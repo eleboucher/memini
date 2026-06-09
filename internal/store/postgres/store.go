@@ -21,11 +21,21 @@ const memoryColumns = `id, namespace, tier, content, summary, metadata, tags, im
 
 // Store is a Postgres/VectorChord backed store.Store.
 type Store struct {
-	pool *pgxpool.Pool
-	dims int
+	pool    *pgxpool.Pool
+	dims    int
+	metrics store.Metrics
 }
 
 var _ store.Store = (*Store)(nil)
+
+// SetMetrics installs an observability sink. Passing nil disables metrics.
+func (s *Store) SetMetrics(m store.Metrics) {
+	if m == nil {
+		s.metrics = store.NopMetrics()
+		return
+	}
+	s.metrics = m
+}
 
 // Open connects to Postgres, ensures the schema exists for the given embedding
 // dimensionality, and returns a ready Store.
@@ -57,12 +67,15 @@ func Open(ctx context.Context, dsn string, dims int) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("postgres: pool: %w", err)
 	}
-	return &Store{pool: pool, dims: dims}, nil
+	return &Store{pool: pool, dims: dims, metrics: store.NopMetrics()}, nil
 }
 
 func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 	stmts := []string{
 		`CREATE EXTENSION IF NOT EXISTS vchord CASCADE`,
+		`CREATE OR REPLACE FUNCTION memini_tags_to_text(text[]) RETURNS text
+			LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT
+		AS $$ SELECT array_to_string($1, ' ') $$`,
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS memories (
 			id               text PRIMARY KEY,
 			namespace        text NOT NULL,
@@ -81,7 +94,7 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 			embedding        vector(%d) NOT NULL,
 			fts              tsvector GENERATED ALWAYS AS (
 				to_tsvector('english',
-					content || ' ' || summary || ' ' || array_to_string(tags, ' '))
+					content || ' ' || summary || ' ' || memini_tags_to_text(tags))
 			) STORED
 		)`, dims),
 		`CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace)`,
@@ -116,13 +129,15 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 
 	// Lock the existing row (if any) and verify namespace ownership.
 	var existingNS string
+	var op string
 	err = tx.QueryRow(ctx, `SELECT namespace FROM memories WHERE id=$1 FOR UPDATE`, m.ID).Scan(&existingNS)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		// fresh insert — proceed
+		op = "insert"
 	case err != nil:
 		return fmt.Errorf("postgres: check existing namespace: %w", err)
 	default:
+		op = "update"
 		if existingNS != m.Namespace {
 			return fmt.Errorf("postgres: id %q exists in namespace %q: %w", m.ID, existingNS, store.ErrConflict)
 		}
@@ -145,7 +160,11 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 	if err != nil {
 		return fmt.Errorf("postgres: upsert: %w", err)
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	s.metrics.Upsert(op, string(m.Tier))
+	return nil
 }
 
 // Get returns a memory by ID.
@@ -162,15 +181,18 @@ func (s *Store) Get(ctx context.Context, namespace, id string) (*memory.Memory, 
 // before cutoff. Returns ErrNotFound when the memory is absent or its TTL was
 // slid past cutoff by Reinforce since the last ListExpired call.
 func (s *Store) DeleteIfExpiredBefore(ctx context.Context, namespace, id string, cutoff time.Time) error {
-	tag, err := s.pool.Exec(ctx,
-		`DELETE FROM memories WHERE id=$1 AND namespace=$2 AND expires_at IS NOT NULL AND expires_at <= $3`,
-		id, namespace, cutoff)
+	var tier string
+	err := s.pool.QueryRow(ctx,
+		`DELETE FROM memories WHERE id=$1 AND namespace=$2 AND expires_at IS NOT NULL AND expires_at <= $3
+		 RETURNING tier`,
+		id, namespace, cutoff).Scan(&tier)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.ErrNotFound
+		}
 		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return store.ErrNotFound
-	}
+	s.metrics.SweepExpired(tier)
 	return nil
 }
 
@@ -183,6 +205,7 @@ func (s *Store) Delete(ctx context.Context, namespace, id string) error {
 	if tag.RowsAffected() == 0 {
 		return store.ErrNotFound
 	}
+	s.metrics.Delete()
 	return nil
 }
 
@@ -196,6 +219,7 @@ func (s *Store) SetSuperseded(ctx context.Context, namespace, id, supersededBy s
 	if tag.RowsAffected() == 0 {
 		return store.ErrNotFound
 	}
+	s.metrics.SoftDelete()
 	return nil
 }
 
