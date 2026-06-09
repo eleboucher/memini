@@ -115,7 +115,7 @@ fsck:
   cronjob:
     enabled: false
     schedule: "0 * * * *"
-    image: curlimages/curl:8.11.0
+    image: curlimages/curl:8.20.0
 
 resources: {}
 podAnnotations: {}
