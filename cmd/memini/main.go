@@ -69,6 +69,21 @@ func run() error {
 	}
 
 	reg := prometheus.NewRegistry()
+	metricsImpl := newConsolidateMetrics(reg)
+
+	// Wire observability into the store and embedder. The store's Open() has
+	// already returned; we set metrics through the concrete handle.
+	if sm, ok := st.(interface{ SetMetrics(store.Metrics) }); ok {
+		sm.SetMetrics(metricsImpl)
+	}
+	if em, ok := embedder.(interface{ SetMetrics(embed.Metrics) }); ok {
+		em.SetMetrics(metricsImpl)
+	}
+	// Wrap the outer embedder so cache / batch / disabled paths also report
+	// per-backend latency. The OpenAIClient inside is instrumented directly
+	// (above) so it can read the API's token count; this outer wrapper
+	// duplicates the openai label with cache-hit / batch / disabled labels.
+	embedder = embed.Instrument(embedder, outerBackendLabel(embedder), metricsImpl)
 
 	var svcOpts []service.Option
 	if cfg.LLMEnabled() {
@@ -93,7 +108,7 @@ func run() error {
 		service.WithShortTermCap(cfg.ShortTermCap),
 		service.WithConsolidateMode(service.ConsolidateMode(cfg.ConsolidateMode)),
 		service.WithConsolidateMinScore(cfg.ConsolidateMinScore),
-		service.WithMetrics(newConsolidateMetrics(reg)),
+		service.WithMetrics(metricsImpl),
 	)
 	svc := service.New(st, embedder, svcOpts...)
 
@@ -161,4 +176,24 @@ func buildEmbedder(cfg *config.Config, log *slog.Logger) (embed.Embedder, error)
 		return nil, err
 	}
 	return embed.NewCached(client, 4096)
+}
+
+// outerBackendLabel names the layer that owns an Embedder. Used to label
+// the outer embedder in /metrics so dashboards can split cache hits, batch
+// fan-outs, and the disabled stub from real network calls.
+func outerBackendLabel(e embed.Embedder) string {
+	switch e.(type) {
+	case *embed.Cached:
+		return "cached"
+	case *embed.DiskCache:
+		return "diskcache"
+	case *embed.Batched:
+		return "batched"
+	case *embed.OpenAIClient:
+		return "openai"
+	case embed.Disabled:
+		return "disabled"
+	default:
+		return "wrapped"
+	}
 }

@@ -54,12 +54,37 @@ type Metrics interface {
 	ConsolidateResult(result string)
 	// ConsolidateQueueDepth reports the current async queue depth.
 	ConsolidateQueueDepth(depth int)
+	// RememberResult records the outcome of a Remember call: result is
+	// "ok"|"error" and tier is the memory's tier.
+	RememberResult(result, tier string)
+	// RecallResult records the outcome of a Recall call. result is
+	// "ok"|"error"; tierFilter is one of "all"|"working"|"episodic"|
+	// "semantic"|"procedural"|"mixed"; hitsBucket is a pre-bucketed
+	// count of returned memories: "0"|"1"|"2-5"|"6-20"|"21+".
+	RecallResult(result, tierFilter, hitsBucket string)
+	// ForgetResult records the outcome of a Forget call: "ok"|"not_found"|"error".
+	ForgetResult(result string)
+	// PromoteResult records one Promote batch: result is "ok"|"error";
+	// facts is the number of semantic facts written.
+	PromoteResult(result string, facts int)
+	// FsckResult records one fsck pass: "ok"|"error". Counters for the
+	// work done (purged, evicted, duplicate groups) are exposed separately
+	// via the store's maintenance metrics.
+	FsckResult(result string)
+	// OpDuration observes end-to-end latency for a public operation.
+	OpDuration(op string, d time.Duration)
 }
 
 type nopMetrics struct{}
 
-func (nopMetrics) ConsolidateResult(string)  {}
-func (nopMetrics) ConsolidateQueueDepth(int) {}
+func (nopMetrics) ConsolidateResult(string)            {}
+func (nopMetrics) ConsolidateQueueDepth(int)           {}
+func (nopMetrics) RememberResult(string, string)       {}
+func (nopMetrics) RecallResult(string, string, string) {}
+func (nopMetrics) ForgetResult(string)                 {}
+func (nopMetrics) PromoteResult(string, int)           {}
+func (nopMetrics) FsckResult(string)                   {}
+func (nopMetrics) OpDuration(string, time.Duration)    {}
 
 // consolidateJob identifies an already-stored memory awaiting background
 // consolidation.
@@ -217,10 +242,16 @@ type RememberInput struct {
 
 // Remember embeds and stores a memory, returning the persisted record.
 func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memory, error) {
+	start := time.Now()
+	defer func() {
+		s.metrics.OpDuration("remember", time.Since(start))
+	}()
 	if in.Namespace == "" {
+		s.metrics.RememberResult("error", "")
 		return nil, fmt.Errorf("remember: namespace is required")
 	}
 	if in.Content == "" {
+		s.metrics.RememberResult("error", "")
 		return nil, fmt.Errorf("remember: content is required")
 	}
 	tier := in.Tier
@@ -228,11 +259,13 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		tier = memory.TierWorking
 	}
 	if !tier.Valid() {
+		s.metrics.RememberResult("error", string(tier))
 		return nil, fmt.Errorf("remember: invalid tier %q", tier)
 	}
 
 	vec, err := embed.EmbedOne(ctx, s.embedder, in.Content)
 	if err != nil {
+		s.metrics.RememberResult("error", string(tier))
 		return nil, fmt.Errorf("remember: embed: %w", err)
 	}
 
@@ -268,13 +301,16 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	// the caller sees the consolidated result.
 	if consolidate && s.consolidateMode == ConsolidateSync {
 		if result, handled, err := s.consolidateSync(ctx, m); err != nil {
+			s.metrics.RememberResult("error", string(tier))
 			return nil, err
 		} else if handled {
+			s.metrics.RememberResult("ok", string(tier))
 			return result, nil
 		}
 	}
 
 	if err := s.store.Upsert(ctx, m); err != nil {
+		s.metrics.RememberResult("error", string(tier))
 		return nil, fmt.Errorf("remember: store: %w", err)
 	}
 
@@ -282,6 +318,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	if consolidate && s.consolidateMode == ConsolidateAsync {
 		s.enqueueConsolidate(m.Namespace, m.ID)
 	}
+	s.metrics.RememberResult("ok", string(tier))
 	return m, nil
 }
 
@@ -549,10 +586,17 @@ type RecallInput struct {
 
 // Recall runs hybrid (vector + keyword) retrieval fused with RRF.
 func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, error) {
+	start := time.Now()
+	tf := tierFilterLabel(in.Tiers)
+	defer func() {
+		s.metrics.OpDuration("recall", time.Since(start))
+	}()
 	if in.Namespace == "" {
+		s.metrics.RecallResult("error", tf, "0")
 		return nil, fmt.Errorf("recall: namespace is required")
 	}
 	if in.Query == "" {
+		s.metrics.RecallResult("error", tf, "0")
 		return nil, fmt.Errorf("recall: query is required")
 	}
 	k := in.Limit
@@ -567,6 +611,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 
 	vec, err := embed.EmbedOne(ctx, s.embedder, in.Query)
 	if err != nil {
+		s.metrics.RecallResult("error", tf, "0")
 		return nil, fmt.Errorf("recall: embed: %w", err)
 	}
 
@@ -575,10 +620,12 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	// after near-duplicates collapse — without deepening the per-list fusion ranks.
 	vres, err := s.store.VectorSearch(ctx, in.Namespace, vec, filter, k)
 	if err != nil {
+		s.metrics.RecallResult("error", tf, "0")
 		return nil, fmt.Errorf("recall: vector search: %w", err)
 	}
 	kres, err := s.store.KeywordSearch(ctx, in.Namespace, in.Query, filter, k)
 	if err != nil {
+		s.metrics.RecallResult("error", tf, "0")
 		return nil, fmt.Errorf("recall: keyword search: %w", err)
 	}
 	// Fuse (no truncation), re-rank by composite relevance/recency/importance,
@@ -587,6 +634,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	ranked := search.Rerank(fused, s.now())
 	results := search.Dedup(ranked, k)
 	s.reinforceResults(ctx, in.Namespace, results)
+	s.metrics.RecallResult("ok", tf, hitsBucket(len(results)))
 	return results, nil
 }
 
@@ -634,13 +682,32 @@ func (s *Service) Get(ctx context.Context, namespace, id string) (*memory.Memory
 
 // Forget deletes a memory by ID.
 func (s *Service) Forget(ctx context.Context, namespace, id string) error {
-	return s.store.Delete(ctx, namespace, id)
+	start := time.Now()
+	defer func() { s.metrics.OpDuration("forget", time.Since(start)) }()
+	err := s.store.Delete(ctx, namespace, id)
+	switch {
+	case err == nil:
+		s.metrics.ForgetResult("ok")
+	case errors.Is(err, store.ErrNotFound):
+		s.metrics.ForgetResult("not_found")
+	default:
+		s.metrics.ForgetResult("error")
+	}
+	return err
 }
 
 // Fsck runs a consistency sweep: purge expired, enforce the short-term cap, and
 // audit live memories for duplicate clusters.
 func (s *Service) Fsck(ctx context.Context) (maintenance.Report, error) {
-	return maintenance.Fsck(ctx, s.store, s.shortTermCap, s.now())
+	start := time.Now()
+	defer func() { s.metrics.OpDuration("fsck", time.Since(start)) }()
+	rep, err := maintenance.Fsck(ctx, s.store, s.shortTermCap, s.now())
+	if err != nil {
+		s.metrics.FsckResult("error")
+		return rep, err
+	}
+	s.metrics.FsckResult("ok")
+	return rep, nil
 }
 
 // RunPromoter periodically distills frequently-accessed episodic memories into
@@ -672,11 +739,15 @@ func (s *Service) RunPromoter(ctx context.Context, interval time.Duration) {
 // aren't reprocessed. Returns the number of facts written. No-op without a
 // distiller.
 func (s *Service) Promote(ctx context.Context) (int, error) {
+	start := time.Now()
+	defer func() { s.metrics.OpDuration("promote", time.Since(start)) }()
 	if s.distiller == nil {
+		s.metrics.PromoteResult("ok", 0)
 		return 0, nil
 	}
 	namespaces, err := s.store.ListNamespaces(ctx)
 	if err != nil {
+		s.metrics.PromoteResult("error", 0)
 		return 0, err
 	}
 	now := s.now()
@@ -684,6 +755,7 @@ func (s *Service) Promote(ctx context.Context) (int, error) {
 	for _, ns := range namespaces {
 		eps, err := s.store.List(ctx, ns, store.Filter{Tiers: []memory.Tier{memory.TierEpisodic}}, 0)
 		if err != nil {
+			s.metrics.PromoteResult("error", total)
 			return total, err
 		}
 		var pending []*memory.Memory
@@ -702,6 +774,7 @@ func (s *Service) Promote(ctx context.Context) (int, error) {
 			total += n
 		}
 	}
+	s.metrics.PromoteResult("ok", total)
 	return total, nil
 }
 
@@ -788,4 +861,34 @@ func resolveExpiry(now time.Time, tier memory.Tier, ttl *time.Duration) *time.Ti
 	}
 	t := now.Add(d)
 	return &t
+}
+
+// tierFilterLabel returns a low-cardinality label summarising the tier
+// filter a recall was issued with. Mixed means more than one distinct
+// non-empty value; all means none.
+func tierFilterLabel(tiers []memory.Tier) string {
+	switch len(tiers) {
+	case 0:
+		return "all"
+	case 1:
+		return string(tiers[0])
+	default:
+		return "mixed"
+	}
+}
+
+// hitsBucket returns a coarse bucket of n for use as a Prometheus label.
+func hitsBucket(n int) string {
+	switch {
+	case n <= 0:
+		return "0"
+	case n == 1:
+		return "1"
+	case n <= 5:
+		return "2-5"
+	case n <= 20:
+		return "6-20"
+	default:
+		return "21+"
+	}
 }

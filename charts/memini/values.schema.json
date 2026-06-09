@@ -183,6 +183,31 @@
       "title": "fullnameOverride",
       "type": "string"
     },
+    "grafanaDashboards": {
+      "description": "Render the bundled Grafana dashboards as ConfigMaps for the grafana-operator to pick up (the standard 'grafana_dashboard: 1' label). Point your Grafana CR's dashboardsConfigMaps selector at the release namespace.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "enabled",
+          "type": "boolean"
+        },
+        "folder": {
+          "default": "memini",
+          "description": "Annotation value for grafana_dashboard_folder; controls where dashboards land in Grafana.",
+          "title": "folder",
+          "type": "string"
+        },
+        "labelSelector": {
+          "default": "grafana_dashboard=1",
+          "description": "Selector string for the Grafana CR's dashboardsConfigMaps (informational; the operator watches by label).",
+          "title": "labelSelector",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "title": "grafanaDashboards",
+      "type": "object"
+    },
     "global": {
       "description": "Global values are values that can be accessed from any chart or subchart by exactly the same name.",
       "required": [],

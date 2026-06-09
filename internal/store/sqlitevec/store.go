@@ -26,11 +26,21 @@ const memoryColumns = `id, namespace, tier, content, summary, metadata, tags, im
 
 // Store is a sqlite-vec backed store.Store.
 type Store struct {
-	db   *sql.DB
-	dims int
+	db      *sql.DB
+	dims    int
+	metrics store.Metrics
 }
 
 var _ store.Store = (*Store)(nil)
+
+// SetMetrics installs an observability sink. Passing nil disables metrics.
+func (s *Store) SetMetrics(m store.Metrics) {
+	if m == nil {
+		s.metrics = store.NopMetrics()
+		return
+	}
+	s.metrics = m
+}
 
 // Open opens (creating if needed) the sqlite database at path and ensures the
 // schema exists for the given embedding dimensionality.
@@ -43,7 +53,7 @@ func Open(ctx context.Context, path string, dims int) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sqlitevec: open: %w", err)
 	}
-	s := &Store{db: db, dims: dims}
+	s := &Store{db: db, dims: dims, metrics: store.NopMetrics()}
 	if err := s.migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -114,9 +124,11 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 
 	var rowID int64
 	var existingNS string
+	var op string
 	err = tx.QueryRowContext(ctx, `SELECT rowid, namespace FROM memories WHERE id = ?`, m.ID).Scan(&rowID, &existingNS)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
+		op = "insert"
 		res, ierr := tx.ExecContext(ctx, `INSERT INTO memories
 			(id, namespace, tier, content, summary, metadata, tags, importance,
 			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by)
@@ -133,6 +145,7 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 	case err != nil:
 		return fmt.Errorf("sqlitevec: lookup memory: %w", err)
 	default:
+		op = "update"
 		if existingNS != m.Namespace {
 			return fmt.Errorf("sqlitevec: id %q exists in namespace %q: %w", m.ID, existingNS, store.ErrConflict)
 		}
@@ -164,7 +177,11 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		rowID, m.Content, m.Summary, strings.Join(m.Tags, " ")); err != nil {
 		return fmt.Errorf("sqlitevec: insert fts: %w", err)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.metrics.Upsert(op, string(m.Tier))
+	return nil
 }
 
 // Reinforce bumps access_count/last_accessed_at and optionally slides the TTL.
@@ -226,7 +243,11 @@ func (s *Store) Delete(ctx context.Context, namespace, id string) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.metrics.Delete()
+	return nil
 }
 
 // DeleteIfExpiredBefore removes a memory only if its expiry is still at or
@@ -239,10 +260,10 @@ func (s *Store) DeleteIfExpiredBefore(ctx context.Context, namespace, id string,
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var rowID int64
+	var rowID, tier string
 	err = tx.QueryRowContext(ctx,
-		`SELECT rowid FROM memories WHERE id=? AND namespace=? AND expires_at IS NOT NULL AND expires_at <= ?`,
-		id, namespace, ms(cutoff)).Scan(&rowID)
+		`SELECT rowid, tier FROM memories WHERE id=? AND namespace=? AND expires_at IS NOT NULL AND expires_at <= ?`,
+		id, namespace, ms(cutoff)).Scan(&rowID, &tier)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.ErrNotFound
 	} else if err != nil {
@@ -257,7 +278,11 @@ func (s *Store) DeleteIfExpiredBefore(ctx context.Context, namespace, id string,
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.metrics.SweepExpired(tier)
+	return nil
 }
 
 // SetSuperseded records that a memory was replaced by supersededBy.
@@ -270,6 +295,7 @@ func (s *Store) SetSuperseded(ctx context.Context, namespace, id, supersededBy s
 	if n, _ := res.RowsAffected(); n == 0 {
 		return store.ErrNotFound
 	}
+	s.metrics.SoftDelete()
 	return nil
 }
 

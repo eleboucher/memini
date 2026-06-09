@@ -110,6 +110,16 @@ metrics:
     interval: 30s
     scrapeTimeout: 10s
 
+# -- Bundled Grafana dashboards, rendered as ConfigMaps for the
+# grafana-operator. Point your Grafana CR's `dashboardsConfigMaps` selector
+# at this release's namespace; the operator will pick up any ConfigMap with
+# the `grafana_dashboard: "1"` label.
+grafanaDashboards:
+  # -- Render dashboards as ConfigMaps with the standard grafana_dashboard label
+  enabled: false
+  # -- grafana_dashboard_folder annotation; controls where dashboards land in Grafana
+  folder: memini
+
 # -- Periodic fsck CronJob (the in-process sweeper already handles decay)
 fsck:
   cronjob:

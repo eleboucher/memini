@@ -1,0 +1,391 @@
+{
+  "annotations": { "list": [] },
+  "description": "memini — what the service is actually doing for your agents. Live memory counts, write/recall traffic by tier, consolidation outcomes, store health, embedder latency & cost.",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Now",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Live memories",
+      "description": "Live (non-superseded, non-expired) memories by tier.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 1 },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "memini_memories_active",
+          "legendFormat": "{{tier}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Writes (5m rate)",
+      "description": "Successful Remember calls per second, by tier.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 1 },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "sum by (tier) (rate(memini_remember_results_total{result=\"ok\"}[5m]))",
+          "legendFormat": "{{tier}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Recalls (5m rate)",
+      "description": "Successful Recall calls per second.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 1 },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "sum(rate(memini_recall_results_total{result=\"ok\"}[5m]))",
+          "legendFormat": "recalls/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "row",
+      "title": "Writes & Recalls",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Remembers per second (by tier)",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "fillOpacity": 10, "showPoints": "never" },
+          "unit": "ops"
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "sum by (tier) (rate(memini_remember_results_total{result=\"ok\"}[5m]))",
+          "legendFormat": "{{tier}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Recalls per second (by hit-count bucket)",
+      "description": "How many memories a typical recall returns. '0' means no matches — investigate if persistent.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "fillOpacity": 10, "showPoints": "never" },
+          "unit": "ops"
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "sum by (hits_bucket) (rate(memini_recall_results_total{result=\"ok\"}[5m]))",
+          "legendFormat": "{{hits_bucket}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "row",
+      "title": "Consolidation (LLM dedup)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Consolidation outcomes per minute",
+      "description": "gated = similarity gate skipped the LLM; new = nothing to merge; update = merged into an existing memory; supersede = contradiction-tombstoned an old one; noop = nothing to do; error/dropped = failure modes.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 17 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "fillOpacity": 20, "showPoints": "never", "stacking": { "mode": "normal" } },
+          "unit": "ops"
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["sum"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "sum by (result) (rate(memini_consolidate_results_total[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Dedup effectiveness",
+      "description": "Fraction of consolidations that actually used the LLM (update+supersede+new+noop) vs the similarity gate skipping it. Higher = busier corpus or noisier dedup signal.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 17 },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "sum(rate(memini_consolidate_results_total{result=~\"update|supersede|new|noop\"}[15m])) / clamp_min(sum(rate(memini_consolidate_results_total{result!~\"error|dropped\"}[15m])), 1e-9)",
+          "legendFormat": "LLM use ratio",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "row",
+      "title": "Storage & decay",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Live memories by tier",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "fillOpacity": 15, "showPoints": "never", "stacking": { "mode": "normal" } },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "memini_memories_active",
+          "legendFormat": "{{tier}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Decay sweep + tombstones (per minute)",
+      "description": "Swept = memories purged by TTL; soft deletes = contradictions tombstoned by consolidation.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "fillOpacity": 15, "showPoints": "never" },
+          "unit": "ops"
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["sum"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "sum by (tier) (rate(memini_store_swept_total[5m]))",
+          "legendFormat": "swept/{{tier}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "rate(memini_store_soft_deletes_total[5m])",
+          "legendFormat": "tombstones",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "row",
+      "title": "Embedder & recall latency",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Embedder p95 latency (by backend)",
+      "description": "openai = real network calls; cached/diskcache/batched = local cache or fan-out; disabled = no endpoint configured.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 35 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "fillOpacity": 10, "showPoints": "never" },
+          "unit": "s"
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "histogram_quantile(0.95, sum by (backend, le) (rate(memini_embed_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{backend}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Embedder tokens + error rate",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 35 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "fillOpacity": 10, "showPoints": "never" }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "sum by (backend) (rate(memini_embed_tokens_total[5m]))",
+          "legendFormat": "tokens/s {{backend}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "sum by (backend) (rate(memini_embed_errors_total[5m]))",
+          "legendFormat": "err/s {{backend}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "End-to-end op latency p95 (by op)",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 43 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "fillOpacity": 5, "showPoints": "never" },
+          "unit": "s"
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "histogram_quantile(0.95, sum by (op, le) (rate(memini_op_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{op}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["memini"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "Prometheus", "value": "Prometheus" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "memini",
+  "uid": "memini",
+  "version": 1,
+  "weekStart": ""
+}
