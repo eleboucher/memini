@@ -1,0 +1,48 @@
+---
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: docker
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@v6
+
+      - name: Setup Go
+        uses: https://data.forgejo.org/actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Check go.mod tidiness
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Run tests
+        run: CGO_ENABLED=1 go test -race -count=1 -timeout 300s ./...
+
+  lint:
+    runs-on: docker
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@v6
+
+      - name: Setup Go
+        uses: https://data.forgejo.org/actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run linter
+        uses: https://data.forgejo.org/golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2

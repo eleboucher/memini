@@ -1,0 +1,45 @@
+---
+name: Release
+on:
+  push:
+    tags:
+      - "v*"
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  container:
+    runs-on: multiarch
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v6
+      - uses: https://data.forgejo.org/docker/setup-buildx-action@v4
+      - name: Compute build timestamp
+        id: build-meta
+        run: echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      - name: Login to git.erwanleboucher.dev
+        uses: https://data.forgejo.org/docker/login-action@v4
+        with:
+          registry: git.erwanleboucher.dev
+          username: ${{ vars.USERNAME }}
+          password: ${{ secrets.OWNER_PACKAGE_SECRET }}
+      - name: Compute image metadata
+        id: meta
+        uses: https://data.forgejo.org/docker/metadata-action@v6
+        with:
+          images: |
+            git.erwanleboucher.dev/${{ vars.USERNAME }}/memini
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - name: Build and push
+        uses: https://data.forgejo.org/docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            REVISION=${{ github.sha }}
+            DATE=${{ steps.build-meta.outputs.created }}
