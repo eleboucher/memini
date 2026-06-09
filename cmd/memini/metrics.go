@@ -40,6 +40,15 @@ type consolidateMetrics struct {
 	embedErrors   *prometheus.CounterVec
 }
 
+const (
+	labelBackend    = "backend"
+	labelHitsBucket = "hits_bucket"
+	labelOp         = "op"
+	labelResult     = "result"
+	labelTier       = "tier"
+	labelTierFilter = "tier_filter"
+)
+
 var (
 	_ service.Metrics = (*consolidateMetrics)(nil)
 	_ store.Metrics   = (*consolidateMetrics)(nil)
@@ -52,7 +61,7 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 		results: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_consolidate_results_total",
 			Help: "Consolidation pipeline outcomes by result (gated, new, update, supersede, noop, error, dropped).",
-		}, []string{"result"}),
+		}, []string{labelResult}),
 		queueDepth: factory.NewGauge(prometheus.GaugeOpts{
 			Name: "memini_consolidate_queue_depth",
 			Help: "Current depth of the async consolidation queue.",
@@ -60,32 +69,32 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 		rememberResults: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_remember_results_total",
 			Help: "Outcomes of the Remember API by tier.",
-		}, []string{"result", "tier"}),
+		}, []string{labelResult, labelTier}),
 		recallResults: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_recall_results_total",
 			Help: "Outcomes of the Recall API by tier filter and hit-count bucket.",
-		}, []string{"result", "tier_filter", "hits_bucket"}),
+		}, []string{labelResult, labelTierFilter, labelHitsBucket}),
 		forgetResults: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_forget_results_total",
 			Help: "Outcomes of the Forget API (ok, not_found, error).",
-		}, []string{"result"}),
+		}, []string{labelResult}),
 		promoteResults: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_promote_results_total",
 			Help: "Outcomes of episodic→semantic promotion.",
-		}, []string{"result"}),
+		}, []string{labelResult}),
 		fsckResults: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_fsck_results_total",
 			Help: "Outcomes of consistency sweeps.",
-		}, []string{"result"}),
+		}, []string{labelResult}),
 		opDuration: factory.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "memini_op_duration_seconds",
 			Help:    "End-to-end latency of public service operations.",
 			Buckets: prometheus.DefBuckets,
-		}, []string{"op"}),
+		}, []string{labelOp}),
 		storeUpsert: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_store_upserts_total",
 			Help: "Store upsert outcomes (insert, update) by tier.",
-		}, []string{"op", "tier"}),
+		}, []string{labelOp, labelTier}),
 		storeDelete: factory.NewCounter(prometheus.CounterOpts{
 			Name: "memini_store_deletes_total",
 			Help: "Hard deletes (Forget) executed by the store.",
@@ -97,29 +106,29 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 		storeSweep: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_store_swept_total",
 			Help: "Memories purged by the decay sweeper, by tier.",
-		}, []string{"tier"}),
+		}, []string{labelTier}),
 		activeByTier: factory.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "memini_memories_active",
 			Help: "Live (non-superseded, non-expired) memory count by tier, refreshed after sweeps and fsck.",
-		}, []string{"tier"}),
+		}, []string{labelTier}),
 		embedDuration: factory.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "memini_embed_duration_seconds",
 			Help:    "Embedder call latency, by backend layer (openai, cached, diskcache, batched, disabled).",
 			Buckets: prometheus.DefBuckets,
-		}, []string{"backend"}),
+		}, []string{labelBackend}),
 		embedTokens: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_embed_tokens_total",
 			Help: "Cumulative embedding tokens reported by the API, by backend (only set for the openai backend).",
-		}, []string{"backend"}),
+		}, []string{labelBackend}),
 		embedItems: factory.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "memini_embed_items",
 			Help:    "Number of input texts per Embed call, by backend.",
 			Buckets: []float64{1, 2, 4, 8, 16, 32, 64, 128},
-		}, []string{"backend"}),
+		}, []string{labelBackend}),
 		embedErrors: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_embed_errors_total",
 			Help: "Embedder failures, by backend.",
-		}, []string{"backend"}),
+		}, []string{labelBackend}),
 	}
 	return m
 }
