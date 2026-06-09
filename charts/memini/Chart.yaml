@@ -2,8 +2,8 @@ apiVersion: v2
 name: memini
 description: A Kubernetes-ready memory service for AI agents (REST + MCP).
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 1.0.0
+appVersion: 0.1.0
 home: https://github.com/eleboucher/memini
 sources:
   - https://github.com/eleboucher/memini
