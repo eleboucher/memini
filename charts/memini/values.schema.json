@@ -1,0 +1,537 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "affinity": {
+      "required": [],
+      "title": "affinity",
+      "type": "object"
+    },
+    "auth": {
+      "description": "Optional bearer-token auth for the API\nBearer-token auth (protects both /v1 and /mcp). REQUIRED before exposing\nmemini off-cluster (see httpRoute). Either reference an existing secret, or set\n`auth.apiKey` to have the chart create one.",
+      "properties": {
+        "apiKey": {
+          "default": "",
+          "description": "Plaintext token; when set, the chart creates a Secret holding it.",
+          "title": "apiKey",
+          "type": "string"
+        },
+        "apiKeySecret": {
+          "description": "Existing secret holding the token (used when auth.apiKey is empty).",
+          "properties": {
+            "key": {
+              "default": "api-key",
+              "title": "key",
+              "type": "string"
+            },
+            "name": {
+              "default": "",
+              "title": "name",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "apiKeySecret",
+          "type": "object"
+        }
+      },
+      "required": [],
+      "title": "auth",
+      "type": "object"
+    },
+    "autoscaling": {
+      "description": "Horizontal Pod Autoscaler (postgres backend only)",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "enabled",
+          "type": "boolean"
+        },
+        "maxReplicas": {
+          "default": 10,
+          "title": "maxReplicas",
+          "type": "integer"
+        },
+        "minReplicas": {
+          "default": 2,
+          "title": "minReplicas",
+          "type": "integer"
+        },
+        "targetCPUUtilizationPercentage": {
+          "default": 80,
+          "title": "targetCPUUtilizationPercentage",
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "title": "autoscaling",
+      "type": "object"
+    },
+    "backend": {
+      "default": "sqlite",
+      "description": "Storage backend: \"sqlite\" (embedded, single replica + PVC) or \"postgres\" (scale-out)",
+      "title": "backend",
+      "type": "string"
+    },
+    "config": {
+      "description": "Service-level (non-secret) configuration, mapped to MEMINI_* env vars",
+      "properties": {
+        "defaultNamespace": {
+          "default": "default",
+          "title": "defaultNamespace",
+          "type": "string"
+        },
+        "logFormat": {
+          "default": "json",
+          "title": "logFormat",
+          "type": "string"
+        },
+        "logLevel": {
+          "default": "info",
+          "title": "logLevel",
+          "type": "string"
+        },
+        "namespaceHeader": {
+          "default": "X-Memini-Namespace",
+          "title": "namespaceHeader",
+          "type": "string"
+        },
+        "sweepInterval": {
+          "default": "1h",
+          "description": "Decay sweeper interval (Go duration)",
+          "title": "sweepInterval",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "title": "config",
+      "type": "object"
+    },
+    "embeddings": {
+      "description": "External OpenAI-compatible embeddings endpoint (required for vector search)",
+      "properties": {
+        "apiKeySecret": {
+          "description": "Optional existing secret holding the embeddings API key",
+          "properties": {
+            "key": {
+              "default": "api-key",
+              "title": "key",
+              "type": "string"
+            },
+            "name": {
+              "default": "",
+              "title": "name",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "apiKeySecret",
+          "type": "object"
+        },
+        "baseURL": {
+          "default": "",
+          "title": "baseURL",
+          "type": "string"
+        },
+        "dims": {
+          "default": 1536,
+          "description": "Embedding dimensionality; MUST match the deployed model",
+          "title": "dims",
+          "type": "integer"
+        },
+        "model": {
+          "default": "text-embedding-3-small",
+          "title": "model",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "title": "embeddings",
+      "type": "object"
+    },
+    "fsck": {
+      "description": "Periodic fsck CronJob (the in-process sweeper already handles decay)",
+      "properties": {
+        "cronjob": {
+          "properties": {
+            "enabled": {
+              "default": false,
+              "title": "enabled",
+              "type": "boolean"
+            },
+            "image": {
+              "default": "curlimages/curl:8.11.0",
+              "title": "image",
+              "type": "string"
+            },
+            "schedule": {
+              "default": "0 * * * *",
+              "title": "schedule",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "cronjob",
+          "type": "object"
+        }
+      },
+      "required": [],
+      "title": "fsck",
+      "type": "object"
+    },
+    "fullnameOverride": {
+      "default": "",
+      "title": "fullnameOverride",
+      "type": "string"
+    },
+    "global": {
+      "description": "Global values are values that can be accessed from any chart or subchart by exactly the same name.",
+      "required": [],
+      "title": "global",
+      "type": "object"
+    },
+    "httpRoute": {
+      "description": "Gateway API HTTPRoute to expose memini off-cluster (the modern replacement\nfor the deprecated Ingress). Attaches to an existing Gateway. Set auth (above)\nbefore enabling. TLS is configured on the Gateway listener, not here.",
+      "properties": {
+        "annotations": {
+          "required": [],
+          "title": "annotations",
+          "type": "object"
+        },
+        "enabled": {
+          "default": false,
+          "title": "enabled",
+          "type": "boolean"
+        },
+        "hostnames": {
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              }
+            ],
+            "required": []
+          },
+          "title": "hostnames",
+          "type": "array"
+        },
+        "parentRefs": {
+          "description": "Gateways to attach to (parentRefs)",
+          "items": {
+            "anyOf": [
+              {
+                "properties": {
+                  "name": {
+                    "default": "",
+                    "title": "name",
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              }
+            ],
+            "required": []
+          },
+          "title": "parentRefs",
+          "type": "array"
+        }
+      },
+      "required": [],
+      "title": "httpRoute",
+      "type": "object"
+    },
+    "image": {
+      "description": "Container image",
+      "properties": {
+        "pullPolicy": {
+          "default": "IfNotPresent",
+          "title": "pullPolicy",
+          "type": "string"
+        },
+        "repository": {
+          "default": "ghcr.io/eleboucher/memini",
+          "title": "repository",
+          "type": "string"
+        },
+        "tag": {
+          "default": "",
+          "description": "Image tag; defaults to the chart appVersion when empty",
+          "title": "tag",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "title": "image",
+      "type": "object"
+    },
+    "imagePullSecrets": {
+      "items": {
+        "required": []
+      },
+      "title": "imagePullSecrets",
+      "type": "array"
+    },
+    "llm": {
+      "description": "Opt-in LLM endpoint for consolidation; leave baseURL empty to run headless",
+      "properties": {
+        "apiKeySecret": {
+          "properties": {
+            "key": {
+              "default": "api-key",
+              "title": "key",
+              "type": "string"
+            },
+            "name": {
+              "default": "",
+              "title": "name",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "apiKeySecret",
+          "type": "object"
+        },
+        "baseURL": {
+          "default": "",
+          "title": "baseURL",
+          "type": "string"
+        },
+        "model": {
+          "default": "gpt-4o-mini",
+          "title": "model",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "title": "llm",
+      "type": "object"
+    },
+    "metrics": {
+      "description": "Prometheus Operator ServiceMonitor",
+      "properties": {
+        "serviceMonitor": {
+          "properties": {
+            "enabled": {
+              "default": false,
+              "title": "enabled",
+              "type": "boolean"
+            },
+            "interval": {
+              "default": "30s",
+              "title": "interval",
+              "type": "string"
+            },
+            "scrapeTimeout": {
+              "default": "10s",
+              "title": "scrapeTimeout",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "serviceMonitor",
+          "type": "object"
+        }
+      },
+      "required": [],
+      "title": "metrics",
+      "type": "object"
+    },
+    "nameOverride": {
+      "default": "",
+      "title": "nameOverride",
+      "type": "string"
+    },
+    "nodeSelector": {
+      "required": [],
+      "title": "nodeSelector",
+      "type": "object"
+    },
+    "podAnnotations": {
+      "required": [],
+      "title": "podAnnotations",
+      "type": "object"
+    },
+    "podSecurityContext": {
+      "properties": {
+        "fsGroup": {
+          "default": 65532,
+          "title": "fsGroup",
+          "type": "integer"
+        },
+        "runAsNonRoot": {
+          "default": true,
+          "title": "runAsNonRoot",
+          "type": "boolean"
+        },
+        "runAsUser": {
+          "default": 65532,
+          "title": "runAsUser",
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "title": "podSecurityContext",
+      "type": "object"
+    },
+    "postgres": {
+      "description": "postgres backend connection",
+      "properties": {
+        "dsnSecret": {
+          "description": "Existing secret holding the libpq DSN (required when backend=postgres)",
+          "properties": {
+            "key": {
+              "default": "dsn",
+              "title": "key",
+              "type": "string"
+            },
+            "name": {
+              "default": "",
+              "title": "name",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "dsnSecret",
+          "type": "object"
+        }
+      },
+      "required": [],
+      "title": "postgres",
+      "type": "object"
+    },
+    "replicaCount": {
+      "default": 1,
+      "description": "Replica count (postgres only; sqlite is pinned to 1)",
+      "title": "replicaCount",
+      "type": "integer"
+    },
+    "resources": {
+      "required": [],
+      "title": "resources",
+      "type": "object"
+    },
+    "securityContext": {
+      "properties": {
+        "allowPrivilegeEscalation": {
+          "default": false,
+          "title": "allowPrivilegeEscalation",
+          "type": "boolean"
+        },
+        "capabilities": {
+          "properties": {
+            "drop": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  }
+                ],
+                "required": []
+              },
+              "title": "drop",
+              "type": "array"
+            }
+          },
+          "required": [],
+          "title": "capabilities",
+          "type": "object"
+        },
+        "readOnlyRootFilesystem": {
+          "default": true,
+          "title": "readOnlyRootFilesystem",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "title": "securityContext",
+      "type": "object"
+    },
+    "service": {
+      "properties": {
+        "port": {
+          "default": 8080,
+          "title": "port",
+          "type": "integer"
+        },
+        "type": {
+          "default": "ClusterIP",
+          "title": "type",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "title": "service",
+      "type": "object"
+    },
+    "serviceAccount": {
+      "properties": {
+        "create": {
+          "default": true,
+          "description": "Create a ServiceAccount",
+          "title": "create",
+          "type": "boolean"
+        },
+        "name": {
+          "default": "",
+          "description": "ServiceAccount name; generated when empty",
+          "title": "name",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "title": "serviceAccount",
+      "type": "object"
+    },
+    "sqlite": {
+      "description": "sqlite backend persistence (StatefulSet volumeClaimTemplate)",
+      "properties": {
+        "persistence": {
+          "properties": {
+            "accessModes": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  }
+                ],
+                "required": []
+              },
+              "title": "accessModes",
+              "type": "array"
+            },
+            "enabled": {
+              "default": true,
+              "title": "enabled",
+              "type": "boolean"
+            },
+            "size": {
+              "default": "5Gi",
+              "title": "size",
+              "type": "string"
+            },
+            "storageClass": {
+              "default": "",
+              "title": "storageClass",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "persistence",
+          "type": "object"
+        }
+      },
+      "required": [],
+      "title": "sqlite",
+      "type": "object"
+    },
+    "tolerations": {
+      "items": {
+        "required": []
+      },
+      "title": "tolerations",
+      "type": "array"
+    }
+  },
+  "required": [],
+  "type": "object"
+}

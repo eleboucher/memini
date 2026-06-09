@@ -1,0 +1,9 @@
+# ~/.codex/config.toml — memini over remote Streamable HTTP (recent Codex).
+[mcp_servers.memini]
+url = "http://localhost:8080/mcp"
+# Replace 'my-project' with your real namespace, or remove the header to let
+# memini auto-resolve the namespace from the git repo basename of its own
+# working directory (see README).
+http_headers = { "X-Memini-Namespace" = "my-project" }
+# If memini requires auth, add the bearer token:
+# bearer_token = "your-token"

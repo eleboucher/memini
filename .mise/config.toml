@@ -1,0 +1,96 @@
+# mise is the single source of truth for tool versions and dev tasks.
+# `mise install` provisions the toolchain; `mise run <task>` runs a task;
+# `mise tasks` lists them. CI uses the same tasks so local == CI.
+[tools]
+go = "1.26.4"
+golangci-lint = "2.12.2"
+lefthook = "2.1.9"
+helm = "4.2.0"
+helm-docs = "1.14.2"
+"aqua:dadav/helm-schema" = "0.23.4"
+kind = "0.32.0"
+kubectl = "1.36.1"
+stern = "1.34.0"
+oxfmt = "0.54.0"
+yq = "4.53.3"
+jq = "1.8.1"
+node = "22.14.0"
+
+[settings]
+# Required for the postinstall hook below (auto-installs git hooks via lefthook).
+experimental = true
+
+[env]
+# Keep the sqlite dev database out of the way and ephemeral.
+MEMINI_SQLITE_PATH = "{{ config_root }}/bin/memini.dev.db"
+
+[tasks.fmt]
+description = "Format Go code"
+run = "go fmt ./..."
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run"
+
+[tasks.lint-fix]
+description = "Run golangci-lint with --fix"
+run = "golangci-lint run --fix"
+
+[tasks.test]
+description = "Run unit tests with coverage"
+depends = ["fmt", "vet"]
+run = "go test ./... -coverprofile cover.out"
+
+[tasks.test-hooks]
+description = "Run Node hook script tests (plugin/scripts/_test.mjs)"
+run = "node --test plugin/scripts/_test.mjs"
+
+[tasks.test-integration]
+description = "Run integration tests (testcontainers; requires Docker)"
+run = "go test -tags=integration ./... -count=1"
+
+[tasks.build]
+description = "Build the memini binary into ./bin"
+depends = ["fmt", "vet"]
+run = '''
+version="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
+commit="$(git rev-parse --short HEAD 2>/dev/null || echo none)"
+date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+pkg="github.com/eleboucher/memini/internal/version"
+CGO_ENABLED=0 go build \
+  -ldflags "-s -w -X ${pkg}.Version=${version} -X ${pkg}.Commit=${commit} -X ${pkg}.Date=${date}" \
+  -o bin/memini ./cmd/memini
+'''
+
+[tasks.run]
+description = "Run the service from source"
+run = "go run ./cmd/memini"
+
+[tasks.bench]
+description = "Run the retrieval benchmark (offline sample by default)"
+run = "go run ./cmd/bench"
+
+[tasks.helm-lint]
+description = "Lint the Helm chart"
+run = "helm lint charts/memini"
+
+[tasks.helm-docs]
+description = "Regenerate the chart README + values.schema.json"
+run = '''
+helm-docs --chart-search-root=charts --log-level=warn
+helm-schema --chart-search-root charts/memini --skip-auto-generation required,additionalProperties --append-newline
+'''
+
+[tasks.helm-docs-check]
+description = "Fail if the generated chart README/schema are stale (CI gate)"
+run = '''
+mise run helm-docs
+git diff --exit-code charts/memini/README.md charts/memini/values.schema.json
+'''
+
+[hooks]
+postinstall = "lefthook install"

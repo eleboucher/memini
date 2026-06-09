@@ -1,0 +1,42 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["config:recommended", ":semanticCommits", ":automergeMinor", "schedule:weekly"],
+  labels: ["dependencies"],
+  packageRules: [
+    {
+      description: "Group Go module updates",
+      matchManagers: ["gomod"],
+      groupName: "go modules",
+    },
+    {
+      description: "Keep the Go toolchain pinned in mise and go.mod in sync",
+      matchPackageNames: ["go", "golang"],
+      groupName: "go toolchain",
+    },
+    {
+      // Pinned: this is the newest ncruces release whose API still exposes
+      // sqlite3.Binary AND whose wazero runtime enables wasm atomics, both of
+      // which the sqlite-vec-go-bindings embedded wasm requires. Newer versions
+      // break the build/runtime until the bindings are updated upstream.
+      description: "Do not bump ncruces/go-sqlite3 (sqlite-vec wasm compatibility)",
+      matchPackageNames: ["github.com/ncruces/go-sqlite3"],
+      enabled: false,
+    },
+    {
+      description: "Automerge dev-tool patch/minor bumps in mise",
+      matchFileNames: [".mise/config.toml"],
+      matchUpdateTypes: ["minor", "patch"],
+      automerge: true,
+    },
+  ],
+  customManagers: [
+    {
+      // Pick up `x = "1.2.3"` tool pins in .mise/config.toml.
+      customType: "regex",
+      managerFilePatterns: ["/^\\.mise/config\\.toml$/"],
+      matchStrings: [
+        '#\\s*renovate:\\s*datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+\\S+\\s*=\\s*"(?<currentValue>[^"]+)"',
+      ],
+    },
+  ],
+}
