@@ -1,0 +1,11 @@
+* text=auto eol=lf
+
+*.go    text diff=golang
+go.sum  text -diff
+*.png   binary
+*.jpg   binary
+*.gz    binary
+
+# Keep generated artifacts out of language stats and diffs.
+charts/memini/README.md          linguist-generated=true
+charts/memini/values.schema.json linguist-generated=true

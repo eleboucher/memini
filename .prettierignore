@@ -1,0 +1,10 @@
+# Generated chart artifacts.
+charts/memini/README.md
+charts/memini/values.schema.json
+
+# Go toolchain artifacts.
+bin/
+cover.out
+
+# Vendored / external data.
+bench/data/

@@ -1,0 +1,54 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+      - name: Unit tests
+        run: mise run test
+      - name: Plugin hook tests
+        run: mise run test-hooks
+      - name: Build
+        run: mise run build
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      vchord:
+        # Postgres + VectorChord, used by the postgres-backend integration tests.
+        image: ghcr.io/tensorchord/vchord-postgres:pg18-v1.1.1
+        env:
+          POSTGRES_PASSWORD: memini
+          POSTGRES_DB: memini
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      MEMINI_TEST_POSTGRES_DSN: postgres://postgres:memini@localhost:5432/memini?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+      - name: Integration tests
+        run: mise run test-integration

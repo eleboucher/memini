@@ -1,0 +1,13 @@
+{
+  "//": "Manual MCP wire for opencode without the plugin. Prefer the Claude Code / Codex plugin (../../plugin/) when applicable. If you must wire by hand, replace 'my-project' with your real namespace or drop the X-Memini-Namespace header and let the server auto-resolve.",
+  "mcp": {
+    "memini": {
+      "type": "remote",
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "X-Memini-Namespace": "my-project"
+      },
+      "enabled": true
+    }
+  }
+}

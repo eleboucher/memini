@@ -1,0 +1,41 @@
+name: memini
+
+services:
+  db:
+    image: ghcr.io/tensorchord/vchord-postgres:pg18-v1.1.1
+    environment:
+      POSTGRES_PASSWORD: memini
+      POSTGRES_DB: memini
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    command: ["--model-id", "BAAI/bge-small-en-v1.5"]
+    ports:
+      - "8081:80"
+
+  memini:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+      embeddings:
+        condition: service_started
+    environment:
+      MEMINI_BACKEND: postgres
+      MEMINI_POSTGRES_DSN: postgres://postgres:memini@db:5432/memini?sslmode=disable
+      MEMINI_EMBED_BASE_URL: http://embeddings:80/v1
+      MEMINI_EMBED_MODEL: BAAI/bge-small-en-v1.5
+      MEMINI_EMBED_DIMS: "384"
+      MEMINI_LOG_FORMAT: text
+      # Opt-in consolidation: point at any OpenAI-compatible chat endpoint.
+      # MEMINI_LLM_BASE_URL: http://your-llm/v1
+      # MEMINI_LLM_MODEL: gpt-4o-mini
+    ports:
+      - "8080:8080"

@@ -1,0 +1,134 @@
+# -- Container image
+image:
+  repository: ghcr.io/eleboucher/memini
+  # -- Image tag; defaults to the chart appVersion when empty
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# -- Storage backend: "sqlite" (embedded, single replica + PVC) or "postgres" (scale-out)
+backend: sqlite
+
+# -- Replica count (postgres only; sqlite is pinned to 1)
+replicaCount: 1
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Create a ServiceAccount
+  create: true
+  # -- ServiceAccount name; generated when empty
+  name: ""
+
+# -- Service-level (non-secret) configuration, mapped to MEMINI_* env vars
+config:
+  logLevel: info
+  logFormat: json
+  defaultNamespace: default
+  namespaceHeader: X-Memini-Namespace
+  # -- Decay sweeper interval (Go duration)
+  sweepInterval: 1h
+
+# -- External OpenAI-compatible embeddings endpoint (required for vector search)
+embeddings:
+  baseURL: ""
+  model: text-embedding-3-small
+  # -- Embedding dimensionality; MUST match the deployed model
+  dims: 1536
+  # -- Optional existing secret holding the embeddings API key
+  apiKeySecret:
+    name: ""
+    key: api-key
+
+# -- Opt-in LLM endpoint for consolidation; leave baseURL empty to run headless
+llm:
+  baseURL: ""
+  model: gpt-4o-mini
+  apiKeySecret:
+    name: ""
+    key: api-key
+
+# -- Optional bearer-token auth for the API
+# -- Bearer-token auth (protects both /v1 and /mcp). REQUIRED before exposing
+# memini off-cluster (see httpRoute). Either reference an existing secret, or set
+# `auth.apiKey` to have the chart create one.
+auth:
+  # -- Plaintext token; when set, the chart creates a Secret holding it.
+  apiKey: ""
+  # -- Existing secret holding the token (used when auth.apiKey is empty).
+  apiKeySecret:
+    name: ""
+    key: api-key
+
+# -- sqlite backend persistence (StatefulSet volumeClaimTemplate)
+sqlite:
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+
+# -- postgres backend connection
+postgres:
+  # -- Existing secret holding the libpq DSN (required when backend=postgres)
+  dsnSecret:
+    name: ""
+    key: dsn
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# -- Gateway API HTTPRoute to expose memini off-cluster (the modern replacement
+# for the deprecated Ingress). Attaches to an existing Gateway. Set auth (above)
+# before enabling. TLS is configured on the Gateway listener, not here.
+httpRoute:
+  enabled: false
+  # -- Gateways to attach to (parentRefs)
+  parentRefs:
+    - name: ""
+      # namespace: ""
+      # sectionName: https
+      # port: 443
+  hostnames:
+    - memini.example.com
+  annotations: {}
+
+# -- Horizontal Pod Autoscaler (postgres backend only)
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+
+# -- Prometheus Operator ServiceMonitor
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+
+# -- Periodic fsck CronJob (the in-process sweeper already handles decay)
+fsck:
+  cronjob:
+    enabled: false
+    schedule: "0 * * * *"
+    image: curlimages/curl:8.11.0
+
+resources: {}
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  fsGroup: 65532
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+nodeSelector: {}
+tolerations: []
+affinity: {}

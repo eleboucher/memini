@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "memini": {
+      "transport": "stdio",
+      "command": "memini",
+      "args": ["mcp"],
+      "env": {
+        "MEMINI_EMBED_BASE_URL": "http://localhost:8081/v1",
+        "MEMINI_EMBED_MODEL": "bge-m3",
+        "MEMINI_EMBED_DIMS": "1024",
+        "MEMINI_SQLITE_PATH": "/home/you/.memini/memini.db",
+        "MEMINI_DEFAULT_NAMESPACE": "my-project"
+      },
+      "allowedTools": ["memory_remember", "memory_recall", "memory_get", "memory_forget"]
+    }
+  }
+}
