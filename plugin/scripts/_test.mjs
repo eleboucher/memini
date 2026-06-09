@@ -15,10 +15,19 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import http from "node:http";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS = __dirname;
+
+// Each test that touches the session buffer gets an isolated cache dir so runs
+// don't pollute the real ~/.cache or each other.
+function freshCache() {
+  return mkdtempSync(join(tmpdir(), "memini-test-"));
+}
 
 function runHook(script, payload, env = {}) {
   return new Promise((resolveProm, reject) => {
@@ -115,7 +124,8 @@ test("session-start.mjs: queries with right namespace, writes context to stdout"
   }
 });
 
-test("session-end.mjs: posts marker with right namespace and tier=episodic", async () => {
+test("session-end.mjs: falls back to a bare marker when no events buffered", async () => {
+  const cache = freshCache(); // empty buffer dir → no digest
   const hits = [];
   const { url, close } = await startMockServer((req, res, body) => {
     hits.push({ method: req.method, url: req.url, ns: req.headers["x-memini-namespace"], body });
@@ -127,8 +137,8 @@ test("session-end.mjs: posts marker with right namespace and tier=episodic", asy
   try {
     await runHook(
       "session-end.mjs",
-      JSON.stringify({ session_id: "s1", cwd: __dirname, reason: "user_exit" }),
-      { MEMINI_URL: url },
+      JSON.stringify({ session_id: "nobuf", cwd: __dirname, reason: "user_exit" }),
+      { MEMINI_URL: url, XDG_CACHE_HOME: cache },
     );
 
     assert.equal(hits.length, 1);
@@ -143,37 +153,75 @@ test("session-end.mjs: posts marker with right namespace and tier=episodic", asy
   }
 });
 
-test("post-tool-use.mjs: Edit/Write post, Read/Glob/Grep are filtered out", async () => {
-  for (const tool of ["Edit", "Read", "Glob", "Grep", "Write"]) {
-    const hits = [];
-    const { url, close } = await startMockServer((req, res) => {
-      hits.push({ url: req.url });
-      res.setHeader("Content-Type", "application/json");
-      res.statusCode = 201;
-      res.end(JSON.stringify({ id: "m1" }));
-    });
+test("post-tool-use.mjs: buffers state-changing tools, never POSTs", async () => {
+  const cache = freshCache();
+  const hits = [];
+  const { url, close } = await startMockServer((req, res) => {
+    hits.push({ url: req.url });
+    res.setHeader("Content-Type", "application/json");
+    res.statusCode = 201;
+    res.end(JSON.stringify({ id: "m1" }));
+  });
 
-    try {
+  try {
+    // Edit and Bash are buffered; Read is filtered out. None should POST.
+    for (const [tool, input] of [
+      ["Edit", { file_path: "foo.go" }],
+      ["Read", { file_path: "bar.go" }],
+      ["Bash", { command: "go test ./..." }],
+    ]) {
       await runHook(
         "post-tool-use.mjs",
-        JSON.stringify({
-          session_id: "s1",
-          cwd: __dirname,
-          tool_name: tool,
-          tool_input: { file_path: "foo.go" },
-        }),
-        { MEMINI_URL: url },
+        JSON.stringify({ session_id: "buf1", cwd: __dirname, tool_name: tool, tool_input: input }),
+        { MEMINI_URL: url, XDG_CACHE_HOME: cache },
       );
-
-      const expected = ["Edit", "Write"].includes(tool) ? 1 : 0;
-      assert.equal(
-        hits.length,
-        expected,
-        `tool=${tool} expected ${expected} POST(s), got ${hits.length}`,
-      );
-    } finally {
-      await close();
     }
+    assert.equal(hits.length, 0, `PostToolUse must not POST, got ${hits.length} calls`);
+  } finally {
+    await close();
+  }
+});
+
+test("session-end.mjs: distills buffered events into one digest", async () => {
+  const cache = freshCache();
+  // Buffer two edits (one file twice) and a command.
+  const events = [
+    ["Edit", { file_path: "auth.go" }],
+    ["Edit", { file_path: "auth.go" }],
+    ["Bash", { command: "go test ./..." }],
+  ];
+  for (const [tool, input] of events) {
+    await runHook(
+      "post-tool-use.mjs",
+      JSON.stringify({ session_id: "dig1", cwd: __dirname, tool_name: tool, tool_input: input }),
+      { XDG_CACHE_HOME: cache },
+    );
+  }
+
+  const hits = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    hits.push({ url: req.url, ns: req.headers["x-memini-namespace"], body });
+    res.setHeader("Content-Type", "application/json");
+    res.statusCode = 201;
+    res.end(JSON.stringify({ id: "m1" }));
+  });
+
+  try {
+    await runHook(
+      "session-end.mjs",
+      JSON.stringify({ session_id: "dig1", cwd: __dirname, reason: "user_exit" }),
+      { MEMINI_URL: url, XDG_CACHE_HOME: cache },
+    );
+
+    assert.equal(hits.length, 1, "session-end should write exactly one digest memory");
+    const body = JSON.parse(hits[0].body);
+    assert.equal(body.tier, "episodic");
+    assert.match(body.content, /3 tool calls/, "digest should count events");
+    assert.match(body.content, /auth\.go \(2\)/, "digest should count repeated file edits");
+    assert.match(body.content, /go test/, "digest should mention commands");
+    assert.deepEqual(body.metadata.files, ["auth.go"]);
+  } finally {
+    await close();
   }
 });
 

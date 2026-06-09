@@ -66,11 +66,29 @@ type Completer interface {
 	Complete(ctx context.Context, system, user string) (string, error)
 }
 
-// Client is a chat backend that can both consolidate memories and answer
-// single-turn prompts.
+// Fact is a durable memory distilled from episodic observations.
+type Fact struct {
+	Content string `json:"content"`
+	Summary string `json:"summary,omitempty"`
+}
+
+// DistillInput is a batch of episodic memory contents to distill.
+type DistillInput struct {
+	Episodes []string `json:"episodes"`
+}
+
+// Distiller compresses episodic memories into durable semantic facts. Used by
+// the episodic→semantic promotion job.
+type Distiller interface {
+	Distill(ctx context.Context, in DistillInput) ([]Fact, error)
+}
+
+// Client is a chat backend that can consolidate memories, distill facts, and
+// answer single-turn prompts.
 type Client interface {
 	Consolidator
 	Completer
+	Distiller
 }
 
 // Config configures a chat client. The same fields apply to both the
@@ -134,24 +152,55 @@ Rules:
   Set target to that candidate's id and content to the new memory text.
 Prefer "new" unless there is a clear match. Output only the JSON object.`
 
-// decodeDecision parses and validates a consolidation decision, tolerating a
-// markdown code fence around the JSON (some models wrap output despite the
-// instruction).
-func decodeDecision(content string) (Decision, error) {
+// distillPrompt instructs the model to compress episodic memories into durable
+// semantic facts, used by the promotion job.
+const distillPrompt = `You compress an AI agent's episodic memories into durable, reusable knowledge.
+Given a JSON object {"episodes":[...]} of past observations, extract only the DURABLE knowledge worth
+keeping long-term: stable facts, decisions, conventions, preferences, and how-to knowledge. Discard
+transient noise (one-off actions, timestamps, routine file edits with no lasting lesson). Merge
+overlapping observations into single facts. Respond with a single JSON object:
+{"facts":[{"content":"<durable fact>","summary":"<one line>"}]}
+Return {"facts":[]} if nothing is durable. Output only the JSON object.`
+
+// trimFence strips a leading/trailing markdown code fence some models wrap JSON
+// in despite instructions, and surrounding whitespace.
+func trimFence(content string) string {
 	s := strings.TrimSpace(content)
 	s = strings.TrimPrefix(s, "```json")
 	s = strings.TrimPrefix(s, "```")
 	s = strings.TrimSuffix(s, "```")
-	s = strings.TrimSpace(s)
+	return strings.TrimSpace(s)
+}
 
+// decodeDecision parses and validates a consolidation decision, tolerating a
+// markdown code fence around the JSON.
+func decodeDecision(content string) (Decision, error) {
 	var d Decision
-	if err := json.Unmarshal([]byte(s), &d); err != nil {
+	if err := json.Unmarshal([]byte(trimFence(content)), &d); err != nil {
 		return Decision{}, fmt.Errorf("llm: decode decision JSON: %w", err)
 	}
 	if d.Action != ActionNew && d.Action != ActionUpdate && d.Action != ActionSupersede {
 		return Decision{}, fmt.Errorf("llm: invalid action %q", d.Action)
 	}
 	return d, nil
+}
+
+// decodeFacts parses a distillation response into durable facts, tolerating a
+// markdown code fence and dropping any with empty content.
+func decodeFacts(content string) ([]Fact, error) {
+	var out struct {
+		Facts []Fact `json:"facts"`
+	}
+	if err := json.Unmarshal([]byte(trimFence(content)), &out); err != nil {
+		return nil, fmt.Errorf("llm: decode facts JSON: %w", err)
+	}
+	kept := out.Facts[:0]
+	for _, f := range out.Facts {
+		if strings.TrimSpace(f.Content) != "" {
+			kept = append(kept, f)
+		}
+	}
+	return kept, nil
 }
 
 // maxTokensOr applies the default budget when unset.

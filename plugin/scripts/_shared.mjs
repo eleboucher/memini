@@ -11,7 +11,9 @@
 // Hooks are .mjs (not .ts) so they run in plain `node` without a build step.
 
 import { execSync } from "node:child_process";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import fs from "node:fs";
 
 export const DEBUG = process.env["MEMINI_DEBUG"] === "1";
 
@@ -143,6 +145,119 @@ export function truncate(value, max) {
     return str.length > max ? str.slice(0, max) + "...[truncated]" : str;
   }
   return value;
+}
+
+// --- Session event buffer -------------------------------------------------
+//
+// Tool calls are buffered locally during a session (one JSON line each) and
+// distilled into a single digest memory at session end, rather than POSTed
+// per-call. This keeps the agent's memory dense — one searchable digest per
+// session instead of dozens of thin tool-use fragments — and means zero
+// network traffic on the hot PostToolUse path.
+
+/** Root directory for per-session event buffers. */
+function bufferDir() {
+  const base = process.env["XDG_CACHE_HOME"] || join(homedir() || tmpdir(), ".cache");
+  return join(base, "memini", "sessions");
+}
+
+/** Sanitize a session id into a safe filename component. */
+function safeId(sessionId) {
+  return String(sessionId || "unknown").replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+/** Path of the JSONL buffer file for a session. */
+export function sessionBufferPath(sessionId) {
+  return join(bufferDir(), safeId(sessionId) + ".jsonl");
+}
+
+/**
+ * Append one tool event to the session buffer. Best-effort: filesystem errors
+ * are swallowed so a hook never fails the agent.
+ */
+export function appendSessionEvent(sessionId, event) {
+  try {
+    fs.mkdirSync(bufferDir(), { recursive: true });
+    fs.appendFileSync(sessionBufferPath(sessionId), JSON.stringify(event) + "\n");
+  } catch (e) {
+    if (DEBUG) console.error("[memini] appendSessionEvent failed:", e?.message || e);
+  }
+}
+
+/** Read and parse a session buffer into an array of events ([] on any error). */
+export function readSessionEvents(sessionId) {
+  try {
+    const raw = fs.readFileSync(sessionBufferPath(sessionId), "utf8");
+    const out = [];
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue;
+      const ev = parseJSON(line);
+      if (ev) out.push(ev);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** Delete a session's buffer file (best-effort). */
+export function deleteSessionBuffer(sessionId) {
+  try {
+    fs.rmSync(sessionBufferPath(sessionId), { force: true });
+  } catch (e) {
+    if (DEBUG) console.error("[memini] deleteSessionBuffer failed:", e?.message || e);
+  }
+}
+
+/** Delete buffer files older than maxAgeMs (best-effort hygiene). */
+export function cleanStaleBuffers(maxAgeMs) {
+  try {
+    const dir = bufferDir();
+    const now = Date.now();
+    for (const name of fs.readdirSync(dir)) {
+      const p = join(dir, name);
+      try {
+        if (now - fs.statSync(p).mtimeMs > maxAgeMs) fs.rmSync(p, { force: true });
+      } catch {}
+    }
+  } catch {}
+}
+
+/**
+ * Distill buffered tool events into a single dense, searchable digest. Returns
+ * null when there is nothing worth recording. The shape is { content, summary,
+ * files, commands, count }.
+ */
+export function buildSessionDigest(events, project) {
+  if (!Array.isArray(events) || events.length === 0) return null;
+
+  const fileCounts = new Map();
+  const commands = [];
+  const seenCmd = new Set();
+  for (const ev of events) {
+    if (ev.file) fileCounts.set(ev.file, (fileCounts.get(ev.file) || 0) + 1);
+    if (ev.cmd && !seenCmd.has(ev.cmd)) {
+      seenCmd.add(ev.cmd);
+      commands.push(ev.cmd);
+    }
+  }
+
+  const files = [...fileCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([f, n]) => (n > 1 ? `${f} (${n})` : f));
+  const topCommands = commands.slice(0, 10);
+
+  const parts = [`Session digest for ${project}: ${events.length} tool calls.`];
+  if (files.length) parts.push(`Edited: ${files.slice(0, 15).join(", ")}.`);
+  if (topCommands.length) parts.push(`Ran: ${topCommands.map((c) => truncate(c, 80)).join("; ")}.`);
+
+  return {
+    content: parts.join(" "),
+    summary: `Worked on ${files.length} file(s) in ${project}`,
+    files: [...fileCounts.keys()],
+    commands: topCommands,
+    count: events.length,
+  };
 }
 
 /** Extract a short hint of the agent's last user prompt for context. */

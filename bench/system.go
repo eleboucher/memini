@@ -42,11 +42,19 @@ type meminiBackend struct {
 	ingErr      error
 }
 
+// benchClock pins recall's time source to the ingest timestamp so a benchmark
+// measures pure retrieval ranking: with all memories sharing one LastAccessedAt
+// the recency factor is uniform and the composite re-ranker reduces to the RRF
+// order. Combined with synchronous reinforcement, runs are deterministic and
+// free of background writes racing the next query.
+var benchClock = func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
+
 func newMeminiBackend(st store.Store, e embed.Embedder, concurrency int) *meminiBackend {
 	if concurrency < 1 {
 		concurrency = 1
 	}
-	return &meminiBackend{store: st, embedder: e, svc: service.New(st, e), concurrency: concurrency}
+	svc := service.New(st, e, service.WithClock(benchClock), service.WithSyncReinforce())
+	return &meminiBackend{store: st, embedder: e, svc: svc, concurrency: concurrency}
 }
 
 // ingest embeds item windows concurrently and upserts under a single lock

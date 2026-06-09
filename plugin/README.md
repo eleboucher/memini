@@ -7,13 +7,25 @@ the agent _when_ to use the memory tools.
 
 ## What it does
 
-| Hook event     | What memini does                                                  |
-| -------------- | ----------------------------------------------------------------- |
-| `SessionStart` | Searches prior context, writes a short block to the agent's input |
-| `PreToolUse`   | Before Edit/Write/Read/Glob/Grep, surfaces related memories       |
-| `PostToolUse`  | Records a one-line episodic note for state-changing tool calls    |
-| `Stop`         | Drops a working-tier checkpoint                                   |
-| `SessionEnd`   | Writes a durable session-end marker                               |
+| Hook event     | What memini does                                                       |
+| -------------- | ---------------------------------------------------------------------- |
+| `SessionStart` | Searches prior context, writes a short block to the agent's input      |
+| `PreToolUse`   | Before Edit/Write/Read/Glob/Grep, surfaces related memories            |
+| `PostToolUse`  | Buffers state-changing tool calls locally (no network, no per-call memory) |
+| `Stop`         | Distills the buffer into a working-tier checkpoint                     |
+| `SessionEnd`   | Distills the buffer into one durable episodic **session digest**       |
+
+### Session capture: buffer → digest
+
+Rather than POSTing a memory per tool call (noisy — recall ends up full of thin
+fragments), `PostToolUse` appends one JSON line per state-changing call to a
+local buffer at `${XDG_CACHE_HOME:-~/.cache}/memini/sessions/<session_id>.jsonl`.
+At `SessionEnd` the buffer is distilled into a **single** dense, searchable
+episodic memory — files edited (with counts), commands run, event count — then
+deleted. `Stop` writes the same digest as a 24h working-tier checkpoint without
+deleting the buffer. `SessionStart` also sweeps away buffers older than 7 days
+left behind by crashed sessions. Net effect: zero network traffic on the hot
+path and one dense memory per session instead of dozens.
 
 Plus 3 skills (`remember`, `recall`, `recap`) the agent invokes directly.
 
@@ -51,7 +63,7 @@ plugin/
 │   ├── hooks.json               # Claude Code hook wiring
 │   └── hooks.codex.json         # Codex hook wiring
 ├── scripts/
-│   ├── _shared.mjs              # resolveProject, postJSON, postSearch, postRemember
+│   ├── _shared.mjs              # resolveProject, postJSON/Search/Remember, session buffer + digest
 │   ├── session-start.mjs
 │   ├── session-end.mjs
 │   ├── stop.mjs

@@ -1,0 +1,3 @@
+# Large benchmark datasets — download on demand (see bench/README.md), never commit
+longmemeval_*.json
+locomo*.json
