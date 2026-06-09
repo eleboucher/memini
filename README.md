@@ -13,6 +13,13 @@ It synthesizes three ideas:
 - **A stateless, K8s-native HTTP service** with an opt-in LLM consolidation pipeline, per-memory
   TTLs, per-tenant isolation, Prometheus metrics, and an `fsck` consistency checker (after `mnemory`).
 
+Retrieval is tuned for quality-per-byte: hybrid results are re-ranked by a composite of
+relevance, access **recency**, and **importance** (not similarity alone), and near-duplicates
+are collapsed at recall time. When an LLM is configured, writes are stored immediately and
+**deduplicated/contradiction-resolved in the background** (a similarity gate skips the LLM when
+nothing close exists), and frequently-recalled episodic memories are periodically **distilled into
+durable semantic facts** so retrieval quality compounds over time.
+
 ## Design at a glance
 
 | Concern    | Choice                                                                              |
@@ -20,7 +27,8 @@ It synthesizes three ideas:
 | Language   | Go — single static binary, tiny image, low memory                                   |
 | Storage    | Pluggable: **sqlite-vec** (embedded, default) or **Postgres + VectorChord** (scale) |
 | Embeddings | External OpenAI-compatible endpoint (you deploy the model)                          |
-| LLM        | **Opt-in** — runs headless without one; enables dedup/consolidation when configured |
+| LLM        | **Opt-in** — runs headless without one; enables background dedup, consolidation, and episodic→semantic promotion when configured |
+| Ranking    | Hybrid (vector + keyword) RRF, re-ranked by relevance + recency + importance, deduplicated |
 | Interfaces | REST (OpenAPI) + MCP (stdio & Streamable HTTP), sharing one service layer           |
 
 ## Running
@@ -50,7 +58,11 @@ curl -s localhost:8080/healthz
 | `MEMINI_LLM_BASE_URL`      | —                        | opt-in LLM endpoint; empty disables it                                 |
 | `MEMINI_LLM_API`           | `openai`                 | chat backend: `openai` or `anthropic` (e.g. MiniMax)                   |
 | `MEMINI_LLM_MODEL`         | `gpt-4o-mini`            | consolidation model name                                               |
-| `MEMINI_API_KEY`           | —                        | if set, required as a bearer token                                     |
+| `MEMINI_CONSOLIDATE_MODE`  | `async`                  | `async` (store now, dedup in background), `sync`, or `off`             |
+| `MEMINI_CONSOLIDATE_MIN_SCORE` | `0.6`                | similarity gate: skip the LLM when the nearest candidate scores below it (`0` disables) |
+| `MEMINI_PROMOTE_INTERVAL`  | `24h`                    | how often frequently-used episodic memories are distilled into semantic facts (`0` disables; needs LLM) |
+| `MEMINI_PROMOTE_MIN_ACCESS` | `3`                     | minimum recall count before an episodic memory is eligible for promotion |
+| `MEMINI_API_KEY`           | —                        | if set, required as a bearer token (also gates `/metrics`)             |
 | `MEMINI_NAMESPACE_HEADER`  | `X-Memini-Namespace`     | header used to scope tenants                                           |
 | `MEMINI_DEFAULT_NAMESPACE` | auto                     | fallback namespace (see [Namespace resolution](#namespace-resolution)) |
 | `MEMINI_LOG_LEVEL`         | `info`                   | `debug`/`info`/`warn`/`error`                                          |

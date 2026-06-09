@@ -8,7 +8,6 @@ import (
 	"errors"
 	"log/slog"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/eleboucher/memini/internal/memory"
@@ -120,7 +119,7 @@ func Fsck(ctx context.Context, st store.Store, cap int, now time.Time) (Report, 
 		}
 		groups := map[string][]string{}
 		for _, m := range mems {
-			key := normalizeContent(m.Content)
+			key := memory.NormalizeContent(m.Content)
 			groups[key] = append(groups[key], m.ID)
 		}
 		for _, ids := range groups {
@@ -130,12 +129,6 @@ func Fsck(ctx context.Context, st store.Store, cap int, now time.Time) (Report, 
 		}
 	}
 	return rep, nil
-}
-
-// normalizeContent collapses whitespace and case so trivially-duplicated
-// memories cluster together.
-func normalizeContent(s string) string {
-	return strings.ToLower(strings.Join(strings.Fields(s), " "))
 }
 
 // Sweeper periodically purges expired memories and enforces the short-term cap.

@@ -11,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 //go:embed data/sample.json
@@ -26,21 +27,26 @@ func Sample() (*Dataset, error) {
 }
 
 // Item is one memory to ingest; Group scopes it to a namespace, empty falls
-// back to a shared default.
+// back to a shared default. Time, when set, is the memory's source timestamp
+// (used to ground recency in the recency-aware re-ranking comparison).
 type Item struct {
-	ID      string `json:"id"`
-	Content string `json:"content"`
-	Group   string `json:"group,omitempty"`
+	ID      string    `json:"id"`
+	Content string    `json:"content"`
+	Group   string    `json:"group,omitempty"`
+	Time    time.Time `json:"-"`
 }
 
 // Question is a query plus the gold memory IDs it should retrieve. Group must
-// match its items; Answer/Category are populated for QA evaluation where available.
+// match its items; Answer/Category are populated for QA evaluation where
+// available. Now, when set, is the query's reference time (e.g. the question
+// date) — the "now" against which recency is measured.
 type Question struct {
-	Query    string   `json:"query"`
-	Gold     []string `json:"gold"`
-	Group    string   `json:"group,omitempty"`
-	Answer   string   `json:"answer,omitempty"`
-	Category string   `json:"category,omitempty"`
+	Query    string    `json:"query"`
+	Gold     []string  `json:"gold"`
+	Group    string    `json:"group,omitempty"`
+	Answer   string    `json:"answer,omitempty"`
+	Category string    `json:"category,omitempty"`
+	Now      time.Time `json:"-"`
 }
 
 // Dataset is a normalized retrieval benchmark.
@@ -77,9 +83,11 @@ func LoadLongMemEval(path string) (*Dataset, error) {
 		QuestionID      string          `json:"question_id"`
 		QuestionType    string          `json:"question_type"`
 		Question        string          `json:"question"`
+		QuestionDate    string          `json:"question_date"`
 		Answer          json.RawMessage `json:"answer"`
 		AnswerSessionID []string        `json:"answer_session_ids"`
 		HaystackIDs     []string        `json:"haystack_session_ids"`
+		HaystackDates   []string        `json:"haystack_dates"`
 		HaystackData    [][]turn        `json:"haystack_sessions"`
 	}
 	if err := json.Unmarshal(raw, &rows); err != nil {
@@ -91,17 +99,45 @@ func LoadLongMemEval(path string) (*Dataset, error) {
 		if group == "" {
 			group = fmt.Sprintf("q-%d", qi)
 		}
+		// Session ids repeat across questions' haystacks; scope them to the
+		// question's namespace so ids are globally unique (the store rejects the
+		// same id under two namespaces). Gold ids are scoped identically, so the
+		// within-question recall match is unaffected.
 		for i, sess := range r.HaystackData {
 			d.Items = append(d.Items, Item{
-				ID: sessionID(r.HaystackIDs, i), Group: group, Content: sessionText(sess),
+				ID:      group + "/" + sessionID(r.HaystackIDs, i),
+				Group:   group,
+				Content: sessionText(sess),
+				Time:    parseLMEDate(r.HaystackDates, i),
 			})
 		}
+		gold := make([]string, len(r.AnswerSessionID))
+		for i, g := range r.AnswerSessionID {
+			gold[i] = group + "/" + g
+		}
 		d.Questions = append(d.Questions, Question{
-			Query: r.Question, Gold: r.AnswerSessionID, Group: group,
+			Query: r.Question, Gold: gold, Group: group,
 			Answer: jsonScalar(r.Answer), Category: r.QuestionType,
+			Now: parseLMEDate([]string{r.QuestionDate}, 0),
 		})
 	}
 	return d, nil
+}
+
+// lmeDateLayout matches LongMemEval timestamps like "2023/05/30 (Tue) 23:40".
+const lmeDateLayout = "2006/01/02 (Mon) 15:04"
+
+// parseLMEDate parses dates[i] in the LongMemEval layout, returning the zero
+// time when absent or unparseable.
+func parseLMEDate(dates []string, i int) time.Time {
+	if i >= len(dates) || dates[i] == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(lmeDateLayout, dates[i])
+	if err != nil {
+		return time.Time{}
+	}
+	return t.UTC()
 }
 
 // diaIDRe matches LoCoMo dialogue ids like "D1:3", used to parse the (often
@@ -163,13 +199,19 @@ func LoadLoCoMo(path string) (*Dataset, error) {
 				if date != "" {
 					content = "[" + date + "] " + content
 				}
-				d.Items = append(d.Items, Item{ID: tn.DiaID, Group: group, Content: content})
+				// Dialogue ids (e.g. "D1:3") repeat across conversations; scope
+				// them to the conversation namespace for global uniqueness.
+				d.Items = append(d.Items, Item{ID: group + "/" + tn.DiaID, Group: group, Content: content})
 			}
 		}
 		for _, qa := range r.QA {
-			gold := diaIDRe.FindAllString(string(qa.Evidence), -1)
-			if len(gold) == 0 {
+			matches := diaIDRe.FindAllString(string(qa.Evidence), -1)
+			if len(matches) == 0 {
 				continue
+			}
+			gold := make([]string, len(matches))
+			for i, m := range matches {
+				gold[i] = group + "/" + m
 			}
 			d.Questions = append(d.Questions, Question{
 				Query: qa.Question, Gold: gold, Group: group,

@@ -32,6 +32,9 @@ func run() error {
 	limit := flag.Int("limit", 0, "cap the number of questions (0 = all)")
 	concurrency := flag.Int("concurrency", 8, "parallel embedding workers during ingest")
 	outDir := flag.String("out", "bench/results", "directory for JSON results")
+	rerank := flag.Bool("rerank", false, "compare pure-RRF vs recency-aware composite ranking (needs a timestamped dataset, e.g. longmemeval)")
+	rerankCats := flag.String("rerank-cats", "knowledge-update,temporal-reasoning",
+		"comma-separated question categories for -rerank (empty = all)")
 	flag.Parse()
 
 	ds, err := loadDataset(*suite, *data)
@@ -62,6 +65,24 @@ func run() error {
 	defer func() { _ = st.Close() }()
 
 	ks := parseKs(*k)
+
+	// Rerank comparison: isolate the recency-aware re-ranker against pure RRF on
+	// the same retrieved candidates, using each question's reference time.
+	if *rerank {
+		var cats []string
+		for _, c := range strings.Split(*rerankCats, ",") {
+			if c = strings.TrimSpace(c); c != "" {
+				cats = append(cats, c)
+			}
+		}
+		rr, err := bench.RerankCompare(ctx, st, embedder, ds, cats, ks[0])
+		if err != nil {
+			return err
+		}
+		fmt.Println(bench.RerankMarkdown(rr, ks[0]))
+		return nil
+	}
+
 	var results []bench.Result
 	for _, sys := range bench.MeminiSystems(st, embedder, *concurrency) {
 		rs, err := bench.Run(ctx, sys, ds, ks)

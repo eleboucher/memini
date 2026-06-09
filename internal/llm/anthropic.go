@@ -59,6 +59,19 @@ func (c *AnthropicClient) Consolidate(ctx context.Context, in Input) (Decision, 
 	return decodeDecision(content)
 }
 
+// Distill compresses episodic memories into durable semantic facts.
+func (c *AnthropicClient) Distill(ctx context.Context, in DistillInput) ([]Fact, error) {
+	payload, err := json.Marshal(in)
+	if err != nil {
+		return nil, err
+	}
+	content, err := c.chat(ctx, distillPrompt, string(payload))
+	if err != nil {
+		return nil, err
+	}
+	return decodeFacts(content)
+}
+
 // Complete is a single-turn message returning the concatenated text blocks.
 func (c *AnthropicClient) Complete(ctx context.Context, system, user string) (string, error) {
 	return c.chat(ctx, system, user)

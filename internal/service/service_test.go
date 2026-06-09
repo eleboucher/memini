@@ -26,6 +26,7 @@ func newService(t *testing.T) *service.Service {
 	return service.New(st, embedtest.New(dims),
 		service.WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }),
 		service.WithIDGenerator(func() string { n++; return "id-" + string(rune('a'+n-1)) }),
+		service.WithSyncReinforce(),
 	)
 }
 

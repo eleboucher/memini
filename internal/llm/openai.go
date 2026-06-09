@@ -56,6 +56,19 @@ func (c *OpenAIClient) Consolidate(ctx context.Context, in Input) (Decision, err
 	return decodeDecision(content)
 }
 
+// Distill compresses episodic memories into durable semantic facts.
+func (c *OpenAIClient) Distill(ctx context.Context, in DistillInput) ([]Fact, error) {
+	payload, err := json.Marshal(in)
+	if err != nil {
+		return nil, err
+	}
+	content, err := c.chat(ctx, distillPrompt, string(payload), true)
+	if err != nil {
+		return nil, err
+	}
+	return decodeFacts(content)
+}
+
 // Complete is a single-turn chat completion returning the assistant message text.
 func (c *OpenAIClient) Complete(ctx context.Context, system, user string) (string, error) {
 	return c.chat(ctx, system, user, false)

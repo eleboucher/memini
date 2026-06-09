@@ -11,13 +11,26 @@
 // We don't try to be exhaustive here — a "what was I doing last time in
 // this project" hint is more useful than a wall of text. Limit to 5 hits.
 
-import { readStdin, parseJSON, resolveProject, postSearch, DEBUG } from "./_shared.mjs";
+import {
+  readStdin,
+  parseJSON,
+  resolveProject,
+  postSearch,
+  cleanStaleBuffers,
+  DEBUG,
+} from "./_shared.mjs";
+
+// Buffers older than this are abandoned (crashed/killed sessions) and removed.
+const STALE_BUFFER_MS = 7 * 24 * 60 * 60 * 1000;
 
 async function main() {
   const payload = parseJSON(await readStdin()) || {};
   const sessionId = payload.session_id || payload.sessionId;
   const cwd = payload.cwd || process.cwd();
   const project = resolveProject(cwd);
+
+  // Hygiene: drop session buffers left behind by sessions that never ended.
+  cleanStaleBuffers(STALE_BUFFER_MS);
 
   if (DEBUG) console.error(`[memini] SessionStart project=${project} session=${sessionId}`);
 

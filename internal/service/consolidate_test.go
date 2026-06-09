@@ -33,6 +33,12 @@ func newConsolidatingService(t *testing.T, fc *fakeConsolidator) *service.Servic
 	t.Cleanup(func() { _ = st.Close() })
 	return service.New(st, embedtest.New(dims),
 		service.WithConsolidator(fc),
+		// Sync mode so a write reflects its consolidated result immediately, and
+		// gate disabled so the LLM is always consulted (the fake embedder's
+		// similar fixtures score below the production gate).
+		service.WithConsolidateMode(service.ConsolidateSync),
+		service.WithConsolidateMinScore(0),
+		service.WithSyncReinforce(),
 		service.WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }),
 	)
 }

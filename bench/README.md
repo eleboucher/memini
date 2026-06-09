@@ -15,6 +15,10 @@ export MEMINI_EMBED_BASE_URL=http://localhost:8081/v1
 export MEMINI_EMBED_MODEL=bge-m3 MEMINI_EMBED_DIMS=1024
 go run ./cmd/bench -suite longmemeval -data ./longmemeval_s.json -k 5
 go run ./cmd/bench -suite locomo      -data ./locomo.json        -k 5
+
+# Isolate the recency-aware re-ranker against pure RRF on the same candidates,
+# using each question's date as "now" (needs a timestamped dataset):
+go run ./cmd/bench -suite longmemeval -data ./longmemeval_s.json -rerank -k 5
 ```
 
 ## Results: memini vs other memory systems
@@ -37,9 +41,9 @@ apples-to-apples comparison, the second a premium model (Qwen3-Embedding-8B).
 
 | System                         | Embedding model             |       R@5 |      R@10 | Source                                                                                  |
 | ------------------------------ | --------------------------- | --------: | --------: | --------------------------------------------------------------------------------------- |
-| **memini — hybrid (RRF)**      | all-MiniLM-L6-v2 (384-d)    |     96.8% |     98.6% | measured                                                                                |
-| memini — keyword (Porter BM25) | —                           |     97.2% |     98.2% | measured                                                                                |
-| memini — vector                | all-MiniLM-L6-v2            |     94.0% |     97.0% | measured                                                                                |
+| **memini — hybrid (RRF)**      | all-MiniLM-L6-v2 (384-d)    |     96.4% |     98.4% | measured                                                                                |
+| memini — keyword (Porter BM25) | —                           |     97.6% |     99.0% | measured                                                                                |
+| memini — vector                | all-MiniLM-L6-v2            |     92.6% |     95.4% | measured                                                                                |
 | **memini — hybrid (RRF)**      | Qwen3-Embedding-8B (4096-d) | **97.6%** | **98.4%** | measured                                                                                |
 | memini — keyword (Porter BM25) | —                           |     97.2% |     98.2% | measured                                                                                |
 | memini — vector                | Qwen3-Embedding-8B          |     96.0% |     97.8% | measured                                                                                |
@@ -47,12 +51,35 @@ apples-to-apples comparison, the second a premium model (Qwen3-Embedding-8B).
 | agentmemory — BM25 only        | —                           |     86.2% |     94.6% | published                                                                               |
 | MemPalace (vector only)        | larger model                |    ~96.6% |         — | self-reported                                                                           |
 
-On the **same model/dataset/metric**, memini hybrid **beats agentmemory at R@5
-(96.8% vs 95.2%)** and ties at R@10; with the premium model it reaches **97.6%
-R@5**. memini's keyword leg is **+11pp over agentmemory's BM25-only** (97.2% vs
-86.2%) thanks to Porter stemming. On the small model the keyword leg alone is so
-strong it edges the fused R@5 — we deliberately **do not** tune RRF to the test
-set; with the premium model the vector leg strengthens and hybrid wins outright.
+On the **same model/dataset/metric** (full 500 questions), memini hybrid
+**beats agentmemory at R@5 (96.4% vs 95.2%)** and MRR (88.6% vs 88.2%), ties at
+R@10 (98.4% vs 98.6%) and R@20 (99.6% vs 99.4%); with the premium model it
+reaches **97.6% R@5**. memini's keyword leg is **+11.4pp over agentmemory's
+BM25-only** (97.6% vs 86.2%) thanks to Porter stemming. On the small model the
+keyword leg alone is so strong it edges the fused R@5 — we deliberately **do
+not** tune RRF to the test set; with the premium model the vector leg
+strengthens and hybrid wins outright.
+
+### Recency-aware re-ranking (`-rerank`)
+
+memini re-ranks the fused candidates by a composite of relevance, **recency**,
+and **importance**. The recency weight is deliberately light (0.05): a sweep on
+LongMemEval-S (knowledge-update + temporal-reasoning, q.Now = question date,
+sessions timestamped from `haystack_dates`) shows recency is a net win only as a
+tie-breaker, and actively harmful when over-weighted.
+
+| recency weight | R@1 (both cats) | knowledge-update R@1 | temporal R@1 | MRR |
+| -------------- | --------------: | -------------------: | -----------: | --: |
+| 0 (pure RRF)   |           79.6% |                88.5% |        74.4% | 87.6% |
+| **0.05** (default) |       **81.0%** |            85.9% |        78.2% | **88.4%** |
+| 0.15           |           77.7% |                73.1% |        80.5% | 86.4% |
+| 0.25           |           71.6% |                56.4% |        80.5% | 82.6% |
+
+At 0.05 the re-ranker is **+1.4pp R@1 / +0.8pp MRR** over pure RRF (gaining
++3.8pp on temporal at a −2.6pp knowledge-update cost). Heavier recency buries
+correct-but-older memories — the gold session is **not** always the most recent
+— so the default keeps relevance dominant. Recall@5 is unchanged across all
+weights (the re-rank only reorders within the top results).
 
 memini hybrid per-category (Qwen3-8B, recall_any@10): multi-session 100%,
 single-session-user 100%, single-session-assistant 100%, knowledge-update 97.4%,

@@ -3,6 +3,7 @@ package memory
 
 import (
 	"math"
+	"strings"
 	"time"
 )
 
@@ -111,4 +112,17 @@ func (m *Memory) RetentionScore(now time.Time) float64 {
 	recency := math.Exp(-float64(age) / float64(retentionHalfLife))
 	usage := 1 + math.Log1p(float64(m.AccessCount))
 	return (0.2 + m.Importance) * usage * recency
+}
+
+// Recency returns an exponentially-decaying [0,1] factor for how recently the
+// memory was accessed, halving every retentionHalfLife. Used by recall ranking.
+func (m *Memory) Recency(now time.Time) float64 {
+	age := max(now.Sub(m.LastAccessedAt), 0)
+	return math.Exp(-float64(age) / float64(retentionHalfLife))
+}
+
+// NormalizeContent collapses whitespace and case so trivially-duplicated
+// memories compare equal. Used by recall dedup and the fsck duplicate audit.
+func NormalizeContent(s string) string {
+	return strings.ToLower(strings.Join(strings.Fields(s), " "))
 }

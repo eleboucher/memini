@@ -46,6 +46,18 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.SweepInterval != time.Hour {
 		t.Errorf("SweepInterval = %v, want 1h", cfg.SweepInterval)
 	}
+	if cfg.ConsolidateMode != "async" {
+		t.Errorf("ConsolidateMode = %q, want async", cfg.ConsolidateMode)
+	}
+	if cfg.ConsolidateMinScore != 0.6 {
+		t.Errorf("ConsolidateMinScore = %v, want 0.6", cfg.ConsolidateMinScore)
+	}
+	if cfg.PromoteInterval != 24*time.Hour {
+		t.Errorf("PromoteInterval = %v, want 24h", cfg.PromoteInterval)
+	}
+	if cfg.PromoteMinAccess != 3 {
+		t.Errorf("PromoteMinAccess = %d, want 3", cfg.PromoteMinAccess)
+	}
 	if cfg.DefaultNamespace != "stable-test-cwd" {
 		t.Errorf("DefaultNamespace = %q, want stable-test-cwd", cfg.DefaultNamespace)
 	}
@@ -113,6 +125,10 @@ func TestLoadValidationErrors(t *testing.T) {
 			name: "negative dims",
 			env:  map[string]string{"MEMINI_EMBED_DIMS": "-4"},
 		},
+		{
+			name: "unknown consolidate mode",
+			env:  map[string]string{"MEMINI_CONSOLIDATE_MODE": "eventually"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -134,6 +150,8 @@ var meminiEnvKeys = []string{
 	"MEMINI_BACKEND", "MEMINI_SQLITE_PATH", "MEMINI_POSTGRES_DSN",
 	"MEMINI_EMBED_BASE_URL", "MEMINI_EMBED_API_KEY", "MEMINI_EMBED_MODEL", "MEMINI_EMBED_DIMS",
 	"MEMINI_LLM_BASE_URL", "MEMINI_LLM_API_KEY", "MEMINI_LLM_MODEL",
+	"MEMINI_CONSOLIDATE_MODE", "MEMINI_CONSOLIDATE_MIN_SCORE",
+	"MEMINI_PROMOTE_INTERVAL", "MEMINI_PROMOTE_MIN_ACCESS",
 	"MEMINI_SWEEP_INTERVAL", "MEMINI_API_KEY", "MEMINI_NAMESPACE_HEADER",
 	"MEMINI_DEFAULT_NAMESPACE", "MEMINI_NAMESPACE",
 }

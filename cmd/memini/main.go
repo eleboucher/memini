@@ -68,19 +68,39 @@ func run() error {
 		return err
 	}
 
+	reg := prometheus.NewRegistry()
+
 	var svcOpts []service.Option
 	if cfg.LLMEnabled() {
-		consolidator, err := llm.New(llm.API(cfg.LLMAPI), llm.Config{
+		client, err := llm.New(llm.API(cfg.LLMAPI), llm.Config{
 			BaseURL: cfg.LLMBaseURL, APIKey: cfg.LLMAPIKey, Model: cfg.LLMModel,
 		})
 		if err != nil {
 			return err
 		}
-		svcOpts = append(svcOpts, service.WithConsolidator(consolidator))
-		log.Info("LLM consolidation enabled", "api", cfg.LLMAPI, "model", cfg.LLMModel)
+		svcOpts = append(svcOpts, service.WithConsolidator(client))
+		log.Info("LLM consolidation enabled",
+			"api", cfg.LLMAPI, "model", cfg.LLMModel, "mode", cfg.ConsolidateMode)
+		if cfg.PromoteInterval > 0 {
+			svcOpts = append(svcOpts,
+				service.WithDistiller(client),
+				service.WithPromoteMinAccess(cfg.PromoteMinAccess))
+			log.Info("episodic→semantic promotion enabled",
+				"interval", cfg.PromoteInterval, "min_access", cfg.PromoteMinAccess)
+		}
 	}
-	svcOpts = append(svcOpts, service.WithShortTermCap(cfg.ShortTermCap))
+	svcOpts = append(svcOpts,
+		service.WithShortTermCap(cfg.ShortTermCap),
+		service.WithConsolidateMode(service.ConsolidateMode(cfg.ConsolidateMode)),
+		service.WithConsolidateMinScore(cfg.ConsolidateMinScore),
+		service.WithMetrics(newConsolidateMetrics(reg)),
+	)
 	svc := service.New(st, embedder, svcOpts...)
+
+	// Background consolidation worker (no-op unless async mode + a consolidator).
+	go svc.StartConsolidator(ctx)
+	// Background promoter (no-op unless a distiller + positive interval).
+	go svc.RunPromoter(ctx, cfg.PromoteInterval)
 
 	// `memini mcp` serves MCP tools over stdio.
 	if len(os.Args) > 1 && os.Args[1] == "mcp" {
@@ -91,7 +111,6 @@ func run() error {
 	// Background decay sweeper purges expired memories.
 	go maintenance.NewSweeper(st, log, cfg.SweepInterval, cfg.ShortTermCap).Run(ctx)
 
-	reg := prometheus.NewRegistry()
 	srv := server.New(server.Options{
 		Addr:            cfg.HTTPAddr,
 		ShutdownTimeout: cfg.ShutdownTimeout,
