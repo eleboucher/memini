@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -26,9 +27,10 @@ type OpenAIConfig struct {
 
 // OpenAIClient calls an OpenAI-compatible /embeddings endpoint.
 type OpenAIClient struct {
-	client openai.Client
-	model  string
-	dims   int
+	client  openai.Client
+	model   string
+	dims    int
+	metrics Metrics
 }
 
 // NewOpenAI builds an embeddings client. BaseURL and Model are required.
@@ -53,6 +55,16 @@ func NewOpenAI(cfg OpenAIConfig) (*OpenAIClient, error) {
 	return &OpenAIClient{client: openai.NewClient(opts...), model: cfg.Model, dims: cfg.Dims}, nil
 }
 
+// SetMetrics installs an observability sink on this client. Reports real
+// token usage from the API's Usage block. A nil m disables instrumentation.
+func (c *OpenAIClient) SetMetrics(m Metrics) {
+	if m == nil {
+		c.metrics = nopMetrics{}
+		return
+	}
+	c.metrics = m
+}
+
 // Dims returns the configured embedding dimensionality.
 func (c *OpenAIClient) Dims() int { return c.dims }
 
@@ -61,15 +73,22 @@ func (c *OpenAIClient) Embed(ctx context.Context, texts []string) ([][]float32, 
 	if len(texts) == 0 {
 		return nil, nil
 	}
+	m := c.metrics
+	if m == nil {
+		m = nopMetrics{}
+	}
+	start := time.Now()
 	resp, err := c.client.Embeddings.New(ctx, openai.EmbeddingNewParams{
 		Model:          c.model,
 		Input:          openai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: texts},
 		EncodingFormat: openai.EmbeddingNewParamsEncodingFormatFloat,
 	})
 	if err != nil {
+		m.Error("openai")
 		return nil, fmt.Errorf("embed: %w", err)
 	}
 	if len(resp.Data) != len(texts) {
+		m.Error("openai")
 		return nil, fmt.Errorf("embed: expected %d vectors, got %d", len(texts), len(resp.Data))
 	}
 
@@ -77,9 +96,11 @@ func (c *OpenAIClient) Embed(ctx context.Context, texts []string) ([][]float32, 
 	vecs := make([][]float32, len(resp.Data))
 	for _, d := range resp.Data {
 		if int(d.Index) >= len(vecs) {
+			m.Error("openai")
 			return nil, fmt.Errorf("embed: vector index %d out of range", d.Index)
 		}
 		if len(d.Embedding) != c.dims {
+			m.Error("openai")
 			return nil, fmt.Errorf("embed: vector %d has %d dims, configured %d", d.Index, len(d.Embedding), c.dims)
 		}
 		v := make([]float32, len(d.Embedding))
@@ -88,6 +109,11 @@ func (c *OpenAIClient) Embed(ctx context.Context, texts []string) ([][]float32, 
 		}
 		vecs[d.Index] = v
 	}
+	tokens := 0
+	if resp.Usage.TotalTokens > 0 {
+		tokens = int(resp.Usage.TotalTokens)
+	}
+	m.Observe("openai", len(texts), tokens, time.Since(start))
 	return vecs, nil
 }
 

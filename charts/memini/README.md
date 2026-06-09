@@ -37,6 +37,9 @@ helm install memini ./charts/memini \
 | embeddings.dims | int | `1536` | Embedding dimensionality; MUST match the deployed model |
 | fsck | object | `{"cronjob":{"enabled":false,"image":"curlimages/curl:8.11.0","schedule":"0 * * * *"}}` | Periodic fsck CronJob (the in-process sweeper already handles decay) |
 | fullnameOverride | string | `""` |  |
+| grafanaDashboards | object | `{"enabled":false,"folder":"memini"}` | Render the bundled Grafana dashboard as a ConfigMap for the grafana-operator. The chart creates a single ConfigMap with the `grafana_dashboard: "1"` label so the operator's auto-loader picks it up. |
+| grafanaDashboards.enabled | bool | `false` | Render the dashboard as a ConfigMap with the standard grafana_dashboard label |
+| grafanaDashboards.folder | string | `"memini"` | grafana_dashboard_folder annotation; controls where the dashboard lands in Grafana |
 | httpRoute | object | `{"annotations":{},"enabled":false,"hostnames":["memini.example.com"],"parentRefs":[{"name":""}]}` | Gateway API HTTPRoute to expose memini off-cluster (the modern replacement for the deprecated Ingress). Attaches to an existing Gateway. Set auth (above) before enabling. TLS is configured on the Gateway listener, not here. |
 | httpRoute.parentRefs | list | `[{"name":""}]` | Gateways to attach to (parentRefs) |
 | image | object | `{"pullPolicy":"IfNotPresent","repository":"ghcr.io/eleboucher/memini","tag":""}` | Container image |
@@ -63,6 +66,27 @@ helm install memini ./charts/memini \
 | serviceAccount.name | string | `""` | ServiceAccount name; generated when empty |
 | sqlite | object | `{"persistence":{"accessModes":["ReadWriteOnce"],"enabled":true,"size":"5Gi","storageClass":""}}` | sqlite backend persistence (StatefulSet volumeClaimTemplate) |
 | tolerations | list | `[]` |  |
+
+## Observability
+
+The service exposes Prometheus metrics at `:8080/metrics`. The chart ships a
+single Grafana dashboard at `charts/memini/dashboards/memini.json` that
+surfaces the actual memory value: live counts by tier, write/recall traffic,
+consolidation outcomes (including LLM dedup effectiveness), decay sweeps,
+embedder latency and tokens, and end-to-end op latency.
+
+For automatic loading via the [grafana-operator](https://github.com/grafana-operator/grafana-operator),
+enable the ConfigMap renderer and point your `Grafana` CR's `dashboardsConfigMaps`
+selector at the release namespace:
+
+```sh
+helm install memini ./charts/memini \
+  --set metrics.serviceMonitor.enabled=true \
+  --set grafanaDashboards.enabled=true
+```
+
+The chart creates a single ConfigMap labelled `grafana_dashboard: "1"` and
+annotated with `grafana_dashboard_folder: memini`.
 
 ## Maintainers
 

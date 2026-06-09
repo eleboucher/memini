@@ -33,9 +33,15 @@ type countingMetrics struct {
 	depth   int
 }
 
-func newCountingMetrics() *countingMetrics             { return &countingMetrics{results: map[string]int{}} }
-func (m *countingMetrics) ConsolidateResult(r string)  { m.results[r]++ }
-func (m *countingMetrics) ConsolidateQueueDepth(d int) { m.depth = d }
+func newCountingMetrics() *countingMetrics                     { return &countingMetrics{results: map[string]int{}} }
+func (m *countingMetrics) ConsolidateResult(r string)          { m.results[r]++ }
+func (m *countingMetrics) ConsolidateQueueDepth(d int)         { m.depth = d }
+func (m *countingMetrics) RememberResult(string, string)       {}
+func (m *countingMetrics) RecallResult(string, string, string) {}
+func (m *countingMetrics) ForgetResult(string)                 {}
+func (m *countingMetrics) PromoteResult(string, int)           {}
+func (m *countingMetrics) FsckResult(string)                   {}
+func (m *countingMetrics) OpDuration(string, time.Duration)    {}
 
 func newAsyncSvc(t *testing.T, fc llm.Consolidator, minScore float64, mx Metrics) (*Service, store.Store) {
 	t.Helper()
