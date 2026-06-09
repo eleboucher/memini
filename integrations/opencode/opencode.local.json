@@ -1,0 +1,13 @@
+{
+  "//": "Manual stdio wire for opencode without the plugin. Prefer the Claude Code / Codex plugin (../../plugin/) when applicable. If you must wire by hand, replace 'my-project' with your real namespace or drop MEMINI_DEFAULT_NAMESPACE and let the server auto-resolve from its own cwd.",
+  "mcp": {
+    "memini": {
+      "type": "local",
+      "command": ["memini", "mcp"],
+      "env": {
+        "MEMINI_DEFAULT_NAMESPACE": "my-project"
+      },
+      "enabled": true
+    }
+  }
+}

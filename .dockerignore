@@ -1,0 +1,14 @@
+.git
+.github
+.devcontainer
+.mise
+bin
+dist
+*.db
+*.db-shm
+*.db-wal
+cover.out
+charts
+bench/data
+*.md
+!README.md

@@ -1,0 +1,22 @@
+[pre-commit.commands.gofmt]
+glob = "*.go"
+run = "gofmt -w {staged_files}"
+stage_fixed = true
+
+[pre-commit.commands.golangci-lint]
+glob = "*.go"
+run = "golangci-lint run"
+
+[pre-commit.commands.format]
+# oxfmt formats markdown/json/yaml; honours .prettierignore.
+glob = "*.{md,json,yaml,yml}"
+run = "oxfmt --write {staged_files}"
+stage_fixed = true
+
+[pre-commit.commands.tidy]
+glob = "go.{mod,sum}"
+run = "go mod tidy"
+stage_fixed = true
+
+[pre-push.commands.test]
+run = "go test ./..."

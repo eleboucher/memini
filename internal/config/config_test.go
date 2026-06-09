@@ -1,0 +1,139 @@
+package config_test
+
+import (
+	"os"
+	"testing"
+	"time"
+
+	"github.com/eleboucher/memini/internal/config"
+)
+
+func TestLoadDefaults(t *testing.T) {
+	for _, k := range meminiEnvKeys {
+		t.Setenv(k, "")
+	}
+	// Land in a temp dir so `git rev-parse` fails and we fall through to the
+	// cwd basename. Use a stable basename so the assertion is meaningful.
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(prev) })
+	leaf := t.TempDir() + "/stable-test-cwd"
+	if err := os.MkdirAll(leaf, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.Chdir(leaf); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.HTTPAddr != ":8080" {
+		t.Errorf("HTTPAddr = %q, want :8080", cfg.HTTPAddr)
+	}
+	if cfg.Backend != config.BackendSQLite {
+		t.Errorf("Backend = %q, want sqlite", cfg.Backend)
+	}
+	if cfg.SQLitePath != "memini.db" {
+		t.Errorf("SQLitePath = %q, want memini.db", cfg.SQLitePath)
+	}
+	if cfg.EmbedDims != 1536 {
+		t.Errorf("EmbedDims = %d, want 1536", cfg.EmbedDims)
+	}
+	if cfg.SweepInterval != time.Hour {
+		t.Errorf("SweepInterval = %v, want 1h", cfg.SweepInterval)
+	}
+	if cfg.DefaultNamespace != "stable-test-cwd" {
+		t.Errorf("DefaultNamespace = %q, want stable-test-cwd", cfg.DefaultNamespace)
+	}
+	if cfg.NamespaceSrc != config.NamespaceFromCWD {
+		t.Errorf("NamespaceSrc = %q, want cwd", cfg.NamespaceSrc)
+	}
+	if cfg.LLMEnabled() {
+		t.Error("LLMEnabled() = true, want false with no base URL")
+	}
+}
+
+func TestLoadOverrides(t *testing.T) {
+	t.Setenv("MEMINI_HTTP_ADDR", ":9999")
+	t.Setenv("MEMINI_LOG_LEVEL", "debug")
+	t.Setenv("MEMINI_EMBED_DIMS", "256")
+	t.Setenv("MEMINI_SWEEP_INTERVAL", "5m")
+	t.Setenv("MEMINI_LLM_BASE_URL", "http://localhost:8000/v1")
+	t.Setenv("MEMINI_DEFAULT_NAMESPACE", "tenant-a")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.HTTPAddr != ":9999" {
+		t.Errorf("HTTPAddr = %q, want :9999", cfg.HTTPAddr)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Errorf("LogLevel = %q, want debug", cfg.LogLevel)
+	}
+	if cfg.EmbedDims != 256 {
+		t.Errorf("EmbedDims = %d, want 256", cfg.EmbedDims)
+	}
+	if cfg.SweepInterval != 5*time.Minute {
+		t.Errorf("SweepInterval = %v, want 5m", cfg.SweepInterval)
+	}
+	if cfg.DefaultNamespace != "tenant-a" {
+		t.Errorf("DefaultNamespace = %q, want tenant-a", cfg.DefaultNamespace)
+	}
+	if cfg.NamespaceSrc != config.NamespaceFromEnv {
+		t.Errorf("NamespaceSrc = %q, want env", cfg.NamespaceSrc)
+	}
+	if !cfg.LLMEnabled() {
+		t.Error("LLMEnabled() = false, want true")
+	}
+}
+
+func TestLoadValidationErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+	}{
+		{
+			name: "postgres without dsn",
+			env:  map[string]string{"MEMINI_BACKEND": "postgres", "MEMINI_POSTGRES_DSN": ""},
+		},
+		{
+			name: "unknown backend",
+			env:  map[string]string{"MEMINI_BACKEND": "mysql"},
+		},
+		{
+			name: "non-positive dims",
+			env:  map[string]string{"MEMINI_EMBED_DIMS": "0"},
+		},
+		{
+			name: "negative dims",
+			env:  map[string]string{"MEMINI_EMBED_DIMS": "-4"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, k := range meminiEnvKeys {
+				t.Setenv(k, "")
+			}
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+			if _, err := config.Load(); err == nil {
+				t.Fatal("Load: expected error, got nil")
+			}
+		})
+	}
+}
+
+var meminiEnvKeys = []string{
+	"MEMINI_HTTP_ADDR", "MEMINI_SHUTDOWN_TIMEOUT", "MEMINI_LOG_LEVEL", "MEMINI_LOG_FORMAT",
+	"MEMINI_BACKEND", "MEMINI_SQLITE_PATH", "MEMINI_POSTGRES_DSN",
+	"MEMINI_EMBED_BASE_URL", "MEMINI_EMBED_API_KEY", "MEMINI_EMBED_MODEL", "MEMINI_EMBED_DIMS",
+	"MEMINI_LLM_BASE_URL", "MEMINI_LLM_API_KEY", "MEMINI_LLM_MODEL",
+	"MEMINI_SWEEP_INTERVAL", "MEMINI_API_KEY", "MEMINI_NAMESPACE_HEADER",
+	"MEMINI_DEFAULT_NAMESPACE", "MEMINI_NAMESPACE",
+}

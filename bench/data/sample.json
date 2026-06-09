@@ -1,0 +1,25 @@
+{
+  "name": "memini-sample",
+  "items": [
+    { "id": "k1", "content": "the production database is PostgreSQL 16 with the VectorChord extension" },
+    { "id": "k2", "content": "our continuous integration runs on GitHub Actions using the mise toolchain" },
+    { "id": "k3", "content": "the staging environment is deployed to the Talos kubernetes cluster" },
+    { "id": "k4", "content": "API authentication uses bearer tokens stored in the vault" },
+    { "id": "k5", "content": "the frontend is built with React and served via nginx" },
+    { "id": "k6", "content": "logs are shipped to VictoriaLogs and dashboards live in Grafana" },
+    { "id": "k7", "content": "the embeddings model is bge-m3 with 1024 dimensions" },
+    { "id": "k8", "content": "nightly backups are written to the MinIO object store" },
+    { "id": "k9", "content": "the daily team standup happens at 9am every weekday" },
+    { "id": "k10", "content": "rate limiting is enforced at 100 requests per minute per token" }
+  ],
+  "questions": [
+    { "query": "what database do we use in production", "gold": ["k1"] },
+    { "query": "where does continuous integration run", "gold": ["k2"] },
+    { "query": "which kubernetes cluster hosts staging", "gold": ["k3"] },
+    { "query": "how is the API authenticated", "gold": ["k4"] },
+    { "query": "what serves the frontend", "gold": ["k5"] },
+    { "query": "where do logs and dashboards go", "gold": ["k6"] },
+    { "query": "what embedding model and how many dimensions", "gold": ["k7"] },
+    { "query": "where are nightly backups stored", "gold": ["k8"] }
+  ]
+}

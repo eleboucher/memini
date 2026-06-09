@@ -1,0 +1,162 @@
+openapi: 3.1.0
+info:
+  title: memini
+  description: A Kubernetes-ready memory service for AI agents.
+  version: 0.1.0
+  license:
+    name: Apache-2.0
+servers:
+  - url: http://localhost:8080
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      security: []
+      responses:
+        "200": { description: Service is alive }
+  /readyz:
+    get:
+      summary: Readiness probe (verifies storage backend)
+      security: []
+      responses:
+        "200": { description: Ready }
+        "503": { description: Not ready }
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      security: []
+      responses:
+        "200": { description: Metrics in Prometheus text format }
+  /v1/memories:
+    post:
+      summary: Remember (store) a memory
+      parameters: [{ $ref: "#/components/parameters/Namespace" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RememberRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Memory" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/memories/{id}:
+    parameters:
+      - { $ref: "#/components/parameters/Namespace" }
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Fetch a memory by ID
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Memory" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Forget (delete) a memory
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/search:
+    post:
+      summary: Recall memories via hybrid (vector + keyword) search
+      parameters: [{ $ref: "#/components/parameters/Namespace" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SearchRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SearchResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    Namespace:
+      name: X-Memini-Namespace
+      in: header
+      required: false
+      description: Tenant/agent namespace; falls back to the server default.
+      schema: { type: string }
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string }
+  schemas:
+    Tier:
+      type: string
+      enum: [working, episodic, semantic, procedural]
+    RememberRequest:
+      type: object
+      required: [content]
+      properties:
+        content: { type: string }
+        tier: { $ref: "#/components/schemas/Tier" }
+        summary: { type: string }
+        tags: { type: array, items: { type: string } }
+        metadata: { type: object, additionalProperties: true }
+        importance: { type: number, minimum: 0, maximum: 1 }
+        ttl_seconds:
+          type: integer
+          description: Overrides the tier default TTL; negative means never expire.
+        id:
+          type: string
+          description: Upserts an existing memory when provided.
+    SearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query: { type: string }
+        tiers: { type: array, items: { $ref: "#/components/schemas/Tier" } }
+        limit: { type: integer, default: 10 }
+        include_expired: { type: boolean, default: false }
+        include_superseded: { type: boolean, default: false }
+    SearchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              memory: { $ref: "#/components/schemas/Memory" }
+              score: { type: number }
+    Memory:
+      type: object
+      properties:
+        id: { type: string }
+        namespace: { type: string }
+        tier: { $ref: "#/components/schemas/Tier" }
+        content: { type: string }
+        summary: { type: string }
+        metadata: { type: object, additionalProperties: true }
+        tags: { type: array, items: { type: string } }
+        importance: { type: number }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        last_accessed_at: { type: string, format: date-time }
+        access_count: { type: integer }
+        expires_at: { type: string, format: date-time, nullable: true }
+        superseded_by: { type: string, nullable: true }

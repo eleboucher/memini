@@ -1,0 +1,14 @@
+/bin/
+/dist/
+*.db
+*.db-shm
+*.db-wal
+memini.db*
+/tmp/
+cover.out
+coverage.out
+.env
+# Benchmark run outputs (generated; not part of the repo).
+/bench/results/
+# Local agent session notes.
+/.remember/

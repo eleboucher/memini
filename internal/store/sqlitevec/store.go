@@ -1,0 +1,377 @@
+package sqlitevec
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	sqlitevec "github.com/asg017/sqlite-vec-go-bindings/ncruces"
+	_ "github.com/ncruces/go-sqlite3/driver" // registers the database/sql "sqlite3" driver
+
+	"github.com/eleboucher/memini/internal/memory"
+	"github.com/eleboucher/memini/internal/store"
+)
+
+// overFetch multiplies k for vector search so post-filtering (expiry,
+// supersession, tier) still leaves roughly k live results.
+const overFetch = 4
+
+// memoryColumns is the canonical column order for scanning a memory row.
+const memoryColumns = `id, namespace, tier, content, summary, metadata, tags, importance,
+	created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by`
+
+// Store is a sqlite-vec backed store.Store.
+type Store struct {
+	db   *sql.DB
+	dims int
+}
+
+var _ store.Store = (*Store)(nil)
+
+// Open opens (creating if needed) the sqlite database at path and ensures the
+// schema exists for the given embedding dimensionality.
+func Open(ctx context.Context, path string, dims int) (*Store, error) {
+	if dims <= 0 {
+		return nil, fmt.Errorf("sqlitevec: dims must be positive, got %d", dims)
+	}
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(10000)&_pragma=journal_mode(wal)&_pragma=foreign_keys(on)", path)
+	db, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitevec: open: %w", err)
+	}
+	s := &Store{db: db, dims: dims}
+	if err := s.migrate(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Store) migrate(ctx context.Context) error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS memories (
+			rowid            INTEGER PRIMARY KEY,
+			id               TEXT NOT NULL UNIQUE,
+			namespace        TEXT NOT NULL,
+			tier             TEXT NOT NULL,
+			content          TEXT NOT NULL,
+			summary          TEXT NOT NULL DEFAULT '',
+			metadata         TEXT NOT NULL DEFAULT '{}',
+			tags             TEXT NOT NULL DEFAULT '[]',
+			importance       REAL NOT NULL DEFAULT 0,
+			created_at       INTEGER NOT NULL,
+			updated_at       INTEGER NOT NULL,
+			last_accessed_at INTEGER NOT NULL,
+			access_count     INTEGER NOT NULL DEFAULT 0,
+			expires_at       INTEGER,
+			superseded_by    TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at)`,
+		// namespace is a partition key so KNN can isolate tenants efficiently.
+		fmt.Sprintf(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_memories USING vec0(
+			namespace TEXT partition key,
+			embedding float[%d]
+		)`, s.dims),
+		// Porter stemming so queries match morphological variants (move/moved/moving).
+		`CREATE VIRTUAL TABLE IF NOT EXISTS fts_memories USING fts5(content, summary, tags, tokenize='porter unicode61')`,
+	}
+	for _, q := range stmts {
+		if _, err := s.db.ExecContext(ctx, q); err != nil {
+			return fmt.Errorf("sqlitevec: migrate: %w\nstatement: %s", err, q)
+		}
+	}
+	return nil
+}
+
+// Upsert inserts or replaces a memory and its vector/keyword index entries.
+func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
+	if len(m.Embedding) != s.dims {
+		return fmt.Errorf("sqlitevec: embedding has %d dims, store expects %d", len(m.Embedding), s.dims)
+	}
+	metaJSON, err := json.Marshal(orEmptyMap(m.Metadata))
+	if err != nil {
+		return fmt.Errorf("sqlitevec: marshal metadata: %w", err)
+	}
+	tagsJSON, err := json.Marshal(orEmptySlice(m.Tags))
+	if err != nil {
+		return fmt.Errorf("sqlitevec: marshal tags: %w", err)
+	}
+	vec, err := sqlitevec.SerializeFloat32(m.Embedding)
+	if err != nil {
+		return fmt.Errorf("sqlitevec: serialize embedding: %w", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var rowID int64
+	err = tx.QueryRowContext(ctx, `SELECT rowid FROM memories WHERE id = ?`, m.ID).Scan(&rowID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		res, ierr := tx.ExecContext(ctx, `INSERT INTO memories
+			(id, namespace, tier, content, summary, metadata, tags, importance,
+			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
+			m.Importance, ms(m.CreatedAt), ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
+			msPtr(m.ExpiresAt), strPtr(m.SupersededBy))
+		if ierr != nil {
+			return fmt.Errorf("sqlitevec: insert memory: %w", ierr)
+		}
+		if rowID, ierr = res.LastInsertId(); ierr != nil {
+			return ierr
+		}
+	case err != nil:
+		return fmt.Errorf("sqlitevec: lookup memory: %w", err)
+	default:
+		if _, uerr := tx.ExecContext(ctx, `UPDATE memories SET
+			namespace=?, tier=?, content=?, summary=?, metadata=?, tags=?, importance=?,
+			created_at=?, updated_at=?, last_accessed_at=?, access_count=?, expires_at=?, superseded_by=?
+			WHERE rowid=?`,
+			m.Namespace, string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
+			m.Importance, ms(m.CreatedAt), ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
+			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), rowID); uerr != nil {
+			return fmt.Errorf("sqlitevec: update memory: %w", uerr)
+		}
+	}
+
+	// Rewrite the vector and FTS rows keyed by the stable rowid.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM vec_memories WHERE rowid=?`, rowID); err != nil {
+		return fmt.Errorf("sqlitevec: clear vector: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO vec_memories(rowid, namespace, embedding) VALUES (?,?,?)`,
+		rowID, m.Namespace, vec); err != nil {
+		return fmt.Errorf("sqlitevec: insert vector: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM fts_memories WHERE rowid=?`, rowID); err != nil {
+		return fmt.Errorf("sqlitevec: clear fts: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO fts_memories(rowid, content, summary, tags) VALUES (?,?,?,?)`,
+		rowID, m.Content, m.Summary, strings.Join(m.Tags, " ")); err != nil {
+		return fmt.Errorf("sqlitevec: insert fts: %w", err)
+	}
+	return tx.Commit()
+}
+
+// Reinforce bumps access_count/last_accessed_at and optionally slides the TTL.
+func (s *Store) Reinforce(ctx context.Context, namespace string, ids []string, accessedAt time.Time, newExpiry *time.Time) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	set := "access_count = access_count + 1, last_accessed_at = ?"
+	args := []any{ms(accessedAt)}
+	if newExpiry != nil {
+		// Only slide rows that already expire (short-term); never add a TTL to durable rows.
+		set += ", expires_at = CASE WHEN expires_at IS NOT NULL THEN ? ELSE expires_at END"
+		args = append(args, ms(*newExpiry))
+	}
+	args = append(args, namespace)
+	placeholders := make([]string, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	q := fmt.Sprintf("UPDATE memories SET %s WHERE namespace = ? AND id IN (%s)",
+		set, strings.Join(placeholders, ","))
+	_, err := s.db.ExecContext(ctx, q, args...)
+	return err
+}
+
+// Get returns a memory by ID.
+func (s *Store) Get(ctx context.Context, namespace, id string) (*memory.Memory, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+memoryColumns+` FROM memories WHERE id=? AND namespace=?`, id, namespace)
+	m, err := scanMemory(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, store.ErrNotFound
+	}
+	return m, err
+}
+
+// Delete removes a memory and its index entries.
+func (s *Store) Delete(ctx context.Context, namespace, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var rowID int64
+	err = tx.QueryRowContext(ctx, `SELECT rowid FROM memories WHERE id=? AND namespace=?`, id, namespace).Scan(&rowID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	for _, q := range []string{
+		`DELETE FROM memories WHERE rowid=?`,
+		`DELETE FROM vec_memories WHERE rowid=?`,
+		`DELETE FROM fts_memories WHERE rowid=?`,
+	} {
+		if _, err := tx.ExecContext(ctx, q, rowID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// SetSuperseded records that a memory was replaced by supersededBy.
+func (s *Store) SetSuperseded(ctx context.Context, namespace, id, supersededBy string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE memories SET superseded_by=? WHERE id=? AND namespace=?`, supersededBy, id, namespace)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// VectorSearch returns the k nearest live memories to vec in the namespace.
+func (s *Store) VectorSearch(ctx context.Context, namespace string, vec []float32, f store.Filter, k int) ([]store.Scored, error) {
+	if len(vec) != s.dims {
+		return nil, fmt.Errorf("sqlitevec: query vector has %d dims, store expects %d", len(vec), s.dims)
+	}
+	blob, err := sqlitevec.SerializeFloat32(vec)
+	if err != nil {
+		return nil, err
+	}
+	where, args := filterClause(f, "m")
+	q := fmt.Sprintf(`
+		SELECT %s, v.distance
+		FROM vec_memories v
+		JOIN memories m ON m.rowid = v.rowid
+		WHERE v.namespace = ? AND v.embedding MATCH ? AND k = ?%s
+		ORDER BY v.distance
+		LIMIT ?`, prefixed(memoryColumns, "m"), where)
+
+	callArgs := append([]any{namespace, blob, k * overFetch}, args...)
+	callArgs = append(callArgs, k)
+	return s.queryScored(ctx, q, callArgs, distanceToScore)
+}
+
+// KeywordSearch returns the k best BM25 full-text matches in the namespace.
+func (s *Store) KeywordSearch(ctx context.Context, namespace, query string, f store.Filter, k int) ([]store.Scored, error) {
+	match := ftsQuery(query)
+	if match == "" {
+		return nil, nil
+	}
+	where, args := filterClause(f, "m")
+	q := fmt.Sprintf(`
+		SELECT %s, bm25(fts_memories) AS rank
+		FROM fts_memories
+		JOIN memories m ON m.rowid = fts_memories.rowid
+		WHERE fts_memories MATCH ? AND m.namespace = ?%s
+		ORDER BY rank
+		LIMIT ?`, prefixed(memoryColumns, "m"), where)
+
+	callArgs := append([]any{match, namespace}, args...)
+	callArgs = append(callArgs, k)
+	// bm25 is lower-is-better, so negate it for a higher-is-better score.
+	return s.queryScored(ctx, q, callArgs, func(rank float64) float64 { return -rank })
+}
+
+// ListExpired returns up to limit memories whose TTL has passed.
+func (s *Store) ListExpired(ctx context.Context, now time.Time, limit int) ([]*memory.Memory, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+memoryColumns+` FROM memories WHERE expires_at IS NOT NULL AND expires_at <= ? LIMIT ?`,
+		ms(now), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []*memory.Memory
+	for rows.Next() {
+		m, err := scanMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// List returns memories in a namespace matching f (without embeddings).
+func (s *Store) List(ctx context.Context, namespace string, f store.Filter, limit int) ([]*memory.Memory, error) {
+	where, args := filterClause(f, "m")
+	q := `SELECT ` + memoryColumns + ` FROM memories m WHERE m.namespace = ?` + where
+	callArgs := append([]any{namespace}, args...)
+	if limit > 0 {
+		q += " LIMIT ?"
+		callArgs = append(callArgs, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, q, callArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []*memory.Memory
+	for rows.Next() {
+		m, err := scanMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ListNamespaces returns the distinct namespaces holding memories.
+func (s *Store) ListNamespaces(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT namespace FROM memories ORDER BY namespace`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []string
+	for rows.Next() {
+		var ns string
+		if err := rows.Scan(&ns); err != nil {
+			return nil, err
+		}
+		out = append(out, ns)
+	}
+	return out, rows.Err()
+}
+
+// Ping verifies the database is reachable.
+func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
+
+// Close closes the underlying database.
+func (s *Store) Close() error { return s.db.Close() }
+
+// queryScored runs a query whose final selected column is a numeric metric and
+// returns scored memories, best-first. score converts the raw metric to a
+// higher-is-better score.
+func (s *Store) queryScored(ctx context.Context, q string, args []any, score func(float64) float64) ([]store.Scored, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []store.Scored
+	for rows.Next() {
+		var metric float64
+		m, err := scanMemoryWith(rows, &metric)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, store.Scored{Memory: m, Score: score(metric)})
+	}
+	return out, rows.Err()
+}

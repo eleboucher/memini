@@ -1,0 +1,4 @@
+.git
+*.tmpl
+*.gotmpl
+ci/

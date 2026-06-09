@@ -1,0 +1,56 @@
+{
+  "//": "memini plugin hooks for Codex CLI. Codex reuses the same hook protocol and resolves the script paths from the plugin root (no CLAUDE_PLUGIN_ROOT expansion).",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CODEX_PLUGIN_ROOT/scripts/session-start.mjs\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CODEX_PLUGIN_ROOT/scripts/stop.mjs\""
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CODEX_PLUGIN_ROOT/scripts/session-end.mjs\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|Read|Glob|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CODEX_PLUGIN_ROOT/scripts/pre-tool-use.mjs\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CODEX_PLUGIN_ROOT/scripts/post-tool-use.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,8 @@
+# ~/.codex/config.toml — memini over stdio (Codex spawns `memini mcp`).
+[mcp_servers.memini]
+command = "memini"
+args = ["mcp"]
+# Replace 'my-project' with your real namespace, or remove MEMINI_DEFAULT_NAMESPACE
+# to let memini auto-resolve the namespace from the git repo basename of its own
+# working directory (see README).
+env = { MEMINI_EMBED_BASE_URL = "http://localhost:8081/v1", MEMINI_EMBED_MODEL = "bge-m3", MEMINI_EMBED_DIMS = "1024", MEMINI_SQLITE_PATH = "/home/you/.memini/memini.db", MEMINI_DEFAULT_NAMESPACE = "my-project" }
