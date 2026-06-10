@@ -35,11 +35,11 @@ helm install memini ./charts/memini \
 | embeddings | object | `{"apiKeySecret":{"key":"api-key","name":""},"baseURL":"","dims":1536,"model":"text-embedding-3-small"}` | External OpenAI-compatible embeddings endpoint (required for vector search) |
 | embeddings.apiKeySecret | object | `{"key":"api-key","name":""}` | Optional existing secret holding the embeddings API key |
 | embeddings.dims | int | `1536` | Embedding dimensionality; MUST match the deployed model |
-| fsck | object | `{"cronjob":{"enabled":false,"image":"curlimages/curl:8.11.0","schedule":"0 * * * *"}}` | Periodic fsck CronJob (the in-process sweeper already handles decay) |
+| fsck | object | `{"cronjob":{"enabled":false,"image":"curlimages/curl:8.20.0","schedule":"0 * * * *"}}` | Periodic fsck CronJob (the in-process sweeper already handles decay) |
 | fullnameOverride | string | `""` |  |
-| grafanaDashboards | object | `{"enabled":false,"folder":"memini"}` | Render the bundled Grafana dashboard as a ConfigMap for the grafana-operator. The chart creates a single ConfigMap with the `grafana_dashboard: "1"` label so the operator's auto-loader picks it up. |
-| grafanaDashboards.enabled | bool | `false` | Render the dashboard as a ConfigMap with the standard grafana_dashboard label |
-| grafanaDashboards.folder | string | `"memini"` | grafana_dashboard_folder annotation; controls where the dashboard lands in Grafana |
+| grafanaDashboards | object | `{"enabled":false,"folder":"memini"}` | Bundled Grafana dashboards, rendered as ConfigMaps for the grafana-operator. Point your Grafana CR's `dashboardsConfigMaps` selector at this release's namespace; the operator will pick up any ConfigMap with the `grafana_dashboard: "1"` label. |
+| grafanaDashboards.enabled | bool | `false` | Render dashboards as ConfigMaps with the standard grafana_dashboard label |
+| grafanaDashboards.folder | string | `"memini"` | grafana_dashboard_folder annotation; controls where dashboards land in Grafana |
 | httpRoute | object | `{"annotations":{},"enabled":false,"hostnames":["memini.example.com"],"parentRefs":[{"name":""}]}` | Gateway API HTTPRoute to expose memini off-cluster (the modern replacement for the deprecated Ingress). Attaches to an existing Gateway. Set auth (above) before enabling. TLS is configured on the Gateway listener, not here. |
 | httpRoute.parentRefs | list | `[{"name":""}]` | Gateways to attach to (parentRefs) |
 | image | object | `{"digest":"","pullPolicy":"IfNotPresent","repository":"ghcr.io/eleboucher/memini","tag":""}` | Container image |

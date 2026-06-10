@@ -159,7 +159,7 @@
               "type": "boolean"
             },
             "image": {
-              "default": "curlimages/curl:8.11.0",
+              "default": "curlimages/curl:8.20.0",
               "title": "image",
               "type": "string"
             },
@@ -183,35 +183,30 @@
       "title": "fullnameOverride",
       "type": "string"
     },
+    "global": {
+      "description": "Global values are values that can be accessed from any chart or subchart by exactly the same name.",
+      "required": [],
+      "title": "global",
+      "type": "object"
+    },
     "grafanaDashboards": {
-      "description": "Render the bundled Grafana dashboards as ConfigMaps for the grafana-operator to pick up (the standard 'grafana_dashboard: 1' label). Point your Grafana CR's dashboardsConfigMaps selector at the release namespace.",
+      "description": "Bundled Grafana dashboards, rendered as ConfigMaps for the\ngrafana-operator. Point your Grafana CR's `dashboardsConfigMaps` selector\nat this release's namespace; the operator will pick up any ConfigMap with\nthe `grafana_dashboard: \"1\"` label.",
       "properties": {
         "enabled": {
           "default": false,
+          "description": "Render dashboards as ConfigMaps with the standard grafana_dashboard label",
           "title": "enabled",
           "type": "boolean"
         },
         "folder": {
           "default": "memini",
-          "description": "Annotation value for grafana_dashboard_folder; controls where dashboards land in Grafana.",
+          "description": "grafana_dashboard_folder annotation; controls where dashboards land in Grafana",
           "title": "folder",
-          "type": "string"
-        },
-        "labelSelector": {
-          "default": "grafana_dashboard=1",
-          "description": "Selector string for the Grafana CR's dashboardsConfigMaps (informational; the operator watches by label).",
-          "title": "labelSelector",
           "type": "string"
         }
       },
       "required": [],
       "title": "grafanaDashboards",
-      "type": "object"
-    },
-    "global": {
-      "description": "Global values are values that can be accessed from any chart or subchart by exactly the same name.",
-      "required": [],
-      "title": "global",
       "type": "object"
     },
     "httpRoute": {
@@ -268,6 +263,12 @@
     "image": {
       "description": "Container image",
       "properties": {
+        "digest": {
+          "default": "",
+          "description": "Image digest (sha256:...); takes precedence over tag when set",
+          "title": "digest",
+          "type": "string"
+        },
         "pullPolicy": {
           "default": "IfNotPresent",
           "title": "pullPolicy",
@@ -282,12 +283,6 @@
           "default": "",
           "description": "Image tag; defaults to the chart appVersion when empty",
           "title": "tag",
-          "type": "string"
-        },
-        "digest": {
-          "default": "",
-          "description": "Image digest (sha256:...); takes precedence over tag when set",
-          "title": "digest",
           "type": "string"
         }
       },

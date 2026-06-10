@@ -1,0 +1,10 @@
+{
+  "name": "memini-openclaw",
+  "version": "0.1.0",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./plugin.mjs"
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+name: memini
+version: 0.1.0
+description: "Persistent cross-session memory for Hermes Agent via memini. Native MemoryProvider — no MCP server required."
+homepage: "https://github.com/eleboucher/memini"
+# Memory providers are single-select; only one may be active at a time.
+hooks:
+  - prefetch
+  - sync_turn
+  - on_pre_compress
+  - on_memory_write

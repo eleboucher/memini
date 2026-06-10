@@ -1,19 +1,70 @@
 # memini + Hermes (NousResearch)
 
-Hermes Agent is an MCP client: it discovers tools from configured MCP servers at
-startup and supports per-server filtering. Add memini as a server in your Hermes
-config (consult the Hermes docs for the exact file location/format; the entries
-below follow the common MCP-server shape).
+Hermes Agent has a native, single-select **memory provider** interface: you drop
+a `MemoryProvider` implementation into `plugins/<name>/` and enable it under
+`plugins.enabled` in `~/.hermes/config.yaml`. memini ships one in
+[`plugin/memini/`](plugin/memini/): Hermes drives it directly, so recall and
+capture happen automatically with no MCP server.
 
-**Remote (Streamable HTTP):** see [`hermes.mcp.json`](hermes.mcp.json).
+## Recommended: native memory provider plugin
 
-**Local (stdio):** see [`hermes.mcp.local.json`](hermes.mcp.local.json).
+What it wires:
 
-Restrict Hermes to memini's memory tools using its per-server tool filtering
-(allow `memory_remember`, `memory_recall`, `memory_get`, `memory_forget`).
+- **`prefetch`** — recalls relevant memories from memini before each turn and
+  injects them into context.
+- **`sync_turn`** — captures each user/assistant exchange into memini (episodic).
+- **`on_pre_compress`** — re-injects recalled context before history compaction.
+- **`on_memory_write`** — mirrors Hermes `MEMORY.md` / `USER.md` edits into
+  memini as durable (semantic) facts.
+- **tools** — `memory_recall` / `memory_remember` for when the agent wants to
+  read or write memory explicitly.
 
-Set the namespace (`X-Memini-Namespace` header for remote, or
-`MEMINI_DEFAULT_NAMESPACE` for stdio) to share memory with your other agents.
-The `my-project` placeholder in the JSON files can be replaced with your real
-namespace, or removed entirely — memini auto-resolves the namespace from the
-git repo basename of its own working directory when no namespace is set.
+### Install
+
+One-liner (downloads just the plugin, no clone):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/eleboucher/memini/main/integrations/hermes/install.sh | sh
+```
+
+Or from a checkout of this repo:
+
+```bash
+cp -r integrations/hermes/plugin/memini ~/.hermes/plugins/memini
+```
+
+Activate it in `~/.hermes/config.yaml`:
+
+```yaml
+plugins:
+  enabled:
+    - memini
+```
+
+> Plugins live in `$HERMES_HOME/plugins/<name>/`. Deploying on Kubernetes
+> (bjw-s `app-template`)? Use [`kubernetes.md`](kubernetes.md) — an
+> initContainer installs the plugin into the data volume at rollout.
+
+Point it at your memini (environment, or the Hermes onboarding prompts):
+
+| Variable               | Default                        | Purpose                                               |
+| ---------------------- | ------------------------------ | ----------------------------------------------------- |
+| `MEMINI_URL`           | `http://localhost:8080`        | memini service endpoint                               |
+| `MEMINI_NAMESPACE`     | basename of cwd, else `hermes` | tenant the memory is scoped to                        |
+| `MEMINI_API_KEY`       | (none)                         | bearer token, if memini requires auth                 |
+| `MEMINI_REQUIRE_HTTPS` | (off)                          | set `1` to refuse sending a token over plaintext HTTP |
+
+Restart Hermes. On the next turn, recalled memories appear in context and new
+exchanges are written back. Use the **same `MEMINI_NAMESPACE`** as your other
+agents to share one memory across all of them.
+
+The plugin is dependency-free (Python stdlib only) and fails silently on
+network errors.
+
+## Fallback: MCP server
+
+If you'd rather not install the plugin, wire memini as a plain MCP server — see
+[`mcp-config.yaml`](mcp-config.yaml) for the exact `mcp_servers` block (HTTP or
+stdio). You lose automatic prefetch/capture; the agent must call the memory
+tools itself. Note Hermes filters tools with `tools.include` / `tools.exclude`
+(not an `allowedTools` array).
