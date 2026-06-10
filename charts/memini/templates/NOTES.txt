@@ -9,6 +9,13 @@ Port-forward and check health:
 Endpoints:
   REST: http://.../v1/memories, /v1/search, /v1/fsck
   MCP : http://.../mcp   (Streamable HTTP)
+{{- if .Values.ui.enabled }}
+  Admin UI: http://.../ (embedded SPA)
+{{- end }}
+{{- if and .Values.ui.enabled .Values.httpRoute.enabled }}
+
+Admin UI: https://{{ first .Values.httpRoute.hostnames }}/
+{{- end }}
 
 {{- if not .Values.embeddings.baseURL }}
 

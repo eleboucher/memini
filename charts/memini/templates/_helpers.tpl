@@ -105,6 +105,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
       name: {{ include "memini.authSecretName" . }}
       key: {{ include "memini.authSecretKey" . }}
 {{- end }}
+- name: MEMINI_UI_ENABLED
+  value: {{ .Values.ui.enabled | quote }}
 {{- end -}}
 
 {{/* Shared container spec */}}
