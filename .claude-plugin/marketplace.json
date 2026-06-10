@@ -1,0 +1,14 @@
+{
+  "name": "memini",
+  "owner": {
+    "name": "memini maintainers",
+    "github": "eleboucher"
+  },
+  "plugins": [
+    {
+      "name": "memini",
+      "description": "Persistent memory for AI coding agents via the memini memory service. 5 hooks, MCP tools, and skills that capture tool usage and inject prior context at session start.",
+      "source": "./plugin"
+    }
+  ]
+}

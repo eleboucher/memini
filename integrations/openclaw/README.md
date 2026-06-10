@@ -74,7 +74,7 @@ and inject `MEMINI_API_KEY` as a container env var from a Secret.
 ## Alternatives
 
 1. **Through the managed agent.** OpenClaw runs Claude Code / Codex — configure
-   memini there using the [`claude-code/`](../claude-code/) or [`codex/`](../codex/)
+   memini there using the [`plugin/`](../../plugin/) or [`codex/`](../codex/)
    recipes, and the managed sessions inherit memory.
 
 2. **As a skill.** [`skills/memory/SKILL.md`](skills/memory/SKILL.md) teaches
