@@ -556,6 +556,20 @@
       },
       "title": "tolerations",
       "type": "array"
+    },
+    "ui": {
+      "description": "Embedded admin UI served at /",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "description": "Mount the admin SPA at /; set to false for a headless API/MCP-only service",
+          "title": "enabled",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "title": "ui",
+      "type": "object"
     }
   },
   "required": [],

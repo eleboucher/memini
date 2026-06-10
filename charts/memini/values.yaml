@@ -79,6 +79,11 @@ postgres:
     name: ""
     key: dsn
 
+# -- Embedded admin UI served at /
+ui:
+  # -- Mount the admin SPA at /; set to false for a headless API/MCP-only service
+  enabled: true
+
 service:
   type: ClusterIP
   port: 8080
