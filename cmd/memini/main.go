@@ -12,6 +12,7 @@ import (
 
 	mcpapi "github.com/eleboucher/memini/internal/api/mcp"
 	"github.com/eleboucher/memini/internal/api/rest"
+	"github.com/eleboucher/memini/internal/api/ui"
 	"github.com/eleboucher/memini/internal/config"
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/llm"
@@ -108,6 +109,8 @@ func run() error {
 		service.WithShortTermCap(cfg.ShortTermCap),
 		service.WithConsolidateMode(service.ConsolidateMode(cfg.ConsolidateMode)),
 		service.WithConsolidateMinScore(cfg.ConsolidateMinScore),
+		service.WithQueryPrefix(cfg.EmbedQueryPrefix),
+		service.WithScoreFusion(cfg.FusionAlpha),
 		service.WithMetrics(metricsImpl),
 	)
 	svc := service.New(st, embedder, svcOpts...)
@@ -143,6 +146,16 @@ func run() error {
 	mcpHandler := mcpapi.HTTPHandler(svc, cfg.NamespaceHeader, cfg.DefaultNamespace, cfg.APIKey)
 	srv.Router().Handle("/mcp", mcpHandler)
 	srv.Router().Handle("/mcp/*", mcpHandler)
+
+	// Embedded admin UI at /. Opt-out via MEMINI_UI_ENABLED=false. Mounted last
+	// as a catch-all so it cannot shadow the API, MCP, health, or metrics routes
+	// registered above.
+	if cfg.UIEnabled {
+		if err := ui.Mount(srv.Router()); err != nil {
+			return fmt.Errorf("mount ui: %w", err)
+		}
+		log.Info("admin UI mounted at /")
+	}
 
 	return srv.Run(ctx)
 }

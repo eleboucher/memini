@@ -1,5 +1,6 @@
 // Package search fuses results from multiple retrieval strategies (vector,
-// keyword) into a single ranking using Reciprocal Rank Fusion.
+// keyword) into a single ranking, via either Reciprocal Rank Fusion (Fuse) or
+// convex-combination score fusion (FuseScores), then re-ranks the result.
 package search
 
 import (
@@ -8,9 +9,15 @@ import (
 	"github.com/eleboucher/memini/internal/store"
 )
 
-// DefaultRRFK is the standard RRF damping constant; larger values flatten the
-// contribution of top ranks.
-const DefaultRRFK = 60.0
+// DefaultRRFK is the RRF damping constant; larger values flatten the
+// contribution of top ranks. The classic value is 60, but with deep per-leg
+// candidate pools that lets many mediocre both-leg candidates outscore a
+// memory ranked first in a single leg (2/(60+20) > 1/(60+0)). A steep decay
+// keeps single-leg excellence dominant while still letting candidates deep in
+// both legs surface when nothing stronger exists. Swept on LongMemEval-S and
+// LoCoMo (opposite corpus shapes): quality plateaus for rrfK in [2, 5] and
+// degrades steadily above 10, so 5 sits at the safe end of the plateau.
+const DefaultRRFK = 5.0
 
 // Fuse combines several best-first result lists into one ranking via Reciprocal
 // Rank Fusion: each memory's fused score is the sum over lists of

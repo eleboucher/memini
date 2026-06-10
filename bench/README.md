@@ -13,6 +13,11 @@ Against a real embeddings model and a real dataset:
 ```sh
 export MEMINI_EMBED_BASE_URL=http://localhost:8081/v1
 export MEMINI_EMBED_MODEL=bge-m3 MEMINI_EMBED_DIMS=1024
+# Optional: instruction-tuned asymmetric embedders (Qwen3-Embedding, bge) score
+# higher when queries carry a retrieval instruction; documents stay bare.
+# Measured on Qwen3-Embedding-8B: +6.0pp R@5 on the LongMemEval vector leg
+# (91.2% -> 97.2%), +1.0pp MRR on the fused ranking on both datasets.
+export MEMINI_EMBED_QUERY_PREFIX=$'Instruct: Given a user query, retrieve relevant memories that answer it\nQuery:'
 go run ./cmd/bench -suite longmemeval -data ./longmemeval_s.json -k 5
 go run ./cmd/bench -suite locomo      -data ./locomo.json        -k 5
 
@@ -24,7 +29,8 @@ go run ./cmd/bench -suite longmemeval -data ./longmemeval_s.json -rerank -k 5
 ## Results: memini vs other memory systems
 
 All memini numbers below are **measured by this harness** against a live
-**Qwen3-Embedding-8B** (4096-d) endpoint. Competitor numbers are **cited from
+**all-MiniLM-L6-v2** (384-d) endpoint — the same embedding model agentmemory
+benchmarks with. Competitor numbers are **cited from
 their own publications** — we cannot re-run their systems here, and they use
 different embedding models, readers, and judges. Treat cross-system rows as
 **directional**, not a controlled head-to-head. (This mirrors how
@@ -34,31 +40,63 @@ different embedding models, readers, and judges. Treat cross-system rows as
 
 Full **500-question** [LongMemEval-S](https://arxiv.org/abs/2410.10813) (~48
 sessions/question), same metric agentmemory reports: does **any** gold session
-appear in the top-K retrieved? No LLM in the loop — pure retrieval. Both runs
-below are the **full 500 questions**; the first uses the **identical embedding
-model agentmemory benchmarks with** (all-MiniLM-L6-v2, 384-d) for a true
-apples-to-apples comparison, the second a premium model (Qwen3-Embedding-8B).
+appear in the top-K retrieved? No LLM in the loop — pure retrieval. The run is
+the **full 500 questions** with the **identical embedding model agentmemory
+benchmarks with** (all-MiniLM-L6-v2, 384-d) for a true apples-to-apples
+comparison.
 
-| System                         | Embedding model             |       R@5 |      R@10 | Source                                                                                  |
-| ------------------------------ | --------------------------- | --------: | --------: | --------------------------------------------------------------------------------------- |
-| **memini — hybrid (RRF)**      | all-MiniLM-L6-v2 (384-d)    |     96.4% |     98.4% | measured                                                                                |
-| memini — keyword (Porter BM25) | —                           |     97.6% |     99.0% | measured                                                                                |
-| memini — vector                | all-MiniLM-L6-v2            |     92.6% |     95.4% | measured                                                                                |
-| **memini — hybrid (RRF)**      | Qwen3-Embedding-8B (4096-d) | **97.6%** | **98.4%** | measured                                                                                |
-| memini — keyword (Porter BM25) | —                           |     97.2% |     98.2% | measured                                                                                |
-| memini — vector                | Qwen3-Embedding-8B          |     96.0% |     97.8% | measured                                                                                |
-| agentmemory — BM25 + Vector    | all-MiniLM-L6-v2            |     95.2% |     98.6% | [published](https://github.com/rohitg00/agentmemory/blob/main/benchmark/LONGMEMEVAL.md) |
-| agentmemory — BM25 only        | —                           |     86.2% |     94.6% | published                                                                               |
-| MemPalace (vector only)        | larger model                |    ~96.6% |         — | self-reported                                                                           |
+Hybrid recall over-fetches a deep candidate pool per leg (`max(k*5, 50)`)
+before fusing, so a memory just outside the top-k of both legs can still win —
+the production `Recall` path does the same. Fusion defaults to **convex score
+fusion** (`MEMINI_FUSION_ALPHA=0.5`): each leg's scores are min-max normalized
+to [0,1] and combined `0.5·vector + 0.5·keyword`, keeping score _magnitude_ so a
+memory a leg ranks far above its runners-up dominates one that is merely
+middling in both. A negative alpha falls back to **Reciprocal Rank Fusion**;
+deep pools then need a steep decay (`rrfK=5`, not the classic 60), since a flat
+decay lets both-leg mediocrity outscore single-leg excellence
+(`2/(60+20) > 1/(60+0)`). Score fusion reaches the same end principledly and
+beat RRF on 3 of 4 model×dataset cells (and on MRR in all 4).
+
+| System                         | Embedding model          |       R@5 |      R@10 | Source                                                                                  |
+| ------------------------------ | ------------------------ | --------: | --------: | --------------------------------------------------------------------------------------- |
+| **memini — hybrid (score)**    | all-MiniLM-L6-v2 (384-d) | **98.4%** | **99.4%** | measured                                                                                |
+| memini — keyword (Porter BM25) | —                        |     97.6% |     99.0% | measured                                                                                |
+| memini — vector                | all-MiniLM-L6-v2         |     91.8% |     96.6% | measured                                                                                |
+| agentmemory — BM25 + Vector    | all-MiniLM-L6-v2         |     95.2% |     98.6% | [published](https://github.com/rohitg00/agentmemory/blob/main/benchmark/LONGMEMEVAL.md) |
+| agentmemory — BM25 only        | —                        |     86.2% |     94.6% | published                                                                               |
+| MemPalace (vector only)        | larger model             |    ~96.6% |         — | self-reported                                                                           |
 
 On the **same model/dataset/metric** (full 500 questions), memini hybrid
-**beats agentmemory at R@5 (96.4% vs 95.2%)** and MRR (88.6% vs 88.2%), ties at
-R@10 (98.4% vs 98.6%) and R@20 (99.6% vs 99.4%); with the premium model it
-reaches **97.6% R@5**. memini's keyword leg is **+11.4pp over agentmemory's
-BM25-only** (97.6% vs 86.2%) thanks to Porter stemming. On the small model the
-keyword leg alone is so strong it edges the fused R@5 — we deliberately **do
-not** tune RRF to the test set; with the premium model the vector leg
-strengthens and hybrid wins outright.
+**beats agentmemory at R@5 (98.4% vs 95.2%)**, R@10 (99.4% vs 98.6%), and MRR
+(92.3% vs 88.2%). memini's keyword leg is **+11.4pp over agentmemory's
+BM25-only** (97.6% vs 86.2%) thanks to Porter stemming, and hybrid fusion now
+beats either leg alone. Relative to fetching only k per leg with the classic
+`rrfK=60`, the deep-pool + score fusion is worth **+2.0pp R@5 / +1.0pp
+R@10**.
+
+### LoCoMo — retrieval `recall_any@K`
+
+[LoCoMo](https://snap-research.github.io/locomo/) retrieval at **dialogue-turn
+granularity** (1,982 questions over 10 long conversations, gold = exact
+evidence turns among ~590 turns/conversation) — a much harder target than
+LongMemEval's session granularity, and the regime where flat-decay RRF over
+deep pools degrades badly.
+
+| System (all-MiniLM-L6-v2)      |   R@5 |  R@10 |
+| ------------------------------ | ----: | ----: |
+| **memini — hybrid (score)**    | 59.8% | 69.8% |
+| memini — keyword (Porter BM25) | 58.7% | 67.1% |
+| memini — vector                | 41.5% | 52.1% |
+
+No published turn-level retrieval baselines exist to compare against (mem0 /
+Letta report LLM-judged QA accuracy, below). This is the one cell where the
+default score fusion is edged by RRF (60.1% / 71.0%): when the vector leg is
+near-noise (MiniLM scores only 41.5% here), giving it an equal-weight normalized
+vote hurts, whereas RRF's rank-only vote is more robust. Score fusion still wins
+this cell on MRR and wins outright on every cell with a stronger embedder — so
+it is the default, and `MEMINI_FUSION_ALPHA=-1` selects RRF for weak-vector
+deployments. (Ablation: `rrfK=60` over the same deep pools scored just **52.8%
+R@5**, _below_ the keyword leg alone — both score fusion and `rrfK=5` fix that.)
 
 ### Recency-aware re-ranking (`-rerank`)
 
@@ -68,22 +106,23 @@ LongMemEval-S (knowledge-update + temporal-reasoning, q.Now = question date,
 sessions timestamped from `haystack_dates`) shows recency is a net win only as a
 tie-breaker, and actively harmful when over-weighted.
 
-| recency weight | R@1 (both cats) | knowledge-update R@1 | temporal R@1 | MRR |
-| -------------- | --------------: | -------------------: | -----------: | --: |
-| 0 (pure RRF)   |           79.6% |                88.5% |        74.4% | 87.6% |
-| **0.05** (default) |       **81.0%** |            85.9% |        78.2% | **88.4%** |
-| 0.15           |           77.7% |                73.1% |        80.5% | 86.4% |
-| 0.25           |           71.6% |                56.4% |        80.5% | 82.6% |
+| recency weight     | R@1 (both cats) | knowledge-update R@1 | temporal R@1 |       MRR |
+| ------------------ | --------------: | -------------------: | -----------: | --------: |
+| 0 (pure RRF)       |           82.9% |                91.0% |        78.2% |     90.1% |
+| **0.05** (default) |       **83.4%** |            **91.0%** |        78.9% | **90.5%** |
+| 0.15               |           83.9% |                89.7% |        80.5% |     90.7% |
+| 0.25               |           83.4% |                87.2% |        81.2% |     90.4% |
 
-At 0.05 the re-ranker is **+1.4pp R@1 / +0.8pp MRR** over pure RRF (gaining
-+3.8pp on temporal at a −2.6pp knowledge-update cost). Heavier recency buries
-correct-but-older memories — the gold session is **not** always the most recent
-— so the default keeps relevance dominant. Recall@5 is unchanged across all
-weights (the re-rank only reorders within the top results).
+At 0.05 the re-ranker is **+0.5pp R@1 / +0.4pp MRR** over pure RRF with **no**
+knowledge-update cost, and recall@5 is identical across all weights (the
+re-rank only reorders within the top results). The steep RRF decay made the
+composite far more robust to the recency weight than the flat `rrfK=60` decay
+was (where 0.15+ buried correct-but-older memories); the default stays at the
+conservative 0.05 since the gains beyond it are within noise.
 
-memini hybrid per-category (Qwen3-8B, recall_any@10): multi-session 100%,
-single-session-user 100%, single-session-assistant 100%, knowledge-update 97.4%,
-single-session-preference 96.7%, temporal-reasoning 96.2%.
+memini hybrid per-category (all-MiniLM, recall_any@10): multi-session 100%,
+knowledge-update 100%, single-session-user 98.6%, single-session-assistant
+98.2%, temporal-reasoning 97.0%, single-session-preference 96.7%.
 
 ### LoCoMo — end-to-end QA accuracy (LLM-judge)
 

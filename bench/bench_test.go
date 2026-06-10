@@ -25,7 +25,7 @@ func TestSampleBenchmark(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 
 	results := map[string]bench.Result{}
-	for _, sys := range bench.MeminiSystems(st, embedtest.New(dims), 4) {
+	for _, sys := range bench.MeminiSystems(st, embedtest.New(dims), 4, "", -1, 0, 0) {
 		rs, err := bench.Run(ctx, sys, ds, []int{3})
 		if err != nil {
 			t.Fatalf("run %s: %v", sys.Name(), err)
