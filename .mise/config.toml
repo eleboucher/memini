@@ -55,7 +55,8 @@ run = "go test -tags=integration ./... -count=1"
 
 [tasks.build]
 description = "Build the memini binary into ./bin"
-depends = ["fmt", "vet"]
+# `ui` builds dist/ (gitignored) so the binary embeds the real bundle.
+depends = ["fmt", "vet", "ui"]
 run = '''
 version="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
 commit="$(git rev-parse --short HEAD 2>/dev/null || echo none)"

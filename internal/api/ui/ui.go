@@ -1,7 +1,7 @@
 // Package ui serves memini's embedded single-page admin UI (Preact + Vite).
-// The built assets live in dist/ and are embedded into the binary at compile
-// time, so the service stays a single static binary with no separate frontend
-// to deploy. Regenerate dist/ with `mise run ui`.
+// dist/ is a build artifact (gitignored; only .gitkeep is tracked) embedded at
+// compile time. The Docker image builds it; locally use `mise run ui`. Without
+// it the binary still boots and serves a placeholder.
 package ui
 
 import (
@@ -20,8 +20,8 @@ var assets embed.FS
 // from the embedded filesystem; everything else falls back to index.html so
 // client-side routing works on deep links and reloads.
 //
-// The shell is intentionally public (no bearer auth): the API it calls (/v1)
-// enforces the token, and the user needs to load the page to enter one.
+// The shell is intentionally public (no bearer auth): when MEMINI_API_KEY is
+// set the API it calls (/v1) enforces the token; the UI itself carries none.
 func Mount(r chi.Router) error {
 	dist, err := fs.Sub(assets, "dist")
 	if err != nil {
@@ -29,7 +29,7 @@ func Mount(r chi.Router) error {
 	}
 	index, err := fs.ReadFile(dist, "index.html")
 	if err != nil {
-		return err
+		index = []byte(placeholder)
 	}
 	fileServer := http.FileServer(http.FS(dist))
 
@@ -55,3 +55,10 @@ func exists(fsys fs.FS, name string) bool {
 	info, err := fs.Stat(fsys, name)
 	return err == nil && !info.IsDir()
 }
+
+// placeholder is served when the UI bundle was not built into the binary.
+const placeholder = `<!doctype html><meta charset="utf-8"><title>memini</title>` +
+	`<body style="font:14px system-ui;margin:3rem;max-width:40rem">` +
+	`<h1>memini</h1><p>The admin UI was not built into this binary. ` +
+	`Run <code>mise run ui</code> and rebuild, or use the official container image. ` +
+	`The API is available at <code>/v1</code>.</p>`
