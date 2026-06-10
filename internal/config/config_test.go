@@ -55,6 +55,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.FusionAlpha != 0.5 {
 		t.Errorf("FusionAlpha = %v, want 0.5 (score fusion default)", cfg.FusionAlpha)
 	}
+	if cfg.WriteDedupMinScore != 0 {
+		t.Errorf("WriteDedupMinScore = %v, want 0 (off by default)", cfg.WriteDedupMinScore)
+	}
 	if cfg.SweepInterval != time.Hour {
 		t.Errorf("SweepInterval = %v, want 1h", cfg.SweepInterval)
 	}
@@ -90,6 +93,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("MEMINI_EMBED_DIMS", "256")
 	t.Setenv("MEMINI_EMBED_QUERY_PREFIX", "Instruct: retrieve\nQuery: ")
 	t.Setenv("MEMINI_FUSION_ALPHA", "-1")
+	t.Setenv("MEMINI_WRITE_DEDUP_MIN_SCORE", "0.95")
 	t.Setenv("MEMINI_SWEEP_INTERVAL", "5m")
 	t.Setenv("MEMINI_LLM_BASE_URL", "http://localhost:8000/v1")
 	t.Setenv("MEMINI_DEFAULT_NAMESPACE", "tenant-a")
@@ -112,6 +116,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.FusionAlpha != -1 {
 		t.Errorf("FusionAlpha = %v, want -1 (RRF override)", cfg.FusionAlpha)
+	}
+	if cfg.WriteDedupMinScore != 0.95 {
+		t.Errorf("WriteDedupMinScore = %v, want 0.95", cfg.WriteDedupMinScore)
 	}
 	if cfg.SweepInterval != 5*time.Minute {
 		t.Errorf("SweepInterval = %v, want 5m", cfg.SweepInterval)
@@ -170,7 +177,7 @@ var meminiEnvKeys = []string{
 	"MEMINI_HTTP_ADDR", "MEMINI_SHUTDOWN_TIMEOUT", "MEMINI_LOG_LEVEL", "MEMINI_LOG_FORMAT",
 	"MEMINI_BACKEND", "MEMINI_SQLITE_PATH", "MEMINI_POSTGRES_DSN",
 	"MEMINI_EMBED_BASE_URL", "MEMINI_EMBED_API_KEY", "MEMINI_EMBED_MODEL", "MEMINI_EMBED_DIMS",
-	"MEMINI_EMBED_QUERY_PREFIX", "MEMINI_FUSION_ALPHA",
+	"MEMINI_EMBED_QUERY_PREFIX", "MEMINI_FUSION_ALPHA", "MEMINI_WRITE_DEDUP_MIN_SCORE",
 	"MEMINI_LLM_BASE_URL", "MEMINI_LLM_API_KEY", "MEMINI_LLM_MODEL",
 	"MEMINI_CONSOLIDATE_MODE", "MEMINI_CONSOLIDATE_MIN_SCORE",
 	"MEMINI_PROMOTE_INTERVAL", "MEMINI_PROMOTE_MIN_ACCESS",

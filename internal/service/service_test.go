@@ -184,6 +184,79 @@ func TestRecallQueryPrefix(t *testing.T) {
 	}
 }
 
+func TestWriteDedupCoalescesNearIdentical(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "svc.db"), dims)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := service.New(st, embedtest.New(dims),
+		service.WithSyncReinforce(), service.WithWriteDedup(0.95))
+
+	first, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the user likes coffee", Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+
+	// An identical repeat coalesces into the existing memory (same ID, no new row).
+	dup, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the user likes coffee", Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("remember dup: %v", err)
+	}
+	if dup.ID != first.ID {
+		t.Fatalf("dup got new ID %q, want coalesced into %q", dup.ID, first.ID)
+	}
+
+	// A genuinely different fact is stored as its own memory.
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "kubernetes schedules pods across nodes", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember distinct: %v", err)
+	}
+
+	all, err := svc.List(ctx, service.ListInput{Namespace: "alice", Tiers: []memory.Tier{memory.TierSemantic}})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 memories (dup coalesced), got %d", len(all))
+	}
+
+	// The coalesced repeat reinforced the canonical memory.
+	got, err := svc.Get(ctx, "alice", first.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.AccessCount < 1 {
+		t.Fatalf("canonical memory access_count = %d, want >= 1 (reinforced by the repeat)", got.AccessCount)
+	}
+}
+
+func TestWriteDedupDisabledByDefault(t *testing.T) {
+	svc := newService(t) // no WithWriteDedup
+	ctx := context.Background()
+
+	for range 2 {
+		if _, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: "bob", Content: "the user likes coffee", Tier: memory.TierSemantic,
+		}); err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+	}
+	all, err := svc.List(ctx, service.ListInput{Namespace: "bob", Tiers: []memory.Tier{memory.TierSemantic}})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("dedup off: expected 2 memories, got %d", len(all))
+	}
+}
+
 func TestRecallNamespaceIsolation(t *testing.T) {
 	svc := newService(t)
 	ctx := context.Background()
