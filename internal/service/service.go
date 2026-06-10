@@ -134,6 +134,11 @@ type Service struct {
 	// poolFactor / poolFloor size the per-leg recall candidate pool as
 	// max(k*poolFactor, poolFloor); zero values use the package defaults.
 	poolFactor, poolFloor int
+	// writeDedupMinScore coalesces a fresh write into an existing same-tier
+	// memory at or above this similarity instead of storing a near-duplicate,
+	// but only when the LLM consolidation pipeline isn't handling the write.
+	// 0 (the default) disables it.
+	writeDedupMinScore float64
 	// now and newID are injectable for deterministic tests.
 	now   func() time.Time
 	newID func() string
@@ -200,6 +205,15 @@ func WithRecallPool(factor, floor int) Option {
 			s.poolFloor = floor
 		}
 	}
+}
+
+// WithWriteDedup coalesces a fresh write into an existing same-tier memory when
+// their vector similarity is at or above minScore, instead of storing a
+// near-duplicate. It only acts when the LLM consolidation pipeline is not
+// handling the write (no consolidator, a non-durable tier, or consolidation
+// off), giving headless deployments basic corpus hygiene. 0 disables it.
+func WithWriteDedup(minScore float64) Option {
+	return func(s *Service) { s.writeDedupMinScore = minScore }
 }
 
 // New builds a Service from a store and embedder.
@@ -341,6 +355,16 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	durable := tier == memory.TierSemantic || tier == memory.TierProcedural
 	consolidate := in.ID == "" && s.consolidator != nil && durable && s.consolidateMode != ConsolidateOff
 
+	// Write-time dedup (non-LLM corpus hygiene): when the consolidation pipeline
+	// isn't handling this write, coalesce a near-identical repeat into the
+	// existing memory instead of storing a duplicate.
+	if in.ID == "" && !consolidate && s.writeDedupMinScore > 0 {
+		if existing := s.dedupExisting(ctx, m); existing != nil {
+			s.metrics.RememberResult("ok", string(tier))
+			return existing, nil
+		}
+	}
+
 	// Sync mode resolves the write against existing memories before storing, so
 	// the caller sees the consolidated result.
 	if consolidate && s.consolidateMode == ConsolidateSync {
@@ -379,6 +403,24 @@ func (s *Service) enqueueConsolidate(namespace, id string) {
 		slog.Warn("consolidation queue full, dropping job", "namespace", namespace, "id", id)
 		s.metrics.ConsolidateResult("dropped")
 	}
+}
+
+// dedupExisting looks for a near-identical memory in m's own tier and namespace.
+// When the nearest neighbour's similarity is at or above writeDedupMinScore, it
+// reinforces that memory (recording the repeat and refreshing its recency/TTL)
+// and returns it, so a fresh write of essentially the same fact coalesces into
+// the canonical record. It is deliberately non-destructive — without an LLM to
+// judge "replaces" vs "duplicate" it never supersedes or rewrites the existing
+// memory. Returns nil to fall through to a normal insert.
+func (s *Service) dedupExisting(ctx context.Context, m *memory.Memory) *memory.Memory {
+	cands, err := s.store.VectorSearch(ctx, m.Namespace, m.Embedding,
+		store.Filter{Tiers: []memory.Tier{m.Tier}}, 1)
+	if err != nil || len(cands) == 0 || cands[0].Score < s.writeDedupMinScore {
+		return nil
+	}
+	existing := cands[0].Memory
+	s.reinforce(ctx, m.Namespace, []store.Scored{{Memory: existing}})
+	return existing
 }
 
 // candidates returns the near-neighbour durable memories offered to the LLM for

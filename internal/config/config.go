@@ -67,6 +67,15 @@ type Config struct {
 	// negative value falls back to rank fusion (RRF).
 	FusionAlpha float64 `env:"MEMINI_FUSION_ALPHA" envDefault:"0.5"`
 
+	// WriteDedupMinScore coalesces a fresh write into an existing same-tier
+	// memory when their vector similarity is at or above this score, instead of
+	// storing a near-duplicate. It only acts when the LLM consolidation pipeline
+	// is not handling the write (no LLM, or a non-durable tier), giving headless
+	// deployments basic corpus hygiene. 0 (the default) disables it; the right
+	// value is embedder-dependent (~0.9 in score units collapses near-identical
+	// restatements only).
+	WriteDedupMinScore float64 `env:"MEMINI_WRITE_DEDUP_MIN_SCORE" envDefault:"0"`
+
 	// LLM (opt-in; empty BaseURL disables the consolidation pipeline).
 	LLMBaseURL string `env:"MEMINI_LLM_BASE_URL"`
 	LLMAPIKey  string `env:"MEMINI_LLM_API_KEY"`

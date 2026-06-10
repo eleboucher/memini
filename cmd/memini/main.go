@@ -111,6 +111,7 @@ func run() error {
 		service.WithConsolidateMinScore(cfg.ConsolidateMinScore),
 		service.WithQueryPrefix(cfg.EmbedQueryPrefix),
 		service.WithScoreFusion(cfg.FusionAlpha),
+		service.WithWriteDedup(cfg.WriteDedupMinScore),
 		service.WithMetrics(metricsImpl),
 	)
 	svc := service.New(st, embedder, svcOpts...)
