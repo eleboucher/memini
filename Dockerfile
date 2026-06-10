@@ -2,26 +2,20 @@
 ARG GO_VERSION=1.26.4
 ARG NODE_VERSION=24
 
-# --- ui build stage ------------------------------------------------------
-# Rebuilds the embedded admin UI so released images always ship assets that
-# match the source, regardless of the committed internal/api/ui/dist.
-FROM node:${NODE_VERSION}-alpine AS ui
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-alpine AS ui
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 COPY ui/ ./
 RUN npm run build
 
-# --- build stage ---------------------------------------------------------
-FROM golang:${GO_VERSION}-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS build
 WORKDIR /workspace
 
-# Cache modules separately from source.
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY . .
-# Overlay freshly built UI assets (vite outputs to internal/api/ui/dist).
 COPY --from=ui /internal/api/ui/dist ./internal/api/ui/dist
 
 ARG TARGETOS
@@ -30,7 +24,8 @@ ARG VERSION=dev
 ARG REVISION=none
 ARG DATE=unknown
 
-RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build,id=gobuild-${TARGETARCH} \
     CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
     -ldflags "-s -w \
       -X github.com/eleboucher/memini/internal/version.Version=${VERSION} \
@@ -38,8 +33,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
       -X github.com/eleboucher/memini/internal/version.Date=${DATE}" \
     -o /out/memini ./cmd/memini
 
-# --- runtime stage -------------------------------------------------------
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 COPY --from=build /out/memini /usr/local/bin/memini
 EXPOSE 8080
 USER 65532:65532
