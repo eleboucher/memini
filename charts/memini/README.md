@@ -42,7 +42,8 @@ helm install memini ./charts/memini \
 | grafanaDashboards.folder | string | `"memini"` | grafana_dashboard_folder annotation; controls where the dashboard lands in Grafana |
 | httpRoute | object | `{"annotations":{},"enabled":false,"hostnames":["memini.example.com"],"parentRefs":[{"name":""}]}` | Gateway API HTTPRoute to expose memini off-cluster (the modern replacement for the deprecated Ingress). Attaches to an existing Gateway. Set auth (above) before enabling. TLS is configured on the Gateway listener, not here. |
 | httpRoute.parentRefs | list | `[{"name":""}]` | Gateways to attach to (parentRefs) |
-| image | object | `{"pullPolicy":"IfNotPresent","repository":"ghcr.io/eleboucher/memini","tag":""}` | Container image |
+| image | object | `{"digest":"","pullPolicy":"IfNotPresent","repository":"ghcr.io/eleboucher/memini","tag":""}` | Container image |
+| image.digest | string | `""` | Image digest (sha256:...); takes precedence over tag when set |
 | image.tag | string | `""` | Image tag; defaults to the chart appVersion when empty |
 | imagePullSecrets | list | `[]` |  |
 | llm | object | `{"apiKeySecret":{"key":"api-key","name":""},"baseURL":"","model":"gpt-4o-mini"}` | Opt-in LLM endpoint for consolidation; leave baseURL empty to run headless |

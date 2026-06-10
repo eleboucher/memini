@@ -283,6 +283,12 @@
           "description": "Image tag; defaults to the chart appVersion when empty",
           "title": "tag",
           "type": "string"
+        },
+        "digest": {
+          "default": "",
+          "description": "Image digest (sha256:...); takes precedence over tag when set",
+          "title": "digest",
+          "type": "string"
         }
       },
       "required": [],
