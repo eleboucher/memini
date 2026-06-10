@@ -87,16 +87,30 @@ jobs:
     runs-on: multiarch
     env:
       VERSION: ${{ github.ref_name }}
+      # renovate: datasource=github-releases depName=helm/helm
+      HELM_VERSION: "4.2.0"
       # renovate: datasource=github-releases depName=sigstore/cosign
       COSIGN_VERSION: "3.0.5"
       # renovate: datasource=github-releases depName=google/go-containerregistry
       CRANE_VERSION: "0.21.6"
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v6
-      - name: Install helm via mise
-        uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
-        with:
-          install_args: --locked
+      - name: Install helm
+        run: |
+          set -euo pipefail
+          HOST_ARCH="$(uname -m)"
+          case "$HOST_ARCH" in
+            x86_64) HELM_ARCH="amd64" ;;
+            aarch64) HELM_ARCH="arm64" ;;
+            *) echo "unsupported host arch: $HOST_ARCH" >&2; exit 1 ;;
+          esac
+          TARBALL="helm-v${HELM_VERSION}-linux-${HELM_ARCH}.tar.gz"
+          BASE="https://get.helm.sh"
+          curl -fsSL -o "${TARBALL}" "${BASE}/${TARBALL}"
+          curl -fsSL "${BASE}/${TARBALL}.sha256sum" | sha256sum -c -
+          tar -xzf "${TARBALL}" "linux-${HELM_ARCH}/helm"
+          install -m 0755 "linux-${HELM_ARCH}/helm" /usr/local/bin/helm
+          rm -rf "${TARBALL}" "linux-${HELM_ARCH}"
       - name: Install crane
         run: |
           set -euo pipefail
