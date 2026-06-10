@@ -1,5 +1,8 @@
 /bin/
 /dist/
+# UI dependencies. The built bundle (internal/api/ui/dist) IS committed so the
+# Go binary always embeds it; node_modules is not.
+/ui/node_modules/
 *.db
 *.db-shm
 *.db-wal

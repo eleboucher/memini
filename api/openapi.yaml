@@ -58,6 +58,52 @@ paths:
               schema: { $ref: "#/components/schemas/Memory" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+    get:
+      summary: List memories in a namespace (backs the admin UI browser)
+      parameters:
+        - { $ref: "#/components/parameters/Namespace" }
+        - name: tier
+          in: query
+          description: Repeatable and/or comma-separated tier filter; omitted means all tiers.
+          schema: { type: array, items: { $ref: "#/components/schemas/Tier" } }
+        - name: include_expired
+          in: query
+          schema: { type: boolean, default: false }
+        - name: include_superseded
+          in: query
+          schema: { type: boolean, default: false }
+        - name: limit
+          in: query
+          description: Caps the result count; 0 or absent returns all matches.
+          schema: { type: integer }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ListResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+  /v1/stats:
+    get:
+      summary: Per-namespace overview (counts by tier, accesses, importance)
+      parameters: [{ $ref: "#/components/parameters/Namespace" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Stats" }
+        "500": { $ref: "#/components/responses/Error" }
+  /v1/namespaces:
+    get:
+      summary: List the distinct namespaces holding memories
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NamespacesResponse" }
+        "500": { $ref: "#/components/responses/Error" }
   /v1/memories/{id}:
     parameters:
       - { $ref: "#/components/parameters/Namespace" }
@@ -155,6 +201,31 @@ components:
             properties:
               memory: { $ref: "#/components/schemas/Memory" }
               score: { type: number }
+    ListResponse:
+      type: object
+      properties:
+        memories:
+          type: array
+          items: { $ref: "#/components/schemas/Memory" }
+    Stats:
+      type: object
+      properties:
+        namespace: { type: string }
+        total: { type: integer, description: Live memories (excludes expired/superseded) }
+        by_tier:
+          type: object
+          additionalProperties: { type: integer }
+        expired: { type: integer }
+        superseded: { type: integer }
+        total_accesses: { type: integer }
+        avg_importance: { type: number }
+        last_write_at: { type: string, format: date-time, nullable: true }
+    NamespacesResponse:
+      type: object
+      properties:
+        namespaces:
+          type: array
+          items: { type: string }
     FsckReport:
       type: object
       properties:

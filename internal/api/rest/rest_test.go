@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -119,6 +120,77 @@ func TestRememberSearchForgetRoundTrip(t *testing.T) {
 	rec = do(t, h, http.MethodGet, "/v1/memories/"+created.ID, "alice", apiKey, nil)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("get after forget: want 404, got %d", rec.Code)
+	}
+}
+
+func TestListStatsNamespaces(t *testing.T) {
+	h := newServer(t)
+
+	// Seed two namespaces with a couple of tiers.
+	seed := []struct {
+		ns, content, tier string
+	}{
+		{"alice", "alice runs the deploy pipeline", "semantic"},
+		{"alice", "alice debugged the cache today", "episodic"},
+		{"bob", "bob owns the billing service", "semantic"},
+	}
+	for _, s := range seed {
+		rec := do(t, h, http.MethodPost, "/v1/memories", s.ns, apiKey, map[string]any{
+			"content": s.content, "tier": s.tier,
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("seed remember: want 201, got %d (%s)", rec.Code, rec.Body)
+		}
+	}
+
+	// List is namespace-scoped.
+	rec := do(t, h, http.MethodGet, "/v1/memories", "alice", apiKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var lr struct {
+		Memories []struct {
+			ID   string `json:"id"`
+			Tier string `json:"tier"`
+		} `json:"memories"`
+	}
+	mustJSON(t, rec, &lr)
+	if len(lr.Memories) != 2 {
+		t.Fatalf("list alice: want 2 memories, got %d", len(lr.Memories))
+	}
+
+	// List with a tier filter narrows results.
+	rec = do(t, h, http.MethodGet, "/v1/memories?tier=semantic", "alice", apiKey, nil)
+	mustJSON(t, rec, &lr)
+	if len(lr.Memories) != 1 || lr.Memories[0].Tier != "semantic" {
+		t.Fatalf("list alice?tier=semantic: want 1 semantic, got %+v", lr.Memories)
+	}
+
+	// Stats reflect the namespace.
+	rec = do(t, h, http.MethodGet, "/v1/stats", "alice", apiKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stats: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var stats struct {
+		Total  int            `json:"total"`
+		ByTier map[string]int `json:"by_tier"`
+	}
+	mustJSON(t, rec, &stats)
+	if stats.Total != 2 || stats.ByTier["semantic"] != 1 || stats.ByTier["episodic"] != 1 {
+		t.Fatalf("stats alice: unexpected %+v", stats)
+	}
+
+	// Namespaces lists both tenants.
+	rec = do(t, h, http.MethodGet, "/v1/namespaces", "", apiKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("namespaces: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var nsr struct {
+		Namespaces []string `json:"namespaces"`
+	}
+	mustJSON(t, rec, &nsr)
+	if !slices.Contains(nsr.Namespaces, "alice") || !slices.Contains(nsr.Namespaces, "bob") {
+		t.Fatalf("namespaces: want alice and bob, got %v", nsr.Namespaces)
 	}
 }
 
