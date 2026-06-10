@@ -1,6 +1,6 @@
 # -- Container image
 image:
-  repository: ghcr.io/eleboucher/memini
+  repository: registry.erwanleboucher.dev/eleboucher/memini
   # -- Image tag; defaults to the chart appVersion when empty
   tag: ""
   # -- Image digest (sha256:...); takes precedence over tag when set
