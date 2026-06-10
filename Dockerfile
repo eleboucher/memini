@@ -1,5 +1,16 @@
 # syntax=docker/dockerfile:1
 ARG GO_VERSION=1.26.4
+ARG NODE_VERSION=24
+
+# --- ui build stage ------------------------------------------------------
+# Rebuilds the embedded admin UI so released images always ship assets that
+# match the source, regardless of the committed internal/api/ui/dist.
+FROM node:${NODE_VERSION}-alpine AS ui
+WORKDIR /ui
+COPY ui/package.json ui/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci
+COPY ui/ ./
+RUN npm run build
 
 # --- build stage ---------------------------------------------------------
 FROM golang:${GO_VERSION}-alpine AS build
@@ -10,6 +21,8 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY . .
+# Overlay freshly built UI assets (vite outputs to internal/api/ui/dist).
+COPY --from=ui /internal/api/ui/dist ./internal/api/ui/dist
 
 ARG TARGETOS
 ARG TARGETARCH
