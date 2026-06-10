@@ -1,8 +1,10 @@
 /bin/
 /dist/
-# UI dependencies. The built bundle (internal/api/ui/dist) IS committed so the
-# Go binary always embeds it; node_modules is not.
+# UI artifacts. The Vite bundle is generated, not committed; .gitkeep stays so
+# //go:embed all:dist compiles.
 /ui/node_modules/
+/internal/api/ui/dist/*
+!/internal/api/ui/dist/.gitkeep
 *.db
 *.db-shm
 *.db-wal
