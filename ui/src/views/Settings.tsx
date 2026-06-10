@@ -1,8 +1,7 @@
-import { baseUrl, token, namespaceHeader, refresh } from '../store'
+import { baseUrl, namespaceHeader, refresh } from '../store'
 
 // Settings edits the connection details the SPA uses to reach memini. They are
-// persisted to localStorage. The static UI is public; the bearer token entered
-// here is what authorizes the /v1 API calls when MEMINI_API_KEY is set.
+// persisted to localStorage.
 export function Settings() {
   return (
     <div class="view">
@@ -21,18 +20,6 @@ export function Settings() {
             onInput={(e) => (baseUrl.value = (e.target as HTMLInputElement).value)}
           />
           <span class="desc">Leave empty to use the host serving this page. Set it to target a remote memini.</span>
-        </label>
-
-        <label class="field">
-          <span class="lbl">Bearer token</span>
-          <input
-            class="input mono"
-            type="password"
-            placeholder="MEMINI_API_KEY (if configured)"
-            value={token.value}
-            onInput={(e) => (token.value = (e.target as HTMLInputElement).value)}
-          />
-          <span class="desc">Sent as <code>Authorization: Bearer …</code> on every request.</span>
         </label>
 
         <label class="field">

@@ -1,4 +1,4 @@
-import { baseUrl, token, namespace, namespaceHeader } from './store'
+import { baseUrl, namespace, namespaceHeader } from './store'
 import type {
   FsckReport,
   ListResponse,
@@ -22,7 +22,6 @@ export class ApiError extends Error {
 
 function headers(extra?: Record<string, string>, ns?: string): Record<string, string> {
   const h: Record<string, string> = { ...extra }
-  if (token.value) h['Authorization'] = `Bearer ${token.value}`
   // An explicit ns overrides the active namespace (used to scope a request to a
   // specific project without switching the global selection).
   const effective = ns ?? namespace.value
