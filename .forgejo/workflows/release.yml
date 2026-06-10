@@ -10,6 +10,11 @@ concurrency:
 jobs:
   container:
     runs-on: multiarch
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    env:
+      # renovate: datasource=github-releases depName=sigstore/cosign
+      COSIGN_VERSION: "3.0.5"
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v6
       - uses: https://data.forgejo.org/docker/setup-buildx-action@v4
@@ -22,16 +27,24 @@ jobs:
           registry: git.erwanleboucher.dev
           username: ${{ vars.USERNAME }}
           password: ${{ secrets.OWNER_PACKAGE_SECRET }}
+      - name: Login to registry.erwanleboucher.dev
+        uses: https://data.forgejo.org/docker/login-action@v4
+        with:
+          registry: registry.erwanleboucher.dev
+          username: ${{ vars.USERNAME }}
+          password: ${{ secrets.APOCI_REGISTRY_TOKEN }}
       - name: Compute image metadata
         id: meta
         uses: https://data.forgejo.org/docker/metadata-action@v6
         with:
           images: |
             git.erwanleboucher.dev/${{ vars.USERNAME }}/memini
+            registry.erwanleboucher.dev/${{ vars.USERNAME }}/memini
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
       - name: Build and push
+        id: build
         uses: https://data.forgejo.org/docker/build-push-action@v7
         with:
           context: .
@@ -43,3 +56,136 @@ jobs:
             VERSION=${{ github.ref_name }}
             REVISION=${{ github.sha }}
             DATE=${{ steps.build-meta.outputs.created }}
+      - name: Install cosign
+        run: |
+          set -euo pipefail
+          HOST_ARCH="$(uname -m)"
+          case "$HOST_ARCH" in
+            x86_64) COSIGN_BIN="cosign-linux-amd64" ;;
+            aarch64) COSIGN_BIN="cosign-linux-arm64" ;;
+            *) echo "unsupported host arch: $HOST_ARCH" >&2; exit 1 ;;
+          esac
+          BASE="https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}"
+          curl -fsSL -o "${COSIGN_BIN}" "${BASE}/${COSIGN_BIN}"
+          curl -fsSL "${BASE}/cosign_checksums.txt" -o checksums.txt
+          grep "[[:space:]]${COSIGN_BIN}\$" checksums.txt | sha256sum -c -
+          install -m 0755 "${COSIGN_BIN}" /usr/local/bin/cosign
+          rm -f "${COSIGN_BIN}" checksums.txt
+      - name: Cosign sign image
+        env:
+          COSIGN_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          USERNAME: ${{ vars.USERNAME }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes --key env://COSIGN_KEY \
+            "git.erwanleboucher.dev/${USERNAME}/memini@${DIGEST}" \
+            "registry.erwanleboucher.dev/${USERNAME}/memini@${DIGEST}"
+  helm:
+    needs: [container]
+    runs-on: multiarch
+    env:
+      VERSION: ${{ github.ref_name }}
+      # renovate: datasource=github-releases depName=sigstore/cosign
+      COSIGN_VERSION: "3.0.5"
+      # renovate: datasource=github-releases depName=google/go-containerregistry
+      CRANE_VERSION: "0.21.6"
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v6
+      - name: Install helm via mise
+        uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+        with:
+          install_args: --locked
+      - name: Install crane
+        run: |
+          set -euo pipefail
+          HOST_ARCH="$(uname -m)"
+          case "$HOST_ARCH" in
+            x86_64) CRANE_ARCH="x86_64" ;;
+            aarch64) CRANE_ARCH="arm64" ;;
+            *) echo "unsupported host arch: $HOST_ARCH" >&2; exit 1 ;;
+          esac
+          BASE="https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}"
+          TARBALL="go-containerregistry_Linux_${CRANE_ARCH}.tar.gz"
+          curl -fsSL -o "${TARBALL}" "${BASE}/${TARBALL}"
+          tar -xzf "${TARBALL}" -C /tmp crane
+          install -m 0755 /tmp/crane /usr/local/bin/crane
+          rm -f "${TARBALL}" /tmp/crane
+      # Released charts reference immutable images; fail closed rather than
+      # fall back to a floating tag.
+      - name: Pin the released image digest into the chart
+        env:
+          DIGEST: ${{ needs.container.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [ -n "${DIGEST}" ] || { echo "container build produced no digest" >&2; exit 1; }
+          sed -i 's|^  digest: ""$|  digest: "'"${DIGEST}"'"|' charts/memini/values.yaml
+          grep -q '^  digest: "'"${DIGEST}"'"$' charts/memini/values.yaml
+      - name: Login to git.erwanleboucher.dev
+        uses: https://data.forgejo.org/docker/login-action@v4
+        with:
+          registry: git.erwanleboucher.dev
+          username: ${{ vars.USERNAME }}
+          password: ${{ secrets.OWNER_PACKAGE_SECRET }}
+      - name: Login to registry.erwanleboucher.dev
+        uses: https://data.forgejo.org/docker/login-action@v4
+        with:
+          registry: registry.erwanleboucher.dev
+          username: ${{ vars.USERNAME }}
+          password: ${{ secrets.APOCI_REGISTRY_TOKEN }}
+      - name: Package and push chart to git.erwanleboucher.dev
+        id: push-git
+        run: |
+          set -euo pipefail
+          helm package charts/memini \
+            --version "${VERSION}" \
+            --app-version "${VERSION}"
+          helm push "memini-${VERSION}.tgz" "oci://git.erwanleboucher.dev/${{ vars.USERNAME }}/charts"
+          DIGEST="$(crane digest "git.erwanleboucher.dev/${{ vars.USERNAME }}/charts/memini:${VERSION}")"
+          [ -n "${DIGEST}" ] || { echo "crane digest returned empty" >&2; exit 1; }
+          echo "git-digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+      - name: Package and push chart to registry.erwanleboucher.dev
+        id: push-registry
+        run: |
+          set -euo pipefail
+          helm package charts/memini \
+            --version "${VERSION}" \
+            --app-version "${VERSION}"
+          helm push "memini-${VERSION}.tgz" "oci://registry.erwanleboucher.dev/${{ vars.USERNAME }}/charts"
+          DIGEST="$(crane digest "registry.erwanleboucher.dev/${{ vars.USERNAME }}/charts/memini:${VERSION}")"
+          [ -n "${DIGEST}" ] || { echo "crane digest returned empty" >&2; exit 1; }
+          echo "registry-digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+      - name: Install cosign
+        run: |
+          set -euo pipefail
+          HOST_ARCH="$(uname -m)"
+          case "$HOST_ARCH" in
+            x86_64) COSIGN_BIN="cosign-linux-amd64" ;;
+            aarch64) COSIGN_BIN="cosign-linux-arm64" ;;
+            *) echo "unsupported host arch: $HOST_ARCH" >&2; exit 1 ;;
+          esac
+          BASE="https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}"
+          curl -fsSL -o "${COSIGN_BIN}" "${BASE}/${COSIGN_BIN}"
+          curl -fsSL "${BASE}/cosign_checksums.txt" -o checksums.txt
+          grep "[[:space:]]${COSIGN_BIN}\$" checksums.txt | sha256sum -c -
+          install -m 0755 "${COSIGN_BIN}" /usr/local/bin/cosign
+          rm -f "${COSIGN_BIN}" checksums.txt
+      - name: Cosign sign charts
+        env:
+          COSIGN_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          OWNER_PACKAGE_SECRET: ${{ secrets.OWNER_PACKAGE_SECRET }}
+          APOCI_REGISTRY_TOKEN: ${{ secrets.APOCI_REGISTRY_TOKEN }}
+          USERNAME: ${{ vars.USERNAME }}
+          GIT_DIGEST: ${{ steps.push-git.outputs.git-digest }}
+          REGISTRY_DIGEST: ${{ steps.push-registry.outputs.registry-digest }}
+        run: |
+          set -euo pipefail
+          # helm registry login only fills helm's config; cosign reads the
+          # docker config, so it needs its own login per registry.
+          echo "${OWNER_PACKAGE_SECRET}" | cosign login git.erwanleboucher.dev --username "${USERNAME}" --password-stdin
+          echo "${APOCI_REGISTRY_TOKEN}" | cosign login registry.erwanleboucher.dev --username "${USERNAME}" --password-stdin
+          cosign sign --yes --key env://COSIGN_KEY \
+            "git.erwanleboucher.dev/${USERNAME}/charts/memini@${GIT_DIGEST}" \
+            "registry.erwanleboucher.dev/${USERNAME}/charts/memini@${REGISTRY_DIGEST}"

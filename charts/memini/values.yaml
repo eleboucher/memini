@@ -3,6 +3,8 @@ image:
   repository: ghcr.io/eleboucher/memini
   # -- Image tag; defaults to the chart appVersion when empty
   tag: ""
+  # -- Image digest (sha256:...); takes precedence over tag when set
+  digest: ""
   pullPolicy: IfNotPresent
 
 # -- Storage backend: "sqlite" (embedded, single replica + PVC) or "postgres" (scale-out)
