@@ -50,6 +50,8 @@ jobs:
   helm:
     runs-on: docker
     env:
+      # renovate: datasource=github-releases depName=helm/helm
+      HELM_VERSION: "4.2.0"
       # renovate: datasource=github-releases depName=norwoodj/helm-docs
       HELM_DOCS_VERSION: "1.14.2"
       # renovate: datasource=github-releases depName=dadav/helm-schema
@@ -63,10 +65,16 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install helm via mise
-        uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
-        with:
-          install_args: --locked
+      - name: Install helm
+        run: |
+          set -euo pipefail
+          TARBALL="helm-v${HELM_VERSION}-linux-amd64.tar.gz"
+          BASE="https://get.helm.sh"
+          curl -fsSL -o "${TARBALL}" "${BASE}/${TARBALL}"
+          curl -fsSL "${BASE}/${TARBALL}.sha256sum" | sha256sum -c -
+          tar -xzf "${TARBALL}" linux-amd64/helm
+          install -m 0755 linux-amd64/helm /usr/local/bin/helm
+          rm -rf "${TARBALL}" linux-amd64
 
       - name: Install helm-docs and helm-schema
         run: |
