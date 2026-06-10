@@ -98,6 +98,25 @@ it is the default, and `MEMINI_FUSION_ALPHA=-1` selects RRF for weak-vector
 deployments. (Ablation: `rrfK=60` over the same deep pools scored just **52.8%
 R@5**, _below_ the keyword leg alone — both score fusion and `rrfK=5` fix that.)
 
+### Pool-depth robustness (`-pool-factor` / `-pool-floor`)
+
+Min-max normalization could in principle be fragile to pool depth (the score at
+the bottom of the pool sets each leg's zero point), so score fusion was swept at
+per-leg depths 30 / 50 / 80 on both datasets and both embedders (hybrid
+R@5 / R@10 / MRR):
+
+| cell                  | depth 30           | depth 50 (default) | depth 80           |
+| --------------------- | ------------------ | ------------------ | ------------------ |
+| LME · MiniLM          | 97.8 / 99.4 / 92.0 | 98.4 / 99.4 / 92.3 | 98.6 / 99.4 / 92.6 |
+| LME · Qwen3+prefix    | 98.8 / 99.4 / 94.5 | 98.8 / 99.6 / 94.6 | 98.8 / 99.6 / 94.6 |
+| LoCoMo · MiniLM       | 60.0 / 70.1 / 42.1 | 59.8 / 69.8 / 42.6 | 59.3 / 69.6 / 42.7 |
+| LoCoMo · Qwen3+prefix | 70.1 / 77.9 / 52.1 | 70.1 / 78.5 / 52.4 | 70.1 / 78.7 / 52.5 |
+
+Quality moves at most ±0.6pp R@5 across a 2.7× depth range — no tail collapse —
+with the two datasets drifting in opposite directions (deeper pools help
+session-granularity LongMemEval slightly and hurt turn-granularity LoCoMo
+slightly), so the default `max(k*5, 50)` sits at the crossover.
+
 ### Recency-aware re-ranking (`-rerank`)
 
 memini re-ranks the fused candidates by a composite of relevance, **recency**,
@@ -153,11 +172,11 @@ Output is a Markdown table (stdout) plus JSON under `bench/results/`.
 Three memini retrieval strategies over the same ingested store, to show the
 value of hybrid fusion:
 
-| System           | Retrieval                                         |
-| ---------------- | ------------------------------------------------- |
-| `memini-hybrid`  | vector + keyword fused with RRF (production path) |
-| `memini-vector`  | dense vector only                                 |
-| `memini-keyword` | BM25 keyword only                                 |
+| System           | Retrieval                                        |
+| ---------------- | ------------------------------------------------ |
+| `memini-hybrid`  | vector + keyword, score fusion (production path) |
+| `memini-vector`  | dense vector only                                |
+| `memini-keyword` | BM25 keyword only                                |
 
 `memini-hybrid` should never score below either single strategy.
 
