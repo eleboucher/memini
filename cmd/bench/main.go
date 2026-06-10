@@ -35,6 +35,10 @@ func run() error {
 	rerank := flag.Bool("rerank", false, "compare pure-RRF vs recency-aware composite ranking (needs a timestamped dataset, e.g. longmemeval)")
 	rerankCats := flag.String("rerank-cats", "knowledge-update,temporal-reasoning",
 		"comma-separated question categories for -rerank (empty = all)")
+	fusionAlpha := flag.Float64("fusion", 0.5,
+		"hybrid fusion: >=0 = score fusion with this vector weight (0.5 = balanced, default); <0 = RRF")
+	poolFactor := flag.Int("pool-factor", 0, "per-leg recall pool factor (max(k*factor, floor); 0 = default)")
+	poolFloor := flag.Int("pool-floor", 0, "per-leg recall pool floor (0 = default)")
 	flag.Parse()
 
 	ds, err := loadDataset(*suite, *data)
@@ -51,6 +55,12 @@ func run() error {
 		return err
 	}
 	defer func() { _ = saveCache() }()
+
+	// Same query-side embedding instruction the server honors in production.
+	queryPrefix := os.Getenv("MEMINI_EMBED_QUERY_PREFIX")
+	if queryPrefix != "" {
+		fmt.Fprintf(os.Stderr, "query prefix: %q\n", queryPrefix)
+	}
 
 	ctx := context.Background()
 	tmpDir, err := os.MkdirTemp("", "memini-bench-")
@@ -75,7 +85,7 @@ func run() error {
 				cats = append(cats, c)
 			}
 		}
-		rr, err := bench.RerankCompare(ctx, st, embedder, ds, cats, ks[0])
+		rr, err := bench.RerankCompare(ctx, st, embedder, ds, cats, ks[0], queryPrefix)
 		if err != nil {
 			return err
 		}
@@ -84,7 +94,7 @@ func run() error {
 	}
 
 	var results []bench.Result
-	for _, sys := range bench.MeminiSystems(st, embedder, *concurrency) {
+	for _, sys := range bench.MeminiSystems(st, embedder, *concurrency, queryPrefix, *fusionAlpha, *poolFactor, *poolFloor) {
 		rs, err := bench.Run(ctx, sys, ds, ks)
 		if err != nil {
 			return err

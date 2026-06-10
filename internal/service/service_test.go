@@ -6,9 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/embed/embedtest"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/service"
+	"github.com/eleboucher/memini/internal/store"
 	"github.com/eleboucher/memini/internal/store/sqlitevec"
 )
 
@@ -89,6 +91,96 @@ func TestRecallHybrid(t *testing.T) {
 	}
 	if res[0].Memory.Content != "postgres is a relational database system" {
 		t.Fatalf("top hit = %q, want the postgres doc", res[0].Memory.Content)
+	}
+}
+
+// recordingStore captures the per-leg k requested by Recall.
+type recordingStore struct {
+	store.Store
+	vectorK, keywordK int
+}
+
+func (r *recordingStore) VectorSearch(ctx context.Context, ns string, vec []float32, f store.Filter, k int) ([]store.Scored, error) {
+	r.vectorK = k
+	return r.Store.VectorSearch(ctx, ns, vec, f, k)
+}
+
+func (r *recordingStore) KeywordSearch(ctx context.Context, ns, query string, f store.Filter, k int) ([]store.Scored, error) {
+	r.keywordK = k
+	return r.Store.KeywordSearch(ctx, ns, query, f, k)
+}
+
+// recordingEmbedder captures every text sent to the embedder.
+type recordingEmbedder struct {
+	embed.Embedder
+	texts []string
+}
+
+func (r *recordingEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	r.texts = append(r.texts, texts...)
+	return r.Embedder.Embed(ctx, texts)
+}
+
+func TestRecallDeepensCandidatePool(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "svc.db"), dims)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	rec := &recordingStore{Store: st}
+	svc := service.New(rec, embedtest.New(dims), service.WithSyncReinforce())
+
+	if _, err := svc.Remember(ctx, service.RememberInput{Namespace: "alice", Content: "hello"}); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+
+	// Small limits use the pool floor so fusion sees deep per-leg rankings.
+	if _, err := svc.Recall(ctx, service.RecallInput{Namespace: "alice", Query: "hello", Limit: 2}); err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if rec.vectorK != 50 || rec.keywordK != 50 {
+		t.Fatalf("per-leg pool = (%d, %d), want floor (50, 50)", rec.vectorK, rec.keywordK)
+	}
+
+	// Large limits scale the pool by the over-fetch factor.
+	if _, err := svc.Recall(ctx, service.RecallInput{Namespace: "alice", Query: "hello", Limit: 20}); err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if rec.vectorK != 100 || rec.keywordK != 100 {
+		t.Fatalf("per-leg pool = (%d, %d), want k*factor (100, 100)", rec.vectorK, rec.keywordK)
+	}
+}
+
+func TestRecallQueryPrefix(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "svc.db"), dims)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	rec := &recordingEmbedder{Embedder: embedtest.New(dims)}
+	svc := service.New(st, rec,
+		service.WithSyncReinforce(),
+		service.WithQueryPrefix("Instruct: retrieve\nQuery: "),
+	)
+
+	// Documents are embedded bare; only recall queries get the prefix.
+	if _, err := svc.Remember(ctx, service.RememberInput{Namespace: "alice", Content: "hello world"}); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	if _, err := svc.Recall(ctx, service.RecallInput{Namespace: "alice", Query: "hello", Limit: 1}); err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+
+	want := []string{"hello world", "Instruct: retrieve\nQuery: hello"}
+	if len(rec.texts) != len(want) {
+		t.Fatalf("embedded texts = %q, want %q", rec.texts, want)
+	}
+	for i := range want {
+		if rec.texts[i] != want[i] {
+			t.Errorf("embedded[%d] = %q, want %q", i, rec.texts[i], want[i])
+		}
 	}
 }
 

@@ -36,7 +36,9 @@ type RerankResult struct {
 // SAME fused candidate set two ways — pure RRF order vs the composite re-ranker
 // using the question's reference time. Reports recall@1, recall@K, and MRR per
 // category and overall, for both strategies. cats empty means all categories.
-func RerankCompare(ctx context.Context, st store.Store, e embed.Embedder, ds *Dataset, cats []string, k int) ([]RerankResult, error) {
+func RerankCompare(
+	ctx context.Context, st store.Store, e embed.Embedder, ds *Dataset, cats []string, k int, queryPrefix string,
+) ([]RerankResult, error) {
 	if err := ingestTimed(ctx, st, e, ds.Items); err != nil {
 		return nil, err
 	}
@@ -70,12 +72,14 @@ func RerankCompare(ctx context.Context, st store.Store, e embed.Embedder, ds *Da
 		return m[cat]
 	}
 
-	fetch := max(k, 20)
+	// Mirror service.Recall's deep candidate pool (max(k*5, 50) per leg) so the
+	// comparison reflects what the composite re-ranker sees in production.
+	fetch := max(k*5, 50)
 	for _, q := range ds.Questions {
 		if len(want) > 0 && !want[q.Category] {
 			continue
 		}
-		qvec, err := embed.EmbedOne(ctx, e, q.Query)
+		qvec, err := embed.EmbedOne(ctx, e, queryPrefix+q.Query)
 		if err != nil {
 			return nil, err
 		}

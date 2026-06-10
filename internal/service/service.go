@@ -30,6 +30,12 @@ const (
 	consolidateQueueCap     = 1024
 	consolidateDrainTimeout = 30 * time.Second
 	reinforceTimeout        = 10 * time.Second
+
+	// recallPoolFactor / recallPoolFloor size the per-leg candidate pool for
+	// hybrid recall: each leg over-fetches max(k*factor, floor) so a memory
+	// ranked just outside the top k in both legs can still win after RRF fusion.
+	recallPoolFactor = 5
+	recallPoolFloor  = 50
 )
 
 // ConsolidateMode selects how the opt-in LLM consolidation pipeline runs.
@@ -117,6 +123,17 @@ type Service struct {
 
 	// shortTermCap bounds short-term memories per namespace during fsck (0 = off).
 	shortTermCap int
+	// queryPrefix is prepended to recall queries before embedding, enabling the
+	// asymmetric instruction mode of instruction-tuned embedders. Documents are
+	// always embedded bare.
+	queryPrefix string
+	// scoreFusionAlpha selects the hybrid fusion strategy: >= 0 (the default) uses
+	// convex-combination score fusion with this vector-vs-keyword weight; < 0
+	// falls back to rank fusion (RRF).
+	scoreFusionAlpha float64
+	// poolFactor / poolFloor size the per-leg recall candidate pool as
+	// max(k*poolFactor, poolFloor); zero values use the package defaults.
+	poolFactor, poolFloor int
 	// now and newID are injectable for deterministic tests.
 	now   func() time.Time
 	newID func() string
@@ -161,6 +178,30 @@ func WithSyncReinforce() Option { return func(s *Service) { s.syncReinforce = tr
 // WithShortTermCap bounds short-term memories per namespace, enforced by fsck.
 func WithShortTermCap(cap int) Option { return func(s *Service) { s.shortTermCap = cap } }
 
+// WithQueryPrefix prepends an instruction to recall queries before embedding
+// (e.g. the retrieval instruct expected by Qwen3-Embedding or bge models).
+// Documents keep bare embeddings; the keyword leg keeps the raw query.
+func WithQueryPrefix(p string) Option { return func(s *Service) { s.queryPrefix = p } }
+
+// WithScoreFusion switches hybrid recall from rank fusion (RRF) to convex-
+// combination score fusion, weighting the vector leg by alpha and the keyword
+// leg by 1-alpha. alpha < 0 keeps RRF (the default).
+func WithScoreFusion(alpha float64) Option { return func(s *Service) { s.scoreFusionAlpha = alpha } }
+
+// WithRecallPool overrides the per-leg candidate pool sizing
+// (max(k*factor, floor)) for hybrid recall. Non-positive values keep the
+// defaults. Used by the benchmark harness to sweep pool depth.
+func WithRecallPool(factor, floor int) Option {
+	return func(s *Service) {
+		if factor > 0 {
+			s.poolFactor = factor
+		}
+		if floor > 0 {
+			s.poolFloor = floor
+		}
+	}
+}
+
 // New builds a Service from a store and embedder.
 func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 	s := &Service{
@@ -169,6 +210,9 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 		consolidateMode:     ConsolidateAsync,
 		consolidateMinScore: 0.6,
 		promoteMinAccess:    3,
+		scoreFusionAlpha:    search.DefaultFusionAlpha, // convex score fusion by default; negative selects RRF
+		poolFactor:          recallPoolFactor,
+		poolFloor:           recallPoolFloor,
 		metrics:             nopMetrics{},
 		now:                 func() time.Time { return time.Now().UTC() },
 		newID:               func() string { return uuid.NewString() },
@@ -609,28 +653,36 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		IncludeSuperseded: in.IncludeSuperseded,
 	}
 
-	vec, err := embed.EmbedOne(ctx, s.embedder, in.Query)
+	vec, err := embed.EmbedOne(ctx, s.embedder, s.queryPrefix+in.Query)
 	if err != nil {
 		s.metrics.RecallResult("error", tf, "0")
 		return nil, fmt.Errorf("recall: embed: %w", err)
 	}
 
-	// Fetch k from each strategy. Their union (up to 2k distinct memories) is the
-	// candidate pool for re-ranking and dedup, so the final set still fills k even
-	// after near-duplicates collapse — without deepening the per-list fusion ranks.
-	vres, err := s.store.VectorSearch(ctx, in.Namespace, vec, filter, k)
+	// Over-fetch a deep candidate pool from each strategy: a memory ranked just
+	// outside the top k in both legs is invisible at pool depth k, yet RRF would
+	// rank it above single-leg hits. Fusion, re-rank, and dedup then cut the
+	// pool back down to k.
+	poolK := max(k*s.poolFactor, s.poolFloor)
+	vres, err := s.store.VectorSearch(ctx, in.Namespace, vec, filter, poolK)
 	if err != nil {
 		s.metrics.RecallResult("error", tf, "0")
 		return nil, fmt.Errorf("recall: vector search: %w", err)
 	}
-	kres, err := s.store.KeywordSearch(ctx, in.Namespace, in.Query, filter, k)
+	kres, err := s.store.KeywordSearch(ctx, in.Namespace, in.Query, filter, poolK)
 	if err != nil {
 		s.metrics.RecallResult("error", tf, "0")
 		return nil, fmt.Errorf("recall: keyword search: %w", err)
 	}
 	// Fuse (no truncation), re-rank by composite relevance/recency/importance,
 	// drop near-duplicates, then cap at k.
-	fused := search.Fuse([][]store.Scored{vres, kres}, 0, search.DefaultRRFK)
+	var fused []store.Scored
+	if s.scoreFusionAlpha >= 0 {
+		fused = search.FuseScores([][]store.Scored{vres, kres},
+			[]float64{s.scoreFusionAlpha, 1 - s.scoreFusionAlpha}, 0)
+	} else {
+		fused = search.Fuse([][]store.Scored{vres, kres}, 0, search.DefaultRRFK)
+	}
 	ranked := search.Rerank(fused, s.now())
 	results := search.Dedup(ranked, k)
 	s.reinforceResults(ctx, in.Namespace, results)
