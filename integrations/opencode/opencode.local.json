@@ -4,7 +4,7 @@
     "memini": {
       "type": "local",
       "command": ["memini", "mcp"],
-      "env": {
+      "environment": {
         "MEMINI_DEFAULT_NAMESPACE": "my-project"
       },
       "enabled": true

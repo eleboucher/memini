@@ -1,0 +1,28 @@
+{
+  "id": "memini",
+  "kind": "memory",
+  "name": "memini",
+  "description": "Persistent cross-session memory for OpenClaw via memini.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean" },
+      "base_url": { "type": "string" },
+      "namespace": { "type": "string" },
+      "fallback_on_error": { "type": "boolean" },
+      "timeout_ms": { "type": "number" }
+    }
+  },
+  "uiHints": {
+    "enabled": { "label": "Enabled" },
+    "base_url": { "label": "Base URL", "help": "memini REST server base URL" },
+    "namespace": {
+      "label": "Namespace",
+      "help": "Tenant the memory is scoped to (X-Memini-Namespace)"
+    },
+    "fallback_on_error": { "label": "Fallback On Error" },
+    "timeout_ms": { "label": "Timeout (ms)" }
+  }
+}

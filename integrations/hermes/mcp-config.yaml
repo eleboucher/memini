@@ -1,0 +1,28 @@
+# Fallback: wire memini as an MCP server in Hermes instead of the native plugin.
+# Merge one of these blocks into ~/.hermes/config.yaml under `mcp_servers`.
+# Hermes detects transport by shape: `url` => HTTP, `command` => stdio.
+# (Prefer the native MemoryProvider plugin in ./plugin — see README.)
+
+mcp_servers:
+  # Remote (Streamable HTTP) — a shared, always-on memini.
+  memini:
+    url: "http://localhost:8080/mcp"
+    headers:
+      X-Memini-Namespace: "my-project"
+      # Authorization: "Bearer ${MEMINI_API_KEY}"   # if memini requires auth
+    tools:
+      include: [memory_remember, memory_recall, memory_get, memory_forget]
+
+  # Local (stdio) — Hermes spawns memini as a subprocess. Use INSTEAD of the
+  # block above (same server name); don't enable both at once.
+  # memini:
+  #   command: "memini"
+  #   args: ["mcp"]
+  #   env:
+  #     MEMINI_EMBED_BASE_URL: "http://localhost:8081/v1"
+  #     MEMINI_EMBED_MODEL: "bge-m3"
+  #     MEMINI_EMBED_DIMS: "1024"
+  #     MEMINI_SQLITE_PATH: "/home/you/.memini/memini.db"
+  #     MEMINI_DEFAULT_NAMESPACE: "my-project"
+  #   tools:
+  #     include: [memory_remember, memory_recall, memory_get, memory_forget]

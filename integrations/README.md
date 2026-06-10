@@ -58,13 +58,13 @@ header explicitly) instead of relying on the server-side resolve.
 
 ## Recipes
 
-| Agent       | Folder                         | Transport              |
-| ----------- | ------------------------------ | ---------------------- |
-| Claude Code | [`claude-code/`](claude-code/) | HTTP (plugin) or stdio |
-| opencode    | [`opencode/`](opencode/)       | HTTP or stdio          |
-| Codex CLI   | [`codex/`](codex/)             | stdio (plugin) or HTTP |
-| Hermes      | [`hermes/`](hermes/)           | HTTP or stdio          |
-| OpenClaw    | [`openclaw/`](openclaw/)       | skill + HTTP           |
+| Agent       | Folder                         | Transport                               |
+| ----------- | ------------------------------ | --------------------------------------- |
+| Claude Code | [`claude-code/`](claude-code/) | HTTP (plugin) or stdio                  |
+| opencode    | [`opencode/`](opencode/)       | HTTP or stdio                           |
+| Codex CLI   | [`codex/`](codex/)             | stdio (plugin) or HTTP                  |
+| Hermes      | [`hermes/`](hermes/)           | native MemoryProvider plugin (or MCP)   |
+| OpenClaw    | [`openclaw/`](openclaw/)       | native memory-slot extension (or skill) |
 
 All recipes assume memini is reachable and that its embeddings endpoint
 is configured (`MEMINI_EMBED_BASE_URL`). If memini requires a bearer

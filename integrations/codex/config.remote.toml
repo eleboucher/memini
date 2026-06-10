@@ -5,5 +5,5 @@ url = "http://localhost:8080/mcp"
 # memini auto-resolve the namespace from the git repo basename of its own
 # working directory (see README).
 http_headers = { "X-Memini-Namespace" = "my-project" }
-# If memini requires auth, add the bearer token:
-# bearer_token = "your-token"
+# If memini requires auth, name the env var holding the bearer token:
+# bearer_token_env_var = "MEMINI_API_KEY"
