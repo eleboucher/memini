@@ -188,9 +188,9 @@ func WithShortTermCap(cap int) Option { return func(s *Service) { s.shortTermCap
 // Documents keep bare embeddings; the keyword leg keeps the raw query.
 func WithQueryPrefix(p string) Option { return func(s *Service) { s.queryPrefix = p } }
 
-// WithScoreFusion switches hybrid recall from rank fusion (RRF) to convex-
-// combination score fusion, weighting the vector leg by alpha and the keyword
-// leg by 1-alpha. alpha < 0 keeps RRF (the default).
+// WithScoreFusion sets the hybrid fusion weight: the vector leg by alpha and
+// the keyword leg by 1-alpha (score fusion). alpha < 0 selects rank fusion
+// (RRF). The package default is score fusion at DefaultFusionAlpha.
 func WithScoreFusion(alpha float64) Option { return func(s *Service) { s.scoreFusionAlpha = alpha } }
 
 // WithRecallPool overrides the per-leg candidate pool sizing
@@ -405,13 +405,11 @@ func (s *Service) enqueueConsolidate(namespace, id string) {
 	}
 }
 
-// dedupExisting looks for a near-identical memory in m's own tier and namespace.
-// When the nearest neighbour's similarity is at or above writeDedupMinScore, it
-// reinforces that memory (recording the repeat and refreshing its recency/TTL)
-// and returns it, so a fresh write of essentially the same fact coalesces into
-// the canonical record. It is deliberately non-destructive — without an LLM to
-// judge "replaces" vs "duplicate" it never supersedes or rewrites the existing
-// memory. Returns nil to fall through to a normal insert.
+// dedupExisting returns the nearest same-tier memory when its similarity is at
+// or above writeDedupMinScore, after reinforcing it (so the repeat refreshes
+// its recency/TTL). The caller coalesces the write into that record instead of
+// storing a duplicate. It never supersedes or rewrites the existing memory.
+// Returns nil to fall through to a normal insert.
 func (s *Service) dedupExisting(ctx context.Context, m *memory.Memory) *memory.Memory {
 	cands, err := s.store.VectorSearch(ctx, m.Namespace, m.Embedding,
 		store.Filter{Tiers: []memory.Tier{m.Tier}}, 1)

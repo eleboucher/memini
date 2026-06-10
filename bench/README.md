@@ -54,8 +54,9 @@ memory a leg ranks far above its runners-up dominates one that is merely
 middling in both. A negative alpha falls back to **Reciprocal Rank Fusion**;
 deep pools then need a steep decay (`rrfK=5`, not the classic 60), since a flat
 decay lets both-leg mediocrity outscore single-leg excellence
-(`2/(60+20) > 1/(60+0)`). Score fusion reaches the same end principledly and
-beat RRF on 3 of 4 model×dataset cells (and on MRR in all 4).
+(`2/(60+20) > 1/(60+0)`). Score fusion gets the same effect from score
+magnitude directly, and beat RRF on 3 of 4 model×dataset cells (and on MRR in
+all 4).
 
 | System                         | Embedding model          |       R@5 |      R@10 | Source                                                                                  |
 | ------------------------------ | ------------------------ | --------: | --------: | --------------------------------------------------------------------------------------- |

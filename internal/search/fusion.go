@@ -6,23 +6,18 @@ import (
 	"github.com/eleboucher/memini/internal/store"
 )
 
-// DefaultFusionAlpha weights the vector leg against the keyword leg in
-// FuseScores: combined = alpha*vectorNorm + (1-alpha)*keywordNorm. 0.5 is the
-// neutral, deliberately-untuned default — balanced fusion is consistently
-// optimal in the literature and we do not fit alpha to the benchmark.
+// DefaultFusionAlpha is the vector-leg weight in FuseScores; the keyword leg
+// gets 1-alpha. 0.5 weights both legs equally.
 const DefaultFusionAlpha = 0.5
 
-// FuseScores combines best-first result lists by convex combination of their
-// min-max-normalized scores (a.k.a. relative score fusion): within each list
-// the raw scores are scaled so the best becomes 1 and the worst 0, then each
-// memory's normalized scores are summed weighted by the per-list weights.
-//
-// Unlike Reciprocal Rank Fusion, this keeps score *magnitude*: a memory that a
-// leg considers far better than its runners-up dominates, and one that is
-// merely middling in both legs stays middling — so single-leg excellence is not
-// drowned by both-leg consensus. weights are aligned with lists by index;
-// missing or short weight slices default the remainder to 1. The top k are
-// returned best-first (k <= 0 returns all), ties broken by first-seen order.
+// FuseScores combines best-first result lists by a weighted sum of their
+// min-max-normalized scores (relative score fusion): within each list the
+// scores are scaled so the best is 1 and the worst 0, then each memory's
+// normalized scores are summed, weighted per list. Unlike RRF this preserves
+// score magnitude, so a leg's standout hit outranks one that is middling in
+// both legs. weights align with lists by index; absent weights default to 1.
+// The top k are returned best-first (k <= 0 returns all); ties keep first-seen
+// order.
 func FuseScores(lists [][]store.Scored, weights []float64, k int) []store.Scored {
 	type agg struct {
 		mem   *store.Scored
@@ -39,7 +34,7 @@ func FuseScores(lists [][]store.Scored, weights []float64, k int) []store.Scored
 		lo, hi := scoreRange(list)
 		span := hi - lo
 		for _, sc := range list {
-			norm := 1.0 // when every score in the leg is equal, treat them as equally strong
+			norm := 1.0 // equal scores in a leg all normalize to 1
 			if span > 0 {
 				norm = (sc.Score - lo) / span
 			}
