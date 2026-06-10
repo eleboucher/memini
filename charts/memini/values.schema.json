@@ -275,7 +275,7 @@
           "type": "string"
         },
         "repository": {
-          "default": "ghcr.io/eleboucher/memini",
+          "default": "registry.erwanleboucher.dev/eleboucher/memini",
           "title": "repository",
           "type": "string"
         },
