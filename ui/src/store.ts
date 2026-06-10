@@ -8,7 +8,6 @@ export type Theme = 'ink' | 'ivory'
 // host. Override it to point the UI at a remote memini.
 interface Persisted {
   baseUrl: string
-  token: string
   namespace: string
   namespaceHeader: string
   theme: Theme
@@ -18,7 +17,6 @@ const KEY = 'memini.settings'
 
 const defaults: Persisted = {
   baseUrl: '',
-  token: '',
   namespace: '',
   namespaceHeader: 'X-Memini-Namespace',
   theme: 'ink',
@@ -41,7 +39,6 @@ const initial = load()
 // changes. Default landing is the Overview in "All projects" mode (ns === '').
 export const route = signal<Route>('overview')
 export const baseUrl = signal(initial.baseUrl)
-export const token = signal(initial.token)
 export const namespace = signal(initial.namespace)
 export const namespaceHeader = signal(initial.namespaceHeader)
 export const theme = signal<Theme>(initial.theme)
@@ -56,7 +53,6 @@ export function refresh() {
 effect(() => {
   const data: Persisted = {
     baseUrl: baseUrl.value,
-    token: token.value,
     namespace: namespace.value,
     namespaceHeader: namespaceHeader.value,
     theme: theme.value,
