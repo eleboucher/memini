@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -263,5 +264,102 @@ func TestInvalidNamespaceIsRejected(t *testing.T) {
 	}
 	if !res.IsError {
 		t.Fatal("over-long namespace must error, never fall back to the default tenant")
+	}
+}
+
+// TestHTTPHandlerNamespaceHeader pins that an invalid X-Memini-Namespace is
+// rejected with 400 on the HTTP surface (matching REST) — with and without an
+// API key configured. The keyless case matters most: the pre-fix code returned
+// the inner handler directly when no key was set, silently routing invalid
+// namespaces to the default tenant.
+func TestHTTPHandlerNamespaceHeader(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "ns.db"), dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := service.New(st, embedtest.New(dims))
+
+	const body = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
+	req := func(h http.Handler, ns, token string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Accept", "application/json, text/event-stream")
+		if ns != "" {
+			r.Header.Set("X-Memini-Namespace", ns)
+		}
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	badNS := strings.Repeat("n", 300)
+
+	t.Run("no api key", func(t *testing.T) {
+		h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "")
+		if got := req(h, badNS, "").Code; got != http.StatusBadRequest {
+			t.Errorf("invalid namespace without auth: got %d, want 400", got)
+		}
+		if got := req(h, "tenant-a", "").Code; got == http.StatusBadRequest {
+			t.Errorf("valid namespace: got 400, want it to pass")
+		}
+	})
+
+	t.Run("with api key", func(t *testing.T) {
+		h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "secret")
+		if got := req(h, badNS, "secret").Code; got != http.StatusBadRequest {
+			t.Errorf("invalid namespace with valid token: got %d, want 400", got)
+		}
+		// Auth still runs first: bad token beats bad namespace.
+		if got := req(h, badNS, "wrong").Code; got != http.StatusUnauthorized {
+			t.Errorf("bad token + bad namespace: got %d, want 401", got)
+		}
+	})
+}
+
+// TestRememberPositiveTTL pins the seconds→duration conversion: a positive
+// ttl_seconds must produce an expiry (the full-args test only covers the
+// never-expire case).
+func TestRememberPositiveTTL(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_remember",
+		Arguments: map[string]any{
+			"content": "short lived note", "tier": "semantic", "ttl_seconds": 3600, "id": "ttl-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("remember errored: %+v", res.Content)
+	}
+
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_get", Arguments: map[string]any{"id": "ttl-1"},
+	})
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	var got struct {
+		CreatedAt string `json:"created_at"`
+		ExpiresAt string `json:"expires_at"`
+	}
+	structured(t, res, &got)
+	if got.ExpiresAt == "" {
+		t.Fatal("positive ttl_seconds must set an expiry")
+	}
+	created, err1 := time.Parse(time.RFC3339, got.CreatedAt)
+	expires, err2 := time.Parse(time.RFC3339, got.ExpiresAt)
+	if err1 != nil || err2 != nil {
+		t.Fatalf("parse timestamps: %v / %v", err1, err2)
+	}
+	if d := expires.Sub(created); d != time.Hour {
+		t.Fatalf("ttl_seconds=3600 produced expiry %v after creation, want 1h", d)
 	}
 }
