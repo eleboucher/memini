@@ -13,6 +13,7 @@
       "namespace": { "type": "string" },
       "namespace_per_agent": { "type": "boolean" },
       "namespace_template": { "type": "string" },
+      "skip_without_agent": { "type": "boolean" },
       "fallback_on_error": { "type": "boolean" },
       "timeout_ms": { "type": "number" }
     }
@@ -31,6 +32,10 @@
     "namespace_template": {
       "label": "Namespace Template",
       "help": "Per-agent namespace, e.g. \"{agent}\" or \"openclaw-{agent}\" ({namespace} also substituted)"
+    },
+    "skip_without_agent": {
+      "label": "Skip Without Agent",
+      "help": "In per-agent mode, skip recall/write when no agent identity resolves (e.g. cron/heartbeat) instead of using the fallback namespace"
     },
     "fallback_on_error": { "label": "Fallback On Error" },
     "timeout_ms": { "label": "Timeout (ms)" }
