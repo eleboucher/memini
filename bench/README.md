@@ -26,6 +26,37 @@ go run ./cmd/bench -suite locomo      -data ./locomo.json        -k 5
 go run ./cmd/bench -suite longmemeval -data ./longmemeval_s.json -rerank -k 5
 ```
 
+## Full results
+
+Everything this harness measures, in one table — sourced from the committed
+[`results/`](results/) JSON, all on the **same all-MiniLM-L6-v2** (384-d)
+endpoint. Cells are `recall_any@5 / @10 / MRR` (%); `p50` is in-process recall
+latency (rerank rows show the added cost). The detailed per-dataset sections
+below explain the methodology, sweeps, and caveats behind each column.
+
+| Strategy                                  | LongMemEval · session  | LoCoMo · turn-level    | LoCoMo · session-level | p50         |
+| ----------------------------------------- | ---------------------- | ---------------------- | ---------------------- | ----------- |
+| vector                                    | 92.6 / 95.4 / 80.7     | 41.3 / 51.8 / 28.1     | 64.1 / 79.8 / 45.2     | <1 ms       |
+| keyword (Porter BM25)                     | 97.6 / 99.0 / 92.2     | 58.7 / 67.1 / 44.8     | 92.6 / 96.8 / 79.4     | ~3 ms       |
+| **hybrid** (default, production path)     | **98.4 / 99.2 / 93.0** | **59.7 / 69.9 / 42.4** | **90.9 / 96.6 / 74.3** | ~5 ms       |
+| + cross-encoder (`MEMINI_RERANK=<url>`)   | 98.4 / 99.2 / 93.1     | **70.9 / 75.0 / 59.8** | 90.9 / 96.6 / 74.3     | +20–230 ms  |
+| + LLM rerank (`MEMINI_RERANK=llm`)        | 98.4 / 99.2 / 93.0     | **74.4 / 76.5 / 67.4** | —                      | +350–420 ms |
+
+Questions per dataset: **LongMemEval** 500 (session granularity), **LoCoMo
+turn-level** 1,982 (gold = exact evidence turns), **LoCoMo session-level** 1,981
+(gold = sessions holding those turns). Rerank backends: Qwen3-Reranker-0.6B
+(cross-encoder) and Qwen3.5-9B (LLM). Reproduce with the per-suite commands in
+the sections below (`-suite longmemeval`, `locomo`, `locomo-sessions`; add
+`-rerank-url`/`-llm-rerank` for the rerank rows).
+
+Reading it: **hybrid** never trails either single leg on the saturated session
+sets (it ties keyword on LoCoMo-session, where keyword's exact-token match is
+already near-ceiling). On **turn-level LoCoMo** base recall has real headroom, so
+the rerank tier earns its keep — the cross-encoder lands **+11pp R@5 / +17pp
+MRR** over hybrid at a fraction of the LLM's latency, and the LLM adds a few more
+points (**+15pp / +25pp**) if you already run a chat model. Where recall is
+already at ceiling (both session sets), reranking is a measured no-op.
+
 ## Results: memini vs other memory systems
 
 All memini numbers below are **measured by this harness** against a live
