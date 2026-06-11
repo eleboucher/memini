@@ -59,7 +59,15 @@ func runImport(ctx context.Context, cfg *config.Config, log *slog.Logger, args [
 	for _, e := range rep.Errors {
 		fmt.Fprintln(os.Stderr, "  error:", e)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	// Per-record failures must fail the command too, or scripted imports
+	// conclude success while records were dropped.
+	if len(rep.Errors) > 0 {
+		return fmt.Errorf("import completed with %d errors", len(rep.Errors))
+	}
+	return nil
 }
 
 // buildImporter wires a remote (REST) or local (store+embedder) importer,
