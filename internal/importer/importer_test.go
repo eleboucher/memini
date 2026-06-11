@@ -64,3 +64,62 @@ func TestImportPreservesIDAndTimestamps(t *testing.T) {
 		t.Error("default namespace not applied: record not in 'fallback'")
 	}
 }
+
+func TestImportQualityGates(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "import.db"), 32)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	recs := []importer.Record{
+		{ID: "keep", Namespace: "p", Content: "a substantial, useful memory", Importance: 0.5},
+		{ID: "stub", Namespace: "p", Content: "  ok  ", Importance: 0.5},              // too short
+		{ID: "weak", Namespace: "p", Content: "long enough content", Importance: 0.1}, // below importance floor
+	}
+
+	rep, err := importer.NewLocal(st, embedtest.New(32)).Import(ctx, recs,
+		importer.Options{MinContentLen: 10, MinImportance: 0.3})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if rep.Imported != 1 || rep.Skipped != 2 {
+		t.Fatalf("report = %+v, want imported=1 skipped=2", rep)
+	}
+	if _, err := st.Get(ctx, "p", "keep"); err != nil {
+		t.Errorf("keep should be imported: %v", err)
+	}
+	if _, err := st.Get(ctx, "p", "stub"); err == nil {
+		t.Error("stub should be skipped (too short)")
+	}
+	if _, err := st.Get(ctx, "p", "weak"); err == nil {
+		t.Error("weak should be skipped (below importance floor)")
+	}
+}
+
+func TestImportUntypedDefaultsToEpisodic(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "import.db"), 32)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	// No tier set -> should default to episodic (decaying), not durable semantic.
+	recs := []importer.Record{{ID: "u", Namespace: "p", Content: "an untyped imported memory"}}
+	if _, err := importer.NewLocal(st, embedtest.New(32)).Import(ctx, recs, importer.Options{}); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	got, err := st.Get(ctx, "p", "u")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Tier != memory.TierEpisodic {
+		t.Fatalf("untyped import tier = %q, want episodic", got.Tier)
+	}
+	if got.ExpiresAt == nil {
+		t.Fatal("episodic import should carry a TTL, got none")
+	}
+}

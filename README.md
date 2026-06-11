@@ -313,10 +313,23 @@ recency ranking. This pairs with the [plugin](plugin/)'s auto-capture: backfill
 once, then the hooks keep it current.
 
 Each source's fields map onto memini's tiers (e.g. agentmemory `workflow`→procedural,
-mem0 facts→semantic) and namespace (`project`/`user_id`). Empty records are skipped;
-per-record failures don't abort the run. Over `--remote` the server sets its own
-timestamps, so the source's created-at is kept in `metadata.imported_created_at`.
-Reads stdin when the path is `-`.
+mem0 facts→semantic) and namespace (`project`/`user_id`). Records whose source
+carries no recognized tier default to **episodic** (90-day TTL), so a bulk import
+of unknown quality ages out unless recall reinforces it rather than living forever
+as durable facts. Empty records are skipped; per-record failures don't abort the run.
+Over `--remote` the server sets its own timestamps, so the source's created-at is
+kept in `metadata.imported_created_at`. Reads stdin when the path is `-`.
+
+For low-quality bulk exports, two optional gates drop weak records before they're
+written (both off by default):
+
+```sh
+# Skip stubs shorter than 40 bytes and anything below importance 0.3:
+memini import --source mem0 --min-length 40 --min-importance 0.3 ./export.json
+```
+
+Note `--min-importance` skips records whose source reported no importance (they
+arrive as `0`); leave it off unless your export carries real importance scores.
 
 ## Benchmark
 

@@ -7,6 +7,7 @@ package importer
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -40,13 +41,20 @@ type Options struct {
 	// OnProgress is called after each batch with (processed, total).
 	// It may be nil.
 	OnProgress func(done, total int)
+	// MinContentLen drops records whose trimmed content is shorter than this,
+	// filtering out stubs from a low-quality bulk import. 0 disables the gate.
+	MinContentLen int
+	// MinImportance drops records below this importance. 0 disables the gate;
+	// note sources that carry no importance report 0, so any positive value
+	// skips them.
+	MinImportance float64
 }
 
 // Report summarizes an import run.
 type Report struct {
 	Total    int      `json:"total"`
 	Imported int      `json:"imported"`
-	Skipped  int      `json:"skipped"` // dropped before write (empty content)
+	Skipped  int      `json:"skipped"` // dropped before write (failed a quality gate)
 	Errors   []string `json:"errors,omitempty"`
 }
 
@@ -74,8 +82,9 @@ func NewRemote(c *RemoteClient) *Importer {
 	return &Importer{write: c.write, batchSize: 32}
 }
 
-// Import writes records, skipping empty-content ones and continuing past
-// per-record failures (collected in the Report).
+// Import writes records, skipping those that fail the quality gates (empty or
+// below MinContentLen/MinImportance) and continuing past per-record failures
+// (collected in the Report).
 func (im *Importer) Import(ctx context.Context, recs []Record, opts Options) (Report, error) {
 	rep := Report{Total: len(recs)}
 	batch := opts.BatchSize
@@ -88,7 +97,11 @@ func (im *Importer) Import(ctx context.Context, recs []Record, opts Options) (Re
 
 	clean := make([]Record, 0, len(recs))
 	for _, r := range recs {
-		if r.Content == "" {
+		if len(strings.TrimSpace(r.Content)) < max(1, opts.MinContentLen) {
+			rep.Skipped++
+			continue
+		}
+		if r.Importance < opts.MinImportance {
 			rep.Skipped++
 			continue
 		}
@@ -158,7 +171,10 @@ func (lw *localWriter) toMemory(r Record, opts Options) *memory.Memory {
 	}
 	tier := r.Tier
 	if !tier.Valid() {
-		tier = memory.TierSemantic
+		// Untyped imports default to episodic (90d TTL) rather than durable
+		// semantic: bulk imports of unknown quality should age out unless recall
+		// reinforces them, not live forever.
+		tier = memory.TierEpisodic
 	}
 	id := r.ID
 	if id == "" {

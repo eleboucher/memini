@@ -21,6 +21,8 @@ var (
 	importBatch     int
 	importRemote    string
 	importToken     string
+	importMinLen    int
+	importMinImp    float64
 )
 
 var importCmd = &cobra.Command{
@@ -43,6 +45,10 @@ func init() {
 		"target a running memini server (e.g. https://memini.example.com) instead of the local store")
 	importCmd.Flags().StringVar(&importToken, "token", "",
 		"bearer token for the remote server (defaults to MEMINI_API_KEY)")
+	importCmd.Flags().IntVar(&importMinLen, "min-length", 0,
+		"skip records whose trimmed content is shorter than this many bytes (0 = off)")
+	importCmd.Flags().Float64Var(&importMinImp, "min-importance", 0,
+		"skip records below this importance (0 = off; note: sources without importance report 0)")
 
 	rootCmd.AddCommand(importCmd)
 }
@@ -109,6 +115,8 @@ func runImport(cmd *cobra.Command, args []string) error {
 		DefaultNamespace: importNamespace,
 		BatchSize:        importBatch,
 		OnProgress:       newProgressWriter(w),
+		MinContentLen:    importMinLen,
+		MinImportance:    importMinImp,
 	})
 	fmt.Fprintf(cmd.OutOrStdout(), "import %s -> %s: %d imported, %d skipped, %d total\n", //nolint:errcheck
 		importSource, target, rep.Imported, rep.Skipped, rep.Total)
