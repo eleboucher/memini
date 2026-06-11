@@ -45,7 +45,8 @@ func run() error {
 	sessionDoc := flag.String("session-doc", "full", "longmemeval doc construction: full | user-only | dated")
 	llmRerank := flag.Bool("llm-rerank", false, "with-LLM tier: production order vs LLM rerank (needs MEMINI_LLM_*; use -limit)")
 	llmRerankPool := flag.Int("llm-rerank-pool", 20, "candidates handed to the reranker per question")
-	ceRerankURL := flag.String("rerank-url", "", "rerank tier with a cross-encoder /rerank endpoint at this base URL (e.g. http://localhost:8002/v1)")
+	ceRerankURL := flag.String("rerank-url", "",
+		"rerank tier with a cross-encoder /rerank endpoint at this base URL (e.g. http://localhost:8002/v1)")
 	ceRerankModel := flag.String("rerank-model", "", "cross-encoder model name for -rerank-url")
 	flag.Parse()
 
