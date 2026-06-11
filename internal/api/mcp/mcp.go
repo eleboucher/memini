@@ -97,6 +97,20 @@ type tools struct {
 	defaultNS string
 }
 
+// parseTiers validates a tier filter. An unknown tier is an error rather than
+// silently unfiltered results, matching the REST surface.
+func parseTiers(in []string) ([]memory.Tier, error) {
+	tiers := make([]memory.Tier, 0, len(in))
+	for _, v := range in {
+		t := memory.Tier(strings.TrimSpace(v))
+		if !t.Valid() {
+			return nil, fmt.Errorf("invalid tier %q", t)
+		}
+		tiers = append(tiers, t)
+	}
+	return tiers, nil
+}
+
 // ns resolves a tool call's namespace argument: empty falls back to the server
 // default, an invalid value is an error (never silently rerouted to the
 // default tenant, which would mix data across namespaces).
@@ -112,11 +126,15 @@ func (t *tools) ns(arg string) (string, error) {
 }
 
 type rememberArgs struct {
-	Content    string   `json:"content" jsonschema:"the text to remember"`
-	Tier       string   `json:"tier,omitempty" jsonschema:"working, episodic, semantic, or procedural (default working)"`
-	Tags       []string `json:"tags,omitempty" jsonschema:"optional labels"`
-	Importance float64  `json:"importance,omitempty" jsonschema:"0..1 bias toward retention"`
-	Namespace  string   `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+	Content    string         `json:"content" jsonschema:"the text to remember"`
+	Tier       string         `json:"tier,omitempty" jsonschema:"working, episodic, semantic, or procedural (default working)"`
+	Summary    string         `json:"summary,omitempty" jsonschema:"optional one-line summary"`
+	Tags       []string       `json:"tags,omitempty" jsonschema:"optional labels"`
+	Metadata   map[string]any `json:"metadata,omitempty" jsonschema:"optional structured metadata"`
+	Importance float64        `json:"importance,omitempty" jsonschema:"0..1 bias toward retention"`
+	TTLSeconds *int           `json:"ttl_seconds,omitempty" jsonschema:"overrides the tier default TTL; negative means never expire"`
+	ID         string         `json:"id,omitempty" jsonschema:"upserts an existing memory when provided"`
+	Namespace  string         `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 }
 
 type rememberResult struct {
@@ -129,13 +147,21 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 	if err != nil {
 		return nil, rememberResult{}, err
 	}
-	m, err := t.svc.Remember(ctx, service.RememberInput{
+	input := service.RememberInput{
 		Namespace:  ns,
 		Content:    in.Content,
 		Tier:       memory.Tier(in.Tier),
+		Summary:    in.Summary,
 		Tags:       in.Tags,
+		Metadata:   in.Metadata,
 		Importance: in.Importance,
-	})
+		ID:         in.ID,
+	}
+	if in.TTLSeconds != nil {
+		d := time.Duration(*in.TTLSeconds) * time.Second
+		input.TTL = &d
+	}
+	m, err := t.svc.Remember(ctx, input)
 	if err != nil {
 		return nil, rememberResult{}, err
 	}
@@ -143,9 +169,10 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 }
 
 type recallArgs struct {
-	Query     string `json:"query" jsonschema:"what to search for"`
-	Limit     int    `json:"limit,omitempty" jsonschema:"max results (default 10)"`
-	Namespace string `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+	Query     string   `json:"query" jsonschema:"what to search for"`
+	Tiers     []string `json:"tiers,omitempty" jsonschema:"restrict to these tiers (working, episodic, semantic, procedural); empty means all"`
+	Limit     int      `json:"limit,omitempty" jsonschema:"max results (default 10)"`
+	Namespace string   `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 }
 
 type recallItem struct {
@@ -164,9 +191,14 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 	if err != nil {
 		return nil, recallResult{}, err
 	}
+	tiers, err := parseTiers(in.Tiers)
+	if err != nil {
+		return nil, recallResult{}, err
+	}
 	res, err := t.svc.Recall(ctx, service.RecallInput{
 		Namespace: ns,
 		Query:     in.Query,
+		Tiers:     tiers,
 		Limit:     in.Limit,
 	})
 	if err != nil {

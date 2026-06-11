@@ -150,3 +150,118 @@ func TestHTTPHandlerAuth(t *testing.T) {
 		t.Errorf("good token: got 401, want it to pass auth")
 	}
 }
+
+func TestRememberFullArgsRoundTripViaGet(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_remember",
+		Arguments: map[string]any{
+			"content":     "the deploy pipeline runs on forgejo",
+			"tier":        "semantic",
+			"summary":     "deploy pipeline location",
+			"tags":        []string{"ci", "deploy"},
+			"metadata":    map[string]any{"source": "test"},
+			"importance":  0.8,
+			"ttl_seconds": -1,
+			"id":          "fixed-id-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	var remembered struct {
+		ID string `json:"id"`
+	}
+	structured(t, res, &remembered)
+	if remembered.ID != "fixed-id-1" {
+		t.Fatalf("id = %q, want the upsert id", remembered.ID)
+	}
+
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_get",
+		Arguments: map[string]any{"id": "fixed-id-1"},
+	})
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	var got struct {
+		Content    string         `json:"content"`
+		Summary    string         `json:"summary"`
+		Tags       []string       `json:"tags"`
+		Metadata   map[string]any `json:"metadata"`
+		Importance float64        `json:"importance"`
+		CreatedAt  string         `json:"created_at"`
+		ExpiresAt  string         `json:"expires_at"`
+	}
+	structured(t, res, &got)
+	if got.Summary != "deploy pipeline location" || len(got.Tags) != 2 ||
+		got.Metadata["source"] != "test" || got.Importance != 0.8 || got.CreatedAt == "" {
+		t.Fatalf("get dropped fields: %+v", got)
+	}
+	if got.ExpiresAt != "" {
+		t.Fatalf("negative ttl should mean no expiry, got %q", got.ExpiresAt)
+	}
+}
+
+func TestRecallTierFilter(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	for _, m := range []map[string]any{
+		{"content": "fact about kubernetes nodes", "tier": "semantic"},
+		{"content": "note about kubernetes nodes", "tier": "working"},
+	} {
+		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{Name: "memory_remember", Arguments: m}); err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+	}
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_recall",
+		Arguments: map[string]any{"query": "kubernetes nodes", "tiers": []string{"semantic"}},
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	var recalled struct {
+		Results []struct {
+			Tier string `json:"tier"`
+		} `json:"results"`
+	}
+	structured(t, res, &recalled)
+	if len(recalled.Results) == 0 {
+		t.Fatal("tier-filtered recall returned nothing")
+	}
+	for _, r := range recalled.Results {
+		if r.Tier != "semantic" {
+			t.Fatalf("tier filter leaked %q results: %+v", r.Tier, recalled.Results)
+		}
+	}
+
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_recall",
+		Arguments: map[string]any{"query": "kubernetes nodes", "tiers": []string{"semantik"}},
+	})
+	if err != nil {
+		t.Fatalf("recall transport: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("unknown tier should be a tool error, not silently unfiltered")
+	}
+}
+
+func TestInvalidNamespaceIsRejected(t *testing.T) {
+	cs := connect(t)
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "memory_remember",
+		Arguments: map[string]any{"content": "x", "namespace": strings.Repeat("n", 300)},
+	})
+	if err != nil {
+		t.Fatalf("transport: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("over-long namespace must error, never fall back to the default tenant")
+	}
+}
