@@ -41,8 +41,10 @@ func New(svc *service.Service, auth AuthConfig) *Server {
 // are rejected with 400 by the generated wrappers.
 func (h *Server) Mount(r chi.Router) {
 	r.Group(func(r chi.Router) {
-		r.Use(h.auth.namespaceMiddleware)
+		// Authentication first: an unauthenticated caller gets 401, never a
+		// 400 that leaks namespace-validation behavior.
 		r.Use(h.auth.authMiddleware)
+		r.Use(h.auth.namespaceMiddleware)
 		HandlerWithOptions(h, ChiServerOptions{
 			BaseRouter: r,
 			ErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
