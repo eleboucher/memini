@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -14,8 +15,11 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/eleboucher/memini/internal/api/rest"
+	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/embed/embedtest"
+	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/service"
+	"github.com/eleboucher/memini/internal/store"
 	"github.com/eleboucher/memini/internal/store/sqlitevec"
 )
 
@@ -310,4 +314,81 @@ func TestNamespacesEmptyStoreIsArray(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"namespaces":[]`) {
 		t.Fatalf("empty store must marshal namespaces as [], got %s", rec.Body)
 	}
+}
+
+// failingStore wraps a real store but fails every Upsert, to exercise the
+// 5xx branch of the error mapping.
+type failingStore struct {
+	store.Store
+}
+
+func (failingStore) Upsert(context.Context, *memory.Memory) error {
+	return errors.New("disk unavailable")
+}
+
+// TestErrorStatusMapping pins statusFor end-to-end: caller mistakes are 4xx,
+// configuration gaps 503, backend failures 500. Before the classification fix
+// every one of these was a 400.
+func TestErrorStatusMapping(t *testing.T) {
+	open := func(t *testing.T) store.Store {
+		t.Helper()
+		st, err := sqlitevec.Open(context.Background(), filepath.Join(t.TempDir(), "rest.db"), dims)
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		return st
+	}
+	mount := func(svc *service.Service) http.Handler {
+		r := chi.NewRouter()
+		rest.New(svc, rest.AuthConfig{
+			APIKey: apiKey, NamespaceHeader: nsHdr, DefaultNamespace: "default",
+		}).Mount(r)
+		return r
+	}
+
+	t.Run("invalid input is 400", func(t *testing.T) {
+		h := mount(service.New(open(t), embedtest.New(dims)))
+		for _, body := range []map[string]any{
+			{"content": ""},                   // missing content
+			{"content": "x", "tier": "bogus"}, // unknown tier
+		} {
+			rec := do(t, h, http.MethodPost, "/v1/memories", "alice", apiKey, body)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("remember %v: want 400, got %d (%s)", body, rec.Code, rec.Body)
+			}
+		}
+	})
+
+	t.Run("cross-namespace id conflict is 409", func(t *testing.T) {
+		h := mount(service.New(open(t), embedtest.New(dims)))
+		body := map[string]any{"content": "x", "id": "shared-id"}
+		if rec := do(t, h, http.MethodPost, "/v1/memories", "alice", apiKey, body); rec.Code != http.StatusCreated {
+			t.Fatalf("first remember: want 201, got %d (%s)", rec.Code, rec.Body)
+		}
+		rec := do(t, h, http.MethodPost, "/v1/memories", "bob", apiKey, body)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("cross-namespace id: want 409, got %d (%s)", rec.Code, rec.Body)
+		}
+	})
+
+	t.Run("missing embedder is 503", func(t *testing.T) {
+		h := mount(service.New(open(t), embed.Disabled{D: dims}))
+		rec := do(t, h, http.MethodPost, "/v1/search", "alice", apiKey, map[string]any{"query": "x"})
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("search without embedder: want 503, got %d (%s)", rec.Code, rec.Body)
+		}
+		rec = do(t, h, http.MethodPost, "/v1/memories", "alice", apiKey, map[string]any{"content": "x"})
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("remember without embedder: want 503, got %d (%s)", rec.Code, rec.Body)
+		}
+	})
+
+	t.Run("store failure is 500", func(t *testing.T) {
+		h := mount(service.New(failingStore{open(t)}, embedtest.New(dims)))
+		rec := do(t, h, http.MethodPost, "/v1/memories", "alice", apiKey, map[string]any{"content": "x"})
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("remember with broken store: want 500, got %d (%s)", rec.Code, rec.Body)
+		}
+	})
 }
