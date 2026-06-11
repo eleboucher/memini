@@ -4,7 +4,7 @@ info:
   description: A Kubernetes-ready memory service for AI agents.
   version: 0.1.0
   license:
-    name: Apache-2.0
+    name: AGPL-3.0-only
 servers:
   - url: http://localhost:8080
 security:
@@ -141,6 +141,23 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/SearchResponse" }
         "400": { $ref: "#/components/responses/Error" }
+  /v1/answer:
+    post:
+      summary: Recall memories and answer a question grounded on them (requires an LLM)
+      parameters: [{ $ref: "#/components/parameters/Namespace" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AnswerRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AnswerResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
 components:
   securitySchemes:
     bearerAuth:
@@ -195,6 +212,27 @@ components:
       type: object
       properties:
         results:
+          type: array
+          items:
+            type: object
+            properties:
+              memory: { $ref: "#/components/schemas/Memory" }
+              score: { type: number }
+    AnswerRequest:
+      type: object
+      required: [query]
+      properties:
+        query: { type: string }
+        tiers: { type: array, items: { $ref: "#/components/schemas/Tier" } }
+        limit:
+          type: integer
+          default: 10
+          description: Caps how many recalled memories ground the answer.
+    AnswerResponse:
+      type: object
+      properties:
+        answer: { type: string }
+        sources:
           type: array
           items:
             type: object
