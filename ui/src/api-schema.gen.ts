@@ -127,6 +127,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/namespaces/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete every memory in a namespace */
+        delete: operations["deleteNamespace"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/memories/{id}": {
         parameters: {
             query?: never;
@@ -256,6 +273,10 @@ export interface components {
         };
         NamespacesResponse: {
             namespaces: string[];
+        };
+        DeleteNamespaceResponse: {
+            /** @description Number of memories deleted */
+            deleted: number;
         };
         FsckReport: {
             expired_purged: number;
@@ -498,6 +519,30 @@ export interface operations {
                     "application/json": components["schemas"]["NamespacesResponse"];
                 };
             };
+            500: components["responses"]["Error"];
+        };
+    };
+    deleteNamespace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteNamespaceResponse"];
+                };
+            };
+            400: components["responses"]["Error"];
             500: components["responses"]["Error"];
         };
     };

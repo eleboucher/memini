@@ -56,6 +56,12 @@ type AnswerResponse struct {
 	Sources []ScoredMemory `json:"sources"`
 }
 
+// DeleteNamespaceResponse defines model for DeleteNamespaceResponse.
+type DeleteNamespaceResponse struct {
+	// Deleted Number of memories deleted
+	Deleted int `json:"deleted"`
+}
+
 // FsckReport defines model for FsckReport.
 type FsckReport struct {
 	DuplicateGroups  *[][]string `json:"duplicate_groups,omitempty"`
@@ -244,6 +250,9 @@ type ServerInterface interface {
 	// List the distinct namespaces holding memories
 	// (GET /v1/namespaces)
 	ListNamespaces(w http.ResponseWriter, r *http.Request)
+	// Delete every memory in a namespace
+	// (DELETE /v1/namespaces/{name})
+	DeleteNamespace(w http.ResponseWriter, r *http.Request, name string)
 	// Recall memories via hybrid (vector + keyword) search
 	// (POST /v1/search)
 	SearchMemories(w http.ResponseWriter, r *http.Request, params SearchMemoriesParams)
@@ -295,6 +304,12 @@ func (_ Unimplemented) GetMemory(w http.ResponseWriter, r *http.Request, id stri
 // List the distinct namespaces holding memories
 // (GET /v1/namespaces)
 func (_ Unimplemented) ListNamespaces(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Delete every memory in a namespace
+// (DELETE /v1/namespaces/{name})
+func (_ Unimplemented) DeleteNamespace(w http.ResponseWriter, r *http.Request, name string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -691,6 +706,38 @@ func (siw *ServerInterfaceWrapper) ListNamespaces(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// DeleteNamespace operation middleware
+func (siw *ServerInterfaceWrapper) DeleteNamespace(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteNamespace(w, r, name)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // SearchMemories operation middleware
 func (siw *ServerInterfaceWrapper) SearchMemories(w http.ResponseWriter, r *http.Request) {
 
@@ -918,6 +965,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/namespaces", wrapper.ListNamespaces)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/namespaces/{name}", wrapper.DeleteNamespace)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/search", wrapper.SearchMemories)

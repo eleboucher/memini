@@ -415,6 +415,59 @@ func (s *Store) ListNamespaces(ctx context.Context) ([]string, error) {
 	return out, rows.Err()
 }
 
+// DeleteNamespace removes every memory in a namespace, including vector and FTS
+// index entries. Returns the number of memories deleted.
+func (s *Store) DeleteNamespace(ctx context.Context, namespace string) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rowIDs, err := collectRowIDs(tx, ctx, namespace)
+	if err != nil {
+		return 0, err
+	}
+	if len(rowIDs) == 0 {
+		return 0, nil
+	}
+
+	for _, q := range []string{
+		`DELETE FROM vec_memories WHERE rowid IN (SELECT rowid FROM memories WHERE namespace=?)`,
+		`DELETE FROM fts_memories WHERE rowid IN (SELECT rowid FROM memories WHERE namespace=?)`,
+		`DELETE FROM memories WHERE namespace=?`,
+	} {
+		if _, err := tx.ExecContext(ctx, q, namespace); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	for range rowIDs {
+		s.metrics.Delete()
+	}
+	return int64(len(rowIDs)), nil
+}
+
+func collectRowIDs(tx *sql.Tx, ctx context.Context, namespace string) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT rowid FROM memories WHERE namespace=?`, namespace)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // Ping verifies the database is reachable.
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 

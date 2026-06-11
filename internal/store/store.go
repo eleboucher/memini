@@ -89,6 +89,10 @@ type Store interface {
 	// ListNamespaces returns the distinct namespaces that hold memories.
 	ListNamespaces(ctx context.Context) ([]string, error)
 
+	// DeleteNamespace removes every memory in a namespace (including embeddings
+	// and keyword-search index entries). Returns the number of memories deleted.
+	DeleteNamespace(ctx context.Context, namespace string) (int64, error)
+
 	// Ping verifies the backend is reachable, for readiness checks.
 	Ping(ctx context.Context) error
 

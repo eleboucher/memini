@@ -120,6 +120,24 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/NamespacesResponse" }
         "500": { $ref: "#/components/responses/Error" }
+  /v1/namespaces/{name}:
+    delete:
+      operationId: deleteNamespace
+      tags: [memory]
+      summary: Delete every memory in a namespace
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeleteNamespaceResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /v1/memories/{id}:
     parameters:
       - { $ref: "#/components/parameters/Namespace" }
@@ -291,6 +309,11 @@ components:
         namespaces:
           type: array
           items: { type: string }
+    DeleteNamespaceResponse:
+      type: object
+      required: [deleted]
+      properties:
+        deleted: { type: integer, description: Number of memories deleted }
     FsckReport:
       type: object
       required: [expired_purged, short_term_evicted, namespaces]

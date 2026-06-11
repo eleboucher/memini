@@ -18,6 +18,10 @@ type Metrics interface {
 	// ActiveByTier sets the current count of live (non-superseded,
 	// non-expired) memories per tier. Called periodically after sweeps/fsck.
 	ActiveByTier(tier string, n int)
+	// DedupTombstoned records the number of memories tombstoned by one
+	// dedup pass (the periodic vector-cluster job or a one-shot dedup call).
+	// Called once per pass with the pass total.
+	DedupTombstoned(n int)
 }
 
 type nopMetrics struct{}
@@ -27,6 +31,7 @@ func (nopMetrics) Delete()                  {}
 func (nopMetrics) SoftDelete()              {}
 func (nopMetrics) SweepExpired(string)      {}
 func (nopMetrics) ActiveByTier(string, int) {}
+func (nopMetrics) DedupTombstoned(int)      {}
 
 // NopMetrics is exported for tests.
 func NopMetrics() Metrics { return nopMetrics{} }

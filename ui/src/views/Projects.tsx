@@ -1,12 +1,12 @@
+import { useState } from 'preact/hooks'
 import { api } from '../api'
-import { namespace, route, refreshNonce } from '../store'
+import { namespace, route, refreshNonce, refresh } from '../store'
 import { useAsync } from '../hooks'
 import { TIERS, type Stats } from '../types'
 import { tierColor, relTime, num } from '../util'
 import { Loading, ErrorBanner, Empty } from '../components/States'
+import { IconTrash } from '../icons'
 
-// Projects is the landing view: every namespace holding memories, with a count
-// and tier mini-bar, so you see the whole picture before drilling into one.
 export function Projects() {
   const { data, error, loading } = useAsync(async () => {
     const names = await api.namespaces()
@@ -31,19 +31,61 @@ export function Projects() {
       ) : (
         <div class="project-grid stagger">
           {projects.map((p) => (
-            <button class="panel project-card" key={p.name} onClick={() => open(p.name)}>
-              <div class="project-name">{p.name}</div>
-              <div class="project-count">
-                <span class="v">{num(p.stats?.total ?? 0)}</span> memories
-              </div>
-              <TierBar stats={p.stats} />
-              <div class="project-foot">
-                {p.stats?.last_write_at ? `updated ${relTime(p.stats.last_write_at)}` : '—'}
-              </div>
-            </button>
+            <ProjectCard key={p.name} name={p.name} stats={p.stats} onOpen={() => open(p.name)} />
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+function ProjectCard({ name, stats, onOpen }: { name: string; stats: Stats | null; onOpen: () => void }) {
+  const [armed, setArmed] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  const del = async (e: Event) => {
+    e.stopPropagation()
+    if (!armed) {
+      setArmed(true)
+      setTimeout(() => setArmed(false), 3000)
+      return
+    }
+    setDeleting(true)
+    try {
+      await api.deleteNamespace(name)
+      if (namespace.value === name) namespace.value = ''
+      refresh()
+    } catch {
+      setDeleting(false)
+      setArmed(false)
+    }
+  }
+
+  return (
+    <div class="panel project-card" role="button" tabIndex={0} onClick={onOpen} onKeyDown={(e) => { if (e.key === 'Enter') onOpen() }}>
+      <div class="project-head">
+        <div class="project-name">{name}</div>
+        <button
+          class={`icon-btn project-del-btn ${armed ? 'danger-on' : ''}`}
+          aria-label={armed ? 'Confirm delete' : `Delete ${name}`}
+          onClick={del}
+          disabled={deleting}
+        >
+          <IconTrash />
+        </button>
+      </div>
+      {armed && (
+        <div class="banner err" role="status">
+          Click trash again to delete all memories in "{name}".
+        </div>
+      )}
+      <div class="project-count">
+        <span class="v">{num(stats?.total ?? 0)}</span> memories
+      </div>
+      <TierBar stats={stats} />
+      <div class="project-foot">
+        {stats?.last_write_at ? `updated ${relTime(stats.last_write_at)}` : '—'}
+      </div>
     </div>
   )
 }

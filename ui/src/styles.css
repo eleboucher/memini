@@ -630,6 +630,34 @@ label.field .desc {
   border-color: var(--line-strong);
   transform: translateY(-2px);
 }
+.project-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.project-del-btn {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition:
+    opacity 0.15s var(--ease),
+    color 0.15s,
+    border-color 0.15s,
+    background 0.15s;
+}
+.project-card:hover .project-del-btn,
+.project-del-btn.danger-on {
+  opacity: 1;
+}
+.project-del-btn svg {
+  width: 14px;
+  height: 14px;
+}
+.project-card .banner {
+  margin-bottom: 0;
+}
 .project-name {
   font-family: var(--font-display);
   font-size: 19px;

@@ -195,6 +195,9 @@ export const api = {
 
   namespaces: listNamespaces,
 
+  deleteNamespace: (name: string) =>
+    req<{ deleted: number }>('DELETE', `/v1/namespaces/${encodeURIComponent(name)}`),
+
   get: (id: string, ns?: string) => req<Memory>('GET', `/v1/memories/${encodeURIComponent(id)}`, undefined, ns),
 
   // remove must scope to the memory's own namespace: in "All projects" mode the

@@ -321,6 +321,20 @@ func (h *Server) ListNamespaces(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusOK, NamespacesResponse{Namespaces: ns})
 }
 
+// DeleteNamespace implements DELETE /v1/namespaces/{name}.
+func (h *Server) DeleteNamespace(w http.ResponseWriter, r *http.Request, name string) {
+	if err := httputil.ValidateNamespace(name); err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid namespace: "+err.Error())
+		return
+	}
+	n, err := h.svc.DeleteNamespace(r.Context(), name)
+	if err != nil {
+		httputil.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httputil.JSON(w, http.StatusOK, DeleteNamespaceResponse{Deleted: int(n)})
+}
+
 // apiMemory maps the domain memory onto the spec model. Optional fields are
 // emitted only when set, preserving the wire format clients already rely on.
 func apiMemory(m *memory.Memory) Memory {

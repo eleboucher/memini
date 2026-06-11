@@ -348,6 +348,20 @@ func (s *Store) ListNamespaces(ctx context.Context) ([]string, error) {
 	return out, rows.Err()
 }
 
+// DeleteNamespace removes every memory in a namespace. Returns the number of
+// memories deleted.
+func (s *Store) DeleteNamespace(ctx context.Context, namespace string) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM memories WHERE namespace=$1`, namespace)
+	if err != nil {
+		return 0, err
+	}
+	n := tag.RowsAffected()
+	for range n {
+		s.metrics.Delete()
+	}
+	return n, nil
+}
+
 // Ping verifies the database is reachable.
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 

@@ -87,3 +87,17 @@ func (s *Service) Stats(ctx context.Context, namespace string) (Stats, error) {
 func (s *Service) Namespaces(ctx context.Context) ([]string, error) {
 	return s.store.ListNamespaces(ctx)
 }
+
+// DeleteNamespace removes every memory in a namespace. Returns the number of
+// memories deleted.
+func (s *Service) DeleteNamespace(ctx context.Context, namespace string) (int64, error) {
+	start := time.Now()
+	defer func() { s.metrics.OpDuration("delete_namespace", time.Since(start)) }()
+	n, err := s.store.DeleteNamespace(ctx, namespace)
+	if err != nil {
+		s.metrics.ForgetResult("error")
+		return 0, err
+	}
+	s.metrics.ForgetResult("ok")
+	return n, nil
+}
