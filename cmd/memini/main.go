@@ -152,6 +152,10 @@ func run() error {
 	workers.Go(func() { svc.StartConsolidator(workerCtx) })
 	// Promoter (no-op unless a distiller + positive interval).
 	workers.Go(func() { svc.RunPromoter(workerCtx, cfg.PromoteInterval) })
+	// Decay sweeper purges expired memories. Also runs in stdio mode: expired
+	// memories are filtered at read time, but long-lived stdio sessions would
+	// otherwise never reclaim them.
+	workers.Go(func() { maintenance.NewSweeper(st, log, cfg.SweepInterval, cfg.ShortTermCap).Run(workerCtx) })
 
 	// `memini mcp` serves MCP tools over stdio.
 	if len(os.Args) > 1 && os.Args[1] == "mcp" {
@@ -160,9 +164,6 @@ func run() error {
 		joinWorkers()
 		return err
 	}
-
-	// Decay sweeper purges expired memories.
-	workers.Go(func() { maintenance.NewSweeper(st, log, cfg.SweepInterval, cfg.ShortTermCap).Run(workerCtx) })
 
 	defer joinWorkers()
 
