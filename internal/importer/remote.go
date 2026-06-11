@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/eleboucher/memini/internal/memory"
@@ -17,6 +18,8 @@ import (
 
 // errUnauthorized aborts a remote import: a 401/403 will recur for every record.
 var errUnauthorized = errors.New("import: remote rejected credentials (401/403)")
+
+const remoteConcurrency = 8
 
 // RemoteClient writes records to a running memini via its REST API (POST
 // /v1/memories).
@@ -54,19 +57,51 @@ type remoteRequest struct {
 }
 
 func (c *RemoteClient) write(ctx context.Context, recs []Record, opts Options) (int, []string, error) {
+	type result struct {
+		idx int
+		err error
+	}
+
+	results := make(chan result, len(recs))
+	jobs := make(chan int, len(recs))
+
+	var wg sync.WaitGroup
+	for range remoteConcurrency {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				err := c.put(ctx, recs[i], opts)
+				results <- result{i, err}
+			}
+		}()
+	}
+
+	for i := range recs {
+		jobs <- i
+	}
+	close(jobs)
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
 	var imported int
 	var errs []string
-	for _, r := range recs {
-		if err := c.put(ctx, r, opts); err != nil {
-			if errors.Is(err, errUnauthorized) {
-				return imported, errs, err
+	var authErr error
+	for r := range results {
+		if r.err != nil {
+			if errors.Is(r.err, errUnauthorized) {
+				authErr = r.err
+				continue
 			}
-			errs = append(errs, fmt.Sprintf("%s: %v", r.ID, err))
+			errs = append(errs, fmt.Sprintf("%s: %v", recs[r.idx].ID, r.err))
 			continue
 		}
 		imported++
 	}
-	return imported, errs, nil
+	return imported, errs, authErr
 }
 
 func (c *RemoteClient) put(ctx context.Context, r Record, opts Options) error {

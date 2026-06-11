@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/eleboucher/memini/internal/memory"
@@ -161,6 +163,12 @@ func parseClaudeCodeReader(r io.Reader, fallbackID string) ([]Record, error) {
 // project dir, or ~/.claude/projects) for *.jsonl files. Per-file parse errors
 // become warnings rather than aborting the whole walk.
 func LoadClaudeCode(path string) (recs []Record, warns []string, err error) {
+	return LoadClaudeCodeWithProgress(path, nil)
+}
+
+// LoadClaudeCodeWithProgress is like LoadClaudeCode but accepts an optional
+// progress callback that fires after each file is parsed.
+func LoadClaudeCodeWithProgress(path string, onProgress func(done, total int)) (recs []Record, warns []string, err error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, nil, err
@@ -168,6 +176,8 @@ func LoadClaudeCode(path string) (recs []Record, warns []string, err error) {
 	if !info.IsDir() {
 		return loadClaudeCodeFile(path)
 	}
+
+	var files []string
 	err = filepath.WalkDir(path, func(p string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			warns = append(warns, fmt.Sprintf("%s: %v", p, walkErr))
@@ -176,16 +186,69 @@ func LoadClaudeCode(path string) (recs []Record, warns []string, err error) {
 		if d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
 			return nil
 		}
-		fileRecs, fileWarns, ferr := loadClaudeCodeFile(p)
-		warns = append(warns, fileWarns...)
-		if ferr != nil {
-			warns = append(warns, fmt.Sprintf("%s: %v", p, ferr))
-			return nil
+		files = append(files, p)
+		if onProgress != nil {
+			onProgress(0, len(files))
 		}
-		recs = append(recs, fileRecs...)
 		return nil
 	})
-	return recs, warns, err
+	if err != nil {
+		return nil, warns, err
+	}
+
+	if len(files) == 0 {
+		return nil, warns, nil
+	}
+
+	type result struct {
+		recs  []Record
+		warns []string
+	}
+
+	workers := runtime.NumCPU()
+	if workers > len(files) {
+		workers = len(files)
+	}
+
+	jobs := make(chan string, len(files))
+	results := make(chan result, len(files))
+
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for p := range jobs {
+				fileRecs, fileWarns, ferr := loadClaudeCodeFile(p)
+				if ferr != nil {
+					fileWarns = append(fileWarns, fmt.Sprintf("%s: %v", p, ferr))
+				}
+				results <- result{fileRecs, fileWarns}
+			}
+		}()
+	}
+
+	for _, f := range files {
+		jobs <- f
+	}
+	close(jobs)
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	var done int
+	for r := range results {
+		done++
+		if onProgress != nil {
+			onProgress(done, len(files))
+		}
+		recs = append(recs, r.recs...)
+		warns = append(warns, r.warns...)
+	}
+
+	return recs, warns, nil
 }
 
 // loadClaudeCodeFile parses one transcript file, using its basename (minus

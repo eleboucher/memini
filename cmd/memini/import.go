@@ -66,14 +66,27 @@ func runImport(cmd *cobra.Command, args []string) error {
 	if len(args) > 0 {
 		path = args[0]
 	}
+	if path == "" && importer.Source(importSource) == importer.SourceClaudeCode {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			path = home + "/.claude/projects"
+		}
+	}
 
 	w := cmd.ErrOrStderr()
 	isTerm := isTerminal(w)
 
+	var loadProgress func(done, total int)
 	if isTerm {
-		fmt.Fprint(w, "loading records...") //nolint:errcheck
+		loadProgress = func(done, total int) {
+			if done == 0 {
+				fmt.Fprintf(w, "\r\033[Kscanning... found %d files", total) //nolint:errcheck
+			} else {
+				fmt.Fprintf(w, "\r\033[Kloading records... %d/%d files", done, total) //nolint:errcheck
+			}
+		}
 	}
-	recs, err := loadRecords(importer.Source(importSource), path)
+	recs, err := loadRecords(importer.Source(importSource), path, w, loadProgress)
 	if err != nil {
 		return err
 	}
@@ -137,12 +150,12 @@ func readInput(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-func loadRecords(src importer.Source, path string) ([]importer.Record, error) {
+func loadRecords(src importer.Source, path string, w io.Writer, onProgress func(done, total int)) ([]importer.Record, error) {
 	if src == importer.SourceClaudeCode && path != "" && path != "-" {
 		if info, err := os.Stat(path); err == nil && info.IsDir() {
-			recs, warns, err := importer.LoadClaudeCode(path)
-			for _, w := range warns {
-				fmt.Fprintln(os.Stderr, "  warning:", w)
+			recs, warns, err := importer.LoadClaudeCodeWithProgress(path, onProgress)
+			for _, warn := range warns {
+				fmt.Fprintln(w, "  warning:", warn) //nolint:errcheck
 			}
 			return recs, err
 		}

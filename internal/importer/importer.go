@@ -71,7 +71,7 @@ func NewLocal(st store.Store, e embed.Embedder) *Importer {
 
 // NewRemote builds an Importer that POSTs records to a remote memini server.
 func NewRemote(c *RemoteClient) *Importer {
-	return &Importer{write: c.write, batchSize: 1}
+	return &Importer{write: c.write, batchSize: 32}
 }
 
 // Import writes records, skipping empty-content ones and continuing past
