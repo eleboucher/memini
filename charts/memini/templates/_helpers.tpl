@@ -98,6 +98,23 @@ app.kubernetes.io/instance: {{ .Release.Name }}
       key: {{ .Values.llm.apiKeySecret.key }}
 {{- end }}
 {{- end }}
+{{- if and .Values.rerank.mode (ne .Values.rerank.mode "off") }}
+- name: MEMINI_RERANK
+  value: {{ .Values.rerank.mode | quote }}
+{{- with .Values.rerank.model }}
+- name: MEMINI_RERANK_MODEL
+  value: {{ . | quote }}
+{{- end }}
+- name: MEMINI_RERANK_TOP_N
+  value: {{ .Values.rerank.topN | quote }}
+{{- if .Values.rerank.apiKeySecret.name }}
+- name: MEMINI_RERANK_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.rerank.apiKeySecret.name }}
+      key: {{ .Values.rerank.apiKeySecret.key }}
+{{- end }}
+{{- end }}
 {{- if include "memini.authEnabled" . }}
 - name: MEMINI_API_KEY
   valueFrom:
@@ -107,6 +124,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 - name: MEMINI_UI_ENABLED
   value: {{ .Values.ui.enabled | quote }}
+{{- with .Values.extraEnv }}
+{{ toYaml . }}
+{{- end }}
 {{- end -}}
 
 {{/* Shared container spec */}}

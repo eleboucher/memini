@@ -51,6 +51,28 @@ llm:
     name: ""
     key: api-key
 
+# -- Opt-in recall reranking (MEMINI_RERANK); leave mode empty to disable
+rerank:
+  # -- "" or "off" (disabled), "llm" (reorder with the chat LLM), or a
+  # cross-encoder /rerank base URL (e.g. http://reranker:8080/v1, served by
+  # Infinity, vLLM, TEI, or llama-server --rerank)
+  mode: ""
+  # -- Cross-encoder model name (when mode is a URL)
+  model: ""
+  # -- How many composite-ranked candidates the reranker sees
+  topN: 20
+  # -- Optional existing secret holding the cross-encoder endpoint API key
+  # (when mode is a URL)
+  apiKeySecret:
+    name: ""
+    key: api-key
+
+# -- Extra environment variables appended verbatim to the container, for
+# MEMINI_* settings that don't have dedicated chart values
+extraEnv: []
+#  - name: MEMINI_PROMOTE_INTERVAL
+#    value: 12h
+
 # -- Optional bearer-token auth for the API
 # -- Bearer-token auth (protects both /v1 and /mcp). REQUIRED before exposing
 # memini off-cluster (see httpRoute). Either reference an existing secret, or set

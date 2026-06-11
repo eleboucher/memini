@@ -35,6 +35,7 @@ helm install memini ./charts/memini \
 | embeddings | object | `{"apiKeySecret":{"key":"api-key","name":""},"baseURL":"","dims":1536,"model":"text-embedding-3-small"}` | External OpenAI-compatible embeddings endpoint (required for vector search) |
 | embeddings.apiKeySecret | object | `{"key":"api-key","name":""}` | Optional existing secret holding the embeddings API key |
 | embeddings.dims | int | `1536` | Embedding dimensionality; MUST match the deployed model |
+| extraEnv | list | `[]` | Extra environment variables appended verbatim to the container, for MEMINI_* settings that don't have dedicated chart values |
 | fsck | object | `{"cronjob":{"enabled":false,"image":"curlimages/curl:8.20.0","schedule":"0 * * * *"}}` | Periodic fsck CronJob (the in-process sweeper already handles decay) |
 | fullnameOverride | string | `""` |  |
 | grafanaDashboards | object | `{"enabled":false,"folder":"memini"}` | Bundled Grafana dashboards, rendered as ConfigMaps for the grafana-operator. Point your Grafana CR's `dashboardsConfigMaps` selector at this release's namespace; the operator will pick up any ConfigMap with the `grafana_dashboard: "1"` label. |
@@ -57,6 +58,11 @@ helm install memini ./charts/memini \
 | postgres | object | `{"dsnSecret":{"key":"dsn","name":""}}` | postgres backend connection |
 | postgres.dsnSecret | object | `{"key":"dsn","name":""}` | Existing secret holding the libpq DSN (required when backend=postgres) |
 | replicaCount | int | `1` | Replica count (postgres only; sqlite is pinned to 1) |
+| rerank | object | `{"apiKeySecret":{"key":"api-key","name":""},"mode":"","model":"","topN":20}` | Opt-in recall reranking (MEMINI_RERANK); leave mode empty to disable |
+| rerank.apiKeySecret | object | `{"key":"api-key","name":""}` | Optional existing secret holding the cross-encoder endpoint API key (when mode is a URL) |
+| rerank.mode | string | `""` | "" or "off" (disabled), "llm" (reorder with the chat LLM), or a cross-encoder /rerank base URL (e.g. http://reranker:8080/v1, served by Infinity, vLLM, TEI, or llama-server --rerank) |
+| rerank.model | string | `""` | Cross-encoder model name (when mode is a URL) |
+| rerank.topN | int | `20` | How many composite-ranked candidates the reranker sees |
 | resources | object | `{}` |  |
 | securityContext.allowPrivilegeEscalation | bool | `false` |  |
 | securityContext.capabilities.drop[0] | string | `"ALL"` |  |
@@ -67,6 +73,8 @@ helm install memini ./charts/memini \
 | serviceAccount.name | string | `""` | ServiceAccount name; generated when empty |
 | sqlite | object | `{"persistence":{"accessModes":["ReadWriteOnce"],"enabled":true,"size":"5Gi","storageClass":""}}` | sqlite backend persistence (StatefulSet volumeClaimTemplate) |
 | tolerations | list | `[]` |  |
+| ui | object | `{"enabled":true}` | Embedded admin UI served at / |
+| ui.enabled | bool | `true` | Mount the admin SPA at /; set to false for a headless API/MCP-only service |
 
 ## Observability
 
