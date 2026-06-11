@@ -132,7 +132,11 @@ func run() error {
 					continue
 				}
 				mu.Lock()
-				_ = json.NewEncoder(ckpt).Encode(result{Index: i, Category: q.Category, Correct: correct})
+				if err := json.NewEncoder(ckpt).Encode(result{Index: i, Category: q.Category, Correct: correct}); err != nil {
+					// A checkpoint that can't be trusted is worse than none:
+					// a torn line breaks resume and silently re-bills questions.
+					fmt.Fprintf(os.Stderr, "q%d: checkpoint write failed: %v\n", i, err)
+				}
 				processed++
 				if processed%50 == 0 {
 					fmt.Fprintf(os.Stderr, "  ...%d processed\n", processed)
