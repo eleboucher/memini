@@ -146,18 +146,10 @@ tool).
 
 ## Reranking — which recall config to use
 
-`MEMINI_RERANK` adds an optional read-side rerank over the hybrid candidates.
-Measured by [`bench/`](bench/README.md) on all-MiniLM-L6-v2 (cross-encoder =
-Qwen3-Reranker-0.6B, LLM = Qwen3.5-9B), `recall_any@5 / @10 / MRR` with the p50
-latency each adds:
-
-| Config             | `MEMINI_RERANK`   | dep        | LongMemEval (session)  | LoCoMo turn-level      | p50      |
-| ------------------ | ----------------- | ---------- | ---------------------- | ---------------------- | -------- |
-| hybrid (default)   | `off`             | embedder   | 98.4 / 99.2 / 93.0     | 59.7 / 69.9 / 42.4     | ~5 ms    |
-| + cross-encoder    | `<url>`           | + reranker | 98.4 / 99.2 / 93.1     | **70.9 / 75.0 / 59.8** | ~20–230 ms |
-| + LLM rerank       | `llm`             | + chat LLM | 98.4 / 99.2 / 93.0     | **74.4 / 76.5 / 67.4** | ~350–420 ms |
-
-Two rules of thumb:
+`MEMINI_RERANK` adds an optional read-side rerank over the hybrid candidates
+(`off`, a cross-encoder `/rerank` URL served by Infinity / vLLM / `llama-server
+--rerank`, or `llm`). See the [full benchmark table](#benchmark) for measured
+numbers across every config and dataset. Two rules of thumb:
 
 - **Reranking only helps where base recall has headroom.** On session-level sets
   hybrid is already at ~98–99% — reranking is a no-op. On turn-level LoCoMo
@@ -219,20 +211,39 @@ Reads stdin when the path is `-`.
 mise run bench   # offline retrieval benchmark (hybrid vs vector vs keyword)
 ```
 
-On the full **500-question LongMemEval-S** (`recall_any@K`), memini hybrid beats
-agentmemory on the **same embedding model** (all-MiniLM-L6-v2, 384-d) — a true
-apples-to-apples head-to-head — and goes higher with a premium model:
+Full results from the committed [`bench/results/`](bench/results/) run, all on
+the **same all-MiniLM-L6-v2** (384-d) endpoint — the model agentmemory benchmarks
+with. Cells are `recall_any@5 / @10 / MRR` (%); `p50` is in-process recall latency
+(rerank rows show the cost they add on top):
+
+| Strategy                                  | LongMemEval · session  | LoCoMo · turn-level    | LoCoMo · session-level | p50         |
+| ----------------------------------------- | ---------------------- | ---------------------- | ---------------------- | ----------- |
+| vector                                    | 92.6 / 95.4 / 80.7     | 41.3 / 51.8 / 28.1     | 64.1 / 79.8 / 45.2     | <1 ms       |
+| keyword (Porter BM25)                     | 97.6 / 99.0 / 92.2     | 58.7 / 67.1 / 44.8     | 92.6 / 96.8 / 79.4     | ~3 ms       |
+| **hybrid** (default)                      | **98.4 / 99.2 / 93.0** | **59.7 / 69.9 / 42.4** | **90.9 / 96.6 / 74.3** | ~5 ms       |
+| + cross-encoder (`MEMINI_RERANK=<url>`)   | 98.4 / 99.2 / 93.1     | **70.9 / 75.0 / 59.8** | 90.9 / 96.6 / 74.3     | +20–230 ms  |
+| + LLM rerank (`MEMINI_RERANK=llm`)        | 98.4 / 99.2 / 93.0     | **74.4 / 76.5 / 67.4** | —                      | +350–420 ms |
+
+Questions: LongMemEval 500, LoCoMo turn 1,982, LoCoMo session 1,981 (rerank =
+Qwen3-Reranker-0.6B cross-encoder, Qwen3.5-9B LLM). Hybrid never trails either
+single leg on the saturated session sets; on turn-level LoCoMo (gold = exact
+evidence turns) base recall has headroom, so reranking pays off big —
+cross-encoder **+11pp R@5 / +17pp MRR**, LLM **+15pp / +25pp** — while being a
+no-op once recall is already at ceiling.
+
+On the **same model, dataset, and metric**, memini hybrid beats agentmemory's
+published LongMemEval-S numbers, and goes higher with a premium embedder:
 
 | System                    | Embedding          |       R@5 |      R@10 |
 | ------------------------- | ------------------ | --------: | --------: |
-| memini — hybrid (RRF)     | all-MiniLM-L6-v2   |     96.8% |     98.6% |
-| memini — hybrid (RRF)     | Qwen3-Embedding-8B | **97.6%** | **98.4%** |
+| memini — hybrid           | all-MiniLM-L6-v2   | **98.4%** | **99.2%** |
+| memini — hybrid           | Qwen3-Embedding-8B | **98.8%** | **99.6%** |
 | agentmemory — BM25+Vector | all-MiniLM-L6-v2   |     95.2% |     98.6% |
 | agentmemory — BM25-only   | —                  |     86.2% |     94.6% |
 
-Same model, dataset, and metric; memini's Porter-stemming keyword leg is +11pp
-over their BM25-only. Full per-leg/per-category tables, methodology, caveats, and
-the LoCoMo QA comparison (vs mem0/Letta) are in [`bench/`](bench/README.md).
+memini's Porter-stemming keyword leg is +11pp over their BM25-only. Full
+per-leg/per-category tables, parameter sweeps, methodology, caveats, and the
+LoCoMo QA comparison (vs mem0/Letta) are in [`bench/`](bench/README.md).
 
 ## License
 
