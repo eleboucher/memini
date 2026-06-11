@@ -19,14 +19,15 @@ type consolidateMetrics struct {
 	queueDepth prometheus.Gauge
 
 	// service-level (added with the dashboards work)
-	rememberResults *prometheus.CounterVec
-	recallResults   *prometheus.CounterVec
-	forgetResults   *prometheus.CounterVec
-	promoteResults  *prometheus.CounterVec
-	fsckResults     *prometheus.CounterVec
-	answerResults   *prometheus.CounterVec
-	rerankResults   *prometheus.CounterVec
-	opDuration      *prometheus.HistogramVec
+	rememberResults  *prometheus.CounterVec
+	recallResults    *prometheus.CounterVec
+	forgetResults    *prometheus.CounterVec
+	promoteResults   *prometheus.CounterVec
+	fsckResults      *prometheus.CounterVec
+	answerResults    *prometheus.CounterVec
+	rerankResults    *prometheus.CounterVec
+	reinforceResults *prometheus.CounterVec
+	opDuration       *prometheus.HistogramVec
 
 	// store-level
 	storeUpsert     *prometheus.CounterVec
@@ -96,6 +97,10 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 			Name: "memini_rerank_results_total",
 			Help: "Recall rerank outcomes by backend (llm, cross_encoder) and result (ok, fallback).",
 		}, []string{labelBackend, labelResult}),
+		reinforceResults: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "memini_reinforce_results_total",
+			Help: "Best-effort recall reinforcement writes (ok, error).",
+		}, []string{labelResult}),
 		opDuration: factory.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "memini_op_duration_seconds",
 			Help:    "End-to-end latency of public service operations.",
@@ -183,6 +188,10 @@ func (m *consolidateMetrics) AnswerResult(result string) {
 
 func (m *consolidateMetrics) RerankResult(backend, result string) {
 	m.rerankResults.WithLabelValues(backend, result).Inc()
+}
+
+func (m *consolidateMetrics) ReinforceResult(result string) {
+	m.reinforceResults.WithLabelValues(result).Inc()
 }
 
 // store.Metrics methods.

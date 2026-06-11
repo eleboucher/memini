@@ -44,6 +44,7 @@ func (m *countingMetrics) FsckResult(string)                   {}
 func (m *countingMetrics) OpDuration(string, time.Duration)    {}
 func (m *countingMetrics) AnswerResult(string)                 {}
 func (m *countingMetrics) RerankResult(string, string)         {}
+func (m *countingMetrics) ReinforceResult(string)              {}
 
 func newAsyncSvc(t *testing.T, fc llm.Consolidator, minScore float64, mx Metrics) (*Service, store.Store) {
 	t.Helper()
