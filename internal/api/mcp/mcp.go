@@ -6,6 +6,7 @@ package mcp
 import (
 	"context"
 	"crypto/subtle"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -53,25 +54,31 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 
 // HTTPHandler returns an http.Handler serving MCP over Streamable HTTP. The
 // tenant namespace is taken from nsHeader when present, else defaultNS; tool
-// calls may still override it per-call. When apiKey is non-empty, requests must
-// present it as a bearer token — required for any remote (non-localhost)
-// deployment.
+// calls may still override it per-call. An invalid header value is rejected
+// with 400 (matching the REST API) rather than silently falling back to the
+// default tenant. When apiKey is non-empty, requests must present it as a
+// bearer token — required for any remote (non-localhost) deployment.
 func HTTPHandler(svc *service.Service, nsHeader, defaultNS, apiKey string) http.Handler {
 	h := mcpsdk.NewStreamableHTTPHandler(func(r *http.Request) *mcpsdk.Server {
 		ns := defaultNS
-		if v := strings.TrimSpace(r.Header.Get(nsHeader)); v != "" && httputil.ValidateNamespace(v) == nil {
+		if v := strings.TrimSpace(r.Header.Get(nsHeader)); v != "" {
 			ns = v
 		}
 		return NewServer(svc, ns)
 	}, nil)
-	if apiKey == "" {
-		return h
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(token), []byte(apiKey)) != 1 {
-			http.Error(w, `{"error":"missing or invalid bearer token"}`, http.StatusUnauthorized)
-			return
+		if apiKey != "" {
+			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if subtle.ConstantTimeCompare([]byte(token), []byte(apiKey)) != 1 {
+				http.Error(w, `{"error":"missing or invalid bearer token"}`, http.StatusUnauthorized)
+				return
+			}
+		}
+		if v := strings.TrimSpace(r.Header.Get(nsHeader)); v != "" {
+			if err := httputil.ValidateNamespace(v); err != nil {
+				http.Error(w, `{"error":"invalid namespace header"}`, http.StatusBadRequest)
+				return
+			}
 		}
 		h.ServeHTTP(w, r)
 	})
@@ -89,12 +96,18 @@ type tools struct {
 	defaultNS string
 }
 
-func (t *tools) ns(arg string) string {
+// ns resolves a tool call's namespace argument: empty falls back to the server
+// default, an invalid value is an error (never silently rerouted to the
+// default tenant, which would mix data across namespaces).
+func (t *tools) ns(arg string) (string, error) {
 	arg = strings.TrimSpace(arg)
-	if arg != "" && httputil.ValidateNamespace(arg) == nil {
-		return arg
+	if arg == "" {
+		return t.defaultNS, nil
 	}
-	return t.defaultNS
+	if err := httputil.ValidateNamespace(arg); err != nil {
+		return "", fmt.Errorf("invalid namespace: %w", err)
+	}
+	return arg, nil
 }
 
 type rememberArgs struct {
@@ -111,8 +124,12 @@ type rememberResult struct {
 }
 
 func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in rememberArgs) (*mcpsdk.CallToolResult, rememberResult, error) {
+	ns, err := t.ns(in.Namespace)
+	if err != nil {
+		return nil, rememberResult{}, err
+	}
 	m, err := t.svc.Remember(ctx, service.RememberInput{
-		Namespace:  t.ns(in.Namespace),
+		Namespace:  ns,
 		Content:    in.Content,
 		Tier:       memory.Tier(in.Tier),
 		Tags:       in.Tags,
@@ -142,8 +159,12 @@ type recallResult struct {
 }
 
 func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recallArgs) (*mcpsdk.CallToolResult, recallResult, error) {
+	ns, err := t.ns(in.Namespace)
+	if err != nil {
+		return nil, recallResult{}, err
+	}
 	res, err := t.svc.Recall(ctx, service.RecallInput{
-		Namespace: t.ns(in.Namespace),
+		Namespace: ns,
 		Query:     in.Query,
 		Limit:     in.Limit,
 	})
@@ -171,8 +192,12 @@ type answerResult struct {
 }
 
 func (t *tools) answer(ctx context.Context, _ *mcpsdk.CallToolRequest, in answerArgs) (*mcpsdk.CallToolResult, answerResult, error) {
+	ns, err := t.ns(in.Namespace)
+	if err != nil {
+		return nil, answerResult{}, err
+	}
 	res, err := t.svc.Answer(ctx, service.AnswerInput{
-		Namespace: t.ns(in.Namespace),
+		Namespace: ns,
 		Query:     in.Query,
 		Limit:     in.Limit,
 	})
@@ -194,7 +219,11 @@ type idArgs struct {
 }
 
 func (t *tools) get(ctx context.Context, _ *mcpsdk.CallToolRequest, in idArgs) (*mcpsdk.CallToolResult, recallItem, error) {
-	m, err := t.svc.Get(ctx, t.ns(in.Namespace), in.ID)
+	ns, err := t.ns(in.Namespace)
+	if err != nil {
+		return nil, recallItem{}, err
+	}
+	m, err := t.svc.Get(ctx, ns, in.ID)
 	if err != nil {
 		return nil, recallItem{}, err
 	}
@@ -206,7 +235,11 @@ type forgetResult struct {
 }
 
 func (t *tools) forget(ctx context.Context, _ *mcpsdk.CallToolRequest, in idArgs) (*mcpsdk.CallToolResult, forgetResult, error) {
-	if err := t.svc.Forget(ctx, t.ns(in.Namespace), in.ID); err != nil {
+	ns, err := t.ns(in.Namespace)
+	if err != nil {
+		return nil, forgetResult{}, err
+	}
+	if err := t.svc.Forget(ctx, ns, in.ID); err != nil {
 		return nil, forgetResult{}, err
 	}
 	return nil, forgetResult{Deleted: true}, nil
