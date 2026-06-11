@@ -31,6 +31,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("Reinforce", func(t *testing.T) { testReinforce(t, st, dims) })
 	t.Run("DeleteIfExpiredBefore", func(t *testing.T) { testDeleteIfExpiredBefore(t, st, dims) })
 	t.Run("KeywordSearchHostileQueries", func(t *testing.T) { testKeywordHostileQueries(t, st, dims) })
+	t.Run("FilterNow", func(t *testing.T) { testFilterNow(t, st, dims) })
 	t.Run("ConcurrentAccess", func(t *testing.T) { testConcurrentAccess(t, st, dims) })
 }
 
@@ -399,6 +400,63 @@ func testKeywordHostileQueries(t *testing.T, st store.Store, dims int) {
 			t.Errorf("KeywordSearch(%q) errored: %v", q, err)
 		}
 	}
+
+	// A sane query must still match — guards against a sanitizer that starts
+	// neutralizing everything into zero results.
+	res, err := st.KeywordSearch(ctx, ns, "cats", store.Filter{}, 5)
+	if err != nil {
+		t.Fatalf("KeywordSearch(cats): %v", err)
+	}
+	if !slices.Contains(idsOf(res), id(ns, "a")) {
+		t.Fatalf("plain query no longer matches after hostile queries: %v", idsOf(res))
+	}
+}
+
+// testFilterNow pins that expiry filtering honors Filter.Now (the caller's
+// injected clock) instead of the wall clock, and that the zero value falls
+// back to time.Now(). The expiry clause is duplicated per backend, so this
+// runs through the conformance suite to keep them in lockstep.
+func testFilterNow(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	const ns = "filter-now"
+	base := time.Now().UTC().Truncate(time.Millisecond)
+	expiry := base.Add(time.Hour)
+
+	m := mem(ns, "ttl", "fact with a one hour ttl", vec(dims, 1))
+	m.ExpiresAt = &expiry
+	mustUpsert(t, st, m)
+
+	list := func(f store.Filter) []*memory.Memory {
+		t.Helper()
+		mems, err := st.List(ctx, ns, f, 0)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		return mems
+	}
+
+	if got := list(store.Filter{Now: base}); len(got) != 1 {
+		t.Fatalf("before expiry (Now=base): want 1 memory, got %d", len(got))
+	}
+	if got := list(store.Filter{Now: base.Add(2 * time.Hour)}); len(got) != 0 {
+		t.Fatalf("after expiry (Now=base+2h): want 0 memories, got %d", len(got))
+	}
+	if got := list(store.Filter{Now: base.Add(2 * time.Hour), IncludeExpired: true}); len(got) != 1 {
+		t.Fatalf("IncludeExpired after expiry: want 1 memory, got %d", len(got))
+	}
+	// Zero Now falls back to the wall clock, which is well before the expiry.
+	if got := list(store.Filter{}); len(got) != 1 {
+		t.Fatalf("zero Now (wall clock, before expiry): want 1 memory, got %d", len(got))
+	}
+
+	// Search legs honor it too.
+	res, err := st.VectorSearch(ctx, ns, vec(dims, 1), store.Filter{Now: base.Add(2 * time.Hour)}, 5)
+	if err != nil {
+		t.Fatalf("vector search: %v", err)
+	}
+	if len(res) != 0 {
+		t.Fatalf("vector search after expiry: want 0, got %d", len(res))
+	}
 }
 
 // testConcurrentAccess hammers one namespace from several goroutines with
@@ -412,7 +470,10 @@ func testConcurrentAccess(t *testing.T, st store.Store, dims int) {
 	const workers, iters = 8, 25
 
 	var wg sync.WaitGroup
-	errs := make(chan error, workers*iters)
+	// Each iteration can emit up to 5 errors; size the channel for the worst
+	// case so a pathologically failing store fails loudly instead of blocking
+	// the senders and timing the test out.
+	errs := make(chan error, workers*iters*5)
 	for w := range workers {
 		wg.Go(func() {
 			for i := range iters {
