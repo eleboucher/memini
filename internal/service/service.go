@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -168,7 +169,16 @@ type Service struct {
 	// now and newID are injectable for deterministic tests.
 	now   func() time.Time
 	newID func() string
+
+	// bg tracks detached best-effort goroutines (async recall reinforcement) so
+	// WaitBackground can join them before the store is closed.
+	bg sync.WaitGroup
 }
+
+// WaitBackground blocks until detached background goroutines (async recall
+// reinforcement) finish. Call during shutdown, after the workers have been
+// stopped and before closing the store.
+func (s *Service) WaitBackground() { s.bg.Wait() }
 
 // Option customizes a Service.
 type Option func(*Service)
@@ -844,11 +854,11 @@ func (s *Service) reinforceResults(ctx context.Context, namespace string, result
 	}
 	// Detach from the request lifetime but keep its values; bound the work.
 	bg := context.WithoutCancel(ctx)
-	go func() {
+	s.bg.Go(func() {
 		rctx, cancel := context.WithTimeout(bg, reinforceTimeout)
 		defer cancel()
 		s.reinforce(rctx, namespace, results)
-	}()
+	})
 }
 
 // reinforce records that recalled memories were just used: it bumps their
