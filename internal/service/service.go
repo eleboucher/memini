@@ -77,8 +77,11 @@ type Metrics interface {
 	// work done (purged, evicted, duplicate groups) are exposed separately
 	// via the store's maintenance metrics.
 	FsckResult(result string)
-	// OpDuration observes end-to-end latency for a public operation.
+	// OpDuration observes end-to-end latency for a public operation
+	// (e.g. "recall", "answer").
 	OpDuration(op string, d time.Duration)
+	// AnswerResult records one Answer call: "ok" or "error".
+	AnswerResult(result string)
 }
 
 type nopMetrics struct{}
@@ -91,6 +94,7 @@ func (nopMetrics) ForgetResult(string)                 {}
 func (nopMetrics) PromoteResult(string, int)           {}
 func (nopMetrics) FsckResult(string)                   {}
 func (nopMetrics) OpDuration(string, time.Duration)    {}
+func (nopMetrics) AnswerResult(string)                 {}
 
 // consolidateJob identifies an already-stored memory awaiting background
 // consolidation.
@@ -111,6 +115,10 @@ type Service struct {
 	consolidateMinScore float64
 	// consolidateQueue carries background jobs in async mode; nil otherwise.
 	consolidateQueue chan consolidateJob
+
+	// answerer is optional; when set, Answer recalls memories and asks it to
+	// generate a grounded answer from them.
+	answerer llm.Completer
 
 	// distiller is optional; when set, RunPromoter distills frequently-accessed
 	// episodic memories into durable semantic facts.
@@ -174,6 +182,10 @@ func WithConsolidateMinScore(minScore float64) Option {
 
 // WithDistiller enables episodic→semantic promotion via RunPromoter.
 func WithDistiller(d llm.Distiller) Option { return func(s *Service) { s.distiller = d } }
+
+// WithAnswerer enables Answer: recall memories, then generate a grounded answer
+// from them with this chat client.
+func WithAnswerer(c llm.Completer) Option { return func(s *Service) { s.answerer = c } }
 
 // WithPromoteMinAccess sets the minimum access_count for an episodic memory to
 // be eligible for promotion.

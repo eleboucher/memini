@@ -24,6 +24,7 @@ type consolidateMetrics struct {
 	forgetResults   *prometheus.CounterVec
 	promoteResults  *prometheus.CounterVec
 	fsckResults     *prometheus.CounterVec
+	answerResults   *prometheus.CounterVec
 	opDuration      *prometheus.HistogramVec
 
 	// store-level
@@ -85,6 +86,10 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 		fsckResults: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_fsck_results_total",
 			Help: "Outcomes of consistency sweeps.",
+		}, []string{labelResult}),
+		answerResults: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "memini_answer_results_total",
+			Help: "Outcomes of the Answer API (ok, error).",
 		}, []string{labelResult}),
 		opDuration: factory.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "memini_op_duration_seconds",
@@ -165,6 +170,10 @@ func (m *consolidateMetrics) FsckResult(result string) {
 
 func (m *consolidateMetrics) OpDuration(op string, d time.Duration) {
 	m.opDuration.WithLabelValues(op).Observe(d.Seconds())
+}
+
+func (m *consolidateMetrics) AnswerResult(result string) {
+	m.answerResults.WithLabelValues(result).Inc()
 }
 
 // store.Metrics methods.

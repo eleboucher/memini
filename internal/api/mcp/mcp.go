@@ -36,6 +36,10 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 		Description: "Recall relevant memories via hybrid (semantic + keyword) search.",
 	}, h.recall)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "memory_answer",
+		Description: "Recall relevant memories and answer a question grounded on them (requires an LLM).",
+	}, h.answer)
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "memory_get",
 		Description: "Fetch a single memory by its ID.",
 	}, h.get)
@@ -149,6 +153,35 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 	out := recallResult{Results: make([]recallItem, len(res))}
 	for i, s := range res {
 		out.Results[i] = recallItem{
+			ID: s.Memory.ID, Content: s.Memory.Content, Tier: string(s.Memory.Tier), Score: s.Score,
+		}
+	}
+	return nil, out, nil
+}
+
+type answerArgs struct {
+	Query     string `json:"query" jsonschema:"the question to answer from memory"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"max memories to ground on (default 10)"`
+	Namespace string `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+}
+
+type answerResult struct {
+	Answer  string       `json:"answer"`
+	Sources []recallItem `json:"sources"`
+}
+
+func (t *tools) answer(ctx context.Context, _ *mcpsdk.CallToolRequest, in answerArgs) (*mcpsdk.CallToolResult, answerResult, error) {
+	res, err := t.svc.Answer(ctx, service.AnswerInput{
+		Namespace: t.ns(in.Namespace),
+		Query:     in.Query,
+		Limit:     in.Limit,
+	})
+	if err != nil {
+		return nil, answerResult{}, err
+	}
+	out := answerResult{Answer: res.Answer, Sources: make([]recallItem, len(res.Sources))}
+	for i, s := range res.Sources {
+		out.Sources[i] = recallItem{
 			ID: s.Memory.ID, Content: s.Memory.Content, Tier: string(s.Memory.Tier), Score: s.Score,
 		}
 	}

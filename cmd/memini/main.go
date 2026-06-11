@@ -95,8 +95,8 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		svcOpts = append(svcOpts, service.WithConsolidator(client))
-		log.Info("LLM consolidation enabled",
+		svcOpts = append(svcOpts, service.WithConsolidator(client), service.WithAnswerer(client))
+		log.Info("LLM consolidation + answering enabled",
 			"api", cfg.LLMAPI, "model", cfg.LLMModel, "mode", cfg.ConsolidateMode)
 		if cfg.PromoteInterval > 0 {
 			svcOpts = append(svcOpts,
