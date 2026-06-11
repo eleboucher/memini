@@ -1,0 +1,13 @@
+# Configuration for oapi-codegen: generates the chi server interface and the
+# request/response models in api.gen.go from api/openapi.yaml, so the REST
+# surface cannot drift from the spec. Regenerate with `go generate ./...`.
+package: rest
+output: api.gen.go
+generate:
+  chi-server: true
+  models: true
+output-options:
+  # The ops endpoints (healthz, readyz, metrics) are implemented by
+  # internal/server, not this package.
+  include-tags:
+    - memory

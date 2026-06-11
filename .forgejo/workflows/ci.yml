@@ -39,6 +39,13 @@ jobs:
           go mod tidy
           git diff --exit-code go.mod go.sum
 
+      # The REST server is generated from api/openapi.yaml (oapi-codegen);
+      # fail if the committed code drifted from the spec.
+      - name: Check generated REST code is current
+        run: |
+          go generate ./internal/api/rest
+          git diff --exit-code internal/api/rest/api.gen.go
+
       - name: Run tests
         run: CGO_ENABLED=1 go test -race -count=1 -timeout 300s ./...
 

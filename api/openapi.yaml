@@ -12,12 +12,16 @@ security:
 paths:
   /healthz:
     get:
+      operationId: healthz
+      tags: [ops]
       summary: Liveness probe
       security: []
       responses:
         "200": { description: Service is alive }
   /readyz:
     get:
+      operationId: readyz
+      tags: [ops]
       summary: Readiness probe (verifies storage backend)
       security: []
       responses:
@@ -25,6 +29,8 @@ paths:
         "503": { description: Not ready }
   /metrics:
     get:
+      operationId: metrics
+      tags: [ops]
       summary: Prometheus metrics
       description: Protected by bearer auth when MEMINI_API_KEY is set; unauthenticated otherwise.
       responses:
@@ -32,6 +38,8 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
   /v1/fsck:
     post:
+      operationId: runFsck
+      tags: [memory]
       summary: Run a consistency sweep (purge expired, enforce short-term cap, audit duplicates)
       parameters: [{ $ref: "#/components/parameters/Namespace" }]
       responses:
@@ -43,6 +51,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /v1/memories:
     post:
+      operationId: rememberMemory
+      tags: [memory]
       summary: Remember (store) a memory
       parameters: [{ $ref: "#/components/parameters/Namespace" }]
       requestBody:
@@ -59,6 +69,8 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
     get:
+      operationId: listMemories
+      tags: [memory]
       summary: List memories in a namespace (backs the admin UI browser)
       parameters:
         - { $ref: "#/components/parameters/Namespace" }
@@ -85,6 +97,8 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
   /v1/stats:
     get:
+      operationId: getStats
+      tags: [memory]
       summary: Per-namespace overview (counts by tier, accesses, importance)
       parameters: [{ $ref: "#/components/parameters/Namespace" }]
       responses:
@@ -96,6 +110,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /v1/namespaces:
     get:
+      operationId: listNamespaces
+      tags: [memory]
       summary: List the distinct namespaces holding memories
       responses:
         "200":
@@ -112,6 +128,8 @@ paths:
         required: true
         schema: { type: string }
     get:
+      operationId: getMemory
+      tags: [memory]
       summary: Fetch a memory by ID
       responses:
         "200":
@@ -121,12 +139,16 @@ paths:
               schema: { $ref: "#/components/schemas/Memory" }
         "404": { $ref: "#/components/responses/Error" }
     delete:
+      operationId: forgetMemory
+      tags: [memory]
       summary: Forget (delete) a memory
       responses:
         "204": { description: Deleted }
         "404": { $ref: "#/components/responses/Error" }
   /v1/search:
     post:
+      operationId: searchMemories
+      tags: [memory]
       summary: Recall memories via hybrid (vector + keyword) search
       parameters: [{ $ref: "#/components/parameters/Namespace" }]
       requestBody:
@@ -143,6 +165,8 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
   /v1/answer:
     post:
+      operationId: answerQuestion
+      tags: [memory]
       summary: Recall memories and answer a question grounded on them (requires an LLM)
       parameters: [{ $ref: "#/components/parameters/Namespace" }]
       requestBody:
@@ -192,7 +216,7 @@ components:
         summary: { type: string }
         tags: { type: array, items: { type: string } }
         metadata: { type: object, additionalProperties: true }
-        importance: { type: number, minimum: 0, maximum: 1 }
+        importance: { type: number, format: double, minimum: 0, maximum: 1 }
         ttl_seconds:
           type: integer
           description: Overrides the tier default TTL; negative means never expire.
@@ -213,7 +237,7 @@ components:
       required: [memory, score]
       properties:
         memory: { $ref: "#/components/schemas/Memory" }
-        score: { type: number }
+        score: { type: number, format: double }
     SearchResponse:
       type: object
       required: [results]
@@ -258,7 +282,7 @@ components:
         expired: { type: integer }
         superseded: { type: integer }
         total_accesses: { type: integer }
-        avg_importance: { type: number }
+        avg_importance: { type: number, format: double }
         last_write_at: { type: string, format: date-time, nullable: true }
     NamespacesResponse:
       type: object
@@ -299,7 +323,7 @@ components:
         summary: { type: string }
         metadata: { type: object, additionalProperties: true }
         tags: { type: array, items: { type: string } }
-        importance: { type: number }
+        importance: { type: number, format: double }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         last_accessed_at: { type: string, format: date-time }

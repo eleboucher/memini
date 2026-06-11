@@ -22,14 +22,14 @@ durable semantic facts** so retrieval quality compounds over time.
 
 ## Design at a glance
 
-| Concern    | Choice                                                                                                                           |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Language   | Go — single static binary, tiny image, low memory                                                                                |
-| Storage    | Pluggable: **sqlite-vec** (embedded, default) or **Postgres + VectorChord** (scale)                                              |
-| Embeddings | External OpenAI-compatible endpoint (you deploy the model)                                                                       |
-| LLM        | **Opt-in** — runs headless without one; enables background dedup, consolidation, and episodic→semantic promotion when configured |
-| Ranking    | Hybrid (vector + keyword) RRF, re-ranked by relevance + recency + importance, deduplicated                                       |
-| Interfaces | REST (OpenAPI) + MCP (stdio & Streamable HTTP) + embedded web UI, sharing one service layer                                      |
+| Concern    | Choice                                                                                                                                                                 |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Language   | Go — single static binary, tiny image, low memory                                                                                                                      |
+| Storage    | Pluggable: **sqlite-vec** (embedded, default) or **Postgres + VectorChord** (scale)                                                                                    |
+| Embeddings | External OpenAI-compatible endpoint (you deploy the model)                                                                                                             |
+| LLM        | **Opt-in** — runs headless without one; enables background dedup, consolidation, and episodic→semantic promotion when configured                                       |
+| Ranking    | Hybrid (vector + keyword) RRF, re-ranked by relevance + recency + importance, deduplicated                                                                             |
+| Interfaces | REST (API-first: server + UI types generated from [`api/openapi.yaml`](api/openapi.yaml)) + MCP (stdio & Streamable HTTP) + embedded web UI, sharing one service layer |
 
 ## Running
 

@@ -12,24 +12,7 @@ export interface paths {
             cookie?: never;
         };
         /** Liveness probe */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Service is alive */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
+        get: operations["healthz"];
         put?: never;
         post?: never;
         delete?: never;
@@ -46,31 +29,7 @@ export interface paths {
             cookie?: never;
         };
         /** Readiness probe (verifies storage backend) */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Ready */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-                /** @description Not ready */
-                503: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
+        get: operations["readyz"];
         put?: never;
         post?: never;
         delete?: never;
@@ -90,25 +49,7 @@ export interface paths {
          * Prometheus metrics
          * @description Protected by bearer auth when MEMINI_API_KEY is set; unauthenticated otherwise.
          */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Metrics in Prometheus text format */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-                401: components["responses"]["Error"];
-            };
-        };
+        get: operations["metrics"];
         put?: never;
         post?: never;
         delete?: never;
@@ -127,30 +68,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Run a consistency sweep (purge expired, enforce short-term cap, audit duplicates) */
-        post: {
-            parameters: {
-                query?: never;
-                header?: {
-                    /** @description Tenant/agent namespace; falls back to the server default. */
-                    "X-Memini-Namespace"?: components["parameters"]["Namespace"];
-                };
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["FsckReport"];
-                    };
-                };
-                500: components["responses"]["Error"];
-            };
-        };
+        post: operations["runFsck"];
         delete?: never;
         options?: never;
         head?: never;
@@ -165,68 +83,10 @@ export interface paths {
             cookie?: never;
         };
         /** List memories in a namespace (backs the admin UI browser) */
-        get: {
-            parameters: {
-                query?: {
-                    /** @description Repeatable and/or comma-separated tier filter; omitted means all tiers. */
-                    tier?: components["schemas"]["Tier"][];
-                    include_expired?: boolean;
-                    include_superseded?: boolean;
-                    /** @description Caps the result count; 0 or absent returns all matches. */
-                    limit?: number;
-                };
-                header?: {
-                    /** @description Tenant/agent namespace; falls back to the server default. */
-                    "X-Memini-Namespace"?: components["parameters"]["Namespace"];
-                };
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ListResponse"];
-                    };
-                };
-                400: components["responses"]["Error"];
-            };
-        };
+        get: operations["listMemories"];
         put?: never;
         /** Remember (store) a memory */
-        post: {
-            parameters: {
-                query?: never;
-                header?: {
-                    /** @description Tenant/agent namespace; falls back to the server default. */
-                    "X-Memini-Namespace"?: components["parameters"]["Namespace"];
-                };
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["RememberRequest"];
-                };
-            };
-            responses: {
-                /** @description Created */
-                201: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Memory"];
-                    };
-                };
-                400: components["responses"]["Error"];
-                401: components["responses"]["Error"];
-            };
-        };
+        post: operations["rememberMemory"];
         delete?: never;
         options?: never;
         head?: never;
@@ -241,30 +101,7 @@ export interface paths {
             cookie?: never;
         };
         /** Per-namespace overview (counts by tier, accesses, importance) */
-        get: {
-            parameters: {
-                query?: never;
-                header?: {
-                    /** @description Tenant/agent namespace; falls back to the server default. */
-                    "X-Memini-Namespace"?: components["parameters"]["Namespace"];
-                };
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Stats"];
-                    };
-                };
-                500: components["responses"]["Error"];
-            };
-        };
+        get: operations["getStats"];
         put?: never;
         post?: never;
         delete?: never;
@@ -281,27 +118,7 @@ export interface paths {
             cookie?: never;
         };
         /** List the distinct namespaces holding memories */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["NamespacesResponse"];
-                    };
-                };
-                500: components["responses"]["Error"];
-            };
-        };
+        get: operations["listNamespaces"];
         put?: never;
         post?: never;
         delete?: never;
@@ -323,59 +140,11 @@ export interface paths {
             cookie?: never;
         };
         /** Fetch a memory by ID */
-        get: {
-            parameters: {
-                query?: never;
-                header?: {
-                    /** @description Tenant/agent namespace; falls back to the server default. */
-                    "X-Memini-Namespace"?: components["parameters"]["Namespace"];
-                };
-                path: {
-                    id: string;
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Memory"];
-                    };
-                };
-                404: components["responses"]["Error"];
-            };
-        };
+        get: operations["getMemory"];
         put?: never;
         post?: never;
         /** Forget (delete) a memory */
-        delete: {
-            parameters: {
-                query?: never;
-                header?: {
-                    /** @description Tenant/agent namespace; falls back to the server default. */
-                    "X-Memini-Namespace"?: components["parameters"]["Namespace"];
-                };
-                path: {
-                    id: string;
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Deleted */
-                204: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-                404: components["responses"]["Error"];
-            };
-        };
+        delete: operations["forgetMemory"];
         options?: never;
         head?: never;
         patch?: never;
@@ -391,34 +160,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Recall memories via hybrid (vector + keyword) search */
-        post: {
-            parameters: {
-                query?: never;
-                header?: {
-                    /** @description Tenant/agent namespace; falls back to the server default. */
-                    "X-Memini-Namespace"?: components["parameters"]["Namespace"];
-                };
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["SearchRequest"];
-                };
-            };
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["SearchResponse"];
-                    };
-                };
-                400: components["responses"]["Error"];
-            };
-        };
+        post: operations["searchMemories"];
         delete?: never;
         options?: never;
         head?: never;
@@ -435,35 +177,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Recall memories and answer a question grounded on them (requires an LLM) */
-        post: {
-            parameters: {
-                query?: never;
-                header?: {
-                    /** @description Tenant/agent namespace; falls back to the server default. */
-                    "X-Memini-Namespace"?: components["parameters"]["Namespace"];
-                };
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["AnswerRequest"];
-                };
-            };
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["AnswerResponse"];
-                    };
-                };
-                400: components["responses"]["Error"];
-                500: components["responses"]["Error"];
-            };
-        };
+        post: operations["answerQuestion"];
         delete?: never;
         options?: never;
         head?: never;
@@ -484,6 +198,7 @@ export interface components {
             metadata?: {
                 [key: string]: unknown;
             };
+            /** Format: double */
             importance?: number;
             /** @description Overrides the tier default TTL; negative means never expire. */
             ttl_seconds?: number;
@@ -502,6 +217,7 @@ export interface components {
         };
         ScoredMemory: {
             memory: components["schemas"]["Memory"];
+            /** Format: double */
             score: number;
         };
         SearchResponse: {
@@ -533,6 +249,7 @@ export interface components {
             expired: number;
             superseded: number;
             total_accesses: number;
+            /** Format: double */
             avg_importance: number;
             /** Format: date-time */
             last_write_at?: string | null;
@@ -556,6 +273,7 @@ export interface components {
                 [key: string]: unknown;
             };
             tags?: string[];
+            /** Format: double */
             importance: number;
             /** Format: date-time */
             created_at: string;
@@ -591,4 +309,303 @@ export interface components {
     pathItems: never;
 }
 export type $defs = Record<string, never>;
-export type operations = Record<string, never>;
+export interface operations {
+    healthz: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Service is alive */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    readyz: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ready */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not ready */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    metrics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Metrics in Prometheus text format */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Error"];
+        };
+    };
+    runFsck: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FsckReport"];
+                };
+            };
+            500: components["responses"]["Error"];
+        };
+    };
+    listMemories: {
+        parameters: {
+            query?: {
+                /** @description Repeatable and/or comma-separated tier filter; omitted means all tiers. */
+                tier?: components["schemas"]["Tier"][];
+                include_expired?: boolean;
+                include_superseded?: boolean;
+                /** @description Caps the result count; 0 or absent returns all matches. */
+                limit?: number;
+            };
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListResponse"];
+                };
+            };
+            400: components["responses"]["Error"];
+        };
+    };
+    rememberMemory: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RememberRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Memory"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+        };
+    };
+    getStats: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Stats"];
+                };
+            };
+            500: components["responses"]["Error"];
+        };
+    };
+    listNamespaces: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NamespacesResponse"];
+                };
+            };
+            500: components["responses"]["Error"];
+        };
+    };
+    getMemory: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Memory"];
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    forgetMemory: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    searchMemories: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SearchRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchResponse"];
+                };
+            };
+            400: components["responses"]["Error"];
+        };
+    };
+    answerQuestion: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnswerRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnswerResponse"];
+                };
+            };
+            400: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+}
