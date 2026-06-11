@@ -200,6 +200,37 @@ export function readSessionEvents(sessionId) {
   }
 }
 
+// --- Auto-save state ------------------------------------------------------
+//
+// The Stop hook periodically nudges the agent to persist durable memories. It
+// tracks how many user messages had been seen at the last nudge in a small
+// state file alongside the session buffer, so it nudges once per interval
+// rather than on every stop. Lives in bufferDir() so cleanStaleBuffers GCs it.
+
+/** Path of the auto-save state file for a session. */
+export function sessionStatePath(sessionId) {
+  return join(bufferDir(), safeId(sessionId) + ".savestate");
+}
+
+/** Read a session's auto-save state ({lastSavedCount, updatedAt}) or null. */
+export function readSaveState(sessionId) {
+  try {
+    return parseJSON(fs.readFileSync(sessionStatePath(sessionId), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** Persist a session's auto-save state (best-effort). */
+export function writeSaveState(sessionId, state) {
+  try {
+    fs.mkdirSync(bufferDir(), { recursive: true });
+    fs.writeFileSync(sessionStatePath(sessionId), JSON.stringify(state));
+  } catch (e) {
+    if (DEBUG) console.error("[memini] writeSaveState failed:", e?.message || e);
+  }
+}
+
 /** Delete a session's buffer file (best-effort). */
 export function deleteSessionBuffer(sessionId) {
   try {

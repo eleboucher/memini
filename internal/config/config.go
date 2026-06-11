@@ -76,6 +76,12 @@ type Config struct {
 	// restatements only).
 	WriteDedupMinScore float64 `env:"MEMINI_WRITE_DEDUP_MIN_SCORE" envDefault:"0"`
 
+	// TemporalBoost enables query-conditioned temporal targeting in the
+	// re-ranker: when a query names a relative time ("3 weeks ago"), candidates
+	// dated near the referenced point are boosted by up to this much on the
+	// composite score. 0 disables it. Uses the regex anchor extractor.
+	TemporalBoost float64 `env:"MEMINI_TEMPORAL_BOOST" envDefault:"0.40"`
+
 	// LLM (opt-in; empty BaseURL disables the consolidation pipeline).
 	LLMBaseURL string `env:"MEMINI_LLM_BASE_URL"`
 	LLMAPIKey  string `env:"MEMINI_LLM_API_KEY"`
