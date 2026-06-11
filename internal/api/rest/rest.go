@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/httputil"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/service"
@@ -23,6 +24,24 @@ import (
 type Handler struct {
 	svc  *service.Service
 	auth AuthConfig
+}
+
+// statusFor maps a service error to an HTTP status: caller mistakes are 4xx,
+// backend failures 5xx (so outages alert and clients retry instead of being
+// blamed with a 400).
+func statusFor(err error) int {
+	switch {
+	case errors.Is(err, service.ErrInvalidInput):
+		return http.StatusBadRequest
+	case errors.Is(err, store.ErrNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, store.ErrConflict):
+		return http.StatusConflict
+	case errors.Is(err, embed.ErrDisabled):
+		return http.StatusServiceUnavailable
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 // New builds a REST handler.
@@ -90,7 +109,7 @@ func (h *Handler) remember(w http.ResponseWriter, r *http.Request) {
 
 	m, err := h.svc.Remember(r.Context(), in)
 	if err != nil {
-		httputil.Error(w, http.StatusBadRequest, err.Error())
+		httputil.Error(w, statusFor(err), err.Error())
 		return
 	}
 	httputil.JSON(w, http.StatusCreated, m)
@@ -172,7 +191,7 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 		IncludeSuperseded: req.IncludeSuperseded,
 	})
 	if err != nil {
-		httputil.Error(w, http.StatusBadRequest, err.Error())
+		httputil.Error(w, statusFor(err), err.Error())
 		return
 	}
 
@@ -206,7 +225,7 @@ func (h *Handler) answer(w http.ResponseWriter, r *http.Request) {
 		Limit:     req.Limit,
 	})
 	if err != nil {
-		httputil.Error(w, http.StatusBadRequest, err.Error())
+		httputil.Error(w, statusFor(err), err.Error())
 		return
 	}
 	out := answerResponse{Answer: res.Answer, Sources: make([]scoredDTO, len(res.Sources))}
@@ -231,7 +250,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	mems, err := h.svc.List(r.Context(), in)
 	if err != nil {
-		httputil.Error(w, http.StatusBadRequest, err.Error())
+		httputil.Error(w, statusFor(err), err.Error())
 		return
 	}
 	httputil.JSON(w, http.StatusOK, listResponse{Memories: mems})

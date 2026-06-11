@@ -101,6 +101,16 @@ func (nopMetrics) OpDuration(string, time.Duration)    {}
 func (nopMetrics) AnswerResult(string)                 {}
 func (nopMetrics) RerankResult(string, string)         {}
 
+// ErrInvalidInput marks errors caused by the caller's request (missing fields,
+// unknown tiers) as opposed to backend failures. API layers map it to 400;
+// anything else is a server-side error.
+var ErrInvalidInput = errors.New("invalid input")
+
+// invalidInputf builds a caller-input validation error wrapping ErrInvalidInput.
+func invalidInputf(format string, args ...any) error {
+	return fmt.Errorf(format+": %w", append(args, ErrInvalidInput)...)
+}
+
 // consolidateJob identifies an already-stored memory awaiting background
 // consolidation.
 type consolidateJob struct {
@@ -374,11 +384,11 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	}()
 	if in.Namespace == "" {
 		s.metrics.RememberResult("error", "")
-		return nil, fmt.Errorf("remember: namespace is required")
+		return nil, invalidInputf("remember: namespace is required")
 	}
 	if in.Content == "" {
 		s.metrics.RememberResult("error", "")
-		return nil, fmt.Errorf("remember: content is required")
+		return nil, invalidInputf("remember: content is required")
 	}
 	tier := in.Tier
 	if tier == "" {
@@ -386,7 +396,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	}
 	if !tier.Valid() {
 		s.metrics.RememberResult("error", string(tier))
-		return nil, fmt.Errorf("remember: invalid tier %q", tier)
+		return nil, invalidInputf("remember: invalid tier %q", tier)
 	}
 
 	vec, err := embed.EmbedOne(ctx, s.embedder, in.Content)
@@ -745,11 +755,11 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	}()
 	if in.Namespace == "" {
 		s.metrics.RecallResult("error", tf, "0")
-		return nil, fmt.Errorf("recall: namespace is required")
+		return nil, invalidInputf("recall: namespace is required")
 	}
 	if in.Query == "" {
 		s.metrics.RecallResult("error", tf, "0")
-		return nil, fmt.Errorf("recall: query is required")
+		return nil, invalidInputf("recall: query is required")
 	}
 	k := in.Limit
 	if k <= 0 {
