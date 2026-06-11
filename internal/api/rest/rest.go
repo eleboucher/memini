@@ -41,6 +41,7 @@ func (h *Handler) Mount(r chi.Router) {
 		r.Get("/v1/memories/{id}", h.get)
 		r.Delete("/v1/memories/{id}", h.forget)
 		r.Post("/v1/search", h.search)
+		r.Post("/v1/answer", h.answer)
 		r.Post("/v1/fsck", h.fsck)
 		r.Get("/v1/stats", h.stats)
 		r.Get("/v1/namespaces", h.namespaces)
@@ -159,6 +160,39 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 	out := searchResponse{Results: make([]scoredDTO, len(res))}
 	for i, s := range res {
 		out.Results[i] = scoredDTO{Memory: s.Memory, Score: s.Score}
+	}
+	httputil.JSON(w, http.StatusOK, out)
+}
+
+type answerRequest struct {
+	Query string        `json:"query"`
+	Tiers []memory.Tier `json:"tiers,omitempty"`
+	Limit int           `json:"limit,omitempty"`
+}
+
+type answerResponse struct {
+	Answer  string      `json:"answer"`
+	Sources []scoredDTO `json:"sources"`
+}
+
+func (h *Handler) answer(w http.ResponseWriter, r *http.Request) {
+	var req answerRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	res, err := h.svc.Answer(r.Context(), service.AnswerInput{
+		Namespace: namespaceFromContext(r.Context()),
+		Query:     req.Query,
+		Tiers:     req.Tiers,
+		Limit:     req.Limit,
+	})
+	if err != nil {
+		httputil.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	out := answerResponse{Answer: res.Answer, Sources: make([]scoredDTO, len(res.Sources))}
+	for i, s := range res.Sources {
+		out.Sources[i] = scoredDTO{Memory: s.Memory, Score: s.Score}
 	}
 	httputil.JSON(w, http.StatusOK, out)
 }

@@ -133,9 +133,16 @@ ui` (or iterate with HMR via `mise run ui-dev`, which proxies `/v1` to a local
 server on `:8080`). The built bundle is committed under
 `internal/api/ui/dist/`, so a plain `go build` always embeds a working UI.
 
+## Answering
+
+Beyond raw recall, `POST /v1/answer` `{query, limit}` retrieves memories and has
+the LLM generate a grounded answer from them, returning the answer plus the
+supporting `sources` (requires an LLM; also exposed as the `memory_answer` MCP
+tool).
+
 ## MCP
 
-memini speaks the Model Context Protocol so agents can `remember`/`recall`:
+memini speaks the Model Context Protocol so agents can `remember`/`recall`/`answer`:
 
 - **Remote (Streamable HTTP):** `http://<host>:8080/mcp`
 - **Local (stdio):** `memini mcp`
