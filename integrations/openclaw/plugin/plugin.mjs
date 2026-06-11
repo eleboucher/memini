@@ -21,10 +21,56 @@ const configSchema = {
     enabled: { type: "boolean" },
     base_url: { type: "string" },
     namespace: { type: "string" },
+    namespace_per_agent: { type: "boolean" },
+    namespace_template: { type: "string" },
     fallback_on_error: { type: "boolean" },
     timeout_ms: { type: "number" },
   },
 };
+
+const DEFAULT_NAMESPACE_TEMPLATE = "{agent}";
+
+// sanitizeNsSegment keeps a namespace segment header-safe (the server sanitizes
+// too, but the X-Memini-Namespace value should be clean): alnum, dot, dash,
+// underscore; collapse the rest to dashes and trim.
+function sanitizeNsSegment(s) {
+  return String(s).trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+// agentIdentity pulls a stable per-agent id from an OpenClaw hook event,
+// tolerating the field names different OpenClaw versions use. Returns "" when
+// the event doesn't identify an agent.
+function agentIdentity(event) {
+  if (!event || typeof event !== "object") return "";
+  const candidates = [
+    event.agentId,
+    event.agentName,
+    event.agent?.id,
+    event.agent?.name,
+    event.agent?.slug,
+    event.sessionId,
+    event.session?.id,
+    event.session?.agentId,
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim()) return c.trim();
+  }
+  return "";
+}
+
+// effectiveNamespace returns the configured namespace, or a per-agent namespace
+// when namespace_per_agent is enabled and the event identifies an agent. The
+// per-agent name comes from namespace_template (default "{agent}"), with
+// {agent} and {namespace} substituted — e.g. "{agent}" -> "miso",
+// "openclaw-{agent}" -> "openclaw-miso". Falls back to the base namespace when
+// no agent id is present, preserving the shared-memory behavior.
+export function effectiveNamespace(cfg, event) {
+  if (!cfg.namespace_per_agent) return cfg.namespace;
+  const id = sanitizeNsSegment(agentIdentity(event));
+  if (!id) return cfg.namespace;
+  const tmpl = cfg.namespace_template || DEFAULT_NAMESPACE_TEMPLATE;
+  return tmpl.replaceAll("{agent}", id).replaceAll("{namespace}", cfg.namespace);
+}
 
 function extractText(content) {
   if (typeof content === "string") return content;
@@ -104,9 +150,9 @@ function createClient(cfg, api) {
     guardPlaintextBearerAuth(baseUrl, secret);
   }
 
-  async function postJson(path, payload) {
+  async function postJson(path, payload, ns) {
     guardPlaintextBearerAuth(baseUrl, secret);
-    const headers = { "Content-Type": "application/json", "X-Memini-Namespace": namespace };
+    const headers = { "Content-Type": "application/json", "X-Memini-Namespace": ns || namespace };
     if (secret) headers.Authorization = `Bearer ${secret}`;
     try {
       const res = await fetch(`${baseUrl}${path}`, {
@@ -141,6 +187,8 @@ const plugin = {
       enabled: api.pluginConfig?.enabled !== false,
       base_url: api.pluginConfig?.base_url || DEFAULT_BASE_URL,
       namespace: api.pluginConfig?.namespace || DEFAULT_NAMESPACE,
+      namespace_per_agent: api.pluginConfig?.namespace_per_agent === true,
+      namespace_template: api.pluginConfig?.namespace_template || DEFAULT_NAMESPACE_TEMPLATE,
       fallback_on_error: api.pluginConfig?.fallback_on_error !== false,
       timeout_ms: api.pluginConfig?.timeout_ms || DEFAULT_TIMEOUT_MS,
     };
@@ -149,7 +197,9 @@ const plugin = {
     if (typeof api.registerMemoryCapability === "function") {
       api.registerMemoryCapability({
         promptBuilder: () => [
-          `Long-term memory: memini at ${client.baseUrl}, namespace "${client.namespace}".`,
+          cfg.namespace_per_agent
+            ? `Long-term memory: memini at ${client.baseUrl}, per-agent namespace from "${cfg.namespace_template}".`
+            : `Long-term memory: memini at ${client.baseUrl}, namespace "${client.namespace}".`,
           "Relevant memories are recalled before each turn and turns are captured after. Treat recalled context as background; prefer current workspace state and user instructions.",
         ],
       });
@@ -159,7 +209,7 @@ const plugin = {
       if (!cfg.enabled) return;
       const prompt = typeof event?.prompt === "string" ? event.prompt.trim() : "";
       if (!prompt) return;
-      const result = await client.postJson("/v1/search", { query: prompt, limit: 5 });
+      const result = await client.postJson("/v1/search", { query: prompt, limit: 5 }, effectiveNamespace(cfg, event));
       const block = formatResults(result?.results || []);
       if (!block) return;
       return { prependContext: `Relevant long-term memory from memini:\n${block}` };
@@ -174,7 +224,7 @@ const plugin = {
         content: `User: ${userText.slice(0, 1000)}\nAssistant: ${assistantText.slice(0, 3000)}`,
         tier: "episodic",
         metadata: { source: "openclaw" },
-      });
+      }, effectiveNamespace(cfg, event));
     });
   },
 };

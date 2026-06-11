@@ -42,6 +42,8 @@ Claim the memory slot in `~/.openclaw/openclaw.json`:
         "config": {
           "base_url": "http://localhost:8080",
           "namespace": "openclaw",
+          "namespace_per_agent": false,
+          "namespace_template": "{agent}",
           "fallback_on_error": true,
           "timeout_ms": 5000
         }
@@ -57,6 +59,16 @@ refuse sending it over plaintext HTTP). Restart OpenClaw.
 
 Use the same `namespace` as your other agents to share one memory across the
 gateway and its managed coding sessions.
+
+To instead isolate memory **per agent**, set `"namespace_per_agent": true`. Each
+agent then reads and writes its own scope, resolved from the agent id on each
+hook event and formatted by `namespace_template`:
+
+- `"{agent}"` (default) → `miso`, `saffron`, `matcha`
+- `"openclaw-{agent}"` → `openclaw-miso`, … (`{namespace}` is also substituted)
+
+When the event doesn't identify an agent, it falls back to the base `namespace`,
+so the default (`namespace_per_agent: false`) keeps one shared memory.
 
 ### On Kubernetes
 
