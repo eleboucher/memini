@@ -100,7 +100,6 @@ docker run -i --rm \
   -e MEMINI_SQLITE_PATH=/data/memini.db \
   -e MEMINI_EMBED_BASE_URL=http://host.docker.internal:8081/v1 \
   -e MEMINI_EMBED_MODEL=bge-small-en-v1.5 -e MEMINI_EMBED_DIMS=384 \
-  -e MEMINI_DEFAULT_NAMESPACE=my-project \
   memini mcp
 ```
 
@@ -119,7 +118,6 @@ opencode:
         "-e", "MEMINI_EMBED_BASE_URL=http://host.docker.internal:8081/v1",
         "-e", "MEMINI_EMBED_MODEL=bge-small-en-v1.5",
         "-e", "MEMINI_EMBED_DIMS=384",
-        "-e", "MEMINI_DEFAULT_NAMESPACE=my-project",
         "memini", "mcp"
       ]
     }
@@ -127,10 +125,11 @@ opencode:
 }
 ```
 
-Since the stdio container runs detached from the agent's working directory, set
-`MEMINI_DEFAULT_NAMESPACE` explicitly (the auto cwd/git resolution won't see the
-agent's repo). See [`integrations/`](integrations/) for per-agent recipes and the
-shared-namespace trick.
+This works as-is — memory lands in the `default` namespace. A detached container
+can't auto-detect the agent's repo the way the [plugin](plugin/) does, so if you
+want **per-project isolation** set `MEMINI_DEFAULT_NAMESPACE` (or pass a
+`namespace` argument per tool call). See [`integrations/`](integrations/) for
+per-agent recipes and the shared-namespace trick.
 
 ### Configuration (12-factor)
 
