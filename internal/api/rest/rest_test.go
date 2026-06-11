@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -120,6 +121,35 @@ func TestRememberSearchForgetRoundTrip(t *testing.T) {
 	rec = do(t, h, http.MethodGet, "/v1/memories/"+created.ID, "alice", apiKey, nil)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("get after forget: want 404, got %d", rec.Code)
+	}
+}
+
+// TestPercentEncodedID guards against the path-param decoding bug: ids with
+// reserved characters like ':' (e.g. agentmemory's "openclaw:main:<uuid>")
+// arrive percent-encoded from most HTTP clients, and must resolve to the same
+// record as their literal form.
+func TestPercentEncodedID(t *testing.T) {
+	h := newServer(t)
+
+	const id = "agm-sum-openclaw:main:9119fd27"
+	rec := do(t, h, http.MethodPost, "/v1/memories", "alice", apiKey, map[string]any{
+		"content": "imported session summary", "tier": "semantic", "id": id,
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("remember: want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	// Many clients (Python's urllib, etc.) percent-encode ':' in a path segment
+	// even though url.PathEscape leaves it literal, so encode it explicitly.
+	encoded := "/v1/memories/" + strings.ReplaceAll(id, ":", "%3A")
+
+	rec = do(t, h, http.MethodGet, encoded, "alice", apiKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get encoded id: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	rec = do(t, h, http.MethodDelete, encoded, "alice", apiKey, nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete encoded id: want 204, got %d (%s)", rec.Code, rec.Body)
 	}
 }
 

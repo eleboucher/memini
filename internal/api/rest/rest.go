@@ -96,8 +96,22 @@ func (h *Handler) remember(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusCreated, m)
 }
 
+// pathID returns the {id} path param, percent-decoded. chi matches on the
+// escaped path, so URLParam yields the raw segment; ids with reserved chars
+// like ':' (e.g. imported "openclaw:main:<uuid>") arrive as %3A and must be
+// decoded to match the stored literal. A malformed encoding yields ok=false.
+func pathID(r *http.Request) (string, bool) {
+	id, err := url.PathUnescape(chi.URLParam(r, "id"))
+	return id, err == nil
+}
+
 func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
-	m, err := h.svc.Get(r.Context(), namespaceFromContext(r.Context()), chi.URLParam(r, "id"))
+	id, ok := pathID(r)
+	if !ok {
+		httputil.Error(w, http.StatusNotFound, "memory not found")
+		return
+	}
+	m, err := h.svc.Get(r.Context(), namespaceFromContext(r.Context()), id)
 	if errors.Is(err, store.ErrNotFound) {
 		httputil.Error(w, http.StatusNotFound, "memory not found")
 		return
@@ -110,7 +124,12 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) forget(w http.ResponseWriter, r *http.Request) {
-	err := h.svc.Forget(r.Context(), namespaceFromContext(r.Context()), chi.URLParam(r, "id"))
+	id, ok := pathID(r)
+	if !ok {
+		httputil.Error(w, http.StatusNotFound, "memory not found")
+		return
+	}
+	err := h.svc.Forget(r.Context(), namespaceFromContext(r.Context()), id)
 	if errors.Is(err, store.ErrNotFound) {
 		httputil.Error(w, http.StatusNotFound, "memory not found")
 		return
