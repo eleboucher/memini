@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -64,7 +65,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = st.Close() }()
+	defer func() {
+		if err := st.Close(); err != nil {
+			log.Warn("closing store", "err", err)
+		}
+	}()
 
 	embedder, err := buildEmbedder(cfg, log)
 	if err != nil {
@@ -132,19 +137,34 @@ func run() error {
 	)
 	svc := service.New(st, embedder, svcOpts...)
 
-	// Background consolidation worker (no-op unless async mode + a consolidator).
-	go svc.StartConsolidator(ctx)
-	// Background promoter (no-op unless a distiller + positive interval).
-	go svc.RunPromoter(ctx, cfg.PromoteInterval)
+	// Background workers. They are joined before the deferred st.Close() runs,
+	// so the consolidator gets to drain its queue and nothing races the store
+	// teardown.
+	workerCtx, stopWorkers := context.WithCancel(ctx)
+	defer stopWorkers()
+	var workers sync.WaitGroup
+	joinWorkers := func() {
+		stopWorkers()
+		workers.Wait()
+		svc.WaitBackground()
+	}
+	// Consolidation worker (no-op unless async mode + a consolidator).
+	workers.Go(func() { svc.StartConsolidator(workerCtx) })
+	// Promoter (no-op unless a distiller + positive interval).
+	workers.Go(func() { svc.RunPromoter(workerCtx, cfg.PromoteInterval) })
 
 	// `memini mcp` serves MCP tools over stdio.
 	if len(os.Args) > 1 && os.Args[1] == "mcp" {
 		log.Info("serving MCP over stdio")
-		return mcpapi.RunStdio(ctx, svc, cfg.DefaultNamespace)
+		err := mcpapi.RunStdio(ctx, svc, cfg.DefaultNamespace)
+		joinWorkers()
+		return err
 	}
 
-	// Background decay sweeper purges expired memories.
-	go maintenance.NewSweeper(st, log, cfg.SweepInterval, cfg.ShortTermCap).Run(ctx)
+	// Decay sweeper purges expired memories.
+	workers.Go(func() { maintenance.NewSweeper(st, log, cfg.SweepInterval, cfg.ShortTermCap).Run(workerCtx) })
+
+	defer joinWorkers()
 
 	srv := server.New(server.Options{
 		Addr:            cfg.HTTPAddr,
