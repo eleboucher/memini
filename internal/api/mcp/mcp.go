@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -218,16 +219,42 @@ type idArgs struct {
 	Namespace string `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 }
 
-func (t *tools) get(ctx context.Context, _ *mcpsdk.CallToolRequest, in idArgs) (*mcpsdk.CallToolResult, recallItem, error) {
+// memoryItem is the full single-memory DTO returned by memory_get (recall
+// results stay slim via recallItem; a get has no score and should not drop
+// the record's metadata).
+type memoryItem struct {
+	ID          string         `json:"id"`
+	Content     string         `json:"content"`
+	Tier        string         `json:"tier"`
+	Summary     string         `json:"summary,omitempty"`
+	Tags        []string       `json:"tags,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+	Importance  float64        `json:"importance"`
+	CreatedAt   string         `json:"created_at"`
+	UpdatedAt   string         `json:"updated_at"`
+	AccessCount int            `json:"access_count"`
+	ExpiresAt   string         `json:"expires_at,omitempty"`
+}
+
+func (t *tools) get(ctx context.Context, _ *mcpsdk.CallToolRequest, in idArgs) (*mcpsdk.CallToolResult, memoryItem, error) {
 	ns, err := t.ns(in.Namespace)
 	if err != nil {
-		return nil, recallItem{}, err
+		return nil, memoryItem{}, err
 	}
 	m, err := t.svc.Get(ctx, ns, in.ID)
 	if err != nil {
-		return nil, recallItem{}, err
+		return nil, memoryItem{}, err
 	}
-	return nil, recallItem{ID: m.ID, Content: m.Content, Tier: string(m.Tier)}, nil
+	out := memoryItem{
+		ID: m.ID, Content: m.Content, Tier: string(m.Tier), Summary: m.Summary,
+		Tags: m.Tags, Metadata: m.Metadata, Importance: m.Importance,
+		CreatedAt: m.CreatedAt.Format(time.RFC3339), UpdatedAt: m.UpdatedAt.Format(time.RFC3339),
+		AccessCount: m.AccessCount,
+	}
+	if m.ExpiresAt != nil {
+		out.ExpiresAt = m.ExpiresAt.Format(time.RFC3339)
+	}
+	return nil, out, nil
 }
 
 type forgetResult struct {
