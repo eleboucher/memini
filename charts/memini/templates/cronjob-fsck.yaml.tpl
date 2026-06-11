@@ -29,8 +29,13 @@ spec:
                 - -X
                 - POST
                 {{- if include "memini.authEnabled" . }}
-                - -H
-                - "Authorization: Bearer $(MEMINI_API_KEY)"
+                # curl expands the env var in-process (--variable/--expand-header),
+                # so the secret never appears in the container's argv
+                # (readable via /proc/<pid>/cmdline with $(MEMINI_API_KEY)).
+                - --variable
+                - "%MEMINI_API_KEY"
+                - --expand-header
+                - "Authorization: Bearer {{ "{{" }}MEMINI_API_KEY{{ "}}" }}"
                 {{- end }}
                 - http://{{ include "memini.fullname" . }}:{{ .Values.service.port }}/v1/fsck
 {{- end }}
