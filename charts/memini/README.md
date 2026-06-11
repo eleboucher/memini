@@ -18,6 +18,12 @@ helm install memini ./charts/memini \
   --set postgres.dsnSecret.name=memini-pg \
   --set autoscaling.enabled=true \
   --set embeddings.baseURL=http://text-embeddings:80/v1
+
+# Sqlite with a pre-provisioned PVC (RWO, same namespace, large enough for the db):
+helm install memini ./charts/memini \
+  --set embeddings.baseURL=http://text-embeddings:80/v1 \
+  --set embeddings.model=bge-m3 --set embeddings.dims=1024 \
+  --set sqlite.persistence.existingClaimName=memini-data
 ```
 
 ## Values
@@ -65,7 +71,8 @@ helm install memini ./charts/memini \
 | service.type | string | `"ClusterIP"` |  |
 | serviceAccount.create | bool | `true` | Create a ServiceAccount |
 | serviceAccount.name | string | `""` | ServiceAccount name; generated when empty |
-| sqlite | object | `{"persistence":{"accessModes":["ReadWriteOnce"],"enabled":true,"size":"5Gi","storageClass":""}}` | sqlite backend persistence (StatefulSet volumeClaimTemplate) |
+| sqlite | object | `{"persistence":{"accessModes":["ReadWriteOnce"],"enabled":true,"existingClaimName":"","size":"5Gi","storageClass":""}}` | sqlite backend persistence (StatefulSet volumeClaimTemplate, or an existing PVC) |
+| sqlite.persistence.existingClaimName | string | `""` | Name of an existing PVC to use instead of creating one via volumeClaimTemplates. Must be in the same namespace, RWO, and large enough for the sqlite database. When set, `size`, `storageClass`, and `accessModes` are ignored. |
 | tolerations | list | `[]` |  |
 
 ## Observability

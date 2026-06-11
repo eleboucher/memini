@@ -530,6 +530,12 @@
               "title": "enabled",
               "type": "boolean"
             },
+            "existingClaimName": {
+              "default": "",
+              "description": "Name of an existing PVC to use instead of creating one via volumeClaimTemplates. Must be in the same namespace, RWO, and large enough for the sqlite database. When set, size, storageClass, and accessModes are ignored.",
+              "title": "existingClaimName",
+              "type": "string"
+            },
             "size": {
               "default": "5Gi",
               "title": "size",

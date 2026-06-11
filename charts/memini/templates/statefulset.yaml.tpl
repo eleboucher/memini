@@ -1,4 +1,5 @@
 {{- if eq .Values.backend "sqlite" }}
+{{- $useExistingClaim := and .Values.sqlite.persistence.enabled .Values.sqlite.persistence.existingClaimName }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -30,7 +31,15 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         {{- include "memini.container" . | nindent 8 }}
-      {{- if not .Values.sqlite.persistence.enabled }}
+      {{- if $useExistingClaim }}
+      # Mount a pre-existing PVC via a pod-level volume. The StatefulSet's
+      # volumeClaimTemplates is omitted below so we don't create an extra PVC
+      # alongside the one the user already provisioned.
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.sqlite.persistence.existingClaimName }}
+      {{- else if not .Values.sqlite.persistence.enabled }}
       volumes:
         - name: data
           emptyDir: {}
@@ -47,7 +56,7 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-  {{- if .Values.sqlite.persistence.enabled }}
+  {{- if and .Values.sqlite.persistence.enabled (not $useExistingClaim) }}
   volumeClaimTemplates:
     - metadata:
         name: data

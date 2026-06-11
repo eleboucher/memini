@@ -63,12 +63,16 @@ auth:
     name: ""
     key: api-key
 
-# -- sqlite backend persistence (StatefulSet volumeClaimTemplate)
+# -- sqlite backend persistence (StatefulSet volumeClaimTemplate, or an existing PVC)
 sqlite:
   persistence:
     enabled: true
     size: 5Gi
     storageClass: ""
+    # -- Name of an existing PVC to use instead of creating one via volumeClaimTemplates.
+    # Must be in the same namespace, RWO, and large enough for the sqlite database.
+    # When set, `size`, `storageClass`, and `accessModes` are ignored.
+    existingClaimName: ""
     accessModes:
       - ReadWriteOnce
 
