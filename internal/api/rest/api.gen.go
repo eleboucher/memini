@@ -233,6 +233,9 @@ type ListMemoriesParams struct {
 	// Limit Caps the result count; 0 or absent returns all matches.
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 
+	// AllNamespaces Aggregate across every namespace, ignoring the namespace header. The server merges all namespaces and applies limit as a single global cap (newest first), so the admin UI's "All projects" view fetches one response instead of one request per namespace.
+	AllNamespaces *bool `form:"all_namespaces,omitempty" json:"all_namespaces,omitempty"`
+
 	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
@@ -263,6 +266,9 @@ type SearchMemoriesParams struct {
 
 // GetStatsParams defines parameters for GetStats.
 type GetStatsParams struct {
+	// AllNamespaces Aggregate counts across every namespace, ignoring the namespace header. Returns a single merged overview (namespace reported as "") so the admin UI's "All projects" view fetches one response instead of one request per namespace.
+	AllNamespaces *bool `form:"all_namespaces,omitempty" json:"all_namespaces,omitempty"`
+
 	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
@@ -603,6 +609,19 @@ func (siw *ServerInterfaceWrapper) ListMemories(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// ------------- Optional query parameter "all_namespaces" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "all_namespaces", r.URL.Query(), &params.AllNamespaces, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "all_namespaces"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "all_namespaces", Err: err})
+		}
+		return
+	}
+
 	headers := r.Header
 
 	// ------------- Optional header parameter "X-Memini-Namespace" -------------
@@ -907,6 +926,19 @@ func (siw *ServerInterfaceWrapper) GetStats(w http.ResponseWriter, r *http.Reque
 
 	// Parameter object where we will unmarshal all parameters from the context
 	var params GetStatsParams
+
+	// ------------- Optional query parameter "all_namespaces" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "all_namespaces", r.URL.Query(), &params.AllNamespaces, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "all_namespaces"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "all_namespaces", Err: err})
+		}
+		return
+	}
 
 	headers := r.Header
 

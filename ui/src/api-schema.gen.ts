@@ -524,6 +524,8 @@ export interface operations {
                 include_superseded?: boolean;
                 /** @description Caps the result count; 0 or absent returns all matches. */
                 limit?: number;
+                /** @description Aggregate across every namespace, ignoring the namespace header. The server merges all namespaces and applies limit as a single global cap (newest first), so the admin UI's "All projects" view fetches one response instead of one request per namespace. */
+                all_namespaces?: boolean;
             };
             header?: {
                 /** @description Tenant/agent namespace; falls back to the server default. */
@@ -577,7 +579,10 @@ export interface operations {
     };
     getStats: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Aggregate counts across every namespace, ignoring the namespace header. Returns a single merged overview (namespace reported as "") so the admin UI's "All projects" view fetches one response instead of one request per namespace. */
+                all_namespaces?: boolean;
+            };
             header?: {
                 /** @description Tenant/agent namespace; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];

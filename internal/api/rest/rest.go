@@ -318,6 +318,9 @@ func (h *Server) ListMemories(w http.ResponseWriter, r *http.Request, params Lis
 	if params.IncludeSuperseded != nil {
 		in.IncludeSuperseded = *params.IncludeSuperseded
 	}
+	if params.AllNamespaces != nil {
+		in.AllNamespaces = *params.AllNamespaces
+	}
 	if params.Limit != nil {
 		if *params.Limit < 0 {
 			httputil.Error(w, http.StatusBadRequest, fmt.Sprintf("invalid limit %d", *params.Limit))
@@ -339,8 +342,14 @@ func (h *Server) ListMemories(w http.ResponseWriter, r *http.Request, params Lis
 }
 
 // GetStats implements GET /v1/stats.
-func (h *Server) GetStats(w http.ResponseWriter, r *http.Request, _ GetStatsParams) {
-	s, err := h.svc.Stats(r.Context(), namespaceFromContext(r.Context()))
+func (h *Server) GetStats(w http.ResponseWriter, r *http.Request, params GetStatsParams) {
+	var s service.Stats
+	var err error
+	if params.AllNamespaces != nil && *params.AllNamespaces {
+		s, err = h.svc.StatsAll(r.Context())
+	} else {
+		s, err = h.svc.Stats(r.Context(), namespaceFromContext(r.Context()))
+	}
 	if err != nil {
 		httputil.Error(w, http.StatusInternalServerError, err.Error())
 		return

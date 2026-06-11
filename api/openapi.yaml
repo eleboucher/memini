@@ -118,6 +118,14 @@ paths:
           in: query
           description: Caps the result count; 0 or absent returns all matches.
           schema: { type: integer }
+        - name: all_namespaces
+          in: query
+          description: >
+            Aggregate across every namespace, ignoring the namespace header. The
+            server merges all namespaces and applies limit as a single global cap
+            (newest first), so the admin UI's "All projects" view fetches one
+            response instead of one request per namespace.
+          schema: { type: boolean, default: false }
       responses:
         "200":
           description: OK
@@ -130,7 +138,16 @@ paths:
       operationId: getStats
       tags: [memory]
       summary: Per-namespace overview (counts by tier, accesses, importance)
-      parameters: [{ $ref: "#/components/parameters/Namespace" }]
+      parameters:
+        - { $ref: "#/components/parameters/Namespace" }
+        - name: all_namespaces
+          in: query
+          description: >
+            Aggregate counts across every namespace, ignoring the namespace
+            header. Returns a single merged overview (namespace reported as "")
+            so the admin UI's "All projects" view fetches one response instead
+            of one request per namespace.
+          schema: { type: boolean, default: false }
       responses:
         "200":
           description: OK

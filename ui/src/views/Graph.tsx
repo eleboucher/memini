@@ -162,9 +162,13 @@ export function Graph() {
           .distance((d) => (d.kind === 'supersede' ? 60 : 90))
           .strength((d) => (d.kind === 'supersede' ? 0.6 : 0.15)),
       )
-      .force('charge', forceManyBody().strength(-220))
+      // distanceMax bounds the charge to nearby nodes; otherwise every node
+      // repels every other each tick, the dominant cost on large graphs.
+      .force('charge', forceManyBody().strength(-220).distanceMax(400))
       .force('center', forceCenter(width / 2, height / 2))
       .force('collide', forceCollide<GNode>().radius((d) => d.r + 6))
+      // Settle in fewer ticks so the per-tick repaint stops sooner.
+      .alphaDecay(0.045)
       .on('tick', () => {
         link
           .attr('x1', (d) => (d.source as GNode).x!)

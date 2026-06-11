@@ -274,3 +274,48 @@ func TestRecallNamespaceIsolation(t *testing.T) {
 		t.Fatalf("bob should see nothing, got %d results", len(res))
 	}
 }
+
+func TestListAndStatsAllNamespaces(t *testing.T) {
+	svc := newService(t)
+	ctx := context.Background()
+
+	// Two memories each across three namespaces.
+	for _, ns := range []string{"alice", "bob", "carol"} {
+		for range 2 {
+			if _, err := svc.Remember(ctx, service.RememberInput{
+				Namespace: ns, Content: ns + " fact", Tier: memory.TierSemantic,
+			}); err != nil {
+				t.Fatalf("remember %s: %v", ns, err)
+			}
+		}
+	}
+
+	// AllNamespaces aggregates every namespace; scoped lists stay isolated.
+	all, err := svc.List(ctx, service.ListInput{AllNamespaces: true})
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if len(all) != 6 {
+		t.Fatalf("aggregate list = %d memories, want 6", len(all))
+	}
+
+	// Limit applies as a single global cap, not per namespace.
+	capped, err := svc.List(ctx, service.ListInput{AllNamespaces: true, Limit: 4})
+	if err != nil {
+		t.Fatalf("list all capped: %v", err)
+	}
+	if len(capped) != 4 {
+		t.Fatalf("global cap = %d memories, want 4", len(capped))
+	}
+
+	stats, err := svc.StatsAll(ctx)
+	if err != nil {
+		t.Fatalf("stats all: %v", err)
+	}
+	if stats.Namespace != "" {
+		t.Fatalf("aggregate stats namespace = %q, want empty", stats.Namespace)
+	}
+	if stats.Total != 6 {
+		t.Fatalf("aggregate stats total = %d, want 6", stats.Total)
+	}
+}

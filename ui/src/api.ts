@@ -114,50 +114,28 @@ interface SearchOpts {
 }
 
 // ---- "All projects" aggregation -------------------------------------------
-// NOTE: these fan out one request per namespace and merge in the browser
-// (an N+1 against the API). Fine for an admin UI over a handful of projects;
-// if namespace counts grow, add server-side aggregate endpoints instead.
+// stats/list aggregate server-side via all_namespaces=true: one request, with
+// the server merging namespaces and applying limit as a single global cap. (No
+// namespace header is sent in "All projects" mode, so the server spans tenants.)
+// search still fans out and merges client-side — see searchAll.
 
-async function statsAll(): Promise<Stats> {
-  const names = await listNamespaces()
-  const per = (await Promise.all(names.map((n) => scopedStats(n).catch(() => null)))).filter(
-    (s): s is Stats => s !== null,
-  )
-  const merged: Stats = {
-    namespace: '',
-    total: 0,
-    by_tier: {},
-    expired: 0,
-    superseded: 0,
-    total_accesses: 0,
-    avg_importance: 0,
-  }
-  let importanceWeighted = 0
-  for (const s of per) {
-    merged.total += s.total
-    merged.expired += s.expired
-    merged.superseded += s.superseded
-    merged.total_accesses += s.total_accesses
-    // Weight by live total; skip namespaces with no live memories so a stale
-    // avg_importance can't pollute the merged average.
-    if (s.total > 0) importanceWeighted += s.avg_importance * s.total
-    for (const t of Object.keys(s.by_tier) as Tier[]) {
-      merged.by_tier[t] = (merged.by_tier[t] ?? 0) + (s.by_tier[t] ?? 0)
-    }
-    if (s.last_write_at && (!merged.last_write_at || newer(s.last_write_at, merged.last_write_at))) {
-      merged.last_write_at = s.last_write_at
-    }
-  }
-  merged.avg_importance = merged.total ? importanceWeighted / merged.total : 0
-  return merged
+function statsAll(): Promise<Stats> {
+  return req<Stats>('GET', '/v1/stats?all_namespaces=true')
 }
 
-async function listAll(p: ListParams): Promise<Memory[]> {
-  const names = await listNamespaces()
-  const lists = await Promise.all(names.map((n) => scopedList(p, n).catch(() => [])))
-  return lists.flat()
+function listAll(p: ListParams): Promise<Memory[]> {
+  const q = new URLSearchParams()
+  p.tiers?.forEach((t) => q.append('tier', t))
+  if (p.includeExpired) q.set('include_expired', 'true')
+  if (p.includeSuperseded) q.set('include_superseded', 'true')
+  if (p.limit) q.set('limit', String(p.limit))
+  q.set('all_namespaces', 'true')
+  return req<ListResponse>('GET', '/v1/memories?' + q.toString()).then((r) => r.memories ?? [])
 }
 
+// NOTE: searchAll still fans out one request per namespace and merges in the
+// browser. Fine for interactive, limit-bounded recall; if namespace counts make
+// this slow, add an all_namespaces aggregate to /v1/search too.
 async function searchAll(query: string, opts: SearchOpts): Promise<Scored[]> {
   const names = await listNamespaces()
   // Over-fetch per namespace so the merged global top-N isn't truncated by each
@@ -171,12 +149,6 @@ async function searchAll(query: string, opts: SearchOpts): Promise<Scored[]> {
     .flat()
     .sort((a, b) => b.score - a.score)
     .slice(0, want)
-}
-
-// newer compares two timestamps by absolute instant (not lexically), so mixed
-// timezone offsets sort correctly.
-function newer(a: string, b: string): boolean {
-  return new Date(a).getTime() > new Date(b).getTime()
 }
 
 function listNamespaces() {
