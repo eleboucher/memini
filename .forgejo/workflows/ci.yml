@@ -14,6 +14,17 @@ concurrency:
 jobs:
   test:
     runs-on: docker
+    services:
+      postgres:
+        image: ghcr.io/tensorchord/vchord-postgres:pg18-v1.1.1
+        env:
+          POSTGRES_PASSWORD: memini
+          POSTGRES_DB: memini
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Checkout
         uses: https://data.forgejo.org/actions/checkout@v6
@@ -30,6 +41,13 @@ jobs:
 
       - name: Run tests
         run: CGO_ENABLED=1 go test -race -count=1 -timeout 300s ./...
+
+      # The shared store conformance suite against a real Postgres+VectorChord;
+      # without this the postgres backend never runs in CI.
+      - name: Run Postgres conformance tests
+        env:
+          MEMINI_TEST_POSTGRES_DSN: postgres://postgres:memini@postgres:5432/memini?sslmode=disable
+        run: CGO_ENABLED=1 go test -race -count=1 -timeout 300s -tags integration ./internal/store/postgres/
 
   lint:
     runs-on: docker
