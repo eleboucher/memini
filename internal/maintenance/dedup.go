@@ -117,101 +117,32 @@ func Dedup(ctx context.Context, st store.Store, emb embed.Embedder, opts DedupOp
 	}
 	rep.DryRun = opts.DryRun
 
+	// A single requested namespace (the one-shot API path) propagates its
+	// error so the caller sees a 5xx. A store-wide pass over many namespaces is
+	// best-effort instead: dedupNamespace calls the external embedder, so a
+	// namespace whose content trips it would otherwise abort every later
+	// namespace on every tick. We log and skip it rather than poison the pass.
+	scoped := len(namespaces) == 1
 	for _, ns := range namespaces {
-		f := store.Filter{Tiers: opts.Tiers, Now: opts.Now}
-		mems, err := st.List(ctx, ns, f, 0)
-		if err != nil {
+		if err := ctx.Err(); err != nil {
 			return rep, err
 		}
-		// Drop expired entries the filter might have leaked (defensive: List
-		// already excludes them by default, but we don't want to cluster them).
-		live := mems[:0]
-		for _, m := range mems {
-			if !m.Expired(opts.Now) {
-				live = append(live, m)
-			}
-		}
-		mems = live
-		if len(mems) < opts.MinClusterSize {
-			continue
-		}
-
-		texts := make([]string, len(mems))
-		for i, m := range mems {
-			texts[i] = m.Content
-		}
-		vecs, err := emb.Embed(ctx, texts)
+		nsRep, err := dedupNamespace(ctx, st, emb, ns, opts)
 		if err != nil {
-			return rep, err
-		}
-
-		// Union-find over the similarity graph: two memories with cosine
-		// score >= opts.Similarity share a root. Processing order doesn't
-		// matter — the closure is computed transitively, then components are
-		// resolved once.
-		u := newUnionFind(idsOf(mems))
-		for i, anchor := range mems {
-			cands, err := st.VectorSearch(ctx, ns, vecs[i], f, opts.NeighboursPerAnchor)
-			if err != nil {
+			if scoped || ctx.Err() != nil {
 				return rep, err
 			}
-			for _, c := range cands {
-				if c.Memory.ID == anchor.ID {
-					continue
-				}
-				if c.Score < opts.Similarity {
-					break // best-first; further results are lower-scored
-				}
-				if _, ok := u.parent[c.Memory.ID]; !ok {
-					// Result not in our current namespace snapshot (e.g.
-					// another tier dropped by the filter). Skip rather than
-					// corrupt the DSU with an unknown id.
-					continue
-				}
-				u.union(anchor.ID, c.Memory.ID)
-			}
+			log.WarnContext(ctx, "dedup namespace failed; skipping", "namespace", ns, "error", err)
+			continue
 		}
-
-		components := map[string][]*memory.Memory{}
-		for _, m := range mems {
-			root := u.find(m.ID)
-			components[root] = append(components[root], m)
-		}
-
-		for _, comp := range components {
-			if len(comp) < opts.MinClusterSize {
-				continue
-			}
-			// Highest-retention memory is the cluster representative.
-			sort.SliceStable(comp, func(i, j int) bool {
-				return betterRepresentative(comp[i], comp[j], opts.Now)
-			})
-			keep := comp[0]
-			rest := comp[1:]
-			action := ClusterAction{
-				RepresentativeID: keep.ID,
-				TombstonedIDs:    idsOf(rest),
-				Size:             len(comp),
-			}
-			rep.Actions = append(rep.Actions, action)
-			rep.ClustersFound++
-
-			if opts.DryRun {
-				rep.Tombstoned += len(rest)
-				continue
-			}
-			for _, m := range rest {
-				if err := st.SetSuperseded(ctx, ns, m.ID, keep.ID); err != nil {
-					if errors.Is(err, store.ErrNotFound) {
-						continue // raced with a concurrent write/delete
-					}
-					return rep, err
-				}
-				rep.Tombstoned++
-			}
+		if nsRep.memoriesSeen == 0 {
+			continue // too few memories to cluster; not a processed namespace
 		}
 		rep.Namespaces++
-		rep.MemoriesSeen += len(mems)
+		rep.MemoriesSeen += nsRep.memoriesSeen
+		rep.ClustersFound += nsRep.clustersFound
+		rep.Tombstoned += nsRep.tombstoned
+		rep.Actions = append(rep.Actions, nsRep.actions...)
 	}
 	if rep.Tombstoned > 0 {
 		log.InfoContext(ctx, "dedup pass complete",
@@ -222,6 +153,114 @@ func Dedup(ctx context.Context, st store.Store, emb embed.Embedder, opts DedupOp
 			"dry_run", rep.DryRun)
 	}
 	return rep, nil
+}
+
+// nsDedup is one namespace's contribution to a dedup pass. memoriesSeen is 0
+// when the namespace held too few live memories to cluster.
+type nsDedup struct {
+	memoriesSeen  int
+	clustersFound int
+	tombstoned    int
+	actions       []ClusterAction
+}
+
+// dedupNamespace clusters one namespace and tombstones the non-representative
+// members of each cluster. It performs the embed + per-anchor vector-search
+// fan-out, so it is the unit a store-wide pass isolates failures to.
+func dedupNamespace(ctx context.Context, st store.Store, emb embed.Embedder, ns string, opts DedupOptions) (nsDedup, error) {
+	var res nsDedup
+	f := store.Filter{Tiers: opts.Tiers, Now: opts.Now}
+	mems, err := st.List(ctx, ns, f, 0)
+	if err != nil {
+		return res, err
+	}
+	// Drop expired entries the filter might have leaked (defensive: List
+	// already excludes them by default, but we don't want to cluster them).
+	live := mems[:0]
+	for _, m := range mems {
+		if !m.Expired(opts.Now) {
+			live = append(live, m)
+		}
+	}
+	mems = live
+	if len(mems) < opts.MinClusterSize {
+		return res, nil
+	}
+	res.memoriesSeen = len(mems)
+
+	texts := make([]string, len(mems))
+	for i, m := range mems {
+		texts[i] = m.Content
+	}
+	vecs, err := emb.Embed(ctx, texts)
+	if err != nil {
+		return res, err
+	}
+
+	// Union-find over the similarity graph: two memories with cosine score >=
+	// opts.Similarity share a root. Processing order doesn't matter — the
+	// closure is computed transitively, then components are resolved once.
+	u := newUnionFind(idsOf(mems))
+	for i, anchor := range mems {
+		cands, err := st.VectorSearch(ctx, ns, vecs[i], f, opts.NeighboursPerAnchor)
+		if err != nil {
+			return res, err
+		}
+		for _, c := range cands {
+			if c.Memory.ID == anchor.ID {
+				continue
+			}
+			if c.Score < opts.Similarity {
+				break // best-first; further results are lower-scored
+			}
+			if _, ok := u.parent[c.Memory.ID]; !ok {
+				// Result not in our current namespace snapshot (e.g. another
+				// tier dropped by the filter). Skip rather than corrupt the
+				// DSU with an unknown id.
+				continue
+			}
+			u.union(anchor.ID, c.Memory.ID)
+		}
+	}
+
+	components := map[string][]*memory.Memory{}
+	for _, m := range mems {
+		root := u.find(m.ID)
+		components[root] = append(components[root], m)
+	}
+
+	for _, comp := range components {
+		if len(comp) < opts.MinClusterSize {
+			continue
+		}
+		// Highest-retention memory is the cluster representative.
+		sort.SliceStable(comp, func(i, j int) bool {
+			return betterRepresentative(comp[i], comp[j], opts.Now)
+		})
+		keep := comp[0]
+		rest := comp[1:]
+		res.actions = append(res.actions, ClusterAction{
+			RepresentativeID: keep.ID,
+			TombstonedIDs:    idsOf(rest),
+			Size:             len(comp),
+		})
+		res.clustersFound++
+
+		if opts.DryRun {
+			res.tombstoned += len(rest)
+			continue
+		}
+		for _, m := range rest {
+			if err := st.SetSuperseded(ctx, ns, m.ID, keep.ID); err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					continue // raced with a concurrent write/delete
+				}
+				return res, err
+			}
+			res.tombstoned++
+		}
+	}
+	return res, nil
 }
 
 // betterRepresentative reports whether a is a better cluster representative

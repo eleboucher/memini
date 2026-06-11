@@ -2,16 +2,41 @@ package maintenance_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/embed/embedtest"
 	"github.com/eleboucher/memini/internal/maintenance"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/store"
 	"github.com/eleboucher/memini/internal/store/sqlitevec"
 )
+
+// failEmbedder wraps a real embedder but errors on any batch containing a
+// marker string, simulating content that deterministically trips the embedder
+// (oversized input, bad encoding) for one namespace.
+type failEmbedder struct {
+	inner  embed.Embedder
+	marker string
+}
+
+func (f failEmbedder) Dims() int { return f.inner.Dims() }
+
+func (f failEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	for _, t := range texts {
+		if strings.Contains(t, f.marker) {
+			return nil, errors.New("embed failed")
+		}
+	}
+	return f.inner.Embed(ctx, texts)
+}
 
 const (
 	dedupDims    = 64
@@ -400,4 +425,124 @@ func TestDedupTombstoneAlreadySupersededIsNoop(t *testing.T) {
 	}
 }
 
+// seedPair upserts two identical memories in a namespace using the plain fake
+// embedder for their stored vectors.
+func seedPair(t *testing.T, st *sqlitevec.Store, emb *embedtest.Fake, ns, content string) {
+	t.Helper()
+	ctx := context.Background()
+	ts := nowFixed(t)
+	for _, id := range []string{ns + "-1", ns + "-2"} {
+		vec, _ := emb.Embed(ctx, []string{content})
+		m := &memory.Memory{
+			ID: id, Namespace: ns, Tier: memory.TierSemantic, Content: content,
+			CreatedAt: ts, UpdatedAt: ts, LastAccessedAt: ts, Embedding: vec[0],
+		}
+		if err := st.Upsert(ctx, m); err != nil {
+			t.Fatalf("upsert %s: %v", id, err)
+		}
+	}
+}
+
+func TestDedupStoreWideSkipsFailingNamespace(t *testing.T) {
+	// A store-wide pass (Namespaces empty) is best-effort: a namespace whose
+	// content trips the embedder is logged and skipped, the rest still run.
+	ctx := context.Background()
+	st, emb := openStoreAndFake(t)
+	seedPair(t, st, emb, "good", "the sky is blue")
+	seedPair(t, st, emb, "bad", "boom marker content")
+
+	rep, err := maintenance.Dedup(ctx, st, failEmbedder{inner: emb, marker: "boom"}, maintenance.DedupOptions{
+		Similarity: 0.5, Now: nowFixed(t),
+	})
+	if err != nil {
+		t.Fatalf("store-wide dedup should be best-effort, got error: %v", err)
+	}
+	if rep.Namespaces != 1 || rep.Tombstoned != 1 {
+		t.Fatalf("report=%+v, want 1 namespace processed / 1 tombstoned (bad skipped)", rep)
+	}
+	// The failing namespace is untouched.
+	for _, id := range []string{"bad-1", "bad-2"} {
+		m, err := st.Get(ctx, "bad", id)
+		if err != nil {
+			t.Fatalf("get bad/%s: %v", id, err)
+		}
+		if m.SupersededBy != nil {
+			t.Errorf("skipped namespace bad/%s was tombstoned: %v", id, *m.SupersededBy)
+		}
+	}
+}
+
+func TestDedupScopedNamespacePropagatesError(t *testing.T) {
+	// A single requested namespace propagates its error (the one-shot API path
+	// must surface a failure rather than report an empty success).
+	ctx := context.Background()
+	st, emb := openStoreAndFake(t)
+	seedPair(t, st, emb, "bad", "boom marker content")
+
+	_, err := maintenance.Dedup(ctx, st, failEmbedder{inner: emb, marker: "boom"}, maintenance.DedupOptions{
+		Similarity: 0.5, Namespaces: []string{"bad"}, Now: nowFixed(t),
+	})
+	if err == nil {
+		t.Fatal("scoped dedup over a failing namespace should return an error, got nil")
+	}
+}
+
+func TestDedupRespectsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	st, emb := openStoreAndFake(t)
+	seedPair(t, st, emb, "ns", "the sky is blue")
+	cancel()
+
+	_, err := maintenance.Dedup(ctx, st, emb, maintenance.DedupOptions{
+		Similarity: 0.5, Now: nowFixed(t),
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
+}
+
 func ptr(s string) *string { return &s }
+
+// BenchmarkDedup establishes a cost baseline for the clustering pass (embed +
+// per-anchor vector search + union-find) over a single namespace. Dry-run, so
+// it measures the O(n·vector_search) work without per-cluster tombstone writes
+// and is repeatable across iterations.
+func BenchmarkDedup(b *testing.B) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(b.TempDir(), "bench.db"), dedupDims)
+	if err != nil {
+		b.Fatalf("open: %v", err)
+	}
+	b.Cleanup(func() { _ = st.Close() })
+	emb := embedtest.New(dedupDims)
+	ts, _ := time.Parse(time.RFC3339, dedupTestNow)
+
+	// 500 memories: 100 groups of 5 identical paraphrases each.
+	const groups, perGroup = 100, 5
+	for g := range groups {
+		content := fmt.Sprintf("fact number %d about the topic", g)
+		for k := range perGroup {
+			vec, _ := emb.Embed(ctx, []string{content})
+			m := &memory.Memory{
+				ID: fmt.Sprintf("m-%d-%d", g, k), Namespace: dedupTestNS,
+				Tier: memory.TierSemantic, Content: content,
+				CreatedAt: ts, UpdatedAt: ts, LastAccessedAt: ts, Embedding: vec[0],
+			}
+			if err := st.Upsert(ctx, m); err != nil {
+				b.Fatalf("upsert: %v", err)
+			}
+		}
+	}
+
+	opts := maintenance.DedupOptions{
+		Similarity: 0.9, DryRun: true, Now: ts,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := maintenance.Dedup(ctx, st, emb, opts); err != nil {
+			b.Fatalf("dedup: %v", err)
+		}
+	}
+}

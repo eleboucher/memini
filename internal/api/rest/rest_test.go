@@ -442,3 +442,59 @@ func TestDedupNamespaceScoping(t *testing.T) {
 		t.Fatalf("bob untouched by alice's dedup; scoped pass should collapse 1, got tombstoned=%d", got.Tombstoned)
 	}
 }
+
+// TestDedupAllNamespacesDryRun covers the all_namespaces opt-in (overriding the
+// default request-namespace scope) and dry-run (report actions, tombstone
+// nothing) at the HTTP layer.
+func TestDedupAllNamespacesDryRun(t *testing.T) {
+	h := newServer(t)
+	for _, ns := range []string{"alice", "bob"} {
+		for range 2 {
+			rec := do(t, h, http.MethodPost, "/v1/memories", ns, apiKey, map[string]any{
+				"content": "the sky is blue", "tier": "semantic",
+			})
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("seed %s: want 201, got %d (%s)", ns, rec.Code, rec.Body)
+			}
+		}
+	}
+
+	// Dry-run over all namespaces from a single caller: reports both clusters,
+	// tombstones nothing.
+	rec := do(t, h, http.MethodPost, "/v1/dedup", "alice", apiKey, map[string]any{
+		"similarity": 0.5, "all_namespaces": true, "dry_run": true,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dedup: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var out struct {
+		Namespaces int  `json:"namespaces"`
+		Tombstoned int  `json:"tombstoned"`
+		DryRun     bool `json:"dry_run"`
+		Actions    []struct {
+			RepresentativeID string   `json:"representative_id"`
+			TombstonedIDs    []string `json:"tombstoned_ids"`
+			Size             int      `json:"size"`
+		} `json:"actions"`
+	}
+	mustJSON(t, rec, &out)
+	if out.Namespaces != 2 || out.Tombstoned != 2 || !out.DryRun {
+		t.Fatalf("all-namespaces dry-run: namespaces=%d tombstoned=%d dry_run=%v, want 2/2/true",
+			out.Namespaces, out.Tombstoned, out.DryRun)
+	}
+	if len(out.Actions) != 2 {
+		t.Fatalf("want 2 actions (one per namespace), got %d", len(out.Actions))
+	}
+	for _, a := range out.Actions {
+		if a.RepresentativeID == "" || len(a.TombstonedIDs) != 1 || a.Size != 2 {
+			t.Errorf("malformed action: %+v", a)
+		}
+	}
+
+	// Dry-run committed nothing: a real scoped pass still finds the duplicate.
+	rec = do(t, h, http.MethodPost, "/v1/dedup", "bob", apiKey, map[string]any{"similarity": 0.5})
+	mustJSON(t, rec, &out)
+	if out.Tombstoned != 1 {
+		t.Fatalf("dry-run should not have tombstoned; real pass on bob wanted 1, got %d", out.Tombstoned)
+	}
+}
