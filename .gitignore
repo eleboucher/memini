@@ -17,3 +17,7 @@ coverage.out
 /bench/results/
 # Local agent session notes.
 /.remember/
+
+# Stray QA benchmark checkpoints and built command binaries.
+qa_*.jsonl
+/locomo-qa
