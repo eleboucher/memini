@@ -14,6 +14,7 @@ import (
 	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/maintenance"
 	"github.com/eleboucher/memini/internal/memory"
+	"github.com/eleboucher/memini/internal/rerank"
 	"github.com/eleboucher/memini/internal/search"
 	"github.com/eleboucher/memini/internal/store"
 )
@@ -119,7 +120,7 @@ type Service struct {
 	// limit. rerankName labels the backend for metrics. Adds one reranker call
 	// per Recall, so it is opt-in (see WithReranker); failures fall back to the
 	// composite order.
-	reranker   llm.Reranker
+	reranker   rerank.Reranker
 	rerankName string
 	rerankTopN int
 
@@ -207,7 +208,7 @@ const defaultRerankTopN = 20
 // model), then truncated to the limit. name labels the backend in metrics. It
 // adds one reranker call per Recall, so it is opt-in; a failed rerank falls back
 // to the composite order. topN <= 0 keeps the default.
-func WithReranker(r llm.Reranker, name string, topN int) Option {
+func WithReranker(r rerank.Reranker, name string, topN int) Option {
 	return func(s *Service) {
 		s.reranker = r
 		s.rerankName = name
@@ -522,9 +523,9 @@ func (s *Service) finalizeRecall(ctx context.Context, query string, ranked []sto
 		return search.Dedup(ranked, k)
 	}
 	pool := search.Dedup(ranked, s.rerankTopN)
-	cands := make([]llm.RerankCandidate, len(pool))
+	cands := make([]rerank.Candidate, len(pool))
 	for i, r := range pool {
-		cands[i] = llm.RerankCandidate{ID: r.Memory.ID, Content: r.Memory.Content}
+		cands[i] = rerank.Candidate{ID: r.Memory.ID, Content: r.Memory.Content}
 	}
 	start := time.Now()
 	order, err := s.reranker.Rerank(ctx, query, cands)
