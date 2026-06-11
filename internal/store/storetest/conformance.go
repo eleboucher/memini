@@ -3,7 +3,9 @@ package storetest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +30,8 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("SetSuperseded", func(t *testing.T) { testSetSuperseded(t, st, dims) })
 	t.Run("Reinforce", func(t *testing.T) { testReinforce(t, st, dims) })
 	t.Run("DeleteIfExpiredBefore", func(t *testing.T) { testDeleteIfExpiredBefore(t, st, dims) })
+	t.Run("KeywordSearchHostileQueries", func(t *testing.T) { testKeywordHostileQueries(t, st, dims) })
+	t.Run("ConcurrentAccess", func(t *testing.T) { testConcurrentAccess(t, st, dims) })
 }
 
 func vec(dims int, head ...float32) []float32 {
@@ -369,4 +373,91 @@ func containsMem(ms []*memory.Memory, id string) bool {
 		}
 	}
 	return false
+}
+
+// testKeywordHostileQueries pins that keyword search treats user queries as
+// data: FTS/tsquery operators, quotes, and non-ASCII input must never produce
+// a syntax error from the underlying engine. Hit counts are backend-specific
+// (the sqlite tokenizer drops non-ASCII; postgres stems it), so only the
+// no-error contract is asserted here.
+func testKeywordHostileQueries(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	const ns = "hostile-queries"
+	mustUpsert(t, st, mem(ns, "a", "plain ascii content about cats", vec(dims, 1)))
+
+	queries := []string{
+		`NEAR(foo bar)`,
+		`"quoted phrase"`,
+		`col:value AND x* OR (y)`,
+		`cat's -toy`,
+		"東京タワー",
+		`café naïve`,
+		`); DROP TABLE memories; --`,
+	}
+	for _, q := range queries {
+		if _, err := st.KeywordSearch(ctx, ns, q, store.Filter{}, 5); err != nil {
+			t.Errorf("KeywordSearch(%q) errored: %v", q, err)
+		}
+	}
+}
+
+// testConcurrentAccess hammers one namespace from several goroutines with
+// mixed reads, writes, reinforcement, and deletes. It asserts no operation
+// fails (beyond ErrNotFound on a racing delete) and exists chiefly so the
+// -race runs in CI exercise real store concurrency: sqlite's single-writer
+// handling (busy_timeout) and the pgx pool both get contention here.
+func testConcurrentAccess(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	const ns = "concurrent"
+	const workers, iters = 8, 25
+
+	var wg sync.WaitGroup
+	errs := make(chan error, workers*iters)
+	for w := range workers {
+		wg.Go(func() {
+			for i := range iters {
+				short := fmt.Sprintf("w%d-i%d", w, i)
+				m := mem(ns, short, fmt.Sprintf("memory %s about shared topic", short), vec(dims, float32(w), float32(i)))
+				if err := st.Upsert(ctx, m); err != nil {
+					errs <- fmt.Errorf("upsert %s: %w", short, err)
+					continue
+				}
+				if _, err := st.VectorSearch(ctx, ns, vec(dims, float32(w)), store.Filter{}, 5); err != nil {
+					errs <- fmt.Errorf("vector search: %w", err)
+				}
+				if _, err := st.KeywordSearch(ctx, ns, "shared topic", store.Filter{}, 5); err != nil {
+					errs <- fmt.Errorf("keyword search: %w", err)
+				}
+				if err := st.Reinforce(ctx, ns, []string{m.ID}, time.Now().UTC(), nil); err != nil {
+					errs <- fmt.Errorf("reinforce: %w", err)
+				}
+				if _, err := st.Get(ctx, ns, m.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+					errs <- fmt.Errorf("get: %w", err)
+				}
+				// Delete every third memory so reads race tombstoned rows too.
+				if i%3 == 0 {
+					if err := st.Delete(ctx, ns, m.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+						errs <- fmt.Errorf("delete: %w", err)
+					}
+				}
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	// The store must still be coherent: a full list succeeds and contains
+	// exactly the non-deleted writes.
+	mems, err := st.List(ctx, ns, store.Filter{}, 0)
+	if err != nil {
+		t.Fatalf("list after hammer: %v", err)
+	}
+	deletedPerWorker := (iters + 2) / 3 // i%3==0 for i in [0,iters)
+	want := workers * (iters - deletedPerWorker)
+	if len(mems) != want {
+		t.Fatalf("list = %d memories, want %d", len(mems), want)
+	}
 }
