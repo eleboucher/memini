@@ -168,6 +168,11 @@ func run() error {
 	// as a catch-all so it cannot shadow the API, MCP, health, or metrics routes
 	// registered above.
 	if cfg.UIEnabled {
+		if cfg.APIKey != "" {
+			log.Warn("the admin UI embeds MEMINI_API_KEY in its unauthenticated shell " +
+				"so the browser can call the API; anyone who can load / can read the key. " +
+				"Set MEMINI_UI_ENABLED=false if the port is reachable by untrusted clients")
+		}
 		if err := ui.Mount(srv.Router(), cfg.APIKey); err != nil {
 			return fmt.Errorf("mount ui: %w", err)
 		}
