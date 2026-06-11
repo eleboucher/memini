@@ -89,6 +89,10 @@ auth:
 sqlite:
   persistence:
     enabled: true
+    # -- Mount a pre-created PVC instead of rendering a volumeClaimTemplate
+    # (e.g. a claim managed or restored by VolSync); when set, size,
+    # storageClass and accessModes are ignored
+    existingClaim: ""
     size: 5Gi
     storageClass: ""
     accessModes:
