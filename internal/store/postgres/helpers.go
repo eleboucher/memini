@@ -30,7 +30,11 @@ func filterClause(b *args, f store.Filter) string {
 		clause += " AND tier = ANY(" + b.add(tiers) + ")"
 	}
 	if !f.IncludeExpired {
-		clause += " AND (expires_at IS NULL OR expires_at > " + b.add(time.Now()) + ")"
+		now := f.Now
+		if now.IsZero() {
+			now = time.Now()
+		}
+		clause += " AND (expires_at IS NULL OR expires_at > " + b.add(now) + ")"
 	}
 	if !f.IncludeSuperseded {
 		clause += " AND superseded_by IS NULL"

@@ -26,6 +26,7 @@ func (s *Service) List(ctx context.Context, in ListInput) ([]*memory.Memory, err
 		Tiers:             in.Tiers,
 		IncludeExpired:    in.IncludeExpired,
 		IncludeSuperseded: in.IncludeSuperseded,
+		Now:               s.now(),
 	}, in.Limit)
 }
 
