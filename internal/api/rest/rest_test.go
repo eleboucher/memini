@@ -282,3 +282,32 @@ func TestListQueryParamValidation(t *testing.T) {
 		t.Fatalf("limit=1: want 1 memory, got %d", len(lr.Memories))
 	}
 }
+
+// TestAuthBeforeNamespaceValidation pins the middleware order: an
+// unauthenticated request gets 401 even when its namespace header is also
+// invalid, so callers can't probe validation behavior without a token.
+func TestAuthBeforeNamespaceValidation(t *testing.T) {
+	h := newServer(t)
+	rec := do(t, h, http.MethodGet, "/v1/memories", strings.Repeat("n", 300), "", nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401 before namespace validation, got %d (%s)", rec.Code, rec.Body)
+	}
+	// With a valid token the invalid namespace is then rejected with 400.
+	rec = do(t, h, http.MethodGet, "/v1/memories", strings.Repeat("n", 300), apiKey, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for invalid namespace once authenticated, got %d (%s)", rec.Code, rec.Body)
+	}
+}
+
+// TestNamespacesEmptyStoreIsArray guards the wire format on a fresh install:
+// namespaces must be [] (not null) so clients can call .length on it.
+func TestNamespacesEmptyStoreIsArray(t *testing.T) {
+	h := newServer(t)
+	rec := do(t, h, http.MethodGet, "/v1/namespaces", "", apiKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("namespaces: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"namespaces":[]`) {
+		t.Fatalf("empty store must marshal namespaces as [], got %s", rec.Body)
+	}
+}
