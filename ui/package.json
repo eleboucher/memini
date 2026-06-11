@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "gen-api": "openapi-typescript ../api/openapi.yaml -o src/api-schema.gen.ts"
   },
   "dependencies": {
     "@preact/signals": "^2.0.4",
@@ -25,6 +26,7 @@
     "@types/d3-selection": "^3.0.11",
     "@types/d3-zoom": "^3.0.8",
     "@types/node": "^22.10.5",
+    "openapi-typescript": "^7.13.0",
     "typescript": "^5.7.3",
     "vite": "^7.0.0"
   }

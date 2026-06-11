@@ -70,7 +70,10 @@ CGO_ENABLED=0 go build \
 [tasks.ui]
 description = "Build the embedded admin UI (Preact + Vite) into internal/api/ui/dist"
 dir = "ui"
-run = "npm ci && npm run build"
+# gen-api regenerates src/api-schema.gen.ts from api/openapi.yaml so the UI
+# types can't drift from the spec. The generated file stays committed: the
+# Docker build only copies ui/ and cannot regenerate it.
+run = "npm ci && npm run gen-api && npm run build"
 
 [tasks.ui-dev]
 description = "Run the UI dev server with HMR (proxies /v1 to a local memini on :8080)"
