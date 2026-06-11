@@ -78,8 +78,12 @@ func filterClause(f store.Filter, alias string) (string, []any) {
 		b.WriteString(")")
 	}
 	if !f.IncludeExpired {
+		now := f.Now
+		if now.IsZero() {
+			now = time.Now()
+		}
 		b.WriteString(" AND (" + alias + ".expires_at IS NULL OR " + alias + ".expires_at > ?)")
-		args = append(args, time.Now().UnixMilli())
+		args = append(args, now.UnixMilli())
 	}
 	if !f.IncludeSuperseded {
 		b.WriteString(" AND " + alias + ".superseded_by IS NULL")

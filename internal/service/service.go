@@ -494,7 +494,7 @@ func (s *Service) enqueueConsolidate(namespace, id string) {
 // Returns nil to fall through to a normal insert.
 func (s *Service) dedupExisting(ctx context.Context, m *memory.Memory) *memory.Memory {
 	cands, err := s.store.VectorSearch(ctx, m.Namespace, m.Embedding,
-		store.Filter{Tiers: []memory.Tier{m.Tier}}, 1)
+		store.Filter{Tiers: []memory.Tier{m.Tier}, Now: s.now()}, 1)
 	if err != nil || len(cands) == 0 || cands[0].Score < s.writeDedupMinScore {
 		return nil
 	}
@@ -511,7 +511,7 @@ func (s *Service) candidates(ctx context.Context, m *memory.Memory, excludeID st
 		limit++ // room to drop the self-match
 	}
 	cands, err := s.store.VectorSearch(ctx, m.Namespace, m.Embedding,
-		store.Filter{Tiers: []memory.Tier{memory.TierSemantic, memory.TierProcedural}}, limit)
+		store.Filter{Tiers: []memory.Tier{memory.TierSemantic, memory.TierProcedural}, Now: s.now()}, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -773,6 +773,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		Tiers:             in.Tiers,
 		IncludeExpired:    in.IncludeExpired,
 		IncludeSuperseded: in.IncludeSuperseded,
+		Now:               s.now(),
 	}
 
 	vec, err := embed.EmbedOne(ctx, s.embedder, s.queryPrefix+in.Query)
@@ -982,7 +983,7 @@ func (s *Service) Promote(ctx context.Context) (int, error) {
 	now := s.now()
 	total := 0
 	for _, ns := range namespaces {
-		eps, err := s.store.List(ctx, ns, store.Filter{Tiers: []memory.Tier{memory.TierEpisodic}}, 0)
+		eps, err := s.store.List(ctx, ns, store.Filter{Tiers: []memory.Tier{memory.TierEpisodic}, Now: s.now()}, 0)
 		if err != nil {
 			s.metrics.PromoteResult("error", total)
 			return total, err

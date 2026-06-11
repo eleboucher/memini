@@ -35,6 +35,10 @@ type Filter struct {
 	IncludeExpired bool
 	// IncludeSuperseded includes contradiction-tombstoned memories.
 	IncludeSuperseded bool
+	// Now is the instant expiry is evaluated at; the zero value means the wall
+	// clock. Callers with an injected clock (service.WithClock) should set it so
+	// store-level expiry filtering agrees with their notion of "now".
+	Now time.Time
 }
 
 // Store is the persistence and retrieval contract for memories. Implementations
