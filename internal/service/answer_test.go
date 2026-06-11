@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/eleboucher/memini/internal/embed/embedtest"
 	"github.com/eleboucher/memini/internal/memory"
@@ -39,7 +40,9 @@ func TestAnswerGroundsOnRecall(t *testing.T) {
 	ctx := context.Background()
 	ans := &fakeAnswerer{resp: "postgres"}
 	st := openTestStore(t)
-	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithAnswerer(ans))
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithAnswerer(ans),
+		// Frozen clock so the date annotation in the reader prompt is assertable.
+		service.WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }))
 	if _, err := svc.Remember(ctx, service.RememberInput{Namespace: "alice", Content: "postgres is a relational database", Tier: memory.TierSemantic}); err != nil {
 		t.Fatalf("remember: %v", err)
 	}
@@ -53,8 +56,11 @@ func TestAnswerGroundsOnRecall(t *testing.T) {
 	if len(res.Sources) == 0 {
 		t.Fatal("expected grounding sources")
 	}
-	if !strings.Contains(ans.user, "postgres is a relational database") {
-		t.Fatalf("reader prompt should include the recalled memory; got %q", ans.user)
+	// The system prompt instructs the model to resolve relative dates against
+	// the [bracketed] date each memory carries — pin that the annotation is
+	// actually rendered (1_700_000_000 = 2023-11-14 UTC).
+	if !strings.Contains(ans.user, "- [2023-11-14] postgres is a relational database") {
+		t.Fatalf("reader prompt should date-prefix the recalled memory; got %q", ans.user)
 	}
 }
 
