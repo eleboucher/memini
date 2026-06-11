@@ -5,6 +5,7 @@ package rest
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -241,12 +242,22 @@ type listResponse struct {
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	tiers, err := parseTiers(q)
+	if err != nil {
+		httputil.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	limit, err := parseLimit(q.Get("limit"))
+	if err != nil {
+		httputil.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	in := service.ListInput{
 		Namespace:         namespaceFromContext(r.Context()),
-		Tiers:             parseTiers(q),
+		Tiers:             tiers,
 		IncludeExpired:    q.Get("include_expired") == "true",
 		IncludeSuperseded: q.Get("include_superseded") == "true",
-		Limit:             parseLimit(q.Get("limit")),
+		Limit:             limit,
 	}
 	mems, err := h.svc.List(r.Context(), in)
 	if err != nil {
@@ -286,27 +297,32 @@ func (h *Handler) namespaces(w http.ResponseWriter, r *http.Request) {
 }
 
 // parseTiers reads repeated and/or comma-separated ?tier= values into a tier
-// slice, silently dropping unknown tiers.
-func parseTiers(q url.Values) []memory.Tier {
+// slice. An unknown tier is an error rather than silently unfiltered results.
+func parseTiers(q url.Values) ([]memory.Tier, error) {
 	var tiers []memory.Tier
 	for _, v := range q["tier"] {
 		for part := range strings.SplitSeq(v, ",") {
 			t := memory.Tier(strings.TrimSpace(part))
-			if t.Valid() {
-				tiers = append(tiers, t)
+			if !t.Valid() {
+				return nil, fmt.Errorf("invalid tier %q", t)
 			}
+			tiers = append(tiers, t)
 		}
 	}
-	return tiers
+	return tiers, nil
 }
 
-// parseLimit parses a non-negative ?limit=; invalid or absent yields 0 (all).
-func parseLimit(s string) int {
+// parseLimit parses a non-negative ?limit=; absent yields 0 (all), anything
+// unparseable or negative is an error.
+func parseLimit(s string) (int, error) {
+	if s == "" {
+		return 0, nil
+	}
 	n, err := strconv.Atoi(s)
 	if err != nil || n < 0 {
-		return 0
+		return 0, fmt.Errorf("invalid limit %q", s)
 	}
-	return n
+	return n, nil
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
