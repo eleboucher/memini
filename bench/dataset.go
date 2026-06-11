@@ -297,3 +297,88 @@ func sessionDoc(turns []turn, dates []string, i int, mode DocMode) string {
 		return sessionText(turns)
 	}
 }
+
+// LoadLoCoMoSessions loads LoCoMo at SESSION granularity: each conversation
+// session becomes one document (its turns concatenated), and a question's gold
+// set is the session(s) holding its evidence turns. This matches how
+// session-level memory systems (e.g. MemPalace) score LoCoMo, enabling an
+// apples-to-apples comparison; LoadLoCoMo scores the harder turn granularity.
+func LoadLoCoMoSessions(path string) (*Dataset, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var rows []struct {
+		SampleID     string                     `json:"sample_id"`
+		Conversation map[string]json.RawMessage `json:"conversation"`
+		QA           []struct {
+			Question string          `json:"question"`
+			Answer   json.RawMessage `json:"answer"`
+			Evidence json.RawMessage `json:"evidence"`
+			Category json.RawMessage `json:"category"`
+		} `json:"qa"`
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, fmt.Errorf("bench: parse locomo: %w", err)
+	}
+
+	d := &Dataset{Name: "locomo-sessions"}
+	for i, r := range rows {
+		group := r.SampleID
+		if group == "" {
+			group = fmt.Sprintf("conv-%d", i)
+		}
+		// Map each dialogue id (e.g. "D1:3") to its session document, so a
+		// question's evidence turns resolve to the session(s) containing them.
+		turnToSession := map[string]string{}
+		for key, rawSess := range r.Conversation {
+			if !sessionKeyRe.MatchString(key) {
+				continue // skip non-session fields (speaker names, summaries, dates, ...)
+			}
+			var turns []struct {
+				Speaker string `json:"speaker"`
+				DiaID   string `json:"dia_id"`
+				Text    string `json:"text"`
+			}
+			if json.Unmarshal(rawSess, &turns) != nil {
+				continue
+			}
+			sessID := group + "/" + key
+			var b strings.Builder
+			if date := jsonScalar(r.Conversation[key+"_date_time"]); date != "" {
+				b.WriteString("[" + date + "]\n")
+			}
+			for _, tn := range turns {
+				if tn.DiaID == "" {
+					continue
+				}
+				turnToSession[tn.DiaID] = sessID
+				b.WriteString(strings.TrimSpace(tn.Speaker + ": " + tn.Text))
+				b.WriteByte('\n')
+			}
+			d.Items = append(d.Items, Item{ID: sessID, Group: group, Content: strings.TrimSpace(b.String())})
+		}
+		for _, qa := range r.QA {
+			matches := diaIDRe.FindAllString(string(qa.Evidence), -1)
+			if len(matches) == 0 {
+				continue
+			}
+			seen := map[string]bool{}
+			var gold []string
+			for _, m := range matches {
+				if sid, ok := turnToSession[m]; ok && !seen[sid] {
+					seen[sid] = true
+					gold = append(gold, sid)
+				}
+			}
+			if len(gold) == 0 {
+				continue
+			}
+			d.Questions = append(d.Questions, Question{
+				Query: qa.Question, Gold: gold, Group: group,
+				Answer: jsonScalar(qa.Answer), Category: jsonScalar(qa.Category),
+			})
+		}
+	}
+	return d, nil
+}

@@ -26,7 +26,7 @@ func main() {
 }
 
 func run() error {
-	suite := flag.String("suite", "sample", "sample | file | longmemeval | locomo")
+	suite := flag.String("suite", "sample", "sample | file | longmemeval | locomo | locomo-sessions")
 	data := flag.String("data", "", "dataset path (for file/longmemeval/locomo)")
 	k := flag.String("k", "5", "retrieval cutoff K (comma-separated for multiple, e.g. 5,10)")
 	dims := flag.Int("dims", 256, "embedding dimensions (local embedder)")
@@ -217,6 +217,8 @@ func loadDataset(suite, path string, docMode bench.DocMode) (*bench.Dataset, err
 		return bench.LoadLongMemEval(requirePath(path), docMode)
 	case "locomo":
 		return bench.LoadLoCoMo(requirePath(path))
+	case "locomo-sessions":
+		return bench.LoadLoCoMoSessions(requirePath(path))
 	default:
 		return nil, fmt.Errorf("unknown suite %q", suite)
 	}
