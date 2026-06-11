@@ -148,6 +148,14 @@
       "title": "embeddings",
       "type": "object"
     },
+    "extraEnv": {
+      "description": "Extra environment variables appended verbatim to the container, for\nMEMINI_* settings that don't have dedicated chart values",
+      "items": {
+        "required": []
+      },
+      "title": "extraEnv",
+      "type": "array"
+    },
     "fsck": {
       "description": "Periodic fsck CronJob (the in-process sweeper already handles decay)",
       "properties": {
@@ -430,6 +438,50 @@
       "description": "Replica count (postgres only; sqlite is pinned to 1)",
       "title": "replicaCount",
       "type": "integer"
+    },
+    "rerank": {
+      "description": "Opt-in recall reranking (MEMINI_RERANK); leave mode empty to disable",
+      "properties": {
+        "apiKeySecret": {
+          "description": "Optional existing secret holding the cross-encoder endpoint API key\n(when mode is a URL)",
+          "properties": {
+            "key": {
+              "default": "api-key",
+              "title": "key",
+              "type": "string"
+            },
+            "name": {
+              "default": "",
+              "title": "name",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "apiKeySecret",
+          "type": "object"
+        },
+        "mode": {
+          "default": "",
+          "description": "\"\" or \"off\" (disabled), \"llm\" (reorder with the chat LLM), or a\ncross-encoder /rerank base URL (e.g. http://reranker:8080/v1, served by\nInfinity, vLLM, TEI, or llama-server --rerank)",
+          "title": "mode",
+          "type": "string"
+        },
+        "model": {
+          "default": "",
+          "description": "Cross-encoder model name (when mode is a URL)",
+          "title": "model",
+          "type": "string"
+        },
+        "topN": {
+          "default": 20,
+          "description": "How many composite-ranked candidates the reranker sees",
+          "title": "topN",
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "title": "rerank",
+      "type": "object"
     },
     "resources": {
       "required": [],
