@@ -37,6 +37,9 @@ type Options struct {
 	DefaultNamespace string
 	// BatchSize bounds how many records are written per batch.
 	BatchSize int
+	// OnProgress is called after each batch with (processed, total).
+	// It may be nil.
+	OnProgress func(done, total int)
 }
 
 // Report summarizes an import run.
@@ -92,11 +95,18 @@ func (im *Importer) Import(ctx context.Context, recs []Record, opts Options) (Re
 		clean = append(clean, r)
 	}
 
+	if opts.OnProgress != nil {
+		opts.OnProgress(rep.Skipped, rep.Total)
+	}
+
 	for start := 0; start < len(clean); start += batch {
 		end := min(start+batch, len(clean))
 		imported, errs, err := im.write(ctx, clean[start:end], opts)
 		rep.Imported += imported
 		rep.Errors = append(rep.Errors, errs...)
+		if opts.OnProgress != nil {
+			opts.OnProgress(min(end, len(clean))+rep.Skipped, rep.Total)
+		}
 		if err != nil {
 			return rep, err
 		}
