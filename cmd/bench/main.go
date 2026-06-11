@@ -70,7 +70,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = saveCache() }()
+	defer func() {
+		if err := saveCache(); err != nil {
+			fmt.Fprintf(os.Stderr, "bench: saving embedding cache failed: %v\n", err)
+		}
+	}()
 
 	// Same query-side embedding instruction the server honors in production.
 	queryPrefix := os.Getenv("MEMINI_EMBED_QUERY_PREFIX")

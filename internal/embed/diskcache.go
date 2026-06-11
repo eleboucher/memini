@@ -3,6 +3,7 @@ package embed
 import (
 	"context"
 	"encoding/gob"
+	"log/slog"
 	"os"
 	"sync"
 )
@@ -22,11 +23,15 @@ type DiskCache struct {
 // autosaveEvery flushes to disk after this many new vectors accumulate.
 const autosaveEvery = 500
 
-// NewDiskCache wraps inner, loading any existing cache at path.
+// NewDiskCache wraps inner, loading any existing cache at path. A corrupt
+// cache file is discarded (and logged) rather than half-loaded.
 func NewDiskCache(inner Embedder, path string) (*DiskCache, error) {
 	d := &DiskCache{inner: inner, path: path, cache: map[string][]float32{}}
 	if f, err := os.Open(path); err == nil {
-		_ = gob.NewDecoder(f).Decode(&d.cache)
+		if err := gob.NewDecoder(f).Decode(&d.cache); err != nil {
+			slog.Warn("embed disk cache: discarding corrupt cache file", "path", path, "err", err)
+			d.cache = map[string][]float32{}
+		}
 		_ = f.Close()
 	}
 	return d, nil
@@ -73,7 +78,11 @@ func (d *DiskCache) Embed(ctx context.Context, texts []string) ([][]float32, err
 		shouldSave := len(d.cache)-d.lastSaved >= autosaveEvery
 		d.mu.Unlock()
 		if shouldSave {
-			_ = d.Save()
+			if err := d.Save(); err != nil {
+				// Not fatal for this embed, but a persistent save problem means
+				// every vector is re-embedded (and re-billed) on the next run.
+				slog.Warn("embed disk cache: autosave failed", "path", d.path, "err", err)
+			}
 		}
 	}
 	return out, nil
