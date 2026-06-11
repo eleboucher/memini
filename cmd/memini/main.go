@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"sync"
@@ -167,6 +168,12 @@ func run() error {
 
 	defer joinWorkers()
 
+	if cfg.APIKey == "" && !loopbackAddr(cfg.HTTPAddr) {
+		log.Warn("MEMINI_API_KEY is not set and the listen address is not loopback: " +
+			"the full API (including deletes and cross-namespace reads) is open to " +
+			"anyone who can reach the port")
+	}
+
 	srv := server.New(server.Options{
 		Addr:            cfg.HTTPAddr,
 		ShutdownTimeout: cfg.ShutdownTimeout,
@@ -201,6 +208,20 @@ func run() error {
 	}
 
 	return srv.Run(ctx)
+}
+
+// loopbackAddr reports whether a listen address binds only a loopback
+// interface. An empty host (":8080") binds all interfaces.
+func loopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // buildReranker constructs the recall reranker from MEMINI_RERANK: "llm" uses
