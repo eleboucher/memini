@@ -44,6 +44,94 @@ mise run run
 curl -s localhost:8080/healthz
 ```
 
+### Docker Compose (full local stack)
+
+[`compose.yaml`](compose.yaml) brings up everything you need to try memini on a
+laptop — Postgres + VectorChord, a CPU embeddings server
+(`text-embeddings-inference` serving `bge-small-en-v1.5`, 384-d), and memini
+itself wired to both:
+
+```sh
+docker compose up --build      # builds the image, starts db + embeddings + memini
+curl -s localhost:8080/healthz # -> ok, once the db healthcheck passes
+open http://localhost:8080/    # embedded admin UI
+```
+
+memini is reachable at `http://localhost:8080` (REST + MCP + UI). To enable the
+opt-in LLM pipeline (background dedup/consolidation, `/v1/answer`, `llm` rerank),
+uncomment `MEMINI_LLM_BASE_URL`/`MEMINI_LLM_MODEL` in the `memini` service and
+point them at any OpenAI-compatible chat endpoint. `docker compose down -v` tears
+it down and drops the Postgres volume.
+
+### A single container (sqlite mode)
+
+For a self-contained server with no Postgres, run the image in its default
+embedded (sqlite) mode — just give it a volume for the database and an
+embeddings endpoint to talk to:
+
+```sh
+docker build -t memini .       # or use a prebuilt image if you publish one
+docker run --rm -p 8080:8080 \
+  -v memini-data:/data \
+  -e MEMINI_SQLITE_PATH=/data/memini.db \
+  -e MEMINI_EMBED_BASE_URL=http://host.docker.internal:8081/v1 \
+  -e MEMINI_EMBED_MODEL=bge-small-en-v1.5 \
+  -e MEMINI_EMBED_DIMS=384 \
+  memini
+```
+
+The image runs as a non-root user (`65532`); the named volume keeps memories
+across restarts. On Linux, swap `host.docker.internal` for the host IP (or add
+`--add-host=host.docker.internal:host-gateway`) to reach an embeddings server
+running on the host.
+
+### As an MCP server in Docker
+
+The same image serves MCP. For a **shared, always-on** server, run it over HTTP
+(the Compose or single-container setups above already expose `/mcp` at
+`http://localhost:8080/mcp`) and point agents at that URL.
+
+For a **stdio** MCP server the agent spawns per session, run `memini mcp` in the
+container with `-i` (keep stdin open) and no published port:
+
+```sh
+docker run -i --rm \
+  -v memini-data:/data \
+  -e MEMINI_SQLITE_PATH=/data/memini.db \
+  -e MEMINI_EMBED_BASE_URL=http://host.docker.internal:8081/v1 \
+  -e MEMINI_EMBED_MODEL=bge-small-en-v1.5 -e MEMINI_EMBED_DIMS=384 \
+  -e MEMINI_DEFAULT_NAMESPACE=my-project \
+  memini mcp
+```
+
+Wire that into any MCP client as the launch command — e.g. for Claude Code /
+opencode:
+
+```json
+{
+  "mcpServers": {
+    "memini": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-v", "memini-data:/data",
+        "-e", "MEMINI_SQLITE_PATH=/data/memini.db",
+        "-e", "MEMINI_EMBED_BASE_URL=http://host.docker.internal:8081/v1",
+        "-e", "MEMINI_EMBED_MODEL=bge-small-en-v1.5",
+        "-e", "MEMINI_EMBED_DIMS=384",
+        "-e", "MEMINI_DEFAULT_NAMESPACE=my-project",
+        "memini", "mcp"
+      ]
+    }
+  }
+}
+```
+
+Since the stdio container runs detached from the agent's working directory, set
+`MEMINI_DEFAULT_NAMESPACE` explicitly (the auto cwd/git resolution won't see the
+agent's repo). See [`integrations/`](integrations/) for per-agent recipes and the
+shared-namespace trick.
+
 ### Configuration (12-factor)
 
 | Env var                        | Default                  | Description                                                                                                                                                                                                                                                                                           |
