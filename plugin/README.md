@@ -7,13 +7,26 @@ the agent _when_ to use the memory tools.
 
 ## What it does
 
-| Hook event     | What memini does                                                       |
-| -------------- | ---------------------------------------------------------------------- |
-| `SessionStart` | Searches prior context, writes a short block to the agent's input      |
-| `PreToolUse`   | Before Edit/Write/Read/Glob/Grep, surfaces related memories            |
-| `PostToolUse`  | Buffers state-changing tool calls locally (no network, no per-call memory) |
-| `Stop`         | Distills the buffer into a working-tier checkpoint                     |
-| `SessionEnd`   | Distills the buffer into one durable episodic **session digest**       |
+| Hook event     | What memini does                                                                                        |
+| -------------- | ------------------------------------------------------------------------------------------------------- |
+| `SessionStart` | Searches prior context, writes a short block to the agent's input                                       |
+| `PreToolUse`   | Before Edit/Write/Read/Glob/Grep, surfaces related memories                                             |
+| `PostToolUse`  | Buffers state-changing tool calls locally (no network, no per-call memory)                              |
+| `Stop`         | Distills the buffer into a working-tier checkpoint, and periodically nudges an auto-save (below)        |
+| `PreCompact`   | Before context compaction, distills the buffer into an episodic emergency checkpoint (Claude Code only) |
+| `SessionEnd`   | Distills the buffer into one durable episodic **session digest**                                        |
+
+### Auto-save (Stop)
+
+Agents forget to save. So the `Stop` hook counts the conversation's user
+messages (from the transcript) and, every `MEMINI_AUTO_SAVE_INTERVAL` (default
+15), **blocks the stop once** with a short instruction: review the conversation
+for durable decisions/facts/preferences and persist each via the `memory_remember`
+MCP tool. The agent saves, then stops normally (the next `Stop` carries
+`stop_hook_active` and passes through — no loop). It nudges at most once per
+interval even if the agent saves nothing, and never blocks when the transcript
+is unreadable. On by default; set `MEMINI_AUTO_SAVE=0` to disable. Codex sends no
+transcript path, so the nudge is inert there.
 
 ### Session capture: buffer → digest
 
@@ -35,7 +48,7 @@ Plus 3 skills (`remember`, `recall`, `recap`) the agent invokes directly.
 
 ```
 Install the memini plugin for persistent memory: run `/plugin marketplace add eleboucher/memini`
-then `/plugin install memini`. The plugin registers 5 hooks + 3 skills + the memini MCP server
+then `/plugin install memini`. The plugin registers 6 hooks + 3 skills + the memini MCP server
 so the agent has memory_remember / memory_recall / memory_get / memory_forget without extra
 config. Verify with `curl http://localhost:8080/healthz`.
 ```
@@ -67,6 +80,7 @@ plugin/
 │   ├── session-start.mjs
 │   ├── session-end.mjs
 │   ├── stop.mjs
+│   ├── pre-compact.mjs
 │   ├── pre-tool-use.mjs
 │   └── post-tool-use.mjs
 └── skills/
@@ -92,13 +106,15 @@ the agent's cwd.
 
 ## Environment
 
-| Env var            | Default                     | Used by      | Description                                                  |
-| ------------------ | --------------------------- | ------------ | ------------------------------------------------------------ |
-| `MEMINI_URL`       | `http://localhost:8080`     | hooks (REST) | memini base URL for the lifecycle hooks                      |
-| `MEMINI_MCP_URL`   | `http://localhost:8080/mcp` | MCP tools    | memini `/mcp` URL for the model-invoked memory tools         |
-| `MEMINI_TOKEN`     | —                           | hooks + MCP  | bearer token; required when the server sets `MEMINI_API_KEY` |
-| `MEMINI_NAMESPACE` | auto (cwd/git basename)     | hooks + MCP  | explicit namespace override; otherwise auto-resolved         |
-| `MEMINI_DEBUG`     | —                           | hooks        | set to `1` for verbose hook logging                          |
+| Env var                     | Default                     | Used by      | Description                                                  |
+| --------------------------- | --------------------------- | ------------ | ------------------------------------------------------------ |
+| `MEMINI_URL`                | `http://localhost:8080`     | hooks (REST) | memini base URL for the lifecycle hooks                      |
+| `MEMINI_MCP_URL`            | `http://localhost:8080/mcp` | MCP tools    | memini `/mcp` URL for the model-invoked memory tools         |
+| `MEMINI_TOKEN`              | —                           | hooks + MCP  | bearer token; required when the server sets `MEMINI_API_KEY` |
+| `MEMINI_NAMESPACE`          | auto (cwd/git basename)     | hooks + MCP  | explicit namespace override; otherwise auto-resolved         |
+| `MEMINI_AUTO_SAVE`          | on                          | `Stop` hook  | set to `0` to disable the periodic auto-save nudge           |
+| `MEMINI_AUTO_SAVE_INTERVAL` | `15`                        | `Stop` hook  | user messages between auto-save nudges                       |
+| `MEMINI_DEBUG`              | —                           | hooks        | set to `1` for verbose hook logging                          |
 
 ## Remote memini
 
