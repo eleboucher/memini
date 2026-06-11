@@ -38,7 +38,7 @@ export function Dashboard() {
         <div class="panel stat">
           <div class="k">Last write</div>
           <div class="v" style={{ fontSize: '22px', paddingTop: '8px' }}>
-            {relTime(stats.last_write_at)}
+            {relTime(stats.last_write_at ?? undefined)}
           </div>
           <div class="sub">
             {stats.expired} expired · {stats.superseded} superseded
