@@ -56,6 +56,49 @@ type AnswerResponse struct {
 	Sources []ScoredMemory `json:"sources"`
 }
 
+// ClusterAction defines model for ClusterAction.
+type ClusterAction struct {
+	RepresentativeId string   `json:"representative_id"`
+	Size             int      `json:"size"`
+	TombstonedIds    []string `json:"tombstoned_ids"`
+}
+
+// DedupReport defines model for DedupReport.
+type DedupReport struct {
+	// Actions Per-cluster representative selection. Omitted when no clusters were found.
+	Actions       *[]ClusterAction `json:"actions,omitempty"`
+	ClustersFound int              `json:"clusters_found"`
+	DryRun        bool             `json:"dry_run"`
+	MemoriesSeen  int              `json:"memories_seen"`
+	Namespaces    int              `json:"namespaces"`
+	Tombstoned    int              `json:"tombstoned"`
+}
+
+// DedupRequest Optional knobs for one dedup pass. The zero value uses the production
+// defaults (similarity 0.85, cluster size ≥ 2, all tiers, 20 neighbours
+// per anchor, dry_run false), scoped to the request's namespace.
+type DedupRequest struct {
+	// AllNamespaces Run the pass over every namespace instead of just the request's
+	// namespace. Defaults to false (scope to the request namespace).
+	AllNamespaces *bool `json:"all_namespaces,omitempty"`
+
+	// DryRun Report what would happen without tombstoning anything.
+	DryRun *bool `json:"dry_run,omitempty"`
+
+	// MinClusterSize Smallest cluster acted on. 0 falls back to 2.
+	MinClusterSize *int `json:"min_cluster_size,omitempty"`
+
+	// NeighboursPerAnchor Per-anchor vector-search fan-out. 0 falls back to 20.
+	NeighboursPerAnchor *int `json:"neighbours_per_anchor,omitempty"`
+
+	// Similarity Cosine-like threshold for cluster membership. Higher = stricter
+	// (fewer, tighter clusters). 0 falls back to 0.85.
+	Similarity *float64 `json:"similarity,omitempty"`
+
+	// Tiers Restrict the pass to these tiers; empty means all.
+	Tiers *[]Tier `json:"tiers,omitempty"`
+}
+
 // DeleteNamespaceResponse defines model for DeleteNamespaceResponse.
 type DeleteNamespaceResponse struct {
 	// Deleted Number of memories deleted
@@ -168,6 +211,12 @@ type AnswerQuestionParams struct {
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
+// RunDedupParams defines parameters for RunDedup.
+type RunDedupParams struct {
+	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
+}
+
 // RunFsckParams defines parameters for RunFsck.
 type RunFsckParams struct {
 	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
@@ -221,6 +270,9 @@ type GetStatsParams struct {
 // AnswerQuestionJSONRequestBody defines body for AnswerQuestion for application/json ContentType.
 type AnswerQuestionJSONRequestBody = AnswerRequest
 
+// RunDedupJSONRequestBody defines body for RunDedup for application/json ContentType.
+type RunDedupJSONRequestBody = DedupRequest
+
 // RememberMemoryJSONRequestBody defines body for RememberMemory for application/json ContentType.
 type RememberMemoryJSONRequestBody = RememberRequest
 
@@ -232,6 +284,9 @@ type ServerInterface interface {
 	// Recall memories and answer a question grounded on them (requires an LLM)
 	// (POST /v1/answer)
 	AnswerQuestion(w http.ResponseWriter, r *http.Request, params AnswerQuestionParams)
+	// Collapse near-duplicate memories (vector cluster) — tombstone the lower-scored members of each cluster
+	// (POST /v1/dedup)
+	RunDedup(w http.ResponseWriter, r *http.Request, params RunDedupParams)
 	// Run a consistency sweep (purge expired, enforce short-term cap, audit duplicates)
 	// (POST /v1/fsck)
 	RunFsck(w http.ResponseWriter, r *http.Request, params RunFsckParams)
@@ -268,6 +323,12 @@ type Unimplemented struct{}
 // Recall memories and answer a question grounded on them (requires an LLM)
 // (POST /v1/answer)
 func (_ Unimplemented) AnswerQuestion(w http.ResponseWriter, r *http.Request, params AnswerQuestionParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Collapse near-duplicate memories (vector cluster) — tombstone the lower-scored members of each cluster
+// (POST /v1/dedup)
+func (_ Unimplemented) RunDedup(w http.ResponseWriter, r *http.Request, params RunDedupParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -372,6 +433,53 @@ func (siw *ServerInterfaceWrapper) AnswerQuestion(w http.ResponseWriter, r *http
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.AnswerQuestion(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RunDedup operation middleware
+func (siw *ServerInterfaceWrapper) RunDedup(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params RunDedupParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Memini-Namespace" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Memini-Namespace")]; found {
+		var XMeminiNamespace Namespace
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Memini-Namespace", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Memini-Namespace", valueList[0], &XMeminiNamespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Memini-Namespace", Err: err})
+			return
+		}
+
+		params.XMeminiNamespace = &XMeminiNamespace
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RunDedup(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -947,6 +1055,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/answer", wrapper.AnswerQuestion)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/dedup", wrapper.RunDedup)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/fsck", wrapper.RunFsck)

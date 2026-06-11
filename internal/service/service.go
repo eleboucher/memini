@@ -72,6 +72,9 @@ type Metrics interface {
 	// ReinforceResult records one best-effort recall reinforcement write:
 	// "ok" or "error".
 	ReinforceResult(result string)
+	// DedupTombstoned records the total memories tombstoned by one one-shot
+	// Service.Dedup call. Called once per call.
+	DedupTombstoned(n int)
 }
 
 type nopMetrics struct{}
@@ -87,6 +90,7 @@ func (nopMetrics) OpDuration(string, time.Duration)    {}
 func (nopMetrics) AnswerResult(string)                 {}
 func (nopMetrics) RerankResult(string, string)         {}
 func (nopMetrics) ReinforceResult(string)              {}
+func (nopMetrics) DedupTombstoned(int)                 {}
 
 // ErrInvalidInput marks errors caused by the caller's request (missing fields,
 // unknown tiers) as opposed to backend failures. API layers map it to 400;

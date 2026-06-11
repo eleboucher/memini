@@ -33,6 +33,10 @@ type DedupOptions struct {
 	MinClusterSize int
 	// Tiers restricts the pass to these tiers; nil/empty means all tiers.
 	Tiers []memory.Tier
+	// Namespaces restricts the pass to these namespaces; nil/empty means every
+	// namespace. Clusters never span namespaces, so scoping the pass to one
+	// (the post-import case) is both cheaper and avoids touching other tenants.
+	Namespaces []string
 	// NeighboursPerAnchor bounds the per-anchor vector-search fan-out. Larger
 	// values tighten clusters at higher vector-search cost. 0 falls back to
 	// defaultDedupNeighboursAnchor.
@@ -104,9 +108,12 @@ func Dedup(ctx context.Context, st store.Store, emb embed.Embedder, opts DedupOp
 		log = slog.Default()
 	}
 
-	namespaces, err := st.ListNamespaces(ctx)
-	if err != nil {
-		return rep, err
+	namespaces := opts.Namespaces
+	if len(namespaces) == 0 {
+		var err error
+		if namespaces, err = st.ListNamespaces(ctx); err != nil {
+			return rep, err
+		}
 	}
 	rep.DryRun = opts.DryRun
 
@@ -280,7 +287,8 @@ type DedupJob struct {
 
 // NewDedupJob builds a DedupJob that calls Dedup(opts) every interval.
 // interval <= 0 disables the job.
-func NewDedupJob(st store.Store, emb embed.Embedder, m store.Metrics, log *slog.Logger, interval time.Duration, opts DedupOptions) *DedupJob {
+func NewDedupJob(st store.Store, emb embed.Embedder, m store.Metrics, log *slog.Logger,
+	interval time.Duration, opts DedupOptions) *DedupJob {
 	return &DedupJob{
 		store:    st,
 		embedder: emb,

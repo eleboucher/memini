@@ -191,6 +191,19 @@ func buildServiceStack(ctx context.Context, cfg *config.Config, log *slog.Logger
 	workers.Go(func() { svc.StartConsolidator(workerCtx) })
 	workers.Go(func() { svc.RunPromoter(workerCtx, cfg.PromoteInterval) })
 	workers.Go(func() { maintenance.NewSweeper(st, log, cfg.SweepInterval, cfg.ShortTermCap).Run(workerCtx) })
+	if cfg.DedupInterval > 0 {
+		dedupJob := maintenance.NewDedupJob(st, embedder, metricsImpl, log, cfg.DedupInterval, maintenance.DedupOptions{
+			Similarity:          cfg.DedupSimilarity,
+			MinClusterSize:      cfg.DedupMinClusterSize,
+			NeighboursPerAnchor: cfg.DedupNeighboursAnchor,
+			Tiers:               cfg.DedupTierList(),
+		})
+		workers.Go(func() { dedupJob.Run(workerCtx) })
+		log.Info("periodic dedup enabled",
+			"interval", cfg.DedupInterval,
+			"similarity", cfg.DedupSimilarity,
+			"min_cluster_size", cfg.DedupMinClusterSize)
+	}
 
 	cleanup := func() {
 		if err := st.Close(); err != nil {

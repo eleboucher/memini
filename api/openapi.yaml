@@ -49,6 +49,36 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/FsckReport" }
         "500": { $ref: "#/components/responses/Error" }
+  /v1/dedup:
+    post:
+      operationId: runDedup
+      tags: [memory]
+      summary: Collapse near-duplicate memories (vector cluster) — tombstone the lower-scored members of each cluster
+      description: |
+        Clusters live memories by embedding similarity (cosine ≥
+        `similarity`) and tombstones the lower-RetentionScore members of each
+        cluster, pointing them at the cluster's representative. The action is
+        reversible (SupersededBy → representative) and the duplicates remain in
+        storage but are hidden from default search results. Dry-run reports the
+        actions without committing them.
+
+        Scoped to the request's namespace by default — the common case is
+        cleaning up right after a large import into one namespace, where
+        exports are typically full of restatements. Set `all_namespaces: true`
+        to run the pass over every namespace instead.
+      parameters: [{ $ref: "#/components/parameters/Namespace" }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DedupRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DedupReport" }
+        "500": { $ref: "#/components/responses/Error" }
   /v1/memories:
     post:
       operationId: rememberMemory
@@ -324,6 +354,63 @@ components:
         duplicate_groups:
           type: array
           items: { type: array, items: { type: string } }
+    DedupRequest:
+      type: object
+      description: |
+        Optional knobs for one dedup pass. The zero value uses the production
+        defaults (similarity 0.85, cluster size ≥ 2, all tiers, 20 neighbours
+        per anchor, dry_run false), scoped to the request's namespace.
+      properties:
+        similarity:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: |
+            Cosine-like threshold for cluster membership. Higher = stricter
+            (fewer, tighter clusters). 0 falls back to 0.85.
+        min_cluster_size:
+          type: integer
+          minimum: 2
+          description: Smallest cluster acted on. 0 falls back to 2.
+        tiers:
+          type: array
+          items: { $ref: "#/components/schemas/Tier" }
+          description: Restrict the pass to these tiers; empty means all.
+        neighbours_per_anchor:
+          type: integer
+          minimum: 1
+          description: Per-anchor vector-search fan-out. 0 falls back to 20.
+        all_namespaces:
+          type: boolean
+          description: |
+            Run the pass over every namespace instead of just the request's
+            namespace. Defaults to false (scope to the request namespace).
+        dry_run:
+          type: boolean
+          description: Report what would happen without tombstoning anything.
+    DedupReport:
+      type: object
+      required: [namespaces, memories_seen, clusters_found, tombstoned, dry_run]
+      properties:
+        namespaces: { type: integer }
+        memories_seen: { type: integer }
+        clusters_found: { type: integer }
+        tombstoned: { type: integer }
+        dry_run: { type: boolean }
+        actions:
+          type: array
+          description: Per-cluster representative selection. Omitted when no clusters were found.
+          items: { $ref: "#/components/schemas/ClusterAction" }
+    ClusterAction:
+      type: object
+      required: [representative_id, tombstoned_ids, size]
+      properties:
+        representative_id: { type: string }
+        tombstoned_ids:
+          type: array
+          items: { type: string }
+        size: { type: integer }
     Memory:
       type: object
       required:

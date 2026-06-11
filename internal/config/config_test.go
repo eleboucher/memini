@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eleboucher/memini/internal/config"
+	"github.com/eleboucher/memini/internal/memory"
 )
 
 // clearMeminiEnv makes every memini env var absent for the duration of the
@@ -162,6 +163,22 @@ func TestLoadValidationErrors(t *testing.T) {
 			name: "unknown consolidate mode",
 			env:  map[string]string{"MEMINI_CONSOLIDATE_MODE": "eventually"},
 		},
+		{
+			name: "dedup similarity out of range",
+			env:  map[string]string{"MEMINI_DEDUP_SIMILARITY": "1.5"},
+		},
+		{
+			name: "dedup min cluster size too small",
+			env:  map[string]string{"MEMINI_DEDUP_MIN_CLUSTER_SIZE": "1"},
+		},
+		{
+			name: "dedup neighbours too small",
+			env:  map[string]string{"MEMINI_DEDUP_NEIGHBOURS": "0"},
+		},
+		{
+			name: "dedup unknown tier",
+			env:  map[string]string{"MEMINI_DEDUP_TIERS": "semantic,bogus"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -171,6 +188,44 @@ func TestLoadValidationErrors(t *testing.T) {
 			}
 			if _, err := config.Load(); err == nil {
 				t.Fatal("Load: expected error, got nil")
+			}
+		})
+	}
+}
+
+func TestDedupTierList(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  []memory.Tier
+	}{
+		{name: "empty means all tiers", value: "", want: nil},
+		{name: "single tier", value: "semantic", want: []memory.Tier{memory.TierSemantic}},
+		{
+			name:  "comma list with whitespace",
+			value: " semantic , episodic ",
+			want:  []memory.Tier{memory.TierSemantic, memory.TierEpisodic},
+		},
+		{name: "trailing comma is ignored", value: "semantic,", want: []memory.Tier{memory.TierSemantic}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearMeminiEnv(t)
+			if tt.value != "" {
+				t.Setenv("MEMINI_DEDUP_TIERS", tt.value)
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			got := cfg.DedupTierList()
+			if len(got) != len(tt.want) {
+				t.Fatalf("DedupTierList() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("DedupTierList()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
 			}
 		})
 	}
@@ -188,4 +243,6 @@ var meminiEnvKeys = []string{
 	"MEMINI_SWEEP_INTERVAL", "MEMINI_SHORT_TERM_CAP", "MEMINI_UI_ENABLED",
 	"MEMINI_API_KEY", "MEMINI_NAMESPACE_HEADER",
 	"MEMINI_DEFAULT_NAMESPACE", "MEMINI_NAMESPACE",
+	"MEMINI_DEDUP_INTERVAL", "MEMINI_DEDUP_SIMILARITY", "MEMINI_DEDUP_MIN_CLUSTER_SIZE",
+	"MEMINI_DEDUP_NEIGHBOURS", "MEMINI_DEDUP_TIERS",
 }

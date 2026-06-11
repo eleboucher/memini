@@ -392,3 +392,53 @@ func TestErrorStatusMapping(t *testing.T) {
 		}
 	})
 }
+
+// TestDedupNamespaceScoping guards the isolation fix: POST /v1/dedup defaults
+// to the caller's namespace and must not touch other tenants unless
+// all_namespaces is set.
+func TestDedupNamespaceScoping(t *testing.T) {
+	h := newServer(t)
+
+	// Two identical pairs, one per namespace.
+	seed := func(ns string) {
+		for range 2 {
+			rec := do(t, h, http.MethodPost, "/v1/memories", ns, apiKey, map[string]any{
+				"content": "the sky is blue", "tier": "semantic",
+			})
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("seed %s: want 201, got %d (%s)", ns, rec.Code, rec.Body)
+			}
+		}
+	}
+	seed("alice")
+	seed("bob")
+
+	dedup := func(ns string, body any) struct {
+		Namespaces, Tombstoned, ClustersFound int
+	} {
+		rec := do(t, h, http.MethodPost, "/v1/dedup", ns, apiKey, body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("dedup %s: want 200, got %d (%s)", ns, rec.Code, rec.Body)
+		}
+		var out struct {
+			Namespaces    int `json:"namespaces"`
+			Tombstoned    int `json:"tombstoned"`
+			ClustersFound int `json:"clusters_found"`
+		}
+		mustJSON(t, rec, &out)
+		return struct{ Namespaces, Tombstoned, ClustersFound int }{out.Namespaces, out.Tombstoned, out.ClustersFound}
+	}
+
+	// Scoped to alice: only her duplicate is collapsed; bob is untouched.
+	got := dedup("alice", map[string]any{"similarity": 0.5})
+	if got.Namespaces != 1 || got.ClustersFound != 1 || got.Tombstoned != 1 {
+		t.Fatalf("scoped dedup: namespaces=%d clusters=%d tombstoned=%d, want 1/1/1",
+			got.Namespaces, got.ClustersFound, got.Tombstoned)
+	}
+
+	// bob still has both live: a second scoped dedup on bob finds a fresh pair.
+	got = dedup("bob", map[string]any{"similarity": 0.5})
+	if got.Tombstoned != 1 {
+		t.Fatalf("bob untouched by alice's dedup; scoped pass should collapse 1, got tombstoned=%d", got.Tombstoned)
+	}
+}

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+
+	"github.com/eleboucher/memini/internal/memory"
 )
 
 // Backend selects the storage driver.
@@ -119,6 +121,22 @@ type Config struct {
 	// ShortTermCap bounds short-term (working+episodic) memories per namespace;
 	// the sweeper evicts the lowest-retention ones over the cap. 0 disables it.
 	ShortTermCap int `env:"MEMINI_SHORT_TERM_CAP" envDefault:"1000"`
+
+	// Dedup tuning. The dedup pass collapses near-duplicate memories
+	// (embedding similarity ≥ DedupSimilarity) into a single representative
+	// per cluster; the rest are tombstoned (SupersededBy → representative),
+	// not hard-deleted, so the action is reversible. Primarily a post-import
+	// cleanup tool (exports are typically full of restatements), exposed
+	// on-demand via POST /v1/dedup. Set DedupInterval > 0 to also run it as a
+	// periodic store-wide background job (off by default).
+	DedupInterval         time.Duration `env:"MEMINI_DEDUP_INTERVAL" envDefault:"0"`
+	DedupSimilarity       float64       `env:"MEMINI_DEDUP_SIMILARITY" envDefault:"0.85"`
+	DedupMinClusterSize   int           `env:"MEMINI_DEDUP_MIN_CLUSTER_SIZE" envDefault:"2"`
+	DedupNeighboursAnchor int           `env:"MEMINI_DEDUP_NEIGHBOURS" envDefault:"20"`
+	// DedupTiers is an optional comma-separated list restricting the periodic
+	// pass to specific tiers (working,episodic,semantic,procedural). Empty
+	// means all tiers.
+	DedupTiers string `env:"MEMINI_DEDUP_TIERS" envDefault:""`
 
 	// UIEnabled mounts the embedded admin UI at /. Enabled by default; set
 	// MEMINI_UI_ENABLED=false to run a headless API/MCP-only service.
@@ -241,5 +259,39 @@ func (c *Config) validate() error {
 	default:
 		return fmt.Errorf("unknown MEMINI_CONSOLIDATE_MODE %q (want async|sync|off)", c.ConsolidateMode)
 	}
+	if c.DedupSimilarity < 0 || c.DedupSimilarity > 1 {
+		return fmt.Errorf("MEMINI_DEDUP_SIMILARITY must be in [0,1], got %v", c.DedupSimilarity)
+	}
+	if c.DedupMinClusterSize < 2 {
+		return fmt.Errorf("MEMINI_DEDUP_MIN_CLUSTER_SIZE must be >= 2, got %d", c.DedupMinClusterSize)
+	}
+	if c.DedupNeighboursAnchor < 1 {
+		return fmt.Errorf("MEMINI_DEDUP_NEIGHBOURS must be >= 1, got %d", c.DedupNeighboursAnchor)
+	}
+	for _, t := range c.dedupTiers() {
+		if !t.Valid() {
+			return fmt.Errorf("unknown tier %q in MEMINI_DEDUP_TIERS (want working|episodic|semantic|procedural)", t)
+		}
+	}
 	return nil
+}
+
+// DedupTierList parses MEMINI_DEDUP_TIERS into the tiers the periodic dedup
+// pass is restricted to. Empty/unset returns nil, meaning all tiers. Values
+// are validated in validate(), so the result is safe to use directly.
+func (c *Config) DedupTierList() []memory.Tier {
+	return c.dedupTiers()
+}
+
+func (c *Config) dedupTiers() []memory.Tier {
+	if strings.TrimSpace(c.DedupTiers) == "" {
+		return nil
+	}
+	var tiers []memory.Tier
+	for p := range strings.SplitSeq(c.DedupTiers, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			tiers = append(tiers, memory.Tier(p))
+		}
+	}
+	return tiers
 }

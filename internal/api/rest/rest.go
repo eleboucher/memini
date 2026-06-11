@@ -90,6 +90,66 @@ func (h *Server) RunFsck(w http.ResponseWriter, r *http.Request, _ RunFsckParams
 	httputil.JSON(w, http.StatusOK, out)
 }
 
+// RunDedup implements POST /v1/dedup. The optional body tunes the pass; the
+// zero value uses the production defaults. The pass is scoped to the request's
+// namespace unless all_namespaces is set. Dry-run reports what would happen
+// without tombstoning.
+func (h *Server) RunDedup(w http.ResponseWriter, r *http.Request, _ RunDedupParams) {
+	in := service.DedupInput{Namespaces: []string{namespaceFromContext(r.Context())}}
+	if r.ContentLength != 0 {
+		var req DedupRequest
+		if !decode(w, r, &req) {
+			return
+		}
+		if req.Similarity != nil {
+			in.Similarity = *req.Similarity
+		}
+		if req.MinClusterSize != nil {
+			in.MinClusterSize = *req.MinClusterSize
+		}
+		if req.NeighboursPerAnchor != nil {
+			in.NeighboursPerAnchor = *req.NeighboursPerAnchor
+		}
+		if req.DryRun != nil {
+			in.DryRun = *req.DryRun
+		}
+		if req.AllNamespaces != nil && *req.AllNamespaces {
+			in.Namespaces = nil // empty → every namespace
+		}
+		if req.Tiers != nil && len(*req.Tiers) > 0 {
+			tiers := make([]memory.Tier, len(*req.Tiers))
+			for i, t := range *req.Tiers {
+				tiers[i] = memory.Tier(t)
+			}
+			in.Tiers = tiers
+		}
+	}
+	report, err := h.svc.Dedup(r.Context(), in)
+	if err != nil {
+		httputil.Error(w, statusFor(err), err.Error())
+		return
+	}
+	out := DedupReport{
+		Namespaces:    report.Namespaces,
+		MemoriesSeen:  report.MemoriesSeen,
+		ClustersFound: report.ClustersFound,
+		Tombstoned:    report.Tombstoned,
+		DryRun:        report.DryRun,
+	}
+	if len(report.Actions) > 0 {
+		actions := make([]ClusterAction, len(report.Actions))
+		for i, a := range report.Actions {
+			actions[i] = ClusterAction{
+				RepresentativeId: a.RepresentativeID,
+				TombstonedIds:    a.TombstonedIDs,
+				Size:             a.Size,
+			}
+		}
+		out.Actions = &actions
+	}
+	httputil.JSON(w, http.StatusOK, out)
+}
+
 // RememberMemory implements POST /v1/memories.
 func (h *Server) RememberMemory(w http.ResponseWriter, r *http.Request, _ RememberMemoryParams) {
 	var req RememberRequest

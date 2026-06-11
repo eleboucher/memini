@@ -35,6 +35,7 @@ type consolidateMetrics struct {
 	storeSoftDelete prometheus.Counter
 	storeSweep      *prometheus.CounterVec
 	activeByTier    *prometheus.GaugeVec
+	dedupTombstoned prometheus.Counter
 
 	// embed-level
 	embedDuration *prometheus.HistogramVec
@@ -126,6 +127,10 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 			Name: "memini_memories_active",
 			Help: "Live (non-superseded, non-expired) memory count by tier, refreshed after sweeps and fsck.",
 		}, []string{labelTier}),
+		dedupTombstoned: factory.NewCounter(prometheus.CounterOpts{
+			Name: "memini_dedup_tombstoned_total",
+			Help: "Memories tombstoned by the dedup pass (periodic job or one-shot call).",
+		}),
 		embedDuration: factory.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "memini_embed_duration_seconds",
 			Help:    "Embedder call latency, by backend layer (openai, cached, diskcache, batched, disabled).",
@@ -214,6 +219,12 @@ func (m *consolidateMetrics) SweepExpired(tier string) {
 
 func (m *consolidateMetrics) ActiveByTier(tier string, n int) {
 	m.activeByTier.WithLabelValues(tier).Set(float64(n))
+}
+
+func (m *consolidateMetrics) DedupTombstoned(n int) {
+	if n > 0 {
+		m.dedupTombstoned.Add(float64(n))
+	}
 }
 
 // embed.Metrics methods.

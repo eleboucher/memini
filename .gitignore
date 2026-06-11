@@ -21,3 +21,4 @@ coverage.out
 # Stray QA benchmark checkpoints and built command binaries.
 qa_*.jsonl
 /locomo-qa
+/memini
