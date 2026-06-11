@@ -96,8 +96,9 @@ runs `resolveProject(data.cwd)` and sends the result as the
 `X-Memini-Namespace` header. Resolution order:
 
 1. `MEMINI_NAMESPACE` env var, if set.
-2. `git rev-parse --show-toplevel` in `data.cwd`, then take the basename.
-3. `basename(data.cwd)`.
+2. `git remote get-url origin` in `data.cwd`, then take the repo basename.
+3. `git rev-parse --show-toplevel` in `data.cwd`, then take the basename.
+4. `basename(data.cwd)`.
 
 This matches agentmemory's resolver. The server-side auto-resolve (when
 no namespace header is sent) is only a fallback for clients that don't

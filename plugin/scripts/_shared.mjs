@@ -1,7 +1,7 @@
 // Shared utilities for the memini plugin's hook scripts.
 //
 // Mirrors the layout of agentmemory's plugin/scripts/_shared.mjs:
-//   - resolveProject:   env > git toplevel basename > cwd basename
+//   - resolveProject:   env > git remote origin > git toplevel basename > cwd basename
 //   - readStdin:        drain stdin to a UTF-8 string
 //   - jsonRequest:      POST JSON with bearer-token + namespace headers
 //   - postSearch:       POST /v1/search and return result.memory[] of {content,score}
@@ -18,18 +18,45 @@ import fs from "node:fs";
 export const DEBUG = process.env["MEMINI_DEBUG"] === "1";
 
 /**
- * Resolve the project (namespace) for a hook invocation.
- * Order: MEMINI_NAMESPACE env > git toplevel basename in cwd > cwd basename.
- *
- * Mirrors agentmemory's resolveProject: the agent supplies `data.cwd` with
- * its real working directory, so the resolver runs there. This is the
- * authoritative source — the server-side auto-resolve is only a fallback
- * for clients that send no namespace.
+ * Extract the repo name from a git remote URL.
+ * Handles ssh://, https://, and scp-style URLs; strips a trailing .git.
+ * Returns the basename, or null on any parse error.
+ */
+export function repoNameFromRemote(url) {
+  if (typeof url !== "string" || !url) return null;
+  const cleaned = url.trim().replace(/\/+$/, "").replace(/\.git$/i, "");
+  if (!cleaned) return null;
+  const scpMatch = cleaned.match(/^[^/:]+:[^/]/);
+  if (scpMatch) {
+    const path = cleaned.slice(scpMatch[0].indexOf(":") + 1);
+    const seg = path.split("/").filter(Boolean).pop();
+    return seg || null;
+  }
+  const seg = cleaned.split("/").filter(Boolean).pop();
+  return seg || null;
+}
+
+/**
+ * Resolve the project namespace for a hook invocation.
+ * Order: MEMINI_NAMESPACE env > git remote origin > git toplevel basename > cwd basename.
+ * The remote wins over the toplevel so worktrees and /tmp clones get a
+ * stable, canonical name.
  */
 export function resolveProject(cwd) {
   const nsEnv = process.env["MEMINI_NAMESPACE"];
   if (nsEnv && nsEnv.trim()) return nsEnv.trim();
   const dir = cwd && cwd.trim() ? cwd : process.cwd();
+  try {
+    const url = execSync("git remote get-url origin", {
+      cwd: dir,
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 500,
+    })
+      .toString()
+      .trim();
+    const name = repoNameFromRemote(url);
+    if (name) return name;
+  } catch {}
   try {
     const top = execSync("git rev-parse --show-toplevel", {
       cwd: dir,

@@ -14,7 +14,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, basename } from "node:path";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -66,11 +66,54 @@ function startMockServer(handler) {
   });
 }
 
-test("resolveProject picks git toplevel basename over cwd", async () => {
+test("resolveProject uses git remote origin repo name over toplevel basename", async () => {
   const { resolveProject } = await import("./_shared.mjs");
   const proj = resolveProject(__dirname);
-  // We're inside the memini repo, so this should be "memini"
   assert.equal(proj, "memini");
+});
+
+test("resolveProject: a /tmp clone of a real repo resolves to that repo's name", async () => {
+  const { execSync } = await import("node:child_process");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "memini-test-"));
+  const bareDir = mkdtempSync(join(tmpdir(), "memini-bare-"));
+  try {
+    execSync("git init -q --bare", { cwd: bareDir });
+    execSync("git init -q", { cwd: dir });
+    execSync(`git remote add origin file://${bareDir}/my-cool-repo.git`, { cwd: dir });
+    const { resolveProject } = await import("./_shared.mjs?cb=" + Date.now());
+    assert.equal(resolveProject(dir), "my-cool-repo");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(bareDir, { recursive: true, force: true });
+  }
+});
+
+test("resolveProject: falls back to toplevel basename when no origin remote", async () => {
+  const { execSync } = await import("node:child_process");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "memini-test-"));
+  try {
+    execSync("git init -q", { cwd: dir });
+    const { resolveProject } = await import("./_shared.mjs?cb=" + Date.now());
+    assert.equal(resolveProject(dir), basename(dir));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveProject: falls back to cwd basename for non-git dirs", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "memini-test-"));
+  try {
+    const { resolveProject } = await import("./_shared.mjs?cb=" + Date.now());
+    assert.equal(resolveProject(dir), basename(dir));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("resolveProject respects MEMINI_NAMESPACE override", async () => {
@@ -83,6 +126,19 @@ test("resolveProject respects MEMINI_NAMESPACE override", async () => {
     if (prev === undefined) delete process.env.MEMINI_NAMESPACE;
     else process.env.MEMINI_NAMESPACE = prev;
   }
+});
+
+test("repoNameFromRemote parses common git URL shapes", async () => {
+  const { repoNameFromRemote } = await import("./_shared.mjs");
+  assert.equal(repoNameFromRemote("git@github.com:user/repo.git"), "repo");
+  assert.equal(repoNameFromRemote("https://github.com/user/repo.git"), "repo");
+  assert.equal(repoNameFromRemote("https://github.com/user/repo"), "repo");
+  assert.equal(repoNameFromRemote("ssh://git@host:2222/path/to/repo.git"), "repo");
+  assert.equal(repoNameFromRemote("ssh://git@host:2222/path/to/repo"), "repo");
+  assert.equal(repoNameFromRemote("repo.git"), "repo");
+  assert.equal(repoNameFromRemote(""), null);
+  assert.equal(repoNameFromRemote(null), null);
+  assert.equal(repoNameFromRemote("https://github.com/user/multi-level/nested.git"), "nested");
 });
 
 test("session-start.mjs: queries with right namespace, writes context to stdout", async () => {
