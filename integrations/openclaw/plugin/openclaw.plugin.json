@@ -11,6 +11,8 @@
       "enabled": { "type": "boolean" },
       "base_url": { "type": "string" },
       "namespace": { "type": "string" },
+      "namespace_per_agent": { "type": "boolean" },
+      "namespace_template": { "type": "string" },
       "fallback_on_error": { "type": "boolean" },
       "timeout_ms": { "type": "number" }
     }
@@ -21,6 +23,14 @@
     "namespace": {
       "label": "Namespace",
       "help": "Tenant the memory is scoped to (X-Memini-Namespace)"
+    },
+    "namespace_per_agent": {
+      "label": "Per-Agent Namespaces",
+      "help": "Scope memory per agent instead of sharing one namespace"
+    },
+    "namespace_template": {
+      "label": "Namespace Template",
+      "help": "Per-agent namespace, e.g. \"{agent}\" or \"openclaw-{agent}\" ({namespace} also substituted)"
     },
     "fallback_on_error": { "label": "Fallback On Error" },
     "timeout_ms": { "label": "Timeout (ms)" }
