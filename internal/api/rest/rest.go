@@ -315,6 +315,9 @@ func (h *Server) ListNamespaces(w http.ResponseWriter, r *http.Request) {
 		httputil.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if ns == nil {
+		ns = []string{} // marshal as [] rather than null on an empty store
+	}
 	httputil.JSON(w, http.StatusOK, NamespacesResponse{Namespaces: ns})
 }
 
