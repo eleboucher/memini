@@ -65,8 +65,11 @@ helm install memini ./charts/memini \
 | service.type | string | `"ClusterIP"` |  |
 | serviceAccount.create | bool | `true` | Create a ServiceAccount |
 | serviceAccount.name | string | `""` | ServiceAccount name; generated when empty |
-| sqlite | object | `{"persistence":{"accessModes":["ReadWriteOnce"],"enabled":true,"size":"5Gi","storageClass":""}}` | sqlite backend persistence (StatefulSet volumeClaimTemplate) |
+| sqlite | object | `{"persistence":{"accessModes":["ReadWriteOnce"],"enabled":true,"existingClaim":"","size":"5Gi","storageClass":""}}` | sqlite backend persistence (StatefulSet volumeClaimTemplate) |
+| sqlite.persistence.existingClaim | string | `""` | Mount a pre-created PVC instead of rendering a volumeClaimTemplate (e.g. a claim managed or restored by VolSync); when set, size, storageClass and accessModes are ignored |
 | tolerations | list | `[]` |  |
+| ui | object | `{"enabled":true}` | Embedded admin UI served at / |
+| ui.enabled | bool | `true` | Mount the admin SPA at /; set to false for a headless API/MCP-only service |
 
 ## Observability
 
