@@ -230,3 +230,55 @@ func mustJSON(t *testing.T, rec *httptest.ResponseRecorder, v any) {
 		t.Fatalf("decode response: %v (%s)", err, rec.Body)
 	}
 }
+
+// TestListQueryParamValidation pins the ?tier= / ?limit= contract: unknown
+// tiers and unparseable or negative limits are 400s (never silently
+// unfiltered results), and comma-separated tier values keep working alongside
+// repeats as documented in the spec.
+func TestListQueryParamValidation(t *testing.T) {
+	h := newServer(t)
+
+	for _, s := range []struct{ content, tier string }{
+		{"semantic fact", "semantic"},
+		{"episodic note", "episodic"},
+		{"working scratch", "working"},
+	} {
+		rec := do(t, h, http.MethodPost, "/v1/memories", "alice", apiKey, map[string]any{
+			"content": s.content, "tier": s.tier,
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("seed: want 201, got %d (%s)", rec.Code, rec.Body)
+		}
+	}
+
+	var lr struct {
+		Memories []struct {
+			Tier string `json:"tier"`
+		} `json:"memories"`
+	}
+
+	// Comma-separated and repeated tier filters are equivalent.
+	for _, q := range []string{"?tier=semantic,episodic", "?tier=semantic&tier=episodic"} {
+		rec := do(t, h, http.MethodGet, "/v1/memories"+q, "alice", apiKey, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("list %s: want 200, got %d (%s)", q, rec.Code, rec.Body)
+		}
+		mustJSON(t, rec, &lr)
+		if len(lr.Memories) != 2 {
+			t.Fatalf("list %s: want 2 memories, got %d", q, len(lr.Memories))
+		}
+	}
+
+	for _, q := range []string{"?tier=semantik", "?limit=abc", "?limit=-1"} {
+		rec := do(t, h, http.MethodGet, "/v1/memories"+q, "alice", apiKey, nil)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("list %s: want 400, got %d (%s)", q, rec.Code, rec.Body)
+		}
+	}
+
+	rec := do(t, h, http.MethodGet, "/v1/memories?limit=1", "alice", apiKey, nil)
+	mustJSON(t, rec, &lr)
+	if len(lr.Memories) != 1 {
+		t.Fatalf("limit=1: want 1 memory, got %d", len(lr.Memories))
+	}
+}
