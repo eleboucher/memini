@@ -48,7 +48,12 @@ func Open(ctx context.Context, path string, dims int) (*Store, error) {
 	if dims <= 0 {
 		return nil, fmt.Errorf("sqlitevec: dims must be positive, got %d", dims)
 	}
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(10000)&_pragma=journal_mode(wal)&_pragma=foreign_keys(on)", path)
+	// _txlock=immediate makes BeginTx take the write lock up front. The store's
+	// transactions are all writers; a deferred tx that upgraded to a write under
+	// concurrency would get SQLITE_BUSY immediately (busy_timeout does not apply
+	// to lock upgrades in WAL mode) and fail instead of waiting.
+	dsn := fmt.Sprintf("file:%s?_txlock=immediate"+
+		"&_pragma=busy_timeout(10000)&_pragma=journal_mode(wal)&_pragma=foreign_keys(on)", path)
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("sqlitevec: open: %w", err)
