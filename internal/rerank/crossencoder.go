@@ -1,8 +1,3 @@
-// Package rerank holds the cross-encoder reranker: an HTTP client for a
-// dedicated ranking model (bge-reranker, Qwen3-Reranker, mxbai-rerank, …) served
-// over the Cohere-style /rerank API that Infinity, vLLM, TEI, and
-// llama-server --rerank expose. It implements llm.Reranker, so recall can
-// reorder candidates with a ranking model instead of (and cheaper than) an LLM.
 package rerank
 
 import (
@@ -15,8 +10,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/eleboucher/memini/internal/llm"
 )
 
 const defaultTimeout = 60 * time.Second
@@ -30,7 +23,10 @@ type Config struct {
 	HTTPClient *http.Client
 }
 
-// CrossEncoder reranks candidates by calling a ranking model's /rerank endpoint.
+// CrossEncoder reranks candidates with a dedicated ranking model (bge-reranker,
+// Qwen3-Reranker, mxbai-rerank, …) served over the Cohere-style /rerank API
+// that Infinity, vLLM, TEI, and llama-server --rerank expose — a cheaper
+// alternative to the LLM reranker.
 type CrossEncoder struct {
 	url    string
 	model  string
@@ -71,8 +67,8 @@ type rerankResponse struct {
 // Rerank scores every candidate against the query with the ranking model and
 // returns the candidate IDs most-relevant-first. Candidates the server omits are
 // appended in their original order, satisfying the reorder-only contract of
-// llm.Reranker.
-func (c *CrossEncoder) Rerank(ctx context.Context, query string, candidates []llm.RerankCandidate) ([]string, error) {
+// Reranker.
+func (c *CrossEncoder) Rerank(ctx context.Context, query string, candidates []Candidate) ([]string, error) {
 	if len(candidates) <= 1 {
 		return idsOf(candidates), nil
 	}
@@ -127,12 +123,4 @@ func (c *CrossEncoder) Rerank(ctx context.Context, query string, candidates []ll
 		}
 	}
 	return ordered, nil
-}
-
-func idsOf(candidates []llm.RerankCandidate) []string {
-	out := make([]string, len(candidates))
-	for i, c := range candidates {
-		out[i] = c.ID
-	}
-	return out
 }

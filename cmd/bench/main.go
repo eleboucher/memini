@@ -312,7 +312,7 @@ func buildEmbedder(localDims int) (embed.Embedder, int, func() error, error) {
 // buildReranker constructs the rerank tier's backend: a cross-encoder at ceURL
 // when set, else an LLM reranker from the MEMINI_LLM_* environment (matching how
 // cmd/memini and cmd/locomo-qa configure their chat backend).
-func buildReranker(ceURL, ceModel string) (llm.Reranker, error) {
+func buildReranker(ceURL, ceModel string) (rerankpkg.Reranker, error) {
 	if ceURL != "" {
 		return rerankpkg.New(rerankpkg.Config{
 			BaseURL: ceURL, Model: ceModel, APIKey: os.Getenv("MEMINI_RERANK_API_KEY"),
@@ -326,5 +326,5 @@ func buildReranker(ceURL, ceModel string) (llm.Reranker, error) {
 	if err != nil {
 		return nil, err
 	}
-	return llm.NewReranker(client), nil
+	return rerankpkg.NewLLM(client), nil
 }

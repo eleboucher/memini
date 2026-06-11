@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/eleboucher/memini/internal/llm"
 )
 
 func TestCrossEncoderRerankOrdersByScore(t *testing.T) {
@@ -27,7 +25,7 @@ func TestCrossEncoderRerankOrdersByScore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
-	cands := []llm.RerankCandidate{{ID: "a"}, {ID: "b"}, {ID: "c"}}
+	cands := []Candidate{{ID: "a"}, {ID: "b"}, {ID: "c"}}
 	got, err := ce.Rerank(context.Background(), "q", cands)
 	if err != nil {
 		t.Fatalf("rerank: %v", err)
@@ -48,7 +46,7 @@ func TestCrossEncoderAppendsOmitted(t *testing.T) {
 	defer srv.Close()
 
 	ce, _ := New(Config{BaseURL: srv.URL})
-	got, err := ce.Rerank(context.Background(), "q", []llm.RerankCandidate{{ID: "a"}, {ID: "b"}, {ID: "c"}})
+	got, err := ce.Rerank(context.Background(), "q", []Candidate{{ID: "a"}, {ID: "b"}, {ID: "c"}})
 	if err != nil {
 		t.Fatalf("rerank: %v", err)
 	}
@@ -67,7 +65,7 @@ func TestCrossEncoderErrorsOnBadStatus(t *testing.T) {
 	defer srv.Close()
 
 	ce, _ := New(Config{BaseURL: srv.URL})
-	if _, err := ce.Rerank(context.Background(), "q", []llm.RerankCandidate{{ID: "a"}, {ID: "b"}}); err == nil {
+	if _, err := ce.Rerank(context.Background(), "q", []Candidate{{ID: "a"}, {ID: "b"}}); err == nil {
 		t.Fatal("want error on 500, got nil")
 	}
 }

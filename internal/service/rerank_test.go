@@ -6,15 +6,15 @@ import (
 	"testing"
 
 	"github.com/eleboucher/memini/internal/embed/embedtest"
-	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/memory"
+	"github.com/eleboucher/memini/internal/rerank"
 	"github.com/eleboucher/memini/internal/service"
 )
 
 // reverseReranker reorders candidates last-first; errReranker always fails.
 type reverseReranker struct{ called bool }
 
-func (r *reverseReranker) Rerank(_ context.Context, _ string, c []llm.RerankCandidate) ([]string, error) {
+func (r *reverseReranker) Rerank(_ context.Context, _ string, c []rerank.Candidate) ([]string, error) {
 	r.called = true
 	out := make([]string, len(c))
 	for i := range c {
@@ -25,7 +25,7 @@ func (r *reverseReranker) Rerank(_ context.Context, _ string, c []llm.RerankCand
 
 type errReranker struct{ called bool }
 
-func (r *errReranker) Rerank(_ context.Context, _ string, _ []llm.RerankCandidate) ([]string, error) {
+func (r *errReranker) Rerank(_ context.Context, _ string, _ []rerank.Candidate) ([]string, error) {
 	r.called = true
 	return nil, errors.New("boom")
 }

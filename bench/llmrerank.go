@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/eleboucher/memini/internal/embed"
-	"github.com/eleboucher/memini/internal/llm"
+	"github.com/eleboucher/memini/internal/rerank"
 	"github.com/eleboucher/memini/internal/search"
 	"github.com/eleboucher/memini/internal/service"
 	"github.com/eleboucher/memini/internal/store"
@@ -17,7 +17,7 @@ import (
 // is slow (one chat call per question), so drive it over a subset with
 // cmd/bench -limit.
 func LLMRerankCompare(
-	ctx context.Context, st store.Store, e embed.Embedder, rr llm.Reranker,
+	ctx context.Context, st store.Store, e embed.Embedder, rr rerank.Reranker,
 	ds *Dataset, k, fetch int, queryPrefix string,
 ) ([]RerankResult, error) {
 	if err := ingestTimed(ctx, st, e, ds.Items); err != nil {
@@ -58,9 +58,9 @@ func LLMRerankCompare(
 		if len(head) > fetch {
 			head = head[:fetch]
 		}
-		cands := make([]llm.RerankCandidate, len(head))
+		cands := make([]rerank.Candidate, len(head))
 		for i, r := range head {
-			cands[i] = llm.RerankCandidate{ID: r.Memory.ID, Content: r.Memory.Content}
+			cands[i] = rerank.Candidate{ID: r.Memory.ID, Content: r.Memory.Content}
 		}
 		orderedIDs, err := rr.Rerank(ctx, q.Query, cands)
 		if err != nil {

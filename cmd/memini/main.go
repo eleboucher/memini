@@ -228,7 +228,7 @@ func loopbackAddr(addr string) bool {
 // the chat LLM, any other value is a cross-encoder /rerank base URL. The second
 // return is the backend label for metrics. Returns (nil, "", nil) when the
 // selected backend isn't available.
-func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger) (llm.Reranker, string, error) {
+func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger) (rerank.Reranker, string, error) {
 	if cfg.RerankIsLLM() {
 		if chat == nil {
 			log.Warn("MEMINI_RERANK=llm but no LLM is configured; set MEMINI_LLM_BASE_URL")
@@ -236,7 +236,7 @@ func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger) (llm.R
 		}
 		log.Info("LLM recall reranking enabled (adds one LLM call per recall)",
 			"model", cfg.LLMModel, "top_n", cfg.RerankTopN)
-		return llm.NewReranker(chat), "llm", nil
+		return rerank.NewLLM(chat), "llm", nil
 	}
 	ce, err := rerank.New(rerank.Config{BaseURL: cfg.Rerank, Model: cfg.RerankModel, APIKey: cfg.RerankAPIKey})
 	if err != nil {
