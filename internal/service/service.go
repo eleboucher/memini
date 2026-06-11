@@ -86,6 +86,9 @@ type Metrics interface {
 	// RerankResult records one recall rerank attempt: backend is the reranker's
 	// label ("llm"|"cross_encoder"); result is "ok" or "fallback".
 	RerankResult(backend, result string)
+	// ReinforceResult records one best-effort recall reinforcement write:
+	// "ok" or "error".
+	ReinforceResult(result string)
 }
 
 type nopMetrics struct{}
@@ -100,6 +103,7 @@ func (nopMetrics) FsckResult(string)                   {}
 func (nopMetrics) OpDuration(string, time.Duration)    {}
 func (nopMetrics) AnswerResult(string)                 {}
 func (nopMetrics) RerankResult(string, string)         {}
+func (nopMetrics) ReinforceResult(string)              {}
 
 // ErrInvalidInput marks errors caused by the caller's request (missing fields,
 // unknown tiers) as opposed to backend failures. API layers map it to 400;
@@ -887,7 +891,16 @@ func (s *Service) reinforce(ctx context.Context, namespace string, results []sto
 			t := now.Add(ttl)
 			newExpiry = &t
 		}
-		_ = s.store.Reinforce(ctx, namespace, ids, now, newExpiry)
+		if err := s.store.Reinforce(ctx, namespace, ids, now, newExpiry); err != nil {
+			// Persistent failures here mean TTLs stop sliding and promotion
+			// never fires, so make them observable even though the recall
+			// itself must not fail.
+			slog.WarnContext(ctx, "recall: reinforce failed",
+				"namespace", namespace, "tier", tier, "count", len(ids), "err", err)
+			s.metrics.ReinforceResult("error")
+			continue
+		}
+		s.metrics.ReinforceResult("ok")
 	}
 }
 
