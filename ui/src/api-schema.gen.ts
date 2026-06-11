@@ -75,6 +75,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/dedup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Collapse near-duplicate memories (vector cluster) — tombstone the lower-scored members of each cluster
+         * @description Clusters live memories by embedding similarity (cosine ≥
+         *     `similarity`) and tombstones the lower-RetentionScore members of each
+         *     cluster, pointing them at the cluster's representative. The action is
+         *     reversible (SupersededBy → representative) and the duplicates remain in
+         *     storage but are hidden from default search results. Dry-run reports the
+         *     actions without committing them.
+         *
+         *     Scoped to the request's namespace by default — the common case is
+         *     cleaning up right after a large import into one namespace, where
+         *     exports are typically full of restatements. Set `all_namespaces: true`
+         *     to run the pass over every namespace instead.
+         */
+        post: operations["runDedup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/memories": {
         parameters: {
             query?: never;
@@ -284,6 +314,46 @@ export interface components {
             namespaces: number;
             duplicate_groups?: string[][];
         };
+        /**
+         * @description Optional knobs for one dedup pass. The zero value uses the production
+         *     defaults (similarity 0.85, cluster size ≥ 2, all tiers, 20 neighbours
+         *     per anchor, dry_run false), scoped to the request's namespace.
+         */
+        DedupRequest: {
+            /**
+             * Format: double
+             * @description Cosine-like threshold for cluster membership. Higher = stricter
+             *     (fewer, tighter clusters). 0 falls back to 0.85.
+             */
+            similarity?: number;
+            /** @description Smallest cluster acted on. 0 falls back to 2. */
+            min_cluster_size?: number;
+            /** @description Restrict the pass to these tiers; empty means all. */
+            tiers?: components["schemas"]["Tier"][];
+            /** @description Per-anchor vector-search fan-out. 0 falls back to 20. */
+            neighbours_per_anchor?: number;
+            /**
+             * @description Run the pass over every namespace instead of just the request's
+             *     namespace. Defaults to false (scope to the request namespace).
+             */
+            all_namespaces?: boolean;
+            /** @description Report what would happen without tombstoning anything. */
+            dry_run?: boolean;
+        };
+        DedupReport: {
+            namespaces: number;
+            memories_seen: number;
+            clusters_found: number;
+            tombstoned: number;
+            dry_run: boolean;
+            /** @description Per-cluster representative selection. Omitted when no clusters were found. */
+            actions?: components["schemas"]["ClusterAction"][];
+        };
+        ClusterAction: {
+            representative_id: string;
+            tombstoned_ids: string[];
+            size: number;
+        };
         Memory: {
             id: string;
             namespace: string;
@@ -412,6 +482,34 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FsckReport"];
+                };
+            };
+            500: components["responses"]["Error"];
+        };
+    };
+    runDedup: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DedupRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DedupReport"];
                 };
             };
             500: components["responses"]["Error"];

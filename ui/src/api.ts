@@ -1,5 +1,7 @@
 import { apiToken, baseUrl, namespace, namespaceHeader } from './store'
 import type {
+  DedupReport,
+  DedupRequest,
   FsckReport,
   ListResponse,
   Memory,
@@ -207,4 +209,15 @@ export const api = {
     req<void>('DELETE', `/v1/memories/${encodeURIComponent(id)}`, undefined, ns),
 
   fsck: () => req<FsckReport>('POST', '/v1/fsck'),
+
+  // dedup collapses near-duplicate memories. It scopes to the active namespace
+  // via the request header; in "All projects" mode there's no active namespace,
+  // so it runs store-wide. dryRun previews the clusters without tombstoning.
+  dedup: (opts: { similarity?: number; dryRun?: boolean } = {}) => {
+    const body: DedupRequest = {}
+    if (opts.similarity != null) body.similarity = opts.similarity
+    if (opts.dryRun != null) body.dry_run = opts.dryRun
+    if (isAllProjects()) body.all_namespaces = true
+    return req<DedupReport>('POST', '/v1/dedup', body)
+  },
 }
