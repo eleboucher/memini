@@ -1,5 +1,5 @@
 {
-  "//": "memini plugin hooks for Codex CLI. Codex reuses the same hook protocol and resolves the script paths from the plugin root (no CLAUDE_PLUGIN_ROOT expansion).",
+  "//": "memini plugin hooks for Codex CLI. Codex reuses the same hook protocol and resolves the script paths from the plugin root (no CLAUDE_PLUGIN_ROOT expansion). PreCompact is intentionally absent: Codex has no compaction lifecycle event (Claude-Code-only).",
   "hooks": {
     "SessionStart": [
       {

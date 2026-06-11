@@ -32,13 +32,16 @@ func runImport(ctx context.Context, cfg *config.Config, log *slog.Logger, args [
 		return err
 	}
 
-	data, err := readInput(fs.Arg(0))
+	recs, err := loadRecords(importer.Source(*source), fs.Arg(0))
 	if err != nil {
 		return err
 	}
-	recs, err := importer.Parse(importer.Source(*source), data)
-	if err != nil {
-		return err
+	// For claude-code, each transcript's namespace is derived from its cwd. Honor
+	// an explicit -namespace by blanking those so the run default takes over.
+	if explicitlySet(fs, "namespace") {
+		for i := range recs {
+			recs[i].Namespace = ""
+		}
 	}
 
 	im, target, closeFn, err := buildImporter(ctx, cfg, log, *remote, *token)
@@ -86,4 +89,36 @@ func readInput(path string) ([]byte, error) {
 		return io.ReadAll(os.Stdin)
 	}
 	return os.ReadFile(path)
+}
+
+// loadRecords parses an export into Records. The claude-code source accepts a
+// directory (a project dir or ~/.claude/projects) and walks it for transcripts;
+// every other source reads a single file or stdin and parses its bytes.
+func loadRecords(src importer.Source, path string) ([]importer.Record, error) {
+	if src == importer.SourceClaudeCode && path != "" && path != "-" {
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			recs, warns, err := importer.LoadClaudeCode(path)
+			for _, w := range warns {
+				fmt.Fprintln(os.Stderr, "  warning:", w)
+			}
+			return recs, err
+		}
+	}
+	data, err := readInput(path)
+	if err != nil {
+		return nil, err
+	}
+	return importer.Parse(src, data)
+}
+
+// explicitlySet reports whether the named flag was passed on the command line
+// (as opposed to taking its default).
+func explicitlySet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
 }

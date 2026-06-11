@@ -18,6 +18,7 @@ import (
 	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/logging"
 	"github.com/eleboucher/memini/internal/maintenance"
+	"github.com/eleboucher/memini/internal/search"
 	"github.com/eleboucher/memini/internal/server"
 	"github.com/eleboucher/memini/internal/service"
 	"github.com/eleboucher/memini/internal/store"
@@ -111,6 +112,7 @@ func run() error {
 		service.WithConsolidateMinScore(cfg.ConsolidateMinScore),
 		service.WithQueryPrefix(cfg.EmbedQueryPrefix),
 		service.WithScoreFusion(cfg.FusionAlpha),
+		service.WithTemporalTargeting(cfg.TemporalBoost, search.RegexAnchorExtractor{}),
 		service.WithMetrics(metricsImpl),
 	)
 	svc := service.New(st, embedder, svcOpts...)

@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
@@ -254,6 +254,162 @@ test("pre-tool-use.mjs: searches by file path, surfaces context to stdout", asyn
     assert.equal(hits.length, 1);
     const body = JSON.parse(hits[0].body);
     assert.match(body.query, /Read on internal\/auth\.go/);
+  } finally {
+    await close();
+  }
+});
+
+test("pre-compact.mjs: distills buffer into an episodic precompact checkpoint", async () => {
+  const cache = freshCache();
+  for (const [tool, input] of [
+    ["Edit", { file_path: "auth.go" }],
+    ["Bash", { command: "go build ./..." }],
+  ]) {
+    await runHook(
+      "post-tool-use.mjs",
+      JSON.stringify({ session_id: "pc1", cwd: __dirname, tool_name: tool, tool_input: input }),
+      { XDG_CACHE_HOME: cache },
+    );
+  }
+
+  const hits = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    hits.push({ url: req.url, body });
+    res.setHeader("Content-Type", "application/json");
+    res.statusCode = 201;
+    res.end(JSON.stringify({ id: "m1" }));
+  });
+
+  try {
+    await runHook(
+      "pre-compact.mjs",
+      JSON.stringify({ session_id: "pc1", cwd: __dirname, trigger: "auto" }),
+      { MEMINI_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.equal(hits.length, 1, "precompact should write exactly one checkpoint");
+    const body = JSON.parse(hits[0].body);
+    assert.equal(body.tier, "episodic");
+    assert.equal(body.id, "precompact:pc1");
+    assert.match(body.content, /Pre-compaction checkpoint/);
+    assert.equal(body.metadata.trigger, "auto");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-compact.mjs: no buffer → no POST, no crash", async () => {
+  const cache = freshCache();
+  const hits = [];
+  const { url, close } = await startMockServer((req, res) => {
+    hits.push({ url: req.url });
+    res.statusCode = 201;
+    res.end(JSON.stringify({ id: "m1" }));
+  });
+  try {
+    await runHook(
+      "pre-compact.mjs",
+      JSON.stringify({ session_id: "empty", cwd: __dirname }),
+      { MEMINI_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.equal(hits.length, 0, "no buffer should mean no checkpoint");
+  } finally {
+    await close();
+  }
+});
+
+// Build a fake Claude Code transcript with `n` real user messages plus noise
+// (tool-result arrays, sidechains, isMeta, command-caveat strings) that must
+// not be counted.
+function writeTranscript(path, userCount) {
+  const lines = [];
+  for (let i = 0; i < userCount; i++) {
+    lines.push(JSON.stringify({ type: "user", message: { role: "user", content: `q${i}` } }));
+    lines.push(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "a" }] } }));
+  }
+  // Noise that must be ignored by the counter:
+  lines.push(JSON.stringify({ type: "user", isSidechain: true, message: { content: "side" } }));
+  lines.push(JSON.stringify({ type: "user", isMeta: true, message: { content: "meta" } }));
+  lines.push(JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: "x" }] } }));
+  lines.push(JSON.stringify({ type: "user", message: { content: "<local-command-caveat>noise" } }));
+  writeFileSync(path, lines.join("\n") + "\n");
+}
+
+test("stop.mjs: blocks once after the auto-save interval, baselining first", async () => {
+  const cache = freshCache();
+  const tp = join(cache, "transcript.jsonl");
+  const { url, close } = await startMockServer((_req, res) => {
+    res.statusCode = 201;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ id: "m1" }));
+  });
+  const env = { MEMINI_URL: url, XDG_CACHE_HOME: cache, MEMINI_AUTO_SAVE_INTERVAL: "5" };
+  try {
+    // First sight at 3 user messages → baseline, no block.
+    writeTranscript(tp, 3);
+    let { stdout } = await runHook(
+      "stop.mjs",
+      JSON.stringify({ session_id: "as1", cwd: __dirname, transcript_path: tp }),
+      env,
+    );
+    assert.equal(stdout.trim(), "", "first sight should baseline, not block");
+
+    // Below interval (3 → 6, delta 3 < 5) → still no block.
+    writeTranscript(tp, 6);
+    ({ stdout } = await runHook(
+      "stop.mjs",
+      JSON.stringify({ session_id: "as1", cwd: __dirname, transcript_path: tp }),
+      env,
+    ));
+    assert.equal(stdout.trim(), "", "below interval should not block");
+
+    // At/over interval (3 → 9, delta 6 >= 5) → block with decision JSON.
+    writeTranscript(tp, 9);
+    ({ stdout } = await runHook(
+      "stop.mjs",
+      JSON.stringify({ session_id: "as1", cwd: __dirname, transcript_path: tp }),
+      env,
+    ));
+    const decision = JSON.parse(stdout);
+    assert.equal(decision.decision, "block");
+    assert.match(decision.reason, /memory_remember/);
+  } finally {
+    await close();
+  }
+});
+
+test("stop.mjs: never blocks when stop_hook_active, opted out, or no transcript", async () => {
+  const cache = freshCache();
+  const tp = join(cache, "t.jsonl");
+  writeTranscript(tp, 99);
+  const { url, close } = await startMockServer((_req, res) => {
+    res.statusCode = 201;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ id: "m1" }));
+  });
+  try {
+    // stop_hook_active → pass through
+    let { stdout } = await runHook(
+      "stop.mjs",
+      JSON.stringify({ session_id: "g1", cwd: __dirname, transcript_path: tp, stop_hook_active: true }),
+      { MEMINI_URL: url, XDG_CACHE_HOME: cache, MEMINI_AUTO_SAVE_INTERVAL: "1" },
+    );
+    assert.equal(stdout.trim(), "", "stop_hook_active must pass through");
+
+    // opt-out
+    ({ stdout } = await runHook(
+      "stop.mjs",
+      JSON.stringify({ session_id: "g2", cwd: __dirname, transcript_path: tp }),
+      { MEMINI_URL: url, XDG_CACHE_HOME: cache, MEMINI_AUTO_SAVE: "0", MEMINI_AUTO_SAVE_INTERVAL: "1" },
+    ));
+    assert.equal(stdout.trim(), "", "MEMINI_AUTO_SAVE=0 must pass through");
+
+    // no transcript_path
+    ({ stdout } = await runHook(
+      "stop.mjs",
+      JSON.stringify({ session_id: "g3", cwd: __dirname }),
+      { MEMINI_URL: url, XDG_CACHE_HOME: cache, MEMINI_AUTO_SAVE_INTERVAL: "1" },
+    ));
+    assert.equal(stdout.trim(), "", "missing transcript must pass through");
   } finally {
     await close();
   }

@@ -139,6 +139,55 @@ composite far more robust to the recency weight than the flat `rrfK=60` decay
 was (where 0.15+ buried correct-but-older memories); the default stays at the
 conservative 0.05 since the gains beyond it are within noise.
 
+### Temporal targeting (`temporal0.40`)
+
+Recency weighting trades off against itself: raising it helps temporal-reasoning
+(78.2→81.2% R@1) but hurts knowledge-update (91.0→87.2%), whose answers aren't
+necessarily recent. **Temporal targeting** avoids that: when a query names a
+relative time ("three weeks ago"), it computes `target = now − offset` and boosts
+candidates dated near that point, not near now. It only fires on temporal
+queries, so other categories are unaffected.
+
+| Strategy                     |   all R@1 | knowledge-update R@1 | temporal-reasoning R@1 |       MRR |
+| ---------------------------- | --------: | -------------------: | ---------------------: | --------: |
+| recency 0.05 (prior default) |     83.4% |                91.0% |                  78.9% |     90.5% |
+| recency 0.25                 |     83.4% |                87.2% |                  81.2% |     90.4% |
+| **temporal 0.40**            | **85.3%** |            **91.0%** |              **82.0%** | **91.5%** |
+
+Temporal targeting is **+1.9pp R@1 overall** over the recency default and beats
+even the heaviest recency weight on temporal-reasoning _without_ the
+knowledge-update regression — so it ships on in production
+(`MEMINI_TEMPORAL_BOOST=0.40`, 0 disables). The no-LLM regex extractor only
+catches templated phrasing; an LLM anchor extractor (plugging into the same
+`search.AnchorExtractor` interface) can resolve looser references and is the
+intended with-LLM tier.
+
+### Held-out split (`-holdout`)
+
+To avoid overfitting tuning decisions to the full benchmark, `-holdout` splits
+LongMemEval deterministically by load order: every 10th question is **held**
+(50/500), the rest are **tune** (450/500). Sweep parameters on `-holdout tune`,
+then report the final number on `-holdout held` (unseen). Default `all` runs the
+full set. Results files are suffixed (`longmemeval-held.json`) so splits don't
+overwrite each other.
+
+### Session-doc construction (`-session-doc`)
+
+LongMemEval sessions are embedded as one document per session; `-session-doc`
+controls what text that document contains, to measure the vector leg's
+sensitivity to document shape:
+
+- `full` (default) — `"role: content"` for every turn.
+- `user-only` — only the user turns, no role prefixes. Assistant turns dilute
+  the embedding for user-question recall; this is the shape MemPalace reports
+  96.6% R@5 vector-only with on the same MiniLM model.
+- `dated` — `full` prefixed with the session date, giving temporal questions a
+  textual anchor embeddings would otherwise ignore.
+
+Compare the **vector** row's `recall_any@5` across modes (cached embeddings make
+the sweep cheap); the keyword and hybrid rows shift too but the vector leg is the
+target.
+
 memini hybrid per-category (all-MiniLM, recall_any@10): multi-session 100%,
 knowledge-update 100%, single-session-user 98.6%, single-session-assistant
 98.2%, temporal-reasoning 97.0%, single-session-preference 96.7%.

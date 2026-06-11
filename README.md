@@ -146,8 +146,9 @@ tool calls and injects prior context at session start.
 
 ## Importing
 
-`memini import` loads an export from `agentmemory`, `mem0`, `mnemory`, or memini's
-own format, into the local store or a running server.
+`memini import` loads an export from `agentmemory`, `mem0`, `mnemory`, memini's
+own format, or your **Claude Code session history**, into the local store or a
+running server.
 
 ```sh
 # Local store (embeds + preserves source IDs, timestamps, tiers):
@@ -156,7 +157,20 @@ memini import --source agentmemory ./agentmemory-export.json
 # Remote server over REST:
 memini import --source mem0 --remote https://memini.example.com \
   --token "$MEMINI_API_KEY" --namespace my-project ./mem0-export.json
+
+# Backfill Claude Code history: each user→assistant exchange becomes one
+# episodic memory, scoped to the project namespace (the transcript's cwd
+# basename). Accepts a single transcript, a project dir, or all projects:
+memini import --source claude-code ~/.claude/projects
 ```
+
+The `claude-code` source reconstructs verbatim exchanges from session transcripts
+(`~/.claude/projects/<project>/<session>.jsonl`), skipping tool-result noise,
+sidechains, and slash-command wrappers. IDs are deterministic, so re-importing
+is idempotent. Backfilled memories get a fresh 90-day episodic TTL (so old
+history isn't swept on arrival) while keeping the original timestamp for
+recency ranking. This pairs with the [plugin](plugin/)'s auto-capture: backfill
+once, then the hooks keep it current.
 
 Each source's fields map onto memini's tiers (e.g. agentmemory `workflow`→procedural,
 mem0 facts→semantic) and namespace (`project`/`user_id`). Empty records are skipped;

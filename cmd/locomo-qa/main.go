@@ -68,7 +68,14 @@ func run() error {
 		return err
 	}
 	if *limit > 0 && *limit < len(ds.Questions) {
-		ds.Questions = ds.Questions[:*limit]
+		// Sample evenly across the dataset so a small limit still spans all
+		// conversations instead of truncating to the first one.
+		step := float64(len(ds.Questions)) / float64(*limit)
+		sampled := make([]bench.Question, 0, *limit)
+		for i := 0; i < *limit; i++ {
+			sampled = append(sampled, ds.Questions[int(float64(i)*step)])
+		}
+		ds.Questions = sampled
 		groups := map[string]bool{}
 		for _, q := range ds.Questions {
 			groups[q.Group] = true

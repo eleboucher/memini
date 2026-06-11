@@ -55,6 +55,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.FusionAlpha != 0.5 {
 		t.Errorf("FusionAlpha = %v, want 0.5 (score fusion default)", cfg.FusionAlpha)
 	}
+	if cfg.TemporalBoost != 0.40 {
+		t.Errorf("TemporalBoost = %v, want 0.40 (temporal targeting on by default)", cfg.TemporalBoost)
+	}
 	if cfg.SweepInterval != time.Hour {
 		t.Errorf("SweepInterval = %v, want 1h", cfg.SweepInterval)
 	}
@@ -170,7 +173,7 @@ var meminiEnvKeys = []string{
 	"MEMINI_HTTP_ADDR", "MEMINI_SHUTDOWN_TIMEOUT", "MEMINI_LOG_LEVEL", "MEMINI_LOG_FORMAT",
 	"MEMINI_BACKEND", "MEMINI_SQLITE_PATH", "MEMINI_POSTGRES_DSN",
 	"MEMINI_EMBED_BASE_URL", "MEMINI_EMBED_API_KEY", "MEMINI_EMBED_MODEL", "MEMINI_EMBED_DIMS",
-	"MEMINI_EMBED_QUERY_PREFIX", "MEMINI_FUSION_ALPHA",
+	"MEMINI_EMBED_QUERY_PREFIX", "MEMINI_FUSION_ALPHA", "MEMINI_TEMPORAL_BOOST",
 	"MEMINI_LLM_BASE_URL", "MEMINI_LLM_API_KEY", "MEMINI_LLM_MODEL",
 	"MEMINI_CONSOLIDATE_MODE", "MEMINI_CONSOLIDATE_MIN_SCORE",
 	"MEMINI_PROMOTE_INTERVAL", "MEMINI_PROMOTE_MIN_ACCESS",

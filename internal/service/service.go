@@ -134,6 +134,11 @@ type Service struct {
 	// poolFactor / poolFloor size the per-leg recall candidate pool as
 	// max(k*poolFactor, poolFloor); zero values use the package defaults.
 	poolFactor, poolFloor int
+	// temporalBoost (> 0) enables query-conditioned temporal targeting in the
+	// re-ranker; temporalAnchor resolves a query's relative-time reference (the
+	// regex extractor by default, or an LLM extractor when configured).
+	temporalBoost  float64
+	temporalAnchor search.AnchorExtractor
 	// now and newID are injectable for deterministic tests.
 	now   func() time.Time
 	newID func() string
@@ -187,6 +192,15 @@ func WithQueryPrefix(p string) Option { return func(s *Service) { s.queryPrefix 
 // combination score fusion, weighting the vector leg by alpha and the keyword
 // leg by 1-alpha. alpha < 0 keeps RRF (the default).
 func WithScoreFusion(alpha float64) Option { return func(s *Service) { s.scoreFusionAlpha = alpha } }
+
+// WithTemporalTargeting enables temporal targeting in the re-ranker: when a
+// query names a relative time, candidates dated near the referenced point are
+// boosted by up to `boost` on the composite score. ex resolves the reference
+// (use search.RegexAnchorExtractor{} for the no-LLM default). boost <= 0 or a
+// nil extractor disables it.
+func WithTemporalTargeting(boost float64, ex search.AnchorExtractor) Option {
+	return func(s *Service) { s.temporalBoost = boost; s.temporalAnchor = ex }
+}
 
 // WithRecallPool overrides the per-leg candidate pool sizing
 // (max(k*factor, floor)) for hybrid recall. Non-positive values keep the
@@ -683,7 +697,13 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	} else {
 		fused = search.Fuse([][]store.Scored{vres, kres}, 0, search.DefaultRRFK)
 	}
-	ranked := search.Rerank(fused, s.now())
+	var ranked []store.Scored
+	if s.temporalBoost > 0 && s.temporalAnchor != nil {
+		ranked = search.RerankTemporal(fused, in.Query, s.now(),
+			search.DefaultRerankWeights, s.temporalAnchor, s.temporalBoost)
+	} else {
+		ranked = search.Rerank(fused, s.now())
+	}
 	results := search.Dedup(ranked, k)
 	s.reinforceResults(ctx, in.Namespace, results)
 	s.metrics.RecallResult("ok", tf, hitsBucket(len(results)))
