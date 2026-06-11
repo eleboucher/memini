@@ -34,3 +34,13 @@ test("falls back to base namespace when no agent id", () => {
   assert.equal(effectiveNamespace(cfg, {}), "openclaw");
   assert.equal(effectiveNamespace(cfg, { agentId: "   " }), "openclaw");
 });
+
+test("skip_without_agent returns null when no agent id (per-agent mode)", () => {
+  const cfg = { namespace: "openclaw", namespace_per_agent: true, namespace_template: "{agent}", skip_without_agent: true };
+  assert.equal(effectiveNamespace(cfg, {}), null);
+});
+
+test("skip_without_agent still resolves a present agent id", () => {
+  const cfg = { namespace: "openclaw", namespace_per_agent: true, namespace_template: "{agent}", skip_without_agent: true };
+  assert.equal(effectiveNamespace(cfg, { agentId: "miso" }), "miso");
+});
