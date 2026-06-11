@@ -495,7 +495,14 @@ func (s *Service) enqueueConsolidate(namespace, id string) {
 func (s *Service) dedupExisting(ctx context.Context, m *memory.Memory) *memory.Memory {
 	cands, err := s.store.VectorSearch(ctx, m.Namespace, m.Embedding,
 		store.Filter{Tiers: []memory.Tier{m.Tier}, Now: s.now()}, 1)
-	if err != nil || len(cands) == 0 || cands[0].Score < s.writeDedupMinScore {
+	if err != nil {
+		// Falling through to a plain insert is right, but a persistent vector
+		// search problem means duplicates quietly accumulate — say so.
+		slog.WarnContext(ctx, "remember: dedup search failed, storing without dedup",
+			"namespace", m.Namespace, "err", err)
+		return nil
+	}
+	if len(cands) == 0 || cands[0].Score < s.writeDedupMinScore {
 		return nil
 	}
 	existing := cands[0].Memory
