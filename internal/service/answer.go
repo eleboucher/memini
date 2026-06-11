@@ -58,9 +58,9 @@ func (s *Service) Answer(ctx context.Context, in AnswerInput) (AnswerResult, err
 	}
 	var b strings.Builder
 	for _, r := range res {
-		b.WriteString("- ")
-		b.WriteString(r.Memory.Content)
-		b.WriteByte('\n')
+		// The date annotation the system prompt refers to: anchor each memory
+		// on its creation date so relative time references can be resolved.
+		fmt.Fprintf(&b, "- [%s] %s\n", r.Memory.CreatedAt.Format("2006-01-02"), r.Memory.Content)
 	}
 	ans, err := s.answerer.Complete(ctx, answerSystem,
 		"Memories:\n"+b.String()+"\nQuestion: "+in.Query+"\nAnswer:")
