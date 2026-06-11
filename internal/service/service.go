@@ -628,8 +628,13 @@ func (s *Service) applySupersede(ctx context.Context, m *memory.Memory, dec llm.
 	if dec.Target != "" {
 		if err := s.store.SetSuperseded(ctx, m.Namespace, dec.Target, m.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 			// Best-effort rollback: remove the new memory so we don't leave both
-			// live. If this also fails, the next fsck will flag the duplicate.
-			_ = s.store.Delete(ctx, m.Namespace, m.ID)
+			// live. A contradiction has different content, so fsck's duplicate
+			// detection won't flag the pair — a failed rollback is the one
+			// moment we know contradictory state was left behind.
+			if delErr := s.store.Delete(ctx, m.Namespace, m.ID); delErr != nil && !errors.Is(delErr, store.ErrNotFound) {
+				slog.WarnContext(ctx, "consolidate: supersede rollback failed; contradictory memories left live",
+					"namespace", m.Namespace, "new_id", m.ID, "target_id", dec.Target, "err", delErr)
+			}
 			return nil, false, err
 		}
 	}
