@@ -112,13 +112,21 @@ opencode:
     "memini": {
       "command": "docker",
       "args": [
-        "run", "-i", "--rm",
-        "-v", "memini-data:/data",
-        "-e", "MEMINI_SQLITE_PATH=/data/memini.db",
-        "-e", "MEMINI_EMBED_BASE_URL=http://host.docker.internal:8081/v1",
-        "-e", "MEMINI_EMBED_MODEL=bge-small-en-v1.5",
-        "-e", "MEMINI_EMBED_DIMS=384",
-        "memini", "mcp"
+        "run",
+        "-i",
+        "--rm",
+        "-v",
+        "memini-data:/data",
+        "-e",
+        "MEMINI_SQLITE_PATH=/data/memini.db",
+        "-e",
+        "MEMINI_EMBED_BASE_URL=http://host.docker.internal:8081/v1",
+        "-e",
+        "MEMINI_EMBED_MODEL=bge-small-en-v1.5",
+        "-e",
+        "MEMINI_EMBED_DIMS=384",
+        "memini",
+        "mcp"
       ]
     }
   }
@@ -133,35 +141,41 @@ per-agent recipes and the shared-namespace trick.
 
 ### Configuration (12-factor)
 
-| Env var                        | Default                  | Description                                                                                                                                                                                                                                                                                           |
-| ------------------------------ | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MEMINI_HTTP_ADDR`             | `:8080`                  | HTTP listen address                                                                                                                                                                                                                                                                                   |
-| `MEMINI_BACKEND`               | `sqlite`                 | `sqlite` or `postgres`                                                                                                                                                                                                                                                                                |
-| `MEMINI_SQLITE_PATH`           | `memini.db`              | sqlite database path                                                                                                                                                                                                                                                                                  |
-| `MEMINI_POSTGRES_DSN`          | —                        | required when `MEMINI_BACKEND=postgres`                                                                                                                                                                                                                                                               |
-| `MEMINI_EMBED_BASE_URL`        | —                        | OpenAI-compatible embeddings endpoint                                                                                                                                                                                                                                                                 |
-| `MEMINI_EMBED_MODEL`           | `text-embedding-3-small` | embedding model name                                                                                                                                                                                                                                                                                  |
-| `MEMINI_EMBED_DIMS`            | `1536`                   | embedding dimensions (must match model)                                                                                                                                                                                                                                                               |
-| `MEMINI_EMBED_QUERY_PREFIX`    | —                        | instruction prepended to recall queries before embedding, for instruction-tuned asymmetric embedders (documents stay bare). For Qwen3-Embedding: `Instruct: Given a user query, retrieve relevant memories that answer it\nQuery:`                                                                    |
-| `MEMINI_FUSION_ALPHA`          | `0.5`                    | hybrid fusion: convex score-fusion weight on the vector leg (`0.5` balanced; higher favors vector, lower favors keyword). A negative value falls back to rank fusion (RRF).                                                                                                                           |
-| `MEMINI_WRITE_DEDUP_MIN_SCORE` | `0`                      | non-LLM corpus hygiene: coalesce a fresh write into an existing same-tier memory at or above this vector similarity instead of storing a near-duplicate (only when LLM consolidation isn't handling the write). `0` disables; ~`0.9` collapses near-identical restatements only (embedder-dependent). |
-| `MEMINI_LLM_BASE_URL`          | —                        | opt-in LLM endpoint; empty disables it                                                                                                                                                                                                                                                                |
-| `MEMINI_LLM_API`               | `openai`                 | chat backend: `openai` or `anthropic` (e.g. MiniMax)                                                                                                                                                                                                                                                  |
-| `MEMINI_LLM_MODEL`             | `gpt-4o-mini`            | consolidation model name                                                                                                                                                                                                                                                                              |
+| Env var                        | Default                  | Description                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------ | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEMINI_HTTP_ADDR`             | `:8080`                  | HTTP listen address                                                                                                                                                                                                                                                                                                                |
+| `MEMINI_SHUTDOWN_TIMEOUT`      | `15s`                    | graceful HTTP shutdown budget on SIGTERM                                                                                                                                                                                                                                                                                           |
+| `MEMINI_BACKEND`               | `sqlite`                 | `sqlite` or `postgres`                                                                                                                                                                                                                                                                                                             |
+| `MEMINI_SQLITE_PATH`           | `memini.db`              | sqlite database path                                                                                                                                                                                                                                                                                                               |
+| `MEMINI_POSTGRES_DSN`          | —                        | required when `MEMINI_BACKEND=postgres`                                                                                                                                                                                                                                                                                            |
+| `MEMINI_EMBED_BASE_URL`        | —                        | OpenAI-compatible embeddings endpoint                                                                                                                                                                                                                                                                                              |
+| `MEMINI_EMBED_MODEL`           | `text-embedding-3-small` | embedding model name                                                                                                                                                                                                                                                                                                               |
+| `MEMINI_EMBED_API_KEY`         | —                        | bearer token for the embeddings endpoint (optional)                                                                                                                                                                                                                                                                                |
+| `MEMINI_EMBED_DIMS`            | `1536`                   | embedding dimensions (must match model)                                                                                                                                                                                                                                                                                            |
+| `MEMINI_EMBED_QUERY_PREFIX`    | —                        | instruction prepended to recall queries before embedding, for instruction-tuned asymmetric embedders (documents stay bare). For Qwen3-Embedding: `Instruct: Given a user query, retrieve relevant memories that answer it\nQuery:`                                                                                                 |
+| `MEMINI_FUSION_ALPHA`          | `0.5`                    | hybrid fusion: convex score-fusion weight on the vector leg (`0.5` balanced; higher favors vector, lower favors keyword). A negative value falls back to rank fusion (RRF).                                                                                                                                                        |
+| `MEMINI_WRITE_DEDUP_MIN_SCORE` | `0`                      | non-LLM corpus hygiene: coalesce a fresh write into an existing same-tier memory at or above this vector similarity instead of storing a near-duplicate (only when LLM consolidation isn't handling the write). `0` disables; ~`0.9` collapses near-identical restatements only (embedder-dependent).                              |
+| `MEMINI_TEMPORAL_BOOST`        | `0.40`                   | query-conditioned temporal targeting: when a query names a relative time ("3 weeks ago"), candidates dated near the referenced point are boosted by up to this much on the composite score. **On by default**; `0` disables.                                                                                                       |
+| `MEMINI_LLM_BASE_URL`          | —                        | opt-in LLM endpoint; empty disables it                                                                                                                                                                                                                                                                                             |
+| `MEMINI_LLM_API_KEY`           | —                        | bearer token for the LLM endpoint (optional)                                                                                                                                                                                                                                                                                       |
+| `MEMINI_LLM_API`               | `openai`                 | chat backend: `openai` or `anthropic` (e.g. MiniMax)                                                                                                                                                                                                                                                                               |
+| `MEMINI_LLM_MODEL`             | `gpt-4o-mini`            | consolidation model name                                                                                                                                                                                                                                                                                                           |
 | `MEMINI_RERANK`                | `off`                    | recall reranking: `off`, `llm` (reorder with the chat LLM), or a cross-encoder `/rerank` base URL (e.g. `http://host:8002/v1`, served by Infinity, vLLM, or `llama-server --rerank`). Reorders the top candidates; big gain where recall has headroom (see matrix), a no-op at ceiling. Failures fall back to the composite order. |
-| `MEMINI_RERANK_MODEL`          | —                        | cross-encoder model name (when `MEMINI_RERANK` is a URL)                                                                                                                                                                                                                                              |
-| `MEMINI_RERANK_API_KEY`        | —                        | cross-encoder endpoint auth (when `MEMINI_RERANK` is a URL; optional)                                                                                                                                                                                                                                 |
-| `MEMINI_RERANK_TOP_N`          | `20`                     | how many composite-ranked candidates the reranker sees                                                                                                                                                                                                                                                |
-| `MEMINI_CONSOLIDATE_MODE`      | `async`                  | `async` (store now, dedup in background), `sync`, or `off`                                                                                                                                                                                                                                            |
-| `MEMINI_CONSOLIDATE_MIN_SCORE` | `0.6`                    | similarity gate: skip the LLM when the nearest candidate scores below it (`0` disables)                                                                                                                                                                                                               |
-| `MEMINI_PROMOTE_INTERVAL`      | `24h`                    | how often frequently-used episodic memories are distilled into semantic facts (`0` disables; needs LLM)                                                                                                                                                                                               |
-| `MEMINI_PROMOTE_MIN_ACCESS`    | `3`                      | minimum recall count before an episodic memory is eligible for promotion                                                                                                                                                                                                                              |
-| `MEMINI_API_KEY`               | —                        | if set, required as a bearer token (also gates `/metrics`)                                                                                                                                                                                                                                            |
-| `MEMINI_UI_ENABLED`            | `true`                   | mount the embedded admin UI at `/` (`false` for a headless API/MCP-only service)                                                                                                                                                                                                                      |
-| `MEMINI_NAMESPACE_HEADER`      | `X-Memini-Namespace`     | header used to scope tenants                                                                                                                                                                                                                                                                          |
-| `MEMINI_DEFAULT_NAMESPACE`     | auto                     | fallback namespace (see [Namespace resolution](#namespace-resolution))                                                                                                                                                                                                                                |
-| `MEMINI_LOG_LEVEL`             | `info`                   | `debug`/`info`/`warn`/`error`                                                                                                                                                                                                                                                                         |
-| `MEMINI_LOG_FORMAT`            | `json`                   | `json` or `text`                                                                                                                                                                                                                                                                                      |
+| `MEMINI_RERANK_MODEL`          | —                        | cross-encoder model name (when `MEMINI_RERANK` is a URL)                                                                                                                                                                                                                                                                           |
+| `MEMINI_RERANK_API_KEY`        | —                        | cross-encoder endpoint auth (when `MEMINI_RERANK` is a URL; optional)                                                                                                                                                                                                                                                              |
+| `MEMINI_RERANK_TOP_N`          | `20`                     | how many composite-ranked candidates the reranker sees                                                                                                                                                                                                                                                                             |
+| `MEMINI_CONSOLIDATE_MODE`      | `async`                  | `async` (store now, dedup in background), `sync`, or `off`                                                                                                                                                                                                                                                                         |
+| `MEMINI_CONSOLIDATE_MIN_SCORE` | `0.6`                    | similarity gate: skip the LLM when the nearest candidate scores below it (`0` disables)                                                                                                                                                                                                                                            |
+| `MEMINI_PROMOTE_INTERVAL`      | `24h`                    | how often frequently-used episodic memories are distilled into semantic facts (`0` disables; needs LLM)                                                                                                                                                                                                                            |
+| `MEMINI_PROMOTE_MIN_ACCESS`    | `3`                      | minimum recall count before an episodic memory is eligible for promotion                                                                                                                                                                                                                                                           |
+| `MEMINI_SWEEP_INTERVAL`        | `1h`                     | how often the decay sweeper purges expired memories                                                                                                                                                                                                                                                                                |
+| `MEMINI_SHORT_TERM_CAP`        | `1000`                   | per-namespace cap on short-term (working+episodic) memories; the sweeper evicts the lowest-retention ones over it. `0` disables.                                                                                                                                                                                                   |
+| `MEMINI_API_KEY`               | —                        | if set, required as a bearer token (also gates `/metrics`)                                                                                                                                                                                                                                                                         |
+| `MEMINI_UI_ENABLED`            | `true`                   | mount the embedded admin UI at `/` (`false` for a headless API/MCP-only service)                                                                                                                                                                                                                                                   |
+| `MEMINI_NAMESPACE_HEADER`      | `X-Memini-Namespace`     | header used to scope tenants                                                                                                                                                                                                                                                                                                       |
+| `MEMINI_DEFAULT_NAMESPACE`     | auto                     | fallback namespace (see [Namespace resolution](#namespace-resolution))                                                                                                                                                                                                                                                             |
+| `MEMINI_LOG_LEVEL`             | `info`                   | `debug`/`info`/`warn`/`error`                                                                                                                                                                                                                                                                                                      |
+| `MEMINI_LOG_FORMAT`            | `json`                   | `json` or `text`                                                                                                                                                                                                                                                                                                                   |
 
 ### Namespace resolution
 
@@ -215,14 +229,21 @@ a bearer token (sent as `Authorization: Bearer …`) or point the UI at a remote
 `/v1` API it calls still enforces `MEMINI_API_KEY`. Disable the whole thing with
 `MEMINI_UI_ENABLED=false`.
 
+> [!WARNING]
+> When `MEMINI_API_KEY` is set, the server embeds the key in the UI shell so the
+> same-origin UI authenticates without pasting it — which means **anyone who can
+> load `/` can read the key**. Only expose the UI where reaching it already
+> implies trust, or set `MEMINI_UI_ENABLED=false` on untrusted networks.
+
 It is backed by three read-only endpoints alongside the core API: `GET
 /v1/memories` (list with `tier`/`include_expired`/`include_superseded`/`limit`
 filters), `GET /v1/stats`, and `GET /v1/namespaces`.
 
-The UI sources live in [`ui/`](ui/); rebuild the embedded bundle with `mise run
+The UI sources live in [`ui/`](ui/); build the embedded bundle with `mise run
 ui` (or iterate with HMR via `mise run ui-dev`, which proxies `/v1` to a local
-server on `:8080`). The built bundle is committed under
-`internal/api/ui/dist/`, so a plain `go build` always embeds a working UI.
+server on `:8080`). The built bundle under `internal/api/ui/dist/` is a
+gitignored build artifact: the Docker image builds it, while a plain `go build`
+without it still works and serves a placeholder page.
 
 ## Answering
 
@@ -298,18 +319,18 @@ Reads stdin when the path is `-`.
 mise run bench   # offline retrieval benchmark (hybrid vs vector vs keyword)
 ```
 
-Full results from the committed [`bench/results/`](bench/results/) run, all on
+Full results from a `bench/results/` run (written locally; gitignored), all on
 the **same all-MiniLM-L6-v2** (384-d) endpoint — the model agentmemory benchmarks
 with. Cells are `recall_any@5 / @10 / MRR` (%); `p50` is in-process recall latency
 (rerank rows show the cost they add on top):
 
-| Strategy                                  | LongMemEval · session  | LoCoMo · turn-level    | LoCoMo · session-level | p50         |
-| ----------------------------------------- | ---------------------- | ---------------------- | ---------------------- | ----------- |
-| vector                                    | 92.6 / 95.4 / 80.7     | 41.3 / 51.8 / 28.1     | 64.1 / 79.8 / 45.2     | <1 ms       |
-| keyword (Porter BM25)                     | 97.6 / 99.0 / 92.2     | 58.7 / 67.1 / 44.8     | 92.6 / 96.8 / 79.4     | ~3 ms       |
-| **hybrid** (default)                      | **98.4 / 99.2 / 93.0** | **59.7 / 69.9 / 42.4** | **90.9 / 96.6 / 74.3** | ~5 ms       |
-| + cross-encoder (`MEMINI_RERANK=<url>`)   | 98.4 / 99.2 / 93.1     | **70.9 / 75.0 / 59.8** | 90.9 / 96.6 / 74.3     | +20–230 ms  |
-| + LLM rerank (`MEMINI_RERANK=llm`)        | 98.4 / 99.2 / 93.0     | **74.4 / 76.5 / 67.4** | —                      | +350–420 ms |
+| Strategy                                | LongMemEval · session  | LoCoMo · turn-level    | LoCoMo · session-level | p50         |
+| --------------------------------------- | ---------------------- | ---------------------- | ---------------------- | ----------- |
+| vector                                  | 92.6 / 95.4 / 80.7     | 41.3 / 51.8 / 28.1     | 64.1 / 79.8 / 45.2     | <1 ms       |
+| keyword (Porter BM25)                   | 97.6 / 99.0 / 92.2     | 58.7 / 67.1 / 44.8     | 92.6 / 96.8 / 79.4     | ~3 ms       |
+| **hybrid** (default)                    | **98.4 / 99.2 / 93.0** | **59.7 / 69.9 / 42.4** | **90.9 / 96.6 / 74.3** | ~5 ms       |
+| + cross-encoder (`MEMINI_RERANK=<url>`) | 98.4 / 99.2 / 93.1     | **70.9 / 75.0 / 59.8** | 90.9 / 96.6 / 74.3     | +20–230 ms  |
+| + LLM rerank (`MEMINI_RERANK=llm`)      | 98.4 / 99.2 / 93.0     | **74.4 / 76.5 / 67.4** | —                      | +350–420 ms |
 
 Questions: LongMemEval 500, LoCoMo turn 1,982, LoCoMo session 1,981 (rerank =
 Qwen3-Reranker-0.6B cross-encoder, Qwen3.5-9B LLM). Hybrid never trails either
