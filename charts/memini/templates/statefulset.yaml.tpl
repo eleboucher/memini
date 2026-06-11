@@ -34,6 +34,11 @@ spec:
       volumes:
         - name: data
           emptyDir: {}
+      {{- else if .Values.sqlite.persistence.existingClaim }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.sqlite.persistence.existingClaim }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
@@ -47,7 +52,7 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-  {{- if .Values.sqlite.persistence.enabled }}
+  {{- if and .Values.sqlite.persistence.enabled (not .Values.sqlite.persistence.existingClaim) }}
   volumeClaimTemplates:
     - metadata:
         name: data
