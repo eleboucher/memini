@@ -5,7 +5,9 @@
 package ui
 
 import (
+	"bytes"
 	"embed"
+	"html"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -21,8 +23,11 @@ var assets embed.FS
 // client-side routing works on deep links and reloads.
 //
 // The shell is intentionally public (no bearer auth): when MEMINI_API_KEY is
-// set the API it calls (/v1) enforces the token; the UI itself carries none.
-func Mount(r chi.Router) error {
+// set the API it calls (/v1) enforces the token. apiKey, when non-empty, is
+// injected into the shell so the same-origin UI authenticates without the
+// operator pasting it — which exposes the key to anyone who can load the page,
+// so only set it where reaching the UI already implies trust.
+func Mount(r chi.Router, apiKey string) error {
 	dist, err := fs.Sub(assets, "dist")
 	if err != nil {
 		return err
@@ -31,6 +36,7 @@ func Mount(r chi.Router) error {
 	if err != nil {
 		index = []byte(placeholder)
 	}
+	index = injectToken(index, apiKey)
 	fileServer := http.FileServer(http.FS(dist))
 
 	r.Get("/*", func(w http.ResponseWriter, req *http.Request) {
@@ -54,6 +60,23 @@ func Mount(r chi.Router) error {
 func exists(fsys fs.FS, name string) bool {
 	info, err := fs.Stat(fsys, name)
 	return err == nil && !info.IsDir()
+}
+
+// injectToken embeds apiKey into the shell as a <meta> tag the SPA reads to seed
+// its bearer token. It is inserted before </head> when present (otherwise
+// prepended). The value is HTML-attribute escaped. A blank key is a no-op.
+func injectToken(index []byte, apiKey string) []byte {
+	if apiKey == "" {
+		return index
+	}
+	tag := []byte(`<meta name="memini-token" content="` + html.EscapeString(apiKey) + `">`)
+	if i := bytes.Index(index, []byte("</head>")); i >= 0 {
+		out := make([]byte, 0, len(index)+len(tag))
+		out = append(out, index[:i]...)
+		out = append(out, tag...)
+		return append(out, index[i:]...)
+	}
+	return append(tag, index...)
 }
 
 // placeholder is served when the UI bundle was not built into the binary.

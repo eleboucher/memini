@@ -168,7 +168,7 @@ func run() error {
 	// as a catch-all so it cannot shadow the API, MCP, health, or metrics routes
 	// registered above.
 	if cfg.UIEnabled {
-		if err := ui.Mount(srv.Router()); err != nil {
+		if err := ui.Mount(srv.Router(), cfg.APIKey); err != nil {
 			return fmt.Errorf("mount ui: %w", err)
 		}
 		log.Info("admin UI mounted at /")

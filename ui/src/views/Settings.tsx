@@ -1,4 +1,4 @@
-import { baseUrl, namespaceHeader, refresh } from '../store'
+import { apiToken, baseUrl, namespaceHeader, refresh } from '../store'
 
 // Settings edits the connection details the SPA uses to reach memini. They are
 // persisted to localStorage.
@@ -31,6 +31,21 @@ export function Settings() {
           />
           <span class="desc">
             Must match the server's <code>MEMINI_NAMESPACE_HEADER</code> (default <code>X-Memini-Namespace</code>).
+          </span>
+        </label>
+
+        <label class="field">
+          <span class="lbl">API token</span>
+          <input
+            class="input mono"
+            type="password"
+            placeholder="(none)"
+            value={apiToken.value}
+            onInput={(e) => (apiToken.value = (e.target as HTMLInputElement).value)}
+          />
+          <span class="desc">
+            Sent as <code>Authorization: Bearer …</code>. Auto-filled from the server's{' '}
+            <code>MEMINI_API_KEY</code> on same-origin; set it only to target a remote memini.
           </span>
         </label>
 

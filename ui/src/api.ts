@@ -1,4 +1,4 @@
-import { baseUrl, namespace, namespaceHeader } from './store'
+import { apiToken, baseUrl, namespace, namespaceHeader } from './store'
 import type {
   FsckReport,
   ListResponse,
@@ -26,6 +26,9 @@ function headers(extra?: Record<string, string>, ns?: string): Record<string, st
   // specific project without switching the global selection).
   const effective = ns ?? namespace.value
   if (effective) h[namespaceHeader.value] = effective
+  // The server bearer-gates /v1, /mcp and /metrics when MEMINI_API_KEY is set;
+  // send the configured token so the dashboard works against that setup.
+  if (apiToken.value) h['Authorization'] = `Bearer ${apiToken.value}`
   return h
 }
 
