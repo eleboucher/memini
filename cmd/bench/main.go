@@ -15,6 +15,7 @@ import (
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/embed/embedtest"
 	"github.com/eleboucher/memini/internal/llm"
+	rerankpkg "github.com/eleboucher/memini/internal/rerank"
 	"github.com/eleboucher/memini/internal/store/sqlitevec"
 )
 
@@ -43,7 +44,9 @@ func run() error {
 	holdout := flag.String("holdout", "all", "longmemeval question split: tune (450) | held (50) | all")
 	sessionDoc := flag.String("session-doc", "full", "longmemeval doc construction: full | user-only | dated")
 	llmRerank := flag.Bool("llm-rerank", false, "with-LLM tier: production order vs LLM rerank (needs MEMINI_LLM_*; use -limit)")
-	llmRerankPool := flag.Int("llm-rerank-pool", 20, "candidates handed to the LLM reranker per question")
+	llmRerankPool := flag.Int("llm-rerank-pool", 20, "candidates handed to the reranker per question")
+	ceRerankURL := flag.String("rerank-url", "", "rerank tier with a cross-encoder /rerank endpoint at this base URL (e.g. http://localhost:8002/v1)")
+	ceRerankModel := flag.String("rerank-model", "", "cross-encoder model name for -rerank-url")
 	flag.Parse()
 
 	ds, err := loadDataset(*suite, *data, bench.DocMode(*sessionDoc))
@@ -105,10 +108,11 @@ func run() error {
 		return nil
 	}
 
-	// With-LLM rerank tier: production order vs LLM-reranked, on retrieval recall.
-	// One chat call per question (slow) — use -limit to subset.
-	if *llmRerank {
-		reranker, err := buildReranker()
+	// Rerank tier: production order vs reranked, on retrieval recall. One reranker
+	// call per question — use -limit to subset. Cross-encoder (-rerank-url) is
+	// fast; the LLM (-llm-rerank) is slow.
+	if *llmRerank || *ceRerankURL != "" {
+		reranker, err := buildReranker(*ceRerankURL, *ceRerankModel)
 		if err != nil {
 			return err
 		}
@@ -300,9 +304,15 @@ func buildEmbedder(localDims int) (embed.Embedder, int, func() error, error) {
 	return embedtest.New(localDims), localDims, noop, nil
 }
 
-// buildReranker constructs an LLM reranker from the MEMINI_LLM_* environment,
-// matching how cmd/memini and cmd/locomo-qa configure their chat backend.
-func buildReranker() (llm.Reranker, error) {
+// buildReranker constructs the rerank tier's backend: a cross-encoder at ceURL
+// when set, else an LLM reranker from the MEMINI_LLM_* environment (matching how
+// cmd/memini and cmd/locomo-qa configure their chat backend).
+func buildReranker(ceURL, ceModel string) (llm.Reranker, error) {
+	if ceURL != "" {
+		return rerankpkg.New(rerankpkg.Config{
+			BaseURL: ceURL, Model: ceModel, APIKey: os.Getenv("MEMINI_RERANK_API_KEY"),
+		})
+	}
 	client, err := llm.New(llm.API(os.Getenv("MEMINI_LLM_API")), llm.Config{
 		BaseURL: os.Getenv("MEMINI_LLM_BASE_URL"),
 		APIKey:  os.Getenv("MEMINI_LLM_API_KEY"),

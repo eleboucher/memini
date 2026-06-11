@@ -18,6 +18,7 @@ import (
 	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/logging"
 	"github.com/eleboucher/memini/internal/maintenance"
+	"github.com/eleboucher/memini/internal/rerank"
 	"github.com/eleboucher/memini/internal/search"
 	"github.com/eleboucher/memini/internal/server"
 	"github.com/eleboucher/memini/internal/service"
@@ -88,6 +89,7 @@ func run() error {
 	embedder = embed.Instrument(embedder, outerBackendLabel(embedder), metricsImpl)
 
 	var svcOpts []service.Option
+	var chatClient llm.Client
 	if cfg.LLMEnabled() {
 		client, err := llm.New(llm.API(cfg.LLMAPI), llm.Config{
 			BaseURL: cfg.LLMBaseURL, APIKey: cfg.LLMAPIKey, Model: cfg.LLMModel,
@@ -95,6 +97,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
+		chatClient = client
 		svcOpts = append(svcOpts, service.WithConsolidator(client), service.WithAnswerer(client))
 		log.Info("LLM consolidation + answering enabled",
 			"api", cfg.LLMAPI, "model", cfg.LLMModel, "mode", cfg.ConsolidateMode)
@@ -104,6 +107,17 @@ func run() error {
 				service.WithPromoteMinAccess(cfg.PromoteMinAccess))
 			log.Info("episodic→semantic promotion enabled",
 				"interval", cfg.PromoteInterval, "min_access", cfg.PromoteMinAccess)
+		}
+	}
+	// Recall reranking (opt-in): a cross-encoder ranking model when MEMINI_RERANK
+	// is a URL, else the chat LLM. Adds one reranker call per recall.
+	if cfg.RerankEnabled() {
+		reranker, name, err := buildReranker(cfg, chatClient, log)
+		if err != nil {
+			return err
+		}
+		if reranker != nil {
+			svcOpts = append(svcOpts, service.WithReranker(reranker, name, cfg.RerankTopN))
 		}
 	}
 	svcOpts = append(svcOpts,
@@ -161,6 +175,29 @@ func run() error {
 	}
 
 	return srv.Run(ctx)
+}
+
+// buildReranker constructs the recall reranker from MEMINI_RERANK: "llm" uses
+// the chat LLM, any other value is a cross-encoder /rerank base URL. The second
+// return is the backend label for metrics. Returns (nil, "", nil) when the
+// selected backend isn't available.
+func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger) (llm.Reranker, string, error) {
+	if cfg.RerankIsLLM() {
+		if chat == nil {
+			log.Warn("MEMINI_RERANK=llm but no LLM is configured; set MEMINI_LLM_BASE_URL")
+			return nil, "", nil
+		}
+		log.Info("LLM recall reranking enabled (adds one LLM call per recall)",
+			"model", cfg.LLMModel, "top_n", cfg.RerankTopN)
+		return llm.NewReranker(chat), "llm", nil
+	}
+	ce, err := rerank.New(rerank.Config{BaseURL: cfg.Rerank, Model: cfg.RerankModel, APIKey: cfg.RerankAPIKey})
+	if err != nil {
+		return nil, "", err
+	}
+	log.Info("cross-encoder recall reranking enabled (adds one reranker call per recall)",
+		"base_url", cfg.Rerank, "model", cfg.RerankModel, "top_n", cfg.RerankTopN)
+	return ce, "cross_encoder", nil
 }
 
 // buildStore constructs the configured storage backend.

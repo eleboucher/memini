@@ -61,6 +61,10 @@ curl -s localhost:8080/healthz
 | `MEMINI_LLM_BASE_URL`          | —                        | opt-in LLM endpoint; empty disables it                                                                                                                                                                                                                                                                |
 | `MEMINI_LLM_API`               | `openai`                 | chat backend: `openai` or `anthropic` (e.g. MiniMax)                                                                                                                                                                                                                                                  |
 | `MEMINI_LLM_MODEL`             | `gpt-4o-mini`            | consolidation model name                                                                                                                                                                                                                                                                              |
+| `MEMINI_RERANK`                | `off`                    | recall reranking: `off`, `llm` (reorder with the chat LLM), or a cross-encoder `/rerank` base URL (e.g. `http://host:8002/v1`, served by Infinity, vLLM, or `llama-server --rerank`). Reorders the top candidates; big gain where recall has headroom (see matrix), a no-op at ceiling. Failures fall back to the composite order. |
+| `MEMINI_RERANK_MODEL`          | —                        | cross-encoder model name (when `MEMINI_RERANK` is a URL)                                                                                                                                                                                                                                              |
+| `MEMINI_RERANK_API_KEY`        | —                        | cross-encoder endpoint auth (when `MEMINI_RERANK` is a URL; optional)                                                                                                                                                                                                                                 |
+| `MEMINI_RERANK_TOP_N`          | `20`                     | how many composite-ranked candidates the reranker sees                                                                                                                                                                                                                                                |
 | `MEMINI_CONSOLIDATE_MODE`      | `async`                  | `async` (store now, dedup in background), `sync`, or `off`                                                                                                                                                                                                                                            |
 | `MEMINI_CONSOLIDATE_MIN_SCORE` | `0.6`                    | similarity gate: skip the LLM when the nearest candidate scores below it (`0` disables)                                                                                                                                                                                                               |
 | `MEMINI_PROMOTE_INTERVAL`      | `24h`                    | how often frequently-used episodic memories are distilled into semantic facts (`0` disables; needs LLM)                                                                                                                                                                                               |
@@ -139,6 +143,29 @@ Beyond raw recall, `POST /v1/answer` `{query, limit}` retrieves memories and has
 the LLM generate a grounded answer from them, returning the answer plus the
 supporting `sources` (requires an LLM; also exposed as the `memory_answer` MCP
 tool).
+
+## Reranking — which recall config to use
+
+`MEMINI_RERANK` adds an optional read-side rerank over the hybrid candidates.
+Measured by [`bench/`](bench/README.md) on all-MiniLM-L6-v2 (cross-encoder =
+Qwen3-Reranker-0.6B, LLM = Qwen3.5-9B), `recall_any@5 / @10 / MRR` with the p50
+latency each adds:
+
+| Config             | `MEMINI_RERANK`   | dep        | LongMemEval (session)  | LoCoMo turn-level      | p50      |
+| ------------------ | ----------------- | ---------- | ---------------------- | ---------------------- | -------- |
+| hybrid (default)   | `off`             | embedder   | 98.4 / 99.2 / 93.0     | 59.7 / 69.9 / 42.4     | ~5 ms    |
+| + cross-encoder    | `<url>`           | + reranker | 98.4 / 99.2 / 93.1     | **70.9 / 75.0 / 59.8** | ~20–230 ms |
+| + LLM rerank       | `llm`             | + chat LLM | 98.4 / 99.2 / 93.0     | **74.4 / 76.5 / 67.4** | ~350–420 ms |
+
+Two rules of thumb:
+
+- **Reranking only helps where base recall has headroom.** On session-level sets
+  hybrid is already at ~98–99% — reranking is a no-op. On turn-level LoCoMo
+  (gold = exact turns) it pays off big: **+11pp R@5 / +17pp MRR** (cross-encoder)
+  or **+15pp / +25pp** (LLM).
+- **The cross-encoder is the better default when you need it:** most of the LLM's
+  lift at a fraction of the latency, a tiny 0.6B model, and no chat dependency.
+  Use `llm` only if you already run a chat model and want the last few points.
 
 ## MCP
 

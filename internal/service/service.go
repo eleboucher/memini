@@ -82,6 +82,9 @@ type Metrics interface {
 	OpDuration(op string, d time.Duration)
 	// AnswerResult records one Answer call: "ok" or "error".
 	AnswerResult(result string)
+	// RerankResult records one recall rerank attempt: backend is the reranker's
+	// label ("llm"|"cross_encoder"); result is "ok" or "fallback".
+	RerankResult(backend, result string)
 }
 
 type nopMetrics struct{}
@@ -95,6 +98,7 @@ func (nopMetrics) PromoteResult(string, int)           {}
 func (nopMetrics) FsckResult(string)                   {}
 func (nopMetrics) OpDuration(string, time.Duration)    {}
 func (nopMetrics) AnswerResult(string)                 {}
+func (nopMetrics) RerankResult(string, string)         {}
 
 // consolidateJob identifies an already-stored memory awaiting background
 // consolidation.
@@ -119,6 +123,15 @@ type Service struct {
 	// answerer is optional; when set, Answer recalls memories and asks it to
 	// generate a grounded answer from them.
 	answerer llm.Completer
+
+	// reranker, when set, reorders the top rerankTopN composite-ranked recall
+	// candidates (with an LLM or a cross-encoder model) before truncating to the
+	// limit. rerankName labels the backend for metrics. Adds one reranker call
+	// per Recall, so it is opt-in (see WithReranker); failures fall back to the
+	// composite order.
+	reranker   llm.Reranker
+	rerankName string
+	rerankTopN int
 
 	// distiller is optional; when set, RunPromoter distills frequently-accessed
 	// episodic memories into durable semantic facts.
@@ -187,6 +200,24 @@ func WithDistiller(d llm.Distiller) Option { return func(s *Service) { s.distill
 // from them with this chat client.
 func WithAnswerer(c llm.Completer) Option { return func(s *Service) { s.answerer = c } }
 
+// defaultRerankTopN is how many composite-ranked candidates the reranker sees.
+const defaultRerankTopN = 20
+
+// WithReranker enables reranking of recall candidates: after composite ranking,
+// the top topN candidates are reordered by the reranker (an LLM or cross-encoder
+// model), then truncated to the limit. name labels the backend in metrics. It
+// adds one reranker call per Recall, so it is opt-in; a failed rerank falls back
+// to the composite order. topN <= 0 keeps the default.
+func WithReranker(r llm.Reranker, name string, topN int) Option {
+	return func(s *Service) {
+		s.reranker = r
+		s.rerankName = name
+		if topN > 0 {
+			s.rerankTopN = topN
+		}
+	}
+}
+
 // WithPromoteMinAccess sets the minimum access_count for an episodic memory to
 // be eligible for promotion.
 func WithPromoteMinAccess(n int) Option { return func(s *Service) { s.promoteMinAccess = n } }
@@ -250,6 +281,7 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 		consolidateMode:     ConsolidateAsync,
 		consolidateMinScore: 0.6,
 		promoteMinAccess:    3,
+		rerankTopN:          defaultRerankTopN,
 		scoreFusionAlpha:    search.DefaultFusionAlpha, // convex score fusion by default; negative selects RRF
 		poolFactor:          recallPoolFactor,
 		poolFloor:           recallPoolFloor,
@@ -756,10 +788,50 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	} else {
 		ranked = search.Rerank(fused, s.now())
 	}
-	results := search.Dedup(ranked, k)
+	results := s.finalizeRecall(ctx, in.Query, ranked, k)
 	s.reinforceResults(ctx, in.Namespace, results)
 	s.metrics.RecallResult("ok", tf, hitsBucket(len(results)))
 	return results, nil
+}
+
+// finalizeRecall dedups the composite-ranked candidates to the result set. With
+// no reranker it simply caps at k; with one it dedups to a deeper pool
+// (rerankTopN), reorders that pool by the reranker's verdict, and caps at k. A
+// rerank failure falls back to the composite order so recall never errors on the
+// reranker's account.
+func (s *Service) finalizeRecall(ctx context.Context, query string, ranked []store.Scored, k int) []store.Scored {
+	if s.reranker == nil {
+		return search.Dedup(ranked, k)
+	}
+	pool := search.Dedup(ranked, s.rerankTopN)
+	cands := make([]llm.RerankCandidate, len(pool))
+	for i, r := range pool {
+		cands[i] = llm.RerankCandidate{ID: r.Memory.ID, Content: r.Memory.Content}
+	}
+	start := time.Now()
+	order, err := s.reranker.Rerank(ctx, query, cands)
+	s.metrics.OpDuration("rerank", time.Since(start))
+	if err != nil {
+		slog.WarnContext(ctx, "recall: rerank failed, using composite order", "backend", s.rerankName, "err", err)
+		s.metrics.RerankResult(s.rerankName, "fallback")
+		return search.Dedup(ranked, k)
+	}
+	byID := make(map[string]store.Scored, len(pool))
+	for _, r := range pool {
+		byID[r.Memory.ID] = r
+	}
+	out := make([]store.Scored, 0, len(order))
+	for _, id := range order {
+		if r, ok := byID[id]; ok {
+			out = append(out, r)
+			delete(byID, id)
+		}
+	}
+	if k > 0 && len(out) > k {
+		out = out[:k]
+	}
+	s.metrics.RerankResult(s.rerankName, "ok")
+	return out
 }
 
 // reinforceResults records that recalled memories were used. By default it runs

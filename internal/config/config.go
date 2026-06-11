@@ -89,6 +89,17 @@ type Config struct {
 	// LLMAPI selects the chat backend: "openai" (default) or "anthropic".
 	LLMAPI string `env:"MEMINI_LLM_API" envDefault:"openai"`
 
+	// Rerank selects recall reranking: "off" (default), "llm" (reorder with the
+	// chat LLM), or a cross-encoder /rerank base URL (e.g. http://host:8002/v1).
+	// Reranking reorders the top RerankTopN candidates before capping at the
+	// limit; it adds one reranker call per recall.
+	Rerank string `env:"MEMINI_RERANK" envDefault:"off"`
+	// RerankModel / RerankAPIKey configure the cross-encoder when Rerank is a URL.
+	RerankModel  string `env:"MEMINI_RERANK_MODEL"`
+	RerankAPIKey string `env:"MEMINI_RERANK_API_KEY"`
+	// RerankTopN is how many composite-ranked candidates the reranker sees.
+	RerankTopN int `env:"MEMINI_RERANK_TOP_N" envDefault:"20"`
+
 	// Consolidation tuning.
 	// ConsolidateMode is "async" (default), "sync", or "off".
 	ConsolidateMode string `env:"MEMINI_CONSOLIDATE_MODE" envDefault:"async"`
@@ -124,6 +135,13 @@ type Config struct {
 
 // LLMEnabled reports whether the opt-in LLM pipeline is configured.
 func (c *Config) LLMEnabled() bool { return c.LLMBaseURL != "" }
+
+// RerankEnabled reports whether recall reranking is configured.
+func (c *Config) RerankEnabled() bool { return c.Rerank != "" && c.Rerank != "off" }
+
+// RerankIsLLM reports whether reranking uses the chat LLM rather than a
+// cross-encoder URL.
+func (c *Config) RerankIsLLM() bool { return c.Rerank == "llm" }
 
 // Load reads configuration from the environment and validates it.
 func Load() (*Config, error) {

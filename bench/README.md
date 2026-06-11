@@ -193,6 +193,35 @@ memini hybrid per-category (all-MiniLM, recall_any@10): multi-session 100%,
 knowledge-update 100%, single-session-user 98.6%, single-session-assistant
 98.2%, temporal-reasoning 97.0%, single-session-preference 96.7%.
 
+### Rerank tier — cross-encoder vs LLM (`-rerank-url` / `-llm-rerank`)
+
+The read-side rerank reorders the top of the production candidate order. The
+bench drives either backend through the same comparison (one reranker call per
+question — use `-limit`):
+
+```sh
+# cross-encoder (fast; e.g. Qwen3-Reranker-0.6B via llama-server --rerank):
+go run ./cmd/bench -suite locomo -data ./locomo.json -rerank-url http://localhost:8002/v1 -rerank-model qwen3-reranker-0.6b -limit 100 -k 5,10
+# LLM reranker (slow; MEMINI_LLM_*):
+go run ./cmd/bench -suite locomo -data ./locomo.json -llm-rerank -limit 100 -k 5,10
+```
+
+Measured on all-MiniLM-L6-v2 (cross-encoder = Qwen3-Reranker-0.6B, LLM =
+Qwen3.5-9B), `recall_any@5 / @10 / MRR`:
+
+| Config           | LongMemEval (session) | LoCoMo turn-level      | added p50   |
+| ---------------- | --------------------- | ---------------------- | ----------- |
+| hybrid (base)    | 98.4 / 99.2 / 93.0    | 59.7 / 69.9 / 42.4     | —           |
+| + cross-encoder  | 98.4 / 99.2 / 93.1    | **70.9 / 75.0 / 59.8** | ~20–230 ms  |
+| + LLM rerank     | 98.4 / 99.2 / 93.0    | **74.4 / 76.5 / 67.4** | ~350–420 ms |
+
+Reranking is a **no-op at recall ceiling** (session-level) and a **big win where
+recall has headroom** (turn-level: +11pp R@5 / +17pp MRR for the cross-encoder,
++15pp / +25pp for the LLM). The cross-encoder captures most of the LLM's lift at
+a fraction of the latency with no chat model — the recommended production rerank
+(`MEMINI_RERANK=<url>`); the LLM tier (`MEMINI_RERANK=llm`) buys the last points
+if you already run one.
+
 ### LoCoMo — end-to-end QA accuracy (LLM-judge)
 
 The metric mem0/Letta publish: retrieve → generate an answer → an LLM judges it
