@@ -74,7 +74,22 @@ func LoadFile(path string) (*Dataset, error) {
 
 // LoadLongMemEval converts a LongMemEval file: each haystack session becomes an
 // item, each question's answer_session_ids becomes its gold set.
-func LoadLongMemEval(path string) (*Dataset, error) {
+// DocMode selects how a LongMemEval haystack session is rendered into one
+// embedded item, for the vector-leg document-construction experiment.
+type DocMode string
+
+const (
+	// DocFull renders "role: content\n" for every turn (the production shape).
+	DocFull DocMode = "full"
+	// DocUserOnly renders only user turns, with no role prefixes (MemPalace's
+	// raw mode: assistant turns dilute the vector leg on user-question recall).
+	DocUserOnly DocMode = "user-only"
+	// DocDated prefixes the full session with its date, so temporal questions
+	// have a textual anchor the embedder can see.
+	DocDated DocMode = "dated"
+)
+
+func LoadLongMemEval(path string, mode DocMode) (*Dataset, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -107,7 +122,7 @@ func LoadLongMemEval(path string) (*Dataset, error) {
 			d.Items = append(d.Items, Item{
 				ID:      group + "/" + sessionID(r.HaystackIDs, i),
 				Group:   group,
-				Content: sessionText(sess),
+				Content: sessionDoc(sess, r.HaystackDates, i, mode),
 				Time:    parseLMEDate(r.HaystackDates, i),
 			})
 		}
@@ -255,4 +270,30 @@ func sessionText(turns []turn) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// sessionDoc renders a haystack session into its embedded document per mode.
+// dates[i] is the session's date (LoCoMo-style "[date]" prefix for DocDated).
+func sessionDoc(turns []turn, dates []string, i int, mode DocMode) string {
+	switch mode {
+	case DocUserOnly:
+		var b strings.Builder
+		for _, tn := range turns {
+			if tn.Role == "user" {
+				b.WriteString(tn.Content)
+				b.WriteString("\n")
+			}
+		}
+		if b.Len() == 0 {
+			return sessionText(turns) // no user turns — fall back to full
+		}
+		return b.String()
+	case DocDated:
+		if i < len(dates) && strings.TrimSpace(dates[i]) != "" {
+			return "[" + dates[i] + "]\n" + sessionText(turns)
+		}
+		return sessionText(turns)
+	default: // DocFull, "" and unknown values
+		return sessionText(turns)
+	}
 }

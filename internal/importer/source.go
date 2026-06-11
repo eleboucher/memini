@@ -20,13 +20,16 @@ const (
 	SourceMem0 Source = "mem0"
 	// SourceMnemory is fpytloun/mnemory's export output.
 	SourceMnemory Source = "mnemory"
+	// SourceClaudeCode is a Claude Code session transcript (JSONL), reconstructed
+	// into per-exchange episodic memories.
+	SourceClaudeCode Source = "claude-code"
 )
 
 // Sources lists the supported import sources, sorted.
 func Sources() []string {
 	out := []string{
 		string(SourceMemini), string(SourceAgentMemory),
-		string(SourceMem0), string(SourceMnemory),
+		string(SourceMem0), string(SourceMnemory), string(SourceClaudeCode),
 	}
 	sort.Strings(out)
 	return out
@@ -43,6 +46,8 @@ func Parse(src Source, data []byte) ([]Record, error) {
 		return parseMem0(data)
 	case SourceMnemory:
 		return parseMnemory(data)
+	case SourceClaudeCode:
+		return parseClaudeCode(data)
 	default:
 		return nil, fmt.Errorf("import: unknown source %q (want one of %s)",
 			src, strings.Join(Sources(), ", "))

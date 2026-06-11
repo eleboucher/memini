@@ -18,6 +18,9 @@ import (
 // recency factor stays well-defined.
 var rerankFallbackTime = time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
 
+// catAll is the synthetic category accumulating every question's score.
+const catAll = "all"
+
 // rerankAcc accumulates recall@1, recall@K, reciprocal rank, and count.
 type rerankAcc struct{ r1, rk, rr, n float64 }
 
@@ -52,13 +55,20 @@ func RerankCompare(
 	// at increasing recency weight, to locate the weight at which recency stops
 	// helping and starts burying correct-but-older memories.
 	strategies := []struct {
-		name string
-		w    search.RerankWeights
+		name     string
+		w        search.RerankWeights
+		temporal float64 // > 0: add a query-conditioned date-proximity boost (experiment #2)
 	}{
-		{"rrf", search.RerankWeights{Relevance: 1, Recency: 0, Importance: 0}},
-		{"recency0.05", search.RerankWeights{Relevance: 0.80, Recency: 0.05, Importance: 0.15}},
-		{"recency0.15", search.RerankWeights{Relevance: 0.75, Recency: 0.15, Importance: 0.10}},
-		{"recency0.25", search.RerankWeights{Relevance: 0.60, Recency: 0.25, Importance: 0.15}},
+		{"rrf", search.RerankWeights{Relevance: 1, Recency: 0, Importance: 0}, 0},
+		{"recency0.05", search.RerankWeights{Relevance: 0.80, Recency: 0.05, Importance: 0.15}, 0},
+		{"recency0.15", search.RerankWeights{Relevance: 0.75, Recency: 0.15, Importance: 0.10}, 0},
+		{"recency0.25", search.RerankWeights{Relevance: 0.60, Recency: 0.25, Importance: 0.15}, 0},
+		// Query-conditioned temporal targeting: parse a relative time phrase in
+		// the query ("3 weeks ago"), compute target = now - offset, boost
+		// candidates dated near it. Unlike recency (monotonic: recent = better),
+		// this targets the *referenced* time, which is where temporal-reasoning
+		// answers actually live.
+		{"temporal0.40", search.RerankWeights{Relevance: 0.80, Recency: 0.05, Importance: 0.15}, 0.40},
 	}
 	// acc[strategy][category]
 	accs := make([]map[string]*rerankAcc, len(strategies))
@@ -98,8 +108,13 @@ func RerankCompare(
 			now = rerankFallbackTime
 		}
 		for si, s := range strategies {
-			ranked := search.RerankWith(fused, now, s.w)
-			for _, cat := range []string{q.Category, "all"} {
+			var ranked []store.Scored
+			if s.temporal > 0 {
+				ranked = search.RerankTemporal(fused, q.Query, now, s.w, search.RegexAnchorExtractor{}, s.temporal)
+			} else {
+				ranked = search.RerankWith(fused, now, s.w)
+			}
+			for _, cat := range []string{q.Category, catAll} {
 				score(bump(accs[si], cat), ranked, q.Gold, k)
 			}
 		}
