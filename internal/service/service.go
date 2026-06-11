@@ -39,6 +39,12 @@ const (
 	recallPoolFloor  = 50
 )
 
+// RecallPoolSize is the per-leg candidate pool Recall over-fetches for a
+// final result count of k, with the default pool sizing. Exported so external
+// pipelines (bench) that re-create recall stage-by-stage match production
+// instead of hardcoding the constants.
+func RecallPoolSize(k int) int { return max(k*recallPoolFactor, recallPoolFloor) }
+
 // ConsolidateMode selects how the opt-in LLM consolidation pipeline runs.
 type ConsolidateMode string
 

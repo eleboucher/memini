@@ -11,6 +11,7 @@ import (
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/search"
+	"github.com/eleboucher/memini/internal/service"
 	"github.com/eleboucher/memini/internal/store"
 )
 
@@ -82,9 +83,9 @@ func RerankCompare(
 		return m[cat]
 	}
 
-	// Mirror service.Recall's deep candidate pool (max(k*5, 50) per leg) so the
-	// comparison reflects what the composite re-ranker sees in production.
-	fetch := max(k*5, 50)
+	// Mirror service.Recall's deep candidate pool per leg so the comparison
+	// reflects what the composite re-ranker sees in production.
+	fetch := service.RecallPoolSize(k)
 	for _, q := range ds.Questions {
 		if len(want) > 0 && !want[q.Category] {
 			continue

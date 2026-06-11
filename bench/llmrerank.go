@@ -6,6 +6,7 @@ import (
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/search"
+	"github.com/eleboucher/memini/internal/service"
 	"github.com/eleboucher/memini/internal/store"
 )
 
@@ -22,7 +23,7 @@ func LLMRerankCompare(
 	if err := ingestTimed(ctx, st, e, ds.Items); err != nil {
 		return nil, err
 	}
-	pool := max(k*5, 50)
+	pool := service.RecallPoolSize(k)
 	baseAcc := map[string]*rerankAcc{}
 	llmAcc := map[string]*rerankAcc{}
 	bump := func(m map[string]*rerankAcc, cat string) *rerankAcc {
