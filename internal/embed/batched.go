@@ -1,6 +1,9 @@
 package embed
 
-import "context"
+import (
+	"context"
+	"log/slog"
+)
 
 // Batched splits an Embed call into sub-requests bounded by item count and
 // character budget to keep payloads under endpoint limits, truncating over-long texts.
@@ -31,6 +34,12 @@ func (b *Batched) Embed(ctx context.Context, texts []string) ([][]float32, error
 		var sub []string
 		for j < len(texts) && len(sub) < b.maxItems {
 			t := truncateRunes(texts[j], b.maxItemChars)
+			if len(t) < len(texts[j]) {
+				// The stored vector represents only this prefix; recall won't
+				// match content beyond it.
+				slog.DebugContext(ctx, "embed: truncating over-long text",
+					"chars", len(texts[j]), "max", b.maxItemChars)
+			}
 			if len(sub) > 0 && b.maxChars > 0 && chars+len(t) > b.maxChars {
 				break
 			}
