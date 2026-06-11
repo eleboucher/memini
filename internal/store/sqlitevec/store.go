@@ -260,7 +260,8 @@ func (s *Store) DeleteIfExpiredBefore(ctx context.Context, namespace, id string,
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var rowID, tier string
+	var rowID int64
+	var tier string
 	err = tx.QueryRowContext(ctx,
 		`SELECT rowid, tier FROM memories WHERE id=? AND namespace=? AND expires_at IS NOT NULL AND expires_at <= ?`,
 		id, namespace, ms(cutoff)).Scan(&rowID, &tier)
