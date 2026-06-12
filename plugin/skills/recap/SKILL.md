@@ -9,9 +9,11 @@ description: >-
 
 # recap (memini)
 
-memini is a memory service. To produce a recap, call `memory_recall` with
-a broad query and a higher `limit` (10–20), then group the results by
-`tier` in your reply.
+memini is a memory service. The fastest recap is the `memory_briefing` tool: it
+returns pinned context, durable facts, how-to procedures, and recent activity
+for the namespace in one query-less call, already grouped — use it for a
+"where are we" overview. For a topic-specific recap, call `memory_recall` with a
+broad query and a higher `limit` (10–20) and group the results by `tier`.
 
 ## When to call
 

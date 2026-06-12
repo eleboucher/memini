@@ -17,10 +17,21 @@ memini is a memory service. To search for prior context, call the
 - `limit` (optional) — max results; default 10, suggested 5 for targeted search
 - `tiers` (optional) — restrict to specific tiers (`semantic`, `procedural`,
   `episodic`, `working`)
+- `scope` (optional) — `subtree` also searches namespaces nested under this one
+  (a `project` namespace then also reads `project/<agent>`), for reading shared
+  plus per-agent memory; default `exact`.
+- `as_of` (optional) — an RFC3339 time for "what was true then" queries; returns
+  facts valid at that instant, including ones since superseded.
 
-`memory_recall` runs hybrid retrieval (vector + keyword, fused with RRF), so
-natural-language queries work as well as exact keywords. Prefer a short
-descriptive query ("JWT auth setup") over a single keyword.
+`memory_recall` runs hybrid retrieval (vector + keyword), then ranks by
+relevance and memory quality (a corroborated, durable, frequently-recalled fact
+outranks a one-off note), so natural-language queries work as well as exact
+keywords. Results carry a `confidence` for durable facts — treat a low-confidence
+memory as a weak signal. Prefer a short descriptive query ("JWT auth setup").
+
+To orient at the start of a session without a query, call `memory_briefing`
+instead: it returns pinned context, durable facts, how-to procedures, and recent
+activity in one call.
 
 ## When to call
 

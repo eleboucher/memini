@@ -16,6 +16,7 @@ import (
 	"github.com/eleboucher/memini/internal/httputil"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/service"
+	"github.com/eleboucher/memini/internal/store"
 	"github.com/eleboucher/memini/internal/version"
 )
 
@@ -34,9 +35,16 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 		Description: "Store a memory for later recall. Returns the new memory's ID.",
 	}, h.remember)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name:        "memory_recall",
-		Description: "Recall relevant memories via hybrid (semantic + keyword) search.",
+		Name: "memory_recall",
+		Description: "Recall relevant memories via hybrid (semantic + keyword) search. " +
+			"Supports time-travel (as_of) and reading nested namespaces (scope=subtree).",
 	}, h.recall)
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "memory_briefing",
+		Description: "Layered session-start briefing for this namespace — pinned context, " +
+			"durable facts, how-to procedures, and recent activity — in one query-less call. " +
+			"Call it when a session opens to orient yourself.",
+	}, h.briefing)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "memory_answer",
 		Description: "Recall relevant memories and answer a question grounded on them (requires an LLM).",
@@ -134,6 +142,7 @@ type rememberArgs struct {
 	Importance float64        `json:"importance,omitempty" jsonschema:"0..1 bias toward retention"`
 	TTLSeconds *int           `json:"ttl_seconds,omitempty" jsonschema:"overrides the tier default TTL; negative means never expire"`
 	ID         string         `json:"id,omitempty" jsonschema:"upserts an existing memory when provided"`
+	Confidence *float64       `json:"confidence,omitempty" jsonschema:"0..1 seed corroboration for a durable fact; omit for default"`
 	Namespace  string         `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 }
 
@@ -156,6 +165,7 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 		Metadata:   in.Metadata,
 		Importance: in.Importance,
 		ID:         in.ID,
+		Confidence: in.Confidence,
 	}
 	if in.TTLSeconds != nil {
 		d := time.Duration(*in.TTLSeconds) * time.Second
@@ -172,14 +182,24 @@ type recallArgs struct {
 	Query     string   `json:"query" jsonschema:"what to search for"`
 	Tiers     []string `json:"tiers,omitempty" jsonschema:"restrict to these tiers (working, episodic, semantic, procedural); empty means all"`
 	Limit     int      `json:"limit,omitempty" jsonschema:"max results (default 10)"`
+	Scope     string   `json:"scope,omitempty" jsonschema:"'subtree' also searches nested namespaces; default 'exact'"`
+	AsOf      string   `json:"as_of,omitempty" jsonschema:"RFC3339 time for time-travel recall (facts true then)"`
 	Namespace string   `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 }
 
 type recallItem struct {
-	ID      string  `json:"id"`
-	Content string  `json:"content"`
-	Tier    string  `json:"tier"`
-	Score   float64 `json:"score"`
+	ID         string   `json:"id"`
+	Content    string   `json:"content"`
+	Tier       string   `json:"tier"`
+	Score      float64  `json:"score"`
+	Confidence *float64 `json:"confidence,omitempty"`
+}
+
+func scoredItem(s store.Scored) recallItem {
+	return recallItem{
+		ID: s.Memory.ID, Content: s.Memory.Content, Tier: string(s.Memory.Tier),
+		Score: s.Score, Confidence: s.Memory.Confidence,
+	}
 }
 
 type recallResult struct {
@@ -195,22 +215,68 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 	if err != nil {
 		return nil, recallResult{}, err
 	}
-	res, err := t.svc.Recall(ctx, service.RecallInput{
+	input := service.RecallInput{
 		Namespace: ns,
 		Query:     in.Query,
 		Tiers:     tiers,
 		Limit:     in.Limit,
-	})
+		Subtree:   strings.EqualFold(strings.TrimSpace(in.Scope), "subtree"),
+	}
+	if in.AsOf != "" {
+		asOf, perr := time.Parse(time.RFC3339, in.AsOf)
+		if perr != nil {
+			return nil, recallResult{}, fmt.Errorf("invalid as_of %q: want RFC3339", in.AsOf)
+		}
+		input.AsOf = asOf.UTC()
+	}
+	res, err := t.svc.Recall(ctx, input)
 	if err != nil {
 		return nil, recallResult{}, err
 	}
 	out := recallResult{Results: make([]recallItem, len(res))}
 	for i, s := range res {
-		out.Results[i] = recallItem{
-			ID: s.Memory.ID, Content: s.Memory.Content, Tier: string(s.Memory.Tier), Score: s.Score,
-		}
+		out.Results[i] = scoredItem(s)
 	}
 	return nil, out, nil
+}
+
+type briefingArgs struct {
+	PerSection int    `json:"per_section,omitempty" jsonschema:"max memories per section (default 5)"`
+	Namespace  string `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+}
+
+type briefingResult struct {
+	Namespace  string       `json:"namespace"`
+	Pinned     []recallItem `json:"pinned,omitempty"`
+	Facts      []recallItem `json:"facts,omitempty"`
+	Procedures []recallItem `json:"procedures,omitempty"`
+	Recent     []recallItem `json:"recent,omitempty"`
+}
+
+func briefingItems(mems []*memory.Memory) []recallItem {
+	out := make([]recallItem, len(mems))
+	for i, m := range mems {
+		out[i] = recallItem{ID: m.ID, Content: m.Content, Tier: string(m.Tier), Confidence: m.Confidence}
+	}
+	return out
+}
+
+func (t *tools) briefing(ctx context.Context, _ *mcpsdk.CallToolRequest, in briefingArgs) (*mcpsdk.CallToolResult, briefingResult, error) {
+	ns, err := t.ns(in.Namespace)
+	if err != nil {
+		return nil, briefingResult{}, err
+	}
+	b, err := t.svc.Briefing(ctx, ns, in.PerSection)
+	if err != nil {
+		return nil, briefingResult{}, err
+	}
+	return nil, briefingResult{
+		Namespace:  b.Namespace,
+		Pinned:     briefingItems(b.Pinned),
+		Facts:      briefingItems(b.Facts),
+		Procedures: briefingItems(b.Procedures),
+		Recent:     briefingItems(b.Recent),
+	}, nil
 }
 
 type answerArgs struct {
@@ -239,9 +305,7 @@ func (t *tools) answer(ctx context.Context, _ *mcpsdk.CallToolRequest, in answer
 	}
 	out := answerResult{Answer: res.Answer, Sources: make([]recallItem, len(res.Sources))}
 	for i, s := range res.Sources {
-		out.Sources[i] = recallItem{
-			ID: s.Memory.ID, Content: s.Memory.Content, Tier: string(s.Memory.Tier), Score: s.Score,
-		}
+		out.Sources[i] = scoredItem(s)
 	}
 	return nil, out, nil
 }

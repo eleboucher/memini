@@ -16,8 +16,15 @@ tool with:
 - `content` (required) — the fact itself, atomic and self-contained
 - `tier` — `semantic` for durable knowledge, `procedural` for how-to,
   `episodic` for events, `working` for transient notes
-- `tags` (optional) — array of keywords for later search
+- `tags` (optional) — array of keywords for later search; tag a critical,
+  always-relevant fact (the user's identity, a hard constraint) `pinned` so it
+  surfaces in every session briefing
 - `summary` (optional) — short summary; defaults to first 200 chars of content
+- `confidence` (optional) — 0..1 for durable (`semantic`/`procedural`) facts;
+  omit to let it start uncorroborated and earn trust as the fact recurs. Durable
+  facts gain confidence each time they're re-observed and lose it if never
+  recalled, so saving a real, lasting fact as `semantic` (not `working`) is what
+  lets it rise above one-off noise over time.
 
 ## When to call
 

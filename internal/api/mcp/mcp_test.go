@@ -66,7 +66,8 @@ func TestToolsListed(t *testing.T) {
 		t.Fatalf("list tools: %v", err)
 	}
 	want := map[string]bool{
-		"memory_remember": false, "memory_recall": false, "memory_get": false, "memory_forget": false,
+		"memory_remember": false, "memory_recall": false, "memory_get": false,
+		"memory_forget": false, "memory_briefing": false,
 	}
 	for _, tool := range res.Tools {
 		if _, ok := want[tool.Name]; ok {
@@ -116,6 +117,70 @@ func TestRememberRecallRoundTrip(t *testing.T) {
 	structured(t, res, &recalled)
 	if len(recalled.Results) == 0 || recalled.Results[0].ID != remembered.ID {
 		t.Fatalf("recall did not return remembered memory: %+v", recalled.Results)
+	}
+}
+
+func TestBriefingTool(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	remember := func(content, tier string, tags []string) {
+		args := map[string]any{"content": content, "tier": tier}
+		if tags != nil {
+			args["tags"] = tags
+		}
+		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{Name: "memory_remember", Arguments: args}); err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+	}
+	remember("the service is written in Go", "semantic", nil)
+	remember("to deploy run make release", "procedural", nil)
+	remember("the user is Erwan", "semantic", []string{"pinned"})
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{Name: "memory_briefing", Arguments: map[string]any{}})
+	if err != nil {
+		t.Fatalf("briefing: %v", err)
+	}
+	var b struct {
+		Namespace  string                     `json:"namespace"`
+		Facts      []struct{ Content string } `json:"facts"`
+		Procedures []struct{ Content string } `json:"procedures"`
+		Pinned     []struct{ Content string } `json:"pinned"`
+	}
+	structured(t, res, &b)
+	if b.Namespace != "default" || len(b.Facts) < 1 || len(b.Procedures) != 1 || len(b.Pinned) != 1 {
+		t.Fatalf("unexpected briefing: %+v", b)
+	}
+}
+
+func TestRecallSubtreeScopeViaMCP(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	remember := func(ns, content string) {
+		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+			Name:      "memory_remember",
+			Arguments: map[string]any{"content": content, "tier": "semantic", "namespace": ns},
+		}); err != nil {
+			t.Fatalf("remember %s: %v", ns, err)
+		}
+	}
+	remember("proj", "shared: the service is written in Go")
+	remember("proj/agent-a", "private: agent-a prefers table tests in Go")
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_recall",
+		Arguments: map[string]any{"query": "Go", "namespace": "proj", "scope": "subtree", "limit": 10},
+	})
+	if err != nil {
+		t.Fatalf("recall subtree: %v", err)
+	}
+	var recalled struct {
+		Results []struct{ Content string } `json:"results"`
+	}
+	structured(t, res, &recalled)
+	if len(recalled.Results) < 2 {
+		t.Fatalf("subtree recall should span proj and proj/agent-a, got %d results", len(recalled.Results))
 	}
 }
 
