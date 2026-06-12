@@ -1,0 +1,93 @@
+---
+name: Bump version
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "auto (infer from commits), patch, minor, major, or explicit X.Y.Z"
+        required: true
+        default: "auto"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    permissions:
+      contents: write
+    runs-on: docker
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Install git-cliff
+        env:
+          # renovate: datasource=github-releases depName=orhun/git-cliff
+          GIT_CLIFF_VERSION: "2.12.0"
+        run: |
+          set -euo pipefail
+          ASSET="git-cliff-${GIT_CLIFF_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          BASE="https://github.com/orhun/git-cliff/releases/download/v${GIT_CLIFF_VERSION}"
+          curl -fsSL -O "${BASE}/${ASSET}"
+          curl -fsSL -O "${BASE}/${ASSET}.sha512"
+          sha512sum -c "${ASSET}.sha512"
+          tar -xzf "${ASSET}" -C /tmp
+          install -m 0755 "/tmp/git-cliff-${GIT_CLIFF_VERSION}/git-cliff" /usr/local/bin/git-cliff
+      - name: Compute next version
+        id: version
+        env:
+          INPUT: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          case "$INPUT" in
+            auto)
+              NEXT="$(git-cliff --config cliff.toml --bumped-version)"
+              ;;
+            major|minor|patch)
+              NEXT="$(git-cliff --config cliff.toml --bump "$INPUT" --bumped-version)"
+              ;;
+            [0-9]*.[0-9]*.[0-9]*) NEXT="v$INPUT" ;;
+            v[0-9]*) NEXT="$INPUT" ;;
+            *) echo "Unknown bump input: $INPUT" >&2; exit 1 ;;
+          esac
+          NEXT="${NEXT#v}"
+          if [ -z "$NEXT" ]; then
+            echo "git-cliff returned empty version" >&2; exit 1
+          fi
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "tag=v$NEXT" >> "$GITHUB_OUTPUT"
+          echo "Next version: v$NEXT"
+      - name: Sync plugin manifest versions
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          set -euo pipefail
+          for f in plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json; do
+            sed -i -E 's/("version"[[:space:]]*:[[:space:]]*")[^"]*(")/\1'"${NEXT}"'\2/' "$f"
+            grep -q "\"version\": \"${NEXT}\"" "$f" || { echo "failed to set version in $f" >&2; exit 1; }
+            # Keep the commit honest: the file must still be valid JSON.
+            jq -e . "$f" >/dev/null
+          done
+      - name: Commit and push tag
+        env:
+          # Must be a PAT with contents:write. The built-in Actions token is
+          # deliberately blocked from triggering further workflows, so a tag
+          # pushed with it would NOT start release.yml.
+          PUSH_TOKEN: ${{ secrets.OWNER_PACKAGE_SECRET }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "forgejo-actions[bot]"
+          git config user.email "actions@git.erwanleboucher.dev"
+          git remote set-url origin \
+            "https://x-access-token:${PUSH_TOKEN}@git.erwanleboucher.dev/${GITHUB_REPOSITORY}.git"
+          git add plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json
+          git commit -m "chore(release): ${TAG}"
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          git push origin "HEAD:${GITHUB_REF_NAME}" "${TAG}"

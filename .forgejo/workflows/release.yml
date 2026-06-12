@@ -8,30 +8,73 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  goreleaser:
-    runs-on: multiarch
-    env:
-      # renovate: datasource=github-releases depName=goreleaser/goreleaser
-      GORELEASER_VERSION: "2.15.4"
+  release:
+    runs-on: docker
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+      tag: ${{ steps.create.outputs.tag }}
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v6
         with:
           fetch-depth: 0
-      - uses: https://data.forgejo.org/actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-      - uses: https://data.forgejo.org/actions/setup-node@v6
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-      - name: Run GoReleaser
-        run: curl -sfL https://goreleaser.com/static/run | VERSION="v${GORELEASER_VERSION}" bash -s -- release --clean
+      - name: Install git-cliff
         env:
-          GORELEASER_FORCE_TOKEN: gitea
+          # renovate: datasource=github-releases depName=orhun/git-cliff
+          GIT_CLIFF_VERSION: "2.12.0"
+        run: |
+          set -euo pipefail
+          ASSET="git-cliff-${GIT_CLIFF_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          BASE="https://github.com/orhun/git-cliff/releases/download/v${GIT_CLIFF_VERSION}"
+          wget -q "${BASE}/${ASSET}"
+          wget -q "${BASE}/${ASSET}.sha512"
+          sha512sum -c "${ASSET}.sha512"
+          tar -xzf "${ASSET}" -C /tmp
+          install -m 0755 "/tmp/git-cliff-${GIT_CLIFF_VERSION}/git-cliff" /usr/local/bin/git-cliff
+      - name: Generate release notes
+        id: changelog
+        run: |
+          set -euo pipefail
+          CONTENT="$(git-cliff --config cliff.toml --latest --strip all)"
+          printf 'content<<EOF\n%s\nEOF\n' "$CONTENT" >> "$GITHUB_OUTPUT"
+      - name: Create release
+        id: create
+        env:
           GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITEA_SERVER_URL: https://git.erwanleboucher.dev
+          RELEASE_BODY: ${{ steps.changelog.outputs.content }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [ -z "${GITEA_TOKEN:-}" ]; then
+            echo "GITEA_TOKEN secret is empty or missing" >&2
+            exit 1
+          fi
+          RESPONSE="$(jq -n \
+            --arg tag "$TAG" \
+            --arg name "$TAG" \
+            --arg body "$RELEASE_BODY" \
+            '{tag_name: $tag, name: $name, body: $body, draft: false, prerelease: false}' \
+            | curl -sS -X POST \
+                -w '\n%{http_code}' \
+                -H "Authorization: token ${GITEA_TOKEN}" \
+                -H "Content-Type: application/json" \
+                --data-binary @- \
+                "https://git.erwanleboucher.dev/api/v1/repos/${GITHUB_REPOSITORY}/releases")"
+          HTTP_CODE="${RESPONSE##*$'\n'}"
+          BODY="${RESPONSE%$'\n'*}"
+          if [ "$HTTP_CODE" != "201" ]; then
+            echo "release create failed: HTTP $HTTP_CODE" >&2
+            echo "$BODY" >&2
+            exit 1
+          fi
+          RELEASE_ID="$(echo "$BODY" | jq -r '.id')"
+          if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
+            echo "failed to parse release id from response: $BODY" >&2
+            exit 1
+          fi
+          echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
   container:
+    needs: [release]
     runs-on: multiarch
     outputs:
       digest: ${{ steps.build.outputs.digest }}
@@ -66,6 +109,8 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+      # Build the binary (with the UI embedded) exactly once. The release
+      # archives are extracted from this same build below, not recompiled.
       - name: Build and push
         id: build
         uses: https://data.forgejo.org/docker/build-push-action@v7
@@ -79,6 +124,22 @@ jobs:
             VERSION=${{ github.ref_name }}
             REVISION=${{ github.sha }}
             DATE=${{ steps.build-meta.outputs.created }}
+          cache-from: type=registry,ref=registry.erwanleboucher.dev/${{ vars.USERNAME }}/memini-buildcache:release
+          cache-to: type=registry,ref=registry.erwanleboucher.dev/${{ vars.USERNAME }}/memini-buildcache:release,mode=max,ignore-error=true
+      # Reuses the cache above (cache hit, no recompile); copies the bare
+      # binaries out of the `artifact` stage to prebuilt/<os>_<arch>/memini.
+      - name: Extract release binaries
+        uses: https://data.forgejo.org/docker/build-push-action@v7
+        with:
+          context: .
+          target: artifact
+          platforms: linux/amd64,linux/arm64
+          outputs: type=local,dest=prebuilt
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            REVISION=${{ github.sha }}
+            DATE=${{ steps.build-meta.outputs.created }}
+          cache-from: type=registry,ref=registry.erwanleboucher.dev/${{ vars.USERNAME }}/memini-buildcache:release
       - name: Install cosign
         run: |
           set -euo pipefail
@@ -105,6 +166,64 @@ jobs:
           cosign sign --yes --key env://COSIGN_KEY \
             "git.erwanleboucher.dev/${USERNAME}/memini@${DIGEST}" \
             "registry.erwanleboucher.dev/${USERNAME}/memini@${DIGEST}"
+      - name: Stage and archive
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          for ARCH in amd64 arm64; do
+            STAGE="memini_${VERSION}_linux_${ARCH}"
+            mkdir -p "$STAGE"
+            install -m 0755 "prebuilt/linux_${ARCH}/memini" "$STAGE/memini"
+            cp LICENSE README.md "$STAGE/"
+            tar -czf "${STAGE}.tar.gz" "$STAGE"
+          done
+          sha256sum memini_*.tar.gz > "memini_${VERSION}_checksums.txt"
+      - name: Cosign sign-blob checksums
+        env:
+          COSIGN_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          CHECKSUMS="memini_${VERSION}_checksums.txt"
+          cosign sign-blob --yes \
+            --key env://COSIGN_KEY \
+            --bundle "${CHECKSUMS}.cosign.bundle" \
+            "${CHECKSUMS}"
+      - name: Upload assets to release
+        env:
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.release.outputs.release_id }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          upload() {
+            local file="$1"
+            local response http_code body
+            response="$(curl -sS -X POST \
+              -w '\n%{http_code}' \
+              -H "Authorization: token ${GITEA_TOKEN}" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary "@${file}" \
+              "https://git.erwanleboucher.dev/api/v1/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=$(basename "${file}")")"
+            http_code="${response##*$'\n'}"
+            body="${response%$'\n'*}"
+            if [ "$http_code" != "201" ]; then
+              echo "asset upload failed for ${file}: HTTP $http_code" >&2
+              echo "$body" >&2
+              return 1
+            fi
+          }
+          VERSION="${TAG#v}"
+          CHECKSUMS="memini_${VERSION}_checksums.txt"
+          for ARCH in amd64 arm64; do
+            upload "memini_${VERSION}_linux_${ARCH}.tar.gz"
+          done
+          upload "${CHECKSUMS}"
+          upload "${CHECKSUMS}.cosign.bundle"
   helm:
     needs: [container]
     runs-on: multiarch

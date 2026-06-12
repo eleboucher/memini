@@ -33,6 +33,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -X github.com/eleboucher/memini/internal/version.Date=${DATE}" \
     -o /out/memini ./cmd/memini
 
+# Bare binary for `--target artifact --output type=local`; the release
+# workflow extracts these instead of recompiling for the archives.
+FROM scratch AS artifact
+COPY --from=build /out/memini /memini
+
 FROM gcr.io/distroless/static-debian13:nonroot
 COPY --from=build /out/memini /usr/local/bin/memini
 EXPOSE 8080
