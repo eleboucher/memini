@@ -17,7 +17,15 @@ What it wires (via `api.registerMemoryCapability` + two hooks):
 
 ### Install
 
-One-liner (downloads just the extension, no clone):
+From ClawHub (recommended) — a tracked install OpenClaw's plugin updater keeps
+current (`openclaw plugins update @eleboucher/memini`):
+
+```bash
+openclaw plugins install clawhub:@eleboucher/memini
+```
+
+Or fetch the extension files directly off `main` (no clone, not tracked for
+updates):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/eleboucher/memini/main/integrations/openclaw/install.sh | sh
@@ -76,16 +84,21 @@ to separate already-pooled agents, see `memini namespace split` below.
 
 ### On Kubernetes
 
-For a containerized gateway, install the extension at rollout with an
-initContainer that clones memini into the data volume:
+For a containerized gateway, install the extension from ClawHub into the data
+volume — either once by hand (`kubectl exec … -- openclaw plugins install
+clawhub:@eleboucher/memini`) or at rollout with an initContainer guarded so it
+only runs on a fresh volume:
 
 ```sh
-git clone --depth 1 --branch main https://github.com/eleboucher/memini /tmp/memini-src
-mv /tmp/memini-src/integrations/openclaw/plugin ~/.openclaw/extensions/memini
+openclaw plugins install clawhub:@eleboucher/memini
 ```
 
-Put `base_url`/`namespace` in `openclaw.json` (templated from your ConfigMap)
-and inject `MEMINI_API_KEY` as a container env var from a Secret.
+This is a tracked install, so the gateway updater (and `openclaw plugins update`)
+keeps it current — unlike a raw `git clone`, which is never tracked and never
+updates. Enablement is handled by `openclaw.json`, not the install command:
+claim `slots.memory: memini` and set `entries.memini.enabled`. Put
+`base_url`/`namespace` there (templated from your ConfigMap) and inject
+`MEMINI_API_KEY` as a container env var from a Secret.
 
 ## Alternatives
 

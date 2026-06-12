@@ -21,7 +21,17 @@ What it wires:
 
 ### Install
 
-One-liner (downloads just the plugin, no clone):
+Via Hermes (recommended) — installs from the repo and is tracked by
+`hermes plugins update memini`:
+
+```bash
+hermes plugins install eleboucher/memini
+```
+
+It prompts `Enable 'memini' now? [y/N]`; pass `--enable` to skip the prompt, or
+activate it via `config.yaml` (below).
+
+Or fetch just the plugin off `main` (no clone):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/eleboucher/memini/main/integrations/hermes/install.sh | sh
