@@ -38,6 +38,25 @@ embeddings:
   model: text-embedding-3-small
   # -- Embedding dimensionality; MUST match the deployed model
   dims: 1536
+  # @schema
+  # type: [string, integer]
+  # @schema
+  # -- Max items per /embeddings request, so bulk callers (namespace dedup)
+  # can't exceed the server's max client batch and fail with 422 (TEI default
+  # is 32). Empty uses the binary default (20).
+  maxBatch: ""
+  # @schema
+  # type: [string, integer]
+  # @schema
+  # -- Max total characters per /embeddings request. Empty uses the binary
+  # default (24000); 0 disables the cap.
+  maxBatchChars: ""
+  # @schema
+  # type: [string, integer]
+  # @schema
+  # -- Truncate any single text to this many characters before embedding.
+  # Empty uses the binary default (8000); 0 disables truncation.
+  maxItemChars: ""
   # -- Optional existing secret holding the embeddings API key
   apiKeySecret:
     name: ""

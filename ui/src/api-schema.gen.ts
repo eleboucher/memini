@@ -117,7 +117,11 @@ export interface paths {
         put?: never;
         /** Remember (store) a memory */
         post: operations["rememberMemory"];
-        delete?: never;
+        /**
+         * Delete every memory in the namespace carrying a tag
+         * @description Bulk-deletes all memories in the request's namespace that carry the given tag. Combined with the import provenance tag (import:<source>:<date>), this undoes a single bulk import in one call. The tag query parameter is required to avoid an accidental delete-everything.
+         */
+        delete: operations["forgetByTag"];
         options?: never;
         head?: never;
         patch?: never;
@@ -149,6 +153,26 @@ export interface paths {
         };
         /** List the distinct namespaces holding memories */
         get: operations["listNamespaces"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/namespaces/{name}/briefing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Layered session-start briefing for a namespace
+         * @description A query-less summary for injecting context when a session opens: the most durable facts and procedures, recent episodic activity, and pinned memories. Backs the plugin's SessionStart hook.
+         */
+        get: operations["getBriefing"];
         put?: never;
         post?: never;
         delete?: never;
@@ -251,6 +275,11 @@ export interface components {
             ttl_seconds?: number;
             /** @description Upserts an existing memory when provided. */
             id?: string;
+            /**
+             * Format: double
+             * @description Seed corroboration for a durable fact (e.g. a trusted import). Omit to use the default seed; ignored for short-term tiers.
+             */
+            confidence?: number;
         };
         SearchRequest: {
             query: string;
@@ -261,6 +290,17 @@ export interface components {
             include_expired: boolean;
             /** @default false */
             include_superseded: boolean;
+            /**
+             * @description exact (default) searches only the request namespace; subtree also searches namespaces nested under it ("project" reads "project/agent"), for the multi-agent read-shared-plus-private pattern.
+             * @default exact
+             * @enum {string}
+             */
+            scope: "exact" | "subtree";
+            /**
+             * Format: date-time
+             * @description Time-travel recall: return facts whose validity window contained this instant (including ones since superseded), for "what was true then" queries.
+             */
+            as_of?: string;
         };
         ScoredMemory: {
             memory: components["schemas"]["Memory"];
@@ -286,6 +326,17 @@ export interface components {
         ListResponse: {
             memories: components["schemas"]["Memory"][];
         };
+        Briefing: {
+            namespace: string;
+            /** @description Durable semantic facts, highest-retention first. */
+            facts?: components["schemas"]["Memory"][];
+            /** @description Procedural how-to memories, highest-retention first. */
+            procedures?: components["schemas"]["Memory"][];
+            /** @description Recent episodic activity, newest first. */
+            recent?: components["schemas"]["Memory"][];
+            /** @description Pinned memories (any tier). */
+            pinned?: components["schemas"]["Memory"][];
+        };
         Stats: {
             namespace: string;
             /** @description Live memories (excludes expired/superseded) */
@@ -305,6 +356,10 @@ export interface components {
             namespaces: string[];
         };
         DeleteNamespaceResponse: {
+            /** @description Number of memories deleted */
+            deleted: number;
+        };
+        DeleteByTagResponse: {
             /** @description Number of memories deleted */
             deleted: number;
         };
@@ -376,6 +431,11 @@ export interface components {
             /** Format: date-time */
             expires_at?: string | null;
             superseded_by?: string | null;
+            /**
+             * Format: double
+             * @description Corroboration of a durable fact in [0,1]; null when not tracked.
+             */
+            confidence?: number | null;
         };
     };
     responses: {
@@ -577,6 +637,34 @@ export interface operations {
             401: components["responses"]["Error"];
         };
     };
+    forgetByTag: {
+        parameters: {
+            query: {
+                /** @description Exact tag a memory must carry to be deleted. */
+                tag: string;
+            };
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteByTagResponse"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+        };
+    };
     getStats: {
         parameters: {
             query?: {
@@ -620,6 +708,32 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["NamespacesResponse"];
+                };
+            };
+            500: components["responses"]["Error"];
+        };
+    };
+    getBriefing: {
+        parameters: {
+            query?: {
+                /** @description Max memories per section (facts/procedures/recent). Default 5. */
+                per_section?: number;
+            };
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Briefing"];
                 };
             };
             500: components["responses"]["Error"];

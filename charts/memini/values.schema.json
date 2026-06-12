@@ -138,6 +138,36 @@
           "title": "dims",
           "type": "integer"
         },
+        "maxBatch": {
+          "default": "",
+          "description": "Max items per /embeddings request, so bulk callers (namespace dedup)\ncan't exceed the server's max client batch and fail with 422 (TEI default\nis 32). Empty uses the binary default (20).",
+          "required": [],
+          "title": "maxBatch",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "maxBatchChars": {
+          "default": "",
+          "description": "Max total characters per /embeddings request. Empty uses the binary\ndefault (24000); 0 disables the cap.",
+          "required": [],
+          "title": "maxBatchChars",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "maxItemChars": {
+          "default": "",
+          "description": "Truncate any single text to this many characters before embedding.\nEmpty uses the binary default (8000); 0 disables truncation.",
+          "required": [],
+          "title": "maxItemChars",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
         "model": {
           "default": "text-embedding-3-small",
           "title": "model",

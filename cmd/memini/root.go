@@ -282,7 +282,8 @@ func buildEmbedder(cfg *config.Config, log *slog.Logger) (embed.Embedder, error)
 	if err != nil {
 		return nil, err
 	}
-	return embed.NewCached(client, 4096)
+	batched := embed.NewBatched(client, cfg.EmbedMaxBatch, cfg.EmbedMaxBatchChars, cfg.EmbedMaxItemChars)
+	return embed.NewCached(batched, 4096)
 }
 
 func outerBackendLabel(e embed.Embedder) string {

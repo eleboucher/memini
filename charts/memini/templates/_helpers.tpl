@@ -67,6 +67,18 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   value: {{ .Values.embeddings.model | quote }}
 - name: MEMINI_EMBED_DIMS
   value: {{ .Values.embeddings.dims | quote }}
+{{- if ne (toString .Values.embeddings.maxBatch) "" }}
+- name: MEMINI_EMBED_MAX_BATCH
+  value: {{ .Values.embeddings.maxBatch | quote }}
+{{- end }}
+{{- if ne (toString .Values.embeddings.maxBatchChars) "" }}
+- name: MEMINI_EMBED_MAX_BATCH_CHARS
+  value: {{ .Values.embeddings.maxBatchChars | quote }}
+{{- end }}
+{{- if ne (toString .Values.embeddings.maxItemChars) "" }}
+- name: MEMINI_EMBED_MAX_ITEM_CHARS
+  value: {{ .Values.embeddings.maxItemChars | quote }}
+{{- end }}
 {{- if .Values.embeddings.apiKeySecret.name }}
 - name: MEMINI_EMBED_API_KEY
   valueFrom:

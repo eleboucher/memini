@@ -63,6 +63,15 @@ type Config struct {
 	// instruction-tuned asymmetric embedders (e.g. Qwen3-Embedding, bge).
 	// Documents are always embedded without it. Empty disables.
 	EmbedQueryPrefix string `env:"MEMINI_EMBED_QUERY_PREFIX"`
+	// EmbedMaxBatch caps items per /embeddings request so bulk callers (dedup
+	// over a whole namespace) can't exceed the server's max client batch and
+	// fail with 422. The TEI default is 32; 20 leaves headroom.
+	EmbedMaxBatch int `env:"MEMINI_EMBED_MAX_BATCH" envDefault:"20"`
+	// EmbedMaxBatchChars caps total characters per request (0 disables).
+	EmbedMaxBatchChars int `env:"MEMINI_EMBED_MAX_BATCH_CHARS" envDefault:"24000"`
+	// EmbedMaxItemChars truncates any single text before embedding so one
+	// oversized memory can't blow the per-request budget (0 disables).
+	EmbedMaxItemChars int `env:"MEMINI_EMBED_MAX_ITEM_CHARS" envDefault:"8000"`
 
 	// FusionAlpha selects hybrid recall fusion: >= 0 uses convex score fusion
 	// with this vector-vs-keyword weight (0.5 = balanced, the default); a

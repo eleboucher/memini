@@ -32,9 +32,12 @@ helm install memini ./charts/memini \
 | backend | string | `"sqlite"` | Storage backend: "sqlite" (embedded, single replica + PVC) or "postgres" (scale-out) |
 | config | object | `{"defaultNamespace":"default","logFormat":"json","logLevel":"info","namespaceHeader":"X-Memini-Namespace","sweepInterval":"1h"}` | Service-level (non-secret) configuration, mapped to MEMINI_* env vars |
 | config.sweepInterval | string | `"1h"` | Decay sweeper interval (Go duration) |
-| embeddings | object | `{"apiKeySecret":{"key":"api-key","name":""},"baseURL":"","dims":1536,"model":"text-embedding-3-small"}` | External OpenAI-compatible embeddings endpoint (required for vector search) |
+| embeddings | object | `{"apiKeySecret":{"key":"api-key","name":""},"baseURL":"","dims":1536,"maxBatch":"","maxBatchChars":"","maxItemChars":"","model":"text-embedding-3-small"}` | External OpenAI-compatible embeddings endpoint (required for vector search) |
 | embeddings.apiKeySecret | object | `{"key":"api-key","name":""}` | Optional existing secret holding the embeddings API key |
 | embeddings.dims | int | `1536` | Embedding dimensionality; MUST match the deployed model |
+| embeddings.maxBatch | string | `""` | Max items per /embeddings request, so bulk callers (namespace dedup) can't exceed the server's max client batch and fail with 422 (TEI default is 32). Empty uses the binary default (20). |
+| embeddings.maxBatchChars | string | `""` | Max total characters per /embeddings request. Empty uses the binary default (24000); 0 disables the cap. |
+| embeddings.maxItemChars | string | `""` | Truncate any single text to this many characters before embedding. Empty uses the binary default (8000); 0 disables truncation. |
 | extraEnv | list | `[]` | Extra environment variables appended verbatim to the container, for MEMINI_* settings that don't have dedicated chart values |
 | fsck | object | `{"cronjob":{"enabled":false,"image":"curlimages/curl:8.20.0","schedule":"0 * * * *"}}` | Periodic fsck CronJob (the in-process sweeper already handles decay) |
 | fullnameOverride | string | `""` |  |
