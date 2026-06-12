@@ -114,9 +114,8 @@ func (c *RemoteClient) put(ctx context.Context, r Record, opts Options) error {
 		ID:         r.ID,
 		Metadata:   r.Metadata,
 	}
-	// Seed the import confidence the server would otherwise miss: durable imports
-	// start low-trust (ConfidenceSeedImported) unless the caller overrides, the
-	// same as the local writer. The server ignores it for short-term tiers.
+	// Seed the low-trust import confidence the local writer applies (a caller
+	// value overrides); the server ignores it for short-term tiers.
 	if opts.Confidence != nil {
 		body.Confidence = opts.Confidence
 	} else {

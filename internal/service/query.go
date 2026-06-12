@@ -191,10 +191,8 @@ func (s *Service) Briefing(ctx context.Context, namespace string, perSection int
 			recent = append(recent, m)
 		}
 	}
-	// Rank durable sections by DurableScore (salience × corroboration × usage),
-	// not the recency-decayed RetentionScore: a core fact unrecalled for weeks is
-	// exactly what a briefing should still surface. Score once per memory, then
-	// sort, rather than recomputing inside the comparator.
+	// Rank durable sections by DurableScore (no recency decay), scored once per
+	// memory rather than inside the comparator.
 	byDurable := func(ms []*memory.Memory) {
 		score := make(map[string]float64, len(ms))
 		for _, m := range ms {

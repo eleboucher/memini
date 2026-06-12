@@ -375,9 +375,8 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	if id == "" {
 		id = s.newID()
 	}
-	// When updating an existing memory by ID, load it first so a content edit
-	// preserves fields that must not reset: the validity start (for as_of
-	// time-travel) and any earned confidence.
+	// An update by ID preserves the existing row's validity start and confidence;
+	// load it so the upsert below doesn't reset them.
 	var existing *memory.Memory
 	if in.ID != "" {
 		ex, gerr := s.store.Get(ctx, in.Namespace, in.ID)
@@ -385,7 +384,6 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		case gerr == nil:
 			existing = ex
 		case errors.Is(gerr, store.ErrNotFound):
-			// a new memory with a caller-chosen ID
 		default:
 			s.metrics.RememberResult("error", string(tier))
 			return nil, fmt.Errorf("remember: load existing: %w", gerr)
@@ -408,16 +406,14 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	if exp := resolveExpiry(now, tier, in.TTL); exp != nil {
 		m.ExpiresAt = exp
 	}
-	// ValidFrom bounds the lower edge of as_of time-travel: a fresh write is
-	// valid from creation; an update keeps the original start (nil for legacy
-	// rows means "always", left untouched).
+	// ValidFrom is the lower bound for as_of recall; a fresh write starts now, an
+	// update keeps the original.
 	m.ValidFrom = &now
 	if existing != nil {
 		m.ValidFrom = existing.ValidFrom
 	}
-	// Seed confidence for durable facts so they start uncorroborated and earn
-	// trust as they recur; an explicit caller value (e.g. a trusted import) wins,
-	// and updating an existing memory keeps its earned corroboration.
+	// Durable facts start uncorroborated and earn trust as they recur; an
+	// explicit value wins, and an update keeps the existing confidence.
 	if tier.Term() == memory.LongTerm {
 		switch {
 		case in.Confidence != nil:
@@ -608,10 +604,8 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		perNS = append(perNS, fuseLegs(v, kw))
 	}
 
-	// Re-rank by composite relevance/recency/importance, drop near-duplicates,
-	// then cap at k. A single namespace is its own fused list; a subtree RRF-
-	// merges the per-namespace lists so each namespace's top hit ranks by its own
-	// position, not its offset in a concatenated slice.
+	// RRF-merge the per-namespace lists so each namespace's hits rank by their own
+	// position rather than their offset in a concatenated slice.
 	var fused []store.Scored
 	if len(perNS) == 1 {
 		fused = perNS[0]
