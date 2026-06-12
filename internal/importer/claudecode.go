@@ -146,12 +146,19 @@ func parseClaudeCodeReader(r io.Reader, fallbackID string, ns *nsResolver) ([]Re
 			return
 		}
 		defer func() { pending = nil }()
-		asst := strings.TrimSpace(strings.Join(pending.asst, "\n"))
-		if asst == "" {
-			return // unanswered user turn or thinking/tool-only reply — skip
+		// Strip harness chrome (injected reminders, hook output, command
+		// wrappers) from each side before storing. A turn that was nothing but
+		// noise becomes empty and is skipped.
+		user := stripNoise(pending.user)
+		asst := stripNoise(strings.Join(pending.asst, "\n"))
+		if user == "" || asst == "" {
+			return // unanswered turn, thinking/tool-only reply, or pure harness noise — skip
+		}
+		if isErrorOnlyResponse(asst) {
+			return // assistant turn is just a transient API error — no knowledge to store
 		}
 		sid := firstNonEmpty(pending.sessionID, fallbackID)
-		content := "user: " + truncateRunes(pending.user, maxExchangeBytes) +
+		content := "user: " + truncateRunes(user, maxExchangeBytes) +
 			"\nassistant: " + truncateRunes(asst, maxExchangeBytes)
 		recs = append(recs, Record{
 			ID:        fmt.Sprintf("cc:%s:%04d", sid, emitted),
@@ -332,11 +339,22 @@ func loadClaudeCodeFile(path string, ns *nsResolver) ([]Record, []string, error)
 	return recs, nil, err
 }
 
-// isCommandNoise reports whether a user message is a slash-command or
-// local-command wrapper rather than a real prompt.
+// isCommandNoise reports whether a user message is a slash-command wrapper or a
+// harness-injected event (local-command output, task notification) rather than a
+// real prompt — none of which carry knowledge worth storing as a memory.
 func isCommandNoise(s string) bool {
 	t := strings.TrimLeft(s, " \t\r\n")
-	return strings.HasPrefix(t, "<local-command") || strings.HasPrefix(t, "<command-")
+	return strings.HasPrefix(t, "<local-command") ||
+		strings.HasPrefix(t, "<command-") ||
+		strings.HasPrefix(t, "<task-notification")
+}
+
+// isErrorOnlyResponse reports whether an assistant turn is just a transport/API
+// error (e.g. "API Error: 500 Internal server error ..."). Such exchanges
+// capture a transient failure, not knowledge, and only pollute recall, so the
+// importer drops them rather than storing them as episodic memories.
+func isErrorOnlyResponse(asst string) bool {
+	return strings.HasPrefix(strings.TrimSpace(asst), "API Error:")
 }
 
 // episodicExpiry returns now + the episodic TTL, so backfilled history (whose
