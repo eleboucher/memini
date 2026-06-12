@@ -13,8 +13,6 @@ jobs:
     env:
       # renovate: datasource=github-releases depName=goreleaser/goreleaser
       GORELEASER_VERSION: "2.15.4"
-      # renovate: datasource=github-releases depName=anchore/syft
-      SYFT_VERSION: "1.45.1"
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v6
         with:
@@ -25,11 +23,8 @@ jobs:
       - uses: https://data.forgejo.org/actions/setup-node@v6
         with:
           node-version: "24"
-      - name: Install syft
-        run: |
-          set -euo pipefail
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
-            | sh -s -- -b /usr/local/bin "v${SYFT_VERSION}"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
       - name: Run GoReleaser
         run: curl -sfL https://goreleaser.com/static/run | VERSION="v${GORELEASER_VERSION}" bash -s -- release --clean
         env:

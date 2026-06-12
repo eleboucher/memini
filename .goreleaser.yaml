@@ -36,9 +36,6 @@ archives:
     ids:
       - memini
 
-sboms:
-  - artifacts: archive
-
 changelog:
   use: git
   sort: asc
