@@ -191,13 +191,19 @@ func (s *Service) Briefing(ctx context.Context, namespace string, perSection int
 			recent = append(recent, m)
 		}
 	}
-	byRetention := func(ms []*memory.Memory) {
-		sort.SliceStable(ms, func(i, j int) bool {
-			return ms[i].RetentionScore(now) > ms[j].RetentionScore(now)
-		})
+	// Rank durable sections by DurableScore (salience × corroboration × usage),
+	// not the recency-decayed RetentionScore: a core fact unrecalled for weeks is
+	// exactly what a briefing should still surface. Score once per memory, then
+	// sort, rather than recomputing inside the comparator.
+	byDurable := func(ms []*memory.Memory) {
+		score := make(map[string]float64, len(ms))
+		for _, m := range ms {
+			score[m.ID] = m.DurableScore(now)
+		}
+		sort.SliceStable(ms, func(i, j int) bool { return score[ms[i].ID] > score[ms[j].ID] })
 	}
-	byRetention(facts)
-	byRetention(procs)
+	byDurable(facts)
+	byDurable(procs)
 	sort.SliceStable(recent, func(i, j int) bool { return recent[i].CreatedAt.After(recent[j].CreatedAt) })
 
 	b.Facts = topN(facts, perSection)

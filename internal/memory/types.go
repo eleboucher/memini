@@ -200,6 +200,15 @@ func (m *Memory) Quality(now time.Time) float64 {
 // of Quality so existing callers keep working; new code should call Quality.
 func (m *Memory) RetentionScore(now time.Time) float64 { return m.Quality(now) }
 
+// DurableScore ranks a memory as durable knowledge (for a session briefing):
+// salience × corroboration × reinforcement, without Quality's recency decay. A
+// core fact that simply hasn't been recalled lately is still the knowledge a
+// briefing should lead with, so recency must not bury it under fresher trivia.
+func (m *Memory) DurableScore(now time.Time) float64 {
+	usage := 1 + math.Log1p(float64(m.AccessCount))
+	return m.Salience() * m.EffectiveConfidence(now) * usage
+}
+
 func clamp01(x float64) float64 {
 	if x < 0 {
 		return 0
