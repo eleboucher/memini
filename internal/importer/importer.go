@@ -319,6 +319,13 @@ func (lw *localWriter) toMemory(r Record) *memory.Memory {
 		exp := created.Add(ttl)
 		m.ExpiresAt = &exp
 	}
+	// Durable imports start uncorroborated: a bulk-imported "fact" must earn
+	// trust through recall/re-observation before it outranks facts the agent
+	// established itself.
+	if tier.Term() == memory.LongTerm {
+		c := memory.ConfidenceSeedImported
+		m.Confidence = &c
+	}
 	return m
 }
 

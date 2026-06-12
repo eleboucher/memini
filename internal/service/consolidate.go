@@ -198,8 +198,15 @@ func (s *Service) applyUpdate(ctx context.Context, m *memory.Memory, dec llm.Dec
 	if dec.Summary != "" {
 		target.Summary = dec.Summary
 	}
-	target.UpdatedAt = s.now()
+	now := s.now()
+	target.UpdatedAt = now
 	target.Embedding = vec
+	// Merging a new observation into an existing fact corroborates it: raise its
+	// confidence one logistic step from its lazily-decayed current value.
+	if target.Tier.Term() == memory.LongTerm && target.Confidence != nil {
+		grown := memory.GrowConfidence(target.EffectiveConfidence(now))
+		target.Confidence = &grown
+	}
 	if err := s.store.Upsert(ctx, target); err != nil {
 		return nil, false, err
 	}

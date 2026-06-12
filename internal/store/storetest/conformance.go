@@ -36,6 +36,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("Reassign", func(t *testing.T) { testReassign(t, st, dims) })
 	t.Run("Retier", func(t *testing.T) { testRetier(t, st, dims) })
 	t.Run("TemporalAsOf", func(t *testing.T) { testTemporalAsOf(t, st, dims) })
+	t.Run("SetConfidence", func(t *testing.T) { testSetConfidence(t, st, dims) })
 }
 
 func testReassign(t *testing.T, st store.Store, dims int) {
@@ -145,6 +146,34 @@ func testTemporalAsOf(t *testing.T, st store.Store, dims int) {
 	}
 	if !containsScored(asof, old.ID) {
 		t.Errorf("as_of recall before supersession should surface 'old'")
+	}
+}
+
+func testSetConfidence(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+	m := mem(ns, "m", "a durable fact", vec(dims, 1))
+	m.Tier = memory.TierSemantic
+	seed := 0.4
+	m.Confidence = &seed
+	mustUpsert(t, st, m)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if err := st.SetConfidence(ctx, ns, m.ID, 0.46, now); err != nil {
+		t.Fatalf("set confidence: %v", err)
+	}
+	got, err := st.Get(ctx, ns, m.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Confidence == nil || *got.Confidence != 0.46 {
+		t.Errorf("confidence = %v, want 0.46", got.Confidence)
+	}
+	if !got.UpdatedAt.Equal(now) {
+		t.Errorf("updated_at = %v, want bumped to %v (decay baseline reset)", got.UpdatedAt, now)
+	}
+	if err := st.SetConfidence(ctx, ns, "missing", 0.5, now); err != store.ErrNotFound {
+		t.Errorf("set confidence on missing: want ErrNotFound, got %v", err)
 	}
 }
 

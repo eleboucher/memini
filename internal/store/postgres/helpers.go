@@ -65,11 +65,12 @@ func scanRow(s rowScanner, metric *float64) (*memory.Memory, error) {
 		expires            sql.NullTime
 		superseded         sql.NullString
 		validFrom, validTo sql.NullTime
+		confidence         sql.NullFloat64
 	)
 	dest := []any{
 		&m.ID, &m.Namespace, &tier, &m.Content, &m.Summary, &metaBytes, &m.Tags,
 		&m.Importance, &m.CreatedAt, &m.UpdatedAt, &m.LastAccessedAt, &m.AccessCount,
-		&expires, &superseded, &validFrom, &validTo,
+		&expires, &superseded, &validFrom, &validTo, &confidence,
 	}
 	if metric != nil {
 		dest = append(dest, metric)
@@ -101,6 +102,10 @@ func scanRow(s rowScanner, metric *float64) (*memory.Memory, error) {
 	if validTo.Valid {
 		t := validTo.Time.UTC()
 		m.ValidTo = &t
+	}
+	if confidence.Valid {
+		c := confidence.Float64
+		m.Confidence = &c
 	}
 	return &m, nil
 }

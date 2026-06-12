@@ -14,6 +14,12 @@ import (
 // always surfaced in a session briefing.
 const PinnedTag = "pinned"
 
+// demoteConfidenceFloor is the corroboration below which an old, unused durable
+// memory is demoted. Memories without tracked confidence (legacy rows, and any
+// short-term memory) report 1.0, so they are always above the floor and never
+// demoted on this account — only uncorroborated, never-recalled facts fall.
+const demoteConfidenceFloor = 0.35
+
 // longTermTiers are the durable tiers eligible for demotion.
 var longTermTiers = []memory.Tier{memory.TierSemantic, memory.TierProcedural}
 
@@ -39,10 +45,16 @@ func DemoteStale(ctx context.Context, st store.Store, olderThan, now time.Time) 
 			return total, err
 		}
 		for _, m := range mems {
+			// Anything ever recalled, marked important, explicitly trusted
+			// (corroborated/legacy memories read as fully confident), or pinned is
+			// kept — only old, unused, low-confidence durable debris demotes.
 			if m.AccessCount > 0 || m.Importance >= 0.5 {
 				continue
 			}
 			if !m.UpdatedAt.Before(olderThan) {
+				continue
+			}
+			if m.EffectiveConfidence(now) >= demoteConfidenceFloor {
 				continue
 			}
 			if slices.Contains(m.Tags, PinnedTag) {

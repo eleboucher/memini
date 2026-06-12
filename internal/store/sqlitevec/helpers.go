@@ -29,11 +29,12 @@ func scanRow(s scanner, metric *float64) (*memory.Memory, error) {
 		expires                    sql.NullInt64
 		superseded                 sql.NullString
 		validFrom, validTo         sql.NullInt64
+		confidence                 sql.NullFloat64
 	)
 	dest := []any{
 		&m.ID, &m.Namespace, &tier, &m.Content, &m.Summary, &metaJSON, &tagsJSON,
 		&m.Importance, &created, &updated, &accessed, &m.AccessCount, &expires, &superseded,
-		&validFrom, &validTo,
+		&validFrom, &validTo, &confidence,
 	}
 	if metric != nil {
 		dest = append(dest, metric)
@@ -66,6 +67,10 @@ func scanRow(s scanner, metric *float64) (*memory.Memory, error) {
 	if validTo.Valid {
 		t := fromMs(validTo.Int64)
 		m.ValidTo = &t
+	}
+	if confidence.Valid {
+		c := confidence.Float64
+		m.Confidence = &c
 	}
 	return &m, nil
 }
@@ -160,6 +165,13 @@ func msPtr(t *time.Time) any {
 		return nil
 	}
 	return t.UnixMilli()
+}
+
+func f64Ptr(f *float64) any {
+	if f == nil {
+		return nil
+	}
+	return *f
 }
 
 func strPtr(s *string) any {

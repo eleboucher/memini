@@ -22,21 +22,23 @@ func TestDemoteStale(t *testing.T) {
 	now := time.Now().UTC()
 	old := now.Add(-100 * 24 * time.Hour)
 
-	add := func(id string, updated time.Time, imp float64, access int, tags []string) {
+	conf := func(c float64) *float64 { return &c }
+	add := func(id string, updated time.Time, imp float64, access int, tags []string, confidence *float64) {
 		m := &memory.Memory{
 			ID: id, Namespace: "ns", Tier: memory.TierSemantic, Content: id, Importance: imp,
 			AccessCount: access, CreatedAt: updated, UpdatedAt: updated, LastAccessedAt: updated,
-			Tags: tags, Embedding: []float32{1, 0, 0, 0},
+			Tags: tags, Confidence: confidence, Embedding: []float32{1, 0, 0, 0},
 		}
 		if err := st.Upsert(ctx, m); err != nil {
 			t.Fatalf("upsert %s: %v", id, err)
 		}
 	}
-	add("debris", old, 0.2, 0, nil)                // demote: old, unused, low importance
-	add("used", old, 0.2, 5, nil)                  // keep: recalled
-	add("important", old, 0.9, 0, nil)             // keep: important
-	add("pinned", old, 0.2, 0, []string{"pinned"}) // keep: pinned
-	add("recent", now, 0.2, 0, nil)                // keep: too new
+	add("debris", old, 0.2, 0, nil, conf(0.25))                // demote: old, unused, low importance + confidence
+	add("used", old, 0.2, 5, nil, conf(0.25))                  // keep: recalled
+	add("important", old, 0.9, 0, nil, conf(0.25))             // keep: important
+	add("pinned", old, 0.2, 0, []string{"pinned"}, conf(0.25)) // keep: pinned
+	add("recent", now, 0.2, 0, nil, conf(0.25))                // keep: too new
+	add("legacy", old, 0.2, 0, nil, nil)                       // keep: untracked confidence = trusted
 
 	n, err := maintenance.DemoteStale(ctx, st, now.Add(-60*24*time.Hour), now)
 	if err != nil {
@@ -52,7 +54,7 @@ func TestDemoteStale(t *testing.T) {
 	if got.Tier != memory.TierEpisodic || got.ExpiresAt == nil {
 		t.Errorf("debris should be episodic with a TTL, got tier=%q expires=%v", got.Tier, got.ExpiresAt)
 	}
-	for _, id := range []string{"used", "important", "pinned", "recent"} {
+	for _, id := range []string{"used", "important", "pinned", "recent", "legacy"} {
 		m, err := st.Get(ctx, "ns", id)
 		if err != nil {
 			t.Fatalf("get %s: %v", id, err)

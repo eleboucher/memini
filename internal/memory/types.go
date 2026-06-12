@@ -97,6 +97,14 @@ type Memory struct {
 	ValidFrom *time.Time `json:"valid_from,omitempty"`
 	ValidTo   *time.Time `json:"valid_to,omitempty"`
 
+	// Confidence is how corroborated a durable (semantic/procedural) fact is,
+	// in [0,1]. It starts low for a fresh or imported fact, grows logistically
+	// each time the fact is re-observed, and decays without reinforcement, so a
+	// corroborated fact outranks one-off noise. nil means "not tracked" (every
+	// short-term memory, and durable memories written before the field existed),
+	// treated as fully trusted so existing data is never retroactively penalized.
+	Confidence *float64 `json:"confidence,omitempty"`
+
 	// Embedding is the dense vector for similarity search. It is required when
 	// writing to the store and is omitted from API responses.
 	Embedding []float32 `json:"-"`
@@ -111,14 +119,95 @@ func (m *Memory) Expired(now time.Time) bool {
 // of a memory's retention score halves.
 const retentionHalfLife = 7 * 24 * time.Hour
 
-// RetentionScore ranks a memory for short-term eviction (higher = keep longer).
-// It rewards importance and access frequency, and decays exponentially with
-// time since last access. Used to bound short-term capacity.
-func (m *Memory) RetentionScore(now time.Time) float64 {
+// tierSalience is the base quality weight of a memory by tier: a durable fact
+// or procedure matters more than a session summary, which matters more than a
+// raw scratch observation. It is the salience taxonomy (memini scopes by tier,
+// so tier carries the role agentmemory's free-text type does).
+var tierSalience = map[Tier]float64{
+	TierProcedural: 0.95,
+	TierSemantic:   0.90,
+	TierEpisodic:   0.55,
+	TierWorking:    0.30,
+}
+
+// Confidence lifecycle constants.
+const (
+	// ConfidenceSeedFresh is the starting confidence of a durable fact written
+	// or promoted from observed activity (some basis, not yet corroborated).
+	ConfidenceSeedFresh = 0.4
+	// ConfidenceSeedImported is the starting confidence of an uncorroborated
+	// bulk import: lower, so imports must earn trust before outranking facts the
+	// agent actually established.
+	ConfidenceSeedImported = 0.25
+	confidenceDecayPerWeek = 0.05
+	confidenceFloor        = 0.05
+)
+
+// Salience is the base, time-independent quality of a memory in [0,1]: the
+// tier's weight modulated by importance. It does not depend on access or age.
+func (m *Memory) Salience() float64 {
+	w, ok := tierSalience[m.Tier]
+	if !ok {
+		w = 0.5 // unknown tier: neutral
+	}
+	return clamp01(w * (0.5 + 0.5*clamp01(m.Importance)))
+}
+
+// EffectiveConfidence is a durable memory's corroboration at now: the stored
+// confidence lazily decayed for the weeks elapsed since it was last corroborated
+// (UpdatedAt) or recalled (LastAccessedAt). Decay is applied at read time so the
+// maintenance sweep needs no extra write. Returns 1 (neutral) for short-term
+// memories and for any memory that never had confidence recorded — so existing
+// data written before the field is treated as fully trusted, not penalized.
+func (m *Memory) EffectiveConfidence(now time.Time) float64 {
+	if m.Tier.Term() != LongTerm || m.Confidence == nil {
+		return 1
+	}
+	base := m.UpdatedAt
+	if m.LastAccessedAt.After(base) {
+		base = m.LastAccessedAt
+	}
+	weeks := now.Sub(base).Hours() / (7 * 24)
+	return decayConfidence(clamp01(*m.Confidence), weeks)
+}
+
+// GrowConfidence raises a confidence toward 1 logistically on corroboration:
+// each re-observation closes 10% of the remaining gap, so confidence asymptotes
+// to 1 and never overshoots.
+func GrowConfidence(c float64) float64 { return clamp01(c + 0.1*(1-c)) }
+
+func decayConfidence(c, weeks float64) float64 {
+	if weeks <= 1 {
+		return c
+	}
+	return math.Max(confidenceFloor, c-confidenceDecayPerWeek*weeks)
+}
+
+// Quality scores a memory for both recall ranking and lifecycle decisions
+// (higher = more worth keeping and surfacing). It multiplies the base salience
+// by corroboration (confidence), reinforcement (access frequency), and recency
+// (exponential decay since last access). A corroborated, frequently-recalled
+// durable fact scores far above a stale one-off observation, so low-value bulk
+// memories sink by construction rather than by a tuning nudge.
+func (m *Memory) Quality(now time.Time) float64 {
 	age := max(now.Sub(m.LastAccessedAt), 0)
 	recency := math.Exp(-float64(age) / float64(retentionHalfLife))
 	usage := 1 + math.Log1p(float64(m.AccessCount))
-	return (0.2 + m.Importance) * usage * recency
+	return m.Salience() * m.EffectiveConfidence(now) * usage * recency
+}
+
+// RetentionScore is the legacy short-term-eviction score, retained as an alias
+// of Quality so existing callers keep working; new code should call Quality.
+func (m *Memory) RetentionScore(now time.Time) float64 { return m.Quality(now) }
+
+func clamp01(x float64) float64 {
+	if x < 0 {
+		return 0
+	}
+	if x > 1 {
+		return 1
+	}
+	return x
 }
 
 // Recency returns an exponentially-decaying [0,1] factor for how recently the

@@ -18,7 +18,7 @@ import (
 
 const memoryColumns = `id, namespace, tier, content, summary, metadata, tags, importance,
 	created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-	valid_from, valid_to`
+	valid_from, valid_to, confidence`
 
 // Store is a Postgres/VectorChord backed store.Store.
 type Store struct {
@@ -94,6 +94,7 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 			superseded_by    text,
 			valid_from       timestamptz,
 			valid_to         timestamptz,
+			confidence       double precision,
 			embedding        vector(%d) NOT NULL,
 			fts              tsvector GENERATED ALWAYS AS (
 				to_tsvector('english',
@@ -104,9 +105,11 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		`CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_fts ON memories USING gin(fts)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_vec ON memories USING vchordrq (embedding vector_l2_ops)`,
-		// Backfill temporal-validity columns on databases created before them.
+		// Backfill temporal-validity and confidence columns on databases created
+		// before them.
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS valid_from timestamptz`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS valid_to timestamptz`,
+		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS confidence double precision`,
 	}
 	for _, q := range stmts {
 		if _, err := conn.Exec(ctx, q); err != nil {
@@ -153,18 +156,19 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		INSERT INTO memories
 			(id, namespace, tier, content, summary, metadata, tags, importance,
 			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-			 valid_from, valid_to, embedding)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+			 valid_from, valid_to, confidence, embedding)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 		ON CONFLICT (id) DO UPDATE SET
 			tier=EXCLUDED.tier, content=EXCLUDED.content,
 			summary=EXCLUDED.summary, metadata=EXCLUDED.metadata, tags=EXCLUDED.tags,
 			importance=EXCLUDED.importance, created_at=EXCLUDED.created_at, updated_at=EXCLUDED.updated_at,
 			last_accessed_at=EXCLUDED.last_accessed_at, access_count=EXCLUDED.access_count,
 			expires_at=EXCLUDED.expires_at, superseded_by=EXCLUDED.superseded_by,
-			valid_from=EXCLUDED.valid_from, valid_to=EXCLUDED.valid_to, embedding=EXCLUDED.embedding`,
+			valid_from=EXCLUDED.valid_from, valid_to=EXCLUDED.valid_to,
+			confidence=EXCLUDED.confidence, embedding=EXCLUDED.embedding`,
 		m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, metaJSON, orEmptySlice(m.Tags),
 		m.Importance, m.CreatedAt, m.UpdatedAt, m.LastAccessedAt, m.AccessCount,
-		m.ExpiresAt, m.SupersededBy, m.ValidFrom, m.ValidTo, pgvector.NewVector(m.Embedding))
+		m.ExpiresAt, m.SupersededBy, m.ValidFrom, m.ValidTo, m.Confidence, pgvector.NewVector(m.Embedding))
 	if err != nil {
 		return fmt.Errorf("postgres: upsert: %w", err)
 	}
@@ -398,6 +402,21 @@ func (s *Store) Retier(ctx context.Context, namespace, id string, tier memory.Ti
 		string(tier), expiresAt, id, namespace)
 	if err != nil {
 		return fmt.Errorf("postgres: retier: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// SetConfidence updates a memory's confidence and bumps updated_at to now.
+// Confidence lives only in the memories row, so no reindex is needed.
+func (s *Store) SetConfidence(ctx context.Context, namespace, id string, confidence float64, now time.Time) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE memories SET confidence=$1, updated_at=$2 WHERE id=$3 AND namespace=$4`,
+		confidence, now, id, namespace)
+	if err != nil {
+		return fmt.Errorf("postgres: set confidence: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return store.ErrNotFound

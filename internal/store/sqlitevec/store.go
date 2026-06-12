@@ -23,7 +23,7 @@ const overFetch = 4
 // memoryColumns is the canonical column order for scanning a memory row.
 const memoryColumns = `id, namespace, tier, content, summary, metadata, tags, importance,
 	created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-	valid_from, valid_to`
+	valid_from, valid_to, confidence`
 
 // Store is a sqlite-vec backed store.Store.
 type Store struct {
@@ -86,7 +86,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			expires_at       INTEGER,
 			superseded_by    TEXT,
 			valid_from       INTEGER,
-			valid_to         INTEGER
+			valid_to         INTEGER,
+			confidence       REAL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at)`,
@@ -109,6 +110,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := s.addColumnIfMissing(ctx, "memories", col, "INTEGER"); err != nil {
 			return err
 		}
+	}
+	if err := s.addColumnIfMissing(ctx, "memories", "confidence", "REAL"); err != nil {
+		return err
 	}
 	return nil
 }
@@ -177,11 +181,11 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		res, ierr := tx.ExecContext(ctx, `INSERT INTO memories
 			(id, namespace, tier, content, summary, metadata, tags, importance,
 			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-			 valid_from, valid_to)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			 valid_from, valid_to, confidence)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
 			m.Importance, ms(m.CreatedAt), ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
-			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo))
+			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), f64Ptr(m.Confidence))
 		if ierr != nil {
 			return fmt.Errorf("sqlitevec: insert memory: %w", ierr)
 		}
@@ -198,11 +202,11 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		if _, uerr := tx.ExecContext(ctx, `UPDATE memories SET
 			tier=?, content=?, summary=?, metadata=?, tags=?, importance=?,
 			created_at=?, updated_at=?, last_accessed_at=?, access_count=?, expires_at=?, superseded_by=?,
-			valid_from=?, valid_to=?
+			valid_from=?, valid_to=?, confidence=?
 			WHERE rowid=?`,
 			string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
 			m.Importance, ms(m.CreatedAt), ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
-			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), rowID); uerr != nil {
+			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), f64Ptr(m.Confidence), rowID); uerr != nil {
 			return fmt.Errorf("sqlitevec: update memory: %w", uerr)
 		}
 	}
@@ -549,6 +553,25 @@ func (s *Store) Retier(ctx context.Context, namespace, id string, tier memory.Ti
 		string(tier), msPtr(expiresAt), id, namespace)
 	if err != nil {
 		return fmt.Errorf("sqlitevec: retier: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// SetConfidence updates a memory's confidence and bumps updated_at to now.
+// Confidence lives only in the memories row, so no vector/FTS reindex is needed.
+func (s *Store) SetConfidence(ctx context.Context, namespace, id string, confidence float64, now time.Time) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE memories SET confidence=?, updated_at=? WHERE id=? AND namespace=?`,
+		confidence, ms(now), id, namespace)
+	if err != nil {
+		return fmt.Errorf("sqlitevec: set confidence: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {

@@ -336,6 +336,9 @@ type RememberInput struct {
 	TTL *time.Duration
 	// ID upserts an existing memory when set; otherwise a new ID is generated.
 	ID string
+	// Confidence overrides the seed corroboration for a durable fact (e.g. a
+	// trusted import). nil uses the default seed. Ignored for short-term tiers.
+	Confidence *float64
 }
 
 // Remember embeds and stores a memory, returning the persisted record.
@@ -388,6 +391,15 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	}
 	if exp := resolveExpiry(now, tier, in.TTL); exp != nil {
 		m.ExpiresAt = exp
+	}
+	// Seed confidence for durable facts so they start uncorroborated and earn
+	// trust as they recur; an explicit caller value (e.g. a trusted import) wins.
+	if tier.Term() == memory.LongTerm {
+		c := memory.ConfidenceSeedFresh
+		if in.Confidence != nil {
+			c = *in.Confidence
+		}
+		m.Confidence = &c
 	}
 
 	// Opt-in consolidation: on fresh writes to durable tiers, let the LLM dedup
@@ -450,7 +462,26 @@ func (s *Service) dedupExisting(ctx context.Context, m *memory.Memory) *memory.M
 	}
 	existing := cands[0].Memory
 	s.reinforce(ctx, []store.Scored{{Memory: existing}})
+	s.corroborate(ctx, existing) // a near-identical repeat raises the fact's confidence
 	return existing
+}
+
+// corroborate raises a durable memory's confidence one logistic step, because
+// it was just re-observed. It works from the lazily-decayed current confidence
+// and persists the result (which resets the decay baseline). No-op for
+// short-term memories or ones without tracked confidence. Best-effort: a failure
+// is logged, never surfaced to the caller.
+func (s *Service) corroborate(ctx context.Context, m *memory.Memory) {
+	if m.Tier.Term() != memory.LongTerm || m.Confidence == nil {
+		return
+	}
+	now := s.now()
+	grown := memory.GrowConfidence(m.EffectiveConfidence(now))
+	if err := s.store.SetConfidence(ctx, m.Namespace, m.ID, grown, now); err != nil &&
+		!errors.Is(err, store.ErrNotFound) {
+		slog.WarnContext(ctx, "corroborate: set confidence failed",
+			"namespace", m.Namespace, "id", m.ID, "err", err)
+	}
 }
 
 // RecallInput describes a hybrid recall query.

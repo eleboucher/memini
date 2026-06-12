@@ -109,6 +109,11 @@ type Store interface {
 	// vector/keyword reindex is needed. Returns ErrNotFound if missing.
 	Retier(ctx context.Context, namespace, id string, tier memory.Tier, expiresAt *time.Time) error
 
+	// SetConfidence updates a memory's corroboration confidence in place and
+	// bumps updated_at to now (resetting the lazy-decay baseline), used when a
+	// durable fact is re-observed. Returns ErrNotFound if missing.
+	SetConfidence(ctx context.Context, namespace, id string, confidence float64, now time.Time) error
+
 	// Ping verifies the backend is reachable, for readiness checks.
 	Ping(ctx context.Context) error
 
