@@ -42,16 +42,16 @@ install-memini-plugin:
 Pin `--branch` to a released tag (or a commit) rather than `main` for
 reproducible rollouts. The plugin is stdlib-only Python, so no pip/npm step.
 
-## 2. config.yaml — enable the plugin
+## 2. config.yaml — activate the provider
 
-In the Hermes `config.yaml` (your `hermes-configmap`), add `memini` to the
-enabled plugins. It is a memory provider, which is single-select — if you're
-switching from another memory plugin, replace it here rather than listing both:
+In the Hermes `config.yaml` (your `hermes-configmap`), set memini as the active
+memory provider. Memory providers are single-select and activated via
+`memory.provider` (not `plugins.enabled`) — switching providers means changing
+this single value:
 
 ```yaml
-plugins:
-  enabled:
-    - memini
+memory:
+  provider: memini
 ```
 
 ## 3. Container env — point at memini and authenticate

@@ -114,6 +114,42 @@ jobs:
             --source-commit "$GITHUB_SHA" \
             --source-ref "$GITHUB_REF" \
             --json
+  # Mirror the Hermes plugin to a standalone repo whose root is the plugin, so
+  # `hermes plugins install eleboucher/memini-hermes` and `hermes plugins
+  # update` both work (a monorepo subdir install supports neither).
+  hermes-mirror:
+    needs: [release]
+    runs-on: docker
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v6
+      - name: Mirror Hermes plugin to standalone GitHub repo
+        env:
+          GH_MIRROR_TOKEN: ${{ secrets.GH_MIRROR_TOKEN }}
+          MIRROR_REPO: eleboucher/memini-hermes
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_MIRROR_TOKEN:-}" ]; then
+            echo "GH_MIRROR_TOKEN secret is empty or missing" >&2
+            exit 1
+          fi
+          WORKSPACE="$(pwd)"
+          git config --global user.email "ci@erwanleboucher.dev"
+          git config --global user.name "memini release bot"
+          MIRROR="$(mktemp -d)"
+          git clone "https://x-access-token:${GH_MIRROR_TOKEN}@github.com/${MIRROR_REPO}.git" "$MIRROR"
+          # Replace tracked files (keep .git) with the plugin dir + README.
+          find "$MIRROR" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          cp -R "$WORKSPACE/integrations/hermes/plugin/memini/." "$MIRROR/"
+          cp "$WORKSPACE/integrations/hermes/README.md" "$MIRROR/README.md"
+          cd "$MIRROR"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Mirror already up to date; nothing to push."
+            exit 0
+          fi
+          git commit -m "sync memini Hermes plugin ${TAG}"
+          git push origin HEAD:main
   container:
     needs: [release]
     runs-on: multiarch

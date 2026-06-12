@@ -1,8 +1,8 @@
 # memini + Hermes (NousResearch)
 
 Hermes Agent has a native, single-select **memory provider** interface: you drop
-a `MemoryProvider` implementation into `plugins/<name>/` and enable it under
-`plugins.enabled` in `~/.hermes/config.yaml`. memini ships one in
+a `MemoryProvider` implementation into `plugins/<name>/` and select it via
+`memory.provider` in `~/.hermes/config.yaml`. memini ships one in
 [`plugin/memini/`](plugin/memini/): Hermes drives it directly, so recall and
 capture happen automatically with no MCP server.
 
@@ -21,15 +21,18 @@ What it wires:
 
 ### Install
 
-Via Hermes (recommended) — installs from the repo and is tracked by
-`hermes plugins update memini`:
+Via Hermes (recommended) — from the standalone repo
+[`eleboucher/memini-hermes`](https://github.com/eleboucher/memini-hermes), a
+mirror of [`plugin/memini/`](plugin/memini/) synced on each release. Plain
+`owner/repo`, so it works on any Hermes version and `hermes plugins update
+memini` tracks it:
 
 ```bash
-hermes plugins install eleboucher/memini
+hermes plugins install eleboucher/memini-hermes
 ```
 
-It prompts `Enable 'memini' now? [y/N]`; pass `--enable` to skip the prompt, or
-activate it via `config.yaml` (below).
+This only installs the files; activate it via `memory.provider` (below), not
+the `Enable? [y/N]` prompt.
 
 Or fetch just the plugin off `main` (no clone):
 
@@ -43,12 +46,12 @@ Or from a checkout of this repo:
 cp -r integrations/hermes/plugin/memini ~/.hermes/plugins/memini
 ```
 
-Activate it in `~/.hermes/config.yaml`:
+Activate it in `~/.hermes/config.yaml` (memory providers are single-select, set
+via `memory.provider`, not `plugins.enabled`), or run `hermes memory setup`:
 
 ```yaml
-plugins:
-  enabled:
-    - memini
+memory:
+  provider: memini
 ```
 
 > Plugins live in `$HERMES_HOME/plugins/<name>/`. Deploying on Kubernetes

@@ -8,8 +8,9 @@ Native MemoryProvider: Hermes drives it directly, no MCP server.
     on_memory_write  mirror MEMORY.md/USER.md edits into memini (semantic)
     tools            memory_recall / memory_remember
 
-Install: copy this directory to ~/.hermes/plugins/memini and add `memini` to
-`plugins.enabled` in ~/.hermes/config.yaml.
+Install: copy this directory to ~/.hermes/plugins/memini and set
+`memory.provider: memini` in ~/.hermes/config.yaml. Memory providers are
+single-select; `plugins.enabled` does not activate them.
 
 Environment:
     MEMINI_URL            base URL (default http://localhost:8080)
@@ -48,7 +49,7 @@ except ImportError:  # allow import/testing outside a Hermes install
         @abstractmethod
         def get_tool_schemas(self) -> list[dict]: ...
         @abstractmethod
-        def handle_tool_call(self, name: str, args: dict) -> str: ...
+        def handle_tool_call(self, name: str, args: dict, **kwargs: Any) -> str: ...
         def get_config_schema(self) -> list[dict]: return []
         def save_config(self, values: dict, hermes_home: str) -> None: pass
         def prefetch(self, query: str, **kwargs: Any) -> str: return ""
@@ -233,7 +234,7 @@ class MeminiMemoryProvider(MemoryProvider):
             },
         ]
 
-    def handle_tool_call(self, name: str, args: dict) -> str:
+    def handle_tool_call(self, name: str, args: dict, **kwargs: Any) -> str:
         if name == "memory_recall":
             limit = args.get("limit", 5)
             result = self._call("/v1/search", {"query": args["query"], "limit": limit})

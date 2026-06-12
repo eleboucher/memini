@@ -21,11 +21,13 @@ done
 
 cat <<EOF
 
-Done. Activate it in $HERMES_HOME/config.yaml:
+Done. Activate it in $HERMES_HOME/config.yaml (memory providers are
+single-select — use memory.provider, not plugins.enabled):
 
-  plugins:
-    enabled:
-      - memini
+  memory:
+    provider: memini
+
+Or run: hermes memory setup
 
 Then point it at your memini with MEMINI_URL (default http://localhost:8080),
 optionally MEMINI_NAMESPACE / MEMINI_API_KEY, and restart Hermes.
