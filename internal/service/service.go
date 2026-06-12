@@ -568,10 +568,20 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	// Over-fetch a deep candidate pool from each strategy: a memory ranked just
 	// outside the top k in both legs is invisible at pool depth k, yet RRF would
 	// rank it above single-leg hits. Fusion, re-rank, and dedup then cut the
-	// pool back down to k. For a subtree, each namespace contributes its pool and
-	// fusion ranks across the merged set.
+	// pool back down to k.
 	poolK := max(k*s.poolFactor, s.poolFloor)
-	var vres, kres []store.Scored
+
+	// Fuse the vector and keyword legs of one namespace into a single best-first
+	// list (RRF by default, or convex score fusion).
+	fuseLegs := func(v, kw []store.Scored) []store.Scored {
+		if s.scoreFusionAlpha >= 0 {
+			return search.FuseScores([][]store.Scored{v, kw},
+				[]float64{s.scoreFusionAlpha, 1 - s.scoreFusionAlpha}, 0)
+		}
+		return search.Fuse([][]store.Scored{v, kw}, 0, search.DefaultRRFK)
+	}
+
+	perNS := make([][]store.Scored, 0, len(namespaces))
 	for _, ns := range namespaces {
 		v, verr := s.store.VectorSearch(ctx, ns, vec, filter, poolK)
 		if verr != nil {
@@ -583,17 +593,18 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 			s.metrics.RecallResult("error", tf, "0")
 			return nil, fmt.Errorf("recall: keyword search: %w", kerr)
 		}
-		vres = append(vres, v...)
-		kres = append(kres, kw...)
+		perNS = append(perNS, fuseLegs(v, kw))
 	}
-	// Fuse (no truncation), re-rank by composite relevance/recency/importance,
-	// drop near-duplicates, then cap at k.
+
+	// Re-rank by composite relevance/recency/importance, drop near-duplicates,
+	// then cap at k. A single namespace is its own fused list; a subtree RRF-
+	// merges the per-namespace lists so each namespace's top hit ranks by its own
+	// position, not its offset in a concatenated slice.
 	var fused []store.Scored
-	if s.scoreFusionAlpha >= 0 {
-		fused = search.FuseScores([][]store.Scored{vres, kres},
-			[]float64{s.scoreFusionAlpha, 1 - s.scoreFusionAlpha}, 0)
+	if len(perNS) == 1 {
+		fused = perNS[0]
 	} else {
-		fused = search.Fuse([][]store.Scored{vres, kres}, 0, search.DefaultRRFK)
+		fused = search.Fuse(perNS, 0, search.DefaultRRFK)
 	}
 	var ranked []store.Scored
 	if s.temporalBoost > 0 && s.temporalAnchor != nil {
