@@ -1,6 +1,6 @@
 {
   "name": "memini",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Persistent memory for AI coding agents via the memini memory service. 5 hooks for Codex CLI capturing tool usage and surfacing prior context at session start.",
   "author": {
     "name": "memini maintainers",
