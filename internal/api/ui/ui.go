@@ -43,9 +43,17 @@ func Mount(r chi.Router, apiKey string) error {
 		name := strings.TrimPrefix(req.URL.Path, "/")
 		// SPA shell is GET-only; non-GET methods and the reserved /.well-known/*
 		// namespace (RFC 8615) 404 so MCP clients never parse the shell or chi's
-		// empty-body 405 as an OAuth response.
+		// empty-body 405 as an OAuth response. The body is JSON, not Go's default
+		// text/plain "404 page not found": memini has no OAuth, so the discovery
+		// probes (RFC 9728 oauth-protected-resource, RFC 8414
+		// oauth-authorization-server) hit here, and some MCP clients (Claude Code)
+		// JSON-parse the discovery 404 body and abort the whole connection on a
+		// parse error instead of treating the 404 as "no OAuth, use the bearer
+		// token". A parseable empty object lets them fall back to static auth.
 		if req.Method != http.MethodGet || strings.HasPrefix(name, ".well-known/") {
-			http.NotFound(w, req)
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("{}"))
 			return
 		}
 		if name != "" && exists(dist, name) {

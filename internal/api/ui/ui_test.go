@@ -2,6 +2,8 @@ package ui
 
 import (
 	"bytes"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -17,7 +19,7 @@ func TestMountWellKnown404(t *testing.T) {
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
-	t.Run("well-known returns 404 not the SPA shell", func(t *testing.T) {
+	t.Run("well-known returns a JSON 404 not the SPA shell", func(t *testing.T) {
 		for _, p := range []string{
 			"/.well-known/oauth-protected-resource",
 			"/.well-known/oauth-authorization-server",
@@ -26,9 +28,17 @@ func TestMountWellKnown404(t *testing.T) {
 			if err != nil {
 				t.Fatalf("get %s: %v", p, err)
 			}
+			body, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
 			if resp.StatusCode != http.StatusNotFound {
 				t.Fatalf("%s: got %d, want 404", p, resp.StatusCode)
+			}
+			// The body must be valid JSON: MCP clients that probe for OAuth
+			// discovery parse the 404 body and abort the connection on a parse
+			// error (Go's default text/plain "404 page not found" breaks them).
+			var v any
+			if err := json.Unmarshal(body, &v); err != nil {
+				t.Fatalf("%s: 404 body is not JSON (%v): %q", p, err, body)
 			}
 		}
 	})
