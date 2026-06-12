@@ -2,7 +2,7 @@ import { api } from '../api'
 import { namespace, refreshNonce } from '../store'
 import { useAsync } from '../hooks'
 import { TIERS, type Tier } from '../types'
-import { tierColor, relTime, num } from '../util'
+import { tierColor, memoryTypeColor, relTime, num, MEMORY_TYPES } from '../util'
 import { Loading, ErrorBanner } from '../components/States'
 
 export function Dashboard() {
@@ -17,6 +17,8 @@ export function Dashboard() {
 
   const byTier = (t: Tier) => stats.by_tier[t] ?? 0
   const max = Math.max(1, stats.total)
+  const byType = stats.by_memory_type ?? {}
+  const typedTotal = MEMORY_TYPES.reduce((sum, t) => sum + (byType[t] ?? 0), 0)
 
   return (
     <div class="view stagger">
@@ -83,6 +85,38 @@ export function Dashboard() {
           </>
         )}
       </div>
+
+      {typedTotal > 0 && (
+        <div class="panel panel-pad strata">
+          <div class="section-h">
+            <h2>Typed extractions</h2>
+          </div>
+          <div class="strata-bar">
+            {MEMORY_TYPES.map((t) => {
+              const n = byType[t] ?? 0
+              if (n === 0) return null
+              return (
+                <div
+                  key={t}
+                  class="strata-seg"
+                  style={{ flexGrow: n, background: memoryTypeColor(t) }}
+                  title={`${t}: ${n}`}
+                >
+                  {n / typedTotal > 0.12 && <span class="seg-label">{t}</span>}
+                </div>
+              )
+            })}
+          </div>
+          <div class="strata-legend">
+            {MEMORY_TYPES.map((t) => (
+              <div class="item" key={t}>
+                <span class="sw" style={{ background: memoryTypeColor(t) }} />
+                {t} <span class="n">{num(byType[t] ?? 0)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

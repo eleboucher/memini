@@ -3,7 +3,8 @@ import type { Memory } from '../types'
 import { api } from '../api'
 import { refresh } from '../store'
 import { TierBadge } from './TierBadge'
-import { fmtDate, relTime } from '../util'
+import { MemoryTypeBadge } from './MemoryTypeBadge'
+import { fmtDate, memoryType, relTime } from '../util'
 import { IconClose, IconCopy, IconCheck, IconTrash } from '../icons'
 
 interface Props {
@@ -93,6 +94,7 @@ export function MemoryDrawer({ memory: m, onClose }: Props) {
       <aside class="drawer" role="dialog" aria-modal="true" aria-label="Memory detail" ref={drawerRef}>
         <div class="drawer-head">
           <TierBadge tier={m.tier} />
+          <MemoryTypeBadge type={memoryType(m)} />
           <span class="grow" />
           <button class="icon-btn" aria-label={copied ? 'Copied' : 'Copy ID'} onClick={copyId}>
             {copied ? <IconCheck /> : <IconCopy />}

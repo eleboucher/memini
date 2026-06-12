@@ -1,4 +1,4 @@
-import type { Tier } from './types'
+import type { Memory, Tier } from './types'
 
 const TIER_COLOR: Record<Tier, string> = {
   working: 'var(--tier-working)',
@@ -9,6 +9,26 @@ const TIER_COLOR: Record<Tier, string> = {
 
 export function tierColor(t: Tier): string {
   return TIER_COLOR[t] ?? 'var(--muted)'
+}
+
+// Typed-extraction classes (decision/preference/problem) and their chart colors.
+export const MEMORY_TYPES = ['decision', 'preference', 'problem'] as const
+
+const MEMORY_TYPE_COLOR: Record<string, string> = {
+  decision: 'var(--tier-semantic)',
+  preference: 'var(--tier-procedural)',
+  problem: 'var(--tier-working)',
+}
+
+export function memoryTypeColor(t: string): string {
+  return MEMORY_TYPE_COLOR[t] ?? 'var(--muted)'
+}
+
+// memoryType reads the typed-extraction class stamped in a memory's metadata, or
+// undefined when it carries none.
+export function memoryType(m: Memory): string | undefined {
+  const mt = (m.metadata as Record<string, unknown> | undefined)?.memory_type
+  return typeof mt === 'string' && mt ? mt : undefined
 }
 
 // relTime renders a compact, human relative timestamp ("3h", "2d", "just now").

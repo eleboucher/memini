@@ -1,6 +1,7 @@
 import type { Memory } from '../types'
 import { TierBadge } from './TierBadge'
-import { relTime } from '../util'
+import { MemoryTypeBadge } from './MemoryTypeBadge'
+import { memoryType, relTime } from '../util'
 
 interface Props {
   memory: Memory
@@ -14,6 +15,7 @@ export function MemoryCard({ memory: m, score, onOpen, showNamespace }: Props) {
     <button type="button" class={`mem panel ${m.tier}`} onClick={() => onOpen(m)}>
       <div class="mem-head">
         <TierBadge tier={m.tier} />
+        <MemoryTypeBadge type={memoryType(m)} />
         {showNamespace && m.namespace && (
           <span class="chip" title="Project">{m.namespace}</span>
         )}

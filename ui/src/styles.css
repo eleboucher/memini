@@ -476,6 +476,38 @@ label.field .desc {
   --tc: var(--tier-procedural);
 }
 
+/* Typed-extraction badge: same pill as .tier, square marker to distinguish it. */
+.mtype {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  padding: 3px 9px 3px 7px;
+  border-radius: 100px;
+  border: 1px solid color-mix(in oklab, var(--tc) 45%, transparent);
+  color: color-mix(in oklab, var(--tc) 75%, var(--text));
+  background: color-mix(in oklab, var(--tc) 14%, transparent);
+  white-space: nowrap;
+}
+.mtype::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  background: var(--tc);
+}
+.mtype.decision {
+  --tc: var(--tier-semantic);
+}
+.mtype.preference {
+  --tc: var(--tier-procedural);
+}
+.mtype.problem {
+  --tc: var(--tier-working);
+}
+
 .chip {
   display: inline-flex;
   align-items: center;

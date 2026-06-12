@@ -344,6 +344,10 @@ export interface components {
             by_tier: {
                 [key: string]: number;
             };
+            /** @description Live count per typed-extraction memory_type (decision/preference/problem). */
+            by_memory_type?: {
+                [key: string]: number;
+            };
             expired: number;
             superseded: number;
             total_accesses: number;
