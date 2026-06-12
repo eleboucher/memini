@@ -364,6 +364,14 @@ func (h *Server) ListMemories(w http.ResponseWriter, r *http.Request, params Lis
 
 // GetBriefing implements GET /v1/namespaces/{name}/briefing.
 func (h *Server) GetBriefing(w http.ResponseWriter, r *http.Request, name string, params GetBriefingParams) {
+	// chi binds the raw escaped path segment, so a nested namespace ("project/
+	// agent") arrives as "project%2Fagent" and must be decoded to match storage.
+	decoded, ok := unescapeID(name)
+	if !ok {
+		httputil.Error(w, http.StatusBadRequest, "invalid namespace encoding")
+		return
+	}
+	name = decoded
 	if err := httputil.ValidateNamespace(name); err != nil {
 		httputil.Error(w, http.StatusBadRequest, "invalid namespace: "+err.Error())
 		return
