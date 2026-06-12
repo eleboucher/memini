@@ -128,6 +128,44 @@ func TestForgetByTag(t *testing.T) {
 	}
 }
 
+func TestGetBriefing(t *testing.T) {
+	h := newServer(t)
+	remember := func(content, tier string, tags []string) {
+		body := map[string]any{"content": content, "tier": tier}
+		if tags != nil {
+			body["tags"] = tags
+		}
+		rec := do(t, h, http.MethodPost, "/v1/memories", "proj", apiKey, body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("remember: %d (%s)", rec.Code, rec.Body)
+		}
+	}
+	remember("we chose Postgres over MySQL for JSONB", "semantic", nil)
+	remember("to deploy, run make release then helm upgrade", "procedural", nil)
+	remember("finished the auth refactor today", "episodic", nil)
+	remember("the user is Erwan, prefers Go", "semantic", []string{"pinned"})
+
+	rec := do(t, h, http.MethodGet, "/v1/namespaces/proj/briefing", "proj", apiKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("briefing: %d (%s)", rec.Code, rec.Body)
+	}
+	var b struct {
+		Namespace  string                     `json:"namespace"`
+		Facts      []struct{ Content string } `json:"facts"`
+		Procedures []struct{ Content string } `json:"procedures"`
+		Recent     []struct{ Content string } `json:"recent"`
+		Pinned     []struct{ Content string } `json:"pinned"`
+	}
+	mustJSON(t, rec, &b)
+	if b.Namespace != "proj" {
+		t.Errorf("namespace = %q", b.Namespace)
+	}
+	if len(b.Facts) < 1 || len(b.Procedures) != 1 || len(b.Recent) != 1 || len(b.Pinned) != 1 {
+		t.Fatalf("briefing sections off: facts=%d procs=%d recent=%d pinned=%d",
+			len(b.Facts), len(b.Procedures), len(b.Recent), len(b.Pinned))
+	}
+}
+
 func TestRememberSearchForgetRoundTrip(t *testing.T) {
 	h := newServer(t)
 

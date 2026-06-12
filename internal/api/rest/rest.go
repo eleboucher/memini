@@ -353,6 +353,43 @@ func (h *Server) ListMemories(w http.ResponseWriter, r *http.Request, params Lis
 	httputil.JSON(w, http.StatusOK, out)
 }
 
+// GetBriefing implements GET /v1/namespaces/{name}/briefing.
+func (h *Server) GetBriefing(w http.ResponseWriter, r *http.Request, name string, params GetBriefingParams) {
+	if err := httputil.ValidateNamespace(name); err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid namespace: "+err.Error())
+		return
+	}
+	per := 0
+	if params.PerSection != nil {
+		per = *params.PerSection
+	}
+	b, err := h.svc.Briefing(r.Context(), name, per)
+	if err != nil {
+		httputil.Error(w, statusFor(err), err.Error())
+		return
+	}
+	httputil.JSON(w, http.StatusOK, Briefing{
+		Namespace:  b.Namespace,
+		Facts:      apiMemoryList(b.Facts),
+		Procedures: apiMemoryList(b.Procedures),
+		Recent:     apiMemoryList(b.Recent),
+		Pinned:     apiMemoryList(b.Pinned),
+	})
+}
+
+// apiMemoryList maps a slice of memories to API models, returning nil for an
+// empty slice so the field is omitted from the response.
+func apiMemoryList(mems []*memory.Memory) *[]Memory {
+	if len(mems) == 0 {
+		return nil
+	}
+	out := make([]Memory, len(mems))
+	for i, m := range mems {
+		out[i] = apiMemory(m)
+	}
+	return &out
+}
+
 // GetStats implements GET /v1/stats.
 func (h *Server) GetStats(w http.ResponseWriter, r *http.Request, params GetStatsParams) {
 	var s service.Stats

@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"time"
 
+	"github.com/eleboucher/memini/internal/maintenance"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/store"
 )
@@ -149,6 +151,66 @@ func (s *Service) StatsAll(ctx context.Context) (Stats, error) {
 // tenant switcher.
 func (s *Service) Namespaces(ctx context.Context) ([]string, error) {
 	return s.store.ListNamespaces(ctx)
+}
+
+// Briefing is a layered session-start summary of a namespace: the most durable
+// facts and procedures, the most recent episodic activity, and pinned memories.
+type Briefing struct {
+	Namespace  string           `json:"namespace"`
+	Facts      []*memory.Memory `json:"facts,omitempty"`      // semantic, highest-retention first
+	Procedures []*memory.Memory `json:"procedures,omitempty"` // procedural, highest-retention first
+	Recent     []*memory.Memory `json:"recent,omitempty"`     // episodic, newest first
+	Pinned     []*memory.Memory `json:"pinned,omitempty"`     // tagged pinned, any tier
+}
+
+// Briefing builds a session-start briefing for a namespace: up to perSection
+// memories in each of facts (semantic), procedures (procedural) and recent
+// (episodic, newest first), plus all pinned memories. It is a cheap, query-less
+// read for hooks to inject context when a session opens.
+func (s *Service) Briefing(ctx context.Context, namespace string, perSection int) (Briefing, error) {
+	if perSection <= 0 {
+		perSection = 5
+	}
+	now := s.now()
+	mems, err := s.store.List(ctx, namespace, store.Filter{Now: now}, 0)
+	if err != nil {
+		return Briefing{}, err
+	}
+	b := Briefing{Namespace: namespace}
+	var facts, procs, recent []*memory.Memory
+	for _, m := range mems {
+		if slices.Contains(m.Tags, maintenance.PinnedTag) {
+			b.Pinned = append(b.Pinned, m)
+		}
+		switch m.Tier {
+		case memory.TierSemantic:
+			facts = append(facts, m)
+		case memory.TierProcedural:
+			procs = append(procs, m)
+		case memory.TierEpisodic:
+			recent = append(recent, m)
+		}
+	}
+	byRetention := func(ms []*memory.Memory) {
+		sort.SliceStable(ms, func(i, j int) bool {
+			return ms[i].RetentionScore(now) > ms[j].RetentionScore(now)
+		})
+	}
+	byRetention(facts)
+	byRetention(procs)
+	sort.SliceStable(recent, func(i, j int) bool { return recent[i].CreatedAt.After(recent[j].CreatedAt) })
+
+	b.Facts = topN(facts, perSection)
+	b.Procedures = topN(procs, perSection)
+	b.Recent = topN(recent, perSection)
+	return b, nil
+}
+
+func topN(ms []*memory.Memory, n int) []*memory.Memory {
+	if len(ms) > n {
+		return ms[:n]
+	}
+	return ms
 }
 
 // DeleteNamespace removes every memory in a namespace. Returns the number of

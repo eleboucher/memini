@@ -142,6 +142,37 @@ export async function postSearch(query, namespace, { limit = 5, tiers } = {}) {
 }
 
 /**
+ * GET JSON from memini. `namespace` is sent as X-Memini-Namespace. Returns
+ * parsed JSON on 2xx, null otherwise. Never throws.
+ */
+export async function getJSON(path, namespace, timeoutMs = 5000) {
+  try {
+    const res = await fetch(`${REST_URL}${path}`, {
+      method: "GET",
+      headers: authHeaders({ "X-Memini-Namespace": namespace }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) {
+      if (DEBUG) console.error(`[memini] GET ${path} -> ${res.status}`);
+      return null;
+    }
+    return await res.json();
+  } catch (e) {
+    if (DEBUG) console.error(`[memini] GET ${path} failed:`, e?.message || e);
+    return null;
+  }
+}
+
+/**
+ * GET /v1/namespaces/{ns}/briefing — a layered session-start summary
+ * {namespace, facts, procedures, recent, pinned}. Returns null on failure.
+ */
+export async function getBriefing(namespace, perSection = 5) {
+  const enc = encodeURIComponent(namespace);
+  return getJSON(`/v1/namespaces/${enc}/briefing?per_section=${perSection}`, namespace);
+}
+
+/**
  * POST /v1/memories. Returns the saved Memory on success, null otherwise.
  */
 export async function postRemember(content, namespace, opts = {}) {

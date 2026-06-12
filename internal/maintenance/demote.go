@@ -10,8 +10,9 @@ import (
 	"github.com/eleboucher/memini/internal/store"
 )
 
-// pinnedTag exempts a memory from retro-tiering demotion.
-const pinnedTag = "pinned"
+// PinnedTag marks a memory as pinned: exempt from retro-tiering demotion and
+// always surfaced in a session briefing.
+const PinnedTag = "pinned"
 
 // longTermTiers are the durable tiers eligible for demotion.
 var longTermTiers = []memory.Tier{memory.TierSemantic, memory.TierProcedural}
@@ -44,7 +45,7 @@ func DemoteStale(ctx context.Context, st store.Store, olderThan, now time.Time) 
 			if !m.UpdatedAt.Before(olderThan) {
 				continue
 			}
-			if slices.Contains(m.Tags, pinnedTag) {
+			if slices.Contains(m.Tags, PinnedTag) {
 				continue
 			}
 			if err := st.Retier(ctx, ns, m.ID, memory.TierEpisodic, &exp); err != nil {

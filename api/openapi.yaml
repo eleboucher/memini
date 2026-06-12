@@ -192,6 +192,31 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/NamespacesResponse" }
         "500": { $ref: "#/components/responses/Error" }
+  /v1/namespaces/{name}/briefing:
+    get:
+      operationId: getBriefing
+      tags: [memory]
+      summary: Layered session-start briefing for a namespace
+      description: >
+        A query-less summary for injecting context when a session opens: the
+        most durable facts and procedures, recent episodic activity, and pinned
+        memories. Backs the plugin's SessionStart hook.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+        - name: per_section
+          in: query
+          description: Max memories per section (facts/procedures/recent). Default 5.
+          schema: { type: integer }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Briefing" }
+        "500": { $ref: "#/components/responses/Error" }
   /v1/namespaces/{name}:
     delete:
       operationId: deleteNamespace
@@ -359,6 +384,27 @@ components:
       properties:
         memories:
           type: array
+          items: { $ref: "#/components/schemas/Memory" }
+    Briefing:
+      type: object
+      required: [namespace]
+      properties:
+        namespace: { type: string }
+        facts:
+          type: array
+          description: Durable semantic facts, highest-retention first.
+          items: { $ref: "#/components/schemas/Memory" }
+        procedures:
+          type: array
+          description: Procedural how-to memories, highest-retention first.
+          items: { $ref: "#/components/schemas/Memory" }
+        recent:
+          type: array
+          description: Recent episodic activity, newest first.
+          items: { $ref: "#/components/schemas/Memory" }
+        pinned:
+          type: array
+          description: Pinned memories (any tier).
           items: { $ref: "#/components/schemas/Memory" }
     Stats:
       type: object

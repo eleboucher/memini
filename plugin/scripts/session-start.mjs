@@ -15,13 +15,23 @@ import {
   readStdin,
   parseJSON,
   resolveProject,
-  postSearch,
+  getBriefing,
   cleanStaleBuffers,
   DEBUG,
 } from "./_shared.mjs";
 
 // Buffers older than this are abandoned (crashed/killed sessions) and removed.
 const STALE_BUFFER_MS = 7 * 24 * 60 * 60 * 1000;
+
+// section appends a labelled, bulleted group of memory contents to lines.
+function section(lines, label, mems, max) {
+  if (!Array.isArray(mems) || mems.length === 0) return;
+  lines.push(label + ":");
+  for (const m of mems.slice(0, max)) {
+    const text = (m?.summary || m?.content || "").trim();
+    if (text) lines.push(`- ${text.slice(0, 280)}`);
+  }
+}
 
 async function main() {
   const payload = parseJSON(await readStdin()) || {};
@@ -34,29 +44,19 @@ async function main() {
 
   if (DEBUG) console.error(`[memini] SessionStart project=${project} session=${sessionId}`);
 
-  // 1. Look for the last session-end marker for this project. That gives the
-  //    agent a short "you last worked on X" hint instead of a long search.
-  const last = await postSearch("session ended in " + project, project, {
-    limit: 1,
-    tiers: ["episodic"],
-  });
-  const recent = await postSearch("recent decisions and conventions in " + project, project, {
-    limit: 4,
-    tiers: ["semantic", "procedural"],
-  });
+  // A single query-less briefing call returns a layered view: pinned identity,
+  // durable facts/procedures, and recent activity — server-side ranked, so the
+  // hook injects useful context without N searches.
+  const b = await getBriefing(project, 5);
+  if (!b) return;
+  const sections = [b.pinned, b.facts, b.procedures, b.recent];
+  if (sections.every((s) => !Array.isArray(s) || s.length === 0)) return;
 
-  if (last.length === 0 && recent.length === 0) return;
-
-  const lines = [];
-  lines.push(`<memini-context project="${project}">`);
-  if (last[0]) {
-    lines.push(`Last session (${last[0].memory?.metadata?.session_id || "?"}): ${last[0].content}`);
-  }
-  for (const r of recent) {
-    if (r.content && r.content !== last[0]?.content) {
-      lines.push(`- ${r.content}`);
-    }
-  }
+  const lines = [`<memini-context project="${project}">`];
+  section(lines, "Pinned", b.pinned, 5);
+  section(lines, "Decisions & conventions", b.facts, 5);
+  section(lines, "How-to", b.procedures, 5);
+  section(lines, "Recent activity", b.recent, 3);
   lines.push("</memini-context>");
 
   // Both Claude Code and Codex interpret stdout as additional context.

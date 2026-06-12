@@ -56,6 +56,22 @@ type AnswerResponse struct {
 	Sources []ScoredMemory `json:"sources"`
 }
 
+// Briefing defines model for Briefing.
+type Briefing struct {
+	// Facts Durable semantic facts, highest-retention first.
+	Facts     *[]Memory `json:"facts,omitempty"`
+	Namespace string    `json:"namespace"`
+
+	// Pinned Pinned memories (any tier).
+	Pinned *[]Memory `json:"pinned,omitempty"`
+
+	// Procedures Procedural how-to memories, highest-retention first.
+	Procedures *[]Memory `json:"procedures,omitempty"`
+
+	// Recent Recent episodic activity, newest first.
+	Recent *[]Memory `json:"recent,omitempty"`
+}
+
 // ClusterAction defines model for ClusterAction.
 type ClusterAction struct {
 	RepresentativeId string   `json:"representative_id"`
@@ -273,6 +289,12 @@ type GetMemoryParams struct {
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
+// GetBriefingParams defines parameters for GetBriefing.
+type GetBriefingParams struct {
+	// PerSection Max memories per section (facts/procedures/recent). Default 5.
+	PerSection *int `form:"per_section,omitempty" json:"per_section,omitempty"`
+}
+
 // SearchMemoriesParams defines parameters for SearchMemories.
 type SearchMemoriesParams struct {
 	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
@@ -332,6 +354,9 @@ type ServerInterface interface {
 	// Delete every memory in a namespace
 	// (DELETE /v1/namespaces/{name})
 	DeleteNamespace(w http.ResponseWriter, r *http.Request, name string)
+	// Layered session-start briefing for a namespace
+	// (GET /v1/namespaces/{name}/briefing)
+	GetBriefing(w http.ResponseWriter, r *http.Request, name string, params GetBriefingParams)
 	// Recall memories via hybrid (vector + keyword) search
 	// (POST /v1/search)
 	SearchMemories(w http.ResponseWriter, r *http.Request, params SearchMemoriesParams)
@@ -401,6 +426,12 @@ func (_ Unimplemented) ListNamespaces(w http.ResponseWriter, r *http.Request) {
 // Delete every memory in a namespace
 // (DELETE /v1/namespaces/{name})
 func (_ Unimplemented) DeleteNamespace(w http.ResponseWriter, r *http.Request, name string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Layered session-start briefing for a namespace
+// (GET /v1/namespaces/{name}/briefing)
+func (_ Unimplemented) GetBriefing(w http.ResponseWriter, r *http.Request, name string, params GetBriefingParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -949,6 +980,54 @@ func (siw *ServerInterfaceWrapper) DeleteNamespace(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// GetBriefing operation middleware
+func (siw *ServerInterfaceWrapper) GetBriefing(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetBriefingParams
+
+	// ------------- Optional query parameter "per_section" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "per_section", r.URL.Query(), &params.PerSection, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "per_section"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "per_section", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetBriefing(w, r, name, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // SearchMemories operation middleware
 func (siw *ServerInterfaceWrapper) SearchMemories(w http.ResponseWriter, r *http.Request) {
 
@@ -1198,6 +1277,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Delete(options.BaseURL+"/v1/namespaces/{name}", wrapper.DeleteNamespace)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/namespaces/{name}/briefing", wrapper.GetBriefing)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/search", wrapper.SearchMemories)
