@@ -142,6 +142,9 @@ type SweeperConfig struct {
 	// reclaiming space. 0 disables it (tombstones are kept indefinitely but stay
 	// excluded from recall).
 	TombstoneTTL time.Duration
+	// DemoteAfter demotes never-recalled, low-importance durable memories older
+	// than this to the episodic tier so unused debris ages out. 0 disables it.
+	DemoteAfter time.Duration
 }
 
 // Sweeper periodically purges expired memories, enforces the short-term cap, and
@@ -188,6 +191,13 @@ func (s *Sweeper) sweep(ctx context.Context) {
 			s.log.Warn("tombstone GC failed", "error", err)
 		} else if n > 0 {
 			s.log.Info("garbage-collected old tombstones", "count", n)
+		}
+	}
+	if s.cfg.DemoteAfter > 0 {
+		if n, err := DemoteStale(ctx, s.store, now.Add(-s.cfg.DemoteAfter), now); err != nil {
+			s.log.Warn("retro-tiering demotion failed", "error", err)
+		} else if n > 0 {
+			s.log.Info("demoted stale durable memories to episodic", "count", n)
 		}
 	}
 }

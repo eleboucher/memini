@@ -131,6 +131,12 @@ type Config struct {
 	// removing it is the only irreversible maintenance action. Set e.g. 720h
 	// (30d) to enable.
 	TombstoneTTL time.Duration `env:"MEMINI_TOMBSTONE_TTL" envDefault:"0"`
+	// DemoteAfter demotes never-recalled, low-importance semantic/procedural
+	// memories older than this to the episodic tier, so unused durable debris
+	// (e.g. an old bulk import) ages out instead of living forever. Off by
+	// default so existing durable memories are never silently given a TTL; set
+	// e.g. 1440h (60d) to enable. Pinned-tagged memories are always exempt.
+	DemoteAfter time.Duration `env:"MEMINI_DEMOTE_AFTER" envDefault:"0"`
 
 	// Dedup tuning. The dedup pass collapses near-duplicate memories
 	// (embedding similarity ≥ DedupSimilarity) into a single representative

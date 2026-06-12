@@ -378,6 +378,22 @@ func (s *Store) Reassign(ctx context.Context, fromNS string, ids []string, toNS 
 	return tag.RowsAffected(), nil
 }
 
+// Retier changes a memory's tier and expiry in place. Tier and expiry live only
+// in the memories row (fts is generated from content, the vector index is on the
+// same row), so no reindex is required.
+func (s *Store) Retier(ctx context.Context, namespace, id string, tier memory.Tier, expiresAt *time.Time) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE memories SET tier=$1, expires_at=$2 WHERE id=$3 AND namespace=$4`,
+		string(tier), expiresAt, id, namespace)
+	if err != nil {
+		return fmt.Errorf("postgres: retier: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 // Ping verifies the database is reachable.
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 

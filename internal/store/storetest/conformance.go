@@ -34,6 +34,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("FilterNow", func(t *testing.T) { testFilterNow(t, st, dims) })
 	t.Run("ConcurrentAccess", func(t *testing.T) { testConcurrentAccess(t, st, dims) })
 	t.Run("Reassign", func(t *testing.T) { testReassign(t, st, dims) })
+	t.Run("Retier", func(t *testing.T) { testRetier(t, st, dims) })
 }
 
 func testReassign(t *testing.T, st store.Store, dims int) {
@@ -82,6 +83,32 @@ func testReassign(t *testing.T, st store.Store, dims int) {
 	}
 	if containsScored(res, moved.ID) {
 		t.Errorf("moved memory still vector-searchable in source namespace")
+	}
+}
+
+func testRetier(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+	m := mem(ns, "m", "a durable fact", vec(dims, 1))
+	m.Tier = memory.TierSemantic
+	mustUpsert(t, st, m)
+
+	exp := time.Now().UTC().Add(90 * 24 * time.Hour).Truncate(time.Millisecond)
+	if err := st.Retier(ctx, ns, m.ID, memory.TierEpisodic, &exp); err != nil {
+		t.Fatalf("retier: %v", err)
+	}
+	got, err := st.Get(ctx, ns, m.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Tier != memory.TierEpisodic {
+		t.Errorf("tier = %q, want episodic", got.Tier)
+	}
+	if got.ExpiresAt == nil || !got.ExpiresAt.Equal(exp) {
+		t.Errorf("expiry = %v, want %v", got.ExpiresAt, exp)
+	}
+	if err := st.Retier(ctx, ns, "missing", memory.TierEpisodic, &exp); err != store.ErrNotFound {
+		t.Errorf("retier missing: want ErrNotFound, got %v", err)
 	}
 }
 

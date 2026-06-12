@@ -496,6 +496,25 @@ func (s *Store) Reassign(ctx context.Context, fromNS string, ids []string, toNS 
 	return moved, nil
 }
 
+// Retier changes a memory's tier and expiry in place. Tier and expiry live only
+// in the memories row, so no vector/FTS reindex is required.
+func (s *Store) Retier(ctx context.Context, namespace, id string, tier memory.Tier, expiresAt *time.Time) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE memories SET tier=?, expires_at=? WHERE id=? AND namespace=?`,
+		string(tier), msPtr(expiresAt), id, namespace)
+	if err != nil {
+		return fmt.Errorf("sqlitevec: retier: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 func collectRowIDs(tx *sql.Tx, ctx context.Context, namespace string) ([]int64, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT rowid FROM memories WHERE namespace=?`, namespace)
 	if err != nil {

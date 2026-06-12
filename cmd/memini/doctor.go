@@ -13,6 +13,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/eleboucher/memini/internal/config"
+	"github.com/eleboucher/memini/internal/logging"
+	"github.com/eleboucher/memini/internal/maintenance"
 	"github.com/eleboucher/memini/internal/store"
 )
 
@@ -21,16 +23,25 @@ import (
 // shared-agent pool.
 const poolWarnThreshold = 500
 
+var (
+	doctorFix bool
+	doctorYes bool
+)
+
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
-	Short: "Diagnose namespace mismatches and store health (read-only)",
+	Short: "Diagnose namespace mismatches and store health",
 	Long: "Report how the namespace resolves for writes vs recall, list per-namespace " +
 		"memory counts, and flag the conditions behind 'agents stopped writing' and " +
-		"'all my memories merged into one pool'. Read-only; changes nothing.",
+		"'all my memories merged into one pool'. Read-only unless --fix is given.",
 	RunE: runDoctor,
 }
 
 func init() {
+	doctorCmd.Flags().BoolVar(&doctorFix, "fix", false,
+		"after diagnosing, remediate: split unambiguously-attributable pools, purge expired, demote stale durable debris, dedup")
+	doctorCmd.Flags().BoolVar(&doctorYes, "yes", false,
+		"apply --fix changes (without it, --fix only previews)")
 	rootCmd.AddCommand(doctorCmd)
 }
 
@@ -81,7 +92,83 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(out, "Store (%s): reachable, %d namespace(s)\n", cfg.Backend, len(stats)) //nolint:errcheck
 	warnings += printStoreStats(out, stats, pluginNS)
 
+	if doctorFix {
+		return runDoctorFix(cmd, cfg, st, stats)
+	}
 	doctorResult(out, warnings)
+	return nil
+}
+
+// runDoctorFix remediates an already-poisoned store. It previews by default and
+// applies only with --yes. It splits oversized catch-all pools when attribution
+// is unambiguous (>=90% of records carry a grouping key), then purges expired
+// memories, demotes stale durable debris, and deduplicates.
+func runDoctorFix(cmd *cobra.Command, cfg *config.Config, st store.Store, stats []nsStat) error {
+	ctx := cmd.Context()
+	out := cmd.OutOrStdout()
+	if doctorYes {
+		fmt.Fprintln(out, "\nRemediation (applying):") //nolint:errcheck
+	} else {
+		fmt.Fprintln(out, "\nRemediation (preview — re-run with --yes to apply):") //nolint:errcheck
+	}
+
+	// Split unambiguously-attributable catch-all pools.
+	for _, s := range stats {
+		if s.namespace != "default" && s.namespace != "openclaw" {
+			continue
+		}
+		if s.total <= poolWarnThreshold {
+			continue
+		}
+		preview, err := maintenance.Split(ctx, st, s.namespace, nil, true)
+		if err != nil {
+			return err
+		}
+		total := preview.Moved + preview.Skipped
+		if total == 0 || float64(preview.Moved)/float64(total) < 0.9 {
+			fmt.Fprintf(out, "  skip split of %q: only %d/%d records attributable (<90%%)\n", //nolint:errcheck
+				s.namespace, preview.Moved, total)
+			note(out, "run `memini namespace split` manually to inspect")
+			continue
+		}
+		rep := preview
+		if doctorYes {
+			if rep, err = maintenance.Split(ctx, st, s.namespace, nil, false); err != nil {
+				return err
+			}
+		}
+		fmt.Fprintf(out, "  split %q: %d memories into %d namespaces\n", s.namespace, rep.Moved, len(rep.Targets)) //nolint:errcheck
+	}
+
+	if !doctorYes {
+		fmt.Fprintln(out, "  (purge/demote/dedup run on --yes)") //nolint:errcheck
+		return nil
+	}
+
+	now := time.Now().UTC()
+	if n, err := maintenance.PurgeExpired(ctx, st, now); err != nil {
+		return err
+	} else {
+		fmt.Fprintf(out, "  purged %d expired memories\n", n) //nolint:errcheck
+	}
+	if n, err := maintenance.DemoteStale(ctx, st, now.Add(-60*24*time.Hour), now); err != nil {
+		return err
+	} else {
+		fmt.Fprintf(out, "  demoted %d stale durable memories\n", n) //nolint:errcheck
+	}
+	if cfg.EmbedBaseURL == "" {
+		fmt.Fprintln(out, "  skip dedup: no embedder configured (set MEMINI_EMBED_BASE_URL)") //nolint:errcheck
+		return nil
+	}
+	embedder, err := buildEmbedder(cfg, logging.New(cfg.LogLevel, cfg.LogFormat))
+	if err != nil {
+		return err
+	}
+	rep, err := maintenance.Dedup(ctx, st, embedder, maintenance.DedupOptions{Similarity: cfg.DedupSimilarity})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "  dedup: %d clusters, %d tombstoned\n", rep.ClustersFound, rep.Tombstoned) //nolint:errcheck
 	return nil
 }
 

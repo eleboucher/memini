@@ -99,6 +99,11 @@ type Store interface {
 	// Returns the number of memories moved.
 	Reassign(ctx context.Context, fromNS string, ids []string, toNS string) (int64, error)
 
+	// Retier changes a memory's tier and expiry in place (used by retro-tiering
+	// to demote stale durable memories). Tier lives only in the main row, so no
+	// vector/keyword reindex is needed. Returns ErrNotFound if missing.
+	Retier(ctx context.Context, namespace, id string, tier memory.Tier, expiresAt *time.Time) error
+
 	// Ping verifies the backend is reachable, for readiness checks.
 	Ping(ctx context.Context) error
 

@@ -1,6 +1,7 @@
 package search
 
 import (
+	"math"
 	"sort"
 	"time"
 
@@ -9,17 +10,26 @@ import (
 )
 
 // RerankWeights weights the composite ranking signals. Relevance (query
-// similarity) dominates; recency and importance are secondary tie-breakers so a
-// fresh or explicitly-important memory can edge a marginally-more-similar one.
+// similarity) dominates; recency, importance and usage are secondary
+// tie-breakers so a fresh, explicitly-important, or repeatedly-recalled memory
+// can edge a marginally-more-similar one. Weights need not sum to 1 — only the
+// relative ordering of the composite matters.
 type RerankWeights struct {
-	Relevance, Recency, Importance float64
+	Relevance, Recency, Importance, Usage float64
 }
 
 // DefaultRerankWeights is the production composite. Recency is a deliberately
 // light tie-breaker: benchmarking on LongMemEval-S showed that heavier recency
 // weighting buries correct-but-older memories (the gold session is not always
 // the most recent), so relevance dominates and recency only decides near-ties.
-var DefaultRerankWeights = RerankWeights{Relevance: 0.80, Recency: 0.05, Importance: 0.15}
+//
+// Usage is an additive term (it does not take weight from the others), so it is
+// inert on a freshly-ingested corpus where every memory has the same access
+// count — the benchmarked ranking is unchanged. In real use, reinforcement on
+// recall accumulates access counts, so memories that keep proving useful drift
+// up and never-recalled debris (e.g. a low-quality bulk import) sinks, with no
+// manual curation.
+var DefaultRerankWeights = RerankWeights{Relevance: 0.80, Recency: 0.05, Importance: 0.15, Usage: 0.05}
 
 // Rerank re-scores a fused result list with the default composite weights.
 func Rerank(results []store.Scored, now time.Time) []store.Scored {
@@ -37,11 +47,18 @@ func RerankWith(results []store.Scored, now time.Time, w RerankWeights) []store.
 	}
 
 	maxRel := 0.0
+	maxAccess := 0
 	for _, r := range results {
 		if r.Score > maxRel {
 			maxRel = r.Score
 		}
+		if r.Memory.AccessCount > maxAccess {
+			maxAccess = r.Memory.AccessCount
+		}
 	}
+	// log1p(maxAccess) normalizes the usage term into [0,1] within this result
+	// set; 0 when nothing has been accessed (the term then contributes nothing).
+	maxUsage := math.Log1p(float64(maxAccess))
 
 	type ranked struct {
 		sc    store.Scored
@@ -56,7 +73,11 @@ func RerankWith(results []store.Scored, now time.Time, w RerankWeights) []store.
 		}
 		recency := r.Memory.Recency(now)
 		importance := clamp01(r.Memory.Importance)
-		composite := w.Relevance*relevance + w.Recency*recency + w.Importance*importance
+		usage := 0.0
+		if maxUsage > 0 {
+			usage = math.Log1p(float64(r.Memory.AccessCount)) / maxUsage
+		}
+		composite := w.Relevance*relevance + w.Recency*recency + w.Importance*importance + w.Usage*usage
 		out[i] = ranked{sc: store.Scored{Memory: r.Memory, Score: composite}, score: composite, pos: i}
 	}
 

@@ -47,6 +47,35 @@ func TestRerankImportanceTieBreak(t *testing.T) {
 	}
 }
 
+func TestRerankUsagePromotesReinforcedMemory(t *testing.T) {
+	now := time.Now().UTC()
+	// Equal relevance, recency and importance; the frequently-recalled memory
+	// should edge ahead on the usage term.
+	hot := scored("hot", "x", 1.0, 0.5, now)
+	hot.Memory.AccessCount = 20
+	cold := scored("cold", "y", 1.0, 0.5, now)
+	cold.Memory.AccessCount = 0
+
+	out := Rerank([]store.Scored{cold, hot}, now)
+	if out[0].Memory.ID != "hot" {
+		t.Fatalf("expected reinforced 'hot' first, got %s", out[0].Memory.ID)
+	}
+}
+
+func TestRerankUsageInertWithoutAccessHistory(t *testing.T) {
+	now := time.Now().UTC()
+	// With no access history (the benchmark case), the usage term is uniformly
+	// zero, so importance still decides — ranking is unchanged.
+	in := []store.Scored{
+		scored("low", "x", 1.0, 0.0, now),
+		scored("high", "y", 1.0, 1.0, now),
+	}
+	out := Rerank(in, now)
+	if out[0].Memory.ID != "high" {
+		t.Fatalf("usage term must be inert without access history; got %s first", out[0].Memory.ID)
+	}
+}
+
 func TestRerankStableForEqualScores(t *testing.T) {
 	now := time.Now().UTC()
 	in := []store.Scored{

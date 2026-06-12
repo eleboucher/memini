@@ -195,6 +195,7 @@ func buildServiceStack(ctx context.Context, cfg *config.Config, log *slog.Logger
 		Interval:     cfg.SweepInterval,
 		ShortTermCap: cfg.ShortTermCap,
 		TombstoneTTL: cfg.TombstoneTTL,
+		DemoteAfter:  cfg.DemoteAfter,
 	})
 	workers.Go(func() { sweeper.Run(workerCtx) })
 	if cfg.DedupInterval > 0 {
