@@ -180,7 +180,7 @@ test("session-start.mjs: queries with right namespace, writes context to stdout"
   }
 });
 
-test("session-end.mjs: falls back to a bare marker when no events buffered", async () => {
+test("session-end.mjs: no events buffered → no POST, no noise", async () => {
   const cache = freshCache(); // empty buffer dir → no digest
   const hits = [];
   const { url, close } = await startMockServer((req, res, body) => {
@@ -197,13 +197,7 @@ test("session-end.mjs: falls back to a bare marker when no events buffered", asy
       { MEMINI_URL: url, XDG_CACHE_HOME: cache },
     );
 
-    assert.equal(hits.length, 1);
-    assert.equal(hits[0].url, "/v1/memories");
-    assert.equal(hits[0].ns, "memini");
-    const body = JSON.parse(hits[0].body);
-    assert.equal(body.tier, "episodic");
-    assert.match(body.content, /Session ended in memini/);
-    assert.deepEqual(body.tags, ["session-marker", "memini"]);
+    assert.equal(hits.length, 0, "an empty session must not write a bare end marker");
   } finally {
     await close();
   }

@@ -87,18 +87,19 @@ async function main() {
   const project = resolveProject(cwd);
 
   const digest = buildSessionDigest(readSessionEvents(sessionId), project);
-  const content = digest ? digest.content : `Stop checkpoint in ${project}`;
 
   if (DEBUG)
     console.error(`[memini] Stop project=${project} session=${sessionId} events=${digest?.count || 0}`);
 
-  await postRemember(content, project, {
-    tier: "working",
-    tags: ["stop-checkpoint", project],
-    id: `stop:${sessionId}`,
-    summary: digest?.summary,
-    metadata: { session_id: sessionId },
-  });
+  // No buffered events → nothing to checkpoint; a bare marker is just noise.
+  if (digest)
+    await postRemember(digest.content, project, {
+      tier: "working",
+      tags: ["stop-checkpoint", project],
+      id: `stop:${sessionId}`,
+      summary: digest.summary,
+      metadata: { session_id: sessionId },
+    });
 
   const reason = autoSaveReasonFor(payload, sessionId);
   if (reason) process.stdout.write(JSON.stringify({ decision: "block", reason }));
