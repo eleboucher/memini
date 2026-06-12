@@ -7,6 +7,7 @@ package importer
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -36,6 +37,26 @@ type Record struct {
 type Options struct {
 	// DefaultNamespace scopes records whose source carried no namespace.
 	DefaultNamespace string
+	// ForceNamespace, when set, overrides every record's namespace (the explicit
+	// "merge everything into one pool" opt-in). The original namespace is
+	// preserved in metadata["import_source_namespace"] so the merge is reversible
+	// with `memini namespace split`.
+	ForceNamespace string
+	// Source names the export format, used to stamp a provenance tag
+	// (import:<source>:<date>) and to seed deterministic record IDs.
+	Source Source
+	// DefaultImportance is applied to records whose source carried no importance
+	// (reported as 0), so bulk imports rank below curated, source-scored
+	// memories. 0 disables the floor.
+	DefaultImportance float64
+	// SkipExisting checks the store for a record's ID before writing and counts
+	// it as a duplicate instead of clobbering an existing memory's access
+	// counters. Combined with deterministic IDs this makes re-imports idempotent.
+	// Only honored by the local backend.
+	SkipExisting bool
+	// DryRun resolves namespaces and runs the quality gates but writes nothing;
+	// the Report's namespace histogram still reflects where records would land.
+	DryRun bool
 	// BatchSize bounds how many records are written per batch.
 	BatchSize int
 	// OnProgress is called after each batch with (processed, total).
@@ -52,34 +73,55 @@ type Options struct {
 
 // Report summarizes an import run.
 type Report struct {
-	Total    int      `json:"total"`
-	Imported int      `json:"imported"`
-	Skipped  int      `json:"skipped"` // dropped before write (failed a quality gate)
-	Errors   []string `json:"errors,omitempty"`
+	Total      int            `json:"total"`
+	Imported   int            `json:"imported"`
+	Skipped    int            `json:"skipped"`              // dropped before write (failed a quality gate)
+	Duplicates int            `json:"duplicates,omitempty"` // already present, left untouched (SkipExisting)
+	Namespaces map[string]int `json:"namespaces,omitempty"` // records resolved per destination namespace
+	Errors     []string       `json:"errors,omitempty"`
+}
+
+// importIDNamespace seeds deterministic, content-addressed IDs for imported
+// records that carry none, so re-importing the same export is idempotent
+// instead of inserting duplicates with fresh random IDs.
+var importIDNamespace = uuid.MustParse("6f9e4d2a-7c3b-4e15-9a8d-2b1c0f6e5a44")
+
+// deterministicID derives a stable UUIDv5 from the source, destination
+// namespace and content, so the same record imported twice yields the same ID.
+func deterministicID(src Source, ns, content string) string {
+	return uuid.NewSHA1(importIDNamespace, []byte(string(src)+"\x00"+ns+"\x00"+content)).String()
 }
 
 const defaultBatchSize = 64
 
-// batchWriter persists a batch of records. A non-nil error aborts the run (a
-// failure that would recur for every record, e.g. embedding or auth); per-record
-// failures are returned in errs instead.
-type batchWriter func(ctx context.Context, recs []Record, opts Options) (imported int, errs []string, err error)
+// writeResult is one batch's outcome. A non-nil error from batchWriter aborts
+// the run (a failure that would recur for every record, e.g. embedding or auth);
+// per-record failures are collected in errs instead.
+type writeResult struct {
+	imported   int
+	duplicates int
+	errs       []string
+}
+
+// batchWriter persists a batch of records.
+type batchWriter func(ctx context.Context, recs []Record, opts Options) (writeResult, error)
 
 // Importer bulk-loads records via a configured backend.
 type Importer struct {
 	write     batchWriter
 	batchSize int
+	now       func() time.Time
 }
 
 // NewLocal builds an Importer that embeds and writes directly to the store.
 func NewLocal(st store.Store, e embed.Embedder) *Importer {
-	lw := &localWriter{store: st, embedder: e, now: time.Now, newID: uuid.NewString}
-	return &Importer{write: lw.write, batchSize: defaultBatchSize}
+	lw := &localWriter{store: st, embedder: e, now: time.Now}
+	return &Importer{write: lw.write, batchSize: defaultBatchSize, now: time.Now}
 }
 
 // NewRemote builds an Importer that POSTs records to a remote memini server.
 func NewRemote(c *RemoteClient) *Importer {
-	return &Importer{write: c.write, batchSize: 32}
+	return &Importer{write: c.write, batchSize: 32, now: time.Now}
 }
 
 // Import writes records, skipping those that fail the quality gates (empty or
@@ -108,15 +150,28 @@ func (im *Importer) Import(ctx context.Context, recs []Record, opts Options) (Re
 		clean = append(clean, r)
 	}
 
+	// Resolve final namespaces, stamp provenance, apply the importance floor and
+	// deterministic IDs once — before any backend write, and so the namespace
+	// histogram reflects exactly where records land (or would, under DryRun).
+	rep.Namespaces = finalizeRecords(clean, opts, im.now().UTC())
+
+	if opts.DryRun {
+		if opts.OnProgress != nil {
+			opts.OnProgress(rep.Total, rep.Total)
+		}
+		return rep, nil
+	}
+
 	if opts.OnProgress != nil {
 		opts.OnProgress(rep.Skipped, rep.Total)
 	}
 
 	for start := 0; start < len(clean); start += batch {
 		end := min(start+batch, len(clean))
-		imported, errs, err := im.write(ctx, clean[start:end], opts)
-		rep.Imported += imported
-		rep.Errors = append(rep.Errors, errs...)
+		res, err := im.write(ctx, clean[start:end], opts)
+		rep.Imported += res.imported
+		rep.Duplicates += res.duplicates
+		rep.Errors = append(rep.Errors, res.errs...)
 		if opts.OnProgress != nil {
 			opts.OnProgress(min(end, len(clean))+rep.Skipped, rep.Total)
 		}
@@ -127,39 +182,101 @@ func (im *Importer) Import(ctx context.Context, recs []Record, opts Options) (Re
 	return rep, nil
 }
 
+// finalizeRecords resolves each record's destination namespace, stamps import
+// provenance (a dated tag plus source metadata), preserves any namespace a merge
+// would erase, applies the importance floor to unscored records and assigns a
+// deterministic ID to records that carry none. It mutates recs in place and
+// returns the per-namespace histogram.
+func finalizeRecords(recs []Record, opts Options, now time.Time) map[string]int {
+	hist := make(map[string]int, 4)
+	today := now.Format("2006-01-02")
+	for i := range recs {
+		r := &recs[i]
+		orig := r.Namespace
+		ns := resolveNamespace(r.Namespace, opts.DefaultNamespace)
+		if opts.ForceNamespace != "" {
+			ns = opts.ForceNamespace
+		}
+		r.Namespace = ns
+		hist[ns]++
+
+		if opts.Source != "" {
+			r.Tags = appendUnique(r.Tags, fmt.Sprintf("import:%s:%s", opts.Source, today))
+			r.Metadata = withMeta(r.Metadata, "import_source", string(opts.Source))
+		}
+		// A merge that discards a real source namespace records it so the
+		// move/split recovery tool can reconstruct the original scoping.
+		if ns != orig && orig != "" {
+			r.Metadata = withMeta(r.Metadata, "import_source_namespace", orig)
+		}
+		if r.Importance == 0 && opts.DefaultImportance > 0 {
+			r.Importance = opts.DefaultImportance
+		}
+		if r.ID == "" {
+			r.ID = deterministicID(opts.Source, ns, r.Content)
+		}
+	}
+	return hist
+}
+
+// appendUnique appends tag to tags unless it is already present.
+func appendUnique(tags []string, tag string) []string {
+	if slices.Contains(tags, tag) {
+		return tags
+	}
+	return append(tags, tag)
+}
+
 // localWriter embeds a batch and upserts each record into the store.
 type localWriter struct {
 	store    store.Store
 	embedder embed.Embedder
 	now      func() time.Time
-	newID    func() string
 }
 
-func (lw *localWriter) write(ctx context.Context, recs []Record, opts Options) (int, []string, error) {
-	texts := make([]string, len(recs))
-	for i, r := range recs {
+func (lw *localWriter) write(ctx context.Context, recs []Record, opts Options) (writeResult, error) {
+	var res writeResult
+	// Existence check before the (expensive) embed call: a re-import of an
+	// already-stored record costs one Get, not an embed plus upsert that would
+	// reset its access counters.
+	pending := recs
+	if opts.SkipExisting {
+		pending = make([]Record, 0, len(recs))
+		for _, r := range recs {
+			if _, err := lw.store.Get(ctx, r.Namespace, r.ID); err == nil {
+				res.duplicates++
+				continue
+			}
+			pending = append(pending, r)
+		}
+	}
+	if len(pending) == 0 {
+		return res, nil
+	}
+
+	texts := make([]string, len(pending))
+	for i, r := range pending {
 		texts[i] = r.Content
 	}
 	vecs, err := lw.embedder.Embed(ctx, texts)
 	if err != nil {
-		return 0, nil, fmt.Errorf("import: embed: %w", err)
+		return res, fmt.Errorf("import: embed: %w", err)
 	}
-	var imported int
-	var errs []string
-	for i, r := range recs {
-		m := lw.toMemory(r, opts)
+	for i, r := range pending {
+		m := lw.toMemory(r)
 		m.Embedding = vecs[i]
 		if err := lw.store.Upsert(ctx, m); err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", m.ID, err))
+			res.errs = append(res.errs, fmt.Sprintf("%s: %v", m.ID, err))
 			continue
 		}
-		imported++
+		res.imported++
 	}
-	return imported, errs, nil
+	return res, nil
 }
 
-// toMemory maps a Record to a stored memory, applying defaults.
-func (lw *localWriter) toMemory(r Record, opts Options) *memory.Memory {
+// toMemory maps a finalized Record (namespace, ID, importance already resolved
+// by finalizeRecords) to a stored memory, applying tier and timestamp defaults.
+func (lw *localWriter) toMemory(r Record) *memory.Memory {
 	now := lw.now().UTC()
 	created := r.CreatedAt
 	if created.IsZero() {
@@ -176,13 +293,9 @@ func (lw *localWriter) toMemory(r Record, opts Options) *memory.Memory {
 		// reinforces them, not live forever.
 		tier = memory.TierEpisodic
 	}
-	id := r.ID
-	if id == "" {
-		id = lw.newID()
-	}
 	m := &memory.Memory{
-		ID:             id,
-		Namespace:      resolveNamespace(r.Namespace, opts.DefaultNamespace),
+		ID:             r.ID,
+		Namespace:      r.Namespace,
 		Tier:           tier,
 		Content:        r.Content,
 		Summary:        r.Summary,

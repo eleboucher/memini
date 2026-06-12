@@ -98,6 +98,169 @@ func TestImportQualityGates(t *testing.T) {
 	}
 }
 
+func TestImportPreservesSourceNamespaces(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "import.db"), 32)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	recs := []importer.Record{
+		{Namespace: "alice", Content: "alice's durable fact about auth"},
+		{Namespace: "bob", Content: "bob's durable fact about billing"},
+		{Content: "no namespace, falls to default"},
+	}
+	rep, err := importer.NewLocal(st, embedtest.New(32)).Import(ctx, recs,
+		importer.Options{DefaultNamespace: "fallback"})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	want := map[string]int{"alice": 1, "bob": 1, "fallback": 1}
+	if len(rep.Namespaces) != len(want) {
+		t.Fatalf("namespace histogram = %v, want %v", rep.Namespaces, want)
+	}
+	for ns, n := range want {
+		if rep.Namespaces[ns] != n {
+			t.Errorf("namespace %q = %d, want %d (histogram %v)", ns, rep.Namespaces[ns], n, rep.Namespaces)
+		}
+	}
+	// Each tenant's memory is isolated in its own namespace.
+	for ns := range want {
+		ms, err := st.List(ctx, ns, store.Filter{}, 0)
+		if err != nil {
+			t.Fatalf("List %s: %v", ns, err)
+		}
+		if len(ms) != 1 {
+			t.Errorf("namespace %q has %d memories, want 1", ns, len(ms))
+		}
+	}
+}
+
+func TestImportMergeIntoPreservesOriginalNamespace(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "import.db"), 32)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	recs := []importer.Record{
+		{ID: "a", Namespace: "alice", Content: "alice's memory about auth"},
+		{ID: "b", Namespace: "bob", Content: "bob's memory about billing"},
+	}
+	rep, err := importer.NewLocal(st, embedtest.New(32)).Import(ctx, recs,
+		importer.Options{ForceNamespace: "pool", Source: importer.SourceMem0})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if rep.Namespaces["pool"] != 2 || len(rep.Namespaces) != 1 {
+		t.Fatalf("histogram = %v, want all in 'pool'", rep.Namespaces)
+	}
+	got, err := st.Get(ctx, "pool", "a")
+	if err != nil {
+		t.Fatalf("Get a: %v", err)
+	}
+	if got.Metadata["import_source_namespace"] != "alice" {
+		t.Errorf("import_source_namespace = %v, want alice (so a split can recover it)", got.Metadata["import_source_namespace"])
+	}
+	if got.Metadata["import_source"] != "mem0" {
+		t.Errorf("import_source = %v, want mem0", got.Metadata["import_source"])
+	}
+}
+
+func TestImportIdempotentReimport(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "import.db"), 32)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	// No source IDs: deterministic content-addressed IDs make re-import a no-op.
+	recs := []importer.Record{
+		{Namespace: "p", Content: "first imported memory"},
+		{Namespace: "p", Content: "second imported memory"},
+	}
+	opts := importer.Options{Source: importer.SourceMnemory, SkipExisting: true}
+	im := importer.NewLocal(st, embedtest.New(32))
+
+	first, err := im.Import(ctx, recs, opts)
+	if err != nil {
+		t.Fatalf("first Import: %v", err)
+	}
+	if first.Imported != 2 || first.Duplicates != 0 {
+		t.Fatalf("first run = %+v, want imported=2 duplicates=0", first)
+	}
+	second, err := im.Import(ctx, recs, opts)
+	if err != nil {
+		t.Fatalf("second Import: %v", err)
+	}
+	if second.Imported != 0 || second.Duplicates != 2 {
+		t.Fatalf("second run = %+v, want imported=0 duplicates=2", second)
+	}
+}
+
+func TestImportDefaultImportanceFloor(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "import.db"), 32)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	recs := []importer.Record{
+		{ID: "unscored", Namespace: "p", Content: "an unscored bulk import record"},
+		{ID: "scored", Namespace: "p", Content: "a source-scored record", Importance: 0.8},
+	}
+	if _, err := importer.NewLocal(st, embedtest.New(32)).Import(ctx, recs,
+		importer.Options{DefaultImportance: 0.25}); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	unscored, err := st.Get(ctx, "p", "unscored")
+	if err != nil {
+		t.Fatalf("Get unscored: %v", err)
+	}
+	if unscored.Importance != 0.25 {
+		t.Errorf("unscored importance = %v, want 0.25 floor", unscored.Importance)
+	}
+	scored, err := st.Get(ctx, "p", "scored")
+	if err != nil {
+		t.Fatalf("Get scored: %v", err)
+	}
+	if scored.Importance != 0.8 {
+		t.Errorf("scored importance = %v, want 0.8 preserved", scored.Importance)
+	}
+}
+
+func TestImportDryRunWritesNothing(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "import.db"), 32)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	recs := []importer.Record{
+		{ID: "a", Namespace: "alice", Content: "alice's memory"},
+		{ID: "b", Namespace: "bob", Content: "bob's memory"},
+	}
+	rep, err := importer.NewLocal(st, embedtest.New(32)).Import(ctx, recs,
+		importer.Options{DryRun: true})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if rep.Imported != 0 {
+		t.Errorf("dry-run imported = %d, want 0", rep.Imported)
+	}
+	if rep.Namespaces["alice"] != 1 || rep.Namespaces["bob"] != 1 {
+		t.Errorf("dry-run histogram = %v, want it to still report destinations", rep.Namespaces)
+	}
+	if _, err := st.Get(ctx, "alice", "a"); err == nil {
+		t.Error("dry-run should not have written 'a'")
+	}
+}
+
 func TestImportUntypedDefaultsToEpisodic(t *testing.T) {
 	ctx := context.Background()
 	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "import.db"), 32)

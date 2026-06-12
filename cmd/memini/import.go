@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -13,11 +15,18 @@ import (
 	"github.com/eleboucher/memini/internal/config"
 	"github.com/eleboucher/memini/internal/importer"
 	"github.com/eleboucher/memini/internal/logging"
+	"github.com/eleboucher/memini/internal/maintenance"
 )
 
 var (
 	importSource    string
 	importNamespace string
+	importMergeInto string
+	importYes       bool
+	importImp       float64
+	importDryRun    bool
+	importNoDedup   bool
+	importDedupSim  float64
 	importBatch     int
 	importRemote    string
 	importToken     string
@@ -38,14 +47,26 @@ func init() {
 	importCmd.Flags().StringVar(&importSource, "source", "memini",
 		"export format: "+strings.Join(importer.Sources(), "|"))
 	importCmd.Flags().StringVar(&importNamespace, "namespace", "",
-		"namespace for records whose source carried none")
+		"namespace for records whose source carried none (fallback only; does not override source namespaces)")
+	importCmd.Flags().StringVar(&importMergeInto, "merge-into", "",
+		"force every record into this one namespace, discarding source namespaces (the original is kept in metadata for `namespace split`)")
+	importCmd.Flags().BoolVar(&importYes, "yes", false,
+		"skip the confirmation prompt when --merge-into collapses multiple source namespaces")
+	importCmd.Flags().Float64Var(&importImp, "importance", 0.25,
+		"importance assigned to records whose source carried none, so bulk imports rank below curated memories (0 = leave at 0)")
+	importCmd.Flags().BoolVar(&importDryRun, "dry-run", false,
+		"parse and report where records would land without writing anything")
+	importCmd.Flags().BoolVar(&importNoDedup, "no-dedup", false,
+		"skip the automatic vector-cluster dedup pass over imported namespaces")
+	importCmd.Flags().Float64Var(&importDedupSim, "dedup-similarity", 0.85,
+		"similarity threshold for the post-import dedup pass")
 	importCmd.Flags().IntVar(&importBatch, "batch", 0,
 		"records per batch (0 = backend default)")
 	importCmd.Flags().StringVar(&importRemote, "remote", "",
 		"target a running memini server (e.g. https://memini.example.com) instead of the local store")
 	importCmd.Flags().StringVar(&importToken, "token", "",
 		"bearer token for the remote server (defaults to MEMINI_API_KEY)")
-	importCmd.Flags().IntVar(&importMinLen, "min-length", 0,
+	importCmd.Flags().IntVar(&importMinLen, "min-length", 20,
 		"skip records whose trimmed content is shorter than this many bytes (0 = off)")
 	importCmd.Flags().Float64Var(&importMinImp, "min-importance", 0,
 		"skip records below this importance (0 = off; note: sources without importance report 0)")
@@ -99,27 +120,47 @@ func runImport(cmd *cobra.Command, args []string) error {
 	if isTerm {
 		fmt.Fprintf(w, "\r\033[Kloaded %d records\n", len(recs)) //nolint:errcheck
 	}
-	if cmd.Flags().Changed("namespace") {
-		for i := range recs {
-			recs[i].Namespace = ""
+
+	// --merge-into collapses every source namespace into one. Confirm before
+	// discarding multi-tenant scoping, since that is exactly the failure mode
+	// that poisons a store (the original is preserved in metadata for recovery).
+	if importMergeInto != "" {
+		srcNS := distinctNamespaces(recs)
+		if len(srcNS) > 1 && !importYes {
+			if !confirmMerge(cmd, srcNS, importMergeInto) {
+				return fmt.Errorf("aborted: %d source namespaces would merge into %q (re-run with --yes to confirm)",
+					len(srcNS), importMergeInto)
+			}
 		}
 	}
 
-	im, target, closeFn, err := buildImporter(cmd.Context(), cfg, log, importRemote, importToken)
+	im, target, dedup, closeFn, err := buildImporter(cmd.Context(), cfg, log, importRemote, importToken)
 	if err != nil {
 		return err
 	}
 	defer closeFn()
 
 	rep, err := im.Import(cmd.Context(), recs, importer.Options{
-		DefaultNamespace: importNamespace,
-		BatchSize:        importBatch,
-		OnProgress:       newProgressWriter(w),
-		MinContentLen:    importMinLen,
-		MinImportance:    importMinImp,
+		DefaultNamespace:  importNamespace,
+		ForceNamespace:    importMergeInto,
+		Source:            importer.Source(importSource),
+		DefaultImportance: importImp,
+		SkipExisting:      true,
+		DryRun:            importDryRun,
+		BatchSize:         importBatch,
+		OnProgress:        newProgressWriter(w),
+		MinContentLen:     importMinLen,
+		MinImportance:     importMinImp,
 	})
-	fmt.Fprintf(cmd.OutOrStdout(), "import %s -> %s: %d imported, %d skipped, %d total\n", //nolint:errcheck
-		importSource, target, rep.Imported, rep.Skipped, rep.Total)
+
+	out := cmd.OutOrStdout()
+	verb := "import"
+	if importDryRun {
+		verb = "dry-run"
+	}
+	fmt.Fprintf(out, "%s %s -> %s: %d imported, %d duplicates, %d skipped, %d total\n", //nolint:errcheck
+		verb, importSource, target, rep.Imported, rep.Duplicates, rep.Skipped, rep.Total)
+	printNamespaceHistogram(out, rep.Namespaces)
 	for _, e := range rep.Errors {
 		fmt.Fprintln(cmd.ErrOrStderr(), "  error:", e) //nolint:errcheck
 	}
@@ -129,26 +170,122 @@ func runImport(cmd *cobra.Command, args []string) error {
 	if len(rep.Errors) > 0 {
 		return fmt.Errorf("import completed with %d errors", len(rep.Errors))
 	}
+
+	// Collapse near-duplicates created or exposed by the import, scoped to the
+	// namespaces it touched so other tenants are untouched.
+	if !importDryRun && !importNoDedup && dedup != nil && rep.Imported > 0 {
+		if err := dedup(cmd.Context(), namespacesOf(rep.Namespaces), importDedupSim, out); err != nil {
+			fmt.Fprintln(cmd.ErrOrStderr(), "  dedup warning:", err) //nolint:errcheck
+		}
+	}
 	return nil
 }
 
+// dedupFunc runs a post-import dedup pass over the given namespaces and writes a
+// one-line summary to out.
+type dedupFunc func(ctx context.Context, namespaces []string, similarity float64, out io.Writer) error
+
 func buildImporter(
 	ctx context.Context, cfg *config.Config, log *slog.Logger, remote, token string,
-) (*importer.Importer, string, func(), error) {
+) (*importer.Importer, string, dedupFunc, func(), error) {
 	if remote != "" {
 		client := importer.NewRemoteClient(remote, token, cfg.NamespaceHeader)
-		return importer.NewRemote(client), remote, func() {}, nil
+		dedup := func(ctx context.Context, namespaces []string, sim float64, out io.Writer) error {
+			var clusters, tombstoned int
+			for _, ns := range namespaces {
+				res, err := client.Dedup(ctx, ns, sim)
+				if err != nil {
+					return err
+				}
+				clusters += res.ClustersFound
+				tombstoned += res.Tombstoned
+			}
+			fmt.Fprintf(out, "dedup: %d clusters, %d tombstoned across %d namespaces\n", //nolint:errcheck
+				clusters, tombstoned, len(namespaces))
+			return nil
+		}
+		return importer.NewRemote(client), remote, dedup, func() {}, nil
 	}
 	st, err := buildStore(ctx, cfg)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", nil, nil, err
 	}
 	embedder, err := buildEmbedder(cfg, log)
 	if err != nil {
 		_ = st.Close()
-		return nil, "", nil, err
+		return nil, "", nil, nil, err
 	}
-	return importer.NewLocal(st, embedder), "local store", func() { _ = st.Close() }, nil
+	dedup := func(ctx context.Context, namespaces []string, sim float64, out io.Writer) error {
+		rep, err := maintenance.Dedup(ctx, st, embedder, maintenance.DedupOptions{
+			Namespaces: namespaces,
+			Similarity: sim,
+			Log:        log,
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "dedup: %d clusters, %d tombstoned across %d namespaces\n", //nolint:errcheck
+			rep.ClustersFound, rep.Tombstoned, rep.Namespaces)
+		return nil
+	}
+	return importer.NewLocal(st, embedder), "local store", dedup, func() { _ = st.Close() }, nil
+}
+
+// distinctNamespaces returns the sorted set of namespaces the records carry
+// (empty source namespaces are ignored — they fall to the default/merge target).
+func distinctNamespaces(recs []importer.Record) []string {
+	seen := map[string]struct{}{}
+	for _, r := range recs {
+		if r.Namespace != "" {
+			seen[r.Namespace] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for ns := range seen {
+		out = append(out, ns)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// namespacesOf returns the sorted keys of a histogram.
+func namespacesOf(hist map[string]int) []string {
+	out := make([]string, 0, len(hist))
+	for ns := range hist {
+		out = append(out, ns)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// printNamespaceHistogram lists records-per-destination-namespace so a single-
+// pool collapse is visible at a glance.
+func printNamespaceHistogram(w io.Writer, hist map[string]int) {
+	if len(hist) == 0 {
+		return
+	}
+	for _, ns := range namespacesOf(hist) {
+		fmt.Fprintf(w, "  namespace %q: %d\n", ns, hist[ns]) //nolint:errcheck
+	}
+}
+
+// confirmMerge prompts on stderr before a --merge-into collapses multiple source
+// namespaces into one. A non-y/yes answer (or non-interactive input) aborts.
+func confirmMerge(cmd *cobra.Command, srcNS []string, target string) bool {
+	w := cmd.ErrOrStderr()
+	fmt.Fprintf(w, "warning: merging %d source namespaces (%s) into %q\n", //nolint:errcheck
+		len(srcNS), strings.Join(srcNS, ", "), target)
+	fmt.Fprint(w, "continue? [y/N] ") //nolint:errcheck
+	sc := bufio.NewScanner(cmd.InOrStdin())
+	if !sc.Scan() {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(sc.Text())) {
+	case "y", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 func readInput(path string) ([]byte, error) {

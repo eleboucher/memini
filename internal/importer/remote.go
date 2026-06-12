@@ -56,7 +56,7 @@ type remoteRequest struct {
 	ID         string         `json:"id,omitempty"`
 }
 
-func (c *RemoteClient) write(ctx context.Context, recs []Record, opts Options) (int, []string, error) {
+func (c *RemoteClient) write(ctx context.Context, recs []Record, opts Options) (writeResult, error) {
 	type result struct {
 		idx int
 		err error
@@ -87,8 +87,7 @@ func (c *RemoteClient) write(ctx context.Context, recs []Record, opts Options) (
 		close(results)
 	}()
 
-	var imported int
-	var errs []string
+	var res writeResult
 	var authErr error
 	for r := range results {
 		if r.err != nil {
@@ -96,12 +95,12 @@ func (c *RemoteClient) write(ctx context.Context, recs []Record, opts Options) (
 				authErr = r.err
 				continue
 			}
-			errs = append(errs, fmt.Sprintf("%s: %v", recs[r.idx].ID, r.err))
+			res.errs = append(res.errs, fmt.Sprintf("%s: %v", recs[r.idx].ID, r.err))
 			continue
 		}
-		imported++
+		res.imported++
 	}
-	return imported, errs, authErr
+	return res, authErr
 }
 
 func (c *RemoteClient) put(ctx context.Context, r Record, opts Options) error {
@@ -153,6 +152,53 @@ func (c *RemoteClient) put(ctx context.Context, r Record, opts Options) error {
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	return nil
+}
+
+// DedupResult is the subset of POST /v1/dedup's response the importer reports
+// after an auto-dedup pass.
+type DedupResult struct {
+	Namespaces    int `json:"namespaces"`
+	ClustersFound int `json:"clusters_found"`
+	Tombstoned    int `json:"tombstoned"`
+}
+
+// Dedup runs a namespace-scoped vector-cluster dedup pass on the remote server
+// (POST /v1/dedup). similarity <= 0 lets the server pick its default.
+func (c *RemoteClient) Dedup(ctx context.Context, namespace string, similarity float64) (DedupResult, error) {
+	var out DedupResult
+	body := map[string]any{}
+	if similarity > 0 {
+		body["similarity"] = similarity
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return out, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/dedup", bytes.NewReader(raw))
+	if err != nil {
+		return out, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(c.nsHeader, namespace)
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return out, fmt.Errorf("request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return out, errUnauthorized
+	}
+	if resp.StatusCode/100 != 2 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
+		return out, fmt.Errorf("status %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return out, fmt.Errorf("decode: %w", err)
+	}
+	return out, nil
 }
 
 // withMeta returns a copy of m with key=val set (never mutating the caller's map).
