@@ -54,6 +54,7 @@ type remoteRequest struct {
 	Importance float64        `json:"importance,omitempty"`
 	TTLSeconds *int           `json:"ttl_seconds,omitempty"`
 	ID         string         `json:"id,omitempty"`
+	Confidence *float64       `json:"confidence,omitempty"`
 }
 
 func (c *RemoteClient) write(ctx context.Context, recs []Record, opts Options) (writeResult, error) {
@@ -112,6 +113,15 @@ func (c *RemoteClient) put(ctx context.Context, r Record, opts Options) error {
 		Importance: r.Importance,
 		ID:         r.ID,
 		Metadata:   r.Metadata,
+	}
+	// Seed the import confidence the server would otherwise miss: durable imports
+	// start low-trust (ConfidenceSeedImported) unless the caller overrides, the
+	// same as the local writer. The server ignores it for short-term tiers.
+	if opts.Confidence != nil {
+		body.Confidence = opts.Confidence
+	} else {
+		c := memory.ConfidenceSeedImported
+		body.Confidence = &c
 	}
 	// The server stamps its own created-at, so preserve the source's in metadata.
 	if !r.CreatedAt.IsZero() {
