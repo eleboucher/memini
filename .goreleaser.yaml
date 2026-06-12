@@ -1,0 +1,67 @@
+---
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+project_name: memini
+gitea_urls:
+  api: https://git.erwanleboucher.dev/api/v1
+  download: https://git.erwanleboucher.dev
+
+before:
+  hooks:
+    - go mod tidy
+    # internal/api/ui embeds dist via //go:embed; build it or the binary ships an empty UI.
+    - sh -c "cd ui && npm ci && npm run build"
+
+builds:
+  - id: memini
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/eleboucher/memini/internal/version.Version={{.Version}}
+      - -X github.com/eleboucher/memini/internal/version.Commit={{.Commit}}
+      - -X github.com/eleboucher/memini/internal/version.Date={{.Date}}
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    main: ./cmd/memini
+    binary: memini
+
+archives:
+  - id: memini
+    ids:
+      - memini
+
+sboms:
+  - artifacts: archive
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "^style:"
+      - "^Merge branch"
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Performance
+      regexp: '^.*?perf(\(.+\))??!?:.+$'
+      order: 2
+    - title: Refactors
+      regexp: '^.*?refactor(\(.+\))??!?:.+$'
+      order: 3
+    - title: Others
+      order: 999
