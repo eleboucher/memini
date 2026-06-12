@@ -228,10 +228,38 @@ export function truncate(value, max) {
 // session instead of dozens of thin tool-use fragments — and means zero
 // network traffic on the hot PostToolUse path.
 
+/** Base memini cache directory ($XDG_CACHE_HOME or ~/.cache, then /memini). */
+function meminiCacheDir() {
+  const base = process.env["XDG_CACHE_HOME"] || join(homedir() || tmpdir(), ".cache");
+  return join(base, "memini");
+}
+
 /** Root directory for per-session event buffers. */
 function bufferDir() {
-  const base = process.env["XDG_CACHE_HOME"] || join(homedir() || tmpdir(), ".cache");
-  return join(base, "memini", "sessions");
+  return join(meminiCacheDir(), "sessions");
+}
+
+/**
+ * Path of the file recording the plugin's install root. The MCP server's
+ * headersHelper is a plain shell command that — unlike hooks — does NOT receive
+ * ${CLAUDE_PLUGIN_ROOT}, so it can't locate mcp-headers.mjs on its own. The
+ * SessionStart hook (which does get ${CLAUDE_PLUGIN_ROOT}) writes it here, and
+ * the headersHelper reads it. Both sides agree on this path.
+ */
+export function pluginRootFile() {
+  return join(meminiCacheDir(), "plugin-root");
+}
+
+/** Record ${CLAUDE_PLUGIN_ROOT} so the MCP headersHelper can find bundled scripts. */
+export function writePluginRoot() {
+  const root = process.env["CLAUDE_PLUGIN_ROOT"];
+  if (!root) return;
+  try {
+    fs.mkdirSync(meminiCacheDir(), { recursive: true });
+    fs.writeFileSync(pluginRootFile(), root);
+  } catch (e) {
+    if (DEBUG) console.error("[memini] writePluginRoot failed:", e?.message || e);
+  }
 }
 
 /** Sanitize a session id into a safe filename component. */

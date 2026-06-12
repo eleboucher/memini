@@ -17,6 +17,7 @@ import {
   resolveProject,
   getBriefing,
   cleanStaleBuffers,
+  writePluginRoot,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -34,6 +35,10 @@ function section(lines, label, mems, max) {
 }
 
 async function main() {
+  // Record the plugin root so the MCP headersHelper (which doesn't receive
+  // ${CLAUDE_PLUGIN_ROOT}) can locate mcp-headers.mjs. Cheap and idempotent.
+  writePluginRoot();
+
   const payload = parseJSON(await readStdin()) || {};
   const sessionId = payload.session_id || payload.sessionId;
   const cwd = payload.cwd || process.cwd();

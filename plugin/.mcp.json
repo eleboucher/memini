@@ -1,10 +1,10 @@
 {
-  "//": "Auto-loaded by Claude Code from the plugin root. Registers the memini MCP server (memory_remember/recall/get/forget). Works local AND remote: set MEMINI_MCP_URL to your remote memini's /mcp URL and MEMINI_TOKEN to its API key. The headersHelper resolves the per-project namespace from CLAUDE_PROJECT_DIR (same resolver as the hooks) and adds the bearer token, so one remote server serves every project correctly.",
+  "//": "Auto-loaded by Claude Code. Registers the memini MCP server (memory_remember/recall/get/forget). Works local AND remote: set MEMINI_MCP_URL to your remote memini's /mcp URL and MEMINI_TOKEN to its API key. headersHelper resolves the per-project namespace + bearer via mcp-headers.mjs. NOTE: headersHelper runs in a bare shell and does NOT receive ${CLAUDE_PLUGIN_ROOT} (unlike hooks/command), so we can't put it in the path directly. The SessionStart hook writes the plugin root to $XDG_CACHE_HOME/memini/plugin-root and this helper reads it to locate the script. On a cold first connect (before SessionStart) it falls back to emitting just the bearer token so auth still succeeds and Claude Code doesn't drop into OAuth discovery.",
   "mcpServers": {
     "memini": {
       "type": "http",
       "url": "${MEMINI_MCP_URL:-http://localhost:8080/mcp}",
-      "headersHelper": "node ${CLAUDE_PLUGIN_ROOT}/scripts/mcp-headers.mjs"
+      "headersHelper": "R=$(cat \"${XDG_CACHE_HOME:-$HOME/.cache}/memini/plugin-root\" 2>/dev/null); if [ -n \"$R\" ] && [ -f \"$R/scripts/mcp-headers.mjs\" ]; then exec node \"$R/scripts/mcp-headers.mjs\"; fi; t=\"${MEMINI_TOKEN:-$MEMINI_API_KEY}\"; if [ -n \"$t\" ]; then printf '{\"Authorization\":\"Bearer %s\"}' \"$t\"; else printf '{}'; fi"
     }
   }
 }
