@@ -1,6 +1,6 @@
 {
   "name": "@eleboucher/memini",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "type": "module",
   "openclaw": {
     "extensions": [
