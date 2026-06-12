@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -67,18 +68,17 @@ type exchange struct {
 // new memories land together. The env override is intentionally skipped (see
 // config.ResolveDirNamespace) so a bulk import across projects doesn't collapse.
 type nsResolver struct {
-	mu    sync.Mutex
-	cache map[string]string
-	fn    func(string) string
+	mu      sync.Mutex
+	cache   map[string]string
+	demoted map[string]string // cwd -> namespace it fell back to (not the git remote)
+	fn      func(string) (string, config.NamespaceSource)
 }
 
 func newNSResolver() *nsResolver {
 	return &nsResolver{
-		cache: map[string]string{},
-		fn: func(cwd string) string {
-			ns, _ := config.ResolveDirNamespace(cwd)
-			return ns
-		},
+		cache:   map[string]string{},
+		demoted: map[string]string{},
+		fn:      config.ResolveDirNamespace,
 	}
 }
 
@@ -91,9 +91,34 @@ func (r *nsResolver) resolve(cwd string) string {
 	if ns, ok := r.cache[cwd]; ok {
 		return ns
 	}
-	ns := r.fn(cwd)
+	ns, src := r.fn(cwd)
 	r.cache[cwd] = ns
+	// The live plugin scopes by the git-remote repo name. If we resolved a
+	// transcript's cwd any other way (e.g. git timed out under load, or the cwd
+	// no longer exists), the backfill could land in a namespace recall never
+	// queries — record it so the caller can warn.
+	if src != config.NamespaceFromGitRemote {
+		r.demoted[cwd] = ns
+	}
 	return ns
+}
+
+// warnings returns one warning per cwd whose namespace was resolved without the
+// git-remote step the live plugin uses, so the operator can spot a backfill that
+// may have landed where recall won't look.
+func (r *nsResolver) warnings() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.demoted) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(r.demoted))
+	for cwd, ns := range r.demoted {
+		out = append(out, fmt.Sprintf("namespace for %q resolved to %q without a git remote; "+
+			"if the live plugin uses a different name, run `memini namespace move` after import", cwd, ns))
+	}
+	sort.Strings(out)
+	return out
 }
 
 // parseClaudeCode parses one transcript's bytes into per-exchange Records. Used
@@ -215,7 +240,8 @@ func LoadClaudeCodeWithProgress(path string, onProgress func(done, total int)) (
 	// not once per transcript.
 	resolver := newNSResolver()
 	if !info.IsDir() {
-		return loadClaudeCodeFile(path, resolver)
+		recs, warns, err = loadClaudeCodeFile(path, resolver)
+		return recs, append(warns, resolver.warnings()...), err
 	}
 
 	var files []string
@@ -288,6 +314,7 @@ func LoadClaudeCodeWithProgress(path string, onProgress func(done, total int)) (
 		recs = append(recs, r.recs...)
 		warns = append(warns, r.warns...)
 	}
+	warns = append(warns, resolver.warnings()...)
 
 	return recs, warns, nil
 }

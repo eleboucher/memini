@@ -6,6 +6,7 @@ package importer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -243,11 +244,17 @@ func (lw *localWriter) write(ctx context.Context, recs []Record, opts Options) (
 	if opts.SkipExisting {
 		pending = make([]Record, 0, len(recs))
 		for _, r := range recs {
-			if _, err := lw.store.Get(ctx, r.Namespace, r.ID); err == nil {
+			_, err := lw.store.Get(ctx, r.Namespace, r.ID)
+			switch {
+			case err == nil:
 				res.duplicates++
-				continue
+			case errors.Is(err, store.ErrNotFound):
+				pending = append(pending, r) // genuinely new
+			default:
+				// A transient store error must not fall through to a blind
+				// upsert that would clobber the record we couldn't verify.
+				res.errs = append(res.errs, fmt.Sprintf("%s: existence check: %v", r.ID, err))
 			}
-			pending = append(pending, r)
 		}
 	}
 	if len(pending) == 0 {

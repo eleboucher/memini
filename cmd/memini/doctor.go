@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/eleboucher/memini/internal/config"
+	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/logging"
 	"github.com/eleboucher/memini/internal/maintenance"
 	"github.com/eleboucher/memini/internal/store"
@@ -23,9 +24,26 @@ import (
 // shared-agent pool.
 const poolWarnThreshold = 500
 
+// nsDefault is the literal fallback namespace records land in when none is
+// resolved — the prime catch-all an import collapse fills.
+const nsDefault = "default"
+
+// catchAllNamespaces are the names a bulk import or shared-agent setup tends to
+// collapse everything into, so an oversized one is a poisoning signal.
+var catchAllNamespaces = []string{nsDefault, "openclaw"}
+
+func isCatchAllNamespace(ns string) bool {
+	for _, c := range catchAllNamespaces {
+		if ns == c {
+			return true
+		}
+	}
+	return false
+}
+
 var (
-	doctorFix bool
-	doctorYes bool
+	doctorFixFlag bool
+	doctorYes     bool
 )
 
 var doctorCmd = &cobra.Command{
@@ -38,7 +56,7 @@ var doctorCmd = &cobra.Command{
 }
 
 func init() {
-	doctorCmd.Flags().BoolVar(&doctorFix, "fix", false,
+	doctorCmd.Flags().BoolVar(&doctorFixFlag, "fix", false,
 		"after diagnosing, remediate: split unambiguously-attributable pools, purge expired, demote stale durable debris, dedup")
 	doctorCmd.Flags().BoolVar(&doctorYes, "yes", false,
 		"apply --fix changes (without it, --fix only previews)")
@@ -92,21 +110,43 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(out, "Store (%s): reachable, %d namespace(s)\n", cfg.Backend, len(stats)) //nolint:errcheck
 	warnings += printStoreStats(out, stats, pluginNS)
 
-	if doctorFix {
+	if doctorFixFlag {
 		return runDoctorFix(cmd, cfg, st, stats)
 	}
 	doctorResult(out, warnings)
 	return nil
 }
 
-// runDoctorFix remediates an already-poisoned store. It previews by default and
-// applies only with --yes. It splits oversized catch-all pools when attribution
-// is unambiguous (>=90% of records carry a grouping key), then purges expired
-// memories, demotes stale durable debris, and deduplicates.
+// fixDeps carries the dependencies doctorFix needs, so the remediation logic is
+// testable without a cobra command or config. embedder may be nil (dedup is then
+// skipped).
+type fixDeps struct {
+	store    store.Store
+	embedder embed.Embedder
+	dedupSim float64
+	now      time.Time
+	apply    bool
+}
+
+// runDoctorFix builds the remediation dependencies from config and runs it.
 func runDoctorFix(cmd *cobra.Command, cfg *config.Config, st store.Store, stats []nsStat) error {
-	ctx := cmd.Context()
-	out := cmd.OutOrStdout()
-	if doctorYes {
+	d := fixDeps{store: st, dedupSim: cfg.DedupSimilarity, now: time.Now().UTC(), apply: doctorYes}
+	if cfg.EmbedBaseURL != "" {
+		embedder, err := buildEmbedder(cfg, logging.New(cfg.LogLevel, cfg.LogFormat))
+		if err != nil {
+			return err
+		}
+		d.embedder = embedder
+	}
+	return doctorFix(cmd.Context(), cmd.OutOrStdout(), stats, d)
+}
+
+// doctorFix remediates an already-poisoned store. It previews by default and
+// mutates only when d.apply is set. It splits oversized catch-all pools when
+// attribution is unambiguous (>=90% of records carry a grouping key), then (on
+// apply) purges expired memories, demotes stale durable debris, and deduplicates.
+func doctorFix(ctx context.Context, out io.Writer, stats []nsStat, d fixDeps) error {
+	if d.apply {
 		fmt.Fprintln(out, "\nRemediation (applying):") //nolint:errcheck
 	} else {
 		fmt.Fprintln(out, "\nRemediation (preview — re-run with --yes to apply):") //nolint:errcheck
@@ -114,13 +154,13 @@ func runDoctorFix(cmd *cobra.Command, cfg *config.Config, st store.Store, stats 
 
 	// Split unambiguously-attributable catch-all pools.
 	for _, s := range stats {
-		if s.namespace != "default" && s.namespace != "openclaw" {
+		if !isCatchAllNamespace(s.namespace) {
 			continue
 		}
 		if s.total <= poolWarnThreshold {
 			continue
 		}
-		preview, err := maintenance.Split(ctx, st, s.namespace, nil, true)
+		preview, err := maintenance.Split(ctx, d.store, s.namespace, nil, true)
 		if err != nil {
 			return err
 		}
@@ -132,39 +172,36 @@ func runDoctorFix(cmd *cobra.Command, cfg *config.Config, st store.Store, stats 
 			continue
 		}
 		rep := preview
-		if doctorYes {
-			if rep, err = maintenance.Split(ctx, st, s.namespace, nil, false); err != nil {
+		if d.apply {
+			if rep, err = maintenance.Split(ctx, d.store, s.namespace, nil, false); err != nil {
 				return err
 			}
 		}
 		fmt.Fprintf(out, "  split %q: %d memories into %d namespaces\n", s.namespace, rep.Moved, len(rep.Targets)) //nolint:errcheck
 	}
 
-	if !doctorYes {
+	if !d.apply {
 		fmt.Fprintln(out, "  (purge/demote/dedup run on --yes)") //nolint:errcheck
 		return nil
 	}
 
-	now := time.Now().UTC()
-	if n, err := maintenance.PurgeExpired(ctx, st, now); err != nil {
-		return err
-	} else {
-		fmt.Fprintf(out, "  purged %d expired memories\n", n) //nolint:errcheck
-	}
-	if n, err := maintenance.DemoteStale(ctx, st, now.Add(-60*24*time.Hour), now); err != nil {
-		return err
-	} else {
-		fmt.Fprintf(out, "  demoted %d stale durable memories\n", n) //nolint:errcheck
-	}
-	if cfg.EmbedBaseURL == "" {
-		fmt.Fprintln(out, "  skip dedup: no embedder configured (set MEMINI_EMBED_BASE_URL)") //nolint:errcheck
-		return nil
-	}
-	embedder, err := buildEmbedder(cfg, logging.New(cfg.LogLevel, cfg.LogFormat))
+	n, err := maintenance.PurgeExpired(ctx, d.store, d.now)
 	if err != nil {
 		return err
 	}
-	rep, err := maintenance.Dedup(ctx, st, embedder, maintenance.DedupOptions{Similarity: cfg.DedupSimilarity})
+	fmt.Fprintf(out, "  purged %d expired memories\n", n) //nolint:errcheck
+
+	n, err = maintenance.DemoteStale(ctx, d.store, d.now.Add(-60*24*time.Hour), d.now)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "  demoted %d stale durable memories\n", n) //nolint:errcheck
+
+	if d.embedder == nil {
+		fmt.Fprintln(out, "  skip dedup: no embedder configured (set MEMINI_EMBED_BASE_URL)") //nolint:errcheck
+		return nil
+	}
+	rep, err := maintenance.Dedup(ctx, d.store, d.embedder, maintenance.DedupOptions{Similarity: d.dedupSim})
 	if err != nil {
 		return err
 	}
@@ -232,7 +269,7 @@ func printStoreStats(out io.Writer, stats []nsStat, pluginNS string) int {
 	_ = tw.Flush()
 
 	for _, s := range stats {
-		if (s.namespace == "default" || s.namespace == "openclaw") && s.total > poolWarnThreshold {
+		if isCatchAllNamespace(s.namespace) && s.total > poolWarnThreshold {
 			warnings++
 			warnf(out, "namespace %q holds %d memories — possible import collapse or shared pool.", s.namespace, s.total)
 			note(out, fmt.Sprintf("Recover isolation with: memini namespace split --from %s --dry-run", s.namespace))

@@ -191,17 +191,25 @@ func buildImporter(
 	if remote != "" {
 		client := importer.NewRemoteClient(remote, token, cfg.NamespaceHeader)
 		dedup := func(ctx context.Context, namespaces []string, sim float64, out io.Writer) error {
-			var clusters, tombstoned int
+			var clusters, tombstoned, done int
+			var failed []string
 			for _, ns := range namespaces {
 				res, err := client.Dedup(ctx, ns, sim)
 				if err != nil {
-					return err
+					// Don't let one namespace's failure skip the rest — report it
+					// and keep deduping the others.
+					failed = append(failed, fmt.Sprintf("%s: %v", ns, err))
+					continue
 				}
+				done++
 				clusters += res.ClustersFound
 				tombstoned += res.Tombstoned
 			}
 			fmt.Fprintf(out, "dedup: %d clusters, %d tombstoned across %d namespaces\n", //nolint:errcheck
-				clusters, tombstoned, len(namespaces))
+				clusters, tombstoned, done)
+			if len(failed) > 0 {
+				return fmt.Errorf("dedup failed for %d namespace(s): %s", len(failed), strings.Join(failed, "; "))
+			}
 			return nil
 		}
 		return importer.NewRemote(client), remote, dedup, func() {}, nil
