@@ -463,8 +463,12 @@
         "maxDocChars": {
           "default": "",
           "description": "Truncate each document to this many characters before sending to the\ncross-encoder, so one oversized memory can't exceed the server's physical\nbatch and fail the request. Empty uses the binary default; 0 disables it.",
+          "required": [],
           "title": "maxDocChars",
-          "type": "string"
+          "type": [
+            "string",
+            "integer"
+          ]
         },
         "mode": {
           "default": "",
