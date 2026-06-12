@@ -33,6 +33,7 @@ var (
 	importToken     string
 	importMinLen    int
 	importMinImp    float64
+	importExtract   bool
 )
 
 var importCmd = &cobra.Command{
@@ -73,6 +74,8 @@ func init() {
 		"skip records whose trimmed content is shorter than this many bytes (0 = off)")
 	importCmd.Flags().Float64Var(&importMinImp, "min-importance", 0,
 		"skip records below this importance (0 = off; note: sources without importance report 0)")
+	importCmd.Flags().BoolVar(&importExtract, "extract", false,
+		"also distil decisions/preferences/problems from conversations into durable semantic memories (no LLM)")
 
 	rootCmd.AddCommand(importCmd)
 }
@@ -122,6 +125,16 @@ func runImport(cmd *cobra.Command, args []string) error {
 	}
 	if isTerm {
 		fmt.Fprintf(w, "\r\033[Kloaded %d records\n", len(recs)) //nolint:errcheck
+	}
+
+	// Distil durable semantic facts from the conversation records, alongside the
+	// transient episodic exchanges (which age out on their TTL).
+	if importExtract {
+		typed := importer.ExtractTyped(recs)
+		recs = append(recs, typed...)
+		if isTerm {
+			fmt.Fprintf(w, "extracted %d typed semantic memories\n", len(typed)) //nolint:errcheck
+		}
 	}
 
 	// --merge-into collapses every source namespace into one. Confirm before
