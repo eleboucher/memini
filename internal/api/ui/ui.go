@@ -41,6 +41,12 @@ func Mount(r chi.Router, apiKey string) error {
 
 	r.Get("/*", func(w http.ResponseWriter, req *http.Request) {
 		name := strings.TrimPrefix(req.URL.Path, "/")
+		// /.well-known/* is reserved (RFC 8615), never an SPA route: serving the
+		// shell here makes MCP OAuth-discovery probes parse HTML as JSON and fail.
+		if strings.HasPrefix(name, ".well-known/") {
+			http.NotFound(w, req)
+			return
+		}
 		if name != "" && exists(dist, name) {
 			// Vite emits content-hashed filenames under assets/, so they are
 			// safe to cache indefinitely.
