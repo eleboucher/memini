@@ -134,11 +134,11 @@ type Config struct {
 	// DemoteAfter demotes durable memories older than this to the episodic tier
 	// when they have never been recalled, are not important, and are
 	// uncorroborated (low confidence) — so an old bulk import ages out while
-	// facts the agent actually uses or establishes are kept. Default 60d.
-	// Memories written before the confidence field (legacy rows) read as fully
-	// trusted and are never demoted, so existing installs are unaffected; set
-	// MEMINI_DEMOTE_AFTER=0 to disable entirely.
-	DemoteAfter time.Duration `env:"MEMINI_DEMOTE_AFTER" envDefault:"1440h"`
+	// facts the agent actually uses or establishes are kept. Off by default:
+	// demotion gives a durable memory a TTL, so defaulting it on would silently
+	// expire never-recalled-but-legitimate facts written after the upgrade. Set
+	// e.g. 1440h (60d) to enable.
+	DemoteAfter time.Duration `env:"MEMINI_DEMOTE_AFTER" envDefault:"0"`
 
 	// Dedup tuning. The dedup pass collapses near-duplicate memories
 	// (embedding similarity ≥ DedupSimilarity) into a single representative
