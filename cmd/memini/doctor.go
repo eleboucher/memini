@@ -44,6 +44,7 @@ func isCatchAllNamespace(ns string) bool {
 
 var (
 	doctorFixFlag bool
+	doctorScrub   bool
 	doctorYes     bool
 )
 
@@ -58,9 +59,12 @@ var doctorCmd = &cobra.Command{
 
 func init() {
 	doctorCmd.Flags().BoolVar(&doctorFixFlag, "fix", false,
-		"after diagnosing, remediate: split attributable pools, backfill legacy confidence, purge expired, demote stale durable debris, dedup")
+		"after diagnosing, remediate: split attributable pools, backfill legacy confidence, "+
+			"purge expired, scrub content junk, demote stale durable debris, dedup")
+	doctorCmd.Flags().BoolVar(&doctorScrub, "scrub", false,
+		"remove content-level junk only: session-lifecycle markers and exact-duplicate memories (preview unless --yes)")
 	doctorCmd.Flags().BoolVar(&doctorYes, "yes", false,
-		"apply --fix changes (without it, --fix only previews)")
+		"apply --fix/--scrub changes (without it, they only preview)")
 	rootCmd.AddCommand(doctorCmd)
 }
 
@@ -114,8 +118,34 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	if doctorFixFlag {
 		return runDoctorFix(cmd, cfg, st, stats)
 	}
+	if doctorScrub {
+		return runDoctorScrub(cmd.Context(), out, st, doctorYes)
+	}
 	doctorResult(out, warnings)
 	return nil
+}
+
+// runDoctorScrub previews (or, with --yes, applies) the content-quality scrub:
+// session-lifecycle markers and exact-duplicate memories the namespace fix and
+// embedding dedup don't catch.
+func runDoctorScrub(ctx context.Context, out io.Writer, st store.Store, apply bool) error {
+	if apply {
+		fmt.Fprintln(out, "\nScrub (applying):") //nolint:errcheck
+	} else {
+		fmt.Fprintln(out, "\nScrub (preview — re-run with --yes to apply):") //nolint:errcheck
+	}
+	rep, err := maintenance.Scrub(ctx, st, apply)
+	if err != nil {
+		return err
+	}
+	printScrub(out, rep)
+	return nil
+}
+
+func printScrub(out io.Writer, rep maintenance.ScrubReport) {
+	fmt.Fprintf(out, "  lifecycle markers:  %d\n", rep.LifecycleNoise)  //nolint:errcheck
+	fmt.Fprintf(out, "  exact duplicates:   %d\n", rep.ExactDuplicates) //nolint:errcheck
+	fmt.Fprintf(out, "  total removed:      %d\n", rep.Total())         //nolint:errcheck
 }
 
 // fixDeps carries the dependencies doctorFix needs, so the remediation logic is
@@ -203,6 +233,15 @@ func doctorFix(ctx context.Context, out io.Writer, stats []nsStat, d fixDeps) er
 		return err
 	}
 	fmt.Fprintf(out, "  purged %d expired memories\n", n) //nolint:errcheck
+
+	// Scrub content junk (lifecycle markers, exact duplicates) that the pool
+	// split and embedding dedup don't catch.
+	scrub, err := maintenance.Scrub(ctx, d.store, true)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "  scrubbed %d lifecycle markers, %d exact duplicates\n", //nolint:errcheck
+		scrub.LifecycleNoise, scrub.ExactDuplicates)
 
 	// Honor the configured demotion window; when periodic demotion is disabled
 	// (0), still age out debris in this one-shot remediation with a 60d default.
