@@ -33,6 +33,17 @@ func TestMountWellKnown404(t *testing.T) {
 		}
 	})
 
+	t.Run("non-GET probe returns 404 not an empty-body 405", func(t *testing.T) {
+		resp, err := http.Post(srv.URL+"/register", "application/json", nil)
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("POST /register: got %d, want 404", resp.StatusCode)
+		}
+	})
+
 	t.Run("deep link still falls back to the SPA shell", func(t *testing.T) {
 		resp, err := http.Get(srv.URL + "/some/client/route")
 		if err != nil {

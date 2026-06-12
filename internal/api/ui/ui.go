@@ -39,11 +39,12 @@ func Mount(r chi.Router, apiKey string) error {
 	index = injectToken(index, apiKey)
 	fileServer := http.FileServer(http.FS(dist))
 
-	r.Get("/*", func(w http.ResponseWriter, req *http.Request) {
+	r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		name := strings.TrimPrefix(req.URL.Path, "/")
-		// /.well-known/* is reserved (RFC 8615), never an SPA route: serving the
-		// shell here makes MCP OAuth-discovery probes parse HTML as JSON and fail.
-		if strings.HasPrefix(name, ".well-known/") {
+		// SPA shell is GET-only; non-GET methods and the reserved /.well-known/*
+		// namespace (RFC 8615) 404 so MCP clients never parse the shell or chi's
+		// empty-body 405 as an OAuth response.
+		if req.Method != http.MethodGet || strings.HasPrefix(name, ".well-known/") {
 			http.NotFound(w, req)
 			return
 		}
@@ -59,7 +60,7 @@ func Mount(r chi.Router, apiKey string) error {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
 		_, _ = w.Write(index)
-	})
+	}))
 	return nil
 }
 
