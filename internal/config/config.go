@@ -108,6 +108,10 @@ type Config struct {
 	// ConsolidateMinScore gates the LLM: it runs only when the nearest candidate
 	// scores at least this. 0 disables the gate.
 	ConsolidateMinScore float64 `env:"MEMINI_CONSOLIDATE_MIN_SCORE" envDefault:"0.6"`
+	// ConsolidateQueueCap bounds the async consolidation queue. When full, the
+	// dedup job (not the memory) is dropped and counted by the "dropped"
+	// consolidate metric — raise it for write-bursty deployments.
+	ConsolidateQueueCap int `env:"MEMINI_CONSOLIDATE_QUEUE_CAP" envDefault:"1024"`
 
 	// Promotion (episodic→semantic distillation). Requires an LLM.
 	// PromoteInterval is how often the promoter runs; 0 disables it.
@@ -121,15 +125,21 @@ type Config struct {
 	// ShortTermCap bounds short-term (working+episodic) memories per namespace;
 	// the sweeper evicts the lowest-retention ones over the cap. 0 disables it.
 	ShortTermCap int `env:"MEMINI_SHORT_TERM_CAP" envDefault:"1000"`
+	// TombstoneTTL hard-deletes superseded (deduped/contradicted) memories last
+	// updated before now-TTL, reclaiming space. Off by default: tombstones are
+	// excluded from recall regardless, so GC is purely a space optimization and
+	// removing it is the only irreversible maintenance action. Set e.g. 720h
+	// (30d) to enable.
+	TombstoneTTL time.Duration `env:"MEMINI_TOMBSTONE_TTL" envDefault:"0"`
 
 	// Dedup tuning. The dedup pass collapses near-duplicate memories
 	// (embedding similarity ≥ DedupSimilarity) into a single representative
 	// per cluster; the rest are tombstoned (SupersededBy → representative),
-	// not hard-deleted, so the action is reversible. Primarily a post-import
-	// cleanup tool (exports are typically full of restatements), exposed
-	// on-demand via POST /v1/dedup. Set DedupInterval > 0 to also run it as a
-	// periodic store-wide background job (off by default).
-	DedupInterval         time.Duration `env:"MEMINI_DEDUP_INTERVAL" envDefault:"0"`
+	// not hard-deleted, so the action is reversible. Exposed on-demand via
+	// POST /v1/dedup and run as a periodic store-wide background job every
+	// DedupInterval (daily by default, so a store stays clean with no manual
+	// intervention). Set MEMINI_DEDUP_INTERVAL=0 to disable the periodic pass.
+	DedupInterval         time.Duration `env:"MEMINI_DEDUP_INTERVAL" envDefault:"24h"`
 	DedupSimilarity       float64       `env:"MEMINI_DEDUP_SIMILARITY" envDefault:"0.85"`
 	DedupMinClusterSize   int           `env:"MEMINI_DEDUP_MIN_CLUSTER_SIZE" envDefault:"2"`
 	DedupNeighboursAnchor int           `env:"MEMINI_DEDUP_NEIGHBOURS" envDefault:"20"`

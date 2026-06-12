@@ -131,25 +131,35 @@ func Fsck(ctx context.Context, st store.Store, cap int, now time.Time) (Report, 
 	return rep, nil
 }
 
-// Sweeper periodically purges expired memories and enforces the short-term cap.
-type Sweeper struct {
-	store        store.Store
-	log          *slog.Logger
-	interval     time.Duration
-	shortTermCap int
+// SweeperConfig configures the periodic maintenance sweep.
+type SweeperConfig struct {
+	// Interval is how often the sweep runs.
+	Interval time.Duration
+	// ShortTermCap bounds working+episodic memories per namespace; the lowest-
+	// retention ones over the cap are evicted. 0 disables it.
+	ShortTermCap int
+	// TombstoneTTL hard-deletes superseded memories last updated before now-TTL,
+	// reclaiming space. 0 disables it (tombstones are kept indefinitely but stay
+	// excluded from recall).
+	TombstoneTTL time.Duration
 }
 
-// NewSweeper builds a sweeper that runs every interval, bounding short-term
-// memory to shortTermCap per namespace (0 disables the cap).
-func NewSweeper(st store.Store, log *slog.Logger, interval time.Duration, shortTermCap int) *Sweeper {
-	return &Sweeper{
-		store: st, log: log, interval: interval, shortTermCap: shortTermCap,
-	}
+// Sweeper periodically purges expired memories, enforces the short-term cap, and
+// (optionally) garbage-collects old tombstones.
+type Sweeper struct {
+	store store.Store
+	log   *slog.Logger
+	cfg   SweeperConfig
+}
+
+// NewSweeper builds a sweeper that runs every cfg.Interval.
+func NewSweeper(st store.Store, log *slog.Logger, cfg SweeperConfig) *Sweeper {
+	return &Sweeper{store: st, log: log, cfg: cfg}
 }
 
 // Run sweeps on a ticker until ctx is cancelled. It runs one sweep immediately.
 func (s *Sweeper) Run(ctx context.Context) {
-	t := time.NewTicker(s.interval)
+	t := time.NewTicker(s.cfg.Interval)
 	defer t.Stop()
 	for {
 		s.sweep(ctx)
@@ -168,9 +178,16 @@ func (s *Sweeper) sweep(ctx context.Context) {
 	} else if n > 0 {
 		s.log.Info("decay sweep purged expired memories", "count", n)
 	}
-	if n, err := EnforceShortTermCap(ctx, s.store, s.shortTermCap, now); err != nil {
+	if n, err := EnforceShortTermCap(ctx, s.store, s.cfg.ShortTermCap, now); err != nil {
 		s.log.Warn("short-term cap enforcement failed", "error", err)
 	} else if n > 0 {
 		s.log.Info("evicted short-term memories over cap", "count", n)
+	}
+	if s.cfg.TombstoneTTL > 0 {
+		if n, err := PurgeTombstones(ctx, s.store, now.Add(-s.cfg.TombstoneTTL)); err != nil {
+			s.log.Warn("tombstone GC failed", "error", err)
+		} else if n > 0 {
+			s.log.Info("garbage-collected old tombstones", "count", n)
+		}
 	}
 }

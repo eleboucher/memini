@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eleboucher/memini/internal/config"
 	"github.com/eleboucher/memini/internal/memory"
 )
 
@@ -59,16 +60,53 @@ type exchange struct {
 	sessionID string
 }
 
+// nsResolver memoizes per-directory namespace resolution. A backfill walks many
+// transcripts that share a cwd, and resolving each shells out to git; without
+// the cache we'd run git once per exchange. resolve() returns the same namespace
+// the live plugin writes to (git remote repo name), so backfilled history and
+// new memories land together. The env override is intentionally skipped (see
+// config.ResolveDirNamespace) so a bulk import across projects doesn't collapse.
+type nsResolver struct {
+	mu    sync.Mutex
+	cache map[string]string
+	fn    func(string) string
+}
+
+func newNSResolver() *nsResolver {
+	return &nsResolver{
+		cache: map[string]string{},
+		fn: func(cwd string) string {
+			ns, _ := config.ResolveDirNamespace(cwd)
+			return ns
+		},
+	}
+}
+
+func (r *nsResolver) resolve(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ns, ok := r.cache[cwd]; ok {
+		return ns
+	}
+	ns := r.fn(cwd)
+	r.cache[cwd] = ns
+	return ns
+}
+
 // parseClaudeCode parses one transcript's bytes into per-exchange Records. Used
 // by Parse() (stdin / single-file path); session id is derived from the records.
 func parseClaudeCode(data []byte) ([]Record, error) {
-	return parseClaudeCodeReader(bytes.NewReader(data), "")
+	return parseClaudeCodeReader(bytes.NewReader(data), "", newNSResolver())
 }
 
 // parseClaudeCodeReader reconstructs exchanges from a JSONL stream. fallbackID
 // names the session when no record carries a sessionId (e.g. stdin import where
-// the filename is the only hint).
-func parseClaudeCodeReader(r io.Reader, fallbackID string) ([]Record, error) {
+// the filename is the only hint). ns resolves a transcript's cwd to a namespace
+// (memoized across the whole backfill so git runs once per project dir).
+func parseClaudeCodeReader(r io.Reader, fallbackID string, ns *nsResolver) ([]Record, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64<<10), ccScannerBuffer)
 
@@ -92,7 +130,7 @@ func parseClaudeCodeReader(r io.Reader, fallbackID string) ([]Record, error) {
 			"\nassistant: " + truncateRunes(asst, maxExchangeBytes)
 		recs = append(recs, Record{
 			ID:        fmt.Sprintf("cc:%s:%04d", sid, emitted),
-			Namespace: namespaceFromCWD(firstNonEmpty(pending.cwd, lastCWD)),
+			Namespace: ns.resolve(firstNonEmpty(pending.cwd, lastCWD)),
 			Tier:      memory.TierEpisodic,
 			Content:   content,
 			Tags:      []string{string(SourceClaudeCode)},
@@ -173,8 +211,11 @@ func LoadClaudeCodeWithProgress(path string, onProgress func(done, total int)) (
 	if err != nil {
 		return nil, nil, err
 	}
+	// One resolver shared across all files so git runs once per project dir,
+	// not once per transcript.
+	resolver := newNSResolver()
 	if !info.IsDir() {
-		return loadClaudeCodeFile(path)
+		return loadClaudeCodeFile(path, resolver)
 	}
 
 	var files []string
@@ -219,7 +260,7 @@ func LoadClaudeCodeWithProgress(path string, onProgress func(done, total int)) (
 		go func() {
 			defer wg.Done()
 			for p := range jobs {
-				fileRecs, fileWarns, ferr := loadClaudeCodeFile(p)
+				fileRecs, fileWarns, ferr := loadClaudeCodeFile(p, resolver)
 				if ferr != nil {
 					fileWarns = append(fileWarns, fmt.Sprintf("%s: %v", p, ferr))
 				}
@@ -253,14 +294,14 @@ func LoadClaudeCodeWithProgress(path string, onProgress func(done, total int)) (
 
 // loadClaudeCodeFile parses one transcript file, using its basename (minus
 // .jsonl) as the session-id fallback.
-func loadClaudeCodeFile(path string) ([]Record, []string, error) {
+func loadClaudeCodeFile(path string, ns *nsResolver) ([]Record, []string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer func() { _ = f.Close() }()
 	fallback := strings.TrimSuffix(filepath.Base(path), ".jsonl")
-	recs, err := parseClaudeCodeReader(f, fallback)
+	recs, err := parseClaudeCodeReader(f, fallback, ns)
 	return recs, nil, err
 }
 
@@ -269,15 +310,6 @@ func loadClaudeCodeFile(path string) ([]Record, []string, error) {
 func isCommandNoise(s string) bool {
 	t := strings.TrimLeft(s, " \t\r\n")
 	return strings.HasPrefix(t, "<local-command") || strings.HasPrefix(t, "<command-")
-}
-
-// namespaceFromCWD derives a namespace from a transcript's working directory;
-// empty cwd yields "" so the importer falls back to the run default.
-func namespaceFromCWD(cwd string) string {
-	if cwd == "" {
-		return ""
-	}
-	return filepath.Base(cwd)
 }
 
 // episodicExpiry returns now + the episodic TTL, so backfilled history (whose

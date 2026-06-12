@@ -19,8 +19,8 @@ const consolidateCandidates = 5
 
 // Async-consolidation tuning.
 const (
-	consolidateQueueCap     = 1024
-	consolidateDrainTimeout = 30 * time.Second
+	defaultConsolidateQueueCap = 1024
+	consolidateDrainTimeout    = 30 * time.Second
 )
 
 // ConsolidateMode selects how the opt-in LLM consolidation pipeline runs.

@@ -184,7 +184,7 @@ func TestEnqueueDropsWhenFull(t *testing.T) {
 	svc, _ := newAsyncSvc(t, fc, 0.5, mx)
 	// Worker not started, so the queue never drains. Fill it to capacity, then
 	// one more must be dropped.
-	for range consolidateQueueCap {
+	for range defaultConsolidateQueueCap {
 		svc.enqueueConsolidate("ns", "id")
 	}
 	svc.enqueueConsolidate("ns", "overflow")

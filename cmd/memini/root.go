@@ -173,6 +173,7 @@ func buildServiceStack(ctx context.Context, cfg *config.Config, log *slog.Logger
 		service.WithShortTermCap(cfg.ShortTermCap),
 		service.WithConsolidateMode(service.ConsolidateMode(cfg.ConsolidateMode)),
 		service.WithConsolidateMinScore(cfg.ConsolidateMinScore),
+		service.WithConsolidateQueueCap(cfg.ConsolidateQueueCap),
 		service.WithQueryPrefix(cfg.EmbedQueryPrefix),
 		service.WithScoreFusion(cfg.FusionAlpha),
 		service.WithWriteDedup(cfg.WriteDedupMinScore),
@@ -190,7 +191,12 @@ func buildServiceStack(ctx context.Context, cfg *config.Config, log *slog.Logger
 	}
 	workers.Go(func() { svc.StartConsolidator(workerCtx) })
 	workers.Go(func() { svc.RunPromoter(workerCtx, cfg.PromoteInterval) })
-	workers.Go(func() { maintenance.NewSweeper(st, log, cfg.SweepInterval, cfg.ShortTermCap).Run(workerCtx) })
+	sweeper := maintenance.NewSweeper(st, log, maintenance.SweeperConfig{
+		Interval:     cfg.SweepInterval,
+		ShortTermCap: cfg.ShortTermCap,
+		TombstoneTTL: cfg.TombstoneTTL,
+	})
+	workers.Go(func() { sweeper.Run(workerCtx) })
 	if cfg.DedupInterval > 0 {
 		dedupJob := maintenance.NewDedupJob(st, embedder, metricsImpl, log, cfg.DedupInterval, maintenance.DedupOptions{
 			Similarity:          cfg.DedupSimilarity,
