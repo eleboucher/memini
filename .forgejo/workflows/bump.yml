@@ -26,6 +26,11 @@ jobs:
       - uses: https://data.forgejo.org/actions/checkout@v6
         with:
           fetch-depth: 0
+          # Authenticate (and persist) with a PAT so the tag push below is
+          # authored by that user. The automatic Actions token can write but
+          # its pushes never trigger another workflow (recursion guard), so
+          # release.yml would not start. Must be a user PAT with content:write.
+          token: ${{ secrets.OWNER_PACKAGE_SECRET }}
       - name: Install git-cliff
         env:
           # renovate: datasource=github-releases depName=orhun/git-cliff
@@ -76,17 +81,11 @@ jobs:
           done
       - name: Commit and push tag
         env:
-          # Must be a PAT with contents:write. The built-in Actions token is
-          # deliberately blocked from triggering further workflows, so a tag
-          # pushed with it would NOT start release.yml.
-          PUSH_TOKEN: ${{ secrets.OWNER_PACKAGE_SECRET }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
           git config user.name "forgejo-actions[bot]"
           git config user.email "actions@git.erwanleboucher.dev"
-          git remote set-url origin \
-            "https://x-access-token:${PUSH_TOKEN}@git.erwanleboucher.dev/${GITHUB_REPOSITORY}.git"
           git add plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json
           git commit -m "chore(release): ${TAG}"
           git tag -a "${TAG}" -m "Release ${TAG}"
