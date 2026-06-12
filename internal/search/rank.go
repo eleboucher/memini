@@ -1,7 +1,6 @@
 package search
 
 import (
-	"math"
 	"sort"
 	"time"
 
@@ -13,10 +12,10 @@ import (
 // similarity) dominates; the rest are secondary. Quality folds salience
 // (tier+importance), corroboration (confidence), reinforcement (access) and
 // recency into one number (Memory.Quality), and is the production secondary
-// signal; Recency/Importance/Usage are retained as separable terms for the
-// tuning bench. Weights need not sum to 1 — only relative ordering matters.
+// signal; Recency/Importance are retained as separable terms for the tuning
+// bench. Weights need not sum to 1 — only relative ordering matters.
 type RerankWeights struct {
-	Relevance, Recency, Importance, Usage, Quality float64
+	Relevance, Recency, Importance, Quality float64
 }
 
 // DefaultRerankWeights is the production composite: relevance plus a single
@@ -44,22 +43,17 @@ func RerankWith(results []store.Scored, now time.Time, w RerankWeights) []store.
 	}
 
 	maxRel := 0.0
-	maxAccess := 0
 	maxQuality := 0.0
-	for _, r := range results {
+	qualities := make([]float64, len(results))
+	for i, r := range results {
 		if r.Score > maxRel {
 			maxRel = r.Score
 		}
-		if r.Memory.AccessCount > maxAccess {
-			maxAccess = r.Memory.AccessCount
-		}
-		if q := r.Memory.Quality(now); q > maxQuality {
-			maxQuality = q
+		qualities[i] = r.Memory.Quality(now)
+		if qualities[i] > maxQuality {
+			maxQuality = qualities[i]
 		}
 	}
-	// log1p(maxAccess) normalizes the usage term into [0,1] within this result
-	// set; 0 when nothing has been accessed (the term then contributes nothing).
-	maxUsage := math.Log1p(float64(maxAccess))
 
 	type ranked struct {
 		sc    store.Scored
@@ -74,16 +68,12 @@ func RerankWith(results []store.Scored, now time.Time, w RerankWeights) []store.
 		}
 		recency := r.Memory.Recency(now)
 		importance := clamp01(r.Memory.Importance)
-		usage := 0.0
-		if maxUsage > 0 {
-			usage = math.Log1p(float64(r.Memory.AccessCount)) / maxUsage
-		}
 		quality := 0.0
 		if maxQuality > 0 {
-			quality = r.Memory.Quality(now) / maxQuality
+			quality = qualities[i] / maxQuality
 		}
 		composite := w.Relevance*relevance + w.Recency*recency + w.Importance*importance +
-			w.Usage*usage + w.Quality*quality
+			w.Quality*quality
 		out[i] = ranked{sc: store.Scored{Memory: r.Memory, Score: composite}, score: composite, pos: i}
 	}
 
