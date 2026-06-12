@@ -31,7 +31,15 @@ func PurgeTombstones(ctx context.Context, st store.Store, olderThan time.Time) (
 			if m.SupersededBy == nil {
 				continue // live memory
 			}
-			if !m.UpdatedAt.Before(olderThan) {
+			// Measure the grace period from when the row was tombstoned (valid_to,
+			// stamped by SetSuperseded), not its last content update — superseding
+			// never bumps updated_at, so an old fact tombstoned today must still get
+			// the full window. Legacy tombstones without valid_to fall back to it.
+			tombstonedAt := m.UpdatedAt
+			if m.ValidTo != nil {
+				tombstonedAt = *m.ValidTo
+			}
+			if !tombstonedAt.Before(olderThan) {
 				continue // tombstoned too recently to GC
 			}
 			if err := st.Delete(ctx, ns, m.ID); err != nil {

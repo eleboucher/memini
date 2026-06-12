@@ -22,9 +22,12 @@ func TestPurgeTombstones(t *testing.T) {
 
 	now := time.Now().UTC()
 	old := now.Add(-100 * 24 * time.Hour)
+	rep := "rep"
 
-	// keep: live (never superseded). gcOld: superseded + old. gcRecent: superseded
-	// but updated recently. rep: the representative they point at.
+	// The grace period is measured from valid_to (when the row was tombstoned),
+	// not its content updated_at — superseding never bumps updated_at. gcOld is
+	// freshly updated but was tombstoned long ago (purge); gcRecent has stale
+	// content but was tombstoned just now (keep); live is never superseded.
 	mk := func(id string, updated time.Time) *memory.Memory {
 		return &memory.Memory{
 			ID: id, Namespace: "ns", Tier: memory.TierSemantic, Content: id,
@@ -32,14 +35,13 @@ func TestPurgeTombstones(t *testing.T) {
 			Embedding: []float32{1, 0, 0, 0},
 		}
 	}
-	for _, m := range []*memory.Memory{mk("rep", now), mk("live", old), mk("gcOld", old), mk("gcRecent", now)} {
+	gcOld := mk("gcOld", now)
+	gcOld.SupersededBy, gcOld.ValidTo = &rep, &old
+	gcRecent := mk("gcRecent", old)
+	gcRecent.SupersededBy, gcRecent.ValidTo = &rep, &now
+	for _, m := range []*memory.Memory{mk("rep", now), mk("live", old), gcOld, gcRecent} {
 		if err := st.Upsert(ctx, m); err != nil {
 			t.Fatalf("upsert %s: %v", m.ID, err)
-		}
-	}
-	for _, id := range []string{"gcOld", "gcRecent"} {
-		if err := st.SetSuperseded(ctx, "ns", id, "rep"); err != nil {
-			t.Fatalf("supersede %s: %v", id, err)
 		}
 	}
 
