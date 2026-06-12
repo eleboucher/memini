@@ -73,6 +73,47 @@ jobs:
           fi
           echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+  clawhub:
+    needs: [release]
+    runs-on: docker
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v6
+      - name: Install Node.js
+        uses: https://data.forgejo.org/actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install ClawHub CLI
+        env:
+          # renovate: datasource=npm depName=clawhub
+          CLAWHUB_VERSION: "0.21.0"
+        run: npm install -g "clawhub@${CLAWHUB_VERSION}"
+      # Publishes the OpenClaw memory-slot plugin as a local-folder code-plugin.
+      # The version is taken from the release tag, so it always matches the tag
+      # regardless of what bump.yml committed.
+      - name: Publish OpenClaw plugin to ClawHub
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+          TAG: ${{ needs.release.outputs.tag }}
+          SOURCE_REPO: eleboucher/memini
+        run: |
+          set -euo pipefail
+          if [ -z "${CLAWHUB_TOKEN:-}" ]; then
+            echo "CLAWHUB_TOKEN secret is empty or missing" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          CONFIG="$(mktemp)"
+          trap 'rm -f "$CONFIG"' EXIT
+          jq -n --arg registry "https://clawhub.ai" --arg token "$CLAWHUB_TOKEN" \
+            '{registry: $registry, token: $token}' > "$CONFIG"
+          export CLAWHUB_CONFIG_PATH="$CONFIG"
+          clawhub package publish ./integrations/openclaw/plugin \
+            --family code-plugin \
+            --version "$VERSION" \
+            --source-repo "$SOURCE_REPO" \
+            --source-commit "$GITHUB_SHA" \
+            --source-ref "$GITHUB_REF" \
+            --json
   container:
     needs: [release]
     runs-on: multiarch
