@@ -59,23 +59,48 @@ function sanitizeNsSegment(s) {
   return String(s).trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
-// agentIdentity pulls a stable per-agent id from an OpenClaw hook event,
-// tolerating the field names different OpenClaw versions use. Returns "" when
-// the event doesn't identify an agent.
-function agentIdentity(event) {
-  if (!event || typeof event !== "object") return "";
-  const candidates = [
-    event.agentId,
-    event.agentName,
-    event.agent?.id,
-    event.agent?.name,
-    event.agent?.slug,
-    event.sessionId,
-    event.session?.id,
-    event.session?.agentId,
+// Session keys look like "agent:<id>:..." (e.g. agent:carol:cron:...);
+// extract the agent segment. Raw session UUIDs are NOT identities — treating
+// them as such fragments memory into per-session namespaces.
+const SESSION_KEY_AGENT = /(?:^|[:/])agent[:/]([^:/]+)/;
+
+function parseAgentFromSessionKey(value) {
+  if (typeof value !== "string") return "";
+  const match = value.match(SESSION_KEY_AGENT);
+  return match ? match[1] : "";
+}
+
+// agentIdentity pulls a stable per-agent id from an OpenClaw hook event and
+// the hook context (the gateway invokes handlers as handler(event, ctx); some
+// events carry no identity fields, but ctx.sessionKey is keyed by agent).
+// Returns "" when neither identifies an agent.
+function agentIdentity(event, ctx) {
+  const direct = [
+    ctx?.agentId,
+    ctx?.agent_id,
+    event?.agentId,
+    event?.agent_id,
+    event?.agentName,
+    event?.agent?.id,
+    event?.agent?.name,
+    event?.agent?.slug,
+    event?.session?.agentId,
+    event?.session?.agent_id,
   ];
-  for (const c of candidates) {
+  for (const c of direct) {
     if (typeof c === "string" && c.trim()) return c.trim();
+  }
+  const keys = [
+    ctx?.sessionKey,
+    ctx?.sessionId,
+    ctx?.runId,
+    event?.sessionKey,
+    event?.sessionId,
+    event?.runId,
+  ];
+  for (const k of keys) {
+    const id = parseAgentFromSessionKey(k);
+    if (id) return id;
   }
   return "";
 }
@@ -83,16 +108,16 @@ function agentIdentity(event) {
 // effectiveNamespace returns the configured namespace, or a per-agent namespace
 // when namespace_per_agent is enabled and the event identifies an agent. The
 // per-agent name comes from namespace_template (default "{agent}"), with
-// {agent} and {namespace} substituted — e.g. "{agent}" -> "miso",
-// "openclaw-{agent}" -> "openclaw-miso". Falls back to the base namespace when
+// {agent} and {namespace} substituted — e.g. "{agent}" -> "alice",
+// "openclaw-{agent}" -> "openclaw-alice". Falls back to the base namespace when
 // no agent id is present, preserving the shared-memory behavior — unless
 // skip_without_agent is set, in which case it returns null so the caller skips
 // the operation entirely (no recall, no write, no fallback namespace). Useful
 // for gateways where unattributable sessions (cron, heartbeat) should not
 // pollute memory.
-export function effectiveNamespace(cfg, event) {
+export function effectiveNamespace(cfg, event, ctx) {
   if (!cfg.namespace_per_agent) return cfg.namespace;
-  const id = sanitizeNsSegment(agentIdentity(event));
+  const id = sanitizeNsSegment(agentIdentity(event, ctx));
   if (!id) return cfg.skip_without_agent ? null : cfg.namespace;
   const tmpl = cfg.namespace_template || DEFAULT_NAMESPACE_TEMPLATE;
   return tmpl.replaceAll("{agent}", id).replaceAll("{namespace}", cfg.namespace);
@@ -236,11 +261,11 @@ const plugin = {
       });
     }
 
-    api.on("before_agent_start", async (event) => {
+    api.on("before_agent_start", async (event, ctx) => {
       if (!cfg.enabled) return;
       const prompt = typeof event?.prompt === "string" ? event.prompt.trim() : "";
       if (!prompt) return;
-      const ns = effectiveNamespace(cfg, event);
+      const ns = effectiveNamespace(cfg, event, ctx);
       if (ns == null) return;
       const result = await client.postJson("/v1/search", { query: prompt, limit: 5 }, ns);
       const block = formatResults(result?.results || []);
@@ -248,12 +273,12 @@ const plugin = {
       return { prependContext: `Relevant long-term memory from memini:\n${block}` };
     });
 
-    api.on("agent_end", async (event) => {
+    api.on("agent_end", async (event, ctx) => {
       if (!cfg.enabled || !event?.success || !Array.isArray(event.messages)) return;
       const userText = lastTextByRole(event.messages, "user");
       const assistantText = lastTextByRole(event.messages, "assistant");
       if (!userText || !assistantText) return;
-      const ns = effectiveNamespace(cfg, event);
+      const ns = effectiveNamespace(cfg, event, ctx);
       if (ns == null) return;
       await client.postJson("/v1/memories", {
         content: `User: ${userText.slice(0, 1000)}\nAssistant: ${assistantText.slice(0, 3000)}`,

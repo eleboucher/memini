@@ -37,6 +37,10 @@
       "label": "Skip Without Agent",
       "help": "Skip recall/write for sessions that carry no agent id, instead of using the shared base namespace"
     },
+    "skip_without_agent": {
+      "label": "Skip Without Agent",
+      "help": "In per-agent mode, skip recall/write when no agent identity resolves (e.g. cron/heartbeat) instead of using the fallback namespace"
+    },
     "fallback_on_error": { "label": "Fallback On Error" },
     "timeout_ms": { "label": "Timeout (ms)" }
   }
