@@ -122,16 +122,20 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 // testable without a cobra command or config. embedder may be nil (dedup is then
 // skipped).
 type fixDeps struct {
-	store    store.Store
-	embedder embed.Embedder
-	dedupSim float64
-	now      time.Time
-	apply    bool
+	store       store.Store
+	embedder    embed.Embedder
+	dedupSim    float64
+	demoteAfter time.Duration
+	now         time.Time
+	apply       bool
 }
 
 // runDoctorFix builds the remediation dependencies from config and runs it.
 func runDoctorFix(cmd *cobra.Command, cfg *config.Config, st store.Store, stats []nsStat) error {
-	d := fixDeps{store: st, dedupSim: cfg.DedupSimilarity, now: time.Now().UTC(), apply: doctorYes}
+	d := fixDeps{
+		store: st, dedupSim: cfg.DedupSimilarity, demoteAfter: cfg.DemoteAfter,
+		now: time.Now().UTC(), apply: doctorYes,
+	}
 	if cfg.EmbedBaseURL != "" {
 		embedder, err := buildEmbedder(cfg, logging.New(cfg.LogLevel, cfg.LogFormat))
 		if err != nil {
@@ -200,7 +204,13 @@ func doctorFix(ctx context.Context, out io.Writer, stats []nsStat, d fixDeps) er
 	}
 	fmt.Fprintf(out, "  purged %d expired memories\n", n) //nolint:errcheck
 
-	n, err = maintenance.DemoteStale(ctx, d.store, d.now.Add(-60*24*time.Hour), d.now)
+	// Honor the configured demotion window; when periodic demotion is disabled
+	// (0), still age out debris in this one-shot remediation with a 60d default.
+	demoteAfter := d.demoteAfter
+	if demoteAfter <= 0 {
+		demoteAfter = 60 * 24 * time.Hour
+	}
+	n, err = maintenance.DemoteStale(ctx, d.store, d.now.Add(-demoteAfter), d.now)
 	if err != nil {
 		return err
 	}
