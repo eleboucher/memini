@@ -38,7 +38,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM scratch AS artifact
 COPY --from=build /out/memini /memini
 
-FROM gcr.io/distroless/static-debian13:nonroot
+FROM gcr.io/distroless/static-debian13:debug-nonroot
 COPY --from=build /out/memini /usr/local/bin/memini
 EXPOSE 8080
 USER 65532:65532
