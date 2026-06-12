@@ -727,9 +727,9 @@ func (s *Service) Forget(ctx context.Context, namespace, id string) error {
 // provenance tag (import:<source>:<date>), this undoes a bulk import in one call.
 func (s *Service) ForgetByTag(ctx context.Context, namespace, tag string) (int64, error) {
 	start := time.Now()
-	defer func() { s.metrics.OpDuration("forget", time.Since(start)) }()
+	defer func() { s.metrics.OpDuration("forget_by_tag", time.Since(start)) }()
 	if strings.TrimSpace(tag) == "" {
-		return 0, fmt.Errorf("forget by tag: tag is required")
+		return 0, invalidInputf("forget by tag: tag is required")
 	}
 	deleted, err := maintenance.ForgetByTag(ctx, s.store, namespace, tag)
 	if err != nil {

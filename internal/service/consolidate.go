@@ -314,12 +314,17 @@ func (s *Service) asyncUpdate(ctx context.Context, m *memory.Memory, dec llm.Dec
 		s.metrics.ConsolidateResult("error")
 		return
 	}
+	now := s.now()
 	target.Content = content
 	if dec.Summary != "" {
 		target.Summary = dec.Summary
 	}
-	target.UpdatedAt = s.now()
+	target.UpdatedAt = now
 	target.Embedding = vec
+	if target.Tier.Term() == memory.LongTerm && target.Confidence != nil {
+		grown := memory.GrowConfidence(target.EffectiveConfidence(now))
+		target.Confidence = &grown
+	}
 	if err := s.store.Upsert(ctx, target); err != nil {
 		slog.WarnContext(ctx, "consolidate: upsert target", "err", err)
 		s.metrics.ConsolidateResult("error")
