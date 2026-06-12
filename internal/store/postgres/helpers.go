@@ -30,11 +30,16 @@ func filterClause(b *args, f store.Filter) string {
 		clause += " AND tier = ANY(" + b.add(tiers) + ")"
 	}
 	if !f.IncludeExpired {
-		now := f.Now
-		if now.IsZero() {
-			now = time.Now()
+		// For a time-travel query, "live" means live at AsOf, not at the current
+		// wall clock — a memory that has since expired was still valid then.
+		ref := f.Now
+		if !f.AsOf.IsZero() {
+			ref = f.AsOf
 		}
-		clause += " AND (expires_at IS NULL OR expires_at > " + b.add(now) + ")"
+		if ref.IsZero() {
+			ref = time.Now()
+		}
+		clause += " AND (expires_at IS NULL OR expires_at > " + b.add(ref) + ")"
 	}
 	if !f.AsOf.IsZero() {
 		// Time-travel: rows whose validity window contained AsOf, regardless of

@@ -93,12 +93,17 @@ func filterClause(f store.Filter, alias string) (string, []any) {
 		b.WriteString(")")
 	}
 	if !f.IncludeExpired {
-		now := f.Now
-		if now.IsZero() {
-			now = time.Now()
+		// For a time-travel query, "live" means live at AsOf, not at the current
+		// wall clock — a memory that has since expired was still valid then.
+		ref := f.Now
+		if !f.AsOf.IsZero() {
+			ref = f.AsOf
+		}
+		if ref.IsZero() {
+			ref = time.Now()
 		}
 		b.WriteString(" AND (" + alias + ".expires_at IS NULL OR " + alias + ".expires_at > ?)")
-		args = append(args, now.UnixMilli())
+		args = append(args, ref.UnixMilli())
 	}
 	if !f.AsOf.IsZero() {
 		// Time-travel: keep rows whose validity window contained AsOf, regardless

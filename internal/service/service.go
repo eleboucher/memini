@@ -375,6 +375,22 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	if id == "" {
 		id = s.newID()
 	}
+	// When updating an existing memory by ID, load it first so a content edit
+	// preserves fields that must not reset: the validity start (for as_of
+	// time-travel) and any earned confidence.
+	var existing *memory.Memory
+	if in.ID != "" {
+		ex, gerr := s.store.Get(ctx, in.Namespace, in.ID)
+		switch {
+		case gerr == nil:
+			existing = ex
+		case errors.Is(gerr, store.ErrNotFound):
+			// a new memory with a caller-chosen ID
+		default:
+			s.metrics.RememberResult("error", string(tier))
+			return nil, fmt.Errorf("remember: load existing: %w", gerr)
+		}
+	}
 	m := &memory.Memory{
 		ID:             id,
 		Namespace:      in.Namespace,
@@ -392,27 +408,23 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	if exp := resolveExpiry(now, tier, in.TTL); exp != nil {
 		m.ExpiresAt = exp
 	}
+	// ValidFrom bounds the lower edge of as_of time-travel: a fresh write is
+	// valid from creation; an update keeps the original start (nil for legacy
+	// rows means "always", left untouched).
+	m.ValidFrom = &now
+	if existing != nil {
+		m.ValidFrom = existing.ValidFrom
+	}
 	// Seed confidence for durable facts so they start uncorroborated and earn
-	// trust as they recur; an explicit caller value (e.g. a trusted import) wins.
-	// Updating an existing memory by ID preserves its earned corroboration
-	// instead of resetting it to the seed.
+	// trust as they recur; an explicit caller value (e.g. a trusted import) wins,
+	// and updating an existing memory keeps its earned corroboration.
 	if tier.Term() == memory.LongTerm {
 		switch {
 		case in.Confidence != nil:
 			c := *in.Confidence
 			m.Confidence = &c
-		case in.ID != "":
-			existing, gerr := s.store.Get(ctx, in.Namespace, in.ID)
-			switch {
-			case gerr == nil:
-				m.Confidence = existing.Confidence
-			case errors.Is(gerr, store.ErrNotFound):
-				c := memory.ConfidenceSeedFresh
-				m.Confidence = &c
-			default:
-				s.metrics.RememberResult("error", string(tier))
-				return nil, fmt.Errorf("remember: load existing for confidence: %w", gerr)
-			}
+		case existing != nil:
+			m.Confidence = existing.Confidence
 		default:
 			c := memory.ConfidenceSeedFresh
 			m.Confidence = &c

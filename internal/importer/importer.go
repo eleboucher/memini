@@ -303,6 +303,7 @@ func (lw *localWriter) toMemory(r Record, opts Options) *memory.Memory {
 		// reinforces them, not live forever.
 		tier = memory.TierEpisodic
 	}
+	validFrom := created
 	m := &memory.Memory{
 		ID:             r.ID,
 		Namespace:      r.Namespace,
@@ -315,6 +316,7 @@ func (lw *localWriter) toMemory(r Record, opts Options) *memory.Memory {
 		CreatedAt:      created,
 		UpdatedAt:      updated,
 		LastAccessedAt: updated,
+		ValidFrom:      &validFrom,
 	}
 	if r.ExpiresAt != nil {
 		m.ExpiresAt = r.ExpiresAt
