@@ -139,6 +139,10 @@ const (
 	// bulk import: lower, so imports must earn trust before outranking facts the
 	// agent actually established.
 	ConfidenceSeedImported = 0.25
+	// ConfidenceDemoteFloor is the corroboration below which an old, never-
+	// recalled durable memory is treated as uncorroborated debris (demotion
+	// eligibility, and the diagnostic's low-confidence count).
+	ConfidenceDemoteFloor  = 0.35
 	confidenceDecayPerWeek = 0.05
 	confidenceFloor        = 0.05
 )

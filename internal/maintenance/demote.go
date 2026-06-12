@@ -18,7 +18,7 @@ const PinnedTag = "pinned"
 // memory is demoted. Memories without tracked confidence (legacy rows, and any
 // short-term memory) report 1.0, so they are always above the floor and never
 // demoted on this account — only uncorroborated, never-recalled facts fall.
-const demoteConfidenceFloor = 0.35
+const demoteConfidenceFloor = memory.ConfidenceDemoteFloor
 
 // longTermTiers are the durable tiers eligible for demotion.
 var longTermTiers = []memory.Tier{memory.TierSemantic, memory.TierProcedural}

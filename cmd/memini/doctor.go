@@ -247,10 +247,6 @@ type nsStat struct {
 	lastWrite     time.Time
 }
 
-// lowConfidenceFloor mirrors the demotion floor: durable memories below it are
-// uncorroborated and at risk of demoting if never recalled.
-const lowConfidenceFloor = 0.35
-
 func namespaceStats(ctx context.Context, st store.Store) ([]nsStat, error) {
 	names, err := st.ListNamespaces(ctx)
 	if err != nil {
@@ -271,7 +267,7 @@ func namespaceStats(ctx context.Context, st store.Store) ([]nsStat, error) {
 				s.superseded++
 			}
 			if m.Tier.Term() == memory.LongTerm && m.Confidence != nil &&
-				m.EffectiveConfidence(now) < lowConfidenceFloor {
+				m.EffectiveConfidence(now) < memory.ConfidenceDemoteFloor {
 				s.lowConfidence++
 			}
 			if m.UpdatedAt.After(s.lastWrite) {
