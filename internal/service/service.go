@@ -394,12 +394,29 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	}
 	// Seed confidence for durable facts so they start uncorroborated and earn
 	// trust as they recur; an explicit caller value (e.g. a trusted import) wins.
+	// Updating an existing memory by ID preserves its earned corroboration
+	// instead of resetting it to the seed.
 	if tier.Term() == memory.LongTerm {
-		c := memory.ConfidenceSeedFresh
-		if in.Confidence != nil {
-			c = *in.Confidence
+		switch {
+		case in.Confidence != nil:
+			c := *in.Confidence
+			m.Confidence = &c
+		case in.ID != "":
+			existing, gerr := s.store.Get(ctx, in.Namespace, in.ID)
+			switch {
+			case gerr == nil:
+				m.Confidence = existing.Confidence
+			case errors.Is(gerr, store.ErrNotFound):
+				c := memory.ConfidenceSeedFresh
+				m.Confidence = &c
+			default:
+				s.metrics.RememberResult("error", string(tier))
+				return nil, fmt.Errorf("remember: load existing for confidence: %w", gerr)
+			}
+		default:
+			c := memory.ConfidenceSeedFresh
+			m.Confidence = &c
 		}
-		m.Confidence = &c
 	}
 
 	// Opt-in consolidation: on fresh writes to durable tiers, let the LLM dedup
