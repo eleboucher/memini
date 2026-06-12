@@ -449,7 +449,7 @@ func (s *Service) dedupExisting(ctx context.Context, m *memory.Memory) *memory.M
 		return nil
 	}
 	existing := cands[0].Memory
-	s.reinforce(ctx, m.Namespace, []store.Scored{{Memory: existing}})
+	s.reinforce(ctx, []store.Scored{{Memory: existing}})
 	return existing
 }
 
@@ -466,6 +466,11 @@ type RecallInput struct {
 	// validity window contained AsOf (including ones since superseded), instead
 	// of only currently-live memories.
 	AsOf time.Time
+	// Subtree expands recall to Namespace and every namespace nested under it
+	// ("project" also reads "project/agent-a", "project/agent-b", ...), for the
+	// multi-agent "read shared + private" pattern. Default (false) is exact scope,
+	// so cross-agent recall never happens unless asked for.
+	Subtree bool
 }
 
 // Recall runs hybrid (vector + keyword) retrieval fused with RRF.
@@ -501,20 +506,37 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		return nil, fmt.Errorf("recall: embed: %w", err)
 	}
 
+	// Resolve the namespaces to search: just in.Namespace by default, or it plus
+	// everything nested under it for a subtree recall.
+	namespaces := []string{in.Namespace}
+	if in.Subtree {
+		namespaces, err = s.subtreeNamespaces(ctx, in.Namespace)
+		if err != nil {
+			s.metrics.RecallResult("error", tf, "0")
+			return nil, fmt.Errorf("recall: resolve subtree: %w", err)
+		}
+	}
+
 	// Over-fetch a deep candidate pool from each strategy: a memory ranked just
 	// outside the top k in both legs is invisible at pool depth k, yet RRF would
 	// rank it above single-leg hits. Fusion, re-rank, and dedup then cut the
-	// pool back down to k.
+	// pool back down to k. For a subtree, each namespace contributes its pool and
+	// fusion ranks across the merged set.
 	poolK := max(k*s.poolFactor, s.poolFloor)
-	vres, err := s.store.VectorSearch(ctx, in.Namespace, vec, filter, poolK)
-	if err != nil {
-		s.metrics.RecallResult("error", tf, "0")
-		return nil, fmt.Errorf("recall: vector search: %w", err)
-	}
-	kres, err := s.store.KeywordSearch(ctx, in.Namespace, in.Query, filter, poolK)
-	if err != nil {
-		s.metrics.RecallResult("error", tf, "0")
-		return nil, fmt.Errorf("recall: keyword search: %w", err)
+	var vres, kres []store.Scored
+	for _, ns := range namespaces {
+		v, verr := s.store.VectorSearch(ctx, ns, vec, filter, poolK)
+		if verr != nil {
+			s.metrics.RecallResult("error", tf, "0")
+			return nil, fmt.Errorf("recall: vector search: %w", verr)
+		}
+		kw, kerr := s.store.KeywordSearch(ctx, ns, in.Query, filter, poolK)
+		if kerr != nil {
+			s.metrics.RecallResult("error", tf, "0")
+			return nil, fmt.Errorf("recall: keyword search: %w", kerr)
+		}
+		vres = append(vres, v...)
+		kres = append(kres, kw...)
 	}
 	// Fuse (no truncation), re-rank by composite relevance/recency/importance,
 	// drop near-duplicates, then cap at k.
@@ -533,9 +555,26 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		ranked = search.Rerank(fused, s.now())
 	}
 	results := s.finalizeRecall(ctx, in.Query, ranked, k)
-	s.reinforceResults(ctx, in.Namespace, results)
+	s.reinforceResults(ctx, results)
 	s.metrics.RecallResult("ok", tf, hitsBucket(len(results)))
 	return results, nil
+}
+
+// subtreeNamespaces returns root and every namespace nested under it (root +
+// "root/..."), the set a subtree recall searches.
+func (s *Service) subtreeNamespaces(ctx context.Context, root string) ([]string, error) {
+	all, err := s.store.ListNamespaces(ctx)
+	if err != nil {
+		return nil, err
+	}
+	prefix := root + "/"
+	out := []string{root}
+	for _, ns := range all {
+		if ns != root && strings.HasPrefix(ns, prefix) {
+			out = append(out, ns)
+		}
+	}
+	return out, nil
 }
 
 // finalizeRecall dedups the composite-ranked candidates to the result set. With
@@ -581,9 +620,9 @@ func (s *Service) finalizeRecall(ctx context.Context, query string, ranked []sto
 // reinforceResults records that recalled memories were used. By default it runs
 // in the background so recall latency excludes the reinforcement writes; tests
 // can force synchronous behaviour with WithSyncReinforce.
-func (s *Service) reinforceResults(ctx context.Context, namespace string, results []store.Scored) {
+func (s *Service) reinforceResults(ctx context.Context, results []store.Scored) {
 	if s.syncReinforce {
-		s.reinforce(ctx, namespace, results)
+		s.reinforce(ctx, results)
 		return
 	}
 	// Detach from the request lifetime but keep its values; bound the work.
@@ -591,32 +630,39 @@ func (s *Service) reinforceResults(ctx context.Context, namespace string, result
 	s.bg.Go(func() {
 		rctx, cancel := context.WithTimeout(bg, reinforceTimeout)
 		defer cancel()
-		s.reinforce(rctx, namespace, results)
+		s.reinforce(rctx, results)
 	})
 }
 
 // reinforce records that recalled memories were just used: it bumps their
 // access stats and slides the TTL forward for short-term tiers, so frequently
 // recalled memories don't decay. Best-effort — a failure never fails the recall.
-func (s *Service) reinforce(ctx context.Context, namespace string, results []store.Scored) {
+func (s *Service) reinforce(ctx context.Context, results []store.Scored) {
 	now := s.now()
-	byTier := map[memory.Tier][]string{}
-	for _, r := range results {
-		byTier[r.Memory.Tier] = append(byTier[r.Memory.Tier], r.Memory.ID)
+	// Group by (namespace, tier): results may span namespaces under a subtree
+	// recall, and Reinforce is scoped to one namespace at a time.
+	type key struct {
+		ns   string
+		tier memory.Tier
 	}
-	for tier, ids := range byTier {
-		ttl := tier.DefaultTTL()
+	byKey := map[key][]string{}
+	for _, r := range results {
+		k := key{r.Memory.Namespace, r.Memory.Tier}
+		byKey[k] = append(byKey[k], r.Memory.ID)
+	}
+	for k, ids := range byKey {
+		ttl := k.tier.DefaultTTL()
 		var newExpiry *time.Time
 		if ttl > 0 { // short-term tiers slide their expiry forward on use
 			t := now.Add(ttl)
 			newExpiry = &t
 		}
-		if err := s.store.Reinforce(ctx, namespace, ids, now, newExpiry); err != nil {
+		if err := s.store.Reinforce(ctx, k.ns, ids, now, newExpiry); err != nil {
 			// Persistent failures here mean TTLs stop sliding and promotion
 			// never fires, so make them observable even though the recall
 			// itself must not fail.
 			slog.WarnContext(ctx, "recall: reinforce failed",
-				"namespace", namespace, "tier", tier, "count", len(ids), "err", err)
+				"namespace", k.ns, "tier", k.tier, "count", len(ids), "err", err)
 			s.metrics.ReinforceResult("error")
 			continue
 		}

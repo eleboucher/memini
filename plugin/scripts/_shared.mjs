@@ -43,6 +43,21 @@ export function repoNameFromRemote(url) {
  * stable, canonical name.
  */
 export function resolveProject(cwd) {
+  return withAgent(resolveProjectBase(cwd));
+}
+
+// withAgent nests the project namespace under a per-agent segment when
+// MEMINI_AGENT is set ("myproject" -> "myproject/reviewer"), so several agents
+// sharing a repo keep private memory. Recall with scope=subtree on the project
+// reads across all of them. Unset (the default) leaves the namespace untouched.
+function withAgent(ns) {
+  const agent = (process.env["MEMINI_AGENT"] || "").trim();
+  if (!agent) return ns;
+  const seg = agent.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return seg ? `${ns}/${seg}` : ns;
+}
+
+function resolveProjectBase(cwd) {
   const nsEnv = process.env["MEMINI_NAMESPACE"];
   if (nsEnv && nsEnv.trim()) return nsEnv.trim();
   const dir = cwd && cwd.trim() ? cwd : process.cwd();

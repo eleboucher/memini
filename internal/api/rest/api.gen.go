@@ -18,6 +18,24 @@ const (
 	BearerAuthScopes bearerAuthContextKey = "bearerAuth.Scopes"
 )
 
+// Defines values for SearchRequestScope.
+const (
+	Exact   SearchRequestScope = "exact"
+	Subtree SearchRequestScope = "subtree"
+)
+
+// Valid indicates whether the value is a known member of the SearchRequestScope enum.
+func (e SearchRequestScope) Valid() bool {
+	switch e {
+	case Exact:
+		return true
+	case Subtree:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Tier.
 const (
 	Episodic   Tier = "episodic"
@@ -193,8 +211,14 @@ type SearchRequest struct {
 	IncludeSuperseded *bool      `json:"include_superseded,omitempty"`
 	Limit             *int       `json:"limit,omitempty"`
 	Query             string     `json:"query"`
-	Tiers             *[]Tier    `json:"tiers,omitempty"`
+
+	// Scope exact (default) searches only the request namespace; subtree also searches namespaces nested under it ("project" reads "project/agent"), for the multi-agent read-shared-plus-private pattern.
+	Scope *SearchRequestScope `json:"scope,omitempty"`
+	Tiers *[]Tier             `json:"tiers,omitempty"`
 }
+
+// SearchRequestScope exact (default) searches only the request namespace; subtree also searches namespaces nested under it ("project" reads "project/agent"), for the multi-agent read-shared-plus-private pattern.
+type SearchRequestScope string
 
 // SearchResponse defines model for SearchResponse.
 type SearchResponse struct {

@@ -279,6 +279,9 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 	if req.AsOf != nil {
 		in.AsOf = req.AsOf.UTC()
 	}
+	if req.Scope != nil && *req.Scope == Subtree {
+		in.Subtree = true
+	}
 
 	res, err := h.svc.Recall(r.Context(), in)
 	if err != nil {

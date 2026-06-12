@@ -347,6 +347,14 @@ components:
         limit: { type: integer, default: 10 }
         include_expired: { type: boolean, default: false }
         include_superseded: { type: boolean, default: false }
+        scope:
+          type: string
+          enum: [exact, subtree]
+          default: exact
+          description: >
+            exact (default) searches only the request namespace; subtree also
+            searches namespaces nested under it ("project" reads "project/agent"),
+            for the multi-agent read-shared-plus-private pattern.
         as_of:
           type: string
           format: date-time
