@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -18,12 +19,19 @@ const NamespaceFromGitRemote NamespaceSource = "git-remote"
 //  3. basename of `git rev-parse --show-toplevel`
 //  4. basename of dir
 //
-// It differs from resolveDefaultNamespace (the server's header-less fallback)
-// only in step 2: the server skips the git-remote step. `memini doctor` uses
-// both to flag the divergence that lands writes where recall doesn't look. The
-// server's resolution is intentionally left unchanged so existing stores keyed
-// by the worktree basename are not silently relocated.
+// then nested under a per-agent segment when MEMINI_AGENT is set (step 5,
+// mirroring _shared.mjs withAgent). It differs from resolveDefaultNamespace (the
+// server's header-less fallback) in step 2 (the server skips the git-remote
+// step) and step 5; `memini doctor` uses both to flag the divergence that lands
+// writes where recall doesn't look. The server's resolution is intentionally
+// left unchanged so existing stores keyed by the worktree basename are not
+// silently relocated.
 func ResolvePluginNamespace(dir string) (string, NamespaceSource) {
+	ns, src := resolvePluginBase(dir)
+	return withAgentSegment(ns), src
+}
+
+func resolvePluginBase(dir string) (string, NamespaceSource) {
 	if v := firstNonEmpty(
 		os.Getenv("MEMINI_NAMESPACE"),
 		os.Getenv("MEMINI_DEFAULT_NAMESPACE"),
@@ -38,6 +46,27 @@ func ResolvePluginNamespace(dir string) (string, NamespaceSource) {
 		dir = cwd
 	}
 	return ResolveDirNamespace(dir)
+}
+
+var (
+	agentSegInvalid = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+	agentSegTrim    = regexp.MustCompile(`^-+|-+$`)
+)
+
+// withAgentSegment mirrors the plugin's withAgent (_shared.mjs): when
+// MEMINI_AGENT is set, nest the namespace under a sanitized per-agent segment
+// ("project" -> "project/reviewer"), so doctor reports the namespace the plugin
+// actually writes to. Unset (the default) leaves the namespace untouched.
+func withAgentSegment(ns string) string {
+	agent := strings.TrimSpace(os.Getenv("MEMINI_AGENT"))
+	if agent == "" {
+		return ns
+	}
+	seg := agentSegTrim.ReplaceAllString(agentSegInvalid.ReplaceAllString(agent, "-"), "")
+	if seg == "" {
+		return ns
+	}
+	return ns + "/" + seg
 }
 
 // ResolveDirNamespace resolves a directory's namespace from git, ignoring any
