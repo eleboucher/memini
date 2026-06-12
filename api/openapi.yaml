@@ -338,6 +338,14 @@ components:
         id:
           type: string
           description: Upserts an existing memory when provided.
+        confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: >
+            Seed corroboration for a durable fact (e.g. a trusted import). Omit
+            to use the default seed; ignored for short-term tiers.
     SearchRequest:
       type: object
       required: [query]
@@ -548,3 +556,8 @@ components:
         access_count: { type: integer }
         expires_at: { type: string, format: date-time, nullable: true }
         superseded_by: { type: string, nullable: true }
+        confidence:
+          type: number
+          format: double
+          nullable: true
+          description: Corroboration of a durable fact in [0,1]; null when not tracked.

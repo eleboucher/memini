@@ -160,7 +160,10 @@ type ListResponse struct {
 
 // Memory defines model for Memory.
 type Memory struct {
-	AccessCount    int                     `json:"access_count"`
+	AccessCount int `json:"access_count"`
+
+	// Confidence Corroboration of a durable fact in [0,1]; null when not tracked.
+	Confidence     *float64                `json:"confidence,omitempty"`
 	Content        string                  `json:"content"`
 	CreatedAt      time.Time               `json:"created_at"`
 	ExpiresAt      *time.Time              `json:"expires_at,omitempty"`
@@ -183,7 +186,9 @@ type NamespacesResponse struct {
 
 // RememberRequest defines model for RememberRequest.
 type RememberRequest struct {
-	Content string `json:"content"`
+	// Confidence Seed corroboration for a durable fact (e.g. a trusted import). Omit to use the default seed; ignored for short-term tiers.
+	Confidence *float64 `json:"confidence,omitempty"`
+	Content    string   `json:"content"`
 
 	// Id Upserts an existing memory when provided.
 	Id         *string                 `json:"id,omitempty"`

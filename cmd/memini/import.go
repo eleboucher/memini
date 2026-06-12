@@ -24,6 +24,7 @@ var (
 	importMergeInto string
 	importYes       bool
 	importImp       float64
+	importConf      float64
 	importDryRun    bool
 	importNoDedup   bool
 	importDedupSim  float64
@@ -54,6 +55,8 @@ func init() {
 		"skip the confirmation prompt when --merge-into collapses multiple source namespaces")
 	importCmd.Flags().Float64Var(&importImp, "importance", 0.25,
 		"importance assigned to records whose source carried none, so bulk imports rank below curated memories (0 = leave at 0)")
+	importCmd.Flags().Float64Var(&importConf, "confidence", -1,
+		"seed confidence for durable imported facts (0..1); <0 uses the default low import seed so they earn trust on recall")
 	importCmd.Flags().BoolVar(&importDryRun, "dry-run", false,
 		"parse and report where records would land without writing anything")
 	importCmd.Flags().BoolVar(&importNoDedup, "no-dedup", false,
@@ -140,11 +143,16 @@ func runImport(cmd *cobra.Command, args []string) error {
 	}
 	defer closeFn()
 
+	var importConfidence *float64
+	if importConf >= 0 {
+		importConfidence = &importConf
+	}
 	rep, err := im.Import(cmd.Context(), recs, importer.Options{
 		DefaultNamespace:  importNamespace,
 		ForceNamespace:    importMergeInto,
 		Source:            importer.Source(importSource),
 		DefaultImportance: importImp,
+		Confidence:        importConfidence,
 		SkipExisting:      true,
 		DryRun:            importDryRun,
 		BatchSize:         importBatch,

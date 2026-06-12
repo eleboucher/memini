@@ -16,6 +16,7 @@ import (
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/logging"
 	"github.com/eleboucher/memini/internal/maintenance"
+	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/store"
 )
 
@@ -220,18 +221,24 @@ func note(out io.Writer, s string) {
 
 // nsStat is the per-namespace summary doctor reports.
 type nsStat struct {
-	namespace  string
-	total      int
-	byTier     map[string]int
-	superseded int
-	lastWrite  time.Time
+	namespace     string
+	total         int
+	byTier        map[string]int
+	superseded    int
+	lowConfidence int // durable memories whose corroboration is below the demote floor
+	lastWrite     time.Time
 }
+
+// lowConfidenceFloor mirrors the demotion floor: durable memories below it are
+// uncorroborated and at risk of demoting if never recalled.
+const lowConfidenceFloor = 0.35
 
 func namespaceStats(ctx context.Context, st store.Store) ([]nsStat, error) {
 	names, err := st.ListNamespaces(ctx)
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now().UTC()
 	sort.Strings(names)
 	out := make([]nsStat, 0, len(names))
 	for _, ns := range names {
@@ -245,6 +252,10 @@ func namespaceStats(ctx context.Context, st store.Store) ([]nsStat, error) {
 			if m.SupersededBy != nil {
 				s.superseded++
 			}
+			if m.Tier.Term() == memory.LongTerm && m.Confidence != nil &&
+				m.EffectiveConfidence(now) < lowConfidenceFloor {
+				s.lowConfidence++
+			}
 			if m.UpdatedAt.After(s.lastWrite) {
 				s.lastWrite = m.UpdatedAt
 			}
@@ -257,14 +268,14 @@ func namespaceStats(ctx context.Context, st store.Store) ([]nsStat, error) {
 func printStoreStats(out io.Writer, stats []nsStat, pluginNS string) int {
 	var warnings int
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "  NAMESPACE\tTOTAL\tBY TIER\tLAST WRITE\tSUPERSEDED") //nolint:errcheck
+	fmt.Fprintln(tw, "  NAMESPACE\tTOTAL\tBY TIER\tLAST WRITE\tSUPERSEDED\tLOW-CONF") //nolint:errcheck
 	var biggest nsStat
 	for _, s := range stats {
 		if s.total > biggest.total {
 			biggest = s
 		}
-		fmt.Fprintf(tw, "  %s\t%d\t%s\t%s\t%d\n", //nolint:errcheck
-			s.namespace, s.total, tierBreakdown(s.byTier), lastWriteStr(s.lastWrite), s.superseded)
+		fmt.Fprintf(tw, "  %s\t%d\t%s\t%s\t%d\t%d\n", //nolint:errcheck
+			s.namespace, s.total, tierBreakdown(s.byTier), lastWriteStr(s.lastWrite), s.superseded, s.lowConfidence)
 	}
 	_ = tw.Flush()
 

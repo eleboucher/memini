@@ -50,6 +50,9 @@ type Options struct {
 	// (reported as 0), so bulk imports rank below curated, source-scored
 	// memories. 0 disables the floor.
 	DefaultImportance float64
+	// Confidence overrides the seed corroboration for durable imported facts
+	// (e.g. a trusted re-import). nil uses the low default import seed.
+	Confidence *float64
 	// SkipExisting checks the store for a record's ID before writing and counts
 	// it as a duplicate instead of clobbering an existing memory's access
 	// counters. Combined with deterministic IDs this makes re-imports idempotent.
@@ -270,7 +273,7 @@ func (lw *localWriter) write(ctx context.Context, recs []Record, opts Options) (
 		return res, fmt.Errorf("import: embed: %w", err)
 	}
 	for i, r := range pending {
-		m := lw.toMemory(r)
+		m := lw.toMemory(r, opts)
 		m.Embedding = vecs[i]
 		if err := lw.store.Upsert(ctx, m); err != nil {
 			res.errs = append(res.errs, fmt.Sprintf("%s: %v", m.ID, err))
@@ -283,7 +286,7 @@ func (lw *localWriter) write(ctx context.Context, recs []Record, opts Options) (
 
 // toMemory maps a finalized Record (namespace, ID, importance already resolved
 // by finalizeRecords) to a stored memory, applying tier and timestamp defaults.
-func (lw *localWriter) toMemory(r Record) *memory.Memory {
+func (lw *localWriter) toMemory(r Record, opts Options) *memory.Memory {
 	now := lw.now().UTC()
 	created := r.CreatedAt
 	if created.IsZero() {
@@ -321,9 +324,12 @@ func (lw *localWriter) toMemory(r Record) *memory.Memory {
 	}
 	// Durable imports start uncorroborated: a bulk-imported "fact" must earn
 	// trust through recall/re-observation before it outranks facts the agent
-	// established itself.
+	// established itself. A caller-supplied value (a trusted import) overrides.
 	if tier.Term() == memory.LongTerm {
 		c := memory.ConfidenceSeedImported
+		if opts.Confidence != nil {
+			c = *opts.Confidence
+		}
 		m.Confidence = &c
 	}
 	return m

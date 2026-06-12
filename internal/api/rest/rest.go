@@ -182,6 +182,9 @@ func (h *Server) RememberMemory(w http.ResponseWriter, r *http.Request, _ Rememb
 		d := time.Duration(*req.TtlSeconds) * time.Second
 		in.TTL = &d
 	}
+	if req.Confidence != nil {
+		in.Confidence = req.Confidence
+	}
 
 	m, err := h.svc.Remember(r.Context(), in)
 	if err != nil {
@@ -474,6 +477,7 @@ func apiMemory(m *memory.Memory) Memory {
 		AccessCount:    m.AccessCount,
 		ExpiresAt:      m.ExpiresAt,
 		SupersededBy:   m.SupersededBy,
+		Confidence:     m.Confidence,
 	}
 	if m.Summary != "" {
 		out.Summary = &m.Summary
