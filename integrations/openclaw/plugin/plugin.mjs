@@ -212,6 +212,19 @@ const plugin = {
     const cfg = resolveConfig(api.pluginConfig);
     const client = createClient(cfg, api);
 
+    // Per-agent isolation is the default as of memini 0.0.11 (it was off before).
+    // Warn installs that never set it: their pre-0.0.11 memory lives in the shared
+    // base namespace and will not be recalled under the new per-agent namespaces
+    // until migrated (`memini namespace split --from <base>`), or isolation is
+    // turned off again with namespace_per_agent:false.
+    if (api.pluginConfig?.namespace_per_agent === undefined && cfg.namespace_per_agent) {
+      console.error(
+        `[memini] per-agent namespaces are now on by default (template "${cfg.namespace_template}"); ` +
+          `existing memory under "${cfg.namespace}" needs \`memini namespace split --from ${cfg.namespace}\` ` +
+          `to migrate, or set namespace_per_agent:false to keep the shared pool.`,
+      );
+    }
+
     if (typeof api.registerMemoryCapability === "function") {
       api.registerMemoryCapability({
         promptBuilder: () => [
