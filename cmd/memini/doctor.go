@@ -58,7 +58,7 @@ var doctorCmd = &cobra.Command{
 
 func init() {
 	doctorCmd.Flags().BoolVar(&doctorFixFlag, "fix", false,
-		"after diagnosing, remediate: split unambiguously-attributable pools, purge expired, demote stale durable debris, dedup")
+		"after diagnosing, remediate: split attributable pools, backfill legacy confidence, purge expired, demote stale durable debris, dedup")
 	doctorCmd.Flags().BoolVar(&doctorYes, "yes", false,
 		"apply --fix changes (without it, --fix only previews)")
 	rootCmd.AddCommand(doctorCmd)
@@ -182,9 +182,17 @@ func doctorFix(ctx context.Context, out io.Writer, stats []nsStat, d fixDeps) er
 	}
 
 	if !d.apply {
-		fmt.Fprintln(out, "  (purge/demote/dedup run on --yes)") //nolint:errcheck
+		fmt.Fprintln(out, "  (backfill/purge/demote/dedup run on --yes)") //nolint:errcheck
 		return nil
 	}
+
+	// Backfill pre-0.0.11 durable memories so the demote sweep below sees them.
+	back, err := maintenance.BackfillConfidence(ctx, d.store, d.now)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "  backfilled %d legacy durable memories (seeded %.2f)\n", //nolint:errcheck
+		back.Seeded, memory.ConfidenceSeedImported)
 
 	n, err := maintenance.PurgeExpired(ctx, d.store, d.now)
 	if err != nil {

@@ -115,3 +115,32 @@ func TestDoctorFixSkipsUnattributablePool(t *testing.T) {
 		t.Errorf("expected a skip-split line, got: %s", out.String())
 	}
 }
+
+// TestDoctorFixBackfillsLegacyConfidence: the fix chain seeds nil confidence on
+// durable memories written before 0.0.11, so they enter the demote lifecycle.
+func TestDoctorFixBackfillsLegacyConfidence(t *testing.T) {
+	st := openTestStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	m := &memory.Memory{
+		ID: "legacy", Namespace: "nsDefault", Tier: memory.TierSemantic, Content: "x",
+		CreatedAt: now, UpdatedAt: now, LastAccessedAt: now,
+		Embedding: []float32{1, 0, 0, 0},
+	}
+	if err := st.Upsert(context.Background(), m); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	var out bytes.Buffer
+	if err := doctorFix(context.Background(), &out, statsFor(t, st), fixDeps{store: st, now: now, apply: true}); err != nil {
+		t.Fatalf("doctorFix: %v", err)
+	}
+	got, err := st.Get(context.Background(), "nsDefault", "legacy")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Confidence == nil || *got.Confidence != memory.ConfidenceSeedImported {
+		t.Errorf("legacy durable memory should be backfilled, got confidence=%v", got.Confidence)
+	}
+	if !strings.Contains(out.String(), "backfilled") {
+		t.Errorf("expected a backfilled line, got: %s", out.String())
+	}
+}

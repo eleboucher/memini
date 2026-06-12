@@ -17,4 +17,6 @@ If it reports warnings, explain them plainly and point the user at the suggested
 fix (`memini namespace split` for a collapsed pool, or setting
 `MEMINI_DEFAULT_NAMESPACE` for a resolution mismatch). To let memini remediate a
 poisoned store itself, run `memini doctor --fix` (preview) and then
-`memini doctor --fix --yes` to apply.
+`memini doctor --fix --yes` to apply. The fix chain also backfills nil
+confidence on legacy (pre-0.0.11) durable memories, so they enter the demote
+lifecycle instead of staying permanently trusted.
