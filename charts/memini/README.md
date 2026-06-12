@@ -30,8 +30,11 @@ helm install memini ./charts/memini \
 | auth.apiKeySecret | object | `{"key":"api-key","name":""}` | Existing secret holding the token (used when auth.apiKey is empty). |
 | autoscaling | object | `{"enabled":false,"maxReplicas":10,"minReplicas":2,"targetCPUUtilizationPercentage":80}` | Horizontal Pod Autoscaler (postgres backend only) |
 | backend | string | `"sqlite"` | Storage backend: "sqlite" (embedded, single replica + PVC) or "postgres" (scale-out) |
-| config | object | `{"defaultNamespace":"default","logFormat":"json","logLevel":"info","namespaceHeader":"X-Memini-Namespace","sweepInterval":"1h"}` | Service-level (non-secret) configuration, mapped to MEMINI_* env vars |
+| config | object | `{"defaultNamespace":"default","demoteAfter":"","logFormat":"json","logLevel":"info","namespaceHeader":"X-Memini-Namespace","sweepInterval":"1h","tombstoneTTL":"","writeDedupMinScore":""}` | Service-level (non-secret) configuration, mapped to MEMINI_* env vars |
+| config.demoteAfter | string | `""` | Demote never-recalled, low-importance, uncorroborated durable memories older than this (Go duration) down to episodic, so unused bulk-import debris ages out while facts the agent uses are kept. Empty uses the binary default (0 = disabled). e.g. 1440h (60d). |
 | config.sweepInterval | string | `"1h"` | Decay sweeper interval (Go duration) |
+| config.tombstoneTTL | string | `""` | Hard-delete superseded (deduped/contradicted) memories last updated before now-TTL (Go duration), reclaiming space. Empty uses the binary default (0 = disabled; tombstones are kept but already excluded from recall). e.g. 720h (30d). |
+| config.writeDedupMinScore | string | `""` | Coalesce a fresh write into an existing same-tier memory at or above this vector similarity instead of storing a near-duplicate (headless corpus hygiene, applied when the LLM consolidation pipeline isn't handling the write). Empty uses the binary default (0 = disabled); ~0.95 collapses near-identical restatements only. |
 | embeddings | object | `{"apiKeySecret":{"key":"api-key","name":""},"baseURL":"","dims":1536,"maxBatch":"","maxBatchChars":"","maxItemChars":"","model":"text-embedding-3-small"}` | External OpenAI-compatible embeddings endpoint (required for vector search) |
 | embeddings.apiKeySecret | object | `{"key":"api-key","name":""}` | Optional existing secret holding the embeddings API key |
 | embeddings.dims | int | `1536` | Embedding dimensionality; MUST match the deployed model |

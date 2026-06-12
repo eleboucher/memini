@@ -80,6 +80,12 @@
           "title": "defaultNamespace",
           "type": "string"
         },
+        "demoteAfter": {
+          "default": "",
+          "description": "Demote never-recalled, low-importance, uncorroborated durable memories\nolder than this (Go duration) down to episodic, so unused bulk-import debris\nages out while facts the agent uses are kept. Empty uses the binary default\n(0 = disabled). e.g. 1440h (60d).",
+          "title": "demoteAfter",
+          "type": "string"
+        },
         "logFormat": {
           "default": "json",
           "title": "logFormat",
@@ -100,6 +106,22 @@
           "description": "Decay sweeper interval (Go duration)",
           "title": "sweepInterval",
           "type": "string"
+        },
+        "tombstoneTTL": {
+          "default": "",
+          "description": "Hard-delete superseded (deduped/contradicted) memories last updated before\nnow-TTL (Go duration), reclaiming space. Empty uses the binary default\n(0 = disabled; tombstones are kept but already excluded from recall).\ne.g. 720h (30d).",
+          "title": "tombstoneTTL",
+          "type": "string"
+        },
+        "writeDedupMinScore": {
+          "default": "",
+          "description": "Coalesce a fresh write into an existing same-tier memory at or above this\nvector similarity instead of storing a near-duplicate (headless corpus\nhygiene, applied when the LLM consolidation pipeline isn't handling the\nwrite). Empty uses the binary default (0 = disabled); ~0.95 collapses\nnear-identical restatements only.",
+          "required": [],
+          "title": "writeDedupMinScore",
+          "type": [
+            "string",
+            "number"
+          ]
         }
       },
       "required": [],

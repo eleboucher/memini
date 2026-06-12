@@ -61,6 +61,18 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   value: {{ .Values.config.namespaceHeader | quote }}
 - name: MEMINI_SWEEP_INTERVAL
   value: {{ .Values.config.sweepInterval | quote }}
+{{- if ne (toString .Values.config.demoteAfter) "" }}
+- name: MEMINI_DEMOTE_AFTER
+  value: {{ .Values.config.demoteAfter | quote }}
+{{- end }}
+{{- if ne (toString .Values.config.tombstoneTTL) "" }}
+- name: MEMINI_TOMBSTONE_TTL
+  value: {{ .Values.config.tombstoneTTL | quote }}
+{{- end }}
+{{- if ne (toString .Values.config.writeDedupMinScore) "" }}
+- name: MEMINI_WRITE_DEDUP_MIN_SCORE
+  value: {{ .Values.config.writeDedupMinScore | quote }}
+{{- end }}
 - name: MEMINI_EMBED_BASE_URL
   value: {{ .Values.embeddings.baseURL | quote }}
 - name: MEMINI_EMBED_MODEL
