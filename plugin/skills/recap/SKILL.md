@@ -36,5 +36,9 @@ Group the response into:
 Don't include working-tier memories in a recap — those are transient by
 design.
 
+When you attribute a decision or fact to memory, quote the stored content
+verbatim rather than paraphrasing it into something firmer than it says.
+
 If the result set is empty, say so. Don't fabricate a recap from general
-knowledge of the codebase.
+knowledge of the codebase. If memini is unreachable, report that and
+suggest `memini doctor` rather than guessing.

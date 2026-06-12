@@ -10,5 +10,6 @@
   "homepage": "https://github.com/eleboucher/memini",
   "repository": "https://github.com/eleboucher/memini",
   "keywords": ["memory", "agent", "claude-code"],
-  "skills": "./skills/"
+  "skills": "./skills/",
+  "commands": "./commands/"
 }

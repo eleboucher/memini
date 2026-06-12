@@ -43,5 +43,17 @@ descriptive query ("JWT auth setup") over a single keyword.
 
 Read the returned `results[].memory.content`. Don't dump the raw list to
 the user — synthesize: "I remember we chose X because Y, and last time we
-hit Z." If multiple results contradict, surface the conflict and ask the
-user to resolve.
+hit Z." When you state a fact that came from memory, quote the stored
+content verbatim rather than paraphrasing it into something it didn't say;
+if a memory is ambiguous, say so instead of guessing.
+
+## Unhappy paths
+
+- **No results**: say memini has nothing on this and proceed from first
+  principles — never invent a "remembered" fact to fill the gap.
+- **Conflicting results**: prefer the most recent (a newer memory may
+  supersede an older one), but surface the conflict and let the user
+  resolve it.
+- **Tool errors / server unreachable**: report that memini is unavailable
+  and suggest running `memini doctor`; continue without memory rather than
+  blocking.
