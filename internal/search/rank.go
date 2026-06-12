@@ -10,26 +10,23 @@ import (
 )
 
 // RerankWeights weights the composite ranking signals. Relevance (query
-// similarity) dominates; recency, importance and usage are secondary
-// tie-breakers so a fresh, explicitly-important, or repeatedly-recalled memory
-// can edge a marginally-more-similar one. Weights need not sum to 1 — only the
-// relative ordering of the composite matters.
+// similarity) dominates; the rest are secondary. Quality folds salience
+// (tier+importance), corroboration (confidence), reinforcement (access) and
+// recency into one number (Memory.Quality), and is the production secondary
+// signal; Recency/Importance/Usage are retained as separable terms for the
+// tuning bench. Weights need not sum to 1 — only relative ordering matters.
 type RerankWeights struct {
-	Relevance, Recency, Importance, Usage float64
+	Relevance, Recency, Importance, Usage, Quality float64
 }
 
-// DefaultRerankWeights is the production composite. Recency is a deliberately
-// light tie-breaker: benchmarking on LongMemEval-S showed that heavier recency
-// weighting buries correct-but-older memories (the gold session is not always
-// the most recent), so relevance dominates and recency only decides near-ties.
-//
-// Usage is an additive term (it does not take weight from the others), so it is
-// inert on a freshly-ingested corpus where every memory has the same access
-// count — the benchmarked ranking is unchanged. In real use, reinforcement on
-// recall accumulates access counts, so memories that keep proving useful drift
-// up and never-recalled debris (e.g. a low-quality bulk import) sinks, with no
-// manual curation.
-var DefaultRerankWeights = RerankWeights{Relevance: 0.80, Recency: 0.05, Importance: 0.15, Usage: 0.05}
+// DefaultRerankWeights is the production composite: relevance plus a single
+// normalized quality term. On a freshly-ingested, single-tier corpus every
+// memory has equal salience/confidence/access and uniform recency, so the
+// quality term is constant and ranking reduces to relevance order — the
+// benchmarked behavior is preserved. In real, multi-tier use a corroborated,
+// frequently-recalled durable fact outranks an equally-relevant one-off
+// observation, so low-value bulk memories sink by construction.
+var DefaultRerankWeights = RerankWeights{Relevance: 0.80, Quality: 0.20}
 
 // Rerank re-scores a fused result list with the default composite weights.
 func Rerank(results []store.Scored, now time.Time) []store.Scored {
@@ -48,12 +45,16 @@ func RerankWith(results []store.Scored, now time.Time, w RerankWeights) []store.
 
 	maxRel := 0.0
 	maxAccess := 0
+	maxQuality := 0.0
 	for _, r := range results {
 		if r.Score > maxRel {
 			maxRel = r.Score
 		}
 		if r.Memory.AccessCount > maxAccess {
 			maxAccess = r.Memory.AccessCount
+		}
+		if q := r.Memory.Quality(now); q > maxQuality {
+			maxQuality = q
 		}
 	}
 	// log1p(maxAccess) normalizes the usage term into [0,1] within this result
@@ -77,7 +78,12 @@ func RerankWith(results []store.Scored, now time.Time, w RerankWeights) []store.
 		if maxUsage > 0 {
 			usage = math.Log1p(float64(r.Memory.AccessCount)) / maxUsage
 		}
-		composite := w.Relevance*relevance + w.Recency*recency + w.Importance*importance + w.Usage*usage
+		quality := 0.0
+		if maxQuality > 0 {
+			quality = r.Memory.Quality(now) / maxQuality
+		}
+		composite := w.Relevance*relevance + w.Recency*recency + w.Importance*importance +
+			w.Usage*usage + w.Quality*quality
 		out[i] = ranked{sc: store.Scored{Memory: r.Memory, Score: composite}, score: composite, pos: i}
 	}
 

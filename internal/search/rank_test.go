@@ -76,6 +76,64 @@ func TestRerankUsageInertWithoutAccessHistory(t *testing.T) {
 	}
 }
 
+func TestRerankQualityPrefersCorroboratedDurableAtEqualRelevance(t *testing.T) {
+	now := time.Now().UTC()
+	conf := 0.9
+	// Equal relevance, equal recency, no access. A corroborated semantic fact
+	// outranks an episodic observation purely on quality (tier salience ×
+	// confidence) — the structural anti-poisoning property.
+	sem := store.Scored{Score: 1.0, Memory: &memory.Memory{
+		ID: "sem", Tier: memory.TierSemantic, Importance: 0.5, Confidence: &conf, LastAccessedAt: now,
+	}}
+	epi := store.Scored{Score: 1.0, Memory: &memory.Memory{
+		ID: "epi", Tier: memory.TierEpisodic, Importance: 0.5, LastAccessedAt: now,
+	}}
+	out := Rerank([]store.Scored{epi, sem}, now)
+	if out[0].Memory.ID != "sem" {
+		t.Fatalf("expected the corroborated semantic fact first, got %s", out[0].Memory.ID)
+	}
+}
+
+func TestRerankQualityRecoversGoldFromRelevantDebris(t *testing.T) {
+	now := time.Now().UTC()
+	conf := 0.9
+	// The gold answer is a corroborated semantic fact of slightly-lower raw
+	// relevance than a flood of episodic debris that matches the query terms
+	// (the poisoning case). Relevance-only ranking buries it; the quality term
+	// should pull it up.
+	gold := store.Scored{Score: 0.70, Memory: &memory.Memory{
+		ID: "gold", Tier: memory.TierSemantic, Importance: 0.7, Confidence: &conf, LastAccessedAt: now,
+	}}
+	results := make([]store.Scored, 0, 9)
+	results = append(results, gold)
+	for i := range 8 {
+		results = append(results, store.Scored{Score: 0.74, Memory: &memory.Memory{
+			ID: "debris" + string(rune('a'+i)), Tier: memory.TierEpisodic, Importance: 0.1, LastAccessedAt: now,
+		}})
+	}
+
+	posOf := func(res []store.Scored, id string) int {
+		for i, r := range res {
+			if r.Memory.ID == id {
+				return i
+			}
+		}
+		return -1
+	}
+
+	relevanceOnly := RerankWith(results, now, RerankWeights{Relevance: 1})
+	quality := Rerank(results, now)
+
+	relPos := posOf(relevanceOnly, "gold")
+	qPos := posOf(quality, "gold")
+	if qPos >= relPos {
+		t.Fatalf("quality ranking should lift gold above the debris: relevance-only pos=%d, quality pos=%d", relPos, qPos)
+	}
+	if qPos != 0 {
+		t.Errorf("expected gold first under quality ranking, got position %d", qPos)
+	}
+}
+
 func TestRerankStableForEqualScores(t *testing.T) {
 	now := time.Now().UTC()
 	in := []store.Scored{
