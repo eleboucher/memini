@@ -47,6 +47,7 @@ type consolidateMetrics struct {
 const (
 	labelBackend    = "backend"
 	labelHitsBucket = "hits_bucket"
+	labelMemoryType = "memory_type"
 	labelOp         = "op"
 	labelResult     = "result"
 	labelTier       = "tier"
@@ -109,8 +110,8 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 		}, []string{labelOp}),
 		storeUpsert: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_store_upserts_total",
-			Help: "Store upsert outcomes (insert, update) by tier.",
-		}, []string{labelOp, labelTier}),
+			Help: "Store upsert outcomes (insert, update) by tier and typed-extraction memory_type.",
+		}, []string{labelOp, labelTier, labelMemoryType}),
 		storeDelete: factory.NewCounter(prometheus.CounterOpts{
 			Name: "memini_store_deletes_total",
 			Help: "Hard deletes (Forget) executed by the store.",
@@ -201,8 +202,8 @@ func (m *consolidateMetrics) ReinforceResult(result string) {
 
 // store.Metrics methods.
 
-func (m *consolidateMetrics) Upsert(op, tier string) {
-	m.storeUpsert.WithLabelValues(op, tier).Inc()
+func (m *consolidateMetrics) Upsert(op, tier, memoryType string) {
+	m.storeUpsert.WithLabelValues(op, tier, memoryType).Inc()
 }
 
 func (m *consolidateMetrics) Delete() {

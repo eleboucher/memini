@@ -438,6 +438,10 @@ components:
         by_tier:
           type: object
           additionalProperties: { type: integer }
+        by_memory_type:
+          type: object
+          description: Live count per typed-extraction memory_type (decision/preference/problem).
+          additionalProperties: { type: integer }
         expired: { type: integer }
         superseded: { type: integer }
         total_accesses: { type: integer }

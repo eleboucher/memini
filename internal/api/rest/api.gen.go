@@ -232,12 +232,15 @@ type SearchResponse struct {
 
 // Stats defines model for Stats.
 type Stats struct {
-	AvgImportance float64        `json:"avg_importance"`
-	ByTier        map[string]int `json:"by_tier"`
-	Expired       int            `json:"expired"`
-	LastWriteAt   *time.Time     `json:"last_write_at,omitempty"`
-	Namespace     string         `json:"namespace"`
-	Superseded    int            `json:"superseded"`
+	AvgImportance float64 `json:"avg_importance"`
+
+	// ByMemoryType Live count per typed-extraction memory_type (decision/preference/problem).
+	ByMemoryType *map[string]int `json:"by_memory_type,omitempty"`
+	ByTier       map[string]int  `json:"by_tier"`
+	Expired      int             `json:"expired"`
+	LastWriteAt  *time.Time      `json:"last_write_at,omitempty"`
+	Namespace    string          `json:"namespace"`
+	Superseded   int             `json:"superseded"`
 
 	// Total Live memories (excludes expired/superseded)
 	Total         int `json:"total"`

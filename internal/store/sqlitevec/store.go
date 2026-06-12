@@ -231,7 +231,7 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	s.metrics.Upsert(op, string(m.Tier))
+	s.metrics.Upsert(op, string(m.Tier), store.MemoryTypeLabel(m))
 	return nil
 }
 

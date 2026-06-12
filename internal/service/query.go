@@ -67,10 +67,11 @@ func (s *Service) List(ctx context.Context, in ListInput) ([]*memory.Memory, err
 // counters).
 type Stats struct {
 	Namespace     string              `json:"namespace"`
-	Total         int                 `json:"total"`      // live memories (excludes expired/superseded)
-	ByTier        map[memory.Tier]int `json:"by_tier"`    // live count per tier
-	Expired       int                 `json:"expired"`    // past-TTL, not yet swept
-	Superseded    int                 `json:"superseded"` // contradiction-tombstoned
+	Total         int                 `json:"total"`                    // live memories (excludes expired/superseded)
+	ByTier        map[memory.Tier]int `json:"by_tier"`                  // live count per tier
+	ByMemoryType  map[string]int      `json:"by_memory_type,omitempty"` // live count per metadata.memory_type (typed extractions)
+	Expired       int                 `json:"expired"`                  // past-TTL, not yet swept
+	Superseded    int                 `json:"superseded"`               // contradiction-tombstoned
 	TotalAccesses int                 `json:"total_accesses"`
 	AvgImportance float64             `json:"avg_importance"`
 	LastWriteAt   *time.Time          `json:"last_write_at,omitempty"`
@@ -87,7 +88,7 @@ func (s *Service) Stats(ctx context.Context, namespace string) (Stats, error) {
 		return Stats{}, err
 	}
 
-	st := Stats{Namespace: namespace, ByTier: map[memory.Tier]int{}}
+	st := Stats{Namespace: namespace, ByTier: map[memory.Tier]int{}, ByMemoryType: map[string]int{}}
 	now := s.now()
 	var importanceSum float64
 	for _, m := range all {
@@ -99,6 +100,9 @@ func (s *Service) Stats(ctx context.Context, namespace string) (Stats, error) {
 		default:
 			st.Total++
 			st.ByTier[m.Tier]++
+			if mt, ok := m.Metadata["memory_type"].(string); ok && mt != "" {
+				st.ByMemoryType[mt]++
+			}
 			st.TotalAccesses += m.AccessCount
 			importanceSum += m.Importance
 		}
@@ -120,7 +124,7 @@ func (s *Service) StatsAll(ctx context.Context) (Stats, error) {
 	if err != nil {
 		return Stats{}, err
 	}
-	merged := Stats{ByTier: map[memory.Tier]int{}}
+	merged := Stats{ByTier: map[memory.Tier]int{}, ByMemoryType: map[string]int{}}
 	var importanceWeighted float64
 	for _, ns := range names {
 		st, err := s.Stats(ctx, ns)
@@ -136,6 +140,9 @@ func (s *Service) StatsAll(ctx context.Context) (Stats, error) {
 		importanceWeighted += st.AvgImportance * float64(st.Total)
 		for tier, n := range st.ByTier {
 			merged.ByTier[tier] += n
+		}
+		for mt, n := range st.ByMemoryType {
+			merged.ByMemoryType[mt] += n
 		}
 		if st.LastWriteAt != nil && (merged.LastWriteAt == nil || st.LastWriteAt.After(*merged.LastWriteAt)) {
 			merged.LastWriteAt = st.LastWriteAt

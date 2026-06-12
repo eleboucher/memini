@@ -424,7 +424,7 @@ func (h *Server) GetStats(w http.ResponseWriter, r *http.Request, params GetStat
 	for tier, n := range s.ByTier {
 		byTier[string(tier)] = n
 	}
-	httputil.JSON(w, http.StatusOK, Stats{
+	resp := Stats{
 		Namespace:     s.Namespace,
 		Total:         s.Total,
 		ByTier:        byTier,
@@ -433,7 +433,11 @@ func (h *Server) GetStats(w http.ResponseWriter, r *http.Request, params GetStat
 		TotalAccesses: s.TotalAccesses,
 		AvgImportance: s.AvgImportance,
 		LastWriteAt:   s.LastWriteAt,
-	})
+	}
+	if len(s.ByMemoryType) > 0 {
+		resp.ByMemoryType = &s.ByMemoryType
+	}
+	httputil.JSON(w, http.StatusOK, resp)
 }
 
 // ListNamespaces implements GET /v1/namespaces.

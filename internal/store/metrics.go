@@ -1,14 +1,19 @@
 package store
 
-import "time"
+import (
+	"time"
+
+	"github.com/eleboucher/memini/internal/memory"
+)
 
 // Metrics receives store events for observability. Methods must be safe for
 // concurrent use; a nil Metrics is replaced by a no-op. Implementations live
 // alongside the Prometheus registry in cmd/memini.
 type Metrics interface {
 	// Upsert records one Upsert outcome. op is "insert" or "update"; tier
-	// is the memory's tier (working/episodic/semantic/procedural).
-	Upsert(op, tier string)
+	// is the memory's tier (working/episodic/semantic/procedural); memoryType
+	// is the typed-extraction class (decision/preference/problem) or "".
+	Upsert(op, tier, memoryType string)
 	// Delete records a hard delete from the Forget API path.
 	Delete()
 	// SoftDelete records a tombstone written by consolidation.
@@ -26,17 +31,31 @@ type Metrics interface {
 
 type nopMetrics struct{}
 
-func (nopMetrics) Upsert(string, string)    {}
-func (nopMetrics) Delete()                  {}
-func (nopMetrics) SoftDelete()              {}
-func (nopMetrics) SweepExpired(string)      {}
-func (nopMetrics) ActiveByTier(string, int) {}
-func (nopMetrics) DedupTombstoned(int)      {}
+func (nopMetrics) Upsert(string, string, string) {}
+func (nopMetrics) Delete()                       {}
+func (nopMetrics) SoftDelete()                   {}
+func (nopMetrics) SweepExpired(string)           {}
+func (nopMetrics) ActiveByTier(string, int)      {}
+func (nopMetrics) DedupTombstoned(int)           {}
 
 // NopMetrics is exported for tests.
 func NopMetrics() Metrics { return nopMetrics{} }
 
 var _ Metrics = nopMetrics{}
+
+// knownMemoryTypes bounds the memory_type metric label to the typed-extraction
+// classes, so an arbitrary caller-supplied metadata value can't explode series
+// cardinality.
+var knownMemoryTypes = map[string]bool{"decision": true, "preference": true, "problem": true}
+
+// MemoryTypeLabel returns m's typed-extraction class for the memory_type metric
+// label, or "" when absent or unrecognized (keeping cardinality bounded).
+func MemoryTypeLabel(m *memory.Memory) string {
+	if mt, ok := m.Metadata["memory_type"].(string); ok && knownMemoryTypes[mt] {
+		return mt
+	}
+	return ""
+}
 
 // guard so the file always references time if it grows later.
 var _ = time.Time{}
