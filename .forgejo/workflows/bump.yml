@@ -81,10 +81,12 @@ jobs:
             # Keep the commit honest: the file must still be valid JSON.
             jq -e . "$f" >/dev/null
           done
-          # The OpenClaw plugin manifest is YAML, so sync its version separately.
-          OC_YAML=integrations/openclaw/plugin/plugin.yaml
-          sed -i -E 's/^(version:[[:space:]]*).*/\1'"${NEXT}"'/' "$OC_YAML"
-          grep -q "^version: ${NEXT}\$" "$OC_YAML" || { echo "failed to set version in $OC_YAML" >&2; exit 1; }
+          # The OpenClaw and Hermes plugin manifests are YAML, so sync those separately.
+          for y in integrations/openclaw/plugin/plugin.yaml \
+                   integrations/hermes/plugin/memini/plugin.yaml; do
+            sed -i -E 's/^(version:[[:space:]]*).*/\1'"${NEXT}"'/' "$y"
+            grep -q "^version: ${NEXT}\$" "$y" || { echo "failed to set version in $y" >&2; exit 1; }
+          done
       - name: Commit and push tag
         env:
           TAG: ${{ steps.version.outputs.tag }}
@@ -95,7 +97,8 @@ jobs:
           git add plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
             integrations/openclaw/plugin/package.json \
             integrations/openclaw/plugin/openclaw.plugin.json \
-            integrations/openclaw/plugin/plugin.yaml
+            integrations/openclaw/plugin/plugin.yaml \
+            integrations/hermes/plugin/memini/plugin.yaml
           git commit -m "chore(release): ${TAG}"
           git tag -a "${TAG}" -m "Release ${TAG}"
           git push origin "HEAD:${GITHUB_REF_NAME}" "${TAG}"
