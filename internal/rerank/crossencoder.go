@@ -17,10 +17,14 @@ const defaultTimeout = 60 * time.Second
 // Config configures the cross-encoder reranker client.
 type Config struct {
 	// BaseURL is the API root (e.g. http://host:8002/v1); "/rerank" is appended.
-	BaseURL    string
-	Model      string
-	APIKey     string
-	HTTPClient *http.Client
+	BaseURL string
+	Model   string
+	APIKey  string
+	// MaxDocChars truncates each document before sending so an oversized
+	// candidate can't blow the server's physical batch and fail the whole
+	// request. 0 disables truncation.
+	MaxDocChars int
+	HTTPClient  *http.Client
 }
 
 // CrossEncoder reranks candidates with a dedicated ranking model (bge-reranker,
@@ -28,10 +32,11 @@ type Config struct {
 // that Infinity, vLLM, TEI, and llama-server --rerank expose — a cheaper
 // alternative to the LLM reranker.
 type CrossEncoder struct {
-	url    string
-	model  string
-	apiKey string
-	client *http.Client
+	url         string
+	model       string
+	apiKey      string
+	maxDocChars int
+	client      *http.Client
 }
 
 // New builds a cross-encoder reranker client. BaseURL is required.
@@ -44,10 +49,11 @@ func New(cfg Config) (*CrossEncoder, error) {
 		c = &http.Client{Timeout: defaultTimeout}
 	}
 	return &CrossEncoder{
-		url:    strings.TrimRight(cfg.BaseURL, "/") + "/rerank",
-		model:  cfg.Model,
-		apiKey: cfg.APIKey,
-		client: c,
+		url:         strings.TrimRight(cfg.BaseURL, "/") + "/rerank",
+		model:       cfg.Model,
+		apiKey:      cfg.APIKey,
+		maxDocChars: cfg.MaxDocChars,
+		client:      c,
 	}, nil
 }
 
@@ -74,7 +80,7 @@ func (c *CrossEncoder) Rerank(ctx context.Context, query string, candidates []Ca
 	}
 	docs := make([]string, len(candidates))
 	for i, cand := range candidates {
-		docs[i] = cand.Content
+		docs[i] = truncateRunes(cand.Content, c.maxDocChars)
 	}
 	body, err := json.Marshal(rerankRequest{Model: c.model, Query: query, Documents: docs})
 	if err != nil {
@@ -123,4 +129,17 @@ func (c *CrossEncoder) Rerank(ctx context.Context, query string, candidates []Ca
 		}
 	}
 	return ordered, nil
+}
+
+// truncateRunes caps s at max runes (not bytes, to avoid splitting UTF-8).
+// max <= 0 means no limit.
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max])
 }

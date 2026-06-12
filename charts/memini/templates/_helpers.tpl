@@ -107,6 +107,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 - name: MEMINI_RERANK_TOP_N
   value: {{ .Values.rerank.topN | quote }}
+{{- if ne (toString .Values.rerank.maxDocChars) "" }}
+- name: MEMINI_RERANK_MAX_DOC_CHARS
+  value: {{ .Values.rerank.maxDocChars | quote }}
+{{- end }}
 {{- if .Values.rerank.apiKeySecret.name }}
 - name: MEMINI_RERANK_API_KEY
   valueFrom:

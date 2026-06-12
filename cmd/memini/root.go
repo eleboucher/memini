@@ -243,7 +243,12 @@ func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger) (reran
 			"model", cfg.LLMModel, "top_n", cfg.RerankTopN)
 		return rerank.NewLLM(chat), "llm", nil
 	}
-	ce, err := rerank.New(rerank.Config{BaseURL: cfg.Rerank, Model: cfg.RerankModel, APIKey: cfg.RerankAPIKey})
+	ce, err := rerank.New(rerank.Config{
+		BaseURL:     cfg.Rerank,
+		Model:       cfg.RerankModel,
+		APIKey:      cfg.RerankAPIKey,
+		MaxDocChars: cfg.RerankMaxDocChars,
+	})
 	if err != nil {
 		return nil, "", err
 	}

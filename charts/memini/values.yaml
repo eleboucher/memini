@@ -61,6 +61,10 @@ rerank:
   model: ""
   # -- How many composite-ranked candidates the reranker sees
   topN: 20
+  # -- Truncate each document to this many characters before sending to the
+  # cross-encoder, so one oversized memory can't exceed the server's physical
+  # batch and fail the request. Empty uses the binary default; 0 disables it.
+  maxDocChars: ""
   # -- Optional existing secret holding the cross-encoder endpoint API key
   # (when mode is a URL)
   apiKeySecret:

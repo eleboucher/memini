@@ -58,8 +58,9 @@ helm install memini ./charts/memini \
 | postgres | object | `{"dsnSecret":{"key":"dsn","name":""}}` | postgres backend connection |
 | postgres.dsnSecret | object | `{"key":"dsn","name":""}` | Existing secret holding the libpq DSN (required when backend=postgres) |
 | replicaCount | int | `1` | Replica count (postgres only; sqlite is pinned to 1) |
-| rerank | object | `{"apiKeySecret":{"key":"api-key","name":""},"mode":"","model":"","topN":20}` | Opt-in recall reranking (MEMINI_RERANK); leave mode empty to disable |
+| rerank | object | `{"apiKeySecret":{"key":"api-key","name":""},"maxDocChars":"","mode":"","model":"","topN":20}` | Opt-in recall reranking (MEMINI_RERANK); leave mode empty to disable |
 | rerank.apiKeySecret | object | `{"key":"api-key","name":""}` | Optional existing secret holding the cross-encoder endpoint API key (when mode is a URL) |
+| rerank.maxDocChars | string | `""` | Truncate each document to this many characters before sending to the cross-encoder, so one oversized memory can't exceed the server's physical batch and fail the request. Empty uses the binary default; 0 disables it. |
 | rerank.mode | string | `""` | "" or "off" (disabled), "llm" (reorder with the chat LLM), or a cross-encoder /rerank base URL (e.g. http://reranker:8080/v1, served by Infinity, vLLM, TEI, or llama-server --rerank) |
 | rerank.model | string | `""` | Cross-encoder model name (when mode is a URL) |
 | rerank.topN | int | `20` | How many composite-ranked candidates the reranker sees |

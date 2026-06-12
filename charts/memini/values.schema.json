@@ -460,6 +460,12 @@
           "title": "apiKeySecret",
           "type": "object"
         },
+        "maxDocChars": {
+          "default": "",
+          "description": "Truncate each document to this many characters before sending to the\ncross-encoder, so one oversized memory can't exceed the server's physical\nbatch and fail the request. Empty uses the binary default; 0 disables it.",
+          "title": "maxDocChars",
+          "type": "string"
+        },
         "mode": {
           "default": "",
           "description": "\"\" or \"off\" (disabled), \"llm\" (reorder with the chat LLM), or a\ncross-encoder /rerank base URL (e.g. http://reranker:8080/v1, served by\nInfinity, vLLM, TEI, or llama-server --rerank)",

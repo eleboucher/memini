@@ -101,6 +101,10 @@ type Config struct {
 	RerankAPIKey string `env:"MEMINI_RERANK_API_KEY"`
 	// RerankTopN is how many composite-ranked candidates the reranker sees.
 	RerankTopN int `env:"MEMINI_RERANK_TOP_N" envDefault:"20"`
+	// RerankMaxDocChars truncates each document sent to the cross-encoder so one
+	// oversized candidate can't exceed the server's physical batch and fail the
+	// whole rerank request. 0 disables truncation.
+	RerankMaxDocChars int `env:"MEMINI_RERANK_MAX_DOC_CHARS" envDefault:"1200"`
 
 	// Consolidation tuning.
 	// ConsolidateMode is "async" (default), "sync", or "off".
