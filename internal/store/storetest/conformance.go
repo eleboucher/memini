@@ -33,6 +33,65 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("KeywordSearchHostileQueries", func(t *testing.T) { testKeywordHostileQueries(t, st, dims) })
 	t.Run("FilterNow", func(t *testing.T) { testFilterNow(t, st, dims) })
 	t.Run("ConcurrentAccess", func(t *testing.T) { testConcurrentAccess(t, st, dims) })
+	t.Run("Reassign", func(t *testing.T) { testReassign(t, st, dims) })
+}
+
+func testReassign(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	from, to := t.Name()+"-from", t.Name()+"-to"
+
+	moved := mem(from, "moved", "a memory to relocate", vec(dims, 1))
+	stay := mem(from, "stay", "a memory that stays put", vec(dims, 0, 1))
+	mustUpsert(t, st, moved)
+	mustUpsert(t, st, stay)
+
+	// Move only "moved" (plus a bogus ID, which must be skipped, not error).
+	n, err := st.Reassign(ctx, from, []string{moved.ID, "does-not-exist"}, to)
+	if err != nil {
+		t.Fatalf("reassign: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("reassign moved %d, want 1", n)
+	}
+
+	// The moved memory is now readable in the target namespace and gone from
+	// the source.
+	if _, err := st.Get(ctx, to, moved.ID); err != nil {
+		t.Errorf("moved memory not in target namespace: %v", err)
+	}
+	if _, err := st.Get(ctx, from, moved.ID); err != store.ErrNotFound {
+		t.Errorf("moved memory still in source namespace: %v", err)
+	}
+	// The untouched memory stays.
+	if _, err := st.Get(ctx, from, stay.ID); err != nil {
+		t.Errorf("stay memory should remain in source: %v", err)
+	}
+
+	// The vector index must follow the move: a search in the target namespace
+	// finds it; a search in the source does not.
+	res, err := st.VectorSearch(ctx, to, vec(dims, 1), store.Filter{}, 5)
+	if err != nil {
+		t.Fatalf("vector search target: %v", err)
+	}
+	if !containsScored(res, moved.ID) {
+		t.Errorf("moved memory not vector-searchable in target namespace")
+	}
+	res, err = st.VectorSearch(ctx, from, vec(dims, 1), store.Filter{}, 5)
+	if err != nil {
+		t.Fatalf("vector search source: %v", err)
+	}
+	if containsScored(res, moved.ID) {
+		t.Errorf("moved memory still vector-searchable in source namespace")
+	}
+}
+
+func containsScored(res []store.Scored, id string) bool {
+	for _, r := range res {
+		if r.Memory.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func vec(dims int, head ...float32) []float32 {

@@ -450,6 +450,52 @@ func (s *Store) DeleteNamespace(ctx context.Context, namespace string) (int64, e
 	return int64(len(rowIDs)), nil
 }
 
+// Reassign moves memories from fromNS to toNS, updating the namespace column
+// and rewriting the vec0 partition row (the FTS row carries no namespace). IDs
+// absent from fromNS are skipped; IDs are globally unique so a move never
+// collides in toNS.
+func (s *Store) Reassign(ctx context.Context, fromNS string, ids []string, toNS string) (int64, error) {
+	if len(ids) == 0 || fromNS == toNS {
+		return 0, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var moved int64
+	for _, id := range ids {
+		var rowID int64
+		var emb []byte
+		err := tx.QueryRowContext(ctx,
+			`SELECT m.rowid, v.embedding FROM memories m JOIN vec_memories v ON v.rowid = m.rowid
+			 WHERE m.id = ? AND m.namespace = ?`, id, fromNS).Scan(&rowID, &emb)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue // not in the source namespace; skip
+		}
+		if err != nil {
+			return moved, fmt.Errorf("sqlitevec: reassign lookup %q: %w", id, err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE memories SET namespace=? WHERE rowid=?`, toNS, rowID); err != nil {
+			return moved, fmt.Errorf("sqlitevec: reassign memory: %w", err)
+		}
+		// vec_memories.namespace is a partition key; rewrite the row under it.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM vec_memories WHERE rowid=?`, rowID); err != nil {
+			return moved, fmt.Errorf("sqlitevec: reassign clear vector: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO vec_memories(rowid, namespace, embedding) VALUES (?,?,?)`, rowID, toNS, emb); err != nil {
+			return moved, fmt.Errorf("sqlitevec: reassign insert vector: %w", err)
+		}
+		moved++
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return moved, nil
+}
+
 func collectRowIDs(tx *sql.Tx, ctx context.Context, namespace string) ([]int64, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT rowid FROM memories WHERE namespace=?`, namespace)
 	if err != nil {

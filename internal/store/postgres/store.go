@@ -362,6 +362,22 @@ func (s *Store) DeleteNamespace(ctx context.Context, namespace string) (int64, e
 	return n, nil
 }
 
+// Reassign moves memories from fromNS to toNS. The fts column is generated and
+// the vector index lives on the same row, so a single namespace UPDATE suffices.
+// IDs absent from fromNS are not matched; IDs are globally unique so a move
+// never collides in toNS.
+func (s *Store) Reassign(ctx context.Context, fromNS string, ids []string, toNS string) (int64, error) {
+	if len(ids) == 0 || fromNS == toNS {
+		return 0, nil
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE memories SET namespace=$1 WHERE namespace=$2 AND id = ANY($3)`, toNS, fromNS, ids)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // Ping verifies the database is reachable.
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 

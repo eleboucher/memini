@@ -93,6 +93,12 @@ type Store interface {
 	// and keyword-search index entries). Returns the number of memories deleted.
 	DeleteNamespace(ctx context.Context, namespace string) (int64, error)
 
+	// Reassign moves the given memories from fromNS to toNS (recovery from a
+	// botched import or a shared-pool migration). IDs absent from fromNS are
+	// skipped; since IDs are globally unique a move never collides in toNS.
+	// Returns the number of memories moved.
+	Reassign(ctx context.Context, fromNS string, ids []string, toNS string) (int64, error)
+
 	// Ping verifies the backend is reachable, for readiness checks.
 	Ping(ctx context.Context) error
 
