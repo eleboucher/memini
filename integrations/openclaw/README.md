@@ -42,8 +42,8 @@ Claim the memory slot in `~/.openclaw/openclaw.json`:
         "config": {
           "base_url": "http://localhost:8080",
           "namespace": "openclaw",
-          "namespace_per_agent": false,
-          "namespace_template": "{agent}",
+          "namespace_per_agent": true,
+          "namespace_template": "{namespace}-{agent}",
           "fallback_on_error": true,
           "timeout_ms": 5000
         }
@@ -57,18 +57,22 @@ If memini requires auth, set `MEMINI_API_KEY` in the gateway environment (the
 plugin sends it as `Authorization: Bearer …`; set `MEMINI_REQUIRE_HTTPS=1` to
 refuse sending it over plaintext HTTP). Restart OpenClaw.
 
-Use the same `namespace` as your other agents to share one memory across the
-gateway and its managed coding sessions.
+Memory is isolated **per agent by default** (`namespace_per_agent: true`): each
+agent reads and writes its own scope, resolved from the agent id on each hook
+event and formatted by `namespace_template`. This prevents subagents sharing one
+gateway from poisoning each other's memory:
 
-To instead isolate memory **per agent**, set `"namespace_per_agent": true`. Each
-agent then reads and writes its own scope, resolved from the agent id on each
-hook event and formatted by `namespace_template`:
+- `"{namespace}-{agent}"` (default) → `openclaw-miso`, `openclaw-saffron`, …
+- `"{agent}"` → `miso`, `saffron`, `matcha`
 
-- `"{agent}"` (default) → `miso`, `saffron`, `matcha`
-- `"openclaw-{agent}"` → `openclaw-miso`, … (`{namespace}` is also substituted)
+When an event carries no agent identity, it falls back to the base `namespace`
+(`openclaw`), so unattributable sessions (cron, heartbeat) still get shared
+memory rather than being dropped. Set `"skip_without_agent": true` to skip those
+sessions entirely instead.
 
-When the event doesn't identify an agent, it falls back to the base `namespace`,
-so the default (`namespace_per_agent: false`) keeps one shared memory.
+To share **one** memory across all agents (the previous default), set
+`"namespace_per_agent": false`. If you previously ran with shared memory and want
+to separate already-pooled agents, see `memini namespace split` below.
 
 ### On Kubernetes
 

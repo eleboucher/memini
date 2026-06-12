@@ -18,7 +18,7 @@ config:
   enabled: true
   base_url: http://localhost:8080
   namespace: openclaw
-  namespace_per_agent: false
-  namespace_template: "{agent}"
+  namespace_per_agent: true
+  namespace_template: "{namespace}-{agent}"
   fallback_on_error: true
   timeout_ms: 5000

@@ -1,7 +1,29 @@
 // Run: node --test (from this directory). Not shipped by install.sh.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { effectiveNamespace } from "./plugin.mjs";
+import { effectiveNamespace, resolveConfig } from "./plugin.mjs";
+
+test("per-agent isolation is on by default", () => {
+  const cfg = resolveConfig(undefined);
+  assert.equal(cfg.namespace_per_agent, true);
+  assert.equal(cfg.namespace, "openclaw");
+  // A named agent lands in its own namespace, not the shared pool.
+  assert.equal(effectiveNamespace(cfg, { agentId: "miso" }), "openclaw-miso");
+  // A session with no agent identity falls back to the shared base namespace
+  // (so unattributable sessions still get memory rather than silently dropping).
+  assert.equal(effectiveNamespace(cfg, {}), "openclaw");
+});
+
+test("namespace_per_agent can be explicitly disabled", () => {
+  const cfg = resolveConfig({ namespace_per_agent: false });
+  assert.equal(cfg.namespace_per_agent, false);
+  assert.equal(effectiveNamespace(cfg, { agentId: "miso" }), "openclaw");
+});
+
+test("default per-agent template prefixes the configured base namespace", () => {
+  const cfg = resolveConfig({ namespace: "team" });
+  assert.equal(effectiveNamespace(cfg, { agentId: "miso" }), "team-miso");
+});
 
 test("namespace_per_agent off returns the base namespace", () => {
   const cfg = { namespace: "openclaw", namespace_per_agent: false };

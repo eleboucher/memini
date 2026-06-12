@@ -13,6 +13,7 @@
       "namespace": { "type": "string" },
       "namespace_per_agent": { "type": "boolean" },
       "namespace_template": { "type": "string" },
+      "skip_without_agent": { "type": "boolean" },
       "fallback_on_error": { "type": "boolean" },
       "timeout_ms": { "type": "number" }
     }
@@ -26,11 +27,15 @@
     },
     "namespace_per_agent": {
       "label": "Per-Agent Namespaces",
-      "help": "Scope memory per agent instead of sharing one namespace"
+      "help": "Scope memory per agent (default) so agents don't poison each other; set false to share one namespace"
     },
     "namespace_template": {
       "label": "Namespace Template",
-      "help": "Per-agent namespace, e.g. \"{agent}\" or \"openclaw-{agent}\" ({namespace} also substituted)"
+      "help": "Per-agent namespace, e.g. \"{namespace}-{agent}\" (default) or \"{agent}\""
+    },
+    "skip_without_agent": {
+      "label": "Skip Without Agent",
+      "help": "Skip recall/write for sessions that carry no agent id, instead of using the shared base namespace"
     },
     "fallback_on_error": { "label": "Fallback On Error" },
     "timeout_ms": { "label": "Timeout (ms)" }

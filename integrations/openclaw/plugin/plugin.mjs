@@ -29,7 +29,28 @@ const configSchema = {
   },
 };
 
-const DEFAULT_NAMESPACE_TEMPLATE = "{agent}";
+// Per-agent isolation is the default: each named agent gets its own namespace
+// so subagents sharing one OpenClaw install do not poison each other's memory.
+// The default template prefixes the configured base ("openclaw" -> "openclaw-miso")
+// so per-agent namespaces are distinct from the shared fallback used for
+// sessions that carry no agent identity.
+const DEFAULT_NAMESPACE_TEMPLATE = "{namespace}-{agent}";
+
+// resolveConfig normalizes raw plugin config into the defaults the plugin runs
+// with. Exported so the defaults (notably per-agent isolation) are testable.
+export function resolveConfig(pluginConfig) {
+  const c = pluginConfig || {};
+  return {
+    enabled: c.enabled !== false,
+    base_url: c.base_url || DEFAULT_BASE_URL,
+    namespace: c.namespace || DEFAULT_NAMESPACE,
+    namespace_per_agent: c.namespace_per_agent !== false,
+    namespace_template: c.namespace_template || DEFAULT_NAMESPACE_TEMPLATE,
+    skip_without_agent: c.skip_without_agent === true,
+    fallback_on_error: c.fallback_on_error !== false,
+    timeout_ms: c.timeout_ms || DEFAULT_TIMEOUT_MS,
+  };
+}
 
 // sanitizeNsSegment keeps a namespace segment header-safe (the server sanitizes
 // too, but the X-Memini-Namespace value should be clean): alnum, dot, dash,
@@ -188,16 +209,7 @@ const plugin = {
   description: "Shared cross-session memory via a memini service.",
   configSchema,
   register(api) {
-    const cfg = {
-      enabled: api.pluginConfig?.enabled !== false,
-      base_url: api.pluginConfig?.base_url || DEFAULT_BASE_URL,
-      namespace: api.pluginConfig?.namespace || DEFAULT_NAMESPACE,
-      namespace_per_agent: api.pluginConfig?.namespace_per_agent === true,
-      namespace_template: api.pluginConfig?.namespace_template || DEFAULT_NAMESPACE_TEMPLATE,
-      skip_without_agent: api.pluginConfig?.skip_without_agent === true,
-      fallback_on_error: api.pluginConfig?.fallback_on_error !== false,
-      timeout_ms: api.pluginConfig?.timeout_ms || DEFAULT_TIMEOUT_MS,
-    };
+    const cfg = resolveConfig(api.pluginConfig);
     const client = createClient(cfg, api);
 
     if (typeof api.registerMemoryCapability === "function") {
