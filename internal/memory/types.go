@@ -180,7 +180,10 @@ func decayConfidence(c, weeks float64) float64 {
 	if weeks <= 1 {
 		return c
 	}
-	return math.Max(confidenceFloor, c-confidenceDecayPerWeek*weeks)
+	// Decay from the end of the one-week grace period, so confidence is
+	// continuous across the boundary instead of dropping a full week's worth the
+	// instant it ends.
+	return math.Max(confidenceFloor, c-confidenceDecayPerWeek*(weeks-1))
 }
 
 // Quality scores a memory for both recall ranking and lifecycle decisions
