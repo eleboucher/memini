@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -112,6 +113,10 @@ type Service struct {
 
 	consolidateMode     ConsolidateMode
 	consolidateMinScore float64
+	// consolidateQueueCap bounds the async consolidation queue; 0 uses the
+	// default. Writes still succeed when the queue is full — the job is dropped
+	// (counted by the "dropped" consolidate metric), never the memory.
+	consolidateQueueCap int
 	// consolidateQueue carries background jobs in async mode; nil otherwise.
 	consolidateQueue chan consolidateJob
 
@@ -195,6 +200,13 @@ func WithConsolidateMode(m ConsolidateMode) Option {
 // when the nearest candidate scores at least minScore. 0 disables the gate.
 func WithConsolidateMinScore(minScore float64) Option {
 	return func(s *Service) { s.consolidateMinScore = minScore }
+}
+
+// WithConsolidateQueueCap bounds the async consolidation queue. n <= 0 uses the
+// default. Raise it for write-bursty deployments to reduce dropped jobs (a
+// dropped job loses the dedup pass, never the memory).
+func WithConsolidateQueueCap(n int) Option {
+	return func(s *Service) { s.consolidateQueueCap = n }
 }
 
 // WithDistiller enables episodic→semantic promotion via RunPromoter.
@@ -301,7 +313,11 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 	}
 	// The async queue exists only when consolidation can actually run.
 	if s.consolidator != nil && s.consolidateMode == ConsolidateAsync {
-		s.consolidateQueue = make(chan consolidateJob, consolidateQueueCap)
+		cap := s.consolidateQueueCap
+		if cap <= 0 {
+			cap = defaultConsolidateQueueCap
+		}
+		s.consolidateQueue = make(chan consolidateJob, cap)
 	}
 	return s
 }
@@ -622,6 +638,24 @@ func (s *Service) Forget(ctx context.Context, namespace, id string) error {
 		s.metrics.ForgetResult("error")
 	}
 	return err
+}
+
+// ForgetByTag deletes every memory in a namespace carrying tag, including
+// superseded and expired ones, and returns the count deleted. With the import
+// provenance tag (import:<source>:<date>), this undoes a bulk import in one call.
+func (s *Service) ForgetByTag(ctx context.Context, namespace, tag string) (int64, error) {
+	start := time.Now()
+	defer func() { s.metrics.OpDuration("forget", time.Since(start)) }()
+	if strings.TrimSpace(tag) == "" {
+		return 0, fmt.Errorf("forget by tag: tag is required")
+	}
+	deleted, err := maintenance.ForgetByTag(ctx, s.store, namespace, tag)
+	if err != nil {
+		s.metrics.ForgetResult("error")
+		return deleted, err
+	}
+	s.metrics.ForgetResult("ok")
+	return deleted, nil
 }
 
 // Fsck runs a consistency sweep: purge expired, enforce the short-term cap, and

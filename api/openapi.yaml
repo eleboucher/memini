@@ -133,6 +133,31 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ListResponse" }
         "400": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: forgetByTag
+      tags: [memory]
+      summary: Delete every memory in the namespace carrying a tag
+      description: >
+        Bulk-deletes all memories in the request's namespace that carry the
+        given tag. Combined with the import provenance tag
+        (import:<source>:<date>), this undoes a single bulk import in one call.
+        The tag query parameter is required to avoid an accidental
+        delete-everything.
+      parameters:
+        - { $ref: "#/components/parameters/Namespace" }
+        - name: tag
+          in: query
+          required: true
+          description: Exact tag a memory must carry to be deleted.
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeleteByTagResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
   /v1/stats:
     get:
       operationId: getStats
@@ -357,6 +382,11 @@ components:
           type: array
           items: { type: string }
     DeleteNamespaceResponse:
+      type: object
+      required: [deleted]
+      properties:
+        deleted: { type: integer, description: Number of memories deleted }
+    DeleteByTagResponse:
       type: object
       required: [deleted]
       properties:

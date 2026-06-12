@@ -99,6 +99,12 @@ type DedupRequest struct {
 	Tiers *[]Tier `json:"tiers,omitempty"`
 }
 
+// DeleteByTagResponse defines model for DeleteByTagResponse.
+type DeleteByTagResponse struct {
+	// Deleted Number of memories deleted
+	Deleted int `json:"deleted"`
+}
+
 // DeleteNamespaceResponse defines model for DeleteNamespaceResponse.
 type DeleteNamespaceResponse struct {
 	// Deleted Number of memories deleted
@@ -223,6 +229,15 @@ type RunFsckParams struct {
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
+// ForgetByTagParams defines parameters for ForgetByTag.
+type ForgetByTagParams struct {
+	// Tag Exact tag a memory must carry to be deleted.
+	Tag string `form:"tag" json:"tag"`
+
+	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
+}
+
 // ListMemoriesParams defines parameters for ListMemories.
 type ListMemoriesParams struct {
 	// Tier Repeatable and/or comma-separated tier filter; omitted means all tiers.
@@ -296,6 +311,9 @@ type ServerInterface interface {
 	// Run a consistency sweep (purge expired, enforce short-term cap, audit duplicates)
 	// (POST /v1/fsck)
 	RunFsck(w http.ResponseWriter, r *http.Request, params RunFsckParams)
+	// Delete every memory in the namespace carrying a tag
+	// (DELETE /v1/memories)
+	ForgetByTag(w http.ResponseWriter, r *http.Request, params ForgetByTagParams)
 	// List memories in a namespace (backs the admin UI browser)
 	// (GET /v1/memories)
 	ListMemories(w http.ResponseWriter, r *http.Request, params ListMemoriesParams)
@@ -341,6 +359,12 @@ func (_ Unimplemented) RunDedup(w http.ResponseWriter, r *http.Request, params R
 // Run a consistency sweep (purge expired, enforce short-term cap, audit duplicates)
 // (POST /v1/fsck)
 func (_ Unimplemented) RunFsck(w http.ResponseWriter, r *http.Request, params RunFsckParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Delete every memory in the namespace carrying a tag
+// (DELETE /v1/memories)
+func (_ Unimplemented) ForgetByTag(w http.ResponseWriter, r *http.Request, params ForgetByTagParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -533,6 +557,66 @@ func (siw *ServerInterfaceWrapper) RunFsck(w http.ResponseWriter, r *http.Reques
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.RunFsck(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ForgetByTag operation middleware
+func (siw *ServerInterfaceWrapper) ForgetByTag(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ForgetByTagParams
+
+	// ------------- Required query parameter "tag" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "tag", r.URL.Query(), &params.Tag, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "tag"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tag", Err: err})
+		}
+		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Memini-Namespace" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Memini-Namespace")]; found {
+		var XMeminiNamespace Namespace
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Memini-Namespace", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Memini-Namespace", valueList[0], &XMeminiNamespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Memini-Namespace", Err: err})
+			return
+		}
+
+		params.XMeminiNamespace = &XMeminiNamespace
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ForgetByTag(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1093,6 +1177,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/fsck", wrapper.RunFsck)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/memories", wrapper.ForgetByTag)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/memories", wrapper.ListMemories)

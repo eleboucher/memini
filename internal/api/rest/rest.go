@@ -239,6 +239,18 @@ func (h *Server) ForgetMemory(w http.ResponseWriter, r *http.Request, boundID st
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ForgetByTag implements DELETE /v1/memories?tag=... — bulk-delete every memory
+// in the namespace carrying the tag. The tag is required (spec-enforced) so a
+// missing tag cannot delete the whole namespace.
+func (h *Server) ForgetByTag(w http.ResponseWriter, r *http.Request, params ForgetByTagParams) {
+	n, err := h.svc.ForgetByTag(r.Context(), namespaceFromContext(r.Context()), params.Tag)
+	if err != nil {
+		httputil.Error(w, statusFor(err), err.Error())
+		return
+	}
+	httputil.JSON(w, http.StatusOK, DeleteByTagResponse{Deleted: int(n)})
+}
+
 // SearchMemories implements POST /v1/search.
 func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ SearchMemoriesParams) {
 	var req SearchRequest

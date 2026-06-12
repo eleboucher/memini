@@ -71,6 +71,63 @@ func TestAuthRequired(t *testing.T) {
 	}
 }
 
+func TestForgetByTag(t *testing.T) {
+	h := newServer(t)
+
+	// alice and bob each get a tagged memory; only alice's should be deleted.
+	remember := func(ns, content string, tags []string) {
+		rec := do(t, h, http.MethodPost, "/v1/memories", ns, apiKey, map[string]any{
+			"content": content, "tier": "semantic", "tags": tags,
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("remember %s: want 201, got %d (%s)", ns, rec.Code, rec.Body)
+		}
+	}
+	remember("alice", "imported fact one", []string{"import:mem0:2026-06-12"})
+	remember("alice", "imported fact two", []string{"import:mem0:2026-06-12"})
+	remember("alice", "a memory alice wrote herself", []string{"manual"})
+	remember("bob", "bob's imported fact", []string{"import:mem0:2026-06-12"})
+
+	// A missing tag must be rejected (spec marks it required) — never a
+	// delete-everything.
+	rec := do(t, h, http.MethodDelete, "/v1/memories", "alice", apiKey, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing tag: want 400, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	// Delete alice's import; her manual memory and bob's data are untouched.
+	rec = do(t, h, http.MethodDelete, "/v1/memories?tag=import:mem0:2026-06-12", "alice", apiKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("forget by tag: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var got struct {
+		Deleted int `json:"deleted"`
+	}
+	mustJSON(t, rec, &got)
+	if got.Deleted != 2 {
+		t.Fatalf("deleted = %d, want 2", got.Deleted)
+	}
+
+	// alice keeps her manual memory.
+	rec = do(t, h, http.MethodGet, "/v1/memories", "alice", apiKey, nil)
+	var list struct {
+		Memories []struct {
+			Content string `json:"content"`
+		} `json:"memories"`
+	}
+	mustJSON(t, rec, &list)
+	if len(list.Memories) != 1 || list.Memories[0].Content != "a memory alice wrote herself" {
+		t.Fatalf("alice should keep only her manual memory, got %+v", list.Memories)
+	}
+
+	// bob's tagged memory is untouched (scoped to alice's namespace).
+	rec = do(t, h, http.MethodGet, "/v1/memories", "bob", apiKey, nil)
+	mustJSON(t, rec, &list)
+	if len(list.Memories) != 1 {
+		t.Fatalf("bob's memory should be untouched, got %d", len(list.Memories))
+	}
+}
+
 func TestRememberSearchForgetRoundTrip(t *testing.T) {
 	h := newServer(t)
 
