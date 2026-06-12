@@ -17,7 +17,8 @@ import (
 )
 
 const memoryColumns = `id, namespace, tier, content, summary, metadata, tags, importance,
-	created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by`
+	created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
+	valid_from, valid_to`
 
 // Store is a Postgres/VectorChord backed store.Store.
 type Store struct {
@@ -91,6 +92,8 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 			access_count     integer NOT NULL DEFAULT 0,
 			expires_at       timestamptz,
 			superseded_by    text,
+			valid_from       timestamptz,
+			valid_to         timestamptz,
 			embedding        vector(%d) NOT NULL,
 			fts              tsvector GENERATED ALWAYS AS (
 				to_tsvector('english',
@@ -101,6 +104,9 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		`CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_fts ON memories USING gin(fts)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_vec ON memories USING vchordrq (embedding vector_l2_ops)`,
+		// Backfill temporal-validity columns on databases created before them.
+		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS valid_from timestamptz`,
+		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS valid_to timestamptz`,
 	}
 	for _, q := range stmts {
 		if _, err := conn.Exec(ctx, q); err != nil {
@@ -146,17 +152,19 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 	_, err = tx.Exec(ctx, `
 		INSERT INTO memories
 			(id, namespace, tier, content, summary, metadata, tags, importance,
-			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by, embedding)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
+			 valid_from, valid_to, embedding)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 		ON CONFLICT (id) DO UPDATE SET
 			tier=EXCLUDED.tier, content=EXCLUDED.content,
 			summary=EXCLUDED.summary, metadata=EXCLUDED.metadata, tags=EXCLUDED.tags,
 			importance=EXCLUDED.importance, created_at=EXCLUDED.created_at, updated_at=EXCLUDED.updated_at,
 			last_accessed_at=EXCLUDED.last_accessed_at, access_count=EXCLUDED.access_count,
-			expires_at=EXCLUDED.expires_at, superseded_by=EXCLUDED.superseded_by, embedding=EXCLUDED.embedding`,
+			expires_at=EXCLUDED.expires_at, superseded_by=EXCLUDED.superseded_by,
+			valid_from=EXCLUDED.valid_from, valid_to=EXCLUDED.valid_to, embedding=EXCLUDED.embedding`,
 		m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, metaJSON, orEmptySlice(m.Tags),
 		m.Importance, m.CreatedAt, m.UpdatedAt, m.LastAccessedAt, m.AccessCount,
-		m.ExpiresAt, m.SupersededBy, pgvector.NewVector(m.Embedding))
+		m.ExpiresAt, m.SupersededBy, m.ValidFrom, m.ValidTo, pgvector.NewVector(m.Embedding))
 	if err != nil {
 		return fmt.Errorf("postgres: upsert: %w", err)
 	}
@@ -209,10 +217,13 @@ func (s *Store) Delete(ctx context.Context, namespace, id string) error {
 	return nil
 }
 
-// SetSuperseded records that a memory was replaced by supersededBy.
+// SetSuperseded records that a memory was replaced by supersededBy, stamping
+// valid_to at the moment of supersession (unless already set) so a time-filtered
+// recall can still surface the fact for the window it held.
 func (s *Store) SetSuperseded(ctx context.Context, namespace, id, supersededBy string) error {
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE memories SET superseded_by=$1 WHERE id=$2 AND namespace=$3`, supersededBy, id, namespace)
+		`UPDATE memories SET superseded_by=$1, valid_to=COALESCE(valid_to, now()) WHERE id=$2 AND namespace=$3`,
+		supersededBy, id, namespace)
 	if err != nil {
 		return err
 	}

@@ -22,7 +22,8 @@ const overFetch = 4
 
 // memoryColumns is the canonical column order for scanning a memory row.
 const memoryColumns = `id, namespace, tier, content, summary, metadata, tags, importance,
-	created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by`
+	created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
+	valid_from, valid_to`
 
 // Store is a sqlite-vec backed store.Store.
 type Store struct {
@@ -83,7 +84,9 @@ func (s *Store) migrate(ctx context.Context) error {
 			last_accessed_at INTEGER NOT NULL,
 			access_count     INTEGER NOT NULL DEFAULT 0,
 			expires_at       INTEGER,
-			superseded_by    TEXT
+			superseded_by    TEXT,
+			valid_from       INTEGER,
+			valid_to         INTEGER
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at)`,
@@ -99,6 +102,43 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
 			return fmt.Errorf("sqlitevec: migrate: %w\nstatement: %s", err, q)
 		}
+	}
+	// Backfill the temporal-validity columns on stores created before they
+	// existed (the CREATE TABLE above is a no-op once the table is present).
+	for _, col := range []string{"valid_from", "valid_to"} {
+		if err := s.addColumnIfMissing(ctx, "memories", col, "INTEGER"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// addColumnIfMissing adds column to table if it is not already present, so
+// schema additions are safe to run against an existing database.
+func (s *Store) addColumnIfMissing(ctx context.Context, table, column, decl string) error {
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return fmt.Errorf("sqlitevec: inspect %s: %w", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil // already present
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, decl))
+	if err != nil {
+		return fmt.Errorf("sqlitevec: add column %s.%s: %w", table, column, err)
 	}
 	return nil
 }
@@ -136,11 +176,12 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		op = "insert"
 		res, ierr := tx.ExecContext(ctx, `INSERT INTO memories
 			(id, namespace, tier, content, summary, metadata, tags, importance,
-			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
+			 valid_from, valid_to)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
 			m.Importance, ms(m.CreatedAt), ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
-			msPtr(m.ExpiresAt), strPtr(m.SupersededBy))
+			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo))
 		if ierr != nil {
 			return fmt.Errorf("sqlitevec: insert memory: %w", ierr)
 		}
@@ -156,11 +197,12 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		}
 		if _, uerr := tx.ExecContext(ctx, `UPDATE memories SET
 			tier=?, content=?, summary=?, metadata=?, tags=?, importance=?,
-			created_at=?, updated_at=?, last_accessed_at=?, access_count=?, expires_at=?, superseded_by=?
+			created_at=?, updated_at=?, last_accessed_at=?, access_count=?, expires_at=?, superseded_by=?,
+			valid_from=?, valid_to=?
 			WHERE rowid=?`,
 			string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
 			m.Importance, ms(m.CreatedAt), ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
-			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), rowID); uerr != nil {
+			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), rowID); uerr != nil {
 			return fmt.Errorf("sqlitevec: update memory: %w", uerr)
 		}
 	}
@@ -293,8 +335,11 @@ func (s *Store) DeleteIfExpiredBefore(ctx context.Context, namespace, id string,
 
 // SetSuperseded records that a memory was replaced by supersededBy.
 func (s *Store) SetSuperseded(ctx context.Context, namespace, id, supersededBy string) error {
+	// Stamp valid_to at the moment of supersession (unless already set), so a
+	// time-filtered recall can still surface the fact for the window it held.
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE memories SET superseded_by=? WHERE id=? AND namespace=?`, supersededBy, id, namespace)
+		`UPDATE memories SET superseded_by=?, valid_to=COALESCE(valid_to, ?) WHERE id=? AND namespace=?`,
+		supersededBy, ms(time.Now().UTC()), id, namespace)
 	if err != nil {
 		return err
 	}

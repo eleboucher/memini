@@ -35,6 +35,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("ConcurrentAccess", func(t *testing.T) { testConcurrentAccess(t, st, dims) })
 	t.Run("Reassign", func(t *testing.T) { testReassign(t, st, dims) })
 	t.Run("Retier", func(t *testing.T) { testRetier(t, st, dims) })
+	t.Run("TemporalAsOf", func(t *testing.T) { testTemporalAsOf(t, st, dims) })
 }
 
 func testReassign(t *testing.T, st store.Store, dims int) {
@@ -109,6 +110,41 @@ func testRetier(t *testing.T, st store.Store, dims int) {
 	}
 	if err := st.Retier(ctx, ns, "missing", memory.TierEpisodic, &exp); err != store.ErrNotFound {
 		t.Errorf("retier missing: want ErrNotFound, got %v", err)
+	}
+}
+
+// testTemporalAsOf verifies time-travel recall: a superseded fact is excluded
+// from default recall but reappears for an as_of within its validity window.
+func testTemporalAsOf(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+	old := mem(ns, "old", "the capital is Bonn", vec(dims, 1))
+	cur := mem(ns, "cur", "the capital is Berlin", vec(dims, 1))
+	mustUpsert(t, st, old)
+	mustUpsert(t, st, cur)
+
+	// Supersede "old" with "cur": old gets superseded_by + valid_to=now.
+	if err := st.SetSuperseded(ctx, ns, old.ID, cur.ID); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+
+	q := vec(dims, 1)
+	// Default recall hides the superseded fact.
+	now, err := st.VectorSearch(ctx, ns, q, store.Filter{}, 5)
+	if err != nil {
+		t.Fatalf("recall now: %v", err)
+	}
+	if containsScored(now, old.ID) {
+		t.Errorf("superseded 'old' must not appear in default recall")
+	}
+	// Time-travel to before the supersession surfaces the then-valid fact.
+	past := time.Now().Add(-time.Hour).UTC()
+	asof, err := st.VectorSearch(ctx, ns, q, store.Filter{AsOf: past}, 5)
+	if err != nil {
+		t.Fatalf("recall as_of: %v", err)
+	}
+	if !containsScored(asof, old.ID) {
+		t.Errorf("as_of recall before supersession should surface 'old'")
 	}
 }
 

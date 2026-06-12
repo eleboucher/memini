@@ -276,6 +276,9 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 	if req.IncludeSuperseded != nil {
 		in.IncludeSuperseded = *req.IncludeSuperseded
 	}
+	if req.AsOf != nil {
+		in.AsOf = req.AsOf.UTC()
+	}
 
 	res, err := h.svc.Recall(r.Context(), in)
 	if err != nil {

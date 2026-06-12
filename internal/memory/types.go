@@ -90,6 +90,13 @@ type Memory struct {
 	// contradiction resolution; non-nil means this record is tombstoned.
 	SupersededBy *string `json:"superseded_by,omitempty"`
 
+	// ValidFrom / ValidTo bound the wall-clock interval a fact was true. Both nil
+	// means "always" (the common case). ValidTo is stamped when a fact is
+	// superseded, so a time-filtered recall (Filter.AsOf) can answer "what was
+	// true in March" by surfacing facts valid then even if later replaced.
+	ValidFrom *time.Time `json:"valid_from,omitempty"`
+	ValidTo   *time.Time `json:"valid_to,omitempty"`
+
 	// Embedding is the dense vector for similarity search. It is required when
 	// writing to the store and is omitted from API responses.
 	Embedding []float32 `json:"-"`

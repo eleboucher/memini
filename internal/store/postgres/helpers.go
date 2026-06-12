@@ -36,7 +36,13 @@ func filterClause(b *args, f store.Filter) string {
 		}
 		clause += " AND (expires_at IS NULL OR expires_at > " + b.add(now) + ")"
 	}
-	if !f.IncludeSuperseded {
+	if !f.AsOf.IsZero() {
+		// Time-travel: rows whose validity window contained AsOf, regardless of
+		// supersession (a then-true fact may since have been replaced).
+		p := b.add(f.AsOf)
+		clause += " AND (valid_from IS NULL OR valid_from <= " + p + ")"
+		clause += " AND (valid_to IS NULL OR valid_to > " + p + ")"
+	} else if !f.IncludeSuperseded {
 		clause += " AND superseded_by IS NULL"
 	}
 	return clause
@@ -53,16 +59,17 @@ func scanMemoryWith(s rowScanner, metric *float64) (*memory.Memory, error) { ret
 
 func scanRow(s rowScanner, metric *float64) (*memory.Memory, error) {
 	var (
-		m          memory.Memory
-		tier       string
-		metaBytes  []byte
-		expires    sql.NullTime
-		superseded sql.NullString
+		m                  memory.Memory
+		tier               string
+		metaBytes          []byte
+		expires            sql.NullTime
+		superseded         sql.NullString
+		validFrom, validTo sql.NullTime
 	)
 	dest := []any{
 		&m.ID, &m.Namespace, &tier, &m.Content, &m.Summary, &metaBytes, &m.Tags,
 		&m.Importance, &m.CreatedAt, &m.UpdatedAt, &m.LastAccessedAt, &m.AccessCount,
-		&expires, &superseded,
+		&expires, &superseded, &validFrom, &validTo,
 	}
 	if metric != nil {
 		dest = append(dest, metric)
@@ -86,6 +93,14 @@ func scanRow(s rowScanner, metric *float64) (*memory.Memory, error) {
 	}
 	if superseded.Valid {
 		m.SupersededBy = &superseded.String
+	}
+	if validFrom.Valid {
+		t := validFrom.Time.UTC()
+		m.ValidFrom = &t
+	}
+	if validTo.Valid {
+		t := validTo.Time.UTC()
+		m.ValidTo = &t
 	}
 	return &m, nil
 }

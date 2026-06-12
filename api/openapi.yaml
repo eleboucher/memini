@@ -347,6 +347,13 @@ components:
         limit: { type: integer, default: 10 }
         include_expired: { type: boolean, default: false }
         include_superseded: { type: boolean, default: false }
+        as_of:
+          type: string
+          format: date-time
+          description: >
+            Time-travel recall: return facts whose validity window contained this
+            instant (including ones since superseded), for "what was true then"
+            queries.
     ScoredMemory:
       type: object
       required: [memory, score]

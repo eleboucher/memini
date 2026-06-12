@@ -10,8 +10,9 @@ import (
 
 // PurgeTombstones hard-deletes superseded (tombstoned) memories last updated
 // before olderThan, reclaiming the storage and vector-index space they occupy.
-// Tombstones are already excluded from recall, so this never changes results;
-// it only frees space. Returns the count deleted.
+// Tombstones are already excluded from default recall, so this never changes
+// those results; it only frees space and bounds how far back time-travel (as_of)
+// recall can reach. Returns the count deleted.
 func PurgeTombstones(ctx context.Context, st store.Store, olderThan time.Time) (int, error) {
 	namespaces, err := st.ListNamespaces(ctx)
 	if err != nil {

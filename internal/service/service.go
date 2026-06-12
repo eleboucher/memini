@@ -462,6 +462,10 @@ type RecallInput struct {
 	// IncludeExpired / IncludeSuperseded relax the default live-only filter.
 	IncludeExpired    bool
 	IncludeSuperseded bool
+	// AsOf, when non-zero, runs time-travel recall: it returns the facts whose
+	// validity window contained AsOf (including ones since superseded), instead
+	// of only currently-live memories.
+	AsOf time.Time
 }
 
 // Recall runs hybrid (vector + keyword) retrieval fused with RRF.
@@ -488,6 +492,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		IncludeExpired:    in.IncludeExpired,
 		IncludeSuperseded: in.IncludeSuperseded,
 		Now:               s.now(),
+		AsOf:              in.AsOf,
 	}
 
 	vec, err := embed.EmbedOne(ctx, s.embedder, s.queryPrefix+in.Query)

@@ -39,6 +39,11 @@ type Filter struct {
 	// clock. Callers with an injected clock (service.WithClock) should set it so
 	// store-level expiry filtering agrees with their notion of "now".
 	Now time.Time
+	// AsOf, when non-zero, switches to time-travel recall: results are the
+	// memories whose validity window contained AsOf (valid_from <= AsOf < valid_to,
+	// treating NULL bounds as open). It overrides the superseded exclusion, so a
+	// fact that was true then but has since been replaced is still returned.
+	AsOf time.Time
 }
 
 // Store is the persistence and retrieval contract for memories. Implementations

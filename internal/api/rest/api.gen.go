@@ -187,11 +187,13 @@ type ScoredMemory struct {
 
 // SearchRequest defines model for SearchRequest.
 type SearchRequest struct {
-	IncludeExpired    *bool   `json:"include_expired,omitempty"`
-	IncludeSuperseded *bool   `json:"include_superseded,omitempty"`
-	Limit             *int    `json:"limit,omitempty"`
-	Query             string  `json:"query"`
-	Tiers             *[]Tier `json:"tiers,omitempty"`
+	// AsOf Time-travel recall: return facts whose validity window contained this instant (including ones since superseded), for "what was true then" queries.
+	AsOf              *time.Time `json:"as_of,omitempty"`
+	IncludeExpired    *bool      `json:"include_expired,omitempty"`
+	IncludeSuperseded *bool      `json:"include_superseded,omitempty"`
+	Limit             *int       `json:"limit,omitempty"`
+	Query             string     `json:"query"`
+	Tiers             *[]Tier    `json:"tiers,omitempty"`
 }
 
 // SearchResponse defines model for SearchResponse.

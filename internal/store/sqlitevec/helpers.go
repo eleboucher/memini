@@ -28,10 +28,12 @@ func scanRow(s scanner, metric *float64) (*memory.Memory, error) {
 		created, updated, accessed int64
 		expires                    sql.NullInt64
 		superseded                 sql.NullString
+		validFrom, validTo         sql.NullInt64
 	)
 	dest := []any{
 		&m.ID, &m.Namespace, &tier, &m.Content, &m.Summary, &metaJSON, &tagsJSON,
 		&m.Importance, &created, &updated, &accessed, &m.AccessCount, &expires, &superseded,
+		&validFrom, &validTo,
 	}
 	if metric != nil {
 		dest = append(dest, metric)
@@ -56,6 +58,14 @@ func scanRow(s scanner, metric *float64) (*memory.Memory, error) {
 	}
 	if superseded.Valid {
 		m.SupersededBy = &superseded.String
+	}
+	if validFrom.Valid {
+		t := fromMs(validFrom.Int64)
+		m.ValidFrom = &t
+	}
+	if validTo.Valid {
+		t := fromMs(validTo.Int64)
+		m.ValidTo = &t
 	}
 	return &m, nil
 }
@@ -85,7 +95,13 @@ func filterClause(f store.Filter, alias string) (string, []any) {
 		b.WriteString(" AND (" + alias + ".expires_at IS NULL OR " + alias + ".expires_at > ?)")
 		args = append(args, now.UnixMilli())
 	}
-	if !f.IncludeSuperseded {
+	if !f.AsOf.IsZero() {
+		// Time-travel: keep rows whose validity window contained AsOf, regardless
+		// of supersession (a then-true fact may since have been replaced).
+		b.WriteString(" AND (" + alias + ".valid_from IS NULL OR " + alias + ".valid_from <= ?)")
+		b.WriteString(" AND (" + alias + ".valid_to IS NULL OR " + alias + ".valid_to > ?)")
+		args = append(args, f.AsOf.UnixMilli(), f.AsOf.UnixMilli())
+	} else if !f.IncludeSuperseded {
 		b.WriteString(" AND " + alias + ".superseded_by IS NULL")
 	}
 	return b.String(), args
