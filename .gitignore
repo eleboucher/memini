@@ -3,6 +3,11 @@
 # UI artifacts. The Vite bundle is generated, not committed; .gitkeep stays so
 # //go:embed all:dist compiles.
 /ui/node_modules/
+# Node deps for the JS integration plugins (e.g. openclaw's typebox); declared in
+# package.json, installed on demand, never committed.
+node_modules/
+# Python bytecode from running the Hermes plugin/tests.
+__pycache__/
 /internal/api/ui/dist/*
 !/internal/api/ui/dist/.gitkeep
 *.db

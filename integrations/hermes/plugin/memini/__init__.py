@@ -30,7 +30,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 from urllib.error import URLError
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 try:
@@ -118,6 +118,24 @@ def _api(base: str, path: str, body: dict | None, namespace: str, secret: str,
             return json.loads(raw) if raw else {}
     except (URLError, TimeoutError, ValueError):
         return None
+
+
+def _list_path(args: dict) -> str:
+    """Build the GET /v1/memories query string from a memory_list tool call:
+    repeatable tier/tag params plus meta=key=value pairs. urlencode escapes the
+    '=' inside each meta value, which the server decodes and splits on."""
+    params: list[tuple[str, str]] = []
+    for t in args.get("tiers") or []:
+        params.append(("tier", str(t)))
+    for tag in args.get("tags") or []:
+        params.append(("tag", str(tag)))
+    for key, val in (args.get("metadata") or {}).items():
+        params.append(("meta", f"{key}={val}"))
+    limit = args.get("limit")
+    if isinstance(limit, int) and limit > 0:
+        params.append(("limit", str(limit)))
+    qs = urlencode(params)
+    return f"/v1/memories?{qs}" if qs else "/v1/memories"
 
 
 class MeminiMemoryProvider(MemoryProvider):
@@ -210,8 +228,46 @@ class MeminiMemoryProvider(MemoryProvider):
                     "properties": {
                         "query": {"type": "string", "description": "What to search for"},
                         "limit": {"type": "integer", "description": "Max results", "default": 5},
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Restrict to memories carrying every listed tag (AND).",
+                        },
+                        "metadata": {
+                            "type": "object",
+                            "additionalProperties": {"type": "string"},
+                            "description": "Restrict to memories whose metadata contains each "
+                                           "key=value pair, e.g. {\"category\": \"bug_fixes\"}.",
+                        },
                     },
                     "required": ["query"],
+                },
+            },
+            {
+                "name": "memory_list",
+                "description": "Browse long-term memory (memini) without a query — filter by tier, "
+                               "tags, or metadata category (e.g. all procedural memories, or "
+                               "everything categorized bug_fixes). Newest first.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "tiers": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": list(VALID_TIERS)},
+                            "description": "Restrict to these tiers; empty means all.",
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Restrict to memories carrying every listed tag (AND).",
+                        },
+                        "metadata": {
+                            "type": "object",
+                            "additionalProperties": {"type": "string"},
+                            "description": "Restrict to memories whose metadata contains each key=value pair.",
+                        },
+                        "limit": {"type": "integer", "description": "Max results (0 = all)", "default": 20},
+                    },
                 },
             },
             {
@@ -228,6 +284,17 @@ class MeminiMemoryProvider(MemoryProvider):
                                            "episodic=what happened, working=transient",
                             "default": "semantic",
                         },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional keywords for later search/filtering.",
+                        },
+                        "category": {
+                            "type": "string",
+                            "description": "Optional topic bucket stored as metadata.category "
+                                           "(e.g. bug_fixes, architecture_decisions, coding_conventions) "
+                                           "so the memory can be browsed by subject later.",
+                        },
                     },
                     "required": ["content"],
                 },
@@ -236,8 +303,12 @@ class MeminiMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, name: str, args: dict, **kwargs: Any) -> str:
         if name == "memory_recall":
-            limit = args.get("limit", 5)
-            result = self._call("/v1/search", {"query": args["query"], "limit": limit})
+            body = {"query": args["query"], "limit": args.get("limit", 5)}
+            if args.get("tags"):
+                body["tags"] = args["tags"]
+            if args.get("metadata"):
+                body["metadata"] = args["metadata"]
+            result = self._call("/v1/search", body)
             items = []
             for r in (result or {}).get("results", []):
                 mem = r.get("memory") or {}
@@ -249,11 +320,30 @@ class MeminiMemoryProvider(MemoryProvider):
                 })
             return json.dumps({"results": items})
 
+        if name == "memory_list":
+            result = self._call(_list_path(args), None, method="GET")
+            items = []
+            for mem in (result or {}).get("memories", []):
+                items.append({
+                    "id": mem.get("id", ""),
+                    "content": mem.get("content", ""),
+                    "summary": mem.get("summary", ""),
+                    "tier": mem.get("tier", ""),
+                    "tags": mem.get("tags", []),
+                    "metadata": mem.get("metadata", {}),
+                })
+            return json.dumps({"memories": items})
+
         if name == "memory_remember":
             tier = args.get("tier", "semantic")
             if tier not in VALID_TIERS:
                 tier = "semantic"
-            result = self._call("/v1/memories", {"content": args["content"], "tier": tier})
+            body: dict = {"content": args["content"], "tier": tier}
+            if args.get("tags"):
+                body["tags"] = args["tags"]
+            if args.get("category"):
+                body["metadata"] = {"category": args["category"]}
+            result = self._call("/v1/memories", body)
             return json.dumps({"id": (result or {}).get("id"), "success": result is not None})
 
         return json.dumps({"error": f"Unknown tool: {name}"})

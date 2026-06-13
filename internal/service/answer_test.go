@@ -64,6 +64,43 @@ func TestAnswerGroundsOnRecall(t *testing.T) {
 	}
 }
 
+// TestAnswerFiltersGrounding pins that tag/metadata filters narrow the memories
+// the answer is grounded on, mirroring Recall — so "answer from my bug_fixes"
+// can't be polluted by unrelated memories.
+func TestAnswerFiltersGrounding(t *testing.T) {
+	ctx := context.Background()
+	ans := &fakeAnswerer{resp: "ok"}
+	st := openTestStore(t)
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithAnswerer(ans))
+
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the auth bug was a race condition", Tier: memory.TierSemantic,
+		Tags: []string{"auth"}, Metadata: map[string]any{"category": "bug_fixes"},
+	}); err != nil {
+		t.Fatalf("remember bug: %v", err)
+	}
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the auth handler latency improved", Tier: memory.TierSemantic,
+		Tags: []string{"auth"}, Metadata: map[string]any{"category": "performance_findings"},
+	}); err != nil {
+		t.Fatalf("remember perf: %v", err)
+	}
+
+	res, err := svc.Answer(ctx, service.AnswerInput{
+		Namespace: "alice", Query: "auth", Limit: 5,
+		Metadata: map[string]string{"category": "bug_fixes"},
+	})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if len(res.Sources) != 1 {
+		t.Fatalf("metadata filter should ground on 1 source, got %d", len(res.Sources))
+	}
+	if !strings.Contains(res.Sources[0].Memory.Content, "race condition") {
+		t.Fatalf("grounded on the wrong memory: %q", res.Sources[0].Memory.Content)
+	}
+}
+
 func TestAnswerRequiresAnswerer(t *testing.T) {
 	svc := service.New(openTestStore(t), embedtest.New(dims), service.WithSyncReinforce())
 	if _, err := svc.Answer(context.Background(), service.AnswerInput{Namespace: "alice", Query: "x"}); err == nil {

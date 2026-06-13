@@ -22,3 +22,4 @@ config:
   namespace_template: "{namespace}-{agent}"
   fallback_on_error: true
   timeout_ms: 5000
+  expose_tools: false

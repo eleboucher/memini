@@ -15,7 +15,8 @@
       "namespace_template": { "type": "string" },
       "skip_without_agent": { "type": "boolean" },
       "fallback_on_error": { "type": "boolean" },
-      "timeout_ms": { "type": "number" }
+      "timeout_ms": { "type": "number" },
+      "expose_tools": { "type": "boolean" }
     }
   },
   "uiHints": {
@@ -38,6 +39,10 @@
       "help": "In per-agent mode, skip recall/write when no agent identity resolves (e.g. cron/heartbeat) instead of using the fallback namespace"
     },
     "fallback_on_error": { "label": "Fallback On Error" },
-    "timeout_ms": { "label": "Timeout (ms)" }
+    "timeout_ms": { "label": "Timeout (ms)" },
+    "expose_tools": {
+      "label": "Expose Tools",
+      "help": "Register memory_recall / memory_list / memory_remember as explicit agent tools, alongside the automatic memory slot (default off)"
+    }
   }
 }

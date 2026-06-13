@@ -17,11 +17,19 @@ memini is a memory service. To search for prior context, call the
 - `limit` (optional) — max results; default 10, suggested 5 for targeted search
 - `tiers` (optional) — restrict to specific tiers (`semantic`, `procedural`,
   `episodic`, `working`)
+- `tags` (optional) — restrict to memories carrying every listed tag (AND)
+- `metadata` (optional) — restrict to memories whose metadata contains each
+  key=value pair, e.g. `{"category":"bug_fixes"}` (see `docs/categories.md`)
 - `scope` (optional) — `subtree` also searches namespaces nested under this one
   (a `project` namespace then also reads `project/<agent>`), for reading shared
   plus per-agent memory; default `exact`.
 - `as_of` (optional) — an RFC3339 time for "what was true then" queries; returns
   facts valid at that instant, including ones since superseded.
+
+To browse without a query — "show me everything tagged X" or "all procedural
+memories in the `deployment_runbook` category" — call `memory_list` instead. It
+takes the same `tiers` / `tags` / `metadata` filters plus `limit`, and returns
+matching memories newest-first with no relevance query.
 
 `memory_recall` runs hybrid retrieval (vector + keyword), then ranks by
 relevance and memory quality (a corroborated, durable, frequently-recalled fact

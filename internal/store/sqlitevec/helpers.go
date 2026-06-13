@@ -92,6 +92,18 @@ func filterClause(f store.Filter, alias string) (string, []any) {
 		}
 		b.WriteString(")")
 	}
+	// Tags: the memory must carry every listed tag (AND), matched against the
+	// JSON tags array element-wise so values bind safely as parameters.
+	for _, tag := range f.Tags {
+		b.WriteString(" AND EXISTS (SELECT 1 FROM json_each(" + alias + ".tags) WHERE value = ?)")
+		args = append(args, tag)
+	}
+	// Metadata: each key must be present at the top level with the given string
+	// value. json_each over an object yields one (key, value) row per entry.
+	for k, v := range f.Metadata {
+		b.WriteString(" AND EXISTS (SELECT 1 FROM json_each(" + alias + ".metadata) WHERE key = ? AND value = ?)")
+		args = append(args, k, v)
+	}
 	if !f.IncludeExpired {
 		// For a time-travel query, "live" means live at AsOf, not at the current
 		// wall clock — a memory that has since expired was still valid then.

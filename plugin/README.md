@@ -96,14 +96,28 @@ runs `resolveProject(data.cwd)` and sends the result as the
 `X-Memini-Namespace` header. Resolution order:
 
 1. `MEMINI_NAMESPACE` env var, if set.
-2. `git remote get-url origin` in `data.cwd`, then take the repo basename.
+2. `git remote get-url origin` in `data.cwd`, then take the repo basename
+   (or the `owner-repo` slug when `MEMINI_NAMESPACE_SCOPE=owner-repo`).
 3. `git rev-parse --show-toplevel` in `data.cwd`, then take the basename.
 4. `basename(data.cwd)`.
 
-This matches agentmemory's resolver. The server-side auto-resolve (when
-no namespace header is sent) is only a fallback for clients that don't
-send one — it's wrong in HTTP mode because the server is detached from
-the agent's cwd.
+The first resolution is cached in a self-healing project map
+(`$XDG_CACHE_HOME/memini/project-map.json`) keyed by both the remote URL and
+the repo's path. So if the folder moves (path changes, remote same) or the
+`origin` remote is later removed or renamed (path same, remote gone), the
+project still resolves to the **same** namespace instead of silently orphaning
+its memory. `MEMINI_NAMESPACE` always overrides the cache; delete the map to
+re-derive (e.g. after switching `MEMINI_NAMESPACE_SCOPE`).
+
+By default the bare repo name is used (backward compatible). Set
+`MEMINI_NAMESPACE_SCOPE=owner-repo` to disambiguate same-named repos under
+different owners (`alice/app` → `alice-app`, `bob/app` → `bob-app`); note this
+changes the namespace, so existing memory under the bare name needs
+`memini namespace move` to migrate.
+
+The server-side auto-resolve (when no namespace header is sent) is only a
+fallback for clients that don't send one — it's wrong in HTTP mode because the
+server is detached from the agent's cwd.
 
 ## Environment
 
@@ -113,6 +127,7 @@ the agent's cwd.
 | `MEMINI_MCP_URL`            | `http://localhost:8080/mcp` | MCP tools    | memini `/mcp` URL for the model-invoked memory tools         |
 | `MEMINI_TOKEN`              | —                           | hooks + MCP  | bearer token; required when the server sets `MEMINI_API_KEY` |
 | `MEMINI_NAMESPACE`          | auto (cwd/git basename)     | hooks + MCP  | explicit namespace override; otherwise auto-resolved         |
+| `MEMINI_NAMESPACE_SCOPE`    | `repo`                      | hooks        | `owner-repo` derives `owner-repo` slugs from the git remote  |
 | `MEMINI_AUTO_SAVE`          | on                          | `Stop` hook  | set to `0` to disable the periodic auto-save nudge           |
 | `MEMINI_AUTO_SAVE_INTERVAL` | `15`                        | `Stop` hook  | user messages between auto-save nudges                       |
 | `MEMINI_DEBUG`              | —                           | hooks        | set to `1` for verbose hook logging                          |

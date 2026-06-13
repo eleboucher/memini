@@ -2,6 +2,9 @@
   "name": "@eleboucher/memini",
   "version": "0.2.7",
   "type": "module",
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.49"
+  },
   "openclaw": {
     "extensions": [
       "./plugin.mjs"

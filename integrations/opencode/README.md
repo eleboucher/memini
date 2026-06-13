@@ -75,7 +75,10 @@ cd integrations/opencode/plugin && node --test
 
 Instead of the plugin you can expose memini's `memory_*` tools to the model and
 let it call them on demand. opencode reads MCP servers from `opencode.json` under
-`mcp`.
+`mcp`. This wire gives the model the full tool set, including `memory_recall`
+(with `tags` / `metadata` filters), `memory_list` (query-less browse by tier /
+tags / metadata category), and `memory_remember`. Set `metadata.category` on
+writes to browse by subject later — see `docs/categories.md`.
 
 **Remote:** merge [`opencode.json`](opencode.json) into your config.
 

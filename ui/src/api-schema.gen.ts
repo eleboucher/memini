@@ -284,6 +284,12 @@ export interface components {
         SearchRequest: {
             query: string;
             tiers?: components["schemas"]["Tier"][];
+            /** @description A memory must carry every listed tag (AND). */
+            tags?: string[];
+            /** @description A memory's top-level metadata must contain every listed key=value pair (AND). */
+            metadata?: {
+                [key: string]: string;
+            };
             /** @default 10 */
             limit: number;
             /** @default false */
@@ -313,6 +319,12 @@ export interface components {
         AnswerRequest: {
             query: string;
             tiers?: components["schemas"]["Tier"][];
+            /** @description Ground only on memories carrying every listed tag (AND). */
+            tags?: string[];
+            /** @description Ground only on memories whose top-level metadata contains every listed key=value pair (AND). */
+            metadata?: {
+                [key: string]: string;
+            };
             /**
              * @description Caps how many recalled memories ground the answer.
              * @default 10
@@ -584,6 +596,10 @@ export interface operations {
             query?: {
                 /** @description Repeatable and/or comma-separated tier filter; omitted means all tiers. */
                 tier?: components["schemas"]["Tier"][];
+                /** @description Repeatable and/or comma-separated tag filter; a memory must carry every listed tag (AND). */
+                tag?: string[];
+                /** @description Repeatable metadata filter in "key=value" form; a memory's top-level metadata must contain every listed pair (AND). Only string values match. */
+                meta?: string[];
                 include_expired?: boolean;
                 include_superseded?: boolean;
                 /** @description Caps the result count; 0 or absent returns all matches. */

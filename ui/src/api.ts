@@ -68,9 +68,21 @@ function safeParse(text: string): unknown {
 
 export interface ListParams {
   tiers?: Tier[]
+  tags?: string[]
+  metadata?: Record<string, string>
   includeExpired?: boolean
   includeSuperseded?: boolean
   limit?: number
+}
+
+// appendFilters adds the shared tier/tag/meta query params to a list request.
+function appendFilters(q: URLSearchParams, p: ListParams) {
+  p.tiers?.forEach((t) => q.append('tier', t))
+  p.tags?.forEach((t) => q.append('tag', t))
+  Object.entries(p.metadata ?? {}).forEach(([k, v]) => q.append('meta', `${k}=${v}`))
+  if (p.includeExpired) q.set('include_expired', 'true')
+  if (p.includeSuperseded) q.set('include_superseded', 'true')
+  if (p.limit) q.set('limit', String(p.limit))
 }
 
 // isAllProjects reports the "All projects" aggregate mode: the active namespace
@@ -89,10 +101,7 @@ function scopedStats(ns?: string) {
 
 function scopedList(p: ListParams, ns?: string) {
   const q = new URLSearchParams()
-  p.tiers?.forEach((t) => q.append('tier', t))
-  if (p.includeExpired) q.set('include_expired', 'true')
-  if (p.includeSuperseded) q.set('include_superseded', 'true')
-  if (p.limit) q.set('limit', String(p.limit))
+  appendFilters(q, p)
   const qs = q.toString()
   return req<ListResponse>('GET', '/v1/memories' + (qs ? `?${qs}` : ''), undefined, ns).then(
     (r) => r.memories ?? [],
@@ -103,13 +112,21 @@ function scopedSearch(query: string, opts: SearchOpts, ns?: string) {
   return req<SearchResponse>(
     'POST',
     '/v1/search',
-    { query, tiers: opts.tiers?.length ? opts.tiers : undefined, limit: opts.limit ?? 20 },
+    {
+      query,
+      tiers: opts.tiers?.length ? opts.tiers : undefined,
+      tags: opts.tags?.length ? opts.tags : undefined,
+      metadata: opts.metadata && Object.keys(opts.metadata).length ? opts.metadata : undefined,
+      limit: opts.limit ?? 20,
+    },
     ns,
   ).then((r) => r.results ?? [])
 }
 
 interface SearchOpts {
   tiers?: Tier[]
+  tags?: string[]
+  metadata?: Record<string, string>
   limit?: number
 }
 
@@ -125,10 +142,7 @@ function statsAll(): Promise<Stats> {
 
 function listAll(p: ListParams): Promise<Memory[]> {
   const q = new URLSearchParams()
-  p.tiers?.forEach((t) => q.append('tier', t))
-  if (p.includeExpired) q.set('include_expired', 'true')
-  if (p.includeSuperseded) q.set('include_superseded', 'true')
-  if (p.limit) q.set('limit', String(p.limit))
+  appendFilters(q, p)
   q.set('all_namespaces', 'true')
   return req<ListResponse>('GET', '/v1/memories?' + q.toString()).then((r) => r.memories ?? [])
 }

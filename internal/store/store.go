@@ -31,6 +31,13 @@ type Scored struct {
 type Filter struct {
 	// Tiers restricts results to these tiers; empty means all tiers.
 	Tiers []memory.Tier
+	// Tags restricts results to memories carrying every listed tag (AND). Empty
+	// means no tag constraint.
+	Tags []string
+	// Metadata restricts results to memories whose top-level metadata contains
+	// each listed key with the given string value (AND). Empty means no metadata
+	// constraint. Only top-level string-valued entries are matched.
+	Metadata map[string]string
 	// IncludeExpired includes memories past their TTL (default excludes them).
 	IncludeExpired bool
 	// IncludeSuperseded includes contradiction-tombstoned memories.

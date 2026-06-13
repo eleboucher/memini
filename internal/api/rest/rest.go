@@ -270,6 +270,12 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 		Query:     req.Query,
 		Tiers:     tiers,
 	}
+	if req.Tags != nil {
+		in.Tags = *req.Tags
+	}
+	if req.Metadata != nil {
+		in.Metadata = *req.Metadata
+	}
 	if req.Limit != nil {
 		in.Limit = *req.Limit
 	}
@@ -310,6 +316,12 @@ func (h *Server) AnswerQuestion(w http.ResponseWriter, r *http.Request, _ Answer
 		Query:     req.Query,
 		Tiers:     tiers,
 	}
+	if req.Tags != nil {
+		in.Tags = *req.Tags
+	}
+	if req.Metadata != nil {
+		in.Metadata = *req.Metadata
+	}
 	if req.Limit != nil {
 		in.Limit = *req.Limit
 	}
@@ -329,9 +341,16 @@ func (h *Server) ListMemories(w http.ResponseWriter, r *http.Request, params Lis
 		httputil.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	meta, err := parseMetaFilters(params.Meta)
+	if err != nil {
+		httputil.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	in := service.ListInput{
 		Namespace: namespaceFromContext(r.Context()),
 		Tiers:     tiers,
+		Tags:      queryTags(params.Tag),
+		Metadata:  meta,
 	}
 	if params.IncludeExpired != nil {
 		in.IncludeExpired = *params.IncludeExpired
@@ -546,6 +565,43 @@ func queryTiers(in *[]Tier) ([]memory.Tier, error) {
 		}
 	}
 	return tiers, nil
+}
+
+// queryTags expands the ?tag= filter, splitting comma-separated values like
+// queryTiers does (the generated binding only splits repeats). Blank entries
+// are dropped; nil/empty yields no tag constraint.
+func queryTags(in *[]string) []string {
+	if in == nil {
+		return nil
+	}
+	var tags []string
+	for _, v := range *in {
+		for part := range strings.SplitSeq(v, ",") {
+			if t := strings.TrimSpace(part); t != "" {
+				tags = append(tags, t)
+			}
+		}
+	}
+	return tags
+}
+
+// parseMetaFilters parses the ?meta=key=value filter into a map. Each entry
+// splits on the first '=', so values may themselves contain '='. A missing '='
+// or empty key is a client error.
+func parseMetaFilters(in *[]string) (map[string]string, error) {
+	if in == nil || len(*in) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(*in))
+	for _, v := range *in {
+		k, val, ok := strings.Cut(v, "=")
+		k = strings.TrimSpace(k)
+		if !ok || k == "" {
+			return nil, fmt.Errorf("invalid meta filter %q: want key=value", v)
+		}
+		out[k] = val
+	}
+	return out, nil
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {

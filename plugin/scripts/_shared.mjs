@@ -18,22 +18,42 @@ import fs from "node:fs";
 export const DEBUG = process.env["MEMINI_DEBUG"] === "1";
 
 /**
- * Extract the repo name from a git remote URL.
+ * Split a git remote URL into its path segments (owner, repo, ...).
  * Handles ssh://, https://, and scp-style URLs; strips a trailing .git.
+ * Returns [] on any parse error.
+ */
+function remotePathSegments(url) {
+  if (typeof url !== "string" || !url) return [];
+  const cleaned = url.trim().replace(/\/+$/, "").replace(/\.git$/i, "");
+  if (!cleaned) return [];
+  const scpMatch = cleaned.match(/^[^/:]+:[^/]/);
+  const path = scpMatch ? cleaned.slice(scpMatch[0].indexOf(":") + 1) : cleaned;
+  return path.split("/").filter(Boolean);
+}
+
+/**
+ * Extract the repo name (last path segment) from a git remote URL.
  * Returns the basename, or null on any parse error.
  */
 export function repoNameFromRemote(url) {
-  if (typeof url !== "string" || !url) return null;
-  const cleaned = url.trim().replace(/\/+$/, "").replace(/\.git$/i, "");
-  if (!cleaned) return null;
-  const scpMatch = cleaned.match(/^[^/:]+:[^/]/);
-  if (scpMatch) {
-    const path = cleaned.slice(scpMatch[0].indexOf(":") + 1);
-    const seg = path.split("/").filter(Boolean).pop();
-    return seg || null;
-  }
-  const seg = cleaned.split("/").filter(Boolean).pop();
-  return seg || null;
+  const segs = remotePathSegments(url);
+  return segs.length ? segs[segs.length - 1] : null;
+}
+
+/**
+ * Extract an "owner-repo" slug (last two path segments joined with "-") from a
+ * git remote URL, so same-named repos under different owners don't collide
+ * (alice/app vs bob/app -> "alice-app" vs "bob-app"). Falls back to the bare
+ * repo name when only one segment is present. Returns null on parse error.
+ * Used only when MEMINI_NAMESPACE_SCOPE=owner-repo (see resolveProjectBase).
+ */
+export function repoSlugFromRemote(url) {
+  const segs = remotePathSegments(url);
+  if (!segs.length) return null;
+  if (segs.length === 1) return segs[0];
+  const owner = segs[segs.length - 2].replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  const repo = segs[segs.length - 1];
+  return owner ? `${owner}-${repo}` : repo;
 }
 
 /**
@@ -57,32 +77,90 @@ function withAgent(ns) {
   return seg ? `${ns}/${seg}` : ns;
 }
 
+// gitOut runs a git command in dir and returns its trimmed stdout, or "" on
+// any error (not a repo, git missing, timeout). Best-effort — never throws.
+function gitOut(args, dir) {
+  try {
+    return execSync(`git ${args}`, {
+      cwd: dir,
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 500,
+    })
+      .toString()
+      .trim();
+  } catch {
+    return "";
+  }
+}
+
 function resolveProjectBase(cwd) {
   const nsEnv = process.env["MEMINI_NAMESPACE"];
   if (nsEnv && nsEnv.trim()) return nsEnv.trim();
   const dir = cwd && cwd.trim() ? cwd : process.cwd();
+
+  const remote = gitOut("remote get-url origin", dir);
+  const toplevel = gitOut("rev-parse --show-toplevel", dir);
+
+  // Self-heal: a repo's identity is its remote URL (stable across folder moves
+  // and clones) and its toplevel path (stable when the remote is later removed
+  // or renamed). If either key has a remembered namespace, reuse it so a move
+  // or a dropped remote never silently orphans a project's memory. The path key
+  // is intentionally sticky: deleting a repo and cloning a *different* one into
+  // the exact same directory inherits the old namespace until the map is cleared
+  // (a rare case; set MEMINI_NAMESPACE to override).
+  const ownerRepo = (process.env["MEMINI_NAMESPACE_SCOPE"] || "").trim() === "owner-repo";
+  const remoteKey = remote ? "remote:" + normalizeRemote(remote) : null;
+  const pathKey = toplevel ? "path:" + toplevel : null;
+  const map = readProjectMap();
+  const cached = (remoteKey && map[remoteKey]) || (pathKey && map[pathKey]);
+  if (cached) return cached;
+
+  // Derive a fresh namespace. owner-repo disambiguates same-named repos across
+  // owners; the default keeps the bare repo name for backward compatibility.
+  let ns = "";
+  if (remote) ns = (ownerRepo ? repoSlugFromRemote(remote) : repoNameFromRemote(remote)) || "";
+  if (!ns && toplevel) ns = basename(toplevel);
+  if (!ns) ns = basename(dir);
+
+  // Remember the derivation under every stable key we have, so a later move or
+  // remote change resolves back to this same namespace.
+  const entries = {};
+  if (remoteKey) entries[remoteKey] = ns;
+  if (pathKey) entries[pathKey] = ns;
+  if (remoteKey || pathKey) writeProjectMap({ ...map, ...entries });
+  return ns;
+}
+
+/** Normalize a remote URL into a stable map key: trim, drop trailing slashes
+ * and a .git suffix, lowercase. Same checkout uses one consistent remote, so
+ * light normalization is enough to survive trivial formatting differences. */
+function normalizeRemote(url) {
+  return String(url).trim().replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase();
+}
+
+/** Path of the self-healing project→namespace map. */
+function projectMapPath() {
+  return join(meminiCacheDir(), "project-map.json");
+}
+
+/** Read the project map ({} on any error — the map is a best-effort cache). */
+export function readProjectMap() {
   try {
-    const url = execSync("git remote get-url origin", {
-      cwd: dir,
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 500,
-    })
-      .toString()
-      .trim();
-    const name = repoNameFromRemote(url);
-    if (name) return name;
-  } catch {}
+    const obj = parseJSON(fs.readFileSync(projectMapPath(), "utf8"));
+    return obj && typeof obj === "object" ? obj : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Persist the project map (best-effort; failures are swallowed). */
+function writeProjectMap(map) {
   try {
-    const top = execSync("git rev-parse --show-toplevel", {
-      cwd: dir,
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 500,
-    })
-      .toString()
-      .trim();
-    if (top) return basename(top);
-  } catch {}
-  return basename(dir);
+    fs.mkdirSync(meminiCacheDir(), { recursive: true });
+    fs.writeFileSync(projectMapPath(), JSON.stringify(map));
+  } catch (e) {
+    if (DEBUG) console.error("[memini] writeProjectMap failed:", e?.message || e);
+  }
 }
 
 /** Drain stdin to a UTF-8 string. */

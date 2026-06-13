@@ -514,7 +514,12 @@ type RecallInput struct {
 	Namespace string
 	Query     string
 	Tiers     []memory.Tier
-	Limit     int
+	// Tags narrows recall to memories carrying every listed tag (AND).
+	Tags []string
+	// Metadata narrows recall to memories whose top-level metadata contains each
+	// listed key=value string pair (AND).
+	Metadata map[string]string
+	Limit    int
 	// IncludeExpired / IncludeSuperseded relax the default live-only filter.
 	IncludeExpired    bool
 	IncludeSuperseded bool
@@ -550,6 +555,8 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	}
 	filter := store.Filter{
 		Tiers:             in.Tiers,
+		Tags:              in.Tags,
+		Metadata:          in.Metadata,
 		IncludeExpired:    in.IncludeExpired,
 		IncludeSuperseded: in.IncludeSuperseded,
 		Now:               s.now(),

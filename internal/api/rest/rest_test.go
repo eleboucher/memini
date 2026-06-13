@@ -323,6 +323,88 @@ func TestListStatsNamespaces(t *testing.T) {
 	}
 }
 
+// TestTagMetadataFilter pins the tag/metadata filter contract on both the
+// query-less browse (GET /v1/memories?tag=&meta=) and the search (POST
+// /v1/search) surfaces, plus the 400 on a malformed meta= pair.
+func TestTagMetadataFilter(t *testing.T) {
+	h := newServer(t)
+
+	seed := []struct {
+		content  string
+		tags     []string
+		category string
+	}{
+		{"fixed the auth race", []string{"bug", "auth"}, "bug_fixes"},
+		{"auth handler latency", []string{"perf", "auth"}, "performance_findings"},
+		{"unrelated note", nil, ""},
+	}
+	for _, s := range seed {
+		body := map[string]any{"content": s.content, "tier": "semantic"}
+		if s.tags != nil {
+			body["tags"] = s.tags
+		}
+		if s.category != "" {
+			body["metadata"] = map[string]any{"category": s.category}
+		}
+		rec := do(t, h, http.MethodPost, "/v1/memories", "alice", apiKey, body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("seed: want 201, got %d (%s)", rec.Code, rec.Body)
+		}
+	}
+
+	var lr struct {
+		Memories []struct {
+			Content string `json:"content"`
+		} `json:"memories"`
+	}
+
+	// Single tag matches both auth memories.
+	rec := do(t, h, http.MethodGet, "/v1/memories?tag=auth", "alice", apiKey, nil)
+	mustJSON(t, rec, &lr)
+	if len(lr.Memories) != 2 {
+		t.Fatalf("?tag=auth: want 2, got %d (%+v)", len(lr.Memories), lr.Memories)
+	}
+
+	// Comma-separated tags are ANDed.
+	rec = do(t, h, http.MethodGet, "/v1/memories?tag=auth,bug", "alice", apiKey, nil)
+	mustJSON(t, rec, &lr)
+	if len(lr.Memories) != 1 {
+		t.Fatalf("?tag=auth,bug: want 1, got %d", len(lr.Memories))
+	}
+
+	// Metadata category narrows the browse.
+	rec = do(t, h, http.MethodGet, "/v1/memories?meta=category=bug_fixes", "alice", apiKey, nil)
+	mustJSON(t, rec, &lr)
+	if len(lr.Memories) != 1 {
+		t.Fatalf("?meta=category=bug_fixes: want 1, got %d", len(lr.Memories))
+	}
+
+	// A malformed meta filter is a 400, never silently unfiltered.
+	rec = do(t, h, http.MethodGet, "/v1/memories?meta=noequals", "alice", apiKey, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("?meta=noequals: want 400, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	// Search composes query + tag + metadata.
+	var sr struct {
+		Results []struct {
+			Memory struct {
+				Content string `json:"content"`
+			} `json:"memory"`
+		} `json:"results"`
+	}
+	rec = do(t, h, http.MethodPost, "/v1/search", "alice", apiKey, map[string]any{
+		"query": "auth", "tags": []string{"perf"}, "metadata": map[string]string{"category": "performance_findings"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	mustJSON(t, rec, &sr)
+	if len(sr.Results) != 1 || sr.Results[0].Memory.Content != "auth handler latency" {
+		t.Fatalf("filtered search: want only the perf memory, got %+v", sr.Results)
+	}
+}
+
 func mustJSON(t *testing.T, rec *httptest.ResponseRecorder, v any) {
 	t.Helper()
 	if err := json.Unmarshal(rec.Body.Bytes(), v); err != nil {

@@ -141,6 +141,62 @@ test("repoNameFromRemote parses common git URL shapes", async () => {
   assert.equal(repoNameFromRemote("https://github.com/user/multi-level/nested.git"), "nested");
 });
 
+test("repoSlugFromRemote builds an owner-repo slug", async () => {
+  const { repoSlugFromRemote } = await import("./_shared.mjs");
+  assert.equal(repoSlugFromRemote("git@github.com:alice/app.git"), "alice-app");
+  assert.equal(repoSlugFromRemote("https://github.com/bob/app"), "bob-app");
+  assert.equal(repoSlugFromRemote("ssh://git@host:2222/team/svc.git"), "team-svc");
+  assert.equal(repoSlugFromRemote("app.git"), "app"); // single segment -> bare name
+  assert.equal(repoSlugFromRemote(""), null);
+});
+
+test("resolveProject: MEMINI_NAMESPACE_SCOPE=owner-repo disambiguates by owner", async () => {
+  const { execSync } = await import("node:child_process");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "memini-test-"));
+  const prevScope = process.env["MEMINI_NAMESPACE_SCOPE"];
+  const prevCache = process.env["XDG_CACHE_HOME"];
+  process.env["XDG_CACHE_HOME"] = mkdtempSync(join(tmpdir(), "memini-cache-"));
+  process.env["MEMINI_NAMESPACE_SCOPE"] = "owner-repo";
+  try {
+    execSync("git init -q", { cwd: dir });
+    execSync("git remote add origin https://github.com/acme/widget.git", { cwd: dir });
+    const { resolveProject } = await import("./_shared.mjs?cb=" + Date.now());
+    assert.equal(resolveProject(dir), "acme-widget");
+  } finally {
+    if (prevScope === undefined) delete process.env["MEMINI_NAMESPACE_SCOPE"];
+    else process.env["MEMINI_NAMESPACE_SCOPE"] = prevScope;
+    if (prevCache === undefined) delete process.env["XDG_CACHE_HOME"];
+    else process.env["XDG_CACHE_HOME"] = prevCache;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveProject: self-heals to the same namespace after the remote is removed", async () => {
+  const { execSync } = await import("node:child_process");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "memini-test-"));
+  const prevCache = process.env["XDG_CACHE_HOME"];
+  process.env["XDG_CACHE_HOME"] = mkdtempSync(join(tmpdir(), "memini-cache-"));
+  try {
+    execSync("git init -q", { cwd: dir });
+    execSync("git remote add origin https://github.com/acme/widget.git", { cwd: dir });
+    const { resolveProject } = await import("./_shared.mjs?cb=" + Date.now());
+    // First resolution derives + caches "widget" under both the remote and path keys.
+    assert.equal(resolveProject(dir), "widget");
+    // Drop the remote: without self-heal this would fall back to the toplevel
+    // basename and silently orphan the project's memory.
+    execSync("git remote remove origin", { cwd: dir });
+    assert.equal(resolveProject(dir), "widget");
+  } finally {
+    if (prevCache === undefined) delete process.env["XDG_CACHE_HOME"];
+    else process.env["XDG_CACHE_HOME"] = prevCache;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("session-start.mjs: queries with right namespace, writes context to stdout", async () => {
   const hits = [];
   const { url, close } = await startMockServer((req, res, body) => {

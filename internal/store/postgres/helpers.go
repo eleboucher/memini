@@ -29,6 +29,18 @@ func filterClause(b *args, f store.Filter) string {
 		}
 		clause += " AND tier = ANY(" + b.add(tiers) + ")"
 	}
+	// Tags: the memory's text[] must contain every listed tag (@> = contains).
+	if len(f.Tags) > 0 {
+		clause += " AND tags @> " + b.add(f.Tags)
+	}
+	// Metadata: the jsonb must contain each listed key=value pair. json.Marshal
+	// of a map[string]string cannot fail, so the error is safe to drop. Pass the
+	// JSON as a string (not []byte, which pgx would send as bytea — uncastable to
+	// jsonb) so the text::jsonb cast parses it.
+	if len(f.Metadata) > 0 {
+		mj, _ := json.Marshal(f.Metadata) //nolint:errchkjson
+		clause += " AND metadata @> " + b.add(string(mj)) + "::jsonb"
+	}
 	if !f.IncludeExpired {
 		// For a time-travel query, "live" means live at AsOf, not at the current
 		// wall clock — a memory that has since expired was still valid then.

@@ -28,17 +28,41 @@ curl -sf -X POST "$MEMINI_URL/v1/search" \
 
 Read the returned `results[].memory.content` and factor them into your plan.
 
+Narrow recall with `tags` (a memory must carry every listed tag) and/or
+`metadata` (top-level key=value pairs), e.g. only auth bug-fix memories:
+
+```sh
+curl -sf -X POST "$MEMINI_URL/v1/search" \
+  -H 'Content-Type: application/json' \
+  -H "X-Memini-Namespace: $MEMINI_NS" \
+  -d '{"query":"auth","tags":["auth"],"metadata":{"category":"bug_fixes"}}'
+```
+
+## Browse without a query
+
+To list memories by tier/tag/category instead of searching — "show me
+everything categorized `bug_fixes`", "all procedural memories" — use
+`GET /v1/memories` with repeatable `tag` and `meta=key=value` filters:
+
+```sh
+curl -sf "$MEMINI_URL/v1/memories?tier=procedural&meta=category=bug_fixes" \
+  -H "X-Memini-Namespace: $MEMINI_NS"
+```
+
 ## Remember durable facts
 
 ```sh
 curl -sf -X POST "$MEMINI_URL/v1/memories" \
   -H 'Content-Type: application/json' \
   -H "X-Memini-Namespace: $MEMINI_NS" \
-  -d '{"content":"<the fact to remember>","tier":"semantic"}'
+  -d '{"content":"<the fact to remember>","tier":"semantic","metadata":{"category":"architecture_decisions"}}'
 ```
 
 Use `tier: "semantic"` for durable knowledge, `procedural` for how-to steps,
-`episodic` for what happened, `working` for transient notes.
+`episodic` for what happened, `working` for transient notes. Set
+`metadata.category` to a canonical topic bucket (see `docs/categories.md`, e.g.
+`bug_fixes`, `architecture_decisions`, `coding_conventions`) so the memory can
+be browsed and filtered by subject later.
 
 ## Guidance
 

@@ -19,6 +19,10 @@ tool with:
 - `tags` (optional) — array of keywords for later search; tag a critical,
   always-relevant fact (the user's identity, a hard constraint) `pinned` so it
   surfaces in every session briefing
+- `metadata.category` (optional) — a topic bucket so the memory can be browsed
+  and filtered by subject later (e.g. `bug_fixes`, `architecture_decisions`,
+  `coding_conventions`). Use a canonical value from `docs/categories.md`. This is
+  orthogonal to `tier`: tier is the memory's _kind_, category is its _topic_.
 - `summary` (optional) — short summary; defaults to first 200 chars of content
 - `confidence` (optional) — 0..1 for durable (`semantic`/`procedural`) facts;
   omit to let it start uncorroborated and earn trust as the fact recurs. Durable
@@ -43,7 +47,7 @@ tool with:
 
 ## Examples
 
-Call with tier `semantic`:
+Call with tier `semantic`, `metadata.category` `architecture_decisions`:
 
 > The auth middleware uses `jose` rather than `jsonwebtoken` because we
 > deploy to Cloudflare Workers, which can't run jsonwebtoken's C++ bindings.

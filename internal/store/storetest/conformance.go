@@ -27,6 +27,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("VectorRanking", func(t *testing.T) { testVectorRanking(t, st, dims) })
 	t.Run("KeywordSearch", func(t *testing.T) { testKeyword(t, st, dims) })
 	t.Run("Filters", func(t *testing.T) { testFilters(t, st, dims) })
+	t.Run("TagMetadataFilter", func(t *testing.T) { testTagMetadataFilter(t, st, dims) })
 	t.Run("SetSuperseded", func(t *testing.T) { testSetSuperseded(t, st, dims) })
 	t.Run("Reinforce", func(t *testing.T) { testReinforce(t, st, dims) })
 	t.Run("DeleteIfExpiredBefore", func(t *testing.T) { testDeleteIfExpiredBefore(t, st, dims) })
@@ -392,6 +393,78 @@ func testFilters(t *testing.T, st store.Store, dims int) {
 	if !containsMem(exp, id(ns, "exp")) {
 		t.Fatalf("ListExpired should include %q, got %v", id(ns, "exp"), memIDs(exp))
 	}
+}
+
+// testTagMetadataFilter verifies that Filter.Tags (AND semantics) and
+// Filter.Metadata (top-level key=value) narrow List, VectorSearch and
+// KeywordSearch across backends.
+func testTagMetadataFilter(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+	// Tokens reused as both memory ids and tags; consts keep goconst quiet.
+	const (
+		tagAuth = "auth"
+		bug     = "bug"
+		perf    = "perf"
+		keyCat  = "category"
+	)
+
+	bm := mem(ns, bug, "fixed the auth race condition", vec(dims, 1))
+	bm.Tags = []string{bug, tagAuth}
+	bm.Metadata = map[string]any{keyCat: "bug_fixes"}
+	mustUpsert(t, st, bm)
+
+	pm := mem(ns, perf, "auth handler latency tuning", vec(dims, 1))
+	pm.Tags = []string{perf, tagAuth}
+	pm.Metadata = map[string]any{keyCat: "performance_findings"}
+	mustUpsert(t, st, pm)
+
+	plain := mem(ns, "plain", "unrelated note about auth", vec(dims, 1))
+	mustUpsert(t, st, plain)
+
+	// Single tag matches every memory carrying it.
+	byTag := mustList(t, st, ns, store.Filter{Tags: []string{tagAuth}})
+	if got := memIDs(byTag); len(got) != 2 || !containsMem(byTag, id(ns, bug)) {
+		t.Fatalf("tag=auth should yield bug+perf, got %v", got)
+	}
+
+	// Multiple tags are ANDed.
+	got := memIDs(mustList(t, st, ns, store.Filter{Tags: []string{tagAuth, bug}}))
+	if len(got) != 1 || got[0] != id(ns, bug) {
+		t.Fatalf("tags=auth+bug should yield only bug, got %v", got)
+	}
+
+	// Metadata key=value narrows to the matching category.
+	got = memIDs(mustList(t, st, ns, store.Filter{Metadata: map[string]string{keyCat: "bug_fixes"}}))
+	if len(got) != 1 || got[0] != id(ns, bug) {
+		t.Fatalf("category=bug_fixes should yield only bug, got %v", got)
+	}
+
+	// Tag + metadata filters compose on search legs too.
+	f := store.Filter{Tags: []string{perf}, Metadata: map[string]string{keyCat: "performance_findings"}}
+	vres, err := st.VectorSearch(ctx, ns, vec(dims, 1), f, 10)
+	if err != nil {
+		t.Fatalf("vector search: %v", err)
+	}
+	if ids := idsOf(vres); len(ids) != 1 || ids[0] != id(ns, perf) {
+		t.Fatalf("filtered vector search should yield only perf, got %v", ids)
+	}
+	kres, err := st.KeywordSearch(ctx, ns, tagAuth, store.Filter{Tags: []string{bug}}, 10)
+	if err != nil {
+		t.Fatalf("keyword search: %v", err)
+	}
+	if ids := idsOf(kres); len(ids) != 1 || ids[0] != id(ns, bug) {
+		t.Fatalf("filtered keyword search should yield only bug, got %v", ids)
+	}
+}
+
+func mustList(t *testing.T, st store.Store, ns string, f store.Filter) []*memory.Memory {
+	t.Helper()
+	ms, err := st.List(context.Background(), ns, f, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	return ms
 }
 
 func testSetSuperseded(t *testing.T, st store.Store, dims int) {

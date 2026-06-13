@@ -439,6 +439,12 @@ a {
 .input::placeholder {
   color: var(--faint);
 }
+/* Compact inline inputs for the tag/metadata filters in a toolbar row. */
+.filter-input {
+  width: auto;
+  flex: 0 1 150px;
+  min-width: 90px;
+}
 label.field {
   display: block;
   margin-bottom: 14px;

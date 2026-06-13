@@ -26,6 +26,7 @@ const configSchema = {
     skip_without_agent: { type: "boolean" },
     fallback_on_error: { type: "boolean" },
     timeout_ms: { type: "number" },
+    expose_tools: { type: "boolean" },
   },
 };
 
@@ -49,6 +50,9 @@ export function resolveConfig(pluginConfig) {
     skip_without_agent: c.skip_without_agent === true,
     fallback_on_error: c.fallback_on_error !== false,
     timeout_ms: c.timeout_ms || DEFAULT_TIMEOUT_MS,
+    // Off by default: the slot already recalls/captures automatically; tools are
+    // opt-in for agents that want to read/browse/write on demand.
+    expose_tools: c.expose_tools === true,
   };
 }
 
@@ -225,7 +229,44 @@ function createClient(cfg, api) {
     }
   }
 
-  return { postJson, baseUrl, namespace };
+  async function getJson(path, ns) {
+    guardPlaintextBearerAuth(baseUrl, secret);
+    const headers = { "X-Memini-Namespace": ns || namespace };
+    if (secret) headers.Authorization = `Bearer ${secret}`;
+    try {
+      const res = await fetch(`${baseUrl}${path}`, {
+        method: "GET",
+        headers,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) {
+        if (fallbackOnError) return null;
+        const body = await res.text().catch(() => "");
+        throw new Error(`memini GET ${path} failed: ${res.status} ${body}`);
+      }
+      return await res.json();
+    } catch (error) {
+      if (!fallbackOnError) throw error;
+      api.logger.warn?.(`memini: ${String(error)}`);
+      return null;
+    }
+  }
+
+  return { postJson, getJson, baseUrl, namespace };
+}
+
+// meminiListPath builds the GET /v1/memories query string for the memory_list
+// tool: repeatable tier/tag params plus meta=key=value pairs. encodeURIComponent
+// escapes the '=' inside each meta value, which the server decodes and splits on.
+export function meminiListPath(args) {
+  const parts = [];
+  for (const t of args?.tiers || []) parts.push(`tier=${encodeURIComponent(String(t))}`);
+  for (const tag of args?.tags || []) parts.push(`tag=${encodeURIComponent(String(tag))}`);
+  for (const [k, v] of Object.entries(args?.metadata || {})) {
+    parts.push(`meta=${encodeURIComponent(`${k}=${v}`)}`);
+  }
+  if (Number.isInteger(args?.limit) && args.limit > 0) parts.push(`limit=${args.limit}`);
+  return parts.length ? `/v1/memories?${parts.join("&")}` : "/v1/memories";
 }
 
 const plugin = {
@@ -233,7 +274,7 @@ const plugin = {
   name: "memini",
   description: "Shared cross-session memory via a memini service.",
   configSchema,
-  register(api) {
+  async register(api) {
     const cfg = resolveConfig(api.pluginConfig);
     const client = createClient(cfg, api);
 
@@ -286,7 +327,123 @@ const plugin = {
         metadata: { source: "openclaw" },
       }, ns);
     });
+
+    // Opt-in explicit tools, registered after the memory slot above. Best-effort:
+    // a failure (e.g. typebox unavailable) is logged and leaves the slot working.
+    if (cfg.expose_tools && typeof api.registerTool === "function") {
+      try {
+        await registerMeminiTools(api, client, cfg);
+      } catch (e) {
+        api.logger?.warn?.(`memini: tool registration skipped: ${String(e)}`);
+      }
+    }
   },
 };
+
+// registerMeminiTools registers memory_recall / memory_list / memory_remember as
+// explicit OpenClaw tools. typebox is loaded lazily so it's only needed when
+// expose_tools is on; each tool resolves the namespace like the hooks do.
+export async function registerMeminiTools(api, client, cfg) {
+  const { Type } = await import("@sinclair/typebox");
+  const text = (obj) => ({ content: [{ type: "text", text: JSON.stringify(obj) }] });
+  const nsFor = (ctx) => effectiveNamespace(cfg, {}, ctx) ?? cfg.namespace;
+  const Tags = Type.Optional(
+    Type.Array(Type.String(), { description: "Match only memories carrying every listed tag (AND)." }),
+  );
+  const Metadata = Type.Optional(
+    Type.Record(Type.String(), Type.String(), {
+      description: 'Match memories whose top-level metadata contains each key=value pair, e.g. {"category":"bug_fixes"}.',
+    }),
+  );
+
+  api.registerTool(
+    {
+      name: "memory_recall",
+      description: "Search long-term memory (memini) for relevant past facts and context.",
+      parameters: Type.Object({
+        query: Type.String({ description: "What to search for" }),
+        limit: Type.Optional(Type.Number({ description: "Max results (default 5)" })),
+        tags: Tags,
+        metadata: Metadata,
+      }),
+      async execute(_id, params, ctx) {
+        const body = { query: params.query, limit: params.limit || 5 };
+        if (params.tags?.length) body.tags = params.tags;
+        if (params.metadata && Object.keys(params.metadata).length) body.metadata = params.metadata;
+        const res = await client.postJson("/v1/search", body, nsFor(ctx));
+        const results = (res?.results || []).map((r) => ({
+          content: r?.memory?.content || "",
+          summary: r?.memory?.summary || "",
+          tier: r?.memory?.tier || "",
+          score: typeof r?.score === "number" ? r.score : 0,
+        }));
+        return text({ results });
+      },
+    },
+    { optional: true },
+  );
+
+  api.registerTool(
+    {
+      name: "memory_list",
+      description:
+        "Browse long-term memory (memini) without a query — filter by tier, tags, or metadata " +
+        "category (e.g. all procedural memories, or everything categorized bug_fixes). Newest first.",
+      parameters: Type.Object({
+        tiers: Type.Optional(
+          Type.Array(Type.String(), { description: "Restrict to these tiers; empty means all." }),
+        ),
+        tags: Tags,
+        metadata: Metadata,
+        limit: Type.Optional(Type.Number({ description: "Max results (0 = all, default 20)" })),
+      }),
+      async execute(_id, params, ctx) {
+        const args = { ...params, limit: params.limit ?? 20 };
+        const res = await client.getJson(meminiListPath(args), nsFor(ctx));
+        const memories = (res?.memories || []).map((m) => ({
+          id: m.id || "",
+          content: m.content || "",
+          summary: m.summary || "",
+          tier: m.tier || "",
+          tags: m.tags || [],
+          metadata: m.metadata || {},
+        }));
+        return text({ memories });
+      },
+    },
+    { optional: true },
+  );
+
+  api.registerTool(
+    {
+      name: "memory_remember",
+      description: "Store a durable fact, decision, or preference in long-term memory (memini).",
+      parameters: Type.Object({
+        content: Type.String({ description: "The fact to remember" }),
+        tier: Type.Optional(
+          Type.String({
+            description:
+              "semantic=durable knowledge, procedural=how-to, episodic=what happened, working=transient (default semantic)",
+          }),
+        ),
+        tags: Type.Optional(Type.Array(Type.String(), { description: "Optional keywords for later search/filtering." })),
+        category: Type.Optional(
+          Type.String({
+            description:
+              "Optional topic bucket stored as metadata.category (e.g. bug_fixes, architecture_decisions) for browsing by subject later.",
+          }),
+        ),
+      }),
+      async execute(_id, params, ctx) {
+        const body = { content: params.content, tier: params.tier || "semantic" };
+        if (params.tags?.length) body.tags = params.tags;
+        if (params.category) body.metadata = { category: params.category };
+        const res = await client.postJson("/v1/memories", body, nsFor(ctx));
+        return text({ id: res?.id || null, success: res != null });
+      },
+    },
+    { optional: true },
+  );
+}
 
 export default plugin;

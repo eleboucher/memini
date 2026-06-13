@@ -63,9 +63,15 @@ func (e Tier) Valid() bool {
 // AnswerRequest defines model for AnswerRequest.
 type AnswerRequest struct {
 	// Limit Caps how many recalled memories ground the answer.
-	Limit *int    `json:"limit,omitempty"`
-	Query string  `json:"query"`
-	Tiers *[]Tier `json:"tiers,omitempty"`
+	Limit *int `json:"limit,omitempty"`
+
+	// Metadata Ground only on memories whose top-level metadata contains every listed key=value pair (AND).
+	Metadata *map[string]string `json:"metadata,omitempty"`
+	Query    string             `json:"query"`
+
+	// Tags Ground only on memories carrying every listed tag (AND).
+	Tags  *[]string `json:"tags,omitempty"`
+	Tiers *[]Tier   `json:"tiers,omitempty"`
 }
 
 // AnswerResponse defines model for AnswerResponse.
@@ -215,11 +221,17 @@ type SearchRequest struct {
 	IncludeExpired    *bool      `json:"include_expired,omitempty"`
 	IncludeSuperseded *bool      `json:"include_superseded,omitempty"`
 	Limit             *int       `json:"limit,omitempty"`
-	Query             string     `json:"query"`
+
+	// Metadata A memory's top-level metadata must contain every listed key=value pair (AND).
+	Metadata *map[string]string `json:"metadata,omitempty"`
+	Query    string             `json:"query"`
 
 	// Scope exact (default) searches only the request namespace; subtree also searches namespaces nested under it ("project" reads "project/agent"), for the multi-agent read-shared-plus-private pattern.
 	Scope *SearchRequestScope `json:"scope,omitempty"`
-	Tiers *[]Tier             `json:"tiers,omitempty"`
+
+	// Tags A memory must carry every listed tag (AND).
+	Tags  *[]string `json:"tags,omitempty"`
+	Tiers *[]Tier   `json:"tiers,omitempty"`
 }
 
 // SearchRequestScope exact (default) searches only the request namespace; subtree also searches namespaces nested under it ("project" reads "project/agent"), for the multi-agent read-shared-plus-private pattern.
@@ -291,9 +303,15 @@ type ForgetByTagParams struct {
 // ListMemoriesParams defines parameters for ListMemories.
 type ListMemoriesParams struct {
 	// Tier Repeatable and/or comma-separated tier filter; omitted means all tiers.
-	Tier              *[]Tier `form:"tier,omitempty" json:"tier,omitempty"`
-	IncludeExpired    *bool   `form:"include_expired,omitempty" json:"include_expired,omitempty"`
-	IncludeSuperseded *bool   `form:"include_superseded,omitempty" json:"include_superseded,omitempty"`
+	Tier *[]Tier `form:"tier,omitempty" json:"tier,omitempty"`
+
+	// Tag Repeatable and/or comma-separated tag filter; a memory must carry every listed tag (AND).
+	Tag *[]string `form:"tag,omitempty" json:"tag,omitempty"`
+
+	// Meta Repeatable metadata filter in "key=value" form; a memory's top-level metadata must contain every listed pair (AND). Only string values match.
+	Meta              *[]string `form:"meta,omitempty" json:"meta,omitempty"`
+	IncludeExpired    *bool     `form:"include_expired,omitempty" json:"include_expired,omitempty"`
+	IncludeSuperseded *bool     `form:"include_superseded,omitempty" json:"include_superseded,omitempty"`
 
 	// Limit Caps the result count; 0 or absent returns all matches.
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
@@ -715,6 +733,32 @@ func (siw *ServerInterfaceWrapper) ListMemories(w http.ResponseWriter, r *http.R
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "tier"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tier", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "tag" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "tag", r.URL.Query(), &params.Tag, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "tag"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tag", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "meta" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "meta", r.URL.Query(), &params.Meta, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "meta"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "meta", Err: err})
 		}
 		return
 	}

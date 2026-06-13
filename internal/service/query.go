@@ -14,8 +14,13 @@ import (
 // ListInput selects a slice of a namespace's memories for browsing. The zero
 // value (besides Namespace) lists all live memories, newest store order.
 type ListInput struct {
-	Namespace         string
-	Tiers             []memory.Tier
+	Namespace string
+	Tiers     []memory.Tier
+	// Tags narrows the listing to memories carrying every listed tag (AND).
+	Tags []string
+	// Metadata narrows the listing to memories whose top-level metadata contains
+	// each listed key=value string pair (AND).
+	Metadata          map[string]string
 	IncludeExpired    bool
 	IncludeSuperseded bool
 	// Limit caps the result count; <= 0 returns all matches.
@@ -31,6 +36,8 @@ type ListInput struct {
 func (s *Service) List(ctx context.Context, in ListInput) ([]*memory.Memory, error) {
 	f := store.Filter{
 		Tiers:             in.Tiers,
+		Tags:              in.Tags,
+		Metadata:          in.Metadata,
 		IncludeExpired:    in.IncludeExpired,
 		IncludeSuperseded: in.IncludeSuperseded,
 		Now:               s.now(),

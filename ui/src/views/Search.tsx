@@ -4,12 +4,15 @@ import type { Memory, Scored, Tier } from '../types'
 import { MemoryCard } from '../components/MemoryCard'
 import { MemoryDrawer } from '../components/MemoryDrawer'
 import { TierFilter } from '../components/TierFilter'
+import { MetaFilter } from '../components/MetaFilter'
 import { Empty, ErrorBanner } from '../components/States'
 import { IconSearch } from '../icons'
 
 export function Search() {
   const [q, setQ] = useState('')
   const [tiers, setTiers] = useState<Tier[]>([])
+  const [tags, setTags] = useState<string[]>([])
+  const [metadata, setMetadata] = useState<Record<string, string>>({})
   const [results, setResults] = useState<Scored[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -25,7 +28,7 @@ export function Search() {
     setError(null)
     const t0 = performance.now()
     try {
-      const r = await api.search(q.trim(), { tiers, limit: 30 })
+      const r = await api.search(q.trim(), { tiers, tags, metadata, limit: 30 })
       setResults(r)
       setTook(performance.now() - t0)
     } catch (err) {
@@ -65,6 +68,12 @@ export function Search() {
           />
         </div>
         <TierFilter selected={tiers} onChange={setTiers} />
+        <MetaFilter
+          onChange={(t, m) => {
+            setTags(t)
+            setMetadata(m)
+          }}
+        />
         <button class="btn primary" type="submit" disabled={loading || !q.trim()}>
           {loading ? <span class="spinner" style={{ width: '14px', height: '14px' }} /> : <IconSearch />}
           Recall

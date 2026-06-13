@@ -67,7 +67,7 @@ func TestToolsListed(t *testing.T) {
 	}
 	want := map[string]bool{
 		"memory_remember": false, "memory_recall": false, "memory_get": false,
-		"memory_forget": false, "memory_briefing": false,
+		"memory_forget": false, "memory_briefing": false, "memory_list": false,
 	}
 	for _, tool := range res.Tools {
 		if _, ok := want[tool.Name]; ok {
@@ -315,6 +315,69 @@ func TestRecallTierFilter(t *testing.T) {
 	}
 	if !res.IsError {
 		t.Fatal("unknown tier should be a tool error, not silently unfiltered")
+	}
+}
+
+func TestListToolFilters(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	for _, m := range []map[string]any{
+		{"content": "fixed the auth race condition", "tier": "semantic",
+			"tags": []string{"bug", "auth"}, "metadata": map[string]any{"category": "bug_fixes"}},
+		{"content": "tuned the auth handler latency", "tier": "semantic",
+			"tags": []string{"perf", "auth"}, "metadata": map[string]any{"category": "performance_findings"}},
+		{"content": "a transient scratch note", "tier": "working"},
+	} {
+		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{Name: "memory_remember", Arguments: m}); err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+	}
+
+	var listed struct {
+		Memories []struct {
+			Content string `json:"content"`
+			Tier    string `json:"tier"`
+		} `json:"memories"`
+	}
+
+	// Query-less browse by tier.
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_list",
+		Arguments: map[string]any{"tiers": []string{"working"}},
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	structured(t, res, &listed)
+	if len(listed.Memories) != 1 || listed.Memories[0].Tier != "working" {
+		t.Fatalf("tier browse: want 1 working memory, got %+v", listed.Memories)
+	}
+
+	// Browse by metadata category.
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_list",
+		Arguments: map[string]any{"metadata": map[string]any{"category": "bug_fixes"}},
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	structured(t, res, &listed)
+	if len(listed.Memories) != 1 || listed.Memories[0].Content != "fixed the auth race condition" {
+		t.Fatalf("category browse: want only the bug_fix, got %+v", listed.Memories)
+	}
+
+	// Tags are ANDed.
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_list",
+		Arguments: map[string]any{"tags": []string{"auth", "perf"}},
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	structured(t, res, &listed)
+	if len(listed.Memories) != 1 || listed.Memories[0].Content != "tuned the auth handler latency" {
+		t.Fatalf("tag AND browse: want only the perf memory, got %+v", listed.Memories)
 	}
 }
 

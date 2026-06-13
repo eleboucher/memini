@@ -50,6 +50,11 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 		Description: "Recall relevant memories and answer a question grounded on them (requires an LLM).",
 	}, h.answer)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "memory_list",
+		Description: "Browse memories without a query — filter by tier, tags, or metadata " +
+			"(e.g. all procedural memories, or everything tagged/categorized X). Newest first.",
+	}, h.list)
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "memory_get",
 		Description: "Fetch a single memory by its ID.",
 	}, h.get)
@@ -179,12 +184,14 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 }
 
 type recallArgs struct {
-	Query     string   `json:"query" jsonschema:"what to search for"`
-	Tiers     []string `json:"tiers,omitempty" jsonschema:"restrict to these tiers (working, episodic, semantic, procedural); empty means all"`
-	Limit     int      `json:"limit,omitempty" jsonschema:"max results (default 10)"`
-	Scope     string   `json:"scope,omitempty" jsonschema:"'subtree' also searches nested namespaces; default 'exact'"`
-	AsOf      string   `json:"as_of,omitempty" jsonschema:"RFC3339 time for time-travel recall (facts true then)"`
-	Namespace string   `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+	Query     string            `json:"query" jsonschema:"what to search for"`
+	Tiers     []string          `json:"tiers,omitempty" jsonschema:"restrict to tiers (working/episodic/semantic/procedural); empty means all"`
+	Tags      []string          `json:"tags,omitempty" jsonschema:"only memories carrying every listed tag (AND)"`
+	Metadata  map[string]string `json:"metadata,omitempty" jsonschema:"only memories whose metadata has each key=value pair (AND)"`
+	Limit     int               `json:"limit,omitempty" jsonschema:"max results (default 10)"`
+	Scope     string            `json:"scope,omitempty" jsonschema:"'subtree' also searches nested namespaces; default 'exact'"`
+	AsOf      string            `json:"as_of,omitempty" jsonschema:"RFC3339 time for time-travel recall (facts true then)"`
+	Namespace string            `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 }
 
 type recallItem struct {
@@ -219,6 +226,8 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 		Namespace: ns,
 		Query:     in.Query,
 		Tiers:     tiers,
+		Tags:      in.Tags,
+		Metadata:  in.Metadata,
 		Limit:     in.Limit,
 		Subtree:   strings.EqualFold(strings.TrimSpace(in.Scope), "subtree"),
 	}
@@ -280,9 +289,11 @@ func (t *tools) briefing(ctx context.Context, _ *mcpsdk.CallToolRequest, in brie
 }
 
 type answerArgs struct {
-	Query     string `json:"query" jsonschema:"the question to answer from memory"`
-	Limit     int    `json:"limit,omitempty" jsonschema:"max memories to ground on (default 10)"`
-	Namespace string `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+	Query     string            `json:"query" jsonschema:"the question to answer from memory"`
+	Tags      []string          `json:"tags,omitempty" jsonschema:"ground only on memories with every listed tag (AND)"`
+	Metadata  map[string]string `json:"metadata,omitempty" jsonschema:"ground only on memories whose metadata has each key=value pair (AND)"`
+	Limit     int               `json:"limit,omitempty" jsonschema:"max memories to ground on (default 10)"`
+	Namespace string            `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 }
 
 type answerResult struct {
@@ -298,6 +309,8 @@ func (t *tools) answer(ctx context.Context, _ *mcpsdk.CallToolRequest, in answer
 	res, err := t.svc.Answer(ctx, service.AnswerInput{
 		Namespace: ns,
 		Query:     in.Query,
+		Tags:      in.Tags,
+		Metadata:  in.Metadata,
 		Limit:     in.Limit,
 	})
 	if err != nil {
@@ -332,6 +345,19 @@ type memoryItem struct {
 	ExpiresAt   string         `json:"expires_at,omitempty"`
 }
 
+func toMemoryItem(m *memory.Memory) memoryItem {
+	out := memoryItem{
+		ID: m.ID, Content: m.Content, Tier: string(m.Tier), Summary: m.Summary,
+		Tags: m.Tags, Metadata: m.Metadata, Importance: m.Importance,
+		CreatedAt: m.CreatedAt.Format(time.RFC3339), UpdatedAt: m.UpdatedAt.Format(time.RFC3339),
+		AccessCount: m.AccessCount,
+	}
+	if m.ExpiresAt != nil {
+		out.ExpiresAt = m.ExpiresAt.Format(time.RFC3339)
+	}
+	return out
+}
+
 func (t *tools) get(ctx context.Context, _ *mcpsdk.CallToolRequest, in idArgs) (*mcpsdk.CallToolResult, memoryItem, error) {
 	ns, err := t.ns(in.Namespace)
 	if err != nil {
@@ -341,14 +367,43 @@ func (t *tools) get(ctx context.Context, _ *mcpsdk.CallToolRequest, in idArgs) (
 	if err != nil {
 		return nil, memoryItem{}, err
 	}
-	out := memoryItem{
-		ID: m.ID, Content: m.Content, Tier: string(m.Tier), Summary: m.Summary,
-		Tags: m.Tags, Metadata: m.Metadata, Importance: m.Importance,
-		CreatedAt: m.CreatedAt.Format(time.RFC3339), UpdatedAt: m.UpdatedAt.Format(time.RFC3339),
-		AccessCount: m.AccessCount,
+	return nil, toMemoryItem(m), nil
+}
+
+type listArgs struct {
+	Tiers     []string          `json:"tiers,omitempty" jsonschema:"restrict to tiers (working/episodic/semantic/procedural); empty means all"`
+	Tags      []string          `json:"tags,omitempty" jsonschema:"only memories carrying every listed tag (AND)"`
+	Metadata  map[string]string `json:"metadata,omitempty" jsonschema:"only memories whose metadata has each key=value pair (AND)"`
+	Limit     int               `json:"limit,omitempty" jsonschema:"max results (0 = all, newest first)"`
+	Namespace string            `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+}
+
+type listResult struct {
+	Memories []memoryItem `json:"memories"`
+}
+
+func (t *tools) list(ctx context.Context, _ *mcpsdk.CallToolRequest, in listArgs) (*mcpsdk.CallToolResult, listResult, error) {
+	ns, err := t.ns(in.Namespace)
+	if err != nil {
+		return nil, listResult{}, err
 	}
-	if m.ExpiresAt != nil {
-		out.ExpiresAt = m.ExpiresAt.Format(time.RFC3339)
+	tiers, err := parseTiers(in.Tiers)
+	if err != nil {
+		return nil, listResult{}, err
+	}
+	mems, err := t.svc.List(ctx, service.ListInput{
+		Namespace: ns,
+		Tiers:     tiers,
+		Tags:      in.Tags,
+		Metadata:  in.Metadata,
+		Limit:     in.Limit,
+	})
+	if err != nil {
+		return nil, listResult{}, err
+	}
+	out := listResult{Memories: make([]memoryItem, len(mems))}
+	for i, m := range mems {
+		out.Memories[i] = toMemoryItem(m)
 	}
 	return nil, out, nil
 }

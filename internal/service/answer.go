@@ -30,6 +30,10 @@ type AnswerInput struct {
 	// Limit caps how many recalled memories are given to the reader (default 10).
 	Limit int
 	Tiers []memory.Tier
+	// Tags / Metadata narrow the grounding recall the same way as Recall: a
+	// memory must carry every listed tag and match each metadata key=value pair.
+	Tags     []string
+	Metadata map[string]string
 }
 
 // AnswerResult is the generated answer and the memories it was grounded on.
@@ -51,6 +55,7 @@ func (s *Service) Answer(ctx context.Context, in AnswerInput) (AnswerResult, err
 	}
 	res, err := s.Recall(ctx, RecallInput{
 		Namespace: in.Namespace, Query: in.Query, Limit: in.Limit, Tiers: in.Tiers,
+		Tags: in.Tags, Metadata: in.Metadata,
 	})
 	if err != nil {
 		s.metrics.AnswerResult("error")
