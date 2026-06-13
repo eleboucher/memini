@@ -45,6 +45,13 @@ postprocessors = [
 # output file path
 # output = "test.md"
 
+[bump]
+# Stay low in the 0.x line: keep version growth slow. Features and fixes bump
+# patch; only a breaking change bumps minor. Nothing auto-jumps to 1.0.
+# Revisit (defaults are both true) when cutting a real 1.0.
+features_always_bump_minor = false
+breaking_always_bump_major = false
+
 [git]
 # Parse commits according to the conventional commits specification.
 # See https://www.conventionalcommits.org
