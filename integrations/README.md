@@ -24,10 +24,14 @@ makes memory actually useful.
 `/plugin install memini` for Claude Code; mount the directory as a Codex
 plugin for Codex CLI).
 
-**opencode / others:** wire the MCP server from the recipes below; the
-hooks layer is Claude-Code/Codex-specific and the agent has to be told
-to use the tools via a `CLAUDE.md`-style file (or — soon — an opencode
-plugin port).
+**opencode:** install the native [opencode plugin](opencode/) for the
+same auto-capture + recall loop (it hooks `chat.message` and
+`session.idle`), or wire the MCP server from the recipe below to expose
+the tools on demand.
+
+**Others:** wire the MCP server from the recipes below; the Claude
+Code/Codex hooks layer is host-specific, so the agent has to be told to
+use the tools via a `CLAUDE.md`-style file.
 
 ## The shared-namespace superpower
 
@@ -61,7 +65,7 @@ header explicitly) instead of relying on the server-side resolve.
 | Agent       | Folder                     | Transport                               |
 | ----------- | -------------------------- | --------------------------------------- |
 | Claude Code | [`../plugin/`](../plugin/) | HTTP (plugin)                           |
-| opencode    | [`opencode/`](opencode/)   | HTTP or stdio                           |
+| opencode    | [`opencode/`](opencode/)   | native plugin (or HTTP / stdio MCP)     |
 | Codex CLI   | [`codex/`](codex/)         | stdio (plugin) or HTTP                  |
 | Hermes      | [`hermes/`](hermes/)       | native MemoryProvider plugin (or MCP)   |
 | OpenClaw    | [`openclaw/`](openclaw/)   | native memory-slot extension (or skill) |

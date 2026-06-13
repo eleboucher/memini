@@ -150,6 +150,38 @@ jobs:
           fi
           git commit -m "sync memini Hermes plugin ${TAG}"
           git push origin HEAD:main
+  # Publishes the opencode plugin to npm as @eleboucher/opencode-memini so
+  # `"plugin": ["@eleboucher/opencode-memini"]` resolves. The version is taken
+  # from the release tag, so it always matches regardless of what bump.yml
+  # committed. (The curl/local-file install path pulls from `main` and needs no
+  # release step.)
+  opencode-npm:
+    needs: [release]
+    runs-on: docker
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v6
+      - name: Install Node.js
+        uses: https://data.forgejo.org/actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - name: Test and publish opencode plugin to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TAG: ${{ needs.release.outputs.tag }}
+        working-directory: integrations/opencode/plugin
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN secret is empty or missing" >&2
+            exit 1
+          fi
+          node --test
+          VERSION="${TAG#v}"
+          npm version "${VERSION}" --no-git-tag-version --allow-same-version
+          # Ship the integration README as the npm package page.
+          cp ../README.md README.md
+          npm publish --access public
   container:
     needs: [release]
     runs-on: multiarch

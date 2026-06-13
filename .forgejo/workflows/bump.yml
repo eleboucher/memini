@@ -75,7 +75,8 @@ jobs:
           set -euo pipefail
           for f in plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
                    integrations/openclaw/plugin/package.json \
-                   integrations/openclaw/plugin/openclaw.plugin.json; do
+                   integrations/openclaw/plugin/openclaw.plugin.json \
+                   integrations/opencode/plugin/package.json; do
             sed -i -E 's/("version"[[:space:]]*:[[:space:]]*")[^"]*(")/\1'"${NEXT}"'\2/' "$f"
             grep -q "\"version\": \"${NEXT}\"" "$f" || { echo "failed to set version in $f" >&2; exit 1; }
             # Keep the commit honest: the file must still be valid JSON.
@@ -98,6 +99,7 @@ jobs:
             integrations/openclaw/plugin/package.json \
             integrations/openclaw/plugin/openclaw.plugin.json \
             integrations/openclaw/plugin/plugin.yaml \
+            integrations/opencode/plugin/package.json \
             integrations/hermes/plugin/memini/plugin.yaml
           git commit -m "chore(release): ${TAG}"
           git tag -a "${TAG}" -m "Release ${TAG}"
