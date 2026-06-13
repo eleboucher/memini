@@ -238,6 +238,7 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       const stored = await rest.postJson("/v1/memories", {
         content: `User: ${userText.slice(0, 1000)}\nAssistant: ${assistantText.slice(0, 3000)}`,
         tier: "episodic",
+        tags: ["opencode"],
         metadata: { source: "opencode", session_id: sessionID },
       });
       if (stored !== null && assistantID) captured.add(assistantID);

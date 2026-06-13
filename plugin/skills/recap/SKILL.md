@@ -25,7 +25,10 @@ broad query and a higher `limit` (10–20) and group the results by `tier`.
 ## Pattern
 
 Call `memory_recall` once with a broad query and `limit: 20`. Don't make
-multiple small queries — memini's RRF ranking already handles breadth.
+multiple small queries — memini's RRF ranking already handles breadth. When the
+recap is scoped to a known subject rather than a fuzzy topic ("catch me up on
+the deployment runbook"), use `memory_list` with `tags` / `metadata` filters
+instead — it browses that bucket without a query (see the `recall` skill).
 
 Group the response into:
 
