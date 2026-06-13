@@ -125,7 +125,7 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 	if len(m.Embedding) != s.dims {
 		return fmt.Errorf("postgres: embedding has %d dims, store expects %d", len(m.Embedding), s.dims)
 	}
-	metaJSON, err := json.Marshal(orEmptyMap(m.Metadata))
+	metaJSON, err := json.Marshal(store.OrEmptyMap(m.Metadata))
 	if err != nil {
 		return fmt.Errorf("postgres: marshal metadata: %w", err)
 	}
@@ -166,7 +166,7 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 			expires_at=EXCLUDED.expires_at, superseded_by=EXCLUDED.superseded_by,
 			valid_from=EXCLUDED.valid_from, valid_to=EXCLUDED.valid_to,
 			confidence=EXCLUDED.confidence, embedding=EXCLUDED.embedding`,
-		m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, metaJSON, orEmptySlice(m.Tags),
+		m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, metaJSON, store.OrEmptySlice(m.Tags),
 		m.Importance, m.CreatedAt, m.UpdatedAt, m.LastAccessedAt, m.AccessCount,
 		m.ExpiresAt, m.SupersededBy, m.ValidFrom, m.ValidTo, m.Confidence, pgvector.NewVector(m.Embedding))
 	if err != nil {

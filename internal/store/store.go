@@ -127,3 +127,21 @@ type Store interface {
 	// Close releases backend resources.
 	Close() error
 }
+
+// OrEmptyMap returns m, or an empty map when m is nil, so drivers persist an
+// empty JSON object rather than null for absent metadata.
+func OrEmptyMap(m map[string]any) map[string]any {
+	if m == nil {
+		return map[string]any{}
+	}
+	return m
+}
+
+// OrEmptySlice returns s, or an empty slice when s is nil, so drivers persist an
+// empty JSON array rather than null for absent tags.
+func OrEmptySlice(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}

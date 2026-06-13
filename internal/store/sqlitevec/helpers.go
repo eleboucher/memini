@@ -197,17 +197,3 @@ func strPtr(s *string) any {
 	}
 	return *s
 }
-
-func orEmptyMap(m map[string]any) map[string]any {
-	if m == nil {
-		return map[string]any{}
-	}
-	return m
-}
-
-func orEmptySlice(s []string) []string {
-	if s == nil {
-		return []string{}
-	}
-	return s
-}

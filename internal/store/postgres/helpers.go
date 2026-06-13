@@ -149,17 +149,3 @@ func tsQuery(query string) string {
 	flush()
 	return strings.Join(terms, " | ")
 }
-
-func orEmptyMap(m map[string]any) map[string]any {
-	if m == nil {
-		return map[string]any{}
-	}
-	return m
-}
-
-func orEmptySlice(s []string) []string {
-	if s == nil {
-		return []string{}
-	}
-	return s
-}

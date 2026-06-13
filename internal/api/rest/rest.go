@@ -160,30 +160,16 @@ func (h *Server) RememberMemory(w http.ResponseWriter, r *http.Request, _ Rememb
 		Namespace: namespaceFromContext(r.Context()),
 		Content:   req.Content,
 	}
-	if req.Tier != nil {
-		in.Tier = memory.Tier(*req.Tier)
-	}
-	if req.Summary != nil {
-		in.Summary = *req.Summary
-	}
-	if req.Tags != nil {
-		in.Tags = *req.Tags
-	}
-	if req.Metadata != nil {
-		in.Metadata = *req.Metadata
-	}
-	if req.Importance != nil {
-		in.Importance = *req.Importance
-	}
-	if req.Id != nil {
-		in.ID = *req.Id
-	}
+	in.Tier = memory.Tier(deref(req.Tier))
+	in.Summary = deref(req.Summary)
+	in.Tags = deref(req.Tags)
+	in.Metadata = deref(req.Metadata)
+	in.Importance = deref(req.Importance)
+	in.ID = deref(req.Id)
+	in.Confidence = req.Confidence
 	if req.TtlSeconds != nil {
 		d := time.Duration(*req.TtlSeconds) * time.Second
 		in.TTL = &d
-	}
-	if req.Confidence != nil {
-		in.Confidence = req.Confidence
 	}
 
 	m, err := h.svc.Remember(r.Context(), in)
@@ -270,21 +256,11 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 		Query:     req.Query,
 		Tiers:     tiers,
 	}
-	if req.Tags != nil {
-		in.Tags = *req.Tags
-	}
-	if req.Metadata != nil {
-		in.Metadata = *req.Metadata
-	}
-	if req.Limit != nil {
-		in.Limit = *req.Limit
-	}
-	if req.IncludeExpired != nil {
-		in.IncludeExpired = *req.IncludeExpired
-	}
-	if req.IncludeSuperseded != nil {
-		in.IncludeSuperseded = *req.IncludeSuperseded
-	}
+	in.Tags = deref(req.Tags)
+	in.Metadata = deref(req.Metadata)
+	in.Limit = deref(req.Limit)
+	in.IncludeExpired = deref(req.IncludeExpired)
+	in.IncludeSuperseded = deref(req.IncludeSuperseded)
 	if req.AsOf != nil {
 		in.AsOf = req.AsOf.UTC()
 	}
@@ -316,15 +292,9 @@ func (h *Server) AnswerQuestion(w http.ResponseWriter, r *http.Request, _ Answer
 		Query:     req.Query,
 		Tiers:     tiers,
 	}
-	if req.Tags != nil {
-		in.Tags = *req.Tags
-	}
-	if req.Metadata != nil {
-		in.Metadata = *req.Metadata
-	}
-	if req.Limit != nil {
-		in.Limit = *req.Limit
-	}
+	in.Tags = deref(req.Tags)
+	in.Metadata = deref(req.Metadata)
+	in.Limit = deref(req.Limit)
 
 	res, err := h.svc.Answer(r.Context(), in)
 	if err != nil {
@@ -352,15 +322,9 @@ func (h *Server) ListMemories(w http.ResponseWriter, r *http.Request, params Lis
 		Tags:      queryTags(params.Tag),
 		Metadata:  meta,
 	}
-	if params.IncludeExpired != nil {
-		in.IncludeExpired = *params.IncludeExpired
-	}
-	if params.IncludeSuperseded != nil {
-		in.IncludeSuperseded = *params.IncludeSuperseded
-	}
-	if params.AllNamespaces != nil {
-		in.AllNamespaces = *params.AllNamespaces
-	}
+	in.IncludeExpired = deref(params.IncludeExpired)
+	in.IncludeSuperseded = deref(params.IncludeSuperseded)
+	in.AllNamespaces = deref(params.AllNamespaces)
 	if params.Limit != nil {
 		if *params.Limit < 0 {
 			httputil.Error(w, http.StatusBadRequest, fmt.Sprintf("invalid limit %d", *params.Limit))
@@ -528,6 +492,17 @@ func apiScored(res []store.Scored) []ScoredMemory {
 		out[i] = ScoredMemory{Memory: apiMemory(s.Memory), Score: s.Score}
 	}
 	return out
+}
+
+// deref returns *p, or the zero value of T when p is nil. It collapses the
+// "copy the optional request field only when present" pattern: an absent value
+// and an explicit zero leave the domain input struct identical either way.
+func deref[T any](p *T) T {
+	if p == nil {
+		var zero T
+		return zero
+	}
+	return *p
 }
 
 // domainTiers validates a body tier filter. An unknown tier is an error rather
