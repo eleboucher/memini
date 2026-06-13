@@ -66,8 +66,10 @@ function build(memories: Memory[]): { nodes: GNode[]; links: GLink[] } {
       byTag.set(t, arr)
     }
   }
+  // Skip catch-all tags: a huge star of edges is a hairball and the dominant cost.
+  const MAX_TAG_GROUP = 40
   for (const ids of byTag.values()) {
-    if (ids.length < 2) continue
+    if (ids.length < 2 || ids.length > MAX_TAG_GROUP) continue
     for (let i = 1; i < ids.length; i++) add(ids[0], ids[i], 'tag')
   }
 
@@ -94,6 +96,8 @@ export function Graph() {
     let width = host.clientWidth
     let height = host.clientHeight
     const { nodes, links } = build(memories)
+    const tagLinks = links.filter((l) => l.kind === 'tag')
+    const supersedeLinks = links.filter((l) => l.kind === 'supersede')
 
     // Resolve CSS custom properties to concrete colors once — canvas fillStyle /
     // strokeStyle can't consume `var(--x)`. (Theme switches recolor on refresh.)
@@ -149,39 +153,56 @@ export function Graph() {
       ctx.translate(transform.x, transform.y)
       ctx.scale(transform.k, transform.k)
 
-      for (const l of links) {
+      // One path per link kind — a single stroke() beats one per edge.
+      ctx.globalAlpha = 0.4
+      ctx.strokeStyle = colors.tag
+      ctx.lineWidth = 1
+      ctx.setLineDash([2, 4])
+      ctx.beginPath()
+      for (const l of tagLinks) {
         const s = l.source as GNode
         const t = l.target as GNode
-        const supersede = l.kind === 'supersede'
-        ctx.globalAlpha = supersede ? 0.85 : 0.4
-        ctx.strokeStyle = supersede ? colors.ember : colors.tag
-        ctx.lineWidth = supersede ? 1.6 : 1
-        ctx.setLineDash(supersede ? [] : [2, 4])
-        ctx.beginPath()
         ctx.moveTo(s.x!, s.y!)
         ctx.lineTo(t.x!, t.y!)
-        ctx.stroke()
-        if (supersede) {
-          ctx.globalAlpha = 0.85
-          drawArrow(s.x!, s.y!, t.x!, t.y!, t.r)
+      }
+      ctx.stroke()
+      ctx.setLineDash([])
+
+      ctx.globalAlpha = 0.85
+      ctx.strokeStyle = colors.ember
+      ctx.lineWidth = 1.6
+      ctx.beginPath()
+      for (const l of supersedeLinks) {
+        const s = l.source as GNode
+        const t = l.target as GNode
+        ctx.moveTo(s.x!, s.y!)
+        ctx.lineTo(t.x!, t.y!)
+      }
+      ctx.stroke()
+      for (const l of supersedeLinks) {
+        const s = l.source as GNode
+        const t = l.target as GNode
+        drawArrow(s.x!, s.y!, t.x!, t.y!, t.r)
+      }
+
+      // Live then superseded, so the dash state is set per group, not per node.
+      ctx.lineWidth = 1.5
+      for (const superseded of [false, true]) {
+        ctx.setLineDash(superseded ? [2, 2] : [])
+        for (const n of nodes) {
+          if (n.superseded !== superseded) continue
+          const c = colors.tier(n.tier)
+          ctx.beginPath()
+          ctx.arc(n.x!, n.y!, n.r, 0, Math.PI * 2)
+          ctx.globalAlpha = superseded ? 0.25 : 0.9
+          ctx.fillStyle = c
+          ctx.fill()
+          ctx.globalAlpha = 1
+          ctx.strokeStyle = c
+          ctx.stroke()
         }
       }
       ctx.setLineDash([])
-
-      for (const n of nodes) {
-        const c = colors.tier(n.tier)
-        ctx.beginPath()
-        ctx.arc(n.x!, n.y!, n.r, 0, Math.PI * 2)
-        ctx.globalAlpha = n.superseded ? 0.25 : 0.9
-        ctx.fillStyle = c
-        ctx.fill()
-        ctx.globalAlpha = 1
-        ctx.strokeStyle = c
-        ctx.lineWidth = 1.5
-        ctx.setLineDash(n.superseded ? [2, 2] : [])
-        ctx.stroke()
-        ctx.setLineDash([])
-      }
 
       // Inline labels (only on smaller graphs, matching the SVG behavior).
       if (showLabels) {
