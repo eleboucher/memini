@@ -56,6 +56,43 @@ jobs:
           MEMINI_TEST_POSTGRES_DSN: postgres://postgres:memini@postgres:5432/memini?sslmode=disable
         run: CGO_ENABLED=1 go test -race -count=1 -timeout 300s -tags integration ./internal/store/postgres/
 
+  plugins:
+    runs-on: docker
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@v6
+
+      - name: Setup Node
+        uses: https://data.forgejo.org/actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Setup Python
+        uses: https://data.forgejo.org/actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Claude Code / Codex hook scripts (pure node, no deps).
+      - name: Test Claude Code + Codex plugin scripts
+        run: node --test plugin/scripts/_test.mjs
+
+      # opencode plugin (pure node, no deps).
+      - name: Test opencode plugin
+        working-directory: integrations/opencode/plugin
+        run: node --test
+
+      # OpenClaw plugin (the expose_tools tests load @sinclair/typebox).
+      - name: Test OpenClaw plugin
+        working-directory: integrations/openclaw/plugin
+        run: |
+          npm ci
+          node --test
+
+      # Hermes memory provider (stdlib unittest, uses the inline-ABC fallback).
+      - name: Test Hermes plugin
+        working-directory: integrations/hermes/plugin
+        run: python3 -m unittest -v
+
   lint:
     runs-on: docker
     steps:
