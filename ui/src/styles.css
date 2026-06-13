@@ -1030,14 +1030,11 @@ pre.json {
   overflow: hidden;
   padding: 0;
 }
-.graph-wrap svg {
+.graph-wrap canvas {
   display: block;
   width: 100%;
   height: 100%;
   cursor: grab;
-}
-.graph-wrap svg:active {
-  cursor: grabbing;
 }
 .graph-legend {
   position: absolute;

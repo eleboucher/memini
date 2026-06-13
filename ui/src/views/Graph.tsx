@@ -8,7 +8,7 @@ import {
   type SimulationNodeDatum,
 } from 'd3-force'
 import { select } from 'd3-selection'
-import { zoom as d3zoom, zoomIdentity } from 'd3-zoom'
+import { zoom as d3zoom, zoomIdentity, type ZoomTransform } from 'd3-zoom'
 import { drag as d3drag } from 'd3-drag'
 import { api } from '../api'
 import { namespace, refreshNonce } from '../store'
@@ -91,68 +91,130 @@ export function Graph() {
     const host = hostRef.current
     if (!host || memories.length === 0) return
 
-    const width = host.clientWidth
-    const height = host.clientHeight
+    let width = host.clientWidth
+    let height = host.clientHeight
     const { nodes, links } = build(memories)
 
-    const svg = select(host).append('svg').attr('viewBox', `0 0 ${width} ${height}`)
+    // Resolve CSS custom properties to concrete colors once — canvas fillStyle /
+    // strokeStyle can't consume `var(--x)`. (Theme switches recolor on refresh.)
+    const cssVar = (name: string) => getComputedStyle(host).getPropertyValue(name).trim()
+    const tierHex: Record<Tier, string> = {
+      working: cssVar('--tier-working'),
+      episodic: cssVar('--tier-episodic'),
+      semantic: cssVar('--tier-semantic'),
+      procedural: cssVar('--tier-procedural'),
+    }
+    const colors = {
+      tier: (t: Tier) => tierHex[t] || cssVar('--muted') || '#888',
+      ember: cssVar('--ember') || '#e07a3f',
+      tag: cssVar('--line-strong') || '#ccc',
+      label: cssVar('--text-dim') || '#888',
+    }
+    const labelFont = `10px ${cssVar('--font-ui') || 'sans-serif'}`
+    const showLabels = nodes.length <= 80
 
-    // Arrowhead for supersession edges.
-    svg
-      .append('defs')
-      .append('marker')
-      .attr('id', 'arrow')
-      .attr('viewBox', '0 -5 10 10')
-      .attr('refX', 16)
-      .attr('markerWidth', 6)
-      .attr('markerHeight', 6)
-      .attr('orient', 'auto')
-      .append('path')
-      .attr('d', 'M0,-4L9,0L0,4')
-      .style('fill', 'var(--ember)')
+    const dpr = window.devicePixelRatio || 1
+    const canvas = document.createElement('canvas')
+    host.appendChild(canvas)
+    const ctx = canvas.getContext('2d')!
 
-    const g = svg.append('g')
+    const sizeCanvas = () => {
+      canvas.width = Math.round(width * dpr)
+      canvas.height = Math.round(height * dpr)
+    }
+    sizeCanvas()
 
-    const link = g
-      .append('g')
-      .selectAll('line')
-      .data(links)
-      .join('line')
-      .style('stroke', (d) => (d.kind === 'supersede' ? 'var(--ember)' : 'var(--line-strong)'))
-      .style('stroke-width', (d) => (d.kind === 'supersede' ? 1.6 : 1))
-      .style('stroke-dasharray', (d) => (d.kind === 'tag' ? '2 4' : 'none'))
-      .style('opacity', (d) => (d.kind === 'supersede' ? 0.85 : 0.4))
-      .attr('marker-end', (d) => (d.kind === 'supersede' ? 'url(#arrow)' : null))
+    let transform: ZoomTransform = zoomIdentity
+    let hovered: GNode | null = null
 
-    const node = g
-      .append('g')
-      .selectAll<SVGGElement, GNode>('g')
-      .data(nodes)
-      .join('g')
-      .style('cursor', 'pointer')
-      .on('click', (_e, d) => {
-        const m = byId.get(d.id)
-        if (m) openRef.current(m)
-      })
+    // drawArrow draws a small filled arrowhead at the target end of a supersede
+    // edge, offset clear of the target node's radius.
+    const drawArrow = (sx: number, sy: number, tx: number, ty: number, tr: number) => {
+      const a = Math.atan2(ty - sy, tx - sx)
+      const tipX = tx - Math.cos(a) * (tr + 2)
+      const tipY = ty - Math.sin(a) * (tr + 2)
+      const size = 6
+      ctx.beginPath()
+      ctx.moveTo(tipX, tipY)
+      ctx.lineTo(tipX - Math.cos(a - 0.4) * size, tipY - Math.sin(a - 0.4) * size)
+      ctx.lineTo(tipX - Math.cos(a + 0.4) * size, tipY - Math.sin(a + 0.4) * size)
+      ctx.closePath()
+      ctx.fillStyle = colors.ember
+      ctx.fill()
+    }
 
-    node
-      .append('circle')
-      .attr('r', (d) => d.r)
-      .style('fill', (d) => tierColor(d.tier))
-      .style('fill-opacity', (d) => (d.superseded ? 0.25 : 0.9))
-      .style('stroke', (d) => tierColor(d.tier))
-      .style('stroke-width', 1.5)
-      .style('stroke-dasharray', (d) => (d.superseded ? '2 2' : 'none'))
+    const draw = () => {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      ctx.clearRect(0, 0, width, height)
+      ctx.translate(transform.x, transform.y)
+      ctx.scale(transform.k, transform.k)
 
-    node
-      .append('text')
-      .attr('class', 'node-label')
-      .attr('x', (d) => d.r + 4)
-      .attr('y', 4)
-      .text((d) => d.label)
-      .style('display', nodes.length > 80 ? 'none' : 'inline')
+      for (const l of links) {
+        const s = l.source as GNode
+        const t = l.target as GNode
+        const supersede = l.kind === 'supersede'
+        ctx.globalAlpha = supersede ? 0.85 : 0.4
+        ctx.strokeStyle = supersede ? colors.ember : colors.tag
+        ctx.lineWidth = supersede ? 1.6 : 1
+        ctx.setLineDash(supersede ? [] : [2, 4])
+        ctx.beginPath()
+        ctx.moveTo(s.x!, s.y!)
+        ctx.lineTo(t.x!, t.y!)
+        ctx.stroke()
+        if (supersede) {
+          ctx.globalAlpha = 0.85
+          drawArrow(s.x!, s.y!, t.x!, t.y!, t.r)
+        }
+      }
+      ctx.setLineDash([])
 
-    node.append('title').text((d) => `${d.tier} · ${d.label}`)
+      for (const n of nodes) {
+        const c = colors.tier(n.tier)
+        ctx.beginPath()
+        ctx.arc(n.x!, n.y!, n.r, 0, Math.PI * 2)
+        ctx.globalAlpha = n.superseded ? 0.25 : 0.9
+        ctx.fillStyle = c
+        ctx.fill()
+        ctx.globalAlpha = 1
+        ctx.strokeStyle = c
+        ctx.lineWidth = 1.5
+        ctx.setLineDash(n.superseded ? [2, 2] : [])
+        ctx.stroke()
+        ctx.setLineDash([])
+      }
+
+      // Inline labels (only on smaller graphs, matching the SVG behavior).
+      if (showLabels) {
+        ctx.globalAlpha = 1
+        ctx.fillStyle = colors.label
+        ctx.font = labelFont
+        ctx.textBaseline = 'middle'
+        for (const n of nodes) ctx.fillText(n.label, n.x! + n.r + 4, n.y!)
+      }
+
+      // Hover tooltip in screen space so it stays legible at any zoom.
+      if (hovered) {
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+        const text = `${hovered.tier} · ${hovered.label}`
+        ctx.font = labelFont
+        const tw = ctx.measureText(text).width
+        const px = transform.applyX(hovered.x!) + hovered.r * transform.k + 8
+        const py = transform.applyY(hovered.y!)
+        ctx.globalAlpha = 0.92
+        ctx.fillStyle = cssVar('--surface') || '#000'
+        ctx.strokeStyle = colors.tag
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        ctx.rect(px - 6, py - 11, tw + 12, 22)
+        ctx.fill()
+        ctx.stroke()
+        ctx.globalAlpha = 1
+        ctx.fillStyle = colors.label
+        ctx.textBaseline = 'middle'
+        ctx.fillText(text, px, py)
+      }
+      ctx.globalAlpha = 1
+    }
 
     const sim = forceSimulation<GNode>(nodes)
       .force(
@@ -169,41 +231,102 @@ export function Graph() {
       .force('collide', forceCollide<GNode>().radius((d) => d.r + 6))
       // Settle in fewer ticks so the per-tick repaint stops sooner.
       .alphaDecay(0.045)
-      .on('tick', () => {
-        link
-          .attr('x1', (d) => (d.source as GNode).x!)
-          .attr('y1', (d) => (d.source as GNode).y!)
-          .attr('x2', (d) => (d.target as GNode).x!)
-          .attr('y2', (d) => (d.target as GNode).y!)
-        node.attr('transform', (d) => `translate(${d.x},${d.y})`)
-      })
+      .on('tick', draw)
 
-    node.call(
-      d3drag<SVGGElement, GNode>()
-        .on('start', (event, d) => {
+    // findNode hit-tests in graph space (pointer coords inverted through zoom).
+    const findNode = (px: number, py: number): GNode | null => {
+      const gx = transform.invertX(px)
+      const gy = transform.invertY(py)
+      const n = sim.find(gx, gy)
+      if (!n) return null
+      return Math.hypot(n.x! - gx, n.y! - gy) <= n.r + 2 ? n : null
+    }
+
+    const sel = select(canvas)
+
+    // Node drag. A non-null subject claims the gesture (stopping zoom-pan); over
+    // empty space the subject is null, so the gesture falls through to zoom.
+    // d3-drag suppresses the trailing click after a real drag, so opening the
+    // drawer lives in a separate click handler below.
+    sel.call(
+      d3drag<HTMLCanvasElement, unknown>()
+        .container(canvas)
+        .subject((event) => findNode(event.x, event.y) ?? undefined)
+        .on('start', (event) => {
           if (!event.active) sim.alphaTarget(0.3).restart()
-          d.fx = d.x
-          d.fy = d.y
+          const d = event.subject as GNode
+          d.fx = transform.invertX(event.x)
+          d.fy = transform.invertY(event.y)
         })
-        .on('drag', (event, d) => {
-          d.fx = event.x
-          d.fy = event.y
+        .on('drag', (event) => {
+          const d = event.subject as GNode
+          d.fx = transform.invertX(event.x)
+          d.fy = transform.invertY(event.y)
         })
-        .on('end', (event, d) => {
+        .on('end', (event) => {
           if (!event.active) sim.alphaTarget(0)
+          const d = event.subject as GNode
           d.fx = null
           d.fy = null
         }),
     )
 
-    const zoomB = d3zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.2, 4])
-      .on('zoom', (event) => g.attr('transform', event.transform.toString()))
-    svg.call(zoomB).call(zoomB.transform, zoomIdentity)
+    const onClick = (e: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect()
+      const hit = findNode(e.clientX - rect.left, e.clientY - rect.top)
+      if (!hit) return
+      const m = byId.get(hit.id)
+      if (m) openRef.current(m)
+    }
+    canvas.addEventListener('click', onClick)
+
+    sel.call(
+      d3zoom<HTMLCanvasElement, unknown>()
+        .scaleExtent([0.2, 4])
+        .on('zoom', (event) => {
+          transform = event.transform
+          draw()
+        }),
+    )
+
+    // Hover: hit-test on move, update tooltip + cursor, repaint only on change.
+    const onMove = (e: PointerEvent) => {
+      const rect = canvas.getBoundingClientRect()
+      const hit = findNode(e.clientX - rect.left, e.clientY - rect.top)
+      if (hit !== hovered) {
+        hovered = hit
+        canvas.style.cursor = hit ? 'pointer' : 'grab'
+        draw()
+      }
+    }
+    const onLeave = () => {
+      if (hovered) {
+        hovered = null
+        canvas.style.cursor = 'grab'
+        draw()
+      }
+    }
+    canvas.addEventListener('pointermove', onMove)
+    canvas.addEventListener('pointerleave', onLeave)
+
+    // Keep the backing store in sync with the panel size (height is viewport-based).
+    const ro = new ResizeObserver(() => {
+      width = host.clientWidth
+      height = host.clientHeight
+      sizeCanvas()
+      sim.force('center', forceCenter(width / 2, height / 2))
+      sim.alpha(0.1).restart()
+      draw()
+    })
+    ro.observe(host)
 
     return () => {
+      ro.disconnect()
       sim.stop()
-      select(host).select('svg').remove()
+      canvas.removeEventListener('pointermove', onMove)
+      canvas.removeEventListener('pointerleave', onLeave)
+      canvas.removeEventListener('click', onClick)
+      canvas.remove()
     }
     // Rebuild on data / namespace / refresh; byId & memories derive from data,
     // so they need no separate dep. (No ESLint runs here; this is a note.)
