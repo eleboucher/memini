@@ -2,11 +2,19 @@
  * memini memory-slot plugin for OpenClaw.
  *
  * Claims plugins.slots.memory via api.registerMemoryCapability, plus:
- *   - before_agent_start: recall relevant memories, prepend as context
+ *   - before_prompt_build: recall relevant memories, prepend as context
  *   - agent_end: capture the completed turn into memini
  *
- * Talks to memini over REST (/v1/search, /v1/memories), scoped by the
- * X-Memini-Namespace header. Default endpoint http://localhost:8080.
+ * Rather than wiring the slot's `runtime`/`flushPlanResolver` (the host-driven
+ * pattern the file-backed memory-core plugin uses), memini drives recall and
+ * capture itself over REST (/v1/search, /v1/memories), scoped by the
+ * X-Memini-Namespace header — it's an external service, not a local corpus.
+ * Default endpoint http://localhost:8080.
+ *
+ * NOTE: agent_end is a raw-conversation hook. Non-bundled plugins only receive
+ * event.messages on it when the operator sets
+ * `plugins.entries.memini.hooks.allowConversationAccess: true` in openclaw.json
+ * — without it, capture silently no-ops. See README "Install".
  */
 
 const DEFAULT_BASE_URL = "http://localhost:8080";
@@ -302,7 +310,7 @@ const plugin = {
       });
     }
 
-    api.on("before_agent_start", async (event, ctx) => {
+    api.on("before_prompt_build", async (event, ctx) => {
       if (!cfg.enabled) return;
       const prompt = typeof event?.prompt === "string" ? event.prompt.trim() : "";
       if (!prompt) return;

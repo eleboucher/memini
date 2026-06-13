@@ -3,6 +3,7 @@
 // first.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import plugin, { effectiveNamespace, meminiListPath, registerMeminiTools, resolveConfig } from "./plugin.mjs";
 
 // fakeClient records the last memini call and returns canned responses, so the
@@ -153,6 +154,82 @@ test("register wires the three tools when expose_tools is on", async () => {
     },
   });
   assert.deepEqual(names.sort(), ["memory_list", "memory_recall", "memory_remember"]);
+});
+
+// OpenClaw requires every runtime api.registerTool(...) name to be declared in
+// the manifest's contracts.tools, or tool discovery can't route to this plugin.
+// Keep the manifest and the registered tools in lockstep.
+test("manifest contracts.tools matches the registered tool names", async () => {
+  const manifest = JSON.parse(readFileSync(new URL("./openclaw.plugin.json", import.meta.url)));
+  const declared = manifest.contracts?.tools ?? [];
+  const { order } = await collectTools(fakeClient(), { namespace: "ns", namespace_per_agent: false });
+  assert.deepEqual([...declared].sort(), [...order].sort(), "contracts.tools must list exactly the registered tools");
+});
+
+test("recall uses before_prompt_build, not the deprecated before_agent_start", async () => {
+  const hooks = {};
+  await plugin.register({
+    pluginConfig: { enabled: true, namespace_per_agent: false },
+    registerMemoryCapability() {},
+    on(name, handler) {
+      hooks[name] = handler;
+    },
+    logger: {},
+    registerTool() {},
+  });
+  assert.ok(hooks.before_prompt_build, "recall should register on before_prompt_build");
+  assert.ok(hooks.agent_end, "capture should register on agent_end");
+  assert.equal(hooks.before_agent_start, undefined, "must not use the deprecated before_agent_start hook");
+});
+
+test("recall searches memini and prepends results; capture writes the episodic turn", async () => {
+  const hooks = {};
+  const requests = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    const body = String(url).endsWith("/v1/search")
+      ? { results: [{ memory: { summary: "prior fact", tier: "semantic" }, score: 0.9 }] }
+      : { id: "m1" };
+    return { ok: true, async json() { return body; }, async text() { return ""; } };
+  };
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {},
+      on(name, handler) {
+        hooks[name] = handler;
+      },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+
+    const recall = await hooks.before_prompt_build({ prompt: "how did we fix auth?" }, {});
+    assert.match(recall.prependContext, /prior fact/);
+    const search = requests.find((r) => r.url.endsWith("/v1/search"));
+    assert.equal(JSON.parse(search.init.body).query, "how did we fix auth?");
+
+    // agent_end is the raw-conversation hook: when the host grants conversation
+    // access, event.messages is present and the turn is captured as episodic.
+    await hooks.agent_end(
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "q" },
+          { role: "assistant", content: "a" },
+        ],
+      },
+      {},
+    );
+    const write = requests.find((r) => r.url.endsWith("/v1/memories"));
+    assert.ok(write, "capture should POST /v1/memories");
+    const body = JSON.parse(write.init.body);
+    assert.equal(body.tier, "episodic");
+    assert.match(body.content, /User: q/);
+    assert.match(body.content, /Assistant: a/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 test("meminiListPath builds repeatable tier/tag and escaped meta params", () => {

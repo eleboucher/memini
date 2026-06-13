@@ -29,11 +29,16 @@ Done. Claim the memory slot in $OPENCLAW_HOME/openclaw.json:
       "entries": {
         "memini": {
           "enabled": true,
+          "hooks": { "allowConversationAccess": true },
           "config": { "base_url": "http://localhost:8080", "namespace": "openclaw" }
         }
       }
     }
   }
+
+hooks.allowConversationAccess is required: the agent_end capture hook only
+receives conversation messages with it set; without it, recall works but
+nothing is written back.
 
 If memini needs auth, set MEMINI_API_KEY in the gateway env, then restart OpenClaw.
 EOF

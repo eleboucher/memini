@@ -10,10 +10,12 @@ no tool calls required from the agent.
 
 What it wires (via `api.registerMemoryCapability` + two hooks):
 
-- **`before_agent_start`** — searches memini for the incoming prompt and
+- **`before_prompt_build`** — searches memini for the incoming prompt and
   prepends the matches as context.
 - **`agent_end`** — stores the completed user/assistant turn back into memini
-  (episodic) so it can be recalled later.
+  (episodic) so it can be recalled later. This is a raw-conversation hook, so it
+  requires `hooks.allowConversationAccess: true` (see config below); without it
+  OpenClaw withholds `event.messages` and capture silently no-ops.
 
 ### Install
 
@@ -47,6 +49,7 @@ Claim the memory slot in `~/.openclaw/openclaw.json`:
     "entries": {
       "memini": {
         "enabled": true,
+        "hooks": { "allowConversationAccess": true },
         "config": {
           "base_url": "http://localhost:8080",
           "namespace": "openclaw",
@@ -113,7 +116,8 @@ openclaw plugins install clawhub:@eleboucher/memini
 This is a tracked install, so the gateway updater (and `openclaw plugins update`)
 keeps it current — unlike a raw `git clone`, which is never tracked and never
 updates. Enablement is handled by `openclaw.json`, not the install command:
-claim `slots.memory: memini` and set `entries.memini.enabled`. Put
+claim `slots.memory: memini`, set `entries.memini.enabled`, and set
+`entries.memini.hooks.allowConversationAccess: true` (capture needs it). Put
 `base_url`/`namespace` there (templated from your ConfigMap) and inject
 `MEMINI_API_KEY` as a container env var from a Secret.
 
