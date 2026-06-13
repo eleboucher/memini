@@ -1,5 +1,5 @@
 name: memini
-version: 0.2.7
+version: 0.2.8
 description: "Persistent cross-session memory for OpenClaw via memini. Claims the plugins.slots.memory slot."
 homepage: "https://github.com/eleboucher/memini"
 license: AGPL-3.0
