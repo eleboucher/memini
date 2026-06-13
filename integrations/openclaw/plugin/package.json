@@ -1,6 +1,6 @@
 {
   "name": "@eleboucher/memini",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "type": "module",
   "dependencies": {
     "@sinclair/typebox": "^0.34.49"
