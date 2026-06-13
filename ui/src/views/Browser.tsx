@@ -20,9 +20,11 @@ export function Browser() {
   )
   const memories = data ?? []
   const showNs = isAllProjects()
+  // Cap the column for a lone result so it doesn't stretch full-width.
+  const sparse = memories.length === 1
 
   return (
-    <div class="view">
+    <div class={`view browse ${sparse ? 'sparse' : ''}`}>
       <div class="toolbar">
         <TierFilter selected={tiers} onChange={setTiers} />
         <span class="grow" />

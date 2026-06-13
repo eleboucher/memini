@@ -17,6 +17,7 @@ import {
   IconSettings,
   IconMoon,
   IconSun,
+  LogoMark,
 } from './icons'
 import type { JSX } from 'preact'
 
@@ -64,6 +65,7 @@ export function App() {
     <div class="shell">
       <nav class="sidebar" aria-label="Primary">
         <div class="brand">
+          <LogoMark class="brand-logo" />
           <span class="mark">memini</span>
           <span class="dot" aria-hidden="true" />
         </div>

@@ -7,66 +7,82 @@
 
 :root {
   --font-display: 'Fraunces', Georgia, 'Times New Roman', serif;
-  --font-ui: 'Hanken Grotesk', ui-sans-serif, system-ui, sans-serif;
+  --font-ui: 'Inter', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 
-  --r-sm: 5px;
-  --r-md: 8px;
-  --r-lg: 13px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 22px;
 
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
-
-  /* Ember accent — constant across themes. */
-  --ember: #e0703a;
-  --ember-soft: #f0a06a;
 
   /* Dark ink for labels that sit on bright tier fills (strata segments). */
   --seg-ink: #0c0b0a;
 
-  /* Tier ramp (consolidation heat: cool → warm). */
-  --tier-working: #6f8398;
-  --tier-episodic: #44a0a3;
-  --tier-semantic: #e0a13c;
-  --tier-procedural: #d9663f;
+  /* Tier ramp (cool → warm). Defaults are dark-theme values; light theme overrides below. */
+  --tier-working: #6e7cf2;
+  --tier-episodic: #1fbeb2;
+  --tier-semantic: #f0ae3e;
+  --tier-procedural: #f2683d;
+  --spectrum: linear-gradient(
+    90deg,
+    var(--tier-working),
+    var(--tier-episodic) 40%,
+    var(--tier-semantic) 72%,
+    var(--tier-procedural)
+  );
 }
 
-/* ---- Ink (dark, default) ---- */
+/* ---- Ink (dark, default) — warm ink ---- */
 :root,
 [data-theme='ink'] {
-  --bg: #0c0b0a;
-  --bg-grain: 0.025;
-  --surface: #141210;
-  --surface-2: #1b1813;
-  --surface-3: #221e18;
-  --line: #2b2620;
-  --line-strong: #3a342b;
-  --text: #ece5d8;
-  --text-dim: #b3a994;
-  --muted: #9a917d;
-  --faint: #847b67;
+  --bg: #15120f;
+  --bg-grain: 0.022;
+  --surface: #1d1915;
+  --surface-2: #26201a;
+  --surface-3: #2f2820;
+  --line: #322b22;
+  --line-strong: #473d30;
+  --text: #f1e9db;
+  --text-dim: #c9bfad;
+  --muted: #a99d88;
+  --faint: #7b7160;
   --ok: #5fb87a;
-  --shadow: 0 18px 50px -28px rgba(0, 0, 0, 0.85);
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.35), 0 20px 40px -20px rgba(0, 0, 0, 0.6);
+  --ember: #f2683d;
+  --ember-soft: #ff8a5c;
+  --accent: #f2683d;
+  --accent-soft: #3a1f15;
+  --logo-bg: #221c16;
+  --logo-dot: #f1e9db;
 }
 
-/* ---- Ivory (light) ---- */
+/* ---- Ivory (light) — warm paper ---- */
 [data-theme='ivory'] {
-  --bg: #f3eee3;
-  --bg-grain: 0.04;
-  --surface: #fbf8f0;
-  --surface-2: #f5efe2;
-  --surface-3: #efe7d6;
-  --line: #e2d9c6;
-  --line-strong: #d2c6ac;
-  --text: #2a241c;
-  --text-dim: #5f574a;
-  --muted: #6b6453;
-  --faint: #837a64;
+  --bg: #f7f3eb;
+  --bg-grain: 0.035;
+  --surface: #fffdf8;
+  --surface-2: #f1eadc;
+  --surface-3: #e9e0cf;
+  --line: #e7decc;
+  --line-strong: #d9cdb5;
+  --text: #1c1815;
+  --text-dim: #4a4239;
+  --muted: #6b6155;
+  --faint: #9b8f7d;
   --ok: #2f9e57;
-  --shadow: 0 16px 40px -26px rgba(80, 60, 30, 0.4);
-  --tier-working: #51637a;
-  --tier-episodic: #3a9094;
-  --tier-semantic: #c2842a;
-  --tier-procedural: #c85a36;
+  --shadow: 0 2px 6px rgba(60, 40, 20, 0.05), 0 16px 34px -16px rgba(60, 40, 20, 0.22);
+  --ember: #e8552d;
+  --ember-soft: #f47a4a;
+  --accent: #e8552d;
+  --accent-soft: #fbe6dc;
+  --logo-bg: #1c1815;
+  --logo-dot: #fffdf8;
+  --tier-working: #5566e0;
+  --tier-episodic: #15a39a;
+  --tier-semantic: #e0962a;
+  --tier-procedural: #e8552d;
 }
 
 * {
@@ -157,9 +173,14 @@ a {
 
 .brand {
   display: flex;
-  align-items: baseline;
-  gap: 9px;
-  padding: 4px 10px 22px;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px 22px;
+}
+.brand-logo {
+  width: 30px;
+  height: 30px;
+  flex: none;
 }
 .brand .mark {
   font-family: var(--font-display);
@@ -369,11 +390,12 @@ a {
 .btn.primary {
   background: var(--ember);
   border-color: var(--ember);
-  color: #1a0f08;
+  color: #fff;
   font-weight: 600;
 }
 .btn.primary:hover {
-  background: var(--ember-soft);
+  background: color-mix(in oklab, var(--ember) 86%, #000);
+  border-color: color-mix(in oklab, var(--ember) 86%, #000);
 }
 .btn.ghost {
   background: transparent;
@@ -660,7 +682,7 @@ label.field .desc {
 }
 .project-card:hover {
   border-color: var(--line-strong);
-  transform: translateY(-2px);
+  background: var(--surface-2);
 }
 .project-head {
   display: flex;
@@ -770,6 +792,11 @@ label.field .desc {
   flex-direction: column;
   gap: 12px;
 }
+/* Single result: cap to a readable column so the lone card doesn't stretch full-width. */
+.browse.sparse .toolbar,
+.browse.sparse .mem-list {
+  max-width: 760px;
+}
 .mem {
   display: block;
   width: 100%;
@@ -781,12 +808,12 @@ label.field .desc {
   cursor: pointer;
   transition:
     border-color 0.15s var(--ease),
-    transform 0.12s var(--ease);
+    background 0.15s var(--ease);
   border-left: 3px solid var(--tc, var(--line));
 }
 .mem:hover {
-  border-color: var(--line-strong);
-  transform: translateX(2px);
+  border-color: var(--tc, var(--line-strong));
+  background: color-mix(in oklab, var(--tc, var(--surface)) 5%, var(--surface));
 }
 .mem.working {
   --tc: var(--tier-working);
@@ -851,7 +878,7 @@ label.field .desc {
 .imp-bar i {
   display: block;
   height: 100%;
-  background: var(--ember);
+  background: var(--muted);
 }
 .tags {
   display: flex;

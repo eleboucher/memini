@@ -66,3 +66,14 @@ export const IconSun = base([
   <circle cx="12" cy="12" r="4" />,
   <path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19" />,
 ])
+
+/** Brand mark. Filled (not stroked); colours pull from the theme's logo and tier vars. */
+export const LogoMark = (props: P) => (
+  <svg viewBox="0 0 48 48" aria-hidden="true" focusable="false" {...props}>
+    <rect x="0.5" y="0.5" width="47" height="47" rx="13" fill="var(--logo-bg)" stroke="var(--line)" />
+    <circle cx="24" cy="12" r="5" fill="var(--logo-dot)" />
+    <rect x="12" y="22" width="24" height="4.6" rx="2.3" fill="var(--tier-working)" />
+    <rect x="12" y="29.4" width="24" height="4.6" rx="2.3" fill="var(--tier-episodic)" />
+    <rect x="13.5" y="36.8" width="21" height="4.6" rx="2.3" fill="var(--tier-semantic)" />
+  </svg>
+)
