@@ -55,8 +55,12 @@ config. Verify with `curl http://localhost:8080/healthz`.
 
 ### Codex CLI
 
-The hooks reuse Claude Code's protocol and resolve paths from
-`$CODEX_PLUGIN_ROOT`. Mount this directory as a Codex plugin.
+Codex implements a Claude-Code-compatible plugin model: it auto-discovers
+`hooks/hooks.json` and expands `${CLAUDE_PLUGIN_ROOT}` (which Codex provides for
+compatibility), so the same hook wiring drives both. Mount this directory as a
+Codex plugin via `.codex-plugin/plugin.json` — no Codex-specific hooks file is
+needed. (Matchers naming Claude-only tools like `Read`/`Glob`/`Grep` just don't
+fire under Codex, which exposes `Bash`/`apply_patch`/`mcp__*`.)
 
 ### opencode
 
@@ -73,8 +77,7 @@ plugin/
 ├── .claude-plugin/plugin.json   # Claude Code manifest
 ├── .codex-plugin/plugin.json    # Codex manifest
 ├── hooks/
-│   ├── hooks.json               # Claude Code hook wiring
-│   └── hooks.codex.json         # Codex hook wiring
+│   └── hooks.json               # hook wiring (Claude Code + Codex, via ${CLAUDE_PLUGIN_ROOT})
 ├── scripts/
 │   ├── _shared.mjs              # resolveProject, postJSON/Search/Remember, session buffer + digest
 │   ├── session-start.mjs

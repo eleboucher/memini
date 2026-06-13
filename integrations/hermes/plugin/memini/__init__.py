@@ -54,7 +54,7 @@ except ImportError:  # allow import/testing outside a Hermes install
         def save_config(self, values: dict, hermes_home: str) -> None: pass
         def prefetch(self, query: str, **kwargs: Any) -> str: return ""
         def sync_turn(self, user: str, assistant: str, **kwargs: Any) -> None: pass
-        def on_pre_compress(self, messages: list, **kwargs: Any) -> None: pass
+        def on_pre_compress(self, messages: list, **kwargs: Any) -> str: return ""
         def on_memory_write(self, action: str, target: str, content: str, **kwargs: Any) -> None: pass
 
 
@@ -152,8 +152,10 @@ class MeminiMemoryProvider(MemoryProvider):
         self._base = _env("MEMINI_URL", DEFAULT_BASE_URL).rstrip("/")
         self._secret = _env("MEMINI_API_KEY")
         self._session_id = session_id
-        cwd = kwargs.get("cwd") or os.getcwd()
-        self._namespace = _env("MEMINI_NAMESPACE") or os.path.basename(cwd.rstrip("/")) or "hermes"
+        # Hermes' initialize kwargs carry no project path (agent_workspace is a
+        # label, not a dir), so the working directory is the only signal for the
+        # default namespace; set MEMINI_NAMESPACE to scope explicitly.
+        self._namespace = _env("MEMINI_NAMESPACE") or os.path.basename(os.getcwd().rstrip("/")) or "hermes"
         if _env("MEMINI_REQUIRE_HTTPS") == "1":
             _check_plaintext_bearer_guard(self._base, self._secret)
 
@@ -193,16 +195,16 @@ class MeminiMemoryProvider(MemoryProvider):
         block = self._format(self._call("/v1/search", {"query": query, "limit": 5}), 5)
         return f"Relevant memories (from memini):\n{block}" if block else ""
 
-    def on_pre_compress(self, messages: list, **kwargs: Any) -> None:
+    def on_pre_compress(self, messages: list, **kwargs: Any) -> str:
+        # Hermes injects the returned string into the compaction-summary prompt;
+        # it ignores in-place edits to `messages`, so we must return the text.
         query = ""
         for m in reversed(messages):
             if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str):
                 query = m["content"]
                 break
         block = self._format(self._call("/v1/search", {"query": query, "limit": 5}), 5) if query else ""
-        if block:
-            messages.insert(0, {"role": "user",
-                                "content": f"[memini context before compaction]\n{block}"})
+        return f"[memini context before compaction]\n{block}" if block else ""
 
     def sync_turn(self, user: str, assistant: str, **kwargs: Any) -> None:
         user, assistant = (user or "").strip(), (assistant or "").strip()

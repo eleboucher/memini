@@ -197,18 +197,20 @@ test("resolveProject: self-heals to the same namespace after the remote is remov
   }
 });
 
-test("session-start.mjs: queries with right namespace, writes context to stdout", async () => {
+test("session-start.mjs: fetches the briefing with right namespace, writes context to stdout", async () => {
   const hits = [];
   const { url, close } = await startMockServer((req, res, body) => {
     hits.push({ method: req.method, url: req.url, ns: req.headers["x-memini-namespace"], body });
     res.setHeader("Content-Type", "application/json");
-    if (req.url === "/v1/search") {
+    // session-start.mjs makes a single layered briefing call, not N searches.
+    if (req.url.startsWith("/v1/namespaces/") && req.url.includes("/briefing")) {
       res.end(
         JSON.stringify({
-          results: [
-            { memory: { content: "last session did X" }, score: 0.9 },
-            { memory: { content: "convention: use tabs" }, score: 0.8 },
-          ],
+          namespace: "memini",
+          pinned: [],
+          facts: [{ content: "convention: use tabs" }],
+          procedures: [],
+          recent: [{ content: "last session did X" }],
         }),
       );
     } else {
@@ -226,11 +228,11 @@ test("session-start.mjs: queries with right namespace, writes context to stdout"
 
     assert.match(stdout, /<memini-context[^>]*>/, "should emit context block");
     assert.match(stdout, /last session did X/, "should surface prior memory");
-    assert.equal(hits.length, 2, `expected 2 search calls, got ${hits.length}`);
-    for (const h of hits) {
-      assert.equal(h.ns, "memini", `expected namespace=memini, got ${h.ns}`);
-      assert.equal(h.url, "/v1/search");
-    }
+    assert.equal(hits.length, 1, `expected 1 briefing call, got ${hits.length}`);
+    const [h] = hits;
+    assert.equal(h.method, "GET");
+    assert.equal(h.ns, "memini", `expected namespace=memini, got ${h.ns}`);
+    assert.match(h.url, /^\/v1\/namespaces\/memini\/briefing\b/);
   } finally {
     await close();
   }
