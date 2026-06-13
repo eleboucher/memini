@@ -43,7 +43,8 @@ export function Dashboard() {
             {relTime(stats.last_write_at ?? undefined)}
           </div>
           <div class="sub">
-            {stats.expired} expired · {stats.superseded} superseded
+            {stats.expired} expired · {stats.superseded} superseded ·{' '}
+            {stats.low_confidence_durable} low-confidence
           </div>
         </div>
       </div>

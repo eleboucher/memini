@@ -263,8 +263,11 @@ type Stats struct {
 	ByTier       map[string]int  `json:"by_tier"`
 	Expired      int             `json:"expired"`
 	LastWriteAt  *time.Time      `json:"last_write_at,omitempty"`
-	Namespace    string          `json:"namespace"`
-	Superseded   int             `json:"superseded"`
+
+	// LowConfidenceDurable Live durable memories whose decayed confidence is below the demote floor — reclaimable, uncorroborated debris.
+	LowConfidenceDurable int    `json:"low_confidence_durable"`
+	Namespace            string `json:"namespace"`
+	Superseded           int    `json:"superseded"`
 
 	// Total Live memories (excludes expired/superseded)
 	Total         int `json:"total"`

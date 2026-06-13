@@ -73,15 +73,18 @@ func (s *Service) List(ctx context.Context, in ListInput) ([]*memory.Memory, err
 // a hot-path metric (Prometheus /metrics remains the source for operational
 // counters).
 type Stats struct {
-	Namespace     string              `json:"namespace"`
-	Total         int                 `json:"total"`                    // live memories (excludes expired/superseded)
-	ByTier        map[memory.Tier]int `json:"by_tier"`                  // live count per tier
-	ByMemoryType  map[string]int      `json:"by_memory_type,omitempty"` // live count per metadata.memory_type (typed extractions)
-	Expired       int                 `json:"expired"`                  // past-TTL, not yet swept
-	Superseded    int                 `json:"superseded"`               // contradiction-tombstoned
-	TotalAccesses int                 `json:"total_accesses"`
-	AvgImportance float64             `json:"avg_importance"`
-	LastWriteAt   *time.Time          `json:"last_write_at,omitempty"`
+	Namespace    string              `json:"namespace"`
+	Total        int                 `json:"total"`                    // live memories (excludes expired/superseded)
+	ByTier       map[memory.Tier]int `json:"by_tier"`                  // live count per tier
+	ByMemoryType map[string]int      `json:"by_memory_type,omitempty"` // live count per metadata.memory_type (typed extractions)
+	Expired      int                 `json:"expired"`                  // past-TTL, not yet swept
+	Superseded   int                 `json:"superseded"`               // contradiction-tombstoned
+	// uncorroborated durable debris (confidence below the demote floor); unbounded
+	// by short-term caps, so a growing value signals reclaimable bloat
+	LowConfidenceDurable int        `json:"low_confidence_durable"`
+	TotalAccesses        int        `json:"total_accesses"`
+	AvgImportance        float64    `json:"avg_importance"`
+	LastWriteAt          *time.Time `json:"last_write_at,omitempty"`
 }
 
 // Stats computes a per-namespace overview by scanning all of its memories
@@ -109,6 +112,9 @@ func (s *Service) Stats(ctx context.Context, namespace string) (Stats, error) {
 			st.ByTier[m.Tier]++
 			if mt, ok := m.Metadata["memory_type"].(string); ok && mt != "" {
 				st.ByMemoryType[mt]++
+			}
+			if m.Tier.Term() == memory.LongTerm && m.EffectiveConfidence(now) < memory.ConfidenceDemoteFloor {
+				st.LowConfidenceDurable++
 			}
 			st.TotalAccesses += m.AccessCount
 			importanceSum += m.Importance
@@ -141,6 +147,7 @@ func (s *Service) StatsAll(ctx context.Context) (Stats, error) {
 		merged.Total += st.Total
 		merged.Expired += st.Expired
 		merged.Superseded += st.Superseded
+		merged.LowConfidenceDurable += st.LowConfidenceDurable
 		merged.TotalAccesses += st.TotalAccesses
 		// Weight by live total so the merged average isn't skewed by empty or
 		// tombstone-only namespaces.

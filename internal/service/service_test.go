@@ -376,6 +376,37 @@ func TestFingerprintDedupByDefault(t *testing.T) {
 	}
 }
 
+func TestStatsLowConfidenceDurable(t *testing.T) {
+	svc := newService(t)
+	ctx := context.Background()
+	low := 0.2 // below memory.ConfidenceDemoteFloor (0.35)
+	high := 0.9
+
+	// Two durable facts below the floor (reclaimable debris), one above, plus a
+	// short-term memory (confidence is not tracked there, so it never counts).
+	for i, c := range []*float64{&low, &low, &high} {
+		if _, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: "alice", Content: fmt.Sprintf("durable fact %d", i),
+			Tier: memory.TierSemantic, Confidence: c,
+		}); err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+	}
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "scratch note", Tier: memory.TierWorking,
+	}); err != nil {
+		t.Fatalf("remember working: %v", err)
+	}
+
+	st, err := svc.Stats(ctx, "alice")
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if st.LowConfidenceDurable != 2 {
+		t.Fatalf("low_confidence_durable = %d, want 2", st.LowConfidenceDurable)
+	}
+}
+
 func TestRecallNamespaceIsolation(t *testing.T) {
 	svc := newService(t)
 	ctx := context.Background()

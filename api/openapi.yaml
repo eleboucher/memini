@@ -469,7 +469,17 @@ components:
           items: { $ref: "#/components/schemas/Memory" }
     Stats:
       type: object
-      required: [namespace, total, by_tier, expired, superseded, total_accesses, avg_importance]
+      required:
+        [
+          namespace,
+          total,
+          by_tier,
+          expired,
+          superseded,
+          low_confidence_durable,
+          total_accesses,
+          avg_importance,
+        ]
       properties:
         namespace: { type: string }
         total: { type: integer, description: Live memories (excludes expired/superseded) }
@@ -482,6 +492,9 @@ components:
           additionalProperties: { type: integer }
         expired: { type: integer }
         superseded: { type: integer }
+        low_confidence_durable:
+          type: integer
+          description: Live durable memories whose decayed confidence is below the demote floor — reclaimable, uncorroborated debris.
         total_accesses: { type: integer }
         avg_importance: { type: number, format: double }
         last_write_at: { type: string, format: date-time, nullable: true }

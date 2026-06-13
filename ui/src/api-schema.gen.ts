@@ -372,6 +372,8 @@ export interface components {
             };
             expired: number;
             superseded: number;
+            /** @description Live durable memories whose decayed confidence is below the demote floor — reclaimable, uncorroborated debris. */
+            low_confidence_durable: number;
             total_accesses: number;
             /** Format: double */
             avg_importance: number;

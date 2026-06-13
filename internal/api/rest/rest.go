@@ -410,14 +410,15 @@ func (h *Server) GetStats(w http.ResponseWriter, r *http.Request, params GetStat
 		byTier[string(tier)] = n
 	}
 	resp := Stats{
-		Namespace:     s.Namespace,
-		Total:         s.Total,
-		ByTier:        byTier,
-		Expired:       s.Expired,
-		Superseded:    s.Superseded,
-		TotalAccesses: s.TotalAccesses,
-		AvgImportance: s.AvgImportance,
-		LastWriteAt:   s.LastWriteAt,
+		Namespace:            s.Namespace,
+		Total:                s.Total,
+		ByTier:               byTier,
+		Expired:              s.Expired,
+		Superseded:           s.Superseded,
+		LowConfidenceDurable: s.LowConfidenceDurable,
+		TotalAccesses:        s.TotalAccesses,
+		AvgImportance:        s.AvgImportance,
+		LastWriteAt:          s.LastWriteAt,
 	}
 	if len(s.ByMemoryType) > 0 {
 		resp.ByMemoryType = &s.ByMemoryType
