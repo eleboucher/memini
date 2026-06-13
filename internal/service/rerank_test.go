@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/eleboucher/memini/internal/embed/embedtest"
 	"github.com/eleboucher/memini/internal/memory"
@@ -28,6 +29,16 @@ type errReranker struct{ called bool }
 func (r *errReranker) Rerank(_ context.Context, _ string, _ []rerank.Candidate) ([]string, error) {
 	r.called = true
 	return nil, errors.New("boom")
+}
+
+// slowReranker blocks until its context is canceled, simulating a backend that
+// is too slow to answer within the rerank timeout.
+type slowReranker struct{ err error }
+
+func (r *slowReranker) Rerank(ctx context.Context, _ string, _ []rerank.Candidate) ([]string, error) {
+	<-ctx.Done()
+	r.err = ctx.Err()
+	return nil, ctx.Err()
 }
 
 func ingestTwo(t *testing.T, svc *service.Service) {
@@ -87,5 +98,23 @@ func TestRecallRerankerFallsBackOnError(t *testing.T) {
 	}
 	if len(got) != len(baseIDs) || got[0] != baseIDs[0] {
 		t.Fatalf("failed rerank should keep composite order: base=%v got=%v", baseIDs, got)
+	}
+}
+
+func TestRecallRerankerTimeoutFallsBackToComposite(t *testing.T) {
+	st := openTestStore(t)
+	base := service.New(st, embedtest.New(dims), service.WithSyncReinforce())
+	ingestTwo(t, base)
+	baseIDs := recallIDs(t, base)
+
+	rr := &slowReranker{}
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(),
+		service.WithReranker(rr, "test", 0), service.WithRerankTimeout(10*time.Millisecond))
+	got := recallIDs(t, svc)
+	if !errors.Is(rr.err, context.DeadlineExceeded) {
+		t.Fatalf("reranker should be canceled by the rerank timeout, got %v", rr.err)
+	}
+	if len(got) != len(baseIDs) || got[0] != baseIDs[0] {
+		t.Fatalf("timed-out rerank should keep composite order: base=%v got=%v", baseIDs, got)
 	}
 }

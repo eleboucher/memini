@@ -132,6 +132,9 @@ type Service struct {
 	reranker   rerank.Reranker
 	rerankName string
 	rerankTopN int
+	// rerankTimeout bounds the reranker call; past it, recall falls back to
+	// composite order instead of stalling on a slow backend.
+	rerankTimeout time.Duration
 
 	// distiller is optional; when set, RunPromoter distills frequently-accessed
 	// episodic memories into durable semantic facts.
@@ -222,6 +225,10 @@ func WithAnswerer(c llm.Completer) Option { return func(s *Service) { s.answerer
 // defaultRerankTopN is how many composite-ranked candidates the reranker sees.
 const defaultRerankTopN = 20
 
+// defaultRerankTimeout bounds a single reranker call; past it, recall falls
+// back to composite order.
+const defaultRerankTimeout = 3 * time.Second
+
 // WithReranker enables reranking of recall candidates: after composite ranking,
 // the top topN candidates are reordered by the reranker (an LLM or cross-encoder
 // model), then truncated to the limit. name labels the backend in metrics. It
@@ -233,6 +240,16 @@ func WithReranker(r rerank.Reranker, name string, topN int) Option {
 		s.rerankName = name
 		if topN > 0 {
 			s.rerankTopN = topN
+		}
+	}
+}
+
+// WithRerankTimeout bounds a single reranker call; at the deadline recall
+// degrades to composite order. d <= 0 keeps the default.
+func WithRerankTimeout(d time.Duration) Option {
+	return func(s *Service) {
+		if d > 0 {
+			s.rerankTimeout = d
 		}
 	}
 }
@@ -310,6 +327,7 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 		consolidateMinScore: 0.6,
 		promoteMinAccess:    3,
 		rerankTopN:          defaultRerankTopN,
+		rerankTimeout:       defaultRerankTimeout,
 		scoreFusionAlpha:    search.DefaultFusionAlpha, // convex score fusion by default; negative selects RRF
 		poolFactor:          recallPoolFactor,
 		poolFloor:           recallPoolFloor,
@@ -725,8 +743,14 @@ func (s *Service) finalizeRecall(ctx context.Context, query string, ranked []sto
 	for i, r := range pool {
 		cands[i] = rerank.Candidate{ID: r.Memory.ID, Content: r.Memory.Content}
 	}
+	rctx := ctx
+	if s.rerankTimeout > 0 {
+		var cancel context.CancelFunc
+		rctx, cancel = context.WithTimeout(ctx, s.rerankTimeout)
+		defer cancel()
+	}
 	start := time.Now()
-	order, err := s.reranker.Rerank(ctx, query, cands)
+	order, err := s.reranker.Rerank(rctx, query, cands)
 	s.metrics.OpDuration("rerank", time.Since(start))
 	if err != nil {
 		slog.WarnContext(ctx, "recall: rerank failed, using composite order", "backend", s.rerankName, "err", err)

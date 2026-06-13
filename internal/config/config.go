@@ -120,6 +120,9 @@ type Config struct {
 	// oversized candidate can't exceed the server's physical batch and fail the
 	// whole rerank request. 0 disables truncation.
 	RerankMaxDocChars int `env:"MEMINI_RERANK_MAX_DOC_CHARS" envDefault:"1200"`
+	// RerankTimeout bounds a single reranker call; past it, recall degrades to
+	// composite order instead of stalling on a slow or congested backend.
+	RerankTimeout time.Duration `env:"MEMINI_RERANK_TIMEOUT" envDefault:"3s"`
 
 	// Consolidation tuning.
 	// ConsolidateMode is "async" (default), "sync", or "off".

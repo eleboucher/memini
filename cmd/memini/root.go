@@ -166,7 +166,10 @@ func buildServiceStack(ctx context.Context, cfg *config.Config, log *slog.Logger
 			return nil, nil, nil, nil, err
 		}
 		if reranker != nil {
-			svcOpts = append(svcOpts, service.WithReranker(reranker, name, cfg.RerankTopN))
+			svcOpts = append(svcOpts,
+				service.WithReranker(reranker, name, cfg.RerankTopN),
+				service.WithRerankTimeout(cfg.RerankTimeout),
+			)
 		}
 	}
 	svcOpts = append(svcOpts,
