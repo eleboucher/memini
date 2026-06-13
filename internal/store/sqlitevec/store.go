@@ -87,10 +87,12 @@ func (s *Store) migrate(ctx context.Context) error {
 			superseded_by    TEXT,
 			valid_from       INTEGER,
 			valid_to         INTEGER,
-			confidence       REAL
+			confidence       REAL,
+			fingerprint      TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_fingerprint ON memories(namespace, tier, fingerprint)`,
 		// namespace is a partition key so KNN can isolate tenants efficiently.
 		fmt.Sprintf(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_memories USING vec0(
 			namespace TEXT partition key,
@@ -112,6 +114,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 	if err := s.addColumnIfMissing(ctx, "memories", "confidence", "REAL"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "memories", "fingerprint", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	return nil
@@ -181,11 +186,12 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		res, ierr := tx.ExecContext(ctx, `INSERT INTO memories
 			(id, namespace, tier, content, summary, metadata, tags, importance,
 			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-			 valid_from, valid_to, confidence)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			 valid_from, valid_to, confidence, fingerprint)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
 			m.Importance, ms(m.CreatedAt), ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
-			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), f64Ptr(m.Confidence))
+			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), f64Ptr(m.Confidence),
+			memory.Fingerprint(m.Content))
 		if ierr != nil {
 			return fmt.Errorf("sqlitevec: insert memory: %w", ierr)
 		}
@@ -202,11 +208,12 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		if _, uerr := tx.ExecContext(ctx, `UPDATE memories SET
 			tier=?, content=?, summary=?, metadata=?, tags=?, importance=?,
 			created_at=?, updated_at=?, last_accessed_at=?, access_count=?, expires_at=?, superseded_by=?,
-			valid_from=?, valid_to=?, confidence=?
+			valid_from=?, valid_to=?, confidence=?, fingerprint=?
 			WHERE rowid=?`,
 			string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
 			m.Importance, ms(m.CreatedAt), ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
-			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), f64Ptr(m.Confidence), rowID); uerr != nil {
+			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), f64Ptr(m.Confidence),
+			memory.Fingerprint(m.Content), rowID); uerr != nil {
 			return fmt.Errorf("sqlitevec: update memory: %w", uerr)
 		}
 	}
@@ -263,6 +270,31 @@ func (s *Store) Reinforce(ctx context.Context, namespace string, ids []string, a
 func (s *Store) Get(ctx context.Context, namespace, id string) (*memory.Memory, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT `+memoryColumns+` FROM memories WHERE id=? AND namespace=?`, id, namespace)
+	m, err := scanMemory(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, store.ErrNotFound
+	}
+	return m, err
+}
+
+// GetByFingerprint returns the most recent live memory in namespace+tier whose
+// content fingerprint matches. Superseded and expired rows are excluded so a
+// dead duplicate never absorbs a fresh write.
+func (s *Store) GetByFingerprint(
+	ctx context.Context, namespace string, tier memory.Tier, fingerprint string, now time.Time,
+) (*memory.Memory, error) {
+	if fingerprint == "" {
+		return nil, store.ErrNotFound
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+memoryColumns+` FROM memories
+		 WHERE namespace=? AND tier=? AND fingerprint=? AND superseded_by IS NULL
+		   AND (expires_at IS NULL OR expires_at > ?)
+		 ORDER BY created_at DESC LIMIT 1`,
+		namespace, string(tier), fingerprint, ms(now))
 	m, err := scanMemory(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, store.ErrNotFound

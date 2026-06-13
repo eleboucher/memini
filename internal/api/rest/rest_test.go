@@ -576,11 +576,13 @@ func TestErrorStatusMapping(t *testing.T) {
 func TestDedupNamespaceScoping(t *testing.T) {
 	h := newServer(t)
 
-	// Two identical pairs, one per namespace.
+	// A near-duplicate pair per namespace (distinct content so write-time
+	// fingerprint dedup keeps both, but similar enough for the dedup pass to
+	// cluster them; exact restatements never reach the maintenance dedup).
 	seed := func(ns string) {
-		for range 2 {
+		for _, c := range []string{"the sky is blue", "the sky is very blue"} {
 			rec := do(t, h, http.MethodPost, "/v1/memories", ns, apiKey, map[string]any{
-				"content": "the sky is blue", "tier": "semantic",
+				"content": c, "tier": "semantic",
 			})
 			if rec.Code != http.StatusCreated {
 				t.Fatalf("seed %s: want 201, got %d (%s)", ns, rec.Code, rec.Body)
@@ -626,9 +628,9 @@ func TestDedupNamespaceScoping(t *testing.T) {
 func TestDedupAllNamespacesDryRun(t *testing.T) {
 	h := newServer(t)
 	for _, ns := range []string{"alice", "bob"} {
-		for range 2 {
+		for _, c := range []string{"the sky is blue", "the sky is very blue"} {
 			rec := do(t, h, http.MethodPost, "/v1/memories", ns, apiKey, map[string]any{
-				"content": "the sky is blue", "tier": "semantic",
+				"content": c, "tier": "semantic",
 			})
 			if rec.Code != http.StatusCreated {
 				t.Fatalf("seed %s: want 201, got %d (%s)", ns, rec.Code, rec.Body)

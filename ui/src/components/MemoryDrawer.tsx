@@ -168,6 +168,14 @@ export function MemoryDrawer({ memory: m, onClose }: Props) {
                 <span class="val">{m.superseded_by}</span>
               </>
             )}
+            {m.valid_to && (
+              <>
+                <span class="key">valid</span>
+                <span class="val">
+                  {m.valid_from ? fmtDate(m.valid_from) : '—'} → {fmtDate(m.valid_to)}
+                </span>
+              </>
+            )}
           </div>
 
           {metaEntries.length > 0 && (

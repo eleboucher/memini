@@ -34,13 +34,13 @@ endpoint. Cells are `recall_any@5 / @10 / MRR` (%); `p50` is in-process recall
 latency (rerank rows show the added cost). The detailed per-dataset sections
 below explain the methodology, sweeps, and caveats behind each column.
 
-| Strategy                                  | LongMemEval · session  | LoCoMo · turn-level    | LoCoMo · session-level | p50         |
-| ----------------------------------------- | ---------------------- | ---------------------- | ---------------------- | ----------- |
-| vector                                    | 92.6 / 95.4 / 80.7     | 41.3 / 51.8 / 28.1     | 64.1 / 79.8 / 45.2     | <1 ms       |
-| keyword (Porter BM25)                     | 97.6 / 99.0 / 92.2     | 58.7 / 67.1 / 44.8     | 92.6 / 96.8 / 79.4     | ~3 ms       |
-| **hybrid** (default, production path)     | **98.4 / 99.2 / 93.0** | **59.7 / 69.9 / 42.4** | **90.9 / 96.6 / 74.3** | ~5 ms       |
-| + cross-encoder (`MEMINI_RERANK=<url>`)   | 98.4 / 99.2 / 93.1     | **70.9 / 75.0 / 59.8** | 90.9 / 96.6 / 74.3     | +20–230 ms  |
-| + LLM rerank (`MEMINI_RERANK=llm`)        | 98.4 / 99.2 / 93.0     | **74.4 / 76.5 / 67.4** | —                      | +350–420 ms |
+| Strategy                                | LongMemEval · session  | LoCoMo · turn-level    | LoCoMo · session-level | p50         |
+| --------------------------------------- | ---------------------- | ---------------------- | ---------------------- | ----------- |
+| vector                                  | 92.6 / 95.4 / 80.7     | 41.3 / 51.8 / 28.1     | 64.1 / 79.8 / 45.2     | <1 ms       |
+| keyword (Porter BM25)                   | 97.6 / 99.0 / 92.2     | 58.7 / 67.1 / 44.8     | 92.6 / 96.8 / 79.4     | ~3 ms       |
+| **hybrid** (default, production path)   | **98.4 / 99.2 / 93.0** | **59.7 / 69.9 / 42.4** | **90.9 / 96.6 / 74.3** | ~5 ms       |
+| + cross-encoder (`MEMINI_RERANK=<url>`) | 98.4 / 99.2 / 93.1     | **70.9 / 75.0 / 59.8** | 90.9 / 96.6 / 74.3     | +20–230 ms  |
+| + LLM rerank (`MEMINI_RERANK=llm`)      | 98.4 / 99.2 / 93.0     | **74.4 / 76.5 / 67.4** | —                      | +350–420 ms |
 
 Questions per dataset: **LongMemEval** 500 (session granularity), **LoCoMo
 turn-level** 1,982 (gold = exact evidence turns), **LoCoMo session-level** 1,981
@@ -203,6 +203,32 @@ then report the final number on `-holdout held` (unseen). Default `all` runs the
 full set. Results files are suffixed (`longmemeval-held.json`) so splits don't
 overwrite each other.
 
+Measured (memini-hybrid, all-MiniLM-L6-v2 — the parameters were swept on `tune`,
+not `held`):
+
+| Split        | Questions |   R@5 |  R@10 |  MRR |
+| ------------ | --------: | ----: | ----: | ---: |
+| `all` (full) |       500 |  98.4 |  99.2 | 93.0 |
+| `tune`       |       450 |  98.2 |  99.1 | 93.0 |
+| `held`       |        50 | 100.0 | 100.0 | 93.5 |
+
+The held split does not regress against tune, so the tuning choices generalize
+(no tuned-to-test inflation). Per-category R@5:
+
+| Category                  | `tune` (450) | `held` (50) |
+| ------------------------- | -----------: | ----------: |
+| knowledge-update          |        100.0 |       100.0 |
+| multi-session             |         99.2 |       100.0 |
+| single-session-assistant  |        100.0 |       100.0 |
+| single-session-user       |         96.8 |       100.0 |
+| temporal-reasoning        |         98.3 |       100.0 |
+| single-session-preference |         88.9 |       100.0 |
+
+Read the per-category numbers off `tune` (450 questions); it shows the real
+headroom is **single-session-preference** (88.9% R@5). On `held` each category is
+only 2–13 questions, so its across-the-board 100% is small-sample, not a separate
+claim of perfection.
+
 ### Session-doc construction (`-session-doc`)
 
 LongMemEval sessions are embedded as one document per session; `-session-doc`
@@ -240,11 +266,11 @@ go run ./cmd/bench -suite locomo -data ./locomo.json -llm-rerank -limit 100 -k 5
 Measured on all-MiniLM-L6-v2 (cross-encoder = Qwen3-Reranker-0.6B, LLM =
 Qwen3.5-9B), `recall_any@5 / @10 / MRR`:
 
-| Config           | LongMemEval (session) | LoCoMo turn-level      | added p50   |
-| ---------------- | --------------------- | ---------------------- | ----------- |
-| hybrid (base)    | 98.4 / 99.2 / 93.0    | 59.7 / 69.9 / 42.4     | —           |
-| + cross-encoder  | 98.4 / 99.2 / 93.1    | **70.9 / 75.0 / 59.8** | ~20–230 ms  |
-| + LLM rerank     | 98.4 / 99.2 / 93.0    | **74.4 / 76.5 / 67.4** | ~350–420 ms |
+| Config          | LongMemEval (session) | LoCoMo turn-level      | added p50   |
+| --------------- | --------------------- | ---------------------- | ----------- |
+| hybrid (base)   | 98.4 / 99.2 / 93.0    | 59.7 / 69.9 / 42.4     | —           |
+| + cross-encoder | 98.4 / 99.2 / 93.1    | **70.9 / 75.0 / 59.8** | ~20–230 ms  |
+| + LLM rerank    | 98.4 / 99.2 / 93.0    | **74.4 / 76.5 / 67.4** | ~350–420 ms |
 
 Reranking is a **no-op at recall ceiling** (session-level) and a **big win where
 recall has headroom** (turn-level: +11pp R@5 / +17pp MRR for the cross-encoder,

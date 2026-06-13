@@ -38,6 +38,46 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("Retier", func(t *testing.T) { testRetier(t, st, dims) })
 	t.Run("TemporalAsOf", func(t *testing.T) { testTemporalAsOf(t, st, dims) })
 	t.Run("SetConfidence", func(t *testing.T) { testSetConfidence(t, st, dims) })
+	t.Run("GetByFingerprint", func(t *testing.T) { testGetByFingerprint(t, st, dims) })
+}
+
+func testGetByFingerprint(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+	now := time.Now().UTC()
+	m := mem(ns, "fact", "the user likes coffee", vec(dims, 1)) // semantic
+	mustUpsert(t, st, m)
+
+	// A normalized restatement (case/whitespace) shares the fingerprint.
+	fp := memory.Fingerprint("  The user   likes COFFEE ")
+	got, err := st.GetByFingerprint(ctx, ns, memory.TierSemantic, fp, now)
+	if err != nil {
+		t.Fatalf("get by fingerprint: %v", err)
+	}
+	if got.ID != m.ID {
+		t.Fatalf("fingerprint matched %q, want %q", got.ID, m.ID)
+	}
+
+	// Wrong tier, unknown content, and empty fingerprint all miss.
+	if _, err := st.GetByFingerprint(ctx, ns, memory.TierWorking, fp, now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("tier mismatch: want ErrNotFound, got %v", err)
+	}
+	if _, err := st.GetByFingerprint(ctx, ns, memory.TierSemantic, memory.Fingerprint("unrelated"), now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("unknown content: want ErrNotFound, got %v", err)
+	}
+	if _, err := st.GetByFingerprint(ctx, ns, memory.TierSemantic, "", now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("empty fingerprint: want ErrNotFound, got %v", err)
+	}
+
+	// A superseded match is excluded so a dead duplicate never absorbs a write.
+	repl := mem(ns, "repl", "the user prefers tea", vec(dims, 0, 1))
+	mustUpsert(t, st, repl)
+	if err := st.SetSuperseded(ctx, ns, m.ID, repl.ID); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+	if _, err := st.GetByFingerprint(ctx, ns, memory.TierSemantic, fp, now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("superseded match: want ErrNotFound, got %v", err)
+	}
 }
 
 func testReassign(t *testing.T, st store.Store, dims int) {

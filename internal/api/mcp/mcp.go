@@ -124,6 +124,20 @@ func parseTiers(in []string) ([]memory.Tier, error) {
 	return tiers, nil
 }
 
+// parseOptionalTime parses an optional RFC3339 timestamp, returning nil for an
+// empty string. field names the argument for error messages.
+func parseOptionalTime(s, field string) (*time.Time, error) {
+	if s == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s %q: want RFC3339", field, s)
+	}
+	u := t.UTC()
+	return &u, nil
+}
+
 // ns resolves a tool call's namespace argument: empty falls back to the server
 // default, an invalid value is an error (never silently rerouted to the
 // default tenant, which would mix data across namespaces).
@@ -148,6 +162,8 @@ type rememberArgs struct {
 	TTLSeconds *int           `json:"ttl_seconds,omitempty" jsonschema:"overrides the tier default TTL; negative means never expire"`
 	ID         string         `json:"id,omitempty" jsonschema:"upserts an existing memory when provided"`
 	Confidence *float64       `json:"confidence,omitempty" jsonschema:"0..1 seed corroboration for a durable fact; omit for default"`
+	ValidFrom  string         `json:"valid_from,omitempty" jsonschema:"RFC3339 start of the fact's validity; backdate for as_of recall"`
+	ValidTo    string         `json:"valid_to,omitempty" jsonschema:"RFC3339 end of the fact's validity; omit if still true"`
 	Namespace  string         `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 }
 
@@ -175,6 +191,12 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 	if in.TTLSeconds != nil {
 		d := time.Duration(*in.TTLSeconds) * time.Second
 		input.TTL = &d
+	}
+	if input.ValidFrom, err = parseOptionalTime(in.ValidFrom, "valid_from"); err != nil {
+		return nil, rememberResult{}, err
+	}
+	if input.ValidTo, err = parseOptionalTime(in.ValidTo, "valid_to"); err != nil {
+		return nil, rememberResult{}, err
 	}
 	m, err := t.svc.Remember(ctx, input)
 	if err != nil {
@@ -343,6 +365,8 @@ type memoryItem struct {
 	UpdatedAt   string         `json:"updated_at"`
 	AccessCount int            `json:"access_count"`
 	ExpiresAt   string         `json:"expires_at,omitempty"`
+	ValidFrom   string         `json:"valid_from,omitempty"`
+	ValidTo     string         `json:"valid_to,omitempty"`
 }
 
 func toMemoryItem(m *memory.Memory) memoryItem {
@@ -354,6 +378,12 @@ func toMemoryItem(m *memory.Memory) memoryItem {
 	}
 	if m.ExpiresAt != nil {
 		out.ExpiresAt = m.ExpiresAt.Format(time.RFC3339)
+	}
+	if m.ValidFrom != nil {
+		out.ValidFrom = m.ValidFrom.Format(time.RFC3339)
+	}
+	if m.ValidTo != nil {
+		out.ValidTo = m.ValidTo.Format(time.RFC3339)
 	}
 	return out
 }

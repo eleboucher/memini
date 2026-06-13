@@ -276,6 +276,16 @@ export interface components {
             /** @description Upserts an existing memory when provided. */
             id?: string;
             /**
+             * Format: date-time
+             * @description Start of the interval the fact was true. Defaults to now; backdate it to record a historical fact so time-travel (as_of) recall surfaces it.
+             */
+            valid_from?: string;
+            /**
+             * Format: date-time
+             * @description End of the interval the fact was true (for recording a fact that was true only in the past). Omit for a fact that is still true.
+             */
+            valid_to?: string;
+            /**
              * Format: double
              * @description Seed corroboration for a durable fact (e.g. a trusted import). Omit to use the default seed; ignored for short-term tiers.
              */
@@ -447,6 +457,16 @@ export interface components {
             /** Format: date-time */
             expires_at?: string | null;
             superseded_by?: string | null;
+            /**
+             * Format: date-time
+             * @description Start of the wall-clock interval the fact was true; null means open ("always, until valid_to"). Used by time-travel (as_of) recall.
+             */
+            valid_from?: string | null;
+            /**
+             * Format: date-time
+             * @description End of the interval the fact was true; null means open ("still true"). Stamped automatically when a fact is superseded.
+             */
+            valid_to?: string | null;
             /**
              * Format: double
              * @description Corroboration of a durable fact in [0,1]; null when not tracked.

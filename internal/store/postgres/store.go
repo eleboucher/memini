@@ -95,6 +95,7 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 			valid_from       timestamptz,
 			valid_to         timestamptz,
 			confidence       double precision,
+			fingerprint      text NOT NULL DEFAULT '',
 			embedding        vector(%d) NOT NULL,
 			fts              tsvector GENERATED ALWAYS AS (
 				to_tsvector('english',
@@ -105,11 +106,13 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		`CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_fts ON memories USING gin(fts)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_vec ON memories USING vchordrq (embedding vector_l2_ops)`,
-		// Backfill temporal-validity and confidence columns on databases created
-		// before them.
+		// Backfill temporal-validity, confidence, and fingerprint columns on
+		// databases created before them.
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS valid_from timestamptz`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS valid_to timestamptz`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS confidence double precision`,
+		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS fingerprint text NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_fingerprint ON memories(namespace, tier, fingerprint)`,
 	}
 	for _, q := range stmts {
 		if _, err := conn.Exec(ctx, q); err != nil {
@@ -156,8 +159,8 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		INSERT INTO memories
 			(id, namespace, tier, content, summary, metadata, tags, importance,
 			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-			 valid_from, valid_to, confidence, embedding)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+			 valid_from, valid_to, confidence, fingerprint, embedding)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		ON CONFLICT (id) DO UPDATE SET
 			tier=EXCLUDED.tier, content=EXCLUDED.content,
 			summary=EXCLUDED.summary, metadata=EXCLUDED.metadata, tags=EXCLUDED.tags,
@@ -165,10 +168,11 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 			last_accessed_at=EXCLUDED.last_accessed_at, access_count=EXCLUDED.access_count,
 			expires_at=EXCLUDED.expires_at, superseded_by=EXCLUDED.superseded_by,
 			valid_from=EXCLUDED.valid_from, valid_to=EXCLUDED.valid_to,
-			confidence=EXCLUDED.confidence, embedding=EXCLUDED.embedding`,
+			confidence=EXCLUDED.confidence, fingerprint=EXCLUDED.fingerprint, embedding=EXCLUDED.embedding`,
 		m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, metaJSON, store.OrEmptySlice(m.Tags),
 		m.Importance, m.CreatedAt, m.UpdatedAt, m.LastAccessedAt, m.AccessCount,
-		m.ExpiresAt, m.SupersededBy, m.ValidFrom, m.ValidTo, m.Confidence, pgvector.NewVector(m.Embedding))
+		m.ExpiresAt, m.SupersededBy, m.ValidFrom, m.ValidTo, m.Confidence, memory.Fingerprint(m.Content),
+		pgvector.NewVector(m.Embedding))
 	if err != nil {
 		return fmt.Errorf("postgres: upsert: %w", err)
 	}
@@ -182,6 +186,31 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 // Get returns a memory by ID.
 func (s *Store) Get(ctx context.Context, namespace, id string) (*memory.Memory, error) {
 	row := s.pool.QueryRow(ctx, `SELECT `+memoryColumns+` FROM memories WHERE id=$1 AND namespace=$2`, id, namespace)
+	m, err := scanMemory(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, store.ErrNotFound
+	}
+	return m, err
+}
+
+// GetByFingerprint returns the most recent live memory in namespace+tier whose
+// content fingerprint matches. Superseded and expired rows are excluded so a
+// dead duplicate never absorbs a fresh write.
+func (s *Store) GetByFingerprint(
+	ctx context.Context, namespace string, tier memory.Tier, fingerprint string, now time.Time,
+) (*memory.Memory, error) {
+	if fingerprint == "" {
+		return nil, store.ErrNotFound
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	row := s.pool.QueryRow(ctx,
+		`SELECT `+memoryColumns+` FROM memories
+		 WHERE namespace=$1 AND tier=$2 AND fingerprint=$3 AND superseded_by IS NULL
+		   AND (expires_at IS NULL OR expires_at > $4)
+		 ORDER BY created_at DESC LIMIT 1`,
+		namespace, string(tier), fingerprint, now)
 	m, err := scanMemory(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, store.ErrNotFound

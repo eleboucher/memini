@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -16,7 +17,7 @@ import (
 
 const dims = 64
 
-func newService(t *testing.T) *service.Service {
+func newService(t *testing.T, opts ...service.Option) *service.Service {
 	t.Helper()
 	st, err := sqlitevec.Open(context.Background(), filepath.Join(t.TempDir(), "svc.db"), dims)
 	if err != nil {
@@ -25,11 +26,83 @@ func newService(t *testing.T) *service.Service {
 	t.Cleanup(func() { _ = st.Close() })
 
 	var n int
-	return service.New(st, embedtest.New(dims),
+	base := make([]service.Option, 0, 3+len(opts))
+	base = append(base,
 		service.WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }),
 		service.WithIDGenerator(func() string { n++; return "id-" + string(rune('a'+n-1)) }),
 		service.WithSyncReinforce(),
 	)
+	return service.New(st, embedtest.New(dims), append(base, opts...)...)
+}
+
+func TestRememberTemporalValidity(t *testing.T) {
+	svc := newService(t)
+	ctx := context.Background()
+
+	// Record a historical fact: the office was in Paris for Q1 2024.
+	from := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2024, 4, 1, 0, 0, 0, 0, time.UTC)
+	m, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the office is in Paris", Tier: memory.TierSemantic,
+		ValidFrom: &from, ValidTo: &to,
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	if m.ValidFrom == nil || !m.ValidFrom.Equal(from) {
+		t.Fatalf("valid_from = %v, want %v", m.ValidFrom, from)
+	}
+	if m.ValidTo == nil || !m.ValidTo.Equal(to) {
+		t.Fatalf("valid_to = %v, want %v", m.ValidTo, to)
+	}
+
+	// The window round-trips through the store.
+	got, err := svc.Get(ctx, "alice", m.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ValidFrom == nil || !got.ValidFrom.Equal(from) || got.ValidTo == nil || !got.ValidTo.Equal(to) {
+		t.Fatalf("round-trip window = [%v,%v], want [%v,%v]", got.ValidFrom, got.ValidTo, from, to)
+	}
+
+	// Time-travel recall inside the window surfaces the fact; before it, nothing.
+	inside, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "alice", Query: "where is the office", Limit: 5,
+		AsOf: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("recall inside: %v", err)
+	}
+	if !containsID(inside, m.ID) {
+		t.Fatalf("as_of inside the validity window should surface the fact, got %v", idsOf(inside))
+	}
+	before, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "alice", Query: "where is the office", Limit: 5,
+		AsOf: time.Date(2023, 6, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("recall before: %v", err)
+	}
+	if containsID(before, m.ID) {
+		t.Fatalf("as_of before valid_from must not surface the fact, got %v", idsOf(before))
+	}
+}
+
+func containsID(res []store.Scored, id string) bool {
+	for _, s := range res {
+		if s.Memory.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func idsOf(res []store.Scored) []string {
+	out := make([]string, len(res))
+	for i, s := range res {
+		out[i] = s.Memory.ID
+	}
+	return out
 }
 
 func TestRememberAssignsDefaults(t *testing.T) {
@@ -238,7 +311,9 @@ func TestWriteDedupCoalescesNearIdentical(t *testing.T) {
 }
 
 func TestWriteDedupDisabledByDefault(t *testing.T) {
-	svc := newService(t) // no WithWriteDedup
+	// The fuzzy vector gate (WithWriteDedup) is off by default; with the exact
+	// fingerprint path also disabled, an identical repeat is stored verbatim.
+	svc := newService(t, service.WithFingerprintDedup(false))
 	ctx := context.Background()
 
 	for range 2 {
@@ -254,6 +329,50 @@ func TestWriteDedupDisabledByDefault(t *testing.T) {
 	}
 	if len(all) != 2 {
 		t.Fatalf("dedup off: expected 2 memories, got %d", len(all))
+	}
+}
+
+func TestFingerprintDedupByDefault(t *testing.T) {
+	svc := newService(t) // fingerprint dedup is on by default
+	ctx := context.Background()
+
+	first, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the user likes coffee", Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	// A restatement differing only in case/whitespace shares a fingerprint, so it
+	// coalesces into the existing memory instead of storing a duplicate.
+	dup, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "  The user   likes coffee  ", Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("remember dup: %v", err)
+	}
+	if dup.ID != first.ID {
+		t.Fatalf("restatement got new ID %q, want coalesced into %q", dup.ID, first.ID)
+	}
+	// Same content in a different tier is a distinct intent: not coalesced.
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the user likes coffee", Tier: memory.TierWorking,
+	}); err != nil {
+		t.Fatalf("remember other tier: %v", err)
+	}
+	all, err := svc.List(ctx, service.ListInput{Namespace: "alice"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 memories (restatement coalesced, other tier kept), got %d", len(all))
+	}
+	// The coalesced restatement reinforced the canonical memory.
+	got, err := svc.Get(ctx, "alice", first.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.AccessCount < 1 {
+		t.Fatalf("canonical access_count = %d, want >= 1 (reinforced by the restatement)", got.AccessCount)
 	}
 }
 
@@ -279,11 +398,12 @@ func TestListAndStatsAllNamespaces(t *testing.T) {
 	svc := newService(t)
 	ctx := context.Background()
 
-	// Two memories each across three namespaces.
+	// Two memories each across three namespaces (distinct content so the
+	// fingerprint dedup default doesn't coalesce the pair).
 	for _, ns := range []string{"alice", "bob", "carol"} {
-		for range 2 {
+		for i := range 2 {
 			if _, err := svc.Remember(ctx, service.RememberInput{
-				Namespace: ns, Content: ns + " fact", Tier: memory.TierSemantic,
+				Namespace: ns, Content: fmt.Sprintf("%s fact %d", ns, i), Tier: memory.TierSemantic,
 			}); err != nil {
 				t.Fatalf("remember %s: %v", ns, err)
 			}

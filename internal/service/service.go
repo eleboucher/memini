@@ -160,6 +160,9 @@ type Service struct {
 	// but only when the LLM consolidation pipeline isn't handling the write.
 	// 0 (the default) disables it.
 	writeDedupMinScore float64
+	// fingerprintDedup (default on) reinforces an exact restatement instead of
+	// storing a duplicate; see WithFingerprintDedup.
+	fingerprintDedup bool
 	// temporalBoost (> 0) enables query-conditioned temporal targeting in the
 	// re-ranker; temporalAnchor resolves a query's relative-time reference (the
 	// regex extractor by default, or an LLM extractor when configured).
@@ -289,6 +292,15 @@ func WithWriteDedup(minScore float64) Option {
 	return func(s *Service) { s.writeDedupMinScore = minScore }
 }
 
+// WithFingerprintDedup toggles exact-restatement dedup: when on (the default), a
+// fresh write whose normalized content exactly matches a live same-tier memory
+// reinforces that memory instead of storing a duplicate, without embedding it.
+// It is independent of WithWriteDedup (the fuzzy vector gate) and the LLM
+// consolidation pipeline.
+func WithFingerprintDedup(on bool) Option {
+	return func(s *Service) { s.fingerprintDedup = on }
+}
+
 // New builds a Service from a store and embedder.
 func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 	s := &Service{
@@ -301,6 +313,7 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 		scoreFusionAlpha:    search.DefaultFusionAlpha, // convex score fusion by default; negative selects RRF
 		poolFactor:          recallPoolFactor,
 		poolFloor:           recallPoolFloor,
+		fingerprintDedup:    true,
 		metrics:             nopMetrics{},
 		now:                 func() time.Time { return time.Now().UTC() },
 		newID:               func() string { return uuid.NewString() },
@@ -339,6 +352,11 @@ type RememberInput struct {
 	// Confidence overrides the seed corroboration for a durable fact (e.g. a
 	// trusted import). nil uses the default seed. Ignored for short-term tiers.
 	Confidence *float64
+	// ValidFrom / ValidTo set the interval the fact was true, for recording
+	// historical facts that time-travel (AsOf) recall can surface. ValidFrom
+	// defaults to now (or the existing row on update); ValidTo defaults to open.
+	ValidFrom *time.Time
+	ValidTo   *time.Time
 }
 
 // Remember embeds and stores a memory, returning the persisted record.
@@ -362,6 +380,14 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	if !tier.Valid() {
 		s.metrics.RememberResult("error", string(tier))
 		return nil, invalidInputf("remember: invalid tier %q", tier)
+	}
+
+	// Exact-restatement fast path: a fresh write whose normalized content already
+	// exists live in this tier reinforces that memory instead of duplicating it,
+	// before embedding so an exact repeat costs no embedder call.
+	if existing, ok := s.fingerprintHit(ctx, in, tier); ok {
+		s.metrics.RememberResult("ok", string(tier))
+		return existing, nil
 	}
 
 	vec, err := embed.EmbedOne(ctx, s.embedder, in.Content)
@@ -406,12 +432,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	if exp := resolveExpiry(now, tier, in.TTL); exp != nil {
 		m.ExpiresAt = exp
 	}
-	// ValidFrom is the lower bound for as_of recall; a fresh write starts now, an
-	// update keeps the original.
-	m.ValidFrom = &now
-	if existing != nil {
-		m.ValidFrom = existing.ValidFrom
-	}
+	resolveValidity(m, existing, in, now)
 	// Durable facts start uncorroborated and earn trust as they recur; an
 	// explicit value wins, and an update keeps the existing confidence.
 	if tier.Term() == memory.LongTerm {
@@ -489,6 +510,47 @@ func (s *Service) dedupExisting(ctx context.Context, m *memory.Memory) *memory.M
 	s.reinforce(ctx, []store.Scored{{Memory: existing}})
 	s.corroborate(ctx, existing) // a near-identical repeat raises the fact's confidence
 	return existing
+}
+
+// fingerprintHit returns a live same-tier memory whose normalized content
+// matches in.Content exactly, reinforced and corroborated, when fingerprint
+// dedup applies. ok is false (fall through to a normal write) for an update by
+// ID, when dedup is off, when nothing matches, or when the lookup fails. It
+// never rewrites the existing memory.
+func (s *Service) fingerprintHit(ctx context.Context, in RememberInput, tier memory.Tier) (*memory.Memory, bool) {
+	if in.ID != "" || !s.fingerprintDedup {
+		return nil, false
+	}
+	existing, err := s.store.GetByFingerprint(ctx, in.Namespace, tier, memory.Fingerprint(in.Content), s.now())
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			slog.WarnContext(ctx, "remember: fingerprint lookup failed, storing without dedup",
+				"namespace", in.Namespace, "err", err)
+		}
+		return nil, false
+	}
+	s.reinforce(ctx, []store.Scored{{Memory: existing}})
+	s.corroborate(ctx, existing) // an exact repeat raises the fact's confidence
+	return existing, true
+}
+
+// resolveValidity sets m's validity window: an explicit ValidFrom/ValidTo wins
+// (for backdating a historical fact), else an update keeps the existing row's
+// bounds, else ValidFrom starts now and ValidTo is open ("still true").
+func resolveValidity(m, existing *memory.Memory, in RememberInput, now time.Time) {
+	m.ValidFrom = &now
+	if existing != nil {
+		m.ValidFrom = existing.ValidFrom
+		m.ValidTo = existing.ValidTo
+	}
+	if in.ValidFrom != nil {
+		vf := in.ValidFrom.UTC()
+		m.ValidFrom = &vf
+	}
+	if in.ValidTo != nil {
+		vt := in.ValidTo.UTC()
+		m.ValidTo = &vt
+	}
 }
 
 // corroborate raises a durable memory's confidence one logistic step, because

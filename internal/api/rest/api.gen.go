@@ -183,6 +183,12 @@ type Memory struct {
 	Tags           *[]string               `json:"tags,omitempty"`
 	Tier           Tier                    `json:"tier"`
 	UpdatedAt      time.Time               `json:"updated_at"`
+
+	// ValidFrom Start of the wall-clock interval the fact was true; null means open ("always, until valid_to"). Used by time-travel (as_of) recall.
+	ValidFrom *time.Time `json:"valid_from,omitempty"`
+
+	// ValidTo End of the interval the fact was true; null means open ("still true"). Stamped automatically when a fact is superseded.
+	ValidTo *time.Time `json:"valid_to,omitempty"`
 }
 
 // NamespacesResponse defines model for NamespacesResponse.
@@ -206,6 +212,12 @@ type RememberRequest struct {
 
 	// TtlSeconds Overrides the tier default TTL; negative means never expire.
 	TtlSeconds *int `json:"ttl_seconds,omitempty"`
+
+	// ValidFrom Start of the interval the fact was true. Defaults to now; backdate it to record a historical fact so time-travel (as_of) recall surfaces it.
+	ValidFrom *time.Time `json:"valid_from,omitempty"`
+
+	// ValidTo End of the interval the fact was true (for recording a fact that was true only in the past). Omit for a fact that is still true.
+	ValidTo *time.Time `json:"valid_to,omitempty"`
 }
 
 // ScoredMemory defines model for ScoredMemory.

@@ -177,6 +177,7 @@ func buildServiceStack(ctx context.Context, cfg *config.Config, log *slog.Logger
 		service.WithQueryPrefix(cfg.EmbedQueryPrefix),
 		service.WithScoreFusion(cfg.FusionAlpha),
 		service.WithWriteDedup(cfg.WriteDedupMinScore),
+		service.WithFingerprintDedup(cfg.WriteDedupFingerprint),
 		service.WithTemporalTargeting(cfg.TemporalBoost, search.RegexAnchorExtractor{}),
 		service.WithMetrics(metricsImpl),
 	)

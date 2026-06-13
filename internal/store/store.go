@@ -64,6 +64,12 @@ type Store interface {
 	// Get returns a memory by ID, or ErrNotFound.
 	Get(ctx context.Context, namespace, id string) (*memory.Memory, error)
 
+	// GetByFingerprint returns a live (non-superseded, non-expired) memory in the
+	// namespace and tier whose content fingerprint (memory.Fingerprint) matches,
+	// for exact-restatement dedup at write time. Returns ErrNotFound when none
+	// matches. Now is the instant expiry is evaluated at (zero means wall clock).
+	GetByFingerprint(ctx context.Context, namespace string, tier memory.Tier, fingerprint string, now time.Time) (*memory.Memory, error)
+
 	// Delete removes a memory by ID, or returns ErrNotFound.
 	Delete(ctx context.Context, namespace, id string) error
 

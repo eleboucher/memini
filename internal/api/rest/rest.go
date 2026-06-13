@@ -167,6 +167,8 @@ func (h *Server) RememberMemory(w http.ResponseWriter, r *http.Request, _ Rememb
 	in.Importance = deref(req.Importance)
 	in.ID = deref(req.Id)
 	in.Confidence = req.Confidence
+	in.ValidFrom = req.ValidFrom
+	in.ValidTo = req.ValidTo
 	if req.TtlSeconds != nil {
 		d := time.Duration(*req.TtlSeconds) * time.Second
 		in.TTL = &d
@@ -472,6 +474,8 @@ func apiMemory(m *memory.Memory) Memory {
 		AccessCount:    m.AccessCount,
 		ExpiresAt:      m.ExpiresAt,
 		SupersededBy:   m.SupersededBy,
+		ValidFrom:      m.ValidFrom,
+		ValidTo:        m.ValidTo,
 		Confidence:     m.Confidence,
 	}
 	if m.Summary != "" {

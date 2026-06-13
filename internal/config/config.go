@@ -87,6 +87,12 @@ type Config struct {
 	// restatements only).
 	WriteDedupMinScore float64 `env:"MEMINI_WRITE_DEDUP_MIN_SCORE" envDefault:"0"`
 
+	// WriteDedupFingerprint reinforces an exact normalized-content restatement
+	// into the existing same-tier memory instead of storing a duplicate, before
+	// embedding. Matches only identical content (no false positives), so it is on
+	// by default; false stores every write verbatim.
+	WriteDedupFingerprint bool `env:"MEMINI_WRITE_DEDUP_FINGERPRINT" envDefault:"true"`
+
 	// TemporalBoost enables query-conditioned temporal targeting in the
 	// re-ranker: when a query names a relative time ("3 weeks ago"), candidates
 	// dated near the referenced point are boosted by up to this much on the

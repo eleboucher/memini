@@ -348,6 +348,18 @@ components:
         id:
           type: string
           description: Upserts an existing memory when provided.
+        valid_from:
+          type: string
+          format: date-time
+          description: >
+            Start of the interval the fact was true. Defaults to now; backdate it
+            to record a historical fact so time-travel (as_of) recall surfaces it.
+        valid_to:
+          type: string
+          format: date-time
+          description: >
+            End of the interval the fact was true (for recording a fact that was
+            true only in the past). Omit for a fact that is still true.
         confidence:
           type: number
           format: double
@@ -586,6 +598,16 @@ components:
         access_count: { type: integer }
         expires_at: { type: string, format: date-time, nullable: true }
         superseded_by: { type: string, nullable: true }
+        valid_from:
+          type: string
+          format: date-time
+          nullable: true
+          description: Start of the wall-clock interval the fact was true; null means open ("always, until valid_to"). Used by time-travel (as_of) recall.
+        valid_to:
+          type: string
+          format: date-time
+          nullable: true
+          description: End of the interval the fact was true; null means open ("still true"). Stamped automatically when a fact is superseded.
         confidence:
           type: number
           format: double

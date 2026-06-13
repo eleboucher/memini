@@ -2,6 +2,8 @@
 package memory
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"math"
 	"strings"
 	"time"
@@ -235,4 +237,11 @@ func (m *Memory) Recency(now time.Time) float64 {
 // memories compare equal. Used by recall dedup and the fsck duplicate audit.
 func NormalizeContent(s string) string {
 	return strings.ToLower(strings.Join(strings.Fields(s), " "))
+}
+
+// Fingerprint is a content key for exact-restatement dedup: the SHA-256 of the
+// normalized content, so writes differing only in case or whitespace collide.
+func Fingerprint(content string) string {
+	sum := sha256.Sum256([]byte(NormalizeContent(content)))
+	return hex.EncodeToString(sum[:])
 }
