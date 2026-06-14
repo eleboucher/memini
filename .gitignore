@@ -8,6 +8,8 @@
 node_modules/
 # Python bytecode from running the Hermes plugin/tests.
 __pycache__/
+# Playwright MCP debug artifacts (snapshots, screenshots, console logs).
+/.playwright-mcp/
 /internal/api/ui/dist/*
 !/internal/api/ui/dist/.gitkeep
 *.db
