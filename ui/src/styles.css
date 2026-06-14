@@ -104,6 +104,10 @@ body,
 #app {
   height: 100%;
   margin: 0;
+  /* The drawer slides in from translateX(100%) (off the right edge); clipping
+     horizontal overflow at the root keeps it from flashing a scrollbar / jumping
+     the layout during the animation. */
+  overflow-x: hidden;
 }
 
 body {
@@ -1030,10 +1034,14 @@ pre.json {
   overflow: hidden;
   padding: 0;
 }
+/* force-graph mounts its canvas into this host; keep it filling the panel and
+   behind the absolutely-positioned hint/legend. */
+.graph-canvas {
+  position: absolute;
+  inset: 0;
+}
 .graph-wrap canvas {
   display: block;
-  width: 100%;
-  height: 100%;
   cursor: grab;
 }
 .graph-legend {

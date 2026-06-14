@@ -13,18 +13,13 @@
   },
   "dependencies": {
     "@preact/signals": "^2.0.4",
-    "d3-drag": "^3.0.0",
     "d3-force": "^3.0.0",
-    "d3-selection": "^3.0.0",
-    "d3-zoom": "^3.0.0",
+    "force-graph": "^1.51.4",
     "preact": "^10.25.4"
   },
   "devDependencies": {
     "@preact/preset-vite": "^2.10.1",
-    "@types/d3-drag": "^3.0.7",
     "@types/d3-force": "^3.0.10",
-    "@types/d3-selection": "^3.0.11",
-    "@types/d3-zoom": "^3.0.8",
     "@types/node": "^24.0.0",
     "openapi-typescript": "^7.13.0",
     "typescript": "^5.7.3",
