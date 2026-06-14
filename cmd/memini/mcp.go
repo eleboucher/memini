@@ -4,6 +4,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cobra"
 
 	mcpapi "github.com/eleboucher/memini/internal/api/mcp"
@@ -38,7 +39,8 @@ func runMCP(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	svc, _, joinWorkers, cleanup, err := buildServiceStack(ctx, cfg, log)
+	reg := prometheus.NewRegistry()
+	svc, _, joinWorkers, cleanup, err := buildServiceStack(ctx, cfg, log, reg)
 	if err != nil {
 		return err
 	}

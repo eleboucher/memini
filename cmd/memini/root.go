@@ -65,7 +65,13 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	svc, st, joinWorkers, cleanup, err := buildServiceStack(ctx, cfg, log)
+	// One registry shared by the service stack (app/store/embed metrics) AND
+	// the HTTP server's /metrics handler. Without this the two would create
+	// independent registries and every series registered on the service one
+	// would be invisible at /metrics.
+	reg := prometheus.NewRegistry()
+
+	svc, st, joinWorkers, cleanup, err := buildServiceStack(ctx, cfg, log, reg)
 	if err != nil {
 		return err
 	}
@@ -78,7 +84,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			"anyone who can reach the port")
 	}
 
-	srv, err := newServer(cfg, svc, st, log)
+	srv, err := newServer(cfg, svc, st, log, reg)
 	if err != nil {
 		return err
 	}
@@ -89,9 +95,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 // newServer mounts the REST API, MCP handler, and optional admin UI onto a
 // fresh server and returns it ready to Run. Kept separate from runServer so
 // integration tests exercise the exact same HTTP wiring without re-running the
-// process bootstrap.
-func newServer(cfg *config.Config, svc *service.Service, st store.Store, log *slog.Logger) (*server.Server, error) {
-	reg := prometheus.NewRegistry()
+// process bootstrap. reg must be the same registry the service stack writes
+// to, otherwise /metrics exposes only HTTP-side series and every
+// app/store/embed collector stays invisible.
+func newServer(
+	cfg *config.Config, svc *service.Service, st store.Store, log *slog.Logger, reg *prometheus.Registry,
+) (*server.Server, error) {
 	srv := server.New(server.Options{
 		Addr:            cfg.HTTPAddr,
 		ShutdownTimeout: cfg.ShutdownTimeout,
@@ -126,8 +135,12 @@ func newServer(cfg *config.Config, svc *service.Service, st store.Store, log *sl
 
 // buildServiceStack constructs the store, embedder, service, and starts
 // background workers. Returns the service, a join function for workers,
-// and a cleanup function that closes the store.
-func buildServiceStack(ctx context.Context, cfg *config.Config, log *slog.Logger) (*service.Service, store.Store, func(), func(), error) {
+// and a cleanup function that closes the store. reg is the shared
+// Prometheus registry the service-side metrics are written to; the HTTP
+// server reads from the same registry to expose them at /metrics.
+func buildServiceStack(
+	ctx context.Context, cfg *config.Config, log *slog.Logger, reg *prometheus.Registry,
+) (*service.Service, store.Store, func(), func(), error) {
 	st, err := buildStore(ctx, cfg)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -139,7 +152,6 @@ func buildServiceStack(ctx context.Context, cfg *config.Config, log *slog.Logger
 		return nil, nil, nil, nil, err
 	}
 
-	reg := prometheus.NewRegistry()
 	metricsImpl := newConsolidateMetrics(reg)
 
 	if sm, ok := st.(interface{ SetMetrics(store.Metrics) }); ok {

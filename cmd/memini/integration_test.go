@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/eleboucher/memini/internal/config"
 	"github.com/eleboucher/memini/internal/embed/embedtest"
@@ -121,13 +122,14 @@ func startStack(t *testing.T, backend, dsn string) harness {
 	log := logging.New("error", "text")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	svc, st, joinWorkers, cleanup, err := buildServiceStack(ctx, cfg, log)
+	reg := prometheus.NewRegistry()
+	svc, st, joinWorkers, cleanup, err := buildServiceStack(ctx, cfg, log, reg)
 	if err != nil {
 		cancel()
 		t.Fatalf("buildServiceStack: %v", err)
 	}
 
-	srv, err := newServer(cfg, svc, st, log)
+	srv, err := newServer(cfg, svc, st, log, reg)
 	if err != nil {
 		cancel()
 		joinWorkers()
@@ -254,6 +256,65 @@ func TestIntegrationHealth(t *testing.T) {
 			_ = resp.Body.Close()
 			if resp.StatusCode != http.StatusOK {
 				t.Errorf("GET %s: want 200, got %d", path, resp.StatusCode)
+			}
+		}
+	})
+}
+
+// TestIntegrationMetricsExposed verifies that the /metrics endpoint serves the
+// application-side collectors (not just the HTTP request collectors) —
+// regression guard for the orphan-registry bug where buildServiceStack and
+// newServer each created their own *prometheus.Registry.
+func TestIntegrationMetricsExposed(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, h harness) {
+		// Drive one remember so the remember_results counter has a sample.
+		var created struct {
+			ID string `json:"id"`
+		}
+		if code := h.req(t, http.MethodPost, "/v1/memories", map[string]any{
+			"content": "metrics regression test", "tier": "semantic",
+		}, &created); code != http.StatusCreated {
+			t.Fatalf("remember: want 201, got %d", code)
+		}
+
+		// And one recall so the recall_results counter has a sample. Counters
+		// with labels don't appear in /metrics until .WithLabelValues is
+		// called at least once, so we have to exercise the path.
+		var sr struct {
+			Results []struct {
+				Memory struct {
+					ID string `json:"id"`
+				} `json:"memory"`
+			} `json:"results"`
+		}
+		if code := h.req(t, http.MethodPost, "/v1/search", map[string]any{
+			"query": "metrics", "limit": 5,
+		}, &sr); code != http.StatusOK {
+			t.Fatalf("search: want 200, got %d", code)
+		}
+
+		req, _ := http.NewRequest(http.MethodGet, h.baseURL+"/metrics", nil)
+		req.Header.Set("Authorization", "Bearer "+h.apiKey)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET /metrics: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("/metrics: want 200, got %d", resp.StatusCode)
+		}
+		// These series live on the application-side registry; if the orphan
+		// registry bug returns, only memini_http_* will be present.
+		for _, want := range []string{
+			"memini_http_requests_total",
+			"memini_remember_results_total",
+			"memini_recall_results_total",
+			"memini_store_upserts_total",
+			"memini_embed_duration_seconds",
+		} {
+			if !strings.Contains(string(body), want) {
+				t.Errorf("/metrics missing %q", want)
 			}
 		}
 	})
