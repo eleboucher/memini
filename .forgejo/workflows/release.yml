@@ -386,8 +386,10 @@ jobs:
         run: |
           set -euo pipefail
           [ -n "${DIGEST}" ] || { echo "container build produced no digest" >&2; exit 1; }
-          sed -i 's|^  digest: ""$|  digest: "'"${DIGEST}"'"|' charts/memini/values.yaml
-          grep -q '^  digest: "'"${DIGEST}"'"$' charts/memini/values.yaml
+          # digest lives under controllers.main.containers.main.image (indented);
+          # match any leading whitespace and preserve it.
+          sed -i 's|^\( *\)digest: ""$|\1digest: "'"${DIGEST}"'"|' charts/memini/values.yaml
+          grep -q 'digest: "'"${DIGEST}"'"$' charts/memini/values.yaml
       - name: Login to git.erwanleboucher.dev
         uses: https://data.forgejo.org/docker/login-action@v4
         with:
@@ -400,6 +402,11 @@ jobs:
           registry: registry.erwanleboucher.dev
           username: ${{ vars.USERNAME }}
           password: ${{ secrets.APOCI_REGISTRY_TOKEN }}
+      - name: Build chart dependencies
+        run: |
+          set -euo pipefail
+          helm repo add bjw-s https://bjw-s-labs.github.io/helm-charts
+          helm dependency build charts/memini
       - name: Package and push chart to git.erwanleboucher.dev
         id: push-git
         run: |

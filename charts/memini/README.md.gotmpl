@@ -3,22 +3,47 @@
 
 {{ template "chart.description" . }}
 
-A Kubernetes-ready memory service for AI agents, exposing REST and MCP.
+A Kubernetes-ready memory service for AI agents, exposing REST and MCP. This
+chart is powered by the [bjw-s common library](https://github.com/bjw-s-labs/helm-charts)
+and uses its native values API (`controllers`/`service`/`route`/`persistence`/
+`serviceAccount`/`serviceMonitor`).
 
 ## Installing
 
 ```sh
-# Embedded sqlite backend (single replica + PVC) — point at your embeddings endpoint:
+# Embedded sqlite backend (single-replica StatefulSet + PVC) — point at your
+# embeddings endpoint:
 helm install memini ./charts/memini \
-  --set embeddings.baseURL=http://text-embeddings:80/v1 \
-  --set embeddings.model=bge-m3 --set embeddings.dims=1024
+  --set controllers.main.containers.main.env.MEMINI_EMBED_BASE_URL=http://text-embeddings:80/v1 \
+  --set controllers.main.containers.main.env.MEMINI_EMBED_MODEL=bge-m3 \
+  --set controllers.main.containers.main.env.MEMINI_EMBED_DIMS=1024
+```
 
-# Scale-out Postgres/VectorChord backend:
-helm install memini ./charts/memini \
-  --set backend=postgres \
-  --set postgres.dsnSecret.name=memini-pg \
-  --set autoscaling.enabled=true \
-  --set embeddings.baseURL=http://text-embeddings:80/v1
+### Postgres (scale-out) backend
+
+The default backend is sqlite (a StatefulSet with a PVC at `/data`). To run the
+scale-out postgres backend instead, override the controller and env via a values
+file:
+
+```yaml
+controllers:
+  main:
+    type: deployment           # no PVC, scale-out
+    containers:
+      main:
+        env:
+          MEMINI_BACKEND: "postgres"
+          MEMINI_POSTGRES_DSN:
+            valueFrom:
+              secretKeyRef:
+                name: memini-pg
+                key: dsn
+    # horizontalPodAutoscaler:   # optional autoscaling
+    #   minReplicas: 2
+    #   maxReplicas: 10
+persistence:
+  data:
+    enabled: false              # no sqlite volume
 ```
 
 {{ template "chart.valuesSection" . }}
@@ -37,7 +62,7 @@ selector at the release namespace:
 
 ```sh
 helm install memini ./charts/memini \
-  --set metrics.serviceMonitor.enabled=true \
+  --set serviceMonitor.main.enabled=true \
   --set grafanaDashboards.enabled=true
 ```
 

@@ -27,3 +27,7 @@ coverage.out
 qa_*.jsonl
 /locomo-qa
 /memini
+
+# Vendored Helm subchart tarballs (re-fetched via `helm dependency build`;
+# Chart.lock is committed).
+/charts/*/charts/

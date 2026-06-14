@@ -1,222 +1,301 @@
-# -- Container image
-image:
-  repository: registry.erwanleboucher.dev/eleboucher/memini
-  # -- Image tag; defaults to the chart appVersion when empty
-  tag: ""
-  # -- Image digest (sha256:...); takes precedence over tag when set
-  digest: ""
-  pullPolicy: IfNotPresent
+# This chart is powered by the bjw-s common library (v5.0.1) and uses its
+# native values API. See https://bjw-s-labs.github.io/helm-charts/docs/common-library/
+#
+# Default backend is sqlite: a single-replica StatefulSet with a PVC at /data.
+# To run the scale-out postgres backend instead, see the commented "postgres
+# backend" notes against controllers.main below and on the MEMINI_* env keys.
 
-# -- Storage backend: "sqlite" (embedded, single replica + PVC) or "postgres" (scale-out)
-backend: sqlite
+controllers:
+  main:
+    # -- Controller type. `statefulset` for the default sqlite backend (PVC at
+    # /data, single replica). For the postgres backend switch this to
+    # `deployment` (no PVC, scale-out) — see env MEMINI_BACKEND below.
+    type: statefulset
+    # -- Replica count. sqlite is single-writer so keep at 1. With postgres
+    # (type: deployment) you can scale out, or drive it via horizontalPodAutoscaler.
+    replicas: 1
+    pod:
+      # -- Pod-level security context.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
 
-# -- Replica count (postgres only; sqlite is pinned to 1)
-replicaCount: 1
+    # -- HorizontalPodAutoscaler (postgres / deployment backend only — sqlite is
+    # single-writer). Uncomment after switching type to `deployment`:
+    # horizontalPodAutoscaler:
+    #   minReplicas: 2
+    #   maxReplicas: 10
+    #   metrics:
+    #     - type: Resource
+    #       resource:
+    #         name: cpu
+    #         target:
+    #           type: Utilization
+    #           averageUtilization: 80
 
-imagePullSecrets: []
-nameOverride: ""
-fullnameOverride: ""
+    containers:
+      main:
+        image:
+          # -- Container image repository.
+          repository: registry.erwanleboucher.dev/eleboucher/memini
+          # -- Image tag. Empty falls back to the chart appVersion.
+          tag: ""
+          # -- Image digest (sha256:...); takes precedence over tag when set.
+          # The release pipeline rewrites this line.
+          digest: ""
+          # -- Image pull policy.
+          pullPolicy: IfNotPresent
 
+        # -- Container probes. Liveness hits /healthz, readiness hits /readyz.
+        probes:
+          liveness:
+            enabled: true
+            custom: true
+            spec:
+              httpGet:
+                path: /healthz
+                port: 8080
+              initialDelaySeconds: 5
+              periodSeconds: 15
+          readiness:
+            enabled: true
+            custom: true
+            spec:
+              httpGet:
+                path: /readyz
+                port: 8080
+              initialDelaySeconds: 3
+              periodSeconds: 10
+
+        # -- Container security context.
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+
+        # -- Environment variables (MEMINI_*). Dictionary style. The always-on
+        # defaults below configure the sqlite backend; commented entries are
+        # optional knobs operators can uncomment.
+        env:
+          # -- HTTP listen address.
+          MEMINI_HTTP_ADDR: ":8080"
+          # -- Storage backend: "sqlite" (default) or "postgres". For postgres,
+          # set this to "postgres", switch controllers.main.type to deployment,
+          # disable persistence.data, and wire MEMINI_POSTGRES_DSN below.
+          MEMINI_BACKEND: "sqlite"
+          # -- Log level.
+          MEMINI_LOG_LEVEL: "info"
+          # -- Log format (json|text).
+          MEMINI_LOG_FORMAT: "json"
+          # -- Default namespace for memories.
+          MEMINI_DEFAULT_NAMESPACE: "default"
+          # -- HTTP header that selects the namespace per request.
+          MEMINI_NAMESPACE_HEADER: "X-Memini-Namespace"
+          # -- Decay sweeper interval (Go duration).
+          MEMINI_SWEEP_INTERVAL: "1h"
+          # -- OpenAI-compatible embeddings endpoint (required for vector search).
+          MEMINI_EMBED_BASE_URL: ""
+          # -- Embedding model name.
+          MEMINI_EMBED_MODEL: "text-embedding-3-small"
+          # -- Embedding dimensionality; MUST match the deployed model.
+          MEMINI_EMBED_DIMS: "1536"
+          # -- sqlite database path (kept on the PVC mounted at /data).
+          MEMINI_SQLITE_PATH: "/data/memini.db"
+          # -- Serve the embedded admin SPA at /. Set "false" for headless API/MCP.
+          MEMINI_UI_ENABLED: "true"
+
+          # --- Optional decay / hygiene knobs (uncomment to enable) ---
+          # MEMINI_DEMOTE_AFTER: "1440h"          # demote stale durable memories to episodic
+          # MEMINI_TOMBSTONE_TTL: "720h"          # hard-delete superseded memories after TTL
+          # MEMINI_WRITE_DEDUP_MIN_SCORE: "0.95"  # coalesce near-identical writes
+
+          # --- Optional embeddings tuning ---
+          # MEMINI_EMBED_MAX_BATCH: "20"          # max items per /embeddings request
+          # MEMINI_EMBED_MAX_BATCH_CHARS: "24000" # max total chars per request (0 disables)
+          # MEMINI_EMBED_MAX_ITEM_CHARS: "8000"   # truncate single text before embedding
+
+          # --- Optional LLM consolidation (leave base URL empty to run headless) ---
+          # MEMINI_LLM_BASE_URL: "http://llm:8080/v1"
+          # MEMINI_LLM_MODEL: "gpt-4o-mini"
+
+          # --- Optional recall reranking ---
+          # MEMINI_RERANK: "http://reranker:8080/v1" # "" / "off" / "llm" / cross-encoder URL
+          # MEMINI_RERANK_MODEL: "bge-reranker-v2-m3"
+          # MEMINI_RERANK_TOP_N: "20"
+          # MEMINI_RERANK_MAX_DOC_CHARS: "2000"
+
+          # --- postgres backend connection (required when MEMINI_BACKEND=postgres) ---
+          # MEMINI_POSTGRES_DSN:
+          #   valueFrom:
+          #     secretKeyRef:
+          #       name: memini-pg
+          #       key: dsn
+
+          # --- API keys for external providers (valueFrom secretKeyRef) ---
+          # MEMINI_EMBED_API_KEY:
+          #   valueFrom:
+          #     secretKeyRef:
+          #       name: memini-embed
+          #       key: api-key
+          # MEMINI_LLM_API_KEY:
+          #   valueFrom:
+          #     secretKeyRef:
+          #       name: memini-llm
+          #       key: api-key
+          # MEMINI_RERANK_API_KEY:
+          #   valueFrom:
+          #     secretKeyRef:
+          #       name: memini-rerank
+          #       key: api-key
+
+          # --- Bearer-token auth (protects both /v1 and /mcp) ---
+          # REQUIRED before exposing memini off-cluster via a route. There is no
+          # chart-created secret: reference your own Secret here.
+          # MEMINI_API_KEY:
+          #   valueFrom:
+          #     secretKeyRef:
+          #       name: memini-auth
+          #       key: api-key
+
+  # -- Periodic fsck CronJob. Disabled by default — the in-process sweeper
+  # already handles decay. If enabled, the container needs MEMINI_API_KEY in env
+  # and uses curl's --variable/--expand-header so the token never lands in argv.
+  fsck:
+    enabled: false
+    type: cronjob
+    cronjob:
+      schedule: "0 * * * *"
+      concurrencyPolicy: Forbid
+    pod:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+    containers:
+      fsck:
+        image:
+          repository: curlimages/curl
+          tag: "8.20.0"
+          pullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - >-
+            curl -sf -X POST
+            --variable %MEMINI_API_KEY
+            --expand-header "Authorization: Bearer {{MEMINI_API_KEY}}"
+            http://memini:8080/v1/fsck
+        # -- Provide the bearer token to the curl --variable above. Point at the
+        # same Secret as the main container's MEMINI_API_KEY.
+        # env:
+        #   MEMINI_API_KEY:
+        #     valueFrom:
+        #       secretKeyRef:
+        #         name: memini-auth
+        #         key: api-key
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+
+# -- ServiceAccount created for the workload.
 serviceAccount:
-  # -- Create a ServiceAccount
-  create: true
-  # -- ServiceAccount name; generated when empty
-  name: ""
-
-# -- Service-level (non-secret) configuration, mapped to MEMINI_* env vars
-config:
-  logLevel: info
-  logFormat: json
-  defaultNamespace: default
-  namespaceHeader: X-Memini-Namespace
-  # -- Decay sweeper interval (Go duration)
-  sweepInterval: 1h
-  # -- Demote never-recalled, low-importance, uncorroborated durable memories
-  # older than this (Go duration) down to episodic, so unused bulk-import debris
-  # ages out while facts the agent uses are kept. Empty uses the binary default
-  # (0 = disabled). e.g. 1440h (60d).
-  demoteAfter: ""
-  # -- Hard-delete superseded (deduped/contradicted) memories last updated before
-  # now-TTL (Go duration), reclaiming space. Empty uses the binary default
-  # (0 = disabled; tombstones are kept but already excluded from recall).
-  # e.g. 720h (30d).
-  tombstoneTTL: ""
-  # @schema
-  # type: [string, number]
-  # @schema
-  # -- Coalesce a fresh write into an existing same-tier memory at or above this
-  # vector similarity instead of storing a near-duplicate (headless corpus
-  # hygiene, applied when the LLM consolidation pipeline isn't handling the
-  # write). Empty uses the binary default (0 = disabled); ~0.95 collapses
-  # near-identical restatements only.
-  writeDedupMinScore: ""
-
-# -- External OpenAI-compatible embeddings endpoint (required for vector search)
-embeddings:
-  baseURL: ""
-  model: text-embedding-3-small
-  # -- Embedding dimensionality; MUST match the deployed model
-  dims: 1536
-  # @schema
-  # type: [string, integer]
-  # @schema
-  # -- Max items per /embeddings request, so bulk callers (namespace dedup)
-  # can't exceed the server's max client batch and fail with 422 (TEI default
-  # is 32). Empty uses the binary default (20).
-  maxBatch: ""
-  # @schema
-  # type: [string, integer]
-  # @schema
-  # -- Max total characters per /embeddings request. Empty uses the binary
-  # default (24000); 0 disables the cap.
-  maxBatchChars: ""
-  # @schema
-  # type: [string, integer]
-  # @schema
-  # -- Truncate any single text to this many characters before embedding.
-  # Empty uses the binary default (8000); 0 disables truncation.
-  maxItemChars: ""
-  # -- Optional existing secret holding the embeddings API key
-  apiKeySecret:
-    name: ""
-    key: api-key
-
-# -- Opt-in LLM endpoint for consolidation; leave baseURL empty to run headless
-llm:
-  baseURL: ""
-  model: gpt-4o-mini
-  apiKeySecret:
-    name: ""
-    key: api-key
-
-# -- Opt-in recall reranking (MEMINI_RERANK); leave mode empty to disable
-rerank:
-  # -- "" or "off" (disabled), "llm" (reorder with the chat LLM), or a
-  # cross-encoder /rerank base URL (e.g. http://reranker:8080/v1, served by
-  # Infinity, vLLM, TEI, or llama-server --rerank)
-  mode: ""
-  # -- Cross-encoder model name (when mode is a URL)
-  model: ""
-  # -- How many composite-ranked candidates the reranker sees
-  topN: 20
-  # @schema
-  # type: [string, integer]
-  # @schema
-  # -- Truncate each document to this many characters before sending to the
-  # cross-encoder, so one oversized memory can't exceed the server's physical
-  # batch and fail the request. Empty uses the binary default; 0 disables it.
-  maxDocChars: ""
-  # -- Optional existing secret holding the cross-encoder endpoint API key
-  # (when mode is a URL)
-  apiKeySecret:
-    name: ""
-    key: api-key
-
-# -- Extra environment variables appended verbatim to the container, for
-# MEMINI_* settings that don't have dedicated chart values
-extraEnv: []
-#  - name: MEMINI_PROMOTE_INTERVAL
-#    value: 12h
-
-# -- Optional bearer-token auth for the API
-# -- Bearer-token auth (protects both /v1 and /mcp). REQUIRED before exposing
-# memini off-cluster (see httpRoute). Either reference an existing secret, or set
-# `auth.apiKey` to have the chart create one.
-auth:
-  # -- Plaintext token; when set, the chart creates a Secret holding it.
-  apiKey: ""
-  # -- Existing secret holding the token (used when auth.apiKey is empty).
-  apiKeySecret:
-    name: ""
-    key: api-key
-
-# -- sqlite backend persistence (StatefulSet volumeClaimTemplate)
-sqlite:
-  persistence:
-    enabled: true
-    # -- Mount a pre-created PVC instead of rendering a volumeClaimTemplate
-    # (e.g. a claim managed or restored by VolSync); when set, size,
-    # storageClass and accessModes are ignored
-    existingClaim: ""
-    size: 5Gi
-    storageClass: ""
-    accessModes:
-      - ReadWriteOnce
-
-# -- postgres backend connection
-postgres:
-  # -- Existing secret holding the libpq DSN (required when backend=postgres)
-  dsnSecret:
-    name: ""
-    key: dsn
-
-# -- Embedded admin UI served at /
-ui:
-  # -- Mount the admin SPA at /; set to false for a headless API/MCP-only service
-  enabled: true
+  main: {}
 
 service:
-  type: ClusterIP
-  port: 8080
+  main:
+    # -- Primary Service. Targets the main controller. Common derives the
+    # container port from this port (8080).
+    controller: main
+    ports:
+      http:
+        port: 8080
+        primary: true
 
-# -- Gateway API HTTPRoute to expose memini off-cluster (the modern replacement
-# for the deprecated Ingress). Attaches to an existing Gateway. Set auth (above)
-# before enabling. TLS is configured on the Gateway listener, not here.
-httpRoute:
-  enabled: false
-  # -- Gateways to attach to (parentRefs)
-  parentRefs:
-    - name: ""
-      # namespace: ""
-      # sectionName: https
-      # port: 443
-  hostnames:
-    - memini.example.com
-  annotations: {}
+# -- Persistent storage for the sqlite backend, mounted at /data. A standalone
+# PVC (single-replica memini sqlite is single-writer). For the postgres backend
+# set `persistence.data.enabled: false`.
+persistence:
+  data:
+    enabled: true
+    type: persistentVolumeClaim
+    accessMode: ReadWriteOnce
+    size: 5Gi
+    # -- Attach a pre-created PVC instead (e.g. restored by VolSync). When set,
+    # size/accessMode are ignored.
+    # existingClaim: memini-data
+    # -- Storage class; null uses the cluster default.
+    # storageClass: ""
+    globalMounts:
+      - path: /data
 
-# -- Horizontal Pod Autoscaler (postgres backend only)
-autoscaling:
-  enabled: false
-  minReplicas: 2
-  maxReplicas: 10
-  targetCPUUtilizationPercentage: 80
-
-# -- Prometheus Operator ServiceMonitor
-metrics:
-  serviceMonitor:
+# -- Prometheus Operator ServiceMonitor. Disabled by default.
+serviceMonitor:
+  main:
     enabled: false
-    interval: 30s
-    scrapeTimeout: 10s
+    service:
+      identifier: main
+    endpoints:
+      - port: http
+        path: /metrics
+        interval: 30s
+        scrapeTimeout: 10s
 
-# -- Bundled Grafana dashboards, rendered as ConfigMaps for the
-# grafana-operator. Point your Grafana CR's `dashboardsConfigMaps` selector
-# at this release's namespace; the operator will pick up any ConfigMap with
-# the `grafana_dashboard: "1"` label.
+# -- Gateway API HTTPRoutes (the modern replacement for Ingress). BOTH disabled
+# by default — the operator enables and attaches them to an existing Gateway.
+# Exposing /v1 or /mcp REQUIRES bearer auth: set MEMINI_API_KEY (see env above).
+route:
+  # -- Public API + MCP surface. Enable, set the gateway in parentRefs, and the
+  # hostname, then scope to the token-gated paths via rules[].matches.
+  main:
+    enabled: false
+    kind: HTTPRoute
+    parentRefs:
+      - name: envoy-external
+        namespace: network
+        sectionName: https
+    hostnames:
+      - memini.example.com
+    rules:
+      - matches:
+          - path:
+              type: PathPrefix
+              value: /v1
+          - path:
+              type: PathPrefix
+              value: /mcp
+          - path:
+              type: PathPrefix
+              value: /.well-known/
+        backendRefs:
+          - identifier: main
+            port: http
+  # -- Internal catch-all surface (full app incl. the UI shell, which embeds the
+  # API key). Keep this on an internal-only gateway.
+  internal:
+    enabled: false
+    kind: HTTPRoute
+    parentRefs:
+      - name: envoy-internal
+        namespace: network
+        sectionName: https
+    hostnames:
+      - memini-internal.example.com
+    rules:
+      - backendRefs:
+          - identifier: main
+            port: http
+
+# -- Bundled Grafana dashboards, rendered as ConfigMaps for the grafana-operator
+# (a custom chart key, not part of the common library). Point your Grafana CR's
+# `dashboardsConfigMaps` selector at this release's namespace; the operator picks
+# up any ConfigMap labelled `grafana_dashboard: "1"`.
 grafanaDashboards:
-  # -- Render dashboards as ConfigMaps with the standard grafana_dashboard label
+  # -- Render the bundled dashboard as a ConfigMap.
   enabled: false
-  # -- grafana_dashboard_folder annotation; controls where dashboards land in Grafana
+  # -- grafana_dashboard_folder annotation; controls where it lands in Grafana.
   folder: memini
-
-# -- Periodic fsck CronJob (the in-process sweeper already handles decay)
-fsck:
-  cronjob:
-    enabled: false
-    schedule: "0 * * * *"
-    image: curlimages/curl:8.20.0
-
-resources: {}
-podAnnotations: {}
-podSecurityContext:
-  runAsNonRoot: true
-  runAsUser: 65532
-  fsGroup: 65532
-securityContext:
-  allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true
-  capabilities:
-    drop:
-      - ALL
-nodeSelector: {}
-tolerations: []
-affinity: {}

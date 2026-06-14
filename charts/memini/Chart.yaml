@@ -14,3 +14,7 @@ keywords:
   - vector-search
 maintainers:
   - name: elebouch
+dependencies:
+  - name: common
+    repository: https://bjw-s-labs.github.io/helm-charts
+    version: 5.0.1

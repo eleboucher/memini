@@ -167,6 +167,14 @@ jobs:
             "https://github.com/dadav/helm-schema/releases/download/${HELM_SCHEMA_VERSION}" \
             checksums.txt helm-schema
 
+      - name: Build chart dependencies
+        run: |
+          set -euo pipefail
+          helm repo add bjw-s https://bjw-s-labs.github.io/helm-charts
+          for chart in charts/*/; do
+            [ -f "${chart}Chart.lock" ] && helm dependency build "$chart"
+          done
+
       - name: Lint charts
         run: |
           set -euo pipefail

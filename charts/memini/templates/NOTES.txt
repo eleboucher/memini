@@ -1,43 +1,16 @@
-memini is deployed as "{{ include "memini.fullname" . }}" using the {{ .Values.backend }} backend.
+memini is deployed.
 
-Service: {{ include "memini.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+Service: {{ .Release.Name }}.{{ .Release.Namespace }}.svc:8080
 
 Port-forward and check health:
-  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "memini.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
-  curl localhost:{{ .Values.service.port }}/healthz
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }} 8080:8080
+  curl localhost:8080/healthz
 
 Endpoints:
-  REST: http://.../v1/memories, /v1/search, /v1/fsck
-  MCP : http://.../mcp   (Streamable HTTP)
-{{- if .Values.ui.enabled }}
-  Admin UI: http://.../ (embedded SPA)
-{{- end }}
-{{- if and .Values.ui.enabled .Values.httpRoute.enabled }}
+  REST    : /v1   (e.g. /v1/memories, /v1/search, /v1/fsck)
+  MCP     : /mcp  (Streamable HTTP)
+  Admin UI: /     (embedded SPA, when MEMINI_UI_ENABLED=true)
 
-Admin UI: https://{{ first .Values.httpRoute.hostnames }}/
-{{- end }}
-
-{{- if not .Values.embeddings.baseURL }}
-
-WARNING: embeddings.baseURL is empty. Vector search will error until you set it
-to an OpenAI-compatible embeddings endpoint (and embeddings.dims to match).
-{{- end }}
-{{- if eq .Values.backend "postgres" }}
-{{- if not .Values.postgres.dsnSecret.name }}
-
-ERROR: backend=postgres requires postgres.dsnSecret.name to point at a Secret
-holding the libpq DSN.
-{{- end }}
-{{- end }}
-{{- if .Values.httpRoute.enabled }}
-{{- if include "memini.authEnabled" . }}
-
-HTTPRoute exposed{{ with (first .Values.httpRoute.hostnames) }} at https://{{ . }}{{ end }} — authenticated.
-Clients must send: Authorization: Bearer <api-key>
-{{- else }}
-
-DANGER: httpRoute.enabled is true but no auth is configured — memini's memory
-(/v1 and /mcp) would be exposed UNAUTHENTICATED. Set auth.apiKey or
-auth.apiKeySecret.name before exposing it off-cluster.
-{{- end }}
-{{- end }}
+Exposing /v1 or /mcp off-cluster (via the `route` values) REQUIRES bearer auth:
+set MEMINI_API_KEY on controllers.main.containers.main.env from a Secret. Clients
+must then send: Authorization: Bearer <api-key>
