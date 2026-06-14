@@ -272,6 +272,7 @@ export function Graph() {
     sel.call(
       d3drag<HTMLCanvasElement, unknown>()
         .container(canvas)
+        .clickDistance(4)
         .subject((event) => findNode(event.x, event.y) ?? undefined)
         .on('start', (event) => {
           if (!event.active) sim.alphaTarget(0.3).restart()
