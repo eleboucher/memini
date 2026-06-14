@@ -56,6 +56,14 @@ jobs:
           MEMINI_TEST_POSTGRES_DSN: postgres://postgres:memini@postgres:5432/memini?sslmode=disable
         run: CGO_ENABLED=1 go test -race -count=1 -timeout 300s -tags integration ./internal/store/postgres/
 
+      # End-to-end tests that boot the full server stack (store + embedder +
+      # workers + REST/MCP) and drive it over HTTP. The DSN also exercises the
+      # Postgres backend; SQLite always runs.
+      - name: Run end-to-end integration tests
+        env:
+          MEMINI_TEST_POSTGRES_DSN: postgres://postgres:memini@postgres:5432/memini?sslmode=disable
+        run: CGO_ENABLED=1 go test -race -count=1 -timeout 300s -tags integration ./cmd/memini/
+
   plugins:
     runs-on: docker
     steps:

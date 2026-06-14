@@ -78,6 +78,19 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			"anyone who can reach the port")
 	}
 
+	srv, err := newServer(cfg, svc, st, log)
+	if err != nil {
+		return err
+	}
+
+	return srv.Run(ctx)
+}
+
+// newServer mounts the REST API, MCP handler, and optional admin UI onto a
+// fresh server and returns it ready to Run. Kept separate from runServer so
+// integration tests exercise the exact same HTTP wiring without re-running the
+// process bootstrap.
+func newServer(cfg *config.Config, svc *service.Service, st store.Store, log *slog.Logger) (*server.Server, error) {
 	reg := prometheus.NewRegistry()
 	srv := server.New(server.Options{
 		Addr:            cfg.HTTPAddr,
@@ -103,12 +116,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 				"Set MEMINI_UI_ENABLED=false if the port is reachable by untrusted clients")
 		}
 		if err := ui.Mount(srv.Router(), cfg.APIKey); err != nil {
-			return fmt.Errorf("mount ui: %w", err)
+			return nil, fmt.Errorf("mount ui: %w", err)
 		}
 		log.Info("admin UI mounted at /")
 	}
 
-	return srv.Run(ctx)
+	return srv, nil
 }
 
 // buildServiceStack constructs the store, embedder, service, and starts
