@@ -10,6 +10,9 @@ run = "golangci-lint run"
 [pre-commit.commands.format]
 # oxfmt formats markdown/json/yaml; honours .prettierignore.
 glob = "*.{md,json,yaml,yml}"
+# Generated lockfile is ignored by oxfmt; excluding it stops the formatter from
+# being handed only-ignored files and exiting non-zero.
+exclude = ["**/package-lock.json"]
 run = "oxfmt --write {staged_files}"
 stage_fixed = true
 
