@@ -25,7 +25,9 @@ export function MemoryDrawer({ memory: m, onClose }: Props) {
   // Escape, and restore focus to whatever was focused before.
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null
-    closeRef.current?.focus()
+    // preventScroll: the drawer starts off-screen (translateX(100%)); scrolling to
+    // the focused child would jump the page during the slide-in.
+    closeRef.current?.focus({ preventScroll: true })
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
