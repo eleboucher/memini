@@ -215,8 +215,9 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       const sibling = output.parts.find((p) => p && p.type === "text") || {};
       const sessionID = input.sessionID || sibling.sessionID;
       const messageID = input.messageID || sibling.messageID;
+      // opencode's part schema requires ids to start with `prt`.
       output.parts.unshift({
-        id: `mem-recall-${messageID || sessionID}`,
+        id: `prt_${crypto.randomUUID()}`,
         sessionID,
         messageID,
         type: "text",
