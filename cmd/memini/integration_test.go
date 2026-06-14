@@ -9,11 +9,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/eleboucher/memini/internal/config"
@@ -103,7 +105,7 @@ func startStack(t *testing.T, backend, dsn string) harness {
 	case "sqlite":
 		t.Setenv("MEMINI_SQLITE_PATH", filepath.Join(t.TempDir(), "memini.db"))
 	case "postgres":
-		t.Setenv("MEMINI_POSTGRES_DSN", dsn)
+		t.Setenv("MEMINI_POSTGRES_DSN", freshPostgresDB(t, dsn))
 	}
 	t.Setenv("MEMINI_EMBED_BASE_URL", embed.URL+"/v1")
 	t.Setenv("MEMINI_EMBED_MODEL", "fake")
@@ -147,6 +149,51 @@ func startStack(t *testing.T, backend, dsn string) harness {
 		nsHeader:  cfg.NamespaceHeader,
 		namespace: cfg.DefaultNamespace,
 	}
+}
+
+// freshPostgresDB creates a uniquely-named database on the server addressed by
+// dsn and returns a DSN pointing at it; it is dropped on test cleanup. This
+// suite must not share a database with the store conformance suite, which opens
+// the same CI Postgres at a different embedding dimension: the memories table's
+// vector column is fixed at CREATE TABLE, so a shared database makes dims collide
+// and writes fail. Mirrors the SQLite path's per-test t.TempDir file.
+func freshPostgresDB(t *testing.T, dsn string) string {
+	t.Helper()
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	name := "it_" + strings.NewReplacer("/", "_", "-", "_", " ", "_").Replace(strings.ToLower(t.Name()))
+	quoted := pgx.Identifier{name}.Sanitize()
+
+	ctx := context.Background()
+	// CREATE/DROP DATABASE cannot target the connected database, so we run them
+	// from the maintenance database the original DSN points at.
+	drop := func() {
+		admin, err := pgx.Connect(ctx, dsn)
+		if err != nil {
+			t.Fatalf("connect for db cleanup: %v", err)
+		}
+		defer func() { _ = admin.Close(ctx) }()
+		if _, err := admin.Exec(ctx, `DROP DATABASE IF EXISTS `+quoted+` WITH (FORCE)`); err != nil {
+			t.Fatalf("drop database: %v", err)
+		}
+	}
+	drop()
+
+	admin, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect to create db: %v", err)
+	}
+	if _, err := admin.Exec(ctx, `CREATE DATABASE `+quoted); err != nil {
+		_ = admin.Close(ctx)
+		t.Fatalf("create database: %v", err)
+	}
+	_ = admin.Close(ctx)
+	t.Cleanup(drop)
+
+	u.Path = "/" + name
+	return u.String()
 }
 
 // forEachBackend runs fn against SQLite, and Postgres when a DSN is configured.
