@@ -67,6 +67,16 @@ func Open(ctx context.Context, path string, dims int) (*Store, error) {
 	return s, nil
 }
 
+// backfillColumns are columns added after the original memories schema. On an
+// existing DB the CREATE TABLE in migrate is a no-op, so each is ALTER-added
+// here before any index or query references it.
+var backfillColumns = []struct{ name, decl string }{
+	{"valid_from", "INTEGER"},
+	{"valid_to", "INTEGER"},
+	{"confidence", "REAL"},
+	{"fingerprint", "TEXT NOT NULL DEFAULT ''"},
+}
+
 func (s *Store) migrate(ctx context.Context) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS memories (
@@ -92,7 +102,6 @@ func (s *Store) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_memories_fingerprint ON memories(namespace, tier, fingerprint)`,
 		// namespace is a partition key so KNN can isolate tenants efficiently.
 		fmt.Sprintf(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_memories USING vec0(
 			namespace TEXT partition key,
@@ -106,18 +115,15 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("sqlitevec: migrate: %w\nstatement: %s", err, q)
 		}
 	}
-	// Backfill the temporal-validity columns on stores created before they
-	// existed (the CREATE TABLE above is a no-op once the table is present).
-	for _, col := range []string{"valid_from", "valid_to"} {
-		if err := s.addColumnIfMissing(ctx, "memories", col, "INTEGER"); err != nil {
+	for _, c := range backfillColumns {
+		if err := s.addColumnIfMissing(ctx, "memories", c.name, c.decl); err != nil {
 			return err
 		}
 	}
-	if err := s.addColumnIfMissing(ctx, "memories", "confidence", "REAL"); err != nil {
-		return err
-	}
-	if err := s.addColumnIfMissing(ctx, "memories", "fingerprint", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
+	// After the backfill: on an old DB the fingerprint column exists only now.
+	if _, err := s.db.ExecContext(ctx,
+		`CREATE INDEX IF NOT EXISTS idx_memories_fingerprint ON memories(namespace, tier, fingerprint)`); err != nil {
+		return fmt.Errorf("sqlitevec: migrate: create idx_memories_fingerprint: %w", err)
 	}
 	return nil
 }
