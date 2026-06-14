@@ -2,7 +2,7 @@
   "name": "memini",
   "image": "mcr.microsoft.com/devcontainers/base:debian",
   "features": {
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/docker-in-docker:3": {},
     "ghcr.io/jdx/mise:1": {}
   },
   "postCreateCommand": "mise trust && mise install",
