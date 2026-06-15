@@ -128,6 +128,31 @@ test("expose_tools is off by default", () => {
   assert.equal(resolveConfig({ expose_tools: true }).expose_tools, true);
 });
 
+// OpenClaw rejects a register() that returns a thenable ("plugin register must be
+// synchronous"), so an async register fails the whole plugin — memory slot included
+// (the >=0.2.8 regression, eleboucher/memini#17). Tools must register synchronously
+// inside register(): the guarded api turns any deferred registerTool into a no-op.
+test("register is synchronous even with expose_tools on (OpenClaw contract)", () => {
+  const names = [];
+  const result = plugin.register({
+    pluginConfig: { enabled: true, expose_tools: true },
+    registerMemoryCapability() {},
+    on() {},
+    logger: { warn() {} },
+    registerTool(def) {
+      names.push(def.name);
+    },
+  });
+  assert.equal(result, undefined, "register must not return a Promise");
+  assert.notEqual(
+    Object.getPrototypeOf(plugin.register).constructor.name,
+    "AsyncFunction",
+    "register must not be an async function",
+  );
+  // Tools are wired before register returns — not deferred (the guarded api would drop them).
+  assert.deepEqual(names.sort(), ["memory_list", "memory_recall", "memory_remember"]);
+});
+
 test("register does not touch registerTool when expose_tools is off", async () => {
   let registered = 0;
   await plugin.register({
