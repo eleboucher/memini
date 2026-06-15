@@ -143,6 +143,30 @@ export function effectiveNamespace(cfg, event, ctx) {
   return tmpl.replaceAll("{agent}", id).replaceAll("{namespace}", cfg.namespace);
 }
 
+// sessionIdentity pulls a stable per-session id from the hook event/ctx, used
+// to tag captured turns and then exclude the current session's own captures
+// from its pre-turn auto-recall — otherwise a turn still in the live transcript
+// gets echoed back as "long-term memory" the very next turn. Unlike
+// agentIdentity (which is per-agent and shared across that agent's sessions),
+// this is per-session, so two sessions of the same agent don't suppress each
+// other. Returns "" when nothing identifies a session (recall/capture then
+// behave as before).
+export function sessionIdentity(event, ctx) {
+  const candidates = [
+    ctx?.sessionId,
+    ctx?.sessionKey,
+    ctx?.runId,
+    event?.sessionId,
+    event?.sessionKey,
+    event?.runId,
+    event?.session?.id,
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim()) return sanitizeNsSegment(c);
+  }
+  return "";
+}
+
 function extractText(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -325,7 +349,13 @@ const plugin = {
       if (!prompt) return;
       const ns = effectiveNamespace(cfg, event, ctx);
       if (ns == null) return;
-      const result = await client.postJson("/v1/search", { query: prompt, limit: 5 }, ns);
+      const body = { query: prompt, limit: 5 };
+      // Exclude this session's own captured turns: they're already in the live
+      // transcript, so recalling them just echoes the conversation back a turn
+      // behind. Captures from other (past) sessions are still recalled.
+      const session = sessionIdentity(event, ctx);
+      if (session) body.exclude_metadata = { session };
+      const result = await client.postJson("/v1/search", body, ns);
       const block = formatResults(result?.results || []);
       if (!block) return;
       return { prependContext: `Relevant long-term memory from memini:\n${block}` };
@@ -338,10 +368,15 @@ const plugin = {
       if (!userText || !assistantText) return;
       const ns = effectiveNamespace(cfg, event, ctx);
       if (ns == null) return;
+      // Tag the capture with its session id so before_prompt_build can exclude
+      // this session's own turns from its auto-recall (see that hook).
+      const metadata = { source: "openclaw" };
+      const session = sessionIdentity(event, ctx);
+      if (session) metadata.session = session;
       await client.postJson("/v1/memories", {
         content: `User: ${userText.slice(0, 1000)}\nAssistant: ${assistantText.slice(0, 3000)}`,
         tier: "episodic",
-        metadata: { source: "openclaw" },
+        metadata,
       }, ns);
     });
 

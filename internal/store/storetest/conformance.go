@@ -28,6 +28,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("KeywordSearch", func(t *testing.T) { testKeyword(t, st, dims) })
 	t.Run("Filters", func(t *testing.T) { testFilters(t, st, dims) })
 	t.Run("TagMetadataFilter", func(t *testing.T) { testTagMetadataFilter(t, st, dims) })
+	t.Run("ExcludeMetadataFilter", func(t *testing.T) { testExcludeMetadataFilter(t, st, dims) })
 	t.Run("SetSuperseded", func(t *testing.T) { testSetSuperseded(t, st, dims) })
 	t.Run("Reinforce", func(t *testing.T) { testReinforce(t, st, dims) })
 	t.Run("DeleteIfExpiredBefore", func(t *testing.T) { testDeleteIfExpiredBefore(t, st, dims) })
@@ -586,6 +587,50 @@ func testTagMetadataFilter(t *testing.T, st store.Store, dims int) {
 	}
 	if ids := idsOf(kres); len(ids) != 1 || ids[0] != id(ns, bug) {
 		t.Fatalf("filtered keyword search should yield only bug, got %v", ids)
+	}
+}
+
+// testExcludeMetadataFilter verifies Filter.ExcludeMetadata drops memories
+// carrying any listed key=value pair (the inverse of Metadata) across List,
+// VectorSearch and KeywordSearch — the mechanism the OpenClaw plugin uses to
+// keep a session from recalling its own just-captured turns.
+func testExcludeMetadataFilter(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+	const keySession = "session"
+
+	mine := mem(ns, "mine", "deploy notes for the auth service", vec(dims, 1))
+	mine.Metadata = map[string]any{keySession: "s1"}
+	mustUpsert(t, st, mine)
+
+	other := mem(ns, "other", "deploy notes for the auth service", vec(dims, 1))
+	other.Metadata = map[string]any{keySession: "s2"}
+	mustUpsert(t, st, other)
+
+	untagged := mem(ns, "untagged", "deploy notes for the auth service", vec(dims, 1))
+	mustUpsert(t, st, untagged)
+
+	// Excluding session s1 drops only the s1 capture; s2 and untagged remain.
+	exclude := store.Filter{ExcludeMetadata: map[string]string{keySession: "s1"}}
+	got := memIDs(mustList(t, st, ns, exclude))
+	if len(got) != 2 || slices.Contains(got, id(ns, "mine")) {
+		t.Fatalf("exclude session=s1 should yield other+untagged, got %v", got)
+	}
+
+	vres, err := st.VectorSearch(ctx, ns, vec(dims, 1), exclude, 10)
+	if err != nil {
+		t.Fatalf("vector search: %v", err)
+	}
+	if ids := idsOf(vres); slices.Contains(ids, id(ns, "mine")) || len(ids) != 2 {
+		t.Fatalf("filtered vector search should drop the s1 capture, got %v", ids)
+	}
+
+	kres, err := st.KeywordSearch(ctx, ns, "deploy", exclude, 10)
+	if err != nil {
+		t.Fatalf("keyword search: %v", err)
+	}
+	if ids := idsOf(kres); slices.Contains(ids, id(ns, "mine")) || len(ids) != 2 {
+		t.Fatalf("filtered keyword search should drop the s1 capture, got %v", ids)
 	}
 }
 

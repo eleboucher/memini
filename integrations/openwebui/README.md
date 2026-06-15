@@ -23,9 +23,12 @@ Open WebUI database.
 What it wires (two methods on the `Filter` class):
 
 - **`inlet`** — searches memini for the latest user message and inserts the
-  matches as a system message before the turn runs.
+  matches as a system message before the turn runs. It excludes this chat's own
+  captured turns (already in the live transcript), so they aren't echoed back as
+  memory a turn behind; other chats still recall.
 - **`outlet`** — once the response completes, stores the user/assistant turn
-  back into memini (episodic) so it can be recalled later.
+  back into memini (episodic, tagged with the chat id) so it can be recalled
+  later.
 
 ### Install
 

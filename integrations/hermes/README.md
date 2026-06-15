@@ -11,9 +11,13 @@ capture happen automatically with no MCP server.
 What it wires:
 
 - **`prefetch`** — recalls relevant memories from memini before each turn and
-  injects them into context.
-- **`sync_turn`** — captures each user/assistant exchange into memini (episodic).
-- **`on_pre_compress`** — re-injects recalled context before history compaction.
+  injects them into context. It excludes this session's own captured turns
+  (already in the live transcript), so they aren't echoed back as memory a turn
+  behind; past sessions still recall.
+- **`sync_turn`** — captures each user/assistant exchange into memini (episodic,
+  tagged with the session id).
+- **`on_pre_compress`** — re-injects recalled context before history compaction
+  (also excluding this session's own captures).
 - **`on_memory_write`** — mirrors Hermes `MEMORY.md` / `USER.md` edits into
   memini as durable (semantic) facts.
 - **tools** — `memory_recall` (with optional `tags` / `metadata` filters),

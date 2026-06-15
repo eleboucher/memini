@@ -382,6 +382,14 @@ components:
           type: object
           additionalProperties: { type: string }
           description: A memory's top-level metadata must contain every listed key=value pair (AND).
+        exclude_metadata:
+          type: object
+          additionalProperties: { type: string }
+          description: >
+            Drop memories whose top-level metadata carries any of these key=value
+            pairs (the inverse of metadata). Lets a caller keep its own
+            just-written memories out of recall — e.g. excluding the current
+            session's captured turns so they are not echoed back as memory.
         limit: { type: integer, default: 10 }
         include_expired: { type: boolean, default: false }
         include_superseded: { type: boolean, default: false }

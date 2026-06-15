@@ -206,15 +206,20 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       if (!cfg.recall) return;
       const query = extractPartsText(output && output.parts);
       if (!query) return;
-      const result = await rest.postJson("/v1/search", { query, limit: cfg.recall_limit });
-      const block = formatResults(result && result.results, cfg.recall_limit);
-      if (!block) return;
       // Borrow sessionID/messageID from the real parts when the hook input
       // omits them (messageID is optional in the contract), so the injected
       // part is attributed to the same message.
       const sibling = output.parts.find((p) => p && p.type === "text") || {};
       const sessionID = input.sessionID || sibling.sessionID;
       const messageID = input.messageID || sibling.messageID;
+      const body = { query, limit: cfg.recall_limit };
+      // Exclude this session's own captured turns: they're still in the live
+      // context, so recalling them just echoes the conversation back a turn
+      // behind. Captures from other (past) sessions are still recalled.
+      if (sessionID) body.exclude_metadata = { session_id: sessionID };
+      const result = await rest.postJson("/v1/search", body);
+      const block = formatResults(result && result.results, cfg.recall_limit);
+      if (!block) return;
       // opencode's part schema requires ids to start with `prt`.
       output.parts.unshift({
         id: `prt_${crypto.randomUUID()}`,

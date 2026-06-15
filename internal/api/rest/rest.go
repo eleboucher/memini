@@ -276,6 +276,7 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 	}
 	in.Tags = deref(req.Tags)
 	in.Metadata = deref(req.Metadata)
+	in.ExcludeMetadata = deref(req.ExcludeMetadata)
 	in.Limit = deref(req.Limit)
 	in.IncludeExpired = deref(req.IncludeExpired)
 	in.IncludeSuperseded = deref(req.IncludeSuperseded)

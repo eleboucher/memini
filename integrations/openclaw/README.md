@@ -11,11 +11,15 @@ no tool calls required from the agent.
 What it wires (via `api.registerMemoryCapability` + two hooks):
 
 - **`before_prompt_build`** — searches memini for the incoming prompt and
-  prepends the matches as context.
+  prepends the matches as context. It excludes the current session's own
+  captured turns (via `exclude_metadata`), so a turn still in the live transcript
+  isn't echoed back as "long-term memory" the next turn; captures from earlier
+  sessions are still recalled.
 - **`agent_end`** — stores the completed user/assistant turn back into memini
-  (episodic) so it can be recalled later. This is a raw-conversation hook, so it
-  requires `hooks.allowConversationAccess: true` (see config below); without it
-  OpenClaw withholds `event.messages` and capture silently no-ops.
+  (episodic, tagged with the session id) so it can be recalled later. This is a
+  raw-conversation hook, so it requires `hooks.allowConversationAccess: true`
+  (see config below); without it OpenClaw withholds `event.messages` and capture
+  silently no-ops.
 
 ### Install
 

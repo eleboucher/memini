@@ -104,6 +104,12 @@ func filterClause(f store.Filter, alias string) (string, []any) {
 		b.WriteString(" AND EXISTS (SELECT 1 FROM json_each(" + alias + ".metadata) WHERE key = ? AND value = ?)")
 		args = append(args, k, v)
 	}
+	// ExcludeMetadata: drop rows carrying any of these key=value pairs (inverse of
+	// Metadata), e.g. excluding a session's own captures from its auto-recall.
+	for k, v := range f.ExcludeMetadata {
+		b.WriteString(" AND NOT EXISTS (SELECT 1 FROM json_each(" + alias + ".metadata) WHERE key = ? AND value = ?)")
+		args = append(args, k, v)
+	}
 	if !f.IncludeExpired {
 		// For a time-travel query, "live" means live at AsOf, not at the current
 		// wall clock — a memory that has since expired was still valid then.

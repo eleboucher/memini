@@ -38,6 +38,13 @@ type Filter struct {
 	// each listed key with the given string value (AND). Empty means no metadata
 	// constraint. Only top-level string-valued entries are matched.
 	Metadata map[string]string
+	// ExcludeMetadata drops memories whose top-level metadata carries any of the
+	// listed key=value pairs (the inverse of Metadata). Empty means no exclusion.
+	// Used to keep a caller from recalling its own just-written memories — e.g.
+	// the OpenClaw plugin tags each captured turn with its session id and excludes
+	// that session on the pre-turn auto-recall, so a turn already in the live
+	// transcript is not echoed back as "long-term memory".
+	ExcludeMetadata map[string]string
 	// IncludeExpired includes memories past their TTL (default excludes them).
 	IncludeExpired bool
 	// IncludeSuperseded includes contradiction-tombstoned memories.

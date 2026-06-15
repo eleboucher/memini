@@ -206,14 +206,15 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 }
 
 type recallArgs struct {
-	Query     string            `json:"query" jsonschema:"what to search for"`
-	Tiers     []string          `json:"tiers,omitempty" jsonschema:"restrict to tiers (working/episodic/semantic/procedural); empty means all"`
-	Tags      []string          `json:"tags,omitempty" jsonschema:"only memories carrying every listed tag (AND)"`
-	Metadata  map[string]string `json:"metadata,omitempty" jsonschema:"only memories whose metadata has each key=value pair (AND)"`
-	Limit     int               `json:"limit,omitempty" jsonschema:"max results (default 10)"`
-	Scope     string            `json:"scope,omitempty" jsonschema:"'subtree' also searches nested namespaces; default 'exact'"`
-	AsOf      string            `json:"as_of,omitempty" jsonschema:"RFC3339 time for time-travel recall (facts true then)"`
-	Namespace string            `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+	Query           string            `json:"query" jsonschema:"what to search for"`
+	Tiers           []string          `json:"tiers,omitempty" jsonschema:"restrict to tiers; empty means all"`
+	Tags            []string          `json:"tags,omitempty" jsonschema:"only memories carrying every listed tag (AND)"`
+	Metadata        map[string]string `json:"metadata,omitempty" jsonschema:"only memories whose metadata has each key=value pair (AND)"`
+	ExcludeMetadata map[string]string `json:"exclude_metadata,omitempty" jsonschema:"inverse of metadata; drops matching memories"`
+	Limit           int               `json:"limit,omitempty" jsonschema:"max results (default 10)"`
+	Scope           string            `json:"scope,omitempty" jsonschema:"'subtree' also searches nested namespaces; default 'exact'"`
+	AsOf            string            `json:"as_of,omitempty" jsonschema:"RFC3339 time for time-travel recall (facts true then)"`
+	Namespace       string            `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 }
 
 type recallItem struct {
@@ -245,13 +246,14 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 		return nil, recallResult{}, err
 	}
 	input := service.RecallInput{
-		Namespace: ns,
-		Query:     in.Query,
-		Tiers:     tiers,
-		Tags:      in.Tags,
-		Metadata:  in.Metadata,
-		Limit:     in.Limit,
-		Subtree:   strings.EqualFold(strings.TrimSpace(in.Scope), "subtree"),
+		Namespace:       ns,
+		Query:           in.Query,
+		Tiers:           tiers,
+		Tags:            in.Tags,
+		Metadata:        in.Metadata,
+		ExcludeMetadata: in.ExcludeMetadata,
+		Limit:           in.Limit,
+		Subtree:         strings.EqualFold(strings.TrimSpace(in.Scope), "subtree"),
 	}
 	if in.AsOf != "" {
 		asOf, perr := time.Parse(time.RFC3339, in.AsOf)

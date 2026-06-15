@@ -4,7 +4,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import plugin, { effectiveNamespace, meminiListPath, registerMeminiTools, resolveConfig } from "./plugin.mjs";
+import plugin, {
+  effectiveNamespace,
+  meminiListPath,
+  registerMeminiTools,
+  resolveConfig,
+  sessionIdentity,
+} from "./plugin.mjs";
 
 // fakeClient records the last memini call and returns canned responses, so the
 // tool handlers can be exercised without a running server.
@@ -252,6 +258,91 @@ test("recall searches memini and prepends results; capture writes the episodic t
     assert.equal(body.tier, "episodic");
     assert.match(body.content, /User: q/);
     assert.match(body.content, /Assistant: a/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("sessionIdentity prefers session ids and sanitizes them; empty without one", () => {
+  assert.equal(sessionIdentity({}, { sessionId: "sess-abc" }), "sess-abc");
+  assert.equal(sessionIdentity({ sessionKey: "agent:bob:run/42" }, {}), "agent-bob-run-42");
+  assert.equal(sessionIdentity({}, { runId: "r1" }), "r1");
+  assert.equal(sessionIdentity({}, {}), "");
+});
+
+test("auto-recall excludes the current session's own captures; capture tags the session", async () => {
+  const hooks = {};
+  const requests = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    const body = String(url).endsWith("/v1/search") ? { results: [] } : { id: "m1" };
+    return { ok: true, async json() { return body; }, async text() { return ""; } };
+  };
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {},
+      on(name, handler) {
+        hooks[name] = handler;
+      },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    const ctx = { sessionId: "sess-abc" };
+
+    await hooks.before_prompt_build({ prompt: "how did we fix auth?" }, ctx);
+    const search = JSON.parse(requests.find((r) => r.url.endsWith("/v1/search")).init.body);
+    assert.deepEqual(search.exclude_metadata, { session: "sess-abc" });
+
+    await hooks.agent_end(
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "q" },
+          { role: "assistant", content: "a" },
+        ],
+      },
+      ctx,
+    );
+    const write = JSON.parse(requests.find((r) => r.url.endsWith("/v1/memories")).init.body);
+    assert.equal(write.metadata.session, "sess-abc");
+    assert.equal(write.metadata.source, "openclaw");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("without a session id, auto-recall and capture stay unscoped (back-compat)", async () => {
+  const hooks = {};
+  const requests = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    const body = String(url).endsWith("/v1/search") ? { results: [] } : { id: "m1" };
+    return { ok: true, async json() { return body; }, async text() { return ""; } };
+  };
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {},
+      on(name, handler) {
+        hooks[name] = handler;
+      },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+
+    await hooks.before_prompt_build({ prompt: "anything" }, {});
+    const search = JSON.parse(requests.find((r) => r.url.endsWith("/v1/search")).init.body);
+    assert.equal(search.exclude_metadata, undefined);
+
+    await hooks.agent_end(
+      { success: true, messages: [{ role: "user", content: "q" }, { role: "assistant", content: "a" }] },
+      {},
+    );
+    const write = JSON.parse(requests.find((r) => r.url.endsWith("/v1/memories")).init.body);
+    assert.equal(write.metadata.session, undefined);
   } finally {
     globalThis.fetch = realFetch;
   }

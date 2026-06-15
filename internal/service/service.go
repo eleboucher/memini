@@ -610,7 +610,11 @@ type RecallInput struct {
 	// Metadata narrows recall to memories whose top-level metadata contains each
 	// listed key=value string pair (AND).
 	Metadata map[string]string
-	Limit    int
+	// ExcludeMetadata drops memories carrying any of these key=value pairs (the
+	// inverse of Metadata), so a caller can keep its own just-written memories out
+	// of recall — see store.Filter.ExcludeMetadata.
+	ExcludeMetadata map[string]string
+	Limit           int
 	// IncludeExpired / IncludeSuperseded relax the default live-only filter.
 	IncludeExpired    bool
 	IncludeSuperseded bool
@@ -651,6 +655,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		Tiers:             in.Tiers,
 		Tags:              in.Tags,
 		Metadata:          in.Metadata,
+		ExcludeMetadata:   in.ExcludeMetadata,
 		IncludeExpired:    in.IncludeExpired,
 		IncludeSuperseded: in.IncludeSuperseded,
 		Now:               s.now(),

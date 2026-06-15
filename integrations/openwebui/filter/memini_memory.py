@@ -184,9 +184,16 @@ class Filter:
         query = extract_last_user(messages)
         if not query or not isinstance(messages, list):
             return body
+        payload = {"query": query, "limit": self.valves.recall_limit}
+        # Exclude this chat's own captured turns: they're still in the live
+        # transcript, so recalling them just echoes the conversation back a turn
+        # behind. Captures from other (past) chats are still recalled.
+        chat_id = body.get("chat_id") or ""
+        if chat_id:
+            payload["exclude_metadata"] = {"chat_id": chat_id}
         result = await self._post_json(
             "/v1/search",
-            {"query": query, "limit": self.valves.recall_limit},
+            payload,
             self._namespace(__user__),
         )
         block = format_results((result or {}).get("results"), self.valves.recall_limit)

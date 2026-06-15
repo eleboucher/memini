@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  MeminiPlugin,
   resolveConfig,
   deriveNamespace,
   extractPartsText,
@@ -116,4 +117,28 @@ test("plaintext bearer guard is silent for loopback and for https", () => {
 test("plaintext bearer guard throws when MEMINI_REQUIRE_HTTPS=1", () => {
   const guard = createPlaintextBearerAuthGuard(() => {}, { MEMINI_REQUIRE_HTTPS: "1" });
   assert.throws(() => guard("http://memini.example.com", "secret"), /plaintext HTTP/);
+});
+
+test("chat.message recall excludes this session's own captures via exclude_metadata", async () => {
+  const requests = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    return { ok: true, async json() { return { results: [] }; }, async text() { return ""; } };
+  };
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080" },
+    );
+    await hooks["chat.message"](
+      { sessionID: "s1" },
+      { parts: [{ type: "text", text: "how did we fix auth?", sessionID: "s1", messageID: "m1" }] },
+    );
+    const search = requests.find((r) => r.url.endsWith("/v1/search"));
+    assert.ok(search, "should POST /v1/search");
+    assert.deepEqual(JSON.parse(search.init.body).exclude_metadata, { session_id: "s1" });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

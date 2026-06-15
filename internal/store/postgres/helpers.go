@@ -41,6 +41,16 @@ func filterClause(b *args, f store.Filter) string {
 		mj, _ := json.Marshal(f.Metadata) //nolint:errchkjson
 		clause += " AND metadata @> " + b.add(string(mj)) + "::jsonb"
 	}
+	// ExcludeMetadata: drop rows carrying any of these key=value pairs (inverse of
+	// Metadata), e.g. excluding a session's own captures from its auto-recall.
+	if len(f.ExcludeMetadata) > 0 {
+		var ex strings.Builder
+		for k, v := range f.ExcludeMetadata {
+			mj, _ := json.Marshal(map[string]string{k: v}) //nolint:errchkjson
+			ex.WriteString(" AND NOT (metadata @> " + b.add(string(mj)) + "::jsonb)")
+		}
+		clause += ex.String()
+	}
 	if !f.IncludeExpired {
 		// For a time-travel query, "live" means live at AsOf, not at the current
 		// wall clock — a memory that has since expired was still valid then.

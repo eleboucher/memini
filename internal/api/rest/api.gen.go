@@ -229,10 +229,13 @@ type ScoredMemory struct {
 // SearchRequest defines model for SearchRequest.
 type SearchRequest struct {
 	// AsOf Time-travel recall: return facts whose validity window contained this instant (including ones since superseded), for "what was true then" queries.
-	AsOf              *time.Time `json:"as_of,omitempty"`
-	IncludeExpired    *bool      `json:"include_expired,omitempty"`
-	IncludeSuperseded *bool      `json:"include_superseded,omitempty"`
-	Limit             *int       `json:"limit,omitempty"`
+	AsOf *time.Time `json:"as_of,omitempty"`
+
+	// ExcludeMetadata Drop memories whose top-level metadata carries any of these key=value pairs (the inverse of metadata). Lets a caller keep its own just-written memories out of recall — e.g. excluding the current session's captured turns so they are not echoed back as memory.
+	ExcludeMetadata   *map[string]string `json:"exclude_metadata,omitempty"`
+	IncludeExpired    *bool              `json:"include_expired,omitempty"`
+	IncludeSuperseded *bool              `json:"include_superseded,omitempty"`
+	Limit             *int               `json:"limit,omitempty"`
 
 	// Metadata A memory's top-level metadata must contain every listed key=value pair (AND).
 	Metadata *map[string]string `json:"metadata,omitempty"`

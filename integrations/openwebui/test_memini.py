@@ -106,6 +106,23 @@ class FilterFlow(unittest.TestCase):
         self.assertEqual(out["messages"][1]["role"], "user")
         self.assertEqual(calls[0][0], "/v1/search")
 
+    def test_inlet_excludes_own_chat(self):
+        # Recall must drop this chat's own captured turns (still in the live
+        # transcript) via exclude_metadata.chat_id; other chats stay recallable.
+        calls = []
+        f = self._filter(calls)
+        body = {"chat_id": "c1", "messages": [{"role": "user", "content": "q"}]}
+        asyncio.run(f.inlet(body))
+        search = next(c for c in calls if c[0] == "/v1/search")
+        self.assertEqual(search[1]["exclude_metadata"], {"chat_id": "c1"})
+
+    def test_inlet_without_chat_id_stays_unscoped(self):
+        calls = []
+        f = self._filter(calls)
+        asyncio.run(f.inlet({"messages": [{"role": "user", "content": "q"}]}))
+        search = next(c for c in calls if c[0] == "/v1/search")
+        self.assertNotIn("exclude_metadata", search[1])
+
     def test_inlet_disabled(self):
         calls = []
         f = self._filter(calls)

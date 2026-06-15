@@ -63,6 +63,32 @@ class OnPreCompressTest(unittest.TestCase):
         p = make_provider(lambda *a, **k: None)
         self.assertEqual(p.on_pre_compress([{"role": "user", "content": "q"}]), "")
 
+    def test_excludes_own_session(self):
+        # Recall must drop this session's own captured turns (they're still in
+        # the live transcript) by passing exclude_metadata.session_id.
+        captured = {}
+
+        def stub(path, body, method="POST"):
+            captured["body"] = body
+            return {"results": []}
+
+        make_provider(stub).on_pre_compress([{"role": "user", "content": "q"}])
+        self.assertEqual(captured["body"]["exclude_metadata"], {"session_id": "sess-1"})
+
+
+class PrefetchTest(unittest.TestCase):
+    def test_excludes_own_session(self):
+        captured = {}
+
+        def stub(path, body, method="POST"):
+            captured["path"], captured["body"] = path, body
+            return {"results": [{"memory": {"summary": "prior note"}}]}
+
+        out = make_provider(stub).prefetch("what did we decide?")
+        self.assertEqual(captured["path"], "/v1/search")
+        self.assertEqual(captured["body"]["exclude_metadata"], {"session_id": "sess-1"})
+        self.assertIn("prior note", out)
+
 
 class HandleToolCallTest(unittest.TestCase):
     def test_remember_maps_category_and_defaults_tier(self):

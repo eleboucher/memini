@@ -11,10 +11,12 @@ required from the model.
 What it wires (two hooks):
 
 - **`chat.message`** — searches memini for the incoming user message and
-  prepends the matches as a synthetic context part before the turn runs.
+  prepends the matches as a synthetic context part before the turn runs. It
+  excludes this session's own captured turns (already in the live context), so
+  they aren't echoed back as memory a turn behind; past sessions still recall.
 - **`event` (`session.idle`)** — once the session goes idle, stores the
-  completed user/assistant turn back into memini (episodic) so it can be
-  recalled later.
+  completed user/assistant turn back into memini (episodic, tagged with the
+  session id) so it can be recalled later.
 
 ### Install
 

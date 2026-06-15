@@ -195,10 +195,19 @@ class MeminiMemoryProvider(MemoryProvider):
                 lines.append(f"- {text[:300]}")
         return "\n".join(lines)
 
+    def _recall_body(self, query: str) -> dict:
+        # Exclude this session's own captured turns: they're still in the live
+        # transcript, so recalling them just echoes the conversation back a turn
+        # behind. Captures from other (past) sessions are still recalled.
+        body = {"query": query, "limit": 5}
+        if self._session_id:
+            body["exclude_metadata"] = {"session_id": self._session_id}
+        return body
+
     def prefetch(self, query: str, **kwargs: Any) -> str:
         if not query.strip():
             return ""
-        block = self._format(self._call("/v1/search", {"query": query, "limit": 5}), 5)
+        block = self._format(self._call("/v1/search", self._recall_body(query)), 5)
         return f"Relevant memories (from memini):\n{block}" if block else ""
 
     def on_pre_compress(self, messages: list, **kwargs: Any) -> str:
@@ -209,7 +218,7 @@ class MeminiMemoryProvider(MemoryProvider):
             if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str):
                 query = m["content"]
                 break
-        block = self._format(self._call("/v1/search", {"query": query, "limit": 5}), 5) if query else ""
+        block = self._format(self._call("/v1/search", self._recall_body(query)), 5) if query else ""
         return f"[memini context before compaction]\n{block}" if block else ""
 
     def sync_turn(self, user: str, assistant: str, **kwargs: Any) -> None:
