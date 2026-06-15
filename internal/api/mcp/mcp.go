@@ -312,6 +312,7 @@ func (t *tools) briefing(ctx context.Context, _ *mcpsdk.CallToolRequest, in brie
 
 type answerArgs struct {
 	Query     string            `json:"query" jsonschema:"the question to answer from memory"`
+	Tiers     []string          `json:"tiers,omitempty" jsonschema:"restrict grounding to tiers (working/episodic/semantic/procedural)"`
 	Tags      []string          `json:"tags,omitempty" jsonschema:"ground only on memories with every listed tag (AND)"`
 	Metadata  map[string]string `json:"metadata,omitempty" jsonschema:"ground only on memories whose metadata has each key=value pair (AND)"`
 	Limit     int               `json:"limit,omitempty" jsonschema:"max memories to ground on (default 10)"`
@@ -328,9 +329,14 @@ func (t *tools) answer(ctx context.Context, _ *mcpsdk.CallToolRequest, in answer
 	if err != nil {
 		return nil, answerResult{}, err
 	}
+	tiers, err := parseTiers(in.Tiers)
+	if err != nil {
+		return nil, answerResult{}, err
+	}
 	res, err := t.svc.Answer(ctx, service.AnswerInput{
 		Namespace: ns,
 		Query:     in.Query,
+		Tiers:     tiers,
 		Tags:      in.Tags,
 		Metadata:  in.Metadata,
 		Limit:     in.Limit,

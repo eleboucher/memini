@@ -318,6 +318,24 @@ func TestRecallTierFilter(t *testing.T) {
 	}
 }
 
+// TestAnswerToolValidatesTiers pins that memory_answer exposes and validates the
+// same tiers filter as recall/list (parity with the service AnswerInput and the
+// REST /v1/answer surface). An unknown tier is rejected before the answerer is
+// consulted, so this needs no LLM.
+func TestAnswerToolValidatesTiers(t *testing.T) {
+	cs := connect(t)
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "memory_answer",
+		Arguments: map[string]any{"query": "anything", "tiers": []string{"semantik"}},
+	})
+	if err != nil {
+		t.Fatalf("answer transport: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("memory_answer must reject an unknown tier, not silently ignore the filter")
+	}
+}
+
 func TestListToolFilters(t *testing.T) {
 	cs := connect(t)
 	ctx := context.Background()
