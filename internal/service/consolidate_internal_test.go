@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -232,9 +233,11 @@ func TestConsolidatorWorkerBoundsJobContext(t *testing.T) {
 	}
 }
 
-// fakeDistiller returns scripted facts and records the episodes it was given.
+// fakeDistiller returns scripted facts (or err) and records the episodes it was
+// given.
 type fakeDistiller struct {
 	facts []llm.Fact
+	err   error
 	calls int
 	last  llm.DistillInput
 }
@@ -242,7 +245,7 @@ type fakeDistiller struct {
 func (d *fakeDistiller) Distill(_ context.Context, in llm.DistillInput) ([]llm.Fact, error) {
 	d.calls++
 	d.last = in
-	return d.facts, nil
+	return d.facts, d.err
 }
 
 func newPromoterSvc(t *testing.T, fd llm.Distiller, minAccess int) (*Service, store.Store) {
@@ -325,6 +328,46 @@ func TestPromoteWritesFactsAndStampsSources(t *testing.T) {
 	}
 	if fd.calls != 0 {
 		t.Fatalf("second run should reprocess nothing, but distiller was called %d times", fd.calls)
+	}
+}
+
+func TestPromoteStampsSourcesBeforeDistilling(t *testing.T) {
+	// Distillation fails, so no facts are written. The source must still be
+	// stamped (stamping happens before distilling), so the next tick does NOT
+	// re-distill it — which, distillation being non-deterministic, would emit a
+	// differently worded duplicate fact.
+	fd := &fakeDistiller{err: errors.New("distill boom")}
+	svc, st := newPromoterSvc(t, fd, 3)
+	e := embedtest.New(testDims)
+	putEpisodic(t, st, e, "hot1", "wrote a lot of go code", 5)
+
+	// Promote swallows per-batch errors (logs + continues), so it returns 0,nil.
+	n, err := svc.Promote(context.Background())
+	if err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("distill failed, want 0 facts written, got %d", n)
+	}
+	if fd.calls != 1 {
+		t.Fatalf("distiller should have been called once, got %d", fd.calls)
+	}
+
+	got, err := st.Get(context.Background(), "ns", "hot1")
+	if err != nil {
+		t.Fatalf("get hot1: %v", err)
+	}
+	if got.Metadata["promoted_at"] == nil {
+		t.Fatal("source must be stamped before distillation so a distill failure cannot cause re-distillation")
+	}
+
+	// Confirm the idempotency guarantee: a second run re-distills nothing.
+	fd.calls = 0
+	if _, err := svc.Promote(context.Background()); err != nil {
+		t.Fatalf("promote 2: %v", err)
+	}
+	if fd.calls != 0 {
+		t.Fatalf("stamped source must not be reprocessed; distiller called %d times", fd.calls)
 	}
 }
 

@@ -88,11 +88,19 @@ func (s *Service) Promote(ctx context.Context) (int, error) {
 	return total, nil
 }
 
-// promote distills one batch of episodic memories into facts, stores the facts,
-// and stamps the sources as promoted.
+// promote stamps the sources as promoted FIRST, then distills only the ones it
+// stamped. Stamping first makes promotion idempotent: a later fact-write
+// failure can't re-distill them next tick into duplicate (non-deterministically
+// reworded) facts. The cost is losing this batch's facts on such a failure
+// (logged, recoverable) rather than silently duplicating them.
 func (s *Service) promote(ctx context.Context, ns string, batch []*memory.Memory, now time.Time) (int, error) {
-	episodes := make([]string, len(batch))
-	for i, m := range batch {
+	stamped := s.stampPromoted(ctx, batch, now)
+	if len(stamped) == 0 {
+		return 0, nil
+	}
+
+	episodes := make([]string, len(stamped))
+	for i, m := range stamped {
 		episodes[i] = m.Content
 	}
 	facts, err := s.distiller.Distill(ctx, llm.DistillInput{Episodes: episodes})
@@ -113,26 +121,25 @@ func (s *Service) promote(ctx context.Context, ns string, batch []*memory.Memory
 		}
 		written++
 	}
-
-	// Stamp the sources so they're not reprocessed. List omits embeddings, so
-	// re-embed (deterministic, cache-friendly) to satisfy Upsert's dim check.
-	if err := s.stampPromoted(ctx, batch, now); err != nil {
-		slog.WarnContext(ctx, "promote: stamp sources", "err", err)
-	}
 	return written, nil
 }
 
-// stampPromoted marks each source memory with metadata["promoted_at"].
-func (s *Service) stampPromoted(ctx context.Context, batch []*memory.Memory, now time.Time) error {
+// stampPromoted marks each source with metadata["promoted_at"] and returns the
+// ones it stamped. Best-effort: a per-source Upsert failure is logged and
+// skipped (that source stays eligible for the next tick). List omits
+// embeddings, so re-embed to satisfy Upsert's dim check.
+func (s *Service) stampPromoted(ctx context.Context, batch []*memory.Memory, now time.Time) []*memory.Memory {
 	texts := make([]string, len(batch))
 	for i, m := range batch {
 		texts[i] = m.Content
 	}
 	vecs, err := s.embedder.Embed(ctx, texts)
 	if err != nil {
-		return err
+		slog.WarnContext(ctx, "promote: embed sources for stamping", "err", err)
+		return nil
 	}
 	stamp := now.UTC().Format(time.RFC3339)
+	stamped := make([]*memory.Memory, 0, len(batch))
 	for i, m := range batch {
 		if m.Metadata == nil {
 			m.Metadata = map[string]any{}
@@ -141,10 +148,12 @@ func (s *Service) stampPromoted(ctx context.Context, batch []*memory.Memory, now
 		m.Embedding = vecs[i]
 		m.UpdatedAt = now
 		if err := s.store.Upsert(ctx, m); err != nil {
-			return err
+			slog.WarnContext(ctx, "promote: stamp source", "id", m.ID, "err", err)
+			continue
 		}
+		stamped = append(stamped, m)
 	}
-	return nil
+	return stamped
 }
 
 // alreadyPromoted reports whether a memory has been distilled before.
