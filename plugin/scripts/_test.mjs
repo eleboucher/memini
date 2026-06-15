@@ -367,6 +367,33 @@ test("pre-tool-use.mjs: searches by file path, surfaces context to stdout", asyn
   }
 });
 
+test("pre-tool-use.mjs: excludes this session's own captures from recall", async () => {
+  const hits = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    hits.push({ url: req.url, body });
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ results: [{ memory: { content: "auth decision" }, score: 0.9 }] }));
+  });
+
+  try {
+    await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({
+        session_id: "s1",
+        cwd: __dirname,
+        tool_name: "Read",
+        tool_input: { file_path: "internal/auth.go" },
+      }),
+      { MEMINI_URL: url },
+    );
+    assert.equal(hits.length, 1);
+    const body = JSON.parse(hits[0].body);
+    assert.deepEqual(body.exclude_metadata, { session_id: "s1" });
+  } finally {
+    await close();
+  }
+});
+
 test("pre-compact.mjs: distills buffer into an episodic precompact checkpoint", async () => {
   const cache = freshCache();
   for (const [tool, input] of [

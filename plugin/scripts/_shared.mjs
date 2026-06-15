@@ -222,9 +222,13 @@ export async function postJSON(path, body, namespace, timeoutMs = 5000) {
  * POST /v1/search and return an array of {content, score, memory} objects.
  * Returns [] on failure.
  */
-export async function postSearch(query, namespace, { limit = 5, tiers } = {}) {
+export async function postSearch(query, namespace, { limit = 5, tiers, exclude } = {}) {
   const body = { query, limit };
   if (tiers) body.tiers = tiers;
+  // exclude drops memories carrying any of these metadata key=value pairs, e.g.
+  // {session_id} so a session's own captured digests aren't recalled back at it
+  // while still in the live context.
+  if (exclude && Object.keys(exclude).length) body.exclude_metadata = exclude;
   const res = await postJSON("/v1/search", body, namespace);
   if (!res || !Array.isArray(res.results)) return [];
   return res.results.map((r) => ({

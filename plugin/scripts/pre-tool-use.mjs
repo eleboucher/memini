@@ -53,7 +53,12 @@ async function main() {
   let any = false;
   for (const f of files.slice(0, 3)) {
     const q = `${toolName} on ${f}`;
-    const hits = await postSearch(q, project, { limit: 3 });
+    // Exclude this session's own captured digests (Stop checkpoint / SessionEnd
+    // digest, both tagged session_id): they're still in the live context, so
+    // surfacing them just echoes what the agent already did this session. Prior
+    // sessions' digests stay recallable.
+    const exclude = sessionId ? { session_id: sessionId } : undefined;
+    const hits = await postSearch(q, project, { limit: 3, exclude });
     if (hits.length === 0) continue;
     any = true;
     out.push(`File: ${f}`);
