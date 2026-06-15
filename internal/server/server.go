@@ -95,7 +95,10 @@ func (s *Server) Run(ctx context.Context) error {
 		Handler:           s.router,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		// No WriteTimeout: it is an absolute deadline on the whole response, which
+		// would sever the long-lived MCP SSE stream at /mcp. IdleTimeout reaps
+		// idle keep-alive connections instead.
+		IdleTimeout: 120 * time.Second,
 	}
 
 	errCh := make(chan error, 1)
