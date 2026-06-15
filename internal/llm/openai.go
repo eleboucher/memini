@@ -32,9 +32,7 @@ func NewOpenAI(cfg Config) (*OpenAIClient, error) {
 		option.WithBaseURL(strings.TrimRight(cfg.BaseURL, "/")),
 		option.WithAPIKey(apiKeyOr(cfg.APIKey)),
 		option.WithMaxRetries(maxRetries),
-	}
-	if cfg.HTTPClient != nil {
-		opts = append(opts, option.WithHTTPClient(cfg.HTTPClient))
+		option.WithHTTPClient(httpClientOr(cfg.HTTPClient)),
 	}
 	return &OpenAIClient{
 		client:    openai.NewClient(opts...),

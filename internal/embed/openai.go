@@ -15,6 +15,11 @@ import (
 // maxRetries bounds SDK retries on rate-limit (429) and 5xx responses.
 const maxRetries = 6
 
+// defaultHTTPTimeout bounds a single embeddings HTTP attempt so a hung endpoint
+// cannot park a recall/import goroutine indefinitely. Each SDK retry gets a
+// fresh attempt under this bound; callers also pass a request context.
+const defaultHTTPTimeout = 60 * time.Second
+
 // OpenAIConfig configures the OpenAI-compatible embeddings client.
 type OpenAIConfig struct {
 	BaseURL string // e.g. http://localhost:8081/v1
@@ -44,13 +49,15 @@ func NewOpenAI(cfg OpenAIConfig) (*OpenAIClient, error) {
 	if cfg.Dims <= 0 {
 		return nil, errors.New("embed: Dims must be positive")
 	}
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
+	}
 	opts := []option.RequestOption{
 		option.WithBaseURL(strings.TrimRight(cfg.BaseURL, "/")),
 		option.WithAPIKey(apiKeyOr(cfg.APIKey)),
 		option.WithMaxRetries(maxRetries),
-	}
-	if cfg.HTTPClient != nil {
-		opts = append(opts, option.WithHTTPClient(cfg.HTTPClient))
+		option.WithHTTPClient(httpClient),
 	}
 	return &OpenAIClient{client: openai.NewClient(opts...), model: cfg.Model, dims: cfg.Dims}, nil
 }

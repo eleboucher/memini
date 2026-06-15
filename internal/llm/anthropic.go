@@ -32,12 +32,10 @@ func NewAnthropic(cfg Config) (*AnthropicClient, error) {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKeyOr(cfg.APIKey)),
 		option.WithMaxRetries(maxRetries),
+		option.WithHTTPClient(httpClientOr(cfg.HTTPClient)),
 	}
 	if cfg.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(strings.TrimRight(cfg.BaseURL, "/")))
-	}
-	if cfg.HTTPClient != nil {
-		opts = append(opts, option.WithHTTPClient(cfg.HTTPClient))
 	}
 	return &AnthropicClient{
 		client:    anthropic.NewClient(opts...),

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Action is the consolidation decision for a new memory.
@@ -122,6 +123,20 @@ const (
 
 // maxRetries bounds SDK retries on rate-limit (429) and 5xx responses.
 const maxRetries = 6
+
+// defaultHTTPTimeout bounds a single LLM HTTP attempt so a hung provider socket
+// cannot park a goroutine indefinitely. Each SDK retry gets a fresh attempt
+// under this bound; callers add their own per-job deadline on top.
+const defaultHTTPTimeout = 120 * time.Second
+
+// httpClientOr returns cfg.HTTPClient when set (tests inject one), else a client
+// with the default per-attempt timeout.
+func httpClientOr(c *http.Client) *http.Client {
+	if c != nil {
+		return c
+	}
+	return &http.Client{Timeout: defaultHTTPTimeout}
+}
 
 // defaultMaxTokens leaves headroom for JSON consolidation decisions, short QA
 // answers, and reasoning-model traces.
