@@ -561,11 +561,20 @@ func TestErrorStatusMapping(t *testing.T) {
 		}
 	})
 
-	t.Run("store failure is 500", func(t *testing.T) {
+	t.Run("store failure is 500 and does not leak internals", func(t *testing.T) {
 		h := mount(service.New(failingStore{open(t)}, embedtest.New(dims)))
 		rec := do(t, h, http.MethodPost, "/v1/memories", "alice", apiKey, map[string]any{"content": "x"})
 		if rec.Code != http.StatusInternalServerError {
 			t.Fatalf("remember with broken store: want 500, got %d (%s)", rec.Code, rec.Body)
+		}
+		// The wrapped internal error ("disk unavailable") must not cross the API
+		// boundary; the client gets a generic message.
+		body := rec.Body.String()
+		if strings.Contains(body, "disk unavailable") {
+			t.Errorf("500 body leaked the internal error chain: %s", body)
+		}
+		if !strings.Contains(body, "internal error") {
+			t.Errorf("500 body should carry a generic message, got %s", body)
 		}
 	})
 }

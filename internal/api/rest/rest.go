@@ -9,12 +9,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/httputil"
@@ -72,11 +74,27 @@ func statusFor(err error) int {
 	}
 }
 
+// writeError sends a JSON error response. For 5xx it logs the underlying error
+// server-side (with the request id for correlation) and returns a generic body,
+// so wrapped internal error chains — SQL/driver/pgvector/filesystem text — never
+// cross the API boundary. For 4xx the message is a deliberate caller-facing
+// validation message and is returned verbatim.
+func writeError(w http.ResponseWriter, r *http.Request, status int, err error) {
+	if status >= http.StatusInternalServerError {
+		slog.ErrorContext(r.Context(), "request failed",
+			"method", r.Method, "path", r.URL.Path, "status", status,
+			"request_id", middleware.GetReqID(r.Context()), "err", err)
+		httputil.Error(w, status, "internal error")
+		return
+	}
+	httputil.Error(w, status, err.Error())
+}
+
 // RunFsck implements POST /v1/fsck.
 func (h *Server) RunFsck(w http.ResponseWriter, r *http.Request, _ RunFsckParams) {
 	report, err := h.svc.Fsck(r.Context())
 	if err != nil {
-		httputil.Error(w, http.StatusInternalServerError, err.Error())
+		writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
 	out := FsckReport{
@@ -126,7 +144,7 @@ func (h *Server) RunDedup(w http.ResponseWriter, r *http.Request, _ RunDedupPara
 	}
 	report, err := h.svc.Dedup(r.Context(), in)
 	if err != nil {
-		httputil.Error(w, statusFor(err), err.Error())
+		writeError(w, r, statusFor(err), err)
 		return
 	}
 	out := DedupReport{
@@ -176,7 +194,7 @@ func (h *Server) RememberMemory(w http.ResponseWriter, r *http.Request, _ Rememb
 
 	m, err := h.svc.Remember(r.Context(), in)
 	if err != nil {
-		httputil.Error(w, statusFor(err), err.Error())
+		writeError(w, r, statusFor(err), err)
 		return
 	}
 	httputil.JSON(w, http.StatusCreated, apiMemory(m))
@@ -205,7 +223,7 @@ func (h *Server) GetMemory(w http.ResponseWriter, r *http.Request, boundID strin
 		return
 	}
 	if err != nil {
-		httputil.Error(w, http.StatusInternalServerError, err.Error())
+		writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
 	httputil.JSON(w, http.StatusOK, apiMemory(m))
@@ -224,7 +242,7 @@ func (h *Server) ForgetMemory(w http.ResponseWriter, r *http.Request, boundID st
 		return
 	}
 	if err != nil {
-		httputil.Error(w, http.StatusInternalServerError, err.Error())
+		writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -236,7 +254,7 @@ func (h *Server) ForgetMemory(w http.ResponseWriter, r *http.Request, boundID st
 func (h *Server) ForgetByTag(w http.ResponseWriter, r *http.Request, params ForgetByTagParams) {
 	n, err := h.svc.ForgetByTag(r.Context(), namespaceFromContext(r.Context()), params.Tag)
 	if err != nil {
-		httputil.Error(w, statusFor(err), err.Error())
+		writeError(w, r, statusFor(err), err)
 		return
 	}
 	httputil.JSON(w, http.StatusOK, DeleteByTagResponse{Deleted: int(n)})
@@ -272,7 +290,7 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 
 	res, err := h.svc.Recall(r.Context(), in)
 	if err != nil {
-		httputil.Error(w, statusFor(err), err.Error())
+		writeError(w, r, statusFor(err), err)
 		return
 	}
 	httputil.JSON(w, http.StatusOK, SearchResponse{Results: apiScored(res)})
@@ -300,7 +318,7 @@ func (h *Server) AnswerQuestion(w http.ResponseWriter, r *http.Request, _ Answer
 
 	res, err := h.svc.Answer(r.Context(), in)
 	if err != nil {
-		httputil.Error(w, statusFor(err), err.Error())
+		writeError(w, r, statusFor(err), err)
 		return
 	}
 	httputil.JSON(w, http.StatusOK, AnswerResponse{Answer: res.Answer, Sources: apiScored(res.Sources)})
@@ -337,7 +355,7 @@ func (h *Server) ListMemories(w http.ResponseWriter, r *http.Request, params Lis
 
 	mems, err := h.svc.List(r.Context(), in)
 	if err != nil {
-		httputil.Error(w, statusFor(err), err.Error())
+		writeError(w, r, statusFor(err), err)
 		return
 	}
 	out := ListResponse{Memories: make([]Memory, len(mems))}
@@ -367,7 +385,7 @@ func (h *Server) GetBriefing(w http.ResponseWriter, r *http.Request, name string
 	}
 	b, err := h.svc.Briefing(r.Context(), name, per)
 	if err != nil {
-		httputil.Error(w, statusFor(err), err.Error())
+		writeError(w, r, statusFor(err), err)
 		return
 	}
 	httputil.JSON(w, http.StatusOK, Briefing{
@@ -402,7 +420,7 @@ func (h *Server) GetStats(w http.ResponseWriter, r *http.Request, params GetStat
 		s, err = h.svc.Stats(r.Context(), namespaceFromContext(r.Context()))
 	}
 	if err != nil {
-		httputil.Error(w, http.StatusInternalServerError, err.Error())
+		writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
 	byTier := make(map[string]int, len(s.ByTier))
@@ -437,7 +455,7 @@ func (h *Server) GetStats(w http.ResponseWriter, r *http.Request, params GetStat
 func (h *Server) ListNamespaces(w http.ResponseWriter, r *http.Request) {
 	ns, err := h.svc.Namespaces(r.Context())
 	if err != nil {
-		httputil.Error(w, http.StatusInternalServerError, err.Error())
+		writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
 	if ns == nil {
@@ -454,7 +472,7 @@ func (h *Server) DeleteNamespace(w http.ResponseWriter, r *http.Request, name st
 	}
 	n, err := h.svc.DeleteNamespace(r.Context(), name)
 	if err != nil {
-		httputil.Error(w, http.StatusInternalServerError, err.Error())
+		writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
 	httputil.JSON(w, http.StatusOK, DeleteNamespaceResponse{Deleted: int(n)})
