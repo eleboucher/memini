@@ -292,8 +292,18 @@ func testUpsertGetDelete(t *testing.T, st store.Store, dims int) {
 func testUpdateInPlace(t *testing.T, st store.Store, dims int) {
 	ctx := context.Background()
 	ns := t.Name()
-	mustUpsert(t, st, mem(ns, "a", "original text", vec(dims, 1)))
-	mustUpsert(t, st, mem(ns, "a", "updated text", vec(dims, 0, 1)))
+
+	original := mem(ns, "a", "original text", vec(dims, 1))
+	createdAt := original.CreatedAt
+	mustUpsert(t, st, original)
+
+	// An update-by-ID carries a fresh CreatedAt/UpdatedAt (the service rebuilds
+	// the Memory with now). The store must keep the original created_at but
+	// advance updated_at.
+	update := mem(ns, "a", "updated text", vec(dims, 0, 1))
+	update.CreatedAt = createdAt.Add(time.Hour) // a (wrong) newer creation time
+	update.UpdatedAt = createdAt.Add(time.Hour)
+	mustUpsert(t, st, update)
 
 	got, err := st.Get(ctx, ns, id(ns, "a"))
 	if err != nil {
@@ -301,6 +311,12 @@ func testUpdateInPlace(t *testing.T, st store.Store, dims int) {
 	}
 	if got.Content != "updated text" {
 		t.Fatalf("update not applied: %q", got.Content)
+	}
+	if !got.CreatedAt.Equal(createdAt) {
+		t.Errorf("created_at mutated on update: got %v, want %v (immutable)", got.CreatedAt, createdAt)
+	}
+	if !got.UpdatedAt.After(createdAt) {
+		t.Errorf("updated_at not advanced on update: got %v, want > %v", got.UpdatedAt, createdAt)
 	}
 	res, err := st.VectorSearch(ctx, ns, vec(dims, 0, 1), store.Filter{}, 5)
 	if err != nil {

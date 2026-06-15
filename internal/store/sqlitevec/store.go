@@ -211,13 +211,17 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		if existingNS != m.Namespace {
 			return fmt.Errorf("sqlitevec: id %q exists in namespace %q: %w", m.ID, existingNS, store.ErrConflict)
 		}
+		// created_at is intentionally absent: it is immutable after insert.
+		// Including it let an update-by-ID (which carries CreatedAt=now) reset
+		// the original creation time, corrupting recency ranking and the
+		// created_at DESC ordering GetByFingerprint relies on.
 		if _, uerr := tx.ExecContext(ctx, `UPDATE memories SET
 			tier=?, content=?, summary=?, metadata=?, tags=?, importance=?,
-			created_at=?, updated_at=?, last_accessed_at=?, access_count=?, expires_at=?, superseded_by=?,
+			updated_at=?, last_accessed_at=?, access_count=?, expires_at=?, superseded_by=?,
 			valid_from=?, valid_to=?, confidence=?, fingerprint=?
 			WHERE rowid=?`,
 			string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
-			m.Importance, ms(m.CreatedAt), ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
+			m.Importance, ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
 			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), f64Ptr(m.Confidence),
 			memory.Fingerprint(m.Content), rowID); uerr != nil {
 			return fmt.Errorf("sqlitevec: update memory: %w", uerr)
