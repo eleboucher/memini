@@ -36,6 +36,8 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("ConcurrentAccess", func(t *testing.T) { testConcurrentAccess(t, st, dims) })
 	t.Run("Reassign", func(t *testing.T) { testReassign(t, st, dims) })
 	t.Run("Retier", func(t *testing.T) { testRetier(t, st, dims) })
+	t.Run("DeleteNamespace", func(t *testing.T) { testDeleteNamespace(t, st, dims) })
+	t.Run("ListNamespaces", func(t *testing.T) { testListNamespaces(t, st, dims) })
 	t.Run("TemporalAsOf", func(t *testing.T) { testTemporalAsOf(t, st, dims) })
 	t.Run("SetConfidence", func(t *testing.T) { testSetConfidence(t, st, dims) })
 	t.Run("GetByFingerprint", func(t *testing.T) { testGetByFingerprint(t, st, dims) })
@@ -77,6 +79,79 @@ func testGetByFingerprint(t *testing.T, st store.Store, dims int) {
 	}
 	if _, err := st.GetByFingerprint(ctx, ns, memory.TierSemantic, fp, now); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("superseded match: want ErrNotFound, got %v", err)
+	}
+}
+
+func testDeleteNamespace(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	nsDel := t.Name() + "-del"
+	nsKeep := t.Name() + "-keep"
+	mustUpsert(t, st, mem(nsDel, "a", "first to delete", vec(dims, 1)))
+	mustUpsert(t, st, mem(nsDel, "b", "second to delete", vec(dims, 0, 1)))
+	mustUpsert(t, st, mem(nsKeep, "c", "survivor", vec(dims, 1)))
+
+	n, err := st.DeleteNamespace(ctx, nsDel)
+	if err != nil {
+		t.Fatalf("delete namespace: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("DeleteNamespace returned %d, want 2", n)
+	}
+	// The rows are gone, including the vector index entries.
+	if _, err := st.Get(ctx, nsDel, id(nsDel, "a")); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("deleted memory still present: %v", err)
+	}
+	res, err := st.VectorSearch(ctx, nsDel, vec(dims, 1), store.Filter{}, 5)
+	if err != nil {
+		t.Fatalf("vector search after delete: %v", err)
+	}
+	if len(res) != 0 {
+		t.Errorf("vector index not cleared for the deleted namespace: %d hits", len(res))
+	}
+	// A sibling namespace is untouched.
+	if _, err := st.Get(ctx, nsKeep, id(nsKeep, "c")); err != nil {
+		t.Errorf("sibling namespace was affected by the delete: %v", err)
+	}
+	// Deleting an empty/unknown namespace returns 0 with no error.
+	n, err = st.DeleteNamespace(ctx, t.Name()+"-empty")
+	if err != nil {
+		t.Fatalf("delete empty namespace: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("DeleteNamespace on an empty namespace returned %d, want 0", n)
+	}
+}
+
+func testListNamespaces(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	nsA := t.Name() + "-a"
+	nsB := t.Name() + "-b"
+	mustUpsert(t, st, mem(nsA, "a", "in a", vec(dims, 1)))
+	mustUpsert(t, st, mem(nsB, "b", "in b", vec(dims, 0, 1)))
+
+	got, err := st.ListNamespaces(ctx)
+	if err != nil {
+		t.Fatalf("list namespaces: %v", err)
+	}
+	// The conformance store is shared across subtests, so assert containment,
+	// not equality.
+	if !slices.Contains(got, nsA) || !slices.Contains(got, nsB) {
+		t.Fatalf("ListNamespaces missing seeded namespaces: got %v, want to contain %q and %q", got, nsA, nsB)
+	}
+	// A namespace with multiple memories must appear exactly once (distinct).
+	mustUpsert(t, st, mem(nsA, "a2", "also in a", vec(dims, 0, 0, 1)))
+	got, err = st.ListNamespaces(ctx)
+	if err != nil {
+		t.Fatalf("list namespaces (after second insert): %v", err)
+	}
+	count := 0
+	for _, ns := range got {
+		if ns == nsA {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("namespace %q appears %d times, want 1 (must be distinct)", nsA, count)
 	}
 }
 
