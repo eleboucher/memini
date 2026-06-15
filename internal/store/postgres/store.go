@@ -164,7 +164,7 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		ON CONFLICT (id) DO UPDATE SET
 			tier=EXCLUDED.tier, content=EXCLUDED.content,
 			summary=EXCLUDED.summary, metadata=EXCLUDED.metadata, tags=EXCLUDED.tags,
-			importance=EXCLUDED.importance, created_at=EXCLUDED.created_at, updated_at=EXCLUDED.updated_at,
+			importance=EXCLUDED.importance, updated_at=EXCLUDED.updated_at,
 			last_accessed_at=EXCLUDED.last_accessed_at, access_count=EXCLUDED.access_count,
 			expires_at=EXCLUDED.expires_at, superseded_by=EXCLUDED.superseded_by,
 			valid_from=EXCLUDED.valid_from, valid_to=EXCLUDED.valid_to,
