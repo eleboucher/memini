@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -145,7 +144,7 @@ func TestConsolidateOneSupersede(t *testing.T) {
 	}
 }
 
-func TestConsolidateOneUpdateDeletesSource(t *testing.T) {
+func TestConsolidateOneUpdateTombstonesSource(t *testing.T) {
 	fc := &recordingConsolidator{}
 	svc, st := newAsyncSvc(t, fc, 0.5, nil)
 	e := embedtest.New(testDims)
@@ -162,9 +161,15 @@ func TestConsolidateOneUpdateDeletesSource(t *testing.T) {
 	if got.Content != "the sky is azure" {
 		t.Fatalf("merged content not applied to target: %q", got.Content)
 	}
-	// The source memory b should be gone (merged into a).
-	if _, err := st.Get(context.Background(), "ns", b.ID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("source memory should be deleted after merge, got %v", err)
+	// The source b is tombstoned onto a (not hard-deleted), so any prior
+	// supersede chain pointing at b stays resolvable. It still exists but is
+	// superseded and therefore excluded from recall.
+	src, err := st.Get(context.Background(), "ns", b.ID)
+	if err != nil {
+		t.Fatalf("source should still exist as a tombstone, got %v", err)
+	}
+	if src.SupersededBy == nil || *src.SupersededBy != a.ID {
+		t.Fatalf("source SupersededBy = %v, want %s", src.SupersededBy, a.ID)
 	}
 }
 

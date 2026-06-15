@@ -186,21 +186,25 @@ func (s *Service) applyUpdate(ctx context.Context, m *memory.Memory, dec llm.Dec
 		s.metrics.ConsolidateResult("noop")
 		return nil, false, nil
 	}
+
+	content := dec.Content
+	if content == "" {
+		content = m.Content
+	}
+	// Embed the merged content before reading the target: the embedding does not
+	// depend on the target's stored state, so doing it first keeps the slow
+	// network call out of the target's read-modify-write window (Get → mutate →
+	// Upsert then stays in-memory).
+	vec, err := embed.EmbedOne(ctx, s.embedder, content)
+	if err != nil {
+		return nil, false, fmt.Errorf("remember: re-embed merged memory: %w", err)
+	}
 	target, err := s.store.Get(ctx, m.Namespace, dec.Target)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
-	}
-
-	content := dec.Content
-	if content == "" {
-		content = m.Content
-	}
-	vec, err := embed.EmbedOne(ctx, s.embedder, content)
-	if err != nil {
-		return nil, false, fmt.Errorf("remember: re-embed merged memory: %w", err)
 	}
 	target.Content = content
 	if dec.Summary != "" {
@@ -246,7 +250,7 @@ func (s *Service) applySupersede(ctx context.Context, m *memory.Memory, dec llm.
 
 // consolidateOne runs the consolidation pipeline for an already-stored memory
 // (the async path). Because the memory exists, update/supersede operate
-// relative to it: an update merges into the target and deletes this record;
+// relative to it: an update merges into the target and tombstones this record;
 // a supersede tombstones the target pointing at this record.
 func (s *Service) consolidateOne(ctx context.Context, job consolidateJob) {
 	m, err := s.store.Get(ctx, job.namespace, job.id)
@@ -295,10 +299,23 @@ func (s *Service) consolidateOne(ctx context.Context, job consolidateJob) {
 }
 
 // asyncUpdate merges the stored memory m into target, re-embeds, persists the
-// target, and deletes m (the merged result now lives in target).
+// target, and tombstones m onto target (the merged result lives in target).
 func (s *Service) asyncUpdate(ctx context.Context, m *memory.Memory, dec llm.Decision) {
 	if dec.Target == "" || dec.Target == m.ID {
 		s.metrics.ConsolidateResult("noop")
+		return
+	}
+
+	content := dec.Content
+	if content == "" {
+		content = m.Content
+	}
+	// Embed before reading the target so the target's read-modify-write window
+	// (Get → mutate → Upsert) holds no slow network call.
+	vec, err := embed.EmbedOne(ctx, s.embedder, content)
+	if err != nil {
+		slog.WarnContext(ctx, "consolidate: re-embed", "err", err)
+		s.metrics.ConsolidateResult("error")
 		return
 	}
 	target, err := s.store.Get(ctx, m.Namespace, dec.Target)
@@ -312,16 +329,6 @@ func (s *Service) asyncUpdate(ctx context.Context, m *memory.Memory, dec llm.Dec
 		return
 	}
 
-	content := dec.Content
-	if content == "" {
-		content = m.Content
-	}
-	vec, err := embed.EmbedOne(ctx, s.embedder, content)
-	if err != nil {
-		slog.WarnContext(ctx, "consolidate: re-embed", "err", err)
-		s.metrics.ConsolidateResult("error")
-		return
-	}
 	now := s.now()
 	target.Content = content
 	if dec.Summary != "" {
@@ -338,8 +345,10 @@ func (s *Service) asyncUpdate(ctx context.Context, m *memory.Memory, dec llm.Dec
 		s.metrics.ConsolidateResult("error")
 		return
 	}
-	if err := s.store.Delete(ctx, m.Namespace, m.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
-		slog.WarnContext(ctx, "consolidate: delete merged source", "err", err)
+	// Tombstone the merged source rather than hard-delete it: a prior supersede
+	// may point another memory at m.ID, and deleting m would orphan that.
+	if err := s.store.SetSuperseded(ctx, m.Namespace, m.ID, dec.Target); err != nil && !errors.Is(err, store.ErrNotFound) {
+		slog.WarnContext(ctx, "consolidate: tombstone merged source", "err", err)
 	}
 	s.metrics.ConsolidateResult("update")
 }
