@@ -77,3 +77,49 @@ func TestScrub(t *testing.T) {
 		t.Errorf("duplicate in a different namespace should survive: %v", err)
 	}
 }
+
+// TestScrubPreservesCrossTierDuplicates pins the per-tier dedup key: identical
+// content in different tiers (e.g. a promoted semantic fact and its originating
+// episodic log) must both survive, while a within-tier duplicate still
+// collapses. Write-time dedup is per-tier, so scrub must match it.
+func TestScrubPreservesCrossTierDuplicates(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "m.db"), 4)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	base := time.Now().UTC().Add(-time.Hour)
+	addTier := func(id, content string, tier memory.Tier) {
+		m := &memory.Memory{
+			ID: id, Namespace: "ns", Tier: tier, Content: content,
+			CreatedAt: base, UpdatedAt: base, LastAccessedAt: base,
+			Embedding: []float32{1, 0, 0, 0},
+		}
+		if err := st.Upsert(ctx, m); err != nil {
+			t.Fatalf("upsert %s: %v", id, err)
+		}
+	}
+	const content = "the user prefers tabs over spaces"
+	addTier("epi", content, memory.TierEpisodic)  // distinct tier: kept
+	addTier("sem", content, memory.TierSemantic)  // first semantic: kept
+	addTier("sem2", content, memory.TierSemantic) // second semantic: collapsed
+
+	rep, err := maintenance.Scrub(ctx, st, true)
+	if err != nil {
+		t.Fatalf("scrub: %v", err)
+	}
+	if rep.ExactDuplicates != 1 {
+		t.Fatalf("ExactDuplicates = %d, want 1 (only the within-tier semantic dup)", rep.ExactDuplicates)
+	}
+	if _, err := st.Get(ctx, "ns", "epi"); err != nil {
+		t.Errorf("episodic copy must survive (different tier from the semantic ones): %v", err)
+	}
+	if _, err := st.Get(ctx, "ns", "sem"); err != nil {
+		t.Errorf("the oldest semantic copy must survive: %v", err)
+	}
+	if _, err := st.Get(ctx, "ns", "sem2"); err == nil {
+		t.Error("the within-tier semantic duplicate should have been scrubbed")
+	}
+}

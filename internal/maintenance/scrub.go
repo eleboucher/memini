@@ -82,6 +82,10 @@ func Scrub(ctx context.Context, st store.Store, apply bool) (ScrubReport, error)
 			return mems[i].ID < mems[j].ID
 		})
 
+		// Key on (tier, normalized content), matching the per-tier write-time
+		// dedup: identical content may legitimately coexist across tiers (a
+		// promoted semantic fact and its episodic source), and a namespace-wide
+		// key would irreversibly delete those.
 		seen := make(map[string]struct{}, len(mems))
 		for _, m := range mems {
 			norm := memory.NormalizeContent(m.Content)
@@ -92,14 +96,15 @@ func Scrub(ctx context.Context, st store.Store, apply bool) (ScrubReport, error)
 				}
 				rep.LifecycleNoise++
 			default:
-				if _, dup := seen[norm]; dup {
+				key := string(m.Tier) + "\x00" + norm
+				if _, dup := seen[key]; dup {
 					if err := del(ns, m.ID); err != nil {
 						return rep, err
 					}
 					rep.ExactDuplicates++
 					continue
 				}
-				seen[norm] = struct{}{}
+				seen[key] = struct{}{}
 			}
 		}
 	}
