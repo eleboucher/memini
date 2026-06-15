@@ -155,7 +155,12 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		}
 	}
 
-	_, err = tx.Exec(ctx, `
+	// The WHERE on the conflict update makes the ownership guard atomic with the
+	// write: SELECT ... FOR UPDATE locks nothing when the row is absent, so two
+	// concurrent inserts of the same id from different namespaces both reach
+	// here. A foreign-namespace conflict then updates 0 rows (reported below as
+	// ErrConflict) instead of overwriting the winner.
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO memories
 			(id, namespace, tier, content, summary, metadata, tags, importance,
 			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
@@ -168,13 +173,19 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 			last_accessed_at=EXCLUDED.last_accessed_at, access_count=EXCLUDED.access_count,
 			expires_at=EXCLUDED.expires_at, superseded_by=EXCLUDED.superseded_by,
 			valid_from=EXCLUDED.valid_from, valid_to=EXCLUDED.valid_to,
-			confidence=EXCLUDED.confidence, fingerprint=EXCLUDED.fingerprint, embedding=EXCLUDED.embedding`,
+			confidence=EXCLUDED.confidence, fingerprint=EXCLUDED.fingerprint, embedding=EXCLUDED.embedding
+		WHERE memories.namespace = EXCLUDED.namespace`,
 		m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, metaJSON, store.OrEmptySlice(m.Tags),
 		m.Importance, m.CreatedAt, m.UpdatedAt, m.LastAccessedAt, m.AccessCount,
 		m.ExpiresAt, m.SupersededBy, m.ValidFrom, m.ValidTo, m.Confidence, memory.Fingerprint(m.Content),
 		pgvector.NewVector(m.Embedding))
 	if err != nil {
 		return fmt.Errorf("postgres: upsert: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		// Conflict on id but the existing row belongs to another namespace, so
+		// the guarded update matched nothing.
+		return fmt.Errorf("postgres: id %q exists in another namespace: %w", m.ID, store.ErrConflict)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
