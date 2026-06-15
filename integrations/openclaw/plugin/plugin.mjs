@@ -17,6 +17,14 @@
  * — without it, capture silently no-ops. See README "Install".
  */
 
+import { createRequire } from "node:module";
+
+// OpenClaw rejects an async `register`, so typebox can't be pulled in with an
+// `await import(...)`. createRequire gives a synchronous, lazy load (typebox
+// ships a CJS build) — only invoked when expose_tools is on, and the try/catch
+// in register still lets the memory slot work if it can't be loaded.
+const require = createRequire(import.meta.url);
+
 const DEFAULT_BASE_URL = "http://localhost:8080";
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_NAMESPACE = "openclaw";
@@ -282,7 +290,8 @@ const plugin = {
   name: "memini",
   description: "Shared cross-session memory via a memini service.",
   configSchema,
-  async register(api) {
+  // Synchronous by contract — see the createRequire note at the top of the file.
+  register(api) {
     const cfg = resolveConfig(api.pluginConfig);
     const client = createClient(cfg, api);
 
@@ -340,7 +349,7 @@ const plugin = {
     // a failure (e.g. typebox unavailable) is logged and leaves the slot working.
     if (cfg.expose_tools && typeof api.registerTool === "function") {
       try {
-        await registerMeminiTools(api, client, cfg);
+        registerMeminiTools(api, client, cfg);
       } catch (e) {
         api.logger?.warn?.(`memini: tool registration skipped: ${String(e)}`);
       }
@@ -349,10 +358,11 @@ const plugin = {
 };
 
 // registerMeminiTools registers memory_recall / memory_list / memory_remember as
-// explicit OpenClaw tools. typebox is loaded lazily so it's only needed when
-// expose_tools is on; each tool resolves the namespace like the hooks do.
-export async function registerMeminiTools(api, client, cfg) {
-  const { Type } = await import("@sinclair/typebox");
+// explicit OpenClaw tools. Synchronous (register must not be async): typebox is
+// loaded lazily via require so it's only needed when expose_tools is on; each
+// tool resolves the namespace like the hooks do.
+export function registerMeminiTools(api, client, cfg) {
+  const { Type } = require("@sinclair/typebox");
   const text = (obj) => ({ content: [{ type: "text", text: JSON.stringify(obj) }] });
   const nsFor = (ctx) => effectiveNamespace(cfg, {}, ctx) ?? cfg.namespace;
   const Tags = Type.Optional(
