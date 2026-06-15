@@ -20,6 +20,11 @@ import (
 	"github.com/eleboucher/memini/internal/store"
 )
 
+// ttlSecondsMetaKey records a memory's caller-configured TTL (in seconds) so
+// reinforcement can slide its expiry by the intended lifetime rather than the
+// tier default. Only set when the caller supplied a custom positive TTL.
+const ttlSecondsMetaKey = "ttl_seconds"
+
 // Recall tuning.
 const (
 	reinforceTimeout = 10 * time.Second
@@ -449,6 +454,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	}
 	if exp := resolveExpiry(now, tier, in.TTL); exp != nil {
 		m.ExpiresAt = exp
+		markCustomTTL(m, in.TTL)
 	}
 	resolveValidity(m, existing, in, now)
 	// Durable facts start uncorroborated and earn trust as they recur; an
@@ -793,26 +799,26 @@ func (s *Service) reinforceResults(ctx context.Context, results []store.Scored) 
 }
 
 // reinforce records that recalled memories were just used: it bumps their
-// access stats and slides the TTL forward for short-term tiers, so frequently
-// recalled memories don't decay. Best-effort — a failure never fails the recall.
+// access stats and slides the expiry forward by each memory's own lifetime, so
+// frequently recalled memories don't decay. Best-effort — a failure never fails
+// the recall.
 func (s *Service) reinforce(ctx context.Context, results []store.Scored) {
 	now := s.now()
-	// Group by (namespace, tier): results may span namespaces under a subtree
-	// recall, and Reinforce is scoped to one namespace at a time.
+	// Group by (namespace, ttl): Reinforce is namespace-scoped and writes one new
+	// expiry per call, so memories sliding by the same lifetime batch together.
 	type key struct {
-		ns   string
-		tier memory.Tier
+		ns  string
+		ttl time.Duration
 	}
 	byKey := map[key][]string{}
 	for _, r := range results {
-		k := key{r.Memory.Namespace, r.Memory.Tier}
+		k := key{r.Memory.Namespace, reinforceTTL(r.Memory)}
 		byKey[k] = append(byKey[k], r.Memory.ID)
 	}
 	for k, ids := range byKey {
-		ttl := k.tier.DefaultTTL()
 		var newExpiry *time.Time
-		if ttl > 0 { // short-term tiers slide their expiry forward on use
-			t := now.Add(ttl)
+		if k.ttl > 0 { // expiring memories slide their expiry forward on use
+			t := now.Add(k.ttl)
 			newExpiry = &t
 		}
 		if err := s.store.Reinforce(ctx, k.ns, ids, now, newExpiry); err != nil {
@@ -820,11 +826,52 @@ func (s *Service) reinforce(ctx context.Context, results []store.Scored) {
 			// never fires, so make them observable even though the recall
 			// itself must not fail.
 			slog.WarnContext(ctx, "recall: reinforce failed",
-				"namespace", k.ns, "tier", k.tier, "count", len(ids), "err", err)
+				"namespace", k.ns, "ttl", k.ttl, "count", len(ids), "err", err)
 			s.metrics.ReinforceResult("error")
 			continue
 		}
 		s.metrics.ReinforceResult("ok")
+	}
+}
+
+// markCustomTTL records a caller-supplied positive TTL on m (as metadata) so
+// reinforcement can slide its expiry by the intended lifetime rather than the
+// tier default. A nil or non-positive ttl records nothing.
+func markCustomTTL(m *memory.Memory, ttl *time.Duration) {
+	if ttl == nil || *ttl <= 0 {
+		return
+	}
+	if m.Metadata == nil {
+		m.Metadata = map[string]any{}
+	}
+	m.Metadata[ttlSecondsMetaKey] = int64(ttl.Seconds())
+}
+
+// reinforceTTL is the lifetime to slide a recalled memory's expiry by: the
+// caller's configured TTL when one was recorded at write time (see
+// ttlSecondsMetaKey), else the tier default. Returning 0 means "do not slide"
+// (durable memories with no recorded TTL).
+func reinforceTTL(m *memory.Memory) time.Duration {
+	if m.Metadata != nil {
+		if secs, ok := metaSeconds(m.Metadata[ttlSecondsMetaKey]); ok && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return m.Tier.DefaultTTL()
+}
+
+// metaSeconds reads a seconds count from a metadata value, tolerating the
+// float64 that JSON round-tripping produces as well as integer types.
+func metaSeconds(v any) (int64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int64(n), true
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	default:
+		return 0, false
 	}
 }
 

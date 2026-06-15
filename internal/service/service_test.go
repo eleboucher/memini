@@ -88,6 +88,43 @@ func TestRememberTemporalValidity(t *testing.T) {
 	}
 }
 
+func TestReinforcePreservesCustomTTL(t *testing.T) {
+	svc := newService(t)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0).UTC() // matches newService's fixed clock
+	ttl := time.Hour
+
+	m, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "short lived note", Tier: memory.TierWorking, TTL: &ttl,
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	if m.ExpiresAt == nil || !m.ExpiresAt.Equal(now.Add(ttl)) {
+		t.Fatalf("initial ExpiresAt = %v, want %v", m.ExpiresAt, now.Add(ttl))
+	}
+
+	// Recall reinforces the returned memory (sync in tests).
+	if _, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "alice", Query: "short lived note", Limit: 5,
+	}); err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+
+	got, err := svc.Get(ctx, "alice", m.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ExpiresAt == nil {
+		t.Fatal("reinforced memory lost its expiry")
+	}
+	// Must slide by the caller's 1h TTL, not the 24h working-tier default.
+	if !got.ExpiresAt.Equal(now.Add(ttl)) {
+		t.Fatalf("ExpiresAt after reinforce = %v, want %v (custom TTL preserved, not tier default now+%v)",
+			got.ExpiresAt, now.Add(ttl), memory.TierWorking.DefaultTTL())
+	}
+}
+
 func containsID(res []store.Scored, id string) bool {
 	for _, s := range res {
 		if s.Memory.ID == id {
