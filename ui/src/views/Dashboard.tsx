@@ -2,7 +2,7 @@ import { api } from '../api'
 import { namespace, refreshNonce } from '../store'
 import { useAsync } from '../hooks'
 import { TIERS, type Tier } from '../types'
-import { tierColor, memoryTypeColor, relTime, num, MEMORY_TYPES } from '../util'
+import { tierColor, tierDesc, memoryTypeColor, relTime, num, MEMORY_TYPES } from '../util'
 import { Loading, ErrorBanner } from '../components/States'
 
 export function Dashboard() {
@@ -52,6 +52,10 @@ export function Dashboard() {
       <div class="panel panel-pad strata">
         <div class="section-h">
           <h2>Tiers</h2>
+          <span class="hint">
+            raw observations → session summaries → durable knowledge; hover a
+            tier for details
+          </span>
         </div>
         {stats.total === 0 ? (
           <div class="empty">
@@ -77,7 +81,7 @@ export function Dashboard() {
             </div>
             <div class="strata-legend">
               {TIERS.map((t) => (
-                <div class="item" key={t}>
+                <div class="item" key={t} title={tierDesc(t)}>
                   <span class="sw" style={{ background: tierColor(t) }} />
                   {t} <span class="n">{num(byTier(t))}</span>
                 </div>

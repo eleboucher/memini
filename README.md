@@ -9,7 +9,8 @@ It synthesizes three ideas:
 
 - **A curated, deduplicated artifact** rather than a pile of chunks (after Karpathy's "LLM wiki").
 - **Tiered memory** — working → episodic → semantic → procedural — with decay and hybrid
-  (vector + keyword) retrieval fused with Reciprocal Rank Fusion (after `agentmemory`).
+  (vector + keyword) retrieval fused with Reciprocal Rank Fusion (after `agentmemory`). See
+  [docs/tiers.md](docs/tiers.md) for what each tier means and how memories move between them.
 - **A stateless, K8s-native HTTP service** with an opt-in LLM consolidation pipeline, per-memory
   TTLs, per-tenant isolation, Prometheus metrics, and an `fsck` consistency checker (after `mnemory`).
 

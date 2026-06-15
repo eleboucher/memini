@@ -11,6 +11,18 @@ export function tierColor(t: Tier): string {
   return TIER_COLOR[t] ?? 'var(--muted)'
 }
 
+// One-line meaning of each tier (and its lifetime), surfaced as legend tooltips.
+const TIER_DESC: Record<Tier, string> = {
+  working: 'Raw, short-lived observations — session scratch (24h TTL).',
+  episodic: 'Summaries of what happened in a session (90-day TTL).',
+  semantic: 'Durable extracted facts — what I know (never expires).',
+  procedural: 'Workflows and how-to knowledge (never expires).',
+}
+
+export function tierDesc(t: Tier): string {
+  return TIER_DESC[t] ?? ''
+}
+
 // Typed-extraction classes (decision/preference/problem) and their chart colors.
 export const MEMORY_TYPES = ['decision', 'preference', 'problem'] as const
 
