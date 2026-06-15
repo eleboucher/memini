@@ -34,6 +34,11 @@ const (
 	// ranked just outside the top k in both legs can still win after RRF fusion.
 	recallPoolFactor = 5
 	recallPoolFloor  = 50
+
+	// maxRecallLimit caps a recall's result count, since poolK over-fetches
+	// k*recallPoolFactor per leg per namespace — an unbounded limit is a cheap
+	// way to amplify load.
+	maxRecallLimit = 100
 )
 
 // RecallPoolSize is the per-leg candidate pool Recall over-fetches for a
@@ -639,6 +644,9 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	if k <= 0 {
 		k = 10
 	}
+	if k > maxRecallLimit {
+		k = maxRecallLimit
+	}
 	filter := store.Filter{
 		Tiers:             in.Tiers,
 		Tags:              in.Tags,
@@ -744,7 +752,9 @@ func (s *Service) finalizeRecall(ctx context.Context, query string, ranked []sto
 	if s.reranker == nil {
 		return search.Dedup(ranked, k)
 	}
-	pool := search.Dedup(ranked, s.rerankTopN)
+	// Pool depth must be at least k so the reranked result can still satisfy a
+	// limit larger than rerankTopN.
+	pool := search.Dedup(ranked, max(k, s.rerankTopN))
 	cands := make([]rerank.Candidate, len(pool))
 	for i, r := range pool {
 		cands[i] = rerank.Candidate{ID: r.Memory.ID, Content: r.Memory.Content}

@@ -125,6 +125,27 @@ func TestReinforcePreservesCustomTTL(t *testing.T) {
 	}
 }
 
+func TestRecallClampsHighLimit(t *testing.T) {
+	svc := newService(t)
+	ctx := context.Background()
+	// Seed more than the clamp (100) so an unbounded limit could otherwise
+	// return them all.
+	for i := range 105 {
+		if _, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: "alice", Content: fmt.Sprintf("fact number %d about widgets", i), Tier: memory.TierSemantic,
+		}); err != nil {
+			t.Fatalf("remember %d: %v", i, err)
+		}
+	}
+	res, err := svc.Recall(ctx, service.RecallInput{Namespace: "alice", Query: "widgets", Limit: 100000})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if len(res) > 100 {
+		t.Fatalf("recall returned %d results; an excessive limit must be clamped to 100", len(res))
+	}
+}
+
 func containsID(res []store.Scored, id string) bool {
 	for _, s := range res {
 		if s.Memory.ID == id {

@@ -84,6 +84,30 @@ func TestRecallRerankerReordersByVerdict(t *testing.T) {
 	}
 }
 
+func TestRecallRerankerPoolSatisfiesLimit(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	// reverseReranker returns every candidate it is given, so the result size is
+	// bounded by the pool the service hands it.
+	rr := &reverseReranker{}
+	// rerankTopN is deliberately smaller (2) than the caller's limit (5).
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithReranker(rr, "test", 2))
+	for _, d := range []string{"alpha fruit", "beta fruit", "gamma fruit", "delta fruit", "epsilon fruit"} {
+		if _, err := svc.Remember(ctx, service.RememberInput{Namespace: "alice", Content: d, Tier: memory.TierSemantic}); err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+	}
+	res, err := svc.Recall(ctx, service.RecallInput{Namespace: "alice", Query: "fruit", Limit: 5})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	// The pool must be sized to max(limit, rerankTopN); the old pool=rerankTopN
+	// capped the reranked result at 2 even though the caller asked for 5.
+	if len(res) != 5 {
+		t.Fatalf("reranked recall returned %d, want 5 (pool must satisfy the limit, not cap at rerankTopN=2)", len(res))
+	}
+}
+
 func TestRecallRerankerFallsBackOnError(t *testing.T) {
 	st := openTestStore(t)
 	base := service.New(st, embedtest.New(dims), service.WithSyncReinforce())
