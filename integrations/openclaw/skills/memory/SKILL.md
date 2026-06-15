@@ -12,10 +12,9 @@ description: >-
 memini is a memory service reachable at `${MEMINI_URL:-http://localhost:8080}`.
 All requests are scoped by the `X-Memini-Namespace` header. Set it to a
 project name (e.g. `acme-web`) or to `${MEMINI_NS}` from the gateway env.
-If the header is omitted, the server falls back to the git-repo basename of
-its own working directory — see the top-level README's "Namespace
-resolution" section. If a bearer token is configured, send `Authorization:
-Bearer $MEMINI_TOKEN`.
+If the header is omitted, the server falls back to its configured default
+namespace — see the top-level README's "Namespace resolution" section. If a
+bearer token is configured, send `Authorization: Bearer $MEMINI_API_KEY`.
 
 ## Recall before acting
 

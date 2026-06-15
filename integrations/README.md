@@ -8,7 +8,7 @@ transports:
   shared, always-on deployment.
 - **Local (stdio):** `memini mcp` — the agent spawns memini as a subprocess.
 
-Tools exposed: `memory_remember`, `memory_recall`, `memory_get`, `memory_forget`.
+Tools exposed: `memory_remember`, `memory_recall`, `memory_briefing`, `memory_answer`, `memory_list`, `memory_get`, `memory_forget`.
 
 ## Recommended: install the plugin
 
