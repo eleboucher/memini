@@ -22,6 +22,7 @@ require (
 	github.com/openai/openai-go/v3 v3.39.0
 	github.com/pgvector/pgvector-go v0.4.0
 	github.com/pgvector/pgvector-go/pgx v0.4.0
+	github.com/prometheus/client_model v0.6.2
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/term v0.44.0
 )
@@ -53,7 +54,6 @@ require (
 	github.com/oasdiff/yaml3 v0.0.9 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/perimeterx/marshmallow v1.1.5 // indirect
-	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect

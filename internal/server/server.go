@@ -50,10 +50,16 @@ func New(opts Options, log *slog.Logger, reg *prometheus.Registry) *Server {
 	s := &Server{cfg: opts, log: log, router: r}
 
 	m := newMetrics(reg)
+	// Middleware order matters: the request-completion log line and the
+	// Prometheus counters/histogram run AFTER next.ServeHTTP returns, so a
+	// handler panic that unwinds through them skips the log + metric. Putting
+	// Recoverer LAST (innermost) means a recovered 500 propagates back outward
+	// through metrics and the request logger, so the request is still counted
+	// and logged.
 	r.Use(middleware.RequestID)
-	r.Use(middleware.Recoverer)
 	r.Use(requestLogger(log))
 	r.Use(m.middleware)
+	r.Use(middleware.Recoverer)
 
 	r.Get("/healthz", s.handleHealthz)
 	r.Get("/readyz", s.handleReadyz)
