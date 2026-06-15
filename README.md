@@ -2,7 +2,7 @@
 
 A memory service for AI agents. `memini` gives any
 [MCP](https://modelcontextprotocol.io)-capable agent — Claude Code, opencode, Codex, Hermes,
-OpenClaw — a shared, persistent place to `remember` and `recall`, with retrieval quality that
+OpenClaw, Open WebUI — a shared, persistent place to `remember` and `recall`, with retrieval quality that
 compounds over time.
 
 It synthesizes three ideas:
@@ -289,7 +289,7 @@ memini speaks the Model Context Protocol so agents can `remember`/`recall`/`answ
 - **Remote (Streamable HTTP):** `http://<host>:8080/mcp`
 - **Local (stdio):** `memini mcp`
 
-Ready-to-paste configs for Claude Code, opencode, Codex, Hermes, and OpenClaw —
+Ready-to-paste configs for Claude Code, opencode, Codex, Hermes, OpenClaw, and Open WebUI —
 plus the shared cross-agent namespace trick — live in [`integrations/`](integrations/).
 For Claude Code and Codex, prefer the [plugin/](plugin/) which auto-captures
 tool calls and injects prior context at session start.
