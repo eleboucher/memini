@@ -123,5 +123,19 @@ class IsAvailableTest(unittest.TestCase):
         self.assertFalse(memini.MeminiMemoryProvider().is_available())
 
 
+class SaveConfigTest(unittest.TestCase):
+    def test_does_not_persist_secret_to_disk(self):
+        import tempfile
+
+        p = memini.MeminiMemoryProvider()
+        with tempfile.TemporaryDirectory() as home:
+            p.save_config({"url": "http://localhost:8080", "namespace": "x", "secret": "tok-123"}, home)
+            with open(os.path.join(home, "memini.json")) as f:
+                saved = json.load(f)
+        self.assertEqual(saved.get("url"), "http://localhost:8080")
+        self.assertEqual(saved.get("namespace"), "x")
+        self.assertNotIn("secret", saved, "bearer token must not be written to disk")
+
+
 if __name__ == "__main__":
     unittest.main()

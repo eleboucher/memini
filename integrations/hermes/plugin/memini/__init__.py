@@ -176,7 +176,13 @@ class MeminiMemoryProvider(MemoryProvider):
         ]
 
     def save_config(self, values: dict, hermes_home: str) -> None:
-        (Path(hermes_home) / "memini.json").write_text(json.dumps(values, indent=2))
+        # Never persist secret-typed config (the bearer token) to disk. The
+        # token is read from the MEMINI_API_KEY env var at runtime (see
+        # initialize), not from this file, so writing it would leave a
+        # plaintext credential on disk for no functional benefit.
+        secret_keys = {c["key"] for c in self.get_config_schema() if c.get("secret")}
+        safe = {k: v for k, v in values.items() if k not in secret_keys}
+        (Path(hermes_home) / "memini.json").write_text(json.dumps(safe, indent=2))
 
     def _format(self, result: dict | None, limit: int) -> str:
         if not result:
