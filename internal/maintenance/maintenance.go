@@ -161,7 +161,14 @@ func NewSweeper(st store.Store, log *slog.Logger, cfg SweeperConfig) *Sweeper {
 }
 
 // Run sweeps on a ticker until ctx is cancelled. It runs one sweep immediately.
+// It is a no-op when Interval <= 0 (time.NewTicker panics on a non-positive
+// duration); config validation rejects that, but guard here too so a
+// misconfigured interval cannot crash the sweeper goroutine.
 func (s *Sweeper) Run(ctx context.Context) {
+	if s.cfg.Interval <= 0 {
+		s.log.Warn("sweep interval is not positive; sweeper disabled", "interval", s.cfg.Interval)
+		return
+	}
 	t := time.NewTicker(s.cfg.Interval)
 	defer t.Stop()
 	for {

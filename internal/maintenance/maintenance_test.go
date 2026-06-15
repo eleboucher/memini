@@ -3,6 +3,8 @@ package maintenance_test
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"path/filepath"
 	"testing"
 	"time"
@@ -103,6 +105,24 @@ func TestEnforceShortTermCap(t *testing.T) {
 		if present != wantPresent {
 			t.Errorf("%s present=%v, want %v", id, present, wantPresent)
 		}
+	}
+}
+
+func TestSweeperRunNonPositiveInterval(t *testing.T) {
+	st := openStore(t)
+	// time.NewTicker panics on a non-positive duration; Run must guard against
+	// it and return instead of crashing the sweeper goroutine.
+	s := maintenance.NewSweeper(st, slog.New(slog.NewTextHandler(io.Discard, nil)), maintenance.SweeperConfig{Interval: 0})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.Run(context.Background())
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Sweeper.Run with Interval=0 did not return promptly")
 	}
 }
 

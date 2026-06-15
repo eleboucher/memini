@@ -294,6 +294,12 @@ func (c *Config) validate() error {
 	if c.EmbedDims <= 0 {
 		return fmt.Errorf("MEMINI_EMBED_DIMS must be positive, got %d", c.EmbedDims)
 	}
+	// The sweeper always runs (there is no "disabled" mode), and time.NewTicker
+	// panics on a non-positive duration, so a zero/negative interval must be
+	// rejected at load time rather than crash the sweeper goroutine.
+	if c.SweepInterval <= 0 {
+		return fmt.Errorf("MEMINI_SWEEP_INTERVAL must be positive, got %v", c.SweepInterval)
+	}
 	switch c.ConsolidateMode {
 	case "async", "sync", "off":
 	default:

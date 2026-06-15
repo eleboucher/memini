@@ -179,6 +179,14 @@ func TestLoadValidationErrors(t *testing.T) {
 			name: "dedup unknown tier",
 			env:  map[string]string{"MEMINI_DEDUP_TIERS": "semantic,bogus"},
 		},
+		{
+			name: "zero sweep interval",
+			env:  map[string]string{"MEMINI_SWEEP_INTERVAL": "0"},
+		},
+		{
+			name: "negative sweep interval",
+			env:  map[string]string{"MEMINI_SWEEP_INTERVAL": "-1m"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
