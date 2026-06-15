@@ -184,7 +184,7 @@ controllers:
           - -c
           - >-
             curl -sf -X POST
-            --variable %MEMINI_API_KEY
+            --variable "MEMINI_API_KEY=$MEMINI_API_KEY"
             --expand-header "Authorization: Bearer {{MEMINI_API_KEY}}"
             http://memini:8080/v1/fsck
         # -- Provide the bearer token to the curl --variable above. Point at the
