@@ -94,5 +94,12 @@ func (c *OpenAIClient) chat(ctx context.Context, system, user string, jsonMode b
 	if len(resp.Choices) == 0 {
 		return "", errors.New("llm: empty response")
 	}
-	return resp.Choices[0].Message.Content, nil
+	out := strings.TrimSpace(resp.Choices[0].Message.Content)
+	if out == "" {
+		// Reasoning models can return a choice whose content is empty (the
+		// budget was spent on hidden reasoning). Surface it distinctly so
+		// callers log "no text" rather than a confusing JSON decode error.
+		return "", fmt.Errorf("llm: openai: %w (finish_reason %q)", errEmptyResponse, resp.Choices[0].FinishReason)
+	}
+	return out, nil
 }

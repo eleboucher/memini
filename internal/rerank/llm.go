@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // Completer is the single-turn chat completion an LLM reranker needs. The
@@ -27,10 +26,6 @@ type llmReranker struct {
 // otherwise blow a RAM-limited local server's context/activation budget.
 func NewLLM(c Completer) Reranker { return &llmReranker{c: c, maxChars: 300} }
 
-// llmTimeout bounds a single rerank call so a stalled or restarting backend
-// fails the call instead of hanging the run indefinitely.
-const llmTimeout = 120 * time.Second
-
 const llmSystem = "You re-rank candidate memories by how well each one helps answer the user's " +
 	"question. Output ONLY candidate numbers, most relevant first, comma-separated " +
 	"(e.g. \"3, 1, 7\"). Include only candidates that are genuinely relevant; omit the rest. " +
@@ -49,8 +44,9 @@ func (r *llmReranker) Rerank(ctx context.Context, query string, candidates []Can
 	}
 	b.WriteString("\nMost relevant candidate numbers (comma-separated, most relevant first):")
 
-	ctx, cancel := context.WithTimeout(ctx, llmTimeout)
-	defer cancel()
+	// The deadline is owned by the caller (the service wraps Rerank in
+	// MEMINI_RERANK_TIMEOUT, default 3s) and backstopped by the chat client's
+	// per-attempt HTTP timeout; this reranker does not impose its own.
 	out, err := r.c.Complete(ctx, llmSystem, b.String())
 	if err != nil {
 		return nil, fmt.Errorf("rerank: llm: %w", err)

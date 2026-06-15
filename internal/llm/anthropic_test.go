@@ -53,6 +53,28 @@ func TestAnthropicCompleteSkipsThinkingAndCachesSystem(t *testing.T) {
 	}
 }
 
+func TestAnthropicRejectsReasoningOnlyReply(t *testing.T) {
+	// A reply with only a thinking block (no text) must surface a clear error,
+	// not an empty string that fails downstream JSON decoding.
+	const reasoningOnly = `{"id":"msg_1","type":"message","role":"assistant","model":"m",
+		"content":[{"type":"thinking","thinking":"just reasoning, no answer"}],
+		"stop_reason":"max_tokens","usage":{"input_tokens":1,"output_tokens":1}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(reasoningOnly))
+	}))
+	defer srv.Close()
+
+	c, _ := llm.NewAnthropic(llm.Config{BaseURL: srv.URL, Model: "m"})
+	_, err := c.Complete(context.Background(), "sys", "user")
+	if err == nil {
+		t.Fatal("expected an error for a reasoning-only reply, got nil")
+	}
+	if !strings.Contains(err.Error(), "no text") {
+		t.Errorf("error should mention the empty response, got %v", err)
+	}
+}
+
 func TestAnthropicConsolidateParsesFencedJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Wrap the decision in a markdown fence to exercise fence-stripping.

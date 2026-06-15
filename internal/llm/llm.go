@@ -12,11 +12,17 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// errEmptyResponse is returned when a chat backend yields no usable text (e.g.
+// a reasoning-only reply, or a choice with empty content). Callers can log it
+// distinctly instead of surfacing a downstream JSON-decode failure.
+var errEmptyResponse = errors.New("response contained no text")
 
 // Action is the consolidation decision for a new memory.
 type Action string

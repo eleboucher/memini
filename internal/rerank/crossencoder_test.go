@@ -3,8 +3,10 @@ package rerank
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -77,6 +79,22 @@ func TestCrossEncoderTruncatesDocuments(t *testing.T) {
 	}
 	if got.Documents[1] != "ok" {
 		t.Errorf("doc[1] = %q, want %q", got.Documents[1], "ok")
+	}
+}
+
+func TestCrossEncoderCapsResponseBody(t *testing.T) {
+	// A hostile/misbehaving endpoint streams a single value larger than the cap.
+	// The bounded read must truncate it (decode error) rather than buffer it all.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		giant := strings.Repeat("A", maxRerankBodyBytes+1024)
+		_, _ = io.WriteString(w, `{"results":[{"index":0,"relevance_score":0.1,"pad":"`+giant+`"}]}`)
+	}))
+	defer srv.Close()
+
+	ce, _ := New(Config{BaseURL: srv.URL})
+	_, err := ce.Rerank(context.Background(), "q", []Candidate{{ID: "a"}, {ID: "b"}})
+	if err == nil {
+		t.Fatal("want a decode error from the truncated (capped) body, got nil")
 	}
 }
 

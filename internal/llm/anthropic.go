@@ -100,5 +100,12 @@ func (c *AnthropicClient) chat(ctx context.Context, system, user string) (string
 			b.WriteString(block.Text)
 		}
 	}
-	return strings.TrimSpace(b.String()), nil
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		// A reasoning-only reply (e.g. MiniMax M2 emitting only a thinking
+		// block) has no text. Surface that distinctly so callers log
+		// "no text" rather than a confusing downstream JSON decode error.
+		return "", fmt.Errorf("llm: anthropic: %w (stop_reason %q)", errEmptyResponse, msg.StopReason)
+	}
+	return out, nil
 }

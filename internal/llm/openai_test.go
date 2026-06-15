@@ -69,6 +69,25 @@ func TestCompleteReturnsText(t *testing.T) {
 	}
 }
 
+func TestCompleteRejectsEmptyContent(t *testing.T) {
+	// A reasoning model can return a choice with empty content (budget spent on
+	// hidden reasoning). That must be a clear error, not an empty success.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":""},"finish_reason":"length"}]}`))
+	}))
+	defer srv.Close()
+
+	c, _ := llm.NewOpenAI(llm.OpenAIConfig{BaseURL: srv.URL, Model: "m"})
+	_, err := c.Complete(context.Background(), "sys", "user")
+	if err == nil {
+		t.Fatal("expected an error for empty content, got nil")
+	}
+	if !strings.Contains(err.Error(), "no text") {
+		t.Errorf("error should mention the empty response, got %v", err)
+	}
+}
+
 func TestCompleteRetriesAfter429(t *testing.T) {
 	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

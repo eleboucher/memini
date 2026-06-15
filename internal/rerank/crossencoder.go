@@ -14,6 +14,12 @@ import (
 
 const defaultTimeout = 60 * time.Second
 
+// maxRerankBodyBytes caps the response body read from the reranker so a
+// misbehaving or hostile endpoint cannot exhaust memory by streaming an
+// arbitrarily large body. The decoded result is bounded by len(candidates),
+// so a legitimate response is far smaller than this.
+const maxRerankBodyBytes = 8 << 20 // 8 MiB
+
 // Config configures the cross-encoder reranker client.
 type Config struct {
 	// BaseURL is the API root (e.g. http://host:8002/v1); "/rerank" is appended.
@@ -104,7 +110,7 @@ func (c *CrossEncoder) Rerank(ctx context.Context, query string, candidates []Ca
 		return nil, fmt.Errorf("rerank: status %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
 	}
 	var rr rerankResponse
-	if err := json.NewDecoder(resp.Body).Decode(&rr); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxRerankBodyBytes)).Decode(&rr); err != nil {
 		return nil, fmt.Errorf("rerank: decode response: %w", err)
 	}
 	if len(rr.Results) == 0 {
