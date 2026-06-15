@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -115,6 +116,9 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("sqlitevec: migrate: %w\nstatement: %s", err, q)
 		}
 	}
+	if err := s.verifyVecDims(ctx); err != nil {
+		return err
+	}
 	for _, c := range backfillColumns {
 		if err := s.addColumnIfMissing(ctx, "memories", c.name, c.decl); err != nil {
 			return err
@@ -126,6 +130,50 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("sqlitevec: migrate: create idx_memories_fingerprint: %w", err)
 	}
 	return nil
+}
+
+// verifyVecDims fails Open if an existing vec_memories table was created with a
+// different embedding width than the configured dims. CREATE VIRTUAL TABLE IF
+// NOT EXISTS is a no-op on an existing table, so without this check a dims
+// change (e.g. switching embedding models, or a config typo) would be silently
+// accepted at Open and only surface as opaque sqlite-vec dimension-mismatch
+// errors on every subsequent Upsert.
+func (s *Store) verifyVecDims(ctx context.Context) error {
+	var ddl string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_memories'`).Scan(&ddl)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // table absent (should not happen post-migrate)
+	}
+	if err != nil {
+		return fmt.Errorf("sqlitevec: inspect vec_memories: %w", err)
+	}
+	got, err := parseVecDims(ddl)
+	if err != nil {
+		return err
+	}
+	if got != s.dims {
+		return fmt.Errorf("sqlitevec: store was created with %d embedding dims but is configured for %d; "+
+			"set MEMINI_EMBED_DIMS=%d to match the existing data, or migrate to a new database", got, s.dims, got)
+	}
+	return nil
+}
+
+// parseVecDims extracts N from a vec0 "embedding float[N]" column declaration.
+func parseVecDims(ddl string) (int, error) {
+	_, after, ok := strings.Cut(ddl, "float[")
+	if !ok {
+		return 0, fmt.Errorf("sqlitevec: cannot find embedding dimension in vec_memories schema")
+	}
+	inside, _, ok := strings.Cut(after, "]")
+	if !ok {
+		return 0, fmt.Errorf("sqlitevec: malformed vec_memories schema (no closing ] for float[)")
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(inside))
+	if err != nil {
+		return 0, fmt.Errorf("sqlitevec: parse vec_memories dimension: %w", err)
+	}
+	return n, nil
 }
 
 // addColumnIfMissing adds column to table if it is not already present, so
