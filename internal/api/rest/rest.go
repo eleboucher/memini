@@ -74,13 +74,11 @@ func statusFor(err error) int {
 	}
 }
 
-// writeError sends a JSON error response. For 5xx it logs the underlying error
-// server-side (with the request id for correlation) and returns a generic body,
-// so wrapped internal error chains — SQL/driver/pgvector/filesystem text — never
-// cross the API boundary. For 4xx the message is a deliberate caller-facing
-// validation message and is returned verbatim.
+// writeError logs and scrubs 500s (the unrecognised-error bucket, whose wrapped
+// chain can hold SQL/driver/filesystem text) to a generic body; every other
+// status returns its deliberate caller-facing message verbatim.
 func writeError(w http.ResponseWriter, r *http.Request, status int, err error) {
-	if status >= http.StatusInternalServerError {
+	if status == http.StatusInternalServerError {
 		slog.ErrorContext(r.Context(), "request failed",
 			"method", r.Method, "path", r.URL.Path, "status", status,
 			"request_id", middleware.GetReqID(r.Context()), "err", err)

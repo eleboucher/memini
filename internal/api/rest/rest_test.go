@@ -559,6 +559,11 @@ func TestErrorStatusMapping(t *testing.T) {
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Fatalf("remember without embedder: want 503, got %d (%s)", rec.Code, rec.Body)
 		}
+		// The 503 carries the actionable ErrDisabled message; only 500s are
+		// scrubbed to a generic body.
+		if !strings.Contains(rec.Body.String(), "MEMINI_EMBED_BASE_URL") {
+			t.Errorf("503 body should keep the actionable embeddings-disabled message, got %s", rec.Body)
+		}
 	})
 
 	t.Run("store failure is 500 and does not leak internals", func(t *testing.T) {
