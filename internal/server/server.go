@@ -50,10 +50,13 @@ func New(opts Options, log *slog.Logger, reg *prometheus.Registry) *Server {
 	s := &Server{cfg: opts, log: log, router: r}
 
 	m := newMetrics(reg)
+	// Recoverer is innermost so a recovered panic propagates back out through
+	// metrics and requestLogger (both record after next.ServeHTTP), keeping the
+	// 500 counted and logged.
 	r.Use(middleware.RequestID)
-	r.Use(middleware.Recoverer)
 	r.Use(requestLogger(log))
 	r.Use(m.middleware)
+	r.Use(middleware.Recoverer)
 
 	r.Get("/healthz", s.handleHealthz)
 	r.Get("/readyz", s.handleReadyz)
