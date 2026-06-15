@@ -76,7 +76,7 @@ jobs:
           node-version: "24"
 
       - name: Setup Python
-        uses: https://data.forgejo.org/actions/setup-python@v5
+        uses: https://data.forgejo.org/actions/setup-python@v6
         with:
           python-version: "3.12"
 
