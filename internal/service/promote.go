@@ -14,6 +14,10 @@ import (
 // promoteBatch bounds how many episodic memories are distilled per LLM call.
 const promoteBatch = 20
 
+// promoteBatchTimeout bounds one distillation batch (LLM distill + fact writes
+// + source stamping) so a slow provider cannot stall the promoter tick.
+const promoteBatchTimeout = 90 * time.Second
+
 // RunPromoter periodically distills frequently-accessed episodic memories into
 // durable semantic facts until ctx is cancelled. It is a no-op without a
 // distiller or a positive interval. Call once, typically in its own goroutine.
@@ -70,7 +74,9 @@ func (s *Service) Promote(ctx context.Context) (int, error) {
 		}
 		for start := 0; start < len(pending); start += promoteBatch {
 			end := min(start+promoteBatch, len(pending))
-			n, err := s.promote(ctx, ns, pending[start:end], now)
+			batchCtx, cancel := context.WithTimeout(ctx, promoteBatchTimeout)
+			n, err := s.promote(batchCtx, ns, pending[start:end], now)
+			cancel()
 			if err != nil {
 				slog.WarnContext(ctx, "promote batch", "namespace", ns, "err", err)
 				continue

@@ -21,6 +21,10 @@ const consolidateCandidates = 5
 const (
 	defaultConsolidateQueueCap = 1024
 	consolidateDrainTimeout    = 30 * time.Second
+	// consolidateJobTimeout bounds one async consolidation job (LLM call +
+	// re-embed + store writes) so a hung provider cannot stall the worker and
+	// back the queue up behind it.
+	consolidateJobTimeout = 60 * time.Second
 )
 
 // ConsolidateMode selects how the opt-in LLM consolidation pipeline runs.
@@ -59,7 +63,11 @@ func (s *Service) StartConsolidator(ctx context.Context) {
 			return
 		case job := <-s.consolidateQueue:
 			s.metrics.ConsolidateQueueDepth(len(s.consolidateQueue))
-			s.consolidateOne(context.WithoutCancel(ctx), job)
+			// Detach from the worker ctx so an in-flight job survives shutdown,
+			// but bound it so a hung provider cannot park the worker forever.
+			jobCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), consolidateJobTimeout)
+			s.consolidateOne(jobCtx, job)
+			cancel()
 		}
 	}
 }

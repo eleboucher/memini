@@ -193,6 +193,40 @@ func TestEnqueueDropsWhenFull(t *testing.T) {
 	}
 }
 
+// deadlineCapturingConsolidator reports whether the context it was handed has a
+// deadline, so a test can confirm the worker bounds each job.
+type deadlineCapturingConsolidator struct {
+	gotDeadline chan bool
+}
+
+func (d *deadlineCapturingConsolidator) Consolidate(ctx context.Context, _ llm.Input) (llm.Decision, error) {
+	_, ok := ctx.Deadline()
+	d.gotDeadline <- ok
+	return llm.Decision{Action: llm.ActionNew}, nil
+}
+
+func TestConsolidatorWorkerBoundsJobContext(t *testing.T) {
+	fc := &deadlineCapturingConsolidator{gotDeadline: make(chan bool, 1)}
+	svc, st := newAsyncSvc(t, fc, 0, nil) // gate 0 → any candidate reaches the LLM
+	e := embedtest.New(testDims)
+	put(t, st, e, "a", "the sky is blue")
+	put(t, st, e, "b", "the sky is azure")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go svc.StartConsolidator(ctx)
+	svc.enqueueConsolidate("ns", "b")
+
+	select {
+	case ok := <-fc.gotDeadline:
+		if !ok {
+			t.Error("consolidation job ctx had no deadline; the worker must bound each job")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("consolidator was not called within 2s")
+	}
+}
+
 // fakeDistiller returns scripted facts and records the episodes it was given.
 type fakeDistiller struct {
 	facts []llm.Fact
