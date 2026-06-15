@@ -22,6 +22,20 @@ type mem0Item struct {
 	Categories []string `json:"categories"`
 }
 
+// mem0Tier maps mem0's MemoryType (mem0/configs/enums.py), carried in
+// metadata["memory_type"], onto memini tiers. mem0's default extraction is
+// untyped and produces durable facts, so an absent/unknown type is semantic.
+func mem0Tier(t string) memory.Tier {
+	switch t {
+	case "procedural_memory":
+		return memory.TierProcedural
+	case "episodic_memory":
+		return memory.TierEpisodic
+	default: // "semantic_memory" and mem0's default untyped extractions
+		return memory.TierSemantic
+	}
+}
+
 func parseMem0(data []byte) ([]Record, error) {
 	var arr []mem0Item
 	if err := unmarshalList(data, "results", &arr); err != nil {
@@ -38,10 +52,9 @@ func parseMem0(data []byte) ([]Record, error) {
 			tags = metaStrings(it.Metadata, "categories")
 		}
 		recs = append(recs, Record{
-			ID:        it.ID,
-			Namespace: ns,
-			// mem0 stores extracted facts; map them to the durable semantic tier.
-			Tier:       memory.TierSemantic,
+			ID:         it.ID,
+			Namespace:  ns,
+			Tier:       mem0Tier(metaString(it.Metadata, "memory_type")),
 			Content:    it.Memory,
 			Tags:       tags,
 			Metadata:   it.Metadata,

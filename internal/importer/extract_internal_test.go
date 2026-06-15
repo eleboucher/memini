@@ -88,6 +88,23 @@ func TestExtractTypedRecords(t *testing.T) {
 	}
 }
 
+// TestExtractTypedTier checks the kind→tier mapping: preferences are procedural
+// how-to, decisions and problems are semantic facts.
+func TestExtractTypedTier(t *testing.T) {
+	for _, tc := range []struct {
+		kind TypedKind
+		want memory.Tier
+	}{
+		{KindPreference, memory.TierProcedural},
+		{KindDecision, memory.TierSemantic},
+		{KindProblem, memory.TierSemantic},
+	} {
+		if got := tc.kind.Tier(); got != tc.want {
+			t.Errorf("%s.Tier() = %q, want %q", tc.kind, got, tc.want)
+		}
+	}
+}
+
 // TestExtractTypedRecordsSkipsNonEpisodic guards against re-extracting from a
 // memini re-import: only untyped episodic records are scanned, so durable or
 // already-typed records don't get reclassified into duplicates.

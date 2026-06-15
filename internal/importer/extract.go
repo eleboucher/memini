@@ -12,7 +12,7 @@ import (
 // without an LLM — a port of mempalace's heuristic extractor. A backfill stores
 // each exchange as a transient episodic memory (90d TTL); this additionally
 // pulls out the decisions, preferences, and problems worth keeping past that, as
-// low-confidence semantic memories that earn trust on recall. Marker-driven and
+// low-confidence durable memories that earn trust on recall. Marker-driven and
 // deliberately conservative: a miss just means no extra memory, never a wrong one.
 
 // TypedKind labels an extracted memory; it doubles as the memory's first tag.
@@ -23,6 +23,15 @@ const (
 	KindPreference TypedKind = "preference"
 	KindProblem    TypedKind = "problem"
 )
+
+// Tier maps an extracted kind to its memory tier: a preference is a how-to rule,
+// so it's procedural; decisions and problems are durable facts, so semantic.
+func (k TypedKind) Tier() memory.Tier {
+	if k == KindPreference {
+		return memory.TierProcedural
+	}
+	return memory.TierSemantic
+}
 
 // extractMinConfidence gates an extraction: confidence is min(1, score/5) where
 // score is the count of distinct markers that match plus a length bonus, so a
@@ -91,7 +100,7 @@ var codeLinePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`^\w+\.\w+\(`),
 }
 
-// extracted is one classified segment ready to become a semantic memory.
+// extracted is one classified segment ready to become a durable memory.
 type extracted struct {
 	kind    TypedKind
 	content string
@@ -188,8 +197,9 @@ func isCodeLine(t string) bool {
 	return false
 }
 
-// ExtractTyped derives durable semantic memories from conversation records (the
-// claude-code episodic exchanges). Each extraction keeps the source's namespace
+// ExtractTyped derives durable memories from conversation records (the
+// claude-code episodic exchanges): decisions and problems as semantic facts,
+// preferences as procedural how-to. Each extraction keeps the source's namespace
 // and timestamp, is tagged with its kind, and gets a content-addressed ID via
 // finalizeRecords so re-imports stay idempotent. The originals are left
 // untouched — callers append the result.
@@ -211,7 +221,7 @@ func ExtractTyped(recs []Record) []Record {
 			meta["memory_type"] = string(ex.kind)
 			out = append(out, Record{
 				Namespace: r.Namespace,
-				Tier:      memory.TierSemantic,
+				Tier:      ex.kind.Tier(),
 				Content:   truncateRunes(ex.content, maxExchangeBytes),
 				Tags:      []string{string(ex.kind)},
 				Metadata:  meta,

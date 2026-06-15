@@ -87,6 +87,30 @@ func TestParseMnemory(t *testing.T) {
 	}
 }
 
+// TestSourceTierMappings pins each importer's source-type→tier mapping:
+// "preference" is procedural, and mem0's memory_type is honored.
+func TestSourceTierMappings(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		got  memory.Tier
+		want memory.Tier
+	}{
+		{"agentmemory preference", agentMemoryTier("preference"), memory.TierProcedural},
+		{"agentmemory workflow", agentMemoryTier("workflow"), memory.TierProcedural},
+		{"agentmemory fact", agentMemoryTier("fact"), memory.TierSemantic},
+		{"mnemory preference", mnemoryTier("preference"), memory.TierProcedural},
+		{"mnemory fact", mnemoryTier("fact"), memory.TierSemantic},
+		{"mem0 procedural", mem0Tier("procedural_memory"), memory.TierProcedural},
+		{"mem0 episodic", mem0Tier("episodic_memory"), memory.TierEpisodic},
+		{"mem0 semantic", mem0Tier("semantic_memory"), memory.TierSemantic},
+		{"mem0 untyped", mem0Tier(""), memory.TierSemantic},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s: tier = %q, want %q", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
 func TestParseUnknownSource(t *testing.T) {
 	if _, err := Parse(Source("bogus"), []byte(`[]`)); err == nil {
 		t.Fatal("expected error for unknown source")

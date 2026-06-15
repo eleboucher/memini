@@ -60,11 +60,11 @@ func mnemoryTier(t string) memory.Tier {
 	switch strings.ToLower(strings.TrimSpace(t)) {
 	case "episodic":
 		return memory.TierEpisodic
-	case "procedural":
+	case "procedural", "preference":
 		return memory.TierProcedural
 	case "context":
 		return memory.TierWorking
-	default: // fact, preference, and anything else: durable semantic
+	default: // fact and anything else: durable semantic
 		return memory.TierSemantic
 	}
 }

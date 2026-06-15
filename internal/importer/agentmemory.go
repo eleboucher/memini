@@ -48,12 +48,12 @@ func parseAgentMemory(data []byte) ([]Record, error) {
 }
 
 // agentMemoryTier maps agentmemory's memory types onto memini tiers: how-to
-// knowledge is procedural, everything else is durable semantic fact.
+// knowledge (patterns, workflows, preferences) is procedural, the rest semantic.
 func agentMemoryTier(t string) memory.Tier {
 	switch t {
-	case "pattern", "architecture", "workflow":
+	case "pattern", "architecture", "workflow", "preference":
 		return memory.TierProcedural
-	default: // preference, fact, bug
+	default: // fact, bug
 		return memory.TierSemantic
 	}
 }
