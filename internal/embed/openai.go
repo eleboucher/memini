@@ -20,15 +20,18 @@ const maxRetries = 6
 // fresh attempt under this bound; callers also pass a request context.
 const defaultHTTPTimeout = 60 * time.Second
 
-// defaultTransport clones the stdlib transport but lifts the idle-connection
-// caps: every recall embeds its query against the same endpoint, and net/http
-// otherwise keeps only 2 idle connections per host (DefaultMaxIdleConnsPerHost),
-// so concurrent recalls churn through fresh TCP/TLS connections instead of
-// reusing warm ones.
-func defaultTransport() *http.Transport {
+// defaultTransport lifts the idle-conn cap above the stdlib default of 2/host
+// so concurrent recalls reuse warm TCP/TLS. maxInFlight, when > 0, also
+// aligns MaxIdleConnsPerHost to the embed.Limited cap (the pool size should
+// match the concurrency cap — otherwise we open 100 idle conns to a backend
+// that only sees 2 in flight).
+func defaultTransport(maxInFlight int) *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.MaxIdleConns = 100
 	t.MaxIdleConnsPerHost = 100
+	if maxInFlight > 0 && maxInFlight < t.MaxIdleConnsPerHost {
+		t.MaxIdleConnsPerHost = maxInFlight
+	}
 	return t
 }
 
@@ -63,7 +66,7 @@ func NewOpenAI(cfg OpenAIConfig) (*OpenAIClient, error) {
 	}
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: defaultHTTPTimeout, Transport: defaultTransport()}
+		httpClient = &http.Client{Timeout: defaultHTTPTimeout, Transport: defaultTransport(0)}
 	}
 	opts := []option.RequestOption{
 		option.WithBaseURL(strings.TrimRight(cfg.BaseURL, "/")),

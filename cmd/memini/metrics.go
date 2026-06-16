@@ -39,10 +39,12 @@ type consolidateMetrics struct {
 	dedupTombstoned prometheus.Counter
 
 	// embed-level
-	embedDuration *prometheus.HistogramVec
-	embedTokens   *prometheus.CounterVec
-	embedItems    *prometheus.HistogramVec
-	embedErrors   *prometheus.CounterVec
+	embedDuration  *prometheus.HistogramVec
+	embedTokens    *prometheus.CounterVec
+	embedItems     *prometheus.HistogramVec
+	embedErrors    *prometheus.CounterVec
+	embedInFlight  prometheus.Gauge
+	rerankInFlight prometheus.Gauge
 }
 
 const (
@@ -156,6 +158,14 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 			Name: "memini_embed_errors_total",
 			Help: "Embedder failures, by backend.",
 		}, []string{labelBackend}),
+		embedInFlight: factory.NewGauge(prometheus.GaugeOpts{
+			Name: "memini_embed_in_flight",
+			Help: "Embeddings calls currently in flight against the backend (post-cap, not cache hits).",
+		}),
+		rerankInFlight: factory.NewGauge(prometheus.GaugeOpts{
+			Name: "memini_rerank_in_flight",
+			Help: "Rerank calls currently in flight against the backend.",
+		}),
 	}
 	return m
 }
@@ -256,4 +266,16 @@ func (m *consolidateMetrics) Observe(backend string, items, tokens int, d time.D
 
 func (m *consolidateMetrics) Error(backend string) {
 	m.embedErrors.WithLabelValues(backend).Inc()
+}
+
+// In-flight hooks for the Limited wrappers. The wrapper accepts a func so
+// this package doesn't need to depend on the embed/rerank packages for a
+// prom gauge; nil is a safe no-op inside the wrappers.
+
+func (m *consolidateMetrics) EmbedInFlight(n int64) {
+	m.embedInFlight.Set(float64(n))
+}
+
+func (m *consolidateMetrics) RerankInFlight(n int64) {
+	m.rerankInFlight.Set(float64(n))
 }

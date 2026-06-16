@@ -80,7 +80,7 @@ func runReembed(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	embedder, err := buildEmbedder(cfg, log)
+	embedder, err := buildEmbedder(cfg, log, nil)
 	if err != nil {
 		return err
 	}

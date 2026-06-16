@@ -167,7 +167,7 @@ func runDoctorFix(cmd *cobra.Command, cfg *config.Config, st store.Store, stats 
 		now: time.Now().UTC(), apply: doctorYes,
 	}
 	if cfg.EmbedBaseURL != "" {
-		embedder, err := buildEmbedder(cfg, logging.New(cfg.LogLevel, cfg.LogFormat))
+		embedder, err := buildEmbedder(cfg, logging.New(cfg.LogLevel, cfg.LogFormat), nil)
 		if err != nil {
 			return err
 		}

@@ -155,13 +155,13 @@ func buildServiceStack(
 		return nil, nil, nil, nil, err
 	}
 
-	embedder, err := buildEmbedder(cfg, log)
+	metricsImpl := newConsolidateMetrics(reg)
+
+	embedder, err := buildEmbedder(cfg, log, metricsImpl.EmbedInFlight)
 	if err != nil {
 		_ = st.Close()
 		return nil, nil, nil, nil, err
 	}
-
-	metricsImpl := newConsolidateMetrics(reg)
 
 	if sm, ok := st.(interface{ SetMetrics(store.Metrics) }); ok {
 		sm.SetMetrics(metricsImpl)
@@ -199,7 +199,7 @@ func buildServiceStack(
 		}
 	}
 	if cfg.RerankEnabled() {
-		reranker, name, err := buildReranker(cfg, chatClient, log)
+		reranker, name, err := buildReranker(cfg, chatClient, log, metricsImpl.RerankInFlight)
 		if err != nil {
 			_ = st.Close()
 			return nil, nil, nil, nil, err
@@ -278,7 +278,7 @@ func loopbackAddr(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger) (rerank.Reranker, string, error) {
+func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger, onInFlight func(n int64)) (rerank.Reranker, string, error) {
 	if cfg.RerankIsLLM() {
 		if chat == nil {
 			log.Warn("MEMINI_RERANK=llm but no LLM is configured; set MEMINI_LLM_BASE_URL")
@@ -286,7 +286,7 @@ func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger) (reran
 		}
 		log.Info("LLM recall reranking enabled (adds one LLM call per recall)",
 			"model", cfg.LLMModel, "top_n", cfg.RerankTopN)
-		return rerank.NewLLM(chat), "llm", nil
+		return wrapRerank(rerank.NewLLM(chat), cfg.RerankMaxConcurrency, onInFlight, log, "llm"), "llm", nil
 	}
 	ce, err := rerank.New(rerank.Config{
 		BaseURL:     cfg.Rerank,
@@ -299,7 +299,16 @@ func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger) (reran
 	}
 	log.Info("cross-encoder recall reranking enabled (adds one reranker call per recall)",
 		"base_url", cfg.Rerank, "model", cfg.RerankModel, "top_n", cfg.RerankTopN)
-	return ce, "cross_encoder", nil
+	return wrapRerank(ce, cfg.RerankMaxConcurrency, onInFlight, log, "cross_encoder"), "cross_encoder", nil
+}
+
+// wrapRerank applies the optional concurrency cap. max <= 0 is a no-op.
+func wrapRerank(r rerank.Reranker, max int, onInFlight func(n int64), log *slog.Logger, name string) rerank.Reranker {
+	if max <= 0 {
+		return r
+	}
+	log.Info("rerank concurrency cap", "backend", name, "max_in_flight", max)
+	return rerank.NewLimited(r, max, onInFlight)
 }
 
 // buildStore opens the configured store and verifies the recorded embedding
@@ -408,7 +417,7 @@ func reconcileEmbedModel(
 	return nil
 }
 
-func buildEmbedder(cfg *config.Config, log *slog.Logger) (embed.Embedder, error) {
+func buildEmbedder(cfg *config.Config, log *slog.Logger, onInFlight func(n int64)) (embed.Embedder, error) {
 	if cfg.EmbedBaseURL == "" {
 		log.Warn("no embeddings endpoint configured; remember/recall will error until MEMINI_EMBED_BASE_URL is set")
 		return embed.Disabled{D: cfg.EmbedDims}, nil
@@ -422,7 +431,12 @@ func buildEmbedder(cfg *config.Config, log *slog.Logger) (embed.Embedder, error)
 	if err != nil {
 		return nil, err
 	}
-	batched := embed.NewBatched(client, cfg.EmbedMaxBatch, cfg.EmbedMaxBatchChars, cfg.EmbedMaxItemChars)
+	// Limited sits inside Batched and Cached so cache hits skip the slot.
+	limited := embed.NewLimited(client, cfg.EmbedMaxConcurrency, onInFlight)
+	if cfg.EmbedMaxConcurrency > 0 {
+		log.Info("embed concurrency cap", "max_in_flight", cfg.EmbedMaxConcurrency)
+	}
+	batched := embed.NewBatched(limited, cfg.EmbedMaxBatch, cfg.EmbedMaxBatchChars, cfg.EmbedMaxItemChars)
 	return embed.NewCached(batched, 4096)
 }
 

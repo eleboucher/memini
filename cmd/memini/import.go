@@ -239,7 +239,7 @@ func buildImporter(
 	if err != nil {
 		return nil, "", nil, nil, err
 	}
-	embedder, err := buildEmbedder(cfg, log)
+	embedder, err := buildEmbedder(cfg, log, nil)
 	if err != nil {
 		_ = st.Close()
 		return nil, "", nil, nil, err

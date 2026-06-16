@@ -78,6 +78,10 @@ type Config struct {
 	// EmbedMaxItemChars truncates any single text before embedding so one
 	// oversized memory can't blow the per-request budget (0 disables).
 	EmbedMaxItemChars int `env:"MEMINI_EMBED_MAX_ITEM_CHARS" envDefault:"8000"`
+	// EmbedMaxConcurrency caps in-flight calls to the embeddings backend. 0
+	// is unbounded. Set to 1-2 for self-hosted backends that can't service a
+	// recall burst in parallel.
+	EmbedMaxConcurrency int `env:"MEMINI_EMBED_MAX_CONCURRENCY" envDefault:"0"`
 	// ReembedOnModelChange makes the server re-embed every stored memory at
 	// startup when MEMINI_EMBED_MODEL differs from the model the vectors were
 	// produced with, instead of refusing to start. Off by default: re-embedding
@@ -145,6 +149,9 @@ type Config struct {
 	// default has headroom for the per-document fan-out (RerankTopN candidates
 	// scored in slot-bounded waves), so a busy backend isn't abandoned mid-rerank.
 	RerankTimeout time.Duration `env:"MEMINI_RERANK_TIMEOUT" envDefault:"10s"`
+	// RerankMaxConcurrency caps in-flight rerank calls. 0 is unbounded. See
+	// EmbedMaxConcurrency for the rationale.
+	RerankMaxConcurrency int `env:"MEMINI_RERANK_MAX_CONCURRENCY" envDefault:"0"`
 	// RecallEmbedTimeout bounds the query embed on the recall path; past it, or on
 	// any embed error, recall degrades to keyword-only search instead of failing
 	// or stalling on a slow embeddings backend. 0 (default) keeps the query embed

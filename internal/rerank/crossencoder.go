@@ -20,14 +20,16 @@ const defaultTimeout = 60 * time.Second
 // so a legitimate response is far smaller than this.
 const maxRerankBodyBytes = 8 << 20 // 8 MiB
 
-// defaultTransport clones the stdlib transport but lifts the idle-connection
-// caps: every recall hits the same reranker host, and net/http otherwise keeps
-// only 2 idle connections per host (DefaultMaxIdleConnsPerHost), so concurrent
-// recalls churn through fresh TCP connections instead of reusing warm ones.
-func defaultTransport() *http.Transport {
+// defaultTransport lifts the idle-conn cap above the stdlib default of 2/host
+// so concurrent recalls reuse warm TCP. maxInFlight, when > 0, also aligns
+// MaxIdleConnsPerHost to the rerank.Limited cap.
+func defaultTransport(maxInFlight int) *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.MaxIdleConns = 100
 	t.MaxIdleConnsPerHost = 100
+	if maxInFlight > 0 && maxInFlight < t.MaxIdleConnsPerHost {
+		t.MaxIdleConnsPerHost = maxInFlight
+	}
 	return t
 }
 
@@ -63,7 +65,7 @@ func New(cfg Config) (*CrossEncoder, error) {
 	}
 	c := cfg.HTTPClient
 	if c == nil {
-		c = &http.Client{Timeout: defaultTimeout, Transport: defaultTransport()}
+		c = &http.Client{Timeout: defaultTimeout, Transport: defaultTransport(0)}
 	}
 	return &CrossEncoder{
 		url:         strings.TrimRight(cfg.BaseURL, "/") + "/rerank",
