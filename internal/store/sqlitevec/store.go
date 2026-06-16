@@ -110,6 +110,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		)`, s.dims),
 		// Porter stemming so queries match morphological variants (move/moved/moving).
 		`CREATE VIRTUAL TABLE IF NOT EXISTS fts_memories USING fts5(content, summary, tags, tokenize='porter unicode61')`,
+		// Key/value store for store-level metadata (e.g. the embedding model the
+		// vectors were produced with — see EmbedModel/SetEmbedModel).
+		`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -686,6 +689,32 @@ func collectRowIDs(tx *sql.Tx, ctx context.Context, namespace string) ([]int64, 
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+const metaEmbedModel = "embed_model"
+
+// EmbedModel returns the recorded embedding model name, or "" if none was set.
+func (s *Store) EmbedModel(ctx context.Context) (string, error) {
+	var v string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key=?`, metaEmbedModel).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("sqlitevec: read embed model: %w", err)
+	}
+	return v, nil
+}
+
+// SetEmbedModel records the embedding model the stored vectors were produced with.
+func (s *Store) SetEmbedModel(ctx context.Context, model string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO meta(key, value) VALUES(?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, metaEmbedModel, model)
+	if err != nil {
+		return fmt.Errorf("sqlitevec: set embed model: %w", err)
+	}
+	return nil
 }
 
 // Ping verifies the database is reachable.

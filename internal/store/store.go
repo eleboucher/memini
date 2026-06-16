@@ -141,6 +141,20 @@ type Store interface {
 	Close() error
 }
 
+// EmbedModelStore is implemented by drivers that record which embedding model
+// produced their stored vectors. It lets the bootstrap detect a silent model
+// swap — a new MEMINI_EMBED_MODEL at the same dimensionality, which the dims
+// guard cannot catch — where old and new vectors share a width but live in
+// incomparable spaces, quietly degrading recall.
+type EmbedModelStore interface {
+	// EmbedModel returns the recorded embedding model name, or "" when none has
+	// been recorded yet (a fresh store, or one created before this was tracked).
+	EmbedModel(ctx context.Context) (string, error)
+	// SetEmbedModel records model as the embedding model the stored vectors were
+	// produced with, overwriting any previous value.
+	SetEmbedModel(ctx context.Context, model string) error
+}
+
 // OrEmptyMap returns m, or an empty map when m is nil, so drivers persist an
 // empty JSON object rather than null for absent metadata.
 func OrEmptyMap(m map[string]any) map[string]any {

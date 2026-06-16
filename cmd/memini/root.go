@@ -148,7 +148,9 @@ func newServer(
 func buildServiceStack(
 	ctx context.Context, cfg *config.Config, log *slog.Logger, reg *prometheus.Registry,
 ) (*service.Service, store.Store, func(), func(), error) {
-	st, err := buildStore(ctx, cfg)
+	// openStore (not buildStore): the embed-model reconciliation below needs the
+	// embedder to re-embed on a model change, which the buildStore guard can't do.
+	st, err := openStore(ctx, cfg)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -168,6 +170,11 @@ func buildServiceStack(
 		em.SetMetrics(metricsImpl)
 	}
 	embedder = embed.Instrument(embedder, outerBackendLabel(embedder), metricsImpl)
+
+	if err := reconcileEmbedModel(ctx, st, embedder, cfg, log); err != nil {
+		_ = st.Close()
+		return nil, nil, nil, nil, err
+	}
 
 	var svcOpts []service.Option
 	var chatClient llm.Client
@@ -294,7 +301,24 @@ func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger) (reran
 	return ce, "cross_encoder", nil
 }
 
+// buildStore opens the configured store and verifies the recorded embedding
+// model matches MEMINI_EMBED_MODEL, so a silent model swap (same dims, vectors
+// in an incomparable space) fails loudly instead of quietly degrading recall.
+// The `reembed` command uses openStore directly to bypass this guard.
 func buildStore(ctx context.Context, cfg *config.Config) (store.Store, error) {
+	st, err := openStore(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := guardEmbedModel(ctx, st, cfg.EmbedModel); err != nil {
+		_ = st.Close()
+		return nil, err
+	}
+	return st, nil
+}
+
+// openStore opens the configured store without the embed-model guard.
+func openStore(ctx context.Context, cfg *config.Config) (store.Store, error) {
 	switch cfg.Backend {
 	case config.BackendSQLite:
 		return sqlitevec.Open(ctx, cfg.SQLitePath, cfg.EmbedDims)
@@ -303,6 +327,84 @@ func buildStore(ctx context.Context, cfg *config.Config) (store.Store, error) {
 	default:
 		return nil, fmt.Errorf("unknown backend %q", cfg.Backend)
 	}
+}
+
+// guardEmbedModel records the configured embedding model on a fresh store and,
+// on an existing one, refuses to proceed when it differs from what the vectors
+// were produced with. A pre-existing store with no recorded model adopts the
+// current one (it is the best guess available). Stores that don't track the
+// model are left untouched.
+func guardEmbedModel(ctx context.Context, st store.Store, model string) error {
+	ems, ok := st.(store.EmbedModelStore)
+	if !ok {
+		return nil
+	}
+	recorded, err := ems.EmbedModel(ctx)
+	if err != nil {
+		return err
+	}
+	if recorded == "" {
+		return ems.SetEmbedModel(ctx, model)
+	}
+	if recorded != model {
+		return embedModelMismatchErr(recorded, model)
+	}
+	return nil
+}
+
+// embedModelMismatchErr describes a recorded-vs-configured embedding model
+// conflict and the three ways out (match the env, re-embed once, or opt into
+// automatic re-embedding).
+func embedModelMismatchErr(recorded, configured string) error {
+	return fmt.Errorf("store was created with embedding model %q but is configured for %q; "+
+		"vectors from different models are not comparable, so recall would silently degrade. "+
+		"Set MEMINI_EMBED_MODEL=%s to match the existing data, run `memini reembed` to re-embed "+
+		"every memory under %q, or set MEMINI_REEMBED_ON_MODEL_CHANGE=true to re-embed automatically "+
+		"at startup", recorded, configured, recorded, configured)
+}
+
+// reconcileEmbedModel handles an embedding-model change for the long-running
+// server, where an embedder is available. It adopts the configured model on a
+// fresh store, and on a changed model either re-embeds every memory in place
+// (when MEMINI_REEMBED_ON_MODEL_CHANGE is set) or refuses to start. Stores that
+// don't track the model are left untouched.
+func reconcileEmbedModel(
+	ctx context.Context, st store.Store, embedder embed.Embedder, cfg *config.Config, log *slog.Logger,
+) error {
+	ems, ok := st.(store.EmbedModelStore)
+	if !ok {
+		return nil
+	}
+	recorded, err := ems.EmbedModel(ctx)
+	if err != nil {
+		return err
+	}
+	if recorded == "" {
+		return ems.SetEmbedModel(ctx, cfg.EmbedModel)
+	}
+	if recorded == cfg.EmbedModel {
+		return nil
+	}
+	if !cfg.ReembedOnModelChange {
+		return embedModelMismatchErr(recorded, cfg.EmbedModel)
+	}
+	if cfg.EmbedBaseURL == "" {
+		return fmt.Errorf("MEMINI_REEMBED_ON_MODEL_CHANGE is set and the model changed from %q to %q, "+
+			"but no embeddings endpoint is configured; set MEMINI_EMBED_BASE_URL", recorded, cfg.EmbedModel)
+	}
+	log.Warn("embedding model changed; re-embedding every memory at startup "+
+		"(MEMINI_REEMBED_ON_MODEL_CHANGE is set) — this blocks startup and calls the embeddings endpoint once per memory",
+		"from", recorded, "to", cfg.EmbedModel)
+	rep, err := maintenance.Reembed(ctx, st, embedder, nil, 0, nil)
+	if err != nil {
+		return fmt.Errorf("auto re-embed after model change: %w", err)
+	}
+	if err := ems.SetEmbedModel(ctx, cfg.EmbedModel); err != nil {
+		return fmt.Errorf("re-embedded %d memories but recording the model failed: %w", rep.Reembedded, err)
+	}
+	log.Info("re-embedding complete",
+		"memories", rep.Reembedded, "namespaces", rep.Namespaces, "model", cfg.EmbedModel)
+	return nil
 }
 
 func buildEmbedder(cfg *config.Config, log *slog.Logger) (embed.Embedder, error) {

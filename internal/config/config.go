@@ -78,6 +78,13 @@ type Config struct {
 	// EmbedMaxItemChars truncates any single text before embedding so one
 	// oversized memory can't blow the per-request budget (0 disables).
 	EmbedMaxItemChars int `env:"MEMINI_EMBED_MAX_ITEM_CHARS" envDefault:"8000"`
+	// ReembedOnModelChange makes the server re-embed every stored memory at
+	// startup when MEMINI_EMBED_MODEL differs from the model the vectors were
+	// produced with, instead of refusing to start. Off by default: re-embedding
+	// hits the embeddings endpoint once per memory and blocks startup, so it
+	// must be opted into (the `memini reembed` command is the explicit
+	// alternative). Dimensionality still cannot change this way.
+	ReembedOnModelChange bool `env:"MEMINI_REEMBED_ON_MODEL_CHANGE" envDefault:"false"`
 
 	// FusionAlpha selects hybrid recall fusion: >= 0 uses convex score fusion
 	// with this vector-vs-keyword weight (0.5 = balanced, the default); a
