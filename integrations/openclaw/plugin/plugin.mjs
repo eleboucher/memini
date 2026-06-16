@@ -40,6 +40,8 @@ const configSchema = {
     namespace_per_agent: { type: "boolean" },
     namespace_template: { type: "string" },
     skip_without_agent: { type: "boolean" },
+    skip_system_turns: { type: "boolean" },
+    system_kinds: { type: "array", items: { type: "string" } },
     fallback_on_error: { type: "boolean" },
     timeout_ms: { type: "number" },
     expose_tools: { type: "boolean" },
@@ -53,6 +55,12 @@ const configSchema = {
 // sessions that carry no agent identity.
 const DEFAULT_NAMESPACE_TEMPLATE = "{namespace}-{agent}";
 
+// Turn "kinds" that mark a system-initiated turn (scheduled/heartbeat/cron
+// polls) rather than a user-driven one. These resolve an agent identity like
+// any other turn, so skip_without_agent doesn't catch them — skip_system_turns
+// does. Override the set via the system_kinds config.
+const DEFAULT_SYSTEM_KINDS = ["cron", "heartbeat", "scheduled", "schedule"];
+
 // resolveConfig normalizes raw plugin config into the defaults the plugin runs
 // with. Exported so the defaults (notably per-agent isolation) are testable.
 export function resolveConfig(pluginConfig) {
@@ -64,6 +72,15 @@ export function resolveConfig(pluginConfig) {
     namespace_per_agent: c.namespace_per_agent !== false,
     namespace_template: c.namespace_template || DEFAULT_NAMESPACE_TEMPLATE,
     skip_without_agent: c.skip_without_agent === true,
+    // Off by default (backward-compat): when on, system-initiated turns
+    // (cron/heartbeat/scheduled polls) are skipped for both recall and capture
+    // even when they carry an agent identity, so scheduled-task chatter doesn't
+    // accumulate as episodic noise. system_kinds overrides the matched kinds.
+    skip_system_turns: c.skip_system_turns === true,
+    system_kinds:
+      Array.isArray(c.system_kinds) && c.system_kinds.length
+        ? c.system_kinds.map((k) => String(k).toLowerCase())
+        : DEFAULT_SYSTEM_KINDS,
     fallback_on_error: c.fallback_on_error !== false,
     timeout_ms: c.timeout_ms || DEFAULT_TIMEOUT_MS,
     // Off by default: the slot already recalls/captures automatically; tools are
@@ -165,6 +182,54 @@ export function sessionIdentity(event, ctx) {
     if (typeof c === "string" && c.trim()) return sanitizeNsSegment(c);
   }
   return "";
+}
+
+// Leading marker some gateways prepend to a system turn's text, e.g.
+// "[OpenClaw heartbeat poll]" or "[cron:daily (...)]". Only the first bracketed
+// segment is inspected, so a user quoting "[cron ...]" mid-message is ignored.
+const LEADING_MARKER = /^\s*\[([^\]]{1,80})\]/;
+
+// detectSystemKind returns the system-turn kind for an event when one is
+// identifiable, else "". It checks, in order: explicit kind/trigger fields on
+// ctx/event, the session key segments (agent:<id>:cron:..., heartbeat:gateway),
+// and a leading bracket marker on the turn text. Field values match on
+// substring (kind:"scheduled" -> "scheduled"); session-key segments match
+// whole-segment only, so an agent id like "concord" never reads as "cron".
+export function detectSystemKind(event, ctx, text, kinds = DEFAULT_SYSTEM_KINDS) {
+  const includesKind = (value) => {
+    if (typeof value !== "string" || !value) return "";
+    const lower = value.toLowerCase();
+    return kinds.find((k) => lower.includes(k)) || "";
+  };
+
+  const fields = [
+    ctx?.kind, ctx?.trigger, ctx?.sessionKind,
+    event?.kind, event?.trigger, event?.sessionKind,
+    event?.session?.kind, event?.session?.trigger,
+  ];
+  for (const f of fields) {
+    const k = includesKind(f);
+    if (k) return k;
+  }
+
+  const keys = [ctx?.sessionKey, event?.sessionKey, ctx?.sessionId, event?.sessionId, ctx?.runId, event?.runId];
+  for (const key of keys) {
+    if (typeof key !== "string") continue;
+    for (const seg of key.split(/[:/]/)) {
+      const k = kinds.find((kind) => kind === seg.toLowerCase());
+      if (k) return k;
+    }
+  }
+
+  const m = typeof text === "string" ? text.match(LEADING_MARKER) : null;
+  return m ? includesKind(m[1]) : "";
+}
+
+// shouldSkipSystemTurn reports whether this turn should be skipped (no recall,
+// no capture) because skip_system_turns is on and the turn is system-initiated.
+export function shouldSkipSystemTurn(cfg, event, ctx, text) {
+  if (!cfg.skip_system_turns) return false;
+  return detectSystemKind(event, ctx, text, cfg.system_kinds) !== "";
 }
 
 function extractText(content) {
@@ -347,6 +412,7 @@ const plugin = {
       if (!cfg.enabled) return;
       const prompt = typeof event?.prompt === "string" ? event.prompt.trim() : "";
       if (!prompt) return;
+      if (shouldSkipSystemTurn(cfg, event, ctx, prompt)) return;
       const ns = effectiveNamespace(cfg, event, ctx);
       if (ns == null) return;
       const body = { query: prompt, limit: 5 };
@@ -366,6 +432,7 @@ const plugin = {
       const userText = lastTextByRole(event.messages, "user");
       const assistantText = lastTextByRole(event.messages, "assistant");
       if (!userText || !assistantText) return;
+      if (shouldSkipSystemTurn(cfg, event, ctx, userText)) return;
       const ns = effectiveNamespace(cfg, event, ctx);
       if (ns == null) return;
       // Tag the capture with its session id so before_prompt_build can exclude

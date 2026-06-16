@@ -5,11 +5,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import plugin, {
+  detectSystemKind,
   effectiveNamespace,
   meminiListPath,
   registerMeminiTools,
   resolveConfig,
   sessionIdentity,
+  shouldSkipSystemTurn,
 } from "./plugin.mjs";
 
 // fakeClient records the last memini call and returns canned responses, so the
@@ -125,6 +127,54 @@ test("skip_without_agent skips gateway-level sessions but keeps agent crons", ()
   assert.equal(effectiveNamespace(cfg, {}, { sessionKey: "agent:alice:heartbeat:hourly" }), "alice");
   assert.equal(effectiveNamespace(cfg, {}, { sessionKey: "heartbeat:gateway" }), null);
   assert.equal(effectiveNamespace(cfg, {}, {}), null);
+});
+
+// --- skip_system_turns ------------------------------------------------------
+
+test("skip_system_turns defaults off with the standard kinds", () => {
+  const cfg = resolveConfig(undefined);
+  assert.equal(cfg.skip_system_turns, false);
+  assert.deepEqual(cfg.system_kinds, ["cron", "heartbeat", "scheduled", "schedule"]);
+});
+
+test("system_kinds can be overridden and is lowercased", () => {
+  const cfg = resolveConfig({ system_kinds: ["Poll", "TICK"] });
+  assert.deepEqual(cfg.system_kinds, ["poll", "tick"]);
+});
+
+test("detectSystemKind reads explicit fields, session keys, and bracket markers", () => {
+  // explicit kind/trigger on ctx or event
+  assert.equal(detectSystemKind({}, { kind: "scheduled" }), "scheduled");
+  assert.equal(detectSystemKind({ trigger: "cron" }, {}), "cron");
+  // session key segments — even when agent-attributed
+  assert.equal(detectSystemKind({}, { sessionKey: "agent:carol:cron:daily" }), "cron");
+  assert.equal(detectSystemKind({}, { sessionKey: "agent:alice:heartbeat:hourly" }), "heartbeat");
+  // leading bracket marker on the turn text
+  assert.equal(detectSystemKind({}, {}, "[OpenClaw heartbeat poll]"), "heartbeat");
+  assert.equal(detectSystemKind({}, {}, "[cron:daily (status sweep)] do the thing"), "cron");
+  // user-driven turns are not system turns
+  assert.equal(detectSystemKind({}, { sessionKey: "agent:bob:b7d2-uuid" }, "fix the bug"), "");
+  // an agent id that merely contains a kind substring is not a system turn
+  assert.equal(detectSystemKind({}, { sessionKey: "agent:concord:b7d2" }), "");
+  // a user quoting a marker mid-message is ignored (marker must lead)
+  assert.equal(detectSystemKind({}, {}, "see the [cron] docs"), "");
+});
+
+test("shouldSkipSystemTurn gates only when enabled and matched", () => {
+  const off = resolveConfig({});
+  assert.equal(shouldSkipSystemTurn(off, {}, { sessionKey: "agent:carol:cron:daily" }), false);
+  const on = resolveConfig({ skip_system_turns: true });
+  assert.equal(shouldSkipSystemTurn(on, {}, { sessionKey: "agent:carol:cron:daily" }), true);
+  assert.equal(shouldSkipSystemTurn(on, {}, {}, "[OpenClaw heartbeat poll]"), true);
+  // normal agent turn is kept
+  assert.equal(shouldSkipSystemTurn(on, {}, { agentId: "carol" }, "fix the bug"), false);
+});
+
+test("shouldSkipSystemTurn honors a custom system_kinds set", () => {
+  const on = resolveConfig({ skip_system_turns: true, system_kinds: ["poll"] });
+  assert.equal(shouldSkipSystemTurn(on, { kind: "poll" }, {}), true);
+  // a default kind no longer matches once the set is overridden
+  assert.equal(shouldSkipSystemTurn(on, {}, { sessionKey: "agent:carol:cron:daily" }), false);
 });
 
 // --- explicit tools (expose_tools) -----------------------------------------

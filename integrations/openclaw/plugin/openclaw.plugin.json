@@ -17,6 +17,8 @@
       "namespace_per_agent": { "type": "boolean" },
       "namespace_template": { "type": "string" },
       "skip_without_agent": { "type": "boolean" },
+      "skip_system_turns": { "type": "boolean" },
+      "system_kinds": { "type": "array", "items": { "type": "string" } },
       "fallback_on_error": { "type": "boolean" },
       "timeout_ms": { "type": "number" },
       "expose_tools": { "type": "boolean" }
@@ -40,6 +42,14 @@
     "skip_without_agent": {
       "label": "Skip Without Agent",
       "help": "In per-agent mode, skip recall/write when no agent identity resolves (e.g. cron/heartbeat) instead of using the fallback namespace"
+    },
+    "skip_system_turns": {
+      "label": "Skip System Turns",
+      "help": "Skip recall and capture for system-initiated turns (cron/heartbeat/scheduled) even when they are agent-attributed, so scheduled-task chatter doesn't become episodic noise"
+    },
+    "system_kinds": {
+      "label": "System Kinds",
+      "help": "Turn kinds treated as system-initiated for Skip System Turns (default cron/heartbeat/scheduled/schedule); override to match your gateway's labels"
     },
     "fallback_on_error": { "label": "Fallback On Error" },
     "timeout_ms": { "label": "Timeout (ms)" },
