@@ -93,6 +93,13 @@ type Config struct {
 	// by default; false stores every write verbatim.
 	WriteDedupFingerprint bool `env:"MEMINI_WRITE_DEDUP_FINGERPRINT" envDefault:"true"`
 
+	// RedactSecrets scrubs live credentials (tokens, passwords, API keys, private
+	// keys) from a memory's content/summary/metadata at ingestion, so a database
+	// compromise exposes memory content but no usable secrets. On by default;
+	// best-effort pattern matching, so it's one layer of defense, not a guarantee.
+	// Set false only if redaction mangles legitimate content.
+	RedactSecrets bool `env:"MEMINI_REDACT_SECRETS" envDefault:"true"`
+
 	// TemporalBoost enables query-conditioned temporal targeting in the
 	// re-ranker: when a query names a relative time ("3 weeks ago"), candidates
 	// dated near the referenced point are boosted by up to this much on the

@@ -206,6 +206,7 @@ func buildServiceStack(
 		service.WithScoreFusion(cfg.FusionAlpha),
 		service.WithWriteDedup(cfg.WriteDedupMinScore),
 		service.WithFingerprintDedup(cfg.WriteDedupFingerprint),
+		service.WithSecretRedaction(cfg.RedactSecrets),
 		service.WithTemporalTargeting(cfg.TemporalBoost, search.RegexAnchorExtractor{}),
 		service.WithMetrics(metricsImpl),
 	)

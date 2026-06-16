@@ -16,6 +16,7 @@ import (
 
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/memory"
+	"github.com/eleboucher/memini/internal/redact"
 	"github.com/eleboucher/memini/internal/store"
 )
 
@@ -308,10 +309,10 @@ func (lw *localWriter) toMemory(r Record, opts Options) *memory.Memory {
 		ID:             r.ID,
 		Namespace:      r.Namespace,
 		Tier:           tier,
-		Content:        r.Content,
-		Summary:        r.Summary,
+		Content:        redact.Secrets(r.Content),
+		Summary:        redact.Secrets(r.Summary),
 		Tags:           r.Tags,
-		Metadata:       r.Metadata,
+		Metadata:       redact.Metadata(r.Metadata),
 		Importance:     min(max(r.Importance, 0), 1),
 		CreatedAt:      created,
 		UpdatedAt:      updated,

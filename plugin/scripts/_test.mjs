@@ -570,3 +570,28 @@ test("mcp-headers.mjs: omits Authorization when no token", async () => {
   assert.equal(h["X-Memini-Namespace"], "memini");
   assert.equal(h.Authorization, undefined);
 });
+
+test("plaintext bearer guard warns once for http to a non-loopback host", async () => {
+  const { createPlaintextBearerAuthGuard } = await import("./_shared.mjs");
+  const warnings = [];
+  const guard = createPlaintextBearerAuthGuard((m) => warnings.push(m), {});
+  guard("http://memini.example.com", "secret");
+  guard("http://memini.example.com", "secret");
+  assert.equal(warnings.length, 1);
+});
+
+test("plaintext bearer guard is silent for loopback, https, and no secret", async () => {
+  const { createPlaintextBearerAuthGuard } = await import("./_shared.mjs");
+  const warnings = [];
+  const guard = createPlaintextBearerAuthGuard((m) => warnings.push(m), {});
+  guard("http://localhost:8080", "secret");
+  guard("https://memini.example.com", "secret");
+  guard("http://memini.example.com", "");
+  assert.equal(warnings.length, 0);
+});
+
+test("plaintext bearer guard throws when MEMINI_REQUIRE_HTTPS=1", async () => {
+  const { createPlaintextBearerAuthGuard } = await import("./_shared.mjs");
+  const guard = createPlaintextBearerAuthGuard(() => {}, { MEMINI_REQUIRE_HTTPS: "1" });
+  assert.throws(() => guard("http://memini.example.com", "secret"), /plaintext HTTP/);
+});

@@ -185,6 +185,47 @@ export function parseJSON(s) {
 const REST_URL = process.env["MEMINI_URL"] || "http://localhost:8080";
 const SECRET = process.env["MEMINI_TOKEN"] || process.env["MEMINI_API_KEY"] || "";
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+
+function normalizedHostname(hostname) {
+  return hostname.replace(/^\[|\]$/g, "").toLowerCase();
+}
+
+// usesPlaintextBearerAuth is true when a bearer token would be sent over
+// plaintext HTTP to a non-loopback host — i.e. the token (and memory payloads)
+// would be observable on the network.
+function usesPlaintextBearerAuth(baseUrl, secret) {
+  if (!secret) return false;
+  try {
+    const parsed = new URL(baseUrl);
+    return parsed.protocol === "http:" && !LOOPBACK_HOSTS.has(normalizedHostname(parsed.hostname));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * createPlaintextBearerAuthGuard mirrors the OpenClaw/OpenCode plugins: it
+ * refuses (when MEMINI_REQUIRE_HTTPS=1) or warns once when a bearer token would
+ * travel over plaintext HTTP to a non-loopback host. Exported for testing.
+ */
+export function createPlaintextBearerAuthGuard(warn, env) {
+  let warned = false;
+  return function guardPlaintextBearerAuth(baseUrl, secret) {
+    if (!usesPlaintextBearerAuth(baseUrl, secret)) return;
+    const message =
+      `memini: a bearer token is configured for plaintext HTTP to ${baseUrl}. ` +
+      `The token and memory payloads can be observed on the network; use HTTPS or an SSH tunnel.`;
+    if ((env || process.env).MEMINI_REQUIRE_HTTPS === "1") throw new Error(message);
+    if (!warned) {
+      warned = true;
+      warn(message);
+    }
+  };
+}
+
+const guardPlaintextBearerAuth = createPlaintextBearerAuthGuard((m) => console.error(`[memini] ${m}`));
+
 function authHeaders(extra) {
   const h = { "Content-Type": "application/json", ...(extra || {}) };
   if (SECRET) h["Authorization"] = `Bearer ${SECRET}`;
@@ -198,6 +239,7 @@ function authHeaders(extra) {
  */
 export async function postJSON(path, body, namespace, timeoutMs = 5000) {
   try {
+    guardPlaintextBearerAuth(REST_URL, SECRET);
     const res = await fetch(`${REST_URL}${path}`, {
       method: "POST",
       headers: authHeaders({ "X-Memini-Namespace": namespace }),
@@ -244,6 +286,7 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude }
  */
 export async function getJSON(path, namespace, timeoutMs = 5000) {
   try {
+    guardPlaintextBearerAuth(REST_URL, SECRET);
     const res = await fetch(`${REST_URL}${path}`, {
       method: "GET",
       headers: authHeaders({ "X-Memini-Namespace": namespace }),

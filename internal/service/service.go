@@ -15,6 +15,7 @@ import (
 	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/maintenance"
 	"github.com/eleboucher/memini/internal/memory"
+	"github.com/eleboucher/memini/internal/redact"
 	"github.com/eleboucher/memini/internal/rerank"
 	"github.com/eleboucher/memini/internal/search"
 	"github.com/eleboucher/memini/internal/store"
@@ -176,6 +177,10 @@ type Service struct {
 	// fingerprintDedup (default on) reinforces an exact restatement instead of
 	// storing a duplicate; see WithFingerprintDedup.
 	fingerprintDedup bool
+	// redactSecrets (default on) scrubs live credentials from a memory's
+	// Content/Summary/Metadata at ingestion, so a database compromise exposes
+	// memory content but no usable tokens/keys. See WithSecretRedaction.
+	redactSecrets bool
 	// temporalBoost (> 0) enables query-conditioned temporal targeting in the
 	// re-ranker; temporalAnchor resolves a query's relative-time reference (the
 	// regex extractor by default, or an LLM extractor when configured).
@@ -236,8 +241,10 @@ func WithAnswerer(c llm.Completer) Option { return func(s *Service) { s.answerer
 const defaultRerankTopN = 20
 
 // defaultRerankTimeout bounds a single reranker call; past it, recall falls
-// back to composite order.
-const defaultRerankTimeout = 3 * time.Second
+// back to composite order. It leaves headroom for the per-document fan-out (a
+// recall scores rerankTopN candidates in slot-bounded waves), so a healthy but
+// busy backend isn't abandoned mid-rerank.
+const defaultRerankTimeout = 10 * time.Second
 
 // WithReranker enables reranking of recall candidates: after composite ranking,
 // the top topN candidates are reordered by the reranker (an LLM or cross-encoder
@@ -328,6 +335,15 @@ func WithFingerprintDedup(on bool) Option {
 	return func(s *Service) { s.fingerprintDedup = on }
 }
 
+// WithSecretRedaction toggles server-side scrubbing of live credentials from a
+// memory's Content/Summary/Metadata at ingestion (on by default). It bounds a
+// database compromise to information disclosure — leaked memory holds no usable
+// tokens, keys, or passwords. Disable only if redaction mangles legitimate
+// content; storing raw secrets re-opens the lateral-movement risk.
+func WithSecretRedaction(on bool) Option {
+	return func(s *Service) { s.redactSecrets = on }
+}
+
 // New builds a Service from a store and embedder.
 func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 	s := &Service{
@@ -342,6 +358,7 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 		poolFactor:          recallPoolFactor,
 		poolFloor:           recallPoolFloor,
 		fingerprintDedup:    true,
+		redactSecrets:       true,
 		metrics:             nopMetrics{},
 		now:                 func() time.Time { return time.Now().UTC() },
 		newID:               func() string { return uuid.NewString() },
@@ -387,6 +404,19 @@ type RememberInput struct {
 	ValidTo   *time.Time
 }
 
+// scrubInput redacts live credentials from a write before it is persisted, so a
+// database compromise yields no usable tokens/keys. A no-op when redaction is
+// disabled (WithSecretRedaction(false)).
+func (s *Service) scrubInput(in RememberInput) RememberInput {
+	if !s.redactSecrets {
+		return in
+	}
+	in.Content = redact.Secrets(in.Content)
+	in.Summary = redact.Secrets(in.Summary)
+	in.Metadata = redact.Metadata(in.Metadata)
+	return in
+}
+
 // Remember embeds and stores a memory, returning the persisted record.
 func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memory, error) {
 	start := time.Now()
@@ -409,6 +439,11 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		s.metrics.RememberResult("error", string(tier))
 		return nil, invalidInputf("remember: invalid tier %q", tier)
 	}
+
+	// Scrub live credentials before anything persists them — content, the
+	// embedding, and the dedup fingerprint are all computed on the redacted
+	// text, so a leaked database yields no usable tokens/keys.
+	in = s.scrubInput(in)
 
 	// Exact-restatement fast path: a fresh write whose normalized content already
 	// exists live in this tier reinforces that memory instead of duplicating it,
@@ -610,9 +645,9 @@ type RecallInput struct {
 	// Metadata narrows recall to memories whose top-level metadata contains each
 	// listed key=value string pair (AND).
 	Metadata map[string]string
-	// ExcludeMetadata drops memories carrying any of these key=value pairs (the
-	// inverse of Metadata), so a caller can keep its own just-written memories out
-	// of recall — see store.Filter.ExcludeMetadata.
+	// ExcludeMetadata drops memories whose top-level metadata contains every
+	// listed key=value pair (AND), applied after Metadata. Lets a caller exclude
+	// its own session's just-captured turns from auto-recall.
 	ExcludeMetadata map[string]string
 	Limit           int
 	// IncludeExpired / IncludeSuperseded relax the default live-only filter.
