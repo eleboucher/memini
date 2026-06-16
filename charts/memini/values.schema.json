@@ -921,16 +921,9 @@
               "type": "boolean"
             },
             "hostnames": {
-              "items": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  }
-                ],
-                "required": []
-              },
+              "default": "",
               "title": "hostnames",
-              "type": "array"
+              "type": "null"
             },
             "kind": {
               "default": "HTTPRoute",
@@ -938,34 +931,9 @@
               "type": "string"
             },
             "parentRefs": {
-              "items": {
-                "anyOf": [
-                  {
-                    "properties": {
-                      "name": {
-                        "default": "envoy-external",
-                        "title": "name",
-                        "type": "string"
-                      },
-                      "namespace": {
-                        "default": "network",
-                        "title": "namespace",
-                        "type": "string"
-                      },
-                      "sectionName": {
-                        "default": "https",
-                        "title": "sectionName",
-                        "type": "string"
-                      }
-                    },
-                    "required": [],
-                    "type": "object"
-                  }
-                ],
-                "required": []
-              },
+              "default": "",
               "title": "parentRefs",
-              "type": "array"
+              "type": "null"
             },
             "rules": {
               "items": {
@@ -1093,34 +1061,15 @@
         "ui": {
           "description": "Admin UI catch-all. Disabled by default — flip to true on installs that\nwant the SPA reachable through a Gateway. Wire it to an internal gateway\nso the SPA and its embedded API key never leave the LAN. The in-process\nserver still serves the SPA on / regardless of this flag.",
           "properties": {
-            "annotations": {
-              "properties": {
-                "gatus.home-operations.com/enabled": {
-                  "default": "false",
-                  "title": "gatus.home-operations.com/enabled",
-                  "type": "string"
-                }
-              },
-              "required": [],
-              "title": "annotations",
-              "type": "object"
-            },
             "enabled": {
               "default": false,
               "title": "enabled",
               "type": "boolean"
             },
             "hostnames": {
-              "items": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  }
-                ],
-                "required": []
-              },
+              "default": "",
               "title": "hostnames",
-              "type": "array"
+              "type": "null"
             },
             "kind": {
               "default": "HTTPRoute",
@@ -1128,34 +1077,9 @@
               "type": "string"
             },
             "parentRefs": {
-              "items": {
-                "anyOf": [
-                  {
-                    "properties": {
-                      "name": {
-                        "default": "envoy-internal",
-                        "title": "name",
-                        "type": "string"
-                      },
-                      "namespace": {
-                        "default": "network",
-                        "title": "namespace",
-                        "type": "string"
-                      },
-                      "sectionName": {
-                        "default": "https",
-                        "title": "sectionName",
-                        "type": "string"
-                      }
-                    },
-                    "required": [],
-                    "type": "object"
-                  }
-                ],
-                "required": []
-              },
+              "default": "",
               "title": "parentRefs",
-              "type": "array"
+              "type": "null"
             },
             "rules": {
               "items": {

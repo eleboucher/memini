@@ -285,11 +285,7 @@ route:
     enabled: false
     kind: HTTPRoute
     parentRefs:
-      - name: envoy-external
-        namespace: network
-        sectionName: https
     hostnames:
-      - memini.example.com
     rules:
       - matches:
           - path:
@@ -310,15 +306,9 @@ route:
   # server still serves the SPA on / regardless of this flag.
   ui:
     enabled: false
-    annotations:
-      gatus.home-operations.com/enabled: "false"
     kind: HTTPRoute
     parentRefs:
-      - name: envoy-internal
-        namespace: network
-        sectionName: https
     hostnames:
-      - memini.example.com
     rules:
       - backendRefs:
           - identifier: main
