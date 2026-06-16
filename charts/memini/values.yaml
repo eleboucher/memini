@@ -176,6 +176,24 @@ controllers:
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
+      # -- Pin the fsck pod to a node that already runs the main StatefulSet
+      # pod. Useful when fsck is extended to touch the RWO PVC directly. Label-
+      # based, so it follows the StatefulSet if it ever moves. Drop this block
+      # (or set to `{}`) to let the scheduler pick any node.
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app.kubernetes.io/component
+                    operator: In
+                    values:
+                      - main
+                  - key: app.kubernetes.io/instance
+                    operator: In
+                    values:
+                      - "{{ .Release.Name }}"
+              topologyKey: kubernetes.io/hostname
     containers:
       fsck:
         image:

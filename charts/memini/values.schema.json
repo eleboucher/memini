@@ -151,6 +151,113 @@
             },
             "pod": {
               "properties": {
+                "affinity": {
+                  "description": "Pin the fsck pod to a node that already runs the main StatefulSet\npod. Useful when fsck is extended to touch the RWO PVC directly. Label-\nbased, so it follows the StatefulSet if it ever moves. Drop this block\n(or set to `{}`) to let the scheduler pick any node.",
+                  "properties": {
+                    "podAffinity": {
+                      "properties": {
+                        "requiredDuringSchedulingIgnoredDuringExecution": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "properties": {
+                                  "labelSelector": {
+                                    "properties": {
+                                      "matchExpressions": {
+                                        "items": {
+                                          "anyOf": [
+                                            {
+                                              "properties": {
+                                                "key": {
+                                                  "default": "app.kubernetes.io/component",
+                                                  "title": "key",
+                                                  "type": "string"
+                                                },
+                                                "operator": {
+                                                  "default": "In",
+                                                  "title": "operator",
+                                                  "type": "string"
+                                                },
+                                                "values": {
+                                                  "items": {
+                                                    "anyOf": [
+                                                      {
+                                                        "type": "string"
+                                                      }
+                                                    ],
+                                                    "required": []
+                                                  },
+                                                  "title": "values",
+                                                  "type": "array"
+                                                }
+                                              },
+                                              "required": [],
+                                              "type": "object"
+                                            },
+                                            {
+                                              "properties": {
+                                                "key": {
+                                                  "default": "app.kubernetes.io/instance",
+                                                  "title": "key",
+                                                  "type": "string"
+                                                },
+                                                "operator": {
+                                                  "default": "In",
+                                                  "title": "operator",
+                                                  "type": "string"
+                                                },
+                                                "values": {
+                                                  "items": {
+                                                    "anyOf": [
+                                                      {
+                                                        "type": "string"
+                                                      }
+                                                    ],
+                                                    "required": []
+                                                  },
+                                                  "title": "values",
+                                                  "type": "array"
+                                                }
+                                              },
+                                              "required": [],
+                                              "type": "object"
+                                            }
+                                          ],
+                                          "required": []
+                                        },
+                                        "title": "matchExpressions",
+                                        "type": "array"
+                                      }
+                                    },
+                                    "required": [],
+                                    "title": "labelSelector",
+                                    "type": "object"
+                                  },
+                                  "topologyKey": {
+                                    "default": "kubernetes.io/hostname",
+                                    "title": "topologyKey",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [],
+                                "type": "object"
+                              }
+                            ],
+                            "required": []
+                          },
+                          "title": "requiredDuringSchedulingIgnoredDuringExecution",
+                          "type": "array"
+                        }
+                      },
+                      "required": [],
+                      "title": "podAffinity",
+                      "type": "object"
+                    }
+                  },
+                  "required": [],
+                  "title": "affinity",
+                  "type": "object"
+                },
                 "securityContext": {
                   "properties": {
                     "runAsNonRoot": {
