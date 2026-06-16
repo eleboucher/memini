@@ -20,6 +20,17 @@ const defaultTimeout = 60 * time.Second
 // so a legitimate response is far smaller than this.
 const maxRerankBodyBytes = 8 << 20 // 8 MiB
 
+// defaultTransport clones the stdlib transport but lifts the idle-connection
+// caps: every recall hits the same reranker host, and net/http otherwise keeps
+// only 2 idle connections per host (DefaultMaxIdleConnsPerHost), so concurrent
+// recalls churn through fresh TCP connections instead of reusing warm ones.
+func defaultTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 100
+	t.MaxIdleConnsPerHost = 100
+	return t
+}
+
 // Config configures the cross-encoder reranker client.
 type Config struct {
 	// BaseURL is the API root (e.g. http://host:8002/v1); "/rerank" is appended.
@@ -52,7 +63,7 @@ func New(cfg Config) (*CrossEncoder, error) {
 	}
 	c := cfg.HTTPClient
 	if c == nil {
-		c = &http.Client{Timeout: defaultTimeout}
+		c = &http.Client{Timeout: defaultTimeout, Transport: defaultTransport()}
 	}
 	return &CrossEncoder{
 		url:         strings.TrimRight(cfg.BaseURL, "/") + "/rerank",

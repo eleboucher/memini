@@ -45,7 +45,7 @@ func (r *llmReranker) Rerank(ctx context.Context, query string, candidates []Can
 	b.WriteString("\nMost relevant candidate numbers (comma-separated, most relevant first):")
 
 	// The deadline is owned by the caller (the service wraps Rerank in
-	// MEMINI_RERANK_TIMEOUT, default 3s) and backstopped by the chat client's
+	// MEMINI_RERANK_TIMEOUT, default 10s) and backstopped by the chat client's
 	// per-attempt HTTP timeout; this reranker does not impose its own.
 	out, err := r.c.Complete(ctx, llmSystem, b.String())
 	if err != nil {

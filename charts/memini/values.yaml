@@ -82,6 +82,9 @@ controllers:
         env:
           # -- HTTP listen address.
           MEMINI_HTTP_ADDR: ":8080"
+          # -- Dedicated metrics listener; keeps /metrics off the main port and
+          # every route, so it needs no bearer token. "" serves it on the main port.
+          MEMINI_METRICS_ADDR: ":9090"
           # -- Storage backend: "sqlite" (default) or "postgres". For postgres,
           # set this to "postgres", switch controllers.main.type to deployment,
           # disable persistence.data, and wire MEMINI_POSTGRES_DSN below.
@@ -209,12 +212,16 @@ serviceAccount:
 service:
   main:
     # -- Primary Service. Targets the main controller. Common derives the
-    # container port from this port (8080).
+    # container ports from these ports.
     controller: main
     ports:
       http:
         port: 8080
         primary: true
+      # -- Dedicated metrics port (MEMINI_METRICS_ADDR). Not referenced by any
+      # route, so /metrics stays in-cluster.
+      metrics:
+        port: 9090
 
 # -- Persistent storage for the sqlite backend, mounted at /data. A standalone
 # PVC (single-replica memini sqlite is single-writer). For the postgres backend
@@ -233,14 +240,19 @@ persistence:
     globalMounts:
       - path: /data
 
-# -- Prometheus Operator ServiceMonitor. Disabled by default.
+# -- Prometheus Operator ServiceMonitor. Disabled by default; flip `enabled` to
+# scrape /metrics from the dedicated `metrics` port (MEMINI_METRICS_ADDR / the
+# service port below). That port is unauthenticated and kept off every route, so
+# the scrape needs no bearer token. If you instead serve /metrics on the main
+# port (MEMINI_METRICS_ADDR: ""), point the endpoint at `port: http` and, when
+# MEMINI_API_KEY is set, add an `authorization.credentials` secret reference.
 serviceMonitor:
   main:
     enabled: false
     service:
       identifier: main
     endpoints:
-      - port: http
+      - port: metrics
         path: /metrics
         interval: 30s
         scrapeTimeout: 10s

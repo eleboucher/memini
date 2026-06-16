@@ -572,6 +572,12 @@ func testTagMetadataFilter(t *testing.T, st store.Store, dims int) {
 		t.Fatalf("category=bug_fixes should yield only bug, got %v", got)
 	}
 
+	// ExcludeMetadata drops the matching category, keeping the rest.
+	excluded := mustList(t, st, ns, store.Filter{ExcludeMetadata: map[string]string{keyCat: "bug_fixes"}})
+	if len(excluded) != 2 || containsMem(excluded, id(ns, bug)) {
+		t.Fatalf("exclude category=bug_fixes should drop only bug, got %v", memIDs(excluded))
+	}
+
 	// Tag + metadata filters compose on search legs too.
 	f := store.Filter{Tags: []string{perf}, Metadata: map[string]string{keyCat: "performance_findings"}}
 	vres, err := st.VectorSearch(ctx, ns, vec(dims, 1), f, 10)

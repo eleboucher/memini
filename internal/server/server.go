@@ -30,6 +30,9 @@ type Server struct {
 	log    *slog.Logger
 	router chi.Router
 	http   *http.Server
+	// metricsHandler is non-nil only when metrics run on a dedicated port (see
+	// Options.MetricsAddr); Run serves it on its own listener.
+	metricsHandler http.Handler
 
 	ready atomic.Pointer[ReadinessFunc]
 }
@@ -38,9 +41,14 @@ type Server struct {
 type Options struct {
 	Addr            string
 	ShutdownTimeout time.Duration
-	// APIKey, when non-empty, gates /metrics behind the same bearer token used
-	// by the /v1 routes.
+	// APIKey, when non-empty, gates /metrics on the main port behind the same
+	// bearer token used by the /v1 routes. A dedicated MetricsAddr port is
+	// unauthenticated instead.
 	APIKey string
+	// MetricsAddr, when set and distinct from Addr, serves /metrics on its own
+	// unauthenticated listener instead of the main router — a port meant to stay
+	// in-cluster (keep it off any public route).
+	MetricsAddr string
 }
 
 // New builds a Server with base middleware, /healthz, /readyz and /metrics.
@@ -60,11 +68,18 @@ func New(opts Options, log *slog.Logger, reg *prometheus.Registry) *Server {
 
 	r.Get("/healthz", s.handleHealthz)
 	r.Get("/readyz", s.handleReadyz)
+
 	metricsHandler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
-	if opts.APIKey != "" {
-		metricsHandler = bearerAuth(opts.APIKey, metricsHandler)
+	if opts.MetricsAddr != "" && opts.MetricsAddr != opts.Addr {
+		// Keep /metrics off the main router so a route forwarding the main port
+		// can't reach it; Run serves it on the dedicated listener.
+		s.metricsHandler = metricsHandler
+	} else {
+		if opts.APIKey != "" {
+			metricsHandler = bearerAuth(opts.APIKey, metricsHandler)
+		}
+		r.Handle("/metrics", metricsHandler)
 	}
-	r.Handle("/metrics", metricsHandler)
 
 	return s
 }
@@ -101,13 +116,34 @@ func (s *Server) Run(ctx context.Context) error {
 		IdleTimeout: 120 * time.Second,
 	}
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		s.log.Info("http server listening", "addr", s.cfg.Addr, "version", version.String())
 		if err := s.http.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
+
+	// Dedicated metrics listener (Options.MetricsAddr): serves only /metrics,
+	// unauthenticated, on an in-cluster port.
+	var metricsSrv *http.Server
+	if s.metricsHandler != nil {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", s.metricsHandler)
+		metricsSrv = &http.Server{
+			Addr:              s.cfg.MetricsAddr,
+			Handler:           mux,
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
+		go func() {
+			s.log.Info("metrics server listening", "addr", s.cfg.MetricsAddr)
+			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- err
+			}
+		}()
+	}
 
 	select {
 	case err := <-errCh:
@@ -116,6 +152,9 @@ func (s *Server) Run(ctx context.Context) error {
 		s.log.Info("shutdown signal received, draining")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 		defer cancel()
+		if metricsSrv != nil {
+			_ = metricsSrv.Shutdown(shutdownCtx)
+		}
 		return s.http.Shutdown(shutdownCtx)
 	}
 }

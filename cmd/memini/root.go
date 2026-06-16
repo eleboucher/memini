@@ -105,6 +105,7 @@ func newServer(
 		Addr:            cfg.HTTPAddr,
 		ShutdownTimeout: cfg.ShutdownTimeout,
 		APIKey:          cfg.APIKey,
+		MetricsAddr:     cfg.MetricsAddr,
 	}, log, reg)
 	srv.SetReady(func(ctx context.Context) error { return st.Ping(ctx) })
 

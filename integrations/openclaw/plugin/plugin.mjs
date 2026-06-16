@@ -160,30 +160,6 @@ export function effectiveNamespace(cfg, event, ctx) {
   return tmpl.replaceAll("{agent}", id).replaceAll("{namespace}", cfg.namespace);
 }
 
-// sessionIdentity pulls a stable per-session id from the hook event/ctx, used
-// to tag captured turns and then exclude the current session's own captures
-// from its pre-turn auto-recall — otherwise a turn still in the live transcript
-// gets echoed back as "long-term memory" the very next turn. Unlike
-// agentIdentity (which is per-agent and shared across that agent's sessions),
-// this is per-session, so two sessions of the same agent don't suppress each
-// other. Returns "" when nothing identifies a session (recall/capture then
-// behave as before).
-export function sessionIdentity(event, ctx) {
-  const candidates = [
-    ctx?.sessionId,
-    ctx?.sessionKey,
-    ctx?.runId,
-    event?.sessionId,
-    event?.sessionKey,
-    event?.runId,
-    event?.session?.id,
-  ];
-  for (const c of candidates) {
-    if (typeof c === "string" && c.trim()) return sanitizeNsSegment(c);
-  }
-  return "";
-}
-
 // Leading marker some gateways prepend to a system turn's text, e.g.
 // "[OpenClaw heartbeat poll]" or "[cron:daily (...)]". Only the first bracketed
 // segment is inspected, so a user quoting "[cron ...]" mid-message is ignored.
@@ -230,6 +206,31 @@ export function detectSystemKind(event, ctx, text, kinds = DEFAULT_SYSTEM_KINDS)
 export function shouldSkipSystemTurn(cfg, event, ctx, text) {
   if (!cfg.skip_system_turns) return false;
   return detectSystemKind(event, ctx, text, cfg.system_kinds) !== "";
+}
+
+// sessionIdentity pulls a stable per-session id from the hook event/ctx, used
+// to tag captured turns (metadata.session_id) and then exclude this session's
+// own just-captured turns from its pre-turn auto-recall — otherwise a turn
+// still in the live transcript is recalled back as "long-term memory" the very
+// next turn. Unlike agentIdentity (per-agent, shared across an agent's
+// sessions), this is per-session, so two sessions of one agent don't suppress
+// each other. It deliberately does NOT fall back to the agent id: that is too
+// coarse and would exclude the agent's entire history from recall. Returns ""
+// when nothing identifies a session (recall/capture then behave as before).
+export function sessionIdentity(event, ctx) {
+  const candidates = [
+    ctx?.sessionId,
+    ctx?.sessionKey,
+    ctx?.runId,
+    event?.sessionId,
+    event?.sessionKey,
+    event?.runId,
+    event?.session?.id,
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim()) return sanitizeNsSegment(c);
+  }
+  return "";
 }
 
 function extractText(content) {
@@ -416,11 +417,11 @@ const plugin = {
       const ns = effectiveNamespace(cfg, event, ctx);
       if (ns == null) return;
       const body = { query: prompt, limit: 5 };
-      // Exclude this session's own captured turns: they're already in the live
-      // transcript, so recalling them just echoes the conversation back a turn
-      // behind. Captures from other (past) sessions are still recalled.
+      // Exclude this session's own just-captured turns: they're still in the
+      // live transcript, so recalling them echoes the conversation back as
+      // "long-term memory". agent_end tags each capture with session_id.
       const session = sessionIdentity(event, ctx);
-      if (session) body.exclude_metadata = { session };
+      if (session) body.exclude_metadata = { session_id: session };
       const result = await client.postJson("/v1/search", body, ns);
       const block = formatResults(result?.results || []);
       if (!block) return;
@@ -439,7 +440,7 @@ const plugin = {
       // this session's own turns from its auto-recall (see that hook).
       const metadata = { source: "openclaw" };
       const session = sessionIdentity(event, ctx);
-      if (session) metadata.session = session;
+      if (session) metadata.session_id = session;
       await client.postJson("/v1/memories", {
         content: `User: ${userText.slice(0, 1000)}\nAssistant: ${assistantText.slice(0, 3000)}`,
         tier: "episodic",

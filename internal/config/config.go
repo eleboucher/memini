@@ -44,6 +44,12 @@ type Config struct {
 	// HTTP server.
 	HTTPAddr        string        `env:"MEMINI_HTTP_ADDR" envDefault:":8080"`
 	ShutdownTimeout time.Duration `env:"MEMINI_SHUTDOWN_TIMEOUT" envDefault:"15s"`
+	// MetricsAddr, when set (e.g. ":9090"), serves /metrics on its own listener
+	// instead of the main HTTP port. The dedicated port is meant to stay
+	// in-cluster — keep it out of any public route and it needs no bearer token.
+	// Empty (the default) keeps /metrics on the main port, where MEMINI_API_KEY
+	// gates it.
+	MetricsAddr string `env:"MEMINI_METRICS_ADDR"`
 
 	// Logging.
 	LogLevel  string `env:"MEMINI_LOG_LEVEL" envDefault:"info"`  // debug|info|warn|error
@@ -128,8 +134,10 @@ type Config struct {
 	// whole rerank request. 0 disables truncation.
 	RerankMaxDocChars int `env:"MEMINI_RERANK_MAX_DOC_CHARS" envDefault:"1200"`
 	// RerankTimeout bounds a single reranker call; past it, recall degrades to
-	// composite order instead of stalling on a slow or congested backend.
-	RerankTimeout time.Duration `env:"MEMINI_RERANK_TIMEOUT" envDefault:"3s"`
+	// composite order instead of stalling on a slow or congested backend. The
+	// default has headroom for the per-document fan-out (RerankTopN candidates
+	// scored in slot-bounded waves), so a busy backend isn't abandoned mid-rerank.
+	RerankTimeout time.Duration `env:"MEMINI_RERANK_TIMEOUT" envDefault:"10s"`
 
 	// Consolidation tuning.
 	// ConsolidateMode is "async" (default), "sync", or "off".

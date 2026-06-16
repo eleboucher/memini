@@ -343,7 +343,7 @@ test("auto-recall excludes the current session's own captures; capture tags the 
 
     await hooks.before_prompt_build({ prompt: "how did we fix auth?" }, ctx);
     const search = JSON.parse(requests.find((r) => r.url.endsWith("/v1/search")).init.body);
-    assert.deepEqual(search.exclude_metadata, { session: "sess-abc" });
+    assert.deepEqual(search.exclude_metadata, { session_id: "sess-abc" });
 
     await hooks.agent_end(
       {
@@ -356,7 +356,7 @@ test("auto-recall excludes the current session's own captures; capture tags the 
       ctx,
     );
     const write = JSON.parse(requests.find((r) => r.url.endsWith("/v1/memories")).init.body);
-    assert.equal(write.metadata.session, "sess-abc");
+    assert.equal(write.metadata.session_id, "sess-abc");
     assert.equal(write.metadata.source, "openclaw");
   } finally {
     globalThis.fetch = realFetch;
@@ -392,7 +392,7 @@ test("without a session id, auto-recall and capture stay unscoped (back-compat)"
       {},
     );
     const write = JSON.parse(requests.find((r) => r.url.endsWith("/v1/memories")).init.body);
-    assert.equal(write.metadata.session, undefined);
+    assert.equal(write.metadata.session_id, undefined);
   } finally {
     globalThis.fetch = realFetch;
   }
