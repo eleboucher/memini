@@ -286,17 +286,21 @@ route:
         backendRefs:
           - identifier: main
             port: http
-  # -- Internal catch-all surface (full app incl. the UI shell, which embeds the
-  # API key). Keep this on an internal-only gateway.
-  internal:
+  # -- Admin UI catch-all. Disabled by default — flip to true on installs that
+  # want the SPA reachable through a Gateway. Wire it to an internal gateway
+  # so the SPA and its embedded API key never leave the LAN. The in-process
+  # server still serves the SPA on / regardless of this flag.
+  ui:
     enabled: false
+    annotations:
+      gatus.home-operations.com/enabled: "false"
     kind: HTTPRoute
     parentRefs:
       - name: envoy-internal
         namespace: network
         sectionName: https
     hostnames:
-      - memini-internal.example.com
+      - memini.example.com
     rules:
       - backendRefs:
           - identifier: main
