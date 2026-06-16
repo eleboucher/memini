@@ -1,7 +1,11 @@
 # memini
 
-A Kubernetes-ready memory service for AI agents (REST + MCP), powered by the
-[common library](https://github.com/bjw-s-labs/helm-charts).
+A Kubernetes-ready memory service for AI agents (REST + MCP).
+
+A Kubernetes-ready memory service for AI agents, exposing REST and MCP. This
+chart is powered by the [bjw-s common library](https://github.com/bjw-s-labs/helm-charts)
+and uses its native values API (`controllers`/`service`/`route`/`persistence`/
+`serviceAccount`/`serviceMonitor`).
 
 ## Installing
 
@@ -46,8 +50,8 @@ persistence:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | controllers.fsck | object | `{"containers":{"fsck":{"command":["/bin/sh","-c","curl -sf -X POST --variable \"MEMINI_API_KEY=$MEMINI_API_KEY\" --expand-header \"Authorization: Bearer {{MEMINI_API_KEY}}\" http://memini:8080/v1/fsck"],"image":{"pullPolicy":"IfNotPresent","repository":"curlimages/curl","tag":"8.20.0"},"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true}}},"cronjob":{"concurrencyPolicy":"Forbid","schedule":"0 * * * *"},"enabled":false,"pod":{"securityContext":{"runAsNonRoot":true,"runAsUser":65532}},"type":"cronjob"}` | Periodic fsck CronJob. Disabled by default — the in-process sweeper already handles decay. If enabled, the container needs MEMINI_API_KEY in env and uses curl's --variable/--expand-header so the token never lands in argv. |
-| controllers.main.containers | object | `{"main":{"env":{"MEMINI_BACKEND":"sqlite","MEMINI_DEFAULT_NAMESPACE":"default","MEMINI_EMBED_BASE_URL":"","MEMINI_EMBED_DIMS":"1536","MEMINI_EMBED_MODEL":"text-embedding-3-small","MEMINI_HTTP_ADDR":":8080","MEMINI_LOG_FORMAT":"json","MEMINI_LOG_LEVEL":"info","MEMINI_NAMESPACE_HEADER":"X-Memini-Namespace","MEMINI_SQLITE_PATH":"/data/memini.db","MEMINI_SWEEP_INTERVAL":"1h","MEMINI_UI_ENABLED":"true"},"image":{"digest":"","pullPolicy":"IfNotPresent","repository":"registry.erwanleboucher.dev/eleboucher/memini","tag":""},"probes":{"liveness":{"custom":true,"enabled":true,"spec":{"httpGet":{"path":"/healthz","port":8080},"initialDelaySeconds":5,"periodSeconds":15}},"readiness":{"custom":true,"enabled":true,"spec":{"httpGet":{"path":"/readyz","port":8080},"initialDelaySeconds":3,"periodSeconds":10}}},"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true}}}` | HorizontalPodAutoscaler (postgres / deployment backend only — sqlite is single-writer). Uncomment after switching type to `deployment`: horizontalPodAutoscaler:   minReplicas: 2   maxReplicas: 10   metrics:     - type: Resource       resource:         name: cpu         target:           type: Utilization           averageUtilization: 80 |
-| controllers.main.containers.main.env | object | `{"MEMINI_BACKEND":"sqlite","MEMINI_DEFAULT_NAMESPACE":"default","MEMINI_EMBED_BASE_URL":"","MEMINI_EMBED_DIMS":"1536","MEMINI_EMBED_MODEL":"text-embedding-3-small","MEMINI_HTTP_ADDR":":8080","MEMINI_LOG_FORMAT":"json","MEMINI_LOG_LEVEL":"info","MEMINI_NAMESPACE_HEADER":"X-Memini-Namespace","MEMINI_SQLITE_PATH":"/data/memini.db","MEMINI_SWEEP_INTERVAL":"1h","MEMINI_UI_ENABLED":"true"}` | Environment variables (MEMINI_*). Dictionary style. The always-on defaults below configure the sqlite backend; commented entries are optional knobs operators can uncomment. |
+| controllers.main.containers | object | `{"main":{"env":{"MEMINI_BACKEND":"sqlite","MEMINI_DEFAULT_NAMESPACE":"default","MEMINI_EMBED_BASE_URL":"","MEMINI_EMBED_DIMS":"1536","MEMINI_EMBED_MODEL":"text-embedding-3-small","MEMINI_HTTP_ADDR":":8080","MEMINI_LOG_FORMAT":"json","MEMINI_LOG_LEVEL":"info","MEMINI_METRICS_ADDR":":9090","MEMINI_NAMESPACE_HEADER":"X-Memini-Namespace","MEMINI_SQLITE_PATH":"/data/memini.db","MEMINI_SWEEP_INTERVAL":"1h","MEMINI_UI_ENABLED":"true"},"image":{"digest":"","pullPolicy":"IfNotPresent","repository":"registry.erwanleboucher.dev/eleboucher/memini","tag":""},"probes":{"liveness":{"custom":true,"enabled":true,"spec":{"httpGet":{"path":"/healthz","port":8080},"initialDelaySeconds":5,"periodSeconds":15}},"readiness":{"custom":true,"enabled":true,"spec":{"httpGet":{"path":"/readyz","port":8080},"initialDelaySeconds":3,"periodSeconds":10}}},"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true}}}` | HorizontalPodAutoscaler (postgres / deployment backend only — sqlite is single-writer). Uncomment after switching type to `deployment`: horizontalPodAutoscaler:   minReplicas: 2   maxReplicas: 10   metrics:     - type: Resource       resource:         name: cpu         target:           type: Utilization           averageUtilization: 80 |
+| controllers.main.containers.main.env | object | `{"MEMINI_BACKEND":"sqlite","MEMINI_DEFAULT_NAMESPACE":"default","MEMINI_EMBED_BASE_URL":"","MEMINI_EMBED_DIMS":"1536","MEMINI_EMBED_MODEL":"text-embedding-3-small","MEMINI_HTTP_ADDR":":8080","MEMINI_LOG_FORMAT":"json","MEMINI_LOG_LEVEL":"info","MEMINI_METRICS_ADDR":":9090","MEMINI_NAMESPACE_HEADER":"X-Memini-Namespace","MEMINI_SQLITE_PATH":"/data/memini.db","MEMINI_SWEEP_INTERVAL":"1h","MEMINI_UI_ENABLED":"true"}` | Environment variables (MEMINI_*). Dictionary style. The always-on defaults below configure the sqlite backend; commented entries are optional knobs operators can uncomment. |
 | controllers.main.containers.main.env.MEMINI_BACKEND | string | `"sqlite"` | Storage backend: "sqlite" (default) or "postgres". For postgres, set this to "postgres", switch controllers.main.type to deployment, disable persistence.data, and wire MEMINI_POSTGRES_DSN below. |
 | controllers.main.containers.main.env.MEMINI_DEFAULT_NAMESPACE | string | `"default"` | Default namespace for memories. |
 | controllers.main.containers.main.env.MEMINI_EMBED_BASE_URL | string | `""` | OpenAI-compatible embeddings endpoint (required for vector search). |
@@ -56,6 +60,7 @@ persistence:
 | controllers.main.containers.main.env.MEMINI_HTTP_ADDR | string | `":8080"` | HTTP listen address. |
 | controllers.main.containers.main.env.MEMINI_LOG_FORMAT | string | `"json"` | Log format (json|text). |
 | controllers.main.containers.main.env.MEMINI_LOG_LEVEL | string | `"info"` | Log level. |
+| controllers.main.containers.main.env.MEMINI_METRICS_ADDR | string | `":9090"` | Dedicated metrics listener; keeps /metrics off the main port and every route, so it needs no bearer token. "" serves it on the main port. |
 | controllers.main.containers.main.env.MEMINI_NAMESPACE_HEADER | string | `"X-Memini-Namespace"` | HTTP header that selects the namespace per request. |
 | controllers.main.containers.main.env.MEMINI_SQLITE_PATH | string | `"/data/memini.db"` | sqlite database path (kept on the PVC mounted at /data). |
 | controllers.main.containers.main.env.MEMINI_SWEEP_INTERVAL | string | `"1h"` | Decay sweeper interval (Go duration). |
@@ -77,11 +82,12 @@ persistence:
 | route | object | `{"internal":{"enabled":false,"hostnames":["memini-internal.example.com"],"kind":"HTTPRoute","parentRefs":[{"name":"envoy-internal","namespace":"network","sectionName":"https"}],"rules":[{"backendRefs":[{"identifier":"main","port":"http"}]}]},"main":{"enabled":false,"hostnames":["memini.example.com"],"kind":"HTTPRoute","parentRefs":[{"name":"envoy-external","namespace":"network","sectionName":"https"}],"rules":[{"backendRefs":[{"identifier":"main","port":"http"}],"matches":[{"path":{"type":"PathPrefix","value":"/v1"}},{"path":{"type":"PathPrefix","value":"/mcp"}},{"path":{"type":"PathPrefix","value":"/.well-known/"}}]}]}}` | Gateway API HTTPRoutes (the modern replacement for Ingress). BOTH disabled by default — the operator enables and attaches them to an existing Gateway. Exposing /v1 or /mcp REQUIRES bearer auth: set MEMINI_API_KEY (see env above). |
 | route.internal | object | `{"enabled":false,"hostnames":["memini-internal.example.com"],"kind":"HTTPRoute","parentRefs":[{"name":"envoy-internal","namespace":"network","sectionName":"https"}],"rules":[{"backendRefs":[{"identifier":"main","port":"http"}]}]}` | Internal catch-all surface (full app incl. the UI shell, which embeds the API key). Keep this on an internal-only gateway. |
 | route.main | object | `{"enabled":false,"hostnames":["memini.example.com"],"kind":"HTTPRoute","parentRefs":[{"name":"envoy-external","namespace":"network","sectionName":"https"}],"rules":[{"backendRefs":[{"identifier":"main","port":"http"}],"matches":[{"path":{"type":"PathPrefix","value":"/v1"}},{"path":{"type":"PathPrefix","value":"/mcp"}},{"path":{"type":"PathPrefix","value":"/.well-known/"}}]}]}` | Public API + MCP surface. Enable, set the gateway in parentRefs, and the hostname, then scope to the token-gated paths via rules[].matches. |
-| service.main.controller | string | `"main"` | Primary Service. Targets the main controller. Common derives the container port from this port (8080). |
+| service.main.controller | string | `"main"` | Primary Service. Targets the main controller. Common derives the container ports from these ports. |
 | service.main.ports.http.port | int | `8080` |  |
 | service.main.ports.http.primary | bool | `true` |  |
+| service.main.ports.metrics | object | `{"port":9090}` | Dedicated metrics port (MEMINI_METRICS_ADDR). Not referenced by any route, so /metrics stays in-cluster. |
 | serviceAccount | object | `{"main":{}}` | ServiceAccount created for the workload. |
-| serviceMonitor | object | `{"main":{"enabled":false,"endpoints":[{"interval":"30s","path":"/metrics","port":"http","scrapeTimeout":"10s"}],"service":{"identifier":"main"}}}` | Prometheus Operator ServiceMonitor. Disabled by default. |
+| serviceMonitor | object | `{"main":{"enabled":false,"endpoints":[{"interval":"30s","path":"/metrics","port":"metrics","scrapeTimeout":"10s"}],"service":{"identifier":"main"}}}` | Prometheus Operator ServiceMonitor. Disabled by default; flip `enabled` to scrape /metrics from the dedicated `metrics` port (MEMINI_METRICS_ADDR / the service port below). That port is unauthenticated and kept off every route, so the scrape needs no bearer token. If you instead serve /metrics on the main port (MEMINI_METRICS_ADDR: ""), point the endpoint at `port: http` and, when MEMINI_API_KEY is set, add an `authorization.credentials` secret reference. |
 
 ## Observability
 
@@ -107,9 +113,8 @@ annotated with `grafana_dashboard_folder: memini`.
 ## Maintainers
 
 | Name | Email | Url |
-| ---- | ----- | --- |
-| elebouch | - | - |
-
+| ---- | ------ | --- |
+| elebouch |  |  |
 ## Source Code
 
-- <https://github.com/eleboucher/memini>
+* <https://github.com/eleboucher/memini>
