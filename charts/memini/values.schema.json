@@ -32,6 +32,7 @@
       "type": "object"
     },
     "controllers": {
+      "description": "This chart is powered by the bjw-s common library (v5.0.1) and uses its\nnative values API. See https://bjw-s-labs.github.io/helm-charts/docs/common-library/\n\nDefault backend is sqlite: a single-replica StatefulSet with a PVC at /data.\nTo run the scale-out postgres backend instead, see the commented \"postgres\nbackend\" notes against controllers.main below and on the MEMINI_* env keys.",
       "properties": {
         "fsck": {
           "description": "Periodic fsck CronJob. Disabled by default — the in-process sweeper\nalready handles decay. If enabled, the container needs MEMINI_API_KEY in env\nand uses curl's --variable/--expand-header so the token never lands in argv.",
@@ -921,9 +922,11 @@
               "type": "boolean"
             },
             "hostnames": {
-              "default": "",
+              "items": {
+                "required": []
+              },
               "title": "hostnames",
-              "type": "null"
+              "type": "array"
             },
             "kind": {
               "default": "HTTPRoute",
@@ -931,9 +934,11 @@
               "type": "string"
             },
             "parentRefs": {
-              "default": "",
+              "items": {
+                "required": []
+              },
               "title": "parentRefs",
-              "type": "null"
+              "type": "array"
             },
             "rules": {
               "items": {
@@ -1067,9 +1072,11 @@
               "type": "boolean"
             },
             "hostnames": {
-              "default": "",
+              "items": {
+                "required": []
+              },
               "title": "hostnames",
-              "type": "null"
+              "type": "array"
             },
             "kind": {
               "default": "HTTPRoute",
@@ -1077,9 +1084,11 @@
               "type": "string"
             },
             "parentRefs": {
-              "default": "",
+              "items": {
+                "required": []
+              },
               "title": "parentRefs",
-              "type": "null"
+              "type": "array"
             },
             "rules": {
               "items": {

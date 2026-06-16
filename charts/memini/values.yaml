@@ -4,7 +4,6 @@
 # Default backend is sqlite: a single-replica StatefulSet with a PVC at /data.
 # To run the scale-out postgres backend instead, see the commented "postgres
 # backend" notes against controllers.main below and on the MEMINI_* env keys.
-
 controllers:
   main:
     # -- Controller type. `statefulset` for the default sqlite backend (PVC at
@@ -20,7 +19,6 @@ controllers:
         runAsNonRoot: true
         runAsUser: 65532
         fsGroup: 65532
-
     # -- HorizontalPodAutoscaler (postgres / deployment backend only — sqlite is
     # single-writer). Uncomment after switching type to `deployment`:
     # horizontalPodAutoscaler:
@@ -33,7 +31,6 @@ controllers:
     #         target:
     #           type: Utilization
     #           averageUtilization: 80
-
     containers:
       main:
         image:
@@ -46,7 +43,6 @@ controllers:
           digest: ""
           # -- Image pull policy.
           pullPolicy: IfNotPresent
-
         # -- Container probes. Liveness hits /healthz, readiness hits /readyz.
         probes:
           liveness:
@@ -67,7 +63,6 @@ controllers:
                 port: 8080
               initialDelaySeconds: 3
               periodSeconds: 10
-
         # -- Container security context.
         securityContext:
           allowPrivilegeEscalation: false
@@ -75,7 +70,6 @@ controllers:
           capabilities:
             drop:
               - ALL
-
         # -- Environment variables (MEMINI_*). Dictionary style. The always-on
         # defaults below configure the sqlite backend; commented entries are
         # optional knobs operators can uncomment.
@@ -109,59 +103,57 @@ controllers:
           MEMINI_SQLITE_PATH: "/data/memini.db"
           # -- Serve the embedded admin SPA at /. Set "false" for headless API/MCP.
           MEMINI_UI_ENABLED: "true"
-
           # --- Optional decay / hygiene knobs (uncomment to enable) ---
           # MEMINI_DEMOTE_AFTER: "1440h"          # demote stale durable memories to episodic
           # MEMINI_TOMBSTONE_TTL: "720h"          # hard-delete superseded memories after TTL
           # MEMINI_WRITE_DEDUP_MIN_SCORE: "0.95"  # coalesce near-identical writes
+  # --- Optional embeddings tuning ---
+  # MEMINI_EMBED_MAX_BATCH: "20"          # max items per /embeddings request
+  # MEMINI_EMBED_MAX_BATCH_CHARS: "24000" # max total chars per request (0 disables)
+  # MEMINI_EMBED_MAX_ITEM_CHARS: "8000"   # truncate single text before embedding
 
-          # --- Optional embeddings tuning ---
-          # MEMINI_EMBED_MAX_BATCH: "20"          # max items per /embeddings request
-          # MEMINI_EMBED_MAX_BATCH_CHARS: "24000" # max total chars per request (0 disables)
-          # MEMINI_EMBED_MAX_ITEM_CHARS: "8000"   # truncate single text before embedding
+  # --- Optional LLM consolidation (leave base URL empty to run headless) ---
+  # MEMINI_LLM_BASE_URL: "http://llm:8080/v1"
+  # MEMINI_LLM_MODEL: "gpt-4o-mini"
 
-          # --- Optional LLM consolidation (leave base URL empty to run headless) ---
-          # MEMINI_LLM_BASE_URL: "http://llm:8080/v1"
-          # MEMINI_LLM_MODEL: "gpt-4o-mini"
+  # --- Optional recall reranking ---
+  # MEMINI_RERANK: "http://reranker:8080/v1" # "" / "off" / "llm" / cross-encoder URL
+  # MEMINI_RERANK_MODEL: "bge-reranker-v2-m3"
+  # MEMINI_RERANK_TOP_N: "20"
+  # MEMINI_RERANK_MAX_DOC_CHARS: "2000"
 
-          # --- Optional recall reranking ---
-          # MEMINI_RERANK: "http://reranker:8080/v1" # "" / "off" / "llm" / cross-encoder URL
-          # MEMINI_RERANK_MODEL: "bge-reranker-v2-m3"
-          # MEMINI_RERANK_TOP_N: "20"
-          # MEMINI_RERANK_MAX_DOC_CHARS: "2000"
+  # --- postgres backend connection (required when MEMINI_BACKEND=postgres) ---
+  # MEMINI_POSTGRES_DSN:
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: memini-pg
+  #       key: dsn
 
-          # --- postgres backend connection (required when MEMINI_BACKEND=postgres) ---
-          # MEMINI_POSTGRES_DSN:
-          #   valueFrom:
-          #     secretKeyRef:
-          #       name: memini-pg
-          #       key: dsn
+  # --- API keys for external providers (valueFrom secretKeyRef) ---
+  # MEMINI_EMBED_API_KEY:
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: memini-embed
+  #       key: api-key
+  # MEMINI_LLM_API_KEY:
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: memini-llm
+  #       key: api-key
+  # MEMINI_RERANK_API_KEY:
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: memini-rerank
+  #       key: api-key
 
-          # --- API keys for external providers (valueFrom secretKeyRef) ---
-          # MEMINI_EMBED_API_KEY:
-          #   valueFrom:
-          #     secretKeyRef:
-          #       name: memini-embed
-          #       key: api-key
-          # MEMINI_LLM_API_KEY:
-          #   valueFrom:
-          #     secretKeyRef:
-          #       name: memini-llm
-          #       key: api-key
-          # MEMINI_RERANK_API_KEY:
-          #   valueFrom:
-          #     secretKeyRef:
-          #       name: memini-rerank
-          #       key: api-key
-
-          # --- Bearer-token auth (protects both /v1 and /mcp) ---
-          # REQUIRED before exposing memini off-cluster via a route. There is no
-          # chart-created secret: reference your own Secret here.
-          # MEMINI_API_KEY:
-          #   valueFrom:
-          #     secretKeyRef:
-          #       name: memini-auth
-          #       key: api-key
+  # --- Bearer-token auth (protects both /v1 and /mcp) ---
+  # REQUIRED before exposing memini off-cluster via a route. There is no
+  # chart-created secret: reference your own Secret here.
+  # MEMINI_API_KEY:
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: memini-auth
+  #       key: api-key
 
   # -- Periodic fsck CronJob. Disabled by default — the in-process sweeper
   # already handles decay. If enabled, the container needs MEMINI_API_KEY in env
@@ -204,10 +196,7 @@ controllers:
           - /bin/sh
           - -c
           - >-
-            curl -sf -X POST
-            --variable "MEMINI_API_KEY=$MEMINI_API_KEY"
-            --expand-header "Authorization: Bearer {{MEMINI_API_KEY}}"
-            http://memini:8080/v1/fsck
+            curl -sf -X POST --variable "MEMINI_API_KEY=$MEMINI_API_KEY" --expand-header "Authorization: Bearer {{MEMINI_API_KEY}}" http://memini:8080/v1/fsck
         # -- Provide the bearer token to the curl --variable above. Point at the
         # same Secret as the main container's MEMINI_API_KEY.
         # env:
@@ -222,11 +211,9 @@ controllers:
           capabilities:
             drop:
               - ALL
-
 # -- ServiceAccount created for the workload.
 serviceAccount:
   main: {}
-
 service:
   main:
     # -- Primary Service. Targets the main controller. Common derives the
@@ -240,7 +227,6 @@ service:
       # route, so /metrics stays in-cluster.
       metrics:
         port: 9090
-
 # -- Persistent storage for the sqlite backend, mounted at /data. A standalone
 # PVC (single-replica memini sqlite is single-writer). For the postgres backend
 # set `persistence.data.enabled: false`.
@@ -257,7 +243,6 @@ persistence:
     # storageClass: ""
     globalMounts:
       - path: /data
-
 # -- Prometheus Operator ServiceMonitor. Disabled by default; flip `enabled` to
 # scrape /metrics from the dedicated `metrics` port (MEMINI_METRICS_ADDR / the
 # service port below). That port is unauthenticated and kept off every route, so
@@ -274,7 +259,6 @@ serviceMonitor:
         path: /metrics
         interval: 30s
         scrapeTimeout: 10s
-
 # -- Gateway API HTTPRoutes (the modern replacement for Ingress). BOTH disabled
 # by default — the operator enables and attaches them to an existing Gateway.
 # Exposing /v1 or /mcp REQUIRES bearer auth: set MEMINI_API_KEY (see env above).
@@ -284,8 +268,8 @@ route:
   main:
     enabled: false
     kind: HTTPRoute
-    parentRefs:
-    hostnames:
+    parentRefs: []
+    hostnames: []
     rules:
       - matches:
           - path:
@@ -307,13 +291,12 @@ route:
   ui:
     enabled: false
     kind: HTTPRoute
-    parentRefs:
-    hostnames:
+    parentRefs: []
+    hostnames: []
     rules:
       - backendRefs:
           - identifier: main
             port: http
-
 # -- Bundled Grafana dashboards, rendered as ConfigMaps for the grafana-operator
 # (a custom chart key, not part of the common library). Point your Grafana CR's
 # `dashboardsConfigMaps` selector at this release's namespace; the operator picks
