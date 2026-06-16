@@ -307,11 +307,9 @@ function createClient(cfg, api) {
   const fallbackOnError = cfg.fallback_on_error !== false;
   const secret = process.env.MEMINI_API_KEY;
   const guardPlaintextBearerAuth = createPlaintextBearerAuthGuard((m) => api.logger.warn?.(m));
-  if (process.env.MEMINI_REQUIRE_HTTPS === "1") {
-    guardPlaintextBearerAuth(baseUrl, secret);
-  }
 
   async function postJson(path, payload, ns) {
+    if (process.env.MEMINI_REQUIRE_HTTPS === "1") guardPlaintextBearerAuth(baseUrl, secret);
     guardPlaintextBearerAuth(baseUrl, secret);
     const headers = { "Content-Type": "application/json", "X-Memini-Namespace": ns || namespace };
     if (secret) headers.Authorization = `Bearer ${secret}`;
@@ -429,18 +427,17 @@ const plugin = {
     });
 
     api.on("agent_end", async (event, ctx) => {
-      if (!cfg.enabled || !event?.success || !Array.isArray(event.messages)) return;
+      if (!cfg.enabled || !Array.isArray(event.messages)) return;
       const userText = lastTextByRole(event.messages, "user");
       const assistantText = lastTextByRole(event.messages, "assistant");
       if (!userText || !assistantText) return;
       if (shouldSkipSystemTurn(cfg, event, ctx, userText)) return;
       const ns = effectiveNamespace(cfg, event, ctx);
       if (ns == null) return;
-      // Tag the capture with its session id so before_prompt_build can exclude
-      // this session's own turns from its auto-recall (see that hook).
       const metadata = { source: "openclaw" };
       const session = sessionIdentity(event, ctx);
       if (session) metadata.session_id = session;
+      if (!event?.success) metadata.failed = true;
       await client.postJson("/v1/memories", {
         content: `User: ${userText.slice(0, 1000)}\nAssistant: ${assistantText.slice(0, 3000)}`,
         tier: "episodic",
@@ -555,12 +552,14 @@ export function registerMeminiTools(api, client, cfg) {
           }),
         ),
       }),
-      async execute(_id, params, ctx) {
-        const body = { content: params.content, tier: params.tier || "semantic" };
-        if (params.tags?.length) body.tags = params.tags;
-        if (params.category) body.metadata = { category: params.category };
-        const res = await client.postJson("/v1/memories", body, nsFor(ctx));
-        return text({ id: res?.id || null, success: res != null });
+    async execute(_id, params, ctx) {
+      const body = { content: params.content, tier: params.tier || "semantic" };
+      const VALID_TIERS = ["working", "episodic", "semantic", "procedural"];
+      if (!VALID_TIERS.includes(body.tier)) body.tier = "semantic";
+      if (params.tags?.length) body.tags = params.tags;
+      if (params.category) body.metadata = { category: params.category };
+      const res = await client.postJson("/v1/memories", body, nsFor(ctx));
+      return text({ id: res?.id || null, success: res != null });
       },
     },
     { optional: true },

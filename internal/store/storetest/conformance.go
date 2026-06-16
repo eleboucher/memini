@@ -539,11 +539,12 @@ func testTagMetadataFilter(t *testing.T, st store.Store, dims int) {
 		bug     = "bug"
 		perf    = "perf"
 		keyCat  = "category"
+		catBug  = "bug_fixes"
 	)
 
 	bm := mem(ns, bug, "fixed the auth race condition", vec(dims, 1))
 	bm.Tags = []string{bug, tagAuth}
-	bm.Metadata = map[string]any{keyCat: "bug_fixes"}
+	bm.Metadata = map[string]any{keyCat: catBug}
 	mustUpsert(t, st, bm)
 
 	pm := mem(ns, perf, "auth handler latency tuning", vec(dims, 1))

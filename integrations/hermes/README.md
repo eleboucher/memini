@@ -30,24 +30,13 @@ What it wires:
 
 Via Hermes (recommended) — from the standalone repo
 [`eleboucher/memini-hermes`](https://github.com/eleboucher/memini-hermes), a
-mirror of [`plugin/memini/`](plugin/memini/) synced on each release. Plain
-`owner/repo`, so it works on any Hermes version and `hermes plugins update
-memini` tracks it:
+mirror of [`plugin/memini/`](plugin/memini/) synced on each release:
 
 ```bash
 hermes plugins install eleboucher/memini-hermes
 ```
 
-This only installs the files; activate it via `memory.provider` (below), not
-the `Enable? [y/N]` prompt.
-
-Or fetch just the plugin off `main` (no clone):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/eleboucher/memini/main/integrations/hermes/install.sh | sh
-```
-
-Or from a checkout of this repo:
+Or from a checkout:
 
 ```bash
 cp -r integrations/hermes/plugin/memini ~/.hermes/plugins/memini

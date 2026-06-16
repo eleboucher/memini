@@ -462,3 +462,57 @@ test("tool namespace follows per-agent resolution from ctx", async () => {
   await byName.memory_recall.execute("id", { query: "q" }, { agentId: "miso" });
   assert.equal(client.calls.at(-1).ns, "team-miso", "per-agent ctx should scope the tool call");
 });
+
+test("plugin.yaml version matches package.json", () => {
+  const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
+  const yaml = readFileSync(new URL("./plugin.yaml", import.meta.url), "utf8");
+  const m = yaml.match(/^version:\s*(.+)$/m);
+  assert.ok(m, "plugin.yaml must contain a version key");
+  assert.equal(m[1].trim().replace(/["']/g, ""), pkg.version, "plugin.yaml version must match package.json");
+});
+
+test("agent_end still captures when success is false, tagging metadata.failed", async () => {
+  const hooks = {};
+  const requests = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    return { ok: true, async json() { return { id: "m1" }; }, async text() { return ""; } };
+  };
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: {},
+      registerTool() {},
+    });
+
+    await hooks.agent_end(
+      {
+        success: false,
+        messages: [
+          { role: "user", content: "q" },
+          { role: "assistant", content: "error output" },
+        ],
+      },
+      {},
+    );
+    const write = requests.find((r) => r.url.endsWith("/v1/memories"));
+    assert.ok(write, "should still capture failed runs");
+    const body = JSON.parse(write.init.body);
+    assert.equal(body.tier, "episodic");
+    assert.equal(body.metadata.failed, true, "failed runs must be tagged");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("memory_remember rejects unknown tier and falls back to semantic", async () => {
+  const client = fakeClient();
+  const cfg = resolveConfig({ namespace: "ns", expose_tools: true });
+  const { byName } = await collectTools(client, cfg);
+  await byName.memory_remember.execute("id", { content: "fact", tier: "bogus" });
+  const call = client.calls.at(-1);
+  assert.equal(call.body.tier, "semantic", "unknown tier must fall back to semantic");
+});

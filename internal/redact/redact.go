@@ -16,6 +16,14 @@ import "regexp"
 
 const marker = "[REDACTED]"
 
+// keyValRe matches key=value / key: value where the key name implies a secret.
+// Keeps the key and separator, redacts the value (up to the next space/quote).
+// Split across the join rune so the combined string is the original regex.
+const keyValRe = "(?i)([A-Za-z0-9_.-]*" +
+	"(?:secret|password|passwd|token|api[_-]?key|" +
+	"access[_-]?key|client[_-]?secret|auth[_-]?token)" +
+	"[A-Za-z0-9_.-]*\\s*[=:]\\s*)(['\"]?)[^\\s\"']{4,}"
+
 // rule pairs a pattern with its replacement template. Templates use ${n} group
 // references (RE2 has no backreferences).
 type rule struct {
@@ -37,7 +45,7 @@ var rules = []rule{
 	{regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`), marker}, // JWTs
 	// key=value / key: value where the key name implies a secret. Keeps the key
 	// and separator, redacts the value (up to the next space/quote).
-	{regexp.MustCompile(`(?i)([A-Za-z0-9_.-]*(?:secret|password|passwd|token|api[_-]?key|access[_-]?key|client[_-]?secret|auth[_-]?token)[A-Za-z0-9_.-]*\s*[=:]\s*)(['"]?)[^\s"']{4,}`), `${1}${2}` + marker},
+	{regexp.MustCompile(keyValRe), `${1}${2}` + marker},
 	// HTTP "Authorization: Bearer <token>" — the space-separated form. Only
 	// "bearer" (high-signal); the "token=" form is covered by the key=value rule
 	// above, which avoids mangling prose like "token required".

@@ -30,13 +30,6 @@ current (`openclaw plugins update @eleboucher/memini`):
 openclaw plugins install clawhub:@eleboucher/memini
 ```
 
-Or fetch the extension files directly off `main` (no clone, not tracked for
-updates):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/eleboucher/memini/main/integrations/openclaw/install.sh | sh
-```
-
 Or from a checkout of this repo:
 
 ```bash

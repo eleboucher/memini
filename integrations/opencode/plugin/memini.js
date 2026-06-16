@@ -162,22 +162,25 @@ function createClient(cfg, log) {
 
 // extractLastTurn returns the latest user and assistant text from the message
 // list returned by client.session.messages ([{info, parts}, ...]), plus the id
-// of the assistant message (for dedup). Exported for testing.
+// of the assistant message (for dedup). Iterates in reverse to short-circuit.
+// Exported for testing.
 export function extractLastTurn(messages) {
   let userText = "";
   let assistantText = "";
   let assistantID = "";
   if (!Array.isArray(messages)) return { userText, assistantText, assistantID };
-  for (const entry of messages) {
+  for (const entry of [...messages].reverse()) {
     const info = entry && entry.info;
     if (!info) continue;
     const text = extractPartsText(entry.parts);
     if (!text) continue;
-    if (info.role === "user") userText = text;
-    else if (info.role === "assistant") {
+    if (info.role === "user" && !userText) {
+      userText = text;
+    } else if (info.role === "assistant" && !assistantText) {
       assistantText = text;
       assistantID = info.id || "";
     }
+    if (userText && assistantText) break;
   }
   return { userText, assistantText, assistantID };
 }

@@ -8,7 +8,10 @@ transports:
   shared, always-on deployment.
 - **Local (stdio):** `memini mcp` — the agent spawns memini as a subprocess.
 
-Tools exposed: `memory_remember`, `memory_recall`, `memory_briefing`, `memory_answer`, `memory_list`, `memory_get`, `memory_forget`.
+Tools exposed:
+
+- `memory_remember`, `memory_recall`, `memory_briefing`, `memory_answer`
+- `memory_list`, `memory_get`, `memory_forget`
 
 ## Recommended: install the plugin
 
@@ -33,7 +36,7 @@ the tools on demand.
 Code/Codex hooks layer is host-specific, so the agent has to be told to
 use the tools via a `CLAUDE.md`-style file.
 
-## The shared-namespace superpower
+## Shared namespace across agents
 
 Every request is scoped to a **namespace** (tenant/agent). Point multiple
 agents at the same memini with the **same namespace** and they share one
@@ -65,10 +68,11 @@ header explicitly) instead of relying on the server-side resolve.
 | Agent       | Folder                     | Transport                               |
 | ----------- | -------------------------- | --------------------------------------- |
 | Claude Code | [`../plugin/`](../plugin/) | HTTP (plugin)                           |
-| opencode    | [`opencode/`](opencode/)   | native plugin (or HTTP / stdio MCP)     |
 | Codex CLI   | [`codex/`](codex/)         | stdio (plugin) or HTTP                  |
+| opencode    | [`opencode/`](opencode/)   | native plugin (or HTTP / stdio MCP)     |
 | Hermes      | [`hermes/`](hermes/)       | native MemoryProvider plugin (or MCP)   |
 | OpenClaw    | [`openclaw/`](openclaw/)   | native memory-slot extension (or skill) |
+| Open WebUI  | [`openwebui/`](openwebui/) | native Filter plugin (or Tools / MCP)   |
 
 All recipes assume memini is reachable and that its embeddings endpoint
 is configured (`MEMINI_EMBED_BASE_URL`). If memini requires a bearer

@@ -211,12 +211,15 @@ class MeminiMemoryProvider(MemoryProvider):
         return f"Relevant memories (from memini):\n{block}" if block else ""
 
     def on_pre_compress(self, messages: list, **kwargs: Any) -> str:
-        # Hermes injects the returned string into the compaction-summary prompt;
-        # it ignores in-place edits to `messages`, so we must return the text.
+        """Re-inject recalled context before history compaction."""
         query = ""
         for m in reversed(messages):
-            if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str):
-                query = m["content"]
+            role = m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
+            if role != "user":
+                continue
+            content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+            if isinstance(content, str) and content.strip():
+                query = content.strip()
                 break
         block = self._format(self._call("/v1/search", self._recall_body(query)), 5) if query else ""
         return f"[memini context before compaction]\n{block}" if block else ""
@@ -226,7 +229,7 @@ class MeminiMemoryProvider(MemoryProvider):
         if not user and not assistant:
             return
         self._call_bg("/v1/memories", {
-            "content": f"User: {user}\nAssistant: {assistant}"[:4000],
+            "content": f"User: {user[:1000]}\nAssistant: {assistant[:3000]}",
             "tier": "episodic",
             "metadata": {"source": "hermes", "session_id": kwargs.get("session_id", self._session_id)},
         })

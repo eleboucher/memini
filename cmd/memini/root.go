@@ -62,6 +62,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		"namespace_source", string(cfg.NamespaceSrc),
 	)
 
+	if cfg.NamespaceSrc != config.NamespaceFromEnv {
+		log.Warn("default namespace derived from server's cwd — likely wrong in HTTP mode. "+
+			"Set X-Memini-Namespace on every request (plugin does this) or set MEMINI_DEFAULT_NAMESPACE",
+			"namespace", cfg.DefaultNamespace, "source", cfg.NamespaceSrc)
+	}
+
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

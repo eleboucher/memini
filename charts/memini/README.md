@@ -1,11 +1,7 @@
 # memini
 
-A Kubernetes-ready memory service for AI agents (REST + MCP).
-
-A Kubernetes-ready memory service for AI agents, exposing REST and MCP. This
-chart is powered by the [bjw-s common library](https://github.com/bjw-s-labs/helm-charts)
-and uses its native values API (`controllers`/`service`/`route`/`persistence`/
-`serviceAccount`/`serviceMonitor`).
+A Kubernetes-ready memory service for AI agents (REST + MCP), powered by the
+[common library](https://github.com/bjw-s-labs/helm-charts).
 
 ## Installing
 
@@ -111,8 +107,9 @@ annotated with `grafana_dashboard_folder: memini`.
 ## Maintainers
 
 | Name | Email | Url |
-| ---- | ------ | --- |
-| elebouch |  |  |
+| ---- | ----- | --- |
+| elebouch | - | - |
+
 ## Source Code
 
-* <https://github.com/eleboucher/memini>
+- <https://github.com/eleboucher/memini>
