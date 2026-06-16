@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/llm"
@@ -40,6 +41,11 @@ const (
 	// k*recallPoolFactor per leg per namespace — an unbounded limit is a cheap
 	// way to amplify load.
 	maxRecallLimit = 100
+
+	// recallSearchConcurrency caps how many search legs run at once across all
+	// namespaces. A subtree recall fans out two legs per namespace; this bound
+	// keeps a deep subtree from exhausting the store's connection pool.
+	recallSearchConcurrency = 16
 )
 
 // RecallPoolSize is the per-leg candidate pool Recall over-fetches for a
@@ -81,6 +87,10 @@ type Metrics interface {
 	// RerankResult records one recall rerank attempt: backend is the reranker's
 	// label ("llm"|"cross_encoder"); result is "ok" or "fallback".
 	RerankResult(backend, result string)
+	// RecallDegraded records one recall that fell back to keyword-only search
+	// because the query embed failed or timed out. reason is "embed_timeout" or
+	// "embed_error".
+	RecallDegraded(reason string)
 	// ReinforceResult records one best-effort recall reinforcement write:
 	// "ok" or "error".
 	ReinforceResult(result string)
@@ -101,6 +111,7 @@ func (nopMetrics) FsckResult(string)                   {}
 func (nopMetrics) OpDuration(string, time.Duration)    {}
 func (nopMetrics) AnswerResult(string)                 {}
 func (nopMetrics) RerankResult(string, string)         {}
+func (nopMetrics) RecallDegraded(string)               {}
 func (nopMetrics) ReinforceResult(string)              {}
 func (nopMetrics) DedupTombstoned(int)                 {}
 
@@ -146,6 +157,10 @@ type Service struct {
 	// rerankTimeout bounds the reranker call; past it, recall falls back to
 	// composite order instead of stalling on a slow backend.
 	rerankTimeout time.Duration
+	// recallEmbedTimeout bounds the query embed on the recall path; past it, or on
+	// any embed error, recall degrades to keyword-only search instead of failing.
+	// 0 keeps the query embed unbounded and an embed error fatal.
+	recallEmbedTimeout time.Duration
 
 	// distiller is optional; when set, RunPromoter distills frequently-accessed
 	// episodic memories into durable semantic facts.
@@ -246,6 +261,11 @@ const defaultRerankTopN = 20
 // busy backend isn't abandoned mid-rerank.
 const defaultRerankTimeout = 10 * time.Second
 
+// rerankResponseMargin is held back from a caller's deadline when bounding the
+// rerank, so the result (composite order on fallback) still has time to reach
+// the caller before its own deadline fires.
+const rerankResponseMargin = 250 * time.Millisecond
+
 // WithReranker enables reranking of recall candidates: after composite ranking,
 // the top topN candidates are reordered by the reranker (an LLM or cross-encoder
 // model), then truncated to the limit. name labels the backend in metrics. It
@@ -267,6 +287,18 @@ func WithRerankTimeout(d time.Duration) Option {
 	return func(s *Service) {
 		if d > 0 {
 			s.rerankTimeout = d
+		}
+	}
+}
+
+// WithRecallEmbedTimeout bounds the query embed on the recall path. Past the
+// deadline, or on any embed error, recall degrades to keyword-only search
+// rather than failing or stalling on a slow embeddings backend. d <= 0 keeps
+// the query embed unbounded and an embed error fatal (the default).
+func WithRecallEmbedTimeout(d time.Duration) Option {
+	return func(s *Service) {
+		if d > 0 {
+			s.recallEmbedTimeout = d
 		}
 	}
 }
@@ -697,21 +729,57 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		AsOf:              in.AsOf,
 	}
 
-	vec, err := embed.EmbedOne(ctx, s.embedder, s.queryPrefix+in.Query)
-	if err != nil {
-		s.metrics.RecallResult("error", tf, "0")
-		return nil, fmt.Errorf("recall: embed: %w", err)
-	}
-
-	// Resolve the namespaces to search: just in.Namespace by default, or it plus
-	// everything nested under it for a subtree recall.
+	// Embed the query and resolve namespaces concurrently: two independent
+	// blocking calls, so overlapping them keeps only the slower on the critical
+	// path. Namespaces default to in.Namespace; a subtree recall adds everything
+	// nested under it.
+	var vec []float32
+	var embedErr error
 	namespaces := []string{in.Namespace}
-	if in.Subtree {
-		namespaces, err = s.subtreeNamespaces(ctx, in.Namespace)
-		if err != nil {
-			s.metrics.RecallResult("error", tf, "0")
-			return nil, fmt.Errorf("recall: resolve subtree: %w", err)
+	embedStart := time.Now()
+	g1, g1ctx := errgroup.WithContext(ctx)
+	g1.Go(func() error {
+		ectx := g1ctx
+		if s.recallEmbedTimeout > 0 {
+			var cancel context.CancelFunc
+			ectx, cancel = context.WithTimeout(g1ctx, s.recallEmbedTimeout)
+			defer cancel()
 		}
+		v, err := embed.EmbedOne(ectx, s.embedder, s.queryPrefix+in.Query)
+		if err != nil {
+			// With an embed budget set, recall is best-effort: capture the error
+			// and degrade to keyword-only rather than aborting the group.
+			if s.recallEmbedTimeout > 0 {
+				embedErr = err
+				return nil
+			}
+			return fmt.Errorf("recall: embed: %w", err)
+		}
+		vec = v
+		return nil
+	})
+	if in.Subtree {
+		g1.Go(func() error {
+			ns, err := s.subtreeNamespaces(g1ctx, in.Namespace)
+			if err != nil {
+				return fmt.Errorf("recall: resolve subtree: %w", err)
+			}
+			namespaces = ns
+			return nil
+		})
+	}
+	if err := g1.Wait(); err != nil {
+		s.metrics.RecallResult("error", tf, "0")
+		return nil, err
+	}
+	s.metrics.OpDuration("recall_embed", time.Since(embedStart))
+	if embedErr != nil {
+		reason := "embed_error"
+		if errors.Is(embedErr, context.DeadlineExceeded) {
+			reason = "embed_timeout"
+		}
+		slog.WarnContext(ctx, "recall: query embed failed, falling back to keyword-only search", "reason", reason, "err", embedErr)
+		s.metrics.RecallDegraded(reason)
 	}
 
 	// Over-fetch a deep candidate pool from each strategy: a memory ranked just
@@ -730,19 +798,43 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		return search.Fuse([][]store.Scored{v, kw}, 0, search.DefaultRRFK)
 	}
 
-	perNS := make([][]store.Scored, 0, len(namespaces))
-	for _, ns := range namespaces {
-		v, verr := s.store.VectorSearch(ctx, ns, vec, filter, poolK)
-		if verr != nil {
-			s.metrics.RecallResult("error", tf, "0")
-			return nil, fmt.Errorf("recall: vector search: %w", verr)
+	// Run both legs of every namespace concurrently into pre-sized,
+	// index-addressed slots so there is no shared append to guard. SetLimit caps
+	// in-flight store calls so a deep subtree can't exhaust the connection pool.
+	searchStart := time.Now()
+	vres := make([][]store.Scored, len(namespaces))
+	kres := make([][]store.Scored, len(namespaces))
+	g2, g2ctx := errgroup.WithContext(ctx)
+	g2.SetLimit(recallSearchConcurrency)
+	for i, ns := range namespaces {
+		if vec != nil {
+			g2.Go(func() error {
+				v, err := s.store.VectorSearch(g2ctx, ns, vec, filter, poolK)
+				if err != nil {
+					return fmt.Errorf("recall: vector search: %w", err)
+				}
+				vres[i] = v
+				return nil
+			})
 		}
-		kw, kerr := s.store.KeywordSearch(ctx, ns, in.Query, filter, poolK)
-		if kerr != nil {
-			s.metrics.RecallResult("error", tf, "0")
-			return nil, fmt.Errorf("recall: keyword search: %w", kerr)
-		}
-		perNS = append(perNS, fuseLegs(v, kw))
+		g2.Go(func() error {
+			kw, err := s.store.KeywordSearch(g2ctx, ns, in.Query, filter, poolK)
+			if err != nil {
+				return fmt.Errorf("recall: keyword search: %w", err)
+			}
+			kres[i] = kw
+			return nil
+		})
+	}
+	if err := g2.Wait(); err != nil {
+		s.metrics.RecallResult("error", tf, "0")
+		return nil, err
+	}
+	s.metrics.OpDuration("recall_search", time.Since(searchStart))
+
+	perNS := make([][]store.Scored, len(namespaces))
+	for i := range namespaces {
+		perNS[i] = fuseLegs(vres[i], kres[i])
 	}
 
 	// RRF-merge the per-namespace lists so each namespace's hits rank by their own
@@ -799,10 +891,26 @@ func (s *Service) finalizeRecall(ctx context.Context, query string, ranked []sto
 	for i, r := range pool {
 		cands[i] = rerank.Candidate{ID: r.Memory.ID, Content: r.Memory.Content}
 	}
+	// Bound the rerank by the configured timeout and, when the caller imposed a
+	// deadline, by the time left before it minus a response margin — whichever is
+	// tighter. If no time remains, skip the rerank and keep composite order so the
+	// caller gets a result before its deadline rather than after.
+	budget := s.rerankTimeout
+	if dl, ok := ctx.Deadline(); ok {
+		rem := time.Until(dl) - rerankResponseMargin
+		if rem <= 0 {
+			slog.WarnContext(ctx, "recall: no time left to rerank, using composite order", "backend", s.rerankName)
+			s.metrics.RerankResult(s.rerankName, "fallback")
+			return search.Dedup(ranked, k)
+		}
+		if budget <= 0 || rem < budget {
+			budget = rem
+		}
+	}
 	rctx := ctx
-	if s.rerankTimeout > 0 {
+	if budget > 0 {
 		var cancel context.CancelFunc
-		rctx, cancel = context.WithTimeout(ctx, s.rerankTimeout)
+		rctx, cancel = context.WithTimeout(ctx, budget)
 		defer cancel()
 	}
 	start := time.Now()

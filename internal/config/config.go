@@ -145,6 +145,11 @@ type Config struct {
 	// default has headroom for the per-document fan-out (RerankTopN candidates
 	// scored in slot-bounded waves), so a busy backend isn't abandoned mid-rerank.
 	RerankTimeout time.Duration `env:"MEMINI_RERANK_TIMEOUT" envDefault:"10s"`
+	// RecallEmbedTimeout bounds the query embed on the recall path; past it, or on
+	// any embed error, recall degrades to keyword-only search instead of failing
+	// or stalling on a slow embeddings backend. 0 (default) keeps the query embed
+	// unbounded and an embed error fatal.
+	RecallEmbedTimeout time.Duration `env:"MEMINI_RECALL_EMBED_TIMEOUT" envDefault:"0s"`
 
 	// Consolidation tuning.
 	// ConsolidateMode is "async" (default), "sync", or "off".

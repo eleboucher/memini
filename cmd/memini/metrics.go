@@ -26,6 +26,7 @@ type consolidateMetrics struct {
 	fsckResults      *prometheus.CounterVec
 	answerResults    *prometheus.CounterVec
 	rerankResults    *prometheus.CounterVec
+	recallDegraded   *prometheus.CounterVec
 	reinforceResults *prometheus.CounterVec
 	opDuration       *prometheus.HistogramVec
 
@@ -49,6 +50,7 @@ const (
 	labelHitsBucket = "hits_bucket"
 	labelMemoryType = "memory_type"
 	labelOp         = "op"
+	labelReason     = "reason"
 	labelResult     = "result"
 	labelTier       = "tier"
 	labelTierFilter = "tier_filter"
@@ -99,6 +101,10 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 			Name: "memini_rerank_results_total",
 			Help: "Recall rerank outcomes by backend (llm, cross_encoder) and result (ok, fallback).",
 		}, []string{labelBackend, labelResult}),
+		recallDegraded: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "memini_recall_degraded_total",
+			Help: "Recalls that fell back to keyword-only search by reason (embed_timeout, embed_error).",
+		}, []string{labelReason}),
 		reinforceResults: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_reinforce_results_total",
 			Help: "Best-effort recall reinforcement writes (ok, error).",
@@ -194,6 +200,10 @@ func (m *consolidateMetrics) AnswerResult(result string) {
 
 func (m *consolidateMetrics) RerankResult(backend, result string) {
 	m.rerankResults.WithLabelValues(backend, result).Inc()
+}
+
+func (m *consolidateMetrics) RecallDegraded(reason string) {
+	m.recallDegraded.WithLabelValues(reason).Inc()
 }
 
 func (m *consolidateMetrics) ReinforceResult(result string) {

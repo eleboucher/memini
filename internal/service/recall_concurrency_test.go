@@ -74,11 +74,12 @@ func (e errEmbedder) Embed(context.Context, []string) ([][]float32, error) {
 }
 func (e errEmbedder) Dims() int { return e.dims }
 
-// countingMetrics counts RecallResult("error", ...) calls; everything else is a
-// no-op. Safe for concurrent use.
+// countingMetrics counts recall error and keyword-only-degrade events;
+// everything else is a no-op. Safe for concurrent use.
 type countingMetrics struct {
 	mu        sync.Mutex
 	recallErr int
+	degraded  map[string]int
 }
 
 func (m *countingMetrics) RecallResult(result, _, _ string) {
@@ -87,6 +88,14 @@ func (m *countingMetrics) RecallResult(result, _, _ string) {
 		m.recallErr++
 		m.mu.Unlock()
 	}
+}
+func (m *countingMetrics) RecallDegraded(reason string) {
+	m.mu.Lock()
+	if m.degraded == nil {
+		m.degraded = map[string]int{}
+	}
+	m.degraded[reason]++
+	m.mu.Unlock()
 }
 func (m *countingMetrics) ConsolidateResult(string)         {}
 func (m *countingMetrics) ConsolidateQueueDepth(int)        {}
@@ -113,6 +122,103 @@ func TestRecallEmbedErrorFailsOnce(t *testing.T) {
 	}
 	if m.recallErr != 1 {
 		t.Fatalf("RecallResult(error) fired %d times, want exactly 1", m.recallErr)
+	}
+}
+
+// slowEmbedder blocks until its deadline or d elapses, simulating a slow
+// embeddings backend; it honors ctx so a recall embed budget can cut it off.
+type slowEmbedder struct{ d time.Duration }
+
+func (e slowEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	select {
+	case <-time.After(e.d):
+		out := make([][]float32, len(texts))
+		for i := range out {
+			out[i] = make([]float32, dims)
+		}
+		return out, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+func (e slowEmbedder) Dims() int { return dims }
+
+func seedHello(t *testing.T, st store.Store) {
+	t.Helper()
+	seed := service.New(st, embedtest.New(dims), service.WithSyncReinforce())
+	if _, err := seed.Remember(context.Background(), service.RememberInput{Namespace: "alice", Content: "hello world", Tier: memory.TierSemantic}); err != nil {
+		t.Fatalf("seed remember: %v", err)
+	}
+}
+
+// TestRecallEmbedTimeoutFallsBackToKeyword confirms that with an embed budget
+// set, a query embed that exceeds it degrades to keyword-only search instead of
+// failing, and records the degrade reason.
+func TestRecallEmbedTimeoutFallsBackToKeyword(t *testing.T) {
+	st := openTestStore(t)
+	seedHello(t, st)
+
+	m := &countingMetrics{}
+	svc := service.New(st, slowEmbedder{d: 2 * time.Second}, service.WithSyncReinforce(),
+		service.WithRecallEmbedTimeout(20*time.Millisecond), service.WithMetrics(m))
+
+	res, err := svc.Recall(context.Background(), service.RecallInput{Namespace: "alice", Query: "hello", Limit: 5})
+	if err != nil {
+		t.Fatalf("recall should degrade, not error: %v", err)
+	}
+	if len(res) == 0 {
+		t.Fatal("keyword-only fallback returned no results")
+	}
+	if m.degraded["embed_timeout"] != 1 {
+		t.Fatalf("RecallDegraded(embed_timeout) = %d, want 1", m.degraded["embed_timeout"])
+	}
+}
+
+// TestRecallEmbedErrorFallsBackToKeyword confirms that with an embed budget set,
+// a hard embed error degrades to keyword-only search rather than failing.
+func TestRecallEmbedErrorFallsBackToKeyword(t *testing.T) {
+	st := openTestStore(t)
+	seedHello(t, st)
+
+	m := &countingMetrics{}
+	svc := service.New(st, errEmbedder{dims: dims}, service.WithSyncReinforce(),
+		service.WithRecallEmbedTimeout(time.Second), service.WithMetrics(m))
+
+	res, err := svc.Recall(context.Background(), service.RecallInput{Namespace: "alice", Query: "hello", Limit: 5})
+	if err != nil {
+		t.Fatalf("recall should degrade, not error: %v", err)
+	}
+	if len(res) == 0 {
+		t.Fatal("keyword-only fallback returned no results")
+	}
+	if m.degraded["embed_error"] != 1 {
+		t.Fatalf("RecallDegraded(embed_error) = %d, want 1", m.degraded["embed_error"])
+	}
+}
+
+// TestRecallRerankSkippedWhenNoTimeLeft confirms that when the caller's deadline
+// leaves no margin, recall skips the reranker and returns composite order rather
+// than racing (or blowing) the deadline.
+func TestRecallRerankSkippedWhenNoTimeLeft(t *testing.T) {
+	st := openTestStore(t)
+	base := service.New(st, embedtest.New(dims), service.WithSyncReinforce())
+	ingestTwo(t, base)
+	baseIDs := recallIDs(t, base)
+
+	rr := &reverseReranker{}
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithReranker(rr, "test", 0))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	res, err := svc.Recall(ctx, service.RecallInput{Namespace: "alice", Query: "fruit", Limit: 2})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if rr.called {
+		t.Fatal("reranker should be skipped when the deadline leaves no response margin")
+	}
+	if len(res) != 2 || res[0].Memory.ID != baseIDs[0] || res[1].Memory.ID != baseIDs[1] {
+		t.Fatalf("expected composite order %v, got %v", baseIDs, res)
 	}
 }
 

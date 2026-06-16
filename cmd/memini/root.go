@@ -222,6 +222,7 @@ func buildServiceStack(
 		service.WithFingerprintDedup(cfg.WriteDedupFingerprint),
 		service.WithSecretRedaction(cfg.RedactSecrets),
 		service.WithTemporalTargeting(cfg.TemporalBoost, search.RegexAnchorExtractor{}),
+		service.WithRecallEmbedTimeout(cfg.RecallEmbedTimeout),
 		service.WithMetrics(metricsImpl),
 	)
 	svc := service.New(st, embedder, svcOpts...)
