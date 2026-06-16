@@ -50,7 +50,7 @@ Pass options inline via the `[name, options]` form:
 | `recall`            | `MEMINI_RECALL`        | on                      | `false` disables recall-before-turn                    |
 | `capture`           | `MEMINI_CAPTURE`       | on                      | `false` disables capture-after-turn                    |
 | `recall_limit`      | `MEMINI_RECALL_LIMIT`  | `5`                     | max memories injected per turn                         |
-| `timeout_ms`        | `MEMINI_TIMEOUT_MS`    | `5000`                  | per-request timeout                                    |
+| `timeout_ms`        | `MEMINI_TIMEOUT_MS`    | `30000`                 | per-request timeout                                    |
 | `fallback_on_error` | `MEMINI_FALLBACK`      | on                      | `false` surfaces errors instead of degrading silently  |
 | —                   | `MEMINI_API_KEY`       | —                       | bearer token, if memini needs auth (env only — secret) |
 | —                   | `MEMINI_REQUIRE_HTTPS` | —                       | `1` refuses to send the token over plaintext HTTP      |
