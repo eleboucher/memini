@@ -135,6 +135,62 @@ server is detached from the agent's cwd.
 | `MEMINI_AUTO_SAVE_INTERVAL` | `15`                        | `Stop` hook  | user messages between auto-save nudges                       |
 | `MEMINI_DEBUG`              | —                           | hooks        | set to `1` for verbose hook logging                          |
 
+### Tuning injection budgets
+
+The SessionStart and PreToolUse hooks inject context into the agent's
+prompt. The volume is configurable per-knob — shrink it for small / fast
+models, grow it where more recall helps. All knobs are env-only; defaults
+match the prior hardcoded behavior, so existing installs see no change.
+
+**SessionStart** (one briefing call → pinned / facts / procedures / recent):
+
+| Env var                             | Default  | Description                                                                                          |
+| ----------------------------------- | -------- | ---------------------------------------------------------------------------------------------------- |
+| `MEMINI_INJECT_BRIEFING_PINNED`     | `5`      | Max pinned memories. `0` disables the section.                                                       |
+| `MEMINI_INJECT_BRIEFING_FACTS`      | `5`      | Max durable semantic facts. `0` disables.                                                            |
+| `MEMINI_INJECT_BRIEFING_PROCEDURES` | `5`      | Max procedural how-tos. `0` disables.                                                                |
+| `MEMINI_INJECT_BRIEFING_RECENT`     | `3`      | Max recent episodic entries. `0` disables.                                                           |
+| `MEMINI_INJECT_BRIEFING_MAX_TOK`    | uncapped | Hard ceiling on rendered tokens; drops tail blocks/bullets first. Pinned keeps priority over recent. |
+
+**PreToolUse** (one search per file in `Edit|Write|Read|Glob|Grep`):
+
+| Env var                           | Default                         | Description                                                   |
+| --------------------------------- | ------------------------------- | ------------------------------------------------------------- |
+| `MEMINI_INJECT_PRETOOL_ITEMS`     | `3`                             | Max hits surfaced per file.                                   |
+| `MEMINI_INJECT_PRETOOL_MAX_TOK`   | uncapped                        | Hard ceiling on rendered tokens (per file).                   |
+| `MEMINI_INJECT_PRETOOL_MIN_SCORE` | `0`                             | Floor on the fused score; hits below are dropped server-side. |
+| `MEMINI_INJECT_PRETOOL_TOOLS`     | `Read\|Write\|Edit\|Glob\|Grep` | Pipe- or comma-separated tool allowlist override.             |
+
+**Output labels** (both hooks):
+
+| Env var                | Default | Description                                                     |
+| ---------------------- | ------- | --------------------------------------------------------------- |
+| `MEMINI_INJECT_LABELS` | —       | Comma-separated toggles: `tier`, `confidence`, `age`, `reason`. |
+
+Labels annotate each injected bullet with metadata, e.g.
+`[semantic · conf=0.85 · 14d · durable fact] use tabs in this project`.
+Off by default — the unannotated format matches prior installs.
+
+**Tight preset for a small / fast model:**
+
+```sh
+export MEMINI_INJECT_BRIEFING_PINNED=2
+export MEMINI_INJECT_BRIEFING_FACTS=2
+export MEMINI_INJECT_BRIEFING_PROCEDURES=1
+export MEMINI_INJECT_BRIEFING_RECENT=0
+export MEMINI_INJECT_BRIEFING_MAX_TOK=300
+export MEMINI_INJECT_PRETOOL_ITEMS=1
+export MEMINI_INJECT_PRETOOL_MIN_SCORE=0.65
+export MEMINI_INJECT_PRETOOL_TOOLS="Read|Edit|Write"
+export MEMINI_INJECT_LABELS=tier,reason
+```
+
+Top-of-mind: tag a memory `pinned` (via `memory_remember` `tags: ["pinned"]`
+or `memini remember ... --tag pinned`) to make it auto-inject as part of the
+curated briefing, exempt from demotion, and never excluded by the budget
+(within `MEMINI_INJECT_BRIEFING_PINNED`). The default cap is small enough
+that only durable identity / preferences should earn the pin.
+
 ## Remote memini
 
 The plugin works against a remote memini with **no code changes** — point it at

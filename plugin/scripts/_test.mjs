@@ -595,3 +595,305 @@ test("plaintext bearer guard throws when MEMINI_REQUIRE_HTTPS=1", async () => {
   const guard = createPlaintextBearerAuthGuard(() => {}, { MEMINI_REQUIRE_HTTPS: "1" });
   assert.throws(() => guard("http://memini.example.com", "secret"), /plaintext HTTP/);
 });
+
+// --- Injection budget env knobs ------------------------------------------
+
+test("intEnv/floatEnv/listEnv/labelsEnv parse env vars defensively", async () => {
+  const { intEnv, floatEnv, listEnv, labelsEnv, approxTokens, fitByTokens } = await import("./_shared.mjs");
+  const prev = { ...process.env };
+  try {
+    process.env["T"] = "5";
+    assert.equal(intEnv("T", 0), 5);
+    process.env["T"] = "0";
+    assert.equal(intEnv("T", 7), 0, "0 is allowed (cap = 0 disables a section)");
+    process.env["T"] = "-1";
+    assert.equal(intEnv("T", 7), 7, "negative falls back to default");
+    process.env["T"] = "abc";
+    assert.equal(intEnv("T", 7), 7);
+    delete process.env["T"];
+    assert.equal(intEnv("T", 7), 7);
+
+    process.env["F"] = "0.65";
+    assert.equal(floatEnv("F", 0), 0.65);
+    process.env["F"] = "-1";
+    assert.equal(floatEnv("F", 0.5), 0.5);
+    delete process.env["F"];
+    assert.equal(floatEnv("F", 0.5), 0.5);
+
+    process.env["L"] = "Read|Edit, Write ";
+    assert.deepEqual(listEnv("L"), ["read", "edit", "write"]);
+    delete process.env["L"];
+    assert.deepEqual(listEnv("L"), []);
+
+    process.env["MEMINI_INJECT_LABELS"] = "tier,reason";
+    const labels = labelsEnv();
+    assert.equal(labels.has("tier"), true);
+    assert.equal(labels.has("reason"), true);
+    assert.equal(labels.has("age"), false);
+    delete process.env["MEMINI_INJECT_LABELS"];
+  } finally {
+    process.env = prev;
+  }
+});
+
+test("approxTokens / fitByTokens trim from the tail under a token budget", async () => {
+  const { approxTokens, fitByTokens } = await import("./_shared.mjs");
+  // ~12 words => ~16 tokens at 4/3; pick something predictable.
+  const long = Array.from({ length: 60 }, (_, i) => `w${i}`).join(" ");
+  const expected = Math.ceil((60 * 4) / 3);
+  assert.equal(approxTokens(long), expected);
+
+  const items = ["one", "two three", "four five six seven eight"];
+  const unlimited = fitByTokens(items, 0);
+  assert.deepEqual(unlimited.items, items);
+  assert.equal(unlimited.dropped, 0);
+
+  // With a budget that fits item 0 only, the others drop.
+  const tight = fitByTokens(items, approxTokens("one"));
+  assert.deepEqual(tight.items, ["one"]);
+  assert.equal(tight.dropped, 2);
+});
+
+test("session-start.mjs: MEMINI_INJECT_BRIEFING_* caps per-section results", async () => {
+  const hits = [];
+  const { url, close } = await startMockServer((req, res) => {
+    hits.push(req.url);
+    const u = new URL(req.url, url);
+    // Server-side cap: honor per_section_X. The plugin sends these so the
+    // mock must apply them to verify the cap actually fires server-side.
+    // 0 explicitly disables a section; missing param keeps the full set
+    // (the server defaults to 5, but this mock has fewer items per section
+    // so we just return what's available).
+    const cap = (param, all) => {
+      const raw = u.searchParams.get(param);
+      if (raw === null) return all;
+      const n = Number.parseInt(raw, 10);
+      if (!Number.isFinite(n) || n < 0) return all;
+      return all.slice(0, n);
+    };
+    const all = {
+      pinned: [{ content: "p1" }, { content: "p2" }],
+      facts: [{ content: "f1" }, { content: "f2" }, { content: "f3" }],
+      procedures: [{ content: "pr1" }],
+      recent: [{ content: "r1" }, { content: "r2" }],
+    };
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify({
+        namespace: "ns",
+        pinned: cap("per_section_pinned", all.pinned),
+        facts: cap("per_section_facts", all.facts),
+        procedures: cap("per_section_procedures", all.procedures),
+        recent: cap("per_section_recent", all.recent),
+      }),
+    );
+  });
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "s1", cwd: __dirname }),
+      {
+        MEMINI_URL: url,
+        MEMINI_INJECT_BRIEFING_PINNED: "1",
+        MEMINI_INJECT_BRIEFING_FACTS: "0",
+        MEMINI_INJECT_BRIEFING_PROCEDURES: "5",
+        MEMINI_INJECT_BRIEFING_RECENT: "3",
+      },
+    );
+    // Exactly one briefing call, with per-section caps applied.
+    assert.equal(hits.length, 1);
+    const u = new URL(hits[0], url);
+    assert.equal(u.searchParams.get("per_section_pinned"), "1");
+    assert.equal(u.searchParams.get("per_section_facts"), "0");
+    assert.equal(u.searchParams.get("per_section_procedures"), "5");
+    assert.equal(u.searchParams.get("per_section_recent"), "3");
+    // Server-side caps mean only one pinned renders, and facts renders none.
+    assert.match(stdout, /- p1/);
+    assert.doesNotMatch(stdout, /p2/);
+    assert.doesNotMatch(stdout, /Decisions/);
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: MEMINI_INJECT_BRIEFING_MAX_TOK truncates the rendered block", async () => {
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify({
+        namespace: "ns",
+        pinned: [],
+        facts: [
+          { content: "alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha" },
+          { content: "beta beta beta beta beta beta beta beta beta beta beta beta" },
+          { content: "gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma" },
+        ],
+        procedures: [],
+        recent: [],
+      }),
+    );
+  });
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "s1", cwd: __dirname }),
+      { MEMINI_URL: url, MEMINI_INJECT_BRIEFING_MAX_TOK: "20" },
+    );
+    // Truncation marker appears when the cap drops items.
+    assert.match(stdout, /\[...\s+\d+ item\(s\) truncated/);
+    // First item still renders (head-most sections keep priority).
+    assert.match(stdout, /alpha/);
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: MEMINI_INJECT_LABELS=tier renders tier annotations", async () => {
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify({
+        namespace: "ns",
+        pinned: [],
+        facts: [{ content: "use tabs in this project", tier: "semantic" }],
+        procedures: [],
+        recent: [],
+      }),
+    );
+  });
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "s1", cwd: __dirname }),
+      { MEMINI_URL: url, MEMINI_INJECT_LABELS: "tier,reason" },
+    );
+    // Labelled format includes the tier tag plus the section reason.
+    assert.match(stdout, /\[semantic · durable fact\]/);
+    assert.match(stdout, /use tabs in this project/);
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: MEMINI_INJECT_PRETOOL_ITEMS caps items per file", async () => {
+  const hits = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    hits.push({ url: req.url, body });
+    const limit = JSON.parse(body || "{}").limit || 5;
+    const n = Math.min(limit, 5);
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify({
+        results: Array.from({ length: n }, (_, i) => ({
+          memory: { content: `hit-${i}` },
+          score: 0.9 - i * 0.1,
+        })),
+      }),
+    );
+  });
+  try {
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({
+        session_id: "s1",
+        tool_name: "Read",
+        tool_input: { file_path: "/tmp/foo" },
+      }),
+      { MEMINI_URL: url, MEMINI_INJECT_PRETOOL_ITEMS: "2" },
+    );
+    const parsed = JSON.parse(stdout);
+    const ctx = parsed.hookSpecificOutput.additionalContext;
+    // Two hits surface, three are dropped (server cap respected).
+    assert.match(ctx, /hit-0/);
+    assert.match(ctx, /hit-1/);
+    assert.doesNotMatch(ctx, /hit-3/);
+    const [h] = hits;
+    assert.equal(JSON.parse(h.body).limit, 2);
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: MEMINI_INJECT_PRETOOL_MIN_SCORE drops low-scored hits", async () => {
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify({
+        results: [
+          { memory: { content: "strong" }, score: 0.9 },
+          { memory: { content: "weak" }, score: 0.3 },
+        ],
+      }),
+    );
+  });
+  try {
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({
+        session_id: "s1",
+        tool_name: "Read",
+        tool_input: { file_path: "/tmp/foo" },
+      }),
+      { MEMINI_URL: url, MEMINI_INJECT_PRETOOL_MIN_SCORE: "0.5" },
+    );
+    const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(ctx, /strong/);
+    assert.doesNotMatch(ctx, /weak/);
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: MEMINI_INJECT_PRETOOL_TOOLS skips tools outside the allowlist", async () => {
+  const hits = [];
+  const { url, close } = await startMockServer((req, res) => {
+    hits.push(req.url);
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ results: [{ memory: { content: "x" }, score: 0.9 }] }));
+  });
+  try {
+    // Bash isn't in the allowlist — the hook must skip without POSTing.
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({
+        session_id: "s1",
+        tool_name: "Bash",
+        tool_input: { command: "ls" },
+      }),
+      { MEMINI_URL: url, MEMINI_INJECT_PRETOOL_TOOLS: "Read|Edit" },
+    );
+    assert.equal(stdout, "", "tool outside allowlist must produce no context");
+    assert.equal(hits.length, 0, "tool outside allowlist must not hit memini");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: MEMINI_INJECT_PRETOOL_MAX_TOK truncates per-file block", async () => {
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify({
+        results: Array.from({ length: 4 }, (_, i) => ({
+          memory: { content: `payload-${i} payload-${i} payload-${i} payload-${i}` },
+          score: 0.9 - i * 0.1,
+        })),
+      }),
+    );
+  });
+  try {
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({
+        session_id: "s1",
+        tool_name: "Read",
+        tool_input: { file_path: "/tmp/foo" },
+      }),
+      { MEMINI_URL: url, MEMINI_INJECT_PRETOOL_ITEMS: "4", MEMINI_INJECT_PRETOOL_MAX_TOK: "10" },
+    );
+    const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(ctx, /\[...\s+\d+ item\(s\) truncated/);
+  } finally {
+    await close();
+  }
+});

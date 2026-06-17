@@ -263,21 +263,34 @@ export async function postJSON(path, body, namespace, timeoutMs = 5000) {
 /**
  * POST /v1/search and return an array of {content, score, memory} objects.
  * Returns [] on failure.
+ *
+ * `minScore` (>= 0) sets a per-call relevance floor: candidates whose fused
+ * score is below it are dropped server-side. 0 / unset falls back to the
+ * server-wide default gate (MEMINI_RECALL_MIN_SCORE). When `minScore` is set,
+ * the hook also filters client-side as a belt-and-braces guard against
+ * score-fusion edge cases where the server's normalization disagrees with
+ * what the caller wants.
  */
-export async function postSearch(query, namespace, { limit = 5, tiers, exclude } = {}) {
+export async function postSearch(query, namespace, { limit = 5, tiers, exclude, minScore } = {}) {
   const body = { query, limit };
   if (tiers) body.tiers = tiers;
+  if (typeof minScore === "number" && minScore > 0) body.min_score = minScore;
   // exclude drops memories carrying any of these metadata key=value pairs, e.g.
   // {session_id} so a session's own captured digests aren't recalled back at it
   // while still in the live context.
   if (exclude && Object.keys(exclude).length) body.exclude_metadata = exclude;
   const res = await postJSON("/v1/search", body, namespace);
   if (!res || !Array.isArray(res.results)) return [];
-  return res.results.map((r) => ({
-    content: r?.memory?.content || "",
-    score: typeof r?.score === "number" ? r.score : 0,
-    memory: r?.memory || null,
-  }));
+  const floor = typeof minScore === "number" && minScore > 0 ? minScore : 0;
+  return res.results
+    .map((r) => ({
+      content: r?.memory?.content || "",
+      summary: r?.memory?.summary || "",
+      score: typeof r?.score === "number" ? r.score : 0,
+      memory: r?.memory || null,
+      tier: r?.memory?.tier || "",
+    }))
+    .filter((r) => r.score >= floor);
 }
 
 /**
@@ -306,10 +319,132 @@ export async function getJSON(path, namespace, timeoutMs = 5000) {
 /**
  * GET /v1/namespaces/{ns}/briefing — a layered session-start summary
  * {namespace, facts, procedures, recent, pinned}. Returns null on failure.
+ *
+ * `opts` controls per-section caps. Each field is an int; omit (or 0) to use
+ * the server default (5). Pass an explicit 0 to disable that section (REST
+ * only — MCP can't distinguish omitted from zero).
  */
-export async function getBriefing(namespace, perSection = 5) {
+export async function getBriefing(namespace, opts = {}) {
   const enc = encodeURIComponent(namespace);
-  return getJSON(`/v1/namespaces/${enc}/briefing?per_section=${perSection}`, namespace);
+  const params = new URLSearchParams();
+  // A "per_section_default" opt acts as the catch-all; per-section fields
+  // win when set. This matches the REST contract exactly.
+  const fallback = opts.per_section_default ?? opts.perSection ?? 5;
+  const pick = (v) => (Number.isInteger(v) && v > 0 ? v : fallback);
+  params.set("per_section", String(fallback));
+  if (Number.isInteger(opts.per_section_pinned) && opts.per_section_pinned >= 0) {
+    params.set("per_section_pinned", String(opts.per_section_pinned));
+  } else if (Number.isInteger(opts.pinned) && opts.pinned >= 0) {
+    params.set("per_section_pinned", String(opts.pinned));
+  } else {
+    params.set("per_section_pinned", String(pick(opts.pinned)));
+  }
+  const setIf = (key, v) => {
+    if (Number.isInteger(v) && v >= 0) params.set(key, String(v));
+  };
+  setIf("per_section_facts", opts.per_section_facts ?? opts.facts);
+  setIf("per_section_procedures", opts.per_section_procedures ?? opts.procedures);
+  setIf("per_section_recent", opts.per_section_recent ?? opts.recent);
+  return getJSON(`/v1/namespaces/${enc}/briefing?${params.toString()}`, namespace);
+}
+
+// --- Injection budget ----------------------------------------------------
+//
+// Per-hook env knobs let an operator shrink auto-injected context without
+// changing code. Defaults match today's behavior; the existing tests +
+// callers keep working unchanged. New knobs:
+//
+//   MEMINI_INJECT_BRIEFING_*        per-section caps for SessionStart
+//   MEMINI_INJECT_BRIEFING_MAX_TOK  hard ceiling on briefing injection tokens
+//   MEMINI_INJECT_PRETOOL_ITEMS     max items per file in PreToolUse
+//   MEMINI_INJECT_PRETOOL_MAX_TOK   hard ceiling on per-tool injection tokens
+//   MEMINI_INJECT_PRETOOL_MIN_SCORE floor on the fused score (>=)
+//   MEMINI_INJECT_PRETOOL_TOOLS     pipe-separated tool allowlist
+//   MEMINI_INJECT_LABELS            comma-separated label toggles: tier,
+//                                   confidence, age, reason
+
+/**
+ * intEnv parses a positive integer env var (>= 0) and returns `default` when
+ * unset or malformed. A negative value also falls back — env values are user
+ * input and shouldn't crash a hook.
+ */
+export function intEnv(name, defaultValue) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return defaultValue;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) return defaultValue;
+  return n;
+}
+
+/**
+ * floatEnv parses a non-negative float env var and returns `default` when
+ * unset or malformed. Used for min_score.
+ */
+export function floatEnv(name, defaultValue) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return defaultValue;
+  const n = Number.parseFloat(raw);
+  if (!Number.isFinite(n) || n < 0) return defaultValue;
+  return n;
+}
+
+/**
+ * listEnv parses a pipe- or comma-separated env var into a non-empty string
+ * array (trimmed, lowercased). Empty / unset returns [].
+ */
+export function listEnv(name) {
+  const raw = process.env[name];
+  if (!raw) return [];
+  return raw
+    .split(/[|,]/)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * labelsEnv parses MEMINI_INJECT_LABELS into a Set of enabled labels.
+ * Recognized: "tier", "confidence", "age", "reason". Empty/unset returns an
+ * empty Set — the format helpers then skip every label.
+ */
+export function labelsEnv(name = "MEMINI_INJECT_LABELS") {
+  return new Set(listEnv(name));
+}
+
+/**
+ * approxTokens is a cheap token estimator. ~0.75 tokens/word for English-ish
+ * content, with a floor of 1 so a single non-empty line never reports 0.
+ */
+export function approxTokens(text) {
+  if (!text) return 0;
+  const words = String(text).trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.ceil((words * 4) / 3));
+}
+
+/**
+ * fitByTokens trims a list of pre-formatted strings to fit under `maxTokens`,
+ * keeping the head (the most-relevant entries first). Returns the trimmed
+ * list and the running token total, so callers can render a "[… truncated]"
+ * footer when items were dropped.
+ */
+export function fitByTokens(items, maxTokens) {
+  if (!Array.isArray(items) || items.length === 0) return { items: [], tokens: 0, dropped: 0 };
+  if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
+    const tokens = items.reduce((sum, s) => sum + approxTokens(s), 0);
+    return { items: items.slice(), tokens, dropped: 0 };
+  }
+  const out = [];
+  let used = 0;
+  let dropped = 0;
+  for (const s of items) {
+    const t = approxTokens(s);
+    if (used + t > maxTokens) {
+      dropped++;
+      continue;
+    }
+    out.push(s);
+    used += t;
+  }
+  return { items: out, tokens: used, dropped };
 }
 
 /**
