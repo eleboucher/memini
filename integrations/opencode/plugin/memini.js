@@ -51,12 +51,29 @@ export function resolveConfig(env, options, worktree) {
   const o = options || {};
   const namespace =
     o.namespace || e.MEMINI_NAMESPACE || deriveNamespace(worktree) || DEFAULT_NAMESPACE;
+  // Number.isFinite guard: malformed env / option falls through to the next
+  // source instead of NaN flowing into the request body.
+  const recall_limit = (() => {
+    for (const v of [o.recall_limit, e.MEMINI_RECALL_LIMIT, DEFAULT_RECALL_LIMIT]) {
+      const n = Number(v);
+      if (Number.isFinite(n) && n >= 0) return n;
+    }
+    return DEFAULT_RECALL_LIMIT;
+  })();
   return {
     base_url: o.base_url || e.MEMINI_BASE_URL || DEFAULT_BASE_URL,
     namespace: sanitizeNamespace(namespace) || DEFAULT_NAMESPACE,
     recall: o.recall !== undefined ? o.recall !== false : envBool(e.MEMINI_RECALL, true),
     capture: o.capture !== undefined ? o.capture !== false : envBool(e.MEMINI_CAPTURE, true),
-    recall_limit: Number(o.recall_limit || e.MEMINI_RECALL_LIMIT || DEFAULT_RECALL_LIMIT),
+    recall_limit,
+    recall_max_tokens:
+      o.recall_max_tokens !== undefined
+        ? Number(o.recall_max_tokens) || 0
+        : intEnv("MEMINI_INJECT_RECALL_MAX_TOK", 0),
+    recall_min_score:
+      o.recall_min_score !== undefined
+        ? Number(o.recall_min_score) || 0
+        : floatEnv("MEMINI_INJECT_RECALL_MIN_SCORE", 0),
     timeout_ms: Number(o.timeout_ms || e.MEMINI_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
     fallback_on_error:
       o.fallback_on_error !== undefined
@@ -77,20 +94,40 @@ export function extractPartsText(parts) {
     .trim();
 }
 
-// formatResults renders memini search hits as a compact bullet list. Exported
-// for testing.
-export function formatResults(results, limit) {
-  if (!Array.isArray(results) || results.length === 0) return "";
+// formatResults returns an array of bullet lines; the caller passes it to
+// fitByTokens to apply a token ceiling, then joins + appends a footer.
+//
+// `labels` (optional) toggles the rich prefix: empty -> "- (tier) text" (the
+// prior format, kept identical so snapshots don't break); non-empty ->
+// "[tier · conf · age] text", same shape as the Claude Code plugin's
+// formatMemory in plugin/scripts/session-start.mjs. Exported for testing.
+export function formatResults(results, limit, labels) {
+  if (!Array.isArray(results) || results.length === 0) return [];
+  const useLabels = labels && labels.size > 0 ? labels : null;
   return results
     .slice(0, limit || DEFAULT_RECALL_LIMIT)
     .map((result, index) => {
       const mem = (result && result.memory) || {};
-      const text = String(mem.summary || mem.content || `Memory ${index + 1}`).trim();
+      const text = truncate(String(mem.summary || mem.content || `Memory ${index + 1}`).trim(), 300);
+      if (!text) return null;
       const tier = String(mem.tier || "memory").trim();
-      return `- (${tier}) ${text.slice(0, 300)}`;
+      if (!useLabels) return `- (${tier}) ${text}`;
+      const tagParts = [];
+      if (useLabels.has("tier") && tier) tagParts.push(tier);
+      if (useLabels.has("confidence") && typeof mem.confidence === "number") {
+        tagParts.push(`conf=${mem.confidence.toFixed(2)}`);
+      }
+      if (useLabels.has("age") && mem.created_at) {
+        const ageMs = Date.now() - new Date(mem.created_at).getTime();
+        if (Number.isFinite(ageMs) && ageMs >= 0) {
+          const days = Math.floor(ageMs / 86400000);
+          tagParts.push(days === 0 ? "today" : `${days}d`);
+        }
+      }
+      if (tagParts.length === 0) return `- (${tier}) ${text}`;
+      return `[${tagParts.join(" · ")}] ${text}`;
     })
-    .filter(Boolean)
-    .join("\n");
+    .filter(Boolean);
 }
 
 function normalizedHostname(hostname) {
@@ -125,6 +162,111 @@ export function createPlaintextBearerAuthGuard(warn, env) {
       warn(message);
     }
   };
+}
+
+// --- Injection budget ----------------------------------------------------
+//
+// Near-verbatim copies of plugin/scripts/_shared.mjs. The opencode plugin
+// ships standalone on npm so it can't import across the tree; copy matches
+// the precedent set by createPlaintextBearerAuthGuard above. Keep contracts
+// identical when both sides change.
+
+/**
+ * intEnv parses a positive integer env var (>= 0) and returns `default` when
+ * unset or malformed. A negative value also falls back — env values are user
+ * input and shouldn't crash a hook.
+ */
+export function intEnv(name, defaultValue) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return defaultValue;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) return defaultValue;
+  return n;
+}
+
+/**
+ * floatEnv parses a non-negative float env var and returns `default` when
+ * unset or malformed. Used for min_score.
+ */
+export function floatEnv(name, defaultValue) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return defaultValue;
+  const n = Number.parseFloat(raw);
+  if (!Number.isFinite(n) || n < 0) return defaultValue;
+  return n;
+}
+
+/**
+ * labelsEnv parses MEMINI_INJECT_LABELS into a Set of enabled labels.
+ * Recognized: "tier", "confidence", "age", "reason". Empty/unset returns an
+ * empty Set — the format helpers then skip every label.
+ */
+export function labelsEnv(name = "MEMINI_INJECT_LABELS") {
+  const raw = process.env[name];
+  if (!raw) return new Set();
+  return new Set(
+    raw
+      .split(/[|,]/)
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+/**
+ * approxTokens is a cheap token estimator. ~0.75 tokens/word for English-ish
+ * content, with a floor of 1 so a single non-empty line never reports 0.
+ */
+export function approxTokens(text) {
+  if (!text) return 0;
+  const words = String(text).trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.ceil((words * 4) / 3));
+}
+
+/**
+ * fitByTokens trims a list of pre-formatted strings to fit under `maxTokens`,
+ * keeping the head (the most-relevant entries first). Returns the trimmed
+ * list and the running token total, so callers can render a "[… truncated]"
+ * footer when items were dropped.
+ */
+export function fitByTokens(items, maxTokens) {
+  if (!Array.isArray(items) || items.length === 0) return { items: [], tokens: 0, dropped: 0 };
+  if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
+    const tokens = items.reduce((sum, s) => sum + approxTokens(s), 0);
+    return { items: items.slice(), tokens, dropped: 0 };
+  }
+  const out = [];
+  let used = 0;
+  let dropped = 0;
+  for (const s of items) {
+    const t = approxTokens(s);
+    if (used + t > maxTokens) {
+      dropped++;
+      continue;
+    }
+    out.push(s);
+    used += t;
+  }
+  return { items: out, tokens: used, dropped };
+}
+
+/**
+ * Truncate to `max` bytes, suffix with a marker. Same shape as the Claude
+ * Code plugin's truncate helper.
+ */
+export function truncate(value, max) {
+  if (typeof value === "string") {
+    return value.length > max ? value.slice(0, max) + "\n[...truncated]" : value;
+  }
+  if (value && typeof value === "object") {
+    let str;
+    try {
+      str = JSON.stringify(value);
+    } catch {
+      return value;
+    }
+    return str.length > max ? str.slice(0, max) + "...[truncated]" : str;
+  }
+  return value;
 }
 
 function createClient(cfg, log) {
@@ -220,9 +362,34 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       // context, so recalling them just echoes the conversation back a turn
       // behind. Captures from other (past) sessions are still recalled.
       if (sessionID) body.exclude_metadata = { session_id: sessionID };
+      // min_score (fused-score floor) is optional and matches the wire knob
+      // the Claude Code plugin's pre-tool-use hook uses; client-side re-filter
+      // is a belt-and-braces guard against score-normalization edge cases.
+      if (cfg.recall_min_score > 0) body.min_score = cfg.recall_min_score;
       const result = await rest.postJson("/v1/search", body);
-      const block = formatResults(result && result.results, cfg.recall_limit);
-      if (!block) return;
+      // Client-side score floor: filter the raw hit list before formatting so
+      // the bullet array only contains hits the operator asked for. Without
+      // this, the server's default floor could leak low-quality hits in
+      // regardless of cfg.recall_min_score.
+      const floor = cfg.recall_min_score > 0 ? cfg.recall_min_score : 0;
+      const rawHits = Array.isArray(result && result.results) ? result.results : [];
+      const filtered = floor > 0
+        ? rawHits.filter((r) => (typeof r?.score === "number" ? r.score : 0) >= floor)
+        : rawHits;
+      const labels = labelsEnv();
+      const hits = formatResults(filtered, cfg.recall_limit, labels);
+      if (hits.length === 0) return;
+      // Apply the token ceiling to the rendered bullet lines; with max=0
+      // (the default) fitByTokens returns the full list unchanged, so the
+      // behaviour matches the prior "no cap" code path for existing installs.
+      const fit = fitByTokens(hits, cfg.recall_max_tokens);
+      if (fit.items.length === 0) return;
+      const lines = [
+        `Relevant long-term memory from memini (background context — prefer ` +
+          `current workspace state and the user's instructions):`,
+        ...fit.items,
+      ];
+      if (fit.dropped > 0) lines.push(`[... ${fit.dropped} item(s) truncated by token budget]`);
       // opencode's part schema requires ids to start with `prt`.
       output.parts.unshift({
         id: `prt_${crypto.randomUUID()}`,
@@ -230,9 +397,7 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
         messageID,
         type: "text",
         synthetic: true,
-        text:
-          `Relevant long-term memory from memini (background context — prefer ` +
-          `current workspace state and the user's instructions):\n${block}`,
+        text: lines.join("\n"),
       });
     },
 

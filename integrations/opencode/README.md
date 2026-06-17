@@ -43,17 +43,20 @@ Pass options inline via the `[name, options]` form:
 }
 ```
 
-| Option              | Env var                | Default                 | Purpose                                                |
-| ------------------- | ---------------------- | ----------------------- | ------------------------------------------------------ |
-| `base_url`          | `MEMINI_BASE_URL`      | `http://localhost:8080` | memini REST base URL                                   |
-| `namespace`         | `MEMINI_NAMESPACE`     | git repo basename       | tenant the memory is scoped to (`X-Memini-Namespace`)  |
-| `recall`            | `MEMINI_RECALL`        | on                      | `false` disables recall-before-turn                    |
-| `capture`           | `MEMINI_CAPTURE`       | on                      | `false` disables capture-after-turn                    |
-| `recall_limit`      | `MEMINI_RECALL_LIMIT`  | `5`                     | max memories injected per turn                         |
-| `timeout_ms`        | `MEMINI_TIMEOUT_MS`    | `30000`                 | per-request timeout                                    |
-| `fallback_on_error` | `MEMINI_FALLBACK`      | on                      | `false` surfaces errors instead of degrading silently  |
-| —                   | `MEMINI_API_KEY`       | —                       | bearer token, if memini needs auth (env only — secret) |
-| —                   | `MEMINI_REQUIRE_HTTPS` | —                       | `1` refuses to send the token over plaintext HTTP      |
+| Option              | Env var                          | Default                 | Purpose                                                                                                                                |
+| ------------------- | -------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `base_url`          | `MEMINI_BASE_URL`                | `http://localhost:8080` | memini REST base URL                                                                                                                   |
+| `namespace`         | `MEMINI_NAMESPACE`               | git repo basename       | tenant the memory is scoped to (`X-Memini-Namespace`)                                                                                  |
+| `recall`            | `MEMINI_RECALL`                  | on                      | `false` disables recall-before-turn                                                                                                    |
+| `capture`           | `MEMINI_CAPTURE`                 | on                      | `false` disables capture-after-turn                                                                                                    |
+| `recall_limit`      | `MEMINI_RECALL_LIMIT`            | `5`                     | max memories injected per turn                                                                                                         |
+| `recall_max_tokens` | `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                     | hard ceiling on the recall-block tokens (`0` = unbounded); the tail is dropped with a `[… N item(s) truncated by token budget]` footer |
+| `recall_min_score`  | `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                     | fused-score floor (>=) sent as `min_score` to `/v1/search`                                                                             |
+| `timeout_ms`        | `MEMINI_TIMEOUT_MS`              | `30000`                 | per-request timeout                                                                                                                    |
+| `fallback_on_error` | `MEMINI_FALLBACK`                | on                      | `false` surfaces errors instead of degrading silently                                                                                  |
+| —                   | `MEMINI_INJECT_LABELS`           | —                       | comma-separated label toggles for each bullet: `tier`, `confidence`, `age`                                                             |
+| —                   | `MEMINI_API_KEY`                 | —                       | bearer token, if memini needs auth (env only — secret)                                                                                 |
+| —                   | `MEMINI_REQUIRE_HTTPS`           | —                       | `1` refuses to send the token over plaintext HTTP                                                                                      |
 
 Inline options win over the env vars. Secrets stay in the environment: set
 `MEMINI_API_KEY` (sent as `Authorization: Bearer …`), and optionally

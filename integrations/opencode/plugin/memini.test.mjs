@@ -9,6 +9,11 @@ import {
   formatResults,
   extractLastTurn,
   createPlaintextBearerAuthGuard,
+  intEnv,
+  floatEnv,
+  approxTokens,
+  fitByTokens,
+  truncate,
 } from "./memini.js";
 
 test("namespace derives from the git worktree basename", () => {
@@ -24,6 +29,8 @@ test("config defaults: recall and capture on, project-scoped namespace", () => {
   assert.equal(cfg.recall, true);
   assert.equal(cfg.capture, true);
   assert.equal(cfg.recall_limit, 5);
+  assert.equal(cfg.recall_max_tokens, 0);
+  assert.equal(cfg.recall_min_score, 0);
   assert.equal(cfg.fallback_on_error, true);
 });
 
@@ -47,6 +54,43 @@ test("capture can be disabled via env", () => {
   assert.equal(resolveConfig({ MEMINI_CAPTURE: "false" }, undefined, "/r").capture, false);
 });
 
+test("resolveConfig honours the MEMINI_INJECT_RECALL_* budget knobs", () => {
+  // intEnv/floatEnv read from process.env, not the env arg, so mutate
+  // process.env around the test (mirrors the intEnv / floatEnv test).
+  process.env["MEMINI_INJECT_RECALL_MAX_TOK"] = "1500";
+  process.env["MEMINI_INJECT_RECALL_MIN_SCORE"] = "0.25";
+  try {
+    const cfg = resolveConfig({}, undefined, "/r");
+    assert.equal(cfg.recall_max_tokens, 1500);
+    assert.equal(cfg.recall_min_score, 0.25);
+  } finally {
+    delete process.env["MEMINI_INJECT_RECALL_MAX_TOK"];
+    delete process.env["MEMINI_INJECT_RECALL_MIN_SCORE"];
+  }
+});
+
+test("resolveConfig: inline options win over MEMINI_INJECT_RECALL_* env", () => {
+  process.env["MEMINI_INJECT_RECALL_MAX_TOK"] = "1000";
+  try {
+    const cfg = resolveConfig({}, { recall_max_tokens: 2500, recall_min_score: 0.5 }, "/r");
+    assert.equal(cfg.recall_max_tokens, 2500);
+    assert.equal(cfg.recall_min_score, 0.5);
+  } finally {
+    delete process.env["MEMINI_INJECT_RECALL_MAX_TOK"];
+  }
+});
+
+test("resolveConfig rejects malformed recall_limit (NaN / negative) gracefully", () => {
+  assert.equal(
+    resolveConfig({ MEMINI_RECALL_LIMIT: "abc" }, undefined, "/r").recall_limit,
+    5,
+  );
+  assert.equal(
+    resolveConfig({}, { recall_limit: "garbage" }, "/r").recall_limit,
+    5,
+  );
+});
+
 test("extractPartsText skips synthetic and ignored parts", () => {
   const parts = [
     { type: "text", text: "real question", synthetic: false },
@@ -63,14 +107,78 @@ test("formatResults renders a bullet list with tier and truncation", () => {
     { memory: { summary: "uses postgres", tier: "semantic" } },
     { memory: { content: "fixed the race", tier: "episodic" } },
   ];
-  assert.equal(formatResults(results, 5), "- (semantic) uses postgres\n- (episodic) fixed the race");
-  assert.equal(formatResults([], 5), "");
-  assert.equal(formatResults(undefined, 5), "");
+  const bullets = formatResults(results, 5);
+  assert.deepEqual(bullets, ["- (semantic) uses postgres", "- (episodic) fixed the race"]);
+  assert.deepEqual(formatResults([], 5), []);
+  assert.deepEqual(formatResults(undefined, 5), []);
 });
 
 test("formatResults respects the limit", () => {
   const results = Array.from({ length: 8 }, (_, i) => ({ memory: { content: `m${i}`, tier: "t" } }));
-  assert.equal(formatResults(results, 3).split("\n").length, 3);
+  assert.equal(formatResults(results, 3).length, 3);
+});
+
+test("formatResults uses the labels prefix when MEMINI_INJECT_LABELS is non-empty", () => {
+  // Mirrors the Claude Code plugin's formatMemory template in
+  // plugin/scripts/session-start.mjs.
+  const results = [
+    { memory: { summary: "uses postgres", tier: "semantic", confidence: 0.91 } },
+  ];
+  const tierOnly = new Set(["tier"]);
+  const withConf = new Set(["tier", "confidence"]);
+  assert.equal(
+    formatResults(results, 5, tierOnly)[0],
+    "[semantic] uses postgres",
+  );
+  assert.equal(
+    formatResults(results, 5, withConf)[0],
+    "[semantic · conf=0.91] uses postgres",
+  );
+  // No labels set -> the bare "- (tier) text" shape is preserved.
+  assert.equal(
+    formatResults(results, 5, new Set())[0],
+    "- (semantic) uses postgres",
+  );
+});
+
+test("intEnv / floatEnv parse user input safely", () => {
+  assert.equal(intEnv("MEMINI_INJECT_TEST_X", 5), 5);
+  process.env["MEMINI_INJECT_TEST_X"] = "42";
+  assert.equal(intEnv("MEMINI_INJECT_TEST_X", 5), 42);
+  process.env["MEMINI_INJECT_TEST_X"] = "garbage";
+  assert.equal(intEnv("MEMINI_INJECT_TEST_X", 5), 5);
+  process.env["MEMINI_INJECT_TEST_X"] = "-3";
+  assert.equal(intEnv("MEMINI_INJECT_TEST_X", 5), 5);
+  delete process.env["MEMINI_INJECT_TEST_X"];
+
+  process.env["MEMINI_INJECT_TEST_Y"] = "0.5";
+  assert.equal(floatEnv("MEMINI_INJECT_TEST_Y", 0), 0.5);
+  process.env["MEMINI_INJECT_TEST_Y"] = "junk";
+  assert.equal(floatEnv("MEMINI_INJECT_TEST_Y", 0), 0);
+  delete process.env["MEMINI_INJECT_TEST_Y"];
+});
+
+test("approxTokens / fitByTokens / truncate match the Claude Code plugin's contracts", () => {
+  assert.equal(approxTokens(""), 0);
+  // ceil(1 * 4/3) = 2; the floor of 1 only kicks in for zero-word strings.
+  assert.equal(approxTokens("hello"), 2);
+  assert.equal(approxTokens("a b c d e f g h i j k l"), Math.ceil((12 * 4) / 3));
+
+  // max=0 is the "no cap" sentinel; fitByTokens returns the full list
+  // (back-compat for callers that pass 0 to mean "unbounded").
+  const all = fitByTokens(["one", "two", "three"], 0);
+  assert.equal(all.dropped, 0);
+  assert.equal(all.items.length, 3);
+
+  const trimmed = fitByTokens(
+    ["alpha beta gamma", "delta epsilon zeta", "eta theta iota"],
+    5,
+  );
+  assert.ok(trimmed.dropped >= 1);
+  assert.ok(trimmed.items.length <= 2);
+
+  assert.ok(truncate("x".repeat(500), 10).endsWith("[...truncated]"));
+  assert.equal(truncate("short", 100), "short");
 });
 
 test("extractLastTurn takes the latest user and assistant text plus assistant id", () => {
@@ -138,6 +246,75 @@ test("chat.message recall excludes this session's own captures via exclude_metad
     const search = requests.find((r) => r.url.endsWith("/v1/search"));
     assert.ok(search, "should POST /v1/search");
     assert.deepEqual(JSON.parse(search.init.body).exclude_metadata, { session_id: "s1" });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("chat.message caps the recall block by MEMINI_INJECT_RECALL_MAX_TOK", async () => {
+  // Four short bullets (~12 words each ≈ 16 tokens) + max=20: only the head
+  // bullet fits, the tail is dropped with the truncation footer. Budget is
+  // passed as a plugin option to avoid process.env mutation.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        results: Array.from({ length: 4 }, (_, i) => ({
+          score: 1 - i * 0.05,
+          memory: { tier: "semantic", summary: "bullet number " + i + " is here" },
+        })),
+      };
+    },
+    async text() { return ""; },
+  });
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080", recall_max_tokens: 20 },
+    );
+    const output = {
+      parts: [{ type: "text", text: "user prompt", sessionID: "s1", messageID: "m1" }],
+    };
+    await hooks["chat.message"]({ sessionID: "s1" }, output);
+    assert.equal(output.parts.length, 2, "synthetic part should be unshifted");
+    const injected = output.parts[0];
+    assert.equal(injected.synthetic, true);
+    assert.match(injected.text, /\[\.\.\. \d+ item\(s\) truncated by token budget\]/);
+    assert.ok(injected.text.includes("bullet number 0"));
+    assert.ok(!injected.text.includes("bullet number 3"));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("chat.message drops hits below MEMINI_INJECT_RECALL_MIN_SCORE", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        results: [
+          { score: 0.9, memory: { tier: "semantic", summary: "high" } },
+          { score: 0.1, memory: { tier: "episodic", summary: "low — should be filtered" } },
+          { score: 0.5, memory: { tier: "procedural", summary: "mid" } },
+        ],
+      };
+    },
+    async text() { return ""; },
+  });
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080", recall_min_score: 0.4 },
+    );
+    const output = {
+      parts: [{ type: "text", text: "user prompt", sessionID: "s1", messageID: "m1" }],
+    };
+    await hooks["chat.message"]({ sessionID: "s1" }, output);
+    if (output.parts.length === 1) return; // no hits passed the floor
+    const injected = output.parts[0];
+    assert.ok(!injected.text.includes("low — should be filtered"));
   } finally {
     globalThis.fetch = realFetch;
   }
