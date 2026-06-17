@@ -12,6 +12,7 @@ import plugin, {
   resolveConfig,
   sessionIdentity,
   shouldSkipSystemTurn,
+  stripRuntimePreambles,
 } from "./plugin.mjs";
 
 // fakeClient records the last memini call and returns canned responses, so the
@@ -569,4 +570,47 @@ test("memory_remember rejects unknown tier and falls back to semantic", async ()
   await byName.memory_remember.execute("id", { content: "fact", tier: "bogus" });
   const call = client.calls.at(-1);
   assert.equal(call.body.tier, "semantic", "unknown tier must fall back to semantic");
+});
+
+test("stripRuntimePreambles drops a leading untrusted-metadata block, keeps the message", () => {
+  const input = [
+    "Conversation info (untrusted metadata):",
+    "```json",
+    '{ "chat_id": "c1", "sender": "alice" }',
+    "```",
+    "",
+    "What is the deploy status?",
+  ].join("\n");
+  assert.equal(stripRuntimePreambles(input), "What is the deploy status?");
+});
+
+test("stripRuntimePreambles drops multiple stacked metadata blocks", () => {
+  const input = [
+    "Conversation info (untrusted metadata):",
+    "```json",
+    '{ "chat_id": "c1" }',
+    "```",
+    "",
+    "Sender (untrusted metadata):",
+    "```json",
+    '{ "name": "alice" }',
+    "```",
+    "",
+    "Real question here",
+  ].join("\n");
+  assert.equal(stripRuntimePreambles(input), "Real question here");
+});
+
+test("stripRuntimePreambles leaves a normal message untouched", () => {
+  assert.equal(stripRuntimePreambles("Just a normal question"), "Just a normal question");
+});
+
+test("stripRuntimePreambles returns empty when the turn is only metadata", () => {
+  const input = [
+    "Conversation info (untrusted metadata):",
+    "```json",
+    '{ "chat_id": "c1" }',
+    "```",
+  ].join("\n");
+  assert.equal(stripRuntimePreambles(input), "");
 });
