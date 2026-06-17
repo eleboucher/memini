@@ -4,9 +4,9 @@ description: A Kubernetes-ready memory service for AI agents (REST + MCP).
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
-home: https://github.com/eleboucher/memini
+home: https://git.erwanleboucher.dev/eleboucher/memini
 sources:
-  - https://github.com/eleboucher/memini
+  - https://git.erwanleboucher.dev/eleboucher/memini
 keywords:
   - ai
   - memory

@@ -39,6 +39,10 @@ FROM scratch AS artifact
 COPY --from=build /out/memini /memini
 
 FROM gcr.io/distroless/static-debian13:debug-nonroot
+LABEL org.opencontainers.image.source="https://git.erwanleboucher.dev/eleboucher/memini"
+LABEL org.opencontainers.image.url="https://git.erwanleboucher.dev/eleboucher/memini"
+LABEL org.opencontainers.image.documentation="https://git.erwanleboucher.dev/eleboucher/memini"
+LABEL org.opencontainers.image.licenses="MIT"
 COPY --from=build /out/memini /usr/local/bin/memini
 EXPOSE 8080
 USER 65532:65532
