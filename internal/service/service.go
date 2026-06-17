@@ -839,11 +839,16 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		perNS[i] = fuseLegs(vres[i], kres[i])
 	}
 
-	// RRF-merge the per-namespace lists so each namespace's hits rank by their own
-	// position rather than their offset in a concatenated slice.
+	// Merge the per-namespace lists so each namespace's hits rank by their own
+	// position rather than their offset in a concatenated slice. Honor the
+	// configured fusion mode: score fusion (alpha >= 0) keeps scores in [0,1]
+	// so the min-score gate below is meaningful; RRF preserves rank-only
+	// fusion and is paired with a skipped gate.
 	var fused []store.Scored
 	if len(perNS) == 1 {
 		fused = perNS[0]
+	} else if s.scoreFusionAlpha >= 0 {
+		fused = search.FuseScores(perNS, nil, 0)
 	} else {
 		fused = search.Fuse(perNS, 0, search.DefaultRRFK)
 	}
