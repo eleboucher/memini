@@ -118,4 +118,4 @@ annotated with `grafana_dashboard_folder: memini`.
 | elebouch |  |  |
 ## Source Code
 
-* <https://github.com/eleboucher/memini>
+* <https://git.erwanleboucher.dev/eleboucher/memini>
