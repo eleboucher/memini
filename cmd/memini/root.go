@@ -290,10 +290,11 @@ func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger, onInFl
 		return wrapRerank(rerank.NewLLM(chat), cfg.RerankMaxConcurrency, onInFlight, log, "llm"), "llm", nil
 	}
 	ce, err := rerank.New(rerank.Config{
-		BaseURL:     cfg.Rerank,
-		Model:       cfg.RerankModel,
-		APIKey:      cfg.RerankAPIKey,
-		MaxDocChars: cfg.RerankMaxDocChars,
+		BaseURL:       cfg.Rerank,
+		Model:         cfg.RerankModel,
+		APIKey:        cfg.RerankAPIKey,
+		MaxDocChars:   cfg.RerankMaxDocChars,
+		MaxBatchChars: cfg.RerankMaxBatchChars,
 	})
 	if err != nil {
 		return nil, "", err

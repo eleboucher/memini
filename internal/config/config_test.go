@@ -22,8 +22,8 @@ func clearMeminiEnv(t *testing.T) {
 
 func TestLoadDefaults(t *testing.T) {
 	clearMeminiEnv(t)
-	// Land in a temp dir so `git rev-parse` fails and we fall through to the
-	// cwd basename. Use a stable basename so the assertion is meaningful.
+	// Stable temp dir so the cwd-basename assertion is meaningful (a real
+	// repo root would resolve via git instead).
 	prev, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd: %v", err)
@@ -54,13 +54,13 @@ func TestLoadDefaults(t *testing.T) {
 		t.Errorf("EmbedDims = %d, want 1536", cfg.EmbedDims)
 	}
 	if cfg.FusionAlpha != 0.5 {
-		t.Errorf("FusionAlpha = %v, want 0.5 (score fusion default)", cfg.FusionAlpha)
+		t.Errorf("FusionAlpha = %v, want 0.5", cfg.FusionAlpha)
 	}
 	if cfg.WriteDedupMinScore != 0 {
-		t.Errorf("WriteDedupMinScore = %v, want 0 (off by default)", cfg.WriteDedupMinScore)
+		t.Errorf("WriteDedupMinScore = %v, want 0", cfg.WriteDedupMinScore)
 	}
 	if cfg.TemporalBoost != 0.40 {
-		t.Errorf("TemporalBoost = %v, want 0.40 (temporal targeting on by default)", cfg.TemporalBoost)
+		t.Errorf("TemporalBoost = %v, want 0.40", cfg.TemporalBoost)
 	}
 	if cfg.SweepInterval != time.Hour {
 		t.Errorf("SweepInterval = %v, want 1h", cfg.SweepInterval)
@@ -70,6 +70,12 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.ConsolidateMinScore != 0.6 {
 		t.Errorf("ConsolidateMinScore = %v, want 0.6", cfg.ConsolidateMinScore)
+	}
+	if cfg.RerankMaxDocChars != 1200 {
+		t.Errorf("RerankMaxDocChars = %d, want 1200", cfg.RerankMaxDocChars)
+	}
+	if cfg.RerankMaxBatchChars != 4000 {
+		t.Errorf("RerankMaxBatchChars = %d, want 4000", cfg.RerankMaxBatchChars)
 	}
 	if cfg.PromoteInterval != 24*time.Hour {
 		t.Errorf("PromoteInterval = %v, want 24h", cfg.PromoteInterval)
@@ -87,7 +93,7 @@ func TestLoadDefaults(t *testing.T) {
 		t.Error("LLMEnabled() = true, want false with no base URL")
 	}
 	if !cfg.UIEnabled {
-		t.Error("UIEnabled = false, want true by default")
+		t.Error("UIEnabled = false, want true")
 	}
 }
 
@@ -246,6 +252,8 @@ var meminiEnvKeys = []string{
 	"MEMINI_EMBED_QUERY_PREFIX", "MEMINI_FUSION_ALPHA",
 	"MEMINI_WRITE_DEDUP_MIN_SCORE", "MEMINI_TEMPORAL_BOOST",
 	"MEMINI_LLM_BASE_URL", "MEMINI_LLM_API_KEY", "MEMINI_LLM_MODEL",
+	"MEMINI_RERANK", "MEMINI_RERANK_MODEL", "MEMINI_RERANK_API_KEY",
+	"MEMINI_RERANK_TIMEOUT", "MEMINI_RERANK_MAX_DOC_CHARS", "MEMINI_RERANK_MAX_BATCH_CHARS",
 	"MEMINI_CONSOLIDATE_MODE", "MEMINI_CONSOLIDATE_MIN_SCORE",
 	"MEMINI_PROMOTE_INTERVAL", "MEMINI_PROMOTE_MIN_ACCESS",
 	"MEMINI_SWEEP_INTERVAL", "MEMINI_SHORT_TERM_CAP", "MEMINI_UI_ENABLED",

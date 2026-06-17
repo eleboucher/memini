@@ -142,6 +142,12 @@ type Config struct {
 	// oversized candidate can't exceed the server's physical batch and fail the
 	// whole rerank request. 0 disables truncation.
 	RerankMaxDocChars int `env:"MEMINI_RERANK_MAX_DOC_CHARS" envDefault:"1200"`
+	// RerankMaxBatchChars caps the total characters across the query and all
+	// documents in a single /rerank request, so a deep candidate pool can never
+	// exceed the model's context window. Set just below the model's effective
+	// context in characters (≈ n_ctx × chars-per-token × (1 − template reserve);
+	// ~4000 for a 1024-token model). 0 disables proactive batching.
+	RerankMaxBatchChars int `env:"MEMINI_RERANK_MAX_BATCH_CHARS" envDefault:"4000"`
 	// RerankTimeout bounds a single reranker call; past it, recall degrades to
 	// composite order instead of stalling on a slow or congested backend.
 	RerankTimeout time.Duration `env:"MEMINI_RERANK_TIMEOUT" envDefault:"10s"`
