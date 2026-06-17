@@ -627,7 +627,11 @@ export function buildSessionDigest(events, project) {
   const commands = [];
   const seenCmd = new Set();
   for (const ev of events) {
-    if (ev.file) fileCounts.set(ev.file, (fileCounts.get(ev.file) || 0) + 1);
+    const files = Array.isArray(ev.files) && ev.files.length ? ev.files : ev.file ? [ev.file] : [];
+    for (const f of files) {
+      if (typeof f !== "string" || !f) continue;
+      fileCounts.set(f, (fileCounts.get(f) || 0) + 1);
+    }
     if (ev.cmd && !seenCmd.has(ev.cmd)) {
       seenCmd.add(ev.cmd);
       commands.push(ev.cmd);

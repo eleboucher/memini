@@ -60,7 +60,9 @@ Codex implements a Claude-Code-compatible plugin model: it auto-discovers
 compatibility), so the same hook wiring drives both. Mount this directory as a
 Codex plugin via `.codex-plugin/plugin.json` — no Codex-specific hooks file is
 needed. (Matchers naming Claude-only tools like `Read`/`Glob`/`Grep` just don't
-fire under Codex, which exposes `Bash`/`apply_patch`/`mcp__*`.)
+fire under Codex, which exposes `Bash`/`apply_patch`/`mcp__*`.) The
+`PostToolUse` hook captures Codex `apply_patch` calls by parsing the patch
+header lines, so session digests still list edited files.
 
 ### opencode
 
