@@ -119,7 +119,6 @@ controllers:
   # --- Optional recall reranking ---
   # MEMINI_RERANK: "http://reranker:8080/v1" # "" / "off" / "llm" / cross-encoder URL
   # MEMINI_RERANK_MODEL: "bge-reranker-v2-m3"
-  # MEMINI_RERANK_TOP_N: "20"
   # MEMINI_RERANK_MAX_DOC_CHARS: "2000"
 
   # --- postgres backend connection (required when MEMINI_BACKEND=postgres) ---
