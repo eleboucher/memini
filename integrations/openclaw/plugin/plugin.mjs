@@ -45,6 +45,8 @@ const configSchema = {
     fallback_on_error: { type: "boolean" },
     timeout_ms: { type: "number" },
     expose_tools: { type: "boolean" },
+    recall_limit: { type: "number" },
+    recall_min_score: { type: "number" },
   },
 };
 
@@ -86,6 +88,11 @@ export function resolveConfig(pluginConfig) {
     // Off by default: the slot already recalls/captures automatically; tools are
     // opt-in for agents that want to read/browse/write on demand.
     expose_tools: c.expose_tools === true,
+    // Per-call recall knobs. 0 / unset falls back to the historical defaults
+    // (limit 5, no score floor) so existing installs see identical output.
+    recall_limit: Number.isFinite(c.recall_limit) && c.recall_limit > 0 ? c.recall_limit : 5,
+    recall_min_score:
+      Number.isFinite(c.recall_min_score) && c.recall_min_score > 0 ? c.recall_min_score : 0,
   };
 }
 
@@ -255,15 +262,57 @@ function lastTextByRole(messages, role) {
   return "";
 }
 
-function formatResults(results) {
+// DEFAULT_RECALL_LABELS mirrors the opencode plugin's labels toggle. Empty by
+// default — when labels are off, formatResults renders the legacy
+// "(tier) text" line so existing callers see identical output.
+const DEFAULT_RECALL_LABELS = ["tier"];
+
+function recallLabels() {
+  const raw = process.env.MEMINI_INJECT_LABELS;
+  if (!raw) return DEFAULT_RECALL_LABELS;
+  return raw
+    .split(/[|,]/)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function formatAge(createdAt) {
+  if (!createdAt) return "";
+  const t = new Date(createdAt).getTime();
+  if (!Number.isFinite(t)) return "";
+  const days = Math.floor((Date.now() - t) / 86400000);
+  if (days < 0) return "";
+  return days === 0 ? "today" : `${days}d`;
+}
+
+function formatResults(results, labels = DEFAULT_RECALL_LABELS) {
   if (!Array.isArray(results) || results.length === 0) return "";
   return results
-    .slice(0, 5)
     .map((result, index) => {
       const mem = result?.memory ?? {};
       const text = (mem.summary || mem.content || `Memory ${index + 1}`).trim();
-      const tier = (mem.tier || "memory").trim();
-      return `- (${tier}) ${text.slice(0, 300)}`;
+      if (labels.length === 0) {
+        // Mirror the pre-budget format exactly: "(tier) text".
+        const tier = (mem.tier || "memory").trim();
+        return `- (${tier}) ${text.slice(0, 300)}`;
+      }
+      const tagParts = [];
+      if (labels.includes("tier") && mem.tier) tagParts.push(mem.tier);
+      if (labels.includes("confidence") && typeof mem.confidence === "number") {
+        tagParts.push(`conf=${mem.confidence.toFixed(2)}`);
+      }
+      if (labels.includes("age")) {
+        const age = formatAge(mem.created_at || mem.createdAt);
+        if (age) tagParts.push(age);
+      }
+      if (labels.includes("reason") && Array.isArray(mem.tags) && mem.tags.includes("pinned")) {
+        tagParts.push("pinned");
+      }
+      if (tagParts.length === 0) {
+        const tier = (mem.tier || "memory").trim();
+        return `- (${tier}) ${text.slice(0, 300)}`;
+      }
+      return `- [${tagParts.join(" · ")}] ${text.slice(0, 300)}`;
     })
     .filter(Boolean)
     .join("\n");
@@ -414,14 +463,15 @@ const plugin = {
       if (shouldSkipSystemTurn(cfg, event, ctx, prompt)) return;
       const ns = effectiveNamespace(cfg, event, ctx);
       if (ns == null) return;
-      const body = { query: prompt, limit: 5 };
+      const body = { query: prompt, limit: cfg.recall_limit };
+      if (cfg.recall_min_score > 0) body.min_score = cfg.recall_min_score;
       // Exclude this session's own just-captured turns: they're still in the
       // live transcript, so recalling them echoes the conversation back as
       // "long-term memory". agent_end tags each capture with session_id.
       const session = sessionIdentity(event, ctx);
       if (session) body.exclude_metadata = { session_id: session };
       const result = await client.postJson("/v1/search", body, ns);
-      const block = formatResults(result?.results || []);
+      const block = formatResults(result?.results || [], recallLabels());
       if (!block) return;
       return { prependContext: `Relevant long-term memory from memini:\n${block}` };
     });

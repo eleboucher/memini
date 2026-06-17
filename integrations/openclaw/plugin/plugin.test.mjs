@@ -247,6 +247,60 @@ test("manifest contracts.tools matches the registered tool names", async () => {
   assert.deepEqual([...declared].sort(), [...order].sort(), "contracts.tools must list exactly the registered tools");
 });
 
+test("resolveConfig defaults recall knobs to today's behavior (limit 5, no min_score)", () => {
+  const cfg = resolveConfig(undefined);
+  assert.equal(cfg.recall_limit, 5);
+  assert.equal(cfg.recall_min_score, 0);
+});
+
+test("resolveConfig honors explicit recall_limit and recall_min_score", () => {
+  const cfg = resolveConfig({ recall_limit: 2, recall_min_score: 0.6 });
+  assert.equal(cfg.recall_limit, 2);
+  assert.equal(cfg.recall_min_score, 0.6);
+});
+
+test("resolveConfig falls back when recall knobs are zero/negative", () => {
+  const cfg = resolveConfig({ recall_limit: 0, recall_min_score: -1 });
+  assert.equal(cfg.recall_limit, 5, "0 falls back to default");
+  assert.equal(cfg.recall_min_score, 0, "negative falls back to default");
+});
+
+test("recall sends recall_limit and min_score on /v1/search when configured", async () => {
+  const hooks = {};
+  const requests = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    return {
+      ok: true,
+      async json() {
+        return { results: [{ memory: { summary: "x", tier: "semantic" }, score: 0.9 }] };
+      },
+      async text() { return ""; },
+    };
+  };
+  try {
+    await plugin.register({
+      pluginConfig: {
+        enabled: true,
+        namespace_per_agent: false,
+        recall_limit: 2,
+        recall_min_score: 0.7,
+      },
+      registerMemoryCapability() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    await hooks.before_prompt_build({ prompt: "q" }, {});
+    const search = JSON.parse(requests.find((r) => r.url.endsWith("/v1/search")).init.body);
+    assert.equal(search.limit, 2);
+    assert.equal(search.min_score, 0.7);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("recall uses before_prompt_build, not the deprecated before_agent_start", async () => {
   const hooks = {};
   await plugin.register({
