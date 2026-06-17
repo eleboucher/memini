@@ -262,6 +262,24 @@ function lastTextByRole(messages, role) {
   return "";
 }
 
+// OpenClaw prepends runtime plumbing to the user turn that the model sees:
+// one or more "<Label> (untrusted metadata):" blocks (chat/sender info), each
+// followed by a fenced JSON object. That metadata is explicitly untrusted and
+// is not memory — captured verbatim it dominates a namespace and recalls at
+// high similarity (it's templated), crowding out real memories. Strip the
+// leading metadata blocks and keep the actual message that follows.
+const UNTRUSTED_METADATA_BLOCK =
+  /^\s*[^\n]*\(untrusted metadata\):\s*```(?:json)?\s*[\s\S]*?```\s*/;
+
+export function stripRuntimePreambles(text) {
+  if (typeof text !== "string") return text;
+  let out = text;
+  while (UNTRUSTED_METADATA_BLOCK.test(out)) {
+    out = out.replace(UNTRUSTED_METADATA_BLOCK, "");
+  }
+  return out.trim();
+}
+
 // DEFAULT_RECALL_LABELS mirrors the opencode plugin's labels toggle. Empty by
 // default — when labels are off, formatResults renders the legacy
 // "(tier) text" line so existing callers see identical output.
@@ -482,6 +500,10 @@ const plugin = {
       const assistantText = lastTextByRole(event.messages, "assistant");
       if (!userText || !assistantText) return;
       if (shouldSkipSystemTurn(cfg, event, ctx, userText)) return;
+      // Drop OpenClaw runtime plumbing from the captured turn: untrusted-metadata
+      // preambles, and subagent task delegations (framing, not conversation).
+      const captureUser = stripRuntimePreambles(userText);
+      if (!captureUser || captureUser.startsWith("[Subagent Context]")) return;
       const ns = effectiveNamespace(cfg, event, ctx);
       if (ns == null) return;
       const metadata = { source: "openclaw" };
@@ -489,7 +511,7 @@ const plugin = {
       if (session) metadata.session_id = session;
       if (!event?.success) metadata.failed = true;
       await client.postJson("/v1/memories", {
-        content: `User: ${userText.slice(0, 1000)}\nAssistant: ${assistantText.slice(0, 3000)}`,
+        content: `User: ${captureUser.slice(0, 1000)}\nAssistant: ${assistantText.slice(0, 3000)}`,
         tier: "episodic",
         metadata,
       }, ns);
