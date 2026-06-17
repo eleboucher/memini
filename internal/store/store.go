@@ -20,18 +20,10 @@ var ErrConflict = errors.New("id exists in a different namespace")
 
 // Scored is a memory paired with a relevance score for the query that produced
 // it. Results are always returned best-first; Score is higher-is-better and is
-// only comparable within a single method's result set. FusedScore preserves the
-// absolute fused (vector+keyword) score before min-max normalisation, so the
-// recall threshold can compare against an absolute value.
+// only comparable within a single method's result set.
 type Scored struct {
 	Memory *memory.Memory
 	Score  float64
-
-	// FusedScore is the pre-normalisation fused relevance value — either the
-	// convex combination (score fusion) or the RRF score (rank fusion). It is
-	// set by RerankWith before Score is overwritten by the composite. A recall
-	// threshold compares against this when > 0.
-	FusedScore float64
 }
 
 // Filter narrows a search to a subset of memories. The zero value matches all

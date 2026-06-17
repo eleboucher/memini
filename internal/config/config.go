@@ -158,10 +158,8 @@ type Config struct {
 	// recall results entirely, preventing the "poison" problem where short
 	// prompts fetch irrelevant memories whose fused scores are then min-max
 	// normalised into competitive values. Default 0.1 (matches mem0's default);
-	// set to 0 to disable. For score fusion (MEMINI_FUSION_ALPHA >= 0), the fused
-	// score is in [0,1] so 0.1 is permissive. For rank fusion (RRF), the fused
-	// score is a small rank-based value where the top position is ~0.016, so 0 is
-	// recommended for RRF users because the default 0.1 would filter everything.
+	// set to 0 to disable. Only applies to score fusion (MEMINI_FUSION_ALPHA >= 0)
+	// where the fused score is comparable. Has no effect when using RRF.
 	RecallMinScore float64 `env:"MEMINI_RECALL_MIN_SCORE" envDefault:"0.1"`
 
 	// Consolidation tuning.

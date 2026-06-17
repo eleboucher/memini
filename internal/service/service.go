@@ -851,8 +851,9 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	// threshold, preventing the "poison" problem where irrelevant memories are
 	// min-max normalised into competitive values. Applied before composite
 	// re-ranking and before the reranker, so low-scoring candidates never
-	// consume the reranker's budget or pollute the result.
-	if s.recallMinScore > 0 {
+	// consume the reranker's budget or pollute the result. Only meaningful for
+	// score fusion (RRF scores are not comparable to the [0,1] threshold).
+	if s.scoreFusionAlpha >= 0 && s.recallMinScore > 0 {
 		filtered := make([]store.Scored, 0, len(fused))
 		for _, r := range fused {
 			if r.Score >= s.recallMinScore {
@@ -944,6 +945,11 @@ func (s *Service) finalizeRecall(ctx context.Context, query string, ranked []sto
 			out = append(out, r)
 			delete(byID, id)
 		}
+	}
+	if len(out) == 0 {
+		slog.WarnContext(ctx, "recall: rerank matched no candidates, using composite order", "backend", s.rerankName)
+		s.metrics.RerankResult(s.rerankName, "fallback")
+		return search.Dedup(ranked, k)
 	}
 	if k > 0 && len(out) > k {
 		out = out[:k]
