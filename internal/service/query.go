@@ -184,14 +184,41 @@ type Briefing struct {
 	Pinned     []*memory.Memory `json:"pinned,omitempty"`     // tagged pinned, any tier
 }
 
-// Briefing builds a session-start briefing for a namespace: up to perSection
-// memories in each of facts (semantic), procedures (procedural) and recent
-// (episodic, newest first), plus all pinned memories. It is a cheap, query-less
-// read for hooks to inject context when a session opens.
-func (s *Service) Briefing(ctx context.Context, namespace string, perSection int) (Briefing, error) {
-	if perSection <= 0 {
-		perSection = 5
+// BriefingOpts sets per-section caps for a Briefing. A nil field falls back
+// to DefaultPerSection (5); a pointer to 0 explicitly disables the section so
+// callers can opt sections out without rebalancing the others. Section caps are
+// independent: pinned memories count against Pinned and never against
+// Facts/Procedures/Recent, so an operator can keep a small durable
+// "top-of-mind" set always-injected while still capping the per-section recall.
+type BriefingOpts struct {
+	Pinned     *int
+	Facts      *int
+	Procedures *int
+	Recent     *int
+}
+
+// DefaultPerSection is the briefing cap applied to any section whose dedicated
+// opt is nil. It mirrors the historical "per_section=N" default so callers that
+// don't pass per-section options see the same behavior.
+const DefaultPerSection = 5
+
+// Briefing builds a session-start briefing for a namespace: up to Facts
+// semantic facts (ranked by DurableScore), Procedures procedural how-tos,
+// Recent episodic entries (newest first), and Pinned pinned memories (any tier).
+// Each opt is a pointer so nil falls back to DefaultPerSection and a pointer
+// to 0 disables the section. It is a cheap, query-less read for hooks to
+// inject context when a session opens.
+func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingOpts) (Briefing, error) {
+	resolve := func(p *int) int {
+		if p == nil {
+			return DefaultPerSection
+		}
+		return *p
 	}
+	pinnedN := resolve(opts.Pinned)
+	factsN := resolve(opts.Facts)
+	procsN := resolve(opts.Procedures)
+	recentN := resolve(opts.Recent)
 	now := s.now()
 	mems, err := s.store.List(ctx, namespace, store.Filter{Now: now}, 0)
 	if err != nil {
@@ -225,9 +252,23 @@ func (s *Service) Briefing(ctx context.Context, namespace string, perSection int
 	byDurable(procs)
 	sort.SliceStable(recent, func(i, j int) bool { return recent[i].CreatedAt.After(recent[j].CreatedAt) })
 
-	b.Facts = topN(facts, perSection)
-	b.Procedures = topN(procs, perSection)
-	b.Recent = topN(recent, perSection)
+	// Pinned sort: by DurableScore first, then created_at desc — so the always
+	// injected "top-of-mind" set keeps stable ordering as new pinned memories
+	// land (pinned memories are exempt from demotion, but a fresh pin can still
+	// shadow an older one with lower durability).
+	sort.SliceStable(b.Pinned, func(i, j int) bool {
+		di := b.Pinned[i].DurableScore(now)
+		dj := b.Pinned[j].DurableScore(now)
+		if di != dj {
+			return di > dj
+		}
+		return b.Pinned[i].CreatedAt.After(b.Pinned[j].CreatedAt)
+	})
+
+	b.Facts = topN(facts, factsN)
+	b.Procedures = topN(procs, procsN)
+	b.Recent = topN(recent, recentN)
+	b.Pinned = topN(b.Pinned, pinnedN)
 	return b, nil
 }
 

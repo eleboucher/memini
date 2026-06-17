@@ -239,7 +239,10 @@ type SearchRequest struct {
 
 	// Metadata A memory's top-level metadata must contain every listed key=value pair (AND).
 	Metadata *map[string]string `json:"metadata,omitempty"`
-	Query    string             `json:"query"`
+
+	// MinScore Per-call relevance floor on the fused score. Candidates below it are dropped server-side before re-ranking. 0 (or unset) falls back to the server's default gate (MEMINI_RECALL_MIN_SCORE). Only meaningful with score fusion (RRF scores are not comparable to this threshold).
+	MinScore *float64 `json:"min_score,omitempty"`
+	Query    string   `json:"query"`
 
 	// Scope exact (default) searches only the request namespace; subtree also searches namespaces nested under it ("project" reads "project/agent"), for the multi-agent read-shared-plus-private pattern.
 	Scope *SearchRequestScope `json:"scope,omitempty"`
@@ -361,8 +364,20 @@ type GetMemoryParams struct {
 
 // GetBriefingParams defines parameters for GetBriefing.
 type GetBriefingParams struct {
-	// PerSection Max memories per section (facts/procedures/recent). Default 5.
+	// PerSection Default cap applied to every section when its dedicated cap is unset. Default 5.
 	PerSection *int `form:"per_section,omitempty" json:"per_section,omitempty"`
+
+	// PerSectionPinned Max pinned memories. Overrides per_section. 0 disables the section.
+	PerSectionPinned *int `form:"per_section_pinned,omitempty" json:"per_section_pinned,omitempty"`
+
+	// PerSectionFacts Max durable semantic facts. Overrides per_section. 0 disables the section.
+	PerSectionFacts *int `form:"per_section_facts,omitempty" json:"per_section_facts,omitempty"`
+
+	// PerSectionProcedures Max procedural how-to memories. Overrides per_section. 0 disables the section.
+	PerSectionProcedures *int `form:"per_section_procedures,omitempty" json:"per_section_procedures,omitempty"`
+
+	// PerSectionRecent Max recent episodic entries. Overrides per_section. 0 disables the section.
+	PerSectionRecent *int `form:"per_section_recent,omitempty" json:"per_section_recent,omitempty"`
 }
 
 // SearchMemoriesParams defines parameters for SearchMemories.
@@ -1109,6 +1124,58 @@ func (siw *ServerInterfaceWrapper) GetBriefing(w http.ResponseWriter, r *http.Re
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "per_section"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "per_section", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "per_section_pinned" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "per_section_pinned", r.URL.Query(), &params.PerSectionPinned, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "per_section_pinned"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "per_section_pinned", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "per_section_facts" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "per_section_facts", r.URL.Query(), &params.PerSectionFacts, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "per_section_facts"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "per_section_facts", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "per_section_procedures" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "per_section_procedures", r.URL.Query(), &params.PerSectionProcedures, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "per_section_procedures"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "per_section_procedures", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "per_section_recent" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "per_section_recent", r.URL.Query(), &params.PerSectionRecent, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "per_section_recent"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "per_section_recent", Err: err})
 		}
 		return
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -145,6 +146,11 @@ func TestGetBriefing(t *testing.T) {
 	remember("finished the auth refactor today", "episodic", nil)
 	remember("the user is Erwan, prefers Go", "semantic", []string{"pinned"})
 
+	// Diagnostic: confirm tags actually land on the stored memory so the
+	// briefing's pinned section has something to find.
+	listRec := do(t, h, http.MethodGet, "/v1/memories", "proj", apiKey, nil)
+	t.Logf("TestGetBriefing list body: %s", listRec.Body)
+
 	rec := do(t, h, http.MethodGet, "/v1/namespaces/proj/briefing", "proj", apiKey, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("briefing: %d (%s)", rec.Code, rec.Body)
@@ -163,6 +169,150 @@ func TestGetBriefing(t *testing.T) {
 	if len(b.Facts) < 1 || len(b.Procedures) != 1 || len(b.Recent) != 1 || len(b.Pinned) != 1 {
 		t.Fatalf("briefing sections off: facts=%d procs=%d recent=%d pinned=%d",
 			len(b.Facts), len(b.Procedures), len(b.Recent), len(b.Pinned))
+	}
+}
+
+func TestGetBriefingPerSectionCaps(t *testing.T) {
+	h := newServer(t)
+	remember := func(content, tier string, tags []string) {
+		body := map[string]any{"content": content, "tier": tier}
+		if tags != nil {
+			body["tags"] = tags
+		}
+		rec := do(t, h, http.MethodPost, "/v1/memories", "proj", apiKey, body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("remember %q: %d (%s)", content, rec.Code, rec.Body)
+		}
+	}
+	// Five of each tier, plus three pinned (across tiers) — enough to exercise
+	// per-section caps in isolation. The unpinned names distinguish from the
+	// pinned ones so each section has a known floor of one tier.
+	for i := 0; i < 5; i++ {
+		remember(fmt.Sprintf("semantic-u-%d", i), "semantic", nil)
+	}
+	for i := 0; i < 5; i++ {
+		remember(fmt.Sprintf("procedural-u-%d", i), "procedural", nil)
+	}
+	for i := 0; i < 5; i++ {
+		remember(fmt.Sprintf("episodic-u-%d", i), "episodic", nil)
+	}
+	for i := 0; i < 3; i++ {
+		remember(fmt.Sprintf("semantic-p-%d", i), "semantic", []string{"pinned"})
+	}
+	for i := 0; i < 2; i++ {
+		remember(fmt.Sprintf("procedural-p-%d", i), "procedural", []string{"pinned"})
+	}
+
+	type result struct {
+		Namespace  string                     `json:"namespace"`
+		Facts      []struct{ Content string } `json:"facts"`
+		Procedures []struct{ Content string } `json:"procedures"`
+		Recent     []struct{ Content string } `json:"recent"`
+		Pinned     []struct{ Content string } `json:"pinned"`
+	}
+	decode := func(rec *httptest.ResponseRecorder) result {
+		var b result
+		mustJSON(t, rec, &b)
+		return b
+	}
+
+	// Verify the seed put pinned memories in storage before asserting on the
+	// briefing — surfaces any tag-plumbing bug here rather than in the cap
+	// assertion.
+	// Verify the seed put pinned memories in storage before asserting on the
+	// briefing — surfaces any tag-plumbing bug here rather than in the cap
+	// assertion.
+	listRec := do(t, h, http.MethodGet, "/v1/memories?tag=pinned", "proj", apiKey, nil)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list pinned: %d (%s)", listRec.Code, listRec.Body)
+	}
+	var listed struct {
+		Memories []struct{ Content string } `json:"memories"`
+	}
+	mustJSON(t, listRec, &listed)
+	if len(listed.Memories) != 5 {
+		t.Fatalf("expected 5 pinned memories in storage, got %d", len(listed.Memories))
+	}
+
+	// Defaults: per_section=5 (omitted), all four sections capped at 5. Pinned
+	// carries 5 candidates (3 semantic + 2 procedural) so it caps at 5.
+	rec := do(t, h, http.MethodGet, "/v1/namespaces/proj/briefing", "proj", apiKey, nil)
+	b := decode(rec)
+	if len(b.Facts) != 5 || len(b.Procedures) != 5 || len(b.Recent) != 5 || len(b.Pinned) != 5 {
+		t.Fatalf("default per_section=5 should cap all sections to 5, got facts=%d procs=%d recent=%d pinned=%d",
+			len(b.Facts), len(b.Procedures), len(b.Recent), len(b.Pinned))
+	}
+
+	// Per-section overrides win over per_section: pin 2, facts 1, procedures 0
+	// (off), recent 3. Verifies that one section can be disabled (procs=0)
+	// while others get custom caps.
+	q := "/v1/namespaces/proj/briefing?per_section=5&per_section_pinned=2&per_section_facts=1&per_section_procedures=0&per_section_recent=3"
+	rec = do(t, h, http.MethodGet, q, "proj", apiKey, nil)
+	b = decode(rec)
+	if len(b.Pinned) != 2 || len(b.Facts) != 1 || len(b.Procedures) != 0 || len(b.Recent) != 3 {
+		t.Fatalf("per-section caps off: pinned=%d facts=%d procs=%d recent=%d",
+			len(b.Pinned), len(b.Facts), len(b.Procedures), len(b.Recent))
+	}
+}
+
+func TestSearchMinScoreFilters(t *testing.T) {
+	h := newServer(t)
+	// Seed a strongly-relevant memory (exact topic match) and a weakly-
+	// relevant one (unrelated content). Both rank on the same query; the
+	// min_score floor drops the weak one without touching the strong.
+	strong := "the kubernetes pod scheduler assigns nodes to containers"
+	weak := "the bakery has fresh croissants every morning"
+	remember := func(content, tier string) {
+		rec := do(t, h, http.MethodPost, "/v1/memories", "ns", apiKey, map[string]any{
+			"content": content, "tier": tier,
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("remember %q: %d", content, rec.Code)
+		}
+	}
+	remember(strong, "semantic")
+	remember(weak, "semantic")
+
+	search := func(body map[string]any) []string {
+		rec := do(t, h, http.MethodPost, "/v1/search", "ns", apiKey, body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("search: %d (%s)", rec.Code, rec.Body)
+		}
+		var sr struct {
+			Results []struct {
+				Memory struct{ Content string } `json:"memory"`
+			} `json:"results"`
+		}
+		mustJSON(t, rec, &sr)
+		contents := make([]string, 0, len(sr.Results))
+		for _, r := range sr.Results {
+			contents = append(contents, r.Memory.Content)
+		}
+		return contents
+	}
+
+	// No min_score: both should appear, strong first.
+	both := search(map[string]any{"query": "kubernetes scheduler", "limit": 5})
+	if len(both) != 2 {
+		t.Fatalf("baseline recall should return both, got %d (%v)", len(both), both)
+	}
+
+	// A min_score high enough to drop the weak but not the strong: per-call
+	// MinScore overrides the server-wide default gate (0.1), proving the
+	// field is wired through to the recall floor.
+	strongOnly := search(map[string]any{
+		"query": "kubernetes scheduler", "limit": 5, "min_score": 0.5,
+	})
+	if len(strongOnly) != 1 || strongOnly[0] != strong {
+		t.Fatalf("min_score=0.5 should keep only the strong match, got %v", strongOnly)
+	}
+
+	// min_score above any achievable fused score: empty result set.
+	none := search(map[string]any{
+		"query": "kubernetes scheduler", "limit": 5, "min_score": 2.0,
+	})
+	if len(none) != 0 {
+		t.Fatalf("min_score=2.0 should drop everything, got %v", none)
 	}
 }
 

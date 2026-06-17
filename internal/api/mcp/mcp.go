@@ -274,8 +274,12 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 }
 
 type briefingArgs struct {
-	PerSection int    `json:"per_section,omitempty" jsonschema:"max memories per section (default 5)"`
-	Namespace  string `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+	PerSection       int    `json:"per_section,omitempty" jsonschema:"default cap for any section when its dedicated cap is unset (default 5)"`
+	PerSectionPinned int    `json:"per_section_pinned,omitempty" jsonschema:"max pinned memories; 0 disables this section"`
+	PerSectionFacts  int    `json:"per_section_facts,omitempty" jsonschema:"max durable semantic facts; 0 disables"`
+	PerSectionProc   int    `json:"per_section_procedures,omitempty" jsonschema:"max procedural how-to memories; 0 disables"`
+	PerSectionRecent int    `json:"per_section_recent,omitempty" jsonschema:"max recent episodic entries; 0 disables"`
+	Namespace        string `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 }
 
 type briefingResult struct {
@@ -299,7 +303,25 @@ func (t *tools) briefing(ctx context.Context, _ *mcpsdk.CallToolRequest, in brie
 	if err != nil {
 		return nil, briefingResult{}, err
 	}
-	b, err := t.svc.Briefing(ctx, ns, in.PerSection)
+	// PerSection is the default cap applied to any section whose dedicated
+	// per_section_X is unset (0). Matches the REST /briefing semantics so MCP
+	// and HTTP callers see the same shape. We pass pointers so "unset"
+	// (omitted) and "explicitly 0" (disable) are distinguishable downstream.
+	pick := func(dedicated int) *int {
+		if dedicated != 0 {
+			return &dedicated
+		}
+		if in.PerSection != 0 {
+			return &in.PerSection
+		}
+		return nil
+	}
+	b, err := t.svc.Briefing(ctx, ns, service.BriefingOpts{
+		Pinned:     pick(in.PerSectionPinned),
+		Facts:      pick(in.PerSectionFacts),
+		Procedures: pick(in.PerSectionProc),
+		Recent:     pick(in.PerSectionRecent),
+	})
 	if err != nil {
 		return nil, briefingResult{}, err
 	}

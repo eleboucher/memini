@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -150,6 +151,65 @@ func TestBriefingTool(t *testing.T) {
 	structured(t, res, &b)
 	if b.Namespace != "default" || len(b.Facts) < 1 || len(b.Procedures) != 1 || len(b.Pinned) != 1 {
 		t.Fatalf("unexpected briefing: %+v", b)
+	}
+}
+
+func TestBriefingToolPerSectionCaps(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	remember := func(content, tier string, tags []string) {
+		args := map[string]any{"content": content, "tier": tier}
+		if tags != nil {
+			args["tags"] = tags
+		}
+		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{Name: "memory_remember", Arguments: args}); err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+	}
+	// 5 of each durable tier + 3 pinned semantic — enough to verify that
+	// per_section_X can shrink one section without touching the others.
+	for i := 0; i < 5; i++ {
+		remember(fmt.Sprintf("sem-u-%d", i), "semantic", nil)
+	}
+	for i := 0; i < 5; i++ {
+		remember(fmt.Sprintf("proc-u-%d", i), "procedural", nil)
+	}
+	for i := 0; i < 3; i++ {
+		remember(fmt.Sprintf("sem-p-%d", i), "semantic", []string{"pinned"})
+	}
+
+	type b struct {
+		Namespace  string                     `json:"namespace"`
+		Facts      []struct{ Content string } `json:"facts"`
+		Procedures []struct{ Content string } `json:"procedures"`
+		Pinned     []struct{ Content string } `json:"pinned"`
+	}
+	call := func(args map[string]any) b {
+		res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{Name: "memory_briefing", Arguments: args})
+		if err != nil {
+			t.Fatalf("briefing: %v", err)
+		}
+		var out b
+		structured(t, res, &out)
+		return out
+	}
+
+	// per_section acts as the default; per_section_pinned shrinks just pinned.
+	got := call(map[string]any{"per_section": 5, "per_section_pinned": 2})
+	if len(got.Facts) != 5 || len(got.Procedures) != 5 || len(got.Pinned) != 2 {
+		t.Fatalf("per_section_pinned=2 should cap pinned at 2 while keeping facts/procs at 5, got facts=%d procs=%d pinned=%d",
+			len(got.Facts), len(got.Procedures), len(got.Pinned))
+	}
+
+	// per_section_procedures shrinks just that section while keeping the
+	// others at the per_section default. The MCP args are int (not *int), so
+	// a user can't disable a section by passing 0 — that's REST-only — but
+	// they can shrink it.
+	got = call(map[string]any{"per_section": 5, "per_section_procedures": 2})
+	if len(got.Procedures) != 2 || len(got.Facts) != 5 || len(got.Pinned) != 3 {
+		t.Fatalf("per_section_procedures=2 should cap procs at 2 while keeping facts=5 pinned=3, got facts=%d procs=%d pinned=%d",
+			len(got.Facts), len(got.Procedures), len(got.Pinned))
 	}
 }
 

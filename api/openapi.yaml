@@ -218,7 +218,23 @@ paths:
           schema: { type: string }
         - name: per_section
           in: query
-          description: Max memories per section (facts/procedures/recent). Default 5.
+          description: Default cap applied to every section when its dedicated cap is unset. Default 5.
+          schema: { type: integer }
+        - name: per_section_pinned
+          in: query
+          description: Max pinned memories. Overrides per_section. 0 disables the section.
+          schema: { type: integer }
+        - name: per_section_facts
+          in: query
+          description: Max durable semantic facts. Overrides per_section. 0 disables the section.
+          schema: { type: integer }
+        - name: per_section_procedures
+          in: query
+          description: Max procedural how-to memories. Overrides per_section. 0 disables the section.
+          schema: { type: integer }
+        - name: per_section_recent
+          in: query
+          description: Max recent episodic entries. Overrides per_section. 0 disables the section.
           schema: { type: integer }
       responses:
         "200":
@@ -408,6 +424,16 @@ components:
             Time-travel recall: return facts whose validity window contained this
             instant (including ones since superseded), for "what was true then"
             queries.
+        min_score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: >
+            Per-call relevance floor on the fused score. Candidates below it are
+            dropped server-side before re-ranking. 0 (or unset) falls back to
+            the server's default gate (MEMINI_RECALL_MIN_SCORE). Only meaningful
+            with score fusion (RRF scores are not comparable to this threshold).
     ScoredMemory:
       type: object
       required: [memory, score]

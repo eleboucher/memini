@@ -696,6 +696,12 @@ type RecallInput struct {
 	// multi-agent "read shared + private" pattern. Default (false) is exact scope,
 	// so cross-agent recall never happens unless asked for.
 	Subtree bool
+	// MinScore, when > 0, overrides the server's default recallMinScore for
+	// this call. Lets a caller request a stricter relevance floor per
+	// integration (e.g. the pre-tool-use hook only injects highly-relevant
+	// hits). 0 (the zero value) falls back to the server-wide gate. Only
+	// meaningful with score fusion; RRF scores are not comparable to [0,1].
+	MinScore float64
 }
 
 // Recall runs hybrid (vector + keyword) retrieval fused with RRF.
@@ -858,14 +864,23 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	// re-ranking and before the reranker, so low-scoring candidates never
 	// consume the reranker's budget or pollute the result. Only meaningful for
 	// score fusion (RRF scores are not comparable to the [0,1] threshold).
-	if s.scoreFusionAlpha >= 0 && s.recallMinScore > 0 {
-		filtered := make([]store.Scored, 0, len(fused))
-		for _, r := range fused {
-			if r.Score >= s.recallMinScore {
-				filtered = append(filtered, r)
-			}
+	// A per-call MinScore (set by the integration) overrides the server-wide
+	// default, so a hook can request a stricter floor without changing the
+	// global gate.
+	if s.scoreFusionAlpha >= 0 {
+		floor := s.recallMinScore
+		if in.MinScore > 0 {
+			floor = in.MinScore
 		}
-		fused = filtered
+		if floor > 0 {
+			filtered := make([]store.Scored, 0, len(fused))
+			for _, r := range fused {
+				if r.Score >= floor {
+					filtered = append(filtered, r)
+				}
+			}
+			fused = filtered
+		}
 	}
 	var ranked []store.Scored
 	if s.temporalBoost > 0 && s.temporalAnchor != nil {

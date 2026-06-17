@@ -286,6 +286,9 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 	if req.Scope != nil && *req.Scope == Subtree {
 		in.Subtree = true
 	}
+	if req.MinScore != nil {
+		in.MinScore = *req.MinScore
+	}
 
 	res, err := h.svc.Recall(r.Context(), in)
 	if err != nil {
@@ -378,11 +381,24 @@ func (h *Server) GetBriefing(w http.ResponseWriter, r *http.Request, name string
 		httputil.Error(w, http.StatusBadRequest, "invalid namespace: "+err.Error())
 		return
 	}
-	per := 0
-	if params.PerSection != nil {
-		per = *params.PerSection
+	// Per-section caps: a dedicated param (per_section_*) wins over the
+	// uniform per_section fallback so callers can pin a small durable
+	// "top-of-mind" set without unbalancing the rest. We pass pointers
+	// through (rather than deref'ing) so nil-vs-zero carries "unset" vs
+	// "explicitly disable this section" to the service layer.
+	pick := func(dedicated, fallback *int) *int {
+		if dedicated != nil {
+			return dedicated
+		}
+		return fallback
 	}
-	b, err := h.svc.Briefing(r.Context(), name, per)
+	opts := service.BriefingOpts{
+		Pinned:     pick(params.PerSectionPinned, params.PerSection),
+		Facts:      pick(params.PerSectionFacts, params.PerSection),
+		Procedures: pick(params.PerSectionProcedures, params.PerSection),
+		Recent:     pick(params.PerSectionRecent, params.PerSection),
+	}
+	b, err := h.svc.Briefing(r.Context(), name, opts)
 	if err != nil {
 		writeError(w, r, statusFor(err), err)
 		return
