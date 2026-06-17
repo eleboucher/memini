@@ -13,7 +13,7 @@ glob = "*.{md,json,yaml,yml}"
 # Generated lockfile is ignored by oxfmt; excluding it stops the formatter from
 # being handed only-ignored files and exiting non-zero.
 exclude = ["**/package-lock.json"]
-run = "oxfmt --write {staged_files}"
+run = "oxfmt --write --no-error-on-unmatched-pattern {staged_files}"
 stage_fixed = true
 
 [pre-commit.commands.tidy]

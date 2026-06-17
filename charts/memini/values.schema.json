@@ -170,7 +170,7 @@
                                             {
                                               "properties": {
                                                 "key": {
-                                                  "default": "app.kubernetes.io/component",
+                                                  "default": "app.kubernetes.io/controller",
                                                   "title": "key",
                                                   "type": "string"
                                                 },
