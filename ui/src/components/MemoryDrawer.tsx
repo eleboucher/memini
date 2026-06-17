@@ -10,9 +10,10 @@ import { IconClose, IconCopy, IconCheck, IconTrash } from '../icons'
 interface Props {
   memory: Memory
   onClose: () => void
+  wide?: boolean
 }
 
-export function MemoryDrawer({ memory: m, onClose }: Props) {
+export function MemoryDrawer({ memory: m, onClose, wide }: Props) {
   const [copied, setCopied] = useState(false)
   const [armed, setArmed] = useState(false) // delete confirmation (two-click)
   const [deleting, setDeleting] = useState(false)
@@ -93,7 +94,7 @@ export function MemoryDrawer({ memory: m, onClose }: Props) {
   return (
     <>
       <div class="scrim" onClick={onClose} />
-      <aside class="drawer" role="dialog" aria-modal="true" aria-label="Memory detail" ref={drawerRef}>
+      <aside class={`drawer${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label="Memory detail" ref={drawerRef}>
         <div class="drawer-head">
           <TierBadge tier={m.tier} />
           <MemoryTypeBadge type={memoryType(m)} />

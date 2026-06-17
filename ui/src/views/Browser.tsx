@@ -35,49 +35,51 @@ export function Browser() {
   const sparse = memories.length === 1
 
   return (
-    <div class={`view browse ${sparse ? 'sparse' : ''}`}>
-      <div class="toolbar">
-        <TierFilter selected={tiers} onChange={setTiers} />
-        <MetaFilter
-          onChange={(t, m) => {
-            setTags(t)
-            setMetadata(m)
-          }}
-        />
-        <span class="grow" />
-        <label class="chip" style={{ cursor: 'pointer', gap: '6px' }}>
-          <input
-            type="checkbox"
-            checked={includeExpired}
-            onChange={(e) => setExpired((e.target as HTMLInputElement).checked)}
+    <>
+      <div class={`view browse ${sparse ? 'sparse' : ''}`}>
+        <div class="toolbar">
+          <TierFilter selected={tiers} onChange={setTiers} />
+          <MetaFilter
+            onChange={(t, m) => {
+              setTags(t)
+              setMetadata(m)
+            }}
           />
-          expired
-        </label>
-        <label class="chip" style={{ cursor: 'pointer', gap: '6px' }}>
-          <input
-            type="checkbox"
-            checked={includeSuperseded}
-            onChange={(e) => setSuperseded((e.target as HTMLInputElement).checked)}
-          />
-          superseded
-        </label>
-        <span class="chip mono">{memories.length} shown</span>
+          <span class="grow" />
+          <label class="chip" style={{ cursor: 'pointer', gap: '6px' }}>
+            <input
+              type="checkbox"
+              checked={includeExpired}
+              onChange={(e) => setExpired((e.target as HTMLInputElement).checked)}
+            />
+            expired
+          </label>
+          <label class="chip" style={{ cursor: 'pointer', gap: '6px' }}>
+            <input
+              type="checkbox"
+              checked={includeSuperseded}
+              onChange={(e) => setSuperseded((e.target as HTMLInputElement).checked)}
+            />
+            superseded
+          </label>
+          <span class="chip mono">{memories.length} shown</span>
+        </div>
+
+        {error && <ErrorBanner message={error} />}
+        {loading && !data ? (
+          <Loading />
+        ) : memories.length === 0 ? (
+          <Empty title="No memories" />
+        ) : (
+          <div class="mem-list">
+            {memories.map((m) => (
+              <MemoryCard key={m.id} memory={m} onOpen={setOpen} showNamespace={showNs} />
+            ))}
+          </div>
+        )}
       </div>
 
-      {error && <ErrorBanner message={error} />}
-      {loading && !data ? (
-        <Loading />
-      ) : memories.length === 0 ? (
-        <Empty title="No memories" />
-      ) : (
-        <div class="mem-list">
-          {memories.map((m) => (
-            <MemoryCard key={m.id} memory={m} onOpen={setOpen} showNamespace={showNs} />
-          ))}
-        </div>
-      )}
-
       {open && <MemoryDrawer memory={open} onClose={() => setOpen(null)} />}
-    </div>
+    </>
   )
 }

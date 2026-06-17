@@ -186,32 +186,34 @@ export function Graph() {
   }, [data, namespace.value, refreshNonce.value])
 
   return (
-    <div class="view" style={{ maxWidth: 'none' }}>
-      {error && <ErrorBanner message={error} />}
-      {loading && !data ? (
-        <Loading />
-      ) : memories.length === 0 ? (
-        <Empty title="No memories" />
-      ) : (
-        <div class="panel graph-wrap">
-          <div class="graph-canvas" ref={hostRef} />
-          <div class="graph-hint">{memories.length} nodes · scroll to zoom · drag to pin</div>
-          <div class="graph-legend">
-            {TIERS.map((t) => (
-              <div class="row" key={t}>
-                <span class="status-dot" style={{ background: tierColor(t) }} /> {t}
+    <>
+      <div class="view" style={{ maxWidth: 'none' }}>
+        {error && <ErrorBanner message={error} />}
+        {loading && !data ? (
+          <Loading />
+        ) : memories.length === 0 ? (
+          <Empty title="No memories" />
+        ) : (
+          <div class="panel graph-wrap">
+            <div class="graph-canvas" ref={hostRef} />
+            <div class="graph-hint">{memories.length} nodes · scroll to zoom · drag to pin</div>
+            <div class="graph-legend">
+              {TIERS.map((t) => (
+                <div class="row" key={t}>
+                  <span class="status-dot" style={{ background: tierColor(t) }} /> {t}
+                </div>
+              ))}
+              <div class="row" style={{ marginTop: '8px', color: 'var(--ember)' }}>
+                <span style={{ fontFamily: 'var(--font-mono)' }}>→</span> supersedes
               </div>
-            ))}
-            <div class="row" style={{ marginTop: '8px', color: 'var(--ember)' }}>
-              <span style={{ fontFamily: 'var(--font-mono)' }}>→</span> supersedes
-            </div>
-            <div class="row" style={{ color: 'var(--muted)' }}>
-              <span style={{ fontFamily: 'var(--font-mono)' }}>┄</span> shared tag
+              <div class="row" style={{ color: 'var(--muted)' }}>
+                <span style={{ fontFamily: 'var(--font-mono)' }}>┄</span> shared tag
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
       {open && <MemoryDrawer memory={open} onClose={() => setOpen(null)} />}
-    </div>
+    </>
   )
 }

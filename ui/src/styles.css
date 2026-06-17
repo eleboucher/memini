@@ -927,6 +927,11 @@ label.field .desc {
   flex-direction: column;
   animation: slidein 0.28s var(--ease);
 }
+/* When the master list is sparse (1 result), the drawer takes more space since
+   there's little content behind it. */
+.drawer.wide {
+  width: min(720px, 95vw);
+}
 @keyframes slidein {
   from {
     transform: translateX(100%);
