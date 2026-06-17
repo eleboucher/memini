@@ -41,6 +41,15 @@ func (r *slowReranker) Rerank(ctx context.Context, _ string, _ []rerank.Candidat
 	return nil, ctx.Err()
 }
 
+// emptyReranker returns no IDs, simulating an LLM that answers "none" or a
+// cross-encoder that scored every candidate below its cutoff.
+type emptyReranker struct{ called bool }
+
+func (r *emptyReranker) Rerank(_ context.Context, _ string, _ []rerank.Candidate) ([]string, error) {
+	r.called = true
+	return nil, nil
+}
+
 func ingestTwo(t *testing.T, svc *service.Service) {
 	t.Helper()
 	ctx := context.Background()
@@ -116,5 +125,22 @@ func TestRecallRerankerTimeoutFallsBackToComposite(t *testing.T) {
 	}
 	if len(got) != len(baseIDs) || got[0] != baseIDs[0] {
 		t.Fatalf("timed-out rerank should keep composite order: base=%v got=%v", baseIDs, got)
+	}
+}
+
+func TestRecallRerankerFallsBackOnEmptyVerdict(t *testing.T) {
+	st := openTestStore(t)
+	base := service.New(st, embedtest.New(dims), service.WithSyncReinforce())
+	ingestTwo(t, base)
+	baseIDs := recallIDs(t, base)
+
+	rr := &emptyReranker{}
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithReranker(rr, "test"))
+	got := recallIDs(t, svc)
+	if !rr.called {
+		t.Fatal("reranker not invoked")
+	}
+	if len(got) != len(baseIDs) || got[0] != baseIDs[0] {
+		t.Fatalf("empty rerank verdict should keep composite order: base=%v got=%v", baseIDs, got)
 	}
 }
