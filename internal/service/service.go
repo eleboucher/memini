@@ -146,14 +146,13 @@ type Service struct {
 	// generate a grounded answer from them.
 	answerer llm.Completer
 
-	// reranker, when set, reorders the top rerankTopN composite-ranked recall
-	// candidates (with an LLM or a cross-encoder model) before truncating to the
-	// limit. rerankName labels the backend for metrics. Adds one reranker call
-	// per Recall, so it is opt-in (see WithReranker); failures fall back to the
+	// reranker, when set, reorders the top k composite-ranked recall candidates
+	// (with an LLM or a cross-encoder model) before truncating to the limit.
+	// rerankName labels the backend for metrics. Adds one reranker call per
+	// Recall, so it is opt-in (see WithReranker); failures fall back to the
 	// composite order.
 	reranker   rerank.Reranker
 	rerankName string
-	rerankTopN int
 	// rerankTimeout bounds the reranker call; past it, recall falls back to
 	// composite order instead of stalling on a slow backend.
 	rerankTimeout time.Duration
@@ -161,6 +160,9 @@ type Service struct {
 	// any embed error, recall degrades to keyword-only search instead of failing.
 	// 0 keeps the query embed unbounded and an embed error fatal.
 	recallEmbedTimeout time.Duration
+	// recallMinScore is an absolute relevance floor on the fused score; candidates
+	// below it are dropped before composite re-ranking. 0 disables filtering.
+	recallMinScore float64
 
 	// distiller is optional; when set, RunPromoter distills frequently-accessed
 	// episodic memories into durable semantic facts.
@@ -252,13 +254,8 @@ func WithDistiller(d llm.Distiller) Option { return func(s *Service) { s.distill
 // from them with this chat client.
 func WithAnswerer(c llm.Completer) Option { return func(s *Service) { s.answerer = c } }
 
-// defaultRerankTopN is how many composite-ranked candidates the reranker sees.
-const defaultRerankTopN = 20
-
 // defaultRerankTimeout bounds a single reranker call; past it, recall falls
-// back to composite order. It leaves headroom for the per-document fan-out (a
-// recall scores rerankTopN candidates in slot-bounded waves), so a healthy but
-// busy backend isn't abandoned mid-rerank.
+// back to composite order.
 const defaultRerankTimeout = 10 * time.Second
 
 // rerankResponseMargin is held back from a caller's deadline when bounding the
@@ -267,17 +264,14 @@ const defaultRerankTimeout = 10 * time.Second
 const rerankResponseMargin = 250 * time.Millisecond
 
 // WithReranker enables reranking of recall candidates: after composite ranking,
-// the top topN candidates are reordered by the reranker (an LLM or cross-encoder
+// the top k candidates are reordered by the reranker (an LLM or cross-encoder
 // model), then truncated to the limit. name labels the backend in metrics. It
 // adds one reranker call per Recall, so it is opt-in; a failed rerank falls back
-// to the composite order. topN <= 0 keeps the default.
-func WithReranker(r rerank.Reranker, name string, topN int) Option {
+// to the composite order.
+func WithReranker(r rerank.Reranker, name string) Option {
 	return func(s *Service) {
 		s.reranker = r
 		s.rerankName = name
-		if topN > 0 {
-			s.rerankTopN = topN
-		}
 	}
 }
 
@@ -325,6 +319,15 @@ func WithQueryPrefix(p string) Option { return func(s *Service) { s.queryPrefix 
 // the keyword leg by 1-alpha (score fusion). alpha < 0 selects rank fusion
 // (RRF). The package default is score fusion at DefaultFusionAlpha.
 func WithScoreFusion(alpha float64) Option { return func(s *Service) { s.scoreFusionAlpha = alpha } }
+
+// WithRecallMinScore sets an absolute relevance floor on the fused score:
+// candidates below the threshold are dropped before composite re-ranking and
+// before the reranker. 0 (the default) disables filtering. For score fusion
+// (alpha >= 0) the fused score is in [0,1]; for RRF it is a small rank-based
+// value (~0.016 for the top position). See MEMINI_RECALL_MIN_SCORE.
+func WithRecallMinScore(minScore float64) Option {
+	return func(s *Service) { s.recallMinScore = minScore }
+}
 
 // WithTemporalTargeting enables temporal targeting in the re-ranker: when a
 // query names a relative time, candidates dated near the referenced point are
@@ -384,7 +387,6 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 		consolidateMode:     ConsolidateAsync,
 		consolidateMinScore: 0.6,
 		promoteMinAccess:    3,
-		rerankTopN:          defaultRerankTopN,
 		rerankTimeout:       defaultRerankTimeout,
 		scoreFusionAlpha:    search.DefaultFusionAlpha, // convex score fusion by default; negative selects RRF
 		poolFactor:          recallPoolFactor,
@@ -845,6 +847,20 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	} else {
 		fused = search.Fuse(perNS, 0, search.DefaultRRFK)
 	}
+	// Absolute relevance gate: drop candidates whose fused score is below the
+	// threshold, preventing the "poison" problem where irrelevant memories are
+	// min-max normalised into competitive values. Applied before composite
+	// re-ranking and before the reranker, so low-scoring candidates never
+	// consume the reranker's budget or pollute the result.
+	if s.recallMinScore > 0 {
+		filtered := make([]store.Scored, 0, len(fused))
+		for _, r := range fused {
+			if r.Score >= s.recallMinScore {
+				filtered = append(filtered, r)
+			}
+		}
+		fused = filtered
+	}
 	var ranked []store.Scored
 	if s.temporalBoost > 0 && s.temporalAnchor != nil {
 		ranked = search.RerankTemporal(fused, in.Query, s.now(),
@@ -876,17 +892,14 @@ func (s *Service) subtreeNamespaces(ctx context.Context, root string) ([]string,
 }
 
 // finalizeRecall dedups the composite-ranked candidates to the result set. With
-// no reranker it simply caps at k; with one it dedups to a deeper pool
-// (rerankTopN), reorders that pool by the reranker's verdict, and caps at k. A
-// rerank failure falls back to the composite order so recall never errors on the
-// reranker's account.
+// no reranker it simply caps at k; with one it reorders the top k candidates by
+// the reranker's verdict and returns up to k. A rerank failure falls back to
+// the composite order so recall never errors on the reranker's account.
 func (s *Service) finalizeRecall(ctx context.Context, query string, ranked []store.Scored, k int) []store.Scored {
 	if s.reranker == nil {
 		return search.Dedup(ranked, k)
 	}
-	// Pool depth must be at least k so the reranked result can still satisfy a
-	// limit larger than rerankTopN.
-	pool := search.Dedup(ranked, max(k, s.rerankTopN))
+	pool := search.Dedup(ranked, k)
 	cands := make([]rerank.Candidate, len(pool))
 	for i, r := range pool {
 		cands[i] = rerank.Candidate{ID: r.Memory.ID, Content: r.Memory.Content}

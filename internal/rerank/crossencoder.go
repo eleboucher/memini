@@ -90,9 +90,8 @@ type rerankResponse struct {
 }
 
 // Rerank scores every candidate against the query with the ranking model and
-// returns the candidate IDs most-relevant-first. Candidates the server omits are
-// appended in their original order, satisfying the reorder-only contract of
-// Reranker.
+// returns the candidate IDs most-relevant-first. Candidates the server omits
+// are dropped (only explicitly ranked IDs are returned).
 func (c *CrossEncoder) Rerank(ctx context.Context, query string, candidates []Candidate) ([]string, error) {
 	if len(candidates) <= 1 {
 		return idsOf(candidates), nil
@@ -133,7 +132,7 @@ func (c *CrossEncoder) Rerank(ctx context.Context, query string, candidates []Ca
 	sort.SliceStable(rr.Results, func(i, j int) bool {
 		return rr.Results[i].RelevanceScore > rr.Results[j].RelevanceScore
 	})
-	ordered := make([]string, 0, len(candidates))
+	ordered := make([]string, 0, len(rr.Results))
 	seen := make([]bool, len(candidates))
 	for _, res := range rr.Results {
 		if res.Index < 0 || res.Index >= len(candidates) || seen[res.Index] {
@@ -141,11 +140,6 @@ func (c *CrossEncoder) Rerank(ctx context.Context, query string, candidates []Ca
 		}
 		seen[res.Index] = true
 		ordered = append(ordered, candidates[res.Index].ID)
-	}
-	for i, cand := range candidates {
-		if !seen[i] {
-			ordered = append(ordered, cand.ID)
-		}
 	}
 	return ordered, nil
 }

@@ -54,10 +54,11 @@ func (r *llmReranker) Rerank(ctx context.Context, query string, candidates []Can
 	return applyOrder(out, candidates), nil
 }
 
-// applyOrder parses the model's number list into an ID ordering: ranked
-// candidates first (in the model's order, de-duplicated, 1-based indices into
-// candidates), then any unranked candidates in their original order. A reply of
-// "none" or no parseable numbers leaves the original order unchanged.
+// applyOrder parses the model's number list into an ID ordering: only
+// explicitly ranked candidates are returned, in the model's order
+// (de-duplicated, 1-based indices into candidates). A reply of "none" or no
+// parseable numbers returns an empty slice — the reranker found nothing
+// relevant, so all candidates are dropped.
 func applyOrder(out string, candidates []Candidate) []string {
 	ordered := make([]string, 0, len(candidates))
 	seen := make([]bool, len(candidates))
@@ -68,11 +69,6 @@ func applyOrder(out string, candidates []Candidate) []string {
 		}
 		seen[n-1] = true
 		ordered = append(ordered, candidates[n-1].ID)
-	}
-	for i, c := range candidates {
-		if !seen[i] {
-			ordered = append(ordered, c.ID)
-		}
 	}
 	return ordered
 }

@@ -14,11 +14,13 @@ type Candidate struct {
 	Content string
 }
 
-// Reranker reorders retrieved candidates by how well each answers a query.
+// Reranker reorders retrieved candidates by how well each answers a query, and
+// MAY drop irrelevant candidates entirely — reranking is no longer reorder-only.
 type Reranker interface {
-	// Rerank returns candidate IDs ordered most-relevant-first. Candidates the
-	// backend omits are appended in their original order, so reranking can only
-	// reorder, never drop, the input.
+	// Rerank returns candidate IDs ordered most-relevant-first. Backends may
+	// return fewer IDs than the input slice; candidates omitted from the output
+	// are treated as irrelevant and DROPPED from the result set. An empty slice
+	// means no candidate is relevant.
 	Rerank(ctx context.Context, query string, candidates []Candidate) ([]string, error)
 }
 

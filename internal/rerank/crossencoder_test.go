@@ -41,9 +41,9 @@ func TestCrossEncoderRerankOrdersByScore(t *testing.T) {
 	}
 }
 
-func TestCrossEncoderAppendsOmitted(t *testing.T) {
+func TestCrossEncoderDropsOmitted(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// Server returns only one result; the rest must follow in original order.
+		// Server returns only one result; omitted candidates are dropped.
 		_, _ = w.Write([]byte(`{"results":[{"index":2,"relevance_score":0.9}]}`))
 	}))
 	defer srv.Close()
@@ -53,11 +53,9 @@ func TestCrossEncoderAppendsOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rerank: %v", err)
 	}
-	want := []string{"c", "a", "b"} // ranked c, then omitted a,b in original order
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("order = %v, want %v", got, want)
-		}
+	want := []string{"c"} // only explicitly scored candidates survive
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("got %v, want %v", got, want)
 	}
 }
 

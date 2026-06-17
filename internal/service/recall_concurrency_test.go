@@ -206,7 +206,7 @@ func TestRecallRerankSkippedWhenNoTimeLeft(t *testing.T) {
 	baseIDs := recallIDs(t, base)
 
 	rr := &reverseReranker{}
-	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithReranker(rr, "test", 0))
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithReranker(rr, "test"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()

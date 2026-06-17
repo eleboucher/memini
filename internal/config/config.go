@@ -132,22 +132,18 @@ type Config struct {
 
 	// Rerank selects recall reranking: "off" (default), "llm" (reorder with the
 	// chat LLM), or a cross-encoder /rerank base URL (e.g. http://host:8002/v1).
-	// Reranking reorders the top RerankTopN candidates before capping at the
-	// limit; it adds one reranker call per recall.
+	// Reranking reorders the top k composite-ranked candidates; it adds one
+	// reranker call per recall.
 	Rerank string `env:"MEMINI_RERANK" envDefault:"off"`
 	// RerankModel / RerankAPIKey configure the cross-encoder when Rerank is a URL.
 	RerankModel  string `env:"MEMINI_RERANK_MODEL"`
 	RerankAPIKey string `env:"MEMINI_RERANK_API_KEY"`
-	// RerankTopN is how many composite-ranked candidates the reranker sees.
-	RerankTopN int `env:"MEMINI_RERANK_TOP_N" envDefault:"20"`
 	// RerankMaxDocChars truncates each document sent to the cross-encoder so one
 	// oversized candidate can't exceed the server's physical batch and fail the
 	// whole rerank request. 0 disables truncation.
 	RerankMaxDocChars int `env:"MEMINI_RERANK_MAX_DOC_CHARS" envDefault:"1200"`
 	// RerankTimeout bounds a single reranker call; past it, recall degrades to
-	// composite order instead of stalling on a slow or congested backend. The
-	// default has headroom for the per-document fan-out (RerankTopN candidates
-	// scored in slot-bounded waves), so a busy backend isn't abandoned mid-rerank.
+	// composite order instead of stalling on a slow or congested backend.
 	RerankTimeout time.Duration `env:"MEMINI_RERANK_TIMEOUT" envDefault:"10s"`
 	// RerankMaxConcurrency caps in-flight rerank calls. 0 is unbounded. See
 	// EmbedMaxConcurrency for the rationale.
@@ -157,6 +153,16 @@ type Config struct {
 	// or stalling on a slow embeddings backend. 0 (default) keeps the query embed
 	// unbounded and an embed error fatal.
 	RecallEmbedTimeout time.Duration `env:"MEMINI_RECALL_EMBED_TIMEOUT" envDefault:"0s"`
+	// RecallMinScore is an absolute relevance floor on the fused (vector+keyword)
+	// score. Candidates whose fused score is below this threshold are dropped from
+	// recall results entirely, preventing the "poison" problem where short
+	// prompts fetch irrelevant memories whose fused scores are then min-max
+	// normalised into competitive values. Default 0.1 (matches mem0's default);
+	// set to 0 to disable. For score fusion (MEMINI_FUSION_ALPHA >= 0), the fused
+	// score is in [0,1] so 0.1 is permissive. For rank fusion (RRF), the fused
+	// score is a small rank-based value where the top position is ~0.016, so 0 is
+	// recommended for RRF users because the default 0.1 would filter everything.
+	RecallMinScore float64 `env:"MEMINI_RECALL_MIN_SCORE" envDefault:"0.1"`
 
 	// Consolidation tuning.
 	// ConsolidateMode is "async" (default), "sync", or "off".
@@ -190,11 +196,9 @@ type Config struct {
 	// DemoteAfter demotes durable memories older than this to the episodic tier
 	// when they have never been recalled, are not important, and are
 	// uncorroborated (low confidence) — so an old bulk import ages out while
-	// facts the agent actually uses or establishes are kept. Off by default:
-	// demotion gives a durable memory a TTL, so defaulting it on would silently
-	// expire never-recalled-but-legitimate facts written after the upgrade. Set
-	// e.g. 1440h (60d) to enable.
-	DemoteAfter time.Duration `env:"MEMINI_DEMOTE_AFTER" envDefault:"0"`
+	// facts the agent actually uses or establishes are kept. Default 168h (7d);
+	// set to 0 to disable.
+	DemoteAfter time.Duration `env:"MEMINI_DEMOTE_AFTER" envDefault:"168h"`
 
 	// Dedup tuning. The dedup pass collapses near-duplicate memories
 	// (embedding similarity ≥ DedupSimilarity) into a single representative

@@ -24,28 +24,24 @@ func cands(ids ...string) []Candidate {
 	return out
 }
 
-func TestRerankReordersAndAppendsOmitted(t *testing.T) {
-	// Model picks 3 then 1, omits 2 — expect [c,a] (ranked) then [b] (original order).
+func TestRerankReordersAndDropsOmitted(t *testing.T) {
+	// Model picks 3 then 1, omits 2 — only ranked candidates survive.
 	r := NewLLM(&fakeCompleter{reply: "3, 1"})
 	got, err := r.Rerank(context.Background(), "q", cands("a", "b", "c"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"c", "a", "b"}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("order = %v, want %v", got, want)
-		}
+	want := []string{"c", "a"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("order = %v, want %v", got, want)
 	}
 }
 
-func TestRerankNoneKeepsOriginalOrder(t *testing.T) {
+func TestRerankNoneReturnsEmpty(t *testing.T) {
 	r := NewLLM(&fakeCompleter{reply: "none"})
 	got, _ := r.Rerank(context.Background(), "q", cands("a", "b", "c"))
-	for i, id := range []string{"a", "b", "c"} {
-		if got[i] != id {
-			t.Fatalf("abstention should preserve original order, got %v", got)
-		}
+	if len(got) != 0 {
+		t.Fatalf("'none' should return empty, got %v", got)
 	}
 }
 
@@ -53,11 +49,9 @@ func TestRerankIgnoresGarbageAndOutOfRange(t *testing.T) {
 	// "99" is out of range, "2" valid; duplicates ignored.
 	r := NewLLM(&fakeCompleter{reply: "garbage 2 99 2 banana"})
 	got, _ := r.Rerank(context.Background(), "q", cands("a", "b", "c"))
-	want := []string{"b", "a", "c"} // 2->b first, then originals a,c
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("order = %v, want %v", got, want)
-		}
+	want := []string{"b"} // only explicitly ranked candidate survives
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("order = %v, want %v", got, want)
 	}
 }
 

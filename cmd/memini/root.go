@@ -206,7 +206,7 @@ func buildServiceStack(
 		}
 		if reranker != nil {
 			svcOpts = append(svcOpts,
-				service.WithReranker(reranker, name, cfg.RerankTopN),
+				service.WithReranker(reranker, name),
 				service.WithRerankTimeout(cfg.RerankTimeout),
 			)
 		}
@@ -223,6 +223,7 @@ func buildServiceStack(
 		service.WithSecretRedaction(cfg.RedactSecrets),
 		service.WithTemporalTargeting(cfg.TemporalBoost, search.RegexAnchorExtractor{}),
 		service.WithRecallEmbedTimeout(cfg.RecallEmbedTimeout),
+		service.WithRecallMinScore(cfg.RecallMinScore),
 		service.WithMetrics(metricsImpl),
 	)
 	svc := service.New(st, embedder, svcOpts...)
@@ -285,7 +286,7 @@ func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger, onInFl
 			return nil, "", nil
 		}
 		log.Info("LLM recall reranking enabled (adds one LLM call per recall)",
-			"model", cfg.LLMModel, "top_n", cfg.RerankTopN)
+			"model", cfg.LLMModel)
 		return wrapRerank(rerank.NewLLM(chat), cfg.RerankMaxConcurrency, onInFlight, log, "llm"), "llm", nil
 	}
 	ce, err := rerank.New(rerank.Config{
@@ -298,7 +299,7 @@ func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger, onInFl
 		return nil, "", err
 	}
 	log.Info("cross-encoder recall reranking enabled (adds one reranker call per recall)",
-		"base_url", cfg.Rerank, "model", cfg.RerankModel, "top_n", cfg.RerankTopN)
+		"base_url", cfg.Rerank, "model", cfg.RerankModel)
 	return wrapRerank(ce, cfg.RerankMaxConcurrency, onInFlight, log, "cross_encoder"), "cross_encoder", nil
 }
 

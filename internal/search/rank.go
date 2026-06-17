@@ -74,7 +74,9 @@ func RerankWith(results []store.Scored, now time.Time, w RerankWeights) []store.
 		}
 		composite := w.Relevance*relevance + w.Recency*recency + w.Importance*importance +
 			w.Quality*quality
-		out[i] = ranked{sc: store.Scored{Memory: r.Memory, Score: composite}, score: composite, pos: i}
+		// Preserve the absolute fused score before overwriting with the
+		// min-max-normalised composite, so a recall threshold can compare.
+		out[i] = ranked{sc: store.Scored{Memory: r.Memory, Score: composite, FusedScore: r.Score}, score: composite, pos: i}
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {
