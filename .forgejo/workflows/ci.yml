@@ -94,11 +94,14 @@ jobs:
         run: cd integrations/opencode/plugin && node --test
 
       # OpenClaw plugin (the expose_tools tests load @sinclair/typebox).
-      # npm install --no-package-lock only needs package.json, so it is robust
-      # to a missing/version-drifted lockfile (bump.yml syncs package.json but
-      # not the lockfile).
+      # npm ci uses the committed package-lock.json for a reproducible install.
       - name: Test OpenClaw plugin
-        run: cd integrations/openclaw/plugin && npm install --no-package-lock --no-audit --no-fund && node --test
+        run: |
+          cd integrations/openclaw/plugin
+          npm ci --no-audit --no-fund
+          npx tsc -p tsconfig.json
+          node --test test/regression.test.mjs
+          npx tsx --test test/helpers.test.ts
 
       # Hermes memory provider (stdlib unittest, uses the inline-ABC fallback).
       - name: Test Hermes plugin

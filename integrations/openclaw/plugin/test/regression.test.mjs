@@ -1,6 +1,5 @@
-// Run: npm install && node --test (from this directory). Not shipped by
-// install.sh. The expose_tools tests load @sinclair/typebox, so install deps
-// first.
+// Run: node --test (from this directory). Imports the built dist/index.js as
+// a regression contract against the legacy plugin.legacy/plugin.mjs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -13,7 +12,7 @@ import plugin, {
   sessionIdentity,
   shouldSkipSystemTurn,
   stripRuntimePreambles,
-} from "./plugin.mjs";
+} from "../dist/index.js";
 
 // fakeClient records the last memini call and returns canned responses, so the
 // tool handlers can be exercised without a running server.
@@ -193,7 +192,7 @@ test("register is synchronous even with expose_tools on (OpenClaw contract)", ()
   const names = [];
   const result = plugin.register({
     pluginConfig: { enabled: true, expose_tools: true },
-    registerMemoryCapability() {},
+    registerMemoryCapability() {}, registerHook() {},
     on() {},
     logger: { warn() {} },
     registerTool(def) {
@@ -214,7 +213,7 @@ test("register does not touch registerTool when expose_tools is off", async () =
   let registered = 0;
   await plugin.register({
     pluginConfig: { enabled: true },
-    registerMemoryCapability() {},
+    registerMemoryCapability() {}, registerHook() {},
     on() {},
     logger: {},
     registerTool() {
@@ -228,7 +227,7 @@ test("register wires the three tools when expose_tools is on", async () => {
   const names = [];
   await plugin.register({
     pluginConfig: { enabled: true, expose_tools: true },
-    registerMemoryCapability() {},
+    registerMemoryCapability() {}, registerHook() {},
     on() {},
     logger: { warn() {} },
     registerTool(def) {
@@ -242,7 +241,7 @@ test("register wires the three tools when expose_tools is on", async () => {
 // the manifest's contracts.tools, or tool discovery can't route to this plugin.
 // Keep the manifest and the registered tools in lockstep.
 test("manifest contracts.tools matches the registered tool names", async () => {
-  const manifest = JSON.parse(readFileSync(new URL("./openclaw.plugin.json", import.meta.url)));
+  const manifest = JSON.parse(readFileSync(new URL("../openclaw.plugin.json", import.meta.url)));
   const declared = manifest.contracts?.tools ?? [];
   const { order } = await collectTools(fakeClient(), { namespace: "ns", namespace_per_agent: false });
   assert.deepEqual([...declared].sort(), [...order].sort(), "contracts.tools must list exactly the registered tools");
@@ -288,7 +287,7 @@ test("recall sends recall_limit and min_score on /v1/search when configured", as
         recall_limit: 2,
         recall_min_score: 0.7,
       },
-      registerMemoryCapability() {},
+      registerMemoryCapability() {}, registerHook() {},
       on(name, handler) { hooks[name] = handler; },
       logger: { warn() {} },
       registerTool() {},
@@ -306,7 +305,7 @@ test("recall uses before_prompt_build, not the deprecated before_agent_start", a
   const hooks = {};
   await plugin.register({
     pluginConfig: { enabled: true, namespace_per_agent: false },
-    registerMemoryCapability() {},
+    registerMemoryCapability() {}, registerHook() {},
     on(name, handler) {
       hooks[name] = handler;
     },
@@ -332,7 +331,7 @@ test("recall searches memini and prepends results; capture writes the episodic t
   try {
     await plugin.register({
       pluginConfig: { enabled: true, namespace_per_agent: false },
-      registerMemoryCapability() {},
+      registerMemoryCapability() {}, registerHook() {},
       on(name, handler) {
         hooks[name] = handler;
       },
@@ -387,7 +386,7 @@ test("auto-recall excludes the current session's own captures; capture tags the 
   try {
     await plugin.register({
       pluginConfig: { enabled: true, namespace_per_agent: false },
-      registerMemoryCapability() {},
+      registerMemoryCapability() {}, registerHook() {},
       on(name, handler) {
         hooks[name] = handler;
       },
@@ -430,7 +429,7 @@ test("without a session id, auto-recall and capture stay unscoped (back-compat)"
   try {
     await plugin.register({
       pluginConfig: { enabled: true, namespace_per_agent: false },
-      registerMemoryCapability() {},
+      registerMemoryCapability() {}, registerHook() {},
       on(name, handler) {
         hooks[name] = handler;
       },
@@ -519,8 +518,8 @@ test("tool namespace follows per-agent resolution from ctx", async () => {
 });
 
 test("plugin.yaml version matches package.json", () => {
-  const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
-  const yaml = readFileSync(new URL("./plugin.yaml", import.meta.url), "utf8");
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const yaml = readFileSync(new URL("../plugin.yaml", import.meta.url), "utf8");
   const m = yaml.match(/^version:\s*(.+)$/m);
   assert.ok(m, "plugin.yaml must contain a version key");
   assert.equal(m[1].trim().replace(/["']/g, ""), pkg.version, "plugin.yaml version must match package.json");
@@ -537,7 +536,7 @@ test("agent_end still captures when success is false, tagging metadata.failed", 
   try {
     await plugin.register({
       pluginConfig: { enabled: true, namespace_per_agent: false },
-      registerMemoryCapability() {},
+      registerMemoryCapability() {}, registerHook() {},
       on(name, handler) { hooks[name] = handler; },
       logger: {},
       registerTool() {},

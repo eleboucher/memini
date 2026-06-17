@@ -7,6 +7,11 @@
   "contracts": {
     "tools": ["memory_recall", "memory_list", "memory_remember"]
   },
+  "toolMetadata": {
+    "memory_recall": { "optional": true },
+    "memory_list": { "optional": true },
+    "memory_remember": { "optional": true }
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -21,41 +26,12 @@
       "system_kinds": { "type": "array", "items": { "type": "string" } },
       "fallback_on_error": { "type": "boolean" },
       "timeout_ms": { "type": "number" },
-      "expose_tools": { "type": "boolean" }
+      "expose_tools": { "type": "boolean" },
+      "recall_limit": { "type": "number" },
+      "recall_min_score": { "type": "number" }
     }
   },
-  "uiHints": {
-    "enabled": { "label": "Enabled" },
-    "base_url": { "label": "Base URL", "help": "memini REST server base URL" },
-    "namespace": {
-      "label": "Namespace",
-      "help": "Tenant the memory is scoped to (X-Memini-Namespace)"
-    },
-    "namespace_per_agent": {
-      "label": "Per-Agent Namespaces",
-      "help": "Scope memory per agent (default) so agents don't poison each other; set false to share one namespace"
-    },
-    "namespace_template": {
-      "label": "Namespace Template",
-      "help": "Per-agent namespace, e.g. \"{namespace}-{agent}\" (default) or \"{agent}\""
-    },
-    "skip_without_agent": {
-      "label": "Skip Without Agent",
-      "help": "In per-agent mode, skip recall/write when no agent identity resolves (e.g. cron/heartbeat) instead of using the fallback namespace"
-    },
-    "skip_system_turns": {
-      "label": "Skip System Turns",
-      "help": "Skip recall and capture for system-initiated turns (cron/heartbeat/scheduled) even when they are agent-attributed, so scheduled-task chatter doesn't become episodic noise"
-    },
-    "system_kinds": {
-      "label": "System Kinds",
-      "help": "Turn kinds treated as system-initiated for Skip System Turns (default cron/heartbeat/scheduled/schedule); override to match your gateway's labels"
-    },
-    "fallback_on_error": { "label": "Fallback On Error" },
-    "timeout_ms": { "label": "Timeout (ms)" },
-    "expose_tools": {
-      "label": "Expose Tools",
-      "help": "Register memory_recall / memory_list / memory_remember as explicit agent tools, alongside the automatic memory slot (default off)"
-    }
+  "activation": {
+    "onStartup": true
   }
 }

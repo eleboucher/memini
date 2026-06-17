@@ -30,11 +30,15 @@ current (`openclaw plugins update @eleboucher/memini`):
 openclaw plugins install clawhub:@eleboucher/memini
 ```
 
-Or from a checkout of this repo:
+Or from a checkout of this repo — the plugin is a TypeScript source tree that
+needs a build before it can be loaded:
 
 ```bash
-mkdir -p ~/.openclaw/extensions
-cp -r integrations/openclaw/plugin ~/.openclaw/extensions/memini
+cd integrations/openclaw/plugin
+npm install
+npm run build
+mkdir -p ~/.openclaw/extensions/memini
+cp -r dist openclaw.plugin.json package.json plugin.yaml pnpm-workspace.yaml ~/.openclaw/extensions/memini/
 ```
 
 Claim the memory slot in `~/.openclaw/openclaw.json`:
@@ -53,13 +57,21 @@ Claim the memory slot in `~/.openclaw/openclaw.json`:
           "namespace_per_agent": true,
           "namespace_template": "{namespace}-{agent}",
           "fallback_on_error": true,
-          "timeout_ms": 5000
+          "timeout_ms": 5000,
+          "expose_tools": true
+        },
+        "tools": {
+          "allow": ["memory_recall", "memory_list", "memory_remember"]
         }
       }
     }
   }
 }
 ```
+
+The `tools.allow` allowlist is required for the three explicit tools to be sent
+to the model — they're declared `optional: true` in the manifest so OpenClaw
+won't auto-expose them.
 
 If memini requires auth, set `MEMINI_API_KEY` in the gateway environment (the
 plugin sends it as `Authorization: Bearer …`; set `MEMINI_REQUIRE_HTTPS=1` to

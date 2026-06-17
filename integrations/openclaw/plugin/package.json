@@ -1,19 +1,40 @@
 {
   "name": "@eleboucher/memini",
   "version": "0.4.6",
+  "private": true,
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "plugin.yaml"
+  ],
   "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test test/regression.test.mjs && npx tsx --test test/helpers.test.ts",
+    "typecheck": "tsc -p tsconfig.test.json"
+  },
   "dependencies": {
-    "@sinclair/typebox": "^0.34.49"
+    "@sinclair/typebox": "^0.34.49",
+    "typebox": "^1.1.38"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "openclaw": "latest",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.5.17"
   },
   "openclaw": {
     "extensions": [
-      "./plugin.mjs"
+      "./dist/index.js"
     ],
     "compat": {
-      "pluginApi": ">=2026.6.6"
+      "pluginApi": ">=2026.5.17"
     },
     "build": {
-      "openclawVersion": "2026.6.6"
+      "openclawVersion": "2026.6.8"
     },
     "release": {
       "publishToClawHub": true
