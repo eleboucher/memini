@@ -333,6 +333,48 @@ test("session-end.mjs: distills buffered events into one digest", async () => {
   }
 });
 
+test("session-end.mjs: counts files edited through Codex apply_patch", async () => {
+  const cache = freshCache();
+  const patch = `*** Begin Patch
+*** Update File: src/auth.js
+@@
+-old
++new
+*** Add File: src/session.js
++export const session = {};
+*** End Patch
+`;
+
+  await runHook(
+    "post-tool-use.mjs",
+    JSON.stringify({ session_id: "codexpatch1", cwd: __dirname, tool_name: "apply_patch", tool_input: patch }),
+    { XDG_CACHE_HOME: cache },
+  );
+
+  const hits = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    hits.push({ url: req.url, ns: req.headers["x-memini-namespace"], body });
+    res.setHeader("Content-Type", "application/json");
+    res.statusCode = 201;
+    res.end(JSON.stringify({ id: "m1" }));
+  });
+
+  try {
+    await runHook(
+      "session-end.mjs",
+      JSON.stringify({ session_id: "codexpatch1", cwd: __dirname, reason: "user_exit" }),
+      { MEMINI_URL: url, XDG_CACHE_HOME: cache },
+    );
+
+    assert.equal(hits.length, 1, "session-end should write a digest for apply_patch edits");
+    const body = JSON.parse(hits[0].body);
+    assert.match(body.content, /Edited: src\/auth\.js, src\/session\.js\./);
+    assert.deepEqual(body.metadata.files, ["src/auth.js", "src/session.js"]);
+  } finally {
+    await close();
+  }
+});
+
 test("pre-tool-use.mjs: searches by file path, surfaces context to stdout", async () => {
   const hits = [];
   const { url, close } = await startMockServer((req, res, body) => {

@@ -11,7 +11,7 @@
 import { readStdin, parseJSON, readToolCall, appendSessionEvent, DEBUG } from "./_shared.mjs";
 
 const FILE_KEYS = ["filePath", "file_path", "path", "file", "pattern"];
-const RECORDED = new Set(["Edit", "MultiEdit", "Write", "Bash", "NotebookEdit", "Agent", "Task"]);
+const RECORDED = new Set(["edit", "multiedit", "write", "bash", "notebookedit", "agent", "task", "apply_patch"]);
 
 function firstFile(args) {
   if (!args || typeof args !== "object") return "";
@@ -22,20 +22,50 @@ function firstFile(args) {
   return "";
 }
 
+function patchText(input) {
+  if (typeof input === "string") return input;
+  if (!input || typeof input !== "object") return "";
+  for (const k of ["patch", "input", "cmd", "command"]) {
+    const v = input[k];
+    if (typeof v === "string" && v.includes("*** Begin Patch")) return v;
+  }
+  return "";
+}
+
+function filesFromApplyPatch(input) {
+  const text = patchText(input);
+  if (!text) return [];
+  const files = [];
+  const seen = new Set();
+  for (const line of text.split("\n")) {
+    const m = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/) || line.match(/^\*\*\* Move to: (.+)$/);
+    if (!m) continue;
+    const file = m[1].trim();
+    if (!file || seen.has(file)) continue;
+    seen.add(file);
+    files.push(file);
+  }
+  return files;
+}
+
 async function main() {
   const payload = parseJSON(await readStdin()) || {};
   const { toolName, toolInput, sessionId } = readToolCall(payload);
-  if (!toolName || !RECORDED.has(toolName)) return;
+  const toolKey = String(toolName || "").toLowerCase();
+  if (!toolName || !RECORDED.has(toolKey)) return;
 
   const args = toolInput && typeof toolInput === "object" ? toolInput : {};
   const cmd = typeof args.command === "string" ? args.command : args.cmd;
+  const files = toolKey === "apply_patch" ? filesFromApplyPatch(toolInput) : [];
+  const file = files[0] || firstFile(args);
 
   if (DEBUG) console.error(`[memini] PostToolUse buffer tool=${toolName} session=${sessionId}`);
 
   appendSessionEvent(sessionId, {
     ts: Date.now(),
     tool: toolName,
-    file: firstFile(args),
+    file,
+    files: files.length ? files : undefined,
     cmd: typeof cmd === "string" ? cmd : "",
   });
 }
