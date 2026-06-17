@@ -87,6 +87,16 @@ jobs:
           # renovate: datasource=npm depName=clawhub
           CLAWHUB_VERSION: "0.21.0"
         run: npm install -g "clawhub@${CLAWHUB_VERSION}"
+      # Build the TypeScript plugin (src/index.ts -> dist/) so the
+      # published clawpack contains the ./dist/index.js entry referenced
+      # by openclaw.extensions. dist/ is gitignored.
+      - name: Build OpenClaw plugin
+        run: |
+          set -euo pipefail
+          cd integrations/openclaw/plugin
+          # `npm install` (not `npm ci`) realigns the drifted package-lock.
+          npm install
+          npm run build
       # Publishes the OpenClaw memory-slot plugin as a local-folder code-plugin.
       # The version is taken from the release tag, so it always matches the tag
       # regardless of what bump.yml committed.
