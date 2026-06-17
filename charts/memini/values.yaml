@@ -177,7 +177,7 @@ controllers:
           requiredDuringSchedulingIgnoredDuringExecution:
             - labelSelector:
                 matchExpressions:
-                  - key: app.kubernetes.io/component
+                  - key: app.kubernetes.io/controller
                     operator: In
                     values:
                       - main
