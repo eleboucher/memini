@@ -604,6 +604,28 @@ const plugin: {
       });
     }
 
+    // OpenClaw fires before_prompt_build on every step of a turn (each tool
+    // call), and an unchanged query recalls the same top memories — so the same
+    // "long-term memory" block is re-injected on every step, drowning the prompt
+    // (eleboucher/memini#21). Track what each session has already been shown and
+    // drop repeats on later steps; genuinely new matches still surface. Bounded
+    // so the map can't grow without limit across long-lived gateways.
+    const injectedBySession = new Map<string, Set<string>>();
+    const MAX_TRACKED_SESSIONS = 200;
+    const rememberInjected = (session: string, ids: string[]) => {
+      let seen = injectedBySession.get(session);
+      if (!seen) {
+        seen = new Set<string>();
+        injectedBySession.set(session, seen);
+        while (injectedBySession.size > MAX_TRACKED_SESSIONS) {
+          const oldest = injectedBySession.keys().next().value;
+          if (oldest === undefined) break;
+          injectedBySession.delete(oldest);
+        }
+      }
+      for (const id of ids) if (id) seen.add(id);
+    };
+
     const recallHandler = async (event: any, ctx: any) => {
       if (!cfg.enabled) return;
       const prompt = typeof event?.prompt === "string" ? event.prompt.trim() : "";
@@ -619,8 +641,18 @@ const plugin: {
       const session = sessionIdentity(event, ctx);
       if (session) body.exclude_metadata = { session_id: session };
       const result = await client.postJson("/v1/search", body, ns);
-      const block = formatResults(result?.results || [], recallLabels());
+      let results = Array.isArray(result?.results) ? result.results : [];
+      // Suppress memories this session has already been shown so a multi-step
+      // turn doesn't re-inject the same block on every tool call (#21).
+      if (session) {
+        const seen = injectedBySession.get(session);
+        if (seen?.size) results = results.filter((r: any) => !seen.has(r?.memory?.id));
+      }
+      const block = formatResults(results, recallLabels());
       if (!block) return;
+      if (session) {
+        rememberInjected(session, results.map((r: any) => r?.memory?.id).filter(Boolean));
+      }
       return { prependContext: `Relevant long-term memory from memini:\n${block}` };
     };
     // Register on whichever hook surface this OpenClaw build exposes. api.on is
