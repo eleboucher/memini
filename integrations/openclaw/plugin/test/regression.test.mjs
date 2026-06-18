@@ -237,6 +237,34 @@ test("register wires the three tools when expose_tools is on", async () => {
   assert.deepEqual(names.sort(), ["memory_list", "memory_recall", "memory_remember"]);
 });
 
+// Production OpenClaw's api.registerHook(name, handler) rejects the positional
+// form with "hook registration missing name". That throw must not abort
+// register() and lose the memory hooks (eleboucher/memini#26) — they register
+// via api.on, which production exposes.
+test("register survives a throwing api.registerHook and still wires hooks via api.on", async () => {
+  const hooks = {};
+  let threw = false;
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {},
+      registerHook() {
+        throw new Error("hook registration missing name");
+      },
+      on(name, handler) {
+        hooks[name] = handler;
+      },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+  } catch {
+    threw = true;
+  }
+  assert.equal(threw, false, "register must not throw when registerHook rejects");
+  assert.equal(typeof hooks.before_prompt_build, "function", "recall hook wired via api.on");
+  assert.equal(typeof hooks.agent_end, "function", "capture hook wired via api.on");
+});
+
 // OpenClaw requires every runtime api.registerTool(...) name to be declared in
 // the manifest's contracts.tools, or tool discovery can't route to this plugin.
 // Keep the manifest and the registered tools in lockstep.

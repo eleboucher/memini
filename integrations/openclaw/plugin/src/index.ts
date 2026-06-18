@@ -623,10 +623,25 @@ const plugin: {
       if (!block) return;
       return { prependContext: `Relevant long-term memory from memini:\n${block}` };
     };
-    api.registerHook("before_prompt_build", recallHandler);
-    // api.on is the legacy hook surface; some test/runtime mocks still use it.
-    // Production OpenClaw only has api.registerHook.
-    api.on?.("before_prompt_build", recallHandler);
+    // Register on whichever hook surface this OpenClaw build exposes. api.on is
+    // the surface the prior plugin.mjs used and is present in current
+    // production; a positional api.registerHook(name, handler) is rejected with
+    // "hook registration missing name" and would abort register(), dropping the
+    // memory hooks entirely (eleboucher/memini#26). Prefer api.on; fall back to
+    // registerHook's object form only when api.on is unavailable, and never let
+    // it throw.
+    const addHook = (name: string, handler: any) => {
+      if (typeof api.on === "function") {
+        api.on(name, handler);
+        return;
+      }
+      try {
+        api.registerHook?.({ name, handler });
+      } catch {
+        /* unknown registerHook signature; nothing else to try */
+      }
+    };
+    addHook("before_prompt_build", recallHandler);
 
     const captureHandler = async (event: any, ctx: any) => {
       if (!cfg.enabled || !Array.isArray(event.messages)) return;
@@ -650,8 +665,7 @@ const plugin: {
         metadata,
       }, ns);
     };
-    api.registerHook("agent_end", captureHandler);
-    api.on?.("agent_end", captureHandler);
+    addHook("agent_end", captureHandler);
 
     // Opt-in explicit tools, registered after the memory slot above. Best-effort:
     // a failure (e.g. typebox unavailable) is logged and leaves the slot working.
