@@ -329,6 +329,48 @@ test("recall sends recall_limit and min_score on /v1/search when configured", as
   }
 });
 
+// before_prompt_build fires on every step of a turn; an unchanged query returns
+// the same memories, so without dedup the same block is re-injected on every
+// tool call (eleboucher/memini#21). The same session must only be shown a given
+// memory once; a different session is unaffected.
+test("recall does not re-inject memories already shown in the same session (#21)", async () => {
+  const hooks = {};
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        results: [
+          { memory: { id: "m1", summary: "alpha", tier: "semantic" }, score: 0.9 },
+          { memory: { id: "m2", summary: "beta", tier: "semantic" }, score: 0.8 },
+        ],
+      };
+    },
+    async text() { return ""; },
+  });
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    const ev = (sessionId) => ({ prompt: "q", session: { id: sessionId } });
+    const first = await hooks.before_prompt_build(ev("s1"), {});
+    assert.match(first.prependContext, /alpha/);
+    assert.match(first.prependContext, /beta/);
+    // Same session, same query (a later tool-call step): both already shown -> no re-injection.
+    const second = await hooks.before_prompt_build(ev("s1"), {});
+    assert.equal(second, undefined, "already-shown memories must not be re-injected");
+    // A different session still sees them.
+    const other = await hooks.before_prompt_build(ev("s2"), {});
+    assert.match(other.prependContext, /alpha/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("recall uses before_prompt_build, not the deprecated before_agent_start", async () => {
   const hooks = {};
   await plugin.register({
