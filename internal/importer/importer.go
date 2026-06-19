@@ -59,6 +59,11 @@ type Options struct {
 	// counters. Combined with deterministic IDs this makes re-imports idempotent.
 	// Only honored by the local backend.
 	SkipExisting bool
+	// DedupContent skips a record whose exact (redacted) content already exists
+	// in the same namespace+tier — in the store or earlier in this batch — before
+	// embedding, counting it as a duplicate. Catches cross-id exact repeats that
+	// id-based SkipExisting misses. Only honored by the local backend.
+	DedupContent bool
 	// DryRun resolves namespaces and runs the quality gates but writes nothing;
 	// the Report's namespace histogram still reflects where records would land.
 	DryRun bool
@@ -241,24 +246,51 @@ type localWriter struct {
 
 func (lw *localWriter) write(ctx context.Context, recs []Record, opts Options) (writeResult, error) {
 	var res writeResult
-	// Existence check before the (expensive) embed call: a re-import of an
-	// already-stored record costs one Get, not an embed plus upsert that would
-	// reset its access counters.
+	// Filter before the (expensive) embed call: a re-import of an already-stored
+	// record (by id, SkipExisting) or an exact-content repeat (by fingerprint,
+	// DedupContent) costs a lookup, not an embed plus upsert the post-import
+	// dedup pass would later have to tombstone.
 	pending := recs
-	if opts.SkipExisting {
+	if opts.SkipExisting || opts.DedupContent {
+		var seen map[string]struct{} // (namespace, tier, fingerprint) seen earlier in this batch
+		if opts.DedupContent {
+			seen = make(map[string]struct{}, len(recs))
+		}
 		pending = make([]Record, 0, len(recs))
 		for _, r := range recs {
-			_, err := lw.store.Get(ctx, r.Namespace, r.ID)
-			switch {
-			case err == nil:
-				res.duplicates++
-			case errors.Is(err, store.ErrNotFound):
-				pending = append(pending, r) // genuinely new
-			default:
-				// A transient store error must not fall through to a blind
-				// upsert that would clobber the record we couldn't verify.
-				res.errs = append(res.errs, fmt.Sprintf("%s: existence check: %v", r.ID, err))
+			if opts.SkipExisting {
+				switch _, err := lw.store.Get(ctx, r.Namespace, r.ID); {
+				case err == nil:
+					res.duplicates++
+					continue
+				case errors.Is(err, store.ErrNotFound): // genuinely new by id
+				default:
+					// A transient store error must not fall through to a blind
+					// upsert that would clobber the record we couldn't verify.
+					res.errs = append(res.errs, fmt.Sprintf("%s: existence check: %v", r.ID, err))
+					continue
+				}
 			}
+			if opts.DedupContent {
+				tier := effectiveTier(r)
+				fp := memory.Fingerprint(redact.Secrets(r.Content))
+				key := r.Namespace + "\x00" + string(tier) + "\x00" + fp
+				if _, dup := seen[key]; dup {
+					res.duplicates++
+					continue
+				}
+				switch _, err := lw.store.GetByFingerprint(ctx, r.Namespace, tier, fp, lw.now()); {
+				case err == nil:
+					res.duplicates++
+					continue
+				case errors.Is(err, store.ErrNotFound):
+					seen[key] = struct{}{}
+				default:
+					res.errs = append(res.errs, fmt.Sprintf("%s: fingerprint check: %v", r.ID, err))
+					continue
+				}
+			}
+			pending = append(pending, r)
 		}
 	}
 	if len(pending) == 0 {
@@ -285,6 +317,18 @@ func (lw *localWriter) write(ctx context.Context, recs []Record, opts Options) (
 	return res, nil
 }
 
+// effectiveTier is the tier a record is stored under. Untyped imports default
+// to episodic (90d TTL) rather than durable semantic: bulk imports of unknown
+// quality should age out unless recall reinforces them, not live forever. Used
+// both by toMemory and by the content-dedup fingerprint lookup, so the dedup
+// check is scoped to the same (namespace, tier) the store indexes.
+func effectiveTier(r Record) memory.Tier {
+	if r.Tier.Valid() {
+		return r.Tier
+	}
+	return memory.TierEpisodic
+}
+
 // toMemory maps a finalized Record (namespace, ID, importance already resolved
 // by finalizeRecords) to a stored memory, applying tier and timestamp defaults.
 func (lw *localWriter) toMemory(r Record, opts Options) *memory.Memory {
@@ -297,13 +341,7 @@ func (lw *localWriter) toMemory(r Record, opts Options) *memory.Memory {
 	if updated.IsZero() {
 		updated = created
 	}
-	tier := r.Tier
-	if !tier.Valid() {
-		// Untyped imports default to episodic (90d TTL) rather than durable
-		// semantic: bulk imports of unknown quality should age out unless recall
-		// reinforces them, not live forever.
-		tier = memory.TierEpisodic
-	}
+	tier := effectiveTier(r)
 	validFrom := created
 	m := &memory.Memory{
 		ID:             r.ID,

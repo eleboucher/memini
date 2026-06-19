@@ -201,6 +201,42 @@ func TestImportIdempotentReimport(t *testing.T) {
 	}
 }
 
+func TestImportContentDedup(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "import.db"), 32)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	// Same content under two different ids, plus a distinct record. DedupContent
+	// skips the exact repeat before embedding — something id-based SkipExisting
+	// can't catch (different ids).
+	recs := []importer.Record{
+		{Namespace: "p", ID: "a", Content: "the cache is a write-through LRU"},
+		{Namespace: "p", ID: "b", Content: "the cache is a write-through LRU"},
+		{Namespace: "p", ID: "c", Content: "a wholly different memory"},
+	}
+	im := importer.NewLocal(st, embedtest.New(32))
+
+	first, err := im.Import(ctx, recs, importer.Options{Source: importer.SourceMnemory, DedupContent: true})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if first.Imported != 2 || first.Duplicates != 1 {
+		t.Fatalf("first run = %+v, want imported=2 duplicates=1 (b dups a within the batch)", first)
+	}
+
+	// Re-import: a and c are already stored and b still dups a → all duplicates.
+	second, err := im.Import(ctx, recs, importer.Options{Source: importer.SourceMnemory, DedupContent: true})
+	if err != nil {
+		t.Fatalf("reimport: %v", err)
+	}
+	if second.Imported != 0 || second.Duplicates != 3 {
+		t.Fatalf("second run = %+v, want imported=0 duplicates=3", second)
+	}
+}
+
 func TestImportDefaultImportanceFloor(t *testing.T) {
 	ctx := context.Background()
 	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "import.db"), 32)

@@ -61,7 +61,7 @@ func init() {
 	importCmd.Flags().BoolVar(&importDryRun, "dry-run", false,
 		"parse and report where records would land without writing anything")
 	importCmd.Flags().BoolVar(&importNoDedup, "no-dedup", false,
-		"skip the automatic vector-cluster dedup pass over imported namespaces")
+		"skip dedup of imported records: both the write-time exact-content skip and the post-import vector-cluster pass")
 	importCmd.Flags().Float64Var(&importDedupSim, "dedup-similarity", 0.85,
 		"similarity threshold for the post-import dedup pass")
 	importCmd.Flags().IntVar(&importBatch, "batch", 0,
@@ -167,6 +167,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 		DefaultImportance: importImp,
 		Confidence:        importConfidence,
 		SkipExisting:      true,
+		DedupContent:      !importNoDedup,
 		DryRun:            importDryRun,
 		BatchSize:         importBatch,
 		OnProgress:        newProgressWriter(w),
