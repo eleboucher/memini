@@ -228,10 +228,10 @@ class Filter:
         stored = await self._post_json(
             "/v1/memories",
             {
-                "content": f"User: {user_text[:1000]}\nAssistant: {assistant_text[:3000]}",
+                "content": f"{user_text[:1000]}\n\n{assistant_text[:3000]}",
                 "tier": "episodic",
                 "tags": ["openwebui"],
-                "metadata": {"source": "openwebui", "chat_id": chat_id},
+                "metadata": {"source": "openwebui", "chat_id": chat_id, "format": "turn"},
             },
             self._namespace(__user__),
         )

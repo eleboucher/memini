@@ -734,12 +734,12 @@ const plugin: {
       if (!captureUser || captureUser.startsWith("[Subagent Context]")) return;
       const ns = effectiveNamespace(cfg, event, ctx);
       if (ns == null) return;
-      const metadata: any = { source: "openclaw" };
+      const metadata: any = { source: "openclaw", format: "turn" };
       const session = sessionIdentity(event, ctx);
       if (session) metadata.session_id = session;
       if (!event?.success) metadata.failed = true;
       await client.postJson("/v1/memories", {
-        content: `User: ${captureUser.slice(0, 1000)}\nAssistant: ${assistantText.slice(0, 3000)}`,
+        content: `${captureUser.slice(0, 1000)}\n\n${assistantText.slice(0, 3000)}`,
         tier: "episodic",
         metadata,
       }, ns);

@@ -363,9 +363,9 @@ class MeminiMemoryProvider(MemoryProvider):
         if not user and not assistant:
             return
         self._call_bg("/v1/memories", {
-            "content": f"User: {user[:1000]}\nAssistant: {assistant[:3000]}",
+            "content": f"{user[:1000]}\n\n{assistant[:3000]}",
             "tier": "episodic",
-            "metadata": {"source": "hermes", "session_id": kwargs.get("session_id", self._session_id)},
+            "metadata": {"source": "hermes", "session_id": kwargs.get("session_id", self._session_id), "format": "turn"},
         })
 
     def on_memory_write(self, action: str, target: str, content: str, **kwargs: Any) -> None:

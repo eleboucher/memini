@@ -430,8 +430,10 @@ test("recall searches memini and prepends results; capture writes the episodic t
     assert.ok(write, "capture should POST /v1/memories");
     const body = JSON.parse(write.init.body);
     assert.equal(body.tier, "episodic");
-    assert.match(body.content, /User: q/);
-    assert.match(body.content, /Assistant: a/);
+    assert.match(body.content, /q/);
+    assert.match(body.content, /a/);
+    assert.doesNotMatch(body.content, /User:|Assistant:/);
+    assert.equal(body.metadata.format, "turn");
   } finally {
     globalThis.fetch = realFetch;
   }
