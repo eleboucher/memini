@@ -97,6 +97,7 @@ func (m *countingMetrics) RecallDegraded(reason string) {
 	m.degraded[reason]++
 	m.mu.Unlock()
 }
+func (m *countingMetrics) WriteSanitized(string)            {}
 func (m *countingMetrics) ConsolidateResult(string)         {}
 func (m *countingMetrics) ConsolidateQueueDepth(int)        {}
 func (m *countingMetrics) RememberResult(string, string)    {}

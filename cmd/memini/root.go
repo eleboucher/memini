@@ -221,6 +221,7 @@ func buildServiceStack(
 		service.WithWriteDedup(cfg.WriteDedupMinScore),
 		service.WithFingerprintDedup(cfg.WriteDedupFingerprint),
 		service.WithSecretRedaction(cfg.RedactSecrets),
+		service.WithCorruptionQuarantine(cfg.QuarantineGarbled),
 		service.WithTemporalTargeting(cfg.TemporalBoost, search.RegexAnchorExtractor{}),
 		service.WithRecallEmbedTimeout(cfg.RecallEmbedTimeout),
 		service.WithRecallMinScore(cfg.RecallMinScore),

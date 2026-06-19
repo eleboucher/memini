@@ -28,6 +28,7 @@ type consolidateMetrics struct {
 	rerankResults    *prometheus.CounterVec
 	recallDegraded   *prometheus.CounterVec
 	reinforceResults *prometheus.CounterVec
+	writeSanitized   *prometheus.CounterVec
 	opDuration       *prometheus.HistogramVec
 
 	// store-level
@@ -48,6 +49,7 @@ type consolidateMetrics struct {
 }
 
 const (
+	labelAction     = "action"
 	labelBackend    = "backend"
 	labelHitsBucket = "hits_bucket"
 	labelMemoryType = "memory_type"
@@ -111,6 +113,10 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 			Name: "memini_reinforce_results_total",
 			Help: "Best-effort recall reinforcement writes (ok, error).",
 		}, []string{labelResult}),
+		writeSanitized: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "memini_write_sanitized_total",
+			Help: "Ingestion content-hygiene actions by action (cleaned, quarantined).",
+		}, []string{labelAction}),
 		opDuration: factory.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "memini_op_duration_seconds",
 			Help:    "End-to-end latency of public service operations.",
@@ -214,6 +220,10 @@ func (m *consolidateMetrics) RerankResult(backend, result string) {
 
 func (m *consolidateMetrics) RecallDegraded(reason string) {
 	m.recallDegraded.WithLabelValues(reason).Inc()
+}
+
+func (m *consolidateMetrics) WriteSanitized(action string) {
+	m.writeSanitized.WithLabelValues(action).Inc()
 }
 
 func (m *consolidateMetrics) ReinforceResult(result string) {

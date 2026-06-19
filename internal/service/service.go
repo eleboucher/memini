@@ -18,6 +18,7 @@ import (
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/redact"
 	"github.com/eleboucher/memini/internal/rerank"
+	"github.com/eleboucher/memini/internal/sanitize"
 	"github.com/eleboucher/memini/internal/search"
 	"github.com/eleboucher/memini/internal/store"
 )
@@ -91,6 +92,10 @@ type Metrics interface {
 	// because the query embed failed or timed out. reason is "embed_timeout" or
 	// "embed_error".
 	RecallDegraded(reason string)
+	// WriteSanitized records one ingestion content-hygiene action: "cleaned"
+	// (unambiguous corruption stripped from content) or "quarantined"
+	// (script-salad downranked when MEMINI_QUARANTINE_GARBLED is on).
+	WriteSanitized(action string)
 	// ReinforceResult records one best-effort recall reinforcement write:
 	// "ok" or "error".
 	ReinforceResult(result string)
@@ -112,6 +117,7 @@ func (nopMetrics) OpDuration(string, time.Duration)    {}
 func (nopMetrics) AnswerResult(string)                 {}
 func (nopMetrics) RerankResult(string, string)         {}
 func (nopMetrics) RecallDegraded(string)               {}
+func (nopMetrics) WriteSanitized(string)               {}
 func (nopMetrics) ReinforceResult(string)              {}
 func (nopMetrics) DedupTombstoned(int)                 {}
 
@@ -198,6 +204,11 @@ type Service struct {
 	// Content/Summary/Metadata at ingestion, so a database compromise exposes
 	// memory content but no usable tokens/keys. See WithSecretRedaction.
 	redactSecrets bool
+	// quarantineGarbled (default off) downranks writes whose content looks like
+	// script-salad — garbled multilingual model output. Flagged, not rejected:
+	// importance is zeroed and metadata.quarantined set so the memory sinks in
+	// recall but stays inspectable. See WithCorruptionQuarantine.
+	quarantineGarbled bool
 	// temporalBoost (> 0) enables query-conditioned temporal targeting in the
 	// re-ranker; temporalAnchor resolves a query's relative-time reference (the
 	// regex extractor by default, or an LLM extractor when configured).
@@ -379,6 +390,17 @@ func WithSecretRedaction(on bool) Option {
 	return func(s *Service) { s.redactSecrets = on }
 }
 
+// WithCorruptionQuarantine toggles downranking of writes whose content looks
+// like script-salad — garbled multilingual output from an upstream model or
+// harness glitch (off by default). When on, a flagged write is still stored but
+// has its importance zeroed and metadata.quarantined set, so it sinks in recall
+// instead of surfacing verbatim. It is a heuristic and can misjudge rare
+// legitimate mixed-script text, so it only downranks (never rejects); leave it
+// off unless garbled digests are a problem for a deployment.
+func WithCorruptionQuarantine(on bool) Option {
+	return func(s *Service) { s.quarantineGarbled = on }
+}
+
 // New builds a Service from a store and embedder.
 func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 	s := &Service{
@@ -451,33 +473,89 @@ func (s *Service) scrubInput(in RememberInput) RememberInput {
 	return in
 }
 
-// Remember embeds and stores a memory, returning the persisted record.
-func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memory, error) {
-	start := time.Now()
-	defer func() {
-		s.metrics.OpDuration("remember", time.Since(start))
-	}()
-	if in.Namespace == "" {
-		s.metrics.RememberResult("error", "")
-		return nil, invalidInputf("remember: namespace is required")
+// sanitizeContent applies write-path content hygiene: it always strips
+// unambiguous corruption (invalid UTF-8, control/non-character codepoints) from
+// content/summary, and — when quarantine is enabled — downranks script-salad
+// writes (Importance=0 + metadata.quarantined) rather than rejecting them. It
+// returns an error when the content is empty after cleaning (pure binary
+// garbage). Leaves valid text in any language untouched.
+func (s *Service) sanitizeContent(ctx context.Context, in RememberInput, tier memory.Tier) (RememberInput, error) {
+	origBytes := len(in.Content) + len(in.Summary)
+	in.Content = sanitize.Clean(in.Content)
+	in.Summary = sanitize.Clean(in.Summary)
+	if removed := origBytes - (len(in.Content) + len(in.Summary)); removed > 0 {
+		s.metrics.WriteSanitized("cleaned")
+		// Debug, not Warn: this runs for every deployment, so keep it off the
+		// default log. It surfaces how often corruption is actually arriving.
+		slog.DebugContext(ctx, "remember: stripped corrupted bytes from content",
+			"namespace", in.Namespace, "removed_bytes", removed)
 	}
 	if in.Content == "" {
-		s.metrics.RememberResult("error", "")
-		return nil, invalidInputf("remember: content is required")
+		return in, invalidInputf("remember: content is empty after sanitization")
+	}
+	// Off by default: the heuristic can misjudge rare legitimate mixed-script
+	// text, so it only downranks (never rejects) — the memory stays inspectable.
+	if s.quarantineGarbled && sanitize.Garbled(in.Content) {
+		in.Importance = 0
+		if in.Metadata == nil {
+			in.Metadata = map[string]any{}
+		}
+		in.Metadata["quarantined"] = true
+		s.metrics.WriteSanitized("quarantined")
+		// Audit trail: only fires when an operator opted in, so it can't add
+		// noise to other deployments. Lets them catch false positives on
+		// legitimate mixed-script content.
+		slog.WarnContext(ctx, "remember: quarantined garbled content (downranked, not rejected)",
+			"namespace", in.Namespace, "tier", string(tier))
+	}
+	return in, nil
+}
+
+// validateRememberInput checks the required fields and resolves the tier
+// (defaulting to working). The returned tier is "" for the namespace/content
+// errors and the offending tier for an invalid-tier error, matching the metric
+// label the caller records.
+func validateRememberInput(in RememberInput) (memory.Tier, error) {
+	if in.Namespace == "" {
+		return "", invalidInputf("remember: namespace is required")
+	}
+	if in.Content == "" {
+		return "", invalidInputf("remember: content is required")
 	}
 	tier := in.Tier
 	if tier == "" {
 		tier = memory.TierWorking
 	}
 	if !tier.Valid() {
+		return tier, invalidInputf("remember: invalid tier %q", tier)
+	}
+	return tier, nil
+}
+
+// Remember embeds and stores a memory, returning the persisted record.
+func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memory, error) {
+	start := time.Now()
+	defer func() {
+		s.metrics.OpDuration("remember", time.Since(start))
+	}()
+	tier, err := validateRememberInput(in)
+	if err != nil {
 		s.metrics.RememberResult("error", string(tier))
-		return nil, invalidInputf("remember: invalid tier %q", tier)
+		return nil, err
 	}
 
 	// Scrub live credentials before anything persists them — content, the
 	// embedding, and the dedup fingerprint are all computed on the redacted
 	// text, so a leaked database yields no usable tokens/keys.
 	in = s.scrubInput(in)
+
+	// Content hygiene: strip unambiguous corruption (always) and downrank
+	// script-salad (opt-in). Rejects a write that is empty after cleaning.
+	in, err = s.sanitizeContent(ctx, in, tier)
+	if err != nil {
+		s.metrics.RememberResult("error", string(tier))
+		return nil, err
+	}
 
 	// Exact-restatement fast path: a fresh write whose normalized content already
 	// exists live in this tier reinforces that memory instead of duplicating it,

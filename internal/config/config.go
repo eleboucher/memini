@@ -117,6 +117,14 @@ type Config struct {
 	// Set false only if redaction mangles legitimate content.
 	RedactSecrets bool `env:"MEMINI_REDACT_SECRETS" envDefault:"true"`
 
+	// QuarantineGarbled downranks writes whose content looks like script-salad
+	// (garbled multilingual model/harness output) so they sink in recall instead
+	// of surfacing verbatim — importance is zeroed and metadata.quarantined set.
+	// Off by default: it's a heuristic that can misjudge rare legitimate
+	// mixed-script text, so it only downranks (never rejects). Enable for
+	// deployments where garbled digests are a problem.
+	QuarantineGarbled bool `env:"MEMINI_QUARANTINE_GARBLED" envDefault:"false"`
+
 	// TemporalBoost enables query-conditioned temporal targeting in the
 	// re-ranker: when a query names a relative time ("3 weeks ago"), candidates
 	// dated near the referenced point are boosted by up to this much on the
@@ -155,10 +163,10 @@ type Config struct {
 	// EmbedMaxConcurrency for the rationale.
 	RerankMaxConcurrency int `env:"MEMINI_RERANK_MAX_CONCURRENCY" envDefault:"0"`
 	// RecallEmbedTimeout bounds the query embed on the recall path; past it, or on
-	// any embed error, recall degrades to keyword-only search instead of failing
-	// or stalling on a slow embeddings backend. 0 (default) keeps the query embed
-	// unbounded and an embed error fatal.
-	RecallEmbedTimeout time.Duration `env:"MEMINI_RECALL_EMBED_TIMEOUT" envDefault:"0s"`
+	// any embed error, recall degrades to keyword-only search instead of stalling
+	// on a slow or stuck embeddings backend. Defaults to 2s so a wedged backend
+	// can't hang recall indefinitely; set 0 to restore an unbounded query embed.
+	RecallEmbedTimeout time.Duration `env:"MEMINI_RECALL_EMBED_TIMEOUT" envDefault:"2s"`
 	// RecallMinScore is an absolute relevance floor on the fused (vector+keyword)
 	// score. Candidates whose fused score is below this threshold are dropped from
 	// recall results entirely, preventing the "poison" problem where short
