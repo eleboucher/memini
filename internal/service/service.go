@@ -80,6 +80,11 @@ type Metrics interface {
 	RecallResult(result, tierFilter, hitsBucket string)
 	// ForgetResult records the outcome of a Forget call: "ok"|"not_found"|"error".
 	ForgetResult(result string)
+	// SupersedeResult records the outcome of a Supersede call:
+	// "ok"|"not_found"|"error". Supersede tombstones a memory (sets
+	// superseded_by) rather than deleting it; the maintenance sweeper
+	// hard-deletes tombstoned rows after TombstoneTTL.
+	SupersedeResult(result string)
 	// PromoteResult records one Promote batch: result is "ok"|"error";
 	// facts is the number of semantic facts written.
 	PromoteResult(result string, facts int)
@@ -118,6 +123,7 @@ func (nopMetrics) ConsolidateQueueDepth(int)           {}
 func (nopMetrics) RememberResult(string, string)       {}
 func (nopMetrics) RecallResult(string, string, string) {}
 func (nopMetrics) ForgetResult(string)                 {}
+func (nopMetrics) SupersedeResult(string)              {}
 func (nopMetrics) PromoteResult(string, int)           {}
 func (nopMetrics) FsckResult(string)                   {}
 func (nopMetrics) OpDuration(string, time.Duration)    {}
@@ -1207,6 +1213,30 @@ func (s *Service) Forget(ctx context.Context, namespace, id string) error {
 		s.metrics.ForgetResult("not_found")
 	default:
 		s.metrics.ForgetResult("error")
+	}
+	return err
+}
+
+// Supersede tombstones (namespace, id), recording that it was replaced by
+// supersededBy. The row is hidden from default recall but kept for the
+// audit/time-travel chain; the sweeper hard-deletes it after TombstoneTTL.
+// NotFound surfaces to the caller so a missing target is not silently
+// swallowed. Idempotent: re-superseding overwrites superseded_by.
+func (s *Service) Supersede(ctx context.Context, namespace, id, supersededBy string) error {
+	if strings.TrimSpace(id) == "" {
+		return invalidInputf("supersede: id is required")
+	}
+	if strings.TrimSpace(supersededBy) == "" {
+		return invalidInputf("supersede: supersededBy is required")
+	}
+	err := s.store.SetSuperseded(ctx, namespace, id, supersededBy)
+	switch {
+	case err == nil:
+		s.metrics.SupersedeResult("ok")
+	case errors.Is(err, store.ErrNotFound):
+		s.metrics.SupersedeResult("not_found")
+	default:
+		s.metrics.SupersedeResult("error")
 	}
 	return err
 }

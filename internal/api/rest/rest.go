@@ -246,6 +246,31 @@ func (h *Server) ForgetMemory(w http.ResponseWriter, r *http.Request, boundID st
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// SupersedeMemory implements POST /v1/memories/{id}/supersede. Stamps
+// superseded_by + valid_to so default recall hides the row while the
+// audit chain and time-travel (AsOf) queries can still reach it.
+func (h *Server) SupersedeMemory(w http.ResponseWriter, r *http.Request, boundID string, _ SupersedeMemoryParams) {
+	id, ok := unescapeID(boundID)
+	if !ok {
+		httputil.Error(w, http.StatusNotFound, "memory not found")
+		return
+	}
+	var req SupersedeRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	err := h.svc.Supersede(r.Context(), namespaceFromContext(r.Context()), id, req.By)
+	if errors.Is(err, store.ErrNotFound) {
+		httputil.Error(w, http.StatusNotFound, "memory not found")
+		return
+	}
+	if err != nil {
+		writeError(w, r, statusFor(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // ForgetByTag implements DELETE /v1/memories?tag=... — bulk-delete every memory
 // in the namespace carrying the tag. The tag is required (spec-enforced) so a
 // missing tag cannot delete the whole namespace.

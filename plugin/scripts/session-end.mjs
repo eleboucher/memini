@@ -10,6 +10,7 @@ import {
   parseJSON,
   resolveProject,
   postRemember,
+  postSupersede,
   readSessionEvents,
   buildSessionDigest,
   deleteSessionBuffer,
@@ -31,7 +32,7 @@ async function main() {
     );
 
   // No buffered events → nothing to digest; a bare end marker is just noise.
-  if (digest)
+  if (digest) {
     await postRemember(digest.content, project, {
       tier: "episodic",
       tags: ["session-marker", project],
@@ -44,6 +45,11 @@ async function main() {
         commands: digest.commands,
       },
     });
+    // Supersede the byte-identical stop:<sessionId> row the Stop hook
+    // emitted on the same final turn. postSupersede is a no-op when the
+    // target is missing (404 → null), so always call it.
+    await postSupersede(`stop:${sessionId}`, `session-end:${sessionId}`, project);
+  }
 
   deleteSessionBuffer(sessionId); // always, even when no digest was written
 }

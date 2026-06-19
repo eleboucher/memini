@@ -39,6 +39,7 @@ func (m *countingMetrics) ConsolidateQueueDepth(d int)         { m.depth = d }
 func (m *countingMetrics) RememberResult(string, string)       {}
 func (m *countingMetrics) RecallResult(string, string, string) {}
 func (m *countingMetrics) ForgetResult(string)                 {}
+func (m *countingMetrics) SupersedeResult(string)              {}
 func (m *countingMetrics) PromoteResult(string, int)           {}
 func (m *countingMetrics) FsckResult(string)                   {}
 func (m *countingMetrics) OpDuration(string, time.Duration)    {}

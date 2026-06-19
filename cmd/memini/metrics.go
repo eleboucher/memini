@@ -22,6 +22,7 @@ type consolidateMetrics struct {
 	rememberResults  *prometheus.CounterVec
 	recallResults    *prometheus.CounterVec
 	forgetResults    *prometheus.CounterVec
+	supersedeResults *prometheus.CounterVec
 	promoteResults   *prometheus.CounterVec
 	fsckResults      *prometheus.CounterVec
 	answerResults    *prometheus.CounterVec
@@ -88,6 +89,10 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 		forgetResults: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_forget_results_total",
 			Help: "Outcomes of the Forget API (ok, not_found, error).",
+		}, []string{labelResult}),
+		supersedeResults: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "memini_supersede_results_total",
+			Help: "Outcomes of the Supersede API (ok, not_found, error).",
 		}, []string{labelResult}),
 		promoteResults: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_promote_results_total",
@@ -196,6 +201,10 @@ func (m *consolidateMetrics) RecallResult(result, tierFilter, hitsBucket string)
 
 func (m *consolidateMetrics) ForgetResult(result string) {
 	m.forgetResults.WithLabelValues(result).Inc()
+}
+
+func (m *consolidateMetrics) SupersedeResult(result string) {
+	m.supersedeResults.WithLabelValues(result).Inc()
 }
 
 func (m *consolidateMetrics) PromoteResult(result string, _ int) {

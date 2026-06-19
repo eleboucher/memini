@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -526,5 +527,102 @@ func TestListAndStatsAllNamespaces(t *testing.T) {
 	}
 	if stats.Total != 6 {
 		t.Fatalf("aggregate stats total = %d, want 6", stats.Total)
+	}
+}
+
+// TestSupersedeTombstonesMemory pins Service.Supersede: stamps
+// superseded_by + valid_to so default recall hides the row, while it stays
+// in the store for the audit chain.
+func TestSupersedeTombstonesMemory(t *testing.T) {
+	svc := newService(t)
+	ctx := context.Background()
+
+	// Seed the long-lived episodic digest the hook will write on SessionEnd.
+	canonical, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "session digest for alice", Tier: memory.TierEpisodic,
+		ID: "session-end:test-uuid",
+	})
+	if err != nil {
+		t.Fatalf("remember canonical: %v", err)
+	}
+	// And the working-tier marker the Stop hook emitted on the same turn.
+	working, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "session digest for alice", Tier: memory.TierWorking,
+		ID: "stop:test-uuid",
+	})
+	if err != nil {
+		t.Fatalf("remember working: %v", err)
+	}
+
+	// Supersede the byte-identical stop: row.
+	if err := svc.Supersede(ctx, "alice", working.ID, canonical.ID); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+
+	// Default recall now hides the working-tier row.
+	res, err := svc.Recall(ctx, service.RecallInput{Namespace: "alice", Query: "session digest", Limit: 10})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	for _, r := range res {
+		if r.Memory.ID == working.ID {
+			t.Fatalf("superseded %q leaked into default recall", working.ID)
+		}
+	}
+
+	// IncludeSuperseded surfaces the tombstone; superseded_by is set.
+	all, err := svc.List(ctx, service.ListInput{Namespace: "alice", IncludeSuperseded: true})
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	var seen bool
+	for _, m := range all {
+		if m.ID != working.ID {
+			continue
+		}
+		seen = true
+		if m.SupersededBy == nil || *m.SupersededBy != canonical.ID {
+			t.Fatalf("superseded_by = %v, want %q", m.SupersededBy, canonical.ID)
+		}
+		if m.ValidTo == nil {
+			t.Fatal("supersession did not stamp valid_to")
+		}
+	}
+	if !seen {
+		t.Fatalf("superseded %q missing from IncludeSuperseded list", working.ID)
+	}
+
+	// NotFound: superseding a row that does not exist is reported (the hook
+	// tolerates a 404, but the service surfaces it so callers can branch).
+	if err := svc.Supersede(ctx, "alice", "stop:does-not-exist", canonical.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("supersede missing = %v, want store.ErrNotFound", err)
+	}
+
+	// Invalid input: empty id or empty by are both rejected up front.
+	if err := svc.Supersede(ctx, "alice", "", canonical.ID); !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("supersede empty id = %v, want ErrInvalidInput", err)
+	}
+	if err := svc.Supersede(ctx, "alice", working.ID, ""); !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("supersede empty by = %v, want ErrInvalidInput", err)
+	}
+
+	// Idempotency: re-superseding with a different pointer overwrites
+	// superseded_by (matches the consolidate-flow pattern).
+	other, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "newer canonical digest", Tier: memory.TierEpisodic,
+		ID: "session-end:newer",
+	})
+	if err != nil {
+		t.Fatalf("remember newer: %v", err)
+	}
+	if err := svc.Supersede(ctx, "alice", working.ID, other.ID); err != nil {
+		t.Fatalf("supersede again: %v", err)
+	}
+	got, err := svc.Get(ctx, "alice", working.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.SupersededBy == nil || *got.SupersededBy != other.ID {
+		t.Fatalf("superseded_by = %v, want %q (idempotency: latest write wins)", got.SupersededBy, other.ID)
 	}
 }

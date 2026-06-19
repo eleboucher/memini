@@ -286,6 +286,30 @@ paths:
       responses:
         "204": { description: Deleted }
         "404": { $ref: "#/components/responses/Error" }
+  /v1/memories/{id}/supersede:
+    parameters:
+      - { $ref: "#/components/parameters/Namespace" }
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: supersedeMemory
+      tags: [memory]
+      summary: Tombstone a memory, recording it was replaced by `by`.
+      description: >
+        Stamps `superseded_by` and `valid_to` on the target. The row stays in
+        the store for audit/time-travel and is hard-deleted by the
+        maintenance sweeper after `TombstoneTTL`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SupersedeRequest" }
+      responses:
+        "204": { description: Superseded }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /v1/search:
     post:
       operationId: searchMemories
@@ -384,6 +408,13 @@ components:
           description: >
             Seed corroboration for a durable fact (e.g. a trusted import). Omit
             to use the default seed; ignored for short-term tiers.
+    SupersedeRequest:
+      type: object
+      required: [by]
+      properties:
+        by:
+          type: string
+          description: ID of the memory that replaces the target.
     SearchRequest:
       type: object
       required: [query]

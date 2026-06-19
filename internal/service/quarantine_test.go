@@ -25,6 +25,7 @@ func (*sanitizeRecorder) ConsolidateQueueDepth(int)           {}
 func (*sanitizeRecorder) RememberResult(string, string)       {}
 func (*sanitizeRecorder) RecallResult(string, string, string) {}
 func (*sanitizeRecorder) ForgetResult(string)                 {}
+func (*sanitizeRecorder) SupersedeResult(string)              {}
 func (*sanitizeRecorder) PromoteResult(string, int)           {}
 func (*sanitizeRecorder) FsckResult(string)                   {}
 func (*sanitizeRecorder) OpDuration(string, time.Duration)    {}

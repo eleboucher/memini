@@ -321,7 +321,13 @@ test("session-end.mjs: distills buffered events into one digest", async () => {
       { MEMINI_URL: url, XDG_CACHE_HOME: cache },
     );
 
-    assert.equal(hits.length, 1, "session-end should write exactly one digest memory");
+    // Two calls: the long-lived digest and a supersede of the byte-identical
+    // stop:<sessionId> marker the Stop hook emitted on the same final turn.
+    assert.equal(hits.length, 2, "session-end should write the digest AND supersede the stop: marker");
+    assert.equal(hits[0].url, "/v1/memories", "first call is the digest");
+    assert.equal(hits[1].url, "/v1/memories/stop%3Adig1/supersede", "second call supersedes the stop: marker");
+    const supersedeBody = JSON.parse(hits[1].body);
+    assert.equal(supersedeBody.by, "session-end:dig1", "supersede target is the long-lived session-end row");
     const body = JSON.parse(hits[0].body);
     assert.equal(body.tier, "episodic");
     assert.match(body.content, /3 tool calls/, "digest should count events");
@@ -366,10 +372,90 @@ test("session-end.mjs: counts files edited through Codex apply_patch", async () 
       { MEMINI_URL: url, XDG_CACHE_HOME: cache },
     );
 
-    assert.equal(hits.length, 1, "session-end should write a digest for apply_patch edits");
+    assert.equal(hits.length, 2, "session-end writes the digest AND supersedes the stop: marker");
     const body = JSON.parse(hits[0].body);
     assert.match(body.content, /Edited: src\/auth\.js, src\/session\.js\./);
     assert.deepEqual(body.metadata.files, ["src/auth.js", "src/session.js"]);
+  } finally {
+    await close();
+  }
+});
+
+test("session-end.mjs: supersede tolerates a 404 (stop: marker missing)", async () => {
+  // The session-end hook must not fail when the Stop hook never wrote a
+  // matching stop:<sessionId> row (e.g. a short session that compacted
+  // before reaching the auto-save threshold). The server returns 404; the
+  // hook logs in DEBUG and otherwise moves on. We verify the hook exited 0
+  // and emitted no unhandled error in stderr.
+  const cache = freshCache();
+  await runHook(
+    "post-tool-use.mjs",
+    JSON.stringify({ session_id: "nfdig1", cwd: __dirname, tool_name: "Edit", tool_input: { file_path: "x.go" } }),
+    { XDG_CACHE_HOME: cache },
+  );
+
+  let supersedeSeen = false;
+  const { url, close } = await startMockServer((req, res, body) => {
+    if (req.url === "/v1/memories") {
+      res.setHeader("Content-Type", "application/json");
+      res.statusCode = 201;
+      res.end(JSON.stringify({ id: "session-end:nfdig1" }));
+      return;
+    }
+    if (req.url === "/v1/memories/stop%3Anfdig1/supersede") {
+      supersedeSeen = true;
+      // The real server returns 404 when the stop: row doesn't exist; the
+      // hook must swallow that and continue.
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: "memory not found" }));
+      return;
+    }
+    res.statusCode = 500;
+    res.end();
+  });
+
+  try {
+    const { stderr } = await runHook(
+      "session-end.mjs",
+      JSON.stringify({ session_id: "nfdig1", cwd: __dirname, reason: "user_exit" }),
+      { MEMINI_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.ok(supersedeSeen, "session-end should still POST the supersede even when the target is missing");
+    assert.doesNotMatch(stderr, /UnhandledPromise|Rejection|TypeError/, "404 must not crash the hook");
+  } finally {
+    await close();
+  }
+});
+
+test("session-end.mjs: percent-encodes the stop: id in the supersede path", async () => {
+  // The stop: id contains a ':' which chi's router needs percent-encoded. If
+  // we forgot to encode, the server would 404 with a "memory not found"
+  // route mismatch instead of the real supersede handler.
+  const cache = freshCache();
+  await runHook(
+    "post-tool-use.mjs",
+    JSON.stringify({ session_id: "abc-123", cwd: __dirname, tool_name: "Edit", tool_input: { file_path: "y.go" } }),
+    { XDG_CACHE_HOME: cache },
+  );
+
+  const paths = [];
+  const { url, close } = await startMockServer((req, res) => {
+    paths.push(req.url);
+    res.setHeader("Content-Type", "application/json");
+    res.statusCode = 201;
+    res.end(JSON.stringify({ id: "ok" }));
+  });
+
+  try {
+    await runHook(
+      "session-end.mjs",
+      JSON.stringify({ session_id: "abc-123", cwd: __dirname, reason: "user_exit" }),
+      { MEMINI_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.ok(
+      paths.includes("/v1/memories/stop%3Aabc-123/supersede"),
+      `expected percent-encoded stop id in supersede path, got ${JSON.stringify(paths)}`,
+    );
   } finally {
     await close();
   }

@@ -280,6 +280,12 @@ type Stats struct {
 	TotalAccesses int `json:"total_accesses"`
 }
 
+// SupersedeRequest defines model for SupersedeRequest.
+type SupersedeRequest struct {
+	// By ID of the memory that replaces the target.
+	By string `json:"by"`
+}
+
 // Tier defines model for Tier.
 type Tier string
 
@@ -362,6 +368,12 @@ type GetMemoryParams struct {
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
+// SupersedeMemoryParams defines parameters for SupersedeMemory.
+type SupersedeMemoryParams struct {
+	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
+}
+
 // GetBriefingParams defines parameters for GetBriefing.
 type GetBriefingParams struct {
 	// PerSection Default cap applied to every section when its dedicated cap is unset. Default 5.
@@ -404,6 +416,9 @@ type RunDedupJSONRequestBody = DedupRequest
 // RememberMemoryJSONRequestBody defines body for RememberMemory for application/json ContentType.
 type RememberMemoryJSONRequestBody = RememberRequest
 
+// SupersedeMemoryJSONRequestBody defines body for SupersedeMemory for application/json ContentType.
+type SupersedeMemoryJSONRequestBody = SupersedeRequest
+
 // SearchMemoriesJSONRequestBody defines body for SearchMemories for application/json ContentType.
 type SearchMemoriesJSONRequestBody = SearchRequest
 
@@ -433,6 +448,9 @@ type ServerInterface interface {
 	// Fetch a memory by ID
 	// (GET /v1/memories/{id})
 	GetMemory(w http.ResponseWriter, r *http.Request, id string, params GetMemoryParams)
+	// Tombstone a memory, recording it was replaced by `by`.
+	// (POST /v1/memories/{id}/supersede)
+	SupersedeMemory(w http.ResponseWriter, r *http.Request, id string, params SupersedeMemoryParams)
 	// List the distinct namespaces holding memories
 	// (GET /v1/namespaces)
 	ListNamespaces(w http.ResponseWriter, r *http.Request)
@@ -499,6 +517,12 @@ func (_ Unimplemented) ForgetMemory(w http.ResponseWriter, r *http.Request, id s
 // Fetch a memory by ID
 // (GET /v1/memories/{id})
 func (_ Unimplemented) GetMemory(w http.ResponseWriter, r *http.Request, id string, params GetMemoryParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Tombstone a memory, recording it was replaced by `by`.
+// (POST /v1/memories/{id}/supersede)
+func (_ Unimplemented) SupersedeMemory(w http.ResponseWriter, r *http.Request, id string, params SupersedeMemoryParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1039,6 +1063,62 @@ func (siw *ServerInterfaceWrapper) GetMemory(w http.ResponseWriter, r *http.Requ
 	handler.ServeHTTP(w, r)
 }
 
+// SupersedeMemory operation middleware
+func (siw *ServerInterfaceWrapper) SupersedeMemory(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SupersedeMemoryParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Memini-Namespace" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Memini-Namespace")]; found {
+		var XMeminiNamespace Namespace
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Memini-Namespace", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Memini-Namespace", valueList[0], &XMeminiNamespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Memini-Namespace", Err: err})
+			return
+		}
+
+		params.XMeminiNamespace = &XMeminiNamespace
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SupersedeMemory(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListNamespaces operation middleware
 func (siw *ServerInterfaceWrapper) ListNamespaces(w http.ResponseWriter, r *http.Request) {
 
@@ -1434,6 +1514,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/memories/{id}", wrapper.GetMemory)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/memories/{id}/supersede", wrapper.SupersedeMemory)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/namespaces", wrapper.ListNamespaces)

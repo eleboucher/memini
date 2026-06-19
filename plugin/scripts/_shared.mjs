@@ -6,6 +6,7 @@
 //   - jsonRequest:      POST JSON with bearer-token + namespace headers
 //   - postSearch:       POST /v1/search and return result.memory[] of {content,score}
 //   - postRemember:     POST /v1/memories
+//   - postSupersede:    POST /v1/memories/{id}/supersede (tombstone)
 //   - debug:            gated by MEMINI_DEBUG=1
 //
 // Hooks are .mjs (not .ts) so they run in plain `node` without a build step.
@@ -458,6 +459,17 @@ export async function postRemember(content, namespace, opts = {}) {
   if (opts.id) body.id = opts.id;
   if (opts.metadata) body.metadata = opts.metadata;
   return postJSON("/v1/memories", body, namespace);
+}
+
+/**
+ * POST /v1/memories/{id}/supersede. Tombstones a memory so default recall
+ * hides it; the row stays for the audit chain and is hard-deleted by the
+ * sweeper after TombstoneTTL. `id` is percent-encoded because the
+ * session-end / stop: prefixes carry `:`.
+ */
+export async function postSupersede(id, by, namespace) {
+  const enc = encodeURIComponent(id);
+  return postJSON(`/v1/memories/${enc}/supersede`, { by }, namespace);
 }
 
 /**
