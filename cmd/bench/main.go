@@ -48,6 +48,10 @@ func run() error {
 	ceRerankURL := flag.String("rerank-url", "",
 		"rerank tier with a cross-encoder /rerank endpoint at this base URL (e.g. http://localhost:8002/v1)")
 	ceRerankModel := flag.String("rerank-model", "", "cross-encoder model name for -rerank-url")
+	ceMaxDocChars := flag.Int("rerank-max-doc-chars", 1200,
+		"cross-encoder: truncate each candidate to this many chars (production default 1200)")
+	ceMaxBatchChars := flag.Int("rerank-max-batch-chars", 4000,
+		"cross-encoder: cap total query+docs chars per request, splitting as needed (production default 4000)")
 	flag.Parse()
 
 	ds, err := loadDataset(*suite, *data, bench.DocMode(*sessionDoc))
@@ -117,7 +121,7 @@ func run() error {
 	// call per question — use -limit to subset. Cross-encoder (-rerank-url) is
 	// fast; the LLM (-llm-rerank) is slow.
 	if *llmRerank || *ceRerankURL != "" {
-		reranker, err := buildReranker(*ceRerankURL, *ceRerankModel)
+		reranker, err := buildReranker(*ceRerankURL, *ceRerankModel, *ceMaxDocChars, *ceMaxBatchChars)
 		if err != nil {
 			return err
 		}
@@ -312,10 +316,11 @@ func buildEmbedder(localDims int) (embed.Embedder, int, func() error, error) {
 // buildReranker constructs the rerank tier's backend: a cross-encoder at ceURL
 // when set, else an LLM reranker from the MEMINI_LLM_* environment (matching how
 // cmd/memini and cmd/locomo-qa configure their chat backend).
-func buildReranker(ceURL, ceModel string) (rerankpkg.Reranker, error) {
+func buildReranker(ceURL, ceModel string, maxDocChars, maxBatchChars int) (rerankpkg.Reranker, error) {
 	if ceURL != "" {
 		return rerankpkg.New(rerankpkg.Config{
 			BaseURL: ceURL, Model: ceModel, APIKey: os.Getenv("MEMINI_RERANK_API_KEY"),
+			MaxDocChars: maxDocChars, MaxBatchChars: maxBatchChars,
 		})
 	}
 	client, err := llm.New(llm.API(os.Getenv("MEMINI_LLM_API")), llm.Config{
