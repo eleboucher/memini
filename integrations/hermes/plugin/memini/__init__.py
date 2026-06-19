@@ -13,18 +13,24 @@ Install: copy this directory to ~/.hermes/plugins/memini and set
 single-select; `plugins.enabled` does not activate them.
 
 Environment:
-    MEMINI_URL            base URL (default http://localhost:8080)
-    MEMINI_NAMESPACE      tenant to scope memory to (default: cwd basename, else "hermes")
-    MEMINI_API_KEY        bearer token, if memini requires auth
-    MEMINI_REQUIRE_HTTPS  =1 to refuse sending a token over plaintext HTTP
+    MEMINI_URL                      base URL (default http://localhost:8080)
+    MEMINI_NAMESPACE                tenant to scope memory to (default: cwd basename, else "hermes")
+    MEMINI_API_KEY                  bearer token, if memini requires auth
+    MEMINI_REQUIRE_HTTPS            =1 to refuse sending a token over plaintext HTTP
+    MEMINI_RECALL_LIMIT             max memories recalled per turn (default 5)
+    MEMINI_INJECT_RECALL_MIN_SCORE  fused-score floor (>=) for auto-recall (default 0)
+    MEMINI_INJECT_RECALL_MAX_TOK    hard token ceiling on the recall block (0 = unbounded)
+    MEMINI_INJECT_LABELS            comma/pipe bullet labels: tier, confidence, age
 
-Network errors are swallowed.
+The recall knobs mirror the opencode/Claude Code plugins so memory shaping is
+consistent across integrations. Network errors are swallowed.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -138,6 +144,86 @@ def _list_path(args: dict) -> str:
     return f"/v1/memories?{qs}" if qs else "/v1/memories"
 
 
+# --- Recall shaping -------------------------------------------------------
+#
+# These mirror the opencode / Claude Code plugins (_shared.mjs) so the recall
+# block honors the same env knobs across integrations: a configurable limit, a
+# score floor, a token ceiling, and label toggles.
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        n = int(raw)
+    except ValueError:
+        return default
+    return n if n >= 0 else default
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        n = float(raw)
+    except ValueError:
+        return default
+    return n if n >= 0 else default
+
+
+def _labels_env(name: str = "MEMINI_INJECT_LABELS") -> set[str]:
+    """Parse MEMINI_INJECT_LABELS into a set of enabled labels (tier,
+    confidence, age). Empty/unset returns an empty set — formatting then emits
+    plain bullets, matching the prior output exactly."""
+    raw = os.environ.get(name, "")
+    return {s.strip().lower() for s in re.split(r"[|,]", raw) if s.strip()}
+
+
+def _format_age(created_at: Any) -> str:
+    if not created_at:
+        return ""
+    try:
+        from datetime import datetime, timezone
+
+        ts = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+        days = (datetime.now(timezone.utc) - ts).days
+    except (ValueError, TypeError):
+        return ""
+    if days < 0:
+        return ""
+    return "today" if days == 0 else f"{days}d"
+
+
+def _approx_tokens(text: str) -> int:
+    """~0.75 tokens/word, floor of 1 for any non-empty line."""
+    if not text:
+        return 0
+    words = len(str(text).split())
+    return max(1, (words * 4 + 2) // 3)  # ceil(words * 4 / 3)
+
+
+def _fit_by_tokens(items: list[str], max_tokens: int) -> tuple[list[str], int]:
+    """Trim a list of bullet lines to fit under `max_tokens`, keeping the head
+    (most-relevant first). max_tokens <= 0 means unbounded. Returns (kept,
+    dropped)."""
+    if not items:
+        return [], 0
+    if max_tokens <= 0:
+        return list(items), 0
+    out: list[str] = []
+    used = dropped = 0
+    for s in items:
+        t = _approx_tokens(s)
+        if used + t > max_tokens:
+            dropped += 1
+            continue
+        out.append(s)
+        used += t
+    return out, dropped
+
+
 class MeminiMemoryProvider(MemoryProvider):
     """Cross-session memory backed by a memini service."""
 
@@ -156,6 +242,13 @@ class MeminiMemoryProvider(MemoryProvider):
         # label, not a dir), so the working directory is the only signal for the
         # default namespace; set MEMINI_NAMESPACE to scope explicitly.
         self._namespace = _env("MEMINI_NAMESPACE") or os.path.basename(os.getcwd().rstrip("/")) or "hermes"
+        # Recall-shaping knobs, read once. Defaults preserve prior behavior
+        # (limit 5, no floor, unbounded, plain bullets).
+        limit = _int_env("MEMINI_RECALL_LIMIT", 5)
+        self._recall_limit = limit if limit > 0 else 5
+        self._recall_min_score = _float_env("MEMINI_INJECT_RECALL_MIN_SCORE", 0.0)
+        self._recall_max_tokens = _int_env("MEMINI_INJECT_RECALL_MAX_TOK", 0)
+        self._labels = _labels_env()
         if _env("MEMINI_REQUIRE_HTTPS") == "1":
             _check_plaintext_bearer_guard(self._base, self._secret)
 
@@ -184,22 +277,57 @@ class MeminiMemoryProvider(MemoryProvider):
         safe = {k: v for k, v in values.items() if k not in secret_keys}
         (Path(hermes_home) / "memini.json").write_text(json.dumps(safe, indent=2))
 
-    def _format(self, result: dict | None, limit: int) -> str:
+    def _format_lines(self, result: dict | None) -> list[str]:
+        """Render hits to bullet lines. Plain `- text` when no labels are
+        enabled (the default); `- [tier · conf=X · age] text` otherwise."""
         if not result:
-            return ""
-        lines = []
-        for r in (result.get("results") or [])[:limit]:
+            return []
+        labels = self._labels
+        floor = self._recall_min_score
+        lines: list[str] = []
+        for r in (result.get("results") or [])[: self._recall_limit]:
+            # Belt-and-braces client floor: drop sub-threshold hits the server
+            # may still return under score-normalization edge cases.
+            if floor > 0 and (r.get("score") or 0) < floor:
+                continue
             mem = r.get("memory") or {}
-            text = (mem.get("summary") or mem.get("content") or "").strip()
-            if text:
-                lines.append(f"- {text[:300]}")
-        return "\n".join(lines)
+            text = (mem.get("summary") or mem.get("content") or "").strip()[:300]
+            if not text:
+                continue
+            if not labels:
+                lines.append(f"- {text}")
+                continue
+            tags: list[str] = []
+            if "tier" in labels and mem.get("tier"):
+                tags.append(str(mem["tier"]))
+            if "confidence" in labels and isinstance(mem.get("confidence"), (int, float)):
+                tags.append(f"conf={mem['confidence']:.2f}")
+            if "age" in labels:
+                age = _format_age(mem.get("created_at"))
+                if age:
+                    tags.append(age)
+            lines.append(f"- [{' · '.join(tags)}] {text}" if tags else f"- {text}")
+        return lines
+
+    def _recall_block(self, result: dict | None, header: str) -> str:
+        """Format hits, fit under the token ceiling, and add a footer when the
+        tail was dropped. Returns "" when there is nothing to show."""
+        lines = self._format_lines(result)
+        kept, dropped = _fit_by_tokens(lines, self._recall_max_tokens)
+        if not kept:
+            return ""
+        block = "\n".join(kept)
+        if dropped > 0:
+            block += f"\n[... {dropped} item(s) truncated by token budget]"
+        return f"{header}\n{block}"
 
     def _recall_body(self, query: str) -> dict:
         # Exclude this session's own captured turns: they're still in the live
         # transcript, so recalling them just echoes the conversation back a turn
         # behind. Captures from other (past) sessions are still recalled.
-        body = {"query": query, "limit": 5}
+        body: dict = {"query": query, "limit": self._recall_limit}
+        if self._recall_min_score > 0:
+            body["min_score"] = self._recall_min_score
         if self._session_id:
             body["exclude_metadata"] = {"session_id": self._session_id}
         return body
@@ -207,8 +335,10 @@ class MeminiMemoryProvider(MemoryProvider):
     def prefetch(self, query: str, **kwargs: Any) -> str:
         if not query.strip():
             return ""
-        block = self._format(self._call("/v1/search", self._recall_body(query)), 5)
-        return f"Relevant memories (from memini):\n{block}" if block else ""
+        return self._recall_block(
+            self._call("/v1/search", self._recall_body(query)),
+            "Relevant memories (from memini):",
+        )
 
     def on_pre_compress(self, messages: list, **kwargs: Any) -> str:
         """Re-inject recalled context before history compaction."""
@@ -221,8 +351,12 @@ class MeminiMemoryProvider(MemoryProvider):
             if isinstance(content, str) and content.strip():
                 query = content.strip()
                 break
-        block = self._format(self._call("/v1/search", self._recall_body(query)), 5) if query else ""
-        return f"[memini context before compaction]\n{block}" if block else ""
+        if not query:
+            return ""
+        return self._recall_block(
+            self._call("/v1/search", self._recall_body(query)),
+            "[memini context before compaction]",
+        )
 
     def sync_turn(self, user: str, assistant: str, **kwargs: Any) -> None:
         user, assistant = (user or "").strip(), (assistant or "").strip()

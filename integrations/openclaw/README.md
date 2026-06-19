@@ -77,6 +77,13 @@ If memini requires auth, set `MEMINI_API_KEY` in the gateway environment (the
 plugin sends it as `Authorization: Bearer …`; set `MEMINI_REQUIRE_HTTPS=1` to
 refuse sending it over plaintext HTTP). Restart OpenClaw.
 
+Recall shaping (all optional, matching the opencode/Claude Code plugins):
+`recall_limit` (max memories per turn, default 5), `recall_min_score` (fused-score
+floor sent as `min_score`), and `recall_max_tokens` (hard token ceiling on the
+recall block — `0`/unset is unbounded; the tail is dropped with a truncation
+footer). `recall_max_tokens` also reads `MEMINI_INJECT_RECALL_MAX_TOK`, and
+`MEMINI_INJECT_LABELS` (`tier`, `confidence`, `age`) toggles the per-bullet tag prefix.
+
 Memory is isolated **per agent by default** (`namespace_per_agent: true`): each
 agent reads and writes its own scope, resolved from the agent id on each hook
 event and formatted by `namespace_template`. This prevents subagents sharing one

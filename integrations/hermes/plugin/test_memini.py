@@ -137,6 +137,76 @@ class HandleToolCallTest(unittest.TestCase):
         self.assertIn("error", json.loads(out))
 
 
+class RecallShapingTest(unittest.TestCase):
+    KNOBS = (
+        "MEMINI_RECALL_LIMIT",
+        "MEMINI_INJECT_RECALL_MIN_SCORE",
+        "MEMINI_INJECT_RECALL_MAX_TOK",
+        "MEMINI_INJECT_LABELS",
+    )
+
+    def setUp(self):
+        for k in self.KNOBS:
+            os.environ.pop(k, None)
+        self.addCleanup(lambda: [os.environ.pop(k, None) for k in self.KNOBS])
+
+    @staticmethod
+    def _hits(*hits):
+        def stub(path, body, method="POST"):
+            stub.body = body
+            return {"results": list(hits)}
+
+        return stub
+
+    def test_body_uses_configured_limit_and_min_score(self):
+        os.environ["MEMINI_RECALL_LIMIT"] = "8"
+        os.environ["MEMINI_INJECT_RECALL_MIN_SCORE"] = "0.3"
+        stub = self._hits()
+        make_provider(stub).prefetch("q")
+        self.assertEqual(stub.body["limit"], 8)
+        self.assertEqual(stub.body["min_score"], 0.3)
+
+    def test_default_body_omits_min_score_and_defaults_limit_5(self):
+        stub = self._hits()
+        make_provider(stub).prefetch("q")
+        self.assertEqual(stub.body["limit"], 5)
+        self.assertNotIn("min_score", stub.body)
+
+    def test_default_renders_plain_bullet(self):
+        stub = self._hits({"memory": {"summary": "note A", "tier": "semantic"}, "score": 0.9})
+        out = make_provider(stub).prefetch("q")
+        self.assertIn("- note A", out)
+        self.assertNotIn("[semantic]", out)
+
+    def test_labels_render_tier_prefix(self):
+        os.environ["MEMINI_INJECT_LABELS"] = "tier"
+        stub = self._hits({"memory": {"summary": "note A", "tier": "semantic"}, "score": 0.9})
+        out = make_provider(stub).prefetch("q")
+        self.assertIn("- [semantic] note A", out)
+
+    def test_client_side_min_score_filter_drops_low_hits(self):
+        os.environ["MEMINI_INJECT_RECALL_MIN_SCORE"] = "0.5"
+        stub = self._hits(
+            {"memory": {"summary": "keep me"}, "score": 0.8},
+            {"memory": {"summary": "drop me"}, "score": 0.2},
+        )
+        out = make_provider(stub).prefetch("q")
+        self.assertIn("keep me", out)
+        self.assertNotIn("drop me", out)
+
+    def test_token_budget_truncates_tail_with_footer(self):
+        # "- alpha beta gamma" ≈ 6 tokens, so a 6-token cap keeps only the first.
+        os.environ["MEMINI_INJECT_RECALL_MAX_TOK"] = "6"
+        stub = self._hits(
+            {"memory": {"summary": "alpha beta gamma"}, "score": 0.9},
+            {"memory": {"summary": "delta epsilon zeta"}, "score": 0.8},
+        )
+        out = make_provider(stub).prefetch("q")
+        self.assertIn("alpha beta gamma", out)
+        self.assertNotIn("delta", out)
+        self.assertIn("truncated by token budget", out)
+
+
 class IsAvailableTest(unittest.TestCase):
     def test_valid_url_is_available(self):
         os.environ["MEMINI_URL"] = "http://localhost:8080"

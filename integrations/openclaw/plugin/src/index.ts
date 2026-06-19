@@ -42,6 +42,7 @@ const typeboxConfigSchema = Type.Object(
     expose_tools: Type.Optional(Type.Boolean()),
     recall_limit: Type.Optional(Type.Number()),
     recall_min_score: Type.Optional(Type.Number()),
+    recall_max_tokens: Type.Optional(Type.Number()),
   },
   { additionalProperties: false },
 );
@@ -90,7 +91,23 @@ export function resolveConfig(pluginConfig: any) {
     recall_limit: Number.isFinite(c.recall_limit) && c.recall_limit > 0 ? c.recall_limit : 5,
     recall_min_score:
       Number.isFinite(c.recall_min_score) && c.recall_min_score > 0 ? c.recall_min_score : 0,
+    // Hard ceiling on the rendered recall-block tokens (0 = unbounded). Config
+    // wins; otherwise the MEMINI_INJECT_RECALL_MAX_TOK env, matching the knob
+    // name the opencode and Claude Code plugins use.
+    recall_max_tokens:
+      Number.isFinite(c.recall_max_tokens) && c.recall_max_tokens > 0
+        ? c.recall_max_tokens
+        : intEnv("MEMINI_INJECT_RECALL_MAX_TOK", 0),
   };
+}
+
+// intEnv parses a non-negative integer env var, falling back to `def` when
+// unset or malformed (env values are operator input and must never throw).
+function intEnv(name: string, def: number) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return def;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : def;
 }
 
 export type ResolvedConfig = ReturnType<typeof resolveConfig>;
@@ -301,8 +318,11 @@ function formatAge(createdAt: any) {
   return days === 0 ? "today" : `${days}d`;
 }
 
-function formatResults(results: any, labels: string[] = DEFAULT_RECALL_LABELS) {
-  if (!Array.isArray(results) || results.length === 0) return "";
+// formatResults renders the hits to an array of bullet lines; the caller fits
+// the array under a token budget (fitByTokens) before joining. Returns [] for
+// no hits.
+function formatResults(results: any, labels: string[] = DEFAULT_RECALL_LABELS): string[] {
+  if (!Array.isArray(results) || results.length === 0) return [];
   return results
     .map((result: any, index: number) => {
       const mem = result?.memory ?? {};
@@ -329,8 +349,37 @@ function formatResults(results: any, labels: string[] = DEFAULT_RECALL_LABELS) {
       }
       return `- [${tagParts.join(" · ")}] ${text.slice(0, 300)}`;
     })
-    .filter(Boolean)
-    .join("\n");
+    .filter(Boolean);
+}
+
+// approxTokens / fitByTokens mirror the Claude Code plugin's _shared.mjs so the
+// recall block can honor a token ceiling. Keep contracts identical when both
+// sides change. Exported for testing.
+export function approxTokens(text: any) {
+  if (!text) return 0;
+  const words = String(text).trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.ceil((words * 4) / 3));
+}
+
+// fitByTokens trims a list of pre-formatted bullet lines to fit under
+// `maxTokens`, keeping the head (most-relevant first). maxTokens <= 0 means
+// unbounded. Returns the kept lines plus the dropped count for a footer.
+export function fitByTokens(items: string[], maxTokens: number) {
+  if (!Array.isArray(items) || items.length === 0) return { items: [] as string[], dropped: 0 };
+  if (!Number.isFinite(maxTokens) || maxTokens <= 0) return { items: items.slice(), dropped: 0 };
+  const out: string[] = [];
+  let used = 0;
+  let dropped = 0;
+  for (const s of items) {
+    const t = approxTokens(s);
+    if (used + t > maxTokens) {
+      dropped++;
+      continue;
+    }
+    out.push(s);
+    used += t;
+  }
+  return { items: out, dropped };
 }
 
 function normalizedHostname(hostname: any) {
@@ -639,12 +688,19 @@ const plugin: {
         const seen = injectedBySession.get(session);
         if (seen?.size) results = results.filter((r: any) => !seen.has(r?.memory?.id));
       }
-      const block = formatResults(results, recallLabels());
-      if (!block) return;
+      const bullets = formatResults(results, recallLabels());
+      if (bullets.length === 0) return;
+      // Apply the token ceiling to the rendered bullets; recall_max_tokens <= 0
+      // (the default) leaves the list unchanged, so existing installs are
+      // unaffected. The tail (lowest-relevance) is dropped first.
+      const fit = fitByTokens(bullets, cfg.recall_max_tokens);
+      if (fit.items.length === 0) return;
       if (session) {
         rememberInjected(session, results.map((r: any) => r?.memory?.id).filter(Boolean));
       }
-      return { prependContext: `Relevant long-term memory from memini:\n${block}` };
+      const lines = [`Relevant long-term memory from memini:`, ...fit.items];
+      if (fit.dropped > 0) lines.push(`[... ${fit.dropped} item(s) truncated by token budget]`);
+      return { prependContext: lines.join("\n") };
     };
     // Register on whichever hook surface this OpenClaw build exposes. api.on is
     // the surface the prior plugin.mjs used and is present in current

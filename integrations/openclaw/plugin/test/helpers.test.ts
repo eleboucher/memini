@@ -2,9 +2,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  approxTokens,
   createPlaintextBearerAuthGuard,
   detectSystemKind,
   effectiveNamespace,
+  fitByTokens,
   meminiListPath,
   registerMeminiTools,
   resolveConfig,
@@ -265,4 +267,36 @@ test("registerMeminiTools: memory_remember validates tier and falls back to sema
   call = client.calls.at(-1);
   assert.ok(call);
   assert.deepEqual(call.body, { content: "fact", tier: "episodic" });
+});
+
+test("resolveConfig: recall_max_tokens — config wins, else MEMINI_INJECT_RECALL_MAX_TOK, else 0", () => {
+  const prev = process.env.MEMINI_INJECT_RECALL_MAX_TOK;
+  try {
+    delete process.env.MEMINI_INJECT_RECALL_MAX_TOK;
+    assert.equal(resolveConfig({}).recall_max_tokens, 0);
+    assert.equal(resolveConfig({ recall_max_tokens: 120 }).recall_max_tokens, 120);
+    process.env.MEMINI_INJECT_RECALL_MAX_TOK = "80";
+    assert.equal(resolveConfig({}).recall_max_tokens, 80);
+    // config still wins over the env fallback
+    assert.equal(resolveConfig({ recall_max_tokens: 200 }).recall_max_tokens, 200);
+    // malformed env falls back to 0
+    process.env.MEMINI_INJECT_RECALL_MAX_TOK = "nope";
+    assert.equal(resolveConfig({}).recall_max_tokens, 0);
+  } finally {
+    if (prev === undefined) delete process.env.MEMINI_INJECT_RECALL_MAX_TOK;
+    else process.env.MEMINI_INJECT_RECALL_MAX_TOK = prev;
+  }
+});
+
+test("fitByTokens: maxTokens<=0 keeps everything; a tight cap drops the tail", () => {
+  const items = ["- alpha beta", "- gamma delta", "- epsilon zeta"];
+  // Unbounded: nothing dropped.
+  assert.deepEqual(fitByTokens(items, 0), { items, dropped: 0 });
+  // Each two-word bullet ≈ approxTokens; a cap that fits only the first.
+  const oneCap = approxTokens(items[0]);
+  const fit = fitByTokens(items, oneCap);
+  assert.deepEqual(fit.items, [items[0]]);
+  assert.equal(fit.dropped, 2);
+  // Empty input is safe.
+  assert.deepEqual(fitByTokens([], 50), { items: [], dropped: 0 });
 });
