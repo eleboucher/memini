@@ -45,9 +45,11 @@ async function main() {
         commands: digest.commands,
       },
     });
-    // Supersede the byte-identical stop:<sessionId> row the Stop hook
-    // emitted on the same final turn. postSupersede is a no-op when the
-    // target is missing (404 → null), so always call it.
+    // Supersede the stop:<sessionId> row the Stop hook emitted this session —
+    // identical content when Stop fired on this same final turn, a stale partial
+    // checkpoint otherwise; either way the long-lived digest replaces it.
+    // postSupersede is a no-op when the target is missing (404 → null), so
+    // always call it.
     await postSupersede(`stop:${sessionId}`, `session-end:${sessionId}`, project);
   }
 
