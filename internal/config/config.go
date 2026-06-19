@@ -110,6 +110,11 @@ type Config struct {
 	// by default; false stores every write verbatim.
 	WriteDedupFingerprint bool `env:"MEMINI_WRITE_DEDUP_FINGERPRINT" envDefault:"true"`
 
+	// ReinforceSkipMarkers drops session-end / stop marker memories from recall
+	// reinforcement so their inflated access_count and TTL don't distort recall.
+	// On by default.
+	ReinforceSkipMarkers bool `env:"MEMINI_REINFORCE_SKIP_MARKERS" envDefault:"true"`
+
 	// RedactSecrets scrubs live credentials (tokens, passwords, API keys, private
 	// keys) from a memory's content/summary/metadata at ingestion, so a database
 	// compromise exposes memory content but no usable secrets. On by default;

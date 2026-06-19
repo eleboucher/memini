@@ -28,6 +28,13 @@ import (
 // tier default. Only set when the caller supplied a custom positive TTL.
 const ttlSecondsMetaKey = "ttl_seconds"
 
+// Session-marker id prefixes written by the Claude Code session-end / stop
+// hooks (plugin/scripts/session-end.mjs, stop.mjs). See WithReinforceSkipMarkers.
+const (
+	sessionEndIDPrefix = "session-end:"
+	stopIDPrefix       = "stop:"
+)
+
 // Recall tuning.
 const (
 	reinforceTimeout = 10 * time.Second
@@ -200,6 +207,9 @@ type Service struct {
 	// fingerprintDedup (default on) reinforces an exact restatement instead of
 	// storing a duplicate; see WithFingerprintDedup.
 	fingerprintDedup bool
+	// reinforceSkipMarkers drops session markers from recall reinforcement;
+	// see WithReinforceSkipMarkers.
+	reinforceSkipMarkers bool
 	// redactSecrets (default on) scrubs live credentials from a memory's
 	// Content/Summary/Metadata at ingestion, so a database compromise exposes
 	// memory content but no usable tokens/keys. See WithSecretRedaction.
@@ -381,6 +391,14 @@ func WithFingerprintDedup(on bool) Option {
 	return func(s *Service) { s.fingerprintDedup = on }
 }
 
+// WithReinforceSkipMarkers drops session-end / stop marker memories from recall
+// reinforcement. The pre-tool-use hook searches once per edited file, so markers
+// would otherwise inflate their access_count and TTL out of proportion. They
+// stay searchable; only the reinforce write is skipped.
+func WithReinforceSkipMarkers(on bool) Option {
+	return func(s *Service) { s.reinforceSkipMarkers = on }
+}
+
 // WithSecretRedaction toggles server-side scrubbing of live credentials from a
 // memory's Content/Summary/Metadata at ingestion (on by default). It bounds a
 // database compromise to information disclosure — leaked memory holds no usable
@@ -404,20 +422,21 @@ func WithCorruptionQuarantine(on bool) Option {
 // New builds a Service from a store and embedder.
 func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 	s := &Service{
-		store:               st,
-		embedder:            e,
-		consolidateMode:     ConsolidateAsync,
-		consolidateMinScore: 0.6,
-		promoteMinAccess:    3,
-		rerankTimeout:       defaultRerankTimeout,
-		scoreFusionAlpha:    search.DefaultFusionAlpha, // convex score fusion by default; negative selects RRF
-		poolFactor:          recallPoolFactor,
-		poolFloor:           recallPoolFloor,
-		fingerprintDedup:    true,
-		redactSecrets:       true,
-		metrics:             nopMetrics{},
-		now:                 func() time.Time { return time.Now().UTC() },
-		newID:               func() string { return uuid.NewString() },
+		store:                st,
+		embedder:             e,
+		consolidateMode:      ConsolidateAsync,
+		consolidateMinScore:  0.6,
+		promoteMinAccess:     3,
+		rerankTimeout:        defaultRerankTimeout,
+		scoreFusionAlpha:     search.DefaultFusionAlpha, // convex score fusion by default; negative selects RRF
+		poolFactor:           recallPoolFactor,
+		poolFloor:            recallPoolFloor,
+		fingerprintDedup:     true,
+		reinforceSkipMarkers: true,
+		redactSecrets:        true,
+		metrics:              nopMetrics{},
+		now:                  func() time.Time { return time.Now().UTC() },
+		newID:                func() string { return uuid.NewString() },
 	}
 	for _, o := range opts {
 		o(s)
@@ -1060,6 +1079,21 @@ func (s *Service) finalizeRecall(ctx context.Context, query string, ranked []sto
 // in the background so recall latency excludes the reinforcement writes; tests
 // can force synchronous behaviour with WithSyncReinforce.
 func (s *Service) reinforceResults(ctx context.Context, results []store.Scored) {
+	// Filter here, not in reinforce(): the write-dedup callers (dedupExisting,
+	// fingerprintHit) invoke reinforce() directly with a memory they want
+	// corroborated. Markers stay in recall output; only their reinforce is skipped.
+	if s.reinforceSkipMarkers {
+		kept := results[:0:0]
+		for _, r := range results {
+			if !isSessionMarker(r.Memory) {
+				kept = append(kept, r)
+			}
+		}
+		results = kept
+	}
+	if len(results) == 0 {
+		return
+	}
 	if s.syncReinforce {
 		s.reinforce(ctx, results)
 		return
@@ -1071,6 +1105,12 @@ func (s *Service) reinforceResults(ctx context.Context, results []store.Scored) 
 		defer cancel()
 		s.reinforce(rctx, results)
 	})
+}
+
+// isSessionMarker reports whether m is a session-end / stop hook digest.
+func isSessionMarker(m *memory.Memory) bool {
+	return strings.HasPrefix(m.ID, sessionEndIDPrefix) ||
+		strings.HasPrefix(m.ID, stopIDPrefix)
 }
 
 // reinforce records that recalled memories were just used: it bumps their

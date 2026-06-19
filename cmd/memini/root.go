@@ -220,6 +220,7 @@ func buildServiceStack(
 		service.WithScoreFusion(cfg.FusionAlpha),
 		service.WithWriteDedup(cfg.WriteDedupMinScore),
 		service.WithFingerprintDedup(cfg.WriteDedupFingerprint),
+		service.WithReinforceSkipMarkers(cfg.ReinforceSkipMarkers),
 		service.WithSecretRedaction(cfg.RedactSecrets),
 		service.WithCorruptionQuarantine(cfg.QuarantineGarbled),
 		service.WithTemporalTargeting(cfg.TemporalBoost, search.RegexAnchorExtractor{}),

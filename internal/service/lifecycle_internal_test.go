@@ -194,3 +194,126 @@ func TestRecallHonorsInjectedClockForExpiry(t *testing.T) {
 		t.Fatalf("IncludeExpired must still see it: got %d", len(mems))
 	}
 }
+
+// TestReinforceResultsSkipsSessionMarkers pins the default: session-end / stop
+// markers recalled alongside normal memories are not reinforced, so per-file
+// pre-tool-use searches don't inflate their access_count and TTL.
+func TestReinforceResultsSkipsSessionMarkers(t *testing.T) {
+	ctx := context.Background()
+	st := openLifecycleStore(t)
+	svc := New(st, embedtest.New(testDims), WithSyncReinforce())
+
+	normal, err := svc.Remember(ctx, RememberInput{
+		Namespace: "ns", Content: "deploy script runs on fridays", Tier: memory.TierEpisodic,
+	})
+	if err != nil {
+		t.Fatalf("remember normal: %v", err)
+	}
+	marker, err := svc.Remember(ctx, RememberInput{
+		Namespace: "ns", Content: "deploy script review session",
+		Tier: memory.TierEpisodic, ID: "session-end:test-uuid",
+	})
+	if err != nil {
+		t.Fatalf("remember marker: %v", err)
+	}
+
+	res, err := svc.Recall(ctx, RecallInput{Namespace: "ns", Query: "deploy script", Limit: 5})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	var sawNormal, sawMarker bool
+	for _, r := range res {
+		switch r.Memory.ID {
+		case normal.ID:
+			sawNormal = true
+		case marker.ID:
+			sawMarker = true
+		}
+	}
+	if !sawNormal || !sawMarker {
+		t.Fatalf("recall must return both to exercise the filter, got %d results", len(res))
+	}
+
+	gotNormal, err := svc.Get(ctx, "ns", normal.ID)
+	if err != nil {
+		t.Fatalf("get normal: %v", err)
+	}
+	if gotNormal.AccessCount == 0 {
+		t.Fatal("normal memory should have been reinforced on recall")
+	}
+	gotMarker, err := svc.Get(ctx, "ns", marker.ID)
+	if err != nil {
+		t.Fatalf("get marker: %v", err)
+	}
+	if gotMarker.AccessCount != 0 {
+		t.Fatalf("session-end marker should NOT be reinforced, got access_count=%d", gotMarker.AccessCount)
+	}
+}
+
+// TestReinforceResultsIncludesMarkersWhenDisabled pins the toggle: with
+// WithReinforceSkipMarkers(false), a marker IS reinforced on recall.
+func TestReinforceResultsIncludesMarkersWhenDisabled(t *testing.T) {
+	ctx := context.Background()
+	st := openLifecycleStore(t)
+	svc := New(st, embedtest.New(testDims), WithSyncReinforce(), WithReinforceSkipMarkers(false))
+
+	marker, err := svc.Remember(ctx, RememberInput{
+		Namespace: "ns", Content: "deploy script review session",
+		Tier: memory.TierEpisodic, ID: "session-end:test-uuid",
+	})
+	if err != nil {
+		t.Fatalf("remember marker: %v", err)
+	}
+
+	if _, err := svc.Recall(ctx, RecallInput{Namespace: "ns", Query: "deploy script", Limit: 5}); err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+
+	got, err := svc.Get(ctx, "ns", marker.ID)
+	if err != nil {
+		t.Fatalf("get marker: %v", err)
+	}
+	if got.AccessCount == 0 {
+		t.Fatal("WithReinforceSkipMarkers(false) should reinforce the marker on recall")
+	}
+}
+
+// TestReinforceDirectlyStillReinforcesMarkers pins the separation: the filter
+// lives in reinforceResults (recall-only), not in reinforce, which the write-
+// dedup callers (fingerprintHit, dedupExisting) invoke directly to corroborate
+// a restated memory.
+func TestReinforceDirectlyStillReinforcesMarkers(t *testing.T) {
+	ctx := context.Background()
+	st := openLifecycleStore(t)
+	svc := New(st, embedtest.New(testDims), WithSyncReinforce())
+
+	marker, err := svc.Remember(ctx, RememberInput{
+		Namespace: "ns", Content: "session digest marker", Tier: memory.TierEpisodic,
+		ID: "stop:test-uuid",
+	})
+	if err != nil {
+		t.Fatalf("remember marker: %v", err)
+	}
+
+	scored := []store.Scored{{Memory: marker}}
+
+	// reinforceResults filters the marker out → no reinforce.
+	svc.reinforceResults(ctx, scored)
+	got, err := svc.Get(ctx, "ns", marker.ID)
+	if err != nil {
+		t.Fatalf("get after reinforceResults: %v", err)
+	}
+	if got.AccessCount != 0 {
+		t.Fatalf("reinforceResults should have skipped the marker, got access_count=%d", got.AccessCount)
+	}
+
+	// reinforce (the direct write-dedup path) does NOT filter → reinforced.
+	svc.reinforce(ctx, scored)
+	got, err = svc.Get(ctx, "ns", marker.ID)
+	if err != nil {
+		t.Fatalf("get after reinforce: %v", err)
+	}
+	if got.AccessCount == 0 {
+		t.Fatal("reinforce (direct) should still reinforce markers — the filter is reinforceResults-only")
+	}
+}
