@@ -17,15 +17,8 @@
  * — without it, capture silently no-ops. See README "Install".
  */
 
-import { createRequire } from "node:module";
 import { Type } from "typebox";
 import { buildJsonPluginConfigSchema, definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-
-// OpenClaw rejects an async `register`, so typebox can't be pulled in with an
-// `await import(...)`. createRequire gives a synchronous, lazy load (typebox
-// ships a CJS build) — only invoked when expose_tools is on, and the try/catch
-// in register still lets the memory slot work if it can't be loaded.
-const require = createRequire(import.meta.url);
 
 const DEFAULT_BASE_URL = "http://localhost:8080";
 const DEFAULT_TIMEOUT_MS = 5000;
@@ -452,11 +445,9 @@ export function meminiListPath(args: any) {
 }
 
 // registerMeminiTools registers memory_recall / memory_list / memory_remember as
-// explicit OpenClaw tools. Synchronous (register must not be async): typebox is
-// loaded lazily via require so it's only needed when expose_tools is on; each
-// tool resolves the namespace like the hooks do.
+// explicit OpenClaw tools. Uses the module-level `Type` (typebox), the package
+// the SDK standardizes on; each tool resolves the namespace like the hooks do.
 export function registerMeminiTools(api: any, client: MeminiClient, cfg: ResolvedConfig) {
-  const { Type } = require("@sinclair/typebox");
   const text = (obj: any) => ({ content: [{ type: "text", text: JSON.stringify(obj) }] });
   const nsFor = (ctx: any) => effectiveNamespace(cfg, {}, ctx) ?? cfg.namespace;
   const Tags = Type.Optional(

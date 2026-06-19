@@ -14,7 +14,6 @@
     "typecheck": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@sinclair/typebox": "^0.34.49",
     "typebox": "^1.1.38"
   },
   "devDependencies": {
