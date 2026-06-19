@@ -30,6 +30,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("TagMetadataFilter", func(t *testing.T) { testTagMetadataFilter(t, st, dims) })
 	t.Run("ExcludeMetadataFilter", func(t *testing.T) { testExcludeMetadataFilter(t, st, dims) })
 	t.Run("SetSuperseded", func(t *testing.T) { testSetSuperseded(t, st, dims) })
+	t.Run("Restore", func(t *testing.T) { testRestore(t, st, dims) })
 	t.Run("Reinforce", func(t *testing.T) { testReinforce(t, st, dims) })
 	t.Run("DeleteIfExpiredBefore", func(t *testing.T) { testDeleteIfExpiredBefore(t, st, dims) })
 	t.Run("KeywordSearchHostileQueries", func(t *testing.T) { testKeywordHostileQueries(t, st, dims) })
@@ -677,6 +678,42 @@ func testSetSuperseded(t *testing.T, st store.Store, dims int) {
 
 	if err := st.SetSuperseded(ctx, ns, id(ns, "missing"), id(ns, "new")); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("set superseded on missing: want ErrNotFound, got %v", err)
+	}
+}
+
+func testRestore(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+	mustUpsert(t, st, mem(ns, "old", "the sky is green", vec(dims, 1)))
+	mustUpsert(t, st, mem(ns, "new", "the sky is blue", vec(dims, 1)))
+	if err := st.SetSuperseded(ctx, ns, id(ns, "old"), id(ns, "new")); err != nil {
+		t.Fatalf("set superseded: %v", err)
+	}
+
+	if err := st.Restore(ctx, ns, id(ns, "old")); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	got, err := st.Get(ctx, ns, id(ns, "old"))
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.SupersededBy != nil {
+		t.Fatalf("superseded_by not cleared: %v", got.SupersededBy)
+	}
+	if got.ValidTo != nil {
+		t.Fatalf("valid_to not cleared: %v", got.ValidTo)
+	}
+
+	res, err := st.VectorSearch(ctx, ns, vec(dims, 1), store.Filter{}, 10)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if !slices.Contains(idsOf(res), id(ns, "old")) {
+		t.Fatalf("restored memory should be searchable again, got %v", idsOf(res))
+	}
+
+	if err := st.Restore(ctx, ns, id(ns, "missing")); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("restore on missing: want ErrNotFound, got %v", err)
 	}
 }
 

@@ -370,4 +370,12 @@ func (d *DedupJob) pass(ctx context.Context) {
 	if rep.Tombstoned > 0 {
 		d.metrics.DedupTombstoned(rep.Tombstoned)
 	}
+	// Heal any supersession chain this pass created (a former representative
+	// re-superseded into a newer one leaves its dependents pointing at a
+	// tombstone), so no cluster is left without a recallable head.
+	if rrep, err := RepairSupersession(ctx, d.store, d.opts.Namespaces, false, d.log); err != nil {
+		d.log.WarnContext(ctx, "supersession repair failed", "error", err)
+	} else if rrep.Restored > 0 {
+		d.log.InfoContext(ctx, "repaired stranded memories", "restored", rrep.Restored, "namespaces", rrep.Namespaces)
+	}
 }

@@ -255,6 +255,15 @@ func doctorFix(ctx context.Context, out io.Writer, stats []nsStat, d fixDeps) er
 	}
 	fmt.Fprintf(out, "  demoted %d stale durable memories\n", n) //nolint:errcheck
 
+	// Heal broken supersession chains (no embedder needed) before deduping, so
+	// the pass below re-collapses any duplicates this resurrects.
+	repaired, err := maintenance.RepairSupersession(ctx, d.store, nil, false, nil)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "  repaired %d stranded memories across %d namespaces\n", //nolint:errcheck
+		repaired.Restored, repaired.Namespaces)
+
 	if d.embedder == nil {
 		fmt.Fprintln(out, "  skip dedup: no embedder configured (set MEMINI_EMBED_BASE_URL)") //nolint:errcheck
 		return nil

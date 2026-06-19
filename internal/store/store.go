@@ -84,6 +84,10 @@ type Store interface {
 	// excluding it from default search results. Returns ErrNotFound if missing.
 	SetSuperseded(ctx context.Context, namespace, id, supersededBy string) error
 
+	// Restore clears superseded_by/valid_to so a tombstoned memory is live
+	// again. Returns ErrNotFound if missing.
+	Restore(ctx context.Context, namespace, id string) error
+
 	// VectorSearch returns the k memories nearest to vec, best-first.
 	VectorSearch(ctx context.Context, namespace string, vec []float32, f Filter, k int) ([]Scored, error)
 

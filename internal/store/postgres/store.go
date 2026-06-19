@@ -281,6 +281,20 @@ func (s *Store) SetSuperseded(ctx context.Context, namespace, id, supersededBy s
 	return nil
 }
 
+// Restore clears superseded_by/valid_to so a tombstoned memory is live again.
+func (s *Store) Restore(ctx context.Context, namespace, id string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE memories SET superseded_by=NULL, valid_to=NULL WHERE id=$1 AND namespace=$2`,
+		id, namespace)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 // Reinforce bumps access_count/last_accessed_at and optionally slides the TTL.
 func (s *Store) Reinforce(ctx context.Context, namespace string, ids []string, accessedAt time.Time, newExpiry *time.Time) error {
 	if len(ids) == 0 {

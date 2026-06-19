@@ -444,6 +444,20 @@ func (s *Store) SetSuperseded(ctx context.Context, namespace, id, supersededBy s
 	return nil
 }
 
+// Restore clears superseded_by/valid_to so a tombstoned memory is live again.
+func (s *Store) Restore(ctx context.Context, namespace, id string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE memories SET superseded_by=NULL, valid_to=NULL WHERE id=? AND namespace=?`,
+		id, namespace)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 // VectorSearch returns the k nearest live memories to vec in the namespace.
 func (s *Store) VectorSearch(ctx context.Context, namespace string, vec []float32, f store.Filter, k int) ([]store.Scored, error) {
 	if len(vec) != s.dims {
