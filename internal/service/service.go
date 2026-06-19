@@ -623,7 +623,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		Summary:        in.Summary,
 		Tags:           in.Tags,
 		Metadata:       in.Metadata,
-		Importance:     in.Importance,
+		Importance:     resolveImportance(in, existing, tier),
 		CreatedAt:      now,
 		UpdatedAt:      now,
 		LastAccessedAt: now,
@@ -1152,6 +1152,37 @@ func (s *Service) reinforce(ctx context.Context, results []store.Scored) {
 			continue
 		}
 		s.metrics.ReinforceResult("ok")
+	}
+}
+
+// resolveImportance decides a write's importance: an explicit value wins, a
+// quarantined write keeps its zeroed importance, an update preserves the
+// existing value, and otherwise a fresh write is seeded by tier so memories
+// aren't all stored at 0 (a dead ranking signal).
+func resolveImportance(in RememberInput, existing *memory.Memory, tier memory.Tier) float64 {
+	switch {
+	case in.Importance != 0:
+		return in.Importance
+	case in.Metadata["quarantined"] == true:
+		return 0
+	case existing != nil:
+		return existing.Importance
+	default:
+		return seedImportance(tier)
+	}
+}
+
+// seedImportance is the tier-based importance floor for a fresh write that
+// carried none: durable curated tiers outrank episodic turns, which outrank
+// ephemeral working notes.
+func seedImportance(tier memory.Tier) float64 {
+	switch tier {
+	case memory.TierSemantic, memory.TierProcedural:
+		return 0.6
+	case memory.TierEpisodic:
+		return 0.3
+	default: // working
+		return 0.1
 	}
 }
 

@@ -530,6 +530,46 @@ func TestListAndStatsAllNamespaces(t *testing.T) {
 	}
 }
 
+// TestRememberSeedsImportance pins the tier-based importance seeding: a write
+// that carries no importance no longer lands at 0; an explicit value wins; and
+// an update keeps the existing importance instead of resetting it to the seed.
+func TestRememberSeedsImportance(t *testing.T) {
+	svc := newService(t)
+	ctx := context.Background()
+
+	ep, err := svc.Remember(ctx, service.RememberInput{Namespace: "n", Content: "an episodic note", Tier: memory.TierEpisodic})
+	if err != nil {
+		t.Fatalf("remember episodic: %v", err)
+	}
+	if ep.Importance != 0.3 {
+		t.Fatalf("episodic importance = %v, want 0.3 (tier seed)", ep.Importance)
+	}
+
+	se, err := svc.Remember(ctx, service.RememberInput{Namespace: "n", Content: "a durable fact", Tier: memory.TierSemantic})
+	if err != nil {
+		t.Fatalf("remember semantic: %v", err)
+	}
+	if se.Importance != 0.6 {
+		t.Fatalf("semantic importance = %v, want 0.6 (tier seed)", se.Importance)
+	}
+
+	ex, err := svc.Remember(ctx, service.RememberInput{Namespace: "n", Content: "explicit", Tier: memory.TierEpisodic, Importance: 0.9})
+	if err != nil {
+		t.Fatalf("remember explicit: %v", err)
+	}
+	if ex.Importance != 0.9 {
+		t.Fatalf("explicit importance = %v, want 0.9 (caller wins)", ex.Importance)
+	}
+
+	upd, err := svc.Remember(ctx, service.RememberInput{Namespace: "n", ID: ex.ID, Content: "explicit v2", Tier: memory.TierEpisodic})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if upd.Importance != 0.9 {
+		t.Fatalf("update importance = %v, want 0.9 preserved (not reset to seed)", upd.Importance)
+	}
+}
+
 // TestSupersedeTombstonesMemory pins Service.Supersede: stamps
 // superseded_by + valid_to so default recall hides the row, while it stays
 // in the store for the audit chain.
