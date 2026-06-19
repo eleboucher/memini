@@ -153,14 +153,19 @@ type Config struct {
 	RerankAPIKey string `env:"MEMINI_RERANK_API_KEY"`
 	// RerankMaxDocChars truncates each document sent to the cross-encoder so one
 	// oversized candidate can't exceed the server's physical batch and fail the
-	// whole rerank request. 0 disables truncation.
-	RerankMaxDocChars int `env:"MEMINI_RERANK_MAX_DOC_CHARS" envDefault:"1200"`
+	// whole rerank request. 0 disables truncation. Default 2048 covers the typical
+	// memory in full (mean content ≈ 2k chars) so the reranker scores the whole
+	// memory, not a fragment; a longer memory is still truncated here. At this cap
+	// the longest (query+doc) is ≈ 800 tokens, so the reranker server must run with
+	// --ubatch-size ≥ ~1024 or it 500s on long candidates.
+	RerankMaxDocChars int `env:"MEMINI_RERANK_MAX_DOC_CHARS" envDefault:"2048"`
 	// RerankMaxBatchChars caps the total characters across the query and all
 	// documents in a single /rerank request, so a deep candidate pool can never
 	// exceed the model's context window. Set just below the model's effective
-	// context in characters (≈ n_ctx × chars-per-token × (1 − template reserve);
-	// ~4000 for a 1024-token model). 0 disables proactive batching.
-	RerankMaxBatchChars int `env:"MEMINI_RERANK_MAX_BATCH_CHARS" envDefault:"4000"`
+	// context in characters (≈ n_ctx × chars-per-token × (1 − template reserve)).
+	// 6000 keeps ~2 max-size docs per request at the 2048-char doc cap above.
+	// 0 disables proactive batching.
+	RerankMaxBatchChars int `env:"MEMINI_RERANK_MAX_BATCH_CHARS" envDefault:"6000"`
 	// RerankTimeout bounds a single reranker call; past it, recall degrades to
 	// composite order instead of stalling on a slow or congested backend.
 	RerankTimeout time.Duration `env:"MEMINI_RERANK_TIMEOUT" envDefault:"10s"`

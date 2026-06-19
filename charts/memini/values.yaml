@@ -119,8 +119,8 @@ controllers:
   # --- Optional recall reranking ---
   # MEMINI_RERANK: "http://reranker:8080/v1" # "" / "off" / "llm" / cross-encoder URL
   # MEMINI_RERANK_MODEL: "bge-reranker-v2-m3"
-  # MEMINI_RERANK_MAX_DOC_CHARS: "2000"
-  # MEMINI_RERANK_MAX_BATCH_CHARS: "4000"
+  # MEMINI_RERANK_MAX_DOC_CHARS: "2048"   # reranker server needs --ubatch-size >= ~1024 at this cap
+  # MEMINI_RERANK_MAX_BATCH_CHARS: "6000"
 
   # --- postgres backend connection (required when MEMINI_BACKEND=postgres) ---
   # MEMINI_POSTGRES_DSN:

@@ -48,10 +48,10 @@ func run() error {
 	ceRerankURL := flag.String("rerank-url", "",
 		"rerank tier with a cross-encoder /rerank endpoint at this base URL (e.g. http://localhost:8002/v1)")
 	ceRerankModel := flag.String("rerank-model", "", "cross-encoder model name for -rerank-url")
-	ceMaxDocChars := flag.Int("rerank-max-doc-chars", 1200,
-		"cross-encoder: truncate each candidate to this many chars (production default 1200)")
-	ceMaxBatchChars := flag.Int("rerank-max-batch-chars", 4000,
-		"cross-encoder: cap total query+docs chars per request, splitting as needed (production default 4000)")
+	ceMaxDocChars := flag.Int("rerank-max-doc-chars", 2048,
+		"cross-encoder: truncate each candidate to this many chars (production default 2048)")
+	ceMaxBatchChars := flag.Int("rerank-max-batch-chars", 6000,
+		"cross-encoder: cap total query+docs chars per request, splitting as needed (production default 6000)")
 	flag.Parse()
 
 	ds, err := loadDataset(*suite, *data, bench.DocMode(*sessionDoc))

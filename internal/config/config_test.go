@@ -71,11 +71,11 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ConsolidateMinScore != 0.6 {
 		t.Errorf("ConsolidateMinScore = %v, want 0.6", cfg.ConsolidateMinScore)
 	}
-	if cfg.RerankMaxDocChars != 1200 {
-		t.Errorf("RerankMaxDocChars = %d, want 1200", cfg.RerankMaxDocChars)
+	if cfg.RerankMaxDocChars != 2048 {
+		t.Errorf("RerankMaxDocChars = %d, want 2048", cfg.RerankMaxDocChars)
 	}
-	if cfg.RerankMaxBatchChars != 4000 {
-		t.Errorf("RerankMaxBatchChars = %d, want 4000", cfg.RerankMaxBatchChars)
+	if cfg.RerankMaxBatchChars != 6000 {
+		t.Errorf("RerankMaxBatchChars = %d, want 6000", cfg.RerankMaxBatchChars)
 	}
 	if cfg.PromoteInterval != 24*time.Hour {
 		t.Errorf("PromoteInterval = %v, want 24h", cfg.PromoteInterval)
