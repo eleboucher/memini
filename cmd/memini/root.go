@@ -226,6 +226,7 @@ func buildServiceStack(
 		service.WithTemporalTargeting(cfg.TemporalBoost, search.RegexAnchorExtractor{}),
 		service.WithRecallEmbedTimeout(cfg.RecallEmbedTimeout),
 		service.WithRecallMinScore(cfg.RecallMinScore),
+		service.WithRecallMinSemanticScore(cfg.RecallMinSemanticScore),
 		service.WithMetrics(metricsImpl),
 	)
 	svc := service.New(st, embedder, svcOpts...)

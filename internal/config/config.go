@@ -186,6 +186,13 @@ type Config struct {
 	// where the fused score is comparable. Has no effect when using RRF.
 	RecallMinScore float64 `env:"MEMINI_RECALL_MIN_SCORE" envDefault:"0.1"`
 
+	// RecallMinSemanticScore is an absolute floor on the raw vector score, applied
+	// before fusion: a candidate below it is excluded and the keyword leg cannot
+	// reintroduce it, so a query with nothing semantically relevant recalls empty.
+	// Default 0 (off); the usable value is embedder-specific (e.g. ~0.46 for
+	// qwen3-embedding-0.6b). See docs/recall-relevance-gate-2026-06-20.md.
+	RecallMinSemanticScore float64 `env:"MEMINI_RECALL_MIN_SEMANTIC_SCORE" envDefault:"0"`
+
 	// Consolidation tuning.
 	// ConsolidateMode is "async" (default), "sync", or "off".
 	ConsolidateMode string `env:"MEMINI_CONSOLIDATE_MODE" envDefault:"async"`

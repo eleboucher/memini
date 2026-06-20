@@ -182,6 +182,12 @@ type Service struct {
 	// recallMinScore is an absolute relevance floor on the fused score; candidates
 	// below it are dropped before composite re-ranking. 0 disables filtering.
 	recallMinScore float64
+	// recallMinSemanticScore is an absolute floor on the raw vector score
+	// (1/(1+L2)): a candidate below it is excluded before fusion and the keyword
+	// leg cannot reintroduce it, so a query with nothing semantically relevant
+	// recalls empty. 0 disables it. The usable value is embedder-specific (see
+	// docs/recall-relevance-gate-2026-06-20.md).
+	recallMinSemanticScore float64
 
 	// distiller is optional; when set, RunPromoter distills frequently-accessed
 	// episodic memories into durable semantic facts.
@@ -354,6 +360,15 @@ func WithScoreFusion(alpha float64) Option { return func(s *Service) { s.scoreFu
 // value (~0.016 for the top position). See MEMINI_RECALL_MIN_SCORE.
 func WithRecallMinScore(minScore float64) Option {
 	return func(s *Service) { s.recallMinScore = minScore }
+}
+
+// WithRecallMinSemanticScore sets an absolute relevance floor on the raw vector
+// (semantic) score: a candidate below the floor is excluded entirely, so the
+// keyword leg cannot reintroduce an off-topic memory on a shared token. 0 (the
+// default) disables it. The usable value is embedder-dependent — see the field
+// note and MEMINI_RECALL_MIN_SEMANTIC_SCORE.
+func WithRecallMinSemanticScore(minSemanticScore float64) Option {
+	return func(s *Service) { s.recallMinSemanticScore = minSemanticScore }
 }
 
 // WithTemporalTargeting enables temporal targeting in the re-ranker: when a
@@ -805,6 +820,10 @@ type RecallInput struct {
 	// hits). 0 (the zero value) falls back to the server-wide gate. Only
 	// meaningful with score fusion; RRF scores are not comparable to [0,1].
 	MinScore float64
+	// MinSemanticScore, when > 0, overrides the server's default
+	// recallMinSemanticScore (the absolute vector-relevance gate) for this call.
+	// 0 falls back to the server-wide gate.
+	MinSemanticScore float64
 }
 
 // Recall runs hybrid (vector + keyword) retrieval fused with RRF.
@@ -943,6 +962,11 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	}
 	s.metrics.OpDuration("recall_search", time.Since(searchStart))
 
+	// Absolute semantic-relevance gate (mem0 score_and_rank semantics): drop
+	// candidates whose raw vector score is below the floor before fusing, so the
+	// keyword leg cannot reintroduce an off-topic memory on a shared token.
+	gateSemantic(vres, kres, s.resolveSemanticFloor(in))
+
 	perNS := make([][]store.Scored, len(namespaces))
 	for i := range namespaces {
 		perNS[i] = fuseLegs(vres[i], kres[i])
@@ -996,6 +1020,43 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	s.reinforceResults(ctx, results)
 	s.metrics.RecallResult("ok", tf, hitsBucket(len(results)))
 	return results, nil
+}
+
+// resolveSemanticFloor returns the per-call MinSemanticScore override when set,
+// else the server-wide recallMinSemanticScore.
+func (s *Service) resolveSemanticFloor(in RecallInput) float64 {
+	if in.MinSemanticScore > 0 {
+		return in.MinSemanticScore
+	}
+	return s.recallMinSemanticScore
+}
+
+// gateSemantic drops vector candidates scoring below floor and restricts the
+// keyword leg to the survivors, so a sub-threshold candidate cannot re-enter via
+// a keyword match. floor <= 0 is a no-op. vres and kres are per-namespace,
+// index-aligned, and filtered in place.
+func gateSemantic(vres, kres [][]store.Scored, floor float64) {
+	if floor <= 0 {
+		return
+	}
+	for i := range vres {
+		passed := make(map[string]struct{}, len(vres[i]))
+		kept := vres[i][:0]
+		for _, r := range vres[i] {
+			if r.Score >= floor {
+				kept = append(kept, r)
+				passed[r.Memory.ID] = struct{}{}
+			}
+		}
+		vres[i] = kept
+		keptKW := kres[i][:0]
+		for _, r := range kres[i] {
+			if _, ok := passed[r.Memory.ID]; ok {
+				keptKW = append(keptKW, r)
+			}
+		}
+		kres[i] = keptKW
+	}
 }
 
 // subtreeNamespaces returns root and every namespace nested under it (root +
