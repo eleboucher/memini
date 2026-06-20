@@ -28,7 +28,6 @@
       "timeout_ms": { "type": "number" },
       "expose_tools": { "type": "boolean" },
       "recall_limit": { "type": "number" },
-      "recall_min_score": { "type": "number" },
       "recall_max_tokens": { "type": "number" }
     }
   },

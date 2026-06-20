@@ -77,12 +77,30 @@ If memini requires auth, set `MEMINI_API_KEY` in the gateway environment (the
 plugin sends it as `Authorization: Bearer …`; set `MEMINI_REQUIRE_HTTPS=1` to
 refuse sending it over plaintext HTTP). Restart OpenClaw.
 
-Recall shaping (all optional, matching the opencode/Claude Code plugins):
-`recall_limit` (max memories per turn, default 5), `recall_min_score` (fused-score
-floor sent as `min_score`), and `recall_max_tokens` (hard token ceiling on the
-recall block — `0`/unset is unbounded; the tail is dropped with a truncation
-footer). `recall_max_tokens` also reads `MEMINI_INJECT_RECALL_MAX_TOK`, and
-`MEMINI_INJECT_LABELS` (`tier`, `confidence`, `age`) toggles the per-bullet tag prefix.
+Recall shaping (both optional, matching the opencode/Claude Code plugins):
+`recall_limit` (max memories per turn, default **3**) and `recall_max_tokens`
+(hard token ceiling on the recall block, default **800**; `0` disables it, the
+tail is dropped with a truncation footer). `recall_max_tokens` also reads
+`MEMINI_INJECT_RECALL_MAX_TOK`, and `MEMINI_INJECT_LABELS` (`tier`, `confidence`,
+`age`) toggles the per-bullet tag prefix.
+
+**There is no relevance-score floor knob — by design.** Bounding per-turn volume
+is `recall_limit`'s job, not a score gate, because benchmarking
+(`cmd/bench -vec-gate`) showed neither score can decide "inject nothing when
+nothing is relevant" with the default MiniLM embedder:
+
+- The **fused score** is min-max-normalised within the candidate pool
+  (`internal/search/fusion.go`), so the pool's best always lands near ~1.0
+  regardless of absolute relevance — a nonsense query produces the same
+  high-scoring shape as a perfect match.
+- The **raw vector score** doesn't separate either: across 240 LongMemEval
+  queries the top score for a relevant namespace (median 0.469) overlaps the
+  top score for a foreign one (median 0.448). Any floor that suppresses the
+  irrelevant case also guts real recall (at 0.46, recall drops 98%→61%).
+
+A genuine relevance gate would need a model whose absolute scores separate (a
+stronger embedder, or a cross-encoder reranker, which emits calibrated scores) —
+not a threshold on the current pipeline. Until then, `recall_limit` is the lever.
 
 Memory is isolated **per agent by default** (`namespace_per_agent: true`): each
 agent reads and writes its own scope, resolved from the agent id on each hook

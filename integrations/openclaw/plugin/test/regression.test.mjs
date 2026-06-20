@@ -275,25 +275,21 @@ test("manifest contracts.tools matches the registered tool names", async () => {
   assert.deepEqual([...declared].sort(), [...order].sort(), "contracts.tools must list exactly the registered tools");
 });
 
-test("resolveConfig defaults recall knobs to today's behavior (limit 5, no min_score)", () => {
+test("resolveConfig defaults recall_limit to 3", () => {
   const cfg = resolveConfig(undefined);
-  assert.equal(cfg.recall_limit, 5);
-  assert.equal(cfg.recall_min_score, 0);
+  assert.equal(cfg.recall_limit, 3);
 });
 
-test("resolveConfig honors explicit recall_limit and recall_min_score", () => {
-  const cfg = resolveConfig({ recall_limit: 2, recall_min_score: 0.6 });
-  assert.equal(cfg.recall_limit, 2);
-  assert.equal(cfg.recall_min_score, 0.6);
+test("resolveConfig honors explicit recall_limit", () => {
+  assert.equal(resolveConfig({ recall_limit: 2 }).recall_limit, 2);
 });
 
-test("resolveConfig falls back when recall knobs are zero/negative", () => {
-  const cfg = resolveConfig({ recall_limit: 0, recall_min_score: -1 });
-  assert.equal(cfg.recall_limit, 5, "0 falls back to default");
-  assert.equal(cfg.recall_min_score, 0, "negative falls back to default");
+test("resolveConfig falls back when recall_limit is zero/negative", () => {
+  assert.equal(resolveConfig({ recall_limit: 0 }).recall_limit, 3, "0 falls back to default");
+  assert.equal(resolveConfig({ recall_limit: -1 }).recall_limit, 3, "negative falls back to default");
 });
 
-test("recall sends recall_limit and min_score on /v1/search when configured", async () => {
+test("recall sends recall_limit and no min_score on /v1/search", async () => {
   const hooks = {};
   const requests = [];
   const realFetch = globalThis.fetch;
@@ -313,7 +309,6 @@ test("recall sends recall_limit and min_score on /v1/search when configured", as
         enabled: true,
         namespace_per_agent: false,
         recall_limit: 2,
-        recall_min_score: 0.7,
       },
       registerMemoryCapability() {}, registerHook() {},
       on(name, handler) { hooks[name] = handler; },
@@ -323,7 +318,7 @@ test("recall sends recall_limit and min_score on /v1/search when configured", as
     await hooks.before_prompt_build({ prompt: "q" }, {});
     const search = JSON.parse(requests.find((r) => r.url.endsWith("/v1/search")).init.body);
     assert.equal(search.limit, 2);
-    assert.equal(search.min_score, 0.7);
+    assert.equal(search.min_score, undefined, "the plugin no longer sends a relevance-score floor");
   } finally {
     globalThis.fetch = realFetch;
   }

@@ -41,7 +41,6 @@ const typeboxConfigSchema = Type.Object(
     timeout_ms: Type.Optional(Type.Number()),
     expose_tools: Type.Optional(Type.Boolean()),
     recall_limit: Type.Optional(Type.Number()),
-    recall_min_score: Type.Optional(Type.Number()),
     recall_max_tokens: Type.Optional(Type.Number()),
   },
   { additionalProperties: false },
@@ -86,18 +85,26 @@ export function resolveConfig(pluginConfig: any) {
     // Off by default: the slot already recalls/captures automatically; tools are
     // opt-in for agents that want to read/browse/write on demand.
     expose_tools: c.expose_tools === true,
-    // Per-call recall knobs. 0 / unset falls back to the historical defaults
-    // (limit 5, no score floor) so existing installs see identical output.
-    recall_limit: Number.isFinite(c.recall_limit) && c.recall_limit > 0 ? c.recall_limit : 5,
-    recall_min_score:
-      Number.isFinite(c.recall_min_score) && c.recall_min_score > 0 ? c.recall_min_score : 0,
-    // Hard ceiling on the rendered recall-block tokens (0 = unbounded). Config
-    // wins; otherwise the MEMINI_INJECT_RECALL_MAX_TOK env, matching the knob
-    // name the opencode and Claude Code plugins use.
+    // Per-call recall knobs. 0 / unset falls back to the defaults below.
+    //
+    // recall_limit defaults to 3 (was 5): the count cap is the lever that bounds
+    // per-turn injection. There is deliberately NO relevance-score floor knob —
+    // benchmarking (bench -vec-gate) showed neither a fused-score nor a raw
+    // vector-score threshold can decide "inject nothing when nothing is relevant"
+    // with the default MiniLM embedder: the fused score is min-max-normalised
+    // within the pool (its best always ~1.0), and MiniLM's absolute scores for
+    // relevant vs irrelevant queries overlap, so any floor that suppresses noise
+    // also guts real recall. Bound volume with the count + token caps instead.
+    recall_limit: Number.isFinite(c.recall_limit) && c.recall_limit > 0 ? c.recall_limit : 3,
+    // Hard ceiling on the rendered recall-block tokens. Defaults to 800: a
+    // generous backstop that never truncates a normal limit=3 block (~225 tok)
+    // but caps the block if recall_limit is raised high; 0 disables it. Config
+    // wins; otherwise MEMINI_INJECT_RECALL_MAX_TOK, matching the knob name the
+    // opencode and Claude Code plugins use.
     recall_max_tokens:
       Number.isFinite(c.recall_max_tokens) && c.recall_max_tokens > 0
         ? c.recall_max_tokens
-        : intEnv("MEMINI_INJECT_RECALL_MAX_TOK", 0),
+        : intEnv("MEMINI_INJECT_RECALL_MAX_TOK", 800),
   };
 }
 
@@ -674,7 +681,6 @@ const plugin: {
       const ns = effectiveNamespace(cfg, event, ctx);
       if (ns == null) return;
       const body: any = { query: prompt, limit: cfg.recall_limit };
-      if (cfg.recall_min_score > 0) body.min_score = cfg.recall_min_score;
       // Exclude this session's own just-captured turns: they're still in the
       // live transcript, so recalling them echoes the conversation back as
       // "long-term memory". agent_end tags each capture with session_id.

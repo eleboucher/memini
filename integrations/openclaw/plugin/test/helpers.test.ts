@@ -57,22 +57,13 @@ test("resolveConfig: defaults match the documented contract", () => {
   assert.equal(cfg.fallback_on_error, true);
   assert.equal(cfg.timeout_ms, 5000);
   assert.equal(cfg.expose_tools, false);
-  assert.equal(cfg.recall_limit, 5);
-  assert.equal(cfg.recall_min_score, 0);
+  assert.equal(cfg.recall_limit, 3);
 });
 
-test("resolveConfig: explicit recall knobs survive, zero/negative/non-finite fall back", () => {
-  const cfg = resolveConfig({ recall_limit: 12, recall_min_score: 0.4 });
-  assert.equal(cfg.recall_limit, 12);
-  assert.equal(cfg.recall_min_score, 0.4);
-
-  const zeroed = resolveConfig({ recall_limit: 0, recall_min_score: 0 });
-  assert.equal(zeroed.recall_limit, 5);
-  assert.equal(zeroed.recall_min_score, 0);
-
-  const nan = resolveConfig({ recall_limit: Number.NaN, recall_min_score: Number.POSITIVE_INFINITY });
-  assert.equal(nan.recall_limit, 5);
-  assert.equal(nan.recall_min_score, 0);
+test("resolveConfig: explicit recall_limit survives, zero/negative/non-finite fall back", () => {
+  assert.equal(resolveConfig({ recall_limit: 12 }).recall_limit, 12);
+  assert.equal(resolveConfig({ recall_limit: 0 }).recall_limit, 3);
+  assert.equal(resolveConfig({ recall_limit: Number.NaN }).recall_limit, 3);
 });
 
 test("effectiveNamespace: return type is `string | null`", () => {
@@ -269,19 +260,19 @@ test("registerMeminiTools: memory_remember validates tier and falls back to sema
   assert.deepEqual(call.body, { content: "fact", tier: "episodic" });
 });
 
-test("resolveConfig: recall_max_tokens — config wins, else MEMINI_INJECT_RECALL_MAX_TOK, else 0", () => {
+test("resolveConfig: recall_max_tokens — config wins, else MEMINI_INJECT_RECALL_MAX_TOK, else 800", () => {
   const prev = process.env.MEMINI_INJECT_RECALL_MAX_TOK;
   try {
     delete process.env.MEMINI_INJECT_RECALL_MAX_TOK;
-    assert.equal(resolveConfig({}).recall_max_tokens, 0);
+    assert.equal(resolveConfig({}).recall_max_tokens, 800);
     assert.equal(resolveConfig({ recall_max_tokens: 120 }).recall_max_tokens, 120);
     process.env.MEMINI_INJECT_RECALL_MAX_TOK = "80";
     assert.equal(resolveConfig({}).recall_max_tokens, 80);
     // config still wins over the env fallback
     assert.equal(resolveConfig({ recall_max_tokens: 200 }).recall_max_tokens, 200);
-    // malformed env falls back to 0
+    // malformed env falls back to the default
     process.env.MEMINI_INJECT_RECALL_MAX_TOK = "nope";
-    assert.equal(resolveConfig({}).recall_max_tokens, 0);
+    assert.equal(resolveConfig({}).recall_max_tokens, 800);
   } finally {
     if (prev === undefined) delete process.env.MEMINI_INJECT_RECALL_MAX_TOK;
     else process.env.MEMINI_INJECT_RECALL_MAX_TOK = prev;
