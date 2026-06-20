@@ -2,6 +2,7 @@ package bench
 
 import (
 	"context"
+	"os"
 	"sync"
 	"time"
 
@@ -23,6 +24,12 @@ func nsOf(group string) string {
 	}
 	return group
 }
+
+// docPrefix is prepended to document text before embedding (not stored), for
+// asymmetric embedders that need a document-side instruction (e.g. nomic's
+// "search_document: "). Empty by default; query-instruction-only models like
+// qwen3-embedding leave it unset and use MEMINI_EMBED_QUERY_PREFIX instead.
+func docPrefix() string { return os.Getenv("MEMINI_EMBED_DOC_PREFIX") }
 
 // System is a memory system under test.
 type System interface {
@@ -90,9 +97,10 @@ func (b *meminiBackend) ingest(ctx context.Context, items []Item) error {
 				defer wg.Done()
 				defer func() { <-sem }()
 
+				dp := docPrefix()
 				texts := make([]string, len(window))
 				for i, it := range window {
-					texts[i] = it.Content
+					texts[i] = dp + it.Content
 				}
 				vecs, err := b.embedder.Embed(ctx, texts)
 				if err != nil {

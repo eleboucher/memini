@@ -136,9 +136,10 @@ func ingestTimed(ctx context.Context, st store.Store, e embed.Embedder, items []
 	for start := 0; start < len(items); start += ingestWindow {
 		end := min(start+ingestWindow, len(items))
 		window := items[start:end]
+		dp := docPrefix()
 		texts := make([]string, len(window))
 		for i, it := range window {
-			texts[i] = it.Content
+			texts[i] = dp + it.Content
 		}
 		vecs, err := e.Embed(ctx, texts)
 		if err != nil {

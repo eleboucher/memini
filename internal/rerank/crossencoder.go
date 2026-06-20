@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"sort"
 	"strings"
@@ -135,6 +136,34 @@ func (c *CrossEncoder) Rerank(ctx context.Context, query string, candidates []Ca
 		}
 		seen[s.id] = struct{}{}
 		out = append(out, s.id)
+	}
+	return out, nil
+}
+
+// Scores returns each candidate's raw relevance score (id → score) from the
+// reranker, applying the same per-doc truncation and batch splitting as Rerank
+// but keeping the scores instead of collapsing them to an order. Candidates the
+// server omits are absent from the map. Exposed for offline analysis (e.g. the
+// rerank-gate separability bench); the production recall path uses Rerank.
+func (c *CrossEncoder) Scores(ctx context.Context, query string, candidates []Candidate) (map[string]float64, error) {
+	out := make(map[string]float64, len(candidates))
+	if len(candidates) == 0 {
+		return out, nil
+	}
+	maxPerDoc := c.maxDocChars
+	if c.maxBatchChars > 0 && (maxPerDoc == 0 || maxPerDoc > c.maxBatchChars) {
+		maxPerDoc = c.maxBatchChars
+	}
+	docs := make([]string, len(candidates))
+	for i, cand := range candidates {
+		docs[i] = truncateRunes(cand.Content, maxPerDoc)
+	}
+	for _, span := range c.splitBatches(docs, query, c.maxBatchChars) {
+		scores, err := c.scoreBatch(ctx, query, candidates[span.start:span.end], docs[span.start:span.end])
+		if err != nil {
+			return nil, err
+		}
+		maps.Copy(out, scores)
 	}
 	return out, nil
 }

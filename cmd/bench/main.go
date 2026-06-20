@@ -16,6 +16,7 @@ import (
 	"github.com/eleboucher/memini/internal/embed/embedtest"
 	"github.com/eleboucher/memini/internal/llm"
 	rerankpkg "github.com/eleboucher/memini/internal/rerank"
+	"github.com/eleboucher/memini/internal/store"
 	"github.com/eleboucher/memini/internal/store/sqlitevec"
 )
 
@@ -52,6 +53,13 @@ func run() error {
 		"cross-encoder: truncate each candidate to this many chars (production default 2048)")
 	ceMaxBatchChars := flag.Int("rerank-max-batch-chars", 6000,
 		"cross-encoder: cap total query+docs chars per request, splitting as needed (production default 6000)")
+	vecGate := flag.String("vec-gate", "",
+		"sweep the absolute vector-relevance gate over these thresholds "+
+			"(comma-separated, e.g. 0,0.2,0.3,0.4); positive recall vs foreign-namespace injection")
+	rerankGate := flag.String("rerank-gate", "",
+		"sweep a cross-encoder rerank-score gate over these thresholds (needs -rerank-url); "+
+			"positive recall vs foreign-namespace injection")
+	rerankGatePool := flag.Int("rerank-gate-pool", 20, "candidates reranked per question for -rerank-gate")
 	flag.Parse()
 
 	ds, err := loadDataset(*suite, *data, bench.DocMode(*sessionDoc))
@@ -120,7 +128,7 @@ func run() error {
 	// Rerank tier: production order vs reranked, on retrieval recall. One reranker
 	// call per question — use -limit to subset. Cross-encoder (-rerank-url) is
 	// fast; the LLM (-llm-rerank) is slow.
-	if *llmRerank || *ceRerankURL != "" {
+	if (*llmRerank || *ceRerankURL != "") && *rerankGate == "" {
 		reranker, err := buildReranker(*ceRerankURL, *ceRerankModel, *ceMaxDocChars, *ceMaxBatchChars)
 		if err != nil {
 			return err
@@ -131,6 +139,16 @@ func run() error {
 		}
 		fmt.Println(bench.RerankMarkdown(rr, ks[0]))
 		return nil
+	}
+
+	// Relevance-gate sweeps: positive recall (own namespace) vs negative injection
+	// (foreign namespace) across thresholds, on the vector score or the rerank score.
+	if *vecGate != "" {
+		return runVecGate(ctx, st, embedder, ds, ks[0], parseFloatList(*vecGate), *concurrency, queryPrefix, *fusionAlpha)
+	}
+	if *rerankGate != "" {
+		return runRerankGate(ctx, st, embedder, ds, ks[0], parseFloatList(*rerankGate), *rerankGatePool,
+			*ceRerankURL, *ceRerankModel, *ceMaxDocChars, *ceMaxBatchChars, queryPrefix)
 	}
 
 	var results []bench.Result
@@ -163,6 +181,50 @@ func run() error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "wrote %s\n", outPath)
+	return nil
+}
+
+// parseFloatList parses a comma-separated list of non-negative floats, skipping
+// malformed or negative entries.
+func parseFloatList(csv string) []float64 {
+	var out []float64
+	for _, p := range strings.Split(csv, ",") {
+		if v, err := strconv.ParseFloat(strings.TrimSpace(p), 64); err == nil && v >= 0 {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func runVecGate(ctx context.Context, st store.Store, e embed.Embedder, ds *bench.Dataset,
+	k int, ts []float64, concurrency int, queryPrefix string, fusionAlpha float64,
+) error {
+	rr, err := bench.VecGateSweep(ctx, st, e, ds, k, ts, concurrency, queryPrefix, fusionAlpha)
+	if err != nil {
+		return err
+	}
+	fmt.Println(bench.VecGateMarkdown(rr, k))
+	return nil
+}
+
+func runRerankGate(ctx context.Context, st store.Store, e embed.Embedder, ds *bench.Dataset,
+	k int, ts []float64, pool int, ceURL, ceModel string, maxDoc, maxBatch int, queryPrefix string,
+) error {
+	if ceURL == "" {
+		return fmt.Errorf("bench: -rerank-gate needs -rerank-url")
+	}
+	ce, err := rerankpkg.New(rerankpkg.Config{
+		BaseURL: ceURL, Model: ceModel, APIKey: os.Getenv("MEMINI_RERANK_API_KEY"),
+		MaxDocChars: maxDoc, MaxBatchChars: maxBatch,
+	})
+	if err != nil {
+		return err
+	}
+	rr, err := bench.RerankGateSweep(ctx, st, e, ce, ds, k, pool, ts, queryPrefix)
+	if err != nil {
+		return err
+	}
+	fmt.Println(bench.RerankGateMarkdown(rr, k))
 	return nil
 }
 
