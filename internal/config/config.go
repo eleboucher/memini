@@ -204,6 +204,12 @@ type Config struct {
 	// episodic memory. Only episodic is gated. Default 120 (on); set 0 to disable.
 	EpisodicMinChars int `env:"MEMINI_EPISODIC_MIN_CHARS" envDefault:"120"`
 
+	// DistillOnWrite distils each fresh episodic capture into durable semantic
+	// facts at write time (mem0-style), instead of waiting on the access-gated
+	// batch promoter. Needs an LLM (the distiller); no-op without one. Off by
+	// default — it adds one LLM call per substantive capture.
+	DistillOnWrite bool `env:"MEMINI_DISTILL_ON_WRITE" envDefault:"false"`
+
 	// Consolidation tuning.
 	// ConsolidateMode is "async" (default), "sync", or "off".
 	ConsolidateMode string `env:"MEMINI_CONSOLIDATE_MODE" envDefault:"async"`

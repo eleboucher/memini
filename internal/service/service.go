@@ -35,6 +35,13 @@ const (
 	stopIDPrefix       = "stop:"
 )
 
+// distillOnWriteTimeout bounds one write-time distillation (LLM call + fact
+// writes); distillSemCap bounds concurrent write-time distillations.
+const (
+	distillOnWriteTimeout = 60 * time.Second
+	distillSemCap         = 4
+)
+
 // Recall tuning.
 const (
 	reinforceTimeout = 10 * time.Second
@@ -196,6 +203,10 @@ type Service struct {
 	// "ok" chatter that otherwise dominates episodic memory. 0 disables it.
 	episodicMinChars int
 
+	// distillOnWrite distils each fresh episodic capture into durable facts at
+	// write time (mem0-style), bounded by distillSem. Needs a distiller.
+	distillOnWrite bool
+	distillSem     chan struct{}
 	// distiller is optional; when set, RunPromoter distills frequently-accessed
 	// episodic memories into durable semantic facts.
 	distiller        llm.Distiller
@@ -391,6 +402,12 @@ func WithEpisodicMinChars(n int) Option {
 	return func(s *Service) { s.episodicMinChars = n }
 }
 
+// WithDistillOnWrite distils each fresh episodic capture into durable facts at
+// write time (needs a distiller). Off by default. See MEMINI_DISTILL_ON_WRITE.
+func WithDistillOnWrite(on bool) Option {
+	return func(s *Service) { s.distillOnWrite = on }
+}
+
 // WithTemporalTargeting enables temporal targeting in the re-ranker: when a
 // query names a relative time, candidates dated near the referenced point are
 // boosted by up to `boost` on the composite score. ex resolves the reference
@@ -492,6 +509,10 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 			cap = defaultConsolidateQueueCap
 		}
 		s.consolidateQueue = make(chan consolidateJob, cap)
+	}
+	// Bounds concurrent write-time distillations (LLM calls) when enabled.
+	if s.distillOnWrite {
+		s.distillSem = make(chan struct{}, distillSemCap)
 	}
 	return s
 }
@@ -728,6 +749,14 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	// Async mode stores immediately and consolidates in the background.
 	if consolidate && s.consolidateMode == ConsolidateAsync {
 		s.enqueueConsolidate(m.Namespace, m.ID)
+	}
+	// Write-time distillation (mem0-style): distil a fresh episodic capture into
+	// durable semantic facts in the background, so durable knowledge is created at
+	// write instead of waiting on the access-gated batch promoter. Opt-in and
+	// needs a distiller (LLM); the extracted facts are written deduped, the
+	// episodic is kept.
+	if s.shouldDistillOnWrite(tier, in) {
+		s.distillEpisodicAsync(ctx, m)
 	}
 	s.metrics.RememberResult("ok", string(tier))
 	return m, nil
@@ -1074,6 +1103,30 @@ func (s *Service) resolveSemanticReserve(in RecallInput) int {
 		return in.SemanticReserve
 	}
 	return s.recallSemanticReserve
+}
+
+// shouldDistillOnWrite reports whether a fresh episodic capture should be
+// distilled into durable facts at write time.
+func (s *Service) shouldDistillOnWrite(tier memory.Tier, in RememberInput) bool {
+	return s.distillOnWrite && s.distiller != nil && tier == memory.TierEpisodic && in.ID == ""
+}
+
+// distillEpisodicAsync distils a freshly-written episodic into durable facts in
+// the background, detached from the request so the capture isn't blocked on the
+// LLM. It reuses the promote path (stamp → distill → write deduped facts) for
+// one memory, bounded by distillSem so a write burst can't fan out unbounded
+// LLM calls. Best-effort: a failure is logged, the episodic stays.
+func (s *Service) distillEpisodicAsync(ctx context.Context, m *memory.Memory) {
+	bg := context.WithoutCancel(ctx)
+	s.bg.Go(func() {
+		s.distillSem <- struct{}{}
+		defer func() { <-s.distillSem }()
+		dctx, cancel := context.WithTimeout(bg, distillOnWriteTimeout)
+		defer cancel()
+		if _, err := s.promote(dctx, m.Namespace, []*memory.Memory{m}, s.now()); err != nil {
+			slog.WarnContext(dctx, "distill-on-write", "namespace", m.Namespace, "id", m.ID, "err", err)
+		}
+	})
 }
 
 // reserveDurableTiers recomposes a relevance-ordered pool so up to `reserve` of
