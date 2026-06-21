@@ -45,7 +45,7 @@ Pass options inline via the `[name, options]` form:
 
 | Option              | Env var                          | Default                 | Purpose                                                                                                                                |
 | ------------------- | -------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `base_url`          | `MEMINI_BASE_URL`                | `http://localhost:8080` | memini REST base URL                                                                                                                   |
+| `base_url`          | `MEMINI_BASE_URL`                | `http://localhost:8080` | memini REST base URL (alias: `MEMINI_URL`)                                                                                             |
 | `namespace`         | `MEMINI_NAMESPACE`               | git repo basename       | tenant the memory is scoped to (`X-Memini-Namespace`)                                                                                  |
 | `recall`            | `MEMINI_RECALL`                  | on                      | `false` disables recall-before-turn                                                                                                    |
 | `capture`           | `MEMINI_CAPTURE`                 | on                      | `false` disables capture-after-turn                                                                                                    |
@@ -55,7 +55,7 @@ Pass options inline via the `[name, options]` form:
 | `timeout_ms`        | `MEMINI_TIMEOUT_MS`              | `30000`                 | per-request timeout                                                                                                                    |
 | `fallback_on_error` | `MEMINI_FALLBACK`                | on                      | `false` surfaces errors instead of degrading silently                                                                                  |
 | —                   | `MEMINI_INJECT_LABELS`           | —                       | comma-separated label toggles for each bullet: `tier`, `confidence`, `age`                                                             |
-| —                   | `MEMINI_API_KEY`                 | —                       | bearer token, if memini needs auth (env only — secret)                                                                                 |
+| —                   | `MEMINI_API_KEY`                 | —                       | bearer token, if memini needs auth (env only — secret; alias: `MEMINI_TOKEN`)                                                          |
 | —                   | `MEMINI_REQUIRE_HTTPS`           | —                       | `1` refuses to send the token over plaintext HTTP                                                                                      |
 
 Inline options win over the env vars. Secrets stay in the environment: set

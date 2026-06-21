@@ -47,7 +47,12 @@ def uses_plaintext_bearer(base_url: str, secret: str) -> bool:
 
 class Tools:
     class Valves(BaseModel):
-        base_url: str = Field(default=DEFAULT_BASE_URL, description="memini REST base URL")
+        base_url: str = Field(
+            default_factory=lambda: os.environ.get("MEMINI_BASE_URL")
+            or os.environ.get("MEMINI_URL")
+            or DEFAULT_BASE_URL,
+            description="memini REST base URL (defaults from MEMINI_BASE_URL / MEMINI_URL env)",
+        )
         namespace: str = Field(
             default=DEFAULT_NAMESPACE,
             description="Tenant the memory is scoped to (X-Memini-Namespace)",
@@ -64,7 +69,7 @@ class Tools:
 
     async def _post_json(self, path: str, payload: dict) -> Optional[dict]:
         base_url = str(self.valves.base_url).rstrip("/")
-        secret = os.environ.get("MEMINI_API_KEY", "")
+        secret = os.environ.get("MEMINI_API_KEY") or os.environ.get("MEMINI_TOKEN") or ""
         if uses_plaintext_bearer(base_url, secret):
             message = (
                 f"memini: MEMINI_API_KEY would cross plaintext HTTP to {base_url}; "

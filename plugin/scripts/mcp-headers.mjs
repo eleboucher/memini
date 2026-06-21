@@ -10,7 +10,7 @@ import { resolveProject } from "./_shared.mjs";
 const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const headers = { "X-Memini-Namespace": resolveProject(projectDir) };
 
-const token = process.env.MEMINI_TOKEN || process.env.MEMINI_API_KEY;
+const token = process.env.MEMINI_API_KEY || process.env.MEMINI_TOKEN;
 if (token) headers.Authorization = `Bearer ${token}`;
 
 process.stdout.write(JSON.stringify(headers));

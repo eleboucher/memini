@@ -66,7 +66,9 @@ export function resolveConfig(pluginConfig: any) {
   const c = pluginConfig || {};
   return {
     enabled: c.enabled !== false,
-    base_url: c.base_url || DEFAULT_BASE_URL,
+    // Config wins; otherwise the canonical MEMINI_BASE_URL (alias MEMINI_URL),
+    // matching the other integrations so one env setup works everywhere.
+    base_url: c.base_url || strEnv("MEMINI_BASE_URL") || strEnv("MEMINI_URL") || DEFAULT_BASE_URL,
     namespace: c.namespace || DEFAULT_NAMESPACE,
     namespace_per_agent: c.namespace_per_agent !== false,
     namespace_template: c.namespace_template || DEFAULT_NAMESPACE_TEMPLATE,
@@ -106,6 +108,12 @@ export function resolveConfig(pluginConfig: any) {
         ? c.recall_max_tokens
         : intEnv("MEMINI_INJECT_RECALL_MAX_TOK", 800),
   };
+}
+
+// strEnv returns a trimmed string env var, or "" when unset/blank.
+function strEnv(name: string) {
+  const raw = process.env[name];
+  return raw == null ? "" : raw.trim();
 }
 
 // intEnv parses a non-negative integer env var, falling back to `def` when
@@ -432,7 +440,7 @@ function createClient(cfg: ResolvedConfig, api: any): MeminiClient {
   const namespace = String(cfg.namespace || DEFAULT_NAMESPACE);
   const timeoutMs = Number(cfg.timeout_ms || DEFAULT_TIMEOUT_MS);
   const fallbackOnError = cfg.fallback_on_error !== false;
-  const secret = process.env.MEMINI_API_KEY;
+  const secret = process.env.MEMINI_API_KEY || process.env.MEMINI_TOKEN;
   const guardPlaintextBearerAuth = createPlaintextBearerAuthGuard((m: any) => api.logger.warn?.(m));
 
   async function postJson(path: string, payload: any, ns?: string) {

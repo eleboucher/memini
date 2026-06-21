@@ -61,7 +61,7 @@ Setting them as real container env vars (not just in the Hermes `.env`) means
 they are in `os.environ` from process start, before the plugin loads:
 
 ```yaml
-MEMINI_URL: http://memini.ai.svc.cluster.local:8080
+MEMINI_BASE_URL: http://memini.ai.svc.cluster.local:8080
 MEMINI_NAMESPACE: hermes # share this string across agents to share memory
 MEMINI_API_KEY: # memini in this cluster requires auth
   valueFrom:

@@ -12,6 +12,12 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import memini  # noqa: E402
 
+# A developer shell may export the real memini config; clear it so each test's
+# explicit env is authoritative (canonical MEMINI_BASE_URL would otherwise win
+# over a test that sets only MEMINI_URL).
+for _v in ("MEMINI_BASE_URL", "MEMINI_URL", "MEMINI_API_KEY", "MEMINI_TOKEN"):
+    os.environ.pop(_v, None)
+
 
 def make_provider(call_stub):
     """A provider initialized against a dummy URL with its network _call stubbed."""
@@ -217,6 +223,27 @@ class IsAvailableTest(unittest.TestCase):
         os.environ["MEMINI_URL"] = "not-a-url"
         self.addCleanup(lambda: os.environ.pop("MEMINI_URL", None))
         self.assertFalse(memini.MeminiMemoryProvider().is_available())
+
+    def test_base_url_canonical_takes_precedence_over_url_alias(self):
+        os.environ["MEMINI_BASE_URL"] = "http://localhost:8080"
+        os.environ["MEMINI_URL"] = "not-a-url"
+        self.addCleanup(lambda: os.environ.pop("MEMINI_BASE_URL", None))
+        self.addCleanup(lambda: os.environ.pop("MEMINI_URL", None))
+        p = memini.MeminiMemoryProvider()
+        p.initialize("sess-base-url")
+        self.assertEqual(p._base, "http://localhost:8080")
+
+    def test_token_reads_api_key_then_token_alias(self):
+        os.environ["MEMINI_TOKEN"] = "tok-alias"
+        self.addCleanup(lambda: os.environ.pop("MEMINI_TOKEN", None))
+        self.addCleanup(lambda: os.environ.pop("MEMINI_API_KEY", None))
+        p = memini.MeminiMemoryProvider()
+        p.initialize("sess-token-alias")
+        self.assertEqual(p._secret, "tok-alias")
+        os.environ["MEMINI_API_KEY"] = "key-canonical"
+        p2 = memini.MeminiMemoryProvider()
+        p2.initialize("sess-token-canonical")
+        self.assertEqual(p2._secret, "key-canonical")
 
 
 class SaveConfigTest(unittest.TestCase):

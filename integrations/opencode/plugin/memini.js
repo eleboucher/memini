@@ -61,7 +61,7 @@ export function resolveConfig(env, options, worktree) {
     return DEFAULT_RECALL_LIMIT;
   })();
   return {
-    base_url: o.base_url || e.MEMINI_BASE_URL || DEFAULT_BASE_URL,
+    base_url: o.base_url || e.MEMINI_BASE_URL || e.MEMINI_URL || DEFAULT_BASE_URL,
     namespace: sanitizeNamespace(namespace) || DEFAULT_NAMESPACE,
     recall: o.recall !== undefined ? o.recall !== false : envBool(e.MEMINI_RECALL, true),
     capture: o.capture !== undefined ? o.capture !== false : envBool(e.MEMINI_CAPTURE, true),
@@ -271,7 +271,7 @@ export function truncate(value, max) {
 
 function createClient(cfg, log) {
   const baseUrl = String(cfg.base_url).replace(/\/+$/, "");
-  const secret = process.env.MEMINI_API_KEY;
+  const secret = process.env.MEMINI_API_KEY || process.env.MEMINI_TOKEN;
   const guardPlaintextBearerAuth = createPlaintextBearerAuthGuard((m) => log.warn(m));
   if (process.env.MEMINI_REQUIRE_HTTPS === "1") guardPlaintextBearerAuth(baseUrl, secret);
 

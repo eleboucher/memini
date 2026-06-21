@@ -30,9 +30,15 @@ function freshCache() {
 }
 
 function runHook(script, payload, env = {}) {
+  // A developer shell may export MEMINI_BASE_URL/_URL/_API_KEY/_TOKEN pointing at
+  // a real memini; strip them so each test's explicit env points the hook at the
+  // in-process mock (canonical MEMINI_BASE_URL would otherwise win over the
+  // test's MEMINI_URL and the hook would hit the real server).
+  const base = { ...process.env };
+  for (const k of ["MEMINI_BASE_URL", "MEMINI_URL", "MEMINI_API_KEY", "MEMINI_TOKEN"]) delete base[k];
   return new Promise((resolveProm, reject) => {
     const child = spawn("node", [resolve(SCRIPTS, script)], {
-      env: { ...process.env, ...env, MEMINI_DEBUG: "1" },
+      env: { ...base, ...env, MEMINI_DEBUG: "1" },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";

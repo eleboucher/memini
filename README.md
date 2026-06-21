@@ -75,14 +75,20 @@ All plugins need a running memini (embeddings configured). To connect, set the
 base URL and token (if your server requires auth). Default URL is always
 `http://localhost:8080`.
 
-| Agent       | Base URL config                        | Token (if auth)                             |
-| ----------- | -------------------------------------- | ------------------------------------------- |
-| Claude Code | `MEMINI_URL`                           | `MEMINI_TOKEN`                              |
-| Codex CLI   | MCP config                             | MCP config                                  |
-| opencode    | `MEMINI_BASE_URL` or inline `base_url` | `MEMINI_API_KEY`                            |
-| Hermes      | `MEMINI_URL`                           | `MEMINI_API_KEY`                            |
-| Open WebUI  | `base_url` Valve                       | `MEMINI_API_KEY` (process env, not a Valve) |
-| OpenClaw    | `base_url` in `openclaw.json`          | `MEMINI_API_KEY` (gateway env)              |
+Every integration reads the same canonical env vars, so one setup works
+everywhere: **`MEMINI_BASE_URL`** for the server and **`MEMINI_API_KEY`** for the
+token. The legacy names **`MEMINI_URL`** and **`MEMINI_TOKEN`** are still accepted
+as aliases. Where a plugin has its own config (opencode options, Open WebUI
+Valves, `openclaw.json`), that config wins over the env.
+
+| Agent       | Base URL config                                       | Token (if auth)                |
+| ----------- | ----------------------------------------------------- | ------------------------------ |
+| Claude Code | `MEMINI_BASE_URL` (MCP endpoint: `MEMINI_MCP_URL`)    | `MEMINI_API_KEY`               |
+| Codex CLI   | MCP config                                            | MCP config                     |
+| opencode    | `MEMINI_BASE_URL` or inline `base_url`                | `MEMINI_API_KEY`               |
+| Hermes      | `MEMINI_BASE_URL`                                     | `MEMINI_API_KEY`               |
+| Open WebUI  | `base_url` Valve (defaults from `MEMINI_BASE_URL`)    | `MEMINI_API_KEY` (process env) |
+| OpenClaw    | `base_url` in `openclaw.json`, else `MEMINI_BASE_URL` | `MEMINI_API_KEY` (gateway env) |
 
 Full details and edge cases live in [`integrations/`](integrations/).
 

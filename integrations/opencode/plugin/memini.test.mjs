@@ -46,6 +46,12 @@ test("env overrides defaults; options override env", () => {
   assert.equal(fromOpts.base_url, "http://x");
 });
 
+test("base_url falls back to the MEMINI_URL alias; MEMINI_BASE_URL canonical wins", () => {
+  assert.equal(resolveConfig({ MEMINI_URL: "http://alias:8080" }, undefined, "/r").base_url, "http://alias:8080");
+  const both = { MEMINI_BASE_URL: "http://canonical:8080", MEMINI_URL: "http://alias:8080" };
+  assert.equal(resolveConfig(both, undefined, "/r").base_url, "http://canonical:8080");
+});
+
 test("namespace falls back to the default when nothing resolves", () => {
   assert.equal(resolveConfig({}, undefined, "").namespace, "opencode");
 });

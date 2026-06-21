@@ -9,7 +9,7 @@ description: >-
 
 # memory (memini)
 
-memini is a memory service reachable at `${MEMINI_URL:-http://localhost:8080}`.
+memini is a memory service reachable at `${MEMINI_BASE_URL:-${MEMINI_URL:-http://localhost:8080}}`.
 All requests are scoped by the `X-Memini-Namespace` header. Set it to a
 project name (e.g. `acme-web`) or to `${MEMINI_NS}` from the gateway env. If
 the header is omitted, the server falls back to its configured default
@@ -19,7 +19,7 @@ bearer token is configured, send `Authorization: Bearer $MEMINI_API_KEY`.
 ## Recall before acting
 
 ```sh
-curl -sf -X POST "$MEMINI_URL/v1/search" \
+curl -sf -X POST "${MEMINI_BASE_URL:-$MEMINI_URL}/v1/search" \
   -H 'Content-Type: application/json' \
   -H "X-Memini-Namespace: $MEMINI_NS" \
   -d '{"query":"<what you are about to work on>","limit":5}'
@@ -31,7 +31,7 @@ Narrow recall with `tags` (a memory must carry every listed tag) and/or
 `metadata` (top-level key=value pairs), e.g. only auth bug-fix memories:
 
 ```sh
-curl -sf -X POST "$MEMINI_URL/v1/search" \
+curl -sf -X POST "${MEMINI_BASE_URL:-$MEMINI_URL}/v1/search" \
   -H 'Content-Type: application/json' \
   -H "X-Memini-Namespace: $MEMINI_NS" \
   -d '{"query":"auth","tags":["auth"],"metadata":{"category":"bug_fixes"}}'
@@ -44,14 +44,14 @@ everything categorized `bug_fixes`", "all procedural memories" — use
 `GET /v1/memories` with repeatable `tag` and `meta=key=value` filters:
 
 ```sh
-curl -sf "$MEMINI_URL/v1/memories?tier=procedural&meta=category=bug_fixes" \
+curl -sf "${MEMINI_BASE_URL:-$MEMINI_URL}/v1/memories?tier=procedural&meta=category=bug_fixes" \
   -H "X-Memini-Namespace: $MEMINI_NS"
 ```
 
 ## Remember durable facts
 
 ```sh
-curl -sf -X POST "$MEMINI_URL/v1/memories" \
+curl -sf -X POST "${MEMINI_BASE_URL:-$MEMINI_URL}/v1/memories" \
   -H 'Content-Type: application/json' \
   -H "X-Memini-Namespace: $MEMINI_NS" \
   -d '{"content":"<the fact to remember>","tier":"semantic","metadata":{"category":"architecture_decisions"}}'

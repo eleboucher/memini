@@ -73,9 +73,14 @@ The `tools.allow` allowlist is required for the three explicit tools to be sent
 to the model — they're declared `optional: true` in the manifest so OpenClaw
 won't auto-expose them.
 
-If memini requires auth, set `MEMINI_API_KEY` in the gateway environment (the
-plugin sends it as `Authorization: Bearer …`; set `MEMINI_REQUIRE_HTTPS=1` to
-refuse sending it over plaintext HTTP). Restart OpenClaw.
+If memini requires auth, set `MEMINI_API_KEY` (alias: `MEMINI_TOKEN`) in the
+gateway environment (the plugin sends it as `Authorization: Bearer …`; set
+`MEMINI_REQUIRE_HTTPS=1` to refuse sending it over plaintext HTTP). Restart
+OpenClaw.
+
+`base_url` can also be omitted from `config` and supplied via the
+`MEMINI_BASE_URL` env var (alias: `MEMINI_URL`); the `config` value wins when
+both are present.
 
 Recall shaping (both optional, matching the opencode/Claude Code plugins):
 `recall_limit` (max memories per turn, default **3**) and `recall_max_tokens`

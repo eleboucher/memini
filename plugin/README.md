@@ -126,16 +126,16 @@ server is detached from the agent's cwd.
 
 ## Environment
 
-| Env var                     | Default                     | Used by      | Description                                                  |
-| --------------------------- | --------------------------- | ------------ | ------------------------------------------------------------ |
-| `MEMINI_URL`                | `http://localhost:8080`     | hooks (REST) | memini base URL for the lifecycle hooks                      |
-| `MEMINI_MCP_URL`            | `http://localhost:8080/mcp` | MCP tools    | memini `/mcp` URL for the model-invoked memory tools         |
-| `MEMINI_TOKEN`              | —                           | hooks + MCP  | bearer token; required when the server sets `MEMINI_API_KEY` |
-| `MEMINI_NAMESPACE`          | auto (cwd/git basename)     | hooks + MCP  | explicit namespace override; otherwise auto-resolved         |
-| `MEMINI_NAMESPACE_SCOPE`    | `repo`                      | hooks        | `owner-repo` derives `owner-repo` slugs from the git remote  |
-| `MEMINI_AUTO_SAVE`          | on                          | `Stop` hook  | set to `0` to disable the periodic auto-save nudge           |
-| `MEMINI_AUTO_SAVE_INTERVAL` | `15`                        | `Stop` hook  | user messages between auto-save nudges                       |
-| `MEMINI_DEBUG`              | —                           | hooks        | set to `1` for verbose hook logging                          |
+| Env var                     | Default                  | Used by      | Description                                                                                     |
+| --------------------------- | ------------------------ | ------------ | ----------------------------------------------------------------------------------------------- |
+| `MEMINI_BASE_URL`           | `http://localhost:8080`  | hooks (REST) | memini base URL for the lifecycle hooks (alias: `MEMINI_URL`)                                   |
+| `MEMINI_MCP_URL`            | `${MEMINI_BASE_URL}/mcp` | MCP tools    | memini `/mcp` URL for the model-invoked memory tools; derived from `MEMINI_BASE_URL` unless set |
+| `MEMINI_API_KEY`            | —                        | hooks + MCP  | bearer token; required when the server sets `MEMINI_API_KEY` (alias: `MEMINI_TOKEN`)            |
+| `MEMINI_NAMESPACE`          | auto (cwd/git basename)  | hooks + MCP  | explicit namespace override; otherwise auto-resolved                                            |
+| `MEMINI_NAMESPACE_SCOPE`    | `repo`                   | hooks        | `owner-repo` derives `owner-repo` slugs from the git remote                                     |
+| `MEMINI_AUTO_SAVE`          | on                       | `Stop` hook  | set to `0` to disable the periodic auto-save nudge                                              |
+| `MEMINI_AUTO_SAVE_INTERVAL` | `15`                     | `Stop` hook  | user messages between auto-save nudges                                                          |
+| `MEMINI_DEBUG`              | —                        | hooks        | set to `1` for verbose hook logging                                                             |
 
 ### Tuning injection budgets
 
@@ -199,13 +199,12 @@ The plugin works against a remote memini with **no code changes** — point it a
 the server and give it a token:
 
 ```sh
-export MEMINI_URL=https://memini.example.com
-export MEMINI_MCP_URL=https://memini.example.com/mcp
-export MEMINI_TOKEN=<the server's MEMINI_API_KEY>
+export MEMINI_BASE_URL=https://memini.example.com   # MCP /mcp endpoint is derived
+export MEMINI_API_KEY=<the server's MEMINI_API_KEY>
 ```
 
 Both the hooks (REST) and the MCP tools then send `Authorization: Bearer
-$MEMINI_TOKEN`. The **namespace stays per-project** even against one shared
+$MEMINI_API_KEY`. The **namespace stays per-project** even against one shared
 remote: the hooks resolve it from `data.cwd`, and the MCP server's
 `headersHelper` (`scripts/mcp-headers.mjs`) resolves the _same_ value from
 `CLAUDE_PROJECT_DIR` per connection — so capture and recall always target the

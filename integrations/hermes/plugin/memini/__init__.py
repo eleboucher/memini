@@ -13,9 +13,9 @@ Install: copy this directory to ~/.hermes/plugins/memini and set
 single-select; `plugins.enabled` does not activate them.
 
 Environment:
-    MEMINI_URL                      base URL (default http://localhost:8080)
+    MEMINI_BASE_URL                 base URL (default http://localhost:8080; alias: MEMINI_URL)
     MEMINI_NAMESPACE                tenant to scope memory to (default: cwd basename, else "hermes")
-    MEMINI_API_KEY                  bearer token, if memini requires auth
+    MEMINI_API_KEY                  bearer token, if memini requires auth (alias: MEMINI_TOKEN)
     MEMINI_REQUIRE_HTTPS            =1 to refuse sending a token over plaintext HTTP
     MEMINI_RECALL_LIMIT             max memories recalled per turn (default 5)
     MEMINI_INJECT_RECALL_MIN_SCORE  fused-score floor (>=) for auto-recall (default 0)
@@ -73,6 +73,17 @@ _plaintext_bearer_warned = False
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
+
+
+# Canonical env names with back-compat aliases, so one env setup works across
+# all memini integrations: MEMINI_BASE_URL (alias MEMINI_URL) for the server,
+# MEMINI_API_KEY (alias MEMINI_TOKEN) for the token.
+def _base_url() -> str:
+    return _env("MEMINI_BASE_URL") or _env("MEMINI_URL") or DEFAULT_BASE_URL
+
+
+def _secret() -> str:
+    return _env("MEMINI_API_KEY") or _env("MEMINI_TOKEN")
 
 
 def _uses_plaintext_bearer_auth(base: str, secret: str) -> bool:
@@ -232,11 +243,11 @@ class MeminiMemoryProvider(MemoryProvider):
         return "memini"
 
     def is_available(self) -> bool:
-        return _valid_url(_env("MEMINI_URL", DEFAULT_BASE_URL))
+        return _valid_url(_base_url())
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
-        self._base = _env("MEMINI_URL", DEFAULT_BASE_URL).rstrip("/")
-        self._secret = _env("MEMINI_API_KEY")
+        self._base = _base_url().rstrip("/")
+        self._secret = _secret()
         self._session_id = session_id
         # Hermes' initialize kwargs carry no project path (agent_workspace is a
         # label, not a dir), so the working directory is the only signal for the
@@ -261,7 +272,7 @@ class MeminiMemoryProvider(MemoryProvider):
     def get_config_schema(self) -> list[dict]:
         return [
             {"key": "url", "description": "memini server URL",
-             "default": DEFAULT_BASE_URL, "env_var": "MEMINI_URL"},
+             "default": DEFAULT_BASE_URL, "env_var": "MEMINI_BASE_URL"},
             {"key": "namespace", "description": "memory namespace (tenant)",
              "required": False, "env_var": "MEMINI_NAMESPACE"},
             {"key": "secret", "description": "memini bearer token (optional)",

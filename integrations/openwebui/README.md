@@ -45,7 +45,8 @@ library or paste the code in directly:
      **Filters**.
 
 The API key (if memini needs auth) goes in the environment that launches Open
-WebUI — `MEMINI_API_KEY=…` — not in a Valve, so it stays out of the DB.
+WebUI — `MEMINI_API_KEY=…` (alias: `MEMINI_TOKEN`) — not in a Valve, so it stays
+out of the DB.
 
 ### Configure (Valves)
 
@@ -53,18 +54,18 @@ Everything else is a [Valve](https://docs.openwebui.com/features/plugin/valves/)
 you set in the function's settings (the gear on the function), no code edit
 needed:
 
-| Valve               | Default                 | Purpose                                                       |
-| ------------------- | ----------------------- | ------------------------------------------------------------- |
-| `base_url`          | `http://localhost:8080` | memini REST base URL                                          |
-| `namespace`         | `openwebui`             | tenant the memory is scoped to (`X-Memini-Namespace`)         |
-| `recall`            | on                      | recall memories before each turn                              |
-| `capture`           | on                      | capture the completed turn after each response                |
-| `recall_limit`      | `5`                     | max memories injected per turn                                |
-| `timeout_ms`        | `5000`                  | per-request timeout                                           |
-| `fallback_on_error` | on                      | degrade silently on memini errors instead of surfacing them   |
-| `require_https`     | off                     | refuse to send the API key over plaintext HTTP to a remote    |
-| `scope_by_user`     | off                     | isolate memory per Open WebUI user (suffix namespace with id) |
-| `priority`          | `0`                     | filter execution order                                        |
+| Valve               | Default                 | Purpose                                                                      |
+| ------------------- | ----------------------- | ---------------------------------------------------------------------------- |
+| `base_url`          | `http://localhost:8080` | memini REST base URL (default seeds from `MEMINI_BASE_URL`/`MEMINI_URL` env) |
+| `namespace`         | `openwebui`             | tenant the memory is scoped to (`X-Memini-Namespace`)                        |
+| `recall`            | on                      | recall memories before each turn                                             |
+| `capture`           | on                      | capture the completed turn after each response                               |
+| `recall_limit`      | `5`                     | max memories injected per turn                                               |
+| `timeout_ms`        | `5000`                  | per-request timeout                                                          |
+| `fallback_on_error` | on                      | degrade silently on memini errors instead of surfacing them                  |
+| `require_https`     | off                     | refuse to send the API key over plaintext HTTP to a remote                   |
+| `scope_by_user`     | off                     | isolate memory per Open WebUI user (suffix namespace with id)                |
+| `priority`          | `0`                     | filter execution order                                                       |
 
 Open WebUI is multi-user, unlike a local agent. Set the same `namespace` to pool
 one shared memory across your agents, or flip `scope_by_user` on to give each

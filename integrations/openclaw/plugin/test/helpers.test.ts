@@ -16,6 +16,11 @@ import {
   type ResolvedConfig,
 } from "../src/index.ts";
 
+// A developer shell may export the real memini config; clear it so resolveConfig
+// tests see the documented defaults (the plugin now reads MEMINI_BASE_URL /
+// MEMINI_URL as a fallback under the plugin config).
+for (const k of ["MEMINI_BASE_URL", "MEMINI_URL", "MEMINI_API_KEY", "MEMINI_TOKEN"]) delete process.env[k];
+
 type MeminiClient = Parameters<typeof registerMeminiTools>[1];
 
 type RecordedCall = { method: string; path: string; body?: unknown; ns?: string };
@@ -58,6 +63,19 @@ test("resolveConfig: defaults match the documented contract", () => {
   assert.equal(cfg.timeout_ms, 5000);
   assert.equal(cfg.expose_tools, false);
   assert.equal(cfg.recall_limit, 3);
+});
+
+test("resolveConfig: base_url falls back to MEMINI_BASE_URL then MEMINI_URL env, config wins", () => {
+  try {
+    process.env.MEMINI_URL = "http://alias:8080";
+    assert.equal(resolveConfig(undefined).base_url, "http://alias:8080");
+    process.env.MEMINI_BASE_URL = "http://canonical:8080";
+    assert.equal(resolveConfig(undefined).base_url, "http://canonical:8080");
+    assert.equal(resolveConfig({ base_url: "http://cfg:9000" }).base_url, "http://cfg:9000");
+  } finally {
+    delete process.env.MEMINI_BASE_URL;
+    delete process.env.MEMINI_URL;
+  }
 });
 
 test("resolveConfig: explicit recall_limit survives, zero/negative/non-finite fall back", () => {

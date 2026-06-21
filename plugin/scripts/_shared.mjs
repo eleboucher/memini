@@ -183,8 +183,8 @@ export function parseJSON(s) {
   }
 }
 
-const REST_URL = process.env["MEMINI_URL"] || "http://localhost:8080";
-const SECRET = process.env["MEMINI_TOKEN"] || process.env["MEMINI_API_KEY"] || "";
+const REST_URL = process.env["MEMINI_BASE_URL"] || process.env["MEMINI_URL"] || "http://localhost:8080";
+const SECRET = process.env["MEMINI_API_KEY"] || process.env["MEMINI_TOKEN"] || "";
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
