@@ -204,9 +204,12 @@ type Service struct {
 	episodicMinChars int
 
 	// distillOnWrite distils each fresh episodic capture into durable facts at
-	// write time (mem0-style), bounded by distillSem. Needs a distiller.
+	// write time, bounded by distillSem. Needs a distiller.
 	distillOnWrite bool
 	distillSem     chan struct{}
+	// distillDropNoFact, with distillOnWrite, deletes the episodic when
+	// distillation yields no durable fact (the LLM becomes a write filter).
+	distillDropNoFact bool
 	// distiller is optional; when set, RunPromoter distills frequently-accessed
 	// episodic memories into durable semantic facts.
 	distiller        llm.Distiller
@@ -406,6 +409,13 @@ func WithEpisodicMinChars(n int) Option {
 // write time (needs a distiller). Off by default. See MEMINI_DISTILL_ON_WRITE.
 func WithDistillOnWrite(on bool) Option {
 	return func(s *Service) { s.distillOnWrite = on }
+}
+
+// WithDistillDropNoFact, with WithDistillOnWrite, deletes an episodic capture
+// when distillation extracts no durable fact. Off by default. See
+// MEMINI_DISTILL_DROP_NO_FACT.
+func WithDistillDropNoFact(on bool) Option {
+	return func(s *Service) { s.distillDropNoFact = on }
 }
 
 // WithTemporalTargeting enables temporal targeting in the re-ranker: when a
@@ -750,11 +760,9 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	if consolidate && s.consolidateMode == ConsolidateAsync {
 		s.enqueueConsolidate(m.Namespace, m.ID)
 	}
-	// Write-time distillation (mem0-style): distil a fresh episodic capture into
-	// durable semantic facts in the background, so durable knowledge is created at
-	// write instead of waiting on the access-gated batch promoter. Opt-in and
-	// needs a distiller (LLM); the extracted facts are written deduped, the
-	// episodic is kept.
+	// Write-time distillation: distil a fresh episodic capture into durable facts
+	// in the background, so durable knowledge is created at write rather than
+	// waiting on the access-gated batch promoter. Opt-in, needs a distiller.
 	if s.shouldDistillOnWrite(tier, in) {
 		s.distillEpisodicAsync(ctx, m)
 	}
@@ -1024,9 +1032,9 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	}
 	s.metrics.OpDuration("recall_search", time.Since(searchStart))
 
-	// Absolute semantic-relevance gate (mem0 score_and_rank semantics): drop
-	// candidates whose raw vector score is below the floor before fusing, so the
-	// keyword leg cannot reintroduce an off-topic memory on a shared token.
+	// Absolute semantic-relevance gate: drop candidates whose raw vector score is
+	// below the floor before fusing, so the keyword leg cannot reintroduce an
+	// off-topic memory on a shared token.
 	gateSemantic(vres, kres, s.resolveSemanticFloor(in))
 
 	perNS := make([][]store.Scored, len(namespaces))
@@ -1123,8 +1131,20 @@ func (s *Service) distillEpisodicAsync(ctx context.Context, m *memory.Memory) {
 		defer func() { <-s.distillSem }()
 		dctx, cancel := context.WithTimeout(bg, distillOnWriteTimeout)
 		defer cancel()
-		if _, err := s.promote(dctx, m.Namespace, []*memory.Memory{m}, s.now()); err != nil {
+		n, err := s.promote(dctx, m.Namespace, []*memory.Memory{m}, s.now())
+		if err != nil {
 			slog.WarnContext(dctx, "distill-on-write", "namespace", m.Namespace, "id", m.ID, "err", err)
+			return
+		}
+		// Drop-when-no-fact: the LLM found nothing durable in this turn, so delete
+		// the kept episodic rather than let low-value chatter the heuristic missed
+		// sit for 90 days.
+		if n == 0 && s.distillDropNoFact {
+			if err := s.store.Delete(dctx, m.Namespace, m.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+				slog.WarnContext(dctx, "distill-on-write: drop no-fact episodic", "namespace", m.Namespace, "id", m.ID, "err", err)
+				return
+			}
+			s.metrics.RememberResult("dropped", string(memory.TierEpisodic))
 		}
 	})
 }

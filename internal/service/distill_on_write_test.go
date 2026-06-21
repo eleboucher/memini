@@ -17,16 +17,28 @@ func (f fakeDistiller) Distill(_ context.Context, _ llm.DistillInput) ([]llm.Fac
 	return []llm.Fact{{Content: f.fact}}, nil
 }
 
-func durableCount(t *testing.T, st store.Store, ns string) int {
+// noFactDistiller extracts nothing — the "this turn carries no durable fact" case.
+type noFactDistiller struct{}
+
+func (noFactDistiller) Distill(_ context.Context, _ llm.DistillInput) ([]llm.Fact, error) {
+	return nil, nil
+}
+
+func tierCount(t *testing.T, st store.Store, ns string, tier memory.Tier) int {
 	t.Helper()
-	ms, err := st.List(context.Background(), ns, store.Filter{Tiers: []memory.Tier{memory.TierSemantic}}, 0)
+	ms, err := st.List(context.Background(), ns, store.Filter{Tiers: []memory.Tier{tier}}, 0)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
 	return len(ms)
 }
 
-// TestDistillOnWrite pins the mem0-style write gate: a fresh episodic capture is
+func durableCount(t *testing.T, st store.Store, ns string) int {
+	t.Helper()
+	return tierCount(t, st, ns, memory.TierSemantic)
+}
+
+// TestDistillOnWrite pins write-time distillation: a fresh episodic capture is
 // distilled into a durable semantic fact in the background. Off by default; only
 // fires for episodic; needs a distiller.
 func TestDistillOnWrite(t *testing.T) {
@@ -71,6 +83,40 @@ func TestDistillOnWrite(t *testing.T) {
 		// Only the explicit semantic write — no distilled fact on top of it.
 		if got := durableCount(t, st, ns); got != 1 {
 			t.Fatalf("semantic write should not trigger distillation, got %d", got)
+		}
+	})
+}
+
+// TestDistillDropNoFact pins the drop-when-no-fact filter: when distillation
+// extracts nothing durable, the episodic is deleted (only with the opt-in).
+func TestDistillDropNoFact(t *testing.T) {
+	ctx := context.Background()
+	ns := "alice"
+	const cap = "User: how's it going?\nAssistant: making progress on the refactor"
+
+	t.Run("drops episodic when no fact and drop enabled", func(t *testing.T) {
+		st := openTestStore(t)
+		svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(),
+			service.WithDistiller(noFactDistiller{}), service.WithDistillOnWrite(true), service.WithDistillDropNoFact(true))
+		if _, err := svc.Remember(ctx, service.RememberInput{Namespace: ns, Content: cap, Tier: memory.TierEpisodic}); err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+		svc.WaitBackground()
+		if got := tierCount(t, st, ns, memory.TierEpisodic); got != 0 {
+			t.Fatalf("episodic with no distillable fact should be dropped, got %d", got)
+		}
+	})
+
+	t.Run("keeps episodic when drop disabled", func(t *testing.T) {
+		st := openTestStore(t)
+		svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(),
+			service.WithDistiller(noFactDistiller{}), service.WithDistillOnWrite(true)) // drop-no-fact off
+		if _, err := svc.Remember(ctx, service.RememberInput{Namespace: ns, Content: cap, Tier: memory.TierEpisodic}); err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+		svc.WaitBackground()
+		if got := tierCount(t, st, ns, memory.TierEpisodic); got != 1 {
+			t.Fatalf("episodic should be kept when drop disabled, got %d", got)
 		}
 	})
 }

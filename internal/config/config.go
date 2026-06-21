@@ -205,10 +205,15 @@ type Config struct {
 	EpisodicMinChars int `env:"MEMINI_EPISODIC_MIN_CHARS" envDefault:"120"`
 
 	// DistillOnWrite distils each fresh episodic capture into durable semantic
-	// facts at write time (mem0-style), instead of waiting on the access-gated
-	// batch promoter. Needs an LLM (the distiller); no-op without one. Off by
-	// default — it adds one LLM call per substantive capture.
+	// facts at write time, instead of waiting on the access-gated batch promoter.
+	// Needs an LLM (the distiller); no-op without one. Off by default — adds one
+	// LLM call per substantive capture.
 	DistillOnWrite bool `env:"MEMINI_DISTILL_ON_WRITE" envDefault:"false"`
+
+	// DistillDropNoFact, with DistillOnWrite, deletes an episodic capture when
+	// write-time distillation extracts no durable fact — making the LLM a write
+	// filter. Off by default; drops "what happened" recall for turns with no fact.
+	DistillDropNoFact bool `env:"MEMINI_DISTILL_DROP_NO_FACT" envDefault:"false"`
 
 	// Consolidation tuning.
 	// ConsolidateMode is "async" (default), "sync", or "off".

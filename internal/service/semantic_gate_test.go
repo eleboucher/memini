@@ -9,8 +9,8 @@ import (
 	"github.com/eleboucher/memini/internal/service"
 )
 
-// TestRecallMinSemanticScoreGate pins the mem0 score_and_rank semantics: the
-// semantic-score floor excludes a candidate entirely, and the keyword leg cannot
+// TestRecallMinSemanticScoreGate pins the gate semantics: the semantic-score
+// floor excludes a candidate entirely, and the keyword leg cannot
 // reintroduce it. The "poison" memory shares the query token (so the keyword leg
 // matches it) but is semantically far; without the gate it's recalled, with the
 // gate it's dropped while the on-topic memory survives.

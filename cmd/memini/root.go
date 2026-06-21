@@ -230,6 +230,7 @@ func buildServiceStack(
 		service.WithRecallSemanticReserve(cfg.RecallSemanticReserve),
 		service.WithEpisodicMinChars(cfg.EpisodicMinChars),
 		service.WithDistillOnWrite(cfg.DistillOnWrite),
+		service.WithDistillDropNoFact(cfg.DistillDropNoFact),
 		service.WithMetrics(metricsImpl),
 	)
 	svc := service.New(st, embedder, svcOpts...)
