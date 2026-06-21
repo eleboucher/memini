@@ -188,6 +188,9 @@ type Service struct {
 	// recalls empty. 0 disables it. The usable value is embedder-specific (see
 	// docs/recall-relevance-gate-2026-06-20.md).
 	recallMinSemanticScore float64
+	// recallSemanticReserve guarantees up to N recall slots for durable tiers
+	// (semantic/procedural), the rest by relevance. 0 disables it.
+	recallSemanticReserve int
 
 	// distiller is optional; when set, RunPromoter distills frequently-accessed
 	// episodic memories into durable semantic facts.
@@ -369,6 +372,13 @@ func WithRecallMinScore(minScore float64) Option {
 // note and MEMINI_RECALL_MIN_SEMANTIC_SCORE.
 func WithRecallMinSemanticScore(minSemanticScore float64) Option {
 	return func(s *Service) { s.recallMinSemanticScore = minSemanticScore }
+}
+
+// WithRecallSemanticReserve guarantees up to n of the recall slots for durable
+// tiers (semantic/procedural). 0 (the default) disables it. See
+// MEMINI_RECALL_SEMANTIC_RESERVE.
+func WithRecallSemanticReserve(n int) Option {
+	return func(s *Service) { s.recallSemanticReserve = n }
 }
 
 // WithTemporalTargeting enables temporal targeting in the re-ranker: when a
@@ -824,6 +834,10 @@ type RecallInput struct {
 	// recallMinSemanticScore (the absolute vector-relevance gate) for this call.
 	// 0 falls back to the server-wide gate.
 	MinSemanticScore float64
+	// SemanticReserve, when > 0, overrides the server's default
+	// recallSemanticReserve (durable-tier slot reservation) for this call. 0
+	// falls back to the server-wide value.
+	SemanticReserve int
 }
 
 // Recall runs hybrid (vector + keyword) retrieval fused with RRF.
@@ -1016,6 +1030,9 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	} else {
 		ranked = search.Rerank(fused, s.now())
 	}
+	// Reserve slots for durable tiers so episodic chatter can't crowd out
+	// consolidated facts/rules; the pool is already relevance-filtered upstream.
+	ranked = reserveDurableTiers(ranked, k, s.resolveSemanticReserve(in))
 	results := s.finalizeRecall(ctx, in.Query, ranked, k)
 	s.reinforceResults(ctx, results)
 	s.metrics.RecallResult("ok", tf, hitsBucket(len(results)))
@@ -1029,6 +1046,74 @@ func (s *Service) resolveSemanticFloor(in RecallInput) float64 {
 		return in.MinSemanticScore
 	}
 	return s.recallMinSemanticScore
+}
+
+// resolveSemanticReserve returns the per-call SemanticReserve override when set,
+// else the server-wide recallSemanticReserve.
+func (s *Service) resolveSemanticReserve(in RecallInput) int {
+	if in.SemanticReserve > 0 {
+		return in.SemanticReserve
+	}
+	return s.recallSemanticReserve
+}
+
+// reserveDurableTiers recomposes a relevance-ordered pool so up to `reserve` of
+// the top `limit` slots hold durable tiers (semantic/procedural): durables just
+// outside the window are promoted in, evicting the lowest-relevance episodic
+// entries, until the reserve is met. Relevance order is preserved. reserve <= 0
+// or a pool no deeper than `limit` returns the input unchanged.
+func reserveDurableTiers(ranked []store.Scored, limit, reserve int) []store.Scored {
+	if reserve <= 0 || limit <= 0 || len(ranked) <= limit {
+		return ranked
+	}
+	if reserve > limit {
+		reserve = limit
+	}
+	durable := func(t memory.Tier) bool { return t == memory.TierSemantic || t == memory.TierProcedural }
+
+	selected := make(map[int]struct{}, limit)
+	durableCount := 0
+	for i := range limit {
+		selected[i] = struct{}{}
+		if durable(ranked[i].Memory.Tier) {
+			durableCount++
+		}
+	}
+	if durableCount >= reserve {
+		return ranked
+	}
+
+	for i := limit; i < len(ranked) && durableCount < reserve; i++ {
+		if !durable(ranked[i].Memory.Tier) {
+			continue
+		}
+		evict := -1
+		for j := limit - 1; j >= 0; j-- {
+			if _, ok := selected[j]; ok && !durable(ranked[j].Memory.Tier) {
+				evict = j
+				break
+			}
+		}
+		if evict < 0 {
+			break // window is all durable; nothing to give up
+		}
+		delete(selected, evict)
+		selected[i] = struct{}{}
+		durableCount++
+	}
+
+	out := make([]store.Scored, 0, len(ranked))
+	for i := range ranked {
+		if _, ok := selected[i]; ok {
+			out = append(out, ranked[i])
+		}
+	}
+	for i := range ranked {
+		if _, ok := selected[i]; !ok {
+			out = append(out, ranked[i])
+		}
+	}
+	return out
 }
 
 // gateSemantic drops vector candidates scoring below floor and restricts the

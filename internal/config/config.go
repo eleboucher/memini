@@ -193,6 +193,11 @@ type Config struct {
 	// qwen3-embedding-0.6b). See docs/recall-relevance-gate-2026-06-20.md.
 	RecallMinSemanticScore float64 `env:"MEMINI_RECALL_MIN_SEMANTIC_SCORE" envDefault:"0"`
 
+	// RecallSemanticReserve guarantees up to N recall slots for durable tiers
+	// (semantic/procedural) so episodic chatter can't crowd out consolidated
+	// memory; the rest fill by relevance. Default 0 (off).
+	RecallSemanticReserve int `env:"MEMINI_RECALL_SEMANTIC_RESERVE" envDefault:"0"`
+
 	// Consolidation tuning.
 	// ConsolidateMode is "async" (default), "sync", or "off".
 	ConsolidateMode string `env:"MEMINI_CONSOLIDATE_MODE" envDefault:"async"`
