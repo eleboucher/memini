@@ -42,6 +42,7 @@ const typeboxConfigSchema = Type.Object(
     expose_tools: Type.Optional(Type.Boolean()),
     recall_limit: Type.Optional(Type.Number()),
     recall_max_tokens: Type.Optional(Type.Number()),
+    recall_semantic_reserve: Type.Optional(Type.Number()),
   },
   { additionalProperties: false },
 );
@@ -105,6 +106,14 @@ export function resolveConfig(pluginConfig: any) {
       Number.isFinite(c.recall_max_tokens) && c.recall_max_tokens > 0
         ? c.recall_max_tokens
         : intEnv("MEMINI_INJECT_RECALL_MAX_TOK", 800),
+    // Reserve up to N of the recall_limit slots for durable (consolidated)
+    // memories — semantic + procedural — so high-volume episodic chatter can't
+    // crowd distilled facts/rules out of recall. 0 (default) reserves nothing,
+    // i.e. identical to prior behavior.
+    recall_semantic_reserve:
+      Number.isFinite(c.recall_semantic_reserve) && c.recall_semantic_reserve > 0
+        ? c.recall_semantic_reserve
+        : 0,
   };
 }
 
@@ -118,6 +127,32 @@ function intEnv(name: string, def: number) {
 }
 
 export type ResolvedConfig = ReturnType<typeof resolveConfig>;
+
+// The consolidated tiers: LLM-distilled facts (semantic) and rules/runbooks
+// (procedural), as opposed to raw per-turn episodic captures.
+const DURABLE_TIERS = new Set(["semantic", "procedural"]);
+
+// reserveDurableTiers caps `results` at `limit`, but first guarantees up to
+// `reserve` of those slots go to durable (consolidated) memories, so episodic
+// chatter — which usually outnumbers consolidated memory by an order of
+// magnitude — can't crowd distilled facts/rules out of recall. Remaining slots
+// fill by relevance (any tier). reserve <= 0 is a plain top-`limit` slice.
+// Output preserves the input's relevance order.
+export function reserveDurableTiers(results: any[], limit: number, reserve: number) {
+  if (!Array.isArray(results)) return [];
+  if (reserve <= 0 || results.length <= limit) return results.slice(0, limit);
+  const want = Math.min(reserve, limit);
+  const keep = new Set<any>();
+  for (const r of results) {
+    if (keep.size >= want) break;
+    if (DURABLE_TIERS.has(r?.memory?.tier)) keep.add(r);
+  }
+  for (const r of results) {
+    if (keep.size >= limit) break;
+    keep.add(r);
+  }
+  return results.filter((r) => keep.has(r)).slice(0, limit);
+}
 
 // sanitizeNsSegment keeps a namespace segment header-safe (the server sanitizes
 // too, but the X-Memini-Namespace value should be clean): alnum, dot, dash,
@@ -680,7 +715,14 @@ const plugin: {
       if (shouldSkipSystemTurn(cfg, event, ctx, prompt)) return;
       const ns = effectiveNamespace(cfg, event, ctx);
       if (ns == null) return;
-      const body: any = { query: prompt, limit: cfg.recall_limit };
+      // Over-fetch a candidate pool when reserving durable slots, so semantic/
+      // procedural memories can surface in the pool despite episodic dominating
+      // by volume; reserveDurableTiers composes it back down to recall_limit.
+      const fetchLimit =
+        cfg.recall_semantic_reserve > 0
+          ? Math.max(cfg.recall_limit * 4, cfg.recall_limit + 12)
+          : cfg.recall_limit;
+      const body: any = { query: prompt, limit: fetchLimit };
       // Exclude this session's own just-captured turns: they're still in the
       // live transcript, so recalling them echoes the conversation back as
       // "long-term memory". agent_end tags each capture with session_id.
@@ -694,6 +736,7 @@ const plugin: {
         const seen = injectedBySession.get(session);
         if (seen?.size) results = results.filter((r: any) => !seen.has(r?.memory?.id));
       }
+      results = reserveDurableTiers(results, cfg.recall_limit, cfg.recall_semantic_reserve);
       const bullets = formatResults(results, recallLabels());
       if (bullets.length === 0) return;
       // Apply the token ceiling to the rendered bullets; recall_max_tokens <= 0

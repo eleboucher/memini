@@ -8,6 +8,7 @@ import plugin, {
   effectiveNamespace,
   meminiListPath,
   registerMeminiTools,
+  reserveDurableTiers,
   resolveConfig,
   sessionIdentity,
   shouldSkipSystemTurn,
@@ -282,6 +283,34 @@ test("resolveConfig defaults recall_limit to 3", () => {
 
 test("resolveConfig honors explicit recall_limit", () => {
   assert.equal(resolveConfig({ recall_limit: 2 }).recall_limit, 2);
+});
+
+test("resolveConfig defaults recall_semantic_reserve to 0 (off) and honors it", () => {
+  assert.equal(resolveConfig(undefined).recall_semantic_reserve, 0);
+  assert.equal(resolveConfig({ recall_semantic_reserve: 2 }).recall_semantic_reserve, 2);
+  assert.equal(resolveConfig({ recall_semantic_reserve: 0 }).recall_semantic_reserve, 0);
+});
+
+// Episodic outnumbers consolidated memory ~20:1, so top-by-relevance recall is
+// nearly all episodic chatter. reserveDurableTiers guarantees up to N slots for
+// semantic/procedural without losing relevance order (eleboucher/memini#21).
+test("reserveDurableTiers reserves slots for semantic/procedural over episodic", () => {
+  const pool = [
+    { memory: { id: "e1", tier: "episodic" } },
+    { memory: { id: "e2", tier: "episodic" } },
+    { memory: { id: "s1", tier: "semantic" } },
+    { memory: { id: "e3", tier: "episodic" } },
+    { memory: { id: "p1", tier: "procedural" } },
+  ];
+  const ids = (rs) => rs.map((r) => r.memory.id);
+  // reserve 0 = plain top-limit, unchanged
+  assert.deepEqual(ids(reserveDurableTiers(pool, 2, 0)), ["e1", "e2"]);
+  // reserve 1 = keep the top episodic + pull in the top durable, relevance order
+  assert.deepEqual(ids(reserveDurableTiers(pool, 2, 1)), ["e1", "s1"]);
+  // reserve 2 = two durable slots
+  assert.deepEqual(ids(reserveDurableTiers(pool, 2, 2)), ["s1", "p1"]);
+  // reserve capped at limit; pool already <= limit returns as-is
+  assert.deepEqual(ids(reserveDurableTiers(pool.slice(0, 2), 3, 2)), ["e1", "e2"]);
 });
 
 test("resolveConfig falls back when recall_limit is zero/negative", () => {
