@@ -191,6 +191,10 @@ type Service struct {
 	// recallSemanticReserve guarantees up to N recall slots for durable tiers
 	// (semantic/procedural), the rest by relevance. 0 disables it.
 	recallSemanticReserve int
+	// episodicMinChars drops an episodic write whose substantive content (role
+	// scaffolding stripped) is below this many characters — the "keep going" /
+	// "ok" chatter that otherwise dominates episodic memory. 0 disables it.
+	episodicMinChars int
 
 	// distiller is optional; when set, RunPromoter distills frequently-accessed
 	// episodic memories into durable semantic facts.
@@ -379,6 +383,12 @@ func WithRecallMinSemanticScore(minSemanticScore float64) Option {
 // MEMINI_RECALL_SEMANTIC_RESERVE.
 func WithRecallSemanticReserve(n int) Option {
 	return func(s *Service) { s.recallSemanticReserve = n }
+}
+
+// WithEpisodicMinChars drops episodic writes whose substantive content is below
+// n characters. 0 (the default) disables it. See MEMINI_EPISODIC_MIN_CHARS.
+func WithEpisodicMinChars(n int) Option {
+	return func(s *Service) { s.episodicMinChars = n }
 }
 
 // WithTemporalTargeting enables temporal targeting in the re-ranker: when a
@@ -605,6 +615,15 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	if err != nil {
 		s.metrics.RememberResult("error", string(tier))
 		return nil, err
+	}
+
+	// Episodic value gate: drop low-signal per-turn chatter ("keep going", "ok")
+	// before it embeds and lands in episodic memory for 90 days. Only episodic is
+	// gated, so durable writes and promotion are unaffected. A drop returns
+	// (nil, nil) — accepted, not stored.
+	if s.dropsLowSignalEpisodic(tier, in.Content) {
+		s.metrics.RememberResult("dropped", string(tier))
+		return nil, nil
 	}
 
 	// Exact-restatement fast path: a fresh write whose normalized content already

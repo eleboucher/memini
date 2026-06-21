@@ -195,6 +195,12 @@ func (h *Server) RememberMemory(w http.ResponseWriter, r *http.Request, _ Rememb
 		writeError(w, r, statusFor(err), err)
 		return
 	}
+	// A nil memory with no error means the episodic value gate dropped the write:
+	// accepted, not stored.
+	if m == nil {
+		httputil.JSON(w, http.StatusOK, map[string]any{"stored": false, "reason": "low_signal"})
+		return
+	}
 	httputil.JSON(w, http.StatusCreated, apiMemory(m))
 }
 

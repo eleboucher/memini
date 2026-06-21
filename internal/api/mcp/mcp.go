@@ -170,6 +170,8 @@ type rememberArgs struct {
 type rememberResult struct {
 	ID   string `json:"id"`
 	Tier string `json:"tier"`
+	// Stored is false when the episodic value gate dropped the write (low signal).
+	Stored bool `json:"stored"`
 }
 
 func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in rememberArgs) (*mcpsdk.CallToolResult, rememberResult, error) {
@@ -202,7 +204,10 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 	if err != nil {
 		return nil, rememberResult{}, err
 	}
-	return nil, rememberResult{ID: m.ID, Tier: string(m.Tier)}, nil
+	if m == nil { // episodic value gate dropped the write
+		return nil, rememberResult{Tier: string(input.Tier), Stored: false}, nil
+	}
+	return nil, rememberResult{ID: m.ID, Tier: string(m.Tier), Stored: true}, nil
 }
 
 type recallArgs struct {

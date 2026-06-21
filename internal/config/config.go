@@ -198,6 +198,12 @@ type Config struct {
 	// memory; the rest fill by relevance. Default 0 (off).
 	RecallSemanticReserve int `env:"MEMINI_RECALL_SEMANTIC_RESERVE" envDefault:"0"`
 
+	// EpisodicMinChars drops an episodic write whose substantive content (role
+	// scaffolding stripped) is below this many characters — the low-signal
+	// per-turn chatter ("keep going", "ok", "hello") that otherwise dominates
+	// episodic memory. Only episodic is gated. Default 120 (on); set 0 to disable.
+	EpisodicMinChars int `env:"MEMINI_EPISODIC_MIN_CHARS" envDefault:"120"`
+
 	// Consolidation tuning.
 	// ConsolidateMode is "async" (default), "sync", or "off".
 	ConsolidateMode string `env:"MEMINI_CONSOLIDATE_MODE" envDefault:"async"`
