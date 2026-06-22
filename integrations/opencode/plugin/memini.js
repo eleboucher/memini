@@ -346,8 +346,19 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
   // the same turn don't write duplicates.
   const captured = new Set();
 
+  // opencode runs chat.message via an unguarded Effect.promise (a throw aborts the
+  // turn) and dispatches event hooks fire-and-forget, so a hook must never reject:
+  // swallow and log instead.
+  const guard = (name, fn) => async (...args) => {
+    try {
+      return await fn(...args);
+    } catch (error) {
+      log.warn(`${name} hook failed: ${String(error)}`);
+    }
+  };
+
   return {
-    "chat.message": async (input, output) => {
+    "chat.message": guard("chat.message", async (input, output) => {
       if (!cfg.recall) return;
       const query = extractPartsText(output && output.parts);
       if (!query) return;
@@ -399,9 +410,9 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
         synthetic: true,
         text: lines.join("\n"),
       });
-    },
+    }),
 
-    event: async ({ event }) => {
+    event: guard("event", async ({ event }) => {
       if (!cfg.capture || !event || event.type !== "session.idle") return;
       const sessionID = event.properties && event.properties.sessionID;
       if (!sessionID) return;
@@ -416,7 +427,7 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
         metadata: { source: "opencode", session_id: sessionID, format: "turn" },
       });
       if (stored !== null && assistantID) captured.add(assistantID);
-    },
+    }),
   };
 };
 

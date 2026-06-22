@@ -325,3 +325,44 @@ test("chat.message drops hits below MEMINI_INJECT_RECALL_MIN_SCORE", async () =>
     globalThis.fetch = realFetch;
   }
 });
+
+// Neither hook may ever reject: opencode aborts the turn on a chat.message throw
+// and raises an unhandled rejection on an event throw.
+test("chat.message never rejects, even when the memini call throws", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("network down");
+  };
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      // fallback_on_error:false makes postJson rethrow; the hook guard must still swallow.
+      { base_url: "http://localhost:8080", fallback_on_error: false },
+    );
+    await assert.doesNotReject(
+      hooks["chat.message"](
+        { sessionID: "s1" },
+        { parts: [{ type: "text", text: "q", sessionID: "s1", messageID: "m1" }] },
+      ),
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("event never rejects, even when client.session.messages throws", async () => {
+  const client = {
+    session: {
+      messages: async () => {
+        throw new Error("opencode server error");
+      },
+    },
+  };
+  const hooks = await MeminiPlugin(
+    { client, worktree: "/tmp/proj", directory: "/tmp/proj" },
+    { base_url: "http://localhost:8080" },
+  );
+  await assert.doesNotReject(
+    hooks.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } }),
+  );
+});
