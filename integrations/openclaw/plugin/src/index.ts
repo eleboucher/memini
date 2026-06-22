@@ -55,11 +55,12 @@ const configSchema = buildJsonPluginConfigSchema(typeboxConfigSchema as any);
 // sessions that carry no agent identity.
 const DEFAULT_NAMESPACE_TEMPLATE = "{namespace}-{agent}";
 
-// Turn "kinds" that mark a system-initiated turn (scheduled/heartbeat/cron
-// polls) rather than a user-driven one. These resolve an agent identity like
-// any other turn, so skip_without_agent doesn't catch them — skip_system_turns
-// does. Override the set via the system_kinds config.
-const DEFAULT_SYSTEM_KINDS = ["cron", "heartbeat", "scheduled", "schedule"];
+// OpenClaw's ctx.trigger values that mark a system-initiated run rather than a
+// user message (PluginHookAgentContext.trigger is "user" | "heartbeat" |
+// "cron" | …). These resolve an agent identity like any other turn, so
+// skip_without_agent doesn't catch them — skip_system_turns does. Matched
+// case-insensitively; override the set via the system_kinds config.
+const DEFAULT_SYSTEM_KINDS = ["heartbeat", "cron"];
 
 // resolveConfig normalizes raw plugin config into the defaults the plugin runs with.
 export function resolveConfig(pluginConfig: any) {
@@ -73,11 +74,12 @@ export function resolveConfig(pluginConfig: any) {
     namespace_per_agent: c.namespace_per_agent !== false,
     namespace_template: c.namespace_template || DEFAULT_NAMESPACE_TEMPLATE,
     skip_without_agent: c.skip_without_agent === true,
-    // Off by default (backward-compat): when on, system-initiated turns
-    // (cron/heartbeat/scheduled polls) are skipped for both recall and capture
-    // even when they carry an agent identity, so scheduled-task chatter doesn't
-    // accumulate as episodic noise. system_kinds overrides the matched kinds.
-    skip_system_turns: c.skip_system_turns === true,
+    // On by default: system-initiated turns (cron/heartbeat/scheduled polls) are
+    // skipped for both recall and capture even when they carry an agent identity,
+    // so scheduled-task chatter doesn't pull long-term memory or accumulate as
+    // episodic noise. Set skip_system_turns:false to recall/capture on them as
+    // before. system_kinds overrides the matched kinds.
+    skip_system_turns: c.skip_system_turns !== false,
     system_kinds:
       Array.isArray(c.system_kinds) && c.system_kinds.length
         ? c.system_kinds.map((k: any) => String(k).toLowerCase())
@@ -198,52 +200,20 @@ export function effectiveNamespace(cfg: ResolvedConfig, event: any, ctx: any) {
   return tmpl.replaceAll("{agent}", id).replaceAll("{namespace}", cfg.namespace);
 }
 
-// Leading marker some gateways prepend to a system turn's text, e.g.
-// "[OpenClaw heartbeat poll]" or "[cron:daily (...)]". Only the first bracketed
-// segment is inspected, so a user quoting "[cron ...]" mid-message is ignored.
-const LEADING_MARKER = /^\s*\[([^\]]{1,80})\]/;
-
-// detectSystemKind returns the system-turn kind for an event when one is
-// identifiable, else "". It checks, in order: explicit kind/trigger fields on
-// ctx/event, the session key segments (agent:<id>:cron:..., heartbeat:gateway),
-// and a leading bracket marker on the turn text. Field values match on
-// substring (kind:"scheduled" -> "scheduled"); session-key segments match
-// whole-segment only, so an agent id like "concord" never reads as "cron".
-export function detectSystemKind(event: any, ctx: any, text: any, kinds: string[] = DEFAULT_SYSTEM_KINDS) {
-  const includesKind = (value: any) => {
-    if (typeof value !== "string" || !value) return "";
-    const lower = value.toLowerCase();
-    return kinds.find((k) => lower.includes(k)) || "";
-  };
-
-  const fields = [
-    ctx?.kind, ctx?.trigger, ctx?.sessionKind,
-    event?.kind, event?.trigger, event?.sessionKind,
-    event?.session?.kind, event?.session?.trigger,
-  ];
-  for (const f of fields) {
-    const k = includesKind(f);
-    if (k) return k;
-  }
-
-  const keys = [ctx?.sessionKey, event?.sessionKey, ctx?.sessionId, event?.sessionId, ctx?.runId, event?.runId];
-  for (const key of keys) {
-    if (typeof key !== "string") continue;
-    for (const seg of key.split(/[:/]/)) {
-      const k = kinds.find((kind) => kind === seg.toLowerCase());
-      if (k) return k;
-    }
-  }
-
-  const m = typeof text === "string" ? text.match(LEADING_MARKER) : null;
-  return m ? includesKind(m[1]) : "";
+// detectSystemKind returns the system-turn kind from the hook context, else "".
+// OpenClaw sets PluginHookAgentContext.trigger on every run ("user" for a real
+// message, "heartbeat"/"cron" for system polls). Heartbeat and cron runs reuse
+// the agent's main session and carry no distinguishing prompt text, so trigger
+// is the only reliable signal — there's no marker or session-key segment to parse.
+export function detectSystemKind(ctx: any, kinds: string[] = DEFAULT_SYSTEM_KINDS) {
+  const trigger = typeof ctx?.trigger === "string" ? ctx.trigger.toLowerCase() : "";
+  return trigger && kinds.includes(trigger) ? trigger : "";
 }
 
 // shouldSkipSystemTurn reports whether this turn should be skipped (no recall,
-// no capture) because skip_system_turns is on and the turn is system-initiated.
-export function shouldSkipSystemTurn(cfg: ResolvedConfig, event: any, ctx: any, text: any) {
-  if (!cfg.skip_system_turns) return false;
-  return detectSystemKind(event, ctx, text, cfg.system_kinds) !== "";
+// no capture) because skip_system_turns is on and ctx.trigger is a system kind.
+export function shouldSkipSystemTurn(cfg: ResolvedConfig, ctx: any) {
+  return cfg.skip_system_turns && detectSystemKind(ctx, cfg.system_kinds) !== "";
 }
 
 // sessionIdentity pulls a stable per-session id from the hook event/ctx, used
@@ -685,7 +655,7 @@ const plugin: {
       if (!cfg.enabled) return;
       const prompt = typeof event?.prompt === "string" ? event.prompt.trim() : "";
       if (!prompt) return;
-      if (shouldSkipSystemTurn(cfg, event, ctx, prompt)) return;
+      if (shouldSkipSystemTurn(cfg, ctx)) return;
       const ns = effectiveNamespace(cfg, event, ctx);
       if (ns == null) return;
       const body: any = { query: prompt, limit: cfg.recall_limit };
@@ -741,7 +711,7 @@ const plugin: {
       const userText = lastTextByRole(event.messages, "user");
       const assistantText = lastTextByRole(event.messages, "assistant");
       if (!userText || !assistantText) return;
-      if (shouldSkipSystemTurn(cfg, event, ctx, userText)) return;
+      if (shouldSkipSystemTurn(cfg, ctx)) return;
       // Drop OpenClaw runtime plumbing from the captured turn: untrusted-metadata
       // preambles, and subagent task delegations (framing, not conversation).
       const captureUser = stripRuntimePreambles(userText);

@@ -131,10 +131,12 @@ test("skip_without_agent skips gateway-level sessions but keeps agent crons", ()
 
 // --- skip_system_turns ------------------------------------------------------
 
-test("skip_system_turns defaults off with the standard kinds", () => {
+test("skip_system_turns defaults on with the OpenClaw trigger kinds", () => {
   const cfg = resolveConfig(undefined);
-  assert.equal(cfg.skip_system_turns, false);
-  assert.deepEqual(cfg.system_kinds, ["cron", "heartbeat", "scheduled", "schedule"]);
+  assert.equal(cfg.skip_system_turns, true);
+  assert.deepEqual(cfg.system_kinds, ["heartbeat", "cron"]);
+  // Opt back out explicitly.
+  assert.equal(resolveConfig({ skip_system_turns: false }).skip_system_turns, false);
 });
 
 test("system_kinds can be overridden and is lowercased", () => {
@@ -142,39 +144,37 @@ test("system_kinds can be overridden and is lowercased", () => {
   assert.deepEqual(cfg.system_kinds, ["poll", "tick"]);
 });
 
-test("detectSystemKind reads explicit fields, session keys, and bracket markers", () => {
-  // explicit kind/trigger on ctx or event
-  assert.equal(detectSystemKind({}, { kind: "scheduled" }), "scheduled");
-  assert.equal(detectSystemKind({ trigger: "cron" }, {}), "cron");
-  // session key segments — even when agent-attributed
-  assert.equal(detectSystemKind({}, { sessionKey: "agent:carol:cron:daily" }), "cron");
-  assert.equal(detectSystemKind({}, { sessionKey: "agent:alice:heartbeat:hourly" }), "heartbeat");
-  // leading bracket marker on the turn text
-  assert.equal(detectSystemKind({}, {}, "[OpenClaw heartbeat poll]"), "heartbeat");
-  assert.equal(detectSystemKind({}, {}, "[cron:daily (status sweep)] do the thing"), "cron");
-  // user-driven turns are not system turns
-  assert.equal(detectSystemKind({}, { sessionKey: "agent:bob:b7d2-uuid" }, "fix the bug"), "");
-  // an agent id that merely contains a kind substring is not a system turn
-  assert.equal(detectSystemKind({}, { sessionKey: "agent:concord:b7d2" }), "");
-  // a user quoting a marker mid-message is ignored (marker must lead)
-  assert.equal(detectSystemKind({}, {}, "see the [cron] docs"), "");
+// Verified against OpenClaw source @3288291 (src/plugins/hook-before-agent-start.types.ts,
+// src/auto-reply/reply/get-reply.ts): before_prompt_build/agent_end receive a
+// PluginHookAgentContext whose `trigger` is "user" for a real message and
+// "heartbeat"/"cron" for system polls. Heartbeat/cron runs reuse the agent's
+// main session (sessionKey "agent:main:main") and carry the configured
+// HEARTBEAT.md prompt — no marker, no kind segment — so ctx.trigger is the only
+// reliable signal.
+test("detectSystemKind matches ctx.trigger, case-insensitive and exact", () => {
+  assert.equal(detectSystemKind({ trigger: "heartbeat" }), "heartbeat");
+  assert.equal(detectSystemKind({ trigger: "CRON" }), "cron");
+  // a real user turn and unknown/other triggers are not system turns
+  assert.equal(detectSystemKind({ trigger: "user" }), "");
+  assert.equal(detectSystemKind({ trigger: "budget" }), "");
+  assert.equal(detectSystemKind({}), "");
 });
 
-test("shouldSkipSystemTurn gates only when enabled and matched", () => {
-  const off = resolveConfig({});
-  assert.equal(shouldSkipSystemTurn(off, {}, { sessionKey: "agent:carol:cron:daily" }), false);
-  const on = resolveConfig({ skip_system_turns: true });
-  assert.equal(shouldSkipSystemTurn(on, {}, { sessionKey: "agent:carol:cron:daily" }), true);
-  assert.equal(shouldSkipSystemTurn(on, {}, {}, "[OpenClaw heartbeat poll]"), true);
-  // normal agent turn is kept
-  assert.equal(shouldSkipSystemTurn(on, {}, { agentId: "carol" }, "fix the bug"), false);
+test("shouldSkipSystemTurn gates on flag + ctx.trigger; default-on skips heartbeats", () => {
+  const def = resolveConfig(undefined); // skip_system_turns on by default
+  assert.equal(shouldSkipSystemTurn(def, { trigger: "heartbeat", sessionKey: "agent:main:main" }), true);
+  assert.equal(shouldSkipSystemTurn(def, { trigger: "cron" }), true);
+  assert.equal(shouldSkipSystemTurn(def, { trigger: "user" }), false);
+  // flag off keeps everything
+  const off = resolveConfig({ skip_system_turns: false });
+  assert.equal(shouldSkipSystemTurn(off, { trigger: "heartbeat" }), false);
 });
 
 test("shouldSkipSystemTurn honors a custom system_kinds set", () => {
   const on = resolveConfig({ skip_system_turns: true, system_kinds: ["poll"] });
-  assert.equal(shouldSkipSystemTurn(on, { kind: "poll" }, {}), true);
+  assert.equal(shouldSkipSystemTurn(on, { trigger: "poll" }), true);
   // a default kind no longer matches once the set is overridden
-  assert.equal(shouldSkipSystemTurn(on, {}, { sessionKey: "agent:carol:cron:daily" }), false);
+  assert.equal(shouldSkipSystemTurn(on, { trigger: "heartbeat" }), false);
 });
 
 // --- explicit tools (expose_tools) -----------------------------------------

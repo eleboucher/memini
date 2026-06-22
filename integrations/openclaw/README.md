@@ -120,15 +120,16 @@ When an event carries no agent identity, it falls back to the base `namespace`
 memory rather than being dropped. Set `"skip_without_agent": true` to skip those
 sessions entirely instead.
 
-`skip_without_agent` only drops turns with **no** agent identity. A cron- or
-heartbeat-triggered turn that _is_ agent-attributed still resolves a namespace
-and gets captured, so scheduled-task chatter (`[OpenClaw heartbeat poll]`,
-`[cron:… ]`) accumulates as episodic noise. Set `"skip_system_turns": true` to
-skip recall **and** capture for system-initiated turns regardless of agent
-attribution. A turn is system-initiated when an explicit `kind`/`trigger` field,
-a session key segment (`agent:carol:cron:daily`), or a leading bracket marker on
-the turn text matches one of `system_kinds` (default `["cron", "heartbeat",
-"scheduled", "schedule"]`; override to match your gateway's labels).
+`skip_without_agent` only drops turns with **no** agent identity. A heartbeat or
+cron run _is_ agent-attributed (it reuses the agent's main session), so without
+further gating it would pull long-term memory into the poll and get captured as
+episodic noise. To prevent that, `"skip_system_turns"` is **on by default**:
+recall **and** capture are skipped for system-initiated runs. Set
+`"skip_system_turns": false` to recall/capture on them as before. A run is
+system-initiated when OpenClaw's `ctx.trigger` (set per run to `user`,
+`heartbeat`, or `cron`) matches one of `system_kinds` (default
+`["heartbeat", "cron"]`, matched case-insensitively; override for custom
+triggers).
 
 To share **one** memory across all agents (the previous default), set
 `"namespace_per_agent": false`. If you previously ran with shared memory and want

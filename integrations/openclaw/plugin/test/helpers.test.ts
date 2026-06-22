@@ -57,8 +57,8 @@ test("resolveConfig: defaults match the documented contract", () => {
   assert.equal(cfg.namespace_per_agent, true);
   assert.equal(cfg.namespace_template, "{namespace}-{agent}");
   assert.equal(cfg.skip_without_agent, false);
-  assert.equal(cfg.skip_system_turns, false);
-  assert.deepEqual(cfg.system_kinds, ["cron", "heartbeat", "scheduled", "schedule"]);
+  assert.equal(cfg.skip_system_turns, true);
+  assert.deepEqual(cfg.system_kinds, ["heartbeat", "cron"]);
   assert.equal(cfg.fallback_on_error, true);
   assert.equal(cfg.timeout_ms, 5000);
   assert.equal(cfg.expose_tools, false);
@@ -109,27 +109,19 @@ test("effectiveNamespace: per-agent mode falls back to base when no id", () => {
   assert.equal(effectiveNamespace(cfg, {}, {}), "openclaw");
 });
 
-test("detectSystemKind: explicit field wins over session-key segment", () => {
-  const k = detectSystemKind({ kind: "scheduled" }, { sessionKey: "agent:alice:cron:abc" }, "");
-  assert.equal(k, "scheduled");
-});
-
-test("detectSystemKind: session-key whole-segment match only (no substring)", () => {
-  // An agent id that contains "cron" must not match.
-  assert.equal(detectSystemKind({}, { sessionKey: "agent:cron-master:abc" }, ""), "");
-  assert.equal(detectSystemKind({}, { sessionKey: "agent:alice:cron:abc" }, ""), "cron");
-});
-
-test("detectSystemKind: leading bracketed marker is recognized", () => {
-  assert.equal(detectSystemKind({}, {}, "[OpenClaw heartbeat poll] do stuff"), "heartbeat");
-  // A bracket mid-message is ignored.
-  assert.equal(detectSystemKind({}, {}, "the user wrote [cron task] in chat"), "");
+test("detectSystemKind: reads ctx.trigger, case-insensitive, exact match", () => {
+  assert.equal(detectSystemKind({ trigger: "heartbeat" }), "heartbeat");
+  assert.equal(detectSystemKind({ trigger: "CRON" }), "cron");
+  // "user" turns and unknown triggers are not system turns
+  assert.equal(detectSystemKind({ trigger: "user" }), "");
+  assert.equal(detectSystemKind({ trigger: "budget" }), "");
+  assert.equal(detectSystemKind({}), "");
 });
 
 test("shouldSkipSystemTurn: gates only when both flags are on", () => {
-  assert.equal(shouldSkipSystemTurn(baseCfg({ skip_system_turns: false }), { kind: "cron" }, {}, "hi"), false);
-  assert.equal(shouldSkipSystemTurn(baseCfg({ skip_system_turns: true }), { kind: "user" }, {}, "hi"), false);
-  assert.equal(shouldSkipSystemTurn(baseCfg({ skip_system_turns: true }), { kind: "scheduled" }, {}, "hi"), true);
+  assert.equal(shouldSkipSystemTurn(baseCfg({ skip_system_turns: false }), { trigger: "heartbeat" }), false);
+  assert.equal(shouldSkipSystemTurn(baseCfg({ skip_system_turns: true }), { trigger: "user" }), false);
+  assert.equal(shouldSkipSystemTurn(baseCfg({ skip_system_turns: true }), { trigger: "heartbeat" }), true);
 });
 
 test("sessionIdentity: prefers session ids over run/sessionKey", () => {
