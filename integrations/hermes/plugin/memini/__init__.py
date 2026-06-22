@@ -380,7 +380,8 @@ class MeminiMemoryProvider(MemoryProvider):
         })
 
     def on_memory_write(self, action: str, target: str, content: str, **kwargs: Any) -> None:
-        if action in ("add", "update") and content.strip():
+        # Hermes emits action ∈ {add, replace, remove}; mirror those that add content.
+        if action in ("add", "replace") and content.strip():
             self._call_bg("/v1/memories", {"content": content.strip()[:4000], "tier": "semantic"})
 
     def get_tool_schemas(self) -> list[dict]:

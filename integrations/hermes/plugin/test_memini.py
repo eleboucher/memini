@@ -96,6 +96,30 @@ class PrefetchTest(unittest.TestCase):
         self.assertIn("prior note", out)
 
 
+class OnMemoryWriteTest(unittest.TestCase):
+    def _provider(self, captured):
+        p = make_provider(lambda *a, **k: None)
+        # on_memory_write writes via the background helper; capture it directly.
+        p._call_bg = lambda path, body: captured.update(path=path, body=body)
+        return p
+
+    def test_mirrors_add_and_replace(self):
+        # Hermes emits action ∈ {add, replace, remove}; add and replace mirror.
+        for action in ("add", "replace"):
+            captured = {}
+            self._provider(captured).on_memory_write(action, "memory", "a durable fact")
+            self.assertEqual(captured["path"], "/v1/memories")
+            self.assertEqual(captured["body"]["tier"], "semantic")
+            self.assertEqual(captured["body"]["content"], "a durable fact")
+
+    def test_ignores_remove_and_empty_content(self):
+        captured = {}
+        p = self._provider(captured)
+        p.on_memory_write("remove", "memory", "gone")
+        p.on_memory_write("add", "memory", "   ")
+        self.assertEqual(captured, {})
+
+
 class HandleToolCallTest(unittest.TestCase):
     def test_remember_maps_category_and_defaults_tier(self):
         captured = {}
