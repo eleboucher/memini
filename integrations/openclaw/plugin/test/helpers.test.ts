@@ -85,28 +85,28 @@ test("resolveConfig: explicit recall_limit survives, zero/negative/non-finite fa
 });
 
 test("effectiveNamespace: return type is `string | null`", () => {
-  const a: string | null = effectiveNamespace(baseCfg({ namespace_per_agent: true, namespace_template: "{agent}" }), { agentId: "alice" }, {});
+  const a: string | null = effectiveNamespace(baseCfg({ namespace_per_agent: true, namespace_template: "{agent}" }), { agentId: "alice" });
   assert.equal(a, "alice");
 
   const b: string | null = effectiveNamespace(
     baseCfg({ namespace_per_agent: true, skip_without_agent: true, namespace_template: "{agent}" }),
     {},
-    {},
   );
   assert.equal(b, null);
 
-  const c: string | null = effectiveNamespace(baseCfg({ namespace_per_agent: false }), { agentId: "alice" }, {});
+  const c: string | null = effectiveNamespace(baseCfg({ namespace_per_agent: false }), { agentId: "alice" });
   assert.equal(c, "openclaw");
 });
 
-test("effectiveNamespace: ctx identity wins over event identity", () => {
+test("effectiveNamespace: resolves ctx.agentId, else the sessionKey agent segment", () => {
   const cfg = baseCfg({ namespace_per_agent: true, namespace_template: "{agent}" });
-  assert.equal(effectiveNamespace(cfg, { agentName: "carol" }, { agentId: "alice" }), "alice");
+  assert.equal(effectiveNamespace(cfg, { agentId: "alice" }), "alice");
+  assert.equal(effectiveNamespace(cfg, { sessionKey: "agent:carol:main" }), "carol");
 });
 
 test("effectiveNamespace: per-agent mode falls back to base when no id", () => {
   const cfg = baseCfg({ namespace_per_agent: true, namespace_template: "{agent}" });
-  assert.equal(effectiveNamespace(cfg, {}, {}), "openclaw");
+  assert.equal(effectiveNamespace(cfg, {}), "openclaw");
 });
 
 test("detectSystemKind: reads ctx.trigger, case-insensitive, exact match", () => {
@@ -124,23 +124,20 @@ test("shouldSkipSystemTurn: gates only when both flags are on", () => {
   assert.equal(shouldSkipSystemTurn(baseCfg({ skip_system_turns: true }), { trigger: "heartbeat" }), true);
 });
 
-test("sessionIdentity: prefers session ids over run/sessionKey", () => {
+test("sessionIdentity: prefers sessionId over sessionKey/runId", () => {
   assert.equal(
-    sessionIdentity(
-      { sessionId: "sess-1", runId: "r-2", sessionKey: "agent:alice:cron:x" },
-      {},
-    ),
+    sessionIdentity({ sessionId: "sess-1", runId: "r-2", sessionKey: "agent:alice:cron:x" }),
     "sess-1",
   );
 });
 
 test("sessionIdentity: empty when no identifier resolves", () => {
-  assert.equal(sessionIdentity({}, {}), "");
-  assert.equal(sessionIdentity({ runId: "" }, {}), "");
+  assert.equal(sessionIdentity({}), "");
+  assert.equal(sessionIdentity({ runId: "" }), "");
 });
 
 test("sessionIdentity: never falls back to the agent id (that would be too coarse)", () => {
-  assert.equal(sessionIdentity({ agentId: "alice" }, { agentId: "alice" }), "");
+  assert.equal(sessionIdentity({ agentId: "alice" }), "");
 });
 
 test("stripRuntimePreambles: drops a single untrusted-metadata block, keeps the message", () => {

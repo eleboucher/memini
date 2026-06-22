@@ -82,21 +82,21 @@ test("default template is the bare agent id", () => {
 
 test("template can prefix and substitute {namespace}", () => {
   const cfg = { namespace: "openclaw", namespace_per_agent: true, namespace_template: "{namespace}-{agent}" };
-  assert.equal(effectiveNamespace(cfg, { agent: { name: "bob" } }), "openclaw-bob");
+  assert.equal(effectiveNamespace(cfg, { agentId: "bob" }), "openclaw-bob");
 });
 
-test("resolves alternate event shapes", () => {
+test("resolves the agent from ctx.agentId or the sessionKey agent segment", () => {
   const cfg = { namespace: "ns", namespace_per_agent: true, namespace_template: "{agent}" };
-  assert.equal(effectiveNamespace(cfg, { agentName: "carol" }), "carol");
-  // raw session UUIDs are not identities (they would fragment namespaces);
-  // only agent-keyed session keys resolve
+  assert.equal(effectiveNamespace(cfg, { agentId: "carol" }), "carol");
+  // raw session ids are not identities (they would fragment namespaces);
+  // only the agent segment of an agent-keyed sessionKey resolves
   assert.equal(effectiveNamespace(cfg, { sessionId: "sess1" }), "ns");
-  assert.equal(effectiveNamespace(cfg, { sessionId: "agent:bob:b7d2-uuid" }), "bob");
+  assert.equal(effectiveNamespace(cfg, { sessionKey: "agent:bob:b7d2-uuid" }), "bob");
 });
 
 test("sanitizes the agent id", () => {
   const cfg = { namespace: "ns", namespace_per_agent: true, namespace_template: "{agent}" };
-  assert.equal(effectiveNamespace(cfg, { agentName: "My Agent/2!" }), "My-Agent-2");
+  assert.equal(effectiveNamespace(cfg, { agentId: "My Agent/2!" }), "My-Agent-2");
 });
 
 test("falls back to base namespace when no agent id", () => {
@@ -115,18 +115,18 @@ test("skip_without_agent still resolves a present agent id", () => {
   assert.equal(effectiveNamespace(cfg, { agentId: "alice" }), "alice");
 });
 
-test("ctx identity wins and session keys parse from ctx", () => {
+test("agentId wins and session keys parse from ctx", () => {
   const cfg = { namespace: "ns", namespace_per_agent: true, namespace_template: "{agent}" };
-  assert.equal(effectiveNamespace(cfg, {}, { agentId: "alice" }), "alice");
-  assert.equal(effectiveNamespace(cfg, {}, { sessionKey: "agent:carol:cron:daily" }), "carol");
-  assert.equal(effectiveNamespace(cfg, {}, { sessionKey: "heartbeat:gateway" }), "ns");
+  assert.equal(effectiveNamespace(cfg, { agentId: "alice" }), "alice");
+  assert.equal(effectiveNamespace(cfg, { sessionKey: "agent:carol:cron:daily" }), "carol");
+  assert.equal(effectiveNamespace(cfg, { sessionKey: "heartbeat:gateway" }), "ns");
 });
 
 test("skip_without_agent skips gateway-level sessions but keeps agent crons", () => {
   const cfg = { namespace: "ns", namespace_per_agent: true, namespace_template: "{agent}", skip_without_agent: true };
-  assert.equal(effectiveNamespace(cfg, {}, { sessionKey: "agent:alice:heartbeat:hourly" }), "alice");
-  assert.equal(effectiveNamespace(cfg, {}, { sessionKey: "heartbeat:gateway" }), null);
-  assert.equal(effectiveNamespace(cfg, {}, {}), null);
+  assert.equal(effectiveNamespace(cfg, { sessionKey: "agent:alice:heartbeat:hourly" }), "alice");
+  assert.equal(effectiveNamespace(cfg, { sessionKey: "heartbeat:gateway" }), null);
+  assert.equal(effectiveNamespace(cfg, {}), null);
 });
 
 // --- skip_system_turns ------------------------------------------------------
@@ -351,15 +351,16 @@ test("recall does not re-inject memories already shown in the same session (#21)
       logger: { warn() {} },
       registerTool() {},
     });
-    const ev = (sessionId) => ({ prompt: "q", session: { id: sessionId } });
-    const first = await hooks.before_prompt_build(ev("s1"), {});
+    const ev = { prompt: "q" };
+    const ctx = (sessionId) => ({ sessionId });
+    const first = await hooks.before_prompt_build(ev, ctx("s1"));
     assert.match(first.prependContext, /alpha/);
     assert.match(first.prependContext, /beta/);
     // Same session, same query (a later tool-call step): both already shown -> no re-injection.
-    const second = await hooks.before_prompt_build(ev("s1"), {});
+    const second = await hooks.before_prompt_build(ev, ctx("s1"));
     assert.equal(second, undefined, "already-shown memories must not be re-injected");
     // A different session still sees them.
-    const other = await hooks.before_prompt_build(ev("s2"), {});
+    const other = await hooks.before_prompt_build(ev, ctx("s2"));
     assert.match(other.prependContext, /alpha/);
   } finally {
     globalThis.fetch = realFetch;
@@ -435,10 +436,10 @@ test("recall searches memini and prepends results; capture writes the episodic t
 });
 
 test("sessionIdentity prefers session ids and sanitizes them; empty without one", () => {
-  assert.equal(sessionIdentity({}, { sessionId: "sess-abc" }), "sess-abc");
-  assert.equal(sessionIdentity({ sessionKey: "agent:bob:run/42" }, {}), "agent-bob-run-42");
-  assert.equal(sessionIdentity({}, { runId: "r1" }), "r1");
-  assert.equal(sessionIdentity({}, {}), "");
+  assert.equal(sessionIdentity({ sessionId: "sess-abc" }), "sess-abc");
+  assert.equal(sessionIdentity({ sessionKey: "agent:bob:run/42" }), "agent-bob-run-42");
+  assert.equal(sessionIdentity({ runId: "r1" }), "r1");
+  assert.equal(sessionIdentity({}), "");
 });
 
 test("auto-recall excludes the current session's own captures; capture tags the session", async () => {

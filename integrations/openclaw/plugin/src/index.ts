@@ -147,54 +147,28 @@ function parseAgentFromSessionKey(value: any) {
   return match ? match[1] : "";
 }
 
-// agentIdentity pulls a stable per-agent id from an OpenClaw hook event and
-// the hook context (the gateway invokes handlers as handler(event, ctx); some
-// events carry no identity fields, but ctx.sessionKey is keyed by agent).
-// Returns "" when neither identifies an agent.
-function agentIdentity(event: any, ctx: any) {
-  const direct = [
-    ctx?.agentId,
-    ctx?.agent_id,
-    event?.agentId,
-    event?.agent_id,
-    event?.agentName,
-    event?.agent?.id,
-    event?.agent?.name,
-    event?.agent?.slug,
-    event?.session?.agentId,
-    event?.session?.agent_id,
-  ];
-  for (const c of direct) {
-    if (typeof c === "string" && c.trim()) return c.trim();
-  }
-  const keys = [
-    ctx?.sessionKey,
-    ctx?.sessionId,
-    ctx?.runId,
-    event?.sessionKey,
-    event?.sessionId,
-    event?.runId,
-  ];
-  for (const k of keys) {
-    const id = parseAgentFromSessionKey(k);
-    if (id) return id;
-  }
-  return "";
+// agentIdentity pulls a stable per-agent id from the hook context. OpenClaw
+// passes identity on ctx (PluginHookAgentContext), never on the event payload:
+// ctx.agentId is the direct id, and ctx.sessionKey ("agent:<id>:…") carries it
+// otherwise. Returns "" when neither identifies an agent.
+function agentIdentity(ctx: any) {
+  const id = ctx?.agentId;
+  if (typeof id === "string" && id.trim()) return id.trim();
+  return parseAgentFromSessionKey(ctx?.sessionKey);
 }
 
 // effectiveNamespace returns the configured namespace, or a per-agent namespace
-// when namespace_per_agent is enabled and the event identifies an agent. The
-// per-agent name comes from namespace_template (default "{agent}"), with
-// {agent} and {namespace} substituted — e.g. "{agent}" -> "alice",
-// "openclaw-{agent}" -> "openclaw-alice". Falls back to the base namespace when
-// no agent id is present, preserving the shared-memory behavior — unless
-// skip_without_agent is set, in which case it returns null so the caller skips
-// the operation entirely (no recall, no write, no fallback namespace). Useful
-// for gateways where unattributable sessions (cron, heartbeat) should not
-// pollute memory.
-export function effectiveNamespace(cfg: ResolvedConfig, event: any, ctx: any) {
+// when namespace_per_agent is enabled and ctx identifies an agent. The per-agent
+// name comes from namespace_template (default "{agent}"), with {agent} and
+// {namespace} substituted — e.g. "{agent}" -> "alice", "openclaw-{agent}" ->
+// "openclaw-alice". Falls back to the base namespace when no agent id is present,
+// preserving the shared-memory behavior — unless skip_without_agent is set, in
+// which case it returns null so the caller skips the operation entirely (no
+// recall, no write, no fallback namespace). Useful for gateways where
+// unattributable sessions (cron, heartbeat) should not pollute memory.
+export function effectiveNamespace(cfg: ResolvedConfig, ctx: any) {
   if (!cfg.namespace_per_agent) return cfg.namespace;
-  const id = sanitizeNsSegment(agentIdentity(event, ctx));
+  const id = sanitizeNsSegment(agentIdentity(ctx));
   if (!id) return cfg.skip_without_agent ? null : cfg.namespace;
   const tmpl = cfg.namespace_template || DEFAULT_NAMESPACE_TEMPLATE;
   return tmpl.replaceAll("{agent}", id).replaceAll("{namespace}", cfg.namespace);
@@ -216,26 +190,17 @@ export function shouldSkipSystemTurn(cfg: ResolvedConfig, ctx: any) {
   return cfg.skip_system_turns && detectSystemKind(ctx, cfg.system_kinds) !== "";
 }
 
-// sessionIdentity pulls a stable per-session id from the hook event/ctx, used
-// to tag captured turns (metadata.session_id) and then exclude this session's
-// own just-captured turns from its pre-turn auto-recall — otherwise a turn
-// still in the live transcript is recalled back as "long-term memory" the very
-// next turn. Unlike agentIdentity (per-agent, shared across an agent's
-// sessions), this is per-session, so two sessions of one agent don't suppress
-// each other. It deliberately does NOT fall back to the agent id: that is too
-// coarse and would exclude the agent's entire history from recall. Returns ""
-// when nothing identifies a session (recall/capture then behave as before).
-export function sessionIdentity(event: any, ctx: any) {
-  const candidates = [
-    ctx?.sessionId,
-    ctx?.sessionKey,
-    ctx?.runId,
-    event?.sessionId,
-    event?.sessionKey,
-    event?.runId,
-    event?.session?.id,
-  ];
-  for (const c of candidates) {
+// sessionIdentity pulls a stable per-session id from the hook context, used to
+// tag captured turns (metadata.session_id) and then exclude this session's own
+// just-captured turns from its pre-turn auto-recall — otherwise a turn still in
+// the live transcript is recalled back as "long-term memory" the very next turn.
+// Unlike agentIdentity (per-agent, shared across an agent's sessions), this is
+// per-session, so two sessions of one agent don't suppress each other. It
+// deliberately does NOT fall back to the agent id: that is too coarse and would
+// exclude the agent's entire history from recall. Returns "" when ctx identifies
+// no session (recall/capture then behave as before).
+export function sessionIdentity(ctx: any) {
+  for (const c of [ctx?.sessionId, ctx?.sessionKey, ctx?.runId]) {
     if (typeof c === "string" && c.trim()) return sanitizeNsSegment(c);
   }
   return "";
@@ -483,7 +448,7 @@ export function meminiListPath(args: any) {
 // the SDK standardizes on; each tool resolves the namespace like the hooks do.
 export function registerMeminiTools(api: any, client: MeminiClient, cfg: ResolvedConfig) {
   const text = (obj: any) => ({ content: [{ type: "text", text: JSON.stringify(obj) }] });
-  const nsFor = (ctx: any) => effectiveNamespace(cfg, {}, ctx) ?? cfg.namespace;
+  const nsFor = (ctx: any) => effectiveNamespace(cfg, ctx) ?? cfg.namespace;
   const Tags = Type.Optional(
     Type.Array(Type.String(), { description: "Match only memories carrying every listed tag (AND)." }),
   );
@@ -656,13 +621,13 @@ const plugin: {
       const prompt = typeof event?.prompt === "string" ? event.prompt.trim() : "";
       if (!prompt) return;
       if (shouldSkipSystemTurn(cfg, ctx)) return;
-      const ns = effectiveNamespace(cfg, event, ctx);
+      const ns = effectiveNamespace(cfg, ctx);
       if (ns == null) return;
       const body: any = { query: prompt, limit: cfg.recall_limit };
       // Exclude this session's own just-captured turns: they're still in the
       // live transcript, so recalling them echoes the conversation back as
       // "long-term memory". agent_end tags each capture with session_id.
-      const session = sessionIdentity(event, ctx);
+      const session = sessionIdentity(ctx);
       if (session) body.exclude_metadata = { session_id: session };
       const result = await client.postJson("/v1/search", body, ns);
       let results = Array.isArray(result?.results) ? result.results : [];
@@ -686,23 +651,13 @@ const plugin: {
       if (fit.dropped > 0) lines.push(`[... ${fit.dropped} item(s) truncated by token budget]`);
       return { prependContext: lines.join("\n") };
     };
-    // Register on whichever hook surface this OpenClaw build exposes. api.on is
-    // the surface the prior plugin.mjs used and is present in current
-    // production; a positional api.registerHook(name, handler) is rejected with
-    // "hook registration missing name" and would abort register(), dropping the
-    // memory hooks entirely (eleboucher/memini#26). Prefer api.on; fall back to
-    // registerHook's object form only when api.on is unavailable, and never let
-    // it throw.
+    // api.on is OpenClaw's typed hook surface and the only one that can register
+    // before_prompt_build/agent_end (the coarse api.registerHook is for internal
+    // events like message:sent). Warn rather than silently drop memory if a build
+    // somehow lacks it (eleboucher/memini#26).
     const addHook = (name: string, handler: any) => {
-      if (typeof api.on === "function") {
-        api.on(name, handler);
-        return;
-      }
-      try {
-        api.registerHook?.({ name, handler });
-      } catch {
-        /* unknown registerHook signature; nothing else to try */
-      }
+      if (typeof api.on === "function") api.on(name, handler);
+      else api.logger.warn?.(`memini: api.on unavailable; ${name} hook not registered`);
     };
     addHook("before_prompt_build", recallHandler);
 
@@ -716,10 +671,10 @@ const plugin: {
       // preambles, and subagent task delegations (framing, not conversation).
       const captureUser = stripRuntimePreambles(userText);
       if (!captureUser || captureUser.startsWith("[Subagent Context]")) return;
-      const ns = effectiveNamespace(cfg, event, ctx);
+      const ns = effectiveNamespace(cfg, ctx);
       if (ns == null) return;
       const metadata: any = { source: "openclaw", format: "turn" };
-      const session = sessionIdentity(event, ctx);
+      const session = sessionIdentity(ctx);
       if (session) metadata.session_id = session;
       if (!event?.success) metadata.failed = true;
       await client.postJson("/v1/memories", {
