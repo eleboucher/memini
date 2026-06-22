@@ -107,14 +107,23 @@ class FilterFlow(unittest.TestCase):
         self.assertEqual(calls[0][0], "/v1/search")
 
     def test_inlet_excludes_own_chat(self):
-        # Recall must drop this chat's own captured turns (still in the live
-        # transcript) via exclude_metadata.chat_id; other chats stay recallable.
+        # On inlet the chat id arrives via injected __chat_id__/__metadata__, not
+        # body; it must become exclude_metadata.chat_id so own turns aren't echoed.
         calls = []
         f = self._filter(calls)
-        body = {"chat_id": "c1", "messages": [{"role": "user", "content": "q"}]}
-        asyncio.run(f.inlet(body))
+        body = {"messages": [{"role": "user", "content": "q"}]}
+        asyncio.run(f.inlet(body, __chat_id__="c1"))
         search = next(c for c in calls if c[0] == "/v1/search")
         self.assertEqual(search[1]["exclude_metadata"], {"chat_id": "c1"})
+
+    def test_inlet_excludes_own_chat_via_metadata(self):
+        # __metadata__["chat_id"] is the other injection path Open WebUI uses.
+        calls = []
+        f = self._filter(calls)
+        body = {"messages": [{"role": "user", "content": "q"}]}
+        asyncio.run(f.inlet(body, __metadata__={"chat_id": "c2"}))
+        search = next(c for c in calls if c[0] == "/v1/search")
+        self.assertEqual(search[1]["exclude_metadata"], {"chat_id": "c2"})
 
     def test_inlet_without_chat_id_stays_unscoped(self):
         calls = []

@@ -180,7 +180,13 @@ class Filter:
             print(f"[memini] {error}")
             return None
 
-    async def inlet(self, body: dict, __user__: Optional[dict] = None) -> dict:
+    async def inlet(
+        self,
+        body: dict,
+        __user__: Optional[dict] = None,
+        __metadata__: Optional[dict] = None,
+        __chat_id__: Optional[str] = None,
+    ) -> dict:
         if not self.valves.recall:
             return body
         messages = body.get("messages")
@@ -190,8 +196,9 @@ class Filter:
         payload = {"query": query, "limit": self.valves.recall_limit}
         # Exclude this chat's own captured turns: they're still in the live
         # transcript, so recalling them just echoes the conversation back a turn
-        # behind. Captures from other (past) chats are still recalled.
-        chat_id = body.get("chat_id") or ""
+        # behind. Captures from other (past) chats are still recalled. On inlet
+        # the chat id arrives via injected __chat_id__/__metadata__, not body.
+        chat_id = __chat_id__ or (__metadata__ or {}).get("chat_id") or body.get("chat_id") or ""
         if chat_id:
             payload["exclude_metadata"] = {"chat_id": chat_id}
         result = await self._post_json(
@@ -218,13 +225,20 @@ class Filter:
         messages.insert(insert_at, context)
         return body
 
-    async def outlet(self, body: dict, __user__: Optional[dict] = None) -> dict:
+    async def outlet(
+        self,
+        body: dict,
+        __user__: Optional[dict] = None,
+        __metadata__: Optional[dict] = None,
+        __chat_id__: Optional[str] = None,
+    ) -> dict:
         if not self.valves.capture:
             return body
         user_text, assistant_text = extract_last_turn(body.get("messages"))
         if not user_text or not assistant_text:
             return body
-        chat_id = body.get("chat_id") or ""
+        # Same resolution as inlet; the outlet payload also carries body["chat_id"].
+        chat_id = __chat_id__ or (__metadata__ or {}).get("chat_id") or body.get("chat_id") or ""
         key = f"{chat_id}:{hash(assistant_text)}"
         if key in self._captured:
             return body
