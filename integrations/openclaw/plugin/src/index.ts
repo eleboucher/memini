@@ -443,12 +443,18 @@ export function meminiListPath(args: any) {
   return parts.length ? `/v1/memories?${parts.join("&")}` : "/v1/memories";
 }
 
-// registerMeminiTools registers memory_recall / memory_list / memory_remember as
-// explicit OpenClaw tools. Uses the module-level `Type` (typebox), the package
-// the SDK standardizes on; each tool resolves the namespace like the hooks do.
+const TOOL_NAMES = ["memory_recall", "memory_list", "memory_remember"];
+
+// registerMeminiTools registers memory_recall / memory_list / memory_remember.
+//
+// Registered as a tool factory, not plain tool objects: the calling agent's
+// identity is on the factory's OpenClawPluginToolContext (agentId/sessionKey),
+// not the execute callback (signature toolCallId, params, signal, onUpdate). The
+// host wraps a plain-object tool as `(_ctx) => tool`, discarding ctx, so it would
+// always hit the base namespace — empty under per-agent namespaces. The factory
+// resolves the namespace from its ctx and binds it into each execute closure.
 export function registerMeminiTools(api: any, client: MeminiClient, cfg: ResolvedConfig) {
   const text = (obj: any) => ({ content: [{ type: "text", text: JSON.stringify(obj) }] });
-  const nsFor = (ctx: any) => effectiveNamespace(cfg, ctx) ?? cfg.namespace;
   const Tags = Type.Optional(
     Type.Array(Type.String(), { description: "Match only memories carrying every listed tag (AND)." }),
   );
@@ -458,7 +464,24 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
     }),
   );
 
-  api.registerTool(
+  // effectiveNamespace yields null only under skip_without_agent; tools have no
+  // skip, so fall back to base. Landing on the base under per-agent mode means no
+  // agent resolved — warn once so an empty result reads as "wrong namespace",
+  // not "no memories".
+  let warnedMissingAgent = false;
+  const nsForCtx = (ctx: any) => {
+    const ns = effectiveNamespace(cfg, ctx) ?? cfg.namespace;
+    if (cfg.namespace_per_agent && ns === cfg.namespace && !warnedMissingAgent) {
+      warnedMissingAgent = true;
+      api.logger?.warn?.(
+        `memini: tool call could not resolve an agent; querying base namespace "${cfg.namespace}". ` +
+          `Per-agent memory lives under "${cfg.namespace_template}" and will not appear here.`,
+      );
+    }
+    return ns;
+  };
+
+  const buildTools = (ns: string) => [
     {
       name: "memory_recall",
       description: "Search long-term memory (memini) for relevant past facts and context.",
@@ -468,11 +491,11 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
         tags: Tags,
         metadata: Metadata,
       }),
-      async execute(_id: any, params: any, ctx: any) {
+      async execute(_id: any, params: any) {
         const body: any = { query: params.query, limit: params.limit || 5 };
         if (params.tags?.length) body.tags = params.tags;
         if (params.metadata && Object.keys(params.metadata).length) body.metadata = params.metadata;
-        const res = await client.postJson("/v1/search", body, nsFor(ctx));
+        const res = await client.postJson("/v1/search", body, ns);
         const results = (res?.results || []).map((r: any) => ({
           content: r?.memory?.content || "",
           summary: r?.memory?.summary || "",
@@ -482,10 +505,6 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
         return text({ results });
       },
     },
-    { optional: true },
-  );
-
-  api.registerTool(
     {
       name: "memory_list",
       description:
@@ -499,9 +518,9 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
         metadata: Metadata,
         limit: Type.Optional(Type.Number({ description: "Max results (0 = all, default 20)" })),
       }),
-      async execute(_id: any, params: any, ctx: any) {
+      async execute(_id: any, params: any) {
         const args = { ...params, limit: params.limit ?? 20 };
-        const res = await client.getJson(meminiListPath(args), nsFor(ctx));
+        const res = await client.getJson(meminiListPath(args), ns);
         const memories = (res?.memories || []).map((m: any) => ({
           id: m.id || "",
           content: m.content || "",
@@ -513,10 +532,6 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
         return text({ memories });
       },
     },
-    { optional: true },
-  );
-
-  api.registerTool(
     {
       name: "memory_remember",
       description: "Store a durable fact, decision, or preference in long-term memory (memini).",
@@ -536,18 +551,22 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
           }),
         ),
       }),
-    async execute(_id: any, params: any, ctx: any) {
-      const body: any = { content: params.content, tier: params.tier || "semantic" };
-      const VALID_TIERS = ["working", "episodic", "semantic", "procedural"];
-      if (!VALID_TIERS.includes(body.tier)) body.tier = "semantic";
-      if (params.tags?.length) body.tags = params.tags;
-      if (params.category) body.metadata = { category: params.category };
-      const res = await client.postJson("/v1/memories", body, nsFor(ctx));
-      return text({ id: res?.id || null, success: res != null });
+      async execute(_id: any, params: any) {
+        const body: any = { content: params.content, tier: params.tier || "semantic" };
+        const VALID_TIERS = ["working", "episodic", "semantic", "procedural"];
+        if (!VALID_TIERS.includes(body.tier)) body.tier = "semantic";
+        if (params.tags?.length) body.tags = params.tags;
+        if (params.category) body.metadata = { category: params.category };
+        const res = await client.postJson("/v1/memories", body, ns);
+        return text({ id: res?.id || null, success: res != null });
       },
     },
-    { optional: true },
-  );
+  ];
+
+  // names is required for a factory: the host matches the factory's tools by the
+  // declared names (candidates with names.length > 0), and re-invokes the factory
+  // with the live per-agent ctx at execution time.
+  api.registerTool((ctx: any) => buildTools(nsForCtx(ctx)), { optional: true, names: TOOL_NAMES });
 }
 
 // Explicit return-type annotation on the default export — the SDK's chunked

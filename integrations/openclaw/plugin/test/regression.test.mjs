@@ -35,16 +35,20 @@ function fakeClient() {
   };
 }
 
-// collectTools runs registerMeminiTools against a fake api and returns the tools
-// keyed by name, plus the options each was registered with.
-async function collectTools(client, cfg) {
+// collectTools runs registerMeminiTools against a fake api and materializes the
+// tools by invoking the registered factory with `ctx` — the per-agent
+// OpenClawPluginToolContext OpenClaw hands the factory. Returns the tools keyed
+// by name, the single registration options, and the registration order.
+async function collectTools(client, cfg, ctx = {}) {
   const registered = [];
-  const api = { registerTool: (def, opts) => registered.push({ def, opts }) };
+  const api = { logger: { warn() {} }, registerTool: (factory, opts) => registered.push({ factory, opts }) };
   await registerMeminiTools(api, client, cfg);
+  const reg = registered[0];
+  const tools = reg ? [].concat(reg.factory(ctx)) : [];
   return {
-    byName: Object.fromEntries(registered.map((r) => [r.def.name, r.def])),
-    opts: Object.fromEntries(registered.map((r) => [r.def.name, r.opts])),
-    order: registered.map((r) => r.def.name),
+    byName: Object.fromEntries(tools.map((t) => [t.name, t])),
+    opts: reg?.opts,
+    order: tools.map((t) => t.name),
   };
 }
 
@@ -195,8 +199,8 @@ test("register is synchronous even with expose_tools on (OpenClaw contract)", ()
     registerMemoryCapability() {}, registerHook() {},
     on() {},
     logger: { warn() {} },
-    registerTool(def) {
-      names.push(def.name);
+    registerTool(_factory, opts) {
+      names.push(...(opts?.names ?? []));
     },
   });
   assert.equal(result, undefined, "register must not return a Promise");
@@ -230,8 +234,8 @@ test("register wires the three tools when expose_tools is on", async () => {
     registerMemoryCapability() {}, registerHook() {},
     on() {},
     logger: { warn() {} },
-    registerTool(def) {
-      names.push(def.name);
+    registerTool(_factory, opts) {
+      names.push(...(opts?.names ?? []));
     },
   });
   assert.deepEqual(names.sort(), ["memory_list", "memory_recall", "memory_remember"]);
@@ -530,11 +534,14 @@ test("meminiListPath builds repeatable tier/tag and escaped meta params", () => 
   assert.equal(meminiListPath({ limit: 0 }), "/v1/memories");
 });
 
-test("tools register as optional", async () => {
+test("tools register as a single optional factory naming all three tools", async () => {
   const { opts } = await collectTools(fakeClient(), { namespace: "ns", namespace_per_agent: false });
-  for (const name of ["memory_recall", "memory_list", "memory_remember"]) {
-    assert.deepEqual(opts[name], { optional: true }, `${name} should be optional`);
-  }
+  assert.equal(opts.optional, true, "factory must register optional");
+  assert.deepEqual(
+    [...opts.names].sort(),
+    ["memory_list", "memory_recall", "memory_remember"],
+    "opts.names must list every tool so the host can match the factory by name",
+  );
 });
 
 test("memory_recall passes query + tag/metadata filters and formats results", async () => {
@@ -577,12 +584,38 @@ test("memory_remember maps category to metadata and defaults the tier", async ()
   assert.deepEqual(JSON.parse(out.content[0].text), { id: "m1", success: true });
 });
 
-test("tool namespace follows per-agent resolution from ctx", async () => {
+test("tool namespace follows per-agent resolution from the factory ctx", async () => {
   const client = fakeClient();
   const cfg = resolveConfig({ namespace: "team", expose_tools: true });
-  const { byName } = await collectTools(client, cfg);
-  await byName.memory_recall.execute("id", { query: "q" }, { agentId: "miso" });
+  // The agent identity is delivered to the factory, not the execute call.
+  const { byName } = await collectTools(client, cfg, { agentId: "miso" });
+  await byName.memory_recall.execute("id", { query: "q" });
   assert.equal(client.calls.at(-1).ns, "team-miso", "per-agent ctx should scope the tool call");
+});
+
+test("tool namespace resolves the agent from a sessionKey too", async () => {
+  const client = fakeClient();
+  const cfg = resolveConfig({ namespace: "team", expose_tools: true });
+  const { byName } = await collectTools(client, cfg, { sessionKey: "agent:carol:main" });
+  await byName.memory_remember.execute("id", { content: "fact" });
+  assert.equal(client.calls.at(-1).ns, "team-carol");
+});
+
+test("tool falls back to base namespace and warns once when no agent resolves", async () => {
+  const client = fakeClient();
+  const warns = [];
+  const cfg = resolveConfig({ namespace: "team", expose_tools: true });
+  const registered = [];
+  const api = { logger: { warn: (m) => warns.push(m) }, registerTool: (factory, opts) => registered.push({ factory, opts }) };
+  await registerMeminiTools(api, client, cfg);
+  // Materialize twice with an agentless ctx: base namespace, warned exactly once.
+  const a = [].concat(registered[0].factory({}));
+  const b = [].concat(registered[0].factory({}));
+  await a.find((t) => t.name === "memory_recall").execute("id", { query: "q" });
+  await b.find((t) => t.name === "memory_recall").execute("id", { query: "q" });
+  assert.equal(client.calls.at(-1).ns, "team", "agentless tool call uses the base namespace");
+  assert.equal(warns.length, 1, "the missing-agent fallback warns once, not per call");
+  assert.match(warns[0], /base namespace "team"/);
 });
 
 test("plugin.yaml version matches package.json", () => {

@@ -216,33 +216,40 @@ type ToolDef = {
   name: string;
   description: string;
   parameters: unknown;
-  execute: (id: string, params: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<{ content: { type: string; text: string }[] }>;
+  execute: (id: string, params: Record<string, unknown>) => Promise<{ content: { type: string; text: string }[] }>;
 };
 
-async function collectTools(cfg: ResolvedConfig = baseCfg()) {
-  const defs: ToolDef[] = [];
-  const optsByName: Record<string, unknown> = {};
+type ToolFactory = (ctx: Record<string, unknown>) => ToolDef | ToolDef[];
+type RegisterOpts = { optional?: boolean; names?: string[] };
+
+// collectTools materializes the registered factory with `ctx` — the per-agent
+// OpenClawPluginToolContext OpenClaw hands the factory (identity lives here, not
+// on the execute call).
+function collectTools(cfg: ResolvedConfig = baseCfg(), ctx: Record<string, unknown> = {}) {
+  let factory: ToolFactory | undefined;
+  let opts: RegisterOpts | undefined;
   const api = {
-    registerTool: (def: ToolDef, opts: unknown) => {
-      defs.push(def);
-      optsByName[def.name] = opts;
+    logger: { warn() {} },
+    registerTool: (f: ToolFactory, o: RegisterOpts) => {
+      factory = f;
+      opts = o;
     },
   };
   const client = fakeClient();
-  await registerMeminiTools(api, client, cfg);
-  return { byName: Object.fromEntries(defs.map((d) => [d.name, d])), opts: optsByName, client };
+  registerMeminiTools(api, client, cfg);
+  const tools = factory ? ([] as ToolDef[]).concat(factory(ctx)) : [];
+  return { byName: Object.fromEntries(tools.map((d) => [d.name, d])), opts, client };
 }
 
-test("registerMeminiTools: registers three tools, all marked optional", async () => {
-  const { opts } = await collectTools();
-  for (const name of ["memory_recall", "memory_list", "memory_remember"]) {
-    assert.deepEqual(opts[name], { optional: true }, `${name} should be optional`);
-  }
+test("registerMeminiTools: registers one optional factory naming all three tools", () => {
+  const { opts } = collectTools();
+  assert.equal(opts?.optional, true);
+  assert.deepEqual([...(opts?.names ?? [])].sort(), ["memory_list", "memory_recall", "memory_remember"]);
 });
 
 test("registerMeminiTools: memory_recall shapes the request body from typed params", async () => {
-  const { byName, client } = await collectTools();
-  await byName.memory_recall.execute("id", { query: "auth race", tags: ["auth"], metadata: { category: "bug_fixes" } }, {});
+  const { byName, client } = collectTools();
+  await byName.memory_recall.execute("id", { query: "auth race", tags: ["auth"], metadata: { category: "bug_fixes" } });
   const call = client.calls.at(-1);
   assert.ok(call);
   assert.equal(call.method, "POST");
@@ -256,15 +263,22 @@ test("registerMeminiTools: memory_recall shapes the request body from typed para
 });
 
 test("registerMeminiTools: memory_remember validates tier and falls back to semantic", async () => {
-  const { byName, client } = await collectTools();
-  await byName.memory_remember.execute("id", { content: "fact", tier: "bogus" }, {});
+  const { byName, client } = collectTools();
+  await byName.memory_remember.execute("id", { content: "fact", tier: "bogus" });
   let call = client.calls.at(-1);
   assert.ok(call);
   assert.deepEqual(call.body, { content: "fact", tier: "semantic" });
-  await byName.memory_remember.execute("id", { content: "fact", tier: "episodic" }, {});
+  await byName.memory_remember.execute("id", { content: "fact", tier: "episodic" });
   call = client.calls.at(-1);
   assert.ok(call);
   assert.deepEqual(call.body, { content: "fact", tier: "episodic" });
+});
+
+test("registerMeminiTools: tool namespace resolves per-agent from the factory ctx", async () => {
+  const cfg = baseCfg({ namespace: "team", namespace_per_agent: true, namespace_template: "{namespace}-{agent}" });
+  const { byName, client } = collectTools(cfg, { agentId: "miso" });
+  await byName.memory_list.execute("id", {});
+  assert.equal(client.calls.at(-1)?.ns, "team-miso");
 });
 
 test("resolveConfig: recall_max_tokens — config wins, else MEMINI_INJECT_RECALL_MAX_TOK, else 800", () => {
