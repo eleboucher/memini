@@ -101,6 +101,15 @@ jobs:
             integrations/openclaw/plugin/plugin.yaml \
             integrations/opencode/plugin/package.json \
             integrations/hermes/plugin/memini/plugin.yaml
+          # A no-op bump (auto found no conventional commits since the last
+          # tag, or an explicit version equal to the current one) stages
+          # nothing; git commit would die with a cryptic "nothing to commit".
+          # Fail with an actionable message instead.
+          if git diff --cached --quiet; then
+            echo "No manifest changes: version is already ${TAG#v}." >&2
+            echo "Auto-bump found no conventional commits since the last tag (or you targeted the current version). Re-run with an explicit patch/minor/major, or use conventional-commit messages so a new version is computed." >&2
+            exit 1
+          fi
           git commit -m "chore(release): ${TAG}"
           git tag -a "${TAG}" -m "Release ${TAG}"
           git push origin "HEAD:${GITHUB_REF_NAME}" "${TAG}"
