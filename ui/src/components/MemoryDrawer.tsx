@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
+import { createPortal } from 'preact/compat'
 import type { Memory } from '../types'
 import { api } from '../api'
 import { refresh } from '../store'
@@ -91,7 +92,7 @@ export function MemoryDrawer({ memory: m, onClose, wide }: Props) {
 
   const metaEntries = m.metadata ? Object.entries(m.metadata) : []
 
-  return (
+  return createPortal(
     <>
       <div class="scrim" onClick={onClose} />
       <aside class={`drawer${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label="Memory detail" ref={drawerRef}>
@@ -189,6 +190,7 @@ export function MemoryDrawer({ memory: m, onClose, wide }: Props) {
           )}
         </div>
       </aside>
-    </>
+    </>,
+    document.body,
   )
 }
