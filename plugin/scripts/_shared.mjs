@@ -439,6 +439,19 @@ export function fitByTokens(items, maxTokens) {
   for (const s of items) {
     const t = approxTokens(s);
     if (used + t > maxTokens) {
+      // If the item fits partially, truncate at the last newline boundary so
+      // bullet points stay intact (~4 chars/token).
+      const charBudget = (maxTokens - used) * 4;
+      if (charBudget > 20) {
+        let cut = s.slice(0, charBudget);
+        const lastNL = cut.lastIndexOf("\n");
+        if (lastNL > 20) cut = cut.slice(0, lastNL);
+        if (cut.length > 20) {
+          out.push(cut + "\n[...truncated]");
+          used += approxTokens(cut);
+          continue;
+        }
+      }
       dropped++;
       continue;
     }
