@@ -19,6 +19,9 @@ import {
   buildSessionDigest,
   readSaveState,
   writeSaveState,
+  parseMemoryBlocks,
+  extractAssistantText,
+  readTranscript,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -100,6 +103,29 @@ async function main() {
       summary: digest.summary,
       metadata: { session_id: sessionId },
     });
+
+  // Inline memory extraction: when MEMINI_INLINE_EXTRACT=1, scan the session
+  // transcript for <memory> blocks the agent emitted during its responses and
+  // persist each as a durable semantic fact.
+  if (process.env.MEMINI_INLINE_EXTRACT === "1" && payload.transcript_path) {
+    const transcript = readTranscript(payload.transcript_path);
+    const assistantTexts = extractAssistantText(transcript);
+    const allBlocks = [];
+    for (const text of assistantTexts) {
+      for (const mem of parseMemoryBlocks(text)) {
+        allBlocks.push(mem.content);
+      }
+    }
+    if (DEBUG && allBlocks.length > 0)
+      console.error(`[memini] Inline extraction: ${allBlocks.length} memory block(s) from transcript`);
+    for (const content of allBlocks) {
+      await postRemember(content, project, {
+        tier: "semantic",
+        tags: ["inline-extract", project],
+        metadata: { source: "inline_extract", session_id: sessionId },
+      });
+    }
+  }
 
   const reason = autoSaveReasonFor(payload, sessionId);
   if (reason) process.stdout.write(JSON.stringify({ decision: "block", reason }));

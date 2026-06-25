@@ -23,6 +23,7 @@ import {
   labelsEnv,
   fitByTokens,
   approxTokens,
+  MEMORY_INSTRUCTION,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -152,6 +153,18 @@ async function main() {
     }
   }
   lines.push("</memini-context>");
+
+  // Inline extraction instruction: when MEMINI_INLINE_EXTRACT=1, append a
+  // directive telling the agent to emit <memory> blocks in its responses.
+  // The Stop hook scans the transcript for these blocks and persists them.
+  // Zero extra API calls — memories ride along in the agent's output tokens.
+  if (process.env.MEMINI_INLINE_EXTRACT === "1") {
+    lines.push(MEMORY_INSTRUCTION);
+  }
+
+  // Record what we injected so a later SessionStart this session can skip an
+  // unchanged re-injection (see the cache-stable guard above).
+  if (sessionId) cacheBriefingHash(sessionId, contentHash);
 
   // Both Claude Code and Codex interpret stdout as additional context.
   process.stdout.write(lines.join("\n"));

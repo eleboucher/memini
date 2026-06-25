@@ -684,3 +684,94 @@ export function readToolCall(payload) {
     cwd: payload?.cwd || process.cwd(),
   };
 }
+
+// Inline memory extraction: parse <memory> blocks from agent output.
+// Opt-in via MEMINI_INLINE_EXTRACT=1.
+
+export const MEMORY_INSTRUCTION = `
+
+<memini-inline-memory>
+After your response, if you learned something durable worth persisting for
+future sessions (a decision, a fact, a convention, a gotcha), emit a block:
+
+<memory>
+{"memories":[{"content":"concise fact, one per item"}]}
+</memory>
+
+Rules:
+- One JSON object, one "memories" array of {"content":"..."} objects.
+- Each content should be a self-contained fact (readable without context).
+- Omit the block entirely when nothing is worth keeping — don't emit empty arrays.
+- This is reference memory, not scratch space. Prefer quality over quantity.
+</memini-inline-memory>`;
+
+/**
+ * Parse all <memory>...</memory> blocks from a text. Returns an array of
+ * memory objects ({content}) extracted from the JSON inside each block.
+ * Malformed JSON or empty arrays yield []. Never throws.
+ */
+export function parseMemoryBlocks(text) {
+  if (typeof text !== "string" || !text) return [];
+  const out = [];
+  const re = /<memory>\s*([\s\S]*?)\s*<\/memory>/gi;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const raw = m[1].trim();
+    if (!raw) continue;
+    try {
+      const obj = JSON.parse(raw);
+      if (obj && Array.isArray(obj.memories)) {
+        for (const item of obj.memories) {
+          if (item && typeof item.content === "string" && item.content.trim()) {
+            out.push({ content: item.content.trim() });
+          }
+        }
+      }
+    } catch {
+      // malformed JSON in the block — skip it, keep scanning
+    }
+  }
+  return out;
+}
+
+/**
+ * Extract assistant message text from a Claude Code transcript (JSONL string).
+ * Returns an array of strings (one per assistant text message). Tool-use-only
+ * turns (no text block) are skipped.
+ */
+export function extractAssistantText(transcript) {
+  if (typeof transcript !== "string" || !transcript) return [];
+  const out = [];
+  for (const line of transcript.split("\n")) {
+    if (!line.trim()) continue;
+    const r = parseJSON(line);
+    if (!r || r.type !== "assistant") continue;
+    const c = r.message?.content;
+    if (typeof c === "string") {
+      out.push(c);
+    } else if (Array.isArray(c)) {
+      // Claude Code assistant messages are arrays of content blocks;
+      // text blocks carry the model's prose.
+      for (const block of c) {
+        if (block?.type === "text" && typeof block.text === "string") {
+          out.push(block.text);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Read a transcript file and return its raw content. Returns "" on any error
+ * (file missing, unreadable). Used by the Stop hook to scan for inline
+ * <memory> blocks emitted during the session.
+ */
+export function readTranscript(transcriptPath) {
+  if (!transcriptPath || typeof transcriptPath !== "string") return "";
+  try {
+    return fs.readFileSync(transcriptPath, "utf8");
+  } catch {
+    return "";
+  }
+}
