@@ -640,6 +640,34 @@ export function cleanStaleBuffers(maxAgeMs) {
   } catch {}
 }
 
+function briefingCachePath(sessionId) {
+  return join(bufferDir(), safeId(sessionId) + ".briefing-hash");
+}
+
+/**
+ * Check if the briefing content hash matches the cached one for this session.
+ * Returns true if unchanged (caller should replay cached text), false if
+ * changed or new (caller should render fresh text and cache the new hash).
+ */
+export function briefingUnchanged(sessionId, contentHash) {
+  try {
+    const cached = fs.readFileSync(briefingCachePath(sessionId), "utf8").trim();
+    return cached === contentHash;
+  } catch {
+    return false;
+  }
+}
+
+/** Cache a briefing content hash for a session. */
+export function cacheBriefingHash(sessionId, contentHash) {
+  try {
+    fs.mkdirSync(bufferDir(), { recursive: true });
+    fs.writeFileSync(briefingCachePath(sessionId), contentHash);
+  } catch (e) {
+    if (DEBUG) console.error("[memini] cacheBriefingHash failed:", e?.message || e);
+  }
+}
+
 /**
  * Distill buffered tool events into a single dense, searchable digest. Returns
  * null when there is nothing worth recording. The shape is { content, summary,
