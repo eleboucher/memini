@@ -172,6 +172,21 @@ type rememberResult struct {
 	Tier string `json:"tier"`
 	// Stored is false when the episodic value gate dropped the write (low signal).
 	Stored bool `json:"stored"`
+	// AutoSuperseded is true when the write's near-duplicate crossed the
+	// auto-supersede gate and the older memory was tombstoned in the background.
+	AutoSuperseded bool `json:"auto_superseded,omitempty"`
+	// MergeHint points at a near-duplicate the caller may want to merge into
+	// (via memory_update) when the write landed in the merge-hint band. nil
+	// otherwise.
+	MergeHint *mergeHintResult `json:"merge_hint,omitempty"`
+}
+
+// mergeHintResult mirrors service.MergeHint for the MCP wire shape.
+type mergeHintResult struct {
+	SimilarID      string  `json:"similar_id"`
+	SimilarContent string  `json:"similar_content"`
+	Score          float64 `json:"score"`
+	Tier           string  `json:"tier"`
 }
 
 func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in rememberArgs) (*mcpsdk.CallToolResult, rememberResult, error) {
@@ -200,6 +215,10 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 	if input.ValidTo, err = parseOptionalTime(in.ValidTo, "valid_to"); err != nil {
 		return nil, rememberResult{}, err
 	}
+	var hint service.MergeHint
+	var superseded bool
+	input.MergeHint = &hint
+	input.AutoSuperseded = &superseded
 	m, err := t.svc.Remember(ctx, input)
 	if err != nil {
 		return nil, rememberResult{}, err
@@ -207,7 +226,16 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 	if m == nil { // episodic value gate dropped the write
 		return nil, rememberResult{Tier: string(input.Tier), Stored: false}, nil
 	}
-	return nil, rememberResult{ID: m.ID, Tier: string(m.Tier), Stored: true}, nil
+	res := rememberResult{ID: m.ID, Tier: string(m.Tier), Stored: true, AutoSuperseded: superseded}
+	if hint.SimilarID != "" {
+		res.MergeHint = &mergeHintResult{
+			SimilarID:      hint.SimilarID,
+			SimilarContent: hint.SimilarContent,
+			Score:          hint.Score,
+			Tier:           string(hint.Tier),
+		}
+	}
+	return nil, res, nil
 }
 
 type recallArgs struct {

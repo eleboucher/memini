@@ -666,3 +666,89 @@ func TestSupersedeTombstonesMemory(t *testing.T) {
 		t.Fatalf("superseded_by = %v, want %q (idempotency: latest write wins)", got.SupersededBy, other.ID)
 	}
 }
+
+// The upper gate of the write-time dedup split: a near-duplicate at or above
+// AutoSupersedeMinScore stores the new memory and tombstones the old one in the
+// background. Fingerprint dedup is off so the split path (not the exact-match
+// coalesce) is what runs.
+func TestAutoSupersedeReplacesNearDuplicate(t *testing.T) {
+	svc := newService(t, service.WithFingerprintDedup(false), service.WithAutoSupersede(0.5))
+	ctx := context.Background()
+
+	old, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the user likes coffee", Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("remember old: %v", err)
+	}
+
+	var superseded bool
+	nw, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the user likes coffee", Tier: memory.TierSemantic,
+		AutoSuperseded: &superseded,
+	})
+	if err != nil {
+		t.Fatalf("remember new: %v", err)
+	}
+	if !superseded {
+		t.Fatal("expected AutoSuperseded=true for an identical near-duplicate")
+	}
+	if nw.ID == old.ID {
+		t.Fatalf("auto-supersede should store a new memory, not coalesce into %q", old.ID)
+	}
+
+	svc.WaitBackground() // the supersede runs fire-and-forget
+
+	all, err := svc.List(ctx, service.ListInput{Namespace: "alice", Tiers: []memory.Tier{memory.TierSemantic}})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 1 || all[0].ID != nw.ID {
+		t.Fatalf("expected only the new memory %q live after supersede, got %+v", nw.ID, all)
+	}
+}
+
+// The lower gate: a near-duplicate in the [MergeHintMinScore, AutoSupersede)
+// band stores the new memory AND returns a hint pointing at the existing one,
+// so the caller can decide to merge.
+func TestMergeHintReturnedWithoutSuppression(t *testing.T) {
+	svc := newService(t, service.WithFingerprintDedup(false),
+		service.WithMergeHint(0.5), service.WithAutoSupersede(0.99))
+	ctx := context.Background()
+
+	first, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the user likes coffee", Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("remember first: %v", err)
+	}
+
+	var hint service.MergeHint
+	var superseded bool
+	second, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the user really likes strong coffee", Tier: memory.TierSemantic,
+		MergeHint: &hint, AutoSuperseded: &superseded,
+	})
+	if err != nil {
+		t.Fatalf("remember second: %v", err)
+	}
+	if superseded {
+		t.Fatal("a merge-hint-band write must not supersede")
+	}
+	if hint.SimilarID != first.ID {
+		t.Fatalf("hint.SimilarID = %q, want %q", hint.SimilarID, first.ID)
+	}
+	if hint.Score < 0.5 || hint.Score >= 0.99 {
+		t.Fatalf("hint.Score = %v, want within the merge-hint band [0.5, 0.99)", hint.Score)
+	}
+
+	svc.WaitBackground()
+	all, err := svc.List(ctx, service.ListInput{Namespace: "alice", Tiers: []memory.Tier{memory.TierSemantic}})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("merge-hint band keeps both memories, got %d: %+v", len(all), all)
+	}
+	_ = second
+}

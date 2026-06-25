@@ -190,6 +190,10 @@ func (h *Server) RememberMemory(w http.ResponseWriter, r *http.Request, _ Rememb
 		in.TTL = &d
 	}
 
+	var hint service.MergeHint
+	var superseded bool
+	in.MergeHint = &hint
+	in.AutoSuperseded = &superseded
 	m, err := h.svc.Remember(r.Context(), in)
 	if err != nil {
 		writeError(w, r, statusFor(err), err)
@@ -201,7 +205,32 @@ func (h *Server) RememberMemory(w http.ResponseWriter, r *http.Request, _ Rememb
 		httputil.JSON(w, http.StatusOK, map[string]any{"stored": false, "reason": "low_signal"})
 		return
 	}
-	httputil.JSON(w, http.StatusCreated, apiMemory(m))
+	// Build the response via JSON round-trip so we can add the optional
+	// merge_hint and auto_superseded fields without duplicating the
+	// apiMemory field-by-field copy.
+	respBytes, err := json.Marshal(apiMemory(m))
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(respBytes, &resp); err != nil {
+		writeError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	if hint.SimilarID != "" {
+		const tierKey = "tier"
+		resp["merge_hint"] = map[string]any{
+			"similar_id":      hint.SimilarID,
+			"similar_content": hint.SimilarContent,
+			"score":           hint.Score,
+			tierKey:           string(hint.Tier),
+		}
+	}
+	if superseded {
+		resp["auto_superseded"] = true
+	}
+	httputil.JSON(w, http.StatusCreated, resp)
 }
 
 // unescapeID percent-decodes a bound {id} path param. chi matches on the

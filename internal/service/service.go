@@ -237,6 +237,12 @@ type Service struct {
 	// but only when the LLM consolidation pipeline isn't handling the write.
 	// 0 (the default) disables it.
 	writeDedupMinScore float64
+	// autoSupersedeMinScore: score ≥ this auto-supersedes the existing memory
+	// in a background goroutine. 0 disables.
+	autoSupersedeMinScore float64
+	// mergeHintMinScore: score in [this, autoSupersedeMinScore) returns a
+	// MergeHint to the caller. 0 disables.
+	mergeHintMinScore float64
 	// fingerprintDedup (default on) reinforces an exact restatement instead of
 	// storing a duplicate; see WithFingerprintDedup.
 	fingerprintDedup bool
@@ -450,6 +456,31 @@ func WithWriteDedup(minScore float64) Option {
 	return func(s *Service) { s.writeDedupMinScore = minScore }
 }
 
+// WithAutoSupersede sets the upper dedup gate: score ≥ minScore triggers a
+// background supersede of the existing memory. 0 disables.
+func WithAutoSupersede(minScore float64) Option {
+	return func(s *Service) { s.autoSupersedeMinScore = minScore }
+}
+
+// WithMergeHint sets the lower dedup gate: score in [minScore, autoSupersede]
+// returns a MergeHint to the caller. 0 disables.
+func WithMergeHint(minScore float64) Option {
+	return func(s *Service) { s.mergeHintMinScore = minScore }
+}
+
+// MergeHint surfaces a near-duplicate the caller may want to merge into.
+type MergeHint struct {
+	// SimilarID is the id of the near-duplicate memory. Empty when unknown.
+	SimilarID string
+	// SimilarContent is a preview of the near-duplicate memory's content.
+	SimilarContent string
+	// Score is the fused similarity (0..1) between the new write and the
+	// near-duplicate.
+	Score float64
+	// Tier is the tier of the near-duplicate.
+	Tier memory.Tier
+}
+
 // WithFingerprintDedup toggles exact-restatement dedup: when on (the default), a
 // fresh write whose normalized content exactly matches a live same-tier memory
 // reinforces that memory instead of storing a duplicate, without embedding it.
@@ -549,6 +580,15 @@ type RememberInput struct {
 	// defaults to now (or the existing row on update); ValidTo defaults to open.
 	ValidFrom *time.Time
 	ValidTo   *time.Time
+	// MergeHint (output-only) is set to a non-nil MergeHint when the write's
+	// nearest same-tier candidate landed in the merge-hint band. The caller
+	// passes the address of a local `*MergeHint`; after the call it holds the
+	// hint (or remains nil). nil disables hint reporting.
+	MergeHint *MergeHint
+	// AutoSuperseded (output-only) is set to true when the write triggered a
+	// background supersede. The caller passes the address of a local bool.
+	// nil disables reporting.
+	AutoSuperseded *bool
 }
 
 // scrubInput redacts live credentials from a write before it is persisted, so a
@@ -729,14 +769,15 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	durable := tier == memory.TierSemantic || tier == memory.TierProcedural
 	consolidate := in.ID == "" && s.consolidator != nil && durable && s.consolidateMode != ConsolidateOff
 
-	// Write-time dedup (non-LLM corpus hygiene): when the consolidation pipeline
-	// isn't handling this write, coalesce a near-identical repeat into the
-	// existing memory instead of storing a duplicate.
-	if in.ID == "" && !consolidate && s.writeDedupMinScore > 0 {
-		if existing := s.dedupExisting(ctx, m); existing != nil {
-			s.metrics.RememberResult("ok", string(tier))
-			return existing, nil
+	// Write-time dedup (non-LLM corpus hygiene): run the split dedup check
+	// when neither the consolidation pipeline nor an explicit ID is in play.
+	var supersedeID string
+	if in.ID == "" && !consolidate {
+		handled, result, sid := s.runSplitDedup(ctx, m, in)
+		if handled {
+			return result, nil
 		}
+		supersedeID = sid
 	}
 
 	// Sync mode resolves the write against existing memories before storing, so
@@ -756,6 +797,12 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		return nil, fmt.Errorf("remember: store: %w", err)
 	}
 
+	// Auto-supersede: now that the replacement is durably stored, tombstone the
+	// near-duplicate in the background. Deferred to here so a failed Upsert above
+	// can never drop the old fact without a stored replacement. No-op when there
+	// is nothing to supersede.
+	s.autoSupersede(m.Namespace, supersedeID, m.ID, in.AutoSuperseded)
+
 	// Async mode stores immediately and consolidates in the background.
 	if consolidate && s.consolidateMode == ConsolidateAsync {
 		s.enqueueConsolidate(m.Namespace, m.ID)
@@ -770,28 +817,107 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	return m, nil
 }
 
-// dedupExisting returns the nearest same-tier memory when its similarity is at
-// or above writeDedupMinScore, after reinforcing it (so the repeat refreshes
-// its recency/TTL). The caller coalesces the write into that record instead of
-// storing a duplicate. It never supersedes or rewrites the existing memory.
-// Returns nil to fall through to a normal insert.
-func (s *Service) dedupExisting(ctx context.Context, m *memory.Memory) *memory.Memory {
+// runSplitDedup runs the split-aware dedup gate. Returns handled=true and
+// the coalesced existing memory when the write should be coalesced into it
+// (the middle / writeDedupMinScore band). Returns handled=false when the
+// write should proceed; supersedeID then names a near-duplicate the caller
+// must tombstone *after* storing the new memory, and any merge-hint is
+// stashed on in.MergeHint for the caller to surface.
+func (s *Service) runSplitDedup(
+	ctx context.Context, m *memory.Memory, in RememberInput,
+) (handled bool, result *memory.Memory, supersedeID string) {
+	if s.autoSupersedeMinScore <= 0 && s.mergeHintMinScore <= 0 && s.writeDedupMinScore <= 0 {
+		return false, nil, ""
+	}
+	hit, hint, supersedeID := s.dedupCheck(ctx, m)
+	if hit != nil {
+		return true, hit, ""
+	}
+	if in.MergeHint != nil && hint != nil {
+		*in.MergeHint = *hint
+	}
+	return false, nil, supersedeID
+}
+
+// dedupCheck is the split-aware dedup gate. It returns:
+//   - hit: the nearest same-tier memory when score >= writeDedupMinScore;
+//     caller should coalesce the write into it (nil if below the gate).
+//   - hint: a MergeHint when the score landed in the
+//     [mergeHintMinScore, autoSupersedeMinScore) band — the caller proceeds
+//     with the write and surfaces the hint so the LLM (or the human) can
+//     decide to merge via memory_update.
+//   - supersedeID: the id of the near-duplicate the caller should supersede
+//     (score >= autoSupersedeMinScore). The supersede is deferred to the
+//     caller so it only runs once the replacement is durably stored — a
+//     failed insert must never tombstone the old memory. Empty otherwise.
+func (s *Service) dedupCheck(ctx context.Context, m *memory.Memory) (hit *memory.Memory, hint *MergeHint, supersedeID string) {
 	cands, err := s.store.VectorSearch(ctx, m.Namespace, m.Embedding,
 		store.Filter{Tiers: []memory.Tier{m.Tier}, Now: s.now()}, 1)
 	if err != nil {
-		// Falling through to a plain insert is right, but a persistent vector
-		// search problem means duplicates quietly accumulate — say so.
 		slog.WarnContext(ctx, "remember: dedup search failed, storing without dedup",
 			"namespace", m.Namespace, "err", err)
-		return nil
+		return nil, nil, ""
 	}
-	if len(cands) == 0 || cands[0].Score < s.writeDedupMinScore {
-		return nil
+	if len(cands) == 0 {
+		return nil, nil, ""
 	}
+	score := cands[0].Score
 	existing := cands[0].Memory
-	s.reinforce(ctx, []store.Scored{{Memory: existing}})
-	s.corroborate(ctx, existing) // a near-identical repeat raises the fact's confidence
-	return existing
+
+	// Upper gate: auto-supersede. Report the id back so the caller can tombstone
+	// it after the new memory is stored — never before, or a failed insert would
+	// drop the old fact without a replacement.
+	if s.autoSupersedeMinScore > 0 && score >= s.autoSupersedeMinScore {
+		return nil, nil, existing.ID
+	}
+
+	// Lower gate: merge hint. The write proceeds; the caller gets a hint
+	// pointing at the near-duplicate so it can decide to merge.
+	if s.mergeHintMinScore > 0 && score >= s.mergeHintMinScore {
+		preview := existing.Content
+		if len(preview) > 200 {
+			preview = preview[:200] + "…"
+		}
+		return nil, &MergeHint{
+			SimilarID:      existing.ID,
+			SimilarContent: preview,
+			Score:          score,
+			Tier:           existing.Tier,
+		}, ""
+	}
+
+	// Middle: no auto-supersede and no merge hint — legacy coalesce path
+	// (replaces the old writeDedupMinScore behaviour).
+	if s.writeDedupMinScore > 0 && score >= s.writeDedupMinScore {
+		s.reinforce(ctx, []store.Scored{{Memory: existing}})
+		s.corroborate(ctx, existing)
+		return existing, nil, ""
+	}
+
+	return nil, nil, ""
+}
+
+// autoSupersede tombstones oldID (replaced by newID) in the background, after
+// the replacement has been durably stored; done (when non-nil) records that it
+// fired. A no-op when oldID is empty. Fire-and-forget so the write path doesn't
+// pay the latency; a sweep GCs the tombstoned row.
+func (s *Service) autoSupersede(ns, oldID, newID string, done *bool) {
+	if oldID == "" {
+		return
+	}
+	if done != nil {
+		*done = true
+	}
+	s.bg.Add(1)
+	go func() {
+		defer s.bg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := s.store.SetSuperseded(ctx, ns, oldID, newID); err != nil {
+			slog.WarnContext(ctx, "remember: auto-supersede failed",
+				"namespace", ns, "old", oldID, "err", err)
+		}
+	}()
 }
 
 // fingerprintHit returns a live same-tier memory whose normalized content

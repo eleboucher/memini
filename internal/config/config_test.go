@@ -193,6 +193,26 @@ func TestLoadValidationErrors(t *testing.T) {
 			name: "negative sweep interval",
 			env:  map[string]string{"MEMINI_SWEEP_INTERVAL": "-1m"},
 		},
+		{
+			name: "auto-supersede score out of range",
+			env:  map[string]string{"MEMINI_AUTO_SUPERSEDE_MIN_SCORE": "1.5"},
+		},
+		{
+			name: "merge-hint score out of range",
+			env:  map[string]string{"MEMINI_MERGE_HINT_MIN_SCORE": "-0.1"},
+		},
+		{
+			name: "auto-supersede not above merge-hint",
+			env:  map[string]string{"MEMINI_AUTO_SUPERSEDE_MIN_SCORE": "0.80", "MEMINI_MERGE_HINT_MIN_SCORE": "0.80"},
+		},
+		{
+			name: "write-dedup not below merge-hint band",
+			env:  map[string]string{"MEMINI_MERGE_HINT_MIN_SCORE": "0.75", "MEMINI_WRITE_DEDUP_MIN_SCORE": "0.80"},
+		},
+		{
+			name: "write-dedup not below auto-supersede band (merge-hint disabled)",
+			env:  map[string]string{"MEMINI_AUTO_SUPERSEDE_MIN_SCORE": "0.80", "MEMINI_WRITE_DEDUP_MIN_SCORE": "0.85"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

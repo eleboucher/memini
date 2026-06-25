@@ -110,6 +110,19 @@ type Config struct {
 	// by default; false stores every write verbatim.
 	WriteDedupFingerprint bool `env:"MEMINI_WRITE_DEDUP_FINGERPRINT" envDefault:"true"`
 
+	// AutoSupersedeMinScore is the upper gate of the write-time dedup split: a
+	// fresh write whose nearest same-tier candidate scores at or above this
+	// value supersedes the old memory once the new one is stored; the caller
+	// still gets the new memory back. 0 disables. Must be > MergeHintMinScore
+	// when both set.
+	AutoSupersedeMinScore float64 `env:"MEMINI_AUTO_SUPERSEDE_MIN_SCORE" envDefault:"0"`
+
+	// MergeHintMinScore is the lower gate of the write-time dedup split: a fresh
+	// write whose nearest same-tier candidate scores in [MergeHintMinScore,
+	// AutoSupersedeMinScore) proceeds normally and a MergeHint is returned in the
+	// REST response so the caller can merge via memory_update. 0 disables.
+	MergeHintMinScore float64 `env:"MEMINI_MERGE_HINT_MIN_SCORE" envDefault:"0"`
+
 	// ReinforceSkipMarkers drops session-end / stop marker memories from recall
 	// reinforcement so their inflated access_count and TTL don't distort recall.
 	// On by default.
@@ -407,6 +420,31 @@ func (c *Config) validate() error {
 		if !t.Valid() {
 			return fmt.Errorf("unknown tier %q in MEMINI_DEDUP_TIERS (want working|episodic|semantic|procedural)", t)
 		}
+	}
+	// Write-time dedup split gates. Each is a fused similarity in [0,1]. The
+	// ladder in dedupCheck is supersede > merge-hint > coalesce, so when more
+	// than one gate is enabled the upper gate must sit strictly above the lower
+	// one; otherwise a band is unreachable and the documented behaviour silently
+	// collapses.
+	if c.AutoSupersedeMinScore < 0 || c.AutoSupersedeMinScore > 1 {
+		return fmt.Errorf("MEMINI_AUTO_SUPERSEDE_MIN_SCORE must be in [0,1], got %v", c.AutoSupersedeMinScore)
+	}
+	if c.MergeHintMinScore < 0 || c.MergeHintMinScore > 1 {
+		return fmt.Errorf("MEMINI_MERGE_HINT_MIN_SCORE must be in [0,1], got %v", c.MergeHintMinScore)
+	}
+	if c.AutoSupersedeMinScore > 0 && c.MergeHintMinScore > 0 && c.AutoSupersedeMinScore <= c.MergeHintMinScore {
+		return fmt.Errorf("MEMINI_AUTO_SUPERSEDE_MIN_SCORE (%v) must be > MEMINI_MERGE_HINT_MIN_SCORE (%v)",
+			c.AutoSupersedeMinScore, c.MergeHintMinScore)
+	}
+	if c.MergeHintMinScore > 0 && c.WriteDedupMinScore > 0 && c.WriteDedupMinScore >= c.MergeHintMinScore {
+		return fmt.Errorf("MEMINI_WRITE_DEDUP_MIN_SCORE (%v) must be < MEMINI_MERGE_HINT_MIN_SCORE (%v) so the coalesce band stays reachable",
+			c.WriteDedupMinScore, c.MergeHintMinScore)
+	}
+	// When merge-hint is disabled the coalesce band sits directly below
+	// auto-supersede, so guard that pair too.
+	if c.AutoSupersedeMinScore > 0 && c.WriteDedupMinScore > 0 && c.WriteDedupMinScore >= c.AutoSupersedeMinScore {
+		return fmt.Errorf("MEMINI_WRITE_DEDUP_MIN_SCORE (%v) must be < MEMINI_AUTO_SUPERSEDE_MIN_SCORE (%v) so the coalesce band stays reachable",
+			c.WriteDedupMinScore, c.AutoSupersedeMinScore)
 	}
 	return nil
 }
