@@ -374,6 +374,29 @@ func TestPromoteStampsSourcesBeforeDistilling(t *testing.T) {
 	}
 }
 
+func TestPromoteGroundsEpisodeDates(t *testing.T) {
+	fd := &fakeDistiller{facts: []llm.Fact{{Content: "switched to Go on 2023-11-13", Summary: "lang"}}}
+	svc, st := newPromoterSvc(t, fd, 3)
+	putEpisodic(t, st, embedtest.New(testDims), "hot1", "yesterday we switched to Go", 5)
+
+	if _, err := svc.Promote(context.Background()); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	// The distiller receives the reference date and each episode's record date
+	// (fixed test clock: Unix 1_700_000_000 == 2023-11-14) so it can ground
+	// "yesterday" to an absolute date.
+	const wantDate = "2023-11-14"
+	if fd.last.Now != wantDate {
+		t.Fatalf("DistillInput.Now = %q, want %q", fd.last.Now, wantDate)
+	}
+	if len(fd.last.Episodes) != 1 || fd.last.Episodes[0].Date != wantDate {
+		t.Fatalf("episode date not grounded: %+v", fd.last.Episodes)
+	}
+	if fd.last.Episodes[0].Content != "yesterday we switched to Go" {
+		t.Fatalf("episode content = %q", fd.last.Episodes[0].Content)
+	}
+}
+
 func TestPromoteNoDistillerIsNoop(t *testing.T) {
 	st, err := sqlitevec.Open(context.Background(), filepath.Join(t.TempDir(), "p.db"), testDims)
 	if err != nil {

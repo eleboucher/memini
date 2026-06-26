@@ -99,11 +99,18 @@ func (s *Service) promote(ctx context.Context, ns string, batch []*memory.Memory
 		return 0, nil
 	}
 
-	episodes := make([]string, len(stamped))
+	episodes := make([]llm.Episode, len(stamped))
 	for i, m := range stamped {
-		episodes[i] = m.Content
+		e := llm.Episode{Content: m.Content}
+		if !m.CreatedAt.IsZero() {
+			e.Date = m.CreatedAt.UTC().Format(time.DateOnly)
+		}
+		episodes[i] = e
 	}
-	facts, err := s.distiller.Distill(ctx, llm.DistillInput{Episodes: episodes})
+	facts, err := s.distiller.Distill(ctx, llm.DistillInput{
+		Episodes: episodes,
+		Now:      now.UTC().Format(time.DateOnly),
+	})
 	if err != nil {
 		return 0, err
 	}

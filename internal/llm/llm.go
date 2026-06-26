@@ -79,9 +79,21 @@ type Fact struct {
 	Summary string `json:"summary,omitempty"`
 }
 
-// DistillInput is a batch of episodic memory contents to distill.
+// Episode is one episodic memory to distill, paired with the date it was
+// recorded so the model can resolve relative dates in the text ("yesterday",
+// "last week") to absolute ones.
+type Episode struct {
+	Content string `json:"content"`
+	// Date is the YYYY-MM-DD the episode was recorded. Empty when unknown.
+	Date string `json:"date,omitempty"`
+}
+
+// DistillInput is a batch of episodic memories to distill. Now is the current
+// date (YYYY-MM-DD); the model grounds relative dates against each episode's
+// Date, falling back to Now. Both empty disables grounding.
 type DistillInput struct {
-	Episodes []string `json:"episodes"`
+	Episodes []Episode `json:"episodes"`
+	Now      string    `json:"now,omitempty"`
 }
 
 // Distiller compresses episodic memories into durable semantic facts. Used by
@@ -176,10 +188,14 @@ Prefer "new" unless there is a clear match. Output only the JSON object.`
 // distillPrompt instructs the model to compress episodic memories into durable
 // semantic facts, used by the promotion job.
 const distillPrompt = `You compress an AI agent's episodic memories into durable, reusable knowledge.
-Given a JSON object {"episodes":[...]} of past observations, extract only the DURABLE knowledge worth
-keeping long-term: stable facts, decisions, conventions, preferences, and how-to knowledge. Discard
-transient noise (one-off actions, timestamps, routine file edits with no lasting lesson). Merge
-overlapping observations into single facts. Respond with a single JSON object:
+Input is a JSON object {"now":"YYYY-MM-DD","episodes":[{"content":"...","date":"YYYY-MM-DD"}]} of past
+observations, each with the date it was recorded; "now" is today. Extract only the DURABLE knowledge
+worth keeping long-term: stable facts, decisions, conventions, preferences, and how-to knowledge.
+Discard transient noise (one-off actions, routine file edits with no lasting lesson). Merge overlapping
+observations into single facts.
+When an episode states a relative time (e.g. "yesterday", "last week", "two days ago"), resolve it to an
+absolute YYYY-MM-DD date in the fact, grounding against that episode's "date" (or "now" if it has none).
+Leave already-absolute dates unchanged. Respond with a single JSON object:
 {"facts":[{"content":"<durable fact>","summary":"<one line>"}]}
 Return {"facts":[]} if nothing is durable. Output only the JSON object.`
 
