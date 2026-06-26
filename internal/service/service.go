@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1594,6 +1595,68 @@ func metaSeconds(v any) (int64, bool) {
 // Get returns a single memory by ID.
 func (s *Service) Get(ctx context.Context, namespace, id string) (*memory.Memory, error) {
 	return s.store.Get(ctx, namespace, id)
+}
+
+// History returns the full supersession lineage of a memory: the memory itself,
+// every memory it superseded (walking PredecessorIDs backwards) and every one
+// that superseded it (following SupersededBy forwards), including tombstoned
+// rows, ordered oldest-first by CreatedAt. Returns ErrNotFound when id is
+// absent. Walks breadth-first so a merge (several memories superseded by one)
+// is followed in every direction without revisiting a node.
+func (s *Service) History(ctx context.Context, namespace, id string) ([]*memory.Memory, error) {
+	root, err := s.store.Get(ctx, namespace, id)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]*memory.Memory{root.ID: root}
+	queue := []*memory.Memory{root}
+	visit := func(mid string) error {
+		if mid == "" {
+			return nil
+		}
+		if _, ok := seen[mid]; ok {
+			return nil
+		}
+		m, err := s.store.Get(ctx, namespace, mid)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil // a dangling link is not fatal to the rest of the chain
+		}
+		if err != nil {
+			return err
+		}
+		seen[m.ID] = m
+		queue = append(queue, m)
+		return nil
+	}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur.SupersededBy != nil {
+			if err := visit(*cur.SupersededBy); err != nil {
+				return nil, err
+			}
+		}
+		preds, err := s.store.PredecessorIDs(ctx, namespace, cur.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, pid := range preds {
+			if err := visit(pid); err != nil {
+				return nil, err
+			}
+		}
+	}
+	out := make([]*memory.Memory, 0, len(seen))
+	for _, m := range seen {
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
 }
 
 // Forget deletes a memory by ID.

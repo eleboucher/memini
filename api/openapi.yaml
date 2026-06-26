@@ -286,6 +286,28 @@ paths:
       responses:
         "204": { description: Deleted }
         "404": { $ref: "#/components/responses/Error" }
+  /v1/memories/{id}/history:
+    parameters:
+      - { $ref: "#/components/parameters/Namespace" }
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getMemoryHistory
+      tags: [memory]
+      summary: The full version chain (supersession lineage) of a memory
+      description: >
+        Returns every version linked to this memory by supersession, oldest
+        first: the memories it superseded and the ones that superseded it,
+        including tombstoned rows. Useful for auditing how a fact evolved.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ListResponse" }
+        "404": { $ref: "#/components/responses/Error" }
   /v1/memories/{id}/supersede:
     parameters:
       - { $ref: "#/components/parameters/Namespace" }

@@ -168,27 +168,46 @@ type ListResponse struct {
 type Memory struct {
 	AccessCount int `json:"access_count"`
 
+	// AutoSuperseded Optional. Present only on POST /v1/memories responses when the write's nearest same-tier candidate scored at or above MEMINI_AUTO_SUPERSEDE_MIN_SCORE and was auto-superseded in the background. The caller still receives the new memory.
+	AutoSuperseded *bool `json:"auto_superseded,omitempty"`
+
 	// Confidence Corroboration of a durable fact in [0,1]; null when not tracked.
-	Confidence     *float64                `json:"confidence,omitempty"`
-	Content        string                  `json:"content"`
-	CreatedAt      time.Time               `json:"created_at"`
-	ExpiresAt      *time.Time              `json:"expires_at,omitempty"`
-	Id             string                  `json:"id"`
-	Importance     float64                 `json:"importance"`
-	LastAccessedAt time.Time               `json:"last_accessed_at"`
-	Metadata       *map[string]interface{} `json:"metadata,omitempty"`
-	Namespace      string                  `json:"namespace"`
-	Summary        *string                 `json:"summary,omitempty"`
-	SupersededBy   *string                 `json:"superseded_by,omitempty"`
-	Tags           *[]string               `json:"tags,omitempty"`
-	Tier           Tier                    `json:"tier"`
-	UpdatedAt      time.Time               `json:"updated_at"`
+	Confidence     *float64   `json:"confidence,omitempty"`
+	Content        string     `json:"content"`
+	CreatedAt      time.Time  `json:"created_at"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	Id             string     `json:"id"`
+	Importance     float64    `json:"importance"`
+	LastAccessedAt time.Time  `json:"last_accessed_at"`
+
+	// MergeHint Optional. Returned on POST /v1/memories when the write's nearest same-tier candidate landed in the merge-hint band (between MEMINI_MERGE_HINT_MIN_SCORE and MEMINI_AUTO_SUPERSEDE_MIN_SCORE). The caller can decide whether to merge into the near-duplicate via memory_update.
+	MergeHint    *MergeHint              `json:"merge_hint,omitempty"`
+	Metadata     *map[string]interface{} `json:"metadata,omitempty"`
+	Namespace    string                  `json:"namespace"`
+	Summary      *string                 `json:"summary,omitempty"`
+	SupersededBy *string                 `json:"superseded_by,omitempty"`
+	Tags         *[]string               `json:"tags,omitempty"`
+	Tier         Tier                    `json:"tier"`
+	UpdatedAt    time.Time               `json:"updated_at"`
 
 	// ValidFrom Start of the wall-clock interval the fact was true; null means open ("always, until valid_to"). Used by time-travel (as_of) recall.
 	ValidFrom *time.Time `json:"valid_from,omitempty"`
 
 	// ValidTo End of the interval the fact was true; null means open ("still true"). Stamped automatically when a fact is superseded.
 	ValidTo *time.Time `json:"valid_to,omitempty"`
+}
+
+// MergeHint Optional. Returned on POST /v1/memories when the write's nearest same-tier candidate landed in the merge-hint band (between MEMINI_MERGE_HINT_MIN_SCORE and MEMINI_AUTO_SUPERSEDE_MIN_SCORE). The caller can decide whether to merge into the near-duplicate via memory_update.
+type MergeHint struct {
+	// Score Fused similarity between the new write and the near-duplicate (0..1).
+	Score *float64 `json:"score,omitempty"`
+
+	// SimilarContent Preview (≤200 chars) of the near-duplicate memory's content.
+	SimilarContent *string `json:"similar_content,omitempty"`
+
+	// SimilarId ID of the near-duplicate memory.
+	SimilarId *string `json:"similar_id,omitempty"`
+	Tier      *Tier   `json:"tier,omitempty"`
 }
 
 // NamespacesResponse defines model for NamespacesResponse.
@@ -368,6 +387,12 @@ type GetMemoryParams struct {
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
+// GetMemoryHistoryParams defines parameters for GetMemoryHistory.
+type GetMemoryHistoryParams struct {
+	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
+}
+
 // SupersedeMemoryParams defines parameters for SupersedeMemory.
 type SupersedeMemoryParams struct {
 	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
@@ -448,6 +473,9 @@ type ServerInterface interface {
 	// Fetch a memory by ID
 	// (GET /v1/memories/{id})
 	GetMemory(w http.ResponseWriter, r *http.Request, id string, params GetMemoryParams)
+	// The full version chain (supersession lineage) of a memory
+	// (GET /v1/memories/{id}/history)
+	GetMemoryHistory(w http.ResponseWriter, r *http.Request, id string, params GetMemoryHistoryParams)
 	// Tombstone a memory, recording it was replaced by `by`.
 	// (POST /v1/memories/{id}/supersede)
 	SupersedeMemory(w http.ResponseWriter, r *http.Request, id string, params SupersedeMemoryParams)
@@ -517,6 +545,12 @@ func (_ Unimplemented) ForgetMemory(w http.ResponseWriter, r *http.Request, id s
 // Fetch a memory by ID
 // (GET /v1/memories/{id})
 func (_ Unimplemented) GetMemory(w http.ResponseWriter, r *http.Request, id string, params GetMemoryParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// The full version chain (supersession lineage) of a memory
+// (GET /v1/memories/{id}/history)
+func (_ Unimplemented) GetMemoryHistory(w http.ResponseWriter, r *http.Request, id string, params GetMemoryHistoryParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1063,6 +1097,62 @@ func (siw *ServerInterfaceWrapper) GetMemory(w http.ResponseWriter, r *http.Requ
 	handler.ServeHTTP(w, r)
 }
 
+// GetMemoryHistory operation middleware
+func (siw *ServerInterfaceWrapper) GetMemoryHistory(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetMemoryHistoryParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Memini-Namespace" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Memini-Namespace")]; found {
+		var XMeminiNamespace Namespace
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Memini-Namespace", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Memini-Namespace", valueList[0], &XMeminiNamespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Memini-Namespace", Err: err})
+			return
+		}
+
+		params.XMeminiNamespace = &XMeminiNamespace
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMemoryHistory(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // SupersedeMemory operation middleware
 func (siw *ServerInterfaceWrapper) SupersedeMemory(w http.ResponseWriter, r *http.Request) {
 
@@ -1514,6 +1604,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/memories/{id}", wrapper.GetMemory)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/memories/{id}/history", wrapper.GetMemoryHistory)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/memories/{id}/supersede", wrapper.SupersedeMemory)

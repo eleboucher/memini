@@ -402,6 +402,51 @@ func TestPercentEncodedID(t *testing.T) {
 	}
 }
 
+func TestGetMemoryHistory(t *testing.T) {
+	h := newServer(t)
+	mk := func(content string) string {
+		rec := do(t, h, http.MethodPost, "/v1/memories", "alice", apiKey, map[string]any{
+			"content": content, "tier": "semantic",
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("remember %q: want 201, got %d (%s)", content, rec.Code, rec.Body)
+		}
+		var created struct {
+			ID string `json:"id"`
+		}
+		mustJSON(t, rec, &created)
+		return created.ID
+	}
+
+	v1 := mk("office is in Paris")
+	v2 := mk("office is in Berlin")
+	rec := do(t, h, http.MethodPost, "/v1/memories/"+v1+"/supersede", "alice", apiKey, map[string]any{"by": v2})
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("supersede: want 204, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	// History of the live tip returns both versions, including the tombstoned one.
+	rec = do(t, h, http.MethodGet, "/v1/memories/"+v2+"/history", "alice", apiKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("history: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var hist struct {
+		Memories []struct {
+			ID string `json:"id"`
+		} `json:"memories"`
+	}
+	mustJSON(t, rec, &hist)
+	if len(hist.Memories) != 2 {
+		t.Fatalf("history length = %d, want 2: %s", len(hist.Memories), rec.Body)
+	}
+
+	// Unknown id is 404, not an empty list.
+	rec = do(t, h, http.MethodGet, "/v1/memories/nope/history", "alice", apiKey, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("history of missing id: want 404, got %d", rec.Code)
+	}
+}
+
 func TestListStatsNamespaces(t *testing.T) {
 	h := newServer(t)
 

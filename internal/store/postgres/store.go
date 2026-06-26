@@ -207,6 +207,25 @@ func (s *Store) Get(ctx context.Context, namespace, id string) (*memory.Memory, 
 	return m, err
 }
 
+// PredecessorIDs returns the IDs of memories in the namespace superseded by id.
+func (s *Store) PredecessorIDs(ctx context.Context, namespace, id string) ([]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id FROM memories WHERE namespace=$1 AND superseded_by=$2`, namespace, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var x string
+		if err := rows.Scan(&x); err != nil {
+			return nil, err
+		}
+		ids = append(ids, x)
+	}
+	return ids, rows.Err()
+}
+
 // GetByFingerprint returns the most recent live memory in namespace+tier whose
 // content fingerprint matches. Superseded and expired rows are excluded so a
 // dead duplicate never absorbs a fresh write.

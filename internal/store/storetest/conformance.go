@@ -30,6 +30,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("TagMetadataFilter", func(t *testing.T) { testTagMetadataFilter(t, st, dims) })
 	t.Run("ExcludeMetadataFilter", func(t *testing.T) { testExcludeMetadataFilter(t, st, dims) })
 	t.Run("SetSuperseded", func(t *testing.T) { testSetSuperseded(t, st, dims) })
+	t.Run("PredecessorIDs", func(t *testing.T) { testPredecessorIDs(t, st, dims) })
 	t.Run("Restore", func(t *testing.T) { testRestore(t, st, dims) })
 	t.Run("Reinforce", func(t *testing.T) { testReinforce(t, st, dims) })
 	t.Run("DeleteIfExpiredBefore", func(t *testing.T) { testDeleteIfExpiredBefore(t, st, dims) })
@@ -678,6 +679,37 @@ func testSetSuperseded(t *testing.T, st store.Store, dims int) {
 
 	if err := st.SetSuperseded(ctx, ns, id(ns, "missing"), id(ns, "new")); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("set superseded on missing: want ErrNotFound, got %v", err)
+	}
+}
+
+func testPredecessorIDs(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+	mustUpsert(t, st, mem(ns, "v1", "draft one", vec(dims, 1)))
+	mustUpsert(t, st, mem(ns, "v2", "draft two", vec(dims, 1)))
+	mustUpsert(t, st, mem(ns, "v3", "draft three", vec(dims, 1)))
+	// A merge: both v1 and v2 are superseded by v3.
+	if err := st.SetSuperseded(ctx, ns, id(ns, "v1"), id(ns, "v3")); err != nil {
+		t.Fatalf("supersede v1: %v", err)
+	}
+	if err := st.SetSuperseded(ctx, ns, id(ns, "v2"), id(ns, "v3")); err != nil {
+		t.Fatalf("supersede v2: %v", err)
+	}
+
+	preds, err := st.PredecessorIDs(ctx, ns, id(ns, "v3"))
+	if err != nil {
+		t.Fatalf("predecessor ids: %v", err)
+	}
+	slices.Sort(preds)
+	want := []string{id(ns, "v1"), id(ns, "v2")}
+	slices.Sort(want)
+	if !slices.Equal(preds, want) {
+		t.Fatalf("predecessors of v3 = %v, want %v", preds, want)
+	}
+
+	// A leaf nothing supersedes has no predecessors.
+	if got, err := st.PredecessorIDs(ctx, ns, id(ns, "v1")); err != nil || len(got) != 0 {
+		t.Fatalf("predecessors of v1 = %v, %v; want empty", got, err)
 	}
 }
 

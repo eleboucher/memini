@@ -221,6 +221,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/memories/{id}/history": {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * The full version chain (supersession lineage) of a memory
+         * @description Returns every version linked to this memory by supersession, oldest first: the memories it superseded and the ones that superseded it, including tombstoned rows. Useful for auditing how a fact evolved.
+         */
+        get: operations["getMemoryHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/memories/{id}/supersede": {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Tombstone a memory, recording it was replaced by `by`.
+         * @description Stamps `superseded_by` and `valid_to` on the target. The row stays in the store for audit/time-travel and is hard-deleted by the maintenance sweeper after `TombstoneTTL`.
+         */
+        post: operations["supersedeMemory"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/search": {
         parameters: {
             query?: never;
@@ -291,6 +341,23 @@ export interface components {
              */
             confidence?: number;
         };
+        SupersedeRequest: {
+            /** @description ID of the memory that replaces the target. */
+            by: string;
+        };
+        /** @description Optional. Returned on POST /v1/memories when the write's nearest same-tier candidate landed in the merge-hint band (between MEMINI_MERGE_HINT_MIN_SCORE and MEMINI_AUTO_SUPERSEDE_MIN_SCORE). The caller can decide whether to merge into the near-duplicate via memory_update. */
+        MergeHint: {
+            /** @description ID of the near-duplicate memory. */
+            similar_id?: string;
+            /** @description Preview (≤200 chars) of the near-duplicate memory's content. */
+            similar_content?: string;
+            /**
+             * Format: double
+             * @description Fused similarity between the new write and the near-duplicate (0..1).
+             */
+            score?: number;
+            tier?: components["schemas"]["Tier"];
+        };
         SearchRequest: {
             query: string;
             tiers?: components["schemas"]["Tier"][];
@@ -298,6 +365,10 @@ export interface components {
             tags?: string[];
             /** @description A memory's top-level metadata must contain every listed key=value pair (AND). */
             metadata?: {
+                [key: string]: string;
+            };
+            /** @description Drop memories whose top-level metadata carries any of these key=value pairs (the inverse of metadata). Lets a caller keep its own just-written memories out of recall — e.g. excluding the current session's captured turns so they are not echoed back as memory. */
+            exclude_metadata?: {
                 [key: string]: string;
             };
             /** @default 10 */
@@ -317,6 +388,11 @@ export interface components {
              * @description Time-travel recall: return facts whose validity window contained this instant (including ones since superseded), for "what was true then" queries.
              */
             as_of?: string;
+            /**
+             * Format: double
+             * @description Per-call relevance floor on the fused score. Candidates below it are dropped server-side before re-ranking. 0 (or unset) falls back to the server's default gate (MEMINI_RECALL_MIN_SCORE). Only meaningful with score fusion (RRF scores are not comparable to this threshold).
+             */
+            min_score?: number;
         };
         ScoredMemory: {
             memory: components["schemas"]["Memory"];
@@ -474,6 +550,10 @@ export interface components {
              * @description Corroboration of a durable fact in [0,1]; null when not tracked.
              */
             confidence?: number | null;
+            /** @description Optional. Present only on POST /v1/memories responses when the write's nearest same-tier candidate landed in the merge-hint band (between MEMINI_MERGE_HINT_MIN_SCORE and MEMINI_AUTO_SUPERSEDE_MIN_SCORE). */
+            merge_hint?: components["schemas"]["MergeHint"];
+            /** @description Optional. Present only on POST /v1/memories responses when the write's nearest same-tier candidate scored at or above MEMINI_AUTO_SUPERSEDE_MIN_SCORE and was auto-superseded in the background. The caller still receives the new memory. */
+            auto_superseded?: boolean;
         };
     };
     responses: {
@@ -758,8 +838,16 @@ export interface operations {
     getBriefing: {
         parameters: {
             query?: {
-                /** @description Max memories per section (facts/procedures/recent). Default 5. */
+                /** @description Default cap applied to every section when its dedicated cap is unset. Default 5. */
                 per_section?: number;
+                /** @description Max pinned memories. Overrides per_section. 0 disables the section. */
+                per_section_pinned?: number;
+                /** @description Max durable semantic facts. Overrides per_section. 0 disables the section. */
+                per_section_facts?: number;
+                /** @description Max procedural how-to memories. Overrides per_section. 0 disables the section. */
+                per_section_procedures?: number;
+                /** @description Max recent episodic entries. Overrides per_section. 0 disables the section. */
+                per_section_recent?: number;
             };
             header?: never;
             path: {
@@ -852,6 +940,61 @@ export interface operations {
                 };
                 content?: never;
             };
+            404: components["responses"]["Error"];
+        };
+    };
+    getMemoryHistory: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListResponse"];
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    supersedeMemory: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SupersedeRequest"];
+            };
+        };
+        responses: {
+            /** @description Superseded */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error"];
             404: components["responses"]["Error"];
         };
     };

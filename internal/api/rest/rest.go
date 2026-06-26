@@ -262,6 +262,29 @@ func (h *Server) GetMemory(w http.ResponseWriter, r *http.Request, boundID strin
 	httputil.JSON(w, http.StatusOK, apiMemory(m))
 }
 
+// GetMemoryHistory implements GET /v1/memories/{id}/history.
+func (h *Server) GetMemoryHistory(w http.ResponseWriter, r *http.Request, boundID string, _ GetMemoryHistoryParams) {
+	id, ok := unescapeID(boundID)
+	if !ok {
+		httputil.Error(w, http.StatusNotFound, "memory not found")
+		return
+	}
+	mems, err := h.svc.History(r.Context(), namespaceFromContext(r.Context()), id)
+	if errors.Is(err, store.ErrNotFound) {
+		httputil.Error(w, http.StatusNotFound, "memory not found")
+		return
+	}
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	out := ListResponse{Memories: make([]Memory, len(mems))}
+	for i, m := range mems {
+		out.Memories[i] = apiMemory(m)
+	}
+	httputil.JSON(w, http.StatusOK, out)
+}
+
 // ForgetMemory implements DELETE /v1/memories/{id}.
 func (h *Server) ForgetMemory(w http.ResponseWriter, r *http.Request, boundID string, _ ForgetMemoryParams) {
 	id, ok := unescapeID(boundID)

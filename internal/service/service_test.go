@@ -752,3 +752,52 @@ func TestMergeHintReturnedWithoutSuppression(t *testing.T) {
 	}
 	_ = second
 }
+
+func TestHistoryWalksTheSupersessionChain(t *testing.T) {
+	svc := newService(t, service.WithFingerprintDedup(false))
+	ctx := context.Background()
+	ns := "alice"
+
+	v1, err := svc.Remember(ctx, service.RememberInput{Namespace: ns, Content: "office is in Paris", Tier: memory.TierSemantic})
+	if err != nil {
+		t.Fatalf("v1: %v", err)
+	}
+	v2, err := svc.Remember(ctx, service.RememberInput{Namespace: ns, Content: "office is in Berlin", Tier: memory.TierSemantic})
+	if err != nil {
+		t.Fatalf("v2: %v", err)
+	}
+	if err := svc.Supersede(ctx, ns, v1.ID, v2.ID); err != nil {
+		t.Fatalf("supersede v1: %v", err)
+	}
+	v3, err := svc.Remember(ctx, service.RememberInput{Namespace: ns, Content: "office is in Lisbon", Tier: memory.TierSemantic})
+	if err != nil {
+		t.Fatalf("v3: %v", err)
+	}
+	if err := svc.Supersede(ctx, ns, v2.ID, v3.ID); err != nil {
+		t.Fatalf("supersede v2: %v", err)
+	}
+
+	// From the live tip, history must surface the whole lineage including the
+	// tombstoned ancestors.
+	hist, err := svc.History(ctx, ns, v3.ID)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	got := make(map[string]bool, len(hist))
+	for _, m := range hist {
+		got[m.ID] = true
+	}
+	for _, want := range []string{v1.ID, v2.ID, v3.ID} {
+		if !got[want] {
+			t.Fatalf("history %v missing %q", got, want)
+		}
+	}
+	if len(hist) != 3 {
+		t.Fatalf("history length = %d, want 3", len(hist))
+	}
+
+	// A missing id is ErrNotFound, not an empty slice.
+	if _, err := svc.History(ctx, ns, "nope"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("history of missing id: want ErrNotFound, got %v", err)
+	}
+}

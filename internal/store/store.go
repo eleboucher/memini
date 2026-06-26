@@ -71,6 +71,11 @@ type Store interface {
 	// Get returns a memory by ID, or ErrNotFound.
 	Get(ctx context.Context, namespace, id string) (*memory.Memory, error)
 
+	// PredecessorIDs returns the IDs of memories in the namespace whose
+	// SupersededBy points at id — the versions id replaced. Empty when none.
+	// Used to walk a memory's supersession lineage backwards.
+	PredecessorIDs(ctx context.Context, namespace, id string) ([]string, error)
+
 	// GetByFingerprint returns a live (non-superseded, non-expired) memory in the
 	// namespace and tier whose content fingerprint (memory.Fingerprint) matches,
 	// for exact-restatement dedup at write time. Returns ErrNotFound when none
