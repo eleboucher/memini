@@ -8,6 +8,7 @@ import {
   extractPartsText,
   formatResults,
   extractLastTurn,
+  lastAssistantFailed,
   createPlaintextBearerAuthGuard,
   intEnv,
   floatEnv,
@@ -209,6 +210,18 @@ test("extractLastTurn takes the latest user and assistant text plus assistant id
 
 test("extractLastTurn handles empty input", () => {
   assert.deepEqual(extractLastTurn(undefined), { userText: "", assistantText: "", assistantID: "" });
+});
+
+test("lastAssistantFailed reads the latest assistant turn's error", () => {
+  assert.equal(
+    lastAssistantFailed([
+      { info: { role: "user" }, parts: [] },
+      { info: { role: "assistant", id: "a1", error: { name: "boom" } }, parts: [] },
+    ]),
+    true,
+  );
+  assert.equal(lastAssistantFailed([{ info: { role: "assistant", id: "a1" }, parts: [] }]), false);
+  assert.equal(lastAssistantFailed(undefined), false);
 });
 
 test("plaintext bearer guard warns once for http to a non-loopback host", () => {

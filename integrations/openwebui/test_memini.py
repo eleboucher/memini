@@ -37,6 +37,15 @@ class Helpers(unittest.TestCase):
         self.assertEqual(flt.sanitize_namespace("a__b.c-d"), "a__b.c-d")
         self.assertEqual(flt.sanitize_namespace("  --x--  "), "x")
 
+    def test_last_assistant_failed(self):
+        self.assertTrue(
+            flt.last_assistant_failed(
+                [{"role": "user", "content": "x"}, {"role": "assistant", "content": "y", "error": "boom"}]
+            )
+        )
+        self.assertFalse(flt.last_assistant_failed([{"role": "assistant", "content": "ok"}]))
+        self.assertFalse(flt.last_assistant_failed(None))
+
     def test_extract_last_user_string(self):
         messages = [
             {"role": "user", "content": "first"},

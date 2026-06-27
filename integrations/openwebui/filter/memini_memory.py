@@ -78,6 +78,17 @@ def extract_last_turn(messages: list) -> tuple:
     return user_text, assistant_text
 
 
+def last_assistant_failed(messages) -> bool:
+    """Whether the latest assistant message errored, so the capture can flag it
+    (the distiller mines failed→fixed turns into recovery)."""
+    if not isinstance(messages, list):
+        return False
+    for message in reversed(messages):
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            return bool(message.get("error"))
+    return False
+
+
 def format_results(results: list, limit: int) -> str:
     """Render memini search hits as a compact bullet list."""
     if not isinstance(results, list) or not results:
@@ -242,13 +253,16 @@ class Filter:
         key = f"{chat_id}:{hash(assistant_text)}"
         if key in self._captured:
             return body
+        metadata = {"source": "openwebui", "chat_id": chat_id, "format": "turn"}
+        if last_assistant_failed(body.get("messages")):
+            metadata["failed"] = True
         stored = await self._post_json(
             "/v1/memories",
             {
                 "content": f"{user_text[:1000]}\n\n{assistant_text[:3000]}",
                 "tier": "episodic",
                 "tags": ["openwebui"],
-                "metadata": {"source": "openwebui", "chat_id": chat_id, "format": "turn"},
+                "metadata": metadata,
             },
             self._namespace(__user__),
         )

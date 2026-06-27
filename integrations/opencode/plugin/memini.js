@@ -327,6 +327,19 @@ export function extractLastTurn(messages) {
   return { userText, assistantText, assistantID };
 }
 
+// lastAssistantFailed reports whether the latest assistant turn errored, so the
+// capture can flag it (the distiller mines failed→fixed turns into recovery).
+// Exported for testing.
+export function lastAssistantFailed(messages) {
+  if (!Array.isArray(messages)) return false;
+  for (const entry of [...messages].reverse()) {
+    if (entry && entry.info && entry.info.role === "assistant") {
+      return !!entry.info.error;
+    }
+  }
+  return false;
+}
+
 export const MeminiPlugin = async ({ client, worktree, directory }, options) => {
   const log = {
     warn: (message) => {
@@ -420,11 +433,13 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       const { userText, assistantText, assistantID } = extractLastTurn(res && res.data);
       if (!userText || !assistantText) return;
       if (assistantID && captured.has(assistantID)) return;
+      const metadata = { source: "opencode", session_id: sessionID, format: "turn" };
+      if (lastAssistantFailed(res && res.data)) metadata.failed = true;
       const stored = await rest.postJson("/v1/memories", {
         content: `${userText.slice(0, 1000)}\n\n${assistantText.slice(0, 3000)}`,
         tier: "episodic",
         tags: ["opencode"],
-        metadata: { source: "opencode", session_id: sessionID, format: "turn" },
+        metadata,
       });
       if (stored !== null && assistantID) captured.add(assistantID);
     }),
