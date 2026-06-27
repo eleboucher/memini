@@ -187,13 +187,16 @@ func buildServiceStack(
 			return nil, nil, nil, nil, err
 		}
 		chatClient = client
-		svcOpts = append(svcOpts, service.WithConsolidator(client), service.WithAnswerer(client))
+		// The distiller is shared by write-time distillation and the batch
+		// promoter, so wire it whenever an LLM is configured — not only when the
+		// promoter is on, or MEMINI_PROMOTE_INTERVAL=0 would silently disable
+		// distill-on-write too.
+		svcOpts = append(svcOpts, service.WithConsolidator(client), service.WithAnswerer(client),
+			service.WithDistiller(client))
 		log.Info("LLM consolidation + answering enabled",
 			"api", cfg.LLMAPI, "model", cfg.LLMModel, "mode", cfg.ConsolidateMode)
 		if cfg.PromoteInterval > 0 {
-			svcOpts = append(svcOpts,
-				service.WithDistiller(client),
-				service.WithPromoteMinAccess(cfg.PromoteMinAccess))
+			svcOpts = append(svcOpts, service.WithPromoteMinAccess(cfg.PromoteMinAccess))
 			log.Info("episodic→semantic promotion enabled",
 				"interval", cfg.PromoteInterval, "min_access", cfg.PromoteMinAccess)
 		}
@@ -234,6 +237,7 @@ func buildServiceStack(
 		service.WithEpisodicMinChars(cfg.EpisodicMinChars),
 		service.WithDistillOnWrite(cfg.DistillOnWrite),
 		service.WithDistillDropNoFact(cfg.DistillDropNoFact),
+		service.WithExtractOnWrite(cfg.ExtractOnWrite),
 		service.WithMetrics(metricsImpl),
 	)
 	svc := service.New(st, embedder, svcOpts...)

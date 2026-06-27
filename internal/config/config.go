@@ -226,14 +226,21 @@ type Config struct {
 
 	// DistillOnWrite distils each fresh episodic capture into durable semantic
 	// facts at write time, instead of waiting on the access-gated batch promoter.
-	// Needs an LLM (the distiller); no-op without one. Off by default — adds one
-	// LLM call per substantive capture.
-	DistillOnWrite bool `env:"MEMINI_DISTILL_ON_WRITE" envDefault:"false"`
+	// Needs an LLM (the distiller); no-op without one. On by default so a fact
+	// stated once becomes durable immediately, rather than only after it is
+	// recalled enough times to trip the promoter's access gate.
+	DistillOnWrite bool `env:"MEMINI_DISTILL_ON_WRITE" envDefault:"true"`
 
 	// DistillDropNoFact, with DistillOnWrite, deletes an episodic capture when
 	// write-time distillation extracts no durable fact — making the LLM a write
 	// filter. Off by default; drops "what happened" recall for turns with no fact.
 	DistillDropNoFact bool `env:"MEMINI_DISTILL_DROP_NO_FACT" envDefault:"false"`
+
+	// ExtractOnWrite is the no-LLM counterpart to DistillOnWrite: a fresh episodic
+	// capture is run through the heuristic extractor into durable typed facts. Only
+	// fires when no LLM is configured, so embedder-only and embedder+reranker
+	// deployments also build durable knowledge at write time. On by default.
+	ExtractOnWrite bool `env:"MEMINI_EXTRACT_ON_WRITE" envDefault:"true"`
 
 	// Consolidation tuning.
 	// ConsolidateMode is "async" (default), "sync", or "off".

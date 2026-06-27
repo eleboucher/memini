@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/eleboucher/memini/internal/embed"
+	"github.com/eleboucher/memini/internal/extract"
 	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/maintenance"
 	"github.com/eleboucher/memini/internal/memory"
@@ -212,6 +213,9 @@ type Service struct {
 	// distillDropNoFact, with distillOnWrite, deletes the episodic when
 	// distillation yields no durable fact (the LLM becomes a write filter).
 	distillDropNoFact bool
+	// extractOnWrite runs each fresh episodic capture through the no-LLM heuristic
+	// extractor (internal/extract). Only fires when no distiller is set.
+	extractOnWrite bool
 	// distiller is optional; when set, RunPromoter distills frequently-accessed
 	// episodic memories into durable semantic facts.
 	distiller        llm.Distiller
@@ -418,7 +422,7 @@ func WithEpisodicMinChars(n int) Option {
 }
 
 // WithDistillOnWrite distils each fresh episodic capture into durable facts at
-// write time (needs a distiller). Off by default. See MEMINI_DISTILL_ON_WRITE.
+// write time (needs a distiller). On by default. See MEMINI_DISTILL_ON_WRITE.
 func WithDistillOnWrite(on bool) Option {
 	return func(s *Service) { s.distillOnWrite = on }
 }
@@ -428,6 +432,13 @@ func WithDistillOnWrite(on bool) Option {
 // MEMINI_DISTILL_DROP_NO_FACT.
 func WithDistillDropNoFact(on bool) Option {
 	return func(s *Service) { s.distillDropNoFact = on }
+}
+
+// WithExtractOnWrite runs each fresh episodic capture through the no-LLM
+// heuristic extractor when no distiller is configured. On by default. See
+// MEMINI_EXTRACT_ON_WRITE.
+func WithExtractOnWrite(on bool) Option {
+	return func(s *Service) { s.extractOnWrite = on }
 }
 
 // WithTemporalTargeting enables temporal targeting in the re-ranker: when a
@@ -564,8 +575,9 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 		}
 		s.consolidateQueue = make(chan consolidateJob, cap)
 	}
-	// Bounds concurrent write-time distillations (LLM calls) when enabled.
-	if s.distillOnWrite {
+	// Bounds concurrent write-time enrichment (LLM distillation or the no-LLM
+	// heuristic extraction; the two are mutually exclusive at runtime).
+	if s.distillOnWrite || s.extractOnWrite {
 		s.distillSem = make(chan struct{}, distillSemCap)
 	}
 	return s
@@ -823,8 +835,11 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	// Write-time distillation: distil a fresh episodic capture into durable facts
 	// in the background, so durable knowledge is created at write rather than
 	// waiting on the access-gated batch promoter. Opt-in, needs a distiller.
-	if s.shouldDistillOnWrite(tier, in) {
+	switch {
+	case s.shouldDistillOnWrite(tier, existing == nil):
 		s.distillEpisodicAsync(ctx, m)
+	case s.shouldExtractOnWrite(tier, existing == nil):
+		s.extractEpisodicAsync(ctx, m)
 	}
 	s.metrics.RememberResult("ok", string(tier))
 	return m, nil
@@ -1292,9 +1307,17 @@ func (s *Service) resolveSemanticReserve(in RecallInput) int {
 }
 
 // shouldDistillOnWrite reports whether a fresh episodic capture should be
-// distilled into durable facts at write time.
-func (s *Service) shouldDistillOnWrite(tier memory.Tier, in RememberInput) bool {
-	return s.distillOnWrite && s.distiller != nil && tier == memory.TierEpisodic && in.ID == ""
+// distilled into durable facts at write time. isCreate must be false for an
+// update (an existing row re-written by ID, e.g. a re-fired session digest), so
+// a capture is distilled once on creation and never again when it's overwritten.
+func (s *Service) shouldDistillOnWrite(tier memory.Tier, isCreate bool) bool {
+	return s.distillOnWrite && s.distiller != nil && tier == memory.TierEpisodic && isCreate
+}
+
+// shouldExtractOnWrite mirrors shouldDistillOnWrite for the heuristic path: it
+// requires no distiller, so distill-on-write supersedes it when an LLM is set.
+func (s *Service) shouldExtractOnWrite(tier memory.Tier, isCreate bool) bool {
+	return s.extractOnWrite && s.distiller == nil && tier == memory.TierEpisodic && isCreate
 }
 
 // distillEpisodicAsync distils a freshly-written episodic into durable facts in
@@ -1323,6 +1346,37 @@ func (s *Service) distillEpisodicAsync(ctx context.Context, m *memory.Memory) {
 				return
 			}
 			s.metrics.RememberResult("dropped", string(memory.TierEpisodic))
+		}
+	})
+}
+
+// extractEpisodicAsync stores the heuristic extractor's typed facts from a
+// freshly-written episodic. The marker scan runs inline; only the embed+store of
+// each fact is detached. The raw episodic is kept; a per-fact failure is logged
+// without blocking the rest.
+func (s *Service) extractEpisodicAsync(ctx context.Context, m *memory.Memory) {
+	results := extract.Typed(m.Content)
+	if len(results) == 0 {
+		return
+	}
+	bg := context.WithoutCancel(ctx)
+	s.bg.Go(func() {
+		s.distillSem <- struct{}{}
+		defer func() { <-s.distillSem }()
+		dctx, cancel := context.WithTimeout(bg, distillOnWriteTimeout)
+		defer cancel()
+		for _, r := range results {
+			in := RememberInput{
+				Namespace: m.Namespace,
+				Content:   r.Content,
+				Tier:      r.Kind.Tier(),
+				Tags:      []string{string(r.Kind)},
+				Metadata:  map[string]any{"memory_type": string(r.Kind)},
+			}
+			if _, err := s.Remember(dctx, in); err != nil {
+				slog.WarnContext(dctx, "extract-on-write: store fact",
+					"namespace", m.Namespace, "id", m.ID, "kind", string(r.Kind), "err", err)
+			}
 		}
 	})
 }

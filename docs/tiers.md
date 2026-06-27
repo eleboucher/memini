@@ -22,15 +22,27 @@ of `semantic`/`procedural` knowledge.
 Memories move between tiers as usage patterns change:
 
 ```
-working ──▶ episodic ──(recalled repeatedly)──▶ semantic / procedural
-                 ▲                                      │
-                 └──────────(unused, low-value)─────────┘
+working ──▶ episodic ──(distilled at write / recalled repeatedly)──▶ semantic / procedural
+                 ▲                                                         │
+                 └──────────────────(unused, low-value)────────────────────┘
 ```
 
-- **Promotion** — frequently-recalled `episodic` memories are periodically
-  distilled by the LLM into durable `semantic` facts. Eligibility kicks in at
-  `MEMINI_PROMOTE_MIN_ACCESS` recalls (default `3`); the pass runs every
-  `MEMINI_PROMOTE_INTERVAL` (default `24h`). Needs an LLM configured.
+- **Distillation (write-time)** — each fresh `episodic` capture is distilled by
+  the LLM into durable `semantic`/`procedural` facts immediately, so a fact
+  stated once is durable without first having to be recalled. On by default
+  (`MEMINI_DISTILL_ON_WRITE`); needs an LLM. The raw episodic is kept unless
+  `MEMINI_DISTILL_DROP_NO_FACT` is set.
+- **Heuristic extraction (write-time, no LLM)** — when no LLM is configured (the
+  embedder-only and embedder+reranker deployments), a marker-based extractor
+  pulls decisions/preferences/problems out of each fresh `episodic` capture into
+  durable typed facts. On by default (`MEMINI_EXTRACT_ON_WRITE`); the LLM
+  distiller supersedes it when present. Conservative — a miss just means no extra
+  fact, and the raw episodic is always kept.
+- **Promotion** — a backstop for episodic memories that were not distilled at
+  write time (e.g. written before an LLM was configured): frequently-recalled
+  `episodic` memories are periodically distilled into durable `semantic` facts.
+  Eligibility kicks in at `MEMINI_PROMOTE_MIN_ACCESS` recalls (default `3`); the
+  pass runs every `MEMINI_PROMOTE_INTERVAL` (default `24h`). Needs an LLM configured.
 - **Demotion** — durable memories that were never recalled, are low-importance,
   and are older than `MEMINI_DEMOTE_AFTER` get pushed back down to `episodic`,
   so unused "durable" debris (e.g. a low-quality bulk import) ages out on its

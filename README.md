@@ -42,8 +42,11 @@ Hybrid results are re-ranked by a composite of relevance, access recency, and im
 
 When an LLM is configured, writes are stored immediately and then deduplicated and
 contradiction-resolved in the background (a similarity gate skips the LLM when nothing
-close exists), and frequently-recalled episodic memories are periodically distilled into
-durable semantic facts.
+close exists), and each fresh episodic capture is distilled into durable semantic facts at
+write time so a fact stated once is durable immediately (with a periodic promoter as a
+backstop for older episodic memories). Without an LLM, a heuristic extractor does the same
+at write time — pulling decisions, preferences, and problems out of each capture — so
+durable knowledge still builds in the embedder-only and embedder+reranker setups.
 
 ### Design
 
@@ -266,6 +269,9 @@ memini is configured entirely through environment variables (12-factor).
 | `MEMINI_CONSOLIDATE_MODE`        | `async`                  | `async` (store now, dedup in background), `sync`, or `off`                                                                                                                                                                                                                                                                      |
 | `MEMINI_CONSOLIDATE_MIN_SCORE`   | `0.6`                    | similarity gate: skip the LLM when the nearest candidate scores below it (`0` disables)                                                                                                                                                                                                                                         |
 | `MEMINI_CONSOLIDATE_QUEUE_CAP`   | `1024`                   | bound on the async consolidation queue; writes never block (jobs dropped when full)                                                                                                                                                                                                                                             |
+| `MEMINI_DISTILL_ON_WRITE`        | `true`                   | distil each fresh episodic capture into durable semantic facts at write time so a fact stated once is durable immediately, instead of waiting on the access-gated promoter (`false` disables; needs LLM)                                                                                                                        |
+| `MEMINI_DISTILL_DROP_NO_FACT`    | `false`                  | with `MEMINI_DISTILL_ON_WRITE`, delete the episodic capture when distillation extracts no durable fact; off by default so raw turns are never lost to a distiller miss                                                                                                                                                          |
+| `MEMINI_EXTRACT_ON_WRITE`        | `true`                   | no-LLM counterpart to distill-on-write: run each fresh episodic capture through the heuristic extractor into durable typed facts (decision/preference/problem). Only fires when no LLM is configured, so embedder-only and embedder+reranker deployments still build durable knowledge at write time (`false` disables)         |
 | `MEMINI_PROMOTE_INTERVAL`        | `24h`                    | how often frequently-used episodic memories are distilled into semantic facts (`0` disables; needs LLM)                                                                                                                                                                                                                         |
 | `MEMINI_PROMOTE_MIN_ACCESS`      | `3`                      | minimum recall count before an episodic memory is eligible for promotion                                                                                                                                                                                                                                                        |
 | `MEMINI_SWEEP_INTERVAL`          | `1h`                     | how often the decay sweeper purges expired memories                                                                                                                                                                                                                                                                             |

@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 
 	"github.com/eleboucher/memini/internal/embed/embedtest"
@@ -15,6 +16,19 @@ type fakeDistiller struct{ fact string }
 
 func (f fakeDistiller) Distill(_ context.Context, _ llm.DistillInput) ([]llm.Fact, error) {
 	return []llm.Fact{{Content: f.fact}}, nil
+}
+
+// countingDistiller records how many times Distill is invoked, so a test can
+// assert distillation fired exactly once even when content dedup would absorb a
+// second identical fact.
+type countingDistiller struct {
+	fact  string
+	calls atomic.Int32
+}
+
+func (d *countingDistiller) Distill(_ context.Context, _ llm.DistillInput) ([]llm.Fact, error) {
+	d.calls.Add(1)
+	return []llm.Fact{{Content: d.fact}}, nil
 }
 
 // noFactDistiller extracts nothing — the "this turn carries no durable fact" case.
@@ -39,8 +53,8 @@ func durableCount(t *testing.T, st store.Store, ns string) int {
 }
 
 // TestDistillOnWrite pins write-time distillation: a fresh episodic capture is
-// distilled into a durable semantic fact in the background. Off by default; only
-// fires for episodic; needs a distiller.
+// distilled into a durable semantic fact in the background. Fires only for a
+// fresh episodic create (not an update); needs a distiller; gated by the option.
 func TestDistillOnWrite(t *testing.T) {
 	ctx := context.Background()
 	ns := "alice"
@@ -83,6 +97,35 @@ func TestDistillOnWrite(t *testing.T) {
 		// Only the explicit semantic write — no distilled fact on top of it.
 		if got := durableCount(t, st, ns); got != 1 {
 			t.Fatalf("semantic write should not trigger distillation, got %d", got)
+		}
+	})
+
+	t.Run("explicit-id episodic create distills; re-fire as update does not", func(t *testing.T) {
+		st := openTestStore(t)
+		dist := &countingDistiller{fact: fact}
+		svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(),
+			service.WithDistiller(dist), service.WithDistillOnWrite(true))
+		// A client-supplied ID (e.g. the plugin's session-end:<id> digest) is a
+		// fresh create the first time, so it distills.
+		in := service.RememberInput{Namespace: ns, ID: "session-end:s1", Tier: memory.TierEpisodic,
+			Content: "User: how's auth wired?\nAssistant: it uses the jose library"}
+		if _, err := svc.Remember(ctx, in); err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+		svc.WaitBackground()
+		if got := durableCount(t, st, ns); got != 1 {
+			t.Fatalf("explicit-id episodic create should distill, got %d durable", got)
+		}
+		// Re-fire the same ID with an updated digest (an update, not a create) —
+		// must not distill again. New content bypasses the exact-restatement gate
+		// so this exercises the update path, not the fingerprint fast path.
+		in.Content += "; added tests"
+		if _, err := svc.Remember(ctx, in); err != nil {
+			t.Fatalf("remember (re-fire): %v", err)
+		}
+		svc.WaitBackground()
+		if got := dist.calls.Load(); got != 1 {
+			t.Fatalf("distiller should run once for create only, ran %d times", got)
 		}
 	})
 }
