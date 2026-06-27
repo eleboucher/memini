@@ -1031,3 +1031,65 @@ test("pre-tool-use.mjs: MEMINI_INJECT_PRETOOL_MAX_TOK truncates per-file block",
     await close();
   }
 });
+
+// --- inline <memory> extraction -------------------------------------------
+
+test("parseMemoryBlocks: extracts contents, tolerates malformed and empty blocks", async () => {
+  const { parseMemoryBlocks } = await import("./_shared.mjs");
+  const text =
+    'prose\n<memory>\n{"memories":[{"content":"a"},{"content":"b"}]}\n</memory>\n' +
+    "more\n<memory>{not json}</memory>\n" +
+    '<memory>{"memories":[]}</memory>\n' +
+    '<memory>{"memories":[{"content":"  "},{"content":"c"}]}</memory>';
+  assert.deepEqual(
+    parseMemoryBlocks(text).map((m) => m.content),
+    ["a", "b", "c"],
+  );
+  assert.deepEqual(parseMemoryBlocks(""), []);
+  assert.deepEqual(parseMemoryBlocks("no blocks here"), []);
+});
+
+test("extractAssistantText: pulls text blocks from a transcript, skips tool-only turns", async () => {
+  const { extractAssistantText } = await import("./_shared.mjs");
+  const transcript = [
+    JSON.stringify({ type: "user", message: { content: "hi" } }),
+    JSON.stringify({ type: "assistant", message: { content: "plain string reply" } }),
+    JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "block reply" }, { type: "tool_use", name: "Bash" }] },
+    }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Read" }] } }),
+    "not json",
+  ].join("\n");
+  assert.deepEqual(extractAssistantText(transcript), ["plain string reply", "block reply"]);
+});
+
+// --- session digest: failed-command surfacing -----------------------------
+
+test("buildSessionDigest: marks a failed command, leaves the recovery command unmarked", async () => {
+  const { buildSessionDigest } = await import("./_shared.mjs");
+  const d = buildSessionDigest(
+    [
+      { tool: "Bash", cmd: "protoc --go_out=.", failed: true },
+      { tool: "Bash", cmd: "./bin/protoc --go_out=." },
+    ],
+    "proj",
+  );
+  assert.match(d.content, /protoc --go_out=\. \(failed\)/);
+  assert.ok(
+    !d.content.includes("./bin/protoc --go_out=. (failed)"),
+    "the recovery command must not be marked failed",
+  );
+});
+
+test("buildSessionDigest: a command that fails then passes on retry is not marked failed", async () => {
+  const { buildSessionDigest } = await import("./_shared.mjs");
+  const d = buildSessionDigest(
+    [
+      { tool: "Bash", cmd: "go test ./...", failed: true },
+      { tool: "Bash", cmd: "go test ./..." },
+    ],
+    "proj",
+  );
+  assert.ok(!d.content.includes("(failed)"), "a retried-and-passed command should not read as failed");
+});

@@ -61,13 +61,18 @@ async function main() {
 
   if (DEBUG) console.error(`[memini] PostToolUse buffer tool=${toolName} session=${sessionId}`);
 
-  appendSessionEvent(sessionId, {
+  const event = {
     ts: Date.now(),
     tool: toolName,
     file,
     files: files.length ? files : undefined,
     cmd: typeof cmd === "string" ? cmd : "",
-  });
+  };
+  // Mark failures (the harness's error flag) so the session digest can surface
+  // failed→fixed command sequences for the distiller to mine.
+  if (payload.tool_response?.is_error || payload.is_error) event.failed = true;
+
+  appendSessionEvent(sessionId, event);
 }
 
 main().catch((e) => {

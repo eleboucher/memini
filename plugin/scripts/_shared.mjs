@@ -679,15 +679,21 @@ export function buildSessionDigest(events, project) {
   const fileCounts = new Map();
   const commands = [];
   const seenCmd = new Set();
+  const failedCmd = new Set();
+  const okCmd = new Set();
   for (const ev of events) {
     const files = Array.isArray(ev.files) && ev.files.length ? ev.files : ev.file ? [ev.file] : [];
     for (const f of files) {
       if (typeof f !== "string" || !f) continue;
       fileCounts.set(f, (fileCounts.get(f) || 0) + 1);
     }
-    if (ev.cmd && !seenCmd.has(ev.cmd)) {
-      seenCmd.add(ev.cmd);
-      commands.push(ev.cmd);
+    if (ev.cmd) {
+      if (!seenCmd.has(ev.cmd)) {
+        seenCmd.add(ev.cmd);
+        commands.push(ev.cmd);
+      }
+      if (ev.failed) failedCmd.add(ev.cmd);
+      else okCmd.add(ev.cmd);
     }
   }
 
@@ -696,9 +702,15 @@ export function buildSessionDigest(events, project) {
     .map(([f, n]) => (n > 1 ? `${f} (${n})` : f));
   const topCommands = commands.slice(0, 10);
 
+  // Mark a command "(failed)" only when it never succeeded this session, so a
+  // failed→fixed pair reads as "X (failed); Y". A retried-then-passing command
+  // is not marked.
+  const renderCmd = (c) =>
+    failedCmd.has(c) && !okCmd.has(c) ? `${truncate(c, 80)} (failed)` : truncate(c, 80);
+
   const parts = [`Session digest for ${project}: ${events.length} tool calls.`];
   if (files.length) parts.push(`Edited: ${files.slice(0, 15).join(", ")}.`);
-  if (topCommands.length) parts.push(`Ran: ${topCommands.map((c) => truncate(c, 80)).join("; ")}.`);
+  if (topCommands.length) parts.push(`Ran: ${topCommands.map(renderCmd).join("; ")}.`);
 
   return {
     content: parts.join(" "),
