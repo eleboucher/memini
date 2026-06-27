@@ -197,6 +197,8 @@ worth keeping long-term and classify each item with a "category":
 - "preference": a user preference or correction ("don't use X", "always prefer Y", "stop doing Z").
 - "procedure": reusable how-to knowledge, including error→recovery ("when X fails, do Y instead").
 - "fact": a stable fact, decision, or convention that is neither of the above.
+Episodes prefixed with "[failed]" were captured from a failed turn or command; pair one with a later
+success to form an error→recovery "procedure".
 Discard transient noise (one-off actions, routine file edits with no lasting lesson). Merge overlapping
 observations into single items.
 When an episode states a relative time (e.g. "yesterday", "last week", "two days ago"), resolve it to an

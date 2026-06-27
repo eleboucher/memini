@@ -381,6 +381,35 @@ func TestPromoteRoutesCategoryToTier(t *testing.T) {
 	}
 }
 
+// A source episodic captured from a failed turn (metadata.failed) reaches the
+// distiller with a "[failed]" content prefix so it can be mined into recovery.
+func TestPromoteMarksFailedEpisodes(t *testing.T) {
+	fd := &fakeDistiller{facts: []llm.Fact{{Content: "x", Category: "procedure"}}}
+	svc, st := newPromoterSvc(t, fd)
+	vec, err := embed.EmbedOne(context.Background(), embedtest.New(testDims), "go test errored")
+	if err != nil {
+		t.Fatalf("embed: %v", err)
+	}
+	now := time.Unix(1_700_000_000, 0).UTC()
+	if err := st.Upsert(context.Background(), &memory.Memory{
+		ID: "f1", Namespace: "ns", Tier: memory.TierEpisodic, Content: "go test ./... errored",
+		AccessCount: 5, CreatedAt: now, UpdatedAt: now, LastAccessedAt: now, Embedding: vec,
+		Metadata: map[string]any{"failed": true},
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	if _, err := svc.Promote(context.Background()); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if len(fd.last.Episodes) != 1 {
+		t.Fatalf("want 1 distilled episode, got %d", len(fd.last.Episodes))
+	}
+	if got := fd.last.Episodes[0].Content; got != "[failed] go test ./... errored" {
+		t.Fatalf("failed episode content = %q, want it prefixed with [failed]", got)
+	}
+}
+
 func TestPromoteStampsSourcesBeforeDistilling(t *testing.T) {
 	// Distillation fails, so no facts are written. The source must still be
 	// stamped (stamping happens before distilling), so the next tick does NOT

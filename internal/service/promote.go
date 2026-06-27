@@ -102,6 +102,12 @@ func (s *Service) promote(ctx context.Context, ns string, batch []*memory.Memory
 	episodes := make([]llm.Episode, len(stamped))
 	for i, m := range stamped {
 		e := llm.Episode{Content: m.Content}
+		// Surface a captured failure (metadata.failed, set by the integrations)
+		// into the content so the distiller can pair a failed turn with a later
+		// success into a recovery procedure.
+		if failedEpisode(m) {
+			e.Content = "[failed] " + e.Content
+		}
 		if !m.CreatedAt.IsZero() {
 			e.Date = m.CreatedAt.UTC().Format(time.DateOnly)
 		}
@@ -143,6 +149,16 @@ func tierForCategory(category string) memory.Tier {
 		return memory.TierProcedural
 	}
 	return memory.TierSemantic
+}
+
+// failedEpisode reports whether a source episodic was captured from a failed
+// turn or command (metadata.failed, set by the integrations and the plugin).
+func failedEpisode(m *memory.Memory) bool {
+	if m.Metadata == nil {
+		return false
+	}
+	v, ok := m.Metadata["failed"].(bool)
+	return ok && v
 }
 
 // stampPromoted marks each source with metadata["promoted_at"] and returns the
