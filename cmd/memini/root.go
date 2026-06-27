@@ -221,6 +221,7 @@ func buildServiceStack(
 		service.WithWriteDedup(cfg.WriteDedupMinScore),
 		service.WithAutoSupersede(cfg.AutoSupersedeMinScore),
 		service.WithMergeHint(cfg.MergeHintMinScore),
+		service.WithGlobalNamespace(cfg.GlobalNamespace),
 		service.WithFingerprintDedup(cfg.WriteDedupFingerprint),
 		service.WithReinforceSkipMarkers(cfg.ReinforceSkipMarkers),
 		service.WithSecretRedaction(cfg.RedactSecrets),

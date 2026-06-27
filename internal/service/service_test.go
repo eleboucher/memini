@@ -801,3 +801,65 @@ func TestHistoryWalksTheSupersessionChain(t *testing.T) {
 		t.Fatalf("history of missing id: want ErrNotFound, got %v", err)
 	}
 }
+
+// A global namespace merges its durable memories into every other namespace's
+// recall and briefing, but never its episodic ones.
+func TestGlobalNamespaceMergesDurableOnly(t *testing.T) {
+	svc := newService(t, service.WithGlobalNamespace("global"))
+	ctx := context.Background()
+	mk := func(ns, content string, tier memory.Tier) {
+		if _, err := svc.Remember(ctx, service.RememberInput{Namespace: ns, Content: content, Tier: tier}); err != nil {
+			t.Fatalf("remember %q: %v", content, err)
+		}
+	}
+	mk("global", "never write AI slop filler comments", memory.TierSemantic)
+	mk("global", "global session chatter about lunch", memory.TierEpisodic) // must not leak
+	mk("proj", "proj deploys with helm charts", memory.TierSemantic)
+
+	has := func(rs []store.Scored, content string) bool {
+		for _, r := range rs {
+			if r.Memory.Content == content {
+				return true
+			}
+		}
+		return false
+	}
+
+	// The durable global rule surfaces in another namespace's recall.
+	res, err := svc.Recall(ctx, service.RecallInput{Namespace: "proj", Query: "AI slop filler comments", Limit: 10})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if !has(res, "never write AI slop filler comments") {
+		t.Fatalf("durable global rule should surface in proj recall")
+	}
+
+	// The global episodic must not leak — the global leg is durable-tier only.
+	res, err = svc.Recall(ctx, service.RecallInput{Namespace: "proj", Query: "global session chatter lunch", Limit: 10})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if has(res, "global session chatter about lunch") {
+		t.Fatal("global episodic must not surface in another namespace's recall")
+	}
+
+	// Briefing in proj carries the global rule under facts, never the episodic.
+	b, err := svc.Briefing(ctx, "proj", service.BriefingOpts{})
+	if err != nil {
+		t.Fatalf("briefing: %v", err)
+	}
+	factFound := false
+	for _, m := range b.Facts {
+		if m.Content == "never write AI slop filler comments" {
+			factFound = true
+		}
+	}
+	if !factFound {
+		t.Fatal("briefing facts should include the global rule")
+	}
+	for _, m := range b.Recent {
+		if m.Content == "global session chatter about lunch" {
+			t.Fatal("global episodic must not appear in briefing recent")
+		}
+	}
+}

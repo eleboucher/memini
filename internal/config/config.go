@@ -123,6 +123,13 @@ type Config struct {
 	// REST response so the caller can merge via memory_update. 0 disables.
 	MergeHintMinScore float64 `env:"MEMINI_MERGE_HINT_MIN_SCORE" envDefault:"0"`
 
+	// GlobalNamespace, when set, is a namespace whose memories are merged
+	// read-only into every other namespace's recall and briefing — a shared
+	// space for cross-project rules the agent should always remember ("no AI
+	// slops", commit conventions, ...). Empty (the default) disables it, keeping
+	// namespaces fully isolated. Pin a global memory so it stays top-of-mind.
+	GlobalNamespace string `env:"MEMINI_GLOBAL_NAMESPACE" envDefault:""`
+
 	// ReinforceSkipMarkers drops session-end / stop marker memories from recall
 	// reinforcement so their inflated access_count and TTL don't distort recall.
 	// On by default.

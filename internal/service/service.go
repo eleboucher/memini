@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -244,6 +245,10 @@ type Service struct {
 	// mergeHintMinScore: score in [this, autoSupersedeMinScore) returns a
 	// MergeHint to the caller. 0 disables.
 	mergeHintMinScore float64
+	// globalNamespace, when set, is merged read-only into every other
+	// namespace's recall and briefing — durable tiers only. See
+	// WithGlobalNamespace. Empty disables it.
+	globalNamespace string
 	// fingerprintDedup (default on) reinforces an exact restatement instead of
 	// storing a duplicate; see WithFingerprintDedup.
 	fingerprintDedup bool
@@ -467,6 +472,13 @@ func WithAutoSupersede(minScore float64) Option {
 // returns a MergeHint to the caller. 0 disables.
 func WithMergeHint(minScore float64) Option {
 	return func(s *Service) { s.mergeHintMinScore = minScore }
+}
+
+// WithGlobalNamespace sets a namespace whose durable (semantic/procedural)
+// memories are merged read-only into every other namespace's recall and
+// briefing — a shared space for cross-project rules. Empty disables it.
+func WithGlobalNamespace(ns string) Option {
+	return func(s *Service) { s.globalNamespace = ns }
 }
 
 // MergeHint surfaces a near-duplicate the caller may want to merge into.
@@ -1024,6 +1036,37 @@ type RecallInput struct {
 }
 
 // Recall runs hybrid (vector + keyword) retrieval fused with RRF.
+// addGlobalNamespace appends the configured global namespace to the recall
+// fan-out (when set, distinct, and not already present), returning the new list,
+// the global namespace's index (-1 when none was added), and the durable tier
+// filter it should use — the global namespace contributes durable tiers only.
+func (s *Service) addGlobalNamespace(namespaces []string, in RecallInput) ([]string, int, []memory.Tier) {
+	if s.globalNamespace == "" || s.globalNamespace == in.Namespace || slices.Contains(namespaces, s.globalNamespace) {
+		return namespaces, -1, nil
+	}
+	gt := durableTiers(in.Tiers)
+	if len(gt) == 0 {
+		return namespaces, -1, nil
+	}
+	return append(namespaces, s.globalNamespace), len(namespaces), gt
+}
+
+// durableTiers restricts a requested tier set to the durable tiers (semantic,
+// procedural) that the global namespace may contribute. An empty request (all
+// tiers) becomes durable-only; an episodic-only request yields none.
+func durableTiers(requested []memory.Tier) []memory.Tier {
+	if len(requested) == 0 {
+		return []memory.Tier{memory.TierSemantic, memory.TierProcedural}
+	}
+	var out []memory.Tier
+	for _, t := range requested {
+		if t == memory.TierSemantic || t == memory.TierProcedural {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, error) {
 	start := time.Now()
 	tf := tierFilterLabel(in.Tiers)
@@ -1099,6 +1142,10 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		s.metrics.RecallResult("error", tf, "0")
 		return nil, err
 	}
+	// Merge the global namespace (durable tiers only) into the fan-out so shared
+	// cross-project rules surface in every recall. It gets its own tier filter;
+	// every other namespace uses the requested one.
+	namespaces, globalIdx, globalTiers := s.addGlobalNamespace(namespaces, in)
 	s.metrics.OpDuration("recall_embed", time.Since(embedStart))
 	if embedErr != nil {
 		reason := "embed_error"
@@ -1134,9 +1181,13 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	g2, g2ctx := errgroup.WithContext(ctx)
 	g2.SetLimit(recallSearchConcurrency)
 	for i, ns := range namespaces {
+		f := filter
+		if i == globalIdx {
+			f.Tiers = globalTiers // global namespace contributes durable tiers only
+		}
 		if vec != nil {
 			g2.Go(func() error {
-				v, err := s.store.VectorSearch(g2ctx, ns, vec, filter, poolK)
+				v, err := s.store.VectorSearch(g2ctx, ns, vec, f, poolK)
 				if err != nil {
 					return fmt.Errorf("recall: vector search: %w", err)
 				}
@@ -1145,7 +1196,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 			})
 		}
 		g2.Go(func() error {
-			kw, err := s.store.KeywordSearch(g2ctx, ns, in.Query, filter, poolK)
+			kw, err := s.store.KeywordSearch(g2ctx, ns, in.Query, f, poolK)
 			if err != nil {
 				return fmt.Errorf("recall: keyword search: %w", err)
 			}

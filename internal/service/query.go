@@ -226,17 +226,40 @@ func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingO
 	}
 	b := Briefing{Namespace: namespace}
 	var facts, procs, recent []*memory.Memory
-	for _, m := range mems {
-		if slices.Contains(m.Tags, maintenance.PinnedTag) {
-			b.Pinned = append(b.Pinned, m)
-		}
+	// bucket sorts a memory into the briefing's sections. Global-namespace
+	// memories contribute durable tiers only (no episodic/working), so shared
+	// cross-project rules surface without dragging global chatter into every
+	// project.
+	bucket := func(m *memory.Memory, global bool) {
 		switch m.Tier {
 		case memory.TierSemantic:
 			facts = append(facts, m)
 		case memory.TierProcedural:
 			procs = append(procs, m)
 		case memory.TierEpisodic:
+			if global {
+				return
+			}
 			recent = append(recent, m)
+		default:
+			if global {
+				return
+			}
+		}
+		if slices.Contains(m.Tags, maintenance.PinnedTag) {
+			b.Pinned = append(b.Pinned, m)
+		}
+	}
+	for _, m := range mems {
+		bucket(m, false)
+	}
+	if s.globalNamespace != "" && s.globalNamespace != namespace {
+		gmems, err := s.store.List(ctx, s.globalNamespace, store.Filter{Now: now}, 0)
+		if err != nil {
+			return Briefing{}, err
+		}
+		for _, m := range gmems {
+			bucket(m, true)
 		}
 	}
 	// Rank durable sections by DurableScore (no recency decay), scored once per
