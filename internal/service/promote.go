@@ -120,15 +120,29 @@ func (s *Service) promote(ctx context.Context, ns string, batch []*memory.Memory
 		if strings.TrimSpace(f.Content) == "" {
 			continue
 		}
-		if _, err := s.Remember(ctx, RememberInput{
-			Namespace: ns, Content: f.Content, Summary: f.Summary, Tier: memory.TierSemantic,
-		}); err != nil {
+		in := RememberInput{
+			Namespace: ns, Content: f.Content, Summary: f.Summary, Tier: tierForCategory(f.Category),
+		}
+		if cat := strings.ToLower(strings.TrimSpace(f.Category)); cat != "" {
+			in.Metadata = map[string]any{"distill_category": cat}
+		}
+		if _, err := s.Remember(ctx, in); err != nil {
 			slog.WarnContext(ctx, "promote: store fact", "err", err)
 			continue
 		}
 		written++
 	}
 	return written, nil
+}
+
+// tierForCategory routes a distilled fact to a tier by its category: a
+// "procedure" (including error→recovery) is procedural; "preference" and "fact"
+// (and any unknown/empty value) are semantic.
+func tierForCategory(category string) memory.Tier {
+	if strings.EqualFold(strings.TrimSpace(category), "procedure") {
+		return memory.TierProcedural
+	}
+	return memory.TierSemantic
 }
 
 // stampPromoted marks each source with metadata["promoted_at"] and returns the

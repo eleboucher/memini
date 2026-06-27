@@ -251,7 +251,7 @@ func (d *fakeDistiller) Distill(_ context.Context, in llm.DistillInput) ([]llm.F
 	return d.facts, d.err
 }
 
-func newPromoterSvc(t *testing.T, fd llm.Distiller, minAccess int) (*Service, store.Store) {
+func newPromoterSvc(t *testing.T, fd llm.Distiller) (*Service, store.Store) {
 	t.Helper()
 	st, err := sqlitevec.Open(context.Background(), filepath.Join(t.TempDir(), "p.db"), testDims)
 	if err != nil {
@@ -260,7 +260,7 @@ func newPromoterSvc(t *testing.T, fd llm.Distiller, minAccess int) (*Service, st
 	t.Cleanup(func() { _ = st.Close() })
 	return New(st, embedtest.New(testDims),
 		WithDistiller(fd),
-		WithPromoteMinAccess(minAccess),
+		WithPromoteMinAccess(3),
 		// Store distilled facts plainly so the test asserts promotion, not dedup.
 		WithConsolidateMode(ConsolidateOff),
 		WithSyncReinforce(),
@@ -286,7 +286,7 @@ func putEpisodic(t *testing.T, st store.Store, e embed.Embedder, id, content str
 
 func TestPromoteWritesFactsAndStampsSources(t *testing.T) {
 	fd := &fakeDistiller{facts: []llm.Fact{{Content: "user prefers Go", Summary: "lang pref"}}}
-	svc, st := newPromoterSvc(t, fd, 3)
+	svc, st := newPromoterSvc(t, fd)
 	e := embedtest.New(testDims)
 	// Two eligible (access >= 3), one below threshold.
 	putEpisodic(t, st, e, "hot1", "wrote a lot of go code", 5)
@@ -334,13 +334,60 @@ func TestPromoteWritesFactsAndStampsSources(t *testing.T) {
 	}
 }
 
+func TestTierForCategory(t *testing.T) {
+	cases := map[string]memory.Tier{
+		"procedure":  memory.TierProcedural,
+		"PROCEDURE ": memory.TierProcedural,
+		"preference": memory.TierSemantic,
+		"fact":       memory.TierSemantic,
+		"":           memory.TierSemantic,
+		"bogus":      memory.TierSemantic,
+	}
+	for in, want := range cases {
+		if got := tierForCategory(in); got != want {
+			t.Errorf("tierForCategory(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A distilled "procedure" (incl. error→recovery) is stored in the procedural
+// tier; a "preference" stays semantic. Both carry a distill_category tag.
+func TestPromoteRoutesCategoryToTier(t *testing.T) {
+	fd := &fakeDistiller{facts: []llm.Fact{
+		{Content: "when go test fails on a dirty cache, run go clean -testcache", Category: "procedure"},
+		{Content: "the user prefers tabs over spaces", Category: "preference"},
+	}}
+	svc, st := newPromoterSvc(t, fd)
+	putEpisodic(t, st, embedtest.New(testDims), "hot1", "ran go clean -testcache to fix the tests", 5)
+
+	if _, err := svc.Promote(context.Background()); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+
+	proc, err := svc.List(context.Background(), ListInput{Namespace: "ns", Tiers: []memory.Tier{memory.TierProcedural}})
+	if err != nil {
+		t.Fatalf("list procedural: %v", err)
+	}
+	if len(proc) != 1 || proc[0].Metadata["distill_category"] != "procedure" {
+		t.Fatalf("procedure fact should land in procedural tier with category tag, got %+v", proc)
+	}
+
+	sem, err := svc.List(context.Background(), ListInput{Namespace: "ns", Tiers: []memory.Tier{memory.TierSemantic}})
+	if err != nil {
+		t.Fatalf("list semantic: %v", err)
+	}
+	if len(sem) != 1 || sem[0].Metadata["distill_category"] != "preference" {
+		t.Fatalf("preference fact should land in semantic tier, got %+v", sem)
+	}
+}
+
 func TestPromoteStampsSourcesBeforeDistilling(t *testing.T) {
 	// Distillation fails, so no facts are written. The source must still be
 	// stamped (stamping happens before distilling), so the next tick does NOT
 	// re-distill it — which, distillation being non-deterministic, would emit a
 	// differently worded duplicate fact.
 	fd := &fakeDistiller{err: errors.New("distill boom")}
-	svc, st := newPromoterSvc(t, fd, 3)
+	svc, st := newPromoterSvc(t, fd)
 	e := embedtest.New(testDims)
 	putEpisodic(t, st, e, "hot1", "wrote a lot of go code", 5)
 
@@ -376,7 +423,7 @@ func TestPromoteStampsSourcesBeforeDistilling(t *testing.T) {
 
 func TestPromoteGroundsEpisodeDates(t *testing.T) {
 	fd := &fakeDistiller{facts: []llm.Fact{{Content: "switched to Go on 2023-11-13", Summary: "lang"}}}
-	svc, st := newPromoterSvc(t, fd, 3)
+	svc, st := newPromoterSvc(t, fd)
 	putEpisodic(t, st, embedtest.New(testDims), "hot1", "yesterday we switched to Go", 5)
 
 	if _, err := svc.Promote(context.Background()); err != nil {

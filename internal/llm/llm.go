@@ -77,6 +77,9 @@ type Completer interface {
 type Fact struct {
 	Content string `json:"content"`
 	Summary string `json:"summary,omitempty"`
+	// Category routes the fact to a tier: "procedure" (incl. error→recovery) →
+	// procedural; "preference" and "fact" → semantic. Empty defaults to semantic.
+	Category string `json:"category,omitempty"`
 }
 
 // Episode is one episodic memory to distill, paired with the date it was
@@ -190,13 +193,16 @@ Prefer "new" unless there is a clear match. Output only the JSON object.`
 const distillPrompt = `You compress an AI agent's episodic memories into durable, reusable knowledge.
 Input is a JSON object {"now":"YYYY-MM-DD","episodes":[{"content":"...","date":"YYYY-MM-DD"}]} of past
 observations, each with the date it was recorded; "now" is today. Extract only the DURABLE knowledge
-worth keeping long-term: stable facts, decisions, conventions, preferences, and how-to knowledge.
+worth keeping long-term and classify each item with a "category":
+- "preference": a user preference or correction ("don't use X", "always prefer Y", "stop doing Z").
+- "procedure": reusable how-to knowledge, including error→recovery ("when X fails, do Y instead").
+- "fact": a stable fact, decision, or convention that is neither of the above.
 Discard transient noise (one-off actions, routine file edits with no lasting lesson). Merge overlapping
-observations into single facts.
+observations into single items.
 When an episode states a relative time (e.g. "yesterday", "last week", "two days ago"), resolve it to an
-absolute YYYY-MM-DD date in the fact, grounding against that episode's "date" (or "now" if it has none).
+absolute YYYY-MM-DD date in the item, grounding against that episode's "date" (or "now" if it has none).
 Leave already-absolute dates unchanged. Respond with a single JSON object:
-{"facts":[{"content":"<durable fact>","summary":"<one line>"}]}
+{"facts":[{"content":"<durable item>","summary":"<one line>","category":"preference|procedure|fact"}]}
 Return {"facts":[]} if nothing is durable. Output only the JSON object.`
 
 // trimFence strips a leading/trailing markdown code fence some models wrap JSON
