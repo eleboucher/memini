@@ -191,7 +191,7 @@ controllers:
       fsck:
         image:
           repository: curlimages/curl
-          tag: "8.20.0"
+          tag: "8.21.0"
           pullPolicy: IfNotPresent
         command:
           - /bin/sh
