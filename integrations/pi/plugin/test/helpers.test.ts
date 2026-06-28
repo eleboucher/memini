@@ -1,0 +1,129 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  deriveNamespace,
+  sanitizeNamespace,
+  resolveConfig,
+  formatResults,
+  fitByTokens,
+  approxTokens,
+  meminiListPath,
+  extractMessageText,
+  extractLastAssistantText,
+  buildTurnContent,
+} from "../src/index.ts";
+
+test("deriveNamespace takes the cwd basename and sanitizes it", () => {
+  assert.equal(deriveNamespace("/home/me/dev/My Repo"), "My-Repo");
+  assert.equal(deriveNamespace("/home/me/dev/memini/"), "memini");
+  assert.equal(deriveNamespace(""), "");
+  assert.equal(deriveNamespace(undefined), "");
+});
+
+test("sanitizeNamespace keeps header-safe chars and trims dashes", () => {
+  assert.equal(sanitizeNamespace("  a/b c "), "a-b-c");
+  assert.equal(sanitizeNamespace("ok.name_1"), "ok.name_1");
+});
+
+test("resolveConfig defaults, with env overriding and cwd fallback", () => {
+  const base = resolveConfig({}, "/x/proj");
+  assert.equal(base.namespace, "proj");
+  assert.equal(base.base_url, "http://localhost:8080");
+  assert.equal(base.recall, true);
+  assert.equal(base.capture, true);
+  assert.equal(base.recall_limit, 3);
+
+  const env = resolveConfig(
+    { MEMINI_NAMESPACE: "shared", MEMINI_BASE_URL: "http://h:9", MEMINI_RECALL: "0", MEMINI_RECALL_LIMIT: "8" },
+    "/x/proj",
+  );
+  assert.equal(env.namespace, "shared");
+  assert.equal(env.base_url, "http://h:9");
+  assert.equal(env.recall, false);
+  assert.equal(env.recall_limit, 8);
+});
+
+test("resolveConfig falls back to the 'pi' default namespace with no cwd or env", () => {
+  assert.equal(resolveConfig({}, undefined).namespace, "pi");
+});
+
+test("formatResults renders bullets and respects labels", () => {
+  const results = [
+    { memory: { tier: "semantic", content: "fact one" }, score: 0.9 },
+    { memory: { tier: "episodic", summary: "did a thing" }, score: 0.5 },
+  ];
+  assert.deepEqual(formatResults(results, 3), ["- (semantic) fact one", "- (episodic) did a thing"]);
+
+  const labeled = formatResults(results, 3, new Set(["tier"]));
+  assert.equal(labeled[0], "[semantic] fact one");
+
+  assert.deepEqual(formatResults([], 3), []);
+});
+
+test("fitByTokens trims to budget and reports dropped", () => {
+  const items = ["one two three", "four five six", "seven eight nine"];
+  const all = fitByTokens(items, 0);
+  assert.equal(all.items.length, 3);
+  assert.equal(all.dropped, 0);
+
+  const tight = fitByTokens(items, approxTokens(items[0]));
+  assert.equal(tight.items.length, 1);
+  assert.equal(tight.dropped, 2);
+});
+
+test("meminiListPath encodes tiers, tags, metadata, and limit", () => {
+  assert.equal(meminiListPath({}), "/v1/memories");
+  assert.equal(
+    meminiListPath({ tiers: ["procedural"], tags: ["x"], metadata: { category: "bug_fixes" }, limit: 5 }),
+    "/v1/memories?tier=procedural&tag=x&meta=category%3Dbug_fixes&limit=5",
+  );
+  // limit=0 means "all" — omitted from the query string.
+  assert.equal(meminiListPath({ limit: 0 }), "/v1/memories");
+});
+
+test("extractMessageText handles string and array content shapes", () => {
+  assert.equal(extractMessageText({ content: "hello" }), "hello");
+  assert.equal(
+    extractMessageText({
+      content: [
+        { type: "text", text: "a" },
+        { type: "tool_use", id: "t1" },
+        { type: "text", text: "b" },
+      ],
+    }),
+    "a\nb",
+  );
+  assert.equal(extractMessageText({ text: "fallback" }), "fallback");
+  assert.equal(extractMessageText(null), "");
+});
+
+test("extractLastAssistantText returns only the latest assistant turn", () => {
+  // agent_end carries the whole conversation; capture must take just the last
+  // assistant reply, not a join of every earlier one.
+  const messages = [
+    { role: "user", content: "q1" },
+    { role: "assistant", content: "first reply" },
+    { role: "user", content: "q2" },
+    { role: "assistant", content: [{ type: "text", text: "second reply" }] },
+  ];
+  assert.equal(extractLastAssistantText(messages), "second reply");
+
+  // Skips a trailing toolResult to find the last assistant message.
+  assert.equal(
+    extractLastAssistantText([
+      { role: "assistant", content: "the answer" },
+      { role: "toolResult", content: "tool output" },
+    ]),
+    "the answer",
+  );
+
+  assert.equal(extractLastAssistantText([]), "");
+});
+
+test("buildTurnContent bounds each side", () => {
+  const content = buildTurnContent("u".repeat(2000), "a".repeat(5000));
+  const [user, assistant] = content.split("\n\n");
+  assert.equal(user.length, 1000);
+  assert.equal(assistant.length, 3000);
+});
