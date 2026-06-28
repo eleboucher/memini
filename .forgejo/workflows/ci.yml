@@ -104,11 +104,11 @@ jobs:
           npx tsx --test test/helpers.test.ts
 
       # Pi extension (typebox runtime dep + tsx/typescript/pi types for build).
-      # No committed lock: `npm install` (not `npm ci`) keeps the runner happy.
+      # npm ci uses the committed package-lock.json for a reproducible install.
       - name: Test Pi plugin
         run: |
           cd integrations/pi/plugin
-          npm install --no-audit --no-fund
+          npm ci --no-audit --no-fund
           npm run build
           npx tsx --test test/helpers.test.ts
 
