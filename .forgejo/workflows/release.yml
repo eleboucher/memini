@@ -193,6 +193,40 @@ jobs:
           # Ship the integration README as the npm package page.
           cp ../README.md README.md
           npm publish --access public
+  # Publishes the Pi extension to npm as @eleboucher/pi-memini so
+  # `"packages": ["npm:@eleboucher/pi-memini"]` resolves. Unlike opencode this
+  # plugin is TypeScript: build dist/ (gitignored, referenced by pi.extensions
+  # and the package `files`) before publishing. Version comes from the tag.
+  pi-npm:
+    needs: [release]
+    runs-on: docker
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v7
+      - name: Install Node.js
+        uses: https://data.forgejo.org/actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - name: Test, build and publish Pi extension to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # This runner resolves `working-directory:` against /tmp; cd instead.
+          cd integrations/pi/plugin
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN secret is empty or missing" >&2
+            exit 1
+          fi
+          npm install --no-audit --no-fund
+          npm run build
+          npx tsx --test test/helpers.test.ts
+          VERSION="${TAG#v}"
+          npm version "${VERSION}" --no-git-tag-version --allow-same-version
+          # Ship the integration README as the npm package page.
+          cp ../README.md README.md
+          npm publish --access public
   container:
     needs: [release]
     runs-on: multiarch

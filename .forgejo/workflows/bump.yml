@@ -76,7 +76,8 @@ jobs:
           for f in plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
                    integrations/openclaw/plugin/package.json \
                    integrations/openclaw/plugin/openclaw.plugin.json \
-                   integrations/opencode/plugin/package.json; do
+                   integrations/opencode/plugin/package.json \
+                   integrations/pi/plugin/package.json; do
             sed -i -E 's/("version"[[:space:]]*:[[:space:]]*")[^"]*(")/\1'"${NEXT}"'\2/' "$f"
             grep -q "\"version\": \"${NEXT}\"" "$f" || { echo "failed to set version in $f" >&2; exit 1; }
             # Keep the commit honest: the file must still be valid JSON.
@@ -100,6 +101,7 @@ jobs:
             integrations/openclaw/plugin/openclaw.plugin.json \
             integrations/openclaw/plugin/plugin.yaml \
             integrations/opencode/plugin/package.json \
+            integrations/pi/plugin/package.json \
             integrations/hermes/plugin/memini/plugin.yaml
           # A no-op bump (auto found no conventional commits since the last
           # tag, or an explicit version equal to the current one) stages

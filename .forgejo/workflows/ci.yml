@@ -103,6 +103,15 @@ jobs:
           node --test test/regression.test.mjs
           npx tsx --test test/helpers.test.ts
 
+      # Pi extension (typebox runtime dep + tsx/typescript/pi types for build).
+      # No committed lock: `npm install` (not `npm ci`) keeps the runner happy.
+      - name: Test Pi plugin
+        run: |
+          cd integrations/pi/plugin
+          npm install --no-audit --no-fund
+          npm run build
+          npx tsx --test test/helpers.test.ts
+
       # Hermes memory provider (stdlib unittest, uses the inline-ABC fallback).
       - name: Test Hermes plugin
         run: cd integrations/hermes/plugin && python3 -m unittest -v
