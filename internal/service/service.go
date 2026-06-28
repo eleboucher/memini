@@ -854,7 +854,13 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 func (s *Service) runSplitDedup(
 	ctx context.Context, m *memory.Memory, in RememberInput,
 ) (handled bool, result *memory.Memory, supersedeID string) {
-	if s.autoSupersedeMinScore <= 0 && s.mergeHintMinScore <= 0 && s.writeDedupMinScore <= 0 {
+	// Merge-hint is scoped to durable tiers (semantic/procedural): that's where
+	// the 0.625 threshold was calibrated and where the hint is actually consumed
+	// (model-driven writes). Episodic/working writes — notably the per-turn
+	// capture flood — skip the lookup entirely when merge-hint is the only active
+	// gate, so they never pay a vector search for a hint nobody reads.
+	mergeApplies := s.mergeHintMinScore > 0 && m.Tier.Term() == memory.LongTerm
+	if s.autoSupersedeMinScore <= 0 && s.writeDedupMinScore <= 0 && !mergeApplies {
 		return false, nil, ""
 	}
 	hit, hint, supersedeID := s.dedupCheck(ctx, m)
@@ -899,9 +905,10 @@ func (s *Service) dedupCheck(ctx context.Context, m *memory.Memory) (hit *memory
 		return nil, nil, existing.ID
 	}
 
-	// Lower gate: merge hint. The write proceeds; the caller gets a hint
-	// pointing at the near-duplicate so it can decide to merge.
-	if s.mergeHintMinScore > 0 && score >= s.mergeHintMinScore {
+	// Lower gate: merge hint, durable tiers only (where the threshold was
+	// calibrated and where the hint is consumed). The write proceeds; the caller
+	// gets a hint pointing at the near-duplicate so it can decide to merge.
+	if s.mergeHintMinScore > 0 && m.Tier.Term() == memory.LongTerm && score >= s.mergeHintMinScore {
 		preview := existing.Content
 		if len(preview) > 200 {
 			preview = preview[:200] + "…"

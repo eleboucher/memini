@@ -753,6 +753,30 @@ func TestMergeHintReturnedWithoutSuppression(t *testing.T) {
 	_ = second
 }
 
+// Merge-hint is scoped to durable tiers: an episodic near-duplicate (the
+// per-turn capture flood) must NOT produce a hint, so captures don't pay a
+// dedup lookup for a hint nobody reads.
+func TestMergeHintSkippedForEpisodicTier(t *testing.T) {
+	svc := newService(t, service.WithFingerprintDedup(false), service.WithMergeHint(0.5))
+	ctx := context.Background()
+
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the user likes coffee", Tier: memory.TierEpisodic,
+	}); err != nil {
+		t.Fatalf("remember first: %v", err)
+	}
+	var hint service.MergeHint
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the user really likes strong coffee", Tier: memory.TierEpisodic,
+		MergeHint: &hint,
+	}); err != nil {
+		t.Fatalf("remember second: %v", err)
+	}
+	if hint.SimilarID != "" {
+		t.Fatalf("episodic write must not get a merge hint, got %+v", hint)
+	}
+}
+
 func TestHistoryWalksTheSupersessionChain(t *testing.T) {
 	svc := newService(t, service.WithFingerprintDedup(false))
 	ctx := context.Background()

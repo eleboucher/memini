@@ -106,7 +106,8 @@ controllers:
           # --- Optional decay / hygiene knobs (uncomment to enable) ---
           # MEMINI_DEMOTE_AFTER: "1440h"          # demote stale durable memories to episodic
           # MEMINI_TOMBSTONE_TTL: "720h"          # hard-delete superseded memories after TTL
-          # MEMINI_WRITE_DEDUP_MIN_SCORE: "0.95"  # coalesce near-identical writes
+          # MEMINI_WRITE_DEDUP_MIN_SCORE: "0.95"  # coalesce near-identical writes (must stay < MEMINI_MERGE_HINT_MIN_SCORE; raise that too if you set this high)
+          # MEMINI_MERGE_HINT_MIN_SCORE: "0.625"  # durable-write near-dup hint (default 0.625; "0" disables)
   # --- Optional embeddings tuning ---
   # MEMINI_EMBED_MAX_BATCH: "20"          # max items per /embeddings request
   # MEMINI_EMBED_MAX_BATCH_CHARS: "24000" # max total chars per request (0 disables)

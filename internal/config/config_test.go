@@ -104,6 +104,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("MEMINI_EMBED_QUERY_PREFIX", "Instruct: retrieve\nQuery: ")
 	t.Setenv("MEMINI_FUSION_ALPHA", "-1")
 	t.Setenv("MEMINI_WRITE_DEDUP_MIN_SCORE", "0.95")
+	t.Setenv("MEMINI_MERGE_HINT_MIN_SCORE", "0.97") // keep the dedup band ordered above WriteDedup
 	t.Setenv("MEMINI_SWEEP_INTERVAL", "5m")
 	t.Setenv("MEMINI_LLM_BASE_URL", "http://localhost:8000/v1")
 	t.Setenv("MEMINI_DEFAULT_NAMESPACE", "tenant-a")
