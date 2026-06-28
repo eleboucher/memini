@@ -20,6 +20,7 @@ import {
   cleanStaleBuffers,
   writePluginRoot,
   intEnv,
+  envEnabled,
   labelsEnv,
   fitByTokens,
   approxTokens,
@@ -103,7 +104,7 @@ async function main() {
   // (startup, then resume / clear / compact). When the briefing is byte-for-byte
   // unchanged since the last fire, re-injecting an identical block only spends
   // tokens and risks busting the prompt prefix cache — so skip it.
-  const inlineExtract = process.env.MEMINI_INLINE_EXTRACT === "1";
+  const inlineExtract = envEnabled("MEMINI_INLINE_EXTRACT", true);
   const contentHash = crypto.createHash("sha256").update(JSON.stringify(b)).digest("hex").slice(0, 16);
   if (sessionId && briefingUnchanged(sessionId, contentHash)) {
     if (DEBUG) console.error("[memini] SessionStart: briefing unchanged this session, skipping re-injection");

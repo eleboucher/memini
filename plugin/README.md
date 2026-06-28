@@ -7,20 +7,20 @@ the agent _when_ to use the memory tools.
 
 ## What it does
 
-| Hook event     | What memini does                                                                                        |
-| -------------- | ------------------------------------------------------------------------------------------------------- |
-| `SessionStart` | Searches prior context, writes a short block to the agent's input                                       |
-| `PreToolUse`   | Before Edit/Write/Read/Glob/Grep, surfaces related memories                                             |
-| `PostToolUse`  | Buffers state-changing tool calls locally (no network, no per-call memory)                              |
-| `Stop`         | Distills the buffer into a working-tier checkpoint, and periodically nudges an auto-save (below)        |
-| `PreCompact`   | Before context compaction, distills the buffer into an episodic emergency checkpoint (Claude Code only) |
-| `SessionEnd`   | Distills the buffer into one durable episodic **session digest**                                        |
+| Hook event     | What memini does                                                                                                                                                              |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SessionStart` | Searches prior context, writes a short block to the agent's input                                                                                                             |
+| `PreToolUse`   | Before Edit/Write/Read/Glob/Grep, surfaces related memories                                                                                                                   |
+| `PostToolUse`  | Buffers state-changing tool calls locally (no network, no per-call memory)                                                                                                    |
+| `Stop`         | Distills the buffer into a working-tier checkpoint, captures the last turn as episodic memory, extracts inline `<memory>` facts, and periodically nudges an auto-save (below) |
+| `PreCompact`   | Before context compaction, distills the buffer into an episodic emergency checkpoint (Claude Code only)                                                                       |
+| `SessionEnd`   | Distills the buffer into one durable episodic **session digest**                                                                                                              |
 
 ### Auto-save (Stop)
 
 Agents forget to save. So the `Stop` hook counts the conversation's user
 messages (from the transcript) and, every `MEMINI_AUTO_SAVE_INTERVAL` (default
-15), **blocks the stop once** with a short instruction: review the conversation
+10), **blocks the stop once** with a short instruction: review the conversation
 for durable decisions/facts/preferences and persist each via the `memory_remember`
 MCP tool. The agent saves, then stops normally (the next `Stop` carries
 `stop_hook_active` and passes through — no loop). It nudges at most once per
@@ -39,6 +39,20 @@ deleted. `Stop` writes the same digest as a 24h working-tier checkpoint without
 deleting the buffer. `SessionStart` also sweeps away buffers older than 7 days
 left behind by crashed sessions. Net effect: zero network traffic on the hot
 path and one dense memory per session instead of dozens.
+
+### Automatic memory capture (Stop)
+
+Two layers run at every `Stop`, both **on by default** so the plugin produces
+real memories out of the box — not just session digests:
+
+- **Turn capture** (`MEMINI_CAPTURE_TURNS`): the last user→assistant turn is
+  stored as an **episodic** memory (deduped on the assistant message id), the
+  same automatic per-turn recall layer the opencode plugin gets from
+  `session.idle`. Set to `0` to disable.
+- **Inline extraction** (`MEMINI_INLINE_EXTRACT`): `SessionStart` injects a
+  short directive asking the agent to emit `<memory>` blocks for durable facts
+  it learns; `Stop` scans the transcript and persists each as a **semantic**
+  fact. Model-curated, so it stays low-noise. Set to `0` to disable.
 
 Plus 3 skills (`remember`, `recall`, `recap`) the agent invokes directly.
 
@@ -126,16 +140,18 @@ server is detached from the agent's cwd.
 
 ## Environment
 
-| Env var                     | Default                  | Used by      | Description                                                                                     |
-| --------------------------- | ------------------------ | ------------ | ----------------------------------------------------------------------------------------------- |
-| `MEMINI_BASE_URL`           | `http://localhost:8080`  | hooks (REST) | memini base URL for the lifecycle hooks (alias: `MEMINI_URL`)                                   |
-| `MEMINI_MCP_URL`            | `${MEMINI_BASE_URL}/mcp` | MCP tools    | memini `/mcp` URL for the model-invoked memory tools; derived from `MEMINI_BASE_URL` unless set |
-| `MEMINI_API_KEY`            | —                        | hooks + MCP  | bearer token; required when the server sets `MEMINI_API_KEY` (alias: `MEMINI_TOKEN`)            |
-| `MEMINI_NAMESPACE`          | auto (cwd/git basename)  | hooks + MCP  | explicit namespace override; otherwise auto-resolved                                            |
-| `MEMINI_NAMESPACE_SCOPE`    | `repo`                   | hooks        | `owner-repo` derives `owner-repo` slugs from the git remote                                     |
-| `MEMINI_AUTO_SAVE`          | on                       | `Stop` hook  | set to `0` to disable the periodic auto-save nudge                                              |
-| `MEMINI_AUTO_SAVE_INTERVAL` | `15`                     | `Stop` hook  | user messages between auto-save nudges                                                          |
-| `MEMINI_DEBUG`              | —                        | hooks        | set to `1` for verbose hook logging                                                             |
+| Env var                     | Default                  | Used by               | Description                                                                                     |
+| --------------------------- | ------------------------ | --------------------- | ----------------------------------------------------------------------------------------------- |
+| `MEMINI_BASE_URL`           | `http://localhost:8080`  | hooks (REST)          | memini base URL for the lifecycle hooks (alias: `MEMINI_URL`)                                   |
+| `MEMINI_MCP_URL`            | `${MEMINI_BASE_URL}/mcp` | MCP tools             | memini `/mcp` URL for the model-invoked memory tools; derived from `MEMINI_BASE_URL` unless set |
+| `MEMINI_API_KEY`            | —                        | hooks + MCP           | bearer token; required when the server sets `MEMINI_API_KEY` (alias: `MEMINI_TOKEN`)            |
+| `MEMINI_NAMESPACE`          | auto (cwd/git basename)  | hooks + MCP           | explicit namespace override; otherwise auto-resolved                                            |
+| `MEMINI_NAMESPACE_SCOPE`    | `repo`                   | hooks                 | `owner-repo` derives `owner-repo` slugs from the git remote                                     |
+| `MEMINI_AUTO_SAVE`          | on                       | `Stop` hook           | set to `0` to disable the periodic auto-save nudge                                              |
+| `MEMINI_AUTO_SAVE_INTERVAL` | `10`                     | `Stop` hook           | user messages between auto-save nudges                                                          |
+| `MEMINI_CAPTURE_TURNS`      | on                       | `Stop` hook           | auto-capture each user→assistant turn as episodic memory; set to `0` to disable                 |
+| `MEMINI_INLINE_EXTRACT`     | on                       | SessionStart + `Stop` | inject a directive to emit `<memory>` blocks and persist them as durable facts; `0` to disable  |
+| `MEMINI_DEBUG`              | —                        | hooks                 | set to `1` for verbose hook logging                                                             |
 
 ### Tuning injection budgets
 

@@ -1064,6 +1064,110 @@ test("extractAssistantText: pulls text blocks from a transcript, skips tool-only
   assert.deepEqual(extractAssistantText(transcript), ["plain string reply", "block reply"]);
 });
 
+test("envEnabled: default-on unless explicitly opted out", async () => {
+  const { envEnabled } = await import("./_shared.mjs");
+  const save = process.env.MEMINI_TESTFLAG;
+  try {
+    delete process.env.MEMINI_TESTFLAG;
+    assert.equal(envEnabled("MEMINI_TESTFLAG", true), true, "unset → default");
+    assert.equal(envEnabled("MEMINI_TESTFLAG", false), false, "unset → default");
+    for (const v of ["0", "false", "no", "off", "OFF", " Off "]) {
+      process.env.MEMINI_TESTFLAG = v;
+      assert.equal(envEnabled("MEMINI_TESTFLAG", true), false, `${v} → false`);
+    }
+    for (const v of ["1", "true", "yes", "on", "anything"]) {
+      process.env.MEMINI_TESTFLAG = v;
+      assert.equal(envEnabled("MEMINI_TESTFLAG", false), true, `${v} → true`);
+    }
+  } finally {
+    if (save === undefined) delete process.env.MEMINI_TESTFLAG;
+    else process.env.MEMINI_TESTFLAG = save;
+  }
+});
+
+test("extractLastTurn: returns the final user→assistant turn, skips noise", async () => {
+  const { extractLastTurn } = await import("./_shared.mjs");
+  const transcript = [
+    JSON.stringify({ type: "user", message: { role: "user", content: "first question" } }),
+    JSON.stringify({ type: "assistant", message: { id: "msg_1", content: [{ type: "text", text: "first answer" }] } }),
+    JSON.stringify({ type: "user", message: { role: "user", content: "second question" } }),
+    // tool-use-only assistant turn must not blank out the captured reply
+    JSON.stringify({ type: "assistant", message: { id: "msg_2", content: [{ type: "tool_use", name: "Bash" }] } }),
+    JSON.stringify({ type: "assistant", message: { id: "msg_3", content: [{ type: "text", text: "second answer" }] } }),
+    // noise that must be ignored
+    JSON.stringify({ type: "user", isSidechain: true, message: { content: "side" } }),
+    JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: "x" }] } }),
+    JSON.stringify({ type: "user", message: { content: "<local-command-stdout>noise" } }),
+  ].join("\n");
+  assert.deepEqual(extractLastTurn(transcript), {
+    userText: "second question",
+    assistantText: "second answer",
+    assistantId: "msg_3",
+  });
+  assert.deepEqual(extractLastTurn(""), { userText: "", assistantText: "", assistantId: "" });
+});
+
+test("stop.mjs: captures the last turn as episodic by default, dedupes, opts out", async () => {
+  const cache = freshCache();
+  const tp = join(cache, "turn.jsonl");
+  writeFileSync(
+    tp,
+    [
+      JSON.stringify({ type: "user", message: { role: "user", content: "how do I do X" } }),
+      JSON.stringify({ type: "assistant", message: { id: "msg_abc", content: [{ type: "text", text: "do it like this" }] } }),
+    ].join("\n") + "\n",
+  );
+  const hits = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    hits.push({ url: req.url, body });
+    res.setHeader("Content-Type", "application/json");
+    res.statusCode = 201;
+    res.end(JSON.stringify({ id: "m1" }));
+  });
+  const turnPosts = () =>
+    hits.filter((h) => {
+      try {
+        return JSON.parse(h.body)?.metadata?.source === "turn_capture";
+      } catch {
+        return false;
+      }
+    });
+  try {
+    // Default on → one episodic turn-capture write.
+    await runHook(
+      "stop.mjs",
+      JSON.stringify({ session_id: "tc1", cwd: __dirname, transcript_path: tp }),
+      { MEMINI_URL: url, XDG_CACHE_HOME: cache },
+    );
+    let posts = turnPosts();
+    assert.equal(posts.length, 1, "should capture the turn by default");
+    const body = JSON.parse(posts[0].body);
+    assert.equal(body.tier, "episodic");
+    assert.match(body.content, /how do I do X/);
+    assert.match(body.content, /do it like this/);
+    assert.deepEqual(body.tags?.includes("turn-capture"), true);
+    assert.equal(body.metadata.format, "turn");
+
+    // Same session + same final turn → deduped on the assistant id, no new write.
+    await runHook(
+      "stop.mjs",
+      JSON.stringify({ session_id: "tc1", cwd: __dirname, transcript_path: tp }),
+      { MEMINI_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.equal(turnPosts().length, 1, "identical turn must not be re-captured");
+
+    // Opt out → no capture even for a fresh session.
+    await runHook(
+      "stop.mjs",
+      JSON.stringify({ session_id: "tc2", cwd: __dirname, transcript_path: tp }),
+      { MEMINI_URL: url, XDG_CACHE_HOME: cache, MEMINI_CAPTURE_TURNS: "0" },
+    );
+    assert.equal(turnPosts().length, 1, "MEMINI_CAPTURE_TURNS=0 must not capture");
+  } finally {
+    await close();
+  }
+});
+
 // --- session digest: failed-command surfacing -----------------------------
 
 test("buildSessionDigest: marks a failed command, leaves the recovery command unmarked", async () => {

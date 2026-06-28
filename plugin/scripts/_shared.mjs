@@ -378,6 +378,18 @@ export function intEnv(name, defaultValue) {
 }
 
 /**
+ * envEnabled parses a boolean env var with an explicit default. Unset/empty
+ * falls back to `defaultOn`; "0", "false", "no", "off" (case-insensitive) are
+ * false; anything else is true. Lets a feature ship default-on while staying
+ * opt-out via MEMINI_FOO=0.
+ */
+export function envEnabled(name, defaultOn) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return defaultOn;
+  return !/^(0|false|no|off)$/i.test(String(raw).trim());
+}
+
+/**
  * floatEnv parses a non-negative float env var and returns `default` when
  * unset or malformed. Used for min_score.
  */
@@ -813,6 +825,53 @@ export function extractAssistantText(transcript) {
     }
   }
   return out;
+}
+
+/**
+ * Extract the latest complete user→assistant turn from a Claude Code transcript
+ * (JSONL string). Returns { userText, assistantText, assistantId } — the last
+ * real user message (string content only; tool_result arrays and slash/local
+ * command noise are skipped) and the final assistant prose, plus the assistant
+ * message id for dedup. Fields are "" when absent. Never throws.
+ *
+ * Mirrors the opencode plugin's extractLastTurn so Claude gets the same
+ * episodic per-turn capture.
+ */
+export function extractLastTurn(transcript) {
+  let userText = "";
+  let assistantText = "";
+  let assistantId = "";
+  if (typeof transcript !== "string" || !transcript) return { userText, assistantText, assistantId };
+  for (const line of transcript.split("\n")) {
+    if (!line.trim()) continue;
+    const r = parseJSON(line);
+    if (!r || r.isSidechain || r.isMeta) continue;
+    if (r.type === "user") {
+      const c = r.message?.content;
+      if (typeof c !== "string") continue; // arrays are tool_results, not user turns
+      if (/^\s*<(local-command|command-)/.test(c)) continue; // slash-command / local-command noise
+      userText = c.trim();
+    } else if (r.type === "assistant") {
+      const c = r.message?.content;
+      let text = "";
+      if (typeof c === "string") {
+        text = c;
+      } else if (Array.isArray(c)) {
+        text = c
+          .filter((b) => b?.type === "text" && typeof b.text === "string")
+          .map((b) => b.text)
+          .join("\n");
+      }
+      text = text.trim();
+      // Keep the last assistant message that actually has prose; tool-use-only
+      // turns carry no text and shouldn't blank out the captured reply.
+      if (text) {
+        assistantText = text;
+        assistantId = r.message?.id || r.uuid || "";
+      }
+    }
+  }
+  return { userText, assistantText, assistantId };
 }
 
 /**

@@ -21,11 +21,13 @@ import {
   writeSaveState,
   parseMemoryBlocks,
   extractAssistantText,
+  extractLastTurn,
   readTranscript,
+  envEnabled,
   DEBUG,
 } from "./_shared.mjs";
 
-const DEFAULT_INTERVAL = 15;
+const DEFAULT_INTERVAL = 10;
 
 const autoSaveReason = (n) =>
   `[memini auto-save] ${n} user messages since the last save. Before stopping, ` +
@@ -73,7 +75,7 @@ function autoSaveReasonFor(payload, sessionId) {
   // First sight, or the transcript was replaced/cleared (count regressed):
   // re-baseline silently so we don't block on a resumed session's backlog.
   if (last === null || last > count) {
-    writeSaveState(sessionId, { lastSavedCount: count, updatedAt: new Date().toISOString() });
+    writeSaveState(sessionId, { ...(state || {}), lastSavedCount: count, updatedAt: new Date().toISOString() });
     return null;
   }
   if (count - last < autoSaveInterval()) return null;
@@ -81,6 +83,32 @@ function autoSaveReasonFor(payload, sessionId) {
   // nothing we wait another full interval before nudging again.
   writeSaveState(sessionId, { lastSavedCount: count, updatedAt: new Date().toISOString() });
   return autoSaveReason(count - last);
+}
+
+/**
+ * Capture the session's latest user→assistant turn as an episodic memory, so
+ * Claude gets the same automatic per-turn recall layer opencode has (via its
+ * session.idle hook). On by default; opt out with MEMINI_CAPTURE_TURNS=0.
+ * Deduped on the assistant message id stored in the save-state, so the repeated
+ * Stop firings of one turn write at most once. Never throws.
+ */
+async function captureTurn(payload, sessionId, project) {
+  if (!envEnabled("MEMINI_CAPTURE_TURNS", true)) return;
+  // A save cycle (the agent re-run after an auto-save block) isn't a real user
+  // turn — skip it so we don't capture the nudge handling as conversation.
+  if (payload.stop_hook_active) return;
+  if (!payload.transcript_path) return;
+  const { userText, assistantText, assistantId } = extractLastTurn(readTranscript(payload.transcript_path));
+  if (!userText || !assistantText) return;
+  const state = readSaveState(sessionId) || {};
+  if (assistantId && state.lastCapturedTurn === assistantId) return; // already captured this turn
+  const stored = await postRemember(`${userText.slice(0, 1000)}\n\n${assistantText.slice(0, 3000)}`, project, {
+    tier: "episodic",
+    tags: ["turn-capture", project],
+    metadata: { source: "turn_capture", session_id: sessionId, format: "turn" },
+  });
+  if (stored !== null && assistantId)
+    writeSaveState(sessionId, { ...state, lastCapturedTurn: assistantId, updatedAt: new Date().toISOString() });
 }
 
 async function main() {
@@ -104,10 +132,10 @@ async function main() {
       metadata: { session_id: sessionId },
     });
 
-  // Inline memory extraction: when MEMINI_INLINE_EXTRACT=1, scan the session
-  // transcript for <memory> blocks the agent emitted during its responses and
-  // persist each as a durable semantic fact.
-  if (process.env.MEMINI_INLINE_EXTRACT === "1" && payload.transcript_path) {
+  // Inline memory extraction (on by default; opt out with MEMINI_INLINE_EXTRACT=0):
+  // scan the session transcript for <memory> blocks the agent emitted during its
+  // responses and persist each as a durable semantic fact.
+  if (envEnabled("MEMINI_INLINE_EXTRACT", true) && payload.transcript_path) {
     const transcript = readTranscript(payload.transcript_path);
     const assistantTexts = extractAssistantText(transcript);
     const allBlocks = [];
@@ -126,6 +154,8 @@ async function main() {
       });
     }
   }
+
+  await captureTurn(payload, sessionId, project);
 
   const reason = autoSaveReasonFor(payload, sessionId);
   if (reason) process.stdout.write(JSON.stringify({ decision: "block", reason }));
