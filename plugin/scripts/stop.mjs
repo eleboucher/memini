@@ -10,6 +10,7 @@
 //      MEMINI_AUTO_SAVE=0.
 
 import fs from "node:fs";
+import crypto from "node:crypto";
 import {
   readStdin,
   parseJSON,
@@ -79,8 +80,10 @@ function autoSaveReasonFor(payload, sessionId) {
   }
   if (count - last < autoSaveInterval()) return null;
   // Update at block time, not after the agent saves — so even if it saves
-  // nothing we wait another full interval before nudging again.
-  writeSaveState(sessionId, { lastSavedCount: count, updatedAt: new Date().toISOString() });
+  // nothing we wait another full interval before nudging again. Spread the
+  // existing state so we don't clobber captureTurn's lastCapturedTurn (written
+  // earlier in this same Stop run).
+  writeSaveState(sessionId, { ...state, lastSavedCount: count, updatedAt: new Date().toISOString() });
   return autoSaveReason(count - last);
 }
 
@@ -99,15 +102,20 @@ async function captureTurn(payload, sessionId, project) {
   if (!payload.transcript_path) return;
   const { userText, assistantText, assistantId } = extractLastTurn(readTranscript(payload.transcript_path));
   if (!userText || !assistantText) return;
+  // Dedup key: the assistant message id when present, else a content hash — so a
+  // transcript whose entries carry no id/uuid still can't re-capture the same
+  // turn on every Stop firing.
+  const dedupKey =
+    assistantId || crypto.createHash("sha256").update(`${userText}\n${assistantText}`).digest("hex").slice(0, 16);
   const state = readSaveState(sessionId) || {};
-  if (assistantId && state.lastCapturedTurn === assistantId) return; // already captured this turn
+  if (state.lastCapturedTurn === dedupKey) return; // already captured this turn
   const stored = await postRemember(`${userText.slice(0, 1000)}\n\n${assistantText.slice(0, 3000)}`, project, {
     tier: "episodic",
     tags: ["turn-capture", project],
     metadata: { source: "turn_capture", session_id: sessionId, format: "turn" },
   });
-  if (stored !== null && assistantId)
-    writeSaveState(sessionId, { ...state, lastCapturedTurn: assistantId, updatedAt: new Date().toISOString() });
+  if (stored !== null)
+    writeSaveState(sessionId, { ...state, lastCapturedTurn: dedupKey, updatedAt: new Date().toISOString() });
 }
 
 async function main() {

@@ -1114,6 +1114,13 @@ test("extractLastTurn: returns the final user→assistant turn, skips noise", as
     assistantId: "msg_3",
   });
   assert.deepEqual(extractLastTurn(""), { userText: "", assistantText: "", assistantId: "" });
+
+  // assistantId falls back to the top-level uuid when message.id is absent.
+  const uuidTail = [
+    JSON.stringify({ type: "user", message: { role: "user", content: "q" } }),
+    JSON.stringify({ type: "assistant", uuid: "uuid-9", message: { content: [{ type: "text", text: "a" }] } }),
+  ].join("\n");
+  assert.equal(extractLastTurn(uuidTail).assistantId, "uuid-9");
 });
 
 test("stop.mjs: captures the last turn as episodic by default, dedupes, opts out", async () => {
@@ -1172,6 +1179,109 @@ test("stop.mjs: captures the last turn as episodic by default, dedupes, opts out
       { MEMINI_URL: url, XDG_CACHE_HOME: cache, MEMINI_CAPTURE_TURNS: "0" },
     );
     assert.equal(turnPosts().length, 1, "MEMINI_CAPTURE_TURNS=0 must not capture");
+  } finally {
+    await close();
+  }
+});
+
+test("stop.mjs: turn-capture dedup survives an auto-save nudge (save-state co-tenancy)", async () => {
+  const cache = freshCache();
+  const tp = join(cache, "cot.jsonl");
+  // Build a transcript with `userCount` turns whose final assistant message has
+  // a specific id + text (the tail extractLastTurn captures).
+  const writeTail = (userCount, tailId, tailText) => {
+    const lines = [];
+    for (let i = 0; i < userCount; i++) {
+      const last = i === userCount - 1;
+      lines.push(JSON.stringify({ type: "user", message: { role: "user", content: `q${i}` } }));
+      lines.push(
+        JSON.stringify({
+          type: "assistant",
+          message: { id: last ? tailId : `m${i}`, content: [{ type: "text", text: last ? tailText : `a${i}` }] },
+        }),
+      );
+    }
+    writeFileSync(tp, lines.join("\n") + "\n");
+  };
+  const hits = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    hits.push({ body });
+    res.setHeader("Content-Type", "application/json");
+    res.statusCode = 201;
+    res.end(JSON.stringify({ id: "m1" }));
+  });
+  const captures = (txt) =>
+    hits.filter((h) => {
+      try {
+        const b = JSON.parse(h.body);
+        return b?.metadata?.source === "turn_capture" && b.content.includes(txt);
+      } catch {
+        return false;
+      }
+    });
+  const env = { MEMINI_URL: url, XDG_CACHE_HOME: cache, MEMINI_AUTO_SAVE_INTERVAL: "2" };
+  const payload = () => JSON.stringify({ session_id: "cot", cwd: __dirname, transcript_path: tp });
+  try {
+    // Run 0: 2 turns, tail msgA. First sight baselines auto-save (no block) and captures msgA.
+    writeTail(2, "msgA", "answer A");
+    let { stdout } = await runHook("stop.mjs", payload(), env);
+    assert.equal(stdout.trim(), "", "first sight baselines, no block");
+    assert.equal(captures("answer A").length, 1, "captured the first turn");
+
+    // Run 1: 4 turns, tail msgB. Crosses the interval → captures msgB, then nudges.
+    writeTail(4, "msgB", "answer B");
+    ({ stdout } = await runHook("stop.mjs", payload(), env));
+    assert.equal(JSON.parse(stdout).decision, "block", "should nudge once past the interval");
+    assert.equal(captures("answer B").length, 1, "captured the second turn before the nudge");
+
+    // Run 2: same tail msgB. The nudge's save-state write must NOT have clobbered
+    // lastCapturedTurn, so msgB dedupes here. (Regression guard for stop.mjs:83.)
+    await runHook("stop.mjs", payload(), env);
+    assert.equal(captures("answer B").length, 1, "msgB must not be re-captured after the nudge");
+  } finally {
+    await close();
+  }
+});
+
+test("stop.mjs: turn-capture skips on stop_hook_active and missing transcript", async () => {
+  const cache = freshCache();
+  const tp = join(cache, "sk.jsonl");
+  writeFileSync(
+    tp,
+    [
+      JSON.stringify({ type: "user", message: { role: "user", content: "hi" } }),
+      JSON.stringify({ type: "assistant", message: { id: "msgZ", content: [{ type: "text", text: "yo" }] } }),
+    ].join("\n") + "\n",
+  );
+  const hits = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    hits.push({ body });
+    res.setHeader("Content-Type", "application/json");
+    res.statusCode = 201;
+    res.end(JSON.stringify({ id: "m1" }));
+  });
+  const turnPosts = () =>
+    hits.filter((h) => {
+      try {
+        return JSON.parse(h.body)?.metadata?.source === "turn_capture";
+      } catch {
+        return false;
+      }
+    });
+  try {
+    // stop_hook_active = save cycle, not a real user turn → no capture.
+    await runHook(
+      "stop.mjs",
+      JSON.stringify({ session_id: "sk1", cwd: __dirname, transcript_path: tp, stop_hook_active: true }),
+      { MEMINI_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.equal(turnPosts().length, 0, "stop_hook_active must not capture");
+    // No transcript path → nothing to capture, no crash.
+    await runHook("stop.mjs", JSON.stringify({ session_id: "sk2", cwd: __dirname }), {
+      MEMINI_URL: url,
+      XDG_CACHE_HOME: cache,
+    });
+    assert.equal(turnPosts().length, 0, "missing transcript must not capture");
   } finally {
     await close();
   }
