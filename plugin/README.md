@@ -81,10 +81,11 @@ header lines, so session digests still list edited files.
 ### opencode
 
 opencode doesn't use the Claude Code hook protocol; it has its own plugin
-system. See the [opencode recipe](../integrations/opencode/) for the MCP
-side. The opencode-side auto-capture is a separate concern that can land
-later — for now, opencode gets the same `memory_*` MCP tools and skills
-as the others.
+system, shipped separately at [integrations/opencode/](../integrations/opencode/).
+That plugin already does automatic memory — recall on `chat.message` and
+per-turn episodic capture on `session.idle`, both on by default — plus the same
+`memory_*` MCP tools and skills. Defaults match this plugin (`recall_limit=3`,
+uncapped); see the opencode recipe for its options.
 
 ## Layout
 
