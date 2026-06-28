@@ -215,8 +215,12 @@ type Config struct {
 
 	// RecallSemanticReserve guarantees up to N recall slots for durable tiers
 	// (semantic/procedural) so episodic chatter can't crowd out consolidated
-	// memory; the rest fill by relevance. Default 0 (off).
-	RecallSemanticReserve int `env:"MEMINI_RECALL_SEMANTIC_RESERVE" envDefault:"0"`
+	// memory; the rest fill by relevance. Default 2: the tier-mixed eval
+	// (bench/reserve_test.go) showed heavy episodic volume drops ~25% of durable
+	// facts out of top-10, and reserving recovers them by evicting only the
+	// weakest (redundant) episodic — relevant turns rank high and survive. Set 0
+	// to disable.
+	RecallSemanticReserve int `env:"MEMINI_RECALL_SEMANTIC_RESERVE" envDefault:"2"`
 
 	// EpisodicMinChars drops an episodic write whose substantive content (role
 	// scaffolding stripped) is below this many characters — the low-signal
