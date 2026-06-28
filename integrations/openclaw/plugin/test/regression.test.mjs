@@ -556,7 +556,7 @@ test("memory_recall passes query + tag/metadata filters and formats results", as
   assert.equal(call.method, "POST");
   assert.equal(call.path, "/v1/search");
   assert.equal(call.ns, "ns");
-  assert.deepEqual(call.body, { query: "auth race", limit: 5, tags: ["auth"], metadata: { category: "bug_fixes" } });
+  assert.deepEqual(call.body, { query: "auth race", limit: 3, tags: ["auth"], metadata: { category: "bug_fixes" } });
   assert.deepEqual(JSON.parse(out.content[0].text), {
     results: [{ content: "hit", summary: "", tier: "semantic", score: 0.9 }],
   });
