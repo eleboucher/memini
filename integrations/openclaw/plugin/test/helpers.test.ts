@@ -281,11 +281,11 @@ test("registerMeminiTools: tool namespace resolves per-agent from the factory ct
   assert.equal(client.calls.at(-1)?.ns, "team-miso");
 });
 
-test("resolveConfig: recall_max_tokens — config wins, else MEMINI_INJECT_RECALL_MAX_TOK, else 800", () => {
+test("resolveConfig: recall_max_tokens — config wins, else MEMINI_INJECT_RECALL_MAX_TOK, else 0 (uncapped)", () => {
   const prev = process.env.MEMINI_INJECT_RECALL_MAX_TOK;
   try {
     delete process.env.MEMINI_INJECT_RECALL_MAX_TOK;
-    assert.equal(resolveConfig({}).recall_max_tokens, 800);
+    assert.equal(resolveConfig({}).recall_max_tokens, 0);
     assert.equal(resolveConfig({ recall_max_tokens: 120 }).recall_max_tokens, 120);
     process.env.MEMINI_INJECT_RECALL_MAX_TOK = "80";
     assert.equal(resolveConfig({}).recall_max_tokens, 80);
@@ -293,7 +293,7 @@ test("resolveConfig: recall_max_tokens — config wins, else MEMINI_INJECT_RECAL
     assert.equal(resolveConfig({ recall_max_tokens: 200 }).recall_max_tokens, 200);
     // malformed env falls back to the default
     process.env.MEMINI_INJECT_RECALL_MAX_TOK = "nope";
-    assert.equal(resolveConfig({}).recall_max_tokens, 800);
+    assert.equal(resolveConfig({}).recall_max_tokens, 0);
   } finally {
     if (prev === undefined) delete process.env.MEMINI_INJECT_RECALL_MAX_TOK;
     else process.env.MEMINI_INJECT_RECALL_MAX_TOK = prev;

@@ -29,7 +29,7 @@ test("config defaults: recall and capture on, project-scoped namespace", () => {
   assert.equal(cfg.namespace, "my-project");
   assert.equal(cfg.recall, true);
   assert.equal(cfg.capture, true);
-  assert.equal(cfg.recall_limit, 5);
+  assert.equal(cfg.recall_limit, 3);
   assert.equal(cfg.recall_max_tokens, 0);
   assert.equal(cfg.recall_min_score, 0);
   assert.equal(cfg.fallback_on_error, true);
@@ -90,11 +90,11 @@ test("resolveConfig: inline options win over MEMINI_INJECT_RECALL_* env", () => 
 test("resolveConfig rejects malformed recall_limit (NaN / negative) gracefully", () => {
   assert.equal(
     resolveConfig({ MEMINI_RECALL_LIMIT: "abc" }, undefined, "/r").recall_limit,
-    5,
+    3,
   );
   assert.equal(
     resolveConfig({}, { recall_limit: "garbage" }, "/r").recall_limit,
-    5,
+    3,
   );
 });
 

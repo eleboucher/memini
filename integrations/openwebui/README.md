@@ -60,7 +60,7 @@ needed:
 | `namespace`         | `openwebui`             | tenant the memory is scoped to (`X-Memini-Namespace`)                        |
 | `recall`            | on                      | recall memories before each turn                                             |
 | `capture`           | on                      | capture the completed turn after each response                               |
-| `recall_limit`      | `5`                     | max memories injected per turn                                               |
+| `recall_limit`      | `3`                     | max memories injected per turn                                               |
 | `timeout_ms`        | `5000`                  | per-request timeout                                                          |
 | `fallback_on_error` | on                      | degrade silently on memini errors instead of surfacing them                  |
 | `require_https`     | off                     | refuse to send the API key over plaintext HTTP to a remote                   |

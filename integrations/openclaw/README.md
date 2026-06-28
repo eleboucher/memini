@@ -84,8 +84,9 @@ both are present.
 
 Recall shaping (both optional, matching the opencode/Claude Code plugins):
 `recall_limit` (max memories per turn, default **3**) and `recall_max_tokens`
-(hard token ceiling on the recall block, default **800**; `0` disables it, the
-tail is dropped with a truncation footer). `recall_max_tokens` also reads
+(hard token ceiling on the recall block, default **0** = uncapped, matching the
+other integrations; set it `> 0` to cap a raised `recall_limit`, the tail is
+dropped with a truncation footer). `recall_max_tokens` also reads
 `MEMINI_INJECT_RECALL_MAX_TOK`, and `MEMINI_INJECT_LABELS` (`tier`, `confidence`,
 `age`) toggles the per-bullet tag prefix.
 

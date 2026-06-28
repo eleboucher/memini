@@ -196,10 +196,10 @@ class RecallShapingTest(unittest.TestCase):
         self.assertEqual(stub.body["limit"], 8)
         self.assertEqual(stub.body["min_score"], 0.3)
 
-    def test_default_body_omits_min_score_and_defaults_limit_5(self):
+    def test_default_body_omits_min_score_and_defaults_limit_3(self):
         stub = self._hits()
         make_provider(stub).prefetch("q")
-        self.assertEqual(stub.body["limit"], 5)
+        self.assertEqual(stub.body["limit"], 3)
         self.assertNotIn("min_score", stub.body)
 
     def test_default_renders_plain_bullet(self):

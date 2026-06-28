@@ -98,17 +98,18 @@ export function resolveConfig(pluginConfig: any) {
     // with the default MiniLM embedder: the fused score is min-max-normalised
     // within the pool (its best always ~1.0), and MiniLM's absolute scores for
     // relevant vs irrelevant queries overlap, so any floor that suppresses noise
-    // also guts real recall. Bound volume with the count + token caps instead.
+    // also guts real recall. Bound volume with the count cap (and the optional
+    // token cap below) instead.
     recall_limit: Number.isFinite(c.recall_limit) && c.recall_limit > 0 ? c.recall_limit : 3,
-    // Hard ceiling on the rendered recall-block tokens. Defaults to 800: a
-    // generous backstop that never truncates a normal limit=3 block (~225 tok)
-    // but caps the block if recall_limit is raised high; 0 disables it. Config
-    // wins; otherwise MEMINI_INJECT_RECALL_MAX_TOK, matching the knob name the
-    // opencode and Claude Code plugins use.
+    // Hard ceiling on the rendered recall-block tokens. Defaults to 0 (uncapped)
+    // to match the other integrations and the Claude Code plugin: with
+    // recall_limit=3 the count is the bound, so a token cap is an optional extra.
+    // Config wins; otherwise MEMINI_INJECT_RECALL_MAX_TOK (same knob name the
+    // opencode and Claude Code plugins use). Set it > 0 to cap a raised limit.
     recall_max_tokens:
       Number.isFinite(c.recall_max_tokens) && c.recall_max_tokens > 0
         ? c.recall_max_tokens
-        : intEnv("MEMINI_INJECT_RECALL_MAX_TOK", 800),
+        : intEnv("MEMINI_INJECT_RECALL_MAX_TOK", 0),
   };
 }
 

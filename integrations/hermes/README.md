@@ -62,7 +62,7 @@ Point it at your memini (environment, or the Hermes onboarding prompts):
 | `MEMINI_NAMESPACE`               | basename of cwd, else `hermes` | tenant the memory is scoped to                                                   |
 | `MEMINI_API_KEY`                 | (none)                         | bearer token, if memini requires auth (alias: `MEMINI_TOKEN`)                    |
 | `MEMINI_REQUIRE_HTTPS`           | (off)                          | set `1` to refuse sending a token over plaintext HTTP                            |
-| `MEMINI_RECALL_LIMIT`            | `5`                            | max memories recalled per turn                                                   |
+| `MEMINI_RECALL_LIMIT`            | `3`                            | max memories recalled per turn                                                   |
 | `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                            | fused-score floor (>=) for auto-recall, sent as `min_score`                      |
 | `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                            | hard token ceiling on the recall block (`0` = unbounded; tail dropped w/ footer) |
 | `MEMINI_INJECT_LABELS`           | (none)                         | per-bullet tag prefix toggles: `tier`, `confidence`, `age`                       |

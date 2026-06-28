@@ -18,7 +18,7 @@
 
 const DEFAULT_BASE_URL = "http://localhost:8080";
 const DEFAULT_TIMEOUT_MS = 30000;
-const DEFAULT_RECALL_LIMIT = 5;
+const DEFAULT_RECALL_LIMIT = 3;
 const DEFAULT_NAMESPACE = "opencode";
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 

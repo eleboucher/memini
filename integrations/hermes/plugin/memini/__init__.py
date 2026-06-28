@@ -17,7 +17,7 @@ Environment:
     MEMINI_NAMESPACE                tenant to scope memory to (default: cwd basename, else "hermes")
     MEMINI_API_KEY                  bearer token, if memini requires auth (alias: MEMINI_TOKEN)
     MEMINI_REQUIRE_HTTPS            =1 to refuse sending a token over plaintext HTTP
-    MEMINI_RECALL_LIMIT             max memories recalled per turn (default 5)
+    MEMINI_RECALL_LIMIT             max memories recalled per turn (default 3)
     MEMINI_INJECT_RECALL_MIN_SCORE  fused-score floor (>=) for auto-recall (default 0)
     MEMINI_INJECT_RECALL_MAX_TOK    hard token ceiling on the recall block (0 = unbounded)
     MEMINI_INJECT_LABELS            comma/pipe bullet labels: tier, confidence, age
@@ -253,10 +253,10 @@ class MeminiMemoryProvider(MemoryProvider):
         # label, not a dir), so the working directory is the only signal for the
         # default namespace; set MEMINI_NAMESPACE to scope explicitly.
         self._namespace = _env("MEMINI_NAMESPACE") or os.path.basename(os.getcwd().rstrip("/")) or "hermes"
-        # Recall-shaping knobs, read once. Defaults preserve prior behavior
-        # (limit 5, no floor, unbounded, plain bullets).
-        limit = _int_env("MEMINI_RECALL_LIMIT", 5)
-        self._recall_limit = limit if limit > 0 else 5
+        # Recall-shaping knobs, read once. Defaults match the other integrations
+        # (limit 3, no floor, unbounded, plain bullets).
+        limit = _int_env("MEMINI_RECALL_LIMIT", 3)
+        self._recall_limit = limit if limit > 0 else 3
         self._recall_min_score = _float_env("MEMINI_INJECT_RECALL_MIN_SCORE", 0.0)
         self._recall_max_tokens = _int_env("MEMINI_INJECT_RECALL_MAX_TOK", 0)
         self._labels = _labels_env()
