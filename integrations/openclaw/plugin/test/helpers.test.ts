@@ -241,10 +241,10 @@ function collectTools(cfg: ResolvedConfig = baseCfg(), ctx: Record<string, unkno
   return { byName: Object.fromEntries(tools.map((d) => [d.name, d])), opts, client };
 }
 
-test("registerMeminiTools: registers one optional factory naming all three tools", () => {
+test("registerMeminiTools: registers one optional factory naming all tools", () => {
   const { opts } = collectTools();
   assert.equal(opts?.optional, true);
-  assert.deepEqual([...(opts?.names ?? [])].sort(), ["memory_list", "memory_recall", "memory_remember"]);
+  assert.deepEqual([...(opts?.names ?? [])].sort(), ["memory_forget", "memory_list", "memory_recall", "memory_remember"]);
 });
 
 test("registerMeminiTools: memory_recall shapes the request body from typed params", async () => {

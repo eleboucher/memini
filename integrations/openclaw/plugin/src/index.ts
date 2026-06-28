@@ -368,6 +368,7 @@ export function createPlaintextBearerAuthGuard(warn: any, env?: any) {
 interface MeminiClient {
   postJson: (path: string, payload: any, ns?: string) => Promise<any>;
   getJson: (path: string, ns?: string) => Promise<any>;
+  deleteJson: (path: string, ns?: string) => Promise<any>;
   baseUrl: string;
   namespace: string;
 }
@@ -428,7 +429,31 @@ function createClient(cfg: ResolvedConfig, api: any): MeminiClient {
     }
   }
 
-  return { postJson, getJson, baseUrl, namespace };
+  async function deleteJson(path: string, ns?: string) {
+    guardPlaintextBearerAuth(baseUrl, secret);
+    const headers: Record<string, string> = { "X-Memini-Namespace": ns || namespace };
+    if (secret) headers.Authorization = `Bearer ${secret}`;
+    try {
+      const res = await fetch(`${baseUrl}${path}`, {
+        method: "DELETE",
+        headers,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) {
+        if (fallbackOnError) return null;
+        const body = await res.text().catch(() => "");
+        throw new Error(`memini DELETE ${path} failed: ${res.status} ${body}`);
+      }
+      // 204 No Content has an empty body; treat a successful status as ok.
+      return await res.json().catch(() => ({ ok: true }));
+    } catch (error) {
+      if (!fallbackOnError) throw error;
+      api.logger.warn?.(`memini: ${String(error)}`);
+      return null;
+    }
+  }
+
+  return { postJson, getJson, deleteJson, baseUrl, namespace };
 }
 
 // meminiListPath builds the GET /v1/memories query string for the memory_list
@@ -445,7 +470,7 @@ export function meminiListPath(args: any) {
   return parts.length ? `/v1/memories?${parts.join("&")}` : "/v1/memories";
 }
 
-const TOOL_NAMES = ["memory_recall", "memory_list", "memory_remember"];
+const TOOL_NAMES = ["memory_recall", "memory_list", "memory_remember", "memory_forget"];
 
 // registerMeminiTools registers memory_recall / memory_list / memory_remember.
 //
@@ -499,6 +524,7 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
         if (params.metadata && Object.keys(params.metadata).length) body.metadata = params.metadata;
         const res = await client.postJson("/v1/search", body, ns);
         const results = (res?.results || []).map((r: any) => ({
+          id: r?.memory?.id || "",
           content: r?.memory?.content || "",
           summary: r?.memory?.summary || "",
           tier: r?.memory?.tier || "",
@@ -561,6 +587,20 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
         if (params.category) body.metadata = { category: params.category };
         const res = await client.postJson("/v1/memories", body, ns);
         return text({ id: res?.id || null, success: res != null });
+      },
+    },
+    {
+      name: "memory_forget",
+      description:
+        "Delete a memory from long-term memory (memini) by its id — use when a recalled memory is wrong, " +
+        "outdated, or poisoned. Get the id from memory_recall or memory_list. This is a soft delete (tombstone).",
+      parameters: Type.Object({
+        id: Type.String({ description: "The id of the memory to forget (from memory_recall / memory_list)." }),
+      }),
+      async execute(_id: any, params: any) {
+        if (!params.id) return text({ forgotten: false, error: "id is required" });
+        const res = await client.deleteJson(`/v1/memories/${encodeURIComponent(params.id)}`, ns);
+        return text({ forgotten: res != null });
       },
     },
   ];

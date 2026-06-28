@@ -61,7 +61,7 @@ Claim the memory slot in `~/.openclaw/openclaw.json`:
           "expose_tools": true
         },
         "tools": {
-          "allow": ["memory_recall", "memory_list", "memory_remember"]
+          "allow": ["memory_recall", "memory_list", "memory_remember", "memory_forget"]
         }
       }
     }
@@ -147,6 +147,8 @@ _also_ register explicit tools the agent can call on demand, alongside the slot:
   (e.g. "all procedural memories" or "everything categorized `bug_fixes`"; see
   `docs/categories.md`).
 - **`memory_remember`** — store a fact, with optional `tags` and a `category`.
+- **`memory_forget`** — delete a memory by `id` (from recall/list) when it's
+  wrong, outdated, or poisoned. Soft delete (tombstone).
 
 Each tool resolves the same per-agent namespace as the hooks, and is registered
 `optional`. Parameter schemas use [typebox](https://github.com/sinclairzx81/typebox),

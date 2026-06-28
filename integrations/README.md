@@ -89,6 +89,15 @@ auto-captures the completed user→assistant turn as episodic memory and
 excludes its **own** session's captures from recall so it never echoes
 the live conversation back.
 
+Where a host exposes explicit memory tools, the set is the same:
+`memory_recall`, `memory_list`, `memory_remember`, and **`memory_forget`**
+(delete a wrong/outdated/poisoned memory by its id — a soft tombstone). Hermes
+and Open WebUI (Tools module) always expose them; OpenClaw exposes them behind
+`expose_tools: true`; Claude Code / Codex get them from the MCP server. **opencode**
+is the exception: its native plugin is deliberately tool-free (automatic recall +
+capture only), so to give it `memory_forget` (or any tool) wire the memini MCP
+server alongside the plugin.
+
 Two host-specific differences remain by design:
 
 - **Relevance floor (`MEMINI_INJECT_RECALL_MIN_SCORE`)** is honored by

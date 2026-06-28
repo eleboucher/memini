@@ -44,9 +44,28 @@ class ListPathTest(unittest.TestCase):
 
 
 class ToolSchemasTest(unittest.TestCase):
-    def test_three_tools(self):
+    def test_tools(self):
         names = [t["name"] for t in memini.MeminiMemoryProvider().get_tool_schemas()]
-        self.assertEqual(sorted(names), ["memory_list", "memory_recall", "memory_remember"])
+        self.assertEqual(sorted(names), ["memory_forget", "memory_list", "memory_recall", "memory_remember"])
+
+
+class MemoryForgetToolTest(unittest.TestCase):
+    def test_forget_deletes_by_id(self):
+        calls = []
+
+        def stub(path, body, method="POST"):
+            calls.append((path, method))
+            return {}
+
+        out = make_provider(stub).handle_tool_call("memory_forget", {"id": "mem 1/x"})
+        self.assertEqual(calls, [("/v1/memories/mem%201%2Fx", "DELETE")])
+        self.assertEqual(json.loads(out), {"forgotten": True})
+
+    def test_forget_without_id_makes_no_request(self):
+        calls = []
+        out = make_provider(lambda *a, **k: calls.append(a) or {}).handle_tool_call("memory_forget", {})
+        self.assertEqual(calls, [])
+        self.assertEqual(json.loads(out)["forgotten"], False)
 
 
 class OnPreCompressTest(unittest.TestCase):

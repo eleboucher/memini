@@ -14,7 +14,7 @@ description: On-demand memini memory — gives the model recall_memory / remembe
 
 import os
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import aiohttp
 from pydantic import BaseModel, Field
@@ -94,6 +94,28 @@ class Tools:
                     raise RuntimeError(f"memini {path} failed: {res.status} {body}")
                 return await res.json()
 
+    async def _delete(self, path: str) -> bool:
+        base_url = str(self.valves.base_url).rstrip("/")
+        secret = os.environ.get("MEMINI_API_KEY") or os.environ.get("MEMINI_TOKEN") or ""
+        if uses_plaintext_bearer(base_url, secret):
+            message = (
+                f"memini: MEMINI_API_KEY would cross plaintext HTTP to {base_url}; "
+                "use HTTPS or an SSH tunnel."
+            )
+            if self.valves.require_https:
+                raise RuntimeError(message)
+            print(f"[memini] {message}")
+        headers = {"X-Memini-Namespace": sanitize_namespace(self.valves.namespace) or DEFAULT_NAMESPACE}
+        if secret:
+            headers["Authorization"] = f"Bearer {secret}"
+        timeout = aiohttp.ClientTimeout(total=self.valves.timeout_ms / 1000)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.delete(f"{base_url}{path}", headers=headers) as res:
+                if res.status >= 400:
+                    body = await res.text()
+                    raise RuntimeError(f"memini DELETE {path} failed: {res.status} {body}")
+                return True
+
     async def recall_memory(self, query: str, __event_emitter__=None) -> str:
         """
         Search long-term memory for facts relevant to a query. Call this when the
@@ -122,7 +144,10 @@ class Tools:
             mem = (item or {}).get("memory") or {}
             text = str(mem.get("summary") or mem.get("content") or f"Memory {index + 1}").strip()
             tier = str(mem.get("tier") or "memory").strip()
-            lines.append(f"- ({tier}) {text[:300]}")
+            mem_id = str(mem.get("id") or "").strip()
+            # Include the id so the model can forget_memory(id) a wrong/outdated hit.
+            suffix = f" (id: {mem_id})" if mem_id else ""
+            lines.append(f"- ({tier}) {text[:300]}{suffix}")
         if __event_emitter__:
             await __event_emitter__(
                 {"type": "status", "data": {"description": f"Recalled {len(lines)} memories", "done": True}}
@@ -156,3 +181,25 @@ class Tools:
                 {"type": "status", "data": {"description": "Memory stored", "done": True}}
             )
         return "Stored in memory."
+
+    async def forget_memory(self, id: str, __event_emitter__=None) -> str:
+        """
+        Delete a memory from long-term memory by its id. Call this when a recalled
+        memory is wrong, outdated, or poisoned. Get the id from recall_memory (each
+        hit is annotated with its id). This is a soft delete (tombstone).
+
+        :param id: The id of the memory to forget, as shown by recall_memory.
+        :return: Confirmation that the memory was forgotten.
+        """
+        if not id:
+            return "No memory id provided."
+        if __event_emitter__:
+            await __event_emitter__(
+                {"type": "status", "data": {"description": "Forgetting memory…", "done": False}}
+            )
+        await self._delete(f"/v1/memories/{quote(str(id), safe='')}")
+        if __event_emitter__:
+            await __event_emitter__(
+                {"type": "status", "data": {"description": "Memory forgotten", "done": True}}
+            )
+        return "Forgotten."

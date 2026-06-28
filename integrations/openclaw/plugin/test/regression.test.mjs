@@ -25,12 +25,16 @@ function fakeClient() {
     async postJson(path, body, ns) {
       calls.push({ method: "POST", path, body, ns });
       return path.includes("search")
-        ? { results: [{ memory: { content: "hit", summary: "", tier: "semantic" }, score: 0.9 }] }
+        ? { results: [{ memory: { id: "m1", content: "hit", summary: "", tier: "semantic" }, score: 0.9 }] }
         : { id: "m1" };
     },
     async getJson(path, ns) {
       calls.push({ method: "GET", path, ns });
       return { memories: [{ id: "m1", content: "c", tier: "procedural", tags: ["auth"], metadata: { category: "bug_fixes" } }] };
+    },
+    async deleteJson(path, ns) {
+      calls.push({ method: "DELETE", path, ns });
+      return { ok: true };
     },
   };
 }
@@ -210,7 +214,7 @@ test("register is synchronous even with expose_tools on (OpenClaw contract)", ()
     "register must not be an async function",
   );
   // Tools are wired before register returns — not deferred (the guarded api would drop them).
-  assert.deepEqual(names.sort(), ["memory_list", "memory_recall", "memory_remember"]);
+  assert.deepEqual(names.sort(), ["memory_forget", "memory_list", "memory_recall", "memory_remember"]);
 });
 
 test("register does not touch registerTool when expose_tools is off", async () => {
@@ -227,7 +231,7 @@ test("register does not touch registerTool when expose_tools is off", async () =
   assert.equal(registered, 0, "no tools should register when expose_tools is off");
 });
 
-test("register wires the three tools when expose_tools is on", async () => {
+test("register wires the memory tools when expose_tools is on", async () => {
   const names = [];
   await plugin.register({
     pluginConfig: { enabled: true, expose_tools: true },
@@ -238,7 +242,7 @@ test("register wires the three tools when expose_tools is on", async () => {
       names.push(...(opts?.names ?? []));
     },
   });
-  assert.deepEqual(names.sort(), ["memory_list", "memory_recall", "memory_remember"]);
+  assert.deepEqual(names.sort(), ["memory_forget", "memory_list", "memory_recall", "memory_remember"]);
 });
 
 // Production OpenClaw's api.registerHook(name, handler) rejects the positional
@@ -534,12 +538,12 @@ test("meminiListPath builds repeatable tier/tag and escaped meta params", () => 
   assert.equal(meminiListPath({ limit: 0 }), "/v1/memories");
 });
 
-test("tools register as a single optional factory naming all three tools", async () => {
+test("tools register as a single optional factory naming all tools", async () => {
   const { opts } = await collectTools(fakeClient(), { namespace: "ns", namespace_per_agent: false });
   assert.equal(opts.optional, true, "factory must register optional");
   assert.deepEqual(
     [...opts.names].sort(),
-    ["memory_list", "memory_recall", "memory_remember"],
+    ["memory_forget", "memory_list", "memory_recall", "memory_remember"],
     "opts.names must list every tool so the host can match the factory by name",
   );
 });
@@ -558,8 +562,25 @@ test("memory_recall passes query + tag/metadata filters and formats results", as
   assert.equal(call.ns, "ns");
   assert.deepEqual(call.body, { query: "auth race", limit: 3, tags: ["auth"], metadata: { category: "bug_fixes" } });
   assert.deepEqual(JSON.parse(out.content[0].text), {
-    results: [{ content: "hit", summary: "", tier: "semantic", score: 0.9 }],
+    results: [{ id: "m1", content: "hit", summary: "", tier: "semantic", score: 0.9 }],
   });
+});
+
+test("memory_forget DELETEs the memory by id", async () => {
+  const client = fakeClient();
+  const { byName, order } = await collectTools(client, { namespace: "ns", namespace_per_agent: false });
+  assert.ok(order.includes("memory_forget"), "memory_forget is registered");
+  const out = await byName.memory_forget.execute("id", { id: "mem 1/x" });
+  const call = client.calls.at(-1);
+  assert.equal(call.method, "DELETE");
+  assert.equal(call.path, "/v1/memories/mem%201%2Fx", "id is percent-encoded into the path");
+  assert.equal(call.ns, "ns");
+  assert.deepEqual(JSON.parse(out.content[0].text), { forgotten: true });
+  // Missing id → no request, explicit error.
+  client.calls.length = 0;
+  const bad = await byName.memory_forget.execute("id", {});
+  assert.equal(client.calls.length, 0, "no DELETE without an id");
+  assert.equal(JSON.parse(bad.content[0].text).forgotten, false);
 });
 
 test("memory_list issues a filtered GET and maps the rows", async () => {

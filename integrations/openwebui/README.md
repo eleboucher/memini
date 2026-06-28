@@ -11,7 +11,8 @@ model can call). memini ships both:
   tool calls from the model. This is the recommended path, and the analog of the
   [opencode plugin](../opencode/).
 - a **Tools** module ([`tools/memini_tools.py`](tools/memini_tools.py)) that
-  exposes `recall_memory` / `remember_memory` for the model to call on demand.
+  exposes `recall_memory` / `remember_memory` / `forget_memory` (delete a
+  wrong/outdated memory by the id shown in recall) for the model to call on demand.
 
 Both talk to memini over REST (`POST /v1/search`, `POST /v1/memories`), scoped by
 the `X-Memini-Namespace` header. The API key is read from the `MEMINI_API_KEY`

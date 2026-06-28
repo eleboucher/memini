@@ -21,9 +21,10 @@ What it wires:
 - **`on_memory_write`** — mirrors Hermes `MEMORY.md` / `USER.md` edits into
   memini as durable (semantic) facts.
 - **tools** — `memory_recall` (with optional `tags` / `metadata` filters),
-  `memory_list` (query-less browse by tier / tags / metadata category), and
-  `memory_remember` (with optional `tags` and a `category`) for when the agent
-  wants to read, browse, or write memory explicitly. See `docs/categories.md`
+  `memory_list` (query-less browse by tier / tags / metadata category),
+  `memory_remember` (with optional `tags` and a `category`), and `memory_forget`
+  (delete a wrong/outdated memory by `id` from recall/list) for when the agent
+  wants to read, browse, write, or prune memory explicitly. See `docs/categories.md`
   for the category convention.
 
 ### Install

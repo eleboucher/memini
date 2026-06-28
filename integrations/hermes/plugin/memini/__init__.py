@@ -36,7 +36,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 from urllib.error import URLError
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 try:
@@ -466,6 +466,22 @@ class MeminiMemoryProvider(MemoryProvider):
                     "required": ["content"],
                 },
             },
+            {
+                "name": "memory_forget",
+                "description": "Delete a memory from long-term memory (memini) by its id — use when a recalled "
+                               "memory is wrong, outdated, or poisoned. Get the id from memory_recall or "
+                               "memory_list. Soft delete (tombstone).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "description": "The id of the memory to forget (from memory_recall / memory_list).",
+                        },
+                    },
+                    "required": ["id"],
+                },
+            },
         ]
 
     def handle_tool_call(self, name: str, args: dict, **kwargs: Any) -> str:
@@ -480,6 +496,7 @@ class MeminiMemoryProvider(MemoryProvider):
             for r in (result or {}).get("results", []):
                 mem = r.get("memory") or {}
                 items.append({
+                    "id": mem.get("id", ""),
                     "content": mem.get("content", ""),
                     "summary": mem.get("summary", ""),
                     "tier": mem.get("tier", ""),
@@ -512,6 +529,13 @@ class MeminiMemoryProvider(MemoryProvider):
                 body["metadata"] = {"category": args["category"]}
             result = self._call("/v1/memories", body)
             return json.dumps({"id": (result or {}).get("id"), "success": result is not None})
+
+        if name == "memory_forget":
+            mem_id = args.get("id")
+            if not mem_id:
+                return json.dumps({"forgotten": False, "error": "id is required"})
+            result = self._call(f"/v1/memories/{quote(str(mem_id), safe='')}", None, method="DELETE")
+            return json.dumps({"forgotten": result is not None})
 
         return json.dumps({"error": f"Unknown tool: {name}"})
 
