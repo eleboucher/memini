@@ -120,7 +120,12 @@ type Config struct {
 	// MergeHintMinScore is the lower gate of the write-time dedup split: a fresh
 	// write whose nearest same-tier candidate scores in [MergeHintMinScore,
 	// AutoSupersedeMinScore) proceeds normally and a MergeHint is returned in the
-	// REST response so the caller can merge via memory_update. 0 disables.
+	// response so the caller can merge via memory_update (non-destructive — the
+	// write is always stored). 0 (off) by default. Recommended opt-in value
+	// ~0.625: the dedup-threshold bench (bench/dedup_test.go) put ~85% of reworded
+	// restatements at/above it with a ~1% false-hit rate on 400 real memories.
+	// Kept opt-in because it adds a per-write nearest-candidate vector lookup and
+	// must stay above MEMINI_WRITE_DEDUP_MIN_SCORE (the band ordering is validated).
 	MergeHintMinScore float64 `env:"MEMINI_MERGE_HINT_MIN_SCORE" envDefault:"0"`
 
 	// GlobalNamespace, when set, is a namespace whose memories are merged
