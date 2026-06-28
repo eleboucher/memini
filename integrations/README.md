@@ -78,3 +78,27 @@ All recipes assume memini is reachable and that its embeddings endpoint
 is configured (`MEMINI_EMBED_BASE_URL`). If memini requires a bearer
 token (`MEMINI_API_KEY`), add `Authorization: Bearer <token>` to HTTP
 headers.
+
+## Defaults & cross-host notes
+
+The native plugins (opencode, Hermes, OpenClaw, Open WebUI, and the
+Claude Code plugin) share the same recall defaults: **recall and capture
+on, `recall_limit=3`, recall token budget uncapped**, plain bullet
+formatting (set `MEMINI_INJECT_LABELS=tier` to add a tier prefix). Each
+auto-captures the completed user→assistant turn as episodic memory and
+excludes its **own** session's captures from recall so it never echoes
+the live conversation back.
+
+Two host-specific differences remain by design:
+
+- **Relevance floor (`MEMINI_INJECT_RECALL_MIN_SCORE`)** is honored by
+  opencode and Hermes but not OpenClaw/Open WebUI. It defaults to `0`
+  (off) everywhere, so default behavior is identical; benchmarking found
+  no score floor reliably separates signal from noise with the default
+  embedder (use `recall_limit` to bound volume instead), which is why
+  OpenClaw omits the knob entirely.
+- **Shared-namespace echo:** the echo-exclusion is keyed on each host's
+  native conversation id (`session_id`, or `chat_id` on Open WebUI). If
+  you point two _different_ integrations at the **same** namespace, one
+  can't exclude the other's just-captured turns — give chatty agents
+  their own namespace (or an agent segment) if that matters.

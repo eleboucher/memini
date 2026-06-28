@@ -81,7 +81,7 @@ class Helpers(unittest.TestCase):
             {"memory": {"content": "fact two"}},
         ]
         out = flt.format_results(results, 5)
-        self.assertEqual(out, "- (semantic) fact one\n- (memory) fact two")
+        self.assertEqual(out, "- fact one\n- fact two")
         self.assertEqual(flt.format_results([], 5), "")
 
     def test_uses_plaintext_bearer(self):

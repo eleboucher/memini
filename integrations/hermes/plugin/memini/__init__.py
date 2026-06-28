@@ -376,6 +376,7 @@ class MeminiMemoryProvider(MemoryProvider):
         self._call_bg("/v1/memories", {
             "content": f"{user[:1000]}\n\n{assistant[:3000]}",
             "tier": "episodic",
+            "tags": ["hermes"],
             "metadata": {"source": "hermes", "session_id": kwargs.get("session_id", self._session_id), "format": "turn"},
         })
 
@@ -393,7 +394,7 @@ class MeminiMemoryProvider(MemoryProvider):
                     "type": "object",
                     "properties": {
                         "query": {"type": "string", "description": "What to search for"},
-                        "limit": {"type": "integer", "description": "Max results", "default": 5},
+                        "limit": {"type": "integer", "description": "Max results", "default": 3},
                         "tags": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -469,7 +470,7 @@ class MeminiMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, name: str, args: dict, **kwargs: Any) -> str:
         if name == "memory_recall":
-            body = {"query": args["query"], "limit": args.get("limit", 5)}
+            body = {"query": args["query"], "limit": args.get("limit", 3)}
             if args.get("tags"):
                 body["tags"] = args["tags"]
             if args.get("metadata"):

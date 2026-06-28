@@ -256,7 +256,7 @@ test("registerMeminiTools: memory_recall shapes the request body from typed para
   assert.equal(call.path, "/v1/search");
   assert.deepEqual(call.body, {
     query: "auth race",
-    limit: 5,
+    limit: 3,
     tags: ["auth"],
     metadata: { category: "bug_fixes" },
   });

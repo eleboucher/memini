@@ -97,9 +97,9 @@ def format_results(results: list, limit: int) -> str:
     for index, result in enumerate(results[: max(limit, 0)]):
         mem = (result or {}).get("memory") or {}
         text = str(mem.get("summary") or mem.get("content") or f"Memory {index + 1}").strip()
-        tier = str(mem.get("tier") or "memory").strip()
         if text:
-            lines.append(f"- ({tier}) {text[:300]}")
+            # Plain bullets, matching the opencode/hermes/openclaw/Claude default.
+            lines.append(f"- {text[:300]}")
     return "\n".join(lines)
 
 

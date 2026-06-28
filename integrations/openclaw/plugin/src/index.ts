@@ -247,9 +247,10 @@ export function stripRuntimePreambles(text: any) {
   return out.trim();
 }
 
-// Mirrors the opencode plugin's labels toggle. Default `["tier"]` keeps the
-// legacy "(tier) text" line so existing callers see identical output.
-const DEFAULT_RECALL_LABELS = ["tier"];
+// Mirrors the opencode plugin's labels toggle. Default is plain bullets (no
+// label prefix), matching the opencode/hermes/Claude Code plugins; set
+// MEMINI_INJECT_LABELS=tier (or confidence/age) to add the annotation prefix.
+const DEFAULT_RECALL_LABELS: string[] = [];
 
 function recallLabels() {
   const raw = process.env.MEMINI_INJECT_LABELS;
@@ -488,12 +489,12 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
       description: "Search long-term memory (memini) for relevant past facts and context.",
       parameters: Type.Object({
         query: Type.String({ description: "What to search for" }),
-        limit: Type.Optional(Type.Number({ description: "Max results (default 5)" })),
+        limit: Type.Optional(Type.Number({ description: "Max results (default 3)" })),
         tags: Tags,
         metadata: Metadata,
       }),
       async execute(_id: any, params: any) {
-        const body: any = { query: params.query, limit: params.limit || 5 };
+        const body: any = { query: params.query, limit: params.limit || 3 };
         if (params.tags?.length) body.tags = params.tags;
         if (params.metadata && Object.keys(params.metadata).length) body.metadata = params.metadata;
         const res = await client.postJson("/v1/search", body, ns);
@@ -700,6 +701,7 @@ const plugin: {
       await client.postJson("/v1/memories", {
         content: `${captureUser.slice(0, 1000)}\n\n${assistantText.slice(0, 3000)}`,
         tier: "episodic",
+        tags: ["openclaw"],
         metadata,
       }, ns);
     };

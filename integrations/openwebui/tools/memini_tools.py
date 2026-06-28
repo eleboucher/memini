@@ -57,7 +57,7 @@ class Tools:
             default=DEFAULT_NAMESPACE,
             description="Tenant the memory is scoped to (X-Memini-Namespace)",
         )
-        recall_limit: int = Field(default=5, description="Max memories returned by recall_memory")
+        recall_limit: int = Field(default=3, description="Max memories returned by recall_memory")
         timeout_ms: int = Field(default=5000, description="Per-request timeout (ms)")
         require_https: bool = Field(
             default=False,
