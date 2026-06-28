@@ -828,6 +828,17 @@ export function extractAssistantText(transcript) {
 }
 
 /**
+ * Report whether a transcript entry's `message.content` is a real user turn:
+ * a string (tool_result entries are arrays) that isn't slash-command or
+ * local-command scaffolding. Shared by the turn extractor and the auto-save
+ * message counter so both skip the same noise.
+ */
+export function isRealUserMessage(content) {
+  if (typeof content !== "string") return false; // arrays are tool_results, not user turns
+  return !/^\s*<(local-command|command-)/.test(content); // slash-command / local-command noise
+}
+
+/**
  * Extract the latest complete user→assistant turn from a Claude Code transcript
  * (JSONL string). Returns { userText, assistantText, assistantId } — the last
  * real user message (string content only; tool_result arrays and slash/local
@@ -848,8 +859,7 @@ export function extractLastTurn(transcript) {
     if (!r || r.isSidechain || r.isMeta) continue;
     if (r.type === "user") {
       const c = r.message?.content;
-      if (typeof c !== "string") continue; // arrays are tool_results, not user turns
-      if (/^\s*<(local-command|command-)/.test(c)) continue; // slash-command / local-command noise
+      if (!isRealUserMessage(c)) continue;
       userText = c.trim();
     } else if (r.type === "assistant") {
       const c = r.message?.content;

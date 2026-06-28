@@ -1085,6 +1085,15 @@ test("envEnabled: default-on unless explicitly opted out", async () => {
   }
 });
 
+test("isRealUserMessage: strings pass, tool_result arrays and command noise skip", async () => {
+  const { isRealUserMessage } = await import("./_shared.mjs");
+  assert.equal(isRealUserMessage("hello"), true);
+  assert.equal(isRealUserMessage([{ type: "tool_result", content: "x" }]), false);
+  assert.equal(isRealUserMessage("<local-command-stdout>x"), false);
+  assert.equal(isRealUserMessage("<command-name>/foo"), false);
+  assert.equal(isRealUserMessage(undefined), false);
+});
+
 test("extractLastTurn: returns the final user→assistant turn, skips noise", async () => {
   const { extractLastTurn } = await import("./_shared.mjs");
   const transcript = [

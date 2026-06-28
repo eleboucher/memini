@@ -22,6 +22,7 @@ import {
   parseMemoryBlocks,
   extractAssistantText,
   extractLastTurn,
+  isRealUserMessage,
   readTranscript,
   envEnabled,
   DEBUG,
@@ -42,9 +43,7 @@ function countUserMessages(raw) {
     if (!line.trim()) continue;
     const r = parseJSON(line);
     if (!r || r.type !== "user" || r.isSidechain || r.isMeta) continue;
-    const c = r.message?.content;
-    if (typeof c !== "string") continue; // arrays are tool_results, not user turns
-    if (/^\s*<(local-command|command-)/.test(c)) continue; // slash-command / local-command noise
+    if (!isRealUserMessage(r.message?.content)) continue;
     n++;
   }
   return n;
