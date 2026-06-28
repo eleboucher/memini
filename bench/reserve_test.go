@@ -41,8 +41,14 @@ func TestSemanticReserveTierMixed(t *testing.T) {
 	if err != nil {
 		t.Skipf("embedder config: %v", err)
 	}
-	if _, err := e.Embed(ctx, []string{"connectivity probe"}); err != nil {
+	probe, err := e.Embed(ctx, []string{"connectivity probe"})
+	if err != nil {
 		t.Skipf("live embedder unreachable at %s (%s): %v", baseURL, model, err)
+	}
+	// Guard against a dims mismatch silently producing meaningless recall numbers
+	// (e.g. MEMINI_EMBED_DIMS=1024 but the model returns 768).
+	if len(probe) != 1 || len(probe[0]) != dims {
+		t.Skipf("embedder returned %d-dim vectors, configured for %d — set MEMINI_EMBED_DIMS", len(probe[0]), dims)
 	}
 
 	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "reserve.db"), dims)

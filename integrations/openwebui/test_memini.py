@@ -114,6 +114,8 @@ class FilterFlow(unittest.TestCase):
         self.assertIn("prior note", out["messages"][0]["content"])
         self.assertEqual(out["messages"][1]["role"], "user")
         self.assertEqual(calls[0][0], "/v1/search")
+        # The default recall_limit (3) must reach the search request body.
+        self.assertEqual(calls[0][1]["limit"], 3)
 
     def test_inlet_excludes_own_chat(self):
         # On inlet the chat id arrives via injected __chat_id__/__metadata__, not
