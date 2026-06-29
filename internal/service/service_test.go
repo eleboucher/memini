@@ -324,7 +324,7 @@ func TestWriteDedupCoalescesNearIdentical(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	svc := service.New(st, embedtest.New(dims),
-		service.WithSyncReinforce(), service.WithWriteDedup(0.95))
+		service.WithSyncReinforce(), service.WithWriteDedup(0.95, service.WriteDedupCoalesce))
 
 	first, err := svc.Remember(ctx, service.RememberInput{
 		Namespace: "alice", Content: "the user likes coffee", Tier: memory.TierSemantic,
@@ -667,12 +667,11 @@ func TestSupersedeTombstonesMemory(t *testing.T) {
 	}
 }
 
-// The upper gate of the write-time dedup split: a near-duplicate at or above
-// AutoSupersedeMinScore stores the new memory and tombstones the old one in the
-// background. Fingerprint dedup is off so the split path (not the exact-match
-// coalesce) is what runs.
+// The supersede action: a near-duplicate at or above the dedup score stores the
+// new memory and tombstones the old one in the background. Fingerprint dedup is
+// off so the vector path (not the exact-match coalesce) is what runs.
 func TestAutoSupersedeReplacesNearDuplicate(t *testing.T) {
-	svc := newService(t, service.WithFingerprintDedup(false), service.WithAutoSupersede(0.5))
+	svc := newService(t, service.WithFingerprintDedup(false), service.WithWriteDedup(0.5, service.WriteDedupSupersede))
 	ctx := context.Background()
 
 	old, err := svc.Remember(ctx, service.RememberInput{
@@ -708,12 +707,12 @@ func TestAutoSupersedeReplacesNearDuplicate(t *testing.T) {
 	}
 }
 
-// The lower gate: a near-duplicate in the [MergeHintMinScore, AutoSupersede)
-// band stores the new memory AND returns a hint pointing at the existing one,
-// so the caller can decide to merge.
+// The hint action: a near-duplicate at or above the dedup score stores the new
+// memory AND returns a hint pointing at the existing one, so the caller can
+// decide to merge.
 func TestMergeHintReturnedWithoutSuppression(t *testing.T) {
 	svc := newService(t, service.WithFingerprintDedup(false),
-		service.WithMergeHint(0.5), service.WithAutoSupersede(0.99))
+		service.WithWriteDedup(0.5, service.WriteDedupHint))
 	ctx := context.Background()
 
 	first, err := svc.Remember(ctx, service.RememberInput{
@@ -753,11 +752,11 @@ func TestMergeHintReturnedWithoutSuppression(t *testing.T) {
 	_ = second
 }
 
-// Merge-hint is scoped to durable tiers: an episodic near-duplicate (the
+// The hint action is scoped to durable tiers: an episodic near-duplicate (the
 // per-turn capture flood) must NOT produce a hint, so captures don't pay a
 // dedup lookup for a hint nobody reads.
 func TestMergeHintSkippedForEpisodicTier(t *testing.T) {
-	svc := newService(t, service.WithFingerprintDedup(false), service.WithMergeHint(0.5))
+	svc := newService(t, service.WithFingerprintDedup(false), service.WithWriteDedup(0.5, service.WriteDedupHint))
 	ctx := context.Background()
 
 	if _, err := svc.Remember(ctx, service.RememberInput{

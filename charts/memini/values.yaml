@@ -89,8 +89,6 @@ controllers:
           MEMINI_LOG_FORMAT: "json"
           # -- Default namespace for memories.
           MEMINI_DEFAULT_NAMESPACE: "default"
-          # -- HTTP header that selects the namespace per request.
-          MEMINI_NAMESPACE_HEADER: "X-Memini-Namespace"
           # -- Decay sweeper interval (Go duration).
           MEMINI_SWEEP_INTERVAL: "1h"
           # -- OpenAI-compatible embeddings endpoint (required for vector search).
@@ -106,12 +104,11 @@ controllers:
           # --- Optional decay / hygiene knobs (uncomment to enable) ---
           # MEMINI_DEMOTE_AFTER: "1440h"          # demote stale durable memories to episodic
           # MEMINI_TOMBSTONE_TTL: "720h"          # hard-delete superseded memories after TTL
-          # MEMINI_WRITE_DEDUP_MIN_SCORE: "0.95"  # coalesce near-identical writes (must stay < MEMINI_MERGE_HINT_MIN_SCORE; raise that too if you set this high)
-          # MEMINI_MERGE_HINT_MIN_SCORE: "0.625"  # durable-write near-dup hint (default 0.625; "0" disables)
+          # MEMINI_WRITE_DEDUP_SCORE: "0.625"     # similarity to treat a write as a near-dup ("0" disables)
+          # MEMINI_WRITE_DEDUP_ACTION: "hint"     # hint (default) | coalesce | supersede | off
   # --- Optional embeddings tuning ---
   # MEMINI_EMBED_MAX_BATCH: "20"          # max items per /embeddings request
   # MEMINI_EMBED_MAX_BATCH_CHARS: "24000" # max total chars per request (0 disables)
-  # MEMINI_EMBED_MAX_ITEM_CHARS: "8000"   # truncate single text before embedding
 
   # --- Optional LLM consolidation (leave base URL empty to run headless) ---
   # MEMINI_LLM_BASE_URL: "http://llm:8080/v1"
@@ -120,8 +117,7 @@ controllers:
   # --- Optional recall reranking ---
   # MEMINI_RERANK: "http://reranker:8080/v1" # "" / "off" / "llm" / cross-encoder URL
   # MEMINI_RERANK_MODEL: "bge-reranker-v2-m3"
-  # MEMINI_RERANK_MAX_DOC_CHARS: "2048"   # reranker server needs --ubatch-size >= ~1024 at this cap
-  # MEMINI_RERANK_MAX_BATCH_CHARS: "6000"
+  # MEMINI_RERANK_MAX_BATCH_CHARS: "6000"  # per-doc truncation is a fixed 2048
 
   # --- postgres backend connection (required when MEMINI_BACKEND=postgres) ---
   # MEMINI_POSTGRES_DSN:

@@ -355,12 +355,6 @@
                           "title": "MEMINI_METRICS_ADDR",
                           "type": "string"
                         },
-                        "MEMINI_NAMESPACE_HEADER": {
-                          "default": "X-Memini-Namespace",
-                          "description": "HTTP header that selects the namespace per request.",
-                          "title": "MEMINI_NAMESPACE_HEADER",
-                          "type": "string"
-                        },
                         "MEMINI_SQLITE_PATH": {
                           "default": "/data/memini.db",
                           "description": "sqlite database path (kept on the PVC mounted at /data).",

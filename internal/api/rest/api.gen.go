@@ -168,7 +168,7 @@ type ListResponse struct {
 type Memory struct {
 	AccessCount int `json:"access_count"`
 
-	// AutoSuperseded Optional. Present only on POST /v1/memories responses when the write's nearest same-tier candidate scored at or above MEMINI_AUTO_SUPERSEDE_MIN_SCORE and was auto-superseded in the background. The caller still receives the new memory.
+	// AutoSuperseded Optional. Present only on POST /v1/memories responses when the write's nearest same-tier candidate scored at/above MEMINI_WRITE_DEDUP_SCORE with MEMINI_WRITE_DEDUP_ACTION="supersede" and the old memory was tombstoned in the background. The caller still receives the new memory.
 	AutoSuperseded *bool `json:"auto_superseded,omitempty"`
 
 	// Confidence Corroboration of a durable fact in [0,1]; null when not tracked.
@@ -180,7 +180,7 @@ type Memory struct {
 	Importance     float64    `json:"importance"`
 	LastAccessedAt time.Time  `json:"last_accessed_at"`
 
-	// MergeHint Optional. Returned on POST /v1/memories when the write's nearest same-tier candidate landed in the merge-hint band (between MEMINI_MERGE_HINT_MIN_SCORE and MEMINI_AUTO_SUPERSEDE_MIN_SCORE). The caller can decide whether to merge into the near-duplicate via memory_update.
+	// MergeHint Optional. Returned on POST /v1/memories when the write's nearest same-tier candidate scored at/above MEMINI_WRITE_DEDUP_SCORE and MEMINI_WRITE_DEDUP_ACTION is "hint". The caller can decide whether to merge into the near-duplicate via memory_update.
 	MergeHint    *MergeHint              `json:"merge_hint,omitempty"`
 	Metadata     *map[string]interface{} `json:"metadata,omitempty"`
 	Namespace    string                  `json:"namespace"`
@@ -197,7 +197,7 @@ type Memory struct {
 	ValidTo *time.Time `json:"valid_to,omitempty"`
 }
 
-// MergeHint Optional. Returned on POST /v1/memories when the write's nearest same-tier candidate landed in the merge-hint band (between MEMINI_MERGE_HINT_MIN_SCORE and MEMINI_AUTO_SUPERSEDE_MIN_SCORE). The caller can decide whether to merge into the near-duplicate via memory_update.
+// MergeHint Optional. Returned on POST /v1/memories when the write's nearest same-tier candidate scored at/above MEMINI_WRITE_DEDUP_SCORE and MEMINI_WRITE_DEDUP_ACTION is "hint". The caller can decide whether to merge into the near-duplicate via memory_update.
 type MergeHint struct {
 	// Score Fused similarity between the new write and the near-duplicate (0..1).
 	Score *float64 `json:"score,omitempty"`
@@ -259,7 +259,7 @@ type SearchRequest struct {
 	// Metadata A memory's top-level metadata must contain every listed key=value pair (AND).
 	Metadata *map[string]string `json:"metadata,omitempty"`
 
-	// MinScore Per-call relevance floor on the fused score. Candidates below it are dropped server-side before re-ranking. 0 (or unset) falls back to the server's default gate (MEMINI_RECALL_MIN_SCORE). Only meaningful with score fusion (RRF scores are not comparable to this threshold).
+	// MinScore Per-call relevance floor on the fused score. Candidates below it are dropped server-side before re-ranking. 0 (or unset) falls back to the server's baked relevance floor (0.1). Only meaningful with score fusion (RRF scores are not comparable to this threshold).
 	MinScore *float64 `json:"min_score,omitempty"`
 	Query    string   `json:"query"`
 

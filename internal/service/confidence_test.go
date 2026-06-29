@@ -18,7 +18,7 @@ func TestConfidenceSeededAndCorroborated(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithWriteDedup(0.95))
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithWriteDedup(0.95, service.WriteDedupCoalesce))
 
 	// A durable write seeds confidence; a short-term write does not track it.
 	fact, err := svc.Remember(ctx, service.RememberInput{Namespace: "n", Content: "the db is postgres", Tier: memory.TierSemantic})

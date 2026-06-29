@@ -75,9 +75,6 @@ type Config struct {
 	EmbedMaxBatch int `env:"MEMINI_EMBED_MAX_BATCH" envDefault:"20"`
 	// EmbedMaxBatchChars caps total characters per request (0 disables).
 	EmbedMaxBatchChars int `env:"MEMINI_EMBED_MAX_BATCH_CHARS" envDefault:"24000"`
-	// EmbedMaxItemChars truncates any single text before embedding so one
-	// oversized memory can't blow the per-request budget (0 disables).
-	EmbedMaxItemChars int `env:"MEMINI_EMBED_MAX_ITEM_CHARS" envDefault:"8000"`
 	// EmbedMaxConcurrency caps in-flight calls to the embeddings backend. 0
 	// is unbounded. Set to 1-2 for self-hosted backends that can't service a
 	// recall burst in parallel.
@@ -90,48 +87,26 @@ type Config struct {
 	// alternative). Dimensionality still cannot change this way.
 	ReembedOnModelChange bool `env:"MEMINI_REEMBED_ON_MODEL_CHANGE" envDefault:"false"`
 
-	// FusionAlpha selects hybrid recall fusion: >= 0 uses convex score fusion
-	// with this vector-vs-keyword weight (0.5 = balanced, the default); a
-	// negative value falls back to rank fusion (RRF).
-	FusionAlpha float64 `env:"MEMINI_FUSION_ALPHA" envDefault:"0.5"`
+	// WriteDedupScore is the fused vector similarity (0..1) at or above which a
+	// fresh write is treated as a near-duplicate of its nearest same-tier memory,
+	// triggering WriteDedupAction. 0 disables write-time dedup regardless of the
+	// action. The right value is embedder-dependent (~0.9 collapses near-identical
+	// restatements only; the default 0.625 was calibrated for merge hints in
+	// bench/dedup_test.go). See WriteDedupAction for what happens at/above it.
+	WriteDedupScore float64 `env:"MEMINI_WRITE_DEDUP_SCORE" envDefault:"0.625"`
 
-	// WriteDedupMinScore coalesces a fresh write into an existing same-tier
-	// memory when their vector similarity is at or above this score, instead of
-	// storing a near-duplicate. It only acts when the LLM consolidation pipeline
-	// is not handling the write (no LLM, or a non-durable tier), giving headless
-	// deployments basic corpus hygiene. 0 (the default) disables it; the right
-	// value is embedder-dependent (~0.9 in score units collapses near-identical
-	// restatements only).
-	WriteDedupMinScore float64 `env:"MEMINI_WRITE_DEDUP_MIN_SCORE" envDefault:"0"`
-
-	// WriteDedupFingerprint reinforces an exact normalized-content restatement
-	// into the existing same-tier memory instead of storing a duplicate, before
-	// embedding. Matches only identical content (no false positives), so it is on
-	// by default; false stores every write verbatim.
-	WriteDedupFingerprint bool `env:"MEMINI_WRITE_DEDUP_FINGERPRINT" envDefault:"true"`
-
-	// AutoSupersedeMinScore is the upper gate of the write-time dedup split: a
-	// fresh write whose nearest same-tier candidate scores at or above this
-	// value supersedes the old memory once the new one is stored; the caller
-	// still gets the new memory back. 0 disables. Must be > MergeHintMinScore
-	// when both set.
-	AutoSupersedeMinScore float64 `env:"MEMINI_AUTO_SUPERSEDE_MIN_SCORE" envDefault:"0"`
-
-	// MergeHintMinScore is the lower gate of the write-time dedup split: a fresh
-	// write whose nearest same-tier candidate scores in [MergeHintMinScore,
-	// AutoSupersedeMinScore) proceeds normally and a MergeHint is returned in the
-	// response so the caller can merge via memory_update (non-destructive — the
-	// write is always stored). Default 0.625 (opt-out: set 0 to disable): the
-	// dedup-threshold bench (bench/dedup_test.go) put ~85% of reworded restatements
-	// at/above it with a ~1% false-hit rate on 400 real memories, and a wrong hint
-	// is harmless (the caller can ignore it). It adds a per-write nearest-candidate
-	// vector lookup and must stay above MEMINI_WRITE_DEDUP_MIN_SCORE — the band
-	// ordering is validated, so an install that set MEMINI_WRITE_DEDUP_MIN_SCORE
-	// >= 0.625 must lower it or raise this (a breaking change from the prior 0).
-	// Scoped to durable tiers (semantic/procedural): episodic/working writes (the
-	// per-turn capture flood) skip the dedup lookup, so the cost lands only where
-	// the hint is consumed.
-	MergeHintMinScore float64 `env:"MEMINI_MERGE_HINT_MIN_SCORE" envDefault:"0.625"`
+	// WriteDedupAction picks what happens when a write scores >= WriteDedupScore
+	// against its nearest same-tier memory:
+	//   - "hint" (default): store the write and return a MergeHint so the caller
+	//     (agent or human) can merge via memory_update. Non-destructive; scoped to
+	//     durable tiers (semantic/procedural), where the threshold was calibrated
+	//     and the hint is consumed — episodic/working writes skip the lookup.
+	//   - "coalesce": reinforce the existing memory and drop the write (headless
+	//     corpus hygiene; use a high score like 0.9). Applies to all tiers.
+	//   - "supersede": store the write and tombstone the old memory ("new wins").
+	//   - "off": no write-time dedup (the exact-restatement fingerprint pass,
+	//     WriteDedupFingerprint, still runs independently).
+	WriteDedupAction string `env:"MEMINI_WRITE_DEDUP_ACTION" envDefault:"hint"`
 
 	// GlobalNamespace, when set, is a namespace whose memories are merged
 	// read-only into every other namespace's recall and briefing — a shared
@@ -139,32 +114,6 @@ type Config struct {
 	// slops", commit conventions, ...). Empty (the default) disables it, keeping
 	// namespaces fully isolated. Pin a global memory so it stays top-of-mind.
 	GlobalNamespace string `env:"MEMINI_GLOBAL_NAMESPACE" envDefault:""`
-
-	// ReinforceSkipMarkers drops session-end / stop marker memories from recall
-	// reinforcement so their inflated access_count and TTL don't distort recall.
-	// On by default.
-	ReinforceSkipMarkers bool `env:"MEMINI_REINFORCE_SKIP_MARKERS" envDefault:"true"`
-
-	// RedactSecrets scrubs live credentials (tokens, passwords, API keys, private
-	// keys) from a memory's content/summary/metadata at ingestion, so a database
-	// compromise exposes memory content but no usable secrets. On by default;
-	// best-effort pattern matching, so it's one layer of defense, not a guarantee.
-	// Set false only if redaction mangles legitimate content.
-	RedactSecrets bool `env:"MEMINI_REDACT_SECRETS" envDefault:"true"`
-
-	// QuarantineGarbled downranks writes whose content looks like script-salad
-	// (garbled multilingual model/harness output) so they sink in recall instead
-	// of surfacing verbatim — importance is zeroed and metadata.quarantined set.
-	// Off by default: it's a heuristic that can misjudge rare legitimate
-	// mixed-script text, so it only downranks (never rejects). Enable for
-	// deployments where garbled digests are a problem.
-	QuarantineGarbled bool `env:"MEMINI_QUARANTINE_GARBLED" envDefault:"false"`
-
-	// TemporalBoost enables query-conditioned temporal targeting in the
-	// re-ranker: when a query names a relative time ("3 weeks ago"), candidates
-	// dated near the referenced point are boosted by up to this much on the
-	// composite score. 0 disables it. Uses the regex anchor extractor.
-	TemporalBoost float64 `env:"MEMINI_TEMPORAL_BOOST" envDefault:"0.40"`
 
 	// LLM (opt-in; empty BaseURL disables the consolidation pipeline).
 	LLMBaseURL string `env:"MEMINI_LLM_BASE_URL"`
@@ -181,14 +130,6 @@ type Config struct {
 	// RerankModel / RerankAPIKey configure the cross-encoder when Rerank is a URL.
 	RerankModel  string `env:"MEMINI_RERANK_MODEL"`
 	RerankAPIKey string `env:"MEMINI_RERANK_API_KEY"`
-	// RerankMaxDocChars truncates each document sent to the cross-encoder so one
-	// oversized candidate can't exceed the server's physical batch and fail the
-	// whole rerank request. 0 disables truncation. Default 2048 covers the typical
-	// memory in full (mean content ≈ 2k chars) so the reranker scores the whole
-	// memory, not a fragment; a longer memory is still truncated here. At this cap
-	// the longest (query+doc) is ≈ 800 tokens, so the reranker server must run with
-	// --ubatch-size ≥ ~1024 or it 500s on long candidates.
-	RerankMaxDocChars int `env:"MEMINI_RERANK_MAX_DOC_CHARS" envDefault:"2048"`
 	// RerankMaxBatchChars caps the total characters across the query and all
 	// documents in a single /rerank request, so a deep candidate pool can never
 	// exceed the model's context window. Set just below the model's effective
@@ -207,30 +148,8 @@ type Config struct {
 	// on a slow or stuck embeddings backend. Defaults to 2s so a wedged backend
 	// can't hang recall indefinitely; set 0 to restore an unbounded query embed.
 	RecallEmbedTimeout time.Duration `env:"MEMINI_RECALL_EMBED_TIMEOUT" envDefault:"2s"`
-	// RecallMinScore is an absolute relevance floor on the fused (vector+keyword)
-	// score. Candidates whose fused score is below this threshold are dropped from
-	// recall results entirely, preventing the "poison" problem where short
-	// prompts fetch irrelevant memories whose fused scores are then min-max
-	// normalised into competitive values. Default 0.1 (matches mem0's default);
-	// set to 0 to disable. Only applies to score fusion (MEMINI_FUSION_ALPHA >= 0)
-	// where the fused score is comparable. Has no effect when using RRF.
-	RecallMinScore float64 `env:"MEMINI_RECALL_MIN_SCORE" envDefault:"0.1"`
-
-	// RecallMinSemanticScore is an absolute floor on the raw vector score, applied
-	// before fusion: a candidate below it is excluded and the keyword leg cannot
-	// reintroduce it, so a query with nothing semantically relevant recalls empty.
-	// Default 0 (off); the usable value is embedder-specific (e.g. ~0.46 for
-	// qwen3-embedding-0.6b). See docs/recall-relevance-gate-2026-06-20.md.
-	RecallMinSemanticScore float64 `env:"MEMINI_RECALL_MIN_SEMANTIC_SCORE" envDefault:"0"`
-
-	// RecallSemanticReserve guarantees up to N recall slots for durable tiers
-	// (semantic/procedural) so episodic chatter can't crowd out consolidated
-	// memory; the rest fill by relevance. Default 2: the tier-mixed eval
-	// (bench/reserve_test.go) showed heavy episodic volume drops ~25% of durable
-	// facts out of top-10, and reserving recovers them by evicting only the
-	// weakest (redundant) episodic — relevant turns rank high and survive. Set 0
-	// to disable.
-	RecallSemanticReserve int `env:"MEMINI_RECALL_SEMANTIC_RESERVE" envDefault:"2"`
+	// Recall relevance floors, semantic reserve, and fusion weight are baked in
+	// cmd/memini (the benchmark harness overrides them via service.Option).
 
 	// EpisodicMinChars drops an episodic write whose substantive content (role
 	// scaffolding stripped) is below this many characters — the low-signal
@@ -238,23 +157,8 @@ type Config struct {
 	// episodic memory. Only episodic is gated. Default 120 (on); set 0 to disable.
 	EpisodicMinChars int `env:"MEMINI_EPISODIC_MIN_CHARS" envDefault:"120"`
 
-	// DistillOnWrite distils each fresh episodic capture into durable semantic
-	// facts at write time, instead of waiting on the access-gated batch promoter.
-	// Needs an LLM (the distiller); no-op without one. On by default so a fact
-	// stated once becomes durable immediately, rather than only after it is
-	// recalled enough times to trip the promoter's access gate.
-	DistillOnWrite bool `env:"MEMINI_DISTILL_ON_WRITE" envDefault:"true"`
-
-	// DistillDropNoFact, with DistillOnWrite, deletes an episodic capture when
-	// write-time distillation extracts no durable fact — making the LLM a write
-	// filter. Off by default; drops "what happened" recall for turns with no fact.
-	DistillDropNoFact bool `env:"MEMINI_DISTILL_DROP_NO_FACT" envDefault:"false"`
-
-	// ExtractOnWrite is the no-LLM counterpart to DistillOnWrite: a fresh episodic
-	// capture is run through the heuristic extractor into durable typed facts. Only
-	// fires when no LLM is configured, so embedder-only and embedder+reranker
-	// deployments also build durable knowledge at write time. On by default.
-	ExtractOnWrite bool `env:"MEMINI_EXTRACT_ON_WRITE" envDefault:"true"`
+	// Write-time fact building (LLM distill, else heuristic extract) is automatic;
+	// it self-selects on LLM presence, so there is no toggle.
 
 	// Consolidation tuning.
 	// ConsolidateMode is "async" (default), "sync", or "off".
@@ -262,10 +166,6 @@ type Config struct {
 	// ConsolidateMinScore gates the LLM: it runs only when the nearest candidate
 	// scores at least this. 0 disables the gate.
 	ConsolidateMinScore float64 `env:"MEMINI_CONSOLIDATE_MIN_SCORE" envDefault:"0.6"`
-	// ConsolidateQueueCap bounds the async consolidation queue. When full, the
-	// dedup job (not the memory) is dropped and counted by the "dropped"
-	// consolidate metric — raise it for write-bursty deployments.
-	ConsolidateQueueCap int `env:"MEMINI_CONSOLIDATE_QUEUE_CAP" envDefault:"1024"`
 
 	// Promotion (episodic→semantic distillation). Requires an LLM.
 	// PromoteInterval is how often the promoter runs; 0 disables it.
@@ -299,10 +199,8 @@ type Config struct {
 	// POST /v1/dedup and run as a periodic store-wide background job every
 	// DedupInterval (daily by default, so a store stays clean with no manual
 	// intervention). Set MEMINI_DEDUP_INTERVAL=0 to disable the periodic pass.
-	DedupInterval         time.Duration `env:"MEMINI_DEDUP_INTERVAL" envDefault:"24h"`
-	DedupSimilarity       float64       `env:"MEMINI_DEDUP_SIMILARITY" envDefault:"0.85"`
-	DedupMinClusterSize   int           `env:"MEMINI_DEDUP_MIN_CLUSTER_SIZE" envDefault:"2"`
-	DedupNeighboursAnchor int           `env:"MEMINI_DEDUP_NEIGHBOURS" envDefault:"20"`
+	DedupInterval   time.Duration `env:"MEMINI_DEDUP_INTERVAL" envDefault:"24h"`
+	DedupSimilarity float64       `env:"MEMINI_DEDUP_SIMILARITY" envDefault:"0.85"`
 	// DedupTiers is an optional comma-separated list restricting the periodic
 	// pass to specific tiers (working,episodic,semantic,procedural). Empty
 	// means all tiers.
@@ -315,17 +213,66 @@ type Config struct {
 	// Auth (optional). When APIKey is set, requests must present it as a bearer token.
 	APIKey string `env:"MEMINI_API_KEY"`
 
-	// Multi-tenancy. Namespace resolution header and the fallback namespace.
-	NamespaceHeader  string `env:"MEMINI_NAMESPACE_HEADER" envDefault:"X-Memini-Namespace"`
+	// Multi-tenancy. The fallback namespace when no header is sent; the header
+	// name itself is fixed (DefaultNamespaceHeader).
 	DefaultNamespace string
 	NamespaceSrc     NamespaceSource
+}
+
+// DefaultNamespaceHeader is the request header carrying the tenant namespace.
+// Fixed (no env override): clients and plugins all send this exact header.
+const DefaultNamespaceHeader = "X-Memini-Namespace"
+
+// valueOff is the shared "disabled" token for the string-enum settings
+// (MEMINI_RERANK, MEMINI_CONSOLIDATE_MODE, MEMINI_WRITE_DEDUP_ACTION).
+const valueOff = "off"
+
+// deprecatedVars maps removed environment variables to migration guidance. A
+// value set for any of these is ignored at load; DeprecationWarnings surfaces it
+// so an operator upgrading from an older release learns why their tuning no
+// longer applies — without the boot failing.
+var deprecatedVars = []struct{ name, guidance string }{
+	{"MEMINI_WRITE_DEDUP_MIN_SCORE", "use MEMINI_WRITE_DEDUP_SCORE with MEMINI_WRITE_DEDUP_ACTION=coalesce"},
+	{"MEMINI_MERGE_HINT_MIN_SCORE", "use MEMINI_WRITE_DEDUP_SCORE with MEMINI_WRITE_DEDUP_ACTION=hint (the default)"},
+	{"MEMINI_AUTO_SUPERSEDE_MIN_SCORE", "use MEMINI_WRITE_DEDUP_SCORE with MEMINI_WRITE_DEDUP_ACTION=supersede"},
+	{"MEMINI_DEDUP_MIN_CLUSTER_SIZE", "now a fixed internal default (2)"},
+	{"MEMINI_DEDUP_NEIGHBOURS", "now a fixed internal default (20)"},
+	{"MEMINI_EMBED_MAX_ITEM_CHARS", "now a fixed internal default (8000); batch-char budgets stay configurable"},
+	{"MEMINI_CONSOLIDATE_QUEUE_CAP", "now a fixed internal default (1024)"},
+	{"MEMINI_NAMESPACE_HEADER", "the header name is fixed to X-Memini-Namespace"},
+	{"MEMINI_FUSION_ALPHA", "now a baked retrieval default (0.5); tune via the benchmark harness, not env"},
+	{"MEMINI_RECALL_MIN_SCORE", "now a baked retrieval default (0.1)"},
+	{"MEMINI_RECALL_MIN_SEMANTIC_SCORE", "now a baked retrieval default (0, off)"},
+	{"MEMINI_RECALL_SEMANTIC_RESERVE", "now a baked retrieval default (2)"},
+	{"MEMINI_TEMPORAL_BOOST", "now a baked retrieval default (0.40)"},
+	{"MEMINI_RERANK_MAX_DOC_CHARS", "now a fixed internal default (2048); MEMINI_RERANK_MAX_BATCH_CHARS remains configurable"},
+	{"MEMINI_REDACT_SECRETS", "secret redaction is always on"},
+	{"MEMINI_REINFORCE_SKIP_MARKERS", "always on"},
+	{"MEMINI_WRITE_DEDUP_FINGERPRINT", "exact-restatement dedup is always on"},
+	{"MEMINI_QUARANTINE_GARBLED", "removed; garbled-content downranking is no longer configurable"},
+	{"MEMINI_DISTILL_ON_WRITE", "write-time fact building is automatic (LLM when configured, heuristic extractor otherwise)"},
+	{"MEMINI_EXTRACT_ON_WRITE", "write-time fact building is automatic (LLM when configured, heuristic extractor otherwise)"},
+	{"MEMINI_DISTILL_DROP_NO_FACT", "removed; episodic captures are always kept"},
+}
+
+// DeprecationWarnings returns one message per removed environment variable that
+// is currently set, telling the operator what to use instead. The variables are
+// ignored either way; this only explains the change. Empty when none are set.
+func DeprecationWarnings() []string {
+	var w []string
+	for _, d := range deprecatedVars {
+		if _, ok := os.LookupEnv(d.name); ok {
+			w = append(w, fmt.Sprintf("%s is removed and ignored; %s", d.name, d.guidance))
+		}
+	}
+	return w
 }
 
 // LLMEnabled reports whether the opt-in LLM pipeline is configured.
 func (c *Config) LLMEnabled() bool { return c.LLMBaseURL != "" }
 
 // RerankEnabled reports whether recall reranking is configured.
-func (c *Config) RerankEnabled() bool { return c.Rerank != "" && c.Rerank != "off" }
+func (c *Config) RerankEnabled() bool { return c.Rerank != "" && c.Rerank != valueOff }
 
 // RerankIsLLM reports whether reranking uses the chat LLM rather than a
 // cross-encoder URL.
@@ -431,48 +378,27 @@ func (c *Config) validate() error {
 		return fmt.Errorf("MEMINI_SWEEP_INTERVAL must be positive, got %v", c.SweepInterval)
 	}
 	switch c.ConsolidateMode {
-	case "async", "sync", "off":
+	case "async", "sync", valueOff:
 	default:
 		return fmt.Errorf("unknown MEMINI_CONSOLIDATE_MODE %q (want async|sync|off)", c.ConsolidateMode)
 	}
 	if c.DedupSimilarity < 0 || c.DedupSimilarity > 1 {
 		return fmt.Errorf("MEMINI_DEDUP_SIMILARITY must be in [0,1], got %v", c.DedupSimilarity)
 	}
-	if c.DedupMinClusterSize < 2 {
-		return fmt.Errorf("MEMINI_DEDUP_MIN_CLUSTER_SIZE must be >= 2, got %d", c.DedupMinClusterSize)
-	}
-	if c.DedupNeighboursAnchor < 1 {
-		return fmt.Errorf("MEMINI_DEDUP_NEIGHBOURS must be >= 1, got %d", c.DedupNeighboursAnchor)
-	}
 	for _, t := range c.dedupTiers() {
 		if !t.Valid() {
 			return fmt.Errorf("unknown tier %q in MEMINI_DEDUP_TIERS (want working|episodic|semantic|procedural)", t)
 		}
 	}
-	// Write-time dedup split gates. Each is a fused similarity in [0,1]. The
-	// ladder in dedupCheck is supersede > merge-hint > coalesce, so when more
-	// than one gate is enabled the upper gate must sit strictly above the lower
-	// one; otherwise a band is unreachable and the documented behaviour silently
-	// collapses.
-	if c.AutoSupersedeMinScore < 0 || c.AutoSupersedeMinScore > 1 {
-		return fmt.Errorf("MEMINI_AUTO_SUPERSEDE_MIN_SCORE must be in [0,1], got %v", c.AutoSupersedeMinScore)
+	// Write-time dedup: one similarity threshold + one action. No band ordering
+	// to get wrong, so no config combination can make startup fail.
+	if c.WriteDedupScore < 0 || c.WriteDedupScore > 1 {
+		return fmt.Errorf("MEMINI_WRITE_DEDUP_SCORE must be in [0,1], got %v", c.WriteDedupScore)
 	}
-	if c.MergeHintMinScore < 0 || c.MergeHintMinScore > 1 {
-		return fmt.Errorf("MEMINI_MERGE_HINT_MIN_SCORE must be in [0,1], got %v", c.MergeHintMinScore)
-	}
-	if c.AutoSupersedeMinScore > 0 && c.MergeHintMinScore > 0 && c.AutoSupersedeMinScore <= c.MergeHintMinScore {
-		return fmt.Errorf("MEMINI_AUTO_SUPERSEDE_MIN_SCORE (%v) must be > MEMINI_MERGE_HINT_MIN_SCORE (%v)",
-			c.AutoSupersedeMinScore, c.MergeHintMinScore)
-	}
-	if c.MergeHintMinScore > 0 && c.WriteDedupMinScore > 0 && c.WriteDedupMinScore >= c.MergeHintMinScore {
-		return fmt.Errorf("MEMINI_WRITE_DEDUP_MIN_SCORE (%v) must be < MEMINI_MERGE_HINT_MIN_SCORE (%v) so the coalesce band stays reachable",
-			c.WriteDedupMinScore, c.MergeHintMinScore)
-	}
-	// When merge-hint is disabled the coalesce band sits directly below
-	// auto-supersede, so guard that pair too.
-	if c.AutoSupersedeMinScore > 0 && c.WriteDedupMinScore > 0 && c.WriteDedupMinScore >= c.AutoSupersedeMinScore {
-		return fmt.Errorf("MEMINI_WRITE_DEDUP_MIN_SCORE (%v) must be < MEMINI_AUTO_SUPERSEDE_MIN_SCORE (%v) so the coalesce band stays reachable",
-			c.WriteDedupMinScore, c.AutoSupersedeMinScore)
+	switch c.WriteDedupAction {
+	case valueOff, "hint", "coalesce", "supersede":
+	default:
+		return fmt.Errorf("unknown MEMINI_WRITE_DEDUP_ACTION %q (want off|hint|coalesce|supersede)", c.WriteDedupAction)
 	}
 	return nil
 }

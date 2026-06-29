@@ -29,15 +29,14 @@ working ──▶ episodic ──(distilled at write / recalled repeatedly)─�
 
 - **Distillation (write-time)** — each fresh `episodic` capture is distilled by
   the LLM into durable `semantic`/`procedural` facts immediately, so a fact
-  stated once is durable without first having to be recalled. On by default
-  (`MEMINI_DISTILL_ON_WRITE`); needs an LLM. The raw episodic is kept unless
-  `MEMINI_DISTILL_DROP_NO_FACT` is set.
+  stated once is durable without first having to be recalled. Automatic when an
+  LLM is configured. The raw episodic is always kept.
 - **Heuristic extraction (write-time, no LLM)** — when no LLM is configured (the
   embedder-only and embedder+reranker deployments), a marker-based extractor
   pulls decisions/preferences/problems out of each fresh `episodic` capture into
-  durable typed facts. On by default (`MEMINI_EXTRACT_ON_WRITE`); the LLM
-  distiller supersedes it when present. Conservative — a miss just means no extra
-  fact, and the raw episodic is always kept.
+  durable typed facts. Automatic when no LLM is present (the distiller supersedes
+  it otherwise). Conservative — a miss just means no extra fact, and the raw
+  episodic is always kept.
 - **Promotion** — a backstop for episodic memories that were not distilled at
   write time (e.g. written before an LLM was configured): frequently-recalled
   `episodic` memories are periodically distilled into durable `semantic` facts.

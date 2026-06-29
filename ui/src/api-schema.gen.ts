@@ -345,7 +345,7 @@ export interface components {
             /** @description ID of the memory that replaces the target. */
             by: string;
         };
-        /** @description Optional. Returned on POST /v1/memories when the write's nearest same-tier candidate landed in the merge-hint band (between MEMINI_MERGE_HINT_MIN_SCORE and MEMINI_AUTO_SUPERSEDE_MIN_SCORE). The caller can decide whether to merge into the near-duplicate via memory_update. */
+        /** @description Optional. Returned on POST /v1/memories when the write's nearest same-tier candidate scored at/above MEMINI_WRITE_DEDUP_SCORE and MEMINI_WRITE_DEDUP_ACTION is "hint". The caller can decide whether to merge into the near-duplicate via memory_update. */
         MergeHint: {
             /** @description ID of the near-duplicate memory. */
             similar_id?: string;
@@ -390,7 +390,7 @@ export interface components {
             as_of?: string;
             /**
              * Format: double
-             * @description Per-call relevance floor on the fused score. Candidates below it are dropped server-side before re-ranking. 0 (or unset) falls back to the server's default gate (MEMINI_RECALL_MIN_SCORE). Only meaningful with score fusion (RRF scores are not comparable to this threshold).
+             * @description Per-call relevance floor on the fused score. Candidates below it are dropped server-side before re-ranking. 0 (or unset) falls back to the server's baked relevance floor (0.1). Only meaningful with score fusion (RRF scores are not comparable to this threshold).
              */
             min_score?: number;
         };
@@ -550,9 +550,9 @@ export interface components {
              * @description Corroboration of a durable fact in [0,1]; null when not tracked.
              */
             confidence?: number | null;
-            /** @description Optional. Present only on POST /v1/memories responses when the write's nearest same-tier candidate landed in the merge-hint band (between MEMINI_MERGE_HINT_MIN_SCORE and MEMINI_AUTO_SUPERSEDE_MIN_SCORE). */
+            /** @description Optional. Present only on POST /v1/memories responses when the write's nearest same-tier candidate scored at/above MEMINI_WRITE_DEDUP_SCORE and MEMINI_WRITE_DEDUP_ACTION is "hint". */
             merge_hint?: components["schemas"]["MergeHint"];
-            /** @description Optional. Present only on POST /v1/memories responses when the write's nearest same-tier candidate scored at or above MEMINI_AUTO_SUPERSEDE_MIN_SCORE and was auto-superseded in the background. The caller still receives the new memory. */
+            /** @description Optional. Present only on POST /v1/memories responses when the write's nearest same-tier candidate scored at/above MEMINI_WRITE_DEDUP_SCORE with MEMINI_WRITE_DEDUP_ACTION="supersede" and the old memory was tombstoned in the background. The caller still receives the new memory. */
             auto_superseded?: boolean;
         };
     };

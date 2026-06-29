@@ -30,7 +30,7 @@ export function Settings() {
             onInput={(e) => (namespaceHeader.value = (e.target as HTMLInputElement).value)}
           />
           <span class="desc">
-            Must match the server's <code>MEMINI_NAMESPACE_HEADER</code> (default <code>X-Memini-Namespace</code>).
+            The server reads the namespace from the <code>X-Memini-Namespace</code> header; leave this as the default unless you proxy under a different name.
           </span>
         </label>
 

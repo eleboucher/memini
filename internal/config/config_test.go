@@ -53,14 +53,11 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.EmbedDims != 1536 {
 		t.Errorf("EmbedDims = %d, want 1536", cfg.EmbedDims)
 	}
-	if cfg.FusionAlpha != 0.5 {
-		t.Errorf("FusionAlpha = %v, want 0.5", cfg.FusionAlpha)
+	if cfg.WriteDedupScore != 0.625 {
+		t.Errorf("WriteDedupScore = %v, want 0.625", cfg.WriteDedupScore)
 	}
-	if cfg.WriteDedupMinScore != 0 {
-		t.Errorf("WriteDedupMinScore = %v, want 0", cfg.WriteDedupMinScore)
-	}
-	if cfg.TemporalBoost != 0.40 {
-		t.Errorf("TemporalBoost = %v, want 0.40", cfg.TemporalBoost)
+	if cfg.WriteDedupAction != "hint" {
+		t.Errorf("WriteDedupAction = %q, want hint", cfg.WriteDedupAction)
 	}
 	if cfg.SweepInterval != time.Hour {
 		t.Errorf("SweepInterval = %v, want 1h", cfg.SweepInterval)
@@ -70,9 +67,6 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.ConsolidateMinScore != 0.6 {
 		t.Errorf("ConsolidateMinScore = %v, want 0.6", cfg.ConsolidateMinScore)
-	}
-	if cfg.RerankMaxDocChars != 2048 {
-		t.Errorf("RerankMaxDocChars = %d, want 2048", cfg.RerankMaxDocChars)
 	}
 	if cfg.RerankMaxBatchChars != 6000 {
 		t.Errorf("RerankMaxBatchChars = %d, want 6000", cfg.RerankMaxBatchChars)
@@ -102,9 +96,8 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("MEMINI_LOG_LEVEL", "debug")
 	t.Setenv("MEMINI_EMBED_DIMS", "256")
 	t.Setenv("MEMINI_EMBED_QUERY_PREFIX", "Instruct: retrieve\nQuery: ")
-	t.Setenv("MEMINI_FUSION_ALPHA", "-1")
-	t.Setenv("MEMINI_WRITE_DEDUP_MIN_SCORE", "0.95")
-	t.Setenv("MEMINI_MERGE_HINT_MIN_SCORE", "0.97") // keep the dedup band ordered above WriteDedup
+	t.Setenv("MEMINI_WRITE_DEDUP_SCORE", "0.95")
+	t.Setenv("MEMINI_WRITE_DEDUP_ACTION", "coalesce")
 	t.Setenv("MEMINI_SWEEP_INTERVAL", "5m")
 	t.Setenv("MEMINI_LLM_BASE_URL", "http://localhost:8000/v1")
 	t.Setenv("MEMINI_DEFAULT_NAMESPACE", "tenant-a")
@@ -125,11 +118,11 @@ func TestLoadOverrides(t *testing.T) {
 	if cfg.EmbedQueryPrefix != "Instruct: retrieve\nQuery: " {
 		t.Errorf("EmbedQueryPrefix = %q, want the instruct prefix", cfg.EmbedQueryPrefix)
 	}
-	if cfg.FusionAlpha != -1 {
-		t.Errorf("FusionAlpha = %v, want -1 (RRF override)", cfg.FusionAlpha)
+	if cfg.WriteDedupScore != 0.95 {
+		t.Errorf("WriteDedupScore = %v, want 0.95", cfg.WriteDedupScore)
 	}
-	if cfg.WriteDedupMinScore != 0.95 {
-		t.Errorf("WriteDedupMinScore = %v, want 0.95", cfg.WriteDedupMinScore)
+	if cfg.WriteDedupAction != "coalesce" {
+		t.Errorf("WriteDedupAction = %q, want coalesce", cfg.WriteDedupAction)
 	}
 	if cfg.SweepInterval != 5*time.Minute {
 		t.Errorf("SweepInterval = %v, want 5m", cfg.SweepInterval)
@@ -175,14 +168,6 @@ func TestLoadValidationErrors(t *testing.T) {
 			env:  map[string]string{"MEMINI_DEDUP_SIMILARITY": "1.5"},
 		},
 		{
-			name: "dedup min cluster size too small",
-			env:  map[string]string{"MEMINI_DEDUP_MIN_CLUSTER_SIZE": "1"},
-		},
-		{
-			name: "dedup neighbours too small",
-			env:  map[string]string{"MEMINI_DEDUP_NEIGHBOURS": "0"},
-		},
-		{
 			name: "dedup unknown tier",
 			env:  map[string]string{"MEMINI_DEDUP_TIERS": "semantic,bogus"},
 		},
@@ -195,24 +180,16 @@ func TestLoadValidationErrors(t *testing.T) {
 			env:  map[string]string{"MEMINI_SWEEP_INTERVAL": "-1m"},
 		},
 		{
-			name: "auto-supersede score out of range",
-			env:  map[string]string{"MEMINI_AUTO_SUPERSEDE_MIN_SCORE": "1.5"},
+			name: "write-dedup score out of range",
+			env:  map[string]string{"MEMINI_WRITE_DEDUP_SCORE": "1.5"},
 		},
 		{
-			name: "merge-hint score out of range",
-			env:  map[string]string{"MEMINI_MERGE_HINT_MIN_SCORE": "-0.1"},
+			name: "write-dedup score negative",
+			env:  map[string]string{"MEMINI_WRITE_DEDUP_SCORE": "-0.1"},
 		},
 		{
-			name: "auto-supersede not above merge-hint",
-			env:  map[string]string{"MEMINI_AUTO_SUPERSEDE_MIN_SCORE": "0.80", "MEMINI_MERGE_HINT_MIN_SCORE": "0.80"},
-		},
-		{
-			name: "write-dedup not below merge-hint band",
-			env:  map[string]string{"MEMINI_MERGE_HINT_MIN_SCORE": "0.75", "MEMINI_WRITE_DEDUP_MIN_SCORE": "0.80"},
-		},
-		{
-			name: "write-dedup not below auto-supersede band (merge-hint disabled)",
-			env:  map[string]string{"MEMINI_AUTO_SUPERSEDE_MIN_SCORE": "0.80", "MEMINI_WRITE_DEDUP_MIN_SCORE": "0.85"},
+			name: "unknown write-dedup action",
+			env:  map[string]string{"MEMINI_WRITE_DEDUP_ACTION": "merge"},
 		},
 	}
 	for _, tt := range tests {
@@ -270,16 +247,15 @@ var meminiEnvKeys = []string{
 	"MEMINI_HTTP_ADDR", "MEMINI_SHUTDOWN_TIMEOUT", "MEMINI_LOG_LEVEL", "MEMINI_LOG_FORMAT",
 	"MEMINI_BACKEND", "MEMINI_SQLITE_PATH", "MEMINI_POSTGRES_DSN",
 	"MEMINI_EMBED_BASE_URL", "MEMINI_EMBED_API_KEY", "MEMINI_EMBED_MODEL", "MEMINI_EMBED_DIMS",
-	"MEMINI_EMBED_QUERY_PREFIX", "MEMINI_FUSION_ALPHA",
-	"MEMINI_WRITE_DEDUP_MIN_SCORE", "MEMINI_TEMPORAL_BOOST",
+	"MEMINI_EMBED_QUERY_PREFIX",
+	"MEMINI_WRITE_DEDUP_SCORE", "MEMINI_WRITE_DEDUP_ACTION",
 	"MEMINI_LLM_BASE_URL", "MEMINI_LLM_API_KEY", "MEMINI_LLM_MODEL",
 	"MEMINI_RERANK", "MEMINI_RERANK_MODEL", "MEMINI_RERANK_API_KEY",
-	"MEMINI_RERANK_TIMEOUT", "MEMINI_RERANK_MAX_DOC_CHARS", "MEMINI_RERANK_MAX_BATCH_CHARS",
+	"MEMINI_RERANK_TIMEOUT", "MEMINI_RERANK_MAX_BATCH_CHARS",
 	"MEMINI_CONSOLIDATE_MODE", "MEMINI_CONSOLIDATE_MIN_SCORE",
 	"MEMINI_PROMOTE_INTERVAL", "MEMINI_PROMOTE_MIN_ACCESS",
 	"MEMINI_SWEEP_INTERVAL", "MEMINI_SHORT_TERM_CAP", "MEMINI_UI_ENABLED",
-	"MEMINI_API_KEY", "MEMINI_NAMESPACE_HEADER",
+	"MEMINI_API_KEY",
 	"MEMINI_DEFAULT_NAMESPACE", "MEMINI_NAMESPACE",
-	"MEMINI_DEDUP_INTERVAL", "MEMINI_DEDUP_SIMILARITY", "MEMINI_DEDUP_MIN_CLUSTER_SIZE",
-	"MEMINI_DEDUP_NEIGHBOURS", "MEMINI_DEDUP_TIERS",
+	"MEMINI_DEDUP_INTERVAL", "MEMINI_DEDUP_SIMILARITY", "MEMINI_DEDUP_TIERS",
 }

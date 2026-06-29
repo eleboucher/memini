@@ -78,8 +78,8 @@ comparison.
 
 Hybrid recall over-fetches a deep candidate pool per leg (`max(k*5, 50)`)
 before fusing, so a memory just outside the top-k of both legs can still win —
-the production `Recall` path does the same. Fusion defaults to **convex score
-fusion** (`MEMINI_FUSION_ALPHA=0.5`): each leg's scores are min-max normalized
+the production `Recall` path does the same. Fusion is **convex score
+fusion** (alpha 0.5, the baked default): each leg's scores are min-max normalized
 to [0,1] and combined `0.5·vector + 0.5·keyword`, keeping score _magnitude_ so a
 memory a leg ranks far above its runners-up dominates one that is merely
 middling in both. A negative alpha falls back to **Reciprocal Rank Fusion**;
@@ -126,8 +126,8 @@ default score fusion is edged by RRF (60.1% / 71.0%): when the vector leg is
 near-noise (MiniLM scores only 41.5% here), giving it an equal-weight normalized
 vote hurts, whereas RRF's rank-only vote is more robust. Score fusion still wins
 this cell on MRR and wins outright on every cell with a stronger embedder — so
-it is the default, and `MEMINI_FUSION_ALPHA=-1` selects RRF for weak-vector
-deployments. (Ablation: `rrfK=60` over the same deep pools scored just **52.8%
+it is the baked default; the benchmark harness can still select RRF (a negative
+fusion alpha via its flag) for weak-vector experiments. (Ablation: `rrfK=60` over the same deep pools scored just **52.8%
 R@5**, _below_ the keyword leg alone — both score fusion and `rrfK=5` fix that.)
 
 ### Pool-depth robustness (`-pool-factor` / `-pool-floor`)
@@ -189,7 +189,7 @@ queries, so other categories are unaffected.
 Temporal targeting is **+1.9pp R@1 overall** over the recency default and beats
 even the heaviest recency weight on temporal-reasoning _without_ the
 knowledge-update regression — so it ships on in production
-(`MEMINI_TEMPORAL_BOOST=0.40`, 0 disables). The no-LLM regex extractor only
+(temporal boost 0.40, the baked default). The no-LLM regex extractor only
 catches templated phrasing; an LLM anchor extractor (plugging into the same
 `search.AnchorExtractor` interface) can resolve looser references and is the
 intended with-LLM tier.

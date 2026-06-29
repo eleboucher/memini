@@ -16,7 +16,7 @@ import (
 	"github.com/eleboucher/memini/internal/store/sqlitevec"
 )
 
-// TestSemanticReserveTierMixed measures what MEMINI_RECALL_SEMANTIC_RESERVE
+// TestSemanticReserveTierMixed measures what the recall semantic reserve
 // actually does — something the LongMemEval/LoCoMo suites cannot, because they
 // ingest every item as TierSemantic (bench/system.go), so reserveDurableTiers
 // is a guaranteed no-op there.

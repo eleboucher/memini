@@ -116,7 +116,7 @@ type Metrics interface {
 	RecallDegraded(reason string)
 	// WriteSanitized records one ingestion content-hygiene action: "cleaned"
 	// (unambiguous corruption stripped from content) or "quarantined"
-	// (script-salad downranked when MEMINI_QUARANTINE_GARBLED is on).
+	// (script-salad downranked when corruption quarantine is enabled).
 	WriteSanitized(action string)
 	// ReinforceResult records one best-effort recall reinforcement write:
 	// "ok" or "error".
@@ -164,10 +164,6 @@ type Service struct {
 
 	consolidateMode     ConsolidateMode
 	consolidateMinScore float64
-	// consolidateQueueCap bounds the async consolidation queue; 0 uses the
-	// default. Writes still succeed when the queue is full — the job is dropped
-	// (counted by the "dropped" consolidate metric), never the memory.
-	consolidateQueueCap int
 	// consolidateQueue carries background jobs in async mode; nil otherwise.
 	consolidateQueue chan consolidateJob
 
@@ -238,17 +234,12 @@ type Service struct {
 	// poolFactor / poolFloor size the per-leg recall candidate pool as
 	// max(k*poolFactor, poolFloor); zero values use the package defaults.
 	poolFactor, poolFloor int
-	// writeDedupMinScore coalesces a fresh write into an existing same-tier
-	// memory at or above this similarity instead of storing a near-duplicate,
-	// but only when the LLM consolidation pipeline isn't handling the write.
-	// 0 (the default) disables it.
-	writeDedupMinScore float64
-	// autoSupersedeMinScore: score ≥ this auto-supersedes the existing memory
-	// in a background goroutine. 0 disables.
-	autoSupersedeMinScore float64
-	// mergeHintMinScore: score in [this, autoSupersedeMinScore) returns a
-	// MergeHint to the caller. 0 disables.
-	mergeHintMinScore float64
+	// writeDedupScore is the similarity at/above which a write's nearest
+	// same-tier memory triggers writeDedupAction. 0 disables write-time dedup.
+	writeDedupScore float64
+	// writeDedupAction is what happens at/above writeDedupScore: hint, coalesce,
+	// supersede, or off. See WriteDedupAction.
+	writeDedupAction WriteDedupAction
 	// globalNamespace, when set, is merged read-only into every other
 	// namespace's recall and briefing — durable tiers only. See
 	// WithGlobalNamespace. Empty disables it.
@@ -308,13 +299,6 @@ func WithConsolidateMode(m ConsolidateMode) Option {
 // when the nearest candidate scores at least minScore. 0 disables the gate.
 func WithConsolidateMinScore(minScore float64) Option {
 	return func(s *Service) { s.consolidateMinScore = minScore }
-}
-
-// WithConsolidateQueueCap bounds the async consolidation queue. n <= 0 uses the
-// default. Raise it for write-bursty deployments to reduce dropped jobs (a
-// dropped job loses the dedup pass, never the memory).
-func WithConsolidateQueueCap(n int) Option {
-	return func(s *Service) { s.consolidateQueueCap = n }
 }
 
 // WithDistiller enables episodic→semantic promotion via RunPromoter.
@@ -394,7 +378,8 @@ func WithScoreFusion(alpha float64) Option { return func(s *Service) { s.scoreFu
 // candidates below the threshold are dropped before composite re-ranking and
 // before the reranker. 0 (the default) disables filtering. For score fusion
 // (alpha >= 0) the fused score is in [0,1]; for RRF it is a small rank-based
-// value (~0.016 for the top position). See MEMINI_RECALL_MIN_SCORE.
+// value (~0.016 for the top position). Baked to 0.1 by the server; the
+// benchmark harness overrides it via this Option.
 func WithRecallMinScore(minScore float64) Option {
 	return func(s *Service) { s.recallMinScore = minScore }
 }
@@ -402,15 +387,15 @@ func WithRecallMinScore(minScore float64) Option {
 // WithRecallMinSemanticScore sets an absolute relevance floor on the raw vector
 // (semantic) score: a candidate below the floor is excluded entirely, so the
 // keyword leg cannot reintroduce an off-topic memory on a shared token. 0 (the
-// default) disables it. The usable value is embedder-dependent — see the field
-// note and MEMINI_RECALL_MIN_SEMANTIC_SCORE.
+// default) disables it. The usable value is embedder-dependent; baked to 0 (off)
+// by the server, overridden by the benchmark harness via this Option.
 func WithRecallMinSemanticScore(minSemanticScore float64) Option {
 	return func(s *Service) { s.recallMinSemanticScore = minSemanticScore }
 }
 
 // WithRecallSemanticReserve guarantees up to n of the recall slots for durable
-// tiers (semantic/procedural). 0 (the default) disables it. See
-// MEMINI_RECALL_SEMANTIC_RESERVE.
+// tiers (semantic/procedural). 0 (the default) disables it. Baked to 2 by the
+// server; the benchmark harness overrides it via this Option.
 func WithRecallSemanticReserve(n int) Option {
 	return func(s *Service) { s.recallSemanticReserve = n }
 }
@@ -422,21 +407,22 @@ func WithEpisodicMinChars(n int) Option {
 }
 
 // WithDistillOnWrite distils each fresh episodic capture into durable facts at
-// write time (needs a distiller). On by default. See MEMINI_DISTILL_ON_WRITE.
+// write time. No-op without a distiller, so the server always enables it and
+// lets LLM presence decide whether it runs.
 func WithDistillOnWrite(on bool) Option {
 	return func(s *Service) { s.distillOnWrite = on }
 }
 
 // WithDistillDropNoFact, with WithDistillOnWrite, deletes an episodic capture
-// when distillation extracts no durable fact. Off by default. See
-// MEMINI_DISTILL_DROP_NO_FACT.
+// when distillation extracts no durable fact. Off by default; not wired to a
+// server flag (the server always keeps episodic captures).
 func WithDistillDropNoFact(on bool) Option {
 	return func(s *Service) { s.distillDropNoFact = on }
 }
 
 // WithExtractOnWrite runs each fresh episodic capture through the no-LLM
-// heuristic extractor when no distiller is configured. On by default. See
-// MEMINI_EXTRACT_ON_WRITE.
+// heuristic extractor. Only fires when no distiller is configured, so the server
+// always enables it and lets LLM absence decide whether it runs.
 func WithExtractOnWrite(on bool) Option {
 	return func(s *Service) { s.extractOnWrite = on }
 }
@@ -464,25 +450,33 @@ func WithRecallPool(factor, floor int) Option {
 	}
 }
 
-// WithWriteDedup coalesces a fresh write into an existing same-tier memory when
-// their vector similarity is at or above minScore, instead of storing a
-// near-duplicate. It only acts when the LLM consolidation pipeline is not
-// handling the write (no consolidator, a non-durable tier, or consolidation
-// off), giving headless deployments basic corpus hygiene. 0 disables it.
-func WithWriteDedup(minScore float64) Option {
-	return func(s *Service) { s.writeDedupMinScore = minScore }
-}
+// WriteDedupAction selects what write-time dedup does when a fresh write scores
+// at or above the dedup threshold against its nearest same-tier memory.
+type WriteDedupAction string
 
-// WithAutoSupersede sets the upper dedup gate: score ≥ minScore triggers a
-// background supersede of the existing memory. 0 disables.
-func WithAutoSupersede(minScore float64) Option {
-	return func(s *Service) { s.autoSupersedeMinScore = minScore }
-}
+const (
+	// WriteDedupOff disables write-time fuzzy dedup. The exact-restatement
+	// fingerprint pass (WithFingerprintDedup) is independent and still runs.
+	WriteDedupOff WriteDedupAction = "off"
+	// WriteDedupHint stores the write and returns a MergeHint for the caller to
+	// merge. Non-destructive; scoped to durable tiers (semantic/procedural).
+	WriteDedupHint WriteDedupAction = "hint"
+	// WriteDedupCoalesce reinforces the existing memory and drops the write
+	// (headless corpus hygiene). Applies to all tiers.
+	WriteDedupCoalesce WriteDedupAction = "coalesce"
+	// WriteDedupSupersede stores the write and tombstones the old memory.
+	WriteDedupSupersede WriteDedupAction = "supersede"
+)
 
-// WithMergeHint sets the lower dedup gate: score in [minScore, autoSupersede]
-// returns a MergeHint to the caller. 0 disables.
-func WithMergeHint(minScore float64) Option {
-	return func(s *Service) { s.mergeHintMinScore = minScore }
+// WithWriteDedup configures write-time dedup: when a fresh write's nearest
+// same-tier memory scores at or above score, the given action fires (see
+// WriteDedupAction). A score of 0 or action "off" disables it. This replaces the
+// former three-gate band system — there is no ordering to misconfigure.
+func WithWriteDedup(score float64, action WriteDedupAction) Option {
+	return func(s *Service) {
+		s.writeDedupScore = score
+		s.writeDedupAction = action
+	}
 }
 
 // WithGlobalNamespace sets a namespace whose durable (semantic/procedural)
@@ -569,11 +563,7 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 	}
 	// The async queue exists only when consolidation can actually run.
 	if s.consolidator != nil && s.consolidateMode == ConsolidateAsync {
-		cap := s.consolidateQueueCap
-		if cap <= 0 {
-			cap = defaultConsolidateQueueCap
-		}
-		s.consolidateQueue = make(chan consolidateJob, cap)
+		s.consolidateQueue = make(chan consolidateJob, defaultConsolidateQueueCap)
 	}
 	// Bounds concurrent write-time enrichment (LLM distillation or the no-LLM
 	// heuristic extraction; the two are mutually exclusive at runtime).
@@ -845,22 +835,24 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	return m, nil
 }
 
-// runSplitDedup runs the split-aware dedup gate. Returns handled=true and
-// the coalesced existing memory when the write should be coalesced into it
-// (the middle / writeDedupMinScore band). Returns handled=false when the
-// write should proceed; supersedeID then names a near-duplicate the caller
-// must tombstone *after* storing the new memory, and any merge-hint is
-// stashed on in.MergeHint for the caller to surface.
+// runSplitDedup runs the write-time dedup gate. Returns handled=true and the
+// existing memory when action=coalesce drops the write into it. Returns
+// handled=false when the write should proceed; supersedeID then names a
+// near-duplicate the caller must tombstone *after* storing the new memory
+// (action=supersede), and any merge-hint (action=hint) is stashed on
+// in.MergeHint for the caller to surface.
 func (s *Service) runSplitDedup(
 	ctx context.Context, m *memory.Memory, in RememberInput,
 ) (handled bool, result *memory.Memory, supersedeID string) {
-	// Merge-hint is scoped to durable tiers (semantic/procedural): that's where
-	// the 0.625 threshold was calibrated and where the hint is actually consumed
+	if s.writeDedupScore <= 0 || s.writeDedupAction == WriteDedupOff || s.writeDedupAction == "" {
+		return false, nil, ""
+	}
+	// The hint action is scoped to durable tiers (semantic/procedural): that's
+	// where the threshold was calibrated and where the hint is actually consumed
 	// (model-driven writes). Episodic/working writes — notably the per-turn
-	// capture flood — skip the lookup entirely when merge-hint is the only active
-	// gate, so they never pay a vector search for a hint nobody reads.
-	mergeApplies := s.mergeHintMinScore > 0 && m.Tier.Term() == memory.LongTerm
-	if s.autoSupersedeMinScore <= 0 && s.writeDedupMinScore <= 0 && !mergeApplies {
+	// capture flood — skip the lookup entirely, never paying a vector search for
+	// a hint nobody reads. Coalesce/supersede apply to all tiers.
+	if s.writeDedupAction == WriteDedupHint && m.Tier.Term() != memory.LongTerm {
 		return false, nil, ""
 	}
 	hit, hint, supersedeID := s.dedupCheck(ctx, m)
@@ -873,17 +865,17 @@ func (s *Service) runSplitDedup(
 	return false, nil, supersedeID
 }
 
-// dedupCheck is the split-aware dedup gate. It returns:
-//   - hit: the nearest same-tier memory when score >= writeDedupMinScore;
-//     caller should coalesce the write into it (nil if below the gate).
-//   - hint: a MergeHint when the score landed in the
-//     [mergeHintMinScore, autoSupersedeMinScore) band — the caller proceeds
-//     with the write and surfaces the hint so the LLM (or the human) can
-//     decide to merge via memory_update.
-//   - supersedeID: the id of the near-duplicate the caller should supersede
-//     (score >= autoSupersedeMinScore). The supersede is deferred to the
-//     caller so it only runs once the replacement is durably stored — a
-//     failed insert must never tombstone the old memory. Empty otherwise.
+// dedupCheck looks up the nearest same-tier memory and, when it scores at or
+// above writeDedupScore, applies writeDedupAction. It returns:
+//   - hit: the existing memory the write was coalesced into (action "coalesce");
+//     the caller stores nothing new.
+//   - hint: a MergeHint (action "hint") — the caller proceeds with the write and
+//     surfaces the hint so the LLM (or the human) can merge via memory_update.
+//   - supersedeID: the id of the near-duplicate to tombstone (action
+//     "supersede"). Deferred to the caller so it only runs once the replacement
+//     is durably stored — a failed insert must never drop the old memory.
+//
+// At most one is non-zero; all empty when nothing scores above the threshold.
 func (s *Service) dedupCheck(ctx context.Context, m *memory.Memory) (hit *memory.Memory, hint *MergeHint, supersedeID string) {
 	cands, err := s.store.VectorSearch(ctx, m.Namespace, m.Embedding,
 		store.Filter{Tiers: []memory.Tier{m.Tier}, Now: s.now()}, 1)
@@ -892,23 +884,15 @@ func (s *Service) dedupCheck(ctx context.Context, m *memory.Memory) (hit *memory
 			"namespace", m.Namespace, "err", err)
 		return nil, nil, ""
 	}
-	if len(cands) == 0 {
+	if len(cands) == 0 || cands[0].Score < s.writeDedupScore {
 		return nil, nil, ""
 	}
-	score := cands[0].Score
 	existing := cands[0].Memory
 
-	// Upper gate: auto-supersede. Report the id back so the caller can tombstone
-	// it after the new memory is stored — never before, or a failed insert would
-	// drop the old fact without a replacement.
-	if s.autoSupersedeMinScore > 0 && score >= s.autoSupersedeMinScore {
+	switch s.writeDedupAction {
+	case WriteDedupSupersede:
 		return nil, nil, existing.ID
-	}
-
-	// Lower gate: merge hint, durable tiers only (where the threshold was
-	// calibrated and where the hint is consumed). The write proceeds; the caller
-	// gets a hint pointing at the near-duplicate so it can decide to merge.
-	if s.mergeHintMinScore > 0 && m.Tier.Term() == memory.LongTerm && score >= s.mergeHintMinScore {
+	case WriteDedupHint:
 		preview := existing.Content
 		if len(preview) > 200 {
 			preview = preview[:200] + "…"
@@ -916,19 +900,14 @@ func (s *Service) dedupCheck(ctx context.Context, m *memory.Memory) (hit *memory
 		return nil, &MergeHint{
 			SimilarID:      existing.ID,
 			SimilarContent: preview,
-			Score:          score,
+			Score:          cands[0].Score,
 			Tier:           existing.Tier,
 		}, ""
-	}
-
-	// Middle: no auto-supersede and no merge hint — legacy coalesce path
-	// (replaces the old writeDedupMinScore behaviour).
-	if s.writeDedupMinScore > 0 && score >= s.writeDedupMinScore {
+	case WriteDedupCoalesce:
 		s.reinforce(ctx, []store.Scored{{Memory: existing}})
 		s.corroborate(ctx, existing)
 		return existing, nil, ""
 	}
-
 	return nil, nil, ""
 }
 

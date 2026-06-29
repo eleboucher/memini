@@ -149,8 +149,8 @@ var dedupTriples = []dedupTriple{
 }
 
 // TestMergeHintThreshold measures the write-time dedup score (store.VectorSearch
-// top-1 — exactly what service.dedupCheck compares against MEMINI_MERGE_HINT_MIN_SCORE
-// / MEMINI_AUTO_SUPERSEDE_MIN_SCORE) for near-duplicate vs distinct-same-topic
+// top-1 — exactly what service.dedupCheck compares against MEMINI_WRITE_DEDUP_SCORE)
+// for near-duplicate vs distinct-same-topic
 // writes, over a large corpus, and sweeps candidate thresholds to report
 // near-dup recall vs distinct false-hit rate. A clean gap means a merge-hint /
 // auto-supersede default is safe; an overlap means it isn't (re-check per embedder).

@@ -62,6 +62,10 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		"namespace_source", string(cfg.NamespaceSrc),
 	)
 
+	for _, w := range config.DeprecationWarnings() {
+		log.Warn("deprecated configuration", "detail", w)
+	}
+
 	if cfg.NamespaceSrc != config.NamespaceFromEnv {
 		log.Warn("default namespace derived from server's cwd — likely wrong in HTTP mode. "+
 			"Set X-Memini-Namespace on every request (plugin does this) or set MEMINI_DEFAULT_NAMESPACE",
@@ -117,11 +121,11 @@ func newServer(
 
 	rest.New(svc, rest.AuthConfig{
 		APIKey:           cfg.APIKey,
-		NamespaceHeader:  cfg.NamespaceHeader,
+		NamespaceHeader:  config.DefaultNamespaceHeader,
 		DefaultNamespace: cfg.DefaultNamespace,
 	}).Mount(srv.Router())
 
-	mcpHandler := mcpapi.HTTPHandler(svc, cfg.NamespaceHeader, cfg.DefaultNamespace, cfg.APIKey)
+	mcpHandler := mcpapi.HTTPHandler(svc, config.DefaultNamespaceHeader, cfg.DefaultNamespace, cfg.APIKey)
 	srv.Router().Handle("/mcp", mcpHandler)
 	srv.Router().Handle("/mcp/*", mcpHandler)
 
@@ -218,26 +222,19 @@ func buildServiceStack(
 		service.WithShortTermCap(cfg.ShortTermCap),
 		service.WithConsolidateMode(service.ConsolidateMode(cfg.ConsolidateMode)),
 		service.WithConsolidateMinScore(cfg.ConsolidateMinScore),
-		service.WithConsolidateQueueCap(cfg.ConsolidateQueueCap),
 		service.WithQueryPrefix(cfg.EmbedQueryPrefix),
-		service.WithScoreFusion(cfg.FusionAlpha),
-		service.WithWriteDedup(cfg.WriteDedupMinScore),
-		service.WithAutoSupersede(cfg.AutoSupersedeMinScore),
-		service.WithMergeHint(cfg.MergeHintMinScore),
+		service.WithScoreFusion(search.DefaultFusionAlpha),
+		service.WithWriteDedup(cfg.WriteDedupScore, service.WriteDedupAction(cfg.WriteDedupAction)),
 		service.WithGlobalNamespace(cfg.GlobalNamespace),
-		service.WithFingerprintDedup(cfg.WriteDedupFingerprint),
-		service.WithReinforceSkipMarkers(cfg.ReinforceSkipMarkers),
-		service.WithSecretRedaction(cfg.RedactSecrets),
-		service.WithCorruptionQuarantine(cfg.QuarantineGarbled),
-		service.WithTemporalTargeting(cfg.TemporalBoost, search.RegexAnchorExtractor{}),
+		service.WithTemporalTargeting(defaultTemporalBoost, search.RegexAnchorExtractor{}),
 		service.WithRecallEmbedTimeout(cfg.RecallEmbedTimeout),
-		service.WithRecallMinScore(cfg.RecallMinScore),
-		service.WithRecallMinSemanticScore(cfg.RecallMinSemanticScore),
-		service.WithRecallSemanticReserve(cfg.RecallSemanticReserve),
+		service.WithRecallMinScore(defaultRecallMinScore),
+		service.WithRecallSemanticReserve(defaultRecallSemanticReserve),
 		service.WithEpisodicMinChars(cfg.EpisodicMinChars),
-		service.WithDistillOnWrite(cfg.DistillOnWrite),
-		service.WithDistillDropNoFact(cfg.DistillDropNoFact),
-		service.WithExtractOnWrite(cfg.ExtractOnWrite),
+		// Write-time fact building self-selects: distill (LLM) no-ops without a
+		// consolidator; extract (heuristic) only fires when no LLM is configured.
+		service.WithDistillOnWrite(true),
+		service.WithExtractOnWrite(true),
 		service.WithMetrics(metricsImpl),
 	)
 	svc := service.New(st, embedder, svcOpts...)
@@ -260,16 +257,13 @@ func buildServiceStack(
 	workers.Go(func() { sweeper.Run(workerCtx) })
 	if cfg.DedupInterval > 0 {
 		dedupJob := maintenance.NewDedupJob(st, embedder, metricsImpl, log, cfg.DedupInterval, maintenance.DedupOptions{
-			Similarity:          cfg.DedupSimilarity,
-			MinClusterSize:      cfg.DedupMinClusterSize,
-			NeighboursPerAnchor: cfg.DedupNeighboursAnchor,
-			Tiers:               cfg.DedupTierList(),
+			Similarity: cfg.DedupSimilarity,
+			Tiers:      cfg.DedupTierList(),
 		})
 		workers.Go(func() { dedupJob.Run(workerCtx) })
 		log.Info("periodic dedup enabled",
 			"interval", cfg.DedupInterval,
-			"similarity", cfg.DedupSimilarity,
-			"min_cluster_size", cfg.DedupMinClusterSize)
+			"similarity", cfg.DedupSimilarity)
 	}
 
 	cleanup := func() {
@@ -307,7 +301,7 @@ func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger, onInFl
 		BaseURL:       cfg.Rerank,
 		Model:         cfg.RerankModel,
 		APIKey:        cfg.RerankAPIKey,
-		MaxDocChars:   cfg.RerankMaxDocChars,
+		MaxDocChars:   rerankMaxDocChars,
 		MaxBatchChars: cfg.RerankMaxBatchChars,
 	})
 	if err != nil {
@@ -452,9 +446,25 @@ func buildEmbedder(cfg *config.Config, log *slog.Logger, onInFlight func(n int64
 	if cfg.EmbedMaxConcurrency > 0 {
 		log.Info("embed concurrency cap", "max_in_flight", cfg.EmbedMaxConcurrency)
 	}
-	batched := embed.NewBatched(limited, cfg.EmbedMaxBatch, cfg.EmbedMaxBatchChars, cfg.EmbedMaxItemChars)
+	batched := embed.NewBatched(limited, cfg.EmbedMaxBatch, cfg.EmbedMaxBatchChars, embedMaxItemChars)
 	return embed.NewCached(batched, 4096)
 }
+
+// Fixed internal defaults (no env override). The benchmark harness overrides the
+// retrieval knobs via service.Option; production runs these baked values.
+const (
+	// embedMaxItemChars truncates any single text before embedding so one
+	// oversized memory can't blow the per-request budget. The per-request and
+	// per-batch budgets remain configurable.
+	embedMaxItemChars = 8000
+	// rerankMaxDocChars truncates each document sent to the cross-encoder.
+	// MEMINI_RERANK_MAX_BATCH_CHARS remains configurable.
+	rerankMaxDocChars = 2048
+	// Baked retrieval defaults (formerly MEMINI_RECALL_* / MEMINI_TEMPORAL_BOOST).
+	defaultRecallMinScore        = 0.1
+	defaultRecallSemanticReserve = 2
+	defaultTemporalBoost         = 0.40
+)
 
 func outerBackendLabel(e embed.Embedder) string {
 	switch e.(type) {

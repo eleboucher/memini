@@ -267,7 +267,7 @@ export async function postJSON(path, body, namespace, timeoutMs = 5000) {
  *
  * `minScore` (>= 0) sets a per-call relevance floor: candidates whose fused
  * score is below it are dropped server-side. 0 / unset falls back to the
- * server-wide default gate (MEMINI_RECALL_MIN_SCORE). When `minScore` is set,
+ * server's baked relevance floor (0.1). When `minScore` is set,
  * the hook also filters client-side as a belt-and-braces guard against
  * score-fusion edge cases where the server's normalization disagrees with
  * what the caller wants.

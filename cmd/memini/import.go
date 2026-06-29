@@ -211,7 +211,7 @@ func buildImporter(
 	ctx context.Context, cfg *config.Config, log *slog.Logger, remote, token string,
 ) (*importer.Importer, string, dedupFunc, func(), error) {
 	if remote != "" {
-		client := importer.NewRemoteClient(remote, token, cfg.NamespaceHeader)
+		client := importer.NewRemoteClient(remote, token, config.DefaultNamespaceHeader)
 		dedup := func(ctx context.Context, namespaces []string, sim float64, out io.Writer) error {
 			var clusters, tombstoned, done int
 			var failed []string
