@@ -35,7 +35,6 @@ const embedDims = 64
 type harness struct {
 	baseURL   string
 	apiKey    string
-	nsHeader  string
 	namespace string
 }
 
@@ -148,7 +147,6 @@ func startStack(t *testing.T, backend, dsn string) harness {
 	return harness{
 		baseURL:   ts.URL,
 		apiKey:    cfg.APIKey,
-		nsHeader:  cfg.NamespaceHeader,
 		namespace: cfg.DefaultNamespace,
 	}
 }
@@ -229,7 +227,7 @@ func (h harness) req(t *testing.T, method, path string, body, out any) int {
 		t.Fatalf("new request: %v", err)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+h.apiKey)
-	httpReq.Header.Set(h.nsHeader, h.namespace)
+	httpReq.Header.Set(config.DefaultNamespaceHeader, h.namespace)
 	if body != nil {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
@@ -324,7 +322,7 @@ func TestIntegrationAuth(t *testing.T) {
 	forEachBackend(t, func(t *testing.T, h harness) {
 		// No bearer token: the API is closed.
 		req, _ := http.NewRequest(http.MethodPost, h.baseURL+"/v1/search", strings.NewReader(`{"query":"x"}`))
-		req.Header.Set(h.nsHeader, h.namespace)
+		req.Header.Set(config.DefaultNamespaceHeader, h.namespace)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("search without token: %v", err)
@@ -484,10 +482,9 @@ func (h harness) mcpConnect(t *testing.T) *mcpsdk.ClientSession {
 	transport := &mcpsdk.StreamableClientTransport{
 		Endpoint: h.baseURL + "/mcp",
 		HTTPClient: &http.Client{Transport: headerRoundTripper{
-			rt:    http.DefaultTransport,
-			key:   h.apiKey,
-			nsHdr: h.nsHeader,
-			ns:    h.namespace,
+			rt:  http.DefaultTransport,
+			key: h.apiKey,
+			ns:  h.namespace,
 		}},
 		// Request/response only; no server-initiated notifications needed.
 		DisableStandaloneSSE: true,
@@ -503,15 +500,15 @@ func (h harness) mcpConnect(t *testing.T) *mcpsdk.ClientSession {
 
 // headerRoundTripper injects auth and namespace headers onto every MCP request.
 type headerRoundTripper struct {
-	rt        http.RoundTripper
-	key       string
-	nsHdr, ns string
+	rt  http.RoundTripper
+	key string
+	ns  string
 }
 
 func (h headerRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 	r = r.Clone(r.Context())
 	r.Header.Set("Authorization", "Bearer "+h.key)
-	r.Header.Set(h.nsHdr, h.ns)
+	r.Header.Set(config.DefaultNamespaceHeader, h.ns)
 	return h.rt.RoundTrip(r)
 }
 
