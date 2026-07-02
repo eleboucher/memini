@@ -574,7 +574,7 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 }
 
 // RememberInput describes a memory to store. Only Namespace and Content are
-// required; Tier defaults to working and TTL to the tier default.
+// required; Tier defaults to episodic and TTL to the tier default.
 type RememberInput struct {
 	Namespace  string
 	Content    string
@@ -658,7 +658,7 @@ func (s *Service) sanitizeContent(ctx context.Context, in RememberInput, tier me
 }
 
 // validateRememberInput checks the required fields and resolves the tier
-// (defaulting to working). The returned tier is "" for the namespace/content
+// (defaulting to episodic). The returned tier is "" for the namespace/content
 // errors and the offending tier for an invalid-tier error, matching the metric
 // label the caller records.
 func validateRememberInput(in RememberInput) (memory.Tier, error) {
@@ -670,7 +670,7 @@ func validateRememberInput(in RememberInput) (memory.Tier, error) {
 	}
 	tier := in.Tier
 	if tier == "" {
-		tier = memory.TierWorking
+		tier = memory.TierEpisodic
 	}
 	if !tier.Valid() {
 		return tier, invalidInputf("remember: invalid tier %q", tier)
