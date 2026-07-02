@@ -144,3 +144,23 @@ func TestDoctorFixBackfillsLegacyConfidence(t *testing.T) {
 		t.Errorf("expected a backfilled line, got: %s", out.String())
 	}
 }
+
+func TestPrintWritePathSignals(t *testing.T) {
+	var buf strings.Builder
+	printWritePathSignals(&buf, []nsStat{
+		{namespace: "a", classified: 2, promoted: 1, corroborated: 3},
+		{namespace: "b", classified: 1},
+	})
+	out := buf.String()
+	for _, want := range []string{"marker-classified durable writes:  3", "promotion-produced facts:          1", "corroborated durable memories:     3"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+
+	buf.Reset()
+	printWritePathSignals(&buf, []nsStat{{namespace: "a"}})
+	if buf.Len() != 0 {
+		t.Fatalf("all-zero signals should print nothing, got:\n%s", buf.String())
+	}
+}

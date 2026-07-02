@@ -49,6 +49,10 @@ working ──▶ episodic ──(distilled at write / recalled repeatedly)─�
   and grows its confidence instead of only piling up as chatter. Growth is
   rate-limited to once per 24h per fact, so a session restating the same thing
   five times counts as one observation. The write itself is still stored.
+  Corroboration never resolves _contradictions_: similarity cannot distinguish
+  "same fact, updated" from "related fact" (benchmarked), so conflicting
+  durable facts stay with the LLM consolidator or the merge-hint +
+  `memory_update` flow.
 - **Demotion** — durable memories that were never recalled, are low-importance,
   and are older than `MEMINI_DEMOTE_AFTER` get pushed back down to `episodic`,
   so unused "durable" debris (e.g. a low-quality bulk import) ages out on its

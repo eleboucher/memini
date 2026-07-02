@@ -293,6 +293,11 @@ type nsStat struct {
 	superseded    int
 	lowConfidence int // durable memories whose corroboration is below the demote floor
 	lastWrite     time.Time
+
+	// Write-path signals: how the heuristic tier machinery is behaving.
+	classified   int // durable writes tiered by the marker classifier (tier_classified=marker)
+	promoted     int // durable facts produced by promotion (promoted_from set)
+	corroborated int // durable memories whose confidence grew past the fresh seed
 }
 
 func namespaceStats(ctx context.Context, st store.Store) ([]nsStat, error) {
@@ -320,6 +325,18 @@ func namespaceStats(ctx context.Context, st store.Store) ([]nsStat, error) {
 			}
 			if m.UpdatedAt.After(s.lastWrite) {
 				s.lastWrite = m.UpdatedAt
+			}
+			if m.Metadata != nil {
+				if v, _ := m.Metadata["tier_classified"].(string); v == "marker" {
+					s.classified++
+				}
+				if _, ok := m.Metadata["promoted_from"]; ok {
+					s.promoted++
+				}
+			}
+			if m.Tier.Term() == memory.LongTerm && m.Confidence != nil &&
+				*m.Confidence > memory.ConfidenceSeedFresh {
+				s.corroborated++
 			}
 		}
 		out = append(out, s)
@@ -362,7 +379,29 @@ func printStoreStats(out io.Writer, stats []nsStat, pluginNS string) int {
 		warnf(out, "recall here uses namespace %q (empty), but %q holds %d memories.", pluginNS, biggest.namespace, biggest.total)
 		note(out, "If agents seem to have lost memory, writes are landing in a different namespace.")
 	}
+	printWritePathSignals(out, stats)
 	return warnings
+}
+
+// printWritePathSignals aggregates how the heuristic tier machinery is
+// behaving across namespaces: writes the classifier tiered durable, facts the
+// promoter produced, and durable memories whose confidence has grown past the
+// fresh seed (re-observed via corroboration or exact restatement).
+func printWritePathSignals(out io.Writer, stats []nsStat) {
+	var classified, promoted, corroborated int
+	for _, s := range stats {
+		classified += s.classified
+		promoted += s.promoted
+		corroborated += s.corroborated
+	}
+	if classified == 0 && promoted == 0 && corroborated == 0 {
+		return
+	}
+	fmt.Fprintln(out, "Write-path signals:")                                                       //nolint:errcheck
+	fmt.Fprintf(out, "  marker-classified durable writes:  %d\n", classified)                      //nolint:errcheck
+	fmt.Fprintf(out, "  promotion-produced facts:          %d\n", promoted)                        //nolint:errcheck
+	fmt.Fprintf(out, "  corroborated durable memories:     %d (confidence above the %.2f seed)\n", //nolint:errcheck
+		corroborated, memory.ConfidenceSeedFresh)
 }
 
 func doctorResult(out io.Writer, warnings int) {
