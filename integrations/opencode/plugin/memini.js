@@ -449,4 +449,4 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
   };
 };
 
-export default MeminiPlugin;
+export default { id: "memini", server: MeminiPlugin };
