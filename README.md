@@ -44,9 +44,11 @@ When an LLM is configured, writes are stored immediately and then deduplicated a
 contradiction-resolved in the background (a similarity gate skips the LLM when nothing
 close exists), and each fresh episodic capture is distilled into durable semantic facts at
 write time so a fact stated once is durable immediately (with a periodic promoter as a
-backstop for older episodic memories). Without an LLM, a heuristic extractor does the same
-at write time — pulling decisions, preferences, and problems out of each capture — so
-durable knowledge still builds in the embedder-only and embedder+reranker setups.
+backstop for older episodic memories). Without an LLM, marker heuristics run the same
+lifecycle — write-time extraction, tier classification of untiered writes, the periodic
+promoter, and corroboration (a restated durable fact gains confidence instead of piling
+up as chatter) — so durable knowledge still builds in the embedder-only and
+embedder+reranker setups.
 
 ### Design
 
@@ -55,7 +57,7 @@ durable knowledge still builds in the embedder-only and embedder+reranker setups
 | Language   | Go: single static binary, tiny image, low memory                                                                                                            |
 | Storage    | Pluggable: **sqlite-vec** (embedded, default) or **Postgres + VectorChord** (scale)                                                                         |
 | Embeddings | External OpenAI-compatible endpoint (you deploy the model)                                                                                                  |
-| LLM        | **Opt-in**: runs headless without one; enables background dedup, consolidation, and episodic→semantic promotion when configured                             |
+| LLM        | **Opt-in**: runs headless without one; enables background dedup, consolidation, and answering when configured                                               |
 | Ranking    | Hybrid (vector + keyword) RRF, re-ranked by relevance + recency + importance, deduplicated                                                                  |
 | Interfaces | REST (server + UI types generated from [`api/openapi.yaml`](api/openapi.yaml)) + MCP (stdio & Streamable HTTP) + embedded web UI, sharing one service layer |
 
@@ -271,7 +273,7 @@ The rest of the table is optional tuning — skip it until you need it.
 | `MEMINI_RERANK_MAX_BATCH_CHARS`  | `6000`                   | cap the total query+documents characters per `/rerank` request; the pool is split across multiple requests when it would exceed this (`6000` keeps ~2 max-size docs per request). `0` disables                                                                                                                                  |
 | `MEMINI_CONSOLIDATE_MODE`        | `async`                  | `async` (store now, dedup in background), `sync`, or `off`                                                                                                                                                                                                                                                                      |
 | `MEMINI_CONSOLIDATE_MIN_SCORE`   | `0.6`                    | similarity gate: skip the LLM when the nearest candidate scores below it (`0` disables)                                                                                                                                                                                                                                         |
-| `MEMINI_PROMOTE_INTERVAL`        | `24h`                    | how often frequently-used episodic memories are distilled into semantic facts (`0` disables; needs LLM)                                                                                                                                                                                                                         |
+| `MEMINI_PROMOTE_INTERVAL`        | `24h`                    | how often frequently-used episodic memories are distilled into semantic facts (`0` disables; uses the LLM when configured, the marker extractor otherwise)                                                                                                                                                                      |
 | `MEMINI_PROMOTE_MIN_ACCESS`      | `3`                      | minimum recall count before an episodic memory is eligible for promotion                                                                                                                                                                                                                                                        |
 | `MEMINI_SWEEP_INTERVAL`          | `1h`                     | how often the decay sweeper purges expired memories                                                                                                                                                                                                                                                                             |
 | `MEMINI_SHORT_TERM_CAP`          | `1000`                   | per-namespace cap on short-term (working+episodic) memories; the sweeper evicts the lowest-retention over it (`0` disables)                                                                                                                                                                                                     |

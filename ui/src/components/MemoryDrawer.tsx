@@ -5,7 +5,7 @@ import { api } from '../api'
 import { refresh } from '../store'
 import { TierBadge } from './TierBadge'
 import { MemoryTypeBadge } from './MemoryTypeBadge'
-import { fmtDate, memoryType, relTime } from '../util'
+import { fmtDate, isAutoTiered, memoryType, promotedFrom, relTime } from '../util'
 import { IconClose, IconCopy, IconCheck, IconTrash } from '../icons'
 
 interface Props {
@@ -99,6 +99,16 @@ export function MemoryDrawer({ memory: m, onClose, wide }: Props) {
         <div class="drawer-head">
           <TierBadge tier={m.tier} />
           <MemoryTypeBadge type={memoryType(m)} />
+          {isAutoTiered(m) && (
+            <span class="chip" title="Tier chosen by the write-time classifier — worth a glance">
+              auto-tiered
+            </span>
+          )}
+          {promotedFrom(m) && (
+            <span class="chip" title="Distilled from a frequently-recalled session memory">
+              promoted
+            </span>
+          )}
           <span class="grow" />
           <button class="icon-btn" aria-label={copied ? 'Copied' : 'Copy ID'} onClick={copyId}>
             {copied ? <IconCheck /> : <IconCopy />}
@@ -154,6 +164,15 @@ export function MemoryDrawer({ memory: m, onClose, wide }: Props) {
             <span class="val">{m.namespace}</span>
             <span class="key">importance</span>
             <span class="val">{(m.importance ?? 0).toFixed(3)}</span>
+            {m.confidence != null && (
+              <>
+                <span class="key">confidence</span>
+                <span class="val" title="Seeded at 0.40; grows each time the fact is re-observed, decays when unused">
+                  {m.confidence.toFixed(2)}
+                  {m.confidence > 0.4 ? ' · corroborated' : ''}
+                </span>
+              </>
+            )}
             <span class="key">access_count</span>
             <span class="val">{m.access_count}</span>
             <span class="key">created</span>
@@ -170,6 +189,12 @@ export function MemoryDrawer({ memory: m, onClose, wide }: Props) {
               <>
                 <span class="key">superseded_by</span>
                 <span class="val">{m.superseded_by}</span>
+              </>
+            )}
+            {promotedFrom(m) && (
+              <>
+                <span class="key">promoted_from</span>
+                <span class="val">{promotedFrom(m)}</span>
               </>
             )}
             {m.valid_to && (

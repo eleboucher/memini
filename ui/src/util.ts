@@ -43,6 +43,20 @@ export function memoryType(m: Memory): string | undefined {
   return typeof mt === 'string' && mt ? mt : undefined
 }
 
+// isAutoTiered reports whether the write-time marker classifier chose this
+// memory's tier (metadata.tier_classified=marker) — machine-curated durability
+// the user may want to audit.
+export function isAutoTiered(m: Memory): boolean {
+  return (m.metadata as Record<string, unknown> | undefined)?.tier_classified === 'marker'
+}
+
+// promotedFrom returns the episodic source ID when this fact was produced by
+// the promotion pass, or undefined for a direct write.
+export function promotedFrom(m: Memory): string | undefined {
+  const src = (m.metadata as Record<string, unknown> | undefined)?.promoted_from
+  return typeof src === 'string' && src ? src : undefined
+}
+
 // relTime renders a compact, human relative timestamp ("3h", "2d", "just now").
 export function relTime(iso?: string): string {
   if (!iso) return '—'
