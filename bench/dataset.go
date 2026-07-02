@@ -139,6 +139,19 @@ func LoadLongMemEval(path string, mode DocMode) (*Dataset, error) {
 	return d, nil
 }
 
+// locomoDateLayout matches LoCoMo session timestamps like "1:56 pm on 8 May, 2023".
+const locomoDateLayout = "3:04 pm on 2 January, 2006"
+
+// parseLoCoMoDate parses a LoCoMo session date, returning the zero time when
+// absent or malformed (items then fall back to ingest-time dating).
+func parseLoCoMoDate(s string) time.Time {
+	t, err := time.Parse(locomoDateLayout, strings.TrimSpace(s))
+	if err != nil {
+		return time.Time{}
+	}
+	return t.UTC()
+}
+
 // lmeDateLayout matches LongMemEval timestamps like "2023/05/30 (Tue) 23:40".
 const lmeDateLayout = "2006/01/02 (Mon) 15:04"
 
@@ -204,8 +217,11 @@ func LoadLoCoMo(path string) (*Dataset, error) {
 				continue
 			}
 			// Ground each turn with its session date so temporal questions
-			// ("when did X happen?") can resolve relative references.
+			// ("when did X happen?") can resolve relative references — both as
+			// a text prefix (for the answerer) and as Item.Time (for
+			// date-aware ingest and temporal targeting).
 			date := jsonScalar(r.Conversation[key+"_date_time"])
+			ts := parseLoCoMoDate(date)
 			for _, tn := range turns {
 				if tn.DiaID == "" {
 					continue
@@ -216,7 +232,16 @@ func LoadLoCoMo(path string) (*Dataset, error) {
 				}
 				// Dialogue ids (e.g. "D1:3") repeat across conversations; scope
 				// them to the conversation namespace for global uniqueness.
-				d.Items = append(d.Items, Item{ID: group + "/" + tn.DiaID, Group: group, Content: content})
+				d.Items = append(d.Items, Item{ID: group + "/" + tn.DiaID, Group: group, Content: content, Time: ts})
+			}
+		}
+		// The conversation's last session date is the reference "now" for its
+		// questions ("last year" in a 2023 conversation means 2022, not
+		// relative to the machine clock).
+		var groupNow time.Time
+		for _, it := range d.Items {
+			if it.Group == group && it.Time.After(groupNow) {
+				groupNow = it.Time
 			}
 		}
 		for _, qa := range r.QA {
@@ -231,6 +256,7 @@ func LoadLoCoMo(path string) (*Dataset, error) {
 			d.Questions = append(d.Questions, Question{
 				Query: qa.Question, Gold: gold, Group: group,
 				Answer: jsonScalar(qa.Answer), Category: jsonScalar(qa.Category),
+				Now: groupNow,
 			})
 		}
 	}

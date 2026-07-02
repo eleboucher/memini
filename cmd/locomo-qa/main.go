@@ -16,6 +16,7 @@ import (
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/memory"
+	"github.com/eleboucher/memini/internal/search"
 	"github.com/eleboucher/memini/internal/service"
 	"github.com/eleboucher/memini/internal/store/sqlitevec"
 )
@@ -40,6 +41,7 @@ func run() error {
 	workers := flag.Int("workers", 6, "concurrent question workers")
 	ckptPath := flag.String("checkpoint", "bench/results/locomo_qa.jsonl", "resume checkpoint (JSONL)")
 	dbg := flag.Bool("debug", false, "print per-question retrieval/answer/grade to stderr")
+	temporalBoost := flag.Float64("temporal-boost", 0.40, "temporal targeting boost (0 disables)")
 	flag.Parse()
 	debug = *dbg
 
@@ -97,7 +99,28 @@ func run() error {
 		return err
 	}
 	defer func() { _ = st.Close() }()
-	svc := service.New(st, embedder)
+	// One service per conversation, clocked at that conversation's last session
+	// date: "last year" in a 2023 conversation must resolve against 2023, not
+	// the machine clock. Falls back to a shared unclocked service.
+	opts := []service.Option{
+		service.WithTemporalTargeting(*temporalBoost, search.RegexAnchorExtractor{}),
+	}
+	base := service.New(st, embedder, opts...)
+	svcByGroup := map[string]*service.Service{}
+	for _, q := range ds.Questions {
+		if q.Now.IsZero() || svcByGroup[q.Group] != nil {
+			continue
+		}
+		qNow := q.Now
+		svcByGroup[q.Group] = service.New(st, embedder,
+			append([]service.Option{service.WithClock(func() time.Time { return qNow })}, opts...)...)
+	}
+	svcFor := func(group string) *service.Service {
+		if s, ok := svcByGroup[group]; ok {
+			return s
+		}
+		return base
+	}
 
 	fmt.Fprintf(os.Stderr, "ingesting %d turns...\n", len(ds.Items))
 	if err := ingest(ctx, st, embedder, ds.Items); err != nil {
@@ -126,7 +149,7 @@ func run() error {
 			defer wg.Done()
 			for i := range jobs {
 				q := ds.Questions[i]
-				correct, err := answerAndJudge(ctx, svc, chat, q, *k)
+				correct, err := answerAndJudge(ctx, svcFor(q.Group), chat, q, *k)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "q%d error: %v\n", i, err)
 					continue
@@ -174,9 +197,19 @@ func ingest(ctx context.Context, st *sqlitevec.Store, e embed.Embedder, items []
 			if ns == "" {
 				ns = "default"
 			}
+			// Date the memory at its session time when the dataset carries one,
+			// so temporal targeting can aim at the referenced date instead of a
+			// uniform ingest timestamp. ValidFrom marks when the fact was true.
+			ts := now
+			var validFrom *time.Time
+			if !it.Time.IsZero() {
+				ts = it.Time
+				validFrom = &it.Time
+			}
 			if err := st.Upsert(ctx, &memory.Memory{
 				ID: it.ID, Namespace: ns, Tier: memory.TierSemantic, Content: it.Content,
-				CreatedAt: now, UpdatedAt: now, LastAccessedAt: now, Embedding: vecs[i],
+				CreatedAt: ts, UpdatedAt: ts, LastAccessedAt: ts, ValidFrom: validFrom,
+				Embedding: vecs[i],
 			}); err != nil {
 				return err
 			}
