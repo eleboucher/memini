@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eleboucher/memini/internal/extract"
 	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/store"
@@ -20,9 +21,9 @@ const promoteBatchTimeout = 90 * time.Second
 
 // RunPromoter periodically distills frequently-accessed episodic memories into
 // durable semantic facts until ctx is cancelled. It is a no-op without a
-// distiller or a positive interval. Call once, typically in its own goroutine.
+// positive interval. Call once, typically in its own goroutine.
 func (s *Service) RunPromoter(ctx context.Context, interval time.Duration) {
-	if s.distiller == nil || interval <= 0 {
+	if interval <= 0 {
 		return
 	}
 	t := time.NewTicker(interval)
@@ -44,15 +45,12 @@ func (s *Service) RunPromoter(ctx context.Context, interval time.Duration) {
 // Promote distills frequently-accessed, not-yet-promoted episodic memories in
 // each namespace into durable semantic facts (written via Remember so they get
 // the similarity gate and consolidation dedup), then stamps the sources so they
-// aren't reprocessed. Returns the number of facts written. No-op without a
-// distiller.
+// aren't reprocessed. Without a distiller it falls back to the marker
+// extractor, so usage-earned promotion also works on LLM-less deployments.
+// Returns the number of facts written.
 func (s *Service) Promote(ctx context.Context) (int, error) {
 	start := time.Now()
 	defer func() { s.metrics.OpDuration("promote", time.Since(start)) }()
-	if s.distiller == nil {
-		s.metrics.PromoteResult("ok", 0)
-		return 0, nil
-	}
 	namespaces, err := s.store.ListNamespaces(ctx)
 	if err != nil {
 		s.metrics.PromoteResult("error", 0)
@@ -98,6 +96,9 @@ func (s *Service) promote(ctx context.Context, ns string, batch []*memory.Memory
 	if len(stamped) == 0 {
 		return 0, nil
 	}
+	if s.distiller == nil {
+		return s.promoteHeuristic(ctx, ns, stamped)
+	}
 
 	episodes := make([]llm.Episode, len(stamped))
 	for i, m := range stamped {
@@ -137,6 +138,48 @@ func (s *Service) promote(ctx context.Context, ns string, batch []*memory.Memory
 			continue
 		}
 		written++
+	}
+	return written, nil
+}
+
+// promoteWholeMaxChars bounds whole-content heuristic promotion: a source this
+// short reads as a single statement, so it can become a fact verbatim.
+const promoteWholeMaxChars = 240
+
+// promoteHeuristic is the LLM-less promotion path: each stamped source is run
+// through the marker extractor and the typed segments are written as durable
+// facts (via Remember, so they get fingerprint/write-dedup like distilled
+// ones). A short source with no extractable segment is written whole as a
+// semantic fact — it earned durability by being recalled repeatedly, even if
+// it matches no marker. Write-time extraction already mined most sources at
+// capture; fingerprint dedup turns those re-extractions into corroboration
+// instead of duplicates.
+func (s *Service) promoteHeuristic(ctx context.Context, ns string, batch []*memory.Memory) (int, error) {
+	written := 0
+	for _, m := range batch {
+		src := strings.TrimSpace(m.Content)
+		var ins []RememberInput
+		if results := extract.Typed(src); len(results) > 0 {
+			for _, r := range results {
+				ins = append(ins, RememberInput{
+					Namespace: ns, Content: r.Content, Tier: r.Kind.Tier(),
+					Tags:     []string{string(r.Kind)},
+					Metadata: map[string]any{"memory_type": string(r.Kind), "promoted_from": m.ID},
+				})
+			}
+		} else if src != "" && len(src) <= promoteWholeMaxChars {
+			ins = append(ins, RememberInput{
+				Namespace: ns, Content: src, Tier: memory.TierSemantic,
+				Metadata: map[string]any{"promoted_from": m.ID},
+			})
+		}
+		for _, in := range ins {
+			if _, err := s.Remember(ctx, in); err != nil {
+				slog.WarnContext(ctx, "promote: store fact", "namespace", ns, "err", err)
+				continue
+			}
+			written++
+		}
 	}
 	return written, nil
 }

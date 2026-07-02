@@ -154,7 +154,7 @@ func (t *tools) ns(arg string) (string, error) {
 
 type rememberArgs struct {
 	Content    string         `json:"content" jsonschema:"the text to remember"`
-	Tier       string         `json:"tier,omitempty" jsonschema:"working, episodic, semantic, or procedural (default episodic)"`
+	Tier       string         `json:"tier,omitempty" jsonschema:"working, episodic, semantic, or procedural (omit to auto-classify)"`
 	Summary    string         `json:"summary,omitempty" jsonschema:"optional one-line summary"`
 	Tags       []string       `json:"tags,omitempty" jsonschema:"optional labels"`
 	Metadata   map[string]any `json:"metadata,omitempty" jsonschema:"optional structured metadata"`

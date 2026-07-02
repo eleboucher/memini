@@ -38,10 +38,17 @@ working ──▶ episodic ──(distilled at write / recalled repeatedly)─�
   it otherwise). Conservative — a miss just means no extra fact, and the raw
   episodic is always kept.
 - **Promotion** — a backstop for episodic memories that were not distilled at
-  write time (e.g. written before an LLM was configured): frequently-recalled
-  `episodic` memories are periodically distilled into durable `semantic` facts.
-  Eligibility kicks in at `MEMINI_PROMOTE_MIN_ACCESS` recalls (default `3`); the
-  pass runs every `MEMINI_PROMOTE_INTERVAL` (default `24h`). Needs an LLM configured.
+  write time: frequently-recalled `episodic` memories are periodically distilled
+  into durable `semantic` facts. Eligibility kicks in at
+  `MEMINI_PROMOTE_MIN_ACCESS` recalls (default `3`); the pass runs every
+  `MEMINI_PROMOTE_INTERVAL` (default `24h`). Uses the LLM when configured, the
+  marker extractor otherwise (a short source with no extractable segment is
+  promoted whole).
+- **Corroboration** — a fresh `working`/`episodic` write that restates an
+  existing durable fact (nearest-neighbour score ≥ 0.70) reinforces that fact
+  and grows its confidence instead of only piling up as chatter. Growth is
+  rate-limited to once per 24h per fact, so a session restating the same thing
+  five times counts as one observation. The write itself is still stored.
 - **Demotion** — durable memories that were never recalled, are low-importance,
   and are older than `MEMINI_DEMOTE_AFTER` get pushed back down to `episodic`,
   so unused "durable" debris (e.g. a low-quality bulk import) ages out on its
@@ -51,12 +58,16 @@ working ──▶ episodic ──(distilled at write / recalled repeatedly)─�
   `MEMINI_SHORT_TERM_CAP` (default `1000`); over the cap, the sweeper evicts the
   lowest-retention `working`/`episodic` rows.
 
-Without an LLM, memini still runs: promotion is a no-op and tiers stay where
-they were written.
+Without an LLM, memini still runs the full lifecycle: write-time extraction,
+promotion, and corroboration all fall back to the marker heuristics.
 
 ## Setting a tier
 
-On write, set `tier` explicitly; it defaults to `episodic` when omitted.
+On write, set `tier` explicitly. When omitted, the content is classified by the
+marker heuristic — a terse, unhedged decision/preference/problem statement lands
+in `semantic`/`procedural` (stamped `metadata.tier_classified=marker` for
+auditing) — and anything else defaults to `episodic`. Classification never picks
+`working`; transient scratch must be explicit.
 
 ```jsonc
 {

@@ -237,6 +237,9 @@ type Service struct {
 	// writeDedupScore is the similarity at/above which a write's nearest
 	// same-tier memory triggers writeDedupAction. 0 disables write-time dedup.
 	writeDedupScore float64
+	// corroborateMinScore (> 0) routes short-term writes that restate a durable
+	// fact into confidence growth on that fact. 0 disables.
+	corroborateMinScore float64
 	// writeDedupAction is what happens at/above writeDedupScore: hint, coalesce,
 	// supersede, or off. See WriteDedupAction.
 	writeDedupAction WriteDedupAction
@@ -479,6 +482,15 @@ func WithWriteDedup(score float64, action WriteDedupAction) Option {
 	}
 }
 
+// WithCorroboration enables corroboration routing: a fresh short-term write
+// whose nearest durable neighbour scores at or above minScore reinforces that
+// fact and grows its confidence (rate-limited by corroborateCooldown) instead
+// of only piling up as chatter. The write is still stored. minScore <= 0
+// disables.
+func WithCorroboration(minScore float64) Option {
+	return func(s *Service) { s.corroborateMinScore = minScore }
+}
+
 // WithGlobalNamespace sets a namespace whose durable (semantic/procedural)
 // memories are merged read-only into every other namespace's recall and
 // briefing — a shared space for cross-project rules. Empty disables it.
@@ -574,7 +586,8 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 }
 
 // RememberInput describes a memory to store. Only Namespace and Content are
-// required; Tier defaults to episodic and TTL to the tier default.
+// required; an omitted Tier is classified from the content (episodic when
+// unclear) and TTL follows the tier default.
 type RememberInput struct {
 	Namespace  string
 	Content    string
@@ -657,10 +670,13 @@ func (s *Service) sanitizeContent(ctx context.Context, in RememberInput, tier me
 	return in, nil
 }
 
-// validateRememberInput checks the required fields and resolves the tier
-// (defaulting to episodic). The returned tier is "" for the namespace/content
-// errors and the offending tier for an invalid-tier error, matching the metric
-// label the caller records.
+// validateRememberInput checks the required fields and resolves the tier. An
+// omitted tier is classified from the content by the marker heuristic — a
+// terse, unhedged decision/preference/problem statement lands durable — and
+// falls back to episodic. Classification only ever raises the tier from the
+// episodic default, never down to working, so a miss costs nothing. The
+// returned tier is "" for the namespace/content errors and the offending tier
+// for an invalid-tier error, matching the metric label the caller records.
 func validateRememberInput(in RememberInput) (memory.Tier, error) {
 	if in.Namespace == "" {
 		return "", invalidInputf("remember: namespace is required")
@@ -671,6 +687,9 @@ func validateRememberInput(in RememberInput) (memory.Tier, error) {
 	tier := in.Tier
 	if tier == "" {
 		tier = memory.TierEpisodic
+		if kind, ok := extract.Classify(in.Content); ok {
+			tier = kind.Tier()
+		}
 	}
 	if !tier.Valid() {
 		return tier, invalidInputf("remember: invalid tier %q", tier)
@@ -689,6 +708,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		s.metrics.RememberResult("error", string(tier))
 		return nil, err
 	}
+	in = stampClassifiedTier(in, tier)
 
 	// Scrub live credentials before anything persists them — content, the
 	// embedding, and the dedup fingerprint are all computed on the redacted
@@ -831,6 +851,10 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	case s.shouldExtractOnWrite(tier, existing == nil):
 		s.extractEpisodicAsync(ctx, m)
 	}
+	// Corroboration routing: a fresh short-term write that restates an existing
+	// durable fact is a re-observation of that fact — grow its confidence and
+	// reinforce it in the background. The write itself is stored unchanged.
+	s.corroborateNearestAsync(ctx, m, in.ID == "")
 	s.metrics.RememberResult("ok", string(tier))
 	return m, nil
 }
@@ -980,6 +1004,59 @@ func resolveValidity(m, existing *memory.Memory, in RememberInput, now time.Time
 // and persists the result (which resets the decay baseline). No-op for
 // short-term memories or ones without tracked confidence. Best-effort: a failure
 // is logged, never surfaced to the caller.
+// stampClassifiedTier marks a heuristically-classified durable write with
+// metadata["tier_classified"]="marker" so a bad call is auditable (and
+// demotable) later. A no-op for explicit tiers and the episodic fallback.
+func stampClassifiedTier(in RememberInput, tier memory.Tier) RememberInput {
+	if in.Tier != "" || tier.Term() != memory.LongTerm {
+		return in
+	}
+	if in.Metadata == nil {
+		in.Metadata = map[string]any{}
+	}
+	in.Metadata["tier_classified"] = "marker"
+	return in
+}
+
+// corroborateCooldown rate-limits confidence growth per fact: however many
+// times a session restates a fact, it counts as one observation per window.
+// Restatement echo must not manufacture confidence — only re-observation
+// spread over time may (see arXiv:2606.29279 on redundant sourcing).
+const corroborateCooldown = 24 * time.Hour
+
+// corroborateNearestAsync routes a fresh short-term write to the durable fact
+// it restates, when one scores at or above corroborateMinScore: the fact is
+// reinforced and its confidence grown, off the request path. The nearest-fact
+// lookup and the cooldown guard (UpdatedAt is bumped by SetConfidence, so it
+// doubles as the last-corroborated stamp) both run in the background goroutine.
+func (s *Service) corroborateNearestAsync(ctx context.Context, m *memory.Memory, fresh bool) {
+	if !fresh || m.Tier.Term() != memory.ShortTerm ||
+		s.corroborateMinScore <= 0 || len(m.Embedding) == 0 {
+		return
+	}
+	bg := context.WithoutCancel(ctx)
+	s.bg.Go(func() {
+		cctx, cancel := context.WithTimeout(bg, 30*time.Second)
+		defer cancel()
+		cands, err := s.store.VectorSearch(cctx, m.Namespace, m.Embedding,
+			store.Filter{Tiers: []memory.Tier{memory.TierSemantic, memory.TierProcedural}, Now: s.now()}, 1)
+		if err != nil {
+			slog.WarnContext(cctx, "corroborate: durable lookup failed",
+				"namespace", m.Namespace, "err", err)
+			return
+		}
+		if len(cands) == 0 || cands[0].Score < s.corroborateMinScore {
+			return
+		}
+		fact := cands[0].Memory
+		if s.now().Sub(fact.UpdatedAt) < corroborateCooldown {
+			return
+		}
+		s.reinforce(cctx, []store.Scored{{Memory: fact}})
+		s.corroborate(cctx, fact)
+	})
+}
+
 func (s *Service) corroborate(ctx context.Context, m *memory.Memory) {
 	if m.Tier.Term() != memory.LongTerm || m.Confidence == nil {
 		return

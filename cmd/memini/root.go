@@ -199,11 +199,14 @@ func buildServiceStack(
 			service.WithDistiller(client))
 		log.Info("LLM consolidation + answering enabled",
 			"api", cfg.LLMAPI, "model", cfg.LLMModel, "mode", cfg.ConsolidateMode)
-		if cfg.PromoteInterval > 0 {
-			svcOpts = append(svcOpts, service.WithPromoteMinAccess(cfg.PromoteMinAccess))
-			log.Info("episodic→semantic promotion enabled",
-				"interval", cfg.PromoteInterval, "min_access", cfg.PromoteMinAccess)
-		}
+	}
+	// Promotion self-selects its engine: the LLM distiller when configured, the
+	// marker extractor otherwise. Wired outside the LLM block so LLM-less
+	// deployments get the usage-earned backstop too.
+	if cfg.PromoteInterval > 0 {
+		svcOpts = append(svcOpts, service.WithPromoteMinAccess(cfg.PromoteMinAccess))
+		log.Info("episodic→semantic promotion enabled",
+			"interval", cfg.PromoteInterval, "min_access", cfg.PromoteMinAccess)
 	}
 	if cfg.RerankEnabled() {
 		reranker, name, err := buildReranker(cfg, chatClient, log, metricsImpl.RerankInFlight)
@@ -225,6 +228,7 @@ func buildServiceStack(
 		service.WithQueryPrefix(cfg.EmbedQueryPrefix),
 		service.WithScoreFusion(search.DefaultFusionAlpha),
 		service.WithWriteDedup(cfg.WriteDedupScore, service.WriteDedupAction(cfg.WriteDedupAction)),
+		service.WithCorroboration(defaultCorroborateMinScore),
 		service.WithGlobalNamespace(cfg.GlobalNamespace),
 		service.WithTemporalTargeting(defaultTemporalBoost, search.RegexAnchorExtractor{}),
 		service.WithRecallEmbedTimeout(cfg.RecallEmbedTimeout),
@@ -464,6 +468,14 @@ const (
 	defaultRecallMinScore        = 0.1
 	defaultRecallSemanticReserve = 2
 	defaultTemporalBoost         = 0.40
+	// defaultCorroborateMinScore gates corroboration routing (short-term write →
+	// confidence growth on the durable fact it restates). Above the 0.664
+	// nearest-neighbour ceiling the dedup bench measured for genuinely distinct
+	// memories, while low enough to catch reworded restatements (in the
+	// sqlitevec 1/(1+L2) score space 0.70 ≈ cosine 0.91). The action is mild
+	// (one bounded confidence step per 24h), so a rare false positive costs
+	// little.
+	defaultCorroborateMinScore = 0.70
 )
 
 func outerBackendLabel(e embed.Embedder) string {

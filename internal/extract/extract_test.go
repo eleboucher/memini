@@ -78,3 +78,31 @@ func TestKindTier(t *testing.T) {
 		}
 	}
 }
+
+func TestClassify(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want Kind
+		ok   bool
+	}{
+		{"decision", "We decided to use Postgres instead of MySQL for the vector store.", KindDecision, true},
+		{"preference", "I prefer table-driven tests, please always use them instead of ad-hoc asserts.", KindPreference, true},
+		{"problem fix", "The bug was a nil map write; the fix was initializing metadata in the constructor.", KindProblem, true},
+		{"hedged decision", "Maybe we should go with Postgres instead of MySQL.", "", false},
+		{"tentative", "I think the reason is the cache, not sure though.", "", false},
+		{"transcript", "User: which db?\nAssistant: we decided to use postgres instead of mysql", "", false},
+		{"no markers", "Met with the platform team about quarterly planning this afternoon.", "", false},
+		{"single weak marker", "I prefer tabs.", "", false},
+		{"too short", "use postgres", "", false},
+		{"too long", strings.Repeat("we decided to go with postgres instead of mysql. ", 20), "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			kind, ok := Classify(tc.text)
+			if ok != tc.ok || kind != tc.want {
+				t.Fatalf("Classify(%q) = (%q, %v), want (%q, %v)", tc.text, kind, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}

@@ -194,3 +194,55 @@ func isCodeLine(t string) bool {
 	}
 	return false
 }
+
+// hedgePatterns veto whole-write classification: tentative phrasing must stay
+// episodic history rather than become a durable fact asserted confidently.
+var hedgePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`\bmaybe\b`), regexp.MustCompile(`\bi think\b`),
+	regexp.MustCompile(`\bnot sure\b`), regexp.MustCompile(`\bpossibly\b`),
+	regexp.MustCompile(`\bmight\b`), regexp.MustCompile(`\bprobably\b`),
+	regexp.MustCompile(`\breportedly\b`), regexp.MustCompile(`\bi guess\b`),
+	regexp.MustCompile(`\bcould be\b`),
+}
+
+// roleScaffold marks transcript-shaped content: a captured exchange is session
+// history, not a single fact, however many markers it contains.
+var roleScaffold = regexp.MustCompile(`(?mi)^\s*(user|assistant)\s*:`)
+
+// ClassifyMaxChars bounds a classifiable write: one durable fact is terse;
+// longer content is session history even when it contains decision markers.
+const ClassifyMaxChars = 400
+
+// Classify labels an entire write whose caller picked no tier. It is stricter
+// than Typed because the verdict covers the full text rather than an extracted
+// segment: the content must be short, prose-shaped, unhedged, not a transcript,
+// and clear the same marker-confidence gate. ok=false means no confident call —
+// callers fall back to the episodic default.
+func Classify(text string) (Kind, bool) {
+	seg := strings.TrimSpace(text)
+	if len(seg) < 20 || len(seg) > ClassifyMaxChars {
+		return "", false
+	}
+	if roleScaffold.MatchString(seg) {
+		return "", false
+	}
+	prose := strings.ToLower(proseOnly(seg))
+	for _, h := range hedgePatterns {
+		if h.MatchString(prose) {
+			return "", false
+		}
+	}
+	bestKind, bestScore := Kind(""), 0
+	for _, ms := range markerSets {
+		if s := scoreMarkers(prose, ms.pats); s > bestScore {
+			bestKind, bestScore = ms.kind, s
+		}
+	}
+	if bestScore == 0 {
+		return "", false
+	}
+	if float64(min(bestScore+lengthBonus(seg), 5))/5.0 < MinConfidence {
+		return "", false
+	}
+	return bestKind, true
+}
