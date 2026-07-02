@@ -68,3 +68,33 @@ func TestMemoryExpired(t *testing.T) {
 		})
 	}
 }
+
+func TestQualityDurableSkipsRecencyDecay(t *testing.T) {
+	now := time.Now().UTC()
+	stale := now.Add(-60 * 24 * time.Hour) // ~8 recency half-lives
+
+	mk := func(tier memory.Tier) *memory.Memory {
+		return &memory.Memory{
+			Tier: tier, Importance: 0.5,
+			CreatedAt: stale, UpdatedAt: now, LastAccessedAt: stale,
+		}
+	}
+
+	// A stale semantic fact keeps its salience-driven quality instead of
+	// collapsing toward zero with the short-term recency factor.
+	sem := mk(memory.TierSemantic).Quality(now)
+	if want := mk(memory.TierSemantic).DurableScore(now); sem != want {
+		t.Fatalf("semantic Quality = %v, want DurableScore %v", sem, want)
+	}
+	epi := mk(memory.TierEpisodic).Quality(now)
+	if sem <= epi {
+		t.Fatalf("stale semantic (%v) should outscore stale episodic (%v)", sem, epi)
+	}
+
+	// Short-term tiers still decay: fresh episodic beats stale episodic.
+	freshEpi := mk(memory.TierEpisodic)
+	freshEpi.LastAccessedAt = now
+	if freshEpi.Quality(now) <= epi {
+		t.Fatalf("fresh episodic (%v) should outscore stale episodic (%v)", freshEpi.Quality(now), epi)
+	}
+}

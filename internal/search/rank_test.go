@@ -11,7 +11,8 @@ import (
 func scored(id, content string, relevance, importance float64, lastAccessed time.Time) store.Scored {
 	return store.Scored{
 		Memory: &memory.Memory{
-			ID: id, Content: content, Importance: importance, LastAccessedAt: lastAccessed,
+			ID: id, Content: content, Tier: memory.TierEpisodic,
+			Importance: importance, LastAccessedAt: lastAccessed,
 		},
 		Score: relevance,
 	}

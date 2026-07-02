@@ -193,11 +193,15 @@ func decayConfidence(c, weeks float64) float64 {
 
 // Quality scores a memory for both recall ranking and lifecycle decisions
 // (higher = more worth keeping and surfacing). It multiplies the base salience
-// by corroboration (confidence), reinforcement (access frequency), and recency
-// (exponential decay since last access). A corroborated, frequently-recalled
-// durable fact scores far above a stale one-off observation, so low-value bulk
-// memories sink by construction rather than by a tuning nudge.
+// by corroboration (confidence), reinforcement (access frequency), and — for
+// short-term tiers — recency (exponential decay since last access). Durable
+// tiers skip the recency factor: they already age through confidence decay,
+// and a 7-day half-life would zero out tier salience for any fact not recalled
+// recently, burying core knowledge under fresh session trivia.
 func (m *Memory) Quality(now time.Time) float64 {
+	if m.Tier.Term() == LongTerm {
+		return m.DurableScore(now)
+	}
 	age := max(now.Sub(m.LastAccessedAt), 0)
 	recency := math.Exp(-float64(age) / float64(retentionHalfLife))
 	usage := 1 + math.Log1p(float64(m.AccessCount))

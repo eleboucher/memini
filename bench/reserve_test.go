@@ -12,6 +12,7 @@ import (
 
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/memory"
+	"github.com/eleboucher/memini/internal/rerank"
 	"github.com/eleboucher/memini/internal/service"
 	"github.com/eleboucher/memini/internal/store/sqlitevec"
 )
@@ -60,10 +61,13 @@ func TestSemanticReserveTierMixed(t *testing.T) {
 	// Fixed clock + sync reinforce → deterministic, no background writes racing
 	// queries. Score fusion at the production default (alpha 0.5).
 	clk := func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
-	svc := service.New(st, e, service.WithClock(clk), service.WithSyncReinforce(), service.WithScoreFusion(0.5))
+	opts := append([]service.Option{
+		service.WithClock(clk), service.WithSyncReinforce(), service.WithScoreFusion(0.5),
+	}, maybeReranker(t)...)
+	svc := service.New(st, e, opts...)
 
 	corpus := buildReserveCorpus()
-	if err := ingestReserveCorpus(ctx, st, e, corpus, clk()); err != nil {
+	if err := ingestReserveCorpus(ctx, st, e, corpus, clk(), 0); err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
 
@@ -112,6 +116,81 @@ func TestSemanticReserveTierMixed(t *testing.T) {
 	if top.durR5 < base.durR5 {
 		t.Errorf("durable R@5 regressed with reserve: reserve=0 %.1f%% -> reserve=%d %.1f%%",
 			base.durR5, top.reserve, top.durR5)
+	}
+}
+
+// TestQualityAgedDurableRecall is the stale-knowledge variant of the tier-mixed
+// eval: the durable facts were last touched 60 days ago (~8 recency half-lives)
+// while the episodic chatter is fresh. It measures whether long-standing facts
+// still surface once their last recall is far in the past. Reported at
+// reserve=0 (pure composite ranking) and the production default reserve=2.
+func TestQualityAgedDurableRecall(t *testing.T) {
+	ctx := context.Background()
+
+	baseURL := envOr("MEMINI_EMBED_BASE_URL", "http://127.0.0.1:8001/v1")
+	model := envOr("MEMINI_EMBED_MODEL", "text-embedding-qwen3-embedding-0.6b")
+	dims := envIntOr("MEMINI_EMBED_DIMS", 1024)
+
+	e, err := embed.NewOpenAI(embed.OpenAIConfig{BaseURL: baseURL, Model: model, Dims: dims})
+	if err != nil {
+		t.Skipf("embedder config: %v", err)
+	}
+	probe, err := e.Embed(ctx, []string{"connectivity probe"})
+	if err != nil {
+		t.Skipf("live embedder unreachable at %s (%s): %v", baseURL, model, err)
+	}
+	if len(probe) != 1 || len(probe[0]) != dims {
+		t.Skipf("embedder returned %d-dim vectors, configured for %d — set MEMINI_EMBED_DIMS", len(probe[0]), dims)
+	}
+
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "reserve-aged.db"), dims)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	clk := func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
+	opts := append([]service.Option{
+		service.WithClock(clk), service.WithSyncReinforce(), service.WithScoreFusion(0.5),
+	}, maybeReranker(t)...)
+	svc := service.New(st, e, opts...)
+
+	corpus := buildReserveCorpus()
+	if err := ingestReserveCorpus(ctx, st, e, corpus, clk(), 60*24*time.Hour); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	t.Logf("aged-durable eval — facts 60d stale, chatter fresh, embedder=%s", model)
+	t.Logf("%-9s | %-18s | %-18s", "reserve", "durable-gold R@5/10", "episodic-gold R@5/10")
+	t.Logf("%s", "----------+--------------------+--------------------")
+	for _, r := range []int{0, 2} {
+		durHits5, durHits10, epiHits5, epiHits10 := 0, 0, 0, 0
+		rankSum := 0
+		for _, tp := range corpus {
+			if slices.Contains(recallIDs(ctx, t, svc, tp.factQuery, 5, r), tp.factID) {
+				durHits5++
+			}
+			if slices.Contains(recallIDs(ctx, t, svc, tp.factQuery, 10, r), tp.factID) {
+				durHits10++
+			}
+			// Rank in a deep pull: R@5 alone hides how far outside the
+			// cutoff the fact sits.
+			deep := recallIDs(ctx, t, svc, tp.factQuery, 50, r)
+			if i := slices.Index(deep, tp.factID); i >= 0 {
+				rankSum += i + 1
+			} else {
+				rankSum += len(deep) + 1
+			}
+			if slices.Contains(recallIDs(ctx, t, svc, tp.detailQuery, 5, r), tp.detailID) {
+				epiHits5++
+			}
+			if slices.Contains(recallIDs(ctx, t, svc, tp.detailQuery, 10, r), tp.detailID) {
+				epiHits10++
+			}
+		}
+		n := float64(len(corpus))
+		t.Logf("%-9d | %5.1f%% / %5.1f%%    | %5.1f%% / %5.1f%%    | mean fact rank %.1f",
+			r, pct(durHits5, n), pct(durHits10, n), pct(epiHits5, n), pct(epiHits10, n), float64(rankSum)/n)
 	}
 }
 
@@ -193,7 +272,30 @@ func buildReserveCorpus() []reserveTopic {
 // reserveNS is the namespace the eval ingests into and queries.
 const reserveNS = "reserve-eval"
 
-func ingestReserveCorpus(ctx context.Context, st *sqlitevec.Store, e embed.Embedder, topics []reserveTopic, now time.Time) error {
+// maybeReranker wires a cross-encoder into the eval service when
+// MEMINI_RERANK_URL (and optionally MEMINI_RERANK_MODEL) is set, at the
+// production truncation/batching defaults — so the tier-mix evals can also
+// measure the embedder+reranker deployment. Returns nil options otherwise.
+func maybeReranker(t *testing.T) []service.Option {
+	t.Helper()
+	url := os.Getenv("MEMINI_RERANK_URL")
+	if url == "" {
+		return nil
+	}
+	ce, err := rerank.New(rerank.Config{
+		BaseURL: url, Model: os.Getenv("MEMINI_RERANK_MODEL"),
+		MaxDocChars: 2048, MaxBatchChars: 6000,
+	})
+	if err != nil {
+		t.Fatalf("reranker config: %v", err)
+	}
+	t.Logf("cross-encoder reranker enabled: %s", url)
+	return []service.Option{service.WithReranker(ce, "crossencoder")}
+}
+
+// ingestReserveCorpus writes the corpus with all timestamps at now, except the
+// durable facts, which are backdated by factAge (0 = fresh like the chatter).
+func ingestReserveCorpus(ctx context.Context, st *sqlitevec.Store, e embed.Embedder, topics []reserveTopic, now time.Time, factAge time.Duration) error {
 	var texts []string
 	var ids []string
 	var tiers []memory.Tier
@@ -212,9 +314,13 @@ func ingestReserveCorpus(ctx context.Context, st *sqlitevec.Store, e embed.Embed
 		return err
 	}
 	for i := range texts {
+		ts := now
+		if tiers[i].Term() == memory.LongTerm {
+			ts = now.Add(-factAge)
+		}
 		if err := st.Upsert(ctx, &memory.Memory{
 			ID: ids[i], Namespace: reserveNS, Tier: tiers[i], Content: texts[i],
-			CreatedAt: now, UpdatedAt: now, LastAccessedAt: now, Embedding: vecs[i],
+			CreatedAt: ts, UpdatedAt: ts, LastAccessedAt: ts, Embedding: vecs[i],
 		}); err != nil {
 			return err
 		}
