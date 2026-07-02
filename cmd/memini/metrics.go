@@ -19,18 +19,21 @@ type consolidateMetrics struct {
 	queueDepth prometheus.Gauge
 
 	// service-level (added with the dashboards work)
-	rememberResults  *prometheus.CounterVec
-	recallResults    *prometheus.CounterVec
-	forgetResults    *prometheus.CounterVec
-	supersedeResults *prometheus.CounterVec
-	promoteResults   *prometheus.CounterVec
-	fsckResults      *prometheus.CounterVec
-	answerResults    *prometheus.CounterVec
-	rerankResults    *prometheus.CounterVec
-	recallDegraded   *prometheus.CounterVec
-	reinforceResults *prometheus.CounterVec
-	writeSanitized   *prometheus.CounterVec
-	opDuration       *prometheus.HistogramVec
+	rememberResults    *prometheus.CounterVec
+	recallResults      *prometheus.CounterVec
+	forgetResults      *prometheus.CounterVec
+	supersedeResults   *prometheus.CounterVec
+	promoteResults     *prometheus.CounterVec
+	fsckResults        *prometheus.CounterVec
+	answerResults      *prometheus.CounterVec
+	rerankResults      *prometheus.CounterVec
+	recallDegraded     *prometheus.CounterVec
+	corroborateResults *prometheus.CounterVec
+	tierClassified     *prometheus.CounterVec
+	promoteFacts       prometheus.Counter
+	reinforceResults   *prometheus.CounterVec
+	writeSanitized     *prometheus.CounterVec
+	opDuration         *prometheus.HistogramVec
 
 	// store-level
 	storeUpsert     *prometheus.CounterVec
@@ -114,6 +117,18 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 			Name: "memini_recall_degraded_total",
 			Help: "Recalls that fell back to keyword-only search by reason (embed_timeout, embed_error).",
 		}, []string{labelReason}),
+		corroborateResults: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "memini_corroborate_results_total",
+			Help: "Corroboration-routing attempts on fresh short-term writes (corroborated, cooldown, miss, error).",
+		}, []string{labelResult}),
+		tierClassified: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "memini_tier_classified_total",
+			Help: "Omitted-tier writes the marker classifier routed to a durable tier, by tier.",
+		}, []string{labelTier}),
+		promoteFacts: factory.NewCounter(prometheus.CounterOpts{
+			Name: "memini_promote_facts_total",
+			Help: "Durable facts written by the promotion pass (LLM distiller or marker extractor).",
+		}),
 		reinforceResults: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_reinforce_results_total",
 			Help: "Best-effort recall reinforcement writes (ok, error).",
@@ -207,8 +222,9 @@ func (m *consolidateMetrics) SupersedeResult(result string) {
 	m.supersedeResults.WithLabelValues(result).Inc()
 }
 
-func (m *consolidateMetrics) PromoteResult(result string, _ int) {
+func (m *consolidateMetrics) PromoteResult(result string, facts int) {
 	m.promoteResults.WithLabelValues(result).Inc()
+	m.promoteFacts.Add(float64(facts))
 }
 
 func (m *consolidateMetrics) FsckResult(result string) {
@@ -259,6 +275,14 @@ func (m *consolidateMetrics) SweepExpired(tier string) {
 
 func (m *consolidateMetrics) ActiveByTier(tier string, n int) {
 	m.activeByTier.WithLabelValues(tier).Set(float64(n))
+}
+
+func (m *consolidateMetrics) CorroborateResult(result string) {
+	m.corroborateResults.WithLabelValues(result).Inc()
+}
+
+func (m *consolidateMetrics) TierClassified(tier string) {
+	m.tierClassified.WithLabelValues(tier).Inc()
 }
 
 func (m *consolidateMetrics) DedupTombstoned(n int) {

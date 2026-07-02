@@ -49,6 +49,8 @@ func (m *countingMetrics) RecallDegraded(string)               {}
 func (m *countingMetrics) WriteSanitized(string)               {}
 func (m *countingMetrics) ReinforceResult(r string)            { m.results["reinforce:"+r]++ }
 func (m *countingMetrics) DedupTombstoned(int)                 {}
+func (m *countingMetrics) CorroborateResult(string)            {}
+func (m *countingMetrics) TierClassified(string)               {}
 
 func newAsyncSvc(t *testing.T, fc llm.Consolidator, minScore float64, mx Metrics) (*Service, store.Store) {
 	t.Helper()

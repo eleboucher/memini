@@ -110,6 +110,8 @@ func (m *countingMetrics) AnswerResult(string)              {}
 func (m *countingMetrics) RerankResult(string, string)      {}
 func (m *countingMetrics) ReinforceResult(string)           {}
 func (m *countingMetrics) DedupTombstoned(int)              {}
+func (m *countingMetrics) CorroborateResult(string)         {}
+func (m *countingMetrics) TierClassified(string)            {}
 
 // TestRecallEmbedErrorFailsOnce confirms an embed failure still hard-fails
 // recall with the original wrap and reports the error metric exactly once.

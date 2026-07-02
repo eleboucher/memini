@@ -124,6 +124,14 @@ type Metrics interface {
 	// DedupTombstoned records the total memories tombstoned by one one-shot
 	// Service.Dedup call. Called once per call.
 	DedupTombstoned(n int)
+	// CorroborateResult records one corroboration-routing attempt on a fresh
+	// short-term write: "corroborated" (durable fact reinforced), "cooldown"
+	// (match found but inside the per-fact window), "miss" (no durable
+	// neighbour at or above the threshold), or "error".
+	CorroborateResult(result string)
+	// TierClassified records an omitted-tier write the marker classifier
+	// routed to a durable tier; tier is "semantic" or "procedural".
+	TierClassified(tier string)
 }
 
 type nopMetrics struct{}
@@ -143,6 +151,8 @@ func (nopMetrics) RecallDegraded(string)               {}
 func (nopMetrics) WriteSanitized(string)               {}
 func (nopMetrics) ReinforceResult(string)              {}
 func (nopMetrics) DedupTombstoned(int)                 {}
+func (nopMetrics) CorroborateResult(string)            {}
+func (nopMetrics) TierClassified(string)               {}
 
 // ErrInvalidInput marks errors caused by the caller's request (missing fields,
 // unknown tiers) as opposed to backend failures. API layers map it to 400;
@@ -708,7 +718,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		s.metrics.RememberResult("error", string(tier))
 		return nil, err
 	}
-	in = stampClassifiedTier(in, tier)
+	in = s.stampClassifiedTier(in, tier)
 
 	// Scrub live credentials before anything persists them — content, the
 	// embedding, and the dedup fingerprint are all computed on the redacted
@@ -1006,11 +1016,13 @@ func resolveValidity(m, existing *memory.Memory, in RememberInput, now time.Time
 // is logged, never surfaced to the caller.
 // stampClassifiedTier marks a heuristically-classified durable write with
 // metadata["tier_classified"]="marker" so a bad call is auditable (and
-// demotable) later. A no-op for explicit tiers and the episodic fallback.
-func stampClassifiedTier(in RememberInput, tier memory.Tier) RememberInput {
+// demotable) later, and records the classification metric. A no-op for
+// explicit tiers and the episodic fallback.
+func (s *Service) stampClassifiedTier(in RememberInput, tier memory.Tier) RememberInput {
 	if in.Tier != "" || tier.Term() != memory.LongTerm {
 		return in
 	}
+	s.metrics.TierClassified(string(tier))
 	if in.Metadata == nil {
 		in.Metadata = map[string]any{}
 	}
@@ -1043,17 +1055,21 @@ func (s *Service) corroborateNearestAsync(ctx context.Context, m *memory.Memory,
 		if err != nil {
 			slog.WarnContext(cctx, "corroborate: durable lookup failed",
 				"namespace", m.Namespace, "err", err)
+			s.metrics.CorroborateResult("error")
 			return
 		}
 		if len(cands) == 0 || cands[0].Score < s.corroborateMinScore {
+			s.metrics.CorroborateResult("miss")
 			return
 		}
 		fact := cands[0].Memory
 		if s.now().Sub(fact.UpdatedAt) < corroborateCooldown {
+			s.metrics.CorroborateResult("cooldown")
 			return
 		}
 		s.reinforce(cctx, []store.Scored{{Memory: fact}})
 		s.corroborate(cctx, fact)
+		s.metrics.CorroborateResult("corroborated")
 	})
 }
 
