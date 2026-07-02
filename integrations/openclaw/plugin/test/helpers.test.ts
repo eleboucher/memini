@@ -262,12 +262,16 @@ test("registerMeminiTools: memory_recall shapes the request body from typed para
   });
 });
 
-test("registerMeminiTools: memory_remember validates tier and falls back to semantic", async () => {
+test("registerMeminiTools: memory_remember drops invalid/omitted tier so the server classifies", async () => {
   const { byName, client } = collectTools();
   await byName.memory_remember.execute("id", { content: "fact", tier: "bogus" });
   let call = client.calls.at(-1);
   assert.ok(call);
-  assert.deepEqual(call.body, { content: "fact", tier: "semantic" });
+  assert.deepEqual(call.body, { content: "fact" });
+  await byName.memory_remember.execute("id", { content: "fact" });
+  call = client.calls.at(-1);
+  assert.ok(call);
+  assert.deepEqual(call.body, { content: "fact" });
   await byName.memory_remember.execute("id", { content: "fact", tier: "episodic" });
   call = client.calls.at(-1);
   assert.ok(call);

@@ -568,7 +568,8 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
         tier: Type.Optional(
           Type.String({
             description:
-              "semantic=durable knowledge, procedural=how-to, episodic=what happened, working=transient (default semantic)",
+              "semantic=durable knowledge, procedural=how-to, episodic=what happened, working=transient " +
+              "(omit to let the server classify from the content)",
           }),
         ),
         tags: Type.Optional(Type.Array(Type.String(), { description: "Optional keywords for later search/filtering." })),
@@ -580,9 +581,11 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
         ),
       }),
       async execute(_id: any, params: any) {
-        const body: any = { content: params.content, tier: params.tier || "semantic" };
+        // No client-side tier default: an omitted (or invalid) tier lets the
+        // server classify the content and apply its own default.
+        const body: any = { content: params.content };
         const VALID_TIERS = ["working", "episodic", "semantic", "procedural"];
-        if (!VALID_TIERS.includes(body.tier)) body.tier = "semantic";
+        if (params.tier && VALID_TIERS.includes(params.tier)) body.tier = params.tier;
         if (params.tags?.length) body.tags = params.tags;
         if (params.category) body.metadata = { category: params.category };
         const res = await client.postJson("/v1/memories", body, ns);

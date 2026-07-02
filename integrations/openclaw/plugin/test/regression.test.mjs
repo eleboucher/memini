@@ -595,13 +595,13 @@ test("memory_list issues a filtered GET and maps the rows", async () => {
   assert.equal(memories[0].metadata.category, "bug_fixes");
 });
 
-test("memory_remember maps category to metadata and defaults the tier", async () => {
+test("memory_remember maps category to metadata and omits the tier for the server to classify", async () => {
   const client = fakeClient();
   const { byName } = await collectTools(client, { namespace: "ns", namespace_per_agent: false });
   const out = await byName.memory_remember.execute("id", { content: "fact", category: "bug_fixes", tags: ["x"] });
   const call = client.calls.at(-1);
   assert.equal(call.path, "/v1/memories");
-  assert.deepEqual(call.body, { content: "fact", tier: "semantic", tags: ["x"], metadata: { category: "bug_fixes" } });
+  assert.deepEqual(call.body, { content: "fact", tags: ["x"], metadata: { category: "bug_fixes" } });
   assert.deepEqual(JSON.parse(out.content[0].text), { id: "m1", success: true });
 });
 
@@ -684,13 +684,13 @@ test("agent_end still captures when success is false, tagging metadata.failed", 
   }
 });
 
-test("memory_remember rejects unknown tier and falls back to semantic", async () => {
+test("memory_remember drops an unknown tier so the server classifies", async () => {
   const client = fakeClient();
   const cfg = resolveConfig({ namespace: "ns", expose_tools: true });
   const { byName } = await collectTools(client, cfg);
   await byName.memory_remember.execute("id", { content: "fact", tier: "bogus" });
   const call = client.calls.at(-1);
-  assert.equal(call.body.tier, "semantic", "unknown tier must fall back to semantic");
+  assert.equal(call.body.tier, undefined, "unknown tier must be dropped, not defaulted");
 });
 
 test("stripRuntimePreambles drops a leading untrusted-metadata block, keeps the message", () => {
