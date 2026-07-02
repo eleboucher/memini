@@ -10,6 +10,12 @@ import (
 
 func TestRegexAnchorExtractor(t *testing.T) {
 	ex := RegexAnchorExtractor{}
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	// ago computes the expected days-ago for an absolute target date, so the
+	// expectations don't hand-count calendar days.
+	ago := func(y int, m time.Month, d int) int {
+		return int(now.Sub(time.Date(y, m, d, 0, 0, 0, 0, time.UTC)).Hours() / 24)
+	}
 	cases := []struct {
 		q         string
 		days, tol int
@@ -20,11 +26,19 @@ func TestRegexAnchorExtractor(t *testing.T) {
 		{"my trip last month", 30, 7, true},
 		{"5 days ago I decided", 5, 2, true},
 		{"a year ago", 365, 30, true},
+		// Absolute references resolve against now (2026-06-01): the most
+		// recent past occurrence.
+		{"what did we ship back in march", ago(2026, time.March, 15), 15, true},
+		{"the decision on march 14th", ago(2026, time.March, 14), 2, true},
+		{"in december we migrated", ago(2025, time.December, 15), 15, true},
+		{"the conference last summer", ago(2025, time.July, 15), 45, true},
+		{"the migration in 2025", ago(2025, time.July, 1), 120, true},
 		{"a totally atemporal question", 0, 0, false},
 		{"two days ago", 0, 0, false}, // spelled-out numbers are out of scope (regex tier)
+		{"may i ask a question", 0, 0, false},
 	}
 	for _, c := range cases {
-		a, ok := ex.Anchor(c.q)
+		a, ok := ex.Anchor(c.q, now)
 		if ok != c.ok {
 			t.Errorf("%q: ok=%v want %v", c.q, ok, c.ok)
 			continue
@@ -32,6 +46,21 @@ func TestRegexAnchorExtractor(t *testing.T) {
 		if ok && (a.Days != c.days || a.Tolerance != c.tol) {
 			t.Errorf("%q: got (%d,%d) want (%d,%d)", c.q, a.Days, a.Tolerance, c.days, c.tol)
 		}
+	}
+}
+
+func TestRerankTemporalUsesValidFrom(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	written := now.AddDate(0, 0, -1)
+	backdated := now.AddDate(0, 0, -21) // matches "3 weeks ago"
+	results := []store.Scored{
+		{Memory: &memory.Memory{ID: "plain", CreatedAt: written}, Score: 0.5},
+		{Memory: &memory.Memory{ID: "backdated", CreatedAt: written, ValidFrom: &backdated}, Score: 0.5},
+	}
+	out := RerankTemporal(results, "what did I decide 3 weeks ago", now,
+		DefaultRerankWeights, RegexAnchorExtractor{}, DefaultTemporalBoost)
+	if out[0].Memory.ID != "backdated" {
+		t.Fatalf("ValidFrom-dated memory should win the temporal boost, got %s first", out[0].Memory.ID)
 	}
 }
 
@@ -56,5 +85,27 @@ func TestRerankTemporalBoostsNearTarget(t *testing.T) {
 	targeted := RerankTemporal(results, "what did I decide 3 weeks ago", now, DefaultRerankWeights, RegexAnchorExtractor{}, DefaultTemporalBoost)
 	if targeted[0].Memory.ID != "old" {
 		t.Fatalf("temporal targeting should lift the on-target memory, got %q first", targeted[0].Memory.ID)
+	}
+}
+
+func TestAbsoluteAnchorExplicitYear(t *testing.T) {
+	ex := RegexAnchorExtractor{}
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	ago := func(y int, m time.Month, d int) int {
+		return int(now.Sub(time.Date(y, m, d, 0, 0, 0, 0, time.UTC)).Hours() / 24)
+	}
+	cases := []struct {
+		q         string
+		days, tol int
+	}{
+		{"the painting shared on october 13, 2023", ago(2023, time.October, 13), 2},
+		{"the project in july 2023", ago(2023, time.July, 15), 15},
+		{"the setback in october 2023", ago(2023, time.October, 15), 15},
+	}
+	for _, c := range cases {
+		a, ok := ex.Anchor(c.q, now)
+		if !ok || a.Days != c.days || a.Tolerance != c.tol {
+			t.Errorf("%q: got (%d,%d,%v) want (%d,%d,true)", c.q, a.Days, a.Tolerance, ok, c.days, c.tol)
+		}
 	}
 }
