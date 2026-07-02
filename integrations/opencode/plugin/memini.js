@@ -371,9 +371,6 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
   };
 
   return {
-    name: "memini",
-    config: async (_config) => {},
-    dispose: async () => {},
     "chat.message": guard("chat.message", async (input, output) => {
       if (!cfg.recall) return;
       const query = extractPartsText(output && output.parts);
