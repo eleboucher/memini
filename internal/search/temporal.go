@@ -15,8 +15,11 @@ import (
 // ("what did I do three weeks ago") rather than near now, which the monotonic
 // recency factor cannot do. It only fires when the query names a relative time.
 //
-// DefaultTemporalBoost is the additive bonus a perfectly on-target candidate
-// gets on the [0,1] composite score; it ramps to 0 by 3x the tolerance.
+// DefaultTemporalBoost is the maximum relevance amplification a perfectly
+// on-target candidate gets (score × (1 + boost) at zero distance); it ramps to
+// 0 by 3x the tolerance. Multiplicative so proximity can reorder comparably
+// relevant candidates without letting a date-near but weakly relevant memory
+// displace a strong match.
 const DefaultTemporalBoost = 0.40
 
 // TimeAnchor is a resolved relative-time reference: an answer is expected
@@ -170,8 +173,8 @@ func daysAgo(target, now time.Time) int {
 }
 
 // RerankTemporal re-ranks with the composite weights, then — when ex resolves a
-// relative-time reference in query — adds a date-proximity bonus toward
-// (now - anchor) so a candidate dated near the referenced time can climb past a
+// relative-time reference in query — scales each score by a date-proximity
+// factor toward (now - anchor) so a candidate dated near the referenced time can climb past a
 // marginally-more-similar one. With no time reference (or no extractor) it is
 // exactly RerankWith. boost <= 0 also degrades to plain composite re-rank.
 func RerankTemporal(
@@ -200,7 +203,13 @@ func RerankTemporal(
 		if r.Memory.ValidFrom != nil {
 			date = *r.Memory.ValidFrom
 		}
-		val := r.Score + boost*temporalProximity(date, target, anchor.Tolerance)
+		// Multiplicative, not additive: proximity amplifies a candidate's own
+		// relevance (up to +boost×100%) rather than adding a flat bonus. A
+		// date-near memory that is also relevant rises; a date-near but weakly
+		// relevant one has little score to amplify, so it cannot leapfrog a
+		// strong match on date alone — temporal targeting reorders among
+		// comparable candidates instead of displacing relevance.
+		val := r.Score * (1 + boost*temporalProximity(date, target, anchor.Tolerance))
 		out[i] = ranked{sc: store.Scored{Memory: r.Memory, Score: val}, val: val, pos: i}
 	}
 	sort.SliceStable(out, func(i, j int) bool {

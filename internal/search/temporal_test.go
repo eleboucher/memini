@@ -88,6 +88,25 @@ func TestRerankTemporalBoostsNearTarget(t *testing.T) {
 	}
 }
 
+// TestRerankTemporalDoesNotDisplaceRelevance guards the multiplicative boost's
+// point: a strongly relevant memory dated far from the target must still beat a
+// weakly relevant one dated exactly on target. An additive boost would let the
+// on-date memory leapfrog on date alone; the multiplicative form must not.
+func TestRerankTemporalDoesNotDisplaceRelevance(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	results := []store.Scored{
+		// Highly relevant, but written yesterday (far from "3 weeks ago").
+		{Memory: &memory.Memory{ID: "relevant", CreatedAt: now.AddDate(0, 0, -1)}, Score: 1.0},
+		// Weakly relevant, but dated exactly on the referenced time.
+		{Memory: &memory.Memory{ID: "on-date", CreatedAt: now.AddDate(0, 0, -21)}, Score: 0.6},
+	}
+	out := RerankTemporal(results, "what did I decide 3 weeks ago", now,
+		DefaultRerankWeights, RegexAnchorExtractor{}, DefaultTemporalBoost)
+	if out[0].Memory.ID != "relevant" {
+		t.Fatalf("date proximity must not displace a much stronger match, got %q first", out[0].Memory.ID)
+	}
+}
+
 func TestAbsoluteAnchorExplicitYear(t *testing.T) {
 	ex := RegexAnchorExtractor{}
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
