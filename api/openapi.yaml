@@ -399,7 +399,14 @@ components:
       required: [content]
       properties:
         content: { type: string }
-        tier: { $ref: "#/components/schemas/Tier" }
+        tier:
+          allOf:
+            - $ref: "#/components/schemas/Tier"
+          description: >-
+            Omit to let the server choose: the content is classified by the
+            marker heuristic (a terse, unhedged decision/preference/problem
+            lands in semantic/procedural, stamped metadata.tier_classified=marker),
+            falling back to episodic. Classification never picks working.
         summary: { type: string }
         tags: { type: array, items: { type: string } }
         metadata: { type: object, additionalProperties: true }

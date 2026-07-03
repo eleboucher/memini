@@ -167,7 +167,8 @@ type Config struct {
 	// scores at least this. 0 disables the gate.
 	ConsolidateMinScore float64 `env:"MEMINI_CONSOLIDATE_MIN_SCORE" envDefault:"0.6"`
 
-	// Promotion (episodic→semantic distillation). Requires an LLM.
+	// Promotion (episodic→semantic distillation). Uses the LLM when configured,
+	// the marker extractor otherwise, so it also runs LLM-less.
 	// PromoteInterval is how often the promoter runs; 0 disables it.
 	PromoteInterval time.Duration `env:"MEMINI_PROMOTE_INTERVAL" envDefault:"24h"`
 	// PromoteMinAccess is the minimum access_count for an episodic memory to be

@@ -313,6 +313,7 @@ export interface components {
         Tier: "working" | "episodic" | "semantic" | "procedural";
         RememberRequest: {
             content: string;
+            /** @description Omit to let the server choose: the content is classified by the marker heuristic (a terse, unhedged decision/preference/problem lands in semantic/procedural, stamped metadata.tier_classified=marker), falling back to episodic. Classification never picks working. */
             tier?: components["schemas"]["Tier"];
             summary?: string;
             tags?: string[];
