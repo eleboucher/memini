@@ -227,7 +227,9 @@ type RememberRequest struct {
 	Metadata   *map[string]interface{} `json:"metadata,omitempty"`
 	Summary    *string                 `json:"summary,omitempty"`
 	Tags       *[]string               `json:"tags,omitempty"`
-	Tier       *Tier                   `json:"tier,omitempty"`
+
+	// Tier Omit to let the server choose: the content is classified by the marker heuristic (a terse, unhedged decision/preference/problem lands in semantic/procedural, stamped metadata.tier_classified=marker), falling back to episodic. Classification never picks working.
+	Tier *Tier `json:"tier,omitempty"`
 
 	// TtlSeconds Overrides the tier default TTL; negative means never expire.
 	TtlSeconds *int `json:"ttl_seconds,omitempty"`
