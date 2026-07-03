@@ -381,9 +381,12 @@ class MeminiMemoryProvider(MemoryProvider):
         })
 
     def on_memory_write(self, action: str, target: str, content: str, **kwargs: Any) -> None:
-        # Hermes emits action ∈ {add, replace, remove}; mirror those that add content.
+        # Hermes emits action ∈ {add, replace, remove}; mirror those that add
+        # content. Tier is omitted so the server classifies it (a decision or
+        # preference lands durable, chatter stays episodic) rather than forcing
+        # everything to semantic.
         if action in ("add", "replace") and content.strip():
-            self._call_bg("/v1/memories", {"content": content.strip()[:4000], "tier": "semantic"})
+            self._call_bg("/v1/memories", {"content": content.strip()[:4000]})
 
     def get_tool_schemas(self) -> list[dict]:
         return [
@@ -448,8 +451,8 @@ class MeminiMemoryProvider(MemoryProvider):
                             "type": "string",
                             "enum": list(VALID_TIERS),
                             "description": "semantic=durable knowledge, procedural=how-to, "
-                                           "episodic=what happened, working=transient",
-                            "default": "semantic",
+                                           "episodic=what happened, working=transient "
+                                           "(omit to let the server classify from the content)",
                         },
                         "tags": {
                             "type": "array",
@@ -519,10 +522,12 @@ class MeminiMemoryProvider(MemoryProvider):
             return json.dumps({"memories": items})
 
         if name == "memory_remember":
-            tier = args.get("tier", "semantic")
-            if tier not in VALID_TIERS:
-                tier = "semantic"
-            body: dict = {"content": args["content"], "tier": tier}
+            # No client-side tier default: send tier only when the caller gave a
+            # valid one, else omit it so the server classifies the content.
+            body: dict = {"content": args["content"]}
+            tier = args.get("tier")
+            if tier in VALID_TIERS:
+                body["tier"] = tier
             if args.get("tags"):
                 body["tags"] = args["tags"]
             if args.get("category"):

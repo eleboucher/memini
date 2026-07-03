@@ -128,7 +128,8 @@ class OnMemoryWriteTest(unittest.TestCase):
             captured = {}
             self._provider(captured).on_memory_write(action, "memory", "a durable fact")
             self.assertEqual(captured["path"], "/v1/memories")
-            self.assertEqual(captured["body"]["tier"], "semantic")
+            # Tier is omitted so the server classifies the content.
+            self.assertNotIn("tier", captured["body"])
             self.assertEqual(captured["body"]["content"], "a durable fact")
 
     def test_ignores_remove_and_empty_content(self):
@@ -140,7 +141,7 @@ class OnMemoryWriteTest(unittest.TestCase):
 
 
 class HandleToolCallTest(unittest.TestCase):
-    def test_remember_maps_category_and_defaults_tier(self):
+    def test_remember_maps_category_and_omits_tier(self):
         captured = {}
 
         def stub(path, body, method="POST"):
@@ -151,13 +152,14 @@ class HandleToolCallTest(unittest.TestCase):
             "memory_remember", {"content": "fact", "category": "bug_fixes", "tags": ["x"]}
         )
         self.assertEqual(captured["path"], "/v1/memories")
+        # Tier omitted so the server classifies; a valid explicit tier is still forwarded.
         self.assertEqual(
             captured["body"],
-            {"content": "fact", "tier": "semantic", "tags": ["x"], "metadata": {"category": "bug_fixes"}},
+            {"content": "fact", "tags": ["x"], "metadata": {"category": "bug_fixes"}},
         )
         self.assertEqual(json.loads(out), {"id": "m1", "success": True})
 
-    def test_remember_rejects_unknown_tier(self):
+    def test_remember_drops_unknown_tier(self):
         captured = {}
 
         def stub(path, body, method="POST"):
@@ -165,7 +167,9 @@ class HandleToolCallTest(unittest.TestCase):
             return {"id": "m2"}
 
         make_provider(stub).handle_tool_call("memory_remember", {"content": "f", "tier": "bogus"})
-        self.assertEqual(captured["body"]["tier"], "semantic")
+        self.assertNotIn("tier", captured["body"])
+        make_provider(stub).handle_tool_call("memory_remember", {"content": "f", "tier": "procedural"})
+        self.assertEqual(captured["body"]["tier"], "procedural")
 
     def test_list_issues_a_get(self):
         captured = {}

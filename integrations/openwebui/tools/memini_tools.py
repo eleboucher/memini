@@ -167,11 +167,13 @@ class Tools:
             await __event_emitter__(
                 {"type": "status", "data": {"description": "Storing memory…", "done": False}}
             )
+        # No forced tier: this tool is for durable preferences/decisions/facts,
+        # so let the server classify the content (a decision or preference lands
+        # durable, chatter stays episodic) instead of pinning everything to one tier.
         await self._post_json(
             "/v1/memories",
             {
                 "content": content,
-                "tier": "episodic",
                 "tags": ["openwebui"],
                 "metadata": {"source": "openwebui"},
             },
