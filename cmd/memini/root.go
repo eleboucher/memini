@@ -232,8 +232,8 @@ func buildServiceStack(
 		service.WithGlobalNamespace(cfg.GlobalNamespace),
 		service.WithTemporalTargeting(defaultTemporalBoost, search.RegexAnchorExtractor{}),
 		service.WithRecallEmbedTimeout(cfg.RecallEmbedTimeout),
-		service.WithRecallMinScore(defaultRecallMinScore),
-		service.WithRecallSemanticReserve(defaultRecallSemanticReserve),
+		service.WithRecallMinScore(cfg.RecallMinScore),
+		service.WithRecallSemanticReserve(cfg.RecallSemanticReserve),
 		service.WithEpisodicMinChars(cfg.EpisodicMinChars),
 		// Write-time fact building self-selects: distill (LLM) no-ops without a
 		// consolidator; extract (heuristic) only fires when no LLM is configured.
@@ -464,10 +464,9 @@ const (
 	// rerankMaxDocChars truncates each document sent to the cross-encoder.
 	// MEMINI_RERANK_MAX_BATCH_CHARS remains configurable.
 	rerankMaxDocChars = 2048
-	// Baked retrieval defaults (formerly MEMINI_RECALL_* / MEMINI_TEMPORAL_BOOST).
-	defaultRecallMinScore        = 0.1
-	defaultRecallSemanticReserve = 2
-	defaultTemporalBoost         = 0.40
+	// Baked retrieval default (formerly MEMINI_TEMPORAL_BOOST). RecallMinScore
+	// and RecallSemanticReserve are configurable again (see internal/config).
+	defaultTemporalBoost = 0.40
 	// defaultCorroborateMinScore gates corroboration routing (short-term write →
 	// confidence growth on the durable fact it restates). Above the 0.664
 	// nearest-neighbour ceiling the dedup bench measured for genuinely distinct

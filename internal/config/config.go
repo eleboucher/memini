@@ -148,8 +148,19 @@ type Config struct {
 	// on a slow or stuck embeddings backend. Defaults to 2s so a wedged backend
 	// can't hang recall indefinitely; set 0 to restore an unbounded query embed.
 	RecallEmbedTimeout time.Duration `env:"MEMINI_RECALL_EMBED_TIMEOUT" envDefault:"2s"`
-	// Recall relevance floors, semantic reserve, and fusion weight are baked in
-	// cmd/memini (the benchmark harness overrides them via service.Option).
+	// RecallMinScore is the fused-score floor: candidates below it are dropped
+	// before ranking. The default (0.1) is the benched value; it is exposed so a
+	// deployment on a different embedder can raise it to trim loosely-relevant
+	// injection. Only meaningful with score fusion.
+	RecallMinScore float64 `env:"MEMINI_RECALL_MIN_SCORE" envDefault:"0.1"`
+	// RecallSemanticReserve reserves up to N of the recall slots for durable
+	// tiers (semantic/procedural) so consolidated knowledge is not crowded out by
+	// episodic chatter. Exposed because it changes recall composition per
+	// deployment: set 0 for pure-relevance recall (no forced durable slots).
+	// Reserved slots are relevance-gated — a durable memory is only promoted in
+	// when it is relevance-competitive with the entry it displaces.
+	RecallSemanticReserve int `env:"MEMINI_RECALL_SEMANTIC_RESERVE" envDefault:"2"`
+	// Fusion weight stays baked in cmd/memini (tuned via the benchmark harness).
 
 	// EpisodicMinChars drops an episodic write whose substantive content (role
 	// scaffolding stripped) is below this many characters — the low-signal
@@ -242,9 +253,7 @@ var deprecatedVars = []struct{ name, guidance string }{
 	{"MEMINI_CONSOLIDATE_QUEUE_CAP", "now a fixed internal default (1024)"},
 	{"MEMINI_NAMESPACE_HEADER", "the header name is fixed to X-Memini-Namespace"},
 	{"MEMINI_FUSION_ALPHA", "now a baked retrieval default (0.5); tune via the benchmark harness, not env"},
-	{"MEMINI_RECALL_MIN_SCORE", "now a baked retrieval default (0.1)"},
 	{"MEMINI_RECALL_MIN_SEMANTIC_SCORE", "now a baked retrieval default (0, off)"},
-	{"MEMINI_RECALL_SEMANTIC_RESERVE", "now a baked retrieval default (2)"},
 	{"MEMINI_TEMPORAL_BOOST", "now a baked retrieval default (0.40)"},
 	{"MEMINI_RERANK_MAX_DOC_CHARS", "now a fixed internal default (2048); MEMINI_RERANK_MAX_BATCH_CHARS remains configurable"},
 	{"MEMINI_REDACT_SECRETS", "secret redaction is always on"},
