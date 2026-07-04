@@ -116,8 +116,8 @@ func TestReserveDurableTiersRelevanceGate(t *testing.T) {
 			tiers:  []memory.Tier{ep, ep, ep, se, pr},
 			scores: []float64{0.9, 0.8, 0.7, 0.3, 0.2},
 			limit:  3, reserve: 2,
-			// 0.3 < max(0.5*0.7, 0.4*0.9): no durable clears the bar, window
-			// stays pure relevance.
+			// 0.3 < 0.4*0.9: no durable clears the bar, window stays pure
+			// relevance.
 			wantTop: "abc",
 		},
 		{
@@ -125,27 +125,17 @@ func TestReserveDurableTiersRelevanceGate(t *testing.T) {
 			tiers:  []memory.Tier{ep, ep, ep, se},
 			scores: []float64{0.9, 0.8, 0.7, 0.6},
 			limit:  3, reserve: 1,
-			// 0.6 >= max(0.5*0.7, 0.4*0.9): the crowded-out fact is recovered,
-			// surfacing below the top hit.
+			// 0.6 >= 0.4*0.9: the crowded-out fact is recovered, surfacing
+			// below the top hit.
 			wantTop: "adb",
 		},
 		{
-			name:   "each eviction raises the bar",
-			tiers:  []memory.Tier{ep, ep, ep, se, se},
-			scores: []float64{0.9, 0.8, 0.7, 0.6, 0.38},
-			limit:  3, reserve: 2,
-			// 'd' clears vs 'c' (0.6 >= 0.36); 'e' would clear c's bar but the
-			// next evictee is 'b' (bar 0.40 > 0.38), so only one is promoted.
-			wantTop: "adb",
-		},
-		{
-			name:   "top anchor blocks promotion into a low-signal window",
+			name:   "anchor holds on a low-signal window",
 			tiers:  []memory.Tier{ep, ep, ep, se},
 			scores: []float64{1.0, 0.15, 0.1, 0.12},
 			limit:  3, reserve: 1,
-			// The evictee leg alone would pass (0.12 >= 0.5*0.1) — the noise
-			// evictee opens the window — but the absolute leg holds:
-			// 0.12 < 0.4*1.0.
+			// A bar relative to the noise evictee (0.1) would pass nearly
+			// anything; the top anchor holds: 0.12 < 0.4*1.0.
 			wantTop: "abc",
 		},
 		{
@@ -153,8 +143,9 @@ func TestReserveDurableTiersRelevanceGate(t *testing.T) {
 			tiers:  []memory.Tier{ep, ep, ep, se, se},
 			scores: []float64{0.9, 0.8, 0.7, 0.6, 0.55},
 			limit:  3, reserve: 2,
-			// Both clear their bars (0.6 >= 0.36; 0.55 >= max(0.5*0.8, 0.36));
-			// the top hit stays first, promotions follow in relevance order.
+			// Both clear their bars (0.6 >= max(0.5*0.7, 0.36); 0.55 >=
+			// max(0.5*0.8, 0.36)); the top hit stays first, promotions follow
+			// in relevance order.
 			wantTop: "ade",
 		},
 	}
@@ -169,6 +160,17 @@ func TestReserveDurableTiersRelevanceGate(t *testing.T) {
 				t.Fatalf("top %q, want %q (full: %q)", ids(top), tt.wantTop, ids(got))
 			}
 		})
+	}
+}
+
+func TestReserveDurableTiersPromoteRatioLeg(t *testing.T) {
+	// The evictee-relative leg: each eviction raises its bar. 'd' clears vs
+	// 'c' (0.6 >= 0.5*0.7); 'e' clears the anchor (0.38 >= 0.36) but not the
+	// next evictee 'b' (0.5*0.8 = 0.40), so only one is promoted.
+	p := scoredPool([]memory.Tier{ep, ep, ep, se, se}, []float64{0.9, 0.8, 0.7, 0.6, 0.38})
+	got := reserveDurableTiers(p, 3, 2, 0.5, defaultReserveTopAnchor, 0)
+	if ids(got[:3]) != "adb" {
+		t.Fatalf("top %q, want %q (full: %q)", ids(got[:3]), "adb", ids(got))
 	}
 }
 

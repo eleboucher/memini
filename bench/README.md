@@ -411,6 +411,24 @@ Reading it against the baseline:
   deliberately not taken to avoid tuning on the eval corpus.
 - Episodic recall and spray are untouched (100% / 1.0, 0).
 
+### The production window (k=3) and the rerank demotion
+
+Every shipped turn-injection integration (hermes, openclaw, opencode, pi,
+openwebui) requests `limit = recall_limit` (default 3) and injects the entire
+response; the MCP tool defaults to k=10, delivered whole. Nobody truncates
+below k, so the cross-encoder demoting a promoted fact within the window
+reorders delivered memories rather than dropping any — a rerank pin/blend was
+scoped and dropped on that evidence. The `prod k=3` scoreboard row measures
+the real consumer window: membership is identical to k=5 (durable R@3
+100/100/100/70, both modes), worst-case rerank MRR is .333 (rank 3 of 3
+delivered), and precision is slightly better (inj 4/9/11/4).
+
+A gate-simplification probe (drop the evictee leg, keep only the 0.4 top
+anchor) was identical on this corpus and recovered bge-small to 100%, but
+leaked one spray injection on the tier-mix corpus (an off-topic durable at
+0.38× the top of a flat chatter window) — the evictee-relative leg is
+load-bearing exactly there, so the gate keeps both legs.
+
 ## External baselines
 
 `bench.System` is the extension point. To compare against mem0, Zep/Graphiti,

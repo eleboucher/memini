@@ -63,15 +63,20 @@ func TestRecallQualityScoreboard(t *testing.T) {
 	corpus := buildQualityCorpus()
 	clk := func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
 
-	// Production is reserve=2 with the default promote ratio; reserve=0 is the
+	// Production is reserve=2 at the gate defaults; reserve=0 is the
 	// pure-relevance reference that prices what the reserve buys and costs.
+	// "prod k=3" is the window every shipped turn-injection plugin actually
+	// requests (recall_limit=3 end-to-end); the k=5 rows keep history
+	// comparable and cover the MCP tool path's deeper windows.
 	configs := []struct {
 		label   string
 		reserve int
+		limit   int
 		opts    []service.Option
 	}{
 		{label: "reserve=0", reserve: 0},
 		{label: "production", reserve: 2},
+		{label: "prod k=3", reserve: 2, limit: 3},
 	}
 
 	for _, emb := range embedders {
@@ -107,7 +112,11 @@ func TestRecallQualityScoreboard(t *testing.T) {
 					opts = append(opts, mode.opts...)
 					svc := service.New(st, emb.e, opts...)
 
-					m := runQualityQueries(ctx, t, svc, corpus, cfg.reserve)
+					limit := cfg.limit
+					if limit <= 0 {
+						limit = 5
+					}
+					m := runQualityQueries(ctx, t, svc, corpus, cfg.reserve, limit)
 					_ = st.Close()
 
 					t.Logf("%-11s | %6.1f%% / %.3f | %6.1f%% / %.3f | %.3f | %.3f | %4d/%-4d | %3d/%-3d | %3d/%-3d",
@@ -137,13 +146,13 @@ type qualityMetrics struct {
 	injFactN, injDetailN int     // injected-durable counts split by query class
 }
 
-func runQualityQueries(ctx context.Context, t *testing.T, svc *service.Service, c qualityCorpus, reserve int) qualityMetrics {
+func runQualityQueries(ctx context.Context, t *testing.T, svc *service.Service, c qualityCorpus, reserve, limit int) qualityMetrics {
 	t.Helper()
 	var m qualityMetrics
 	var p3Sum, p5Sum float64
 	for _, q := range c.queries {
 		res, err := svc.Recall(ctx, service.RecallInput{
-			Namespace: reserveNS, Query: q.text, Limit: 5, SemanticReserve: reserve,
+			Namespace: reserveNS, Query: q.text, Limit: limit, SemanticReserve: reserve,
 		})
 		if err != nil {
 			t.Fatalf("recall %q: %v", q.text, err)

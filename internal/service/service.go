@@ -429,10 +429,11 @@ func WithRecallSemanticReserve(n int) Option {
 	return func(s *Service) { s.recallSemanticReserve = n }
 }
 
-// WithReservePromoteRatio overrides the reserve's fixed-ratio relevance gate:
-// a durable takes a reserved slot only when its composite score is at least
-// ratio× the entry it evicts. Tuning/bench knob (bench/reserve_sweep_test.go);
-// the production default is defaultReservePromoteRatio.
+// WithReservePromoteRatio overrides the evictee-relative leg of the reserve's
+// relevance gate: a durable takes a reserved slot only when its composite
+// score is at least ratio× the entry it evicts. Tuning/bench knob
+// (bench/reserve_sweep_test.go); the production default is
+// defaultReservePromoteRatio.
 func WithReservePromoteRatio(ratio float64) Option {
 	return func(s *Service) { s.reservePromoteRatio = ratio }
 }
@@ -1506,14 +1507,15 @@ func (s *Service) extractEpisodicAsync(ctx context.Context, m *memory.Memory) {
 
 // defaultReservePromoteRatio is the evictee-relative leg of the reserve's
 // promotion gate: a durable takes a reserved slot only when its composite
-// score is at least this fraction of the entry it would evict. Below it the
-// durable is off-topic for the query and forcing it in would trade a relevant
-// hit for noise. 0.5 under the relevance-modulated composite imposes the same
-// effective relevance bar the benched 0.6 imposed under the old additive
-// composite, which gave durables a flat +0.2 floor. Benched across four
-// embedders on bench/reserve_sweep_test.go and bench/quality_test.go. An
-// adaptive window-percentile gate was rejected: a crowded-out durable scores
-// below the window floor by construction.
+// score is at least this fraction of the entry it would evict. 0.5 under the
+// relevance-modulated composite imposes the same effective relevance bar the
+// benched 0.6 imposed under the old additive composite, which gave durables a
+// flat +0.2 floor. This leg is load-bearing on strong flat windows, where the
+// evictee scores close to the top hit and the bar exceeds the anchor's: with
+// it removed, the spray regression (bench/reserve_test.go) leaks an off-topic
+// durable at 0.38x the window top. An adaptive window-percentile gate was
+// rejected: a crowded-out durable scores below the window floor by
+// construction.
 const defaultReservePromoteRatio = 0.5
 
 // defaultReserveTopAnchor is the absolute leg of the promotion gate: a durable
