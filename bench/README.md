@@ -326,6 +326,60 @@ value of hybrid fusion:
 
 > Recall@K on LongMemEval/LoCoMo is easy to overfit — treat scores as directional.
 
+## Recall-quality scoreboard (`quality_test.go`)
+
+The LongMemEval/LoCoMo suites ingest a single tier and mostly measure recall;
+the failures memini has actually shipped (spray) were **precision** failures —
+recall injecting irrelevant memories. `TestRecallQualityScoreboard` is the
+tier-mixed baseline both axes are judged against: durable-fact recall, episodic
+detail recall, and injection precision on one labeled corpus (near-duplicate
+durable/episodic pairs, same-template distractor durables, episodic-only
+topics, and confusable topics that lexically neighbour fact topics). Ranking
+changes are not done until this scoreboard moves in the right direction on ≥2
+embedders.
+
+```sh
+go test ./bench/ -run TestRecallQualityScoreboard -v
+# add the cross-encoder rows:
+MEMINI_RERANK_URL=http://127.0.0.1:8002/v1 MEMINI_RERANK_MODEL=qwen3-reranker-0.6b \
+  go test ./bench/ -run TestRecallQualityScoreboard -v
+```
+
+Baseline (2026-07, production config `reserve=2` / promote ratio 0.6;
+`reserve=0` reference in parentheses). `spray` = injected durables on queries
+with no relevant durable; `inj` = injected durables over all 40 queries:
+
+| Embedder · mode     | dur R@5 / MRR@5         | epi R@5 / MRR | P@3 / P@5     | spray | inj     |
+| ------------------- | ----------------------- | ------------- | ------------- | ----- | ------- |
+| qwen3-0.6b · comp   | **100% / .66** (70/.60) | 100% / 1.0    | 0.725 / 0.670 | 0     | 50 (43) |
+| qwen3-0.6b · rerank | 100% / .20 (70/.14)     | 100% / 1.0    | 0.733 / 0.670 | 0     | 50 (43) |
+| MiniLM-L6 · comp    | 100% / .20 (0/0)        | 100% / 1.0    | 0.742 / 0.695 | 0     | 51 (35) |
+| MiniLM-L6 · rerank  | 100% / .20 (0/0)        | 100% / 1.0    | 0.775 / 0.695 | 0     | 51 (35) |
+| nomic-v1.5 · comp   | 100% / .20 (0/0)        | 100% / 1.0    | 0.758 / 0.695 | 0     | 54 (40) |
+| nomic-v1.5 · rerank | 100% / .20 (0/0)        | 100% / 1.0    | 0.767 / 0.695 | 0     | 54 (40) |
+| bge-small · comp    | 70% / .14 (0/0)         | 100% / 1.0    | 0.750 / 0.700 | 0     | 45 (19) |
+| bge-small · rerank  | 70% / .14 (0/0)         | 100% / 1.0    | 0.775 / 0.700 | 0     | 45 (19) |
+
+What the baseline says:
+
+- **The reserve does its job**: durable R@5 goes 0→100% on the small embedders
+  (they cannot rank the terse fact into a chatter-dominated top-5 unaided);
+  bge-small recovers 7/10 (the 0.6 gate blocks the other three — the known
+  weak-embedder trade-off from the gate sweep).
+- **Spray is clean everywhere**: catch-me-up queries with no relevant durable
+  get zero injections. Their windows are full of strong same-topic matches, so
+  the ratio gate's bar is high.
+- **All injection happens on detail questions** ("what was the incident ticket
+  number?"): the gold line is a strong match but the rest of the window is
+  noise-level, so pure relevance already fills it with off-topic distractor
+  durables (19–43) and the reserve, gating against a _weak_ evictee, adds more
+  (+7 to +26). Low-signal windows are where precision is lost — the target for
+  the entity/contradiction phases.
+- **The cross-encoder demotes terse durables inside the window** (qwen3 durable
+  MRR .66→.20 — rank ~1–2 to rank 5) while nudging P@3 up: it prefers verbose
+  same-topic chatter over "Decision: …" one-liners for conversational queries.
+  Window _membership_ is unchanged (R@5, P@5, inj identical), as designed.
+
 ## External baselines
 
 `bench.System` is the extension point. To compare against mem0, Zep/Graphiti,
