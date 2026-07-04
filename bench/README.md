@@ -429,6 +429,65 @@ leaked one spray injection on the tier-mix corpus (an off-topic durable at
 0.38× the top of a flat chatter window) — the evictee-relative leg is
 load-bearing exactly there, so the gate keeps both legs.
 
+## Multi-hop diagnostics (`multihop_test.go`, `entitydiag_test.go`)
+
+LoCoMo category-1 questions need **all** of ≥2 gold memories ("Where did
+Caroline move from 4 years ago?" = the _moved 4 years ago_ turn + the _home
+country, Sweden_ turn). `TestMultiHopRetrievalCeiling` measures whether that is
+a retrieval problem and what a second recall would buy (each 2nd-hop regime is
+the union of two k=10 result sets):
+
+| regime (277 questions, full-gold %)   | qwen3-0.6b | MiniLM-L6 |
+| ------------------------------------- | ---------: | --------: |
+| single recall                         |      16.2% |     15.9% |
+| + realistic 2nd hop (top-1 content)   |      22.7% |     19.5% |
+| + oracle 2nd hop (known-gold content) |      26.4% |     22.0% |
+
+### Entity edges don't bridge it (measured, phase stopped)
+
+The planned fix was an associative edge: extract entities at write time
+(`extract.Entities`, capitalized spans, no LLM), index entity → memory ids,
+and let recall pull memories sharing entities with the top hits, relevance-
+gated like the durable reserve. `TestEntityBridgeDiagnostic` priced every step
+of that mechanism before any of it was wired, on two embedders:
+
+- **Extraction is precise**: on hand-labeled samples, P 1.00 / R 1.00 over 30
+  LoCoMo turns, P 1.00 / R 0.75 on scoreboard-corpus templates (the misses are
+  lowercase technical names like "pgvector" — out of scope for a no-POS
+  heuristic). Pinned by `TestEntitiesPrecisionRecall`.
+- **But the entity graph has no bridging power**: under a hub-safe document-
+  frequency cap (≤10% of the conversation) only **1.3–2.6%** of failed
+  questions are fully entity-bridgeable. Without the cap it looks like 13%,
+  but every extra link is a speaker-name hub (`caroline` = 119/419 memories) —
+  expansion through a hub is spray by construction.
+- **A lowercase concept vocabulary** (stemmed noun-chunk proxy for the "noun
+  phrase" tier) links 42–43% of failures in principle — but simulating the
+  actual mechanism (promote ≤3 linked pool candidates into the window under
+  the reserve's two-leg gate) yields **no gain or a net loss**: 46–49 vs 48
+  covered on qwen3, 39–41 vs 44 on MiniLM, with ~95% of promotions being
+  noise. The contradiction is structural: a true multi-hop bridge has low
+  query relevance _by definition_, so any relevance gate strong enough to
+  block spray also blocks the bridges; candidates that clear the gate were
+  already at the window's edge.
+- **An entity-anchored 2nd hop** (augment the query with the top hits'
+  DF-capped terms — the union mechanism above, minus the full-content echo)
+  reaches 19.1% / 22.4% (entities / concepts) on qwen3 and 17.3% / 20.6% on
+  MiniLM — at or below the realistic content hop, never near the oracle.
+
+Conclusion: on this benchmark the multi-hop gap is not an associative-edge
+problem a no-LLM entity index can close — 59% of missing golds are not even in
+the 50-deep fused pool, and what connects gold sets is either a hub person or
+generic lowercase concepts. Entity-aware recall was **not** wired into the
+service; `extract.Entities` stays as a validated building block (a later phase
+wants entity+attribute+value contradiction triggers, a precision-first use it
+fits). Re-run with:
+
+```sh
+go test ./bench/ -run 'TestMultiHopRetrievalCeiling|TestEntityBridgeDiagnostic' -v
+MEMINI_EMBED_MODEL=text-embedding-all-minilm-l6-v2-embedding MEMINI_EMBED_DIMS=384 \
+  go test ./bench/ -run 'TestMultiHopRetrievalCeiling|TestEntityBridgeDiagnostic' -v
+```
+
 ## External baselines
 
 `bench.System` is the extension point. To compare against mem0, Zep/Graphiti,

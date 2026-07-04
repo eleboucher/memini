@@ -173,6 +173,7 @@ func ingestItems(ctx context.Context, st *sqlitevec.Store, e embed.Embedder, ite
 	return nil
 }
 
+//nolint:unparam // k mirrors Recall's limit; the diagnostics all probe k=10 today
 func recallSet(ctx context.Context, t *testing.T, svc *service.Service, ns, query string, k int) []string {
 	t.Helper()
 	res, err := svc.Recall(ctx, service.RecallInput{Namespace: ns, Query: query, Limit: k})
