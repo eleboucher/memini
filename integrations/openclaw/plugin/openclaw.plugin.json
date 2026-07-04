@@ -3,7 +3,7 @@
   "kind": "memory",
   "name": "memini",
   "description": "Persistent cross-session memory for OpenClaw via memini.",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "contracts": {
     "tools": ["memory_recall", "memory_list", "memory_remember", "memory_forget"]
   },
