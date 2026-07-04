@@ -426,6 +426,51 @@
     },
     {
       "type": "timeseries",
+      "title": "Contradiction routing",
+      "description": "contradicted: a durable write changed a fact's value or flipped its polarity and the stale fact was invalidated (valid_to + confidence shrink). no_signal: neighbour found but not a real change. cooldown: inside the 24h window. miss: no durable neighbour. Default-on; a high contradicted rate is the misfire smoke alarm (MEMINI_CONTRADICT_DOWNRANK=false disables).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${ds}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 39
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 8,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "sum by (result) (rate(memini_contradict_results_total[$__rate_interval]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
       "title": "Tier classification & promotion",
       "description": "Marker-classified durable writes and facts produced by the promotion pass.",
       "datasource": {

@@ -1282,6 +1282,56 @@
       ]
     },
     {
+      "id": 33,
+      "type": "timeseries",
+      "title": "Contradiction routing",
+      "description": "A fresh durable write that changes a fact's value or flips its polarity: contradicted (stale fact invalidated via valid_to + confidence shrink), no_signal (durable neighbour found but not a real change), cooldown (inside the 24h per-fact window), miss (no durable neighbour), error. Default-on; a contradicted rate far above expectation is the misfire smoke alarm (set MEMINI_CONTRADICT_DOWNRANK=false to disable).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 91
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": ["mean", "max"]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (result) (rate(memini_contradict_results_total[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "id": 32,
       "type": "timeseries",
       "title": "Tier classification & promotion",
