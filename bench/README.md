@@ -3,6 +3,11 @@
 A retrieval benchmark: ingest a dataset of memories, then for each question
 measure how well a system retrieves the gold supporting memories.
 
+The Go eval harnesses in this directory (`*_test.go`) live behind the `bench`
+build tag, so they stay out of the default `go test ./...` (they need a live
+embedder and take minutes). Run them with `-tags bench`, as shown below; a plain
+`go test ./bench/` reports "no test files" by design.
+
 ```sh
 mise run bench                 # offline sample, local embedder
 go run ./cmd/bench -k 5        # same, explicit K
@@ -339,10 +344,10 @@ changes are not done until this scoreboard moves in the right direction on ≥2
 embedders.
 
 ```sh
-go test ./bench/ -run TestRecallQualityScoreboard -v
+go test -tags bench ./bench/ -run TestRecallQualityScoreboard -v
 # add the cross-encoder rows:
 MEMINI_RERANK_URL=http://127.0.0.1:8002/v1 MEMINI_RERANK_MODEL=qwen3-reranker-0.6b \
-  go test ./bench/ -run TestRecallQualityScoreboard -v
+  go test -tags bench ./bench/ -run TestRecallQualityScoreboard -v
 ```
 
 Pre-fix baseline (2026-07, additive quality composite, reserve gate ratio 0.6;
@@ -483,9 +488,9 @@ wants entity+attribute+value contradiction triggers, a precision-first use it
 fits). Re-run with:
 
 ```sh
-go test ./bench/ -run 'TestMultiHopRetrievalCeiling|TestEntityBridgeDiagnostic' -v
+go test -tags bench ./bench/ -run 'TestMultiHopRetrievalCeiling|TestEntityBridgeDiagnostic' -v
 MEMINI_EMBED_MODEL=text-embedding-all-minilm-l6-v2-embedding MEMINI_EMBED_DIMS=384 \
-  go test ./bench/ -run 'TestMultiHopRetrievalCeiling|TestEntityBridgeDiagnostic' -v
+  go test -tags bench ./bench/ -run 'TestMultiHopRetrievalCeiling|TestEntityBridgeDiagnostic' -v
 ```
 
 ## Contradiction / update handling (`contradiction_test.go`)
@@ -562,10 +567,10 @@ inert there). Re-run with:
 
 ```sh
 MEMINI_SWEEP_EMBEDDERS="http://127.0.0.1:8001/v1|text-embedding-qwen3-embedding-0.6b|1024,http://127.0.0.1:8001/v1|text-embedding-all-minilm-l6-v2-embedding|384" \
-  go test ./bench/ -run 'TestContradiction|TestRecallQualityScoreboard' -v
+  go test -tags bench ./bench/ -run 'TestContradiction|TestRecallQualityScoreboard' -v
 # add the wild-FP probe (needs the LongMemEval file):
 MEMINI_LME_DATA=$PWD/bench/data/longmemeval_s_cleaned.json \
-  go test ./bench/ -run TestContradictionWildFalsePositives -v
+  go test -tags bench ./bench/ -run TestContradictionWildFalsePositives -v
 ```
 
 ## External baselines
