@@ -500,6 +500,30 @@ func (s *Store) SetConfidence(ctx context.Context, namespace, id string, confide
 	return nil
 }
 
+// MarkContradicted invalidates a durable fact a newer write contradicts. The
+// SET expressions read the pre-update confidence column (Postgres evaluates the
+// right-hand side against the old row), snapshotting it into metadata for audit
+// and reversal before overwriting it.
+func (s *Store) MarkContradicted(ctx context.Context, namespace, id, contradictedBy string, confidence float64, now time.Time) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE memories SET
+			metadata=jsonb_set(
+				jsonb_set(metadata, '{contradicted_by}', to_jsonb($1::text)),
+				'{contradicted_prev_confidence}', coalesce(to_jsonb(confidence), 'null'::jsonb)),
+			confidence=$2,
+			valid_to=COALESCE(valid_to, $3),
+			updated_at=$4
+		 WHERE id=$5 AND namespace=$6`,
+		contradictedBy, confidence, now, now, id, namespace)
+	if err != nil {
+		return fmt.Errorf("postgres: mark contradicted: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 const metaEmbedModel = "embed_model"
 
 // EmbedModel returns the recorded embedding model name, or "" if none was set.

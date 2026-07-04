@@ -43,6 +43,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("ListNamespaces", func(t *testing.T) { testListNamespaces(t, st, dims) })
 	t.Run("TemporalAsOf", func(t *testing.T) { testTemporalAsOf(t, st, dims) })
 	t.Run("SetConfidence", func(t *testing.T) { testSetConfidence(t, st, dims) })
+	t.Run("MarkContradicted", func(t *testing.T) { testMarkContradicted(t, st, dims) })
 	t.Run("GetByFingerprint", func(t *testing.T) { testGetByFingerprint(t, st, dims) })
 }
 
@@ -293,6 +294,61 @@ func testSetConfidence(t *testing.T, st store.Store, dims int) {
 	}
 	if err := st.SetConfidence(ctx, ns, "missing", 0.5, now); err != store.ErrNotFound {
 		t.Errorf("set confidence on missing: want ErrNotFound, got %v", err)
+	}
+}
+
+func testMarkContradicted(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+	m := mem(ns, "old", "the sky is green", vec(dims, 1))
+	m.Tier = memory.TierSemantic
+	seed := 0.7
+	m.Confidence = &seed
+	m.AccessCount = 3
+	mustUpsert(t, st, m)
+	mustUpsert(t, st, mem(ns, "new", "the sky is blue", vec(dims, 1)))
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if err := st.MarkContradicted(ctx, ns, id(ns, "old"), id(ns, "new"), 0.13, now); err != nil {
+		t.Fatalf("mark contradicted: %v", err)
+	}
+	got, err := st.Get(ctx, ns, id(ns, "old"))
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Confidence == nil || *got.Confidence != 0.13 {
+		t.Errorf("confidence = %v, want 0.13", got.Confidence)
+	}
+	if got.ValidTo == nil || !got.ValidTo.Equal(now) {
+		t.Errorf("valid_to = %v, want stamped to %v", got.ValidTo, now)
+	}
+	if got.Metadata["contradicted_by"] != id(ns, "new") {
+		t.Errorf("contradicted_by = %v, want %q", got.Metadata["contradicted_by"], id(ns, "new"))
+	}
+	// The pre-update confidence (0.7) is snapshotted for audit and reversal.
+	if prev, ok := got.Metadata["contradicted_prev_confidence"].(float64); !ok || prev != 0.7 {
+		t.Errorf("contradicted_prev_confidence = %v, want 0.7", got.Metadata["contradicted_prev_confidence"])
+	}
+
+	// Default recall excludes the invalidated fact (valid_to in the past)...
+	res, err := st.VectorSearch(ctx, ns, vec(dims, 1), store.Filter{Now: now.Add(time.Second)}, 10)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if slices.Contains(idsOf(res), id(ns, "old")) {
+		t.Fatalf("contradicted memory should be excluded from live recall, got %v", idsOf(res))
+	}
+	// ...but AsOf time-travel before the stamp still surfaces it (history kept).
+	asof, err := st.VectorSearch(ctx, ns, vec(dims, 1), store.Filter{AsOf: now.Add(-time.Hour)}, 10)
+	if err != nil {
+		t.Fatalf("asof search: %v", err)
+	}
+	if !slices.Contains(idsOf(asof), id(ns, "old")) {
+		t.Fatalf("AsOf before valid_to should still surface the fact, got %v", idsOf(asof))
+	}
+
+	if err := st.MarkContradicted(ctx, ns, id(ns, "missing"), id(ns, "new"), 0.1, now); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("mark contradicted on missing: want ErrNotFound, got %v", err)
 	}
 }
 

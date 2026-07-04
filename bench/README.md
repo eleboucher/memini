@@ -488,6 +488,86 @@ MEMINI_EMBED_MODEL=text-embedding-all-minilm-l6-v2-embedding MEMINI_EMBED_DIMS=3
   go test ./bench/ -run 'TestMultiHopRetrievalCeiling|TestEntityBridgeDiagnostic' -v
 ```
 
+## Contradiction / update handling (`contradiction_test.go`)
+
+On the no-LLM target a fact _update_ loses to the fact it corrects, and both
+sit in the delivered window together. `corroborateNearestAsync` only _grows_
+confidence on a restatement; its contradiction mirror did not exist (the only
+supersede-on-contradiction was LLM-gated), and `DurableScore` has no recency
+term — so an entrenched old fact outranks a fresh contradicting write
+indefinitely. This phase adds a precision-first, LLM-free contradiction
+detector (`internal/contradict`, in the tradition of de Marneffe et al., ACL
+2008: only surface-detectable value/polarity changes are in scope) and, on a
+confirmed contradiction, invalidates the stale fact the way Zep/Graphiti's
+temporal graph does — stamp `valid_to`, keep the row and its history, never
+delete.
+
+**Detector precision (36 authored quads — base / restatement / update /
+distinct, pure text, no embedder).** The costly error is flagging a restatement
+as an update (it would downrank a live fact _and_ lose its corroboration):
+
+| config  | restatement→update | update recall (value / polarity) | distinct→update |
+| ------- | -----------------: | -------------------------------: | --------------: |
+| Default |             0 / 36 |     29/36 (val 17/22, pol 12/14) |          1 / 36 |
+
+**Similarity-gate routing (per embedder).** The write path already pays a top-1
+same-tier vector search; the detector runs on that neighbour, gated by the
+existing `writeDedupScore` (0.625). Restatement misfires are 0 at _every_ floor
+on both embedders; at 0.625 distinct misfires are 0 too, and 0.625 sits below
+`corroborateMinScore` (0.70) as it must (an update diverges from its base more
+than a restatement):
+
+| floor | qwen3-0.6b update recall | qwen3 rest / dist misfire | MiniLM-L6 update recall | MiniLM rest / dist |
+| ----- | -----------------------: | ------------------------: | ----------------------: | -----------------: |
+| 0.550 |              29/36 (81%) |                     0 / 1 |             27/36 (75%) |              0 / 1 |
+| 0.625 |              26/36 (72%) |                     0 / 0 |             20/36 (56%) |              0 / 0 |
+
+Wild false positives on 500 real LongMemEval nearest-neighbour pairs (all
+distinct by construction, qwen3): **0.00% flagged as update at every floor** (4
+pairs even clear 0.625; none fire).
+
+**The harm, and why confidence alone can't fix it** (`TestContradictionStaleVsFresh`,
+12 topics; the old fact entrenched through the real corroboration path — mean
+effective confidence ~0.42, AccessCount ~4 — then contradicted by a fresh
+durable write, at the production config):
+
+| action on the stale fact                      | stale-above-fresh (qwen3, k=3) | stale-above-fresh (MiniLM, k=3) |
+| --------------------------------------------- | -----------------------------: | ------------------------------: |
+| baseline (none)                               |                          10/12 |                            9/12 |
+| shrink confidence (×0.25 / usage-aware)       |                         4–5/12 |                          5–6/12 |
+| **stamp `valid_to` (supersede / invalidate)** |                       **0/12** |                        **0/12** |
+
+Confidence shrink only _halves_ the harm: composite rank is 80% relevance / 20%
+quality (and fresh episodic chatter sets the quality normaliser), so zeroing the
+stale fact's confidence barely moves its score. Only removing it from the
+current-state window flips the order — hence the `valid_to` invalidation
+(reversible via `Restore`, still reachable via `AsOf`), which recall now honours
+in the default (non-`AsOf`) path.
+
+**Shipped mechanism.** `contradictNearestAsync` (mirror of
+`corroborateNearestAsync`, `internal/service/service.go`) fires on fresh durable
+writes: top-1 durable neighbour ≥ 0.625, 24h cooldown, `extract`-anchored
+detector confirms a value/polarity change, then `store.MarkContradicted` stamps
+`valid_to`, shrinks confidence usage-aware (`0.9·seed/usage`, so the fresh write
+outranks it for any AccessCount), and records `contradicted_by` /
+`contradicted_prev_confidence` for audit and reversal. On by default;
+`MEMINI_CONTRADICT_DOWNRANK=false` is the kill-switch. Metric:
+`memini_contradict_results_total`.
+
+**No scoreboard regression** — `TestRecallQualityScoreboard`, both embedders,
+composite + reranked, at k=5 and prod k=3: durable R@5/MRR, episodic
+100%/1.000, spray 0, and injection counts are all identical to the pre-change
+baseline (the corpus carries no `valid_to`'d facts, so the new recall filter is
+inert there). Re-run with:
+
+```sh
+MEMINI_SWEEP_EMBEDDERS="http://127.0.0.1:8001/v1|text-embedding-qwen3-embedding-0.6b|1024,http://127.0.0.1:8001/v1|text-embedding-all-minilm-l6-v2-embedding|384" \
+  go test ./bench/ -run 'TestContradiction|TestRecallQualityScoreboard' -v
+# add the wild-FP probe (needs the LongMemEval file):
+MEMINI_LME_DATA=$PWD/bench/data/longmemeval_s_cleaned.json \
+  go test ./bench/ -run TestContradictionWildFalsePositives -v
+```
+
 ## External baselines
 
 `bench.System` is the extension point. To compare against mem0, Zep/Graphiti,

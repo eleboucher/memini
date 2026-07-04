@@ -29,6 +29,7 @@ type consolidateMetrics struct {
 	rerankResults      *prometheus.CounterVec
 	recallDegraded     *prometheus.CounterVec
 	corroborateResults *prometheus.CounterVec
+	contradictResults  *prometheus.CounterVec
 	tierClassified     *prometheus.CounterVec
 	promoteFacts       prometheus.Counter
 	reinforceResults   *prometheus.CounterVec
@@ -120,6 +121,10 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 		corroborateResults: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_corroborate_results_total",
 			Help: "Corroboration-routing attempts on fresh short-term writes (corroborated, cooldown, miss, error).",
+		}, []string{labelResult}),
+		contradictResults: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "memini_contradict_results_total",
+			Help: "Contradiction-routing attempts on fresh durable writes (contradicted, no_signal, cooldown, miss, error).",
 		}, []string{labelResult}),
 		tierClassified: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_tier_classified_total",
@@ -279,6 +284,10 @@ func (m *consolidateMetrics) ActiveByTier(tier string, n int) {
 
 func (m *consolidateMetrics) CorroborateResult(result string) {
 	m.corroborateResults.WithLabelValues(result).Inc()
+}
+
+func (m *consolidateMetrics) ContradictResult(result string) {
+	m.contradictResults.WithLabelValues(result).Inc()
 }
 
 func (m *consolidateMetrics) TierClassified(tier string) {

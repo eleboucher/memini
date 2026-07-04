@@ -111,6 +111,7 @@ func (m *countingMetrics) RerankResult(string, string)      {}
 func (m *countingMetrics) ReinforceResult(string)           {}
 func (m *countingMetrics) DedupTombstoned(int)              {}
 func (m *countingMetrics) CorroborateResult(string)         {}
+func (m *countingMetrics) ContradictResult(string)          {}
 func (m *countingMetrics) TierClassified(string)            {}
 
 // TestRecallEmbedErrorFailsOnce confirms an embed failure still hard-fails

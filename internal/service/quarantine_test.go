@@ -35,6 +35,7 @@ func (*sanitizeRecorder) RecallDegraded(string)               {}
 func (*sanitizeRecorder) ReinforceResult(string)              {}
 func (*sanitizeRecorder) DedupTombstoned(int)                 {}
 func (*sanitizeRecorder) CorroborateResult(string)            {}
+func (*sanitizeRecorder) ContradictResult(string)             {}
 func (*sanitizeRecorder) TierClassified(string)               {}
 
 // A garbled, script-salad digest of the kind an upstream model/harness glitch

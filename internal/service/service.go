@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"slices"
 	"sort"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/eleboucher/memini/internal/contradict"
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/extract"
 	"github.com/eleboucher/memini/internal/llm"
@@ -129,6 +131,12 @@ type Metrics interface {
 	// (match found but inside the per-fact window), "miss" (no durable
 	// neighbour at or above the threshold), or "error".
 	CorroborateResult(result string)
+	// ContradictResult records one contradiction-routing attempt on a fresh
+	// durable write: "contradicted" (stale fact invalidated), "no_signal" (a
+	// near neighbour, but the detector saw no value/polarity change), "cooldown"
+	// (match inside the per-fact window), "miss" (no durable neighbour at or
+	// above the threshold, or an untracked-confidence row), or "error".
+	ContradictResult(result string)
 	// TierClassified records an omitted-tier write the marker classifier
 	// routed to a durable tier; tier is "semantic" or "procedural".
 	TierClassified(tier string)
@@ -152,6 +160,7 @@ func (nopMetrics) WriteSanitized(string)               {}
 func (nopMetrics) ReinforceResult(string)              {}
 func (nopMetrics) DedupTombstoned(int)                 {}
 func (nopMetrics) CorroborateResult(string)            {}
+func (nopMetrics) ContradictResult(string)             {}
 func (nopMetrics) TierClassified(string)               {}
 
 // ErrInvalidInput marks errors caused by the caller's request (missing fields,
@@ -264,6 +273,11 @@ type Service struct {
 	// corroborateMinScore (> 0) routes short-term writes that restate a durable
 	// fact into confidence growth on that fact. 0 disables.
 	corroborateMinScore float64
+	// contradictMinScore (> 0) routes fresh durable writes that contradict an
+	// existing durable fact into invalidating that fact (valid_to stamp +
+	// confidence shrink), when the lexical detector confirms a value/polarity
+	// change. 0 disables. See WithContradictionDownrank.
+	contradictMinScore float64
 	// writeDedupAction is what happens at/above writeDedupScore: hint, coalesce,
 	// supersede, or off. See WriteDedupAction.
 	writeDedupAction WriteDedupAction
@@ -542,6 +556,17 @@ func WithWriteDedup(score float64, action WriteDedupAction) Option {
 // disables.
 func WithCorroboration(minScore float64) Option {
 	return func(s *Service) { s.corroborateMinScore = minScore }
+}
+
+// WithContradictionDownrank enables contradiction routing: a fresh durable
+// write whose nearest durable neighbour scores at or above minScore, and which
+// the lexical detector (internal/contradict) confirms is a value/polarity
+// change rather than a restatement, invalidates that stale neighbour —
+// stamping its valid_to (so it leaves live recall but stays reachable via AsOf)
+// and shrinking its confidence, off the request path and rate-limited by
+// contradictCooldown. The new write is stored unchanged. minScore <= 0 disables.
+func WithContradictionDownrank(minScore float64) Option {
+	return func(s *Service) { s.contradictMinScore = minScore }
 }
 
 // WithGlobalNamespace sets a namespace whose durable (semantic/procedural)
@@ -910,6 +935,11 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	// durable fact is a re-observation of that fact — grow its confidence and
 	// reinforce it in the background. The write itself is stored unchanged.
 	s.corroborateNearestAsync(ctx, m, in.ID == "")
+	// Contradiction routing: the mirror of corroboration. A fresh durable write
+	// that contradicts an existing durable fact (changed value or flipped
+	// polarity) invalidates the stale fact in the background — it is not merely
+	// a re-observation, it supersedes.
+	s.contradictNearestAsync(ctx, m, in.ID == "")
 	s.metrics.RememberResult("ok", string(tier))
 	return m, nil
 }
@@ -1129,6 +1159,91 @@ func (s *Service) corroborate(ctx context.Context, m *memory.Memory) {
 		slog.WarnContext(ctx, "corroborate: set confidence failed",
 			"namespace", m.Namespace, "id", m.ID, "err", err)
 	}
+}
+
+// contradictCooldown rate-limits invalidation per fact: a fact that was just
+// re-observed (corroborated) or just invalidated is not touched again for the
+// window. SetConfidence/MarkContradicted both bump UpdatedAt, so it doubles as
+// the last-touched stamp, and a shrink also blocks corroboration regrowth for
+// the window — a fact churning between restatement and contradiction settles
+// rather than oscillating.
+const contradictCooldown = 24 * time.Hour
+
+// contradictNearestAsync is the mirror of corroborateNearestAsync: a fresh
+// durable write is routed to the durable fact it contradicts, when one scores
+// at or above contradictMinScore AND the lexical detector confirms a value or
+// polarity change (not a restatement). That stale fact is invalidated —
+// valid_to stamped, confidence shrunk usage-aware so the fresh write outranks
+// it — off the request path. The write itself is stored unchanged.
+func (s *Service) contradictNearestAsync(ctx context.Context, m *memory.Memory, fresh bool) {
+	if !fresh || m.Tier.Term() != memory.LongTerm ||
+		s.contradictMinScore <= 0 || len(m.Embedding) == 0 {
+		return
+	}
+	bg := context.WithoutCancel(ctx)
+	s.bg.Go(func() {
+		cctx, cancel := context.WithTimeout(bg, 30*time.Second)
+		defer cancel()
+		// k=2: this runs after Upsert, so the top hit may be the write itself.
+		cands, err := s.store.VectorSearch(cctx, m.Namespace, m.Embedding,
+			store.Filter{Tiers: []memory.Tier{memory.TierSemantic, memory.TierProcedural}, Now: s.now()}, 2)
+		if err != nil {
+			slog.WarnContext(cctx, "contradict: durable lookup failed",
+				"namespace", m.Namespace, "err", err)
+			s.metrics.ContradictResult("error")
+			return
+		}
+		var fact *memory.Memory
+		for i := range cands {
+			if cands[i].Memory.ID == m.ID || cands[i].Score < s.contradictMinScore {
+				continue
+			}
+			fact = cands[i].Memory
+			break
+		}
+		if fact == nil {
+			s.metrics.ContradictResult("miss")
+			return
+		}
+		// Never retroactively penalise a legacy row that predates confidence
+		// tracking — it is trusted, not stale (mirrors corroborate).
+		if fact.Confidence == nil {
+			s.metrics.ContradictResult("miss")
+			return
+		}
+		if s.now().Sub(fact.UpdatedAt) < contradictCooldown {
+			s.metrics.ContradictResult("cooldown")
+			return
+		}
+		if contradict.Classify(m.Content, fact.Content, contradict.Default).Class != contradict.Update {
+			s.metrics.ContradictResult("no_signal")
+			return
+		}
+		s.invalidate(cctx, fact, m.ID)
+		s.metrics.ContradictResult("contradicted")
+	})
+}
+
+// invalidate marks a durable fact as contradicted by newID: its confidence is
+// set usage-aware so the fresh contradicting write outranks it under the
+// composite (DurableScore = salience × confidence × usage, and the composite is
+// relevance-dominated so a bounded shrink alone does not suffice), and its
+// valid_to is stamped so it leaves live recall while AsOf can still surface it.
+func (s *Service) invalidate(ctx context.Context, m *memory.Memory, newID string) {
+	if m.Tier.Term() != memory.LongTerm || m.Confidence == nil {
+		return
+	}
+	now := s.now()
+	usage := 1 + math.Log1p(float64(m.AccessCount))
+	target := math.Min(m.EffectiveConfidence(now), 0.9*memory.ConfidenceSeedFresh/usage)
+	if err := s.store.MarkContradicted(ctx, m.Namespace, m.ID, newID, target, now); err != nil &&
+		!errors.Is(err, store.ErrNotFound) {
+		slog.WarnContext(ctx, "contradict: mark failed",
+			"namespace", m.Namespace, "id", m.ID, "contradicted_by", newID, "err", err)
+		return
+	}
+	slog.InfoContext(ctx, "contradict: invalidated stale fact",
+		"namespace", m.Namespace, "id", m.ID, "contradicted_by", newID)
 }
 
 // RecallInput describes a hybrid recall query.

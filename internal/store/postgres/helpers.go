@@ -51,16 +51,16 @@ func filterClause(b *args, f store.Filter) string {
 		}
 		clause += ex.String()
 	}
+	// For a time-travel query, "live" means live at AsOf, not at the current
+	// wall clock — a memory that has since expired was still valid then.
+	ref := f.Now
+	if !f.AsOf.IsZero() {
+		ref = f.AsOf
+	}
+	if ref.IsZero() {
+		ref = time.Now()
+	}
 	if !f.IncludeExpired {
-		// For a time-travel query, "live" means live at AsOf, not at the current
-		// wall clock — a memory that has since expired was still valid then.
-		ref := f.Now
-		if !f.AsOf.IsZero() {
-			ref = f.AsOf
-		}
-		if ref.IsZero() {
-			ref = time.Now()
-		}
 		clause += " AND (expires_at IS NULL OR expires_at > " + b.add(ref) + ")"
 	}
 	if !f.AsOf.IsZero() {
@@ -71,6 +71,11 @@ func filterClause(b *args, f store.Filter) string {
 		clause += " AND (valid_to IS NULL OR valid_to > " + p + ")"
 	} else if !f.IncludeSuperseded {
 		clause += " AND superseded_by IS NULL"
+		// A fact whose validity window has closed (valid_to in the past) is no
+		// longer current: drop it from live recall while AsOf and
+		// IncludeSuperseded can still reach it. This is how a contradiction
+		// invalidates the superseded fact without deleting it.
+		clause += " AND (valid_to IS NULL OR valid_to > " + b.add(ref) + ")"
 	}
 	return clause
 }

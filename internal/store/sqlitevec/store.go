@@ -706,6 +706,32 @@ func (s *Store) SetConfidence(ctx context.Context, namespace, id string, confide
 	return nil
 }
 
+// MarkContradicted invalidates a durable fact a newer write contradicts. The
+// SET expressions read the pre-update confidence column (SQLite evaluates the
+// right-hand side against the old row), snapshotting it into metadata for
+// audit and reversal before overwriting it.
+func (s *Store) MarkContradicted(ctx context.Context, namespace, id, contradictedBy string, confidence float64, now time.Time) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE memories SET
+			metadata=json_set(json_set(metadata, '$.contradicted_by', ?), '$.contradicted_prev_confidence', confidence),
+			confidence=?,
+			valid_to=COALESCE(valid_to, ?),
+			updated_at=?
+		 WHERE id=? AND namespace=?`,
+		contradictedBy, confidence, ms(now), ms(now), id, namespace)
+	if err != nil {
+		return fmt.Errorf("sqlitevec: mark contradicted: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 func collectRowIDs(tx *sql.Tx, ctx context.Context, namespace string) ([]int64, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT rowid FROM memories WHERE namespace=?`, namespace)
 	if err != nil {

@@ -108,6 +108,15 @@ type Config struct {
 	//     WriteDedupFingerprint, still runs independently).
 	WriteDedupAction string `env:"MEMINI_WRITE_DEDUP_ACTION" envDefault:"hint"`
 
+	// ContradictionDownrank (default on) invalidates a durable fact when a fresh
+	// durable write contradicts it (changed value or flipped polarity, confirmed
+	// by the lexical detector): the stale fact's valid_to is stamped so it leaves
+	// live recall while AsOf time-travel can still reach it, and its confidence
+	// is shrunk. Reversible (Restore clears valid_to) and precision-first (0
+	// restatement misfires measured in bench/contradiction_test.go). Set false to
+	// disable — the kill-switch; there is no threshold knob.
+	ContradictionDownrank bool `env:"MEMINI_CONTRADICT_DOWNRANK" envDefault:"true"`
+
 	// GlobalNamespace, when set, is a namespace whose memories are merged
 	// read-only into every other namespace's recall and briefing — a shared
 	// space for cross-project rules the agent should always remember ("no AI

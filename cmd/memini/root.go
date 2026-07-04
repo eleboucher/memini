@@ -229,6 +229,7 @@ func buildServiceStack(
 		service.WithScoreFusion(search.DefaultFusionAlpha),
 		service.WithWriteDedup(cfg.WriteDedupScore, service.WriteDedupAction(cfg.WriteDedupAction)),
 		service.WithCorroboration(defaultCorroborateMinScore),
+		service.WithContradictionDownrank(contradictMinScore(cfg)),
 		service.WithGlobalNamespace(cfg.GlobalNamespace),
 		service.WithTemporalTargeting(defaultTemporalBoost, search.RegexAnchorExtractor{}),
 		service.WithRecallEmbedTimeout(cfg.RecallEmbedTimeout),
@@ -475,7 +476,23 @@ const (
 	// (one bounded confidence step per 24h), so a rare false positive costs
 	// little.
 	defaultCorroborateMinScore = 0.70
+	// defaultContradictMinScore gates contradiction routing (fresh durable write
+	// → invalidate the stale fact it contradicts). Reuses the write-dedup entry
+	// score: bench/contradiction_test.go measured 0 restatement and 0 distinct
+	// misfires at this floor on qwen3-0.6b and MiniLM-L6, with 56–72% update
+	// recall — and it sits below defaultCorroborateMinScore, since a genuine
+	// update diverges from its base more than a restatement does.
+	defaultContradictMinScore = 0.625
 )
+
+// contradictMinScore returns the contradiction-routing floor, or 0 when the
+// MEMINI_CONTRADICT_DOWNRANK kill-switch is off.
+func contradictMinScore(cfg *config.Config) float64 {
+	if !cfg.ContradictionDownrank {
+		return 0
+	}
+	return defaultContradictMinScore
+}
 
 func outerBackendLabel(e embed.Embedder) string {
 	switch e.(type) {

@@ -143,6 +143,15 @@ type Store interface {
 	// durable fact is re-observed. Returns ErrNotFound if missing.
 	SetConfidence(ctx context.Context, namespace, id string, confidence float64, now time.Time) error
 
+	// MarkContradicted invalidates a durable fact a newer write contradicts: it
+	// sets confidence, stamps valid_to=now (unless already set) so the fact
+	// drops out of live recall while staying reachable via AsOf time-travel, and
+	// records the contradicting id plus the pre-update confidence in metadata for
+	// audit and reversal (Restore clears valid_to). Non-destructive: the row and
+	// its history are kept. Bumps updated_at to now. Returns ErrNotFound if
+	// missing.
+	MarkContradicted(ctx context.Context, namespace, id, contradictedBy string, confidence float64, now time.Time) error
+
 	// Ping verifies the backend is reachable, for readiness checks.
 	Ping(ctx context.Context) error
 
