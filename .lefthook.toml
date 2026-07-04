@@ -23,3 +23,10 @@ stage_fixed = true
 
 [pre-push.commands.test]
 run = "go test ./..."
+
+# Compile-check the bench eval harnesses (behind the `bench` tag, so excluded
+# from `go test ./...` above). `-run=^$` matches no test, so it builds the files
+# but runs none — catching compile errors without triggering the minutes-long,
+# live-embedder eval run.
+[pre-push.commands.bench-compile]
+run = "go test -tags bench -run=^$ ./bench/"
