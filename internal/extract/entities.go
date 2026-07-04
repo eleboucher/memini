@@ -174,6 +174,11 @@ func normalizeEntityWord(tok string) string {
 	return strings.TrimSuffix(w, "'")
 }
 
+// Stopword reports whether a lowercased word is a function/discourse word that
+// carries no content on its own. Exported for the contradict package, which
+// shares the entity extractor's vocabulary judgment when diffing two memories.
+func Stopword(w string) bool { return entityStopword(w) }
+
 // entityStopword reports whether a normalized word can never be (part of) an
 // entity: function words, auxiliaries, greetings/discourse markers, and
 // calendar words. A contraction is judged by its pre-apostrophe stem too, so
