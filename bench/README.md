@@ -345,7 +345,7 @@ MEMINI_RERANK_URL=http://127.0.0.1:8002/v1 MEMINI_RERANK_MODEL=qwen3-reranker-0.
   go test ./bench/ -run TestRecallQualityScoreboard -v
 ```
 
-Baseline (2026-07, production config `reserve=2` / promote ratio 0.6;
+Pre-fix baseline (2026-07, additive quality composite, reserve gate ratio 0.6;
 `reserve=0` reference in parentheses). `spray` = injected durables on queries
 with no relevant durable; `inj` = injected durables over all 40 queries:
 
@@ -360,25 +360,56 @@ with no relevant durable; `inj` = injected durables over all 40 queries:
 | bge-small · comp    | 70% / .14 (0/0)         | 100% / 1.0    | 0.750 / 0.700 | 0     | 45 (19) |
 | bge-small · rerank  | 70% / .14 (0/0)         | 100% / 1.0    | 0.775 / 0.700 | 0     | 45 (19) |
 
-What the baseline says:
+What the baseline said: spray was clean, but **all** injection happened on
+low-signal detail questions — score anatomy showed durables at fused relevance
+0.00 ranked #2–6 because the additive `0.2·quality` bonus dwarfed the noise
+tail — and durable MRR sat at ~.20 on the small embedders because the reserve
+placed recovered facts at the window bottom. The cross-encoder additionally
+demotes terse "Decision: …" facts to the bottom of the window (qwen3 MRR
+.66→.20) while nudging P@3 up.
 
-- **The reserve does its job**: durable R@5 goes 0→100% on the small embedders
-  (they cannot rank the terse fact into a chatter-dominated top-5 unaided);
-  bge-small recovers 7/10 (the 0.6 gate blocks the other three — the known
-  weak-embedder trade-off from the gate sweep).
-- **Spray is clean everywhere**: catch-me-up queries with no relevant durable
-  get zero injections. Their windows are full of strong same-topic matches, so
-  the ratio gate's bar is high.
-- **All injection happens on detail questions** ("what was the incident ticket
-  number?"): the gold line is a strong match but the rest of the window is
-  noise-level, so pure relevance already fills it with off-topic distractor
-  durables (19–43) and the reserve, gating against a _weak_ evictee, adds more
-  (+7 to +26). Low-signal windows are where precision is lost — the target for
-  the entity/contradiction phases.
-- **The cross-encoder demotes terse durables inside the window** (qwen3 durable
-  MRR .66→.20 — rank ~1–2 to rank 5) while nudging P@3 up: it prefers verbose
-  same-topic chatter over "Decision: …" one-liners for conversational queries.
-  Window _membership_ is unchanged (R@5, P@5, inj identical), as designed.
+### After the durable-ranking fix
+
+Three coupled changes (2026-07): the composite's quality term is
+**relevance-modulated** (`rel·(w_r + w_q·q̂)` — a zero-relevance durable has
+nothing to amplify, so tier salience reorders comparable candidates instead of
+floating off-topic facts into weak windows; single-tier corpora like
+LongMemEval/LoCoMo have uniform quality and are provably order-invariant); the
+reserve gate ratio is **re-expressed as 0.5** in the new score space (the same
+effective relevance bar the settled 0.6 imposed under the old composite, which
+carried a flat +0.2 durable floor); and the gate gains an **absolute top-anchor
+leg** (promotion also needs ≥0.4× the window's top hit — the leg that holds
+when the evictee is noise). Promoted durables now **surface directly below the
+top hit** instead of at the window bottom; the top hit is never displaced, so
+an episodic gold answer cannot be shadowed.
+
+| Embedder · mode     | dur R@5 / MRR@5         | epi R@5 / MRR | P@3 / P@5     | spray | inj         |
+| ------------------- | ----------------------- | ------------- | ------------- | ----- | ----------- |
+| qwen3-0.6b · comp   | 100% / **.75** (60/.55) | 100% / 1.0    | 0.733 / 0.695 | 0     | **5** (5)   |
+| qwen3-0.6b · rerank | 100% / .20 (60/.12)     | 100% / 1.0    | 0.758 / 0.695 | 0     | **5** (5)   |
+| MiniLM-L6 · comp    | 100% / **.50** (0/0)    | 100% / 1.0    | 0.758 / 0.720 | 0     | **9** (9)   |
+| MiniLM-L6 · rerank  | 100% / .20 (0/0)        | 100% / 1.0    | 0.767 / 0.720 | 0     | **9** (9)   |
+| nomic-v1.5 · comp   | 100% / **.50** (0/0)    | 100% / 1.0    | 0.775 / 0.735 | 0     | **14** (13) |
+| nomic-v1.5 · rerank | 100% / .20 (0/0)        | 100% / 1.0    | 0.783 / 0.735 | 0     | **14** (13) |
+| bge-small · comp    | 70% / **.35** (0/0)     | 100% / 1.0    | 0.783 / 0.750 | 0     | **4** (5)   |
+| bge-small · rerank  | 70% / .14 (0/0)         | 100% / 1.0    | 0.792 / 0.750 | 0     | **4** (5)   |
+
+Reading it against the baseline:
+
+- **Injections −72 to −91%** (50/51/54/45 → 5/9/14/4), and production now adds
+  at most 1 over the reserve=0 reference — the reserve leak is closed. What
+  remains is base relevance (e.g. a BM25 match on a shared token), not tier
+  spam.
+- **Durable MRR on the small embedders .20 → .50** (promoted facts sit at rank
+  2, capped by the never-displace-the-top rule); qwen3 .66 → .75. Under the
+  cross-encoder MRR stays ~.20: the reranker reorders the window and demotes
+  terse facts — the known remaining defect, and it lives in the rerank tier,
+  not the composite.
+- **Durable R@5 matches the pre-fix baseline exactly** (100/100/100/70).
+  bge-small's three missing facts are blocked by the evictee leg; ratio 0.4
+  recovers all three for +1 injection (measured) — a candidate loosening,
+  deliberately not taken to avoid tuning on the eval corpus.
+- Episodic recall and spray are untouched (100% / 1.0, 0).
 
 ## External baselines
 

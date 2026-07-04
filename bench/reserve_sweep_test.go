@@ -76,12 +76,22 @@ func TestReserveGateSweep(t *testing.T) {
 	configs := make([]gateConfig, 0, 11)
 	configs = append(configs,
 		gateConfig{label: "reserve=0", reserve: 0},
-		gateConfig{label: "ungated", reserve: 2, opts: []service.Option{service.WithReservePromoteRatio(0)}},
+		gateConfig{label: "ungated", reserve: 2, opts: []service.Option{
+			service.WithReservePromoteRatio(0), service.WithReserveTopAnchor(0),
+		}},
 	)
+	// Ratio rows isolate the evictee leg (anchor off); anchor rows isolate the
+	// absolute leg (ratio off) at the production reserve.
 	for _, r := range []float64{0.4, 0.5, 0.6, 0.7, 0.8, 0.9} {
 		configs = append(configs, gateConfig{
 			label: fmt.Sprintf("ratio %.1f", r), reserve: 2,
-			opts: []service.Option{service.WithReservePromoteRatio(r)},
+			opts: []service.Option{service.WithReservePromoteRatio(r), service.WithReserveTopAnchor(0)},
+		})
+	}
+	for _, a := range []float64{0.3, 0.4, 0.5, 0.6} {
+		configs = append(configs, gateConfig{
+			label: fmt.Sprintf("anchor %.1f", a), reserve: 2,
+			opts: []service.Option{service.WithReservePromoteRatio(0), service.WithReserveTopAnchor(a)},
 		})
 	}
 	for _, p := range []float64{5, 10, 25} {

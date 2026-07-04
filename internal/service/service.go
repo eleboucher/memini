@@ -212,6 +212,10 @@ type Service struct {
 	// is promoted only when its composite score is at least this fraction of
 	// the entry it evicts. Defaults to defaultReservePromoteRatio.
 	reservePromoteRatio float64
+	// reserveTopAnchor is the absolute leg of the reserve gate: a durable is
+	// promoted only when its composite score is also at least this fraction of
+	// the window's top hit. Defaults to defaultReserveTopAnchor; 0 disables it.
+	reserveTopAnchor float64
 	// reserveGatePercentile (> 0) switches the reserve's relevance gate to the
 	// adaptive form: a durable is promoted only when it reaches this percentile
 	// of the window's own scores. 0 keeps the fixed-ratio gate. Tuning/bench
@@ -433,6 +437,15 @@ func WithReservePromoteRatio(ratio float64) Option {
 	return func(s *Service) { s.reservePromoteRatio = ratio }
 }
 
+// WithReserveTopAnchor overrides the absolute leg of the reserve's relevance
+// gate: a durable takes a reserved slot only when its composite score is at
+// least anchor× the window's top hit. Tuning/bench knob
+// (bench/reserve_sweep_test.go); the production default is
+// defaultReserveTopAnchor, and 0 disables the leg.
+func WithReserveTopAnchor(anchor float64) Option {
+	return func(s *Service) { s.reserveTopAnchor = anchor }
+}
+
 // WithReserveGatePercentile (pct > 0) switches the reserve's relevance gate to
 // the adaptive form: a durable takes a reserved slot only when its composite
 // score reaches the pct-th percentile of the window's own scores, so the bar
@@ -598,6 +611,7 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 		rerankTimeout:        defaultRerankTimeout,
 		scoreFusionAlpha:     search.DefaultFusionAlpha, // convex score fusion by default; negative selects RRF
 		reservePromoteRatio:  defaultReservePromoteRatio,
+		reserveTopAnchor:     defaultReserveTopAnchor,
 		poolFactor:           recallPoolFactor,
 		poolFloor:            recallPoolFloor,
 		fingerprintDedup:     true,
@@ -1390,7 +1404,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	}
 	// Reserve slots for durable tiers so episodic chatter can't crowd out
 	// consolidated facts/rules; the pool is already relevance-filtered upstream.
-	ranked = reserveDurableTiers(ranked, k, s.resolveSemanticReserve(in), s.reservePromoteRatio, s.reserveGatePercentile)
+	ranked = reserveDurableTiers(ranked, k, s.resolveSemanticReserve(in), s.reservePromoteRatio, s.reserveTopAnchor, s.reserveGatePercentile)
 	results := s.finalizeRecall(ctx, in.Query, ranked, k)
 	s.reinforceResults(ctx, results)
 	s.metrics.RecallResult("ok", tf, hitsBucket(len(results)))
@@ -1490,34 +1504,41 @@ func (s *Service) extractEpisodicAsync(ctx context.Context, m *memory.Memory) {
 	})
 }
 
-// defaultReservePromoteRatio is the relevance bar for taking a reserved slot:
-// a durable is promoted only when its composite score is at least this fraction
-// of the entry it would evict. Below it the durable is off-topic for the query
-// and forcing it in would trade a relevant hit for noise, so the reserve
-// injects nothing. Benched two ways: the tier-mix corpora
-// (bench/reserve_test.go, qwen3-0.6b) put the injection-leak boundary at 0.5;
-// the multi-embedder gate sweep (bench/reserve_sweep_test.go — qwen3-0.6b,
-// MiniLM-L6, nomic-v1.5, bge-small, with and without a cross-encoder) puts it
-// at 0.4 and shows buried-durable recovery degrading above 0.6 on the small
-// embedders (bge-small loses recall at 0.7+, MiniLM/nomic collapse at 0.8).
-// 0.6 is the intersection: injection-clean on both corpora, full or near-full
-// recovery on every benched embedder. The sweep also rejected an adaptive
-// window-percentile gate: a crowded-out durable scores below the window floor
-// by construction, so any in-window percentile blocks all recovery.
-const defaultReservePromoteRatio = 0.6
+// defaultReservePromoteRatio is the evictee-relative leg of the reserve's
+// promotion gate: a durable takes a reserved slot only when its composite
+// score is at least this fraction of the entry it would evict. Below it the
+// durable is off-topic for the query and forcing it in would trade a relevant
+// hit for noise. 0.5 under the relevance-modulated composite imposes the same
+// effective relevance bar the benched 0.6 imposed under the old additive
+// composite, which gave durables a flat +0.2 floor. Benched across four
+// embedders on bench/reserve_sweep_test.go and bench/quality_test.go. An
+// adaptive window-percentile gate was rejected: a crowded-out durable scores
+// below the window floor by construction.
+const defaultReservePromoteRatio = 0.5
+
+// defaultReserveTopAnchor is the absolute leg of the promotion gate: a durable
+// must also score at least this fraction of the window's top hit. The
+// evictee-relative leg degenerates on low-signal windows (one strong hit over
+// a noise tail), where the evictee is itself noise and nearly any durable
+// clears a bar derived from it. Benched (bench/quality_test.go): relevant
+// buried facts score 0.47-0.74 of the window top, off-topic durables on weak
+// windows at most ~0.22; 0.4 splits the bands with margin.
+const defaultReserveTopAnchor = 0.4
 
 // reserveDurableTiers recomposes a relevance-ordered pool so up to `reserve` of
 // the top `limit` slots hold durable tiers (semantic/procedural): durables just
 // outside the window are promoted in, evicting the lowest-relevance episodic
 // entries, until the reserve is met. Promotion is relevance-gated so a query
-// with no relevance-competitive durable keeps its pure-relevance window instead
-// of having off-topic facts forced in: with gatePct <= 0 a candidate must score
-// at least ratio× the entry it evicts; with gatePct > 0 it must instead reach
-// the gatePct-th percentile of the original window's scores (the adaptive gate,
-// which derives the bar from the pool's own score distribution).
-// Relevance order is preserved. reserve <= 0 or a pool no deeper than `limit`
-// returns the input unchanged.
-func reserveDurableTiers(ranked []store.Scored, limit, reserve int, ratio, gatePct float64) []store.Scored {
+// with no relevance-competitive durable keeps its pure-relevance window: with
+// gatePct <= 0 a candidate must score at least ratio× the entry it evicts and
+// topAnchor× the window's top hit; with gatePct > 0 it must instead reach the
+// gatePct-th percentile of the original window's scores.
+//
+// Promoted durables surface directly below the top hit rather than at the
+// window bottom; the top hit is never displaced. Everything else keeps
+// relevance order. reserve <= 0 or a pool no deeper than `limit` returns the
+// input unchanged.
+func reserveDurableTiers(ranked []store.Scored, limit, reserve int, ratio, topAnchor, gatePct float64) []store.Scored {
 	if reserve <= 0 || limit <= 0 || len(ranked) <= limit {
 		return ranked
 	}
@@ -1561,14 +1582,15 @@ func reserveDurableTiers(ranked []store.Scored, limit, reserve int, ratio, gateP
 		if evict < 0 {
 			break // window is all durable; nothing to give up
 		}
-		bar := ratio * ranked[evict].Score
+		bar := max(ratio*ranked[evict].Score, topAnchor*ranked[0].Score)
 		if gatePct > 0 {
 			bar = adaptiveBar
 		}
 		if ranked[i].Score < bar {
 			// Not relevance-competitive with what it would displace. Later
-			// candidates score lower still and (in ratio mode) each eviction
-			// only raises the bar, so none of them can clear it either.
+			// candidates score lower still and (in ratio mode) the bar never
+			// falls — the anchor leg is fixed and each eviction only raises
+			// the evictee leg — so none of them can clear it either.
 			break
 		}
 		delete(selected, evict)
@@ -1576,18 +1598,26 @@ func reserveDurableTiers(ranked []store.Scored, limit, reserve int, ratio, gateP
 		durableCount++
 	}
 
+	window := make([]store.Scored, 0, limit)
+	promoted := make([]store.Scored, 0, reserve)
+	rest := make([]store.Scored, 0, len(ranked))
+	for i := range ranked {
+		_, ok := selected[i]
+		switch {
+		case ok && i < limit:
+			window = append(window, ranked[i])
+		case ok:
+			promoted = append(promoted, ranked[i])
+		default:
+			rest = append(rest, ranked[i])
+		}
+	}
+	head := min(1, len(window))
 	out := make([]store.Scored, 0, len(ranked))
-	for i := range ranked {
-		if _, ok := selected[i]; ok {
-			out = append(out, ranked[i])
-		}
-	}
-	for i := range ranked {
-		if _, ok := selected[i]; !ok {
-			out = append(out, ranked[i])
-		}
-	}
-	return out
+	out = append(out, window[:head]...)
+	out = append(out, promoted...)
+	out = append(out, window[head:]...)
+	return append(out, rest...)
 }
 
 // percentile returns the p-th percentile (0 < p <= 100) of scores by linear

@@ -14,6 +14,12 @@ import (
 // recency into one number (Memory.Quality), and is the production secondary
 // signal; Recency/Importance are retained as separable terms for the tuning
 // bench. Weights need not sum to 1 — only relative ordering matters.
+//
+// The quality term is relevance-modulated (it scales the candidate's own
+// relevance rather than adding a flat bonus), like the temporal boost: an
+// off-topic memory has little score to amplify, so tier salience reorders
+// comparably-relevant candidates without lifting irrelevant durables into
+// low-signal windows.
 type RerankWeights struct {
 	Relevance, Recency, Importance, Quality float64
 }
@@ -72,8 +78,8 @@ func RerankWith(results []store.Scored, now time.Time, w RerankWeights) []store.
 		if maxQuality > 0 {
 			quality = qualities[i] / maxQuality
 		}
-		composite := w.Relevance*relevance + w.Recency*recency + w.Importance*importance +
-			w.Quality*quality
+		composite := relevance*(w.Relevance+w.Quality*quality) +
+			w.Recency*recency + w.Importance*importance
 		out[i] = ranked{sc: store.Scored{Memory: r.Memory, Score: composite}, score: composite, pos: i}
 	}
 

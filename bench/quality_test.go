@@ -68,6 +68,7 @@ func TestRecallQualityScoreboard(t *testing.T) {
 	configs := []struct {
 		label   string
 		reserve int
+		opts    []service.Option
 	}{
 		{label: "reserve=0", reserve: 0},
 		{label: "production", reserve: 2},
@@ -102,7 +103,8 @@ func TestRecallQualityScoreboard(t *testing.T) {
 					}
 					opts := append([]service.Option{
 						service.WithClock(clk), service.WithSyncReinforce(), service.WithScoreFusion(0.5),
-					}, mode.opts...)
+					}, cfg.opts...)
+					opts = append(opts, mode.opts...)
 					svc := service.New(st, emb.e, opts...)
 
 					m := runQualityQueries(ctx, t, svc, corpus, cfg.reserve)

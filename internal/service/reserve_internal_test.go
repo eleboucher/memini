@@ -45,11 +45,12 @@ func TestReserveDurableTiers(t *testing.T) {
 			wantTop: "abc",
 		},
 		{
-			name:  "reserve promotes one durable over lowest episodic, keeps order",
+			name:  "reserve promotes one durable over lowest episodic, below the top hit",
 			tiers: []memory.Tier{ep, ep, ep, se},
 			limit: 3, reserve: 1,
-			// 'd' (semantic) promoted, lowest episodic 'c' evicted; output in relevance order.
-			wantTop: "abd",
+			// 'd' (semantic) promoted, lowest episodic 'c' evicted; the promotion
+			// surfaces directly below the top hit, not at the window bottom.
+			wantTop: "adb",
 		},
 		{
 			name:  "reserve 2 promotes semantic and procedural",
@@ -75,13 +76,13 @@ func TestReserveDurableTiers(t *testing.T) {
 			name:  "not enough durables to fill reserve takes what exists",
 			tiers: []memory.Tier{ep, ep, ep, se},
 			limit: 3, reserve: 2,
-			// only one durable exists; promote 'd', evict 'c'.
-			wantTop: "abd",
+			// only one durable exists; promote 'd' below the top hit, evict 'c'.
+			wantTop: "adb",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := reserveDurableTiers(pool(tt.tiers...), tt.limit, tt.reserve, defaultReservePromoteRatio, 0)
+			got := reserveDurableTiers(pool(tt.tiers...), tt.limit, tt.reserve, defaultReservePromoteRatio, defaultReserveTopAnchor, 0)
 			top := got
 			if len(top) > tt.limit {
 				top = top[:tt.limit]
@@ -115,7 +116,8 @@ func TestReserveDurableTiersRelevanceGate(t *testing.T) {
 			tiers:  []memory.Tier{ep, ep, ep, se, pr},
 			scores: []float64{0.9, 0.8, 0.7, 0.3, 0.2},
 			limit:  3, reserve: 2,
-			// 0.3 < 0.6*0.7: no durable clears the bar, window stays pure relevance.
+			// 0.3 < max(0.5*0.7, 0.4*0.9): no durable clears the bar, window
+			// stays pure relevance.
 			wantTop: "abc",
 		},
 		{
@@ -123,22 +125,42 @@ func TestReserveDurableTiersRelevanceGate(t *testing.T) {
 			tiers:  []memory.Tier{ep, ep, ep, se},
 			scores: []float64{0.9, 0.8, 0.7, 0.6},
 			limit:  3, reserve: 1,
-			// 0.6 >= 0.6*0.7: the crowded-out fact is recovered as before.
-			wantTop: "abd",
+			// 0.6 >= max(0.5*0.7, 0.4*0.9): the crowded-out fact is recovered,
+			// surfacing below the top hit.
+			wantTop: "adb",
 		},
 		{
 			name:   "each eviction raises the bar",
 			tiers:  []memory.Tier{ep, ep, ep, se, se},
-			scores: []float64{0.9, 0.8, 0.7, 0.6, 0.45},
+			scores: []float64{0.9, 0.8, 0.7, 0.6, 0.38},
 			limit:  3, reserve: 2,
-			// 'd' clears vs 'c' (0.6 >= 0.42); 'e' would clear c's bar but the
-			// next evictee is 'b' (bar 0.48 > 0.45), so only one is promoted.
-			wantTop: "abd",
+			// 'd' clears vs 'c' (0.6 >= 0.36); 'e' would clear c's bar but the
+			// next evictee is 'b' (bar 0.40 > 0.38), so only one is promoted.
+			wantTop: "adb",
+		},
+		{
+			name:   "top anchor blocks promotion into a low-signal window",
+			tiers:  []memory.Tier{ep, ep, ep, se},
+			scores: []float64{1.0, 0.15, 0.1, 0.12},
+			limit:  3, reserve: 1,
+			// The evictee leg alone would pass (0.12 >= 0.5*0.1) — the noise
+			// evictee opens the window — but the absolute leg holds:
+			// 0.12 < 0.4*1.0.
+			wantTop: "abc",
+		},
+		{
+			name:   "two promotions keep their relative order below the top hit",
+			tiers:  []memory.Tier{ep, ep, ep, se, se},
+			scores: []float64{0.9, 0.8, 0.7, 0.6, 0.55},
+			limit:  3, reserve: 2,
+			// Both clear their bars (0.6 >= 0.36; 0.55 >= max(0.5*0.8, 0.36));
+			// the top hit stays first, promotions follow in relevance order.
+			wantTop: "ade",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := reserveDurableTiers(scoredPool(tt.tiers, tt.scores), tt.limit, tt.reserve, defaultReservePromoteRatio, 0)
+			got := reserveDurableTiers(scoredPool(tt.tiers, tt.scores), tt.limit, tt.reserve, defaultReservePromoteRatio, defaultReserveTopAnchor, 0)
 			top := got
 			if len(top) > tt.limit {
 				top = top[:tt.limit]
@@ -153,7 +175,7 @@ func TestReserveDurableTiersRelevanceGate(t *testing.T) {
 func TestReserveDurableTiersPassthrough(t *testing.T) {
 	// Pool no deeper than limit: nothing to compose, returned as-is.
 	p := pool(ep, se)
-	got := reserveDurableTiers(p, 5, 2, defaultReservePromoteRatio, 0)
+	got := reserveDurableTiers(p, 5, 2, defaultReservePromoteRatio, defaultReserveTopAnchor, 0)
 	if ids(got) != "ab" {
 		t.Fatalf("small pool should pass through, got %q", ids(got))
 	}
@@ -182,7 +204,7 @@ func TestReserveDurableTiersAdaptiveGate(t *testing.T) {
 			scores: []float64{0.9, 0.8, 0.7, 0.72},
 			limit:  3, reserve: 1, gatePct: 10,
 			// P10 of {0.7,0.8,0.9} = 0.72 <= 0.72: promoted, evicting 'c'.
-			wantTop: "abd",
+			wantTop: "adb",
 		},
 		{
 			name:   "durable above the window floor is promoted",
@@ -190,7 +212,7 @@ func TestReserveDurableTiersAdaptiveGate(t *testing.T) {
 			scores: []float64{0.9, 0.8, 0.7, 0.85},
 			limit:  3, reserve: 1, gatePct: 50,
 			// P50 of {0.7,0.8,0.9} = 0.8 <= 0.85: promoted, evicting 'c'.
-			wantTop: "abd",
+			wantTop: "adb",
 		},
 		{
 			name:   "bar is the original window's percentile, not re-derived per eviction",
@@ -203,7 +225,7 @@ func TestReserveDurableTiersAdaptiveGate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := reserveDurableTiers(scoredPool(tt.tiers, tt.scores), tt.limit, tt.reserve, defaultReservePromoteRatio, tt.gatePct)
+			got := reserveDurableTiers(scoredPool(tt.tiers, tt.scores), tt.limit, tt.reserve, defaultReservePromoteRatio, defaultReserveTopAnchor, tt.gatePct)
 			top := got
 			if len(top) > tt.limit {
 				top = top[:tt.limit]

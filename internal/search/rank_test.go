@@ -135,6 +135,24 @@ func TestRerankQualityRecoversGoldFromRelevantDebris(t *testing.T) {
 	}
 }
 
+func TestRerankQualityCannotLiftIrrelevantDurable(t *testing.T) {
+	now := time.Now().UTC()
+	conf := 0.9
+	// On a low-signal query (one strong hit, the rest noise), an off-topic
+	// durable fact must not outrank weakly-relevant episodic noise on tier
+	// salience alone.
+	in := []store.Scored{
+		{Score: 1.00, Memory: &memory.Memory{ID: "gold", Tier: memory.TierEpisodic, LastAccessedAt: now}},
+		{Score: 0.10, Memory: &memory.Memory{ID: "noise", Tier: memory.TierEpisodic, LastAccessedAt: now}},
+		{Score: 0.01, Memory: &memory.Memory{ID: "offtopic-fact", Tier: memory.TierSemantic, Importance: 0.7, Confidence: &conf, LastAccessedAt: now}},
+	}
+	out := Rerank(in, now)
+	if out[0].Memory.ID != "gold" || out[1].Memory.ID != "noise" {
+		t.Fatalf("near-zero-relevance durable must not outrank relevant candidates, got order %s,%s,%s",
+			out[0].Memory.ID, out[1].Memory.ID, out[2].Memory.ID)
+	}
+}
+
 func TestRerankStableForEqualScores(t *testing.T) {
 	now := time.Now().UTC()
 	in := []store.Scored{
