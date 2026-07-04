@@ -3,6 +3,8 @@ package bench_test
 import (
 	"context"
 	"fmt"
+	"net"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -32,7 +34,8 @@ import (
 // Needs a live embedder (the dev endpoint). Skips when unreachable, so CI without
 // one is unaffected. Point it with MEMINI_EMBED_BASE_URL / _MODEL / _DIMS.
 func TestSemanticReserveTierMixed(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	t.Cleanup(cancel)
 
 	baseURL := envOr("MEMINI_EMBED_BASE_URL", "http://127.0.0.1:8001/v1")
 	model := envOr("MEMINI_EMBED_MODEL", "text-embedding-qwen3-embedding-0.6b")
@@ -42,15 +45,7 @@ func TestSemanticReserveTierMixed(t *testing.T) {
 	if err != nil {
 		t.Skipf("embedder config: %v", err)
 	}
-	probe, err := e.Embed(ctx, []string{"connectivity probe"})
-	if err != nil {
-		t.Skipf("live embedder unreachable at %s (%s): %v", baseURL, model, err)
-	}
-	// Guard against a dims mismatch silently producing meaningless recall numbers
-	// (e.g. MEMINI_EMBED_DIMS=1024 but the model returns 768).
-	if len(probe) != 1 || len(probe[0]) != dims {
-		t.Skipf("embedder returned %d-dim vectors, configured for %d — set MEMINI_EMBED_DIMS", len(probe[0]), dims)
-	}
+	probeEmbedder(ctx, t, baseURL, model)
 
 	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "reserve.db"), dims)
 	if err != nil {
@@ -125,7 +120,8 @@ func TestSemanticReserveTierMixed(t *testing.T) {
 // still surface once their last recall is far in the past. Reported at
 // reserve=0 (pure composite ranking) and the production default reserve=2.
 func TestQualityAgedDurableRecall(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	t.Cleanup(cancel)
 
 	baseURL := envOr("MEMINI_EMBED_BASE_URL", "http://127.0.0.1:8001/v1")
 	model := envOr("MEMINI_EMBED_MODEL", "text-embedding-qwen3-embedding-0.6b")
@@ -135,13 +131,7 @@ func TestQualityAgedDurableRecall(t *testing.T) {
 	if err != nil {
 		t.Skipf("embedder config: %v", err)
 	}
-	probe, err := e.Embed(ctx, []string{"connectivity probe"})
-	if err != nil {
-		t.Skipf("live embedder unreachable at %s (%s): %v", baseURL, model, err)
-	}
-	if len(probe) != 1 || len(probe[0]) != dims {
-		t.Skipf("embedder returned %d-dim vectors, configured for %d — set MEMINI_EMBED_DIMS", len(probe[0]), dims)
-	}
+	probeEmbedder(ctx, t, baseURL, model)
 
 	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "reserve-aged.db"), dims)
 	if err != nil {
@@ -202,7 +192,8 @@ func TestQualityAgedDurableRecall(t *testing.T) {
 // production default reserve=2, and asserts zero durable results in the top-5.
 // Before the gate, every such query had two off-topic facts injected.
 func TestSemanticReserveNoRelevantDurable(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	t.Cleanup(cancel)
 
 	baseURL := envOr("MEMINI_EMBED_BASE_URL", "http://127.0.0.1:8001/v1")
 	model := envOr("MEMINI_EMBED_MODEL", "text-embedding-qwen3-embedding-0.6b")
@@ -212,13 +203,7 @@ func TestSemanticReserveNoRelevantDurable(t *testing.T) {
 	if err != nil {
 		t.Skipf("embedder config: %v", err)
 	}
-	probe, err := e.Embed(ctx, []string{"connectivity probe"})
-	if err != nil {
-		t.Skipf("live embedder unreachable at %s (%s): %v", baseURL, model, err)
-	}
-	if len(probe) != 1 || len(probe[0]) != dims {
-		t.Skipf("embedder returned %d-dim vectors, configured for %d — set MEMINI_EMBED_DIMS", len(probe[0]), dims)
-	}
+	probeEmbedder(ctx, t, baseURL, model)
 
 	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "reserve-spray.db"), dims)
 	if err != nil {
@@ -457,4 +442,35 @@ func envIntOr(key string, def int) int {
 		}
 	}
 	return def
+}
+
+// probeEmbedder skips the test when the embedder endpoint is unreachable.
+// It does a lightweight TCP dial (3s) instead of a real embedding API call —
+// the openai-go SDK retries a non-responding host up to 6 × 60s, which would
+// exceed the test timeout. Dims mismatch is caught on the first real Embed
+// during ingestion.
+func probeEmbedder(ctx context.Context, t *testing.T, baseURL, model string) {
+	t.Helper()
+	u, err := neturl.Parse(baseURL)
+	if err != nil {
+		t.Skipf("bad embedder BaseURL %q: %v", baseURL, err)
+	}
+	host := u.Host
+	if host == "" {
+		t.Skipf("bad embedder BaseURL %q: no host", baseURL)
+	}
+	if u.Port() == "" {
+		host += ":80"
+		if u.Scheme == "https" {
+			host = u.Hostname() + ":443"
+		}
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var d net.Dialer
+	conn, err := d.DialContext(dialCtx, "tcp", host)
+	if err != nil {
+		t.Skipf("live embedder unreachable at %s (%s): %v", baseURL, model, err)
+	}
+	_ = conn.Close()
 }
