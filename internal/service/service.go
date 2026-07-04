@@ -208,6 +208,15 @@ type Service struct {
 	// (semantic/procedural) that are relevance-competitive with what they
 	// displace, the rest by relevance. 0 disables it.
 	recallSemanticReserve int
+	// reservePromoteRatio is the relevance bar for a reserved slot: a durable
+	// is promoted only when its composite score is at least this fraction of
+	// the entry it evicts. Defaults to defaultReservePromoteRatio.
+	reservePromoteRatio float64
+	// reserveGatePercentile (> 0) switches the reserve's relevance gate to the
+	// adaptive form: a durable is promoted only when it reaches this percentile
+	// of the window's own scores. 0 keeps the fixed-ratio gate. Tuning/bench
+	// knob; see bench/reserve_sweep_test.go.
+	reserveGatePercentile float64
 	// episodicMinChars drops an episodic write whose substantive content (role
 	// scaffolding stripped) is below this many characters — the "keep going" /
 	// "ok" chatter that otherwise dominates episodic memory. 0 disables it.
@@ -416,6 +425,23 @@ func WithRecallSemanticReserve(n int) Option {
 	return func(s *Service) { s.recallSemanticReserve = n }
 }
 
+// WithReservePromoteRatio overrides the reserve's fixed-ratio relevance gate:
+// a durable takes a reserved slot only when its composite score is at least
+// ratio× the entry it evicts. Tuning/bench knob (bench/reserve_sweep_test.go);
+// the production default is defaultReservePromoteRatio.
+func WithReservePromoteRatio(ratio float64) Option {
+	return func(s *Service) { s.reservePromoteRatio = ratio }
+}
+
+// WithReserveGatePercentile (pct > 0) switches the reserve's relevance gate to
+// the adaptive form: a durable takes a reserved slot only when its composite
+// score reaches the pct-th percentile of the window's own scores, so the bar
+// derives from the pool's score distribution instead of a fixed ratio.
+// Tuning/bench knob (bench/reserve_sweep_test.go); 0 keeps the ratio gate.
+func WithReserveGatePercentile(pct float64) Option {
+	return func(s *Service) { s.reserveGatePercentile = pct }
+}
+
 // WithEpisodicMinChars drops episodic writes whose substantive content is below
 // n characters. 0 (the default) disables it. See MEMINI_EPISODIC_MIN_CHARS.
 func WithEpisodicMinChars(n int) Option {
@@ -571,6 +597,7 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 		promoteMinAccess:     3,
 		rerankTimeout:        defaultRerankTimeout,
 		scoreFusionAlpha:     search.DefaultFusionAlpha, // convex score fusion by default; negative selects RRF
+		reservePromoteRatio:  defaultReservePromoteRatio,
 		poolFactor:           recallPoolFactor,
 		poolFloor:            recallPoolFloor,
 		fingerprintDedup:     true,
@@ -1363,7 +1390,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	}
 	// Reserve slots for durable tiers so episodic chatter can't crowd out
 	// consolidated facts/rules; the pool is already relevance-filtered upstream.
-	ranked = reserveDurableTiers(ranked, k, s.resolveSemanticReserve(in))
+	ranked = reserveDurableTiers(ranked, k, s.resolveSemanticReserve(in), s.reservePromoteRatio, s.reserveGatePercentile)
 	results := s.finalizeRecall(ctx, in.Query, ranked, k)
 	s.reinforceResults(ctx, results)
 	s.metrics.RecallResult("ok", tf, hitsBucket(len(results)))
@@ -1463,25 +1490,34 @@ func (s *Service) extractEpisodicAsync(ctx context.Context, m *memory.Memory) {
 	})
 }
 
-// reservePromoteRatio is the relevance bar for taking a reserved slot: a
-// durable is promoted only when its composite score is at least this fraction
+// defaultReservePromoteRatio is the relevance bar for taking a reserved slot:
+// a durable is promoted only when its composite score is at least this fraction
 // of the entry it would evict. Below it the durable is off-topic for the query
 // and forcing it in would trade a relevant hit for noise, so the reserve
-// injects nothing. Benched on the tier-mix corpora (bench/reserve_test.go):
-// off-topic injections leak at 0.5 and crowded-out durable recovery holds up
-// to 0.8, so the safe band is 0.6–0.8; the permissive end is chosen so
-// genuinely relevant durables buried deeper on weaker embedders still recover.
-const reservePromoteRatio = 0.6
+// injects nothing. Benched two ways: the tier-mix corpora
+// (bench/reserve_test.go, qwen3-0.6b) put the injection-leak boundary at 0.5;
+// the multi-embedder gate sweep (bench/reserve_sweep_test.go — qwen3-0.6b,
+// MiniLM-L6, nomic-v1.5, bge-small, with and without a cross-encoder) puts it
+// at 0.4 and shows buried-durable recovery degrading above 0.6 on the small
+// embedders (bge-small loses recall at 0.7+, MiniLM/nomic collapse at 0.8).
+// 0.6 is the intersection: injection-clean on both corpora, full or near-full
+// recovery on every benched embedder. The sweep also rejected an adaptive
+// window-percentile gate: a crowded-out durable scores below the window floor
+// by construction, so any in-window percentile blocks all recovery.
+const defaultReservePromoteRatio = 0.6
 
 // reserveDurableTiers recomposes a relevance-ordered pool so up to `reserve` of
 // the top `limit` slots hold durable tiers (semantic/procedural): durables just
 // outside the window are promoted in, evicting the lowest-relevance episodic
-// entries, until the reserve is met. Promotion is relevance-gated by
-// reservePromoteRatio, so a query with no relevance-competitive durable keeps
-// its pure-relevance window instead of having off-topic facts forced in.
+// entries, until the reserve is met. Promotion is relevance-gated so a query
+// with no relevance-competitive durable keeps its pure-relevance window instead
+// of having off-topic facts forced in: with gatePct <= 0 a candidate must score
+// at least ratio× the entry it evicts; with gatePct > 0 it must instead reach
+// the gatePct-th percentile of the original window's scores (the adaptive gate,
+// which derives the bar from the pool's own score distribution).
 // Relevance order is preserved. reserve <= 0 or a pool no deeper than `limit`
 // returns the input unchanged.
-func reserveDurableTiers(ranked []store.Scored, limit, reserve int) []store.Scored {
+func reserveDurableTiers(ranked []store.Scored, limit, reserve int, ratio, gatePct float64) []store.Scored {
 	if reserve <= 0 || limit <= 0 || len(ranked) <= limit {
 		return ranked
 	}
@@ -1502,6 +1538,15 @@ func reserveDurableTiers(ranked []store.Scored, limit, reserve int) []store.Scor
 		return ranked
 	}
 
+	adaptiveBar := 0.0
+	if gatePct > 0 {
+		window := make([]float64, limit)
+		for i := range limit {
+			window[i] = ranked[i].Score
+		}
+		adaptiveBar = percentile(window, gatePct)
+	}
+
 	for i := limit; i < len(ranked) && durableCount < reserve; i++ {
 		if !durable(ranked[i].Memory.Tier) {
 			continue
@@ -1516,10 +1561,14 @@ func reserveDurableTiers(ranked []store.Scored, limit, reserve int) []store.Scor
 		if evict < 0 {
 			break // window is all durable; nothing to give up
 		}
-		if ranked[i].Score < reservePromoteRatio*ranked[evict].Score {
+		bar := ratio * ranked[evict].Score
+		if gatePct > 0 {
+			bar = adaptiveBar
+		}
+		if ranked[i].Score < bar {
 			// Not relevance-competitive with what it would displace. Later
-			// candidates score lower still and each eviction only raises the
-			// bar, so none of them can clear it either.
+			// candidates score lower still and (in ratio mode) each eviction
+			// only raises the bar, so none of them can clear it either.
 			break
 		}
 		delete(selected, evict)
@@ -1539,6 +1588,20 @@ func reserveDurableTiers(ranked []store.Scored, limit, reserve int) []store.Scor
 		}
 	}
 	return out
+}
+
+// percentile returns the p-th percentile (0 < p <= 100) of scores by linear
+// interpolation over the sorted values. scores is not mutated.
+func percentile(scores []float64, p float64) float64 {
+	sorted := slices.Clone(scores)
+	slices.Sort(sorted)
+	if p >= 100 || len(sorted) == 1 {
+		return sorted[len(sorted)-1]
+	}
+	pos := p / 100 * float64(len(sorted)-1)
+	lo := int(pos)
+	frac := pos - float64(lo)
+	return sorted[lo] + frac*(sorted[lo+1]-sorted[lo])
 }
 
 // gateSemantic drops vector candidates scoring below floor and restricts the
