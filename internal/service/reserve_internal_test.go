@@ -93,6 +93,63 @@ func TestReserveDurableTiers(t *testing.T) {
 	}
 }
 
+// scoredPool is pool with explicit composite scores per position.
+func scoredPool(tiers []memory.Tier, scores []float64) []store.Scored {
+	out := pool(tiers...)
+	for i := range out {
+		out[i].Score = scores[i]
+	}
+	return out
+}
+
+func TestReserveDurableTiersRelevanceGate(t *testing.T) {
+	tests := []struct {
+		name           string
+		tiers          []memory.Tier
+		scores         []float64
+		limit, reserve int
+		wantTop        string
+	}{
+		{
+			name:   "off-topic durables are not promoted",
+			tiers:  []memory.Tier{ep, ep, ep, se, pr},
+			scores: []float64{0.9, 0.8, 0.7, 0.3, 0.2},
+			limit:  3, reserve: 2,
+			// 0.3 < 0.6*0.7: no durable clears the bar, window stays pure relevance.
+			wantTop: "abc",
+		},
+		{
+			name:   "competitive durable is still promoted",
+			tiers:  []memory.Tier{ep, ep, ep, se},
+			scores: []float64{0.9, 0.8, 0.7, 0.6},
+			limit:  3, reserve: 1,
+			// 0.6 >= 0.6*0.7: the crowded-out fact is recovered as before.
+			wantTop: "abd",
+		},
+		{
+			name:   "each eviction raises the bar",
+			tiers:  []memory.Tier{ep, ep, ep, se, se},
+			scores: []float64{0.9, 0.8, 0.7, 0.6, 0.45},
+			limit:  3, reserve: 2,
+			// 'd' clears vs 'c' (0.6 >= 0.42); 'e' would clear c's bar but the
+			// next evictee is 'b' (bar 0.48 > 0.45), so only one is promoted.
+			wantTop: "abd",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := reserveDurableTiers(scoredPool(tt.tiers, tt.scores), tt.limit, tt.reserve)
+			top := got
+			if len(top) > tt.limit {
+				top = top[:tt.limit]
+			}
+			if ids(top) != tt.wantTop {
+				t.Fatalf("top %q, want %q (full: %q)", ids(top), tt.wantTop, ids(got))
+			}
+		})
+	}
+}
+
 func TestReserveDurableTiersPassthrough(t *testing.T) {
 	// Pool no deeper than limit: nothing to compose, returned as-is.
 	p := pool(ep, se)

@@ -194,6 +194,99 @@ func TestQualityAgedDurableRecall(t *testing.T) {
 	}
 }
 
+// TestSemanticReserveNoRelevantDurable is the spray-and-pray regression: recall
+// on a subject that has NO durable memory must not have off-topic facts forced
+// into the window by the reserve. It ingests the tier-mixed corpus with the
+// facts fresh (fresh maximizes their quality term — the hardest case for the
+// relevance gate) plus episodic-only subjects, queries those subjects at the
+// production default reserve=2, and asserts zero durable results in the top-5.
+// Before the gate, every such query had two off-topic facts injected.
+func TestSemanticReserveNoRelevantDurable(t *testing.T) {
+	ctx := context.Background()
+
+	baseURL := envOr("MEMINI_EMBED_BASE_URL", "http://127.0.0.1:8001/v1")
+	model := envOr("MEMINI_EMBED_MODEL", "text-embedding-qwen3-embedding-0.6b")
+	dims := envIntOr("MEMINI_EMBED_DIMS", 1024)
+
+	e, err := embed.NewOpenAI(embed.OpenAIConfig{BaseURL: baseURL, Model: model, Dims: dims})
+	if err != nil {
+		t.Skipf("embedder config: %v", err)
+	}
+	probe, err := e.Embed(ctx, []string{"connectivity probe"})
+	if err != nil {
+		t.Skipf("live embedder unreachable at %s (%s): %v", baseURL, model, err)
+	}
+	if len(probe) != 1 || len(probe[0]) != dims {
+		t.Skipf("embedder returned %d-dim vectors, configured for %d — set MEMINI_EMBED_DIMS", len(probe[0]), dims)
+	}
+
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "reserve-spray.db"), dims)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	clk := func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
+	opts := append([]service.Option{
+		service.WithClock(clk), service.WithSyncReinforce(), service.WithScoreFusion(0.5),
+	}, maybeReranker(t)...)
+	svc := service.New(st, e, opts...)
+
+	corpus := buildReserveCorpus()
+	if err := ingestReserveCorpus(ctx, st, e, corpus, clk(), 0); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	// Subjects with chatter but no durable fact anywhere in the corpus.
+	subjects := []string{
+		"the office coffee machine", "the summer team offsite",
+		"the parking situation", "the Friday demo snacks",
+		"the new standing desks", "the holiday rotation",
+	}
+	texts := make([]string, 0, len(subjects)*chatterPerTopic)
+	epIDs := make([]string, 0, len(subjects)*chatterPerTopic)
+	for i, subj := range subjects {
+		for j := range chatterPerTopic {
+			texts = append(texts, fmt.Sprintf(
+				"In standup #%d we kept going back and forth about %s. Several people had strong opinions on %s and nobody fully agreed on %s yet.",
+				j, subj, subj, subj))
+			epIDs = append(epIDs, fmt.Sprintf("spray-%02d-%d", i, j))
+		}
+	}
+	vecs, err := e.Embed(ctx, texts)
+	if err != nil {
+		t.Fatalf("embed episodic-only chatter: %v", err)
+	}
+	for i := range texts {
+		if err := st.Upsert(ctx, &memory.Memory{
+			ID: epIDs[i], Namespace: reserveNS, Tier: memory.TierEpisodic, Content: texts[i],
+			CreatedAt: clk(), UpdatedAt: clk(), LastAccessedAt: clk(), Embedding: vecs[i],
+		}); err != nil {
+			t.Fatalf("upsert episodic-only chatter: %v", err)
+		}
+	}
+
+	injected := 0
+	for _, subj := range subjects {
+		q := fmt.Sprintf("Catch me up on %s — what's the current state of it?", subj)
+		res, err := svc.Recall(ctx, service.RecallInput{
+			Namespace: reserveNS, Query: q, Limit: 5, SemanticReserve: 2,
+		})
+		if err != nil {
+			t.Fatalf("recall %q: %v", q, err)
+		}
+		for _, r := range res {
+			if r.Memory.Tier == memory.TierSemantic || r.Memory.Tier == memory.TierProcedural {
+				injected++
+				t.Logf("durable injected for %q: %s (score %.3f) %q", subj, r.Memory.ID, r.Score, r.Memory.Content)
+			}
+		}
+	}
+	if injected > 0 {
+		t.Errorf("reserve injected %d off-topic durable memories across %d no-durable queries; want 0", injected, len(subjects))
+	}
+}
+
 const chatterPerTopic = 12
 
 type reserveTopic struct {

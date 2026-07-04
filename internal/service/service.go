@@ -204,8 +204,9 @@ type Service struct {
 	// recalls empty. 0 disables it. The usable value is embedder-specific (see
 	// docs/recall-relevance-gate-2026-06-20.md).
 	recallMinSemanticScore float64
-	// recallSemanticReserve guarantees up to N recall slots for durable tiers
-	// (semantic/procedural), the rest by relevance. 0 disables it.
+	// recallSemanticReserve reserves up to N recall slots for durable tiers
+	// (semantic/procedural) that are relevance-competitive with what they
+	// displace, the rest by relevance. 0 disables it.
 	recallSemanticReserve int
 	// episodicMinChars drops an episodic write whose substantive content (role
 	// scaffolding stripped) is below this many characters — the "keep going" /
@@ -406,9 +407,11 @@ func WithRecallMinSemanticScore(minSemanticScore float64) Option {
 	return func(s *Service) { s.recallMinSemanticScore = minSemanticScore }
 }
 
-// WithRecallSemanticReserve guarantees up to n of the recall slots for durable
-// tiers (semantic/procedural). 0 (the default) disables it. Baked to 2 by the
-// server; the benchmark harness overrides it via this Option.
+// WithRecallSemanticReserve reserves up to n of the recall slots for durable
+// tiers (semantic/procedural); a durable takes a slot only when it is
+// relevance-competitive with the entry it displaces (reservePromoteRatio).
+// 0 (the default) disables it. Baked to 2 by the server; the benchmark
+// harness overrides it via this Option.
 func WithRecallSemanticReserve(n int) Option {
 	return func(s *Service) { s.recallSemanticReserve = n }
 }
@@ -1460,11 +1463,24 @@ func (s *Service) extractEpisodicAsync(ctx context.Context, m *memory.Memory) {
 	})
 }
 
+// reservePromoteRatio is the relevance bar for taking a reserved slot: a
+// durable is promoted only when its composite score is at least this fraction
+// of the entry it would evict. Below it the durable is off-topic for the query
+// and forcing it in would trade a relevant hit for noise, so the reserve
+// injects nothing. Benched on the tier-mix corpora (bench/reserve_test.go):
+// off-topic injections leak at 0.5 and crowded-out durable recovery holds up
+// to 0.8, so the safe band is 0.6–0.8; the permissive end is chosen so
+// genuinely relevant durables buried deeper on weaker embedders still recover.
+const reservePromoteRatio = 0.6
+
 // reserveDurableTiers recomposes a relevance-ordered pool so up to `reserve` of
 // the top `limit` slots hold durable tiers (semantic/procedural): durables just
 // outside the window are promoted in, evicting the lowest-relevance episodic
-// entries, until the reserve is met. Relevance order is preserved. reserve <= 0
-// or a pool no deeper than `limit` returns the input unchanged.
+// entries, until the reserve is met. Promotion is relevance-gated by
+// reservePromoteRatio, so a query with no relevance-competitive durable keeps
+// its pure-relevance window instead of having off-topic facts forced in.
+// Relevance order is preserved. reserve <= 0 or a pool no deeper than `limit`
+// returns the input unchanged.
 func reserveDurableTiers(ranked []store.Scored, limit, reserve int) []store.Scored {
 	if reserve <= 0 || limit <= 0 || len(ranked) <= limit {
 		return ranked
@@ -1499,6 +1515,12 @@ func reserveDurableTiers(ranked []store.Scored, limit, reserve int) []store.Scor
 		}
 		if evict < 0 {
 			break // window is all durable; nothing to give up
+		}
+		if ranked[i].Score < reservePromoteRatio*ranked[evict].Score {
+			// Not relevance-competitive with what it would displace. Later
+			// candidates score lower still and each eviction only raises the
+			// bar, so none of them can clear it either.
+			break
 		}
 		delete(selected, evict)
 		selected[i] = struct{}{}
