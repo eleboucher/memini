@@ -110,6 +110,19 @@ def _check_plaintext_bearer_guard(base: str, secret: str, warn: Callable[[str], 
         (warn or (lambda m: print(m, file=sys.stderr)))(msg)
 
 
+def _sanitize_namespace(value: str) -> str:
+    """Keep the X-Memini-Namespace header value clean: alnum, dot, dash,
+    underscore; collapse the rest to dashes and trim. The server sanitizes too,
+    but the header should be clean."""
+    out = []
+    for ch in str(value).strip():
+        out.append(ch if (ch.isalnum() or ch in "._-") else "-")
+    collapsed = "".join(out)
+    while "--" in collapsed:
+        collapsed = collapsed.replace("--", "-")
+    return collapsed.strip("-")
+
+
 def _valid_url(base: str) -> bool:
     try:
         parsed = urlparse(base)
@@ -133,7 +146,10 @@ def _api(base: str, path: str, body: dict | None, namespace: str, secret: str,
         with urlopen(req, timeout=TIMEOUT) as resp:
             raw = resp.read()
             return json.loads(raw) if raw else {}
-    except (URLError, TimeoutError, ValueError):
+    except (URLError, TimeoutError, ValueError) as e:
+        # Degrade gracefully but never silently: a swallowed capture/recall
+        # failure looks like "memory isn't working" with nothing to debug.
+        print(f"[memini] {method} {path} failed: {e}", file=sys.stderr)
         return None
 
 
@@ -252,7 +268,9 @@ class MeminiMemoryProvider(MemoryProvider):
         # Hermes' initialize kwargs carry no project path (agent_workspace is a
         # label, not a dir), so the working directory is the only signal for the
         # default namespace; set MEMINI_NAMESPACE to scope explicitly.
-        self._namespace = _env("MEMINI_NAMESPACE") or os.path.basename(os.getcwd().rstrip("/")) or "hermes"
+        self._namespace = _sanitize_namespace(
+            _env("MEMINI_NAMESPACE") or os.path.basename(os.getcwd().rstrip("/"))
+        ) or "hermes"
         # Recall-shaping knobs, read once. Defaults match the other integrations
         # (limit 3, no floor, unbounded, plain bullets).
         limit = _int_env("MEMINI_RECALL_LIMIT", 3)

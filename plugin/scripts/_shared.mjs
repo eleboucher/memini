@@ -248,15 +248,16 @@ export async function postJSON(path, body, namespace, timeoutMs = 5000) {
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) {
-      if (DEBUG) {
-        const t = await res.text().catch(() => "");
-        console.error(`[memini] POST ${path} -> ${res.status}: ${t.slice(0, 200)}`);
-      }
+      // Degrade but never silently: a swallowed 401/500 on a capture or recall
+      // looks like "memory isn't working" with nothing to debug. The response
+      // body stays DEBUG-only.
+      const t = DEBUG ? await res.text().catch(() => "") : "";
+      console.error(`[memini] POST ${path} -> ${res.status}${t ? `: ${t.slice(0, 200)}` : ""}`);
       return null;
     }
     return await res.json();
   } catch (e) {
-    if (DEBUG) console.error(`[memini] POST ${path} failed:`, e?.message || e);
+    console.error(`[memini] POST ${path} failed:`, e?.message || e);
     return null;
   }
 }
@@ -307,12 +308,12 @@ export async function getJSON(path, namespace, timeoutMs = 5000) {
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) {
-      if (DEBUG) console.error(`[memini] GET ${path} -> ${res.status}`);
+      console.error(`[memini] GET ${path} -> ${res.status}`);
       return null;
     }
     return await res.json();
   } catch (e) {
-    if (DEBUG) console.error(`[memini] GET ${path} failed:`, e?.message || e);
+    console.error(`[memini] GET ${path} failed:`, e?.message || e);
     return null;
   }
 }
@@ -835,7 +836,10 @@ export function extractAssistantText(transcript) {
  */
 export function isRealUserMessage(content) {
   if (typeof content !== "string") return false; // arrays are tool_results, not user turns
-  return !/^\s*<(local-command|command-)/.test(content); // slash-command / local-command noise
+  // Skipped: slash-command / local-command scaffolding, memini's own injected
+  // recall blocks (<memini-context>/<memini-pretool> — capturing one would echo
+  // recalled memories back into memory), and hook-injected system reminders.
+  return !/^\s*<(local-command|command-|memini-|system-reminder)/.test(content);
 }
 
 /**

@@ -763,3 +763,36 @@ test("stripRuntimePreambles returns empty when the turn is only metadata", () =>
   ].join("\n");
   assert.equal(stripRuntimePreambles(input), "");
 });
+
+test("an HTTP error is logged even when fallback_on_error degrades it", async () => {
+  const hooks = {};
+  const warned = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 500,
+    async json() { return {}; },
+    async text() { return "boom"; },
+  });
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) {
+        hooks[name] = handler;
+      },
+      logger: { warn(m) { warned.push(String(m)); } },
+      registerTool() {},
+    });
+    // A swallowed 401/500 on a capture or recall looks like "memory isn't
+    // working"; the degrade path must still say why.
+    const recall = await hooks.before_prompt_build({ prompt: "q" }, { sessionId: "sess-1" });
+    assert.equal(recall, undefined, "recall failure degrades to no injection");
+    assert.ok(
+      warned.some((m) => m.includes("failed: 500")),
+      `expected a failed-status warn, got: ${JSON.stringify(warned)}`,
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

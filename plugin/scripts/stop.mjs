@@ -126,6 +126,11 @@ async function captureTurn(payload, sessionId, project) {
 async function main() {
   const payload = parseJSON(await readStdin()) || {};
   const sessionId = payload.session_id || payload.sessionId || "unknown";
+  // A server write tagged session_id:"unknown" shares one exclusion bucket
+  // with every other unknown-id session (pre-tool-use excludes by exact
+  // session_id match), so cross-session rows would echo into each other. No
+  // identity → no server writes; local buffer bookkeeping is unaffected.
+  const hasSessionIdentity = sessionId !== "unknown";
   const cwd = payload.cwd || process.cwd();
   const project = resolveProject(cwd);
 
@@ -135,7 +140,7 @@ async function main() {
     console.error(`[memini] Stop project=${project} session=${sessionId} events=${digest?.count || 0}`);
 
   // No buffered events → nothing to checkpoint; a bare marker is just noise.
-  if (digest)
+  if (digest && hasSessionIdentity)
     await postRemember(digest.content, project, {
       tier: "working",
       tags: ["stop-checkpoint", project],
@@ -147,7 +152,7 @@ async function main() {
   // Inline memory extraction (on by default; opt out with MEMINI_INLINE_EXTRACT=0):
   // scan the session transcript for <memory> blocks the agent emitted during its
   // responses and persist each as a durable semantic fact.
-  if (envEnabled("MEMINI_INLINE_EXTRACT", true) && payload.transcript_path) {
+  if (envEnabled("MEMINI_INLINE_EXTRACT", true) && hasSessionIdentity && payload.transcript_path) {
     const transcript = readTranscript(payload.transcript_path);
     const assistantTexts = extractAssistantText(transcript);
     const allBlocks = [];

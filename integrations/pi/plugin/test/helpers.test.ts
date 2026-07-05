@@ -165,3 +165,42 @@ test("recall does not re-inject memories already shown in the same session", asy
     globalThis.fetch = realFetch;
   }
 });
+
+test("an HTTP error on recall is logged even when fallback_on_error degrades it", async () => {
+  const { default: meminiExtension } = await import("../src/index.ts");
+  const hooks: Record<string, any> = {};
+  const realFetch = globalThis.fetch;
+  const realError = console.error;
+  const logged: string[] = [];
+  console.error = (m: any) => logged.push(String(m));
+  globalThis.fetch = (async () => ({
+    ok: false,
+    status: 500,
+    async json() {
+      return {};
+    },
+    async text() {
+      return "boom";
+    },
+  })) as any;
+  try {
+    meminiExtension({
+      on(name: string, h: any) {
+        hooks[name] = h;
+      },
+      registerTool() {},
+    } as any);
+    const ctx = { sessionManager: { getSessionId: () => "sess-err", getLeafId: () => "leaf-1" } };
+    // A swallowed 500 looks like "memory isn't working"; the degrade path must
+    // still say why on stderr.
+    const out = await hooks.before_agent_start({ prompt: "anything" }, ctx);
+    assert.equal(out, undefined, "recall failure degrades to no injection");
+    assert.ok(
+      logged.some((m) => m.includes("failed: 500")),
+      `expected a failed-status warn, got: ${JSON.stringify(logged)}`,
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+    console.error = realError;
+  }
+});

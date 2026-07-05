@@ -32,7 +32,10 @@ async function main() {
     );
 
   // No buffered events → nothing to digest; a bare end marker is just noise.
-  if (digest) {
+  // No session identity → no write either: a digest tagged session_id:"unknown"
+  // shares one exclusion bucket with every other unknown-id session, so
+  // cross-session rows would echo into each other.
+  if (digest && sessionId !== "unknown") {
     await postRemember(digest.content, project, {
       tier: "episodic",
       tags: ["session-marker", project],

@@ -257,7 +257,12 @@ function createClient(cfg: ResolvedConfig, warn: (m: string) => void): MeminiCli
         signal: AbortSignal.timeout(cfg.timeout_ms),
       });
       if (!res.ok) {
-        if (cfg.fallback_on_error) return null;
+        if (cfg.fallback_on_error) {
+          // Degrade but never silently: a swallowed 401/500 on a capture or
+          // recall looks like "memory isn't working" with nothing to debug.
+          warn(`memini ${method} ${path} failed: ${res.status}`);
+          return null;
+        }
         const text = await res.text().catch(() => "");
         throw new Error(`memini ${method} ${path} failed: ${res.status} ${text}`);
       }

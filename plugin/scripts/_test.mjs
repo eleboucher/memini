@@ -705,6 +705,34 @@ test("mcp-headers.mjs: omits Authorization when no token", async () => {
   assert.equal(h.Authorization, undefined);
 });
 
+test("mcp-headers.mjs: MEMINI_REQUIRE_HTTPS=1 omits the bearer for plaintext non-loopback", async () => {
+  // The headersHelper must go through the same plaintext-bearer guard as the
+  // hooks' REST client; under REQUIRE_HTTPS it emits no Authorization rather
+  // than leaking the key (a throw would break the MCP connection JSON).
+  const { stdout, stderr } = await runHook("mcp-headers.mjs", "", {
+    CLAUDE_PROJECT_DIR: __dirname,
+    MEMINI_TOKEN: "tok-123",
+    MEMINI_BASE_URL: "http://memini.example.com",
+    MEMINI_REQUIRE_HTTPS: "1",
+  });
+  const h = JSON.parse(stdout);
+  assert.equal(h["X-Memini-Namespace"], "memini", "namespace must still be emitted");
+  assert.equal(h.Authorization, undefined, "bearer must not travel over plaintext");
+  assert.match(stderr, /plaintext HTTP/);
+});
+
+test("mcp-headers.mjs: warns (but still sends) for plaintext non-loopback by default", async () => {
+  // Warn-and-send parity with the hooks' REST client default posture.
+  const { stdout, stderr } = await runHook("mcp-headers.mjs", "", {
+    CLAUDE_PROJECT_DIR: __dirname,
+    MEMINI_TOKEN: "tok-123",
+    MEMINI_BASE_URL: "http://memini.example.com",
+  });
+  const h = JSON.parse(stdout);
+  assert.equal(h.Authorization, "Bearer tok-123");
+  assert.match(stderr, /plaintext HTTP/);
+});
+
 test("plaintext bearer guard warns once for http to a non-loopback host", async () => {
   const { createPlaintextBearerAuthGuard } = await import("./_shared.mjs");
   const warnings = [];
@@ -1092,6 +1120,12 @@ test("isRealUserMessage: strings pass, tool_result arrays and command noise skip
   assert.equal(isRealUserMessage("<local-command-stdout>x"), false);
   assert.equal(isRealUserMessage("<command-name>/foo"), false);
   assert.equal(isRealUserMessage(undefined), false);
+  // memini's own injected recall blocks and hook system reminders must never
+  // be captured as a user turn — that would echo recalled memories back into
+  // memory.
+  assert.equal(isRealUserMessage('<memini-pretool tool="Read" read-only>x'), false);
+  assert.equal(isRealUserMessage('<memini-context project="p" read-only>x'), false);
+  assert.equal(isRealUserMessage("<system-reminder>injected</system-reminder>"), false);
 });
 
 test("extractLastTurn: returns the final user→assistant turn, skips noise", async () => {
@@ -1283,6 +1317,84 @@ test("stop.mjs: turn-capture skips on stop_hook_active and missing transcript", 
     });
     assert.equal(turnPosts().length, 0, "missing transcript must not capture");
   } finally {
+    await close();
+  }
+});
+
+test("stop/session-end/pre-compact: no session id → no server writes", async () => {
+  // A write tagged session_id:"unknown" shares one exclusion bucket with every
+  // other unknown-id session (exact-match exclusion), so identity-less payloads
+  // must not produce server writes — from any of the capture paths.
+  const cache = freshCache();
+  const tp = join(cache, "turn.jsonl");
+  writeFileSync(
+    tp,
+    [
+      JSON.stringify({ type: "user", message: { role: "user", content: "q" } }),
+      JSON.stringify({
+        type: "assistant",
+        message: { id: "msg_1", content: [{ type: "text", text: "a\n<memory>\n{\"memories\":[{\"content\":\"fact\"}]}\n</memory>" }] },
+      }),
+    ].join("\n") + "\n",
+  );
+  const hits = [];
+  const { url, close } = await startMockServer((req, res) => {
+    hits.push({ url: req.url });
+    res.setHeader("Content-Type", "application/json");
+    res.statusCode = 201;
+    res.end(JSON.stringify({ id: "m1" }));
+  });
+  try {
+    // Buffer an event under the "unknown" fallback so each hook has a digest
+    // it *would* write.
+    await runHook(
+      "post-tool-use.mjs",
+      JSON.stringify({ cwd: __dirname, tool_name: "Edit", tool_input: { file_path: "x.go" } }),
+      { XDG_CACHE_HOME: cache },
+    );
+    for (const script of ["stop.mjs", "pre-compact.mjs", "session-end.mjs"]) {
+      await runHook(script, JSON.stringify({ cwd: __dirname, transcript_path: tp }), {
+        MEMINI_URL: url,
+        XDG_CACHE_HOME: cache,
+      });
+    }
+    assert.equal(hits.length, 0, `identity-less payloads must not write, got ${JSON.stringify(hits)}`);
+  } finally {
+    await close();
+  }
+});
+
+test("postJSON/getJSON: HTTP errors are logged even without MEMINI_DEBUG", async () => {
+  // A swallowed 401/500 on a capture or recall looks like "memory isn't
+  // working" with nothing to debug; the degrade path must say why by default.
+  const { url, close } = await startMockServer((req, res) => {
+    res.statusCode = 500;
+    res.end("boom");
+  });
+  const realError = console.error;
+  const logged = [];
+  console.error = (...a) => logged.push(a.join(" "));
+  const prevUrl = process.env.MEMINI_BASE_URL;
+  const prevDebug = process.env.MEMINI_DEBUG;
+  process.env.MEMINI_BASE_URL = url;
+  delete process.env.MEMINI_DEBUG;
+  try {
+    const { postJSON, getJSON } = await import("./_shared.mjs?cb=errlog");
+    assert.equal(await postJSON("/v1/memories", { content: "x" }, "ns"), null);
+    assert.equal(await getJSON("/v1/memories", "ns"), null);
+    assert.ok(
+      logged.some((m) => m.includes("POST /v1/memories -> 500")),
+      `expected a POST failure log, got: ${JSON.stringify(logged)}`,
+    );
+    assert.ok(
+      logged.some((m) => m.includes("GET /v1/memories -> 500")),
+      `expected a GET failure log, got: ${JSON.stringify(logged)}`,
+    );
+  } finally {
+    console.error = realError;
+    if (prevUrl === undefined) delete process.env.MEMINI_BASE_URL;
+    else process.env.MEMINI_BASE_URL = prevUrl;
+    if (prevDebug !== undefined) process.env.MEMINI_DEBUG = prevDebug;
     await close();
   }
 });

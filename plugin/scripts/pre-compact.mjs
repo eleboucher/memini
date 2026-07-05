@@ -22,6 +22,9 @@ async function main() {
 
   const digest = buildSessionDigest(readSessionEvents(sessionId), project);
   if (!digest) return; // nothing buffered → no checkpoint, no noise
+  // A checkpoint tagged session_id:"unknown" shares one exclusion bucket with
+  // every other unknown-id session (exact-match exclusion), so skip it.
+  if (sessionId === "unknown") return;
 
   if (DEBUG)
     console.error(`[memini] PreCompact project=${project} session=${sessionId} events=${digest.count}`);

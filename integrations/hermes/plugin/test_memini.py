@@ -29,6 +29,37 @@ def make_provider(call_stub):
     return p
 
 
+class SanitizeNamespaceTest(unittest.TestCase):
+    def test_collapses_unsafe_chars_for_the_header(self):
+        self.assertEqual(memini._sanitize_namespace("my project (wip)"), "my-project-wip")
+        self.assertEqual(memini._sanitize_namespace("repo.name_ok-1"), "repo.name_ok-1")
+        self.assertEqual(memini._sanitize_namespace("  --x--  "), "x")
+
+    def test_initialize_sanitizes_the_env_namespace(self):
+        os.environ["MEMINI_URL"] = "http://localhost:8080"
+        os.environ["MEMINI_NAMESPACE"] = "team space/eu"
+        try:
+            p = memini.MeminiMemoryProvider()
+            p.initialize("sess-1")
+            self.assertEqual(p._namespace, "team-space-eu")
+        finally:
+            os.environ.pop("MEMINI_NAMESPACE", None)
+
+
+class ApiErrorSurfacingTest(unittest.TestCase):
+    def test_failure_is_logged_not_silent(self):
+        # A swallowed capture/recall failure looks like "memory isn't working";
+        # _api must degrade to None but say why on stderr.
+        import io
+        from contextlib import redirect_stderr
+
+        err = io.StringIO()
+        with redirect_stderr(err):
+            out = memini._api("http://127.0.0.1:1", "/v1/search", {}, "ns", "")
+        self.assertIsNone(out)
+        self.assertIn("[memini] POST /v1/search failed:", err.getvalue())
+
+
 class ListPathTest(unittest.TestCase):
     def test_builds_repeatable_and_escaped_params(self):
         path = memini._list_path(

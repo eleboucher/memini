@@ -270,6 +270,69 @@ test("chat.message recall excludes this session's own captures via exclude_metad
   }
 });
 
+test("chat.message does not re-inject memories already shown in the same session", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return { results: [{ score: 0.9, memory: { id: "m1", tier: "semantic", summary: "prior note" } }] };
+    },
+    async text() { return ""; },
+  });
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080" },
+    );
+    // The injected synthetic part persists in the session, so an unchanged
+    // match must not be re-injected on the next message.
+    const first = { parts: [{ type: "text", text: "what did we decide?", sessionID: "s1", messageID: "m1" }] };
+    await hooks["chat.message"]({ sessionID: "s1" }, first);
+    assert.equal(first.parts.length, 2, "first message should get the recall part");
+    assert.match(first.parts[0].text, /prior note/);
+    const second = { parts: [{ type: "text", text: "and what else?", sessionID: "s1", messageID: "m2" }] };
+    await hooks["chat.message"]({ sessionID: "s1" }, second);
+    assert.equal(second.parts.length, 1, "already-shown memory must not re-inject");
+    // A different session has not been shown it yet.
+    const other = { parts: [{ type: "text", text: "what did we decide?", sessionID: "s2", messageID: "m3" }] };
+    await hooks["chat.message"]({ sessionID: "s2" }, other);
+    assert.equal(other.parts.length, 2, "other sessions still get the memory");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("an HTTP error is logged even when fallback_on_error degrades it", async () => {
+  const realFetch = globalThis.fetch;
+  const realError = console.error;
+  const logged = [];
+  console.error = (m) => logged.push(String(m));
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 500,
+    async json() { return {}; },
+    async text() { return "boom"; },
+  });
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080" },
+    );
+    // A swallowed 500 looks like "memory isn't working"; the degrade path
+    // must still say why.
+    const output = { parts: [{ type: "text", text: "q", sessionID: "s1", messageID: "m1" }] };
+    await hooks["chat.message"]({ sessionID: "s1" }, output);
+    assert.equal(output.parts.length, 1, "recall failure degrades to no injection");
+    assert.ok(
+      logged.some((m) => m.includes("failed: 500")),
+      `expected a failed-status warn, got: ${JSON.stringify(logged)}`,
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+    console.error = realError;
+  }
+});
+
 test("chat.message caps the recall block by MEMINI_INJECT_RECALL_MAX_TOK", async () => {
   // Four short bullets (~12 words each ≈ 16 tokens) + max=20: only the head
   // bullet fits, the tail is dropped with the truncation footer. Budget is

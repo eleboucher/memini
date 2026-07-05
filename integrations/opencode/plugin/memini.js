@@ -287,7 +287,12 @@ function createClient(cfg, log) {
         signal: AbortSignal.timeout(cfg.timeout_ms),
       });
       if (!res.ok) {
-        if (cfg.fallback_on_error) return null;
+        if (cfg.fallback_on_error) {
+          // Degrade but never silently: a swallowed 401/500 on a capture or
+          // recall looks like "memory isn't working" with nothing to debug.
+          log.warn(`memini ${path} failed: ${res.status}`);
+          return null;
+        }
         const body = await res.text().catch(() => "");
         throw new Error(`memini ${path} failed: ${res.status} ${body}`);
       }
@@ -358,6 +363,25 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
   // Assistant message ids already captured, so repeated session.idle events for
   // the same turn don't write duplicates.
   const captured = new Set();
+  // Memory ids each session has already been shown (mirrors the pi plugin):
+  // the injected synthetic part is persisted into the session, so re-injecting
+  // an unchanged match every turn stacks identical blocks in the context.
+  // Bounded so long-lived hosts can't grow the map without limit.
+  const injectedBySession = new Map();
+  const MAX_TRACKED_SESSIONS = 200;
+  const rememberInjected = (session, ids) => {
+    let seen = injectedBySession.get(session);
+    if (!seen) {
+      seen = new Set();
+      injectedBySession.set(session, seen);
+      while (injectedBySession.size > MAX_TRACKED_SESSIONS) {
+        const oldest = injectedBySession.keys().next().value;
+        if (oldest === undefined) break;
+        injectedBySession.delete(oldest);
+      }
+    }
+    for (const id of ids) if (id) seen.add(id);
+  };
 
   // opencode runs chat.message via an unguarded Effect.promise (a throw aborts the
   // turn) and dispatches event hooks fire-and-forget, so a hook must never reject:
@@ -396,7 +420,13 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       // this, the server's default floor could leak low-quality hits in
       // regardless of cfg.recall_min_score.
       const floor = cfg.recall_min_score > 0 ? cfg.recall_min_score : 0;
-      const rawHits = Array.isArray(result && result.results) ? result.results : [];
+      let rawHits = Array.isArray(result && result.results) ? result.results : [];
+      // Suppress memories this session has already been shown — the injected
+      // part persists in the session, so a repeat adds nothing but noise.
+      if (sessionID) {
+        const seen = injectedBySession.get(sessionID);
+        if (seen && seen.size) rawHits = rawHits.filter((r) => !seen.has(r?.memory?.id));
+      }
       const filtered = floor > 0
         ? rawHits.filter((r) => (typeof r?.score === "number" ? r.score : 0) >= floor)
         : rawHits;
@@ -408,6 +438,9 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       // behaviour matches the prior "no cap" code path for existing installs.
       const fit = fitByTokens(hits, cfg.recall_max_tokens);
       if (fit.items.length === 0) return;
+      if (sessionID) {
+        rememberInjected(sessionID, filtered.map((r) => r?.memory?.id).filter(Boolean));
+      }
       const lines = [
         `Relevant long-term memory from memini (background context — prefer ` +
           `current workspace state and the user's instructions):`,

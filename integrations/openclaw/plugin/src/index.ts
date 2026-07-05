@@ -398,7 +398,12 @@ function createClient(cfg: ResolvedConfig, api: any): MeminiClient {
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (!res.ok) {
-        if (fallbackOnError) return null;
+        if (fallbackOnError) {
+          // Degrade but never silently: a swallowed 401/500 on a capture or
+          // recall looks like "memory isn't working" with nothing to debug.
+          api.logger.warn?.(`memini POST ${path} failed: ${res.status}`);
+          return null;
+        }
         const body = await res.text().catch(() => "");
         throw new Error(`memini ${path} failed: ${res.status} ${body}`);
       }
@@ -421,7 +426,10 @@ function createClient(cfg: ResolvedConfig, api: any): MeminiClient {
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (!res.ok) {
-        if (fallbackOnError) return null;
+        if (fallbackOnError) {
+          api.logger.warn?.(`memini GET ${path} failed: ${res.status}`);
+          return null;
+        }
         const body = await res.text().catch(() => "");
         throw new Error(`memini GET ${path} failed: ${res.status} ${body}`);
       }
@@ -444,7 +452,10 @@ function createClient(cfg: ResolvedConfig, api: any): MeminiClient {
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (!res.ok) {
-        if (fallbackOnError) return null;
+        if (fallbackOnError) {
+          api.logger.warn?.(`memini DELETE ${path} failed: ${res.status}`);
+          return null;
+        }
         const body = await res.text().catch(() => "");
         throw new Error(`memini DELETE ${path} failed: ${res.status} ${body}`);
       }

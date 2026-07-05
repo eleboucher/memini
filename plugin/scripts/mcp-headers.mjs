@@ -5,12 +5,26 @@
 // and recall target one namespace) and a bearer token when one is configured —
 // which is what makes a single remote memini work per-project.
 
-import { resolveProject } from "./_shared.mjs";
+import { resolveProject, createPlaintextBearerAuthGuard } from "./_shared.mjs";
 
 const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const headers = { "X-Memini-Namespace": resolveProject(projectDir) };
 
+// Same plaintext-bearer guard as the hooks' REST client. The MCP endpoint is
+// ${MEMINI_BASE_URL}/mcp (see .mcp.json), so check the base URL: warn when the
+// token would travel over plaintext HTTP to a non-loopback host, and under
+// MEMINI_REQUIRE_HTTPS=1 omit the header entirely (the guard's throw must not
+// crash the headersHelper — no auth means the server refuses, which is the
+// refusal REQUIRE_HTTPS asks for).
+const mcpBase = process.env.MEMINI_BASE_URL || "http://localhost:8080";
 const token = process.env.MEMINI_API_KEY || process.env.MEMINI_TOKEN;
-if (token) headers.Authorization = `Bearer ${token}`;
+if (token) {
+  try {
+    createPlaintextBearerAuthGuard((m) => console.error(`[memini] ${m}`))(mcpBase, token);
+    headers.Authorization = `Bearer ${token}`;
+  } catch (e) {
+    console.error(`[memini] ${e?.message || e}`);
+  }
+}
 
 process.stdout.write(JSON.stringify(headers));
