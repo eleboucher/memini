@@ -84,6 +84,20 @@ func testGetByFingerprint(t *testing.T, st store.Store, dims int) {
 	if _, err := st.GetByFingerprint(ctx, ns, memory.TierSemantic, fp, now); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("superseded match: want ErrNotFound, got %v", err)
 	}
+
+	// A validity-closed (contradicted) match is excluded too: re-asserting a
+	// contradicted fact must store a live row, not corroborate the dead one.
+	closed := mem(ns, "closed", "the office is in Berlin", vec(dims, 0, 0, 1))
+	seed := 0.4
+	closed.Confidence = &seed
+	mustUpsert(t, st, closed)
+	if err := st.MarkContradicted(ctx, ns, closed.ID, repl.ID, 0.2, now.Add(-time.Minute)); err != nil {
+		t.Fatalf("mark contradicted: %v", err)
+	}
+	closedFP := memory.Fingerprint(closed.Content)
+	if _, err := st.GetByFingerprint(ctx, ns, memory.TierSemantic, closedFP, now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("validity-closed match: want ErrNotFound, got %v", err)
+	}
 }
 
 func testDeleteNamespace(t *testing.T, st store.Store, dims int) {
@@ -294,6 +308,23 @@ func testSetConfidence(t *testing.T, st store.Store, dims int) {
 	}
 	if err := st.SetConfidence(ctx, ns, "missing", 0.5, now); err != store.ErrNotFound {
 		t.Errorf("set confidence on missing: want ErrNotFound, got %v", err)
+	}
+
+	// A validity-closed (contradicted) row is not touched: corroboration must
+	// never regrow an invalidated fact, even when the invalidation raced in
+	// between the caller's read and its write.
+	if err := st.MarkContradicted(ctx, ns, m.ID, "other", 0.2, now); err != nil {
+		t.Fatalf("mark contradicted: %v", err)
+	}
+	if err := st.SetConfidence(ctx, ns, m.ID, 0.9, now.Add(time.Second)); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("set confidence on validity-closed: want ErrNotFound, got %v", err)
+	}
+	got, err = st.Get(ctx, ns, m.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Confidence == nil || *got.Confidence != 0.2 {
+		t.Errorf("confidence after refused regrow = %v, want 0.2", got.Confidence)
 	}
 }
 

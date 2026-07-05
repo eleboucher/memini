@@ -1161,12 +1161,14 @@ func (s *Service) corroborate(ctx context.Context, m *memory.Memory) {
 	}
 }
 
-// contradictCooldown rate-limits invalidation per fact: a fact that was just
-// re-observed (corroborated) or just invalidated is not touched again for the
-// window. SetConfidence/MarkContradicted both bump UpdatedAt, so it doubles as
-// the last-touched stamp, and a shrink also blocks corroboration regrowth for
-// the window — a fact churning between restatement and contradiction settles
-// rather than oscillating.
+// contradictCooldown protects a freshly created fact from immediate
+// invalidation, keyed on CreatedAt. It must NOT key on UpdatedAt: corroboration
+// bumps UpdatedAt, so a stale fact restated at least daily would be permanently
+// shielded from the genuine update that supersedes it — and the blocked update,
+// once stored, shadows the stale fact for every retry (bench/interaction_test.go).
+// Oscillation needs no window here: an invalidated fact is valid_to-filtered
+// out of both the corroborate and contradict lookups, so it can neither regrow
+// nor be re-invalidated.
 const contradictCooldown = 24 * time.Hour
 
 // contradictNearestAsync is the mirror of corroborateNearestAsync: a fresh
@@ -1184,43 +1186,47 @@ func (s *Service) contradictNearestAsync(ctx context.Context, m *memory.Memory, 
 	s.bg.Go(func() {
 		cctx, cancel := context.WithTimeout(bg, 30*time.Second)
 		defer cancel()
-		// k=2: this runs after Upsert, so the top hit may be the write itself.
+		// k=3: this runs after Upsert, so the top hit may be the write itself —
+		// and an earlier same-value update (a blocked or duplicate one) may sit
+		// between the write and the stale fact it should invalidate. Scanning
+		// past candidates the detector reads as restatements reaches it.
 		cands, err := s.store.VectorSearch(cctx, m.Namespace, m.Embedding,
-			store.Filter{Tiers: []memory.Tier{memory.TierSemantic, memory.TierProcedural}, Now: s.now()}, 2)
+			store.Filter{Tiers: []memory.Tier{memory.TierSemantic, memory.TierProcedural}, Now: s.now()}, 3)
 		if err != nil {
 			slog.WarnContext(cctx, "contradict: durable lookup failed",
 				"namespace", m.Namespace, "err", err)
 			s.metrics.ContradictResult("error")
 			return
 		}
-		var fact *memory.Memory
+		const miss = "miss"
+		result := miss
 		for i := range cands {
 			if cands[i].Memory.ID == m.ID || cands[i].Score < s.contradictMinScore {
 				continue
 			}
-			fact = cands[i].Memory
-			break
-		}
-		if fact == nil {
-			s.metrics.ContradictResult("miss")
+			fact := cands[i].Memory
+			// Never retroactively penalise a legacy row that predates confidence
+			// tracking — it is trusted, not stale (mirrors corroborate).
+			if fact.Confidence == nil {
+				continue
+			}
+			if s.now().Sub(fact.CreatedAt) < contradictCooldown {
+				if result == miss {
+					result = "cooldown"
+				}
+				continue
+			}
+			if contradict.Classify(m.Content, fact.Content, contradict.Default).Class != contradict.Update {
+				if result == miss {
+					result = "no_signal"
+				}
+				continue
+			}
+			s.invalidate(cctx, fact, m.ID)
+			s.metrics.ContradictResult("contradicted")
 			return
 		}
-		// Never retroactively penalise a legacy row that predates confidence
-		// tracking — it is trusted, not stale (mirrors corroborate).
-		if fact.Confidence == nil {
-			s.metrics.ContradictResult("miss")
-			return
-		}
-		if s.now().Sub(fact.UpdatedAt) < contradictCooldown {
-			s.metrics.ContradictResult("cooldown")
-			return
-		}
-		if contradict.Classify(m.Content, fact.Content, contradict.Default).Class != contradict.Update {
-			s.metrics.ContradictResult("no_signal")
-			return
-		}
-		s.invalidate(cctx, fact, m.ID)
-		s.metrics.ContradictResult("contradicted")
+		s.metrics.ContradictResult(result)
 	})
 }
 

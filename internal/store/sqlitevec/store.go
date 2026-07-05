@@ -355,8 +355,10 @@ func (s *Store) PredecessorIDs(ctx context.Context, namespace, id string) ([]str
 }
 
 // GetByFingerprint returns the most recent live memory in namespace+tier whose
-// content fingerprint matches. Superseded and expired rows are excluded so a
-// dead duplicate never absorbs a fresh write.
+// content fingerprint matches. Superseded, expired, and validity-closed
+// (contradicted) rows are excluded so a dead duplicate never absorbs a fresh
+// write — re-asserting a contradicted fact must store a live row, not
+// corroborate the invalidated one.
 func (s *Store) GetByFingerprint(
 	ctx context.Context, namespace string, tier memory.Tier, fingerprint string, now time.Time,
 ) (*memory.Memory, error) {
@@ -370,8 +372,9 @@ func (s *Store) GetByFingerprint(
 		`SELECT `+memoryColumns+` FROM memories
 		 WHERE namespace=? AND tier=? AND fingerprint=? AND superseded_by IS NULL
 		   AND (expires_at IS NULL OR expires_at > ?)
+		   AND (valid_to IS NULL OR valid_to > ?)
 		 ORDER BY created_at DESC LIMIT 1`,
-		namespace, string(tier), fingerprint, ms(now))
+		namespace, string(tier), fingerprint, ms(now), ms(now))
 	m, err := scanMemory(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, store.ErrNotFound
@@ -689,10 +692,14 @@ func (s *Store) Retier(ctx context.Context, namespace, id string, tier memory.Ti
 
 // SetConfidence updates a memory's confidence and bumps updated_at to now.
 // Confidence lives only in the memories row, so no vector/FTS reindex is needed.
+// Validity-closed rows are skipped (ErrNotFound): corroboration must never
+// regrow an invalidated fact, even when MarkContradicted lands between the
+// caller's read and this write.
 func (s *Store) SetConfidence(ctx context.Context, namespace, id string, confidence float64, now time.Time) error {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE memories SET confidence=?, updated_at=? WHERE id=? AND namespace=?`,
-		confidence, ms(now), id, namespace)
+		`UPDATE memories SET confidence=?, updated_at=?
+		 WHERE id=? AND namespace=? AND (valid_to IS NULL OR valid_to > ?)`,
+		confidence, ms(now), id, namespace, ms(now))
 	if err != nil {
 		return fmt.Errorf("sqlitevec: set confidence: %w", err)
 	}

@@ -36,9 +36,13 @@ func newContradictFixture(t *testing.T, opts ...service.Option) contradictFixtur
 }
 
 func (f contradictFixture) remember(t *testing.T, content string) *memory.Memory {
+	return f.rememberTier(t, content, memory.TierSemantic)
+}
+
+func (f contradictFixture) rememberTier(t *testing.T, content string, tier memory.Tier) *memory.Memory {
 	t.Helper()
 	m, err := f.svc.Remember(context.Background(), service.RememberInput{
-		Namespace: "n", Content: content, Tier: memory.TierSemantic,
+		Namespace: "n", Content: content, Tier: tier,
 	})
 	if err != nil {
 		t.Fatalf("remember %q: %v", content, err)
@@ -109,7 +113,7 @@ func TestContradictionIgnoresRestatement(t *testing.T) {
 }
 
 // TestContradictionCooldown: a contradiction within the cooldown window of the
-// old fact's last update is skipped.
+// old fact's creation is skipped.
 func TestContradictionCooldown(t *testing.T) {
 	f := newContradictFixture(t, service.WithContradictionDownrank(0.5))
 	old := f.remember(t, oldFact)
@@ -131,5 +135,76 @@ func TestContradictionKillSwitch(t *testing.T) {
 
 	if got := f.get(t, old.ID); got.ValidTo != nil {
 		t.Errorf("kill-switch off: no invalidation expected, valid_to = %v", got.ValidTo)
+	}
+}
+
+// TestContradictionUnblockedByCorroboration: a short-term restatement
+// corroborates the stale fact (bumping its UpdatedAt) right before the genuine
+// update lands. The cooldown keys on CreatedAt, so the update must still
+// invalidate — keying on UpdatedAt let a daily-restated stale fact shield
+// itself from every update (bench/interaction_test.go).
+func TestContradictionUnblockedByCorroboration(t *testing.T) {
+	f := newContradictFixture(t,
+		service.WithContradictionDownrank(0.5), service.WithCorroboration(0.5))
+	old := f.remember(t, oldFact)
+
+	*f.now = f.now.Add(48 * time.Hour)
+	f.rememberTier(t, "Reminder: "+oldFact, memory.TierEpisodic)
+	if got := f.get(t, old.ID); !got.UpdatedAt.Equal(*f.now) {
+		t.Fatalf("setup: restatement should corroborate the fact, UpdatedAt = %v", got.UpdatedAt)
+	}
+
+	*f.now = f.now.Add(2 * time.Hour) // well inside a last-touched window
+	f.remember(t, updateFact)
+	if got := f.get(t, old.ID); got.ValidTo == nil {
+		t.Fatal("update must invalidate the stale fact even right after corroboration")
+	}
+}
+
+// TestContradictionScansPastShadowingUpdate: an earlier write of the same
+// update value (blocked by the cooldown, but stored) sits closer to a
+// rephrased retry than the stale fact does. The candidate scan must continue
+// past that restatement-classified neighbor and invalidate the stale fact.
+func TestContradictionScansPastShadowingUpdate(t *testing.T) {
+	f := newContradictFixture(t, service.WithContradictionDownrank(0.5))
+	old := f.remember(t, oldFact)
+	f.remember(t, updateFact) // same instant → inside cooldown, blocked but stored
+	if got := f.get(t, old.ID); got.ValidTo != nil {
+		t.Fatalf("setup: first update inside cooldown should not invalidate")
+	}
+
+	*f.now = f.now.Add(48 * time.Hour)
+	f.remember(t, "Decision: the primary datastore is now MySQL.")
+	if got := f.get(t, old.ID); got.ValidTo == nil {
+		t.Fatal("retry must scan past the earlier same-value update and invalidate the stale fact")
+	}
+}
+
+// TestReassertedContradictedFactStoresLiveRow: re-asserting a contradicted
+// fact verbatim must store a fresh live memory — not be absorbed into the
+// invalidated row by fingerprint dedup, which would regrow confidence on a
+// valid_to'd fact and silently drop the write from live recall.
+func TestReassertedContradictedFactStoresLiveRow(t *testing.T) {
+	f := newContradictFixture(t, service.WithContradictionDownrank(0.5))
+	old := f.remember(t, oldFact)
+
+	*f.now = f.now.Add(48 * time.Hour)
+	f.remember(t, updateFact)
+	dead := f.get(t, old.ID)
+	if dead.ValidTo == nil {
+		t.Fatal("setup: update should invalidate the old fact")
+	}
+	deadConf := *dead.Confidence
+
+	*f.now = f.now.Add(48 * time.Hour)
+	re := f.remember(t, oldFact)
+	if re.ID == old.ID {
+		t.Fatal("re-assertion must not be absorbed into the invalidated row")
+	}
+	if re.ValidTo != nil {
+		t.Errorf("re-assertion should be live, valid_to = %v", re.ValidTo)
+	}
+	if got := f.get(t, old.ID); *got.Confidence != deadConf {
+		t.Errorf("invalidated row's confidence changed: %v → %v", deadConf, *got.Confidence)
 	}
 }

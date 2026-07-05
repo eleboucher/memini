@@ -227,8 +227,10 @@ func (s *Store) PredecessorIDs(ctx context.Context, namespace, id string) ([]str
 }
 
 // GetByFingerprint returns the most recent live memory in namespace+tier whose
-// content fingerprint matches. Superseded and expired rows are excluded so a
-// dead duplicate never absorbs a fresh write.
+// content fingerprint matches. Superseded, expired, and validity-closed
+// (contradicted) rows are excluded so a dead duplicate never absorbs a fresh
+// write — re-asserting a contradicted fact must store a live row, not
+// corroborate the invalidated one.
 func (s *Store) GetByFingerprint(
 	ctx context.Context, namespace string, tier memory.Tier, fingerprint string, now time.Time,
 ) (*memory.Memory, error) {
@@ -242,6 +244,7 @@ func (s *Store) GetByFingerprint(
 		`SELECT `+memoryColumns+` FROM memories
 		 WHERE namespace=$1 AND tier=$2 AND fingerprint=$3 AND superseded_by IS NULL
 		   AND (expires_at IS NULL OR expires_at > $4)
+		   AND (valid_to IS NULL OR valid_to > $4)
 		 ORDER BY created_at DESC LIMIT 1`,
 		namespace, string(tier), fingerprint, now)
 	m, err := scanMemory(row)
@@ -487,10 +490,14 @@ func (s *Store) Retier(ctx context.Context, namespace, id string, tier memory.Ti
 
 // SetConfidence updates a memory's confidence and bumps updated_at to now.
 // Confidence lives only in the memories row, so no reindex is needed.
+// Validity-closed rows are skipped (ErrNotFound): corroboration must never
+// regrow an invalidated fact, even when MarkContradicted lands between the
+// caller's read and this write.
 func (s *Store) SetConfidence(ctx context.Context, namespace, id string, confidence float64, now time.Time) error {
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE memories SET confidence=$1, updated_at=$2 WHERE id=$3 AND namespace=$4`,
-		confidence, now, id, namespace)
+		`UPDATE memories SET confidence=$1, updated_at=$2
+		 WHERE id=$3 AND namespace=$4 AND (valid_to IS NULL OR valid_to > $5)`,
+		confidence, now, id, namespace, now)
 	if err != nil {
 		return fmt.Errorf("postgres: set confidence: %w", err)
 	}
