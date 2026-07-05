@@ -37,7 +37,10 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name: "memory_recall",
 		Description: "Recall relevant memories via hybrid (semantic + keyword) search. " +
-			"Supports time-travel (as_of) and reading nested namespaces (scope=subtree).",
+			"Supports time-travel (as_of) and reading nested namespaces (scope=subtree). " +
+			"When the current session's turns are being captured as memories, pass " +
+			"exclude_metadata {\"session_id\": \"<current session id>\"} so the session's " +
+			"own captured turns are not echoed back as memory.",
 	}, h.recall)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name: "memory_briefing",

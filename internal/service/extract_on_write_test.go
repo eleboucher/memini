@@ -7,7 +7,20 @@ import (
 	"github.com/eleboucher/memini/internal/embed/embedtest"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/service"
+	"github.com/eleboucher/memini/internal/store"
 )
+
+func durableOne(t *testing.T, st store.Store, ns string) *memory.Memory {
+	t.Helper()
+	ms, err := st.List(context.Background(), ns, store.Filter{Tiers: []memory.Tier{memory.TierSemantic}}, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(ms) != 1 {
+		t.Fatalf("want exactly 1 semantic fact, got %d", len(ms))
+	}
+	return ms[0]
+}
 
 // TestExtractOnWrite pins the no-LLM write-time extractor: a fresh episodic
 // capture is run through the heuristic extractor into durable typed facts, but
@@ -31,6 +44,26 @@ func TestExtractOnWrite(t *testing.T) {
 		// The raw episodic is kept — the extractor adds, never replaces.
 		if got := tierCount(t, st, ns, memory.TierEpisodic); got != 1 {
 			t.Fatalf("episodic capture should be kept, got %d", got)
+		}
+	})
+
+	t.Run("extracted fact inherits the capture's session_id", func(t *testing.T) {
+		st := openTestStore(t)
+		svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(),
+			service.WithExtractOnWrite(true))
+		if _, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: ns, Content: decision, Tier: memory.TierEpisodic,
+			Metadata: map[string]any{"source": "turn_capture", "session_id": "sess-1", "format": "turn"},
+		}); err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+		svc.WaitBackground()
+		fact := durableOne(t, st, ns)
+		if got, _ := fact.Metadata["session_id"].(string); got != "sess-1" {
+			t.Fatalf("extracted fact session_id = %q, want %q (session exclusion must reach assistant-derived facts)", got, "sess-1")
+		}
+		if got, _ := fact.Metadata["source"].(string); got != "extract" {
+			t.Fatalf("extracted fact source = %q, want %q", got, "extract")
 		}
 	})
 

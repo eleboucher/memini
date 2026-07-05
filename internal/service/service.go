@@ -1605,12 +1605,20 @@ func (s *Service) extractEpisodicAsync(ctx context.Context, m *memory.Memory) {
 		dctx, cancel := context.WithTimeout(bg, distillOnWriteTimeout)
 		defer cancel()
 		for _, r := range results {
+			meta := map[string]any{"memory_type": string(r.Kind), "source": "extract"}
+			// Extracted facts inherit the parent's session_id: a turn capture's
+			// content includes the agent's own response, and without the stamp the
+			// integrations' exclude_metadata session guard can never keep a
+			// session's own words from echoing back as durable facts.
+			if sid, ok := m.Metadata["session_id"].(string); ok && sid != "" {
+				meta["session_id"] = sid
+			}
 			in := RememberInput{
 				Namespace: m.Namespace,
 				Content:   r.Content,
 				Tier:      r.Kind.Tier(),
 				Tags:      []string{string(r.Kind)},
-				Metadata:  map[string]any{"memory_type": string(r.Kind)},
+				Metadata:  meta,
 			}
 			if _, err := s.Remember(dctx, in); err != nil {
 				slog.WarnContext(dctx, "extract-on-write: store fact",
