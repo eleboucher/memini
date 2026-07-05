@@ -167,6 +167,20 @@ class FilterFlow(unittest.TestCase):
         self.assertEqual(len(memory_writes), 1)
         self.assertEqual(memory_writes[0][1]["tier"], "episodic")
 
+    def test_outlet_without_chat_id_skips_capture(self):
+        # A capture without a chat id can never be excluded by inlet recall,
+        # so it would echo the chat's own turns back forever.
+        calls = []
+        f = self._filter(calls)
+        body = {
+            "messages": [
+                {"role": "user", "content": "q"},
+                {"role": "assistant", "content": "a"},
+            ],
+        }
+        asyncio.run(f.outlet(body))
+        self.assertEqual([c for c in calls if c[0] == "/v1/memories"], [])
+
     def test_scope_by_user(self):
         f = flt.Filter()
         f.valves.scope_by_user = True

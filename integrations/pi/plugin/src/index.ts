@@ -373,6 +373,25 @@ export default function meminiExtension(pi: ExtensionAPI): void {
   // Assistant message ids already captured, so a re-fired agent_end never writes
   // a duplicate turn.
   const captured = new Set<string>();
+  // Memory ids each session has already been shown (mirrors the openclaw
+  // plugin): the recall injection is a persistent context message, so
+  // re-injecting an unchanged match every turn stacks identical blocks in the
+  // prompt. Bounded so long-lived hosts can't grow the map without limit.
+  const injectedBySession = new Map<string, Set<string>>();
+  const MAX_TRACKED_SESSIONS = 200;
+  const rememberInjected = (session: string, ids: string[]) => {
+    let seen = injectedBySession.get(session);
+    if (!seen) {
+      seen = new Set<string>();
+      injectedBySession.set(session, seen);
+      while (injectedBySession.size > MAX_TRACKED_SESSIONS) {
+        const oldest = injectedBySession.keys().next().value;
+        if (oldest === undefined) break;
+        injectedBySession.delete(oldest);
+      }
+    }
+    for (const id of ids) if (id) seen.add(id);
+  };
 
   // Recall before the turn: search for the user's prompt and inject the matches
   // as a persistent context message. Buffer the prompt for capture at agent_end.
@@ -390,7 +409,13 @@ export default function meminiExtension(pi: ExtensionAPI): void {
 
     const result = await client.postJson("/v1/search", body);
     const floor = cfg.recall_min_score > 0 ? cfg.recall_min_score : 0;
-    const rawHits = Array.isArray(result?.results) ? result.results : [];
+    let rawHits = Array.isArray(result?.results) ? result.results : [];
+    // Suppress memories this session has already been shown — the injected
+    // message persists in context, so a repeat adds nothing but noise.
+    if (sid) {
+      const seen = injectedBySession.get(sid);
+      if (seen?.size) rawHits = rawHits.filter((r: any) => !seen.has(r?.memory?.id));
+    }
     const filtered =
       floor > 0
         ? rawHits.filter((r: any) => (typeof r?.score === "number" ? r.score : 0) >= floor)
@@ -400,6 +425,9 @@ export default function meminiExtension(pi: ExtensionAPI): void {
 
     const fit = fitByTokens(hits, cfg.recall_max_tokens);
     if (fit.items.length === 0) return;
+    if (sid) {
+      rememberInjected(sid, filtered.map((r: any) => r?.memory?.id).filter(Boolean));
+    }
     const lines = [
       "Relevant long-term memory from memini (background context — prefer " +
         "current workspace state and the user's instructions):",

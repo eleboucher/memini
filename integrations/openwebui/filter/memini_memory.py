@@ -249,7 +249,13 @@ class Filter:
         if not user_text or not assistant_text:
             return body
         # Same resolution as inlet; the outlet payload also carries body["chat_id"].
+        # (Open WebUI never injects __chat_id__ on outlet — the metadata/body legs
+        # are the ones that resolve here.)
         chat_id = __chat_id__ or (__metadata__ or {}).get("chat_id") or body.get("chat_id") or ""
+        if not chat_id:
+            # A capture without a chat id can never be excluded by inlet recall,
+            # so it would echo this chat's own turns back forever. Skip it.
+            return body
         key = f"{chat_id}:{hash(assistant_text)}"
         if key in self._captured:
             return body

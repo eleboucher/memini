@@ -37,6 +37,12 @@ const FILE_KEYS = ["filePath", "file_path", "path", "file", "pattern"];
 // remove tools without editing the manifest.
 const DEFAULT_PRETOOL_TOOLS = ["read", "write", "edit", "glob", "grep"];
 
+// How fresh a turn capture must be to count as "still part of this
+// conversation's live context" and be dropped from injection even when the
+// session-id exclusion misses it (resume/clear/compact roll the session id,
+// so old rows carry an id the exact-match exclusion can't name).
+const TURN_ECHO_WINDOW_MS = 30 * 60 * 1000;
+
 function extractFiles(args) {
   if (!args || typeof args !== "object") return [];
   const out = [];
@@ -104,11 +110,20 @@ async function main() {
     // surfacing them just echoes what the agent already did this session. Prior
     // sessions' digests stay recallable.
     const exclude = sessionId ? { session_id: sessionId } : undefined;
-    const hits = await postSearch(q, project, {
+    let hits = await postSearch(q, project, {
       limit: itemsPerFile,
       exclude,
       minScore,
     });
+    // The session-id exclusion misses turn captures written before a
+    // resume/clear/compact rolled the session id (old rows keep the old id,
+    // and exclude_metadata is an exact match). A fresh turn capture is still
+    // — or was minutes ago — part of this conversation's live context, so
+    // drop it regardless of which session id it carries.
+    const freshCutoff = Date.now() - TURN_ECHO_WINDOW_MS;
+    hits = hits.filter(
+      (h) => !(h.memory?.metadata?.format === "turn" && Date.parse(h.memory?.created_at || "") > freshCutoff),
+    );
     if (hits.length === 0) continue;
     any = true;
     out.push(`File: ${f}`);

@@ -115,6 +115,39 @@ class PrefetchTest(unittest.TestCase):
         self.assertIn("prior note", out)
 
 
+class SyncTurnTest(unittest.TestCase):
+    def test_adopts_host_session_id_for_capture_and_recall(self):
+        # Hermes can switch session_id mid-process (branch/rewind/rotation) and
+        # passes the current one to sync_turn. Capture must carry it AND later
+        # recalls must exclude the same value — a mismatch means the session's
+        # own captured turns echo back on the next prefetch.
+        writes = []
+        p = make_provider(lambda *a, **k: {"results": []})
+        p._call_bg = lambda path, body: writes.append((path, body))
+        p.sync_turn("q", "a", session_id="sess-2")
+        self.assertEqual(writes[0][1]["metadata"]["session_id"], "sess-2")
+
+        captured = {}
+
+        def stub(path, body, method="POST"):
+            captured["body"] = body
+            return {"results": []}
+
+        p._call = stub
+        p.prefetch("next question")
+        self.assertEqual(captured["body"]["exclude_metadata"], {"session_id": "sess-2"})
+
+    def test_skips_capture_without_any_session_id(self):
+        # A capture without a session id can never be excluded on recall, so
+        # it would echo this session's turns back forever.
+        writes = []
+        p = make_provider(lambda *a, **k: None)
+        p._session_id = ""
+        p._call_bg = lambda path, body: writes.append(path)
+        p.sync_turn("q", "a")
+        self.assertEqual(writes, [])
+
+
 class OnMemoryWriteTest(unittest.TestCase):
     def _provider(self, captured):
         p = make_provider(lambda *a, **k: None)

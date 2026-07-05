@@ -199,9 +199,13 @@ export function shouldSkipSystemTurn(cfg: ResolvedConfig, ctx: any) {
 // per-session, so two sessions of one agent don't suppress each other. It
 // deliberately does NOT fall back to the agent id: that is too coarse and would
 // exclude the agent's entire history from recall. Returns "" when ctx identifies
-// no session (recall/capture then behave as before).
+// no session; recall then skips the exclusion and agent_end skips the capture
+// (an untagged capture could never be excluded and would echo back forever).
 export function sessionIdentity(ctx: any) {
-  for (const c of [ctx?.sessionId, ctx?.sessionKey, ctx?.runId]) {
+  // No ctx.runId fallback: runId is per-run (docs/plugins/hooks.md), so a
+  // capture tagged with it carries an identity the next run's exclusion can
+  // never match — the exact echo the session guard exists to prevent.
+  for (const c of [ctx?.sessionId, ctx?.sessionKey]) {
     if (typeof c === "string" && c.trim()) return sanitizeNsSegment(c);
   }
   return "";
@@ -737,9 +741,13 @@ const plugin: {
       if (!captureUser || captureUser.startsWith("[Subagent Context]")) return;
       const ns = effectiveNamespace(cfg, ctx);
       if (ns == null) return;
-      const metadata: any = { source: "openclaw", format: "turn" };
       const session = sessionIdentity(ctx);
-      if (session) metadata.session_id = session;
+      // A capture without a session_id can never be excluded by the pre-turn
+      // recall guard (the server's exclude_metadata is exact key=value), so it
+      // would echo this session's own turns back as "long-term memory" forever.
+      // No identity → no capture.
+      if (!session) return;
+      const metadata: any = { source: "openclaw", format: "turn", session_id: session };
       if (!event?.success) metadata.failed = true;
       await client.postJson("/v1/memories", {
         content: `${captureUser.slice(0, 1000)}\n\n${assistantText.slice(0, 3000)}`,

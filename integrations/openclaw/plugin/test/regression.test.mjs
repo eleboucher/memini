@@ -420,6 +420,7 @@ test("recall searches memini and prepends results; capture writes the episodic t
 
     // agent_end is the raw-conversation hook: when the host grants conversation
     // access, event.messages is present and the turn is captured as episodic.
+    // The ctx must identify the session — untagged captures are skipped.
     await hooks.agent_end(
       {
         success: true,
@@ -428,7 +429,7 @@ test("recall searches memini and prepends results; capture writes the episodic t
           { role: "assistant", content: "a" },
         ],
       },
-      {},
+      { sessionId: "sess-1" },
     );
     const write = requests.find((r) => r.url.endsWith("/v1/memories"));
     assert.ok(write, "capture should POST /v1/memories");
@@ -446,7 +447,9 @@ test("recall searches memini and prepends results; capture writes the episodic t
 test("sessionIdentity prefers session ids and sanitizes them; empty without one", () => {
   assert.equal(sessionIdentity({ sessionId: "sess-abc" }), "sess-abc");
   assert.equal(sessionIdentity({ sessionKey: "agent:bob:run/42" }), "agent-bob-run-42");
-  assert.equal(sessionIdentity({ runId: "r1" }), "r1");
+  // runId is per-run, so it is NOT a session identity: a capture tagged with
+  // it could never be excluded by the next run's recall guard.
+  assert.equal(sessionIdentity({ runId: "r1" }), "");
   assert.equal(sessionIdentity({}), "");
 });
 
@@ -493,7 +496,7 @@ test("auto-recall excludes the current session's own captures; capture tags the 
   }
 });
 
-test("without a session id, auto-recall and capture stay unscoped (back-compat)", async () => {
+test("without a session id, auto-recall stays unscoped and capture is skipped", async () => {
   const hooks = {};
   const requests = [];
   const realFetch = globalThis.fetch;
@@ -521,8 +524,13 @@ test("without a session id, auto-recall and capture stay unscoped (back-compat)"
       { success: true, messages: [{ role: "user", content: "q" }, { role: "assistant", content: "a" }] },
       {},
     );
-    const write = JSON.parse(requests.find((r) => r.url.endsWith("/v1/memories")).init.body);
-    assert.equal(write.metadata.session_id, undefined);
+    // An untagged capture could never be excluded by the recall guard, so no
+    // session identity means no capture at all.
+    assert.equal(
+      requests.find((r) => r.url.endsWith("/v1/memories")),
+      undefined,
+      "capture without a session identity must be skipped",
+    );
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -672,13 +680,33 @@ test("agent_end still captures when success is false, tagging metadata.failed", 
           { role: "assistant", content: "error output" },
         ],
       },
-      {},
+      { sessionId: "sess-fail" },
     );
     const write = requests.find((r) => r.url.endsWith("/v1/memories"));
     assert.ok(write, "should still capture failed runs");
     const body = JSON.parse(write.init.body);
     assert.equal(body.tier, "episodic");
     assert.equal(body.metadata.failed, true, "failed runs must be tagged");
+    assert.equal(body.metadata.session_id, "sess-fail", "captures must carry the session identity");
+
+    // No session identity → no capture: an untagged turn could never be
+    // excluded by the pre-turn recall guard and would echo back forever.
+    requests.length = 0;
+    await hooks.agent_end(
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "q2" },
+          { role: "assistant", content: "a2" },
+        ],
+      },
+      {},
+    );
+    assert.equal(
+      requests.find((r) => r.url.endsWith("/v1/memories")),
+      undefined,
+      "capture without a session identity must be skipped",
+    );
   } finally {
     globalThis.fetch = realFetch;
   }

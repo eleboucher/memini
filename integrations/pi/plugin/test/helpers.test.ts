@@ -127,3 +127,41 @@ test("buildTurnContent bounds each side", () => {
   assert.equal(user.length, 1000);
   assert.equal(assistant.length, 3000);
 });
+
+test("recall does not re-inject memories already shown in the same session", async () => {
+  const { default: meminiExtension } = await import("../src/index.ts");
+  const hooks: Record<string, any> = {};
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: any) => {
+    const body = String(url).endsWith("/v1/search")
+      ? { results: [{ memory: { id: "m1", summary: "prior note", tier: "semantic" }, score: 0.9 }] }
+      : { id: "w1" };
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return body;
+      },
+      async text() {
+        return JSON.stringify(body);
+      },
+    };
+  }) as any;
+  try {
+    meminiExtension({
+      on(name: string, h: any) {
+        hooks[name] = h;
+      },
+      registerTool() {},
+    } as any);
+    const ctx = { sessionManager: { getSessionId: () => "sess-1", getLeafId: () => "leaf-1" } };
+    // The injected recall message persists in context, so an unchanged match
+    // must not be re-injected on the next turn.
+    const first = await hooks.before_agent_start({ prompt: "what did we decide?" }, ctx);
+    assert.match(first.message.content, /prior note/);
+    const second = await hooks.before_agent_start({ prompt: "and what else?" }, ctx);
+    assert.equal(second, undefined, "already-shown memory must not re-inject");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

@@ -100,6 +100,11 @@ async function captureTurn(payload, sessionId, project) {
   // turn — skip it so we don't capture the nudge handling as conversation.
   if (payload.stop_hook_active) return;
   if (!payload.transcript_path) return;
+  // "unknown" is the defensive fallback for a payload with no session id. A
+  // capture tagged with it shares one exclusion bucket with every other
+  // unknown-id session (pre-tool-use excludes by exact session_id match), so
+  // cross-session turns would echo into each other. No identity → no capture.
+  if (!sessionId || sessionId === "unknown") return;
   const { userText, assistantText, assistantId } = extractLastTurn(readTranscript(payload.transcript_path));
   if (!userText || !assistantText) return;
   // Dedup key: the assistant message id when present, else a content hash — so a
@@ -136,7 +141,7 @@ async function main() {
       tags: ["stop-checkpoint", project],
       id: `stop:${sessionId}`,
       summary: digest.summary,
-      metadata: { session_id: sessionId },
+      metadata: { source: "stop_checkpoint", session_id: sessionId },
     });
 
   // Inline memory extraction (on by default; opt out with MEMINI_INLINE_EXTRACT=0):

@@ -373,11 +373,21 @@ class MeminiMemoryProvider(MemoryProvider):
         user, assistant = (user or "").strip(), (assistant or "").strip()
         if not user and not assistant:
             return
+        # Adopt a host-passed per-turn session id: recall's exclude_metadata
+        # keys on self._session_id, so capture and exclusion must resolve the
+        # same value — a mismatch means this session's own turns are never
+        # excluded and echo back on the next recall.
+        sid = kwargs.get("session_id") or self._session_id
+        self._session_id = sid
+        if not sid:
+            # A capture without a session id can never be excluded; storing it
+            # would echo this session's turns back forever.
+            return
         self._call_bg("/v1/memories", {
             "content": f"{user[:1000]}\n\n{assistant[:3000]}",
             "tier": "episodic",
             "tags": ["hermes"],
-            "metadata": {"source": "hermes", "session_id": kwargs.get("session_id", self._session_id), "format": "turn"},
+            "metadata": {"source": "hermes", "session_id": sid, "format": "turn"},
         })
 
     def on_memory_write(self, action: str, target: str, content: str, **kwargs: Any) -> None:
