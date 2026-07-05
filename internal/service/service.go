@@ -1031,16 +1031,14 @@ func (s *Service) autoSupersede(ns, oldID, newID string, done *bool) {
 	if done != nil {
 		*done = true
 	}
-	s.bg.Add(1)
-	go func() {
-		defer s.bg.Done()
+	s.bg.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := s.store.SetSuperseded(ctx, ns, oldID, newID); err != nil {
 			slog.WarnContext(ctx, "remember: auto-supersede failed",
 				"namespace", ns, "old", oldID, "err", err)
 		}
-	}()
+	})
 }
 
 // fingerprintHit returns a live same-tier memory whose normalized content

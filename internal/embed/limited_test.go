@@ -43,8 +43,7 @@ func TestLimitedBounded(t *testing.T) {
 		t.Fatal("NewLimited returned nil with cap > 0")
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	var wg sync.WaitGroup
 	results := make([]error, cap+1)

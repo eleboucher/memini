@@ -144,9 +144,7 @@ func run() error {
 	jobs := make(chan int)
 	var processed int
 	for w := 0; w < *workers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range jobs {
 				q := ds.Questions[i]
 				correct, err := answerAndJudge(ctx, svcFor(q.Group), chat, q, *k)
@@ -166,7 +164,7 @@ func run() error {
 				}
 				mu.Unlock()
 			}
-		}()
+		})
 	}
 	for i := range ds.Questions {
 		if !done[i] {

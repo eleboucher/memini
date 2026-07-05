@@ -224,8 +224,7 @@ func TestConsolidatorWorkerBoundsJobContext(t *testing.T) {
 	put(t, st, e, "a", "the sky is blue")
 	put(t, st, e, "b", "the sky is azure")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go svc.StartConsolidator(ctx)
 	svc.enqueueConsolidate("ns", "b")
 

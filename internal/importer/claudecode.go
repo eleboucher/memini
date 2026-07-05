@@ -279,19 +279,14 @@ func LoadClaudeCodeWithProgress(path string, onProgress func(done, total int)) (
 		warns []string
 	}
 
-	workers := runtime.NumCPU()
-	if workers > len(files) {
-		workers = len(files)
-	}
+	workers := min(runtime.NumCPU(), len(files))
 
 	jobs := make(chan string, len(files))
 	results := make(chan result, len(files))
 
 	var wg sync.WaitGroup
 	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for p := range jobs {
 				fileRecs, fileWarns, ferr := loadClaudeCodeFile(p, resolver)
 				if ferr != nil {
@@ -299,7 +294,7 @@ func LoadClaudeCodeWithProgress(path string, onProgress func(done, total int)) (
 				}
 				results <- result{fileRecs, fileWarns}
 			}
-		}()
+		})
 	}
 
 	for _, f := range files {

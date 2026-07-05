@@ -112,7 +112,7 @@ func run() error {
 	// the same retrieved candidates, using each question's reference time.
 	if *rerank {
 		var cats []string
-		for _, c := range strings.Split(*rerankCats, ",") {
+		for c := range strings.SplitSeq(*rerankCats, ",") {
 			if c = strings.TrimSpace(c); c != "" {
 				cats = append(cats, c)
 			}
@@ -188,7 +188,7 @@ func run() error {
 // malformed or negative entries.
 func parseFloatList(csv string) []float64 {
 	var out []float64
-	for _, p := range strings.Split(csv, ",") {
+	for p := range strings.SplitSeq(csv, ",") {
 		if v, err := strconv.ParseFloat(strings.TrimSpace(p), 64); err == nil && v >= 0 {
 			out = append(out, v)
 		}
@@ -230,7 +230,7 @@ func runRerankGate(ctx context.Context, st store.Store, e embed.Embedder, ds *be
 
 func parseKs(csv string) []int {
 	var ks []int
-	for _, p := range strings.Split(csv, ",") {
+	for p := range strings.SplitSeq(csv, ",") {
 		if n, err := strconv.Atoi(strings.TrimSpace(p)); err == nil && n > 0 {
 			ks = append(ks, n)
 		}
@@ -268,7 +268,7 @@ func subset(ds *bench.Dataset, limit int) *bench.Dataset {
 	step := float64(len(ds.Questions)) / float64(limit)
 	groups := map[string]bool{}
 	qs := make([]bench.Question, 0, limit)
-	for i := 0; i < limit; i++ {
+	for i := range limit {
 		q := ds.Questions[int(float64(i)*step)]
 		qs = append(qs, q)
 		groups[q.Group] = true

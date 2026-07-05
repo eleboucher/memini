@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -34,12 +35,7 @@ const nsDefault = "default"
 var catchAllNamespaces = []string{nsDefault, "openclaw"}
 
 func isCatchAllNamespace(ns string) bool {
-	for _, c := range catchAllNamespaces {
-		if ns == c {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(catchAllNamespaces, ns)
 }
 
 var (

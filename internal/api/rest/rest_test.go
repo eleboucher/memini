@@ -187,19 +187,19 @@ func TestGetBriefingPerSectionCaps(t *testing.T) {
 	// Five of each tier, plus three pinned (across tiers) — enough to exercise
 	// per-section caps in isolation. The unpinned names distinguish from the
 	// pinned ones so each section has a known floor of one tier.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		remember(fmt.Sprintf("semantic-u-%d", i), "semantic", nil)
 	}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		remember(fmt.Sprintf("procedural-u-%d", i), "procedural", nil)
 	}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		remember(fmt.Sprintf("episodic-u-%d", i), "episodic", nil)
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		remember(fmt.Sprintf("semantic-p-%d", i), "semantic", []string{"pinned"})
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		remember(fmt.Sprintf("procedural-p-%d", i), "procedural", []string{"pinned"})
 	}
 

@@ -169,13 +169,13 @@ func TestBriefingToolPerSectionCaps(t *testing.T) {
 	}
 	// 5 of each durable tier + 3 pinned semantic — enough to verify that
 	// per_section_X can shrink one section without touching the others.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		remember(fmt.Sprintf("sem-u-%d", i), "semantic", nil)
 	}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		remember(fmt.Sprintf("proc-u-%d", i), "procedural", nil)
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		remember(fmt.Sprintf("sem-p-%d", i), "semantic", []string{"pinned"})
 	}
 

@@ -68,12 +68,10 @@ func TestNSResolverConcurrent(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	for range 50 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			r.resolve("/shared/proj")
 			r.resolve("/other/proj")
-		}()
+		})
 	}
 	wg.Wait()
 	if calls.Load() != 2 {

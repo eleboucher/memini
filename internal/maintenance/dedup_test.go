@@ -401,7 +401,7 @@ func TestDedupTombstoneAlreadySupersededIsNoop(t *testing.T) {
 	// Manually tombstone one before dedup runs.
 	drop := &memory.Memory{
 		ID: "drop", Namespace: dedupTestNS, Tier: memory.TierSemantic,
-		Content: "the sky is blue", Importance: 0.1, SupersededBy: ptr("keep"),
+		Content: "the sky is blue", Importance: 0.1, SupersededBy: new("keep"),
 		CreatedAt: nowFixed(t), UpdatedAt: nowFixed(t), LastAccessedAt: nowFixed(t),
 	}
 	vec, _ := emb.Embed(ctx, []string{drop.Content})
@@ -500,8 +500,6 @@ func TestDedupRespectsContextCancellation(t *testing.T) {
 		t.Fatalf("want context.Canceled, got %v", err)
 	}
 }
-
-func ptr(s string) *string { return &s }
 
 // BenchmarkDedup establishes a cost baseline for the clustering pass (embed +
 // per-anchor vector search + union-find) over a single namespace. Dry-run, so

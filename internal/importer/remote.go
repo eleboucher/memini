@@ -68,14 +68,12 @@ func (c *RemoteClient) write(ctx context.Context, recs []Record, opts Options) (
 
 	var wg sync.WaitGroup
 	for range remoteConcurrency {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range jobs {
 				err := c.put(ctx, recs[i], opts)
 				results <- result{i, err}
 			}
-		}()
+		})
 	}
 
 	for i := range recs {
