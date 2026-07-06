@@ -180,6 +180,15 @@ type Config struct {
 	// Write-time fact building (LLM distill, else heuristic extract) is automatic;
 	// it self-selects on LLM presence, so there is no toggle.
 
+	// DistillBatchTokens batches distill-on-write per session: captures
+	// accumulate until roughly this many (estimated) tokens, then distill as
+	// one LLM call with cross-turn context. 0 restores per-capture distill.
+	// Only applies with an LLM configured and to captures with a session_id.
+	DistillBatchTokens int `env:"MEMINI_DISTILL_BATCH_TOKENS" envDefault:"1024"`
+	// DistillBatchMaxAge flushes a session's buffered captures once the oldest
+	// has waited this long, so a quiet session still distills promptly.
+	DistillBatchMaxAge time.Duration `env:"MEMINI_DISTILL_BATCH_MAX_AGE" envDefault:"10m"`
+
 	// Consolidation tuning.
 	// ConsolidateMode is "async" (default), "sync", or "off".
 	ConsolidateMode string `env:"MEMINI_CONSOLIDATE_MODE" envDefault:"async"`
@@ -414,11 +423,6 @@ func (c *Config) validate() error {
 	if c.WriteDedupScore < 0 || c.WriteDedupScore > 1 {
 		return fmt.Errorf("MEMINI_WRITE_DEDUP_SCORE must be in [0,1], got %v", c.WriteDedupScore)
 	}
-	switch c.WriteDedupAction {
-	case valueOff, "hint", "coalesce", "supersede":
-	default:
-		return fmt.Errorf("unknown MEMINI_WRITE_DEDUP_ACTION %q (want off|hint|coalesce|supersede)", c.WriteDedupAction)
-	}
 	if c.RecallMinScore < 0 || c.RecallMinScore > 1 {
 		return fmt.Errorf("MEMINI_RECALL_MIN_SCORE must be in [0,1], got %v", c.RecallMinScore)
 	}
@@ -430,6 +434,17 @@ func (c *Config) validate() error {
 	}
 	if c.EpisodicMinChars < 0 {
 		return fmt.Errorf("MEMINI_EPISODIC_MIN_CHARS must be >= 0, got %d", c.EpisodicMinChars)
+	}
+	if c.DistillBatchTokens < 0 {
+		return fmt.Errorf("MEMINI_DISTILL_BATCH_TOKENS must be >= 0, got %d", c.DistillBatchTokens)
+	}
+	if c.DistillBatchTokens > 0 && c.DistillBatchMaxAge <= 0 {
+		return fmt.Errorf("MEMINI_DISTILL_BATCH_MAX_AGE must be positive when batching is on, got %v", c.DistillBatchMaxAge)
+	}
+	switch c.WriteDedupAction {
+	case valueOff, "hint", "coalesce", "supersede":
+	default:
+		return fmt.Errorf("unknown MEMINI_WRITE_DEDUP_ACTION %q (want off|hint|coalesce|supersede)", c.WriteDedupAction)
 	}
 	return nil
 }

@@ -201,6 +201,9 @@ Episodes prefixed with "[failed]" were captured from a failed turn or command; p
 success to form an error→recovery "procedure".
 Discard transient noise (one-off actions, routine file edits with no lasting lesson). Merge overlapping
 observations into single items.
+Each item must be self-contained and readable without the episodes: name the subject explicitly (no bare
+"he/she/it/this"), and keep the context that makes it actionable ("prefers pnpm for the frontend repo",
+not "prefers pnpm").
 When an episode states a relative time (e.g. "yesterday", "last week", "two days ago"), resolve it to an
 absolute YYYY-MM-DD date in the item, grounding against that episode's "date" (or "now" if it has none).
 Leave already-absolute dates unchanged. Respond with a single JSON object:

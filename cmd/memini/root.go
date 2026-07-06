@@ -239,6 +239,7 @@ func buildServiceStack(
 		// Write-time fact building self-selects: distill (LLM) no-ops without a
 		// consolidator; extract (heuristic) only fires when no LLM is configured.
 		service.WithDistillOnWrite(true),
+		service.WithDistillBatch(cfg.DistillBatchTokens, cfg.DistillBatchMaxAge),
 		service.WithExtractOnWrite(true),
 		service.WithMetrics(metricsImpl),
 	)
@@ -252,6 +253,7 @@ func buildServiceStack(
 		svc.WaitBackground()
 	}
 	workers.Go(func() { svc.StartConsolidator(workerCtx) })
+	workers.Go(func() { svc.StartDistillBatcher(workerCtx) })
 	workers.Go(func() { svc.RunPromoter(workerCtx, cfg.PromoteInterval) })
 	sweeper := maintenance.NewSweeper(st, log, maintenance.SweeperConfig{
 		Interval:     cfg.SweepInterval,

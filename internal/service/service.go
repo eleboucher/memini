@@ -238,7 +238,10 @@ type Service struct {
 	// distillOnWrite distils each fresh episodic capture into durable facts at
 	// write time, bounded by distillSem. Needs a distiller.
 	distillOnWrite bool
-	distillSem     chan struct{}
+	// distillBatch, when non-nil, batches distill-on-write per (namespace,
+	// session_id) instead of one LLM call per capture (WithDistillBatch).
+	distillBatch *distillBatcher
+	distillSem   chan struct{}
 	// distillDropNoFact, with distillOnWrite, deletes the episodic when
 	// distillation yields no durable fact (the LLM becomes a write filter).
 	distillDropNoFact bool
@@ -922,15 +925,10 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	if consolidate && s.consolidateMode == ConsolidateAsync {
 		s.enqueueConsolidate(m.Namespace, m.ID)
 	}
-	// Write-time distillation: distil a fresh episodic capture into durable facts
-	// in the background, so durable knowledge is created at write rather than
-	// waiting on the access-gated batch promoter. Opt-in, needs a distiller.
-	switch {
-	case s.shouldDistillOnWrite(tier, existing == nil):
-		s.distillEpisodicAsync(ctx, m)
-	case s.shouldExtractOnWrite(tier, existing == nil):
-		s.extractEpisodicAsync(ctx, m)
-	}
+	// Write-time fact building: distil (LLM) or extract (heuristic) durable
+	// facts from the fresh capture in the background, so durable knowledge is
+	// created at write rather than waiting on the access-gated batch promoter.
+	s.buildFactsOnWrite(ctx, m, tier, existing == nil)
 	// Corroboration routing: a fresh short-term write that restates an existing
 	// durable fact is a re-observation of that fact — grow its confidence and
 	// reinforce it in the background. The write itself is stored unchanged.
@@ -1572,6 +1570,21 @@ func (s *Service) resolveSemanticReserve(in RecallInput) int {
 		return in.SemanticReserve
 	}
 	return s.recallSemanticReserve
+}
+
+// buildFactsOnWrite routes a fresh episodic capture to write-time fact
+// building: LLM distillation (batched per session when configured and the
+// capture carries a session_id, else per-capture) or the heuristic extractor
+// when no LLM is set.
+func (s *Service) buildFactsOnWrite(ctx context.Context, m *memory.Memory, tier memory.Tier, isCreate bool) {
+	switch {
+	case s.shouldDistillOnWrite(tier, isCreate):
+		if !s.enqueueDistillBatch(m) {
+			s.distillEpisodicAsync(ctx, m)
+		}
+	case s.shouldExtractOnWrite(tier, isCreate):
+		s.extractEpisodicAsync(ctx, m)
+	}
 }
 
 // shouldDistillOnWrite reports whether a fresh episodic capture should be
