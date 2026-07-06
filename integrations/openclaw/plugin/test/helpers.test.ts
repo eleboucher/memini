@@ -212,6 +212,18 @@ test("stripRuntimePreambles: user message containing `=` without metadata label 
   assert.equal(stripRuntimePreambles("User: Set foo=bar please"), "User: Set foo=bar please");
 });
 
+test("stripRuntimePreambles: flat block, no blank line, following message contains `=` — kept (no over-strip)", () => {
+  // Regression: a greedy flat matcher (`[^\n]*=[^\n]*`) would swallow the
+  // "User: set FOO=bar" line too, because it also contains `=`. The key anchor
+  // stops the run at the first line that isn't a bare key=value.
+  const text =
+    "Conversation info (untrusted metadata):\n" +
+    "chat_id=abc\n" +
+    "message_id=def\n" +
+    "User: set FOO=bar please";
+  assert.equal(stripRuntimePreambles(text), "User: set FOO=bar please");
+});
+
 test("stripRuntimePreambles: fenced format still works (regression)", () => {
   const text = "Conversation info (untrusted metadata):\n```json\n{\"chat_id\":1}\n```\nhello there";
   assert.equal(stripRuntimePreambles(text), "hello there");

@@ -241,8 +241,14 @@ function lastTextByRole(messages: any, role: any) {
 // namespace and recalls at high similarity (it's templated), crowding out
 // real memories. Strip the leading metadata blocks and keep the actual
 // message that follows.
+//
+// The flat branch matches only lines that look like a bare `key=value`
+// (identifier immediately before the `=`), so a following real message that
+// merely contains an `=` — e.g. "User: set FOO=bar" — is NOT consumed: it
+// starts with "User" then ":", not "=", so the key anchor fails and the run
+// stops. Without this anchor a greedy `[^\n]*=[^\n]*` would eat that message.
 const UNTRUSTED_METADATA_BLOCK =
-  /^\s*[^\n]*\(untrusted metadata\):\s*(?:```(?:json)?\s*[\s\S]*?```\s*|(?:[^\n]*=[^\n]*\n?)+)/;
+  /^\s*[^\n]*\(untrusted metadata\):\s*(?:```(?:json)?\s*[\s\S]*?```\s*|(?:[ \t]*[A-Za-z_][\w.-]*=[^\n]*\n?)+)/;
 
 // Noise prefixes to drop after preamble stripping (backstop for shouldSkipSystemTurn).
 const NOISE_PREFIXES = ["[Subagent Context]", "[cron:"];
