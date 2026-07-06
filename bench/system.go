@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/eleboucher/memini/internal/embed"
+	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/service"
 	"github.com/eleboucher/memini/internal/store"
@@ -88,7 +89,7 @@ var benchClock = func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
 
 func newMeminiBackend(
 	st store.Store, e embed.Embedder, concurrency int, queryPrefix string, fusionAlpha float64,
-	poolFactor, poolFloor int, mode IngestMode,
+	poolFactor, poolFloor int, mode IngestMode, distiller llm.Distiller,
 ) *meminiBackend {
 	if concurrency < 1 {
 		concurrency = 1
@@ -114,6 +115,16 @@ func newMeminiBackend(
 			service.WithEpisodicMinChars(120),
 			service.WithExtractOnWrite(true),
 		)
+		// Distill-on-write mirrors the shipped server's LLM wiring: with a
+		// distiller set it supersedes the heuristic extractor (production
+		// behavior). Batching stays off — bench items carry no session_id, so
+		// each capture (one whole session doc) is distilled per-capture.
+		if distiller != nil {
+			opts = append(opts,
+				service.WithDistiller(distiller),
+				service.WithDistillOnWrite(true),
+			)
+		}
 	}
 	svc := service.New(st, e, opts...)
 	return &meminiBackend{store: st, embedder: e, svc: svc, queryPrefix: queryPrefix, concurrency: concurrency, mode: mode}
@@ -221,6 +232,78 @@ func (b *meminiBackend) ingestWrite(ctx context.Context, items []Item) {
 	}
 	fmt.Fprintf(os.Stderr, "bench: write-mode ingest: %d items -> %d memories, %d gated, %d merged\n",
 		len(items), len(b.alias), gated, merged)
+	if err := b.attributeDerived(ctx, items); err != nil {
+		b.ingErr = fmt.Errorf("write-mode ingest: attribute derived rows: %w", err)
+	}
+}
+
+// attributeDerived maps rows the write path derived itself (extract-on-write
+// facts, distilled facts) back to the dataset items their source episodics
+// answer for, via the provenance metadata stamped at derivation (source_id,
+// source_ids, promoted_from). Without this a derived row in the top-K can
+// never count as a hit even when it carries the gold session's content, so
+// fact-building arms would be structurally penalized on recall.
+func (b *meminiBackend) attributeDerived(ctx context.Context, items []Item) error {
+	namespaces := map[string]bool{}
+	for _, it := range items {
+		namespaces[nsOf(it.Group)] = true
+	}
+	derived := 0
+	for ns := range namespaces {
+		mems, err := b.store.List(ctx, ns, store.Filter{Now: benchClock()}, 0)
+		if err != nil {
+			return err
+		}
+		for _, m := range mems {
+			if len(b.alias[m.ID]) > 0 {
+				continue
+			}
+			var itemIDs []string
+			seen := map[string]bool{}
+			for _, src := range sourceMemoryIDs(m.Metadata) {
+				for _, id := range b.alias[src] {
+					if !seen[id] {
+						seen[id] = true
+						itemIDs = append(itemIDs, id)
+					}
+				}
+			}
+			if len(itemIDs) > 0 {
+				b.alias[m.ID] = itemIDs
+				derived++
+			}
+		}
+	}
+	if derived > 0 {
+		fmt.Fprintf(os.Stderr, "bench: write-mode ingest: %d derived rows attributed to source items\n", derived)
+	}
+	return nil
+}
+
+// sourceMemoryIDs collects the provenance pointers a derived row carries.
+// source_ids survives the store's JSON metadata roundtrip as []any.
+func sourceMemoryIDs(meta map[string]any) []string {
+	if meta == nil {
+		return nil
+	}
+	var ids []string
+	if s, ok := meta["source_id"].(string); ok && s != "" {
+		ids = append(ids, s)
+	}
+	if s, ok := meta["promoted_from"].(string); ok && s != "" {
+		ids = append(ids, s)
+	}
+	switch v := meta["source_ids"].(type) {
+	case []string:
+		ids = append(ids, v...)
+	case []any:
+		for _, e := range v {
+			if s, ok := e.(string); ok && s != "" {
+				ids = append(ids, s)
+			}
+		}
+	}
+	return ids
 }
 
 // hits converts scored results to RecallHits, translating stored-memory IDs
@@ -244,11 +327,13 @@ func (b *meminiBackend) hits(res []store.Scored) []RecallHit {
 // convex-combination score fusion with that vector weight. poolFactor/poolFloor
 // override hybrid recall's per-leg pool sizing (non-positive keeps defaults).
 // mode selects direct upserts (historical default) or the production write path.
+// distiller, non-nil with write mode, enables LLM distill-on-write (nil keeps
+// the heuristic extractor).
 func MeminiSystems(
 	st store.Store, e embed.Embedder, concurrency int, queryPrefix string, fusionAlpha float64,
-	poolFactor, poolFloor int, mode IngestMode,
+	poolFactor, poolFloor int, mode IngestMode, distiller llm.Distiller,
 ) []System {
-	b := newMeminiBackend(st, e, concurrency, queryPrefix, fusionAlpha, poolFactor, poolFloor, mode)
+	b := newMeminiBackend(st, e, concurrency, queryPrefix, fusionAlpha, poolFactor, poolFloor, mode, distiller)
 	return []System{
 		&hybridSystem{b},
 		&vectorSystem{b},

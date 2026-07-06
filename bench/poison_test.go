@@ -33,7 +33,7 @@ func TestDedupRecoversPoisonedStore(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	sys := bench.MeminiSystems(st, embedtest.New(dims), 4, "", -1, 0, 0, bench.IngestUpsert)[0] // hybrid
+	sys := bench.MeminiSystems(st, embedtest.New(dims), 4, "", -1, 0, 0, bench.IngestUpsert, nil)[0] // hybrid
 	if err := sys.Ingest(ctx, poisoned.Items); err != nil {
 		t.Fatalf("ingest: %v", err)
 	}

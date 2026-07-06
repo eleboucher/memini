@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eleboucher/memini/bench"
@@ -53,14 +54,16 @@ func run() error {
 	dbg := flag.Bool("debug", false, "print per-question retrieval/answer/grade to stderr")
 	temporalBoost := flag.Float64("temporal-boost", 0.40, "temporal targeting boost (0 disables)")
 	reasoning := flag.String("reasoning", "", "answer reasoning level: empty/minimal (single-shot) | low | medium | high (agentic tool loop)")
+	distill := flag.Bool("distill", false,
+		"with -ingest=write: distill each episodic capture into durable facts at write time "+
+			"via the MEMINI_LLM_* chat backend (supersedes the heuristic extractor, as in production)")
 	flag.Parse()
 	debug = *dbg
+	if *distill && *ingestMode != "write" {
+		return fmt.Errorf("-distill requires -ingest=write")
+	}
 	if *ckptPath == "" {
-		suffix := ""
-		if *reasoning != "" && *reasoning != "minimal" {
-			suffix = "_" + *reasoning
-		}
-		*ckptPath = fmt.Sprintf("bench/results/qa_%s_%s%s.jsonl", *suite, *ingestMode, suffix)
+		*ckptPath = defaultCheckpoint(*suite, *ingestMode, *reasoning, *distill)
 	}
 
 	dims := envInt("MEMINI_EMBED_DIMS", 4096)
@@ -132,11 +135,15 @@ func run() error {
 	}
 
 	fmt.Fprintf(os.Stderr, "ingesting %d items (%s)...\n", len(ds.Items), *ingestMode)
+	var distiller llm.Distiller
+	if *distill {
+		distiller = chat
+	}
 	switch *ingestMode {
 	case "upsert":
 		err = ingestUpsert(ctx, st, embedder, ds.Items)
 	case "write":
-		err = ingestWrite(ctx, st, embedder, ds.Items)
+		err = ingestWrite(ctx, st, embedder, ds.Items, distiller)
 	default:
 		err = fmt.Errorf("unknown -ingest %q (want upsert|write)", *ingestMode)
 	}
@@ -192,6 +199,19 @@ func run() error {
 	wg.Wait()
 
 	return report(*ckptPath, len(ds.Questions))
+}
+
+// defaultCheckpoint names the resume checkpoint after everything that shapes
+// the answers, so differently-configured runs never share one.
+func defaultCheckpoint(suite, ingestMode, reasoning string, distill bool) string {
+	suffix := ""
+	if distill {
+		suffix = "_distill"
+	}
+	if reasoning != "" && reasoning != "minimal" {
+		suffix += "_" + reasoning
+	}
+	return fmt.Sprintf("bench/results/qa_%s_%s%s.jsonl", suite, ingestMode, suffix)
 }
 
 // loadSuite loads and shapes the dataset. Abstention questions (LongMemEval
@@ -284,30 +304,39 @@ func ingestUpsert(ctx context.Context, st *sqlitevec.Store, e embed.Embedder, it
 // ingestWrite feeds items through service.Remember sequentially in dataset
 // order, mirroring the shipped server's no-LLM write wiring (tier
 // classification, gates, fingerprint/write dedup, corroboration, contradiction
-// invalidation, heuristic extract). The LLM is deliberately NOT wired into
-// ingest — distill/consolidate over a full benchmark corpus would be thousands
-// of completions; this run measures the write path's curation, not its LLM
-// enrichment. Each write is clocked at its item's session time, and TTL is
-// overridden to never-expire: classifier-routed episodic memories carry a 90d
-// TTL, and benchmark question dates can fall months after the sessions — the
-// bench measures answer quality, not retention policy.
-func ingestWrite(ctx context.Context, st *sqlitevec.Store, e embed.Embedder, items []bench.Item) error {
-	ingestNow := time.Unix(1_700_000_000, 0).UTC()
-	svc := service.New(st, e,
+// invalidation, heuristic extract). distiller, when non-nil, additionally
+// wires LLM distill-on-write (superseding the heuristic extractor, as in
+// production) — one completion per capture, so only use it on a subset run.
+// Each write is clocked at its item's session time, and TTL is overridden to
+// never-expire: classifier-routed episodic memories carry a 90d TTL, and
+// benchmark question dates can fall months after the sessions — the bench
+// measures answer quality, not retention policy.
+func ingestWrite(ctx context.Context, st *sqlitevec.Store, e embed.Embedder, items []bench.Item, distiller llm.Distiller) error {
+	// The clock advances per item while detached write-path work (extract,
+	// distill) reads it from background goroutines, so it must be atomic.
+	var clock atomic.Pointer[time.Time]
+	start := time.Unix(1_700_000_000, 0).UTC()
+	clock.Store(&start)
+	opts := []service.Option{
 		service.WithSyncReinforce(),
-		service.WithClock(func() time.Time { return ingestNow }),
+		service.WithClock(func() time.Time { return *clock.Load() }),
 		service.WithWriteDedup(0.625, service.WriteDedupHint),
 		service.WithCorroboration(0.70),
 		service.WithContradictionDownrank(0.625),
 		service.WithEpisodicMinChars(120),
 		service.WithExtractOnWrite(true),
-	)
+	}
+	if distiller != nil {
+		opts = append(opts, service.WithDistiller(distiller), service.WithDistillOnWrite(true))
+	}
+	svc := service.New(st, e, opts...)
 	never := -time.Second
 	var gated, merged int
 	seen := map[string]bool{}
 	for _, it := range items {
 		if !it.Time.IsZero() {
-			ingestNow = it.Time.UTC()
+			t := it.Time.UTC()
+			clock.Store(&t)
 		}
 		var validFrom *time.Time
 		if !it.Time.IsZero() {

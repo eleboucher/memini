@@ -64,28 +64,24 @@ func run() error {
 	ingest := flag.String("ingest", "upsert",
 		"corpus ingestion: upsert (direct store writes, historical default) | "+
 			"write (production Remember path: classify, gates, dedup, corroborate/contradict)")
+	distill := flag.Bool("distill", false,
+		"with -ingest=write: distill each episodic capture into durable facts at write time "+
+			"via the MEMINI_LLM_* chat backend (supersedes the heuristic extractor, as in production)")
 	flag.Parse()
 
 	ingestMode, err := parseIngestMode(*ingest)
 	if err != nil {
 		return err
 	}
+	counting, distiller, err := buildDistiller(*distill, ingestMode)
+	if err != nil {
+		return err
+	}
 
-	ds, err := loadDataset(*suite, *data, bench.DocMode(*sessionDoc))
+	ds, err := prepareDataset(*suite, *data, *sessionDoc, *holdout, *limit, *distill)
 	if err != nil {
 		return err
 	}
-	if *suite == "longmemeval" && *sessionDoc != "" && *sessionDoc != string(bench.DocFull) {
-		ds.Name += "-" + *sessionDoc
-	}
-	ds, err = bench.SplitHoldout(ds, *holdout)
-	if err != nil {
-		return err
-	}
-	if *limit > 0 {
-		ds = subset(ds, *limit)
-	}
-	fmt.Fprintf(os.Stderr, "dataset %q: %d items, %d questions\n", ds.Name, len(ds.Items), len(ds.Questions))
 
 	embedder, dim, saveCache, err := buildEmbedder(*dims)
 	if err != nil {
@@ -161,7 +157,9 @@ func run() error {
 	}
 
 	var results []bench.Result
-	for _, sys := range bench.MeminiSystems(st, embedder, *concurrency, queryPrefix, *fusionAlpha, *poolFactor, *poolFloor, ingestMode) {
+	systems := bench.MeminiSystems(st, embedder, *concurrency, queryPrefix, *fusionAlpha,
+		*poolFactor, *poolFloor, ingestMode, distiller)
+	for _, sys := range systems {
 		rs, err := bench.Run(ctx, sys, ds, ks)
 		if err != nil {
 			return err
@@ -180,10 +178,11 @@ func run() error {
 		fmt.Println(bench.Markdown(forK))
 	}
 	printPerCategory(results, ks[len(ks)-1])
+	printDistillStats(counting)
 
 	cfg := runConfig{
 		Suite: *suite, Dataset: ds.Name, Holdout: *holdout, SessionDoc: *sessionDoc,
-		IngestMode: string(ingestMode), Ks: ks, Limit: *limit, Concurrency: *concurrency,
+		IngestMode: string(ingestMode), Distill: *distill, Ks: ks, Limit: *limit, Concurrency: *concurrency,
 		FusionAlpha: *fusionAlpha, PoolFactor: *poolFactor, PoolFloor: *poolFloor,
 		EmbedBaseURL: os.Getenv("MEMINI_EMBED_BASE_URL"), EmbedModel: embedModel(), EmbedDims: dim,
 		QueryPrefix: queryPrefix, DocPrefix: os.Getenv("MEMINI_EMBED_DOC_PREFIX"),
@@ -219,6 +218,7 @@ type runConfig struct {
 	Holdout      string  `json:"holdout,omitempty"`
 	SessionDoc   string  `json:"session_doc,omitempty"`
 	IngestMode   string  `json:"ingest_mode"`
+	Distill      bool    `json:"distill,omitempty"`
 	Ks           []int   `json:"ks"`
 	Limit        int     `json:"limit,omitempty"`
 	Concurrency  int     `json:"concurrency"`
@@ -251,6 +251,69 @@ func gitCommit() string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// buildDistiller constructs the counted LLM distiller for -distill runs (nils
+// when off). The counting wrapper reports ingest cost/compression at the end.
+func buildDistiller(on bool, mode bench.IngestMode) (*bench.CountingDistiller, llm.Distiller, error) {
+	if !on {
+		return nil, nil, nil
+	}
+	if mode != bench.IngestWrite {
+		return nil, nil, fmt.Errorf("bench: -distill requires -ingest=write")
+	}
+	client, err := llm.New(llm.API(os.Getenv("MEMINI_LLM_API")), llm.Config{
+		BaseURL: os.Getenv("MEMINI_LLM_BASE_URL"),
+		APIKey:  os.Getenv("MEMINI_LLM_API_KEY"),
+		Model:   os.Getenv("MEMINI_LLM_MODEL"),
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	counting := bench.NewCountingDistiller(client)
+	fmt.Fprintf(os.Stderr, "distill-on-write: model %s via %s\n",
+		os.Getenv("MEMINI_LLM_MODEL"), os.Getenv("MEMINI_LLM_BASE_URL"))
+	return counting, counting, nil
+}
+
+// prepareDataset loads, names, splits, and subsets the dataset for a run.
+func prepareDataset(suite, data, sessionDoc, holdout string, limit int, distill bool) (*bench.Dataset, error) {
+	ds, err := loadDataset(suite, data, bench.DocMode(sessionDoc))
+	if err != nil {
+		return nil, err
+	}
+	if suite == "longmemeval" && sessionDoc != "" && sessionDoc != string(bench.DocFull) {
+		ds.Name += "-" + sessionDoc
+	}
+	ds, err = bench.SplitHoldout(ds, holdout)
+	if err != nil {
+		return nil, err
+	}
+	if distill {
+		ds.Name += "-distill" // keep result files distinct from the no-distill arm
+	}
+	if limit > 0 {
+		ds = subset(ds, limit)
+	}
+	fmt.Fprintf(os.Stderr, "dataset %q: %d items, %d questions\n", ds.Name, len(ds.Items), len(ds.Questions))
+	return ds, nil
+}
+
+// printDistillStats reports a -distill run's ingest cost and compression.
+func printDistillStats(counting *bench.CountingDistiller) {
+	if counting == nil {
+		return
+	}
+	s := counting.Stats()
+	perEpisode := 0.0
+	if s.Episodes > 0 {
+		perEpisode = float64(s.Facts) / float64(s.Episodes)
+	}
+	fmt.Printf("\n### distill-on-write cost (token counts are ~4-bytes/token payload estimates; "+
+		"the fixed prompt template adds ~300 tok/call)\n\n"+
+		"| Calls | Errors | Episodes in | Facts out | Facts/episode | In tokens | Out tokens |\n"+
+		"|--:|--:|--:|--:|--:|--:|--:|\n| %d | %d | %d | %d | %.2f | %d | %d |\n",
+		s.Calls, s.Errors, s.Episodes, s.Facts, perEpisode, s.InTokens, s.OutTokens)
 }
 
 func parseIngestMode(s string) (bench.IngestMode, error) {

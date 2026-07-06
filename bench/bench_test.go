@@ -27,7 +27,7 @@ func TestSampleBenchmark(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 
 	results := map[string]bench.Result{}
-	for _, sys := range bench.MeminiSystems(st, embedtest.New(dims), 4, "", -1, 0, 0, bench.IngestUpsert) {
+	for _, sys := range bench.MeminiSystems(st, embedtest.New(dims), 4, "", -1, 0, 0, bench.IngestUpsert, nil) {
 		rs, err := bench.Run(ctx, sys, ds, []int{3})
 		if err != nil {
 			t.Fatalf("run %s: %v", sys.Name(), err)
@@ -90,7 +90,7 @@ func TestWriteModeIngest(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	sys := bench.MeminiSystems(st, embedtest.New(dims), 4, "", 0.5, 0, 0, bench.IngestWrite)[0] // hybrid
+	sys := bench.MeminiSystems(st, embedtest.New(dims), 4, "", 0.5, 0, 0, bench.IngestWrite, nil)[0] // hybrid
 	rs, err := bench.Run(ctx, sys, ds, []int{3})
 	if err != nil {
 		t.Fatalf("run: %v", err)
