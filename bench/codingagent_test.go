@@ -23,9 +23,19 @@ import (
 	"github.com/eleboucher/memini/internal/store/sqlitevec"
 )
 
-// codingAgentData is the committed pilot dataset (relative to the bench package
-// dir, which is the cwd when `go test` runs the package).
-const codingAgentData = "data/codingagent_pilot.json"
+// codingAgentDataDefault is the committed pilot dataset (relative to the bench
+// package dir, which is the cwd when `go test` runs the package).
+// MEMINI_CODINGAGENT_DATA overrides it so the scaled v1 corpus can be run
+// without a code edit; the checkpoint rows are query-stamped, so pointing at a
+// different corpus safely invalidates stale rows rather than miscounting them.
+const codingAgentDataDefault = "data/codingagent_pilot.json"
+
+func codingAgentDataPath() string {
+	if p := os.Getenv("MEMINI_CODINGAGENT_DATA"); p != "" {
+		return p
+	}
+	return codingAgentDataDefault
+}
 
 // caCell identifies one 2x2 discrimination cell: an ingest path crossed with an
 // answer strategy.
@@ -37,9 +47,9 @@ type caCell struct{ ingest, level string }
 // category, a non-monotonic supersession chain, or a distractor leaked into a
 // gold set is worse than no benchmark, so these are hard failures.
 func TestCodingAgentGoldAudit(t *testing.T) {
-	ds, meta, err := bench.LoadCodingAgent(codingAgentData)
+	ds, meta, err := bench.LoadCodingAgent(codingAgentDataPath())
 	if err != nil {
-		t.Fatalf("load %s: %v", codingAgentData, err)
+		t.Fatalf("load %s: %v", codingAgentDataPath(), err)
 	}
 
 	itemIDs := make(map[string]bool, len(ds.Items))
@@ -160,9 +170,9 @@ func TestCodingAgentHeadroom(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	t.Cleanup(cancel)
 
-	ds, _, err := bench.LoadCodingAgent(codingAgentData)
+	ds, _, err := bench.LoadCodingAgent(codingAgentDataPath())
 	if err != nil {
-		t.Fatalf("load %s: %v", codingAgentData, err)
+		t.Fatalf("load %s: %v", codingAgentDataPath(), err)
 	}
 	e := codingAgentEmbedder(ctx, t)
 	dims := envIntOr("MEMINI_EMBED_DIMS", 1024)
@@ -236,9 +246,9 @@ func TestCodingAgentDiscrimination(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
 	t.Cleanup(cancel)
 
-	ds, _, err := bench.LoadCodingAgent(codingAgentData)
+	ds, _, err := bench.LoadCodingAgent(codingAgentDataPath())
 	if err != nil {
-		t.Fatalf("load %s: %v", codingAgentData, err)
+		t.Fatalf("load %s: %v", codingAgentDataPath(), err)
 	}
 	e := codingAgentEmbedder(ctx, t)
 	dims := envIntOr("MEMINI_EMBED_DIMS", 1024)

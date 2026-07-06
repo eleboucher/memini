@@ -33,3 +33,4 @@ qa_*.jsonl
 # Vendored Helm subchart tarballs (re-fetched via `helm dependency build`;
 # Chart.lock is committed).
 /charts/*/charts/
+.bench-mining/
