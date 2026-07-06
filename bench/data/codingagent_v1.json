@@ -1,0 +1,3824 @@
+{
+ "name": "codingagent_v1",
+ "items": [
+  {
+   "id": "n-reserve-0",
+   "content": "[2026-06-21] The recall semantic-reserve (MEMINI_RECALL_SEMANTIC_RESERVE) was introduced defaulting to 0 (off): reserving durable-tier slots is opt-in until sweep evidence justifies a default.",
+   "group": "memini-dev",
+   "time": "2026-06-21T12:00:00Z",
+   "session": "2026-06-21",
+   "source": "note:memini-bench-cant-measure-reserve.md",
+   "kind": "decision",
+   "superseded_by": "n-reserve-2"
+  },
+  {
+   "id": "n-reserve-2",
+   "content": "[2026-06-28] MEMINI_RECALL_SEMANTIC_RESERVE default was changed from 0 to 2, guaranteeing up to 2 durable-tier slots in recall so episodic turn-capture volume can't crowd consolidated facts out.",
+   "group": "memini-dev",
+   "time": "2026-06-28T12:00:00Z",
+   "session": "2026-06-28",
+   "source": "git:fe0c9d4",
+   "kind": "decision"
+  },
+  {
+   "id": "n-reserve-why",
+   "content": "[2026-06-28] The reserve=2 default is justified because at reserve 0 heavy episodic volume dropped about 25% of durable facts out of top-10; reserve>=1 recovered all of them with episodic-gold recall unchanged.",
+   "group": "memini-dev",
+   "time": "2026-06-28T12:00:00Z",
+   "session": "2026-06-28",
+   "source": "note:memini-bench-cant-measure-reserve.md",
+   "kind": "rationale"
+  },
+  {
+   "id": "n-reserve-gate",
+   "content": "[2026-07-04] The durable reserve is relevance-gated so off-topic durable facts are never force-injected into recall.",
+   "group": "memini-dev",
+   "time": "2026-07-04T12:00:00Z",
+   "session": "2026-07-04",
+   "source": "git:62bb6c0",
+   "kind": "decision"
+  },
+  {
+   "id": "n-reserve-bench",
+   "content": "[2026-06-28] The LongMemEval/LoCoMo bench suites cannot validate the semantic reserve because they ingest every item as one tier (TierSemantic); bench/reserve_test.go with a tier-mixed corpus is the harness that measures it.",
+   "group": "memini-dev",
+   "time": "2026-06-28T12:00:00Z",
+   "session": "2026-06-28",
+   "source": "note:memini-bench-cant-measure-reserve.md",
+   "kind": "convention"
+  },
+  {
+   "id": "n-reserve-quality",
+   "content": "[2026-07-04] Recall was changed to relevance-modulate the quality term and re-anchor the durable reserve.",
+   "group": "memini-dev",
+   "time": "2026-07-04T12:00:00Z",
+   "session": "2026-07-04",
+   "source": "git:1926c0c",
+   "kind": "decision"
+  },
+  {
+   "id": "n-reserve-reexpose",
+   "content": "[2026-07-04] MEMINI_RECALL_SEMANTIC_RESERVE and MEMINI_RECALL_MIN_SCORE were re-exposed as environment knobs after being baked as constants.",
+   "group": "memini-dev",
+   "time": "2026-07-04T12:00:00Z",
+   "session": "2026-07-04",
+   "source": "git:becefe2",
+   "kind": "decision"
+  },
+  {
+   "id": "n-contra-shrink",
+   "content": "[2026-07-03] The first proposed action for a contradicting durable write was to shrink the stale fact's confidence.",
+   "group": "memini-dev",
+   "time": "2026-07-03T12:00:00Z",
+   "session": "2026-07-03",
+   "source": "note:memini-contradiction-phase5.md",
+   "kind": "decision",
+   "superseded_by": "n-contra-validto"
+  },
+  {
+   "id": "n-contra-validto",
+   "content": "[2026-07-04] A fresh durable write that contradicts a stale fact invalidates the stale fact by stamping valid_to (Graphiti-style), rather than only shrinking its confidence.",
+   "group": "memini-dev",
+   "time": "2026-07-04T12:00:00Z",
+   "session": "2026-07-04",
+   "source": "git:662c632",
+   "kind": "decision"
+  },
+  {
+   "id": "n-contra-why",
+   "content": "[2026-07-04] Confidence shrink alone cannot flip stale-vs-fresh ranking because the composite rank is 80% relevance and 20% quality and fresh episodic chatter sets the quality normaliser; only removing the stale fact from the current-state window via valid_to invalidation flips it.",
+   "group": "memini-dev",
+   "time": "2026-07-04T12:00:00Z",
+   "session": "2026-07-04",
+   "source": "note:memini-contradiction-phase5.md",
+   "kind": "rationale"
+  },
+  {
+   "id": "n-contra-detector",
+   "content": "[2026-07-04] The contradiction detector in internal/contradict is pure and LLM-free, using de Marneffe-style surface features: a value swap needs a differing value token on both sides plus a residue cap, and polarity needs a retro cue or new-side-only negation with high containment.",
+   "group": "memini-dev",
+   "time": "2026-07-04T12:00:00Z",
+   "session": "2026-07-04",
+   "source": "note:memini-contradiction-phase5.md",
+   "kind": "convention"
+  },
+  {
+   "id": "n-contra-wiring",
+   "content": "[2026-07-04] contradictNearestAsync fires on a fresh durable write whose top durable neighbour scores >=0.625 (reusing writeDedupScore, below the corroboration min-score of 0.70), with a 24h cooldown; it is on by default with MEMINI_CONTRADICT_DOWNRANK=false as the kill-switch.",
+   "group": "memini-dev",
+   "time": "2026-07-04T12:00:00Z",
+   "session": "2026-07-04",
+   "source": "note:memini-contradiction-phase5.md",
+   "kind": "convention"
+  },
+  {
+   "id": "n-contra-store",
+   "content": "[2026-07-04] store.MarkContradicted stamps valid_to=COALESCE(valid_to,now), shrinks confidence usage-aware to 0.9*seed/usage, and records contradicted_by in metadata; it is reversible via Restore and AsOf recall still reaches it.",
+   "group": "memini-dev",
+   "time": "2026-07-04T12:00:00Z",
+   "session": "2026-07-04",
+   "source": "note:memini-contradiction-phase5.md",
+   "kind": "convention"
+  },
+  {
+   "id": "n-cool-updatedat",
+   "content": "[2026-07-04] The contradiction cooldown was originally keyed on the fact's UpdatedAt timestamp.",
+   "group": "memini-dev",
+   "time": "2026-07-04T12:00:00Z",
+   "session": "2026-07-04",
+   "source": "note:memini-corroborate-contradict-interaction.md",
+   "kind": "decision",
+   "superseded_by": "n-cool-createdat"
+  },
+  {
+   "id": "n-cool-createdat",
+   "content": "[2026-07-06] The contradiction cooldown was re-keyed from UpdatedAt to the fact's CreatedAt, because corroboration's SetConfidence bumped UpdatedAt and permanently shielded a restated stale fact from ever being invalidated.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:ced00b4",
+   "kind": "decision"
+  },
+  {
+   "id": "n-interact-shield",
+   "content": "[2026-07-06] The corroborate-shields-contradict bug happened because corroborate's SetConfidence bumped UpdatedAt, which was contradict's cooldown stamp, so a corroborated stale fact could never be invalidated (0 of 18 corroborated topics invalidated pre-fix).",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "note:memini-corroborate-contradict-interaction.md",
+   "kind": "rationale"
+  },
+  {
+   "id": "n-interact-k3",
+   "content": "[2026-07-06] The contradiction detector was changed to scan k=3 nearest durable neighbours (up from k=2) and continue past restatement-classified candidates, closing the rephrased-retry escape.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:ced00b4",
+   "kind": "decision"
+  },
+  {
+   "id": "n-interact-fingerprint",
+   "content": "[2026-07-06] Both stores' GetByFingerprint were changed to exclude validity-closed (valid_to'd) rows so a verbatim re-assertion of a contradicted fact is no longer absorbed into the dead row.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "note:memini-corroborate-contradict-interaction.md",
+   "kind": "decision"
+  },
+  {
+   "id": "n-interact-setconf",
+   "content": "[2026-07-06] SetConfidence now refuses validity-closed rows (WHERE valid_to IS NULL OR valid_to > now) to close the race where confidence regrew on a just-contradicted fact.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "note:memini-corroborate-contradict-interaction.md",
+   "kind": "decision"
+  },
+  {
+   "id": "n-interact-bench",
+   "content": "[2026-07-06] bench/interaction_test.go is the gated regression tripwire for the corroborate-times-contradict write-path interaction (three tests with GATE t.Errorf checks).",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:970f57d",
+   "kind": "convention"
+  },
+  {
+   "id": "n-demote-off",
+   "content": "[2026-06-12] MEMINI_DEMOTE_AFTER was initially defaulted to 0 (off) to avoid expiring legitimate durable facts.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:2033bd0",
+   "kind": "decision",
+   "superseded_by": "n-demote-168"
+  },
+  {
+   "id": "n-demote-168",
+   "content": "[2026-06-28] MEMINI_DEMOTE_AFTER now defaults to 168h (on): demotion is the gentle reversible form (durable->episodic on >7d, unused, uncorroborated, low-importance), acceptable as a default unlike hard-delete.",
+   "group": "memini-dev",
+   "time": "2026-06-28T12:00:00Z",
+   "session": "2026-06-28",
+   "source": "note:memini-poisoning-fix-defaults.md",
+   "kind": "decision"
+  },
+  {
+   "id": "n-recall-split",
+   "content": "[2026-06-20] Integration recall defaults were initially split: opencode/hermes/openwebui used recall_limit=5 uncapped, while openclaw used recall_limit=3 with an 800-token cap.",
+   "group": "memini-dev",
+   "time": "2026-06-20T12:00:00Z",
+   "session": "2026-06-20",
+   "source": "git:0adc56e",
+   "kind": "decision",
+   "superseded_by": "n-recall-3"
+  },
+  {
+   "id": "n-recall-3",
+   "content": "[2026-06-28] All integration recall defaults were standardized to recall_limit=3, uncapped (recall_max_tokens=0); the count is the bound and the token cap is opt-in.",
+   "group": "memini-dev",
+   "time": "2026-06-28T12:00:00Z",
+   "session": "2026-06-28",
+   "source": "git:01fb279",
+   "kind": "decision"
+  },
+  {
+   "id": "n-recall-forget",
+   "content": "[2026-06-28] memory_forget was exposed in the openclaw, hermes, and openwebui tool surfaces, and the memory id is surfaced in recall output.",
+   "group": "memini-dev",
+   "time": "2026-06-28T12:00:00Z",
+   "session": "2026-06-28",
+   "source": "git:4e7a19d",
+   "kind": "convention"
+  },
+  {
+   "id": "n-tier-working",
+   "content": "[2026-06-09] Tier-omitted writes originally landed in the working tier, whose 24h TTL silently evaporated them.",
+   "group": "memini-dev",
+   "time": "2026-06-09T12:00:00Z",
+   "session": "2026-06-09",
+   "source": "note:memini-tiers",
+   "kind": "decision",
+   "superseded_by": "n-tier-episodic"
+  },
+  {
+   "id": "n-tier-episodic",
+   "content": "[2026-07-02] The default write tier for tier-omitted writes was changed to episodic, as docs/tiers.md always promised; working's 24h TTL had silently evaporated tier-omitted writes.",
+   "group": "memini-dev",
+   "time": "2026-07-02T12:00:00Z",
+   "session": "2026-07-02",
+   "source": "git:a8c11f8",
+   "kind": "decision"
+  },
+  {
+   "id": "n-tier-classify",
+   "content": "[2026-07-02] Write-time tier choice uses a heuristic: classification, corroboration, and a promotion backstop decide the tier when the caller omits it.",
+   "group": "memini-dev",
+   "time": "2026-07-02T12:00:00Z",
+   "session": "2026-07-02",
+   "source": "git:a02b3e5",
+   "kind": "decision"
+  },
+  {
+   "id": "n-tier-clientdefault",
+   "content": "[2026-07-02] The client-side semantic tier default was dropped from the openclaw and pi integrations so the server classifies the tier.",
+   "group": "memini-dev",
+   "time": "2026-07-02T12:00:00Z",
+   "session": "2026-07-02",
+   "source": "git:b2bfe3c",
+   "kind": "decision"
+  },
+  {
+   "id": "n-tier-classify-clean",
+   "content": "[2026-07-04] extract.Classify was measured as clean: precision 0.923, recall 0.750, false-durable rate 0.04 (1 of 25) on a hand-labeled fixture, so write-time tier classification is not a recall-poisoning source and should not be re-investigated.",
+   "group": "memini-dev",
+   "time": "2026-07-04T12:00:00Z",
+   "session": "2026-07-04",
+   "source": "note:memini-tier-classifier-clean.md",
+   "kind": "rationale"
+  },
+  {
+   "id": "n-tier-salience",
+   "content": "[2026-06-12] Quality is salience-weighted per tier, and confidence-gated demotion is default-on for confidence-scored durable facts.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:badba37",
+   "kind": "convention"
+  },
+  {
+   "id": "n-rank-composite",
+   "content": "[2026-06-12] Recall uses a quality-aware composite score combining relevance and normalized quality.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:a4024d3",
+   "kind": "decision"
+  },
+  {
+   "id": "n-rank-weights",
+   "content": "[2026-07-06] The default rerank weights are 80% relevance and 20% relevance-modulated quality; recency and importance weights are 0 in production.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "note:memini-ranking",
+   "kind": "convention"
+  },
+  {
+   "id": "n-rank-durable-decay",
+   "content": "[2026-07-02] Quality now skips the recency decay for durable tiers, so old durable facts no longer decay to quality near zero.",
+   "group": "memini-dev",
+   "time": "2026-07-02T12:00:00Z",
+   "session": "2026-07-02",
+   "source": "git:c1887a2",
+   "kind": "decision"
+  },
+  {
+   "id": "n-rank-durable-decay-why",
+   "content": "[2026-07-02] Applying the 7-day recency half-life to all tiers made old durable facts get quality near zero and tier salience inert for them; SemanticReserve=2 was the positional workaround before the decay was dropped for durable tiers.",
+   "group": "memini-dev",
+   "time": "2026-07-02T12:00:00Z",
+   "session": "2026-07-02",
+   "source": "note:memini-ranking",
+   "kind": "rationale"
+  },
+  {
+   "id": "n-rank-usage",
+   "content": "[2026-06-12] The dead Usage weight term was dropped from the rank and Quality is computed once per result.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:71b06bb",
+   "kind": "decision"
+  },
+  {
+   "id": "n-dedup-bands",
+   "content": "[2026-06-25] Write-time dedup on a fresh write's nearest same-tier neighbour uses three bands: >=0.92 fire-and-forget auto-supersede, [0.75,0.92) return a merge hint, and >=writeDedupMinScore legacy coalesce.",
+   "group": "memini-dev",
+   "time": "2026-06-25T12:00:00Z",
+   "session": "2026-06-25",
+   "source": "git:4673214",
+   "kind": "decision"
+  },
+  {
+   "id": "n-dedup-bandorder",
+   "content": "[2026-06-28] Config validation enforces the dedup band order (auto-supersede > merge-hint > write-dedup, each in [0,1]) so a misconfigured gate can't silently shadow a band.",
+   "group": "memini-dev",
+   "time": "2026-06-28T12:00:00Z",
+   "session": "2026-06-28",
+   "source": "git:e3cc039",
+   "kind": "convention"
+  },
+  {
+   "id": "n-mergehint-default",
+   "content": "[2026-06-28] Merge-hint was enabled by default at 0.625 (opt-out, durable tiers only), and the band must stay above write-dedup.",
+   "group": "memini-dev",
+   "time": "2026-06-28T12:00:00Z",
+   "session": "2026-06-28",
+   "source": "git:e3cc039",
+   "kind": "decision"
+  },
+  {
+   "id": "n-dedup-source",
+   "content": "[2026-06-25] The three-band write-time dedup was adapted from headroom's memory/core.py.",
+   "group": "memini-dev",
+   "time": "2026-06-25T12:00:00Z",
+   "session": "2026-06-25",
+   "source": "git:4673214",
+   "kind": "reference"
+  },
+  {
+   "id": "n-writededup-off",
+   "content": "[2026-06-28] MEMINI_WRITE_DEDUP_MIN_SCORE stays 0 (off) because vector-only write-dedup with no metadata guard would coalesce distinct same-topic memories from different agents; fingerprint exact-match dedup is on.",
+   "group": "memini-dev",
+   "time": "2026-06-28T12:00:00Z",
+   "session": "2026-06-28",
+   "source": "note:memini-poisoning-fix-defaults.md",
+   "kind": "decision"
+  },
+  {
+   "id": "n-fingerprint-dedup",
+   "content": "[2026-06-13] Fingerprint write-dedup reinforces an exact restatement instead of storing a duplicate, without embedding it.",
+   "group": "memini-dev",
+   "time": "2026-06-13T12:00:00Z",
+   "session": "2026-06-13",
+   "source": "git:ef8b3fe",
+   "kind": "convention"
+  },
+  {
+   "id": "n-distill-onwrite",
+   "content": "[2026-06-21] Write-time distillation of episodic captures was added behind MEMINI_DISTILL_ON_WRITE.",
+   "group": "memini-dev",
+   "time": "2026-06-21T12:00:00Z",
+   "session": "2026-06-21",
+   "source": "git:0808f82",
+   "kind": "decision"
+  },
+  {
+   "id": "n-distill-drop",
+   "content": "[2026-06-21] MEMINI_DISTILL_DROP_NO_FACT drops the episodic capture when the LLM distills no fact; it defaults to false (off).",
+   "group": "memini-dev",
+   "time": "2026-06-21T12:00:00Z",
+   "session": "2026-06-21",
+   "source": "git:d06b61b",
+   "kind": "convention"
+  },
+  {
+   "id": "n-distill-route",
+   "content": "[2026-06-27] Distilled facts are routed to a tier by category: procedure (including error->recovery) goes to procedural, other facts go to semantic.",
+   "group": "memini-dev",
+   "time": "2026-06-27T12:00:00Z",
+   "session": "2026-06-27",
+   "source": "git:469617a",
+   "kind": "decision"
+  },
+  {
+   "id": "n-distill-dates",
+   "content": "[2026-06-26] When distilling episodes, relative dates are grounded against each episode's recorded date, falling back to the current date.",
+   "group": "memini-dev",
+   "time": "2026-06-26T12:00:00Z",
+   "session": "2026-06-26",
+   "source": "git:22a0c8e",
+   "kind": "decision"
+  },
+  {
+   "id": "n-extract-vs-distill",
+   "content": "[2026-06-28] distill-on-write (LLM) and extract-on-write (no-LLM heuristic) are mutually exclusive at runtime and both default on; extract-on-write fires only when no distiller is configured, so the LLM path supersedes it when both are available.",
+   "group": "memini-dev",
+   "time": "2026-06-28T12:00:00Z",
+   "session": "2026-06-28",
+   "source": "note:memini-deployment-matrix.md",
+   "kind": "convention"
+  },
+  {
+   "id": "n-distill-batch",
+   "content": "[2026-07-06] Distill-on-write supports token-window batching per session with an age flush, buffering captures per (namespace, session_id) and flushing on a token threshold or oldest-age.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:23541bf",
+   "kind": "decision"
+  },
+  {
+   "id": "n-temporal-windows",
+   "content": "[2026-06-12] Temporal fact validity was added: validity windows, supersede stamps valid_to, and as_of time-travel recall.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:c96c8f1",
+   "kind": "decision"
+  },
+  {
+   "id": "n-temporal-multiplicative",
+   "content": "[2026-07-03] The temporal boost was made multiplicative so date proximity amplifies relevance instead of displacing it.",
+   "group": "memini-dev",
+   "time": "2026-07-03T12:00:00Z",
+   "session": "2026-07-03",
+   "source": "git:0cf32c7",
+   "kind": "decision"
+  },
+  {
+   "id": "n-temporal-anchor",
+   "content": "[2026-07-02] Search gained absolute-date temporal anchors and ValidFrom-aware proximity.",
+   "group": "memini-dev",
+   "time": "2026-07-02T12:00:00Z",
+   "session": "2026-07-02",
+   "source": "git:a636121",
+   "kind": "decision"
+  },
+  {
+   "id": "n-temporal-default",
+   "content": "[2026-07-06] Temporal targeting is on by default in the shipped server: cmd/memini wires WithTemporalTargeting(0.40, RegexAnchorExtractor{}) unconditionally; the service-level default of 0 only applies to raw service.New callers.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "note:memini-temporal-default",
+   "kind": "convention"
+  },
+  {
+   "id": "n-validto-recall",
+   "content": "[2026-07-04] Default (non-AsOf) recall now honours valid_to in both drivers' filterClause, tied to !IncludeSuperseded; previously only AsOf recall did.",
+   "group": "memini-dev",
+   "time": "2026-07-04T12:00:00Z",
+   "session": "2026-07-04",
+   "source": "note:memini-contradiction-phase5.md",
+   "kind": "decision"
+  },
+  {
+   "id": "n-rerank-add",
+   "content": "[2026-06-11] Production cross-encoder reranking was added, configured via MEMINI_RERANK.",
+   "group": "memini-dev",
+   "time": "2026-06-11T12:00:00Z",
+   "session": "2026-06-11",
+   "source": "git:6a34941",
+   "kind": "decision"
+  },
+  {
+   "id": "n-rerank-timeout-3",
+   "content": "[2026-06-11] The MEMINI_RERANK_TIMEOUT default was originally 3s.",
+   "group": "memini-dev",
+   "time": "2026-06-11T12:00:00Z",
+   "session": "2026-06-11",
+   "source": "note:memini-rerank-timeout-default",
+   "kind": "decision",
+   "superseded_by": "n-rerank-timeout-10"
+  },
+  {
+   "id": "n-rerank-timeout-10",
+   "content": "[2026-06-16] The MEMINI_RERANK_TIMEOUT default was raised from 3s to 10s, reranker connections were pooled, and metrics moved to a dedicated port.",
+   "group": "memini-dev",
+   "time": "2026-06-16T12:00:00Z",
+   "session": "2026-06-16",
+   "source": "git:f8e5315",
+   "kind": "decision"
+  },
+  {
+   "id": "n-rerank-timeout-why",
+   "content": "[2026-06-16] The rerank timeout was raised because recall's rerank deadline-exceeded fallback was caused by fan-out (RERANK_TOP_N=20) times slots (--parallel) draining in serial waves on a shared queue, not by GPU speed or cold start; at --parallel 4 only 4 of 20 tasks launched before the old 3s bound dropped the connection.",
+   "group": "memini-dev",
+   "time": "2026-06-16T12:00:00Z",
+   "session": "2026-06-16",
+   "source": "note:memini-rerank-timeout-default",
+   "kind": "rationale"
+  },
+  {
+   "id": "n-rerank-doccap",
+   "content": "[2026-06-19] The reranker default document cap was raised to 2048 chars so the reranker scores whole memories.",
+   "group": "memini-dev",
+   "time": "2026-06-19T12:00:00Z",
+   "session": "2026-06-19",
+   "source": "git:cc0a542",
+   "kind": "decision"
+  },
+  {
+   "id": "n-rerank-bound",
+   "content": "[2026-06-14] The reranker call is bounded so a slow backend degrades gracefully to composite order.",
+   "group": "memini-dev",
+   "time": "2026-06-14T12:00:00Z",
+   "session": "2026-06-14",
+   "source": "git:7df8198",
+   "kind": "decision"
+  },
+  {
+   "id": "n-rerank-owncontract",
+   "content": "[2026-06-11] The reranker contract lives in package rerank, not internal/llm.",
+   "group": "memini-dev",
+   "time": "2026-06-11T12:00:00Z",
+   "session": "2026-06-11",
+   "source": "git:ca4f223",
+   "kind": "convention"
+  },
+  {
+   "id": "n-semgate-add",
+   "content": "[2026-06-20] An absolute semantic-score gate was added: MEMINI_RECALL_MIN_SEMANTIC_SCORE excludes a candidate whose raw vector score is below the floor, and the keyword leg cannot reintroduce it; code default is 0 (off).",
+   "group": "memini-dev",
+   "time": "2026-06-20T12:00:00Z",
+   "session": "2026-06-20",
+   "source": "git:a39079a",
+   "kind": "decision"
+  },
+  {
+   "id": "n-semgate-minilm",
+   "content": "[2026-06-20] No relevance-score floor works on MiniLM-L6-v2: fused min_score is dead because FuseScores min-max-normalises each leg so the top hit is always ~1.0, and the raw vector score positive/negative medians overlap (0.469 vs 0.448), so any floor that cuts noise also guts recall.",
+   "group": "memini-dev",
+   "time": "2026-06-20T12:00:00Z",
+   "session": "2026-06-20",
+   "source": "note:recall-no-score-gate-minilm.md",
+   "kind": "rationale"
+  },
+  {
+   "id": "n-semgate-qwen3",
+   "content": "[2026-06-20] The semantic-score gate value is embedder-specific: qwen3-embedding-0.6b at floor ~0.46 gives 91.7% recall (-6pp) and halves injection, but 0.46 is catastrophic on MiniLM (-39pp), so the OSS default stays 0.",
+   "group": "memini-dev",
+   "time": "2026-06-20T12:00:00Z",
+   "session": "2026-06-20",
+   "source": "note:recall-no-score-gate-minilm.md",
+   "kind": "rationale"
+  },
+  {
+   "id": "n-semgate-rerankgate",
+   "content": "[2026-06-20] The Qwen3-Reranker-0.6B score is the only relevance gate that separates cleanly (foreign-ns p90=0.009 vs own-ns p75=0.96), but it under-scores the correct doc on ~16% of answerable queries, so if pursued it should be opt-in at ~0.01-0.02, not default-on.",
+   "group": "memini-dev",
+   "time": "2026-06-20T12:00:00Z",
+   "session": "2026-06-20",
+   "source": "note:recall-no-score-gate-minilm.md",
+   "kind": "rationale"
+  },
+  {
+   "id": "n-entity-stop",
+   "content": "[2026-07-04] Entity-aware recall (Phase 4) was stopped on evidence, not shipped: under a hub-safe document-frequency cap only 1.3-2.6% of multi-hop failures are entity-bridgeable, and simulating in-window promotion gave no gain or net loss with ~95% noise promotions.",
+   "group": "memini-dev",
+   "time": "2026-07-04T12:00:00Z",
+   "session": "2026-07-04",
+   "source": "note:memini-entity-bridge-negative.md",
+   "kind": "decision"
+  },
+  {
+   "id": "n-entity-why",
+   "content": "[2026-07-04] Entity-bridging can't help multi-hop because a true multi-hop bridge has low query relevance by definition, so any spray-safe relevance gate excludes exactly the bridges; multi-hop headroom, if pursued, belongs in multi-recall mechanisms like query decomposition, not single-window ranking.",
+   "group": "memini-dev",
+   "time": "2026-07-04T12:00:00Z",
+   "session": "2026-07-04",
+   "source": "note:memini-entity-bridge-negative.md",
+   "kind": "rationale"
+  },
+  {
+   "id": "n-entity-kept",
+   "content": "[2026-07-04] extract.Entities (capitalized spans, no LLM, precise) was kept as a validated building block for the same-entity+attribute+value contradiction trigger, even though entity-aware recall was dropped.",
+   "group": "memini-dev",
+   "time": "2026-07-04T12:00:00Z",
+   "session": "2026-07-04",
+   "source": "git:c9d7c23",
+   "kind": "decision"
+  },
+  {
+   "id": "n-deploy-matrix",
+   "content": "[2026-07-06] memini supports three backend configs in priority order: embedder+reranker (the main target, no chat LLM), embedder-only, and embedder+LLM.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "note:memini-deployment-matrix.md",
+   "kind": "decision"
+  },
+  {
+   "id": "n-deploy-noop",
+   "content": "[2026-07-06] Every LLM-only feature (distillation, consolidation, answering, episodic->semantic promotion) is a graceful no-op for the embedder+reranker and embedder-only configs, so an LLM-gated quality improvement helps only the embedder+LLM config and does nothing for the main target.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "note:memini-deployment-matrix.md",
+   "kind": "rationale"
+  },
+  {
+   "id": "n-deploy-levers",
+   "content": "[2026-07-06] The non-LLM recall/storage levers for the main target are the heuristic typed extractor (internal/extract), the low-signal episodic drop gate, EpisodicMinChars, and reserveDurableTiers.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "note:memini-deployment-matrix.md",
+   "kind": "convention"
+  },
+  {
+   "id": "n-episodic-gate",
+   "content": "[2026-06-21] An episodic value gate was added, on by default, dropping low-signal episodic writes shorter than MEMINI_EPISODIC_MIN_CHARS=120.",
+   "group": "memini-dev",
+   "time": "2026-06-21T12:00:00Z",
+   "session": "2026-06-21",
+   "source": "git:37df1c6",
+   "kind": "decision"
+  },
+  {
+   "id": "n-seed-importance",
+   "content": "[2026-06-19] Tier-based seed importance was added so writes don't all land at importance 0: durable 0.6, episodic 0.3, working 0.1.",
+   "group": "memini-dev",
+   "time": "2026-06-19T12:00:00Z",
+   "session": "2026-06-19",
+   "source": "git:24eaccc",
+   "kind": "decision"
+  },
+  {
+   "id": "n-corrupt-guard",
+   "content": "[2026-06-19] Ingestion was guarded against corrupted/garbled content.",
+   "group": "memini-dev",
+   "time": "2026-06-19T12:00:00Z",
+   "session": "2026-06-19",
+   "source": "git:6596291",
+   "kind": "decision"
+  },
+  {
+   "id": "n-redact",
+   "content": "[2026-06-16] Credentials are redacted at ingestion and plaintext bearer auth is guarded.",
+   "group": "memini-dev",
+   "time": "2026-06-16T12:00:00Z",
+   "session": "2026-06-16",
+   "source": "git:e0b0cbd",
+   "kind": "decision"
+  },
+  {
+   "id": "n-hermes-token",
+   "content": "[2026-06-15] The Hermes integration never persists the bearer token to disk in save_config.",
+   "group": "memini-dev",
+   "time": "2026-06-15T12:00:00Z",
+   "session": "2026-06-15",
+   "source": "git:6c5a096",
+   "kind": "decision"
+  },
+  {
+   "id": "n-echo-guard",
+   "content": "[2026-06-15] Recall stops echoing the current session's own captured turns via exclude_metadata on session_id.",
+   "group": "memini-dev",
+   "time": "2026-06-15T12:00:00Z",
+   "session": "2026-06-15",
+   "source": "git:cd2ab22",
+   "kind": "decision"
+  },
+  {
+   "id": "n-echo-extract",
+   "content": "[2026-07-05] extract-on-write facts are stamped with the parent capture's session_id so they can be excluded from recall, closing a session-echo hole where minted durable facts were unexcludable.",
+   "group": "memini-dev",
+   "time": "2026-07-05T12:00:00Z",
+   "session": "2026-07-05",
+   "source": "git:19e6c73",
+   "kind": "decision"
+  },
+  {
+   "id": "n-echo-convention",
+   "content": "[2026-07-05] Client convention: never write a capture you cannot exclude; server ExcludeMetadata is exact single-value key=value match with no OR, so one recall can exclude only one session id.",
+   "group": "memini-dev",
+   "time": "2026-07-05T12:00:00Z",
+   "session": "2026-07-05",
+   "source": "note:memini-session-echo-localization.md",
+   "kind": "convention"
+  },
+  {
+   "id": "n-bench-writemode",
+   "content": "[2026-07-06] The bench gained a real write-path ingest mode (-ingest=write via svc.Remember), a token-efficiency metric, and a config snapshot in the results JSON.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:a466ff0",
+   "kind": "decision"
+  },
+  {
+   "id": "n-bench-tag",
+   "content": "[2026-07-04] The eval harnesses are gated behind a bench build tag so go test ./... stays fast; lefthook compile-checks them on pre-push without running them.",
+   "group": "memini-dev",
+   "time": "2026-07-04T12:00:00Z",
+   "session": "2026-07-04",
+   "source": "git:121f90f",
+   "kind": "convention"
+  },
+  {
+   "id": "n-qa-runner",
+   "content": "[2026-07-06] The QA runner is a suite-aware LLM-judged runner with write-mode ingest and per-category judge rubrics.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:dd4b6b5",
+   "kind": "decision"
+  },
+  {
+   "id": "n-answer-loop",
+   "content": "[2026-07-06] An answer path bounded agentic tool loop was added with provider-neutral tool_choice and a reasoning_level (empty/minimal is single-shot; low/medium/high run the loop).",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:0cddc89",
+   "kind": "decision"
+  },
+  {
+   "id": "n-distill-ab",
+   "content": "[2026-07-06] A distill-on-write A/B toggle was added to the bench with cost counters and derived-row attribution.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:57d7d90",
+   "kind": "decision"
+  },
+  {
+   "id": "n-answer-abstain",
+   "content": "[2026-07-06] The answer path gained abstention rules, deterministic conflict tagging, and valid_from dates.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:731eb32",
+   "kind": "decision"
+  },
+  {
+   "id": "n-source-ids",
+   "content": "[2026-07-06] The coalesce path breaks informativeness ties toward the longer content, and derived facts carry source_ids provenance metadata.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:21d0538",
+   "kind": "decision"
+  },
+  {
+   "id": "n-qa-benches-bypass",
+   "content": "[2026-07-06] LongMemEval and LoCoMo ingest via direct store.Upsert, so write-path features (contradict, corroborate, dedup) are structurally inert on them; measure those via a harness that calls Remember.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "note:memini-qa-benches-bypass-write-path.md",
+   "kind": "rationale"
+  },
+  {
+   "id": "n-version-0x",
+   "content": "[2026-06-12] cliff.toml [bump] keeps feat and fix bumping patch and breaking changes bumping minor (never auto-1.0): features_always_bump_minor=false and breaking_always_bump_major=false.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "note:memini-versioning-stay-0x.md",
+   "kind": "decision"
+  },
+  {
+   "id": "n-ci-forgejo",
+   "content": "[2026-06-09] CI was migrated from GitHub Actions to Forgejo Actions.",
+   "group": "memini-dev",
+   "time": "2026-06-09T12:00:00Z",
+   "session": "2026-06-09",
+   "source": "git:b87816a",
+   "kind": "decision"
+  },
+  {
+   "id": "n-ci-cd",
+   "content": "[2026-06-13] Forgejo runner CI steps must cd with relative paths rather than using working-directory (which resolves against /tmp), and prefer npm install --no-package-lock over npm ci.",
+   "group": "memini-dev",
+   "time": "2026-06-13T12:00:00Z",
+   "session": "2026-06-13",
+   "source": "note:forgejo-runner-working-directory-quirk.md",
+   "kind": "convention"
+  },
+  {
+   "id": "n-ci-cliff",
+   "content": "[2026-06-12] The release pipeline extracts release binaries from the Docker image and replaced GoReleaser with git-cliff plus a bump workflow.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:689dfd2",
+   "kind": "decision"
+  },
+  {
+   "id": "n-subtree",
+   "content": "[2026-06-12] Subtree recall fans out across nested namespaces (project also reads project/agent-a, project/agent-b) and MEMINI_AGENT scopes per agent.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:63c4dca",
+   "kind": "decision"
+  },
+  {
+   "id": "n-global-ns",
+   "content": "[2026-06-27] An optional global namespace is merged into recall and briefing, contributing durable tiers only.",
+   "group": "memini-dev",
+   "time": "2026-06-27T12:00:00Z",
+   "session": "2026-06-27",
+   "source": "git:8448429",
+   "kind": "decision"
+  },
+  {
+   "id": "n-namespace-move",
+   "content": "[2026-06-12] Namespace move/split, a store Reassign operation, and the memini doctor command were added for recovery.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:98adde9",
+   "kind": "decision"
+  },
+  {
+   "id": "n-briefing",
+   "content": "[2026-06-12] A layered session-start briefing endpoint and SessionStart hook were added.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:3d08999",
+   "kind": "decision"
+  },
+  {
+   "id": "n-answer-api",
+   "content": "[2026-06-11] A grounded answer API was added (/v1/answer and memory_answer).",
+   "group": "memini-dev",
+   "time": "2026-06-11T12:00:00Z",
+   "session": "2026-06-11",
+   "source": "git:a3fbd4f",
+   "kind": "decision"
+  },
+  {
+   "id": "n-capture-default",
+   "content": "[2026-06-28] The Claude plugin defaults turn-capture and inline extraction on and lowered the auto-save nudge to every 10 messages.",
+   "group": "memini-dev",
+   "time": "2026-06-28T12:00:00Z",
+   "session": "2026-06-28",
+   "source": "git:03e64c8",
+   "kind": "decision"
+  },
+  {
+   "id": "n-inline-extract",
+   "content": "[2026-06-25] Inline memory extraction via a <memory> block was added to the plugin.",
+   "group": "memini-dev",
+   "time": "2026-06-25T12:00:00Z",
+   "session": "2026-06-25",
+   "source": "git:cc6f308",
+   "kind": "decision"
+  },
+  {
+   "id": "n-defaults-policy",
+   "content": "[2026-06-28] Defaults policy: additive reversible capture features default on for good out-of-box UX, while destructive or data-lossy server-side maintenance (tombstone GC, demotion tuning, write-dedup coalesce) stays opt-in for upgrade-safety.",
+   "group": "memini-dev",
+   "time": "2026-06-28T12:00:00Z",
+   "session": "2026-06-28",
+   "source": "note:memini-poisoning-fix-defaults.md",
+   "kind": "rationale"
+  },
+  {
+   "id": "n-recall-parallel",
+   "content": "[2026-06-16] Recall search was parallelized, embed connections pooled, and an embed fallback added.",
+   "group": "memini-dev",
+   "time": "2026-06-16T12:00:00Z",
+   "session": "2026-06-16",
+   "source": "git:3dd5639",
+   "kind": "decision"
+  },
+  {
+   "id": "n-recall-rrf",
+   "content": "[2026-06-17] Recall skips the min-score gate for RRF fusion, falls back on an empty rerank verdict, and dropped the dead FusedScore field.",
+   "group": "memini-dev",
+   "time": "2026-06-17T12:00:00Z",
+   "session": "2026-06-17",
+   "source": "git:c0fc5f1",
+   "kind": "decision"
+  },
+  {
+   "id": "n-recall-fusion-ns",
+   "content": "[2026-06-17] Recall honours score fusion when merging results from multiple namespaces.",
+   "group": "memini-dev",
+   "time": "2026-06-17T12:00:00Z",
+   "session": "2026-06-17",
+   "source": "git:a535c03",
+   "kind": "decision"
+  },
+  {
+   "id": "n-recall-limit-clamp",
+   "content": "[2026-06-15] The recall limit is clamped and the rerank pool is sized to the limit.",
+   "group": "memini-dev",
+   "time": "2026-06-15T12:00:00Z",
+   "session": "2026-06-15",
+   "source": "git:0abb66e",
+   "kind": "decision"
+  },
+  {
+   "id": "n-briefing-durable",
+   "content": "[2026-06-12] Briefing ranks facts by a recency-independent durable score so unrecalled core facts surface.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:423e42f",
+   "kind": "decision"
+  },
+  {
+   "id": "ca-temporal-rerank",
+   "content": "[2026-06-11] Temporal targeting was added to the re-ranker: when a query names a relative time (e.g. \"3 weeks ago\"), it boosts candidates dated near the referenced time instead of near now, via search.RerankTemporal plus an AnchorExtractor, wired through MEMINI_TEMPORAL_BOOST (default 0.40).",
+   "group": "memini-dev",
+   "time": "2026-06-11T12:00:00Z",
+   "session": "2026-06-11",
+   "source": "git:a6b9ab1",
+   "kind": "decision"
+  },
+  {
+   "id": "ca-temporal-rerank-gain",
+   "content": "[2026-06-11] The re-ranker's temporal-targeting boost was measured to gain +1.9 percentage points R@1 on LongMemEval with no knowledge-update regression.",
+   "group": "memini-dev",
+   "time": "2026-06-11T12:00:00Z",
+   "session": "2026-06-11",
+   "source": "git:a6b9ab1",
+   "kind": "rationale"
+  },
+  {
+   "id": "ca-claudecode-importer",
+   "content": "[2026-06-11] A claude-code transcript importer was added (memini import -source claude-code ~/.claude/projects) that reconstructs per-exchange episodic memories using deterministic IDs, so re-running the import is idempotent.",
+   "group": "memini-dev",
+   "time": "2026-06-11T12:00:00Z",
+   "session": "2026-06-11",
+   "source": "git:a6b9ab1",
+   "kind": "decision"
+  },
+  {
+   "id": "ca-embed-model-guard",
+   "content": "[2026-06-16] memini was changed to record the embedding model in a per-store meta table and refuse to start when the configured MEMINI_EMBED_MODEL differs from the recorded one.",
+   "group": "memini-dev",
+   "time": "2026-06-16T12:00:00Z",
+   "session": "2026-06-16",
+   "source": "git:8aeeaa8",
+   "kind": "decision"
+  },
+  {
+   "id": "ca-embed-model-guard-why",
+   "content": "[2026-06-16] The embedding-model guard exists because vectors from different embedding models share a dimension but live in incomparable spaces, so a same-dims MEMINI_EMBED_MODEL change previously degraded recall silently with no error.",
+   "group": "memini-dev",
+   "time": "2026-06-16T12:00:00Z",
+   "session": "2026-06-16",
+   "source": "git:8aeeaa8",
+   "kind": "rationale"
+  },
+  {
+   "id": "ca-reembed-cmd",
+   "content": "[2026-06-16] A `memini reembed` command was added to re-embed every memory under the current model in place, dry-run by default (--yes to apply, --namespace to scope); MEMINI_REEMBED_ON_MODEL_CHANGE can do this automatically at startup instead of refusing, off by default.",
+   "group": "memini-dev",
+   "time": "2026-06-16T12:00:00Z",
+   "session": "2026-06-16",
+   "source": "git:8aeeaa8",
+   "kind": "decision"
+  },
+  {
+   "id": "ca-recallminscore-01",
+   "content": "[2026-06-17] MEMINI_RECALL_MIN_SCORE was changed to default to 0.1 (previously 0), an absolute relevance floor on the fused score to prevent poison inflation.",
+   "group": "memini-dev",
+   "time": "2026-06-17T12:00:00Z",
+   "session": "2026-06-17",
+   "source": "git:dc78ab5",
+   "kind": "decision"
+  },
+  {
+   "id": "ca-rerank-topn-removed",
+   "content": "[2026-06-17] MEMINI_RERANK_TOP_N config and the rerankTopN pooling logic were removed: the reranker now sees exactly k candidates, and the reranker contract drops unmentioned candidates instead of appending them as a fallback.",
+   "group": "memini-dev",
+   "time": "2026-06-17T12:00:00Z",
+   "session": "2026-06-17",
+   "source": "git:dc78ab5",
+   "kind": "decision"
+  },
+  {
+   "id": "ca-rerank-maxbatchchars",
+   "content": "[2026-06-17] MEMINI_RERANK_MAX_BATCH_CHARS was added, defaulting to 4000: it caps the total query+documents characters per /rerank request, splitting the candidate pool across multiple requests when it would exceed this (0 disables).",
+   "group": "memini-dev",
+   "time": "2026-06-17T12:00:00Z",
+   "session": "2026-06-17",
+   "source": "git:25819f7",
+   "kind": "decision"
+  },
+  {
+   "id": "ca-subtree-fusion-fix",
+   "content": "[2026-06-12] Subtree recall was changed to fuse each namespace's vector and keyword legs into its own ranked list first, then RRF-merge the per-namespace lists, instead of concatenating raw per-namespace results before a single fusion pass.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:33c72ac",
+   "kind": "rationale"
+  },
+  {
+   "id": "ca-embeddims-guard",
+   "content": "[2026-06-15] sqlite-vec's Open was changed to fail when the configured MEMINI_EMBED_DIMS disagrees with the existing vec0 table's dimensions, naming both the existing and configured dims in the error.",
+   "group": "memini-dev",
+   "time": "2026-06-15T12:00:00Z",
+   "session": "2026-06-15",
+   "source": "git:2bb451d",
+   "kind": "decision"
+  },
+  {
+   "id": "ca-embeddims-guard-why",
+   "content": "[2026-06-15] The embed-dims mismatch guard was needed because CREATE VIRTUAL TABLE IF NOT EXISTS is a no-op on an existing sqlite-vec database, so reopening a store with a different MEMINI_EMBED_DIMS silently kept the original vec0 width and only surfaced as opaque dimension-mismatch errors on every Upsert.",
+   "group": "memini-dev",
+   "time": "2026-06-15T12:00:00Z",
+   "session": "2026-06-15",
+   "source": "git:2bb451d",
+   "kind": "rationale"
+  },
+  {
+   "id": "ca-consolidation-embed-first",
+   "content": "[2026-06-15] Async memory consolidation was changed to embed the merged content before reading and writing the target record, shrinking the read-modify-write window to purely in-memory.",
+   "group": "memini-dev",
+   "time": "2026-06-15T12:00:00Z",
+   "session": "2026-06-15",
+   "source": "git:e2d822e",
+   "kind": "decision"
+  },
+  {
+   "id": "ca-consolidation-embed-first-why",
+   "content": "[2026-06-15] The consolidation merge was reordered because the previous flow (read the target, make a multi-second embedding call, then write it back) left a window where any concurrent write to the target during that call was silently overwritten.",
+   "group": "memini-dev",
+   "time": "2026-06-15T12:00:00Z",
+   "session": "2026-06-15",
+   "source": "git:e2d822e",
+   "kind": "rationale"
+  },
+  {
+   "id": "ca-consolidation-tombstone-source",
+   "content": "[2026-06-15] asyncUpdate was changed to tombstone the merged source onto the target instead of hard-deleting it, so a SupersededBy pointer aimed at the source is not orphaned; the sweeper's tombstone GC reclaims it later.",
+   "group": "memini-dev",
+   "time": "2026-06-15T12:00:00Z",
+   "session": "2026-06-15",
+   "source": "git:e2d822e",
+   "kind": "decision"
+  },
+  {
+   "id": "ca-tombstone-validto-grace",
+   "content": "[2026-06-12] Tombstone GC was changed to measure the grace period from a memory's valid_to (when it was tombstoned) instead of its content updated_at, because superseding never bumps updated_at, so an old fact tombstoned today must still get the full grace window.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:78f4b39",
+   "kind": "rationale"
+  },
+  {
+   "id": "ca-confidence-preserve-update",
+   "content": "[2026-06-12] Remember was changed so that updating an existing durable memory by ID preserves its earned confidence loaded from the existing record instead of resetting it to the fresh seed value; an explicit caller-supplied confidence still wins.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:abf2ab5",
+   "kind": "decision"
+  },
+  {
+   "id": "ca-confidence-decay-continuous",
+   "content": "[2026-06-12] Confidence decay past the one-week grace period was changed to be continuous from the end of the grace period instead of a step drop, so confidence doesn't fall a full week's worth the instant the grace period ends.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:890a735",
+   "kind": "rationale"
+  },
+  {
+   "id": "ca-dedup-bestforteffort",
+   "content": "[2026-06-12] The store-wide (multi-namespace) dedup pass was changed to be best-effort per namespace, logging and skipping a namespace whose content trips the embedder instead of aborting the whole pass; a single-namespace request still propagates its error.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:1926a89",
+   "kind": "convention"
+  },
+  {
+   "id": "ca-dedup-daily-default",
+   "content": "[2026-06-12] MEMINI_DEDUP_INTERVAL was changed to default to 24h (previously 0/off), so the periodic store-wide dedup job runs daily and a store stays clean with no manual intervention; set it to 0 to disable.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:fd422c2",
+   "kind": "decision"
+  },
+  {
+   "id": "ca-tombstonettl-offdefault",
+   "content": "[2026-06-12] MEMINI_TOMBSTONE_TTL (hard-delete of superseded memories) defaults to 0 (off) because tombstones are already excluded from recall regardless, so GC is purely a space optimization and removing it is the only irreversible maintenance action.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:fd422c2",
+   "kind": "convention"
+  },
+  {
+   "id": "ca-doctor-fix",
+   "content": "[2026-06-12] `memini doctor --fix` was added: it previews remediation by default and applies only with --yes, splitting unambiguously-attributable catch-all namespace pools (>=90% of records carry a grouping key), then purging expired memories, demoting stale durable debris, and deduplicating.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:e260a3f",
+   "kind": "decision"
+  },
+  {
+   "id": "ca-mcp-headershelper",
+   "content": "[2026-06-12] The Claude Code plugin's MCP headersHelper was changed to locate its script via a cache file instead of ${CLAUDE_PLUGIN_ROOT}, because headersHelper runs in a bare shell and does not receive that variable; the SessionStart hook writes the plugin root to $XDG_CACHE_HOME/memini/plugin-root for it to read.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:e35b9c7",
+   "kind": "rationale"
+  },
+  {
+   "id": "ca-hermes-provider-singleselect",
+   "content": "[2026-06-12] The Hermes integration is activated via the single-select memory.provider: memini key in config.yaml, not plugins.enabled, because Hermes memory providers are single-select.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "git:6fb211b",
+   "kind": "convention"
+  },
+  {
+   "id": "ca-helm-bjws-migration",
+   "content": "[2026-06-14] The memini Helm chart was migrated to the bjw-s common Helm library's native values API (controllers/service/route/persistence/serviceAccount/serviceMonitor).",
+   "group": "memini-dev",
+   "time": "2026-06-14T12:00:00Z",
+   "session": "2026-06-14",
+   "source": "git:6bea07f",
+   "kind": "decision"
+  },
+  {
+   "id": "ca-helm-route-split",
+   "content": "[2026-06-14] The Helm chart's Gateway API routes were split in two: route.internal serves the full app including the UI shell (which embeds the API key) and must stay on an internal-only gateway, while route.main exposes only the token-gated /v1, /mcp, and /.well-known/ paths publicly.",
+   "group": "memini-dev",
+   "time": "2026-06-14T12:00:00Z",
+   "session": "2026-06-14",
+   "source": "git:6bea07f",
+   "kind": "convention"
+  },
+  {
+   "id": "ca-loopback-warn",
+   "content": "[2026-06-11] memini was changed to warn at startup when MEMINI_API_KEY is unset and the HTTP listen address is not loopback, since the full API (including deletes and cross-namespace reads) is then open to anyone who can reach the port.",
+   "group": "memini-dev",
+   "time": "2026-06-11T12:00:00Z",
+   "session": "2026-06-11",
+   "source": "git:cae88b6",
+   "kind": "convention"
+  },
+  {
+   "id": "ca-sqlitevec-txlock",
+   "content": "[2026-06-11] sqlite-vec's DSN was changed to add _txlock=immediate so a write transaction takes the write lock up front, because a deferred transaction that upgraded to a write under concurrency would get SQLITE_BUSY immediately (busy_timeout does not apply to lock upgrades in WAL mode) instead of waiting.",
+   "group": "memini-dev",
+   "time": "2026-06-11T12:00:00Z",
+   "session": "2026-06-11",
+   "source": "git:9f7d37e",
+   "kind": "rationale"
+  },
+  {
+   "id": "cb-dedup-collapse",
+   "content": "[2026-06-29] Write-time dedup was collapsed from three interdependent thresholds (MEMINI_WRITE_DEDUP_MIN_SCORE / MERGE_HINT_MIN_SCORE / AUTO_SUPERSEDE_MIN_SCORE) to one MEMINI_WRITE_DEDUP_SCORE plus an action enum MEMINI_WRITE_DEDUP_ACTION (off|hint|coalesce|supersede).",
+   "group": "memini-dev",
+   "time": "2026-06-29T12:00:00Z",
+   "session": "2026-06-29",
+   "source": "git:218858d",
+   "kind": "decision"
+  },
+  {
+   "id": "cb-dedup-collapse-why",
+   "content": "[2026-06-29] The write-time dedup band-ordering validation was removed because it let a config combination fail validation and crash-loop: the v0.4.23 regression where MEMINI_WRITE_DEDUP_MIN_SCORE was set at or above the new merge-hint default failed at startup.",
+   "group": "memini-dev",
+   "time": "2026-06-29T12:00:00Z",
+   "session": "2026-06-29",
+   "source": "git:218858d",
+   "kind": "rationale"
+  },
+  {
+   "id": "cb-env-shrink",
+   "content": "[2026-06-29] The v0.5.0 config collapse reduced memini's operator environment-variable surface from 67 to about 45 vars, by turning pure-internal mechanics into fixed constants and baking recall-tuning knobs into cmd/memini.",
+   "group": "memini-dev",
+   "time": "2026-06-29T12:00:00Z",
+   "session": "2026-06-29",
+   "source": "git:218858d",
+   "kind": "decision"
+  },
+  {
+   "id": "cb-env-deprecation",
+   "content": "[2026-06-29] Environment variables removed or renamed in the v0.5.0 config collapse are warn-and-ignored at startup with migration guidance via config.DeprecationWarnings, instead of crashing or silently changing behavior.",
+   "group": "memini-dev",
+   "time": "2026-06-29T12:00:00Z",
+   "session": "2026-06-29",
+   "source": "git:218858d",
+   "kind": "convention"
+  },
+  {
+   "id": "cb-rerank-failfast",
+   "content": "[2026-07-06] MEMINI_RERANK=llm without a configured LLM now errors at startup instead of warning and silently disabling the reranker, a breaking change.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:e7a6823",
+   "kind": "decision"
+  },
+  {
+   "id": "cb-rerank-failfast-why",
+   "content": "[2026-07-06] The MEMINI_RERANK=llm startup check was made fail-fast because an explicitly requested capability that cannot exist is a misconfiguration, not a degraded mode.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:e7a6823",
+   "kind": "rationale"
+  },
+  {
+   "id": "cb-llm-json-loose",
+   "content": "[2026-07-06] memini's LLM response decoders (decodeDecision, decodeFacts) were made to tolerate mid-text JSON: unmarshalLoose extracts the first balanced top-level JSON object embedded in the reply when a bare/fenced parse fails, for models that wrap JSON in prose.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:e7a6823",
+   "kind": "convention"
+  },
+  {
+   "id": "cb-gate-rationale",
+   "content": "[2026-07-06] The agentic answer loop's early-exit gate was added because the coding-agent-memory pilot bench showed the ungated loop regressed rationale-category (direct-answer) questions by over-searching, dropping accuracy from 88% to 75%.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:9ca9ab7",
+   "kind": "rationale"
+  },
+  {
+   "id": "cb-gate-mechanism",
+   "content": "[2026-07-06] The agentic answer loop's early-exit gate runs one single-shot read over the prefetched memories that either answers the question directly or declares them insufficient; the tool loop only opens when this first pass can't settle the question.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:9ca9ab7",
+   "kind": "decision"
+  },
+  {
+   "id": "cb-reasoning-expand",
+   "content": "[2026-07-06] A new \"expand\" ReasoningLevel was added: one query-rewrite completion producing 2-3 lexically diverse search queries, a unioned multi-query recall, and one synthesis completion, at a fixed two-completion cost with no tool loop.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:9ca9ab7",
+   "kind": "decision"
+  },
+  {
+   "id": "cb-gate-strengthen",
+   "content": "[2026-07-06] The answer loop's early-exit gate criteria were strengthened to require replying INSUFFICIENT whenever the asked-for fact isn't stated by a provided memory, the question needs several memories combined, the memories conflict, or the answer could have been superseded since its date.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:19866f9",
+   "kind": "decision"
+  },
+  {
+   "id": "cb-gate-dontknow",
+   "content": "[2026-07-06] gateInsufficient was added so a gate reply of \"I don't know\" or \"do not know\" is treated the same as INSUFFICIENT, forcing entry into the tool loop instead of letting the answer give up early.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:19866f9",
+   "kind": "decision"
+  },
+  {
+   "id": "cb-gate-conflict-variant",
+   "content": "[2026-07-06] A structural variant that skipped the early-exit gate on conflict-tagged context was tried and measured worse, because the tool loop re-answered conflict questions the gate's first pass had already gotten right.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:19866f9",
+   "kind": "rationale"
+  },
+  {
+   "id": "cb-level-types",
+   "content": "[2026-07-06] Memory derivation provenance was added as a Level field: LevelExplicit for user-stated or heuristically-extracted facts, and LevelDeduced for LLM-inferred facts distilled from episodic material, traceable via metadata.source_ids.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:d395dc3",
+   "kind": "convention"
+  },
+  {
+   "id": "cb-level-legacy",
+   "content": "[2026-07-06] An empty Level value means legacy/unknown (every pre-Level row) and passes derivation-level recall filters unconstrained rather than being excluded.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:d395dc3",
+   "kind": "convention"
+  },
+  {
+   "id": "cb-pilot-motivation",
+   "content": "[2026-07-06] The coding-agent-memory pilot benchmark was built because three consecutive LLM experiments (Phase-4 multi-hop, the WP6 agentic answer loop, and the distill-on-write A/B) each bottomed out at LongMemEval's near-100% recall ceiling or inside its noise floor, so no LLM feature could prove its worth against a bench that couldn't discriminate interventions.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:47a650d",
+   "kind": "rationale"
+  },
+  {
+   "id": "cb-pilot-headroom-gate",
+   "content": "[2026-07-06] The coding-agent-memory pilot bench's pre-registered headroom gate (Test B) requires hybrid-upsert recall@5 to land in [50%, 88%]: at or above 90% synthetic distractors are added and the bench re-run once, below 40% the gold is judged too narrow and the corpus is re-mined.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:47a650d",
+   "kind": "decision"
+  },
+  {
+   "id": "cb-pilot-headroom-observed",
+   "content": "[2026-07-06] On the 2026-07-06 coding-agent-memory pilot run with qwen3-embedding-0.6b, observed hybrid recall@5 was 86.7% for upsert ingest, landing in the pre-registered headroom band.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:47a650d",
+   "kind": "decision"
+  },
+  {
+   "id": "cb-pilot-distill-inert",
+   "content": "[2026-07-06] The distill-on-write arm was inert on the coding-agent-memory pilot bench because the distiller returned 0 facts on all 67 calls: the corpus items were mined from commit messages and memory notes and were already atomic facts, leaving nothing for a distiller to compress out of verbose turns.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:47a650d",
+   "kind": "rationale"
+  },
+  {
+   "id": "cb-pilot-rationale-regression",
+   "content": "[2026-07-06] On the coding-agent-memory pilot bench, the rationale-category accuracy dropped from 88% (7/8) single-shot to 75% under the agentic answer loop.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:47a650d",
+   "kind": "decision"
+  },
+  {
+   "id": "cb-pilot-recommendation",
+   "content": "[2026-07-06] The coding-agent-memory pilot bench's recommendation was to scale to about 150-250 hand-verified questions, weighted toward synthesis and temporal-update, and to add a turn-shaped subcorpus so the distill-on-write axis can be honestly A/B tested.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:47a650d",
+   "kind": "decision"
+  },
+  {
+   "id": "cb-pilot-next-experiment",
+   "content": "[2026-07-06] The coding-agent-memory pilot bench recommended the agentic answer loop (depth and tool mix) as the first LLM experiment to run against it, because it showed the clearest, most mechanistically-coherent per-category lift on synthesis and temporal-update, the categories where LongMemEval is saturated and blind.",
+   "group": "memini-dev",
+   "time": "2026-07-06T12:00:00Z",
+   "session": "2026-07-06",
+   "source": "git:47a650d",
+   "kind": "decision"
+  },
+  {
+   "id": "cb-extract-on-write-default",
+   "content": "[2026-06-27] MEMINI_EXTRACT_ON_WRITE, the no-LLM heuristic counterpart to distill-on-write, defaults to true but only fires when no LLM is configured, so embedder-only and embedder+reranker deployments still build durable knowledge at write time.",
+   "group": "memini-dev",
+   "time": "2026-06-27T12:00:00Z",
+   "session": "2026-06-27",
+   "source": "git:b3865a6",
+   "kind": "decision"
+  },
+  {
+   "id": "cb-distill-drop-nofact-off",
+   "content": "[2026-06-27] MEMINI_DISTILL_DROP_NO_FACT defaults to false so a raw episodic capture is never deleted just because write-time distillation extracted no durable fact from it.",
+   "group": "memini-dev",
+   "time": "2026-06-27T12:00:00Z",
+   "session": "2026-06-27",
+   "source": "git:b3865a6",
+   "kind": "convention"
+  },
+  {
+   "id": "cb-tier-omit-classify",
+   "content": "[2026-07-03] The hermes and openwebui remember paths stopped forcing tier=\"semantic\" by default; tier is now omitted from the write so the server classifies the content itself (a decision or preference lands durable, chatter stays episodic).",
+   "group": "memini-dev",
+   "time": "2026-07-03T12:00:00Z",
+   "session": "2026-07-03",
+   "source": "git:853c78b",
+   "kind": "decision"
+  },
+  {
+   "id": "cb-config-canonical",
+   "content": "[2026-06-21] Every memini integration was harmonized to read the same canonical env vars, MEMINI_BASE_URL for the server and MEMINI_API_KEY for the token, with the legacy MEMINI_URL/MEMINI_TOKEN names retained as accepted aliases.",
+   "group": "memini-dev",
+   "time": "2026-06-21T12:00:00Z",
+   "session": "2026-06-21",
+   "source": "git:7681f4f",
+   "kind": "convention"
+  },
+  {
+   "id": "ct-doctor-demote-hardcoded",
+   "content": "[2026-06-12] The memini doctor --fix demotion pass originally used a hardcoded 60-day window, calling maintenance.DemoteStale(ctx, st, now.Add(-60*24*time.Hour), now) regardless of configuration.",
+   "group": "memini-dev",
+   "time": "2026-06-12T08:27:07Z",
+   "session": "2026-06-12",
+   "source": "git:e260a3f",
+   "kind": "decision",
+   "superseded_by": "ct-doctor-demote-configured"
+  },
+  {
+   "id": "ct-doctor-demote-configured",
+   "content": "[2026-06-12] memini doctor --fix now honors the configured MEMINI_DEMOTE_AFTER for its demotion pass, only falling back to the old hardcoded 60-day window when DemoteAfter is 0 (periodic demotion disabled).",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:35:09Z",
+   "session": "2026-06-12",
+   "source": "git:0598905",
+   "kind": "decision"
+  },
+  {
+   "id": "ct-hermes-action-update",
+   "content": "[2026-06-10] The Hermes integration's on_memory_write handler originally mirrored writes into memini only for action in (\"add\", \"update\").",
+   "group": "memini-dev",
+   "time": "2026-06-10T15:01:52Z",
+   "session": "2026-06-10",
+   "source": "git:c2f30b2",
+   "kind": "decision",
+   "superseded_by": "ct-hermes-action-replace"
+  },
+  {
+   "id": "ct-hermes-action-replace",
+   "content": "[2026-06-22] The Hermes on_memory_write handler was fixed to mirror action \"replace\" instead of the unmatched \"update\", since Hermes actually emits action in {add, replace, remove}.",
+   "group": "memini-dev",
+   "time": "2026-06-22T13:52:29Z",
+   "session": "2026-06-22",
+   "source": "git:e1b5d3c",
+   "kind": "decision"
+  },
+  {
+   "id": "ct-openclaw-skipsystem-off",
+   "content": "[2026-06-16] The OpenClaw integration's skip_system_turns option (skipping recall/capture for cron/heartbeat/scheduled turns) was introduced off by default for backward compatibility.",
+   "group": "memini-dev",
+   "time": "2026-06-16T06:31:42Z",
+   "session": "2026-06-16",
+   "source": "git:856797b",
+   "kind": "decision",
+   "superseded_by": "ct-openclaw-skipsystem-on"
+  },
+  {
+   "id": "ct-openclaw-skipsystem-on",
+   "content": "[2026-06-22] OpenClaw's skip_system_turns was flipped to on by default, so system-initiated runs are skipped for both recall and capture unless explicitly disabled.",
+   "group": "memini-dev",
+   "time": "2026-06-22T13:22:45Z",
+   "session": "2026-06-22",
+   "source": "git:ff8b4e6",
+   "kind": "decision"
+  },
+  {
+   "id": "ct-openclaw-systemkinds-strings",
+   "content": "[2026-06-16] OpenClaw's default system_kinds list (used to detect system-initiated turns) started as the four string markers [\"cron\", \"heartbeat\", \"scheduled\", \"schedule\"].",
+   "group": "memini-dev",
+   "time": "2026-06-16T06:31:42Z",
+   "session": "2026-06-16",
+   "source": "git:856797b",
+   "kind": "decision",
+   "superseded_by": "ct-openclaw-systemkinds-trigger"
+  },
+  {
+   "id": "ct-openclaw-systemkinds-trigger",
+   "content": "[2026-06-22] OpenClaw's default system_kinds was changed to [\"heartbeat\", \"cron\"], matched against OpenClaw's own ctx.trigger field instead of the previous ad hoc kind/session-key/bracket-marker detection.",
+   "group": "memini-dev",
+   "time": "2026-06-22T13:22:45Z",
+   "session": "2026-06-22",
+   "source": "git:ff8b4e6",
+   "kind": "decision"
+  },
+  {
+   "id": "ct-server-writetimeout",
+   "content": "[2026-06-09] memini's initial HTTP server config set an absolute WriteTimeout of 60 seconds alongside ReadHeaderTimeout and ReadTimeout.",
+   "group": "memini-dev",
+   "time": "2026-06-09T16:15:29Z",
+   "session": "2026-06-09",
+   "source": "git:4135c97",
+   "kind": "decision",
+   "superseded_by": "ct-server-idletimeout"
+  },
+  {
+   "id": "ct-server-idletimeout",
+   "content": "[2026-06-15] The 60s absolute WriteTimeout was dropped from memini's HTTP server (it was killing long-lived MCP SSE streams at /mcp after 60s) and replaced with an IdleTimeout of 120 seconds to reap idle keep-alive connections instead.",
+   "group": "memini-dev",
+   "time": "2026-06-15T07:14:52Z",
+   "session": "2026-06-15",
+   "source": "git:6613ca4",
+   "kind": "decision"
+  },
+  {
+   "id": "ct-rerank-topn-20",
+   "content": "[2026-06-11] Cross-encoder reranking was introduced with MEMINI_RERANK_TOP_N defaulting to 20, controlling how many composite-ranked candidates the reranker sees.",
+   "group": "memini-dev",
+   "time": "2026-06-11T15:19:44Z",
+   "session": "2026-06-11",
+   "source": "git:5731215",
+   "kind": "decision",
+   "superseded_by": "ct-rerank-topn-removed"
+  },
+  {
+   "id": "ct-rerank-topn-removed",
+   "content": "[2026-06-17] MEMINI_RERANK_TOP_N and the RerankTopN pooling logic were removed entirely; the reranker now sees exactly the k composite-ranked candidates passed to it instead of a separately configured top-N pool.",
+   "group": "memini-dev",
+   "time": "2026-06-17T07:09:04Z",
+   "session": "2026-06-17",
+   "source": "git:dc78ab5",
+   "kind": "decision"
+  },
+  {
+   "id": "ct-opencode-timeout-5000",
+   "content": "[2026-06-13] The opencode integration's native memory plugin was introduced with DEFAULT_TIMEOUT_MS = 5000 (a 5s per-request timeout).",
+   "group": "memini-dev",
+   "time": "2026-06-13T15:07:55Z",
+   "session": "2026-06-13",
+   "source": "git:b79ce26",
+   "kind": "decision",
+   "superseded_by": "ct-opencode-timeout-30000"
+  },
+  {
+   "id": "ct-opencode-timeout-30000",
+   "content": "[2026-06-16] The opencode plugin's default per-request timeout (DEFAULT_TIMEOUT_MS / MEMINI_TIMEOUT_MS) was bumped from 5000ms to 30000ms.",
+   "group": "memini-dev",
+   "time": "2026-06-16T14:56:54Z",
+   "session": "2026-06-16",
+   "source": "git:27e28aa",
+   "kind": "decision"
+  },
+  {
+   "id": "ct-openclaw-nsagent-false",
+   "content": "[2026-06-11] OpenClaw's per-agent namespace support was introduced with namespace_per_agent defaulting to false (one shared namespace across agents), configured via namespace_template \"{agent}\".",
+   "group": "memini-dev",
+   "time": "2026-06-11T15:03:16Z",
+   "session": "2026-06-11",
+   "source": "git:4e07b68",
+   "kind": "decision",
+   "superseded_by": "ct-openclaw-nsagent-true"
+  },
+  {
+   "id": "ct-openclaw-nsagent-true",
+   "content": "[2026-06-12] OpenClaw was changed to default to per-agent namespace isolation (namespace_per_agent: true, namespace_template \"{namespace}-{agent}\"), so subagents sharing one gateway can't poison each other's memory; the old shared-namespace behavior remains available by setting namespace_per_agent: false.",
+   "group": "memini-dev",
+   "time": "2026-06-12T08:20:29Z",
+   "session": "2026-06-12",
+   "source": "git:19fea61",
+   "kind": "decision"
+  },
+  {
+   "id": "ct-hermes-tier-semantic",
+   "content": "[2026-06-10] The Hermes integration's on_memory_write and memory_remember tool originally forced a client-side tier default of \"semantic\" whenever the caller omitted or gave an invalid tier.",
+   "group": "memini-dev",
+   "time": "2026-06-10T15:01:52Z",
+   "session": "2026-06-10",
+   "source": "git:c2f30b2",
+   "kind": "decision",
+   "superseded_by": "ct-hermes-tier-omit"
+  },
+  {
+   "id": "ct-hermes-tier-omit",
+   "content": "[2026-07-03] The forced \"semantic\" tier default was dropped from Hermes's on_memory_write and memory_remember paths: tier is now sent only when the caller supplies a valid one, otherwise omitted so the server classifies the content.",
+   "group": "memini-dev",
+   "time": "2026-07-03T11:45:32Z",
+   "session": "2026-07-03",
+   "source": "git:853c78b",
+   "kind": "decision"
+  },
+  {
+   "id": "ct-hermes-turn-scaffold",
+   "content": "[2026-06-10] Hermes's captured turn content was originally formatted with \"User: {user}\\nAssistant: {assistant}\" label scaffolding before being stored as an episodic memory.",
+   "group": "memini-dev",
+   "time": "2026-06-10T15:01:52Z",
+   "session": "2026-06-10",
+   "source": "git:c2f30b2",
+   "kind": "decision",
+   "superseded_by": "ct-hermes-turn-plain"
+  },
+  {
+   "id": "ct-hermes-turn-plain",
+   "content": "[2026-06-19] The \"User:\"/\"Assistant:\" label scaffolding was dropped from captured turn content across the hermes, openclaw, opencode, and openwebui integrations, storing plain \"{user}\\n\\n{assistant}\" text and marking format:turn in metadata instead.",
+   "group": "memini-dev",
+   "time": "2026-06-19T21:13:25Z",
+   "session": "2026-06-19",
+   "source": "git:f61d066",
+   "kind": "decision"
+  },
+  {
+   "id": "cd-cg-motivation",
+   "content": "[2026-07-06] The coding-agent-memory pilot benchmark was built because no LLM feature could prove its worth against LongMemEval, a benchmark that can't distinguish interventions (retrieval-saturated near 100% recall@5, and off-domain for coding-agent memory).",
+   "group": "memini-dev",
+   "time": "2026-07-06T17:58:32Z",
+   "session": "2026-07-06",
+   "source": "doc:bench/CODINGAGENT.md",
+   "kind": "rationale"
+  },
+  {
+   "id": "cd-cg-corpus",
+   "content": "[2026-07-06] The coding-agent-memory pilot corpus contains 103 items in a single namespace (memini-dev), so every question retrieves against the whole corpus rather than a per-question private haystack.",
+   "group": "memini-dev",
+   "time": "2026-07-06T17:58:32Z",
+   "session": "2026-07-06",
+   "source": "doc:bench/CODINGAGENT.md",
+   "kind": "current-state"
+  },
+  {
+   "id": "cd-cg-headroomgate",
+   "content": "[2026-07-06] The coding-agent-memory pilot's pre-registered headroom gate requires hybrid-upsert recall@5 to land in [50%, 88%]; landing at or above 90% requires adding synthetic distractors and re-running once, and below 40% means the gold is too narrow and the corpus must be re-mined.",
+   "group": "memini-dev",
+   "time": "2026-07-06T17:58:32Z",
+   "session": "2026-07-06",
+   "source": "doc:bench/CODINGAGENT.md",
+   "kind": "decision"
+  },
+  {
+   "id": "cd-cg-headroomresult",
+   "content": "[2026-07-06] On the coding-agent-memory pilot, hybrid-upsert ingest measured recall@5 of 86.7% (qwen3-embedding-0.6b, 1024-d), landing inside the pre-registered [50%, 88%] headroom band.",
+   "group": "memini-dev",
+   "time": "2026-07-06T17:58:32Z",
+   "session": "2026-07-06",
+   "source": "doc:bench/CODINGAGENT.md",
+   "kind": "current-state"
+  },
+  {
+   "id": "cd-cg-distillinert",
+   "content": "[2026-07-06] The distill-on-write arm was inert on the coding-agent-memory pilot because the LLM distiller returned 0 facts on all 67 calls: the corpus items (mined from commit messages and memory notes) are already atomic facts, leaving nothing to compress.",
+   "group": "memini-dev",
+   "time": "2026-07-06T17:58:32Z",
+   "session": "2026-07-06",
+   "source": "doc:bench/CODINGAGENT.md",
+   "kind": "rationale"
+  },
+  {
+   "id": "cd-br-rrfk",
+   "content": "[2026-07-04] memini's hybrid recall fusion falls back to Reciprocal Rank Fusion with a steep decay (rrfK=5) rather than the classic rrfK=60, because a flat rrfK=60 decay over deep candidate pools lets both-leg mediocrity outscore single-leg excellence.",
+   "group": "memini-dev",
+   "time": "2026-07-04T19:40:30Z",
+   "session": "2026-07-04",
+   "source": "doc:bench/README.md",
+   "kind": "rationale"
+  },
+  {
+   "id": "cd-br-locomo-rrf",
+   "content": "[2026-07-04] On LoCoMo turn-level retrieval, memini's default score fusion is edged out by RRF (60.1%/71.0% vs the default) — the one benchmarked cell where that happens, because MiniLM's vector leg is near-noise there.",
+   "group": "memini-dev",
+   "time": "2026-07-04T19:40:30Z",
+   "session": "2026-07-04",
+   "source": "doc:bench/README.md",
+   "kind": "current-state"
+  },
+  {
+   "id": "cd-env-consolidate",
+   "content": "[2026-07-06] MEMINI_CONSOLIDATE_MIN_SCORE defaults to 0.6, a similarity gate that skips the LLM consolidation call when the nearest candidate scores below it (0 disables the gate).",
+   "group": "memini-dev",
+   "time": "2026-07-06T11:26:04Z",
+   "session": "2026-07-06",
+   "source": "doc:README.md",
+   "kind": "current-state"
+  },
+  {
+   "id": "cd-env-dedupsim",
+   "content": "[2026-07-06] MEMINI_DEDUP_SIMILARITY defaults to 0.85, the cosine-like threshold for cluster membership in memini's periodic store-wide dedup pass; higher is stricter.",
+   "group": "memini-dev",
+   "time": "2026-07-06T11:26:04Z",
+   "session": "2026-07-06",
+   "source": "doc:README.md",
+   "kind": "current-state"
+  },
+  {
+   "id": "cd-env-writededupaction",
+   "content": "[2026-07-06] MEMINI_WRITE_DEDUP_ACTION defaults to hint (non-destructive: stores the write and returns a merge hint, durable tiers only); the other options are coalesce (reinforce the existing memory and drop the write, all tiers), supersede (destructive: store the write and tombstone the old memory), or off.",
+   "group": "memini-dev",
+   "time": "2026-07-06T11:26:04Z",
+   "session": "2026-07-06",
+   "source": "doc:README.md",
+   "kind": "decision"
+  },
+  {
+   "id": "cd-cliff-skip",
+   "content": "[2026-06-13] memini's git-cliff commit_parsers skip chore(release), chore(deps*), chore(pr), and chore(pull) commits from the changelog entirely.",
+   "group": "memini-dev",
+   "time": "2026-06-13T09:19:53Z",
+   "session": "2026-06-13",
+   "source": "doc:cliff.toml",
+   "kind": "convention"
+  },
+  {
+   "id": "cd-cliff-sort",
+   "content": "[2026-06-13] memini's git-cliff config orders commits within each release oldest-first (sort_commits = \"oldest\"), overriding the tool's newest-first default.",
+   "group": "memini-dev",
+   "time": "2026-06-13T09:19:53Z",
+   "session": "2026-06-13",
+   "source": "doc:cliff.toml",
+   "kind": "convention"
+  },
+  {
+   "id": "cd-tiers-shortcap",
+   "content": "[2026-07-02] memini's short-term tiers (working and episodic) are capped per namespace at MEMINI_SHORT_TERM_CAP, default 1000; over the cap, the sweeper evicts the lowest-retention rows.",
+   "group": "memini-dev",
+   "time": "2026-07-02T13:01:32Z",
+   "session": "2026-07-02",
+   "source": "doc:docs/tiers.md",
+   "kind": "current-state"
+  },
+  {
+   "id": "cd-tiers-bulkimport",
+   "content": "[2026-07-02] memini's bulk imports map each source's native memory kind onto a tier (e.g. agentmemory's workflow becomes procedural, mem0 facts become semantic); sources with no recognized kind default to episodic with a fresh 90-day TTL.",
+   "group": "memini-dev",
+   "time": "2026-07-02T13:01:32Z",
+   "session": "2026-07-02",
+   "source": "doc:docs/tiers.md",
+   "kind": "current-state"
+  },
+  {
+   "id": "cd-hermes-repo",
+   "content": "[2026-06-12] memini's Hermes memory-provider plugin is distributed as the standalone GitHub repo eleboucher/memini-hermes, mirrored from integrations/hermes/plugin/memini/ by the hermes-mirror job in .forgejo/workflows/release.yml.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "note:hermes-plugin-distribution.md",
+   "kind": "decision"
+  },
+  {
+   "id": "cd-hermes-why",
+   "content": "[2026-06-12] memini's Hermes plugin can't ship via pip because Hermes's general PluginContext has no register_memory_provider (AttributeError on register()); a subdir install also isn't viable because it discards the clone's .git, so `hermes plugins update` (a git pull) can't work on it.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "note:hermes-plugin-distribution.md",
+   "kind": "rationale"
+  },
+  {
+   "id": "cd-hermes-activate",
+   "content": "[2026-06-12] Hermes memory-provider plugins such as memini's are activated via memory.provider: <name> in config.yaml, not plugins.enabled — Hermes auto-detects providers whose __init__.py mentions MemoryProvider/register_memory_provider and skips plugins.enabled for them.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "note:hermes-plugin-distribution.md",
+   "kind": "convention"
+  },
+  {
+   "id": "cd-hermespath",
+   "content": "[2026-06-19] A user-installed Hermes memory provider (like memini's) must live at $HERMES_HOME/plugins/<name>/, not plugins/memory/<name>/ — the latter path in Hermes's developer-guide diagram is for bundled providers only.",
+   "group": "memini-dev",
+   "time": "2026-06-19T12:00:00Z",
+   "session": "2026-06-19",
+   "source": "note:integration-docs-vs-actual-api.md",
+   "kind": "convention"
+  },
+  {
+   "id": "cd-mcpfix",
+   "content": "[2026-06-12] The fix for memini's MCP headersHelper not receiving CLAUDE_PLUGIN_ROOT adds a SessionStart hook (writePluginRoot in _shared.mjs) that writes $CLAUDE_PLUGIN_ROOT to $XDG_CACHE_HOME/memini/plugin-root; headersHelper reads that file to find its script, with a bearer-token-only fallback for the cold first connect.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "note:mcp-headershelper-no-plugin-root.md",
+   "kind": "decision"
+  },
+  {
+   "id": "cd-mcpdiagnose",
+   "content": "[2026-06-12] A failing memini MCP headersHelper connection is diagnosed via the JSONL logs at ~/.cache/claude-cli-nodejs/<proj>/mcp-logs-<server>/*.jsonl.",
+   "group": "memini-dev",
+   "time": "2026-06-12T12:00:00Z",
+   "session": "2026-06-12",
+   "source": "note:mcp-headershelper-no-plugin-root.md",
+   "kind": "convention"
+  },
+  {
+   "id": "cd-chart-version",
+   "content": "[2026-06-14] As of chart v0.3.0, memini's Helm chart (charts/memini/) depends on the bjw-s common library v5.0.1.",
+   "group": "memini-dev",
+   "time": "2026-06-14T12:00:00Z",
+   "session": "2026-06-14",
+   "source": "note:memini-chart-bjw-s-common.md",
+   "kind": "current-state"
+  },
+  {
+   "id": "cd-chart-secret",
+   "content": "[2026-06-14] memini's Helm chart creates no secret for the API key; MEMINI_API_KEY must be wired in via env.valueFrom.secretKeyRef.",
+   "group": "memini-dev",
+   "time": "2026-06-14T12:00:00Z",
+   "session": "2026-06-14",
+   "source": "note:memini-chart-bjw-s-common.md",
+   "kind": "convention"
+  },
+  {
+   "id": "cd-gateway-route",
+   "content": "[2026-06-14] memini's public route (route.main, gateway envoy-external) matches only PathPrefix /v1, /mcp, and /.well-known/, so the token-bearing UI shell is never reachable publicly.",
+   "group": "memini-dev",
+   "time": "2026-06-14T12:00:00Z",
+   "session": "2026-06-14",
+   "source": "note:memini-ui-api-gateway-split.md",
+   "kind": "decision"
+  },
+  {
+   "id": "cd-gateway-why",
+   "content": "[2026-06-14] memini's public and internal routes use distinct hostnames rather than one split-horizon hostname because external-dns-mikrotik watches both gateways with no filter, so a shared hostname would create a conflicting DNS record-set and a flaky internal UI.",
+   "group": "memini-dev",
+   "time": "2026-06-14T12:00:00Z",
+   "session": "2026-06-14",
+   "source": "note:memini-ui-api-gateway-split.md",
+   "kind": "rationale"
+  },
+  {
+   "id": "ce-promote-minaccess",
+   "content": "[2026-07-02] Promotion, the backstop that distills a frequently-recalled episodic memory into a durable semantic/procedural fact, becomes eligible once the memory has been recalled MEMINI_PROMOTE_MIN_ACCESS times, defaulting to 3.",
+   "group": "memini-dev",
+   "time": "2026-07-02T12:00:00Z",
+   "session": "2026-07-02",
+   "source": "doc:docs/tiers.md",
+   "kind": "convention"
+  },
+  {
+   "id": "ce-promote-interval",
+   "content": "[2026-07-02] The promotion pass that distills eligible frequently-recalled episodic memories into durable facts runs on an interval set by MEMINI_PROMOTE_INTERVAL, defaulting to 24h.",
+   "group": "memini-dev",
+   "time": "2026-07-02T12:00:00Z",
+   "session": "2026-07-02",
+   "source": "doc:docs/tiers.md",
+   "kind": "convention"
+  },
+  {
+   "id": "ce-corrob-cooldown",
+   "content": "[2026-07-02] Corroboration's confidence growth is rate-limited to once per 24h per fact, so a session restating the same fact five times counts as one observation.",
+   "group": "memini-dev",
+   "time": "2026-07-02T12:00:00Z",
+   "session": "2026-07-02",
+   "source": "doc:docs/tiers.md",
+   "kind": "convention"
+  },
+  {
+   "id": "ce-corrob-noresolve",
+   "content": "[2026-07-02] Corroboration never resolves contradictions because similarity cannot distinguish \"same fact, updated\" from \"related fact\" (benchmarked), so conflicting durable facts are left to the LLM consolidator or the merge-hint plus memory_update flow.",
+   "group": "memini-dev",
+   "time": "2026-07-02T12:00:00Z",
+   "session": "2026-07-02",
+   "source": "doc:docs/tiers.md",
+   "kind": "rationale"
+  },
+  {
+   "id": "ce-classify-workingexplicit",
+   "content": "[2026-07-02] Write-time tier classification never automatically assigns the working tier; transient scratch content must set tier=\"working\" explicitly.",
+   "group": "memini-dev",
+   "time": "2026-07-02T12:00:00Z",
+   "session": "2026-07-02",
+   "source": "doc:docs/tiers.md",
+   "kind": "convention"
+  }
+ ],
+ "questions": [
+  {
+   "query": "What did we decide the contradicting-durable-write action should be — shrink confidence or something else?",
+   "gold": [
+    "n-contra-validto"
+   ],
+   "group": "memini-dev",
+   "answer": "Invalidate the stale fact by stamping valid_to (Graphiti-style), not merely shrink its confidence.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:662c632; note:memini-contradiction-phase5.md"
+  },
+  {
+   "query": "How did we decide to handle write-time dedup on a fresh write's nearest same-tier neighbour?",
+   "gold": [
+    "n-dedup-bands"
+   ],
+   "group": "memini-dev",
+   "answer": "A three-band scheme: >=0.92 auto-supersede, [0.75,0.92) return a merge hint, and >=write-dedup score coalesce.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:4673214"
+  },
+  {
+   "query": "What did we decide about entity-aware recall for multi-hop retrieval?",
+   "gold": [
+    "n-entity-stop"
+   ],
+   "group": "memini-dev",
+   "answer": "It was stopped on evidence (not shipped): entity edges cannot bridge multi-hop under any spray-safe gate.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-entity-bridge-negative.md; git:c9d7c23"
+  },
+  {
+   "query": "What are the three supported backend configurations, in priority order?",
+   "gold": [
+    "n-deploy-matrix"
+   ],
+   "group": "memini-dev",
+   "answer": "embedder+reranker (main target, no chat LLM), embedder-only, and embedder+LLM.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-deployment-matrix.md"
+  },
+  {
+   "query": "How do distilled facts get routed to a tier?",
+   "gold": [
+    "n-distill-route"
+   ],
+   "group": "memini-dev",
+   "answer": "By category: procedure (including error->recovery) goes to procedural, other facts to semantic.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:469617a"
+  },
+  {
+   "query": "What was decided about applying recency decay to durable-tier quality?",
+   "gold": [
+    "n-rank-durable-decay"
+   ],
+   "group": "memini-dev",
+   "answer": "Skip the recency decay in Quality for durable tiers so old durable facts don't decay to near-zero quality.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:c1887a2"
+  },
+  {
+   "query": "What did we add for handling a fresh durable write that contradicts an existing fact?",
+   "gold": [
+    "n-contra-validto",
+    "n-contra-wiring"
+   ],
+   "group": "memini-dev",
+   "answer": "contradictNearestAsync invalidates the stale neighbour via valid_to when the pure detector confirms a value/polarity change.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:662c632"
+  },
+  {
+   "query": "What ingest mode did we add to the retrieval bench so write-path features participate?",
+   "gold": [
+    "n-bench-writemode"
+   ],
+   "group": "memini-dev",
+   "answer": "A real write-path ingest mode (-ingest=write) that routes items through svc.Remember, plus a token-efficiency metric and config snapshot.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:a466ff0"
+  },
+  {
+   "query": "What is the contradiction cooldown keyed on?",
+   "gold": [
+    "n-cool-createdat"
+   ],
+   "group": "memini-dev",
+   "answer": "The fact's CreatedAt timestamp (changed from UpdatedAt).",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:ced00b4; note:memini-corroborate-contradict-interaction.md"
+  },
+  {
+   "query": "What is the default episodic value-gate threshold, and is it on by default?",
+   "gold": [
+    "n-episodic-gate"
+   ],
+   "group": "memini-dev",
+   "answer": "MEMINI_EPISODIC_MIN_CHARS=120, on by default; low-signal episodic writes shorter than that are dropped.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:37df1c6"
+  },
+  {
+   "query": "Where does the reranker contract live in the codebase?",
+   "gold": [
+    "n-rerank-owncontract"
+   ],
+   "group": "memini-dev",
+   "answer": "In package rerank, not internal/llm.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:ca4f223"
+  },
+  {
+   "query": "What are the default rerank weights in the recall composite?",
+   "gold": [
+    "n-rank-weights"
+   ],
+   "group": "memini-dev",
+   "answer": "80% relevance and 20% relevance-modulated quality; recency and importance are 0 in production.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-ranking"
+  },
+  {
+   "query": "How are the eval harnesses kept from slowing down `go test ./...`?",
+   "gold": [
+    "n-bench-tag"
+   ],
+   "group": "memini-dev",
+   "answer": "They are gated behind a bench build tag; lefthook compile-checks them on pre-push without running them.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:121f90f"
+  },
+  {
+   "query": "What band-order invariant does config validation enforce for write-time dedup?",
+   "gold": [
+    "n-dedup-bandorder"
+   ],
+   "group": "memini-dev",
+   "answer": "auto-supersede > merge-hint > write-dedup, each in [0,1], so a misconfigured gate can't shadow a band.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:e3cc039"
+  },
+  {
+   "query": "Is temporal targeting on by default in the shipped server?",
+   "gold": [
+    "n-temporal-default"
+   ],
+   "group": "memini-dev",
+   "answer": "Yes — cmd/memini wires WithTemporalTargeting(0.40, RegexAnchorExtractor{}) unconditionally; the service default of 0 only applies to raw service.New callers.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-temporal-default"
+  },
+  {
+   "query": "Why is the contradiction action valid_to invalidation rather than a confidence shrink?",
+   "gold": [
+    "n-contra-why"
+   ],
+   "group": "memini-dev",
+   "answer": "Because confidence shrink can't flip stale-vs-fresh ranking (composite is 80% relevance, 20% quality, and fresh episodic chatter sets the quality normaliser); only removing the stale fact from the current-state window via valid_to flips it.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-contradiction-phase5.md"
+  },
+  {
+   "query": "Why was the rerank timeout raised from 3s to 10s?",
+   "gold": [
+    "n-rerank-timeout-why"
+   ],
+   "group": "memini-dev",
+   "answer": "Because the deadline-exceeded fallback was caused by fan-out (RERANK_TOP_N) times slots (--parallel) draining in serial waves on a shared queue, not GPU speed — at --parallel 4 only 4 of 20 tasks launched before the old 3s bound dropped the connection.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-rerank-timeout-default; git:f8e5315"
+  },
+  {
+   "query": "Why can't a relevance-score floor make recall inject nothing when nothing is relevant, on MiniLM?",
+   "gold": [
+    "n-semgate-minilm"
+   ],
+   "group": "memini-dev",
+   "answer": "Fused min_score is dead (FuseScores min-max-normalises so the top hit is always ~1.0) and the raw vector positive/negative medians overlap (0.469 vs 0.448), so any floor that cuts noise also guts recall.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:recall-no-score-gate-minilm.md"
+  },
+  {
+   "query": "Why was entity-bridging dropped for multi-hop recall?",
+   "gold": [
+    "n-entity-why"
+   ],
+   "group": "memini-dev",
+   "answer": "Because a true multi-hop bridge has low query relevance by definition, so any spray-safe relevance gate excludes exactly the bridges; simulated promotion gave no gain or net loss with ~95% noise.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-entity-bridge-negative.md"
+  },
+  {
+   "query": "Why does an LLM-gated quality improvement not help memini's main target?",
+   "gold": [
+    "n-deploy-noop"
+   ],
+   "group": "memini-dev",
+   "answer": "Because the main target is embedder+reranker with no chat LLM, and every LLM-only feature is a graceful no-op there, so an LLM-gated improvement helps only the embedder+LLM config.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-deployment-matrix.md"
+  },
+  {
+   "query": "Why did corroboration permanently shield stale facts from contradiction?",
+   "gold": [
+    "n-interact-shield"
+   ],
+   "group": "memini-dev",
+   "answer": "Because corroboration's SetConfidence bumped UpdatedAt, which was contradict's cooldown stamp, so a corroborated stale fact could never be invalidated.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-corroborate-contradict-interaction.md"
+  },
+  {
+   "query": "Why is MEMINI_WRITE_DEDUP_MIN_SCORE kept off by default?",
+   "gold": [
+    "n-writededup-off"
+   ],
+   "group": "memini-dev",
+   "answer": "Because vector-only write-dedup with no metadata guard would coalesce distinct same-topic memories from different agents; exact-match fingerprint dedup is on instead.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-poisoning-fix-defaults.md"
+  },
+  {
+   "query": "Why keep extract.Entities even though entity-aware recall was dropped?",
+   "gold": [
+    "n-entity-kept"
+   ],
+   "group": "memini-dev",
+   "answer": "Because extract.Entities is precise and no-LLM, and it's the validated building block for the same-entity+attribute+value contradiction trigger — a precision-first use it fits.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-entity-bridge-negative.md; git:c9d7c23"
+  },
+  {
+   "query": "What is the current default of MEMINI_RECALL_SEMANTIC_RESERVE?",
+   "gold": [
+    "n-reserve-2"
+   ],
+   "group": "memini-dev",
+   "answer": "2.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:fe0c9d4; note:memini-poisoning-fix-defaults.md"
+  },
+  {
+   "query": "What is the current default of MEMINI_DEMOTE_AFTER?",
+   "gold": [
+    "n-demote-168"
+   ],
+   "group": "memini-dev",
+   "answer": "168h (on).",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-poisoning-fix-defaults.md"
+  },
+  {
+   "query": "What is the current standardized integration recall_limit default?",
+   "gold": [
+    "n-recall-3"
+   ],
+   "group": "memini-dev",
+   "answer": "3, uncapped (recall_max_tokens=0).",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:01fb279"
+  },
+  {
+   "query": "What is the current default write tier for a tier-omitted write?",
+   "gold": [
+    "n-tier-episodic"
+   ],
+   "group": "memini-dev",
+   "answer": "episodic.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:a8c11f8"
+  },
+  {
+   "query": "What is the current default MEMINI_RERANK_TIMEOUT?",
+   "gold": [
+    "n-rerank-timeout-10"
+   ],
+   "group": "memini-dev",
+   "answer": "10s.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:f8e5315"
+  },
+  {
+   "query": "Are distill-on-write and extract-on-write both on by default, and how do they interact?",
+   "gold": [
+    "n-extract-vs-distill"
+   ],
+   "group": "memini-dev",
+   "answer": "Both default on and are mutually exclusive at runtime: extract-on-write (no-LLM) fires only when no distiller is configured; the LLM distill path supersedes it when both are available.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-deployment-matrix.md"
+  },
+  {
+   "query": "Which two default-on write-path features interacted badly around the contradiction cooldown, and what was the fix?",
+   "gold": [
+    "n-interact-shield"
+   ],
+   "gold_all": [
+    "n-interact-shield",
+    "n-cool-createdat",
+    "n-interact-k3"
+   ],
+   "group": "memini-dev",
+   "answer": "Corroboration and contradiction: corroboration's SetConfidence bumped UpdatedAt, which was contradict's cooldown stamp, permanently shielding restated stale facts; the fix re-keyed the cooldown to CreatedAt and made the detector scan k=3.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-corroborate-contradict-interaction.md"
+  },
+  {
+   "query": "The semantic reserve default was flipped to 2, then later a ranking change addressed the same crowding problem differently — what were both?",
+   "gold": [
+    "n-reserve-2"
+   ],
+   "gold_all": [
+    "n-reserve-2",
+    "n-rank-durable-decay",
+    "n-rank-durable-decay-why"
+   ],
+   "group": "memini-dev",
+   "answer": "Reserve default was set to 2 (positional workaround for durable crowd-out), and later Quality was changed to skip recency decay for durable tiers so old durable facts keep quality (the underlying cause the reserve worked around).",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-ranking; git:fe0c9d4; git:c1887a2"
+  },
+  {
+   "query": "Why is the LongMemEval/LoCoMo bench unable to measure either the semantic reserve or the write-path contradiction features?",
+   "gold": [
+    "n-reserve-bench"
+   ],
+   "gold_all": [
+    "n-reserve-bench",
+    "n-qa-benches-bypass"
+   ],
+   "group": "memini-dev",
+   "answer": "Both ingest every item as one tier via direct store.Upsert: the single-tier corpus makes reserveDurableTiers a no-op, and bypassing svc.Remember makes contradict/corroborate/dedup structurally inert.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-bench-cant-measure-reserve.md; note:memini-qa-benches-bypass-write-path.md"
+  },
+  {
+   "query": "How does the semantic-score gate decision depend on the embedder, across MiniLM, qwen3-embedding, and the reranker?",
+   "gold": [
+    "n-semgate-minilm"
+   ],
+   "gold_all": [
+    "n-semgate-minilm",
+    "n-semgate-qwen3",
+    "n-semgate-rerankgate"
+   ],
+   "group": "memini-dev",
+   "answer": "No usable vector floor exists on MiniLM (positive/negative medians overlap); qwen3-embedding has a knee at ~0.46 (-6pp recall, injection halved); only the Qwen3 reranker score separates cleanly but costs ~16pp on answerable queries, so all stay opt-in with an embedder-specific value.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:recall-no-score-gate-minilm.md"
+  },
+  {
+   "query": "What broke the session-echo guarantee on the server side and what convention did it establish for clients?",
+   "gold": [
+    "n-echo-extract"
+   ],
+   "gold_all": [
+    "n-echo-extract",
+    "n-echo-convention"
+   ],
+   "group": "memini-dev",
+   "answer": "extract-on-write minted durable facts from the assistant's own words with no session_id (unexcludable echo); the fix stamps the parent capture's session_id, and it established the client convention: never write a capture you cannot exclude.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-session-echo-localization.md; git:19e6c73"
+  },
+  {
+   "query": "Which recall-quality levers for the no-LLM main target were investigated and came back empty?",
+   "gold": [
+    "n-entity-stop"
+   ],
+   "gold_all": [
+    "n-entity-stop",
+    "n-tier-classify-clean"
+   ],
+   "group": "memini-dev",
+   "answer": "Entity-aware recall (Phase 4, net-negative on two embedders) and write-time tier classification (extract.Classify measured clean at 4% false-durable) both came back empty; ranking was already at ceiling.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-entity-bridge-negative.md; note:memini-tier-classifier-clean.md"
+  },
+  {
+   "query": "What is the current default of MEMINI_RECALL_SEMANTIC_RESERVE, and what was it originally?",
+   "gold": [
+    "n-reserve-2"
+   ],
+   "group": "memini-dev",
+   "answer": "It is 2 now; it was originally 0 (opt-in).",
+   "category": "temporal-update",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:fe0c9d4; note:memini-bench-cant-measure-reserve.md"
+  },
+  {
+   "query": "What is the contradiction cooldown keyed on now, and what was it keyed on before?",
+   "gold": [
+    "n-cool-createdat"
+   ],
+   "group": "memini-dev",
+   "answer": "It is keyed on CreatedAt now; it was keyed on UpdatedAt before.",
+   "category": "temporal-update",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:ced00b4; note:memini-corroborate-contradict-interaction.md"
+  },
+  {
+   "query": "What is the current MEMINI_DEMOTE_AFTER default, and what was it initially?",
+   "gold": [
+    "n-demote-168"
+   ],
+   "group": "memini-dev",
+   "answer": "It is 168h (on) now; it was initially 0 (off).",
+   "category": "temporal-update",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-poisoning-fix-defaults.md; git:2033bd0"
+  },
+  {
+   "query": "What is the current MEMINI_RERANK_TIMEOUT default, and what was it before it was raised?",
+   "gold": [
+    "n-rerank-timeout-10"
+   ],
+   "group": "memini-dev",
+   "answer": "It is 10s now; it was 3s before.",
+   "category": "temporal-update",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:f8e5315; note:memini-rerank-timeout-default"
+  },
+  {
+   "query": "What is the standardized integration recall_limit now, and what was the prior split?",
+   "gold": [
+    "n-recall-3"
+   ],
+   "group": "memini-dev",
+   "answer": "It is 3 uncapped now; previously opencode/hermes/openwebui used 5 uncapped and openclaw used 3 with an 800-token cap.",
+   "category": "temporal-update",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:01fb279; git:0adc56e"
+  },
+  {
+   "query": "What tier does a tier-omitted write land in now, and what did it land in originally?",
+   "gold": [
+    "n-tier-episodic"
+   ],
+   "group": "memini-dev",
+   "answer": "It lands in episodic now; originally it landed in working (whose 24h TTL silently evaporated it).",
+   "category": "temporal-update",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:a8c11f8"
+  },
+  {
+   "query": "What consensus or replication protocol does memini use to coordinate writes across multiple server replicas?",
+   "gold": null,
+   "group": "memini-dev",
+   "answer": "",
+   "category": "abstention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "verified absent (grep raft|consensus|replica|leader-elect over internal/,cmd/): memini is single-writer, no multi-replica coordination exists"
+  },
+  {
+   "query": "What is the default value of MEMINI_RECALL_SEMANTIC_RESERVE on the Postgres store versus the SQLite store?",
+   "gold": null,
+   "group": "memini-dev",
+   "answer": "",
+   "category": "abstention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "verified absent: the reserve default is store-independent; no per-store reserve default was ever recorded"
+  },
+  {
+   "query": "Which cloud KMS provider does memini use to encrypt embeddings at rest?",
+   "gold": null,
+   "group": "memini-dev",
+   "answer": "",
+   "category": "abstention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "verified absent: no embeddings-at-rest KMS/encryption feature exists in the corpus"
+  },
+  {
+   "query": "What is the default number of attention heads in memini's built-in embedding model?",
+   "gold": null,
+   "group": "memini-dev",
+   "answer": "",
+   "category": "abstention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "verified absent: memini ships no embedding model; it calls an external embedder endpoint, so no such parameter exists"
+  },
+  {
+   "query": "What did we add to the re-ranker to handle queries that name a relative time?",
+   "gold": [
+    "ca-temporal-rerank"
+   ],
+   "group": "memini-dev",
+   "answer": "Temporal targeting (search.RerankTemporal + AnchorExtractor) that boosts candidates dated near the referenced time instead of near now, via MEMINI_TEMPORAL_BOOST (default 0.40).",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:a6b9ab1"
+  },
+  {
+   "query": "What did we decide about MEMINI_RECALL_MIN_SCORE's default when poison inflation became a concern?",
+   "gold": [
+    "ca-recallminscore-01"
+   ],
+   "group": "memini-dev",
+   "answer": "Changed its default from 0 to 0.1, an absolute relevance floor on the fused score.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:dc78ab5"
+  },
+  {
+   "query": "What did we decide to do with the MEMINI_RERANK_TOP_N config knob?",
+   "gold": [
+    "ca-rerank-topn-removed"
+   ],
+   "group": "memini-dev",
+   "answer": "Removed it entirely; the reranker now sees exactly k candidates instead of a separately-sized pool.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:dc78ab5"
+  },
+  {
+   "query": "What did we decide happens to a durable memory's confidence when it's updated by ID without an explicit confidence value?",
+   "gold": [
+    "ca-confidence-preserve-update"
+   ],
+   "group": "memini-dev",
+   "answer": "Its earned confidence is preserved (loaded from the existing record) instead of being reset to the fresh seed value.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:abf2ab5"
+  },
+  {
+   "query": "What did we decide to do with asyncUpdate's merged source memory instead of hard-deleting it?",
+   "gold": [
+    "ca-consolidation-tombstone-source"
+   ],
+   "group": "memini-dev",
+   "answer": "Tombstone it onto the target (consistent with asyncSupersede) so SupersededBy pointers aren't orphaned.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:e2d822e"
+  },
+  {
+   "query": "Why is the re-ranker's temporal-targeting boost considered worth keeping on by default?",
+   "gold": [
+    "ca-temporal-rerank-gain"
+   ],
+   "group": "memini-dev",
+   "answer": "It measured a +1.9pp R@1 gain on LongMemEval with no knowledge-update regression.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:a6b9ab1"
+  },
+  {
+   "query": "Why does memini refuse to start when the configured embedding model differs from the one recorded for the store?",
+   "gold": [
+    "ca-embed-model-guard-why"
+   ],
+   "group": "memini-dev",
+   "answer": "Vectors from different embedding models share a dimension but live in incomparable spaces, so a same-dims model change previously degraded recall silently with no error.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:8aeeaa8"
+  },
+  {
+   "query": "Why does sqlite-vec's Open fail loudly on a dims mismatch instead of just reusing the existing vec0 table?",
+   "gold": [
+    "ca-embeddims-guard-why"
+   ],
+   "group": "memini-dev",
+   "answer": "CREATE VIRTUAL TABLE IF NOT EXISTS is a no-op on an existing database, so it previously kept the original width silently and only surfaced as opaque per-Upsert dimension errors.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:2bb451d"
+  },
+  {
+   "query": "Why was the consolidation merge reordered to embed content before reading/writing the target record?",
+   "gold": [
+    "ca-consolidation-embed-first-why"
+   ],
+   "group": "memini-dev",
+   "answer": "The old order left a multi-second window (during the embedding call) where a concurrent write to the target could be silently overwritten; embedding first shrinks that window to in-memory only.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:e2d822e"
+  },
+  {
+   "query": "Why does tombstone GC measure the grace period from valid_to instead of updated_at?",
+   "gold": [
+    "ca-tombstone-validto-grace"
+   ],
+   "group": "memini-dev",
+   "answer": "Because superseding never bumps updated_at, so an old fact tombstoned today would otherwise not get the full grace window.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:78f4b39"
+  },
+  {
+   "query": "How does memini's periodic store-wide dedup pass handle a namespace whose content trips the embedder?",
+   "gold": [
+    "ca-dedup-bestforteffort"
+   ],
+   "group": "memini-dev",
+   "answer": "It's best-effort: that namespace is logged and skipped rather than aborting the whole multi-namespace pass; a single-namespace request still propagates the error.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:1926a89"
+  },
+  {
+   "query": "Why does MEMINI_TOMBSTONE_TTL stay off by default?",
+   "gold": [
+    "ca-tombstonettl-offdefault"
+   ],
+   "group": "memini-dev",
+   "answer": "Tombstones are already excluded from recall, so hard-deleting them is purely a space optimization and the only irreversible maintenance action, so it stays opt-in.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:fd422c2"
+  },
+  {
+   "query": "How is the memini Hermes plugin activated in config.yaml?",
+   "gold": [
+    "ca-hermes-provider-singleselect"
+   ],
+   "group": "memini-dev",
+   "answer": "Via the single-select memory.provider: memini key, not plugins.enabled.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:6fb211b"
+  },
+  {
+   "query": "How does the memini Helm chart keep the admin UI off the public route?",
+   "gold": [
+    "ca-helm-route-split"
+   ],
+   "group": "memini-dev",
+   "answer": "It splits Gateway routes: an internal-only route serves the full app including the UI (which embeds the API key), while a separate public route exposes only the token-gated /v1, /mcp, and /.well-known/ paths.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:6bea07f"
+  },
+  {
+   "query": "What does memini warn about at startup regarding auth and the listen address?",
+   "gold": [
+    "ca-loopback-warn"
+   ],
+   "group": "memini-dev",
+   "answer": "It warns when MEMINI_API_KEY is unset and the HTTP listen address isn't loopback, since the full API is then open to anyone who can reach the port.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:cae88b6"
+  },
+  {
+   "query": "What is the current default value of MEMINI_RECALL_MIN_SCORE?",
+   "gold": [
+    "ca-recallminscore-01"
+   ],
+   "group": "memini-dev",
+   "answer": "0.1",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:dc78ab5"
+  },
+  {
+   "query": "Is MEMINI_RERANK_TOP_N still a config option in memini?",
+   "gold": [
+    "ca-rerank-topn-removed"
+   ],
+   "group": "memini-dev",
+   "answer": "No, it was removed; the reranker sees exactly k candidates now.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:dc78ab5"
+  },
+  {
+   "query": "Does `memini reembed` apply changes immediately or only report what it would do by default?",
+   "gold": [
+    "ca-reembed-cmd"
+   ],
+   "group": "memini-dev",
+   "answer": "It only reports a dry-run by default; --yes is required to actually apply the re-embedding.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:8aeeaa8"
+  },
+  {
+   "query": "Does `memini doctor --fix` apply changes immediately or only preview them by default?",
+   "gold": [
+    "ca-doctor-fix"
+   ],
+   "group": "memini-dev",
+   "answer": "It only previews by default; changes are applied only when --yes is also given.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:e260a3f"
+  },
+  {
+   "query": "What must happen before memini will start if the store's recorded embedding model doesn't match MEMINI_EMBED_MODEL?",
+   "gold": [
+    "ca-embed-model-guard"
+   ],
+   "group": "memini-dev",
+   "answer": "It refuses to start; the operator must match the env to the recorded model, run `memini reembed`, or opt into MEMINI_REEMBED_ON_MODEL_CHANGE.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:8aeeaa8"
+  },
+  {
+   "query": "What did write-time dedup get collapsed into in the v0.5.0 config refactor?",
+   "gold": [
+    "cb-dedup-collapse"
+   ],
+   "group": "memini-dev",
+   "answer": "One MEMINI_WRITE_DEDUP_SCORE threshold plus an action enum MEMINI_WRITE_DEDUP_ACTION (off|hint|coalesce|supersede), replacing the three separate thresholds.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:218858d commit body"
+  },
+  {
+   "query": "What happens at startup now if MEMINI_RERANK=llm is set but no LLM is configured?",
+   "gold": [
+    "cb-rerank-failfast"
+   ],
+   "group": "memini-dev",
+   "answer": "It errors out at startup (fail-fast) instead of warning and disabling the LLM reranker.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:e7a6823 commit body"
+  },
+  {
+   "query": "What did we add to the agentic answer loop so it doesn't always run the full tool-search cycle?",
+   "gold": [
+    "cb-gate-mechanism"
+   ],
+   "group": "memini-dev",
+   "answer": "An early-exit gate: one single-shot read over prefetched memories that answers directly or declares INSUFFICIENT, only opening the tool loop when insufficient.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:9ca9ab7 answer_loop.go comment"
+  },
+  {
+   "query": "What new answer ReasoningLevel strategy sits between minimal and the low/medium/high tool loop?",
+   "gold": [
+    "cb-reasoning-expand"
+   ],
+   "group": "memini-dev",
+   "answer": "\"expand\": one query-rewrite completion plus a unioned multi-query recall and one synthesis completion, with no tool loop.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:9ca9ab7 answer_loop.go comment"
+  },
+  {
+   "query": "What is MEMINI_EXTRACT_ON_WRITE's default and when does it actually fire?",
+   "gold": [
+    "cb-extract-on-write-default"
+   ],
+   "group": "memini-dev",
+   "answer": "Defaults to true, but it only fires when no LLM is configured.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:b3865a6 README env table"
+  },
+  {
+   "query": "How are environment variables removed or renamed by the v0.5.0 config collapse handled at startup?",
+   "gold": [
+    "cb-env-deprecation"
+   ],
+   "group": "memini-dev",
+   "answer": "They warn-and-ignore with migration guidance via config.DeprecationWarnings, rather than crashing or silently changing behavior.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:218858d commit body"
+  },
+  {
+   "query": "What is the difference between memory.LevelExplicit and memory.LevelDeduced?",
+   "gold": [
+    "cb-level-types"
+   ],
+   "group": "memini-dev",
+   "answer": "Explicit is a user-stated or heuristically-extracted fact; deduced is an LLM-inferred fact distilled from episodic material, traceable via metadata.source_ids.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:d395dc3 types.go comment"
+  },
+  {
+   "query": "What does an empty derivation Level value mean for a memory row?",
+   "gold": [
+    "cb-level-legacy"
+   ],
+   "group": "memini-dev",
+   "answer": "Legacy/unknown; it passes level filters unconstrained rather than being excluded.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:d395dc3 types.go comment"
+  },
+  {
+   "query": "Which env vars are canonical for pointing a memini integration at the server, and what happened to the old names?",
+   "gold": [
+    "cb-config-canonical"
+   ],
+   "group": "memini-dev",
+   "answer": "MEMINI_BASE_URL and MEMINI_API_KEY are canonical; the legacy MEMINI_URL/MEMINI_TOKEN names are kept as accepted aliases.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:7681f4f README"
+  },
+  {
+   "query": "Does MEMINI_DISTILL_DROP_NO_FACT delete an episodic capture when distillation extracts no fact from it?",
+   "gold": [
+    "cb-distill-drop-nofact-off"
+   ],
+   "group": "memini-dev",
+   "answer": "No, it defaults to false so raw turns are never lost to a distiller miss.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:b3865a6 README env table"
+  },
+  {
+   "query": "Why was the early-exit gate added to memini's agentic answer loop?",
+   "gold": [
+    "cb-gate-rationale"
+   ],
+   "group": "memini-dev",
+   "answer": "Because the coding-agent-memory pilot bench showed the ungated loop regressed rationale-category (direct-answer) questions by over-searching, dropping accuracy from 88% to 75%.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:9ca9ab7 answer_loop.go comment"
+  },
+  {
+   "query": "Why was the write-time dedup band-ordering validation removed in the v0.5.0 config collapse?",
+   "gold": [
+    "cb-dedup-collapse-why"
+   ],
+   "group": "memini-dev",
+   "answer": "Because a config where WRITE_DEDUP_MIN_SCORE was set at or above the merge-hint default could fail validation and crash-loop at startup; collapsing to one threshold makes that impossible.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:218858d commit body"
+  },
+  {
+   "query": "Why does MEMINI_RERANK=llm now fail loud at startup instead of warning and disabling?",
+   "gold": [
+    "cb-rerank-failfast-why"
+   ],
+   "group": "memini-dev",
+   "answer": "Because an explicitly requested capability that cannot exist is a misconfiguration, not a degraded mode.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:e7a6823 root.go comment"
+  },
+  {
+   "query": "Why was the distill-on-write arm inert (0 facts) on the coding-agent-memory pilot bench?",
+   "gold": [
+    "cb-pilot-distill-inert"
+   ],
+   "group": "memini-dev",
+   "answer": "The corpus items were mined from commit messages and memory notes and were already atomic facts, leaving nothing for a distiller to compress out of verbose turns.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:47a650d bench/CODINGAGENT.md"
+  },
+  {
+   "query": "Why was a gate variant that skipped the insufficiency check on conflict-tagged context abandoned?",
+   "gold": [
+    "cb-gate-conflict-variant"
+   ],
+   "group": "memini-dev",
+   "answer": "It measured worse: the tool loop re-answered conflict questions that the gate's first pass had already gotten right.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:19866f9 answer_loop.go comment"
+  },
+  {
+   "query": "Why did memini build its own coding-agent-memory pilot benchmark instead of relying on LongMemEval?",
+   "gold": [
+    "cb-pilot-motivation"
+   ],
+   "group": "memini-dev",
+   "answer": "Three straight LLM experiments bottomed out at LongMemEval's near-100% recall ceiling or inside its noise floor, so it couldn't discriminate memory configurations.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:47a650d bench/CODINGAGENT.md"
+  },
+  {
+   "query": "What is memini's current operator environment-variable count after the v0.5.0 config collapse?",
+   "gold": [
+    "cb-env-shrink"
+   ],
+   "group": "memini-dev",
+   "answer": "About 45 vars, down from 67.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:218858d commit body"
+  },
+  {
+   "query": "What is the pre-registered hybrid-upsert recall@5 headroom band for the coding-agent-memory pilot bench?",
+   "gold": [
+    "cb-pilot-headroom-gate"
+   ],
+   "group": "memini-dev",
+   "answer": "[50%, 88%].",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:47a650d bench/CODINGAGENT.md"
+  },
+  {
+   "query": "What was the observed hybrid recall@5 on the coding-agent-memory pilot bench with upsert ingest?",
+   "gold": [
+    "cb-pilot-headroom-observed"
+   ],
+   "group": "memini-dev",
+   "answer": "86.7%, landing in the pre-registered headroom band.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:47a650d bench/CODINGAGENT.md"
+  },
+  {
+   "query": "What is the rationale-category accuracy on the coding-agent-memory pilot bench under single-shot vs. the agentic loop?",
+   "gold": [
+    "cb-pilot-rationale-regression"
+   ],
+   "group": "memini-dev",
+   "answer": "88% (7/8) single-shot, dropping to 75% under the agentic loop.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:47a650d bench/CODINGAGENT.md"
+  },
+  {
+   "query": "What is the recommended question-count target for scaling the coding-agent-memory pilot bench?",
+   "gold": [
+    "cb-pilot-recommendation"
+   ],
+   "group": "memini-dev",
+   "answer": "About 150-250 hand-verified questions, weighted toward synthesis and temporal-update.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:47a650d bench/CODINGAGENT.md"
+  },
+  {
+   "query": "What window does memini doctor --fix use for demotion now, and what was it originally?",
+   "gold": [
+    "ct-doctor-demote-configured"
+   ],
+   "group": "memini-dev",
+   "answer": "It now honors the configured MEMINI_DEMOTE_AFTER, falling back to the original hardcoded 60-day window only when DemoteAfter is 0.",
+   "category": "temporal-update",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:0598905; git:e260a3f"
+  },
+  {
+   "query": "Does memini doctor --fix still use a hardcoded 60-day demotion window?",
+   "gold": [
+    "ct-doctor-demote-configured"
+   ],
+   "group": "memini-dev",
+   "answer": "No — it honors the configured MEMINI_DEMOTE_AFTER and only falls back to 60 days when that is 0.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:0598905"
+  },
+  {
+   "query": "What action values does the Hermes on_memory_write handler mirror now, and what was the bug before the fix?",
+   "gold": [
+    "ct-hermes-action-replace"
+   ],
+   "group": "memini-dev",
+   "answer": "It now mirrors \"add\" and \"replace\"; before the fix it checked for the unmatched \"update\" instead of \"replace\", so replace events were silently dropped.",
+   "category": "temporal-update",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:e1b5d3c; git:c2f30b2"
+  },
+  {
+   "query": "Is OpenClaw's skip_system_turns on or off by default now, and was that always the default?",
+   "gold": [
+    "ct-openclaw-skipsystem-on"
+   ],
+   "group": "memini-dev",
+   "answer": "It is on by default now; it was introduced off by default for backward compatibility and later flipped on.",
+   "category": "temporal-update",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:ff8b4e6; git:856797b"
+  },
+  {
+   "query": "What is OpenClaw's current default skip_system_turns setting?",
+   "gold": [
+    "ct-openclaw-skipsystem-on"
+   ],
+   "group": "memini-dev",
+   "answer": "On by default.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:ff8b4e6"
+  },
+  {
+   "query": "What is OpenClaw's default system_kinds list now, and what was it before?",
+   "gold": [
+    "ct-openclaw-systemkinds-trigger"
+   ],
+   "group": "memini-dev",
+   "answer": "[\"heartbeat\", \"cron\"], matched against ctx.trigger; it was previously [\"cron\", \"heartbeat\", \"scheduled\", \"schedule\"] matched via ad hoc kind/session-key/bracket detection.",
+   "category": "temporal-update",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:ff8b4e6; git:856797b"
+  },
+  {
+   "query": "Does memini's HTTP server still set an absolute WriteTimeout of 60 seconds?",
+   "gold": [
+    "ct-server-idletimeout"
+   ],
+   "group": "memini-dev",
+   "answer": "No — WriteTimeout was dropped (it killed long-lived MCP SSE streams) and replaced with a 120s IdleTimeout.",
+   "category": "temporal-update",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:6613ca4; git:4135c97"
+  },
+  {
+   "query": "Why was the server's absolute WriteTimeout removed?",
+   "gold": [
+    "ct-server-idletimeout"
+   ],
+   "group": "memini-dev",
+   "answer": "Because it is an absolute deadline on the whole response, and the same router serves the long-lived MCP Streamable-HTTP SSE stream at /mcp, so every remote MCP session was forcibly closed around 60s in.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:6613ca4"
+  },
+  {
+   "query": "Is MEMINI_RERANK_TOP_N still a configurable knob?",
+   "gold": [
+    "ct-rerank-topn-removed"
+   ],
+   "group": "memini-dev",
+   "answer": "No — it was removed; the reranker now sees exactly the k composite-ranked candidates handed to it instead of a separately configured top-N pool (originally defaulted to 20).",
+   "category": "temporal-update",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:dc78ab5; git:5731215"
+  },
+  {
+   "query": "What was the original default value of MEMINI_RERANK_TOP_N before it was removed?",
+   "gold": [
+    "ct-rerank-topn-20"
+   ],
+   "group": "memini-dev",
+   "answer": "20.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:5731215"
+  },
+  {
+   "query": "What is the opencode plugin's default per-request timeout now, and what was it originally?",
+   "gold": [
+    "ct-opencode-timeout-30000"
+   ],
+   "group": "memini-dev",
+   "answer": "30000ms (30s) now; it was originally 5000ms (5s).",
+   "category": "temporal-update",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:27e28aa; git:b79ce26"
+  },
+  {
+   "query": "What is OpenClaw's current default for namespace_per_agent, and what was it when the feature was introduced?",
+   "gold": [
+    "ct-openclaw-nsagent-true"
+   ],
+   "group": "memini-dev",
+   "answer": "It now defaults to true (per-agent isolation); it was introduced defaulting to false (one shared namespace).",
+   "category": "temporal-update",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:19fea61; git:4e07b68"
+  },
+  {
+   "query": "Why did OpenClaw flip its namespace_per_agent default to true?",
+   "gold": [
+    "ct-openclaw-nsagent-true"
+   ],
+   "group": "memini-dev",
+   "answer": "So subagents sharing one gateway can't poison each other's memory by default; sharing one namespace is still available via namespace_per_agent: false.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:19fea61"
+  },
+  {
+   "query": "Does the Hermes integration still force memories to the semantic tier by default?",
+   "gold": [
+    "ct-hermes-tier-omit"
+   ],
+   "group": "memini-dev",
+   "answer": "No — the forced \"semantic\" client-side default was dropped; tier is sent only when the caller supplies a valid one, otherwise omitted so the server classifies it.",
+   "category": "temporal-update",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:853c78b; git:c2f30b2"
+  },
+  {
+   "query": "What tier did the Hermes memory_remember tool default to before the client-side tier default was dropped?",
+   "gold": [
+    "ct-hermes-tier-semantic"
+   ],
+   "group": "memini-dev",
+   "answer": "\"semantic\".",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:c2f30b2"
+  },
+  {
+   "query": "Do memini's integrations still prefix captured turns with \"User:\"/\"Assistant:\" labels?",
+   "gold": [
+    "ct-hermes-turn-plain"
+   ],
+   "group": "memini-dev",
+   "answer": "No — the label scaffolding was dropped in favor of plain \"{user}\\n\\n{assistant}\" content, with a format:turn metadata marker added instead.",
+   "category": "temporal-update",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:f61d066; git:c2f30b2"
+  },
+  {
+   "query": "Which four memini integrations had their captured-turn content reformatted to drop User:/Assistant: scaffolding in the same commit?",
+   "gold": [
+    "ct-hermes-turn-plain"
+   ],
+   "group": "memini-dev",
+   "answer": "hermes, openclaw, opencode, and openwebui.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:f61d066"
+  },
+  {
+   "query": "What was memini's initial HTTP server WriteTimeout before it was removed for MCP SSE compatibility?",
+   "gold": [
+    "ct-server-writetimeout"
+   ],
+   "group": "memini-dev",
+   "answer": "60 seconds.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:4135c97"
+  },
+  {
+   "query": "What Hermes action name was originally unmatched in on_memory_write, causing replace events to be dropped?",
+   "gold": [
+    "ct-hermes-action-update"
+   ],
+   "group": "memini-dev",
+   "answer": "The handler checked for \"update\" instead of the actual Hermes action \"replace\".",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "git:c2f30b2"
+  },
+  {
+   "query": "How does memini distribute its Hermes memory-provider plugin to users?",
+   "gold": [
+    "cd-hermes-repo"
+   ],
+   "group": "memini-dev",
+   "answer": "Via the standalone GitHub repo eleboucher/memini-hermes, mirrored from integrations/hermes/plugin/memini/ by the hermes-mirror release job.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:hermes-plugin-distribution.md"
+  },
+  {
+   "query": "What fix was implemented so memini's MCP headersHelper can find its script without $CLAUDE_PLUGIN_ROOT?",
+   "gold": [
+    "cd-mcpfix"
+   ],
+   "group": "memini-dev",
+   "answer": "A SessionStart hook writes $CLAUDE_PLUGIN_ROOT to $XDG_CACHE_HOME/memini/plugin-root, which headersHelper reads to locate the script, with a bearer-token-only fallback for the cold first connect.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:mcp-headershelper-no-plugin-root.md"
+  },
+  {
+   "query": "Which URL paths does memini's public-facing route (route.main) allow through the gateway?",
+   "gold": [
+    "cd-gateway-route"
+   ],
+   "group": "memini-dev",
+   "answer": "Only PathPrefix /v1, /mcp, and /.well-known/ — never the UI shell at /.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-ui-api-gateway-split.md"
+  },
+  {
+   "query": "What recall@5 band did the coding-agent-memory pilot pre-register as its headroom gate?",
+   "gold": [
+    "cd-cg-headroomgate"
+   ],
+   "group": "memini-dev",
+   "answer": "[50%, 88%] for hybrid-upsert recall@5.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "doc:bench/CODINGAGENT.md"
+  },
+  {
+   "query": "What are memini's write-time dedup actions, and which one fires by default?",
+   "gold": [
+    "cd-env-writededupaction"
+   ],
+   "group": "memini-dev",
+   "answer": "hint fires by default (non-destructive, durable tiers only); coalesce, supersede (destructive), and off are the other options.",
+   "category": "decision",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "doc:README.md"
+  },
+  {
+   "query": "How is a Hermes memory-provider plugin activated in config.yaml?",
+   "gold": [
+    "cd-hermes-activate"
+   ],
+   "group": "memini-dev",
+   "answer": "By setting memory.provider: <name>, not plugins.enabled.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:hermes-plugin-distribution.md"
+  },
+  {
+   "query": "Where should a user-installed Hermes memory provider directory live?",
+   "gold": [
+    "cd-hermespath"
+   ],
+   "group": "memini-dev",
+   "answer": "$HERMES_HOME/plugins/<name>/ — not plugins/memory/<name>/, which is for bundled providers.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:integration-docs-vs-actual-api.md"
+  },
+  {
+   "query": "How do you diagnose a failing memini MCP headersHelper connection?",
+   "gold": [
+    "cd-mcpdiagnose"
+   ],
+   "group": "memini-dev",
+   "answer": "Check the JSONL logs at ~/.cache/claude-cli-nodejs/<proj>/mcp-logs-<server>/*.jsonl.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:mcp-headershelper-no-plugin-root.md"
+  },
+  {
+   "query": "Does memini's Helm chart create its own Kubernetes secret for the API key?",
+   "gold": [
+    "cd-chart-secret"
+   ],
+   "group": "memini-dev",
+   "answer": "No — MEMINI_API_KEY must be wired in via env.valueFrom.secretKeyRef.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-chart-bjw-s-common.md"
+  },
+  {
+   "query": "Which commit types does memini's git-cliff config skip entirely from the changelog?",
+   "gold": [
+    "cd-cliff-skip"
+   ],
+   "group": "memini-dev",
+   "answer": "chore(release), chore(deps*), chore(pr), and chore(pull).",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "doc:cliff.toml"
+  },
+  {
+   "query": "In what order does memini's git-cliff changelog list commits within a release?",
+   "gold": [
+    "cd-cliff-sort"
+   ],
+   "group": "memini-dev",
+   "answer": "Oldest first.",
+   "category": "convention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "doc:cliff.toml"
+  },
+  {
+   "query": "Why was the coding-agent-memory pilot benchmark built rather than relying solely on LongMemEval?",
+   "gold": [
+    "cd-cg-motivation"
+   ],
+   "group": "memini-dev",
+   "answer": "Because no LLM feature could prove its worth against LongMemEval — it's retrieval-saturated near 100% recall@5 and off-domain, so it can't distinguish interventions.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "doc:bench/CODINGAGENT.md"
+  },
+  {
+   "query": "Why did the distill-on-write arm produce no discrimination signal on the coding-agent-memory pilot?",
+   "gold": [
+    "cd-cg-distillinert"
+   ],
+   "group": "memini-dev",
+   "answer": "The LLM distiller returned 0 facts on all 67 calls — the corpus is already fact-shaped (mined from commits/notes), so there was nothing to compress.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "doc:bench/CODINGAGENT.md"
+  },
+  {
+   "query": "Why does memini's hybrid recall fusion use rrfK=5 instead of the classic 60 when it falls back to RRF?",
+   "gold": [
+    "cd-br-rrfk"
+   ],
+   "group": "memini-dev",
+   "answer": "Because a flat rrfK=60 decay over deep pools lets both-leg mediocrity outscore single-leg excellence; a steep decay (rrfK=5) avoids that.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "doc:bench/README.md"
+  },
+  {
+   "query": "Why couldn't memini's Hermes plugin ship as a pip package or a subdir install?",
+   "gold": [
+    "cd-hermes-why"
+   ],
+   "group": "memini-dev",
+   "answer": "Hermes's general plugin PluginContext has no register_memory_provider (AttributeError), and a subdir install discards .git so `hermes plugins update` (a git pull) can't work.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:hermes-plugin-distribution.md"
+  },
+  {
+   "query": "Why does memini use two separate hostnames for its public and internal routes instead of one split-horizon hostname?",
+   "gold": [
+    "cd-gateway-why"
+   ],
+   "group": "memini-dev",
+   "answer": "Because external-dns-mikrotik watches both gateways unfiltered, so a shared hostname would create a conflicting DNS record-set and a flaky internal UI.",
+   "category": "rationale",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-ui-api-gateway-split.md"
+  },
+  {
+   "query": "How large is the coding-agent-memory pilot corpus, and how many namespaces does it use?",
+   "gold": [
+    "cd-cg-corpus"
+   ],
+   "group": "memini-dev",
+   "answer": "103 items in a single namespace (memini-dev).",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "doc:bench/CODINGAGENT.md"
+  },
+  {
+   "query": "What recall@5 did the coding-agent-memory pilot measure for hybrid-upsert ingest?",
+   "gold": [
+    "cd-cg-headroomresult"
+   ],
+   "group": "memini-dev",
+   "answer": "86.7% (qwen3-embedding-0.6b, 1024-d), within the pre-registered band.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "doc:bench/CODINGAGENT.md"
+  },
+  {
+   "query": "On LoCoMo turn-level retrieval, which scores higher — memini's default score fusion or RRF?",
+   "gold": [
+    "cd-br-locomo-rrf"
+   ],
+   "group": "memini-dev",
+   "answer": "RRF edges out the default score fusion there (60.1%/71.0%), the one benchmarked cell where that happens, because MiniLM's vector leg is near-noise.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "doc:bench/README.md"
+  },
+  {
+   "query": "What is memini's default MEMINI_CONSOLIDATE_MIN_SCORE, and what does it control?",
+   "gold": [
+    "cd-env-consolidate"
+   ],
+   "group": "memini-dev",
+   "answer": "0.6 — it skips the LLM consolidation call when the nearest candidate scores below it.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "doc:README.md"
+  },
+  {
+   "query": "What is memini's default MEMINI_DEDUP_SIMILARITY threshold?",
+   "gold": [
+    "cd-env-dedupsim"
+   ],
+   "group": "memini-dev",
+   "answer": "0.85.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "doc:README.md"
+  },
+  {
+   "query": "What is memini's default MEMINI_SHORT_TERM_CAP, and what happens once a namespace exceeds it?",
+   "gold": [
+    "cd-tiers-shortcap"
+   ],
+   "group": "memini-dev",
+   "answer": "1000 per namespace; the sweeper evicts the lowest-retention working/episodic rows over the cap.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "doc:docs/tiers.md"
+  },
+  {
+   "query": "How does memini map a bulk-imported memory's native kind onto one of its tiers?",
+   "gold": [
+    "cd-tiers-bulkimport"
+   ],
+   "group": "memini-dev",
+   "answer": "By source kind, e.g. agentmemory's workflow -> procedural and mem0 facts -> semantic; anything unrecognized defaults to episodic with a fresh 90-day TTL.",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "doc:docs/tiers.md"
+  },
+  {
+   "query": "What version of the bjw-s common library does memini's Helm chart currently depend on?",
+   "gold": [
+    "cd-chart-version"
+   ],
+   "group": "memini-dev",
+   "answer": "v5.0.1 (as of chart v0.3.0).",
+   "category": "current-state",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "note:memini-chart-bjw-s-common.md"
+  },
+  {
+   "query": "Which message queue (Kafka, RabbitMQ, ...) does memini use to process background writes?",
+   "gold": [],
+   "group": "memini-dev",
+   "answer": "",
+   "category": "abstention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "verified absent (grep -riE 'kafka|rabbitmq|message.queue|amqp' internal/ cmd/ docs/ README.md = 0): background work is in-process goroutines, no queue exists"
+  },
+  {
+   "query": "What port does memini's gRPC API listen on by default?",
+   "gold": [],
+   "group": "memini-dev",
+   "answer": "",
+   "category": "abstention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "verified absent (grep -riE 'grpc' internal/ cmd/ docs/ README.md = 0): memini exposes HTTP/MCP only, no gRPC API exists"
+  },
+  {
+   "query": "Which Redis eviction policy did we configure for memini's caching layer?",
+   "gold": [],
+   "group": "memini-dev",
+   "answer": "",
+   "category": "abstention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "verified absent (grep -riE 'redis|memcached' internal/ cmd/ docs/ README.md = 0): caches are in-process, no Redis exists"
+  },
+  {
+   "query": "What S3 bucket layout does memini use for embedding snapshots?",
+   "gold": [],
+   "group": "memini-dev",
+   "answer": "",
+   "category": "abstention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "verified absent (grep -riE 's3|object.storage|minio' internal/ cmd/ docs/ README.md = 0): no object-storage integration exists"
+  },
+  {
+   "query": "Which Kubernetes operator or CRD manages memini instances in the cluster?",
+   "gold": [],
+   "group": "memini-dev",
+   "answer": "",
+   "category": "abstention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "verified absent (grep -riE 'kubernetes operator|crd' internal/ cmd/ docs/ charts/ README.md = 0): deployment is a plain Helm chart, no operator exists"
+  },
+  {
+   "query": "What WebSocket endpoint streams live memory updates to clients?",
+   "gold": [],
+   "group": "memini-dev",
+   "answer": "",
+   "category": "abstention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "verified absent (grep -riE 'websocket' internal/ cmd/ docs/ README.md = 0): no streaming endpoint exists"
+  },
+  {
+   "query": "Which SQL migration tool (goose, golang-migrate, atlas) did we standardize on for schema migrations?",
+   "gold": [],
+   "group": "memini-dev",
+   "answer": "",
+   "category": "abstention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "verified absent (grep -riE 'goose|golang-migrate|atlas' internal/ cmd/ docs/ README.md = 0): schema is created inline by the store, no migration tool was adopted"
+  },
+  {
+   "query": "What vector quantization scheme does the sqlite-vec store use to compress embeddings?",
+   "gold": [],
+   "group": "memini-dev",
+   "answer": "",
+   "category": "abstention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "verified absent (grep -riE 'quantiz' internal/ cmd/ docs/ README.md = 0): embeddings are stored unquantized, no scheme was ever chosen"
+  },
+  {
+   "query": "What MTEB leaderboard score did the memini recall stack achieve?",
+   "gold": [],
+   "group": "memini-dev",
+   "answer": "",
+   "category": "abstention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "verified absent (grep -riE 'MTEB|leaderboard' internal/ cmd/ docs/ bench/ README.md = 0): memini was never evaluated on MTEB"
+  },
+  {
+   "query": "Which feature-flag service gates memini's staged feature rollouts?",
+   "gold": [],
+   "group": "memini-dev",
+   "answer": "",
+   "category": "abstention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "verified absent (grep -riE 'feature.flag|rollout' internal/ cmd/ docs/ README.md = 0): features ship via env-var defaults, no flag service exists"
+  },
+  {
+   "query": "What is memini's documented GDPR data-retention period for stored memories?",
+   "gold": [],
+   "group": "memini-dev",
+   "answer": "",
+   "category": "abstention",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "verified absent (grep -riE 'GDPR|data.retention.polic' internal/ cmd/ docs/ README.md = 0): no compliance retention policy was ever documented (TTLs are per-tier mechanics, not a GDPR policy)"
+  },
+  {
+   "query": "Which recall-tuning knobs got baked into fixed constants during the v0.5.0 config collapse, and which of them were later re-exposed as environment variables?",
+   "gold": [
+    "cb-env-shrink"
+   ],
+   "gold_all": [
+    "cb-env-shrink",
+    "n-reserve-reexpose"
+   ],
+   "group": "memini-dev",
+   "answer": "The v0.5.0 collapse (which shrank memini's operator env-var surface from about 67 to about 45) baked recall-tuning knobs as fixed constants in cmd/memini; MEMINI_RECALL_SEMANTIC_RESERVE and MEMINI_RECALL_MIN_SCORE were later re-exposed as environment knobs again.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "cb-env-shrink; n-reserve-reexpose"
+  },
+  {
+   "query": "Per memini's defaults policy, why do MEMINI_WRITE_DEDUP_MIN_SCORE and MEMINI_TOMBSTONE_TTL both stay off by default?",
+   "gold": [
+    "n-defaults-policy"
+   ],
+   "gold_all": [
+    "n-defaults-policy",
+    "n-writededup-off",
+    "ca-tombstonettl-offdefault"
+   ],
+   "group": "memini-dev",
+   "answer": "memini's policy keeps destructive or data-lossy server-side maintenance opt-in for upgrade-safety; concretely, MEMINI_WRITE_DEDUP_MIN_SCORE stays 0 because vector-only write-dedup with no metadata guard would coalesce distinct same-topic memories from different agents, and MEMINI_TOMBSTONE_TTL defaults to 0 because tombstones are already excluded from recall regardless (GC is purely a space optimization) and hard-delete is the one irreversible maintenance action.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "n-defaults-policy; n-writededup-off; ca-tombstonettl-offdefault"
+  },
+  {
+   "query": "What score threshold triggers memini's contradiction detector, and how does it compare to the corroboration min-score and the write-dedup merge-hint default?",
+   "gold": [
+    "n-contra-wiring"
+   ],
+   "gold_all": [
+    "n-contra-wiring",
+    "n-mergehint-default"
+   ],
+   "group": "memini-dev",
+   "answer": "contradictNearestAsync fires when a fresh durable write's top durable neighbour scores >=0.625, below the corroboration min-score of 0.70; 0.625 is also the value that was the default write-dedup merge-hint threshold.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "n-contra-wiring; n-mergehint-default"
+  },
+  {
+   "query": "Besides re-keying the contradiction cooldown to CreatedAt, what other code-level changes closed the rephrase-retry and race-condition gaps in the corroborate/contradict interaction?",
+   "gold": [
+    "n-cool-createdat"
+   ],
+   "gold_all": [
+    "n-cool-createdat",
+    "n-interact-k3",
+    "n-interact-fingerprint",
+    "n-interact-setconf"
+   ],
+   "group": "memini-dev",
+   "answer": "The cooldown was re-keyed from UpdatedAt to CreatedAt; the contradiction detector was changed to scan k=3 nearest durable neighbours (up from k=2) and continue past restatement-classified candidates, closing the rephrased-retry escape; both stores' GetByFingerprint were changed to exclude valid_to'd rows so a verbatim re-assertion of a contradicted fact isn't absorbed into the dead row; and SetConfidence now refuses validity-closed rows, closing the race where confidence regrew on a just-contradicted fact.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "n-cool-createdat; n-interact-k3; n-interact-fingerprint; n-interact-setconf"
+  },
+  {
+   "query": "What quantitative result and theoretical reason led memini to stop entity-aware multi-hop recall, and what part of that work was still kept?",
+   "gold": [
+    "n-entity-stop"
+   ],
+   "gold_all": [
+    "n-entity-stop",
+    "n-entity-why",
+    "n-entity-kept"
+   ],
+   "group": "memini-dev",
+   "answer": "Under a hub-safe document-frequency cap, only 1.3-2.6% of multi-hop failures were entity-bridgeable, and simulated in-window promotion gave no gain or a net loss with about 95% noise promotions; theoretically, a true multi-hop bridge has low query relevance by definition, so any spray-safe relevance gate excludes exactly the bridges. extract.Entities itself (capitalized spans, no LLM, precise) was kept as a building block for the same-entity+attribute+value contradiction trigger.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "n-entity-stop; n-entity-why; n-entity-kept"
+  },
+  {
+   "query": "What controls how many candidates and how much text memini's reranker sees per request?",
+   "gold": [
+    "ct-rerank-topn-removed"
+   ],
+   "gold_all": [
+    "ct-rerank-topn-removed",
+    "n-rerank-doccap",
+    "ca-rerank-maxbatchchars"
+   ],
+   "group": "memini-dev",
+   "answer": "MEMINI_RERANK_TOP_N and its pooling logic were removed, so the reranker sees exactly the k composite-ranked candidates passed to it (dropping unmentioned candidates instead of appending them); each candidate document is capped at 2048 chars so the reranker scores whole memories; and MEMINI_RERANK_MAX_BATCH_CHARS (default 4000) caps total query+documents characters per /rerank request, splitting the candidate pool across multiple requests if it would exceed this.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "ct-rerank-topn-removed; n-rerank-doccap; ca-rerank-maxbatchchars"
+  },
+  {
+   "query": "How does memini's handling of a misconfigured MEMINI_RERANK=llm differ from how it handles a slow reranker backend?",
+   "gold": [
+    "cb-rerank-failfast"
+   ],
+   "gold_all": [
+    "cb-rerank-failfast",
+    "cb-rerank-failfast-why",
+    "n-rerank-bound"
+   ],
+   "group": "memini-dev",
+   "answer": "A slow or timing-out reranker call is bounded and degrades gracefully to composite order; but requesting MEMINI_RERANK=llm with no LLM configured is treated as a misconfiguration rather than a degraded mode, so it now errors at startup instead of warning and silently disabling the reranker (a breaking change).",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "cb-rerank-failfast; cb-rerank-failfast-why; n-rerank-bound"
+  },
+  {
+   "query": "Why was the coding-agent-memory pilot bench built, what headroom criteria did it have to pass to be trusted, and did the observed result pass?",
+   "gold": [
+    "cb-pilot-motivation"
+   ],
+   "gold_all": [
+    "cb-pilot-motivation",
+    "cb-pilot-headroom-gate",
+    "cb-pilot-headroom-observed"
+   ],
+   "group": "memini-dev",
+   "answer": "It was built because three LLM experiments (Phase-4 multi-hop, the WP6 agentic answer loop, and the distill-on-write A/B) each bottomed out at LongMemEval's near-100% recall ceiling or its noise floor, so no LLM feature could prove its worth; its pre-registered headroom gate required hybrid-upsert recall@5 to land in [50%, 88%]; the observed 86.7% (qwen3-embedding-0.6b) landed inside that band, so the bench passed the gate.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "cb-pilot-motivation; cb-pilot-headroom-gate; cb-pilot-headroom-observed"
+  },
+  {
+   "query": "What did the coding-agent-memory pilot recommend for scaling the bench, and which LLM experiment did it say to run against it first?",
+   "gold": [
+    "cb-pilot-recommendation"
+   ],
+   "gold_all": [
+    "cb-pilot-recommendation",
+    "cb-pilot-next-experiment"
+   ],
+   "group": "memini-dev",
+   "answer": "It recommended scaling to about 150-250 hand-verified questions weighted toward synthesis and temporal-update, plus adding a turn-shaped subcorpus for an honest distill-on-write A/B; it also recommended the agentic answer loop (depth and tool mix) as the first LLM experiment to run against it, since it showed the clearest, most mechanistically-coherent per-category lift on synthesis and temporal-update, the categories where LongMemEval is saturated and blind.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "cb-pilot-recommendation; cb-pilot-next-experiment"
+  },
+  {
+   "query": "What accuracy regression on the pilot bench motivated the agentic answer loop's early-exit gate, and how does the gate work?",
+   "gold": [
+    "cb-pilot-rationale-regression"
+   ],
+   "gold_all": [
+    "cb-pilot-rationale-regression",
+    "cb-gate-rationale",
+    "cb-gate-mechanism"
+   ],
+   "group": "memini-dev",
+   "answer": "The ungated agentic loop dropped rationale-category accuracy from 88% (7/8) single-shot to 75% by over-searching directly-answerable questions; the fix added an early-exit gate that runs one single-shot read over the prefetched memories, which either answers the question directly or declares them insufficient, opening the tool loop only when that first pass can't settle the question.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "cb-pilot-rationale-regression; cb-gate-rationale; cb-gate-mechanism"
+  },
+  {
+   "query": "What two refinements tightened when the answer loop's early-exit gate must declare the prefetched memories insufficient?",
+   "gold": [
+    "cb-gate-strengthen"
+   ],
+   "gold_all": [
+    "cb-gate-strengthen",
+    "cb-gate-dontknow"
+   ],
+   "group": "memini-dev",
+   "answer": "The gate's criteria were strengthened to require an INSUFFICIENT reply whenever the asked-for fact isn't stated by a provided memory, the question needs several memories combined, the memories conflict, or the answer could have been superseded since its date; separately, gateInsufficient was added so a gate reply of \"I don't know\" or \"do not know\" is treated the same as INSUFFICIENT, forcing entry into the tool loop instead of letting the answer give up early.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "cb-gate-strengthen; cb-gate-dontknow"
+  },
+  {
+   "query": "How does the answer API's 'expand' reasoning level differ in mechanism and cost from the low/medium/high tool-loop levels?",
+   "gold": [
+    "n-answer-loop"
+   ],
+   "gold_all": [
+    "n-answer-loop",
+    "cb-reasoning-expand"
+   ],
+   "group": "memini-dev",
+   "answer": "low/medium/high reasoning levels run the bounded agentic tool loop (empty/minimal is single-shot); 'expand' was added as a fixed-cost alternative: one query-rewrite completion producing 2-3 lexically diverse search queries, a unioned multi-query recall, and one synthesis completion, at a fixed two-completion cost with no open-ended tool loop.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "n-answer-loop; cb-reasoning-expand"
+  },
+  {
+   "query": "How does memini distinguish an explicitly-stated fact from an LLM-deduced one, and what happens to memories written before this distinction existed?",
+   "gold": [
+    "cb-level-types"
+   ],
+   "gold_all": [
+    "cb-level-types",
+    "cb-level-legacy",
+    "n-source-ids"
+   ],
+   "group": "memini-dev",
+   "answer": "Memory derivation provenance is tracked with a Level field: LevelExplicit for user-stated or heuristically-extracted facts, and LevelDeduced for LLM-inferred facts distilled from episodic material, traceable via metadata.source_ids, which derived facts carry as provenance metadata; rows written before Level existed have an empty value, treated as legacy/unknown and passed through derivation-level recall filters unconstrained rather than excluded.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "cb-level-types; cb-level-legacy; n-source-ids"
+  },
+  {
+   "query": "Why can't memini's Hermes plugin ship via pip or a bundled subdirectory, and how is the standalone repo kept in sync with the main repo?",
+   "gold": [
+    "cd-hermes-repo"
+   ],
+   "gold_all": [
+    "cd-hermes-repo",
+    "cd-hermes-why"
+   ],
+   "group": "memini-dev",
+   "answer": "Hermes's general PluginContext has no register_memory_provider (a pip install would AttributeError on register()), and a subdirectory install would discard the clone's .git so `hermes plugins update` (a git pull) couldn't work on it; so it ships as the standalone repo eleboucher/memini-hermes, kept in sync by the hermes-mirror job in .forgejo/workflows/release.yml, which mirrors integrations/hermes/plugin/memini/.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "cd-hermes-repo; cd-hermes-why"
+  },
+  {
+   "query": "How does a user activate memini as their Hermes memory provider, and where must a user-installed copy of the plugin live?",
+   "gold": [
+    "cd-hermes-activate"
+   ],
+   "gold_all": [
+    "cd-hermes-activate",
+    "cd-hermespath"
+   ],
+   "group": "memini-dev",
+   "answer": "It's activated via memory.provider: memini in Hermes's config.yaml, not plugins.enabled (Hermes auto-detects providers whose __init__.py mentions MemoryProvider/register_memory_provider and skips plugins.enabled for them); a user-installed copy must live at $HERMES_HOME/plugins/<name>/, not plugins/memory/<name>/, which is only for bundled providers.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "cd-hermes-activate; cd-hermespath"
+  },
+  {
+   "query": "Why did memini's Claude Code MCP headersHelper fail to find its plugin root, what fix was shipped, and how do you diagnose a failing connection?",
+   "gold": [
+    "ca-mcp-headershelper"
+   ],
+   "gold_all": [
+    "ca-mcp-headershelper",
+    "cd-mcpfix",
+    "cd-mcpdiagnose"
+   ],
+   "group": "memini-dev",
+   "answer": "headersHelper runs in a bare shell and never receives ${CLAUDE_PLUGIN_ROOT}; the fix adds a SessionStart hook (writePluginRoot in _shared.mjs) that writes $CLAUDE_PLUGIN_ROOT to $XDG_CACHE_HOME/memini/plugin-root for headersHelper to read, with a bearer-token-only fallback for the cold first connect; a failing connection is diagnosed via the JSONL logs at ~/.cache/claude-cli-nodejs/<proj>/mcp-logs-<server>/*.jsonl.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "ca-mcp-headershelper; cd-mcpfix; cd-mcpdiagnose"
+  },
+  {
+   "query": "How does memini's Helm chart keep the API-key-bearing UI off the public route, and why does it use two separate hostnames instead of one split-horizon hostname?",
+   "gold": [
+    "ca-helm-route-split"
+   ],
+   "gold_all": [
+    "ca-helm-route-split",
+    "cd-gateway-route",
+    "cd-gateway-why"
+   ],
+   "group": "memini-dev",
+   "answer": "route.internal serves the full app including the UI shell (which embeds the API key) and stays on an internal-only gateway, while route.main (public, envoy-external gateway) matches only PathPrefix /v1, /mcp, and /.well-known/, so the UI is never reachable publicly; it uses distinct hostnames rather than one split-horizon hostname because external-dns-mikrotik watches both gateways with no filter, so a shared hostname would create a conflicting DNS record-set and a flaky internal UI.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "ca-helm-route-split; cd-gateway-route; cd-gateway-why"
+  },
+  {
+   "query": "What library does memini's Helm chart depend on for its values API, and what must an operator still configure manually for the API key?",
+   "gold": [
+    "cd-chart-version"
+   ],
+   "gold_all": [
+    "cd-chart-version",
+    "ca-helm-bjws-migration",
+    "cd-chart-secret"
+   ],
+   "group": "memini-dev",
+   "answer": "The chart was migrated to the bjw-s common Helm library's native values API (controllers/service/route/persistence/serviceAccount/serviceMonitor), and as of chart v0.3.0 depends on bjw-s common v5.0.1; the chart creates no Secret for the API key, so MEMINI_API_KEY must be wired in via env.valueFrom.secretKeyRef.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "cd-chart-version; ca-helm-bjws-migration; cd-chart-secret"
+  },
+  {
+   "query": "What two separate startup guards protect memini's vector store from silent embedding-configuration mismatches, and why is each one needed?",
+   "gold": [
+    "ca-embeddims-guard"
+   ],
+   "gold_all": [
+    "ca-embeddims-guard",
+    "ca-embeddims-guard-why",
+    "ca-embed-model-guard",
+    "ca-embed-model-guard-why"
+   ],
+   "group": "memini-dev",
+   "answer": "An embed-dims guard: sqlite-vec's Open fails when the configured MEMINI_EMBED_DIMS disagrees with the existing vec0 table's dimensions (naming both), because CREATE VIRTUAL TABLE IF NOT EXISTS is a no-op on an existing database, so a dims change would otherwise silently keep the old table width and only surface as opaque dimension-mismatch errors on every Upsert. An embed-model guard: the embedding model is recorded in a per-store meta table and startup refuses when MEMINI_EMBED_MODEL differs from the recorded one, because same-dimension vectors from different embedding models live in incomparable spaces, and a same-dims model change previously degraded recall silently with no error.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "ca-embeddims-guard; ca-embeddims-guard-why; ca-embed-model-guard; ca-embed-model-guard-why"
+  },
+  {
+   "query": "How did reordering memini's async consolidation avoid a lost-write race, and how does the sweeper safely reclaim the tombstoned source afterward?",
+   "gold": [
+    "ca-consolidation-embed-first"
+   ],
+   "gold_all": [
+    "ca-consolidation-embed-first",
+    "ca-consolidation-embed-first-why",
+    "ca-consolidation-tombstone-source",
+    "ca-tombstone-validto-grace"
+   ],
+   "group": "memini-dev",
+   "answer": "Consolidation now embeds the merged content before reading and writing the target record, shrinking the read-modify-write window to purely in-memory; previously a multi-second embedding call between reading the target and writing it back left a window where a concurrent write to the target was silently overwritten. The merged source is tombstoned onto the target instead of hard-deleted, so a SupersededBy pointer aimed at the source isn't orphaned; the sweeper's tombstone GC later reclaims it, measuring the grace period from the record's valid_to (when it was tombstoned) rather than updated_at, since superseding never bumps updated_at.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "ca-consolidation-embed-first; ca-consolidation-embed-first-why; ca-consolidation-tombstone-source; ca-tombstone-validto-grace"
+  },
+  {
+   "query": "How does memini avoid abrupt confidence swings, both when a durable memory is updated by ID and after its confidence grace period ends?",
+   "gold": [
+    "ca-confidence-preserve-update"
+   ],
+   "gold_all": [
+    "ca-confidence-preserve-update",
+    "ca-confidence-decay-continuous"
+   ],
+   "group": "memini-dev",
+   "answer": "Updating an existing durable memory by ID preserves its earned confidence loaded from the existing record instead of resetting it to the fresh seed value, unless the caller explicitly supplies one; separately, confidence decay past the one-week grace period is continuous from the end of the grace period rather than a step drop, so confidence doesn't instantly fall a full week's worth the moment the grace period ends.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "ca-confidence-preserve-update; ca-confidence-decay-continuous"
+  },
+  {
+   "query": "How do OpenClaw's per-agent namespace default and memini's subtree recall fan-out work together for a multi-agent gateway?",
+   "gold": [
+    "ct-openclaw-nsagent-true"
+   ],
+   "gold_all": [
+    "ct-openclaw-nsagent-true",
+    "n-subtree"
+   ],
+   "group": "memini-dev",
+   "answer": "OpenClaw defaults to per-agent namespace isolation (namespace_per_agent: true, template \"{namespace}-{agent}\") so subagents sharing one gateway can't poison each other's memory; memini's subtree recall then fans out across those nested namespaces (e.g. a project namespace also reads project/agent-a, project/agent-b), with MEMINI_AGENT scoping writes per agent.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "ct-openclaw-nsagent-true; n-subtree"
+  },
+  {
+   "query": "For episodic memories that write-time distillation didn't catch, what backstop promotes them to durable, and on what access threshold and cadence?",
+   "gold": [
+    "ce-promote-minaccess"
+   ],
+   "gold_all": [
+    "ce-promote-minaccess",
+    "ce-promote-interval",
+    "n-distill-onwrite"
+   ],
+   "group": "memini-dev",
+   "answer": "Promotion is the backstop for episodic memories not distilled at write time (write-time distillation of episodic captures runs behind MEMINI_DISTILL_ON_WRITE); a memory becomes eligible for promotion once it has been recalled MEMINI_PROMOTE_MIN_ACCESS times (default 3), and the promotion pass itself runs every MEMINI_PROMOTE_INTERVAL (default 24h).",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "doc:docs/tiers.md; n-distill-onwrite"
+  },
+  {
+   "query": "Why doesn't memini's corroboration mechanism resolve contradicting facts, and what rate limit does it apply when it does reinforce a genuinely-restated fact?",
+   "gold": [
+    "ce-corrob-noresolve"
+   ],
+   "gold_all": [
+    "ce-corrob-noresolve",
+    "ce-corrob-cooldown"
+   ],
+   "group": "memini-dev",
+   "answer": "Corroboration never resolves contradictions because similarity alone can't distinguish \"same fact, updated\" from \"related fact\" (benchmarked), so conflicting durable facts are left to the LLM consolidator or the merge-hint plus memory_update flow; when it does reinforce a restated fact, confidence growth is rate-limited to once per 24h per fact, so restating the same thing five times in a session counts as one observation.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "doc:docs/tiers.md"
+  },
+  {
+   "query": "Before memini's Phase-5 contradiction detector shipped, how were conflicting durable facts resolved, and what replaced that approach?",
+   "gold": [
+    "ce-corrob-noresolve"
+   ],
+   "gold_all": [
+    "ce-corrob-noresolve",
+    "n-contra-detector",
+    "n-contra-validto"
+   ],
+   "group": "memini-dev",
+   "answer": "Before Phase 5, corroboration couldn't resolve contradictions (similarity can't tell \"same fact, updated\" from \"related fact\"), so conflicting durable facts were left to the LLM consolidator or the manual merge-hint plus memory_update flow; Phase 5 replaced this with a dedicated, pure LLM-free contradiction detector (internal/contradict) that invalidates the stale fact automatically by stamping valid_to (Graphiti-style) instead of relying on similarity.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "doc:docs/tiers.md; n-contra-detector; n-contra-validto"
+  },
+  {
+   "query": "Since write-time classification never assigns the working tier automatically, how does memini make sure a working-tier write still gets meaningful importance?",
+   "gold": [
+    "ce-classify-workingexplicit"
+   ],
+   "gold_all": [
+    "ce-classify-workingexplicit",
+    "n-seed-importance"
+   ],
+   "group": "memini-dev",
+   "answer": "Classification never auto-picks the working tier; transient scratch content must set tier=\"working\" explicitly. Regardless of which tier a write lands in, tier-based seed importance still applies so writes don't all default to importance 0: durable seeds at 0.6, episodic at 0.3, and working at 0.1.",
+   "category": "synthesis",
+   "now": "2026-07-06T00:00:00Z",
+   "provenance": "doc:docs/tiers.md; n-seed-importance"
+  }
+ ]
+}
