@@ -13,11 +13,14 @@ import (
 )
 
 // fakeToolChat scripts a tool loop: each round pops the next scripted result.
-// It also implements Complete so WithAnswerer accepts it.
+// It also implements Complete, which serves the agentic early-exit gate: gate
+// is what the first single-shot pass replies (default INSUFFICIENT so loop
+// tests enter the tool rounds).
 type fakeToolChat struct {
-	script  []llm.ChatResult
-	rounds  []roundSeen
-	oneShot bool // Complete was called (single-shot path)
+	script    []llm.ChatResult
+	rounds    []roundSeen
+	gate      string
+	completes int // Complete calls (gate / single-shot path)
 }
 
 type roundSeen struct {
@@ -27,8 +30,11 @@ type roundSeen struct {
 }
 
 func (f *fakeToolChat) Complete(context.Context, string, string) (string, error) {
-	f.oneShot = true
-	return "single-shot", nil
+	f.completes++
+	if f.gate == "" {
+		return "INSUFFICIENT", nil
+	}
+	return f.gate, nil
 }
 
 func (f *fakeToolChat) ChatTools(
@@ -77,8 +83,8 @@ func TestAnswerAgenticLoop(t *testing.T) {
 	if res.Answer != "postgres" {
 		t.Fatalf("answer = %q, want postgres", res.Answer)
 	}
-	if fake.oneShot {
-		t.Fatal("agentic level must not take the single-shot path")
+	if fake.completes != 1 {
+		t.Fatalf("gate should run exactly once before the loop, got %d Complete calls", fake.completes)
 	}
 	if len(res.Sources) == 0 {
 		t.Fatal("sources should accumulate from prefetch/tool retrievals")
@@ -160,6 +166,95 @@ func TestAnswerAgenticBadToolArgs(t *testing.T) {
 	}
 	if len(errs) != 2 {
 		t.Fatalf("both bad calls should yield tool-visible errors, got %v", errs)
+	}
+}
+
+// TestAnswerAgenticEarlyExit pins the gate: when the first single-shot pass
+// over the prefetched memories answers directly, the loop never opens — no
+// tool rounds, sources are the prefetch only.
+func TestAnswerAgenticEarlyExit(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	fake := &fakeToolChat{gate: "postgres"}
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithAnswerer(fake))
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the team standardized on postgres for services", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+
+	res, err := svc.Answer(ctx, service.AnswerInput{
+		Namespace: "alice", Query: "which database?", Limit: 5, Reasoning: service.ReasoningMedium,
+	})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if res.Answer != "postgres" {
+		t.Fatalf("answer = %q, want the gate's direct answer", res.Answer)
+	}
+	if len(fake.rounds) != 0 {
+		t.Fatalf("gate answered directly, loop must not open; got %d tool rounds", len(fake.rounds))
+	}
+	if len(res.Sources) == 0 {
+		t.Fatal("early exit should still ground on the prefetched memories")
+	}
+}
+
+// scriptedCompleter pops one scripted reply per Complete call and records the
+// user prompts, for testing multi-completion strategies (expand).
+type scriptedCompleter struct {
+	script []string
+	users  []string
+}
+
+func (s *scriptedCompleter) Complete(_ context.Context, _, user string) (string, error) {
+	s.users = append(s.users, user)
+	if len(s.script) == 0 {
+		return "", nil
+	}
+	next := s.script[0]
+	s.script = s.script[1:]
+	return next, nil
+}
+
+// TestAnswerExpand pins the query-expansion strategy: one rewrite completion,
+// recalls unioned across the original and rewritten queries (deduped), one
+// synthesis completion grounded on the union.
+func TestAnswerExpand(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	sc := &scriptedCompleter{script: []string{
+		"1. database decision\n- which db was standardized\n",
+		"postgres",
+	}}
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithAnswerer(sc))
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the team standardized on postgres for services", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+
+	res, err := svc.Answer(ctx, service.AnswerInput{
+		Namespace: "alice", Query: "which database?", Limit: 5, Reasoning: service.ReasoningExpand,
+	})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if res.Answer != "postgres" {
+		t.Fatalf("answer = %q, want postgres", res.Answer)
+	}
+	if len(sc.users) != 2 {
+		t.Fatalf("expand should cost exactly 2 completions (rewrite + synthesis), got %d", len(sc.users))
+	}
+	if !strings.Contains(sc.users[0], "which database?") {
+		t.Fatalf("rewrite prompt should carry the question, got %q", sc.users[0])
+	}
+	// Union dedups: the same memory recalled by all three queries appears once.
+	if !strings.Contains(sc.users[1], "postgres for services") || strings.Count(sc.users[1], "postgres for services") != 1 {
+		t.Fatalf("synthesis context should carry the memory exactly once, got %q", sc.users[1])
+	}
+	if len(res.Sources) != 1 {
+		t.Fatalf("sources should be the deduped union, got %d", len(res.Sources))
 	}
 }
 

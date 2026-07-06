@@ -13,13 +13,15 @@ import (
 )
 
 // ReasoningLevel selects the answer strategy: empty/minimal is the single-shot
-// recall+complete path; low/medium/high run a bounded tool loop where the
-// model may search memory again before answering — the latency/cost dial for
-// multi-hop and temporal questions.
+// recall+complete path; expand is one query-rewrite completion plus a unioned
+// multi-query recall and one synthesis (no tool loop); low/medium/high run a
+// bounded tool loop where the model may search memory again before answering —
+// the latency/cost dial for multi-hop and temporal questions.
 type ReasoningLevel string
 
 const (
 	ReasoningMinimal ReasoningLevel = "minimal"
+	ReasoningExpand  ReasoningLevel = "expand"
 	ReasoningLow     ReasoningLevel = "low"
 	ReasoningMedium  ReasoningLevel = "medium"
 	ReasoningHigh    ReasoningLevel = "high"
@@ -38,6 +40,22 @@ func (r ReasoningLevel) iterations() int {
 		return 0
 	}
 }
+
+// answerGateSystem is the early-exit gate of the agentic loop: one single-shot
+// read over the prefetched memories that either answers directly or declares
+// them insufficient. The pilot bench showed the ungated loop regresses
+// direct-answer questions by over-searching (rationale 88->75%), so the loop
+// only opens when this first pass cannot settle the question.
+const answerGateSystem = answerSystem +
+	" Exception: you are the first pass of a deeper memory search, so instead of guessing or replying " +
+	"\"I don't know\", reply with exactly INSUFFICIENT when the provided memories do not settle the " +
+	"question: the specific fact asked for is missing, the question aggregates across time or sessions " +
+	"(how many, list all, first/last), the memories conflict without a clear latest value, or the answer " +
+	"depends on an update these memories may not include. If the memories do settle the question, answer " +
+	"it directly."
+
+// answerInsufficient is the gate's escape hatch sentinel.
+const answerInsufficient = "INSUFFICIENT"
 
 // answerLoopSystem extends the single-shot reader prompt with tool guidance.
 const answerLoopSystem = answerSystem +
@@ -96,9 +114,11 @@ var answerTools = []llm.Tool{
 	},
 }
 
-// answerAgentic runs the bounded tool loop: prefetch context like the
-// single-shot path, let the model search up to iters rounds, then force a
-// final synthesis. Sources accumulate across every retrieval.
+// answerAgentic runs the gated tool loop: prefetch context like the
+// single-shot path, answer directly when that context already suffices
+// (the early-exit gate), and otherwise let the model search up to iters
+// rounds before forcing a final synthesis. Sources accumulate across every
+// retrieval.
 func (s *Service) answerAgentic(ctx context.Context, in AnswerInput, tc llm.ToolChat, iters int) (AnswerResult, error) {
 	prefetch, err := s.Recall(ctx, RecallInput{
 		Namespace: in.Namespace, Query: in.Query, Limit: in.Limit, Tiers: in.Tiers,
@@ -120,8 +140,21 @@ func (s *Service) answerAgentic(ctx context.Context, in AnswerInput, tc llm.Tool
 	}
 	collect(prefetch)
 
+	// Early-exit gate: if the prefetched context already answers the question,
+	// return that answer at single-shot cost instead of entering the loop.
+	direct, err := s.answerer.Complete(ctx, answerGateSystem,
+		"Memories:\n"+formatAnswerContext(prefetch)+"\nQuestion: "+in.Query+"\nAnswer:")
+	if err != nil {
+		s.metrics.AnswerResult("error")
+		return AnswerResult{}, fmt.Errorf("answer: gate: %w", err)
+	}
+	if !strings.Contains(strings.ToUpper(direct), answerInsufficient) {
+		s.metrics.AnswerResult("ok")
+		return AnswerResult{Answer: strings.TrimSpace(direct), Sources: sources}, nil
+	}
+
 	turns := []llm.ChatTurn{{Role: "user", Text: "Memories:\n" + formatAnswerContext(prefetch) +
-		"\nQuestion: " + in.Query + "\nSearch if these are insufficient, then answer."}}
+		"\nQuestion: " + in.Query + "\nA first read found these memories insufficient. Search for what is missing, then answer."}}
 	for range iters {
 		res, err := tc.ChatTools(ctx, answerLoopSystem, turns, answerTools, llm.ToolAuto)
 		if err != nil {

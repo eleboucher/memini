@@ -51,7 +51,8 @@ func run() error {
 	ckptPath := flag.String("checkpoint", "", "resume checkpoint (JSONL; default bench/results/qa_<suite>_<ingest>.jsonl)")
 	dbg := flag.Bool("debug", false, "print per-question retrieval/answer/grade to stderr")
 	temporalBoost := flag.Float64("temporal-boost", 0.40, "temporal targeting boost (0 disables)")
-	reasoning := flag.String("reasoning", "", "answer reasoning level: empty/minimal (single-shot) | low | medium | high (agentic tool loop)")
+	reasoning := flag.String("reasoning", "",
+		"answer reasoning level: empty/minimal (single-shot) | expand (multi-query rewrite) | low | medium | high (agentic tool loop)")
 	distill := flag.Bool("distill", false,
 		"with -ingest=write: distill each episodic capture into durable facts at write time "+
 			"via the MEMINI_LLM_* chat backend (supersedes the heuristic extractor, as in production)")

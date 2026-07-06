@@ -67,6 +67,9 @@ func (s *Service) Answer(ctx context.Context, in AnswerInput) (AnswerResult, err
 		s.metrics.AnswerResult("error")
 		return AnswerResult{}, fmt.Errorf("answer: no LLM configured (use WithAnswerer)")
 	}
+	if in.Reasoning == ReasoningExpand {
+		return s.answerExpand(ctx, in)
+	}
 	if iters := in.Reasoning.iterations(); iters > 0 {
 		if tc, ok := s.answerer.(llm.ToolChat); ok {
 			return s.answerAgentic(ctx, in, tc, iters)
