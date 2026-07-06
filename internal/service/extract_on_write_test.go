@@ -51,10 +51,11 @@ func TestExtractOnWrite(t *testing.T) {
 		st := openTestStore(t)
 		svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(),
 			service.WithExtractOnWrite(true))
-		if _, err := svc.Remember(ctx, service.RememberInput{
+		src, err := svc.Remember(ctx, service.RememberInput{
 			Namespace: ns, Content: decision, Tier: memory.TierEpisodic,
 			Metadata: map[string]any{"source": "turn_capture", "session_id": "sess-1", "format": "turn"},
-		}); err != nil {
+		})
+		if err != nil {
 			t.Fatalf("remember: %v", err)
 		}
 		svc.WaitBackground()
@@ -64,6 +65,9 @@ func TestExtractOnWrite(t *testing.T) {
 		}
 		if got, _ := fact.Metadata["source"].(string); got != "extract" {
 			t.Fatalf("extracted fact source = %q, want %q", got, "extract")
+		}
+		if got, _ := fact.Metadata["source_id"].(string); got != src.ID {
+			t.Fatalf("extracted fact source_id = %q, want the parent episodic %q", got, src.ID)
 		}
 	})
 

@@ -369,6 +369,68 @@ func TestWriteDedupCoalescesNearIdentical(t *testing.T) {
 	}
 }
 
+// TestWriteDedupCoalesceTiebreak pins the informativeness tiebreak on the
+// coalesce action: a strictly richer phrasing of a near-duplicate replaces the
+// stored copy (old is tombstoned, earned confidence carries forward); a poorer
+// phrasing still coalesces into the survivor.
+func TestWriteDedupCoalesceTiebreak(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "svc.db"), dims)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	// Threshold 0.1 so the nearest same-tier match always enters the coalesce
+	// path regardless of embedder geometry — the tiebreak is what's under test.
+	svc := service.New(st, embedtest.New(dims),
+		service.WithSyncReinforce(), service.WithWriteDedup(0.1, service.WriteDedupCoalesce))
+
+	first, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the user likes coffee", Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	// Raise the stored fact's confidence above the fresh seed so the carry is
+	// observable on the replacement.
+	if err := st.SetConfidence(ctx, "alice", first.ID, 0.9, time.Unix(1_700_000_000, 0).UTC()); err != nil {
+		t.Fatalf("set confidence: %v", err)
+	}
+
+	richer, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the user likes coffee strong and black every morning before standup",
+		Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("remember richer: %v", err)
+	}
+	if richer.ID == first.ID {
+		t.Fatal("richer phrasing should replace the stored copy, not coalesce into it")
+	}
+	if richer.Confidence == nil || *richer.Confidence < 0.9 {
+		t.Fatalf("replacement confidence = %v, want >= 0.9 carried from the superseded copy", richer.Confidence)
+	}
+	svc.WaitBackground() // auto-supersede of the old copy runs in the background
+	old, err := svc.Get(ctx, "alice", first.ID)
+	if err != nil {
+		t.Fatalf("get old: %v", err)
+	}
+	if old.SupersededBy == nil || *old.SupersededBy != richer.ID {
+		t.Fatalf("old copy SupersededBy = %v, want %q", old.SupersededBy, richer.ID)
+	}
+
+	// A poorer restatement still coalesces into the survivor.
+	poorer, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "user likes coffee", Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("remember poorer: %v", err)
+	}
+	if poorer.ID != richer.ID {
+		t.Fatalf("poorer phrasing got ID %q, want coalesced into %q", poorer.ID, richer.ID)
+	}
+}
+
 func TestWriteDedupDisabledByDefault(t *testing.T) {
 	// The fuzzy vector gate (WithWriteDedup) is off by default; with the exact
 	// fingerprint path also disabled, an identical repeat is stored verbatim.

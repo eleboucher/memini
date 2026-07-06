@@ -52,6 +52,37 @@ func durableCount(t *testing.T, st store.Store, ns string) int {
 	return tierCount(t, st, ns, memory.TierSemantic)
 }
 
+// TestDistillOnWriteProvenance pins that a distilled fact records where it came
+// from: source_ids always, plus the exact promoted_from pointer and inherited
+// session_id when the batch is a single episode (the distill-on-write case).
+func TestDistillOnWriteProvenance(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(),
+		service.WithDistiller(fakeDistiller{fact: "deploys go through the staging gate"}),
+		service.WithDistillOnWrite(true))
+	src, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "User: how do we deploy?\nAssistant: everything goes through the staging gate",
+		Tier: memory.TierEpisodic, Metadata: map[string]any{"session_id": "sess-42"},
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	svc.WaitBackground()
+
+	fact := durableOne(t, st, "alice")
+	if got, _ := fact.Metadata["promoted_from"].(string); got != src.ID {
+		t.Fatalf("promoted_from = %q, want %q", got, src.ID)
+	}
+	if got, _ := fact.Metadata["session_id"].(string); got != "sess-42" {
+		t.Fatalf("session_id = %q, want sess-42 (session exclusion must reach distilled facts)", got)
+	}
+	ids, ok := fact.Metadata["source_ids"].([]any) // JSON round-trip turns []string into []any
+	if !ok || len(ids) != 1 || ids[0] != src.ID {
+		t.Fatalf("source_ids = %v, want [%q]", fact.Metadata["source_ids"], src.ID)
+	}
+}
+
 // TestDistillOnWrite pins write-time distillation: a fresh episodic capture is
 // distilled into a durable semantic fact in the background. Fires only for a
 // fresh episodic create (not an update); needs a distiller; gated by the option.

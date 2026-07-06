@@ -981,8 +981,9 @@ func (s *Service) runSplitDedup(
 //   - hint: a MergeHint (action "hint") — the caller proceeds with the write and
 //     surfaces the hint so the LLM (or the human) can merge via memory_update.
 //   - supersedeID: the id of the near-duplicate to tombstone (action
-//     "supersede"). Deferred to the caller so it only runs once the replacement
-//     is durably stored — a failed insert must never drop the old memory.
+//     "supersede", or a coalesce the incoming phrasing wins on informativeness).
+//     Deferred to the caller so it only runs once the replacement is durably
+//     stored — a failed insert must never drop the old memory.
 //
 // At most one is non-zero; all empty when nothing scores above the threshold.
 func (s *Service) dedupCheck(ctx context.Context, m *memory.Memory) (hit *memory.Memory, hint *MergeHint, supersedeID string) {
@@ -1013,11 +1014,35 @@ func (s *Service) dedupCheck(ctx context.Context, m *memory.Memory) (hit *memory
 			Tier:           existing.Tier,
 		}, ""
 	case WriteDedupCoalesce:
+		// Informativeness tiebreak (adapted from honcho's token-set
+		// duplicate-superiority heuristic): when the incoming phrasing is
+		// strictly richer than the stored one, replace instead of dropping —
+		// store the new copy and tombstone the old (reversible via supersede),
+		// carrying earned confidence forward so the swap doesn't reset trust.
+		if wordSetScore(m.Content) > wordSetScore(existing.Content) {
+			if existing.Confidence != nil && (m.Confidence == nil || *existing.Confidence > *m.Confidence) {
+				c := *existing.Confidence
+				m.Confidence = &c
+			}
+			return nil, nil, existing.ID
+		}
 		s.reinforce(ctx, []store.Scored{{Memory: existing}})
 		s.corroborate(ctx, existing)
 		return existing, nil, ""
 	}
 	return nil, nil, ""
+}
+
+// wordSetScore measures how informative a phrasing is: total words plus a 10×
+// premium on distinct words, so added detail wins the coalesce tiebreak but
+// repetition alone doesn't.
+func wordSetScore(s string) int {
+	words := strings.Fields(strings.ToLower(s))
+	uniq := make(map[string]struct{}, len(words))
+	for _, w := range words {
+		uniq[w] = struct{}{}
+	}
+	return len(words) + 10*len(uniq)
 }
 
 // autoSupersede tombstones oldID (replaced by newID) in the background, after
@@ -1609,7 +1634,9 @@ func (s *Service) extractEpisodicAsync(ctx context.Context, m *memory.Memory) {
 		dctx, cancel := context.WithTimeout(bg, distillOnWriteTimeout)
 		defer cancel()
 		for _, r := range results {
-			meta := map[string]any{"memory_type": string(r.Kind), "source": "extract"}
+			// source_id links the derived fact back to the episodic it was mined
+			// from, so "why does this memory exist" stays answerable.
+			meta := map[string]any{"memory_type": string(r.Kind), "source": "extract", "source_id": m.ID}
 			// Extracted facts inherit the parent's session_id: a turn capture's
 			// content includes the agent's own response, and without the stamp the
 			// integrations' exclude_metadata session guard can never keep a

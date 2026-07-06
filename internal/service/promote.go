@@ -122,16 +122,33 @@ func (s *Service) promote(ctx context.Context, ns string, batch []*memory.Memory
 		return 0, err
 	}
 
+	// Provenance: every distilled fact records the episodic IDs it was distilled
+	// from. Batch-granular (the LLM does not attribute facts to episodes), so a
+	// single-episode batch also gets the exact promoted_from pointer and inherits
+	// the source's session_id for the integrations' session-echo guard.
+	sourceIDs := make([]string, len(stamped))
+	for i, m := range stamped {
+		sourceIDs[i] = m.ID
+	}
+
 	written := 0
 	for _, f := range facts {
 		if strings.TrimSpace(f.Content) == "" {
 			continue
 		}
+		meta := map[string]any{"source_ids": sourceIDs}
+		if cat := strings.ToLower(strings.TrimSpace(f.Category)); cat != "" {
+			meta["distill_category"] = cat
+		}
+		if len(stamped) == 1 {
+			meta["promoted_from"] = stamped[0].ID
+			if sid, ok := stamped[0].Metadata["session_id"].(string); ok && sid != "" {
+				meta["session_id"] = sid
+			}
+		}
 		in := RememberInput{
 			Namespace: ns, Content: f.Content, Summary: f.Summary, Tier: tierForCategory(f.Category),
-		}
-		if cat := strings.ToLower(strings.TrimSpace(f.Category)); cat != "" {
-			in.Metadata = map[string]any{"distill_category": cat}
+			Metadata: meta,
 		}
 		if _, err := s.Remember(ctx, in); err != nil {
 			slog.WarnContext(ctx, "promote: store fact", "err", err)
