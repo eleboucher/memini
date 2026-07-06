@@ -377,6 +377,9 @@ type answerArgs struct {
 	Metadata  map[string]string `json:"metadata,omitempty" jsonschema:"ground only on memories whose metadata has each key=value pair (AND)"`
 	Limit     int               `json:"limit,omitempty" jsonschema:"max memories to ground on (default 10)"`
 	Namespace string            `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+	// ReasoningLevel is the latency/cost dial: higher levels let the model
+	// search memory iteratively before answering.
+	ReasoningLevel string `json:"reasoning_level,omitempty" jsonschema:"effort: minimal|low|medium|high; higher = iterative search (slower)"`
 }
 
 type answerResult struct {
@@ -400,6 +403,7 @@ func (t *tools) answer(ctx context.Context, _ *mcpsdk.CallToolRequest, in answer
 		Tags:      in.Tags,
 		Metadata:  in.Metadata,
 		Limit:     in.Limit,
+		Reasoning: service.ReasoningLevel(in.ReasoningLevel),
 	})
 	if err != nil {
 		return nil, answerResult{}, err

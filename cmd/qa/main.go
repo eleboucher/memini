@@ -52,10 +52,15 @@ func run() error {
 	ckptPath := flag.String("checkpoint", "", "resume checkpoint (JSONL; default bench/results/qa_<suite>_<ingest>.jsonl)")
 	dbg := flag.Bool("debug", false, "print per-question retrieval/answer/grade to stderr")
 	temporalBoost := flag.Float64("temporal-boost", 0.40, "temporal targeting boost (0 disables)")
+	reasoning := flag.String("reasoning", "", "answer reasoning level: empty/minimal (single-shot) | low | medium | high (agentic tool loop)")
 	flag.Parse()
 	debug = *dbg
 	if *ckptPath == "" {
-		*ckptPath = fmt.Sprintf("bench/results/qa_%s_%s.jsonl", *suite, *ingestMode)
+		suffix := ""
+		if *reasoning != "" && *reasoning != "minimal" {
+			suffix = "_" + *reasoning
+		}
+		*ckptPath = fmt.Sprintf("bench/results/qa_%s_%s%s.jsonl", *suite, *ingestMode, suffix)
 	}
 
 	dims := envInt("MEMINI_EMBED_DIMS", 4096)
@@ -159,7 +164,7 @@ func run() error {
 		wg.Go(func() {
 			for i := range jobs {
 				q := ds.Questions[i]
-				correct, err := answerAndJudge(ctx, svcFor(q.Group), chat, q, *k)
+				correct, err := answerAndJudge(ctx, svcFor(q.Group), chat, q, *k, service.ReasoningLevel(*reasoning))
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "q%d error: %v\n", i, err)
 					continue
@@ -373,9 +378,12 @@ func judgeSystemFor(category string) string {
 var debug bool
 
 // answerAndJudge runs the production answer path (recall + service.Answer's
-// reader prompt) and grades the reply against the reference.
-func answerAndJudge(ctx context.Context, svc *service.Service, chat llm.Completer, q bench.Question, k int) (bool, error) {
-	res, err := svc.Answer(ctx, service.AnswerInput{Namespace: q.Group, Query: q.Query, Limit: k})
+// reader prompt; the agentic loop when a reasoning level is set) and grades
+// the reply against the reference.
+func answerAndJudge(
+	ctx context.Context, svc *service.Service, chat llm.Completer, q bench.Question, k int, level service.ReasoningLevel,
+) (bool, error) {
+	res, err := svc.Answer(ctx, service.AnswerInput{Namespace: q.Group, Query: q.Query, Limit: k, Reasoning: level})
 	if err != nil {
 		return false, err
 	}

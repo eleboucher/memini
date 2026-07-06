@@ -72,6 +72,78 @@ func (c *OpenAIClient) Complete(ctx context.Context, system, user string) (strin
 	return c.chat(ctx, system, user, false)
 }
 
+// ChatTools runs one round of a tool-calling conversation, translating the
+// canonical tool/choice vocabulary to the /chat/completions encoding.
+func (c *OpenAIClient) ChatTools(
+	ctx context.Context, system string, turns []ChatTurn, tools []Tool, choice ToolChoice,
+) (ChatResult, error) {
+	messages := make([]openai.ChatCompletionMessageParamUnion, 0, len(turns)+1)
+	messages = append(messages, openai.SystemMessage(system))
+	for _, t := range turns {
+		switch t.Role {
+		case RoleAssistant:
+			a := openai.ChatCompletionAssistantMessageParam{}
+			if t.Text != "" {
+				a.Content.OfString = openai.String(t.Text)
+			}
+			for _, call := range t.Calls {
+				a.ToolCalls = append(a.ToolCalls, openai.ChatCompletionMessageToolCallUnionParam{
+					OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
+						ID: call.ID,
+						Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
+							Name: call.Name, Arguments: string(call.Args),
+						},
+					},
+				})
+			}
+			messages = append(messages, openai.ChatCompletionMessageParamUnion{OfAssistant: &a})
+		case RoleTool:
+			messages = append(messages, openai.ToolMessage(t.Text, t.CallID))
+		default:
+			messages = append(messages, openai.UserMessage(t.Text))
+		}
+	}
+
+	params := openai.ChatCompletionNewParams{
+		Model:       c.model,
+		Messages:    messages,
+		Temperature: openai.Float(0),
+		MaxTokens:   openai.Int(c.maxTokens),
+	}
+	if len(tools) > 0 && choice != ToolNone {
+		for _, tool := range tools {
+			params.Tools = append(params.Tools, openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
+				Name:        tool.Name,
+				Description: openai.String(tool.Description),
+				Parameters:  shared.FunctionParameters(tool.Schema),
+			}))
+		}
+		params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{OfAuto: openai.String(string(choice))}
+	}
+
+	resp, err := c.client.Chat.Completions.New(ctx, params)
+	if err != nil {
+		return ChatResult{}, fmt.Errorf("llm: chat tools: %w", err)
+	}
+	if len(resp.Choices) == 0 {
+		return ChatResult{}, errors.New("llm: empty response")
+	}
+	msg := resp.Choices[0].Message
+	out := ChatResult{Text: strings.TrimSpace(msg.Content)}
+	for _, call := range msg.ToolCalls {
+		if call.Type != "" && call.Type != "function" {
+			continue
+		}
+		out.Calls = append(out.Calls, ToolCall{
+			ID: call.ID, Name: call.Function.Name, Args: json.RawMessage(call.Function.Arguments),
+		})
+	}
+	if out.Text == "" && len(out.Calls) == 0 {
+		return ChatResult{}, fmt.Errorf("llm: openai: %w (finish_reason %q)", errEmptyResponse, resp.Choices[0].FinishReason)
+	}
+	return out, nil
+}
+
 func (c *OpenAIClient) chat(ctx context.Context, system, user string, jsonMode bool) (string, error) {
 	params := openai.ChatCompletionNewParams{
 		Model: c.model,

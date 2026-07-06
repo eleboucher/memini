@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/eleboucher/memini/internal/contradict"
+	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/store"
 )
@@ -42,6 +43,10 @@ type AnswerInput struct {
 	// memory must carry every listed tag and match each metadata key=value pair.
 	Tags     []string
 	Metadata map[string]string
+	// Reasoning selects the answer strategy: empty/minimal is single-shot;
+	// low/medium/high run the bounded tool loop (see ReasoningLevel). Falls
+	// back to single-shot when the configured LLM client can't do tool calls.
+	Reasoning ReasoningLevel
 }
 
 // AnswerResult is the generated answer and the memories it was grounded on.
@@ -61,6 +66,14 @@ func (s *Service) Answer(ctx context.Context, in AnswerInput) (AnswerResult, err
 		s.metrics.AnswerResult("error")
 		return AnswerResult{}, fmt.Errorf("answer: no LLM configured (use WithAnswerer)")
 	}
+	if iters := in.Reasoning.iterations(); iters > 0 {
+		if tc, ok := s.answerer.(llm.ToolChat); ok {
+			return s.answerAgentic(ctx, in, tc, iters)
+		}
+		// The configured client can't do tool calls: single-shot is the honest
+		// fallback rather than an error — the caller asked for more effort, not
+		// a different capability.
+	}
 	res, err := s.Recall(ctx, RecallInput{
 		Namespace: in.Namespace, Query: in.Query, Limit: in.Limit, Tiers: in.Tiers,
 		Tags: in.Tags, Metadata: in.Metadata,
@@ -69,16 +82,26 @@ func (s *Service) Answer(ctx context.Context, in AnswerInput) (AnswerResult, err
 		s.metrics.AnswerResult("error")
 		return AnswerResult{}, err
 	}
-	// Tag conflicting pairs deterministically before formatting: the write-path
-	// detector only compares at write time, so recall can surface live pairs it
-	// never saw side by side. The lexical classifier is precision-first — a tag
-	// means a real same-claim disagreement, not embedding-space proximity.
+	ans, err := s.answerer.Complete(ctx, answerSystem,
+		"Memories:\n"+formatAnswerContext(res)+"\nQuestion: "+in.Query+"\nAnswer:")
+	if err != nil {
+		s.metrics.AnswerResult("error")
+		return AnswerResult{}, fmt.Errorf("answer: generate: %w", err)
+	}
+	s.metrics.AnswerResult("ok")
+	return AnswerResult{Answer: strings.TrimSpace(ans), Sources: res}, nil
+}
+
+// formatAnswerContext renders recalled memories for a reader prompt: numbered,
+// date-bracketed (ValidFrom over CreatedAt so backdated facts resolve relative
+// time correctly), with deterministic conflict tags — the write-path detector
+// only compares at write time, so recall can surface live pairs it never saw
+// side by side. The lexical classifier is precision-first: a tag means a real
+// same-claim disagreement, not embedding-space proximity.
+func formatAnswerContext(res []store.Scored) string {
 	conflicts := conflictTags(res)
 	var b strings.Builder
 	for i, r := range res {
-		// The date annotation the system prompt refers to: anchor each memory on
-		// when it was true (ValidFrom) rather than when it was recorded, so
-		// backdated facts resolve relative time references correctly.
 		date := r.Memory.CreatedAt
 		if r.Memory.ValidFrom != nil {
 			date = *r.Memory.ValidFrom
@@ -89,14 +112,7 @@ func (s *Service) Answer(ctx context.Context, in AnswerInput) (AnswerResult, err
 		}
 		b.WriteByte('\n')
 	}
-	ans, err := s.answerer.Complete(ctx, answerSystem,
-		"Memories:\n"+b.String()+"\nQuestion: "+in.Query+"\nAnswer:")
-	if err != nil {
-		s.metrics.AnswerResult("error")
-		return AnswerResult{}, fmt.Errorf("answer: generate: %w", err)
-	}
-	s.metrics.AnswerResult("ok")
-	return AnswerResult{Answer: strings.TrimSpace(ans), Sources: res}, nil
+	return b.String()
 }
 
 // conflictTags classifies every recalled pair with the lexical contradiction
