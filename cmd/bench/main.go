@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -60,7 +61,15 @@ func run() error {
 		"sweep a cross-encoder rerank-score gate over these thresholds (needs -rerank-url); "+
 			"positive recall vs foreign-namespace injection")
 	rerankGatePool := flag.Int("rerank-gate-pool", 20, "candidates reranked per question for -rerank-gate")
+	ingest := flag.String("ingest", "upsert",
+		"corpus ingestion: upsert (direct store writes, historical default) | "+
+			"write (production Remember path: classify, gates, dedup, corroborate/contradict)")
 	flag.Parse()
+
+	ingestMode, err := parseIngestMode(*ingest)
+	if err != nil {
+		return err
+	}
 
 	ds, err := loadDataset(*suite, *data, bench.DocMode(*sessionDoc))
 	if err != nil {
@@ -152,7 +161,7 @@ func run() error {
 	}
 
 	var results []bench.Result
-	for _, sys := range bench.MeminiSystems(st, embedder, *concurrency, queryPrefix, *fusionAlpha, *poolFactor, *poolFloor) {
+	for _, sys := range bench.MeminiSystems(st, embedder, *concurrency, queryPrefix, *fusionAlpha, *poolFactor, *poolFloor, ingestMode) {
 		rs, err := bench.Run(ctx, sys, ds, ks)
 		if err != nil {
 			return err
@@ -172,16 +181,86 @@ func run() error {
 	}
 	printPerCategory(results, ks[len(ks)-1])
 
-	if err := os.MkdirAll(*outDir, 0o755); err != nil {
+	cfg := runConfig{
+		Suite: *suite, Dataset: ds.Name, Holdout: *holdout, SessionDoc: *sessionDoc,
+		IngestMode: string(ingestMode), Ks: ks, Limit: *limit, Concurrency: *concurrency,
+		FusionAlpha: *fusionAlpha, PoolFactor: *poolFactor, PoolFloor: *poolFloor,
+		EmbedBaseURL: os.Getenv("MEMINI_EMBED_BASE_URL"), EmbedModel: embedModel(), EmbedDims: dim,
+		QueryPrefix: queryPrefix, DocPrefix: os.Getenv("MEMINI_EMBED_DOC_PREFIX"),
+		GitCommit: gitCommit(),
+	}
+	return writeReport(*outDir, ds.Name, cfg, results)
+}
+
+// writeReport writes the run's config snapshot and results as one JSON file so
+// past numbers stay self-describing and reproducible.
+func writeReport(outDir, name string, cfg runConfig, results []bench.Result) error {
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
 	}
-	outPath := filepath.Join(*outDir, ds.Name+".json")
-	buf, _ := json.MarshalIndent(results, "", "  ")
+	outPath := filepath.Join(outDir, name+".json")
+	report := struct {
+		Config  runConfig      `json:"config"`
+		Results []bench.Result `json:"results"`
+	}{Config: cfg, Results: results}
+	buf, _ := json.MarshalIndent(report, "", "  ")
 	if err := os.WriteFile(outPath, append(buf, '\n'), 0o644); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "wrote %s\n", outPath)
 	return nil
+}
+
+// runConfig snapshots everything that shaped a run, embedded in the result
+// JSON so past numbers stay self-describing and reproducible.
+type runConfig struct {
+	Suite        string  `json:"suite"`
+	Dataset      string  `json:"dataset"`
+	Holdout      string  `json:"holdout,omitempty"`
+	SessionDoc   string  `json:"session_doc,omitempty"`
+	IngestMode   string  `json:"ingest_mode"`
+	Ks           []int   `json:"ks"`
+	Limit        int     `json:"limit,omitempty"`
+	Concurrency  int     `json:"concurrency"`
+	FusionAlpha  float64 `json:"fusion_alpha"`
+	PoolFactor   int     `json:"pool_factor,omitempty"`
+	PoolFloor    int     `json:"pool_floor,omitempty"`
+	EmbedBaseURL string  `json:"embed_base_url,omitempty"`
+	EmbedModel   string  `json:"embed_model"`
+	EmbedDims    int     `json:"embed_dims"`
+	QueryPrefix  string  `json:"query_prefix,omitempty"`
+	DocPrefix    string  `json:"doc_prefix,omitempty"`
+	GitCommit    string  `json:"git_commit,omitempty"`
+}
+
+// embedModel mirrors buildEmbedder's model resolution for the config snapshot.
+func embedModel() string {
+	if os.Getenv("MEMINI_EMBED_BASE_URL") == "" {
+		return "embedtest"
+	}
+	if m := os.Getenv("MEMINI_EMBED_MODEL"); m != "" {
+		return m
+	}
+	return "text-embedding-3-small"
+}
+
+// gitCommit returns the working tree's short commit hash, best-effort.
+func gitCommit() string {
+	out, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func parseIngestMode(s string) (bench.IngestMode, error) {
+	mode := bench.IngestMode(s)
+	switch mode {
+	case bench.IngestUpsert, bench.IngestWrite:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("unknown -ingest %q (want upsert|write)", s)
+	}
 }
 
 // parseFloatList parses a comma-separated list of non-negative floats, skipping

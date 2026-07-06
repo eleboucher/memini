@@ -33,7 +33,7 @@ func TestDedupRecoversPoisonedStore(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	sys := bench.MeminiSystems(st, embedtest.New(dims), 4, "", -1, 0, 0)[0] // hybrid
+	sys := bench.MeminiSystems(st, embedtest.New(dims), 4, "", -1, 0, 0, bench.IngestUpsert)[0] // hybrid
 	if err := sys.Ingest(ctx, poisoned.Items); err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
@@ -81,15 +81,18 @@ func TestDedupRecoversPoisonedStore(t *testing.T) {
 	}
 }
 
-func goldHits(got, gold []string) int {
+func goldHits(got []bench.RecallHit, gold []string) int {
 	set := map[string]struct{}{}
 	for _, g := range gold {
 		set[g] = struct{}{}
 	}
 	n := 0
-	for _, id := range got {
-		if _, ok := set[id]; ok {
-			n++
+	for _, h := range got {
+		for _, id := range h.IDs {
+			if _, ok := set[id]; ok {
+				n++
+				break
+			}
 		}
 	}
 	return n

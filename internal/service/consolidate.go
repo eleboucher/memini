@@ -46,6 +46,10 @@ const (
 type consolidateJob struct {
 	namespace string
 	id        string
+	// flush, when non-nil, marks a sentinel job: the worker closes it instead
+	// of consolidating, signalling that every job queued before it has been
+	// processed.
+	flush chan struct{}
 }
 
 // StartConsolidator runs the background consolidation worker until ctx is
@@ -62,6 +66,10 @@ func (s *Service) StartConsolidator(ctx context.Context) {
 			s.drainConsolidate()
 			return
 		case job := <-s.consolidateQueue:
+			if job.flush != nil {
+				close(job.flush)
+				continue
+			}
 			s.metrics.ConsolidateQueueDepth(len(s.consolidateQueue))
 			// Detach from the worker ctx so an in-flight job survives shutdown,
 			// but bound it so a hung provider cannot park the worker forever.
@@ -80,6 +88,10 @@ func (s *Service) drainConsolidate() {
 	for {
 		select {
 		case job := <-s.consolidateQueue:
+			if job.flush != nil {
+				close(job.flush)
+				continue
+			}
 			s.consolidateOne(ctx, job)
 			if ctx.Err() != nil {
 				return
@@ -87,6 +99,29 @@ func (s *Service) drainConsolidate() {
 		default:
 			return
 		}
+	}
+}
+
+// FlushConsolidation blocks until every consolidation job queued before the
+// call has been processed. It is a no-op without an async consolidator, and
+// needs StartConsolidator running (otherwise it waits until ctx is done).
+// Intended for benches and tests that must let consolidation settle before
+// measuring.
+func (s *Service) FlushConsolidation(ctx context.Context) error {
+	if s.consolidateQueue == nil {
+		return nil
+	}
+	done := make(chan struct{})
+	select {
+	case s.consolidateQueue <- consolidateJob{flush: done}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

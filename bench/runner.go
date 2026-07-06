@@ -11,16 +11,22 @@ import (
 
 // Result is one system's score on a dataset at a given K.
 type Result struct {
-	System      string             `json:"system"`
-	Dataset     string             `json:"dataset"`
-	K           int                `json:"k"`
-	Questions   int                `json:"questions"`
-	RecallAtK   float64            `json:"recall_at_k"`
-	MRR         float64            `json:"mrr"`
-	P50Millis   float64            `json:"p50_ms"`
-	P95Millis   float64            `json:"p95_ms"`
-	IngestMs    float64            `json:"ingest_ms"`
-	PerCategory map[string]float64 `json:"per_category,omitempty"`
+	System    string  `json:"system"`
+	Dataset   string  `json:"dataset"`
+	K         int     `json:"k"`
+	Questions int     `json:"questions"`
+	RecallAtK float64 `json:"recall_at_k"`
+	MRR       float64 `json:"mrr"`
+	P50Millis float64 `json:"p50_ms"`
+	P95Millis float64 `json:"p95_ms"`
+	IngestMs  float64 `json:"ingest_ms"`
+	// TokensInjectedMean is the mean estimated token count of the top-K
+	// retrieved contents per question — what recall would inject into a
+	// consumer's context. TokenEfficiency divides it by the corpus's total
+	// estimated tokens: the cost axis of answering from memory vs full context.
+	TokensInjectedMean float64            `json:"tokens_injected_mean"`
+	TokenEfficiency    float64            `json:"token_efficiency"`
+	PerCategory        map[string]float64 `json:"per_category,omitempty"`
 }
 
 // Run ingests the dataset into a system once, then scores recall_any@K and MRR
@@ -35,6 +41,7 @@ func Run(ctx context.Context, sys System, ds *Dataset, ks []int) ([]Result, erro
 
 	maxK := slices.Max(ks)
 	hit := map[int]float64{}
+	injTok := map[int]float64{}
 	catHit := map[int]map[string]float64{}
 	for _, k := range ks {
 		catHit[k] = map[string]float64{}
@@ -42,6 +49,10 @@ func Run(ctx context.Context, sys System, ds *Dataset, ks []int) ([]Result, erro
 	catTotal := map[string]float64{}
 	var rrSum float64
 	latencies := make([]float64, 0, len(ds.Questions))
+	var corpusTokens float64
+	for _, it := range ds.Items {
+		corpusTokens += float64(estimateTokens(it.Content))
+	}
 
 	for _, q := range ds.Questions {
 		t0 := time.Now()
@@ -52,7 +63,7 @@ func Run(ctx context.Context, sys System, ds *Dataset, ks []int) ([]Result, erro
 		latencies = append(latencies, float64(time.Since(t0).Microseconds())/1000)
 
 		catTotal[q.Category]++
-		rank := firstGoldRank(got, q.Gold)
+		rank := firstGoldRankHits(got, q.Gold)
 		if rank >= 0 {
 			rrSum += 1.0 / float64(rank+1)
 		}
@@ -60,6 +71,9 @@ func Run(ctx context.Context, sys System, ds *Dataset, ks []int) ([]Result, erro
 			if rank >= 0 && rank < k {
 				hit[k]++
 				catHit[k][q.Category]++
+			}
+			for _, h := range got[:min(k, len(got))] {
+				injTok[k] += float64(estimateTokens(h.Content))
 			}
 		}
 	}
@@ -77,10 +91,16 @@ func Run(ctx context.Context, sys System, ds *Dataset, ks []int) ([]Result, erro
 		if len(perCat) == 0 {
 			perCat = nil
 		}
+		injMean := injTok[k] / n
+		var tokEff float64
+		if corpusTokens > 0 {
+			tokEff = injMean / corpusTokens
+		}
 		results = append(results, Result{
 			System: sys.Name(), Dataset: ds.Name, K: k, Questions: len(ds.Questions),
 			RecallAtK: hit[k] / n, MRR: rrSum / n,
-			P50Millis: p50, P95Millis: p95, IngestMs: ingestMs, PerCategory: perCat,
+			P50Millis: p50, P95Millis: p95, IngestMs: ingestMs,
+			TokensInjectedMean: injMean, TokenEfficiency: tokEff, PerCategory: perCat,
 		})
 	}
 	return results, nil
@@ -96,6 +116,25 @@ func firstGoldRank(got, gold []string) int {
 	}
 	return -1
 }
+
+// firstGoldRankHits is firstGoldRank over RecallHits: a hit matches when any
+// of its item IDs is gold (write-mode dedup can land several items on one
+// stored memory).
+func firstGoldRankHits(hits []RecallHit, gold []string) int {
+	for i, h := range hits {
+		for _, id := range h.IDs {
+			if slices.Contains(gold, id) {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// estimateTokens approximates the token count of s (~4 bytes/token, the usual
+// English-text heuristic); exact tokenizer choice washes out of the
+// injected/corpus ratio.
+func estimateTokens(s string) int { return (len(s) + 3) / 4 }
 
 func percentile(xs []float64, p int) float64 {
 	if len(xs) == 0 {
@@ -116,11 +155,12 @@ func Markdown(results []Result) string {
 	if len(sorted) > 0 {
 		fmt.Fprintf(&b, "## %s — %d questions, recall_any@%d\n\n", sorted[0].Dataset, sorted[0].Questions, sorted[0].K)
 	}
-	b.WriteString("| System | Recall@K | MRR | p50 (ms) | p95 (ms) | ingest (ms) |\n")
-	b.WriteString("|--------|---------:|----:|---------:|---------:|------------:|\n")
+	b.WriteString("| System | Recall@K | MRR | inj tok | tok-eff | p50 (ms) | p95 (ms) | ingest (ms) |\n")
+	b.WriteString("|--------|---------:|----:|--------:|--------:|---------:|---------:|------------:|\n")
 	for _, r := range sorted {
-		fmt.Fprintf(&b, "| %s | %.1f%% | %.1f%% | %.2f | %.2f | %.1f |\n",
-			r.System, r.RecallAtK*100, r.MRR*100, r.P50Millis, r.P95Millis, r.IngestMs)
+		fmt.Fprintf(&b, "| %s | %.1f%% | %.1f%% | %.0f | %.3f%% | %.2f | %.2f | %.1f |\n",
+			r.System, r.RecallAtK*100, r.MRR*100, r.TokensInjectedMean, r.TokenEfficiency*100,
+			r.P50Millis, r.P95Millis, r.IngestMs)
 	}
 	return b.String()
 }
