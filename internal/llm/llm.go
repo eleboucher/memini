@@ -217,11 +217,66 @@ func trimFence(content string) string {
 	return strings.TrimSpace(s)
 }
 
+// extractJSON returns the first balanced top-level JSON object embedded in s,
+// for models that wrap the JSON in prose despite instructions. String-aware so
+// braces inside string values don't unbalance the scan; "" when no complete
+// object exists.
+func extractJSON(s string) string {
+	start := strings.IndexByte(s, '{')
+	if start < 0 {
+		return ""
+	}
+	depth, inStr, esc := 0, false, false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			switch {
+			case esc:
+				esc = false
+			case c == '\\':
+				esc = true
+			case c == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return s[start : i+1]
+			}
+		}
+	}
+	return ""
+}
+
+// unmarshalLoose parses JSON from an LLM reply: bare, fenced, or embedded
+// mid-prose. A direct parse of the fence-trimmed text wins; otherwise the
+// first balanced JSON object is tried before reporting the original error.
+func unmarshalLoose(content string, v any) error {
+	trimmed := trimFence(content)
+	err := json.Unmarshal([]byte(trimmed), v)
+	if err == nil {
+		return nil
+	}
+	if obj := extractJSON(trimmed); obj != "" {
+		if json.Unmarshal([]byte(obj), v) == nil {
+			return nil
+		}
+	}
+	return err
+}
+
 // decodeDecision parses and validates a consolidation decision, tolerating a
-// markdown code fence around the JSON.
+// markdown code fence or surrounding prose around the JSON.
 func decodeDecision(content string) (Decision, error) {
 	var d Decision
-	if err := json.Unmarshal([]byte(trimFence(content)), &d); err != nil {
+	if err := unmarshalLoose(content, &d); err != nil {
 		return Decision{}, fmt.Errorf("llm: decode decision JSON: %w", err)
 	}
 	if d.Action != ActionNew && d.Action != ActionUpdate && d.Action != ActionSupersede {
@@ -231,12 +286,12 @@ func decodeDecision(content string) (Decision, error) {
 }
 
 // decodeFacts parses a distillation response into durable facts, tolerating a
-// markdown code fence and dropping any with empty content.
+// markdown code fence or surrounding prose and dropping any with empty content.
 func decodeFacts(content string) ([]Fact, error) {
 	var out struct {
 		Facts []Fact `json:"facts"`
 	}
-	if err := json.Unmarshal([]byte(trimFence(content)), &out); err != nil {
+	if err := unmarshalLoose(content, &out); err != nil {
 		return nil, fmt.Errorf("llm: decode facts JSON: %w", err)
 	}
 	kept := out.Facts[:0]

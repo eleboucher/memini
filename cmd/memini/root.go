@@ -295,12 +295,16 @@ func loopbackAddr(addr string) bool {
 func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger, onInFlight func(n int64)) (rerank.Reranker, string, error) {
 	if cfg.RerankIsLLM() {
 		if chat == nil {
-			log.Warn("MEMINI_RERANK=llm but no LLM is configured; set MEMINI_LLM_BASE_URL")
-			return nil, "", nil
+			// An explicitly requested capability that cannot exist is a
+			// misconfiguration, not a degraded mode: fail loud at startup.
+			return nil, "", fmt.Errorf("MEMINI_RERANK=llm but no LLM is configured; set MEMINI_LLM_BASE_URL or unset MEMINI_RERANK")
 		}
 		log.Info("LLM recall reranking enabled (adds one LLM call per recall)",
 			"model", cfg.LLMModel)
 		return wrapRerank(rerank.NewLLM(chat), cfg.RerankMaxConcurrency, onInFlight, log, "llm"), "llm", nil
+	}
+	if cfg.RerankModel == "" {
+		log.Warn("MEMINI_RERANK is set without MEMINI_RERANK_MODEL; the /rerank request omits the model field (backend-dependent behavior)")
 	}
 	ce, err := rerank.New(rerank.Config{
 		BaseURL:       cfg.Rerank,

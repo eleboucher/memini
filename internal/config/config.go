@@ -419,6 +419,18 @@ func (c *Config) validate() error {
 	default:
 		return fmt.Errorf("unknown MEMINI_WRITE_DEDUP_ACTION %q (want off|hint|coalesce|supersede)", c.WriteDedupAction)
 	}
+	if c.RecallMinScore < 0 || c.RecallMinScore > 1 {
+		return fmt.Errorf("MEMINI_RECALL_MIN_SCORE must be in [0,1], got %v", c.RecallMinScore)
+	}
+	if c.ConsolidateMinScore < 0 || c.ConsolidateMinScore > 1 {
+		return fmt.Errorf("MEMINI_CONSOLIDATE_MIN_SCORE must be in [0,1], got %v", c.ConsolidateMinScore)
+	}
+	if c.RecallSemanticReserve < 0 {
+		return fmt.Errorf("MEMINI_RECALL_SEMANTIC_RESERVE must be >= 0, got %d", c.RecallSemanticReserve)
+	}
+	if c.EpisodicMinChars < 0 {
+		return fmt.Errorf("MEMINI_EPISODIC_MIN_CHARS must be >= 0, got %d", c.EpisodicMinChars)
+	}
 	return nil
 }
 

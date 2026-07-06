@@ -191,6 +191,22 @@ func TestLoadValidationErrors(t *testing.T) {
 			name: "unknown write-dedup action",
 			env:  map[string]string{"MEMINI_WRITE_DEDUP_ACTION": "merge"},
 		},
+		{
+			name: "recall min score out of range",
+			env:  map[string]string{"MEMINI_RECALL_MIN_SCORE": "1.5"},
+		},
+		{
+			name: "consolidate min score negative",
+			env:  map[string]string{"MEMINI_CONSOLIDATE_MIN_SCORE": "-0.2"},
+		},
+		{
+			name: "negative semantic reserve",
+			env:  map[string]string{"MEMINI_RECALL_SEMANTIC_RESERVE": "-1"},
+		},
+		{
+			name: "negative episodic min chars",
+			env:  map[string]string{"MEMINI_EPISODIC_MIN_CHARS": "-10"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
