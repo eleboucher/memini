@@ -16,6 +16,9 @@ import (
 type ListInput struct {
 	Namespace string
 	Tiers     []memory.Tier
+	// Levels restricts the listing to memories whose derivation level matches one
+	// of the listed values; empty means no level constraint.
+	Levels []memory.Level
 	// Tags narrows the listing to memories carrying every listed tag (AND).
 	Tags []string
 	// Metadata narrows the listing to memories whose top-level metadata contains
@@ -36,6 +39,7 @@ type ListInput struct {
 func (s *Service) List(ctx context.Context, in ListInput) ([]*memory.Memory, error) {
 	f := store.Filter{
 		Tiers:             in.Tiers,
+		Levels:            in.Levels,
 		Tags:              in.Tags,
 		Metadata:          in.Metadata,
 		IncludeExpired:    in.IncludeExpired,

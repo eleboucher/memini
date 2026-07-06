@@ -45,6 +45,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("SetConfidence", func(t *testing.T) { testSetConfidence(t, st, dims) })
 	t.Run("MarkContradicted", func(t *testing.T) { testMarkContradicted(t, st, dims) })
 	t.Run("GetByFingerprint", func(t *testing.T) { testGetByFingerprint(t, st, dims) })
+	t.Run("LevelFilter", func(t *testing.T) { testLevelFilter(t, st, dims) })
 }
 
 func testGetByFingerprint(t *testing.T, st store.Store, dims int) {
@@ -614,6 +615,89 @@ func testFilters(t *testing.T, st store.Store, dims int) {
 	if !containsMem(exp, id(ns, "exp")) {
 		t.Fatalf("ListExpired should include %q, got %v", id(ns, "exp"), memIDs(exp))
 	}
+}
+
+// scoredIDs returns memory IDs from a Scored slice.
+func scoredIDs(res []store.Scored) []string {
+	ids := make([]string, len(res))
+	for i, r := range res {
+		ids[i] = r.Memory.ID
+	}
+	return ids
+}
+
+// testLevelFilter verifies that Filter.Levels restricts results to memories
+// whose derivation level matches one of the listed values; empty means no
+// constraint.
+func testLevelFilter(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+
+	// Insert three memories with different levels.
+	explicit := mem(ns, "exp", "user stated this directly", vec(dims, 1))
+	explicit.Level = memory.LevelExplicit
+	mustUpsert(t, st, explicit)
+
+	deduced := mem(ns, "ded", "LLM distilled this fact", vec(dims, 2))
+	deduced.Level = memory.LevelDeduced
+	mustUpsert(t, st, deduced)
+
+	unnamed := mem(ns, "unl", "no level set (legacy)", vec(dims, 3))
+	// Level is empty string (zero value).
+	mustUpsert(t, st, unnamed)
+
+	// Empty level filter matches all three (no constraint).
+	all := mustList(t, st, ns, store.Filter{Levels: []memory.Level{}})
+	if len(all) != 3 {
+		t.Fatalf("empty levels filter should yield 3, got %d", len(all))
+	}
+
+	// Filter to explicit only.
+	expOnly := mustSearch(t, st, ns, vec(dims, 1), store.Filter{Levels: []memory.Level{memory.LevelExplicit}}, 10)
+	if len(expOnly) != 1 || scoredIDs(expOnly)[0] != id(ns, "exp") {
+		t.Fatalf("level=explicit should yield exp only, got %v", scoredIDs(expOnly))
+	}
+
+	// Filter to deduced only.
+	dedOnly := mustSearch(t, st, ns, vec(dims, 2), store.Filter{Levels: []memory.Level{memory.LevelDeduced}}, 10)
+	if len(dedOnly) != 1 || scoredIDs(dedOnly)[0] != id(ns, "ded") {
+		t.Fatalf("level=deduced should yield ded only, got %v", scoredIDs(dedOnly))
+	}
+
+	// Multi-level filter: explicit + deduced (still excludes unnamed).
+	multi := mustSearch(t, st, ns, vec(dims, 1), store.Filter{Levels: []memory.Level{memory.LevelExplicit, memory.LevelDeduced}}, 10)
+	if len(multi) != 2 {
+		t.Fatalf("level=explicit+deduced should yield 2, got %d", len(multi))
+	}
+
+	// VectorSearch with level filter.
+	vRes, err := st.VectorSearch(ctx, ns, vec(dims, 1), store.Filter{Levels: []memory.Level{memory.LevelExplicit}}, 10)
+	if err != nil {
+		t.Fatalf("VectorSearch level filter: %v", err)
+	}
+	if len(vRes) != 1 || scoredIDs(vRes)[0] != id(ns, "exp") {
+		t.Fatalf("VectorSearch level=explicit should yield exp only, got %v", scoredIDs(vRes))
+	}
+
+	// KeywordSearch with level filter.
+	kRes, err := st.KeywordSearch(ctx, ns, "distilled", store.Filter{Levels: []memory.Level{memory.LevelDeduced}}, 10)
+	if err != nil {
+		t.Fatalf("KeywordSearch level filter: %v", err)
+	}
+	if len(kRes) != 1 || scoredIDs(kRes)[0] != id(ns, "ded") {
+		t.Fatalf("KeywordSearch level=deduced should yield ded only, got %v", scoredIDs(kRes))
+	}
+}
+
+// mustSearch is a helper for testLevelFilter that calls VectorSearch and
+// fatals on error.
+func mustSearch(t *testing.T, st store.Store, ns string, vec []float32, f store.Filter, k int) []store.Scored {
+	t.Helper()
+	res, err := st.VectorSearch(context.Background(), ns, vec, f, k)
+	if err != nil {
+		t.Fatalf("VectorSearch: %v", err)
+	}
+	return res
 }
 
 // testTagMetadataFilter verifies that Filter.Tags (AND semantics) and

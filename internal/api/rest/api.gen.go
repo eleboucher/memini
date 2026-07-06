@@ -18,6 +18,24 @@ const (
 	BearerAuthScopes bearerAuthContextKey = "bearerAuth.Scopes"
 )
 
+// Defines values for Level.
+const (
+	Deduced  Level = "deduced"
+	Explicit Level = "explicit"
+)
+
+// Valid indicates whether the value is a known member of the Level enum.
+func (e Level) Valid() bool {
+	switch e {
+	case Deduced:
+		return true
+	case Explicit:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SearchRequestScope.
 const (
 	Exact   SearchRequestScope = "exact"
@@ -62,6 +80,8 @@ func (e Tier) Valid() bool {
 
 // AnswerRequest defines model for AnswerRequest.
 type AnswerRequest struct {
+	Levels *[]Level `json:"levels,omitempty"`
+
 	// Limit Caps how many recalled memories ground the answer.
 	Limit *int `json:"limit,omitempty"`
 
@@ -159,6 +179,9 @@ type FsckReport struct {
 	ShortTermEvicted int         `json:"short_term_evicted"`
 }
 
+// Level defines model for Level.
+type Level string
+
 // ListResponse defines model for ListResponse.
 type ListResponse struct {
 	Memories []Memory `json:"memories"`
@@ -179,6 +202,9 @@ type Memory struct {
 	Id             string     `json:"id"`
 	Importance     float64    `json:"importance"`
 	LastAccessedAt time.Time  `json:"last_accessed_at"`
+
+	// Level Derivation provenance: explicit (user-stated / heuristic) vs deduced (LLM-distilled). Null/omitted when the row predates the tag or when unset.
+	Level *Level `json:"level,omitempty"`
 
 	// MergeHint Optional. Returned on POST /v1/memories when the write's nearest same-tier candidate scored at/above MEMINI_WRITE_DEDUP_SCORE and MEMINI_WRITE_DEDUP_ACTION is "hint". The caller can decide whether to merge into the near-duplicate via memory_update.
 	MergeHint    *MergeHint              `json:"merge_hint,omitempty"`
@@ -222,11 +248,14 @@ type RememberRequest struct {
 	Content    string   `json:"content"`
 
 	// Id Upserts an existing memory when provided.
-	Id         *string                 `json:"id,omitempty"`
-	Importance *float64                `json:"importance,omitempty"`
-	Metadata   *map[string]interface{} `json:"metadata,omitempty"`
-	Summary    *string                 `json:"summary,omitempty"`
-	Tags       *[]string               `json:"tags,omitempty"`
+	Id         *string  `json:"id,omitempty"`
+	Importance *float64 `json:"importance,omitempty"`
+
+	// Level Label the derivation provenance (explicit vs deduced) at write time. Omit to leave unset (default, legacy rows, auto-tagged by service).
+	Level    *Level                  `json:"level,omitempty"`
+	Metadata *map[string]interface{} `json:"metadata,omitempty"`
+	Summary  *string                 `json:"summary,omitempty"`
+	Tags     *[]string               `json:"tags,omitempty"`
 
 	// Tier Omit to let the server choose: the content is classified by the marker heuristic (a terse, unhedged decision/preference/problem lands in semantic/procedural, stamped metadata.tier_classified=marker), falling back to episodic. Classification never picks working.
 	Tier *Tier `json:"tier,omitempty"`
@@ -256,6 +285,7 @@ type SearchRequest struct {
 	ExcludeMetadata   *map[string]string `json:"exclude_metadata,omitempty"`
 	IncludeExpired    *bool              `json:"include_expired,omitempty"`
 	IncludeSuperseded *bool              `json:"include_superseded,omitempty"`
+	Levels            *[]Level           `json:"levels,omitempty"`
 	Limit             *int               `json:"limit,omitempty"`
 
 	// Metadata A memory's top-level metadata must contain every listed key=value pair (AND).
@@ -352,6 +382,9 @@ type ForgetByTagParams struct {
 type ListMemoriesParams struct {
 	// Tier Repeatable and/or comma-separated tier filter; omitted means all tiers.
 	Tier *[]Tier `form:"tier,omitempty" json:"tier,omitempty"`
+
+	// Level Repeatable and/or comma-separated level filter; omitted means all levels.
+	Level *[]Level `form:"level,omitempty" json:"level,omitempty"`
 
 	// Tag Repeatable and/or comma-separated tag filter; a memory must carry every listed tag (AND).
 	Tag *[]string `form:"tag,omitempty" json:"tag,omitempty"`
@@ -826,6 +859,19 @@ func (siw *ServerInterfaceWrapper) ListMemories(w http.ResponseWriter, r *http.R
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "tier"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tier", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "level" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "level", r.URL.Query(), &params.Level, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "level"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "level", Err: err})
 		}
 		return
 	}

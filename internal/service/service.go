@@ -691,6 +691,10 @@ type RememberInput struct {
 	// defaults to now (or the existing row on update); ValidTo defaults to open.
 	ValidFrom *time.Time
 	ValidTo   *time.Time
+	// Level labels the derivation provenance at write time: explicit (user-stated
+	// or heuristic) vs deduced (LLM-distilled). Empty string means legacy/unknown
+	// and falls through to "no constraint" in filter operations.
+	Level memory.Level
 	// MergeHint (output-only) is set to a non-nil MergeHint when the write's
 	// nearest same-tier candidate landed in the merge-hint band. The caller
 	// passes the address of a local `*MergeHint`; after the call it holds the
@@ -777,6 +781,9 @@ func validateRememberInput(in RememberInput) (memory.Tier, error) {
 	if !tier.Valid() {
 		return tier, invalidInputf("remember: invalid tier %q", tier)
 	}
+	if in.Level != "" && !in.Level.Valid() {
+		return tier, invalidInputf("remember: invalid level %q", in.Level)
+	}
 	return tier, nil
 }
 
@@ -852,6 +859,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		ID:             id,
 		Namespace:      in.Namespace,
 		Tier:           tier,
+		Level:          in.Level,
 		Content:        in.Content,
 		Summary:        in.Summary,
 		Tags:           in.Tags,
@@ -1278,6 +1286,9 @@ type RecallInput struct {
 	Namespace string
 	Query     string
 	Tiers     []memory.Tier
+	// Levels restricts recall to memories whose derivation level matches one of the
+	// listed values; empty means no level constraint.
+	Levels []memory.Level
 	// Tags narrows recall to memories carrying every listed tag (AND).
 	Tags []string
 	// Metadata narrows recall to memories whose top-level metadata contains each
@@ -1371,6 +1382,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	}
 	filter := store.Filter{
 		Tiers:             in.Tiers,
+		Levels:            in.Levels,
 		Tags:              in.Tags,
 		Metadata:          in.Metadata,
 		ExcludeMetadata:   in.ExcludeMetadata,
@@ -1661,6 +1673,7 @@ func (s *Service) extractEpisodicAsync(ctx context.Context, m *memory.Memory) {
 				Namespace: m.Namespace,
 				Content:   r.Content,
 				Tier:      r.Kind.Tier(),
+				Level:     memory.LevelExplicit,
 				Tags:      []string{string(r.Kind)},
 				Metadata:  meta,
 			}

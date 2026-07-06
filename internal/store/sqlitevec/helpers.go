@@ -25,6 +25,7 @@ func scanRow(s scanner, metric *float64) (*memory.Memory, error) {
 	var (
 		m                          memory.Memory
 		tier, metaJSON, tagsJSON   string
+		level                      string
 		created, updated, accessed int64
 		expires                    sql.NullInt64
 		superseded                 sql.NullString
@@ -34,7 +35,7 @@ func scanRow(s scanner, metric *float64) (*memory.Memory, error) {
 	dest := []any{
 		&m.ID, &m.Namespace, &tier, &m.Content, &m.Summary, &metaJSON, &tagsJSON,
 		&m.Importance, &created, &updated, &accessed, &m.AccessCount, &expires, &superseded,
-		&validFrom, &validTo, &confidence,
+		&validFrom, &validTo, &confidence, &level,
 	}
 	if metric != nil {
 		dest = append(dest, metric)
@@ -44,6 +45,7 @@ func scanRow(s scanner, metric *float64) (*memory.Memory, error) {
 	}
 
 	m.Tier = memory.Tier(tier)
+	m.Level = memory.Level(level)
 	if err := json.Unmarshal([]byte(metaJSON), &m.Metadata); err != nil {
 		return nil, err
 	}
@@ -89,6 +91,18 @@ func filterClause(f store.Filter, alias string) (string, []any) {
 			}
 			b.WriteString("?")
 			args = append(args, string(t))
+		}
+		b.WriteString(")")
+	}
+	// Level: mirror the tiers pattern — bind-safe placeholders for each level.
+	if len(f.Levels) > 0 {
+		b.WriteString(" AND " + alias + ".level IN (")
+		for i, l := range f.Levels {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			b.WriteString("?")
+			args = append(args, string(l))
 		}
 		b.WriteString(")")
 	}

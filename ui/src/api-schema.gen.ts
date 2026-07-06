@@ -311,6 +311,8 @@ export interface components {
     schemas: {
         /** @enum {string} */
         Tier: "working" | "episodic" | "semantic" | "procedural";
+        /** @enum {string} */
+        Level: "explicit" | "deduced";
         RememberRequest: {
             content: string;
             /** @description Omit to let the server choose: the content is classified by the marker heuristic (a terse, unhedged decision/preference/problem lands in semantic/procedural, stamped metadata.tier_classified=marker), falling back to episodic. Classification never picks working. */
@@ -322,6 +324,8 @@ export interface components {
             };
             /** Format: double */
             importance?: number;
+            /** @description Label the derivation provenance (explicit vs deduced) at write time. Omit to leave unset (default, legacy rows, auto-tagged by service). */
+            level?: components["schemas"]["Level"];
             /** @description Overrides the tier default TTL; negative means never expire. */
             ttl_seconds?: number;
             /** @description Upserts an existing memory when provided. */
@@ -362,6 +366,7 @@ export interface components {
         SearchRequest: {
             query: string;
             tiers?: components["schemas"]["Tier"][];
+            levels?: components["schemas"]["Level"][];
             /** @description A memory must carry every listed tag (AND). */
             tags?: string[];
             /** @description A memory's top-level metadata must contain every listed key=value pair (AND). */
@@ -406,6 +411,7 @@ export interface components {
         AnswerRequest: {
             query: string;
             tiers?: components["schemas"]["Tier"][];
+            levels?: components["schemas"]["Level"][];
             /** @description Ground only on memories carrying every listed tag (AND). */
             tags?: string[];
             /** @description Ground only on memories whose top-level metadata contains every listed key=value pair (AND). */
@@ -518,6 +524,8 @@ export interface components {
             id: string;
             namespace: string;
             tier: components["schemas"]["Tier"];
+            /** @description Derivation provenance: explicit (user-stated / heuristic) vs deduced (LLM-distilled). Null/omitted when the row predates the tag or when unset. */
+            level?: components["schemas"]["Level"];
             content: string;
             summary?: string;
             metadata?: {
@@ -699,6 +707,8 @@ export interface operations {
             query?: {
                 /** @description Repeatable and/or comma-separated tier filter; omitted means all tiers. */
                 tier?: components["schemas"]["Tier"][];
+                /** @description Repeatable and/or comma-separated level filter; omitted means all levels. */
+                level?: components["schemas"]["Level"][];
                 /** @description Repeatable and/or comma-separated tag filter; a memory must carry every listed tag (AND). */
                 tag?: string[];
                 /** @description Repeatable metadata filter in "key=value" form; a memory's top-level metadata must contain every listed pair (AND). Only string values match. */

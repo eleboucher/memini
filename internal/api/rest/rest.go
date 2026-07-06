@@ -177,6 +177,7 @@ func (h *Server) RememberMemory(w http.ResponseWriter, r *http.Request, _ Rememb
 		Content:   req.Content,
 	}
 	in.Tier = memory.Tier(deref(req.Tier))
+	in.Level = memory.Level(deref(req.Level))
 	in.Summary = deref(req.Summary)
 	in.Tags = deref(req.Tags)
 	in.Metadata = deref(req.Metadata)
@@ -352,10 +353,16 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 		httputil.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	levels, err := domainLevels(req.Levels)
+	if err != nil {
+		httputil.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	in := service.RecallInput{
 		Namespace: namespaceFromContext(r.Context()),
 		Query:     req.Query,
 		Tiers:     tiers,
+		Levels:    levels,
 	}
 	in.Tags = deref(req.Tags)
 	in.Metadata = deref(req.Metadata)
@@ -392,10 +399,16 @@ func (h *Server) AnswerQuestion(w http.ResponseWriter, r *http.Request, _ Answer
 		httputil.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	levels, err := domainLevels(req.Levels)
+	if err != nil {
+		httputil.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	in := service.AnswerInput{
 		Namespace: namespaceFromContext(r.Context()),
 		Query:     req.Query,
 		Tiers:     tiers,
+		Levels:    levels,
 	}
 	in.Tags = deref(req.Tags)
 	in.Metadata = deref(req.Metadata)
@@ -416,6 +429,11 @@ func (h *Server) ListMemories(w http.ResponseWriter, r *http.Request, params Lis
 		httputil.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	levels, err := queryLevels(params.Level)
+	if err != nil {
+		httputil.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	meta, err := parseMetaFilters(params.Meta)
 	if err != nil {
 		httputil.Error(w, http.StatusBadRequest, err.Error())
@@ -424,6 +442,7 @@ func (h *Server) ListMemories(w http.ResponseWriter, r *http.Request, params Lis
 	in := service.ListInput{
 		Namespace: namespaceFromContext(r.Context()),
 		Tiers:     tiers,
+		Levels:    levels,
 		Tags:      queryTags(params.Tag),
 		Metadata:  meta,
 	}
@@ -595,6 +614,10 @@ func apiMemory(m *memory.Memory) Memory {
 		ValidTo:        m.ValidTo,
 		Confidence:     m.Confidence,
 	}
+	if m.Level != "" {
+		l := Level(m.Level)
+		out.Level = &l
+	}
 	if m.Summary != "" {
 		out.Summary = &m.Summary
 	}
@@ -643,6 +666,23 @@ func domainTiers(in *[]Tier) ([]memory.Tier, error) {
 	return tiers, nil
 }
 
+// domainLevels validates a body level filter. An unknown level is an error
+// rather than silently unfiltered results.
+func domainLevels(in *[]Level) ([]memory.Level, error) {
+	if in == nil {
+		return nil, nil
+	}
+	levels := make([]memory.Level, 0, len(*in))
+	for _, l := range *in {
+		ml := memory.Level(l)
+		if !ml.Valid() {
+			return nil, fmt.Errorf("invalid level %q", l)
+		}
+		levels = append(levels, ml)
+	}
+	return levels, nil
+}
+
 // queryTiers expands and validates the ?tier= filter. The parameter is
 // documented as repeatable and/or comma-separated; the generated binding only
 // splits repeats, so comma-separated values are expanded here.
@@ -661,6 +701,25 @@ func queryTiers(in *[]Tier) ([]memory.Tier, error) {
 		}
 	}
 	return tiers, nil
+}
+
+// queryLevels expands and validates the ?level= filter. Like ?tier=, it supports
+// repeatable and/or comma-separated values.
+func queryLevels(in *[]Level) ([]memory.Level, error) {
+	if in == nil {
+		return nil, nil
+	}
+	var levels []memory.Level
+	for _, v := range *in {
+		for part := range strings.SplitSeq(string(v), ",") {
+			l := memory.Level(strings.TrimSpace(part))
+			if !l.Valid() {
+				return nil, fmt.Errorf("invalid level %q", l)
+			}
+			levels = append(levels, l)
+		}
+	}
+	return levels, nil
 }
 
 // queryTags expands the ?tag= filter, splitting comma-separated values like

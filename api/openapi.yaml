@@ -108,6 +108,10 @@ paths:
           in: query
           description: Repeatable and/or comma-separated tier filter; omitted means all tiers.
           schema: { type: array, items: { $ref: "#/components/schemas/Tier" } }
+        - name: level
+          in: query
+          description: Repeatable and/or comma-separated level filter; omitted means all levels.
+          schema: { type: array, items: { $ref: "#/components/schemas/Level" } }
         - name: tag
           in: query
           description: Repeatable and/or comma-separated tag filter; a memory must carry every listed tag (AND).
@@ -394,6 +398,9 @@ components:
     Tier:
       type: string
       enum: [working, episodic, semantic, procedural]
+    Level:
+      type: string
+      enum: [explicit, deduced]
     RememberRequest:
       type: object
       required: [content]
@@ -411,6 +418,12 @@ components:
         tags: { type: array, items: { type: string } }
         metadata: { type: object, additionalProperties: true }
         importance: { type: number, format: double, minimum: 0, maximum: 1 }
+        level:
+          allOf:
+            - $ref: "#/components/schemas/Level"
+          description: >-
+            Label the derivation provenance (explicit vs deduced) at write time.
+            Omit to leave unset (default, legacy rows, auto-tagged by service).
         ttl_seconds:
           type: integer
           description: Overrides the tier default TTL; negative means never expire.
@@ -470,6 +483,7 @@ components:
       properties:
         query: { type: string }
         tiers: { type: array, items: { $ref: "#/components/schemas/Tier" } }
+        levels: { type: array, items: { $ref: "#/components/schemas/Level" } }
         tags:
           type: array
           items: { type: string }
@@ -533,6 +547,7 @@ components:
       properties:
         query: { type: string }
         tiers: { type: array, items: { $ref: "#/components/schemas/Tier" } }
+        levels: { type: array, items: { $ref: "#/components/schemas/Level" } }
         tags:
           type: array
           items: { type: string }
@@ -714,6 +729,13 @@ components:
         id: { type: string }
         namespace: { type: string }
         tier: { $ref: "#/components/schemas/Tier" }
+        level:
+          allOf:
+            - $ref: "#/components/schemas/Level"
+          description: >-
+            Derivation provenance: explicit (user-stated / heuristic) vs
+            deduced (LLM-distilled). Null/omitted when the row predates the
+            tag or when unset.
         content: { type: string }
         summary: { type: string }
         metadata: { type: object, additionalProperties: true }

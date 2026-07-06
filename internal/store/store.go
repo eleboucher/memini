@@ -31,6 +31,9 @@ type Scored struct {
 type Filter struct {
 	// Tiers restricts results to these tiers; empty means all tiers.
 	Tiers []memory.Tier
+	// Levels restricts results to memories whose derivation level (explicit or
+	// deduced) matches one of the listed values; empty means no level constraint.
+	Levels []memory.Level
 	// Tags restricts results to memories carrying every listed tag (AND). Empty
 	// means no tag constraint.
 	Tags []string

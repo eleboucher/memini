@@ -127,6 +127,20 @@ func parseTiers(in []string) ([]memory.Tier, error) {
 	return tiers, nil
 }
 
+// parseLevels validates a level filter. An unknown level is an error rather than
+// silently unfiltered results, matching the REST surface.
+func parseLevels(in []string) ([]memory.Level, error) {
+	levels := make([]memory.Level, 0, len(in))
+	for _, v := range in {
+		l := memory.Level(strings.TrimSpace(v))
+		if !l.Valid() {
+			return nil, fmt.Errorf("invalid level %q", l)
+		}
+		levels = append(levels, l)
+	}
+	return levels, nil
+}
+
 // parseOptionalTime parses an optional RFC3339 timestamp, returning nil for an
 // empty string. field names the argument for error messages.
 func parseOptionalTime(s, field string) (*time.Time, error) {
@@ -158,6 +172,7 @@ func (t *tools) ns(arg string) (string, error) {
 type rememberArgs struct {
 	Content    string         `json:"content" jsonschema:"the text to remember"`
 	Tier       string         `json:"tier,omitempty" jsonschema:"working, episodic, semantic, or procedural (omit to auto-classify)"`
+	Level      string         `json:"level,omitempty" jsonschema:"explicit (user-stated) or deduced (LLM-distilled); omit to leave unset"`
 	Summary    string         `json:"summary,omitempty" jsonschema:"optional one-line summary"`
 	Tags       []string       `json:"tags,omitempty" jsonschema:"optional labels"`
 	Metadata   map[string]any `json:"metadata,omitempty" jsonschema:"optional structured metadata"`
@@ -201,6 +216,7 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 		Namespace:  ns,
 		Content:    in.Content,
 		Tier:       memory.Tier(in.Tier),
+		Level:      memory.Level(in.Level),
 		Summary:    in.Summary,
 		Tags:       in.Tags,
 		Metadata:   in.Metadata,
@@ -244,6 +260,7 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 type recallArgs struct {
 	Query           string            `json:"query" jsonschema:"what to search for"`
 	Tiers           []string          `json:"tiers,omitempty" jsonschema:"restrict to tiers; empty means all"`
+	Levels          []string          `json:"levels,omitempty" jsonschema:"restrict to levels (explicit/deduced); empty means all"`
 	Tags            []string          `json:"tags,omitempty" jsonschema:"only memories carrying every listed tag (AND)"`
 	Metadata        map[string]string `json:"metadata,omitempty" jsonschema:"only memories whose metadata has each key=value pair (AND)"`
 	ExcludeMetadata map[string]string `json:"exclude_metadata,omitempty" jsonschema:"inverse of metadata; drops matching memories"`
@@ -257,6 +274,7 @@ type recallItem struct {
 	ID         string   `json:"id"`
 	Content    string   `json:"content"`
 	Tier       string   `json:"tier"`
+	Level      string   `json:"level,omitempty"`
 	Score      float64  `json:"score"`
 	Confidence *float64 `json:"confidence,omitempty"`
 }
@@ -264,7 +282,7 @@ type recallItem struct {
 func scoredItem(s store.Scored) recallItem {
 	return recallItem{
 		ID: s.Memory.ID, Content: s.Memory.Content, Tier: string(s.Memory.Tier),
-		Score: s.Score, Confidence: s.Memory.Confidence,
+		Level: string(s.Memory.Level), Score: s.Score, Confidence: s.Memory.Confidence,
 	}
 }
 
@@ -281,10 +299,15 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 	if err != nil {
 		return nil, recallResult{}, err
 	}
+	levels, err := parseLevels(in.Levels)
+	if err != nil {
+		return nil, recallResult{}, err
+	}
 	input := service.RecallInput{
 		Namespace:       ns,
 		Query:           in.Query,
 		Tiers:           tiers,
+		Levels:          levels,
 		Tags:            in.Tags,
 		Metadata:        in.Metadata,
 		ExcludeMetadata: in.ExcludeMetadata,
@@ -373,6 +396,7 @@ func (t *tools) briefing(ctx context.Context, _ *mcpsdk.CallToolRequest, in brie
 type answerArgs struct {
 	Query     string            `json:"query" jsonschema:"the question to answer from memory"`
 	Tiers     []string          `json:"tiers,omitempty" jsonschema:"restrict grounding to tiers (working/episodic/semantic/procedural)"`
+	Levels    []string          `json:"levels,omitempty" jsonschema:"restrict grounding to levels (explicit/deduced); empty means all"`
 	Tags      []string          `json:"tags,omitempty" jsonschema:"ground only on memories with every listed tag (AND)"`
 	Metadata  map[string]string `json:"metadata,omitempty" jsonschema:"ground only on memories whose metadata has each key=value pair (AND)"`
 	Limit     int               `json:"limit,omitempty" jsonschema:"max memories to ground on (default 10)"`
@@ -396,10 +420,15 @@ func (t *tools) answer(ctx context.Context, _ *mcpsdk.CallToolRequest, in answer
 	if err != nil {
 		return nil, answerResult{}, err
 	}
+	levels, err := parseLevels(in.Levels)
+	if err != nil {
+		return nil, answerResult{}, err
+	}
 	res, err := t.svc.Answer(ctx, service.AnswerInput{
 		Namespace: ns,
 		Query:     in.Query,
 		Tiers:     tiers,
+		Levels:    levels,
 		Tags:      in.Tags,
 		Metadata:  in.Metadata,
 		Limit:     in.Limit,
@@ -427,6 +456,7 @@ type memoryItem struct {
 	ID          string         `json:"id"`
 	Content     string         `json:"content"`
 	Tier        string         `json:"tier"`
+	Level       string         `json:"level,omitempty"`
 	Summary     string         `json:"summary,omitempty"`
 	Tags        []string       `json:"tags,omitempty"`
 	Metadata    map[string]any `json:"metadata,omitempty"`
@@ -441,8 +471,8 @@ type memoryItem struct {
 
 func toMemoryItem(m *memory.Memory) memoryItem {
 	out := memoryItem{
-		ID: m.ID, Content: m.Content, Tier: string(m.Tier), Summary: m.Summary,
-		Tags: m.Tags, Metadata: m.Metadata, Importance: m.Importance,
+		ID: m.ID, Content: m.Content, Tier: string(m.Tier), Level: string(m.Level),
+		Summary: m.Summary, Tags: m.Tags, Metadata: m.Metadata, Importance: m.Importance,
 		CreatedAt: m.CreatedAt.Format(time.RFC3339), UpdatedAt: m.UpdatedAt.Format(time.RFC3339),
 		AccessCount: m.AccessCount,
 	}
@@ -472,6 +502,7 @@ func (t *tools) get(ctx context.Context, _ *mcpsdk.CallToolRequest, in idArgs) (
 
 type listArgs struct {
 	Tiers     []string          `json:"tiers,omitempty" jsonschema:"restrict to tiers (working/episodic/semantic/procedural); empty means all"`
+	Levels    []string          `json:"levels,omitempty" jsonschema:"restrict to levels (explicit/deduced); empty means all"`
 	Tags      []string          `json:"tags,omitempty" jsonschema:"only memories carrying every listed tag (AND)"`
 	Metadata  map[string]string `json:"metadata,omitempty" jsonschema:"only memories whose metadata has each key=value pair (AND)"`
 	Limit     int               `json:"limit,omitempty" jsonschema:"max results (0 = all, newest first)"`
@@ -491,9 +522,14 @@ func (t *tools) list(ctx context.Context, _ *mcpsdk.CallToolRequest, in listArgs
 	if err != nil {
 		return nil, listResult{}, err
 	}
+	levels, err := parseLevels(in.Levels)
+	if err != nil {
+		return nil, listResult{}, err
+	}
 	mems, err := t.svc.List(ctx, service.ListInput{
 		Namespace: ns,
 		Tiers:     tiers,
+		Levels:    levels,
 		Tags:      in.Tags,
 		Metadata:  in.Metadata,
 		Limit:     in.Limit,

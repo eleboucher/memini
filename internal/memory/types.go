@@ -66,11 +66,37 @@ func (t Tier) Valid() bool {
 	}
 }
 
+// Level classifies a memory by how it was derived: user-stated versus
+// LLM-inferred. Empty string is legacy/unknown (every pre-level row) and
+// passes filters unconstrained.
+type Level string
+
+const (
+	// LevelExplicit is a user-stated or directly-extracted fact, stamped by
+	// the heuristic extract-on-write path and by direct RememberInput callers.
+	LevelExplicit Level = "explicit"
+	// LevelDeduced is an LLM-inferred fact (distilled from episodic material).
+	// Traceable to its sources via metadata.source_ids.
+	LevelDeduced Level = "deduced"
+)
+
+// Valid reports whether l is a known derivation level. Empty (legacy) and any
+// unknown value return false.
+func (l Level) Valid() bool {
+	switch l {
+	case LevelExplicit, LevelDeduced:
+		return true
+	default:
+		return false
+	}
+}
+
 // Memory is a single stored memory, scoped to a namespace (tenant/agent).
 type Memory struct {
 	ID        string `json:"id"`
 	Namespace string `json:"namespace"`
 	Tier      Tier   `json:"tier"`
+	Level     Level  `json:"level,omitempty"`
 	Content   string `json:"content"`
 	Summary   string `json:"summary,omitempty"`
 

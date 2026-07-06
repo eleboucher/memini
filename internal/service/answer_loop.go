@@ -102,7 +102,7 @@ var answerTools = []llm.Tool{
 func (s *Service) answerAgentic(ctx context.Context, in AnswerInput, tc llm.ToolChat, iters int) (AnswerResult, error) {
 	prefetch, err := s.Recall(ctx, RecallInput{
 		Namespace: in.Namespace, Query: in.Query, Limit: in.Limit, Tiers: in.Tiers,
-		Tags: in.Tags, Metadata: in.Metadata,
+		Levels: in.Levels, Tags: in.Tags, Metadata: in.Metadata,
 	})
 	if err != nil {
 		s.metrics.AnswerResult("error")
@@ -178,7 +178,7 @@ func (s *Service) execAnswerTool(
 	switch call.Name {
 	case "search_memory":
 		ri := RecallInput{Namespace: in.Namespace, Query: args.Query, Limit: k,
-			Tags: in.Tags, Metadata: in.Metadata}
+			Levels: in.Levels, Tags: in.Tags, Metadata: in.Metadata}
 		switch args.Tier {
 		case "episodic":
 			ri.Tiers = []memory.Tier{memory.TierEpisodic}
@@ -196,7 +196,7 @@ func (s *Service) execAnswerTool(
 			return "error: date must be YYYY-MM-DD"
 		}
 		res, err = s.Recall(ctx, RecallInput{Namespace: in.Namespace, Query: args.Query, Limit: k,
-			Tags: in.Tags, Metadata: in.Metadata, AsOf: asOf})
+			Levels: in.Levels, Tags: in.Tags, Metadata: in.Metadata, AsOf: asOf})
 	default:
 		return "error: unknown tool " + call.Name
 	}

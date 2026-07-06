@@ -18,7 +18,7 @@ import (
 
 const memoryColumns = `id, namespace, tier, content, summary, metadata, tags, importance,
 	created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-	valid_from, valid_to, confidence`
+	valid_from, valid_to, confidence, level`
 
 // Store is a Postgres/VectorChord backed store.Store.
 type Store struct {
@@ -96,6 +96,7 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 			valid_to         timestamptz,
 			confidence       double precision,
 			fingerprint      text NOT NULL DEFAULT '',
+			level            text NOT NULL DEFAULT '',
 			embedding        vector(%d) NOT NULL,
 			fts              tsvector GENERATED ALWAYS AS (
 				to_tsvector('english',
@@ -106,12 +107,13 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		`CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_fts ON memories USING gin(fts)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_vec ON memories USING vchordrq (embedding vector_l2_ops)`,
-		// Backfill temporal-validity, confidence, and fingerprint columns on
+		// Backfill temporal-validity, confidence, fingerprint, and level columns on
 		// databases created before them.
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS valid_from timestamptz`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS valid_to timestamptz`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS confidence double precision`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS fingerprint text NOT NULL DEFAULT ''`,
+		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS level text NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_fingerprint ON memories(namespace, tier, fingerprint)`,
 		// Key/value store for store-level metadata (e.g. the embedding model the
 		// vectors were produced with — see EmbedModel/SetEmbedModel).
@@ -167,8 +169,8 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		INSERT INTO memories
 			(id, namespace, tier, content, summary, metadata, tags, importance,
 			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-			 valid_from, valid_to, confidence, fingerprint, embedding)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+			 valid_from, valid_to, confidence, fingerprint, level, embedding)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
 		ON CONFLICT (id) DO UPDATE SET
 			tier=EXCLUDED.tier, content=EXCLUDED.content,
 			summary=EXCLUDED.summary, metadata=EXCLUDED.metadata, tags=EXCLUDED.tags,
@@ -176,11 +178,13 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 			last_accessed_at=EXCLUDED.last_accessed_at, access_count=EXCLUDED.access_count,
 			expires_at=EXCLUDED.expires_at, superseded_by=EXCLUDED.superseded_by,
 			valid_from=EXCLUDED.valid_from, valid_to=EXCLUDED.valid_to,
-			confidence=EXCLUDED.confidence, fingerprint=EXCLUDED.fingerprint, embedding=EXCLUDED.embedding
+			confidence=EXCLUDED.confidence, fingerprint=EXCLUDED.fingerprint,
+			level=EXCLUDED.level, embedding=EXCLUDED.embedding
 		WHERE memories.namespace = EXCLUDED.namespace`,
 		m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, metaJSON, store.OrEmptySlice(m.Tags),
 		m.Importance, m.CreatedAt, m.UpdatedAt, m.LastAccessedAt, m.AccessCount,
 		m.ExpiresAt, m.SupersededBy, m.ValidFrom, m.ValidTo, m.Confidence, memory.Fingerprint(m.Content),
+		string(m.Level),
 		pgvector.NewVector(m.Embedding))
 	if err != nil {
 		return fmt.Errorf("postgres: upsert: %w", err)

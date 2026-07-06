@@ -148,7 +148,7 @@ func (s *Service) promote(ctx context.Context, ns string, batch []*memory.Memory
 		}
 		in := RememberInput{
 			Namespace: ns, Content: f.Content, Summary: f.Summary, Tier: tierForCategory(f.Category),
-			Metadata: meta,
+			Level: memory.LevelDeduced, Metadata: meta,
 		}
 		if _, err := s.Remember(ctx, in); err != nil {
 			slog.WarnContext(ctx, "promote: store fact", "err", err)
@@ -180,6 +180,7 @@ func (s *Service) promoteHeuristic(ctx context.Context, ns string, batch []*memo
 			for _, r := range results {
 				ins = append(ins, RememberInput{
 					Namespace: ns, Content: r.Content, Tier: r.Kind.Tier(),
+					Level:    memory.LevelExplicit,
 					Tags:     []string{string(r.Kind)},
 					Metadata: map[string]any{"memory_type": string(r.Kind), "promoted_from": m.ID},
 				})
@@ -187,6 +188,7 @@ func (s *Service) promoteHeuristic(ctx context.Context, ns string, batch []*memo
 		} else if src != "" && len(src) <= promoteWholeMaxChars {
 			ins = append(ins, RememberInput{
 				Namespace: ns, Content: src, Tier: memory.TierSemantic,
+				Level:    memory.LevelExplicit,
 				Metadata: map[string]any{"promoted_from": m.ID},
 			})
 		}

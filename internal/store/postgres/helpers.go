@@ -29,6 +29,14 @@ func filterClause(b *args, f store.Filter) string {
 		}
 		clause += " AND tier = ANY(" + b.add(tiers) + ")"
 	}
+	// Level: mirror the tiers pattern — bind-safe parameter array for each level.
+	if len(f.Levels) > 0 {
+		levels := make([]string, len(f.Levels))
+		for i, l := range f.Levels {
+			levels[i] = string(l)
+		}
+		clause += " AND level = ANY(" + b.add(levels) + ")"
+	}
 	// Tags: the memory's text[] must contain every listed tag (@> = contains).
 	if len(f.Tags) > 0 {
 		clause += " AND tags @> " + b.add(f.Tags)
@@ -92,7 +100,7 @@ func scanMemoryWith(s rowScanner, metric *float64) (*memory.Memory, error) { ret
 func scanRow(s rowScanner, metric *float64) (*memory.Memory, error) {
 	var (
 		m                  memory.Memory
-		tier               string
+		tier, level        string
 		metaBytes          []byte
 		expires            sql.NullTime
 		superseded         sql.NullString
@@ -102,7 +110,7 @@ func scanRow(s rowScanner, metric *float64) (*memory.Memory, error) {
 	dest := []any{
 		&m.ID, &m.Namespace, &tier, &m.Content, &m.Summary, &metaBytes, &m.Tags,
 		&m.Importance, &m.CreatedAt, &m.UpdatedAt, &m.LastAccessedAt, &m.AccessCount,
-		&expires, &superseded, &validFrom, &validTo, &confidence,
+		&expires, &superseded, &validFrom, &validTo, &confidence, &level,
 	}
 	if metric != nil {
 		dest = append(dest, metric)
@@ -112,6 +120,7 @@ func scanRow(s rowScanner, metric *float64) (*memory.Memory, error) {
 	}
 
 	m.Tier = memory.Tier(tier)
+	m.Level = memory.Level(level)
 	if len(metaBytes) > 0 {
 		if err := json.Unmarshal(metaBytes, &m.Metadata); err != nil {
 			return nil, err
