@@ -234,13 +234,18 @@ function lastTextByRole(messages: any, role: any) {
 }
 
 // OpenClaw prepends runtime plumbing to the user turn that the model sees:
-// one or more "<Label> (untrusted metadata):" blocks (chat/sender info), each
-// followed by a fenced JSON object. That metadata is explicitly untrusted and
-// is not memory — captured verbatim it dominates a namespace and recalls at
-// high similarity (it's templated), crowding out real memories. Strip the
-// leading metadata blocks and keep the actual message that follows.
+// one or more "<Label> (untrusted metadata):" blocks (chat/sender info).
+// Each block is followed by EITHER a fenced JSON object (```json ... ```)
+// OR flat key=value lines (chat_id=...\nmessage_id=...). That metadata is
+// explicitly untrusted and is not memory — captured verbatim it dominates a
+// namespace and recalls at high similarity (it's templated), crowding out
+// real memories. Strip the leading metadata blocks and keep the actual
+// message that follows.
 const UNTRUSTED_METADATA_BLOCK =
-  /^\s*[^\n]*\(untrusted metadata\):\s*```(?:json)?\s*[\s\S]*?```\s*/;
+  /^\s*[^\n]*\(untrusted metadata\):\s*(?:```(?:json)?\s*[\s\S]*?```\s*|(?:[^\n]*=[^\n]*\n?)+)/;
+
+// Noise prefixes to drop after preamble stripping (backstop for shouldSkipSystemTurn).
+const NOISE_PREFIXES = ["[Subagent Context]", "[cron:"];
 
 export function stripRuntimePreambles(text: any) {
   if (typeof text !== "string") return text;
@@ -749,7 +754,7 @@ const plugin: {
       // Drop OpenClaw runtime plumbing from the captured turn: untrusted-metadata
       // preambles, and subagent task delegations (framing, not conversation).
       const captureUser = stripRuntimePreambles(userText);
-      if (!captureUser || captureUser.startsWith("[Subagent Context]")) return;
+      if (!captureUser || NOISE_PREFIXES.some((p) => captureUser.startsWith(p))) return;
       const ns = effectiveNamespace(cfg, ctx);
       if (ns == null) return;
       const session = sessionIdentity(ctx);

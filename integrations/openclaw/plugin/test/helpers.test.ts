@@ -163,6 +163,120 @@ test("stripRuntimePreambles: returns empty when the turn is only metadata", () =
   assert.equal(stripRuntimePreambles(text), "");
 });
 
+// --- Flat-format tests (regression: original regex only matched fenced blocks) ---
+
+test("stripRuntimePreambles: flat-format single block strips metadata, keeps message", () => {
+  const text =
+    "Conversation info (untrusted metadata):\n" +
+    "chat_id=abc\n" +
+    "message_id=def\n" +
+    "sender_id=ghi\n" +
+    "group_space=channel\n" +
+    "is_group_chat=false\n" +
+    "User: Hello world";
+  assert.equal(stripRuntimePreambles(text), "User: Hello world");
+});
+
+test("stripRuntimePreambles: flat-format multiple consecutive blocks stripped", () => {
+  const text =
+    "Conversation info (untrusted metadata):\n" +
+    "chat_id=abc\n" +
+    "message_id=def\n" +
+    "Sender (untrusted metadata):\n" +
+    "sender_id=ghi\n" +
+    "User: Hello world";
+  assert.equal(stripRuntimePreambles(text), "User: Hello world");
+});
+
+test("stripRuntimePreambles: mixed format — one fenced block, one flat block", () => {
+  const text =
+    "Conversation info (untrusted metadata):\n" +
+    "```json\n" +
+    '{"chat_id": "abc"}\n' +
+    "```\n" +
+    "Sender (untrusted metadata):\n" +
+    "sender_id=ghi\n" +
+    "User: Hello world";
+  assert.equal(stripRuntimePreambles(text), "User: Hello world");
+});
+
+test("stripRuntimePreambles: flat format, metadata only (no actual message) → empty", () => {
+  const text =
+    "Conversation info (untrusted metadata):\n" +
+    "chat_id=abc\n" +
+    "message_id=def";
+  assert.equal(stripRuntimePreambles(text), "");
+});
+
+test("stripRuntimePreambles: user message containing `=` without metadata label is untouched", () => {
+  assert.equal(stripRuntimePreambles("User: Set foo=bar please"), "User: Set foo=bar please");
+});
+
+test("stripRuntimePreambles: fenced format still works (regression)", () => {
+  const text = "Conversation info (untrusted metadata):\n```json\n{\"chat_id\":1}\n```\nhello there";
+  assert.equal(stripRuntimePreambles(text), "hello there");
+});
+
+// Production format: User: prefix, pretty-printed JSON, nested objects.
+
+test("stripRuntimePreambles: production format — User: prefix + pretty-printed JSON", () => {
+  const text = [
+    "User: Conversation info (untrusted metadata):",
+    "```json",
+    "{",
+    '  "chat_id": "C12345678",',
+    '  "message_id": "M98765432",',
+    '  "sender": {',
+    '    "id": "U123456",',
+    '    "name": "Alice",',
+    '    "username": "alice"',
+    "  },",
+    '  "group_space": "general",',
+    '  "is_group_chat": false',
+    "}",
+    "```",
+    "",
+    "User: Hello does memini work fine?",
+  ].join("\n");
+  assert.equal(stripRuntimePreambles(text), "User: Hello does memini work fine?");
+});
+
+test("stripRuntimePreambles: production format — multiple blocks", () => {
+  const text = [
+    "User: Conversation info (untrusted metadata):",
+    "```json",
+    "{",
+    '  "chat_id": "C123",',
+    '  "message_id": "M456",',
+    "}",
+    "```",
+    "",
+    "Location (untrusted metadata):",
+    "```json",
+    "{",
+    '  "latitude": 37.7749,',
+    '  "longitude": -122.4194',
+    "}",
+    "```",
+    "",
+    "User: What's the weather?",
+  ].join("\n");
+  assert.equal(stripRuntimePreambles(text), "User: What's the weather?");
+});
+
+test("stripRuntimePreambles: production format — metadata only → empty", () => {
+  const text = [
+    "User: Conversation info (untrusted metadata):",
+    "```json",
+    "{",
+    '  "chat_id": "C123",',
+    '  "is_group_chat": true',
+    "}",
+    "```",
+  ].join("\n");
+  assert.equal(stripRuntimePreambles(text), "");
+});
+
 test("meminiListPath: tiers, tags, metadata, limit", () => {
   assert.equal(
     meminiListPath({ tiers: ["procedural"], tags: ["auth"], metadata: { category: "bug_fixes" }, limit: 20 }),
