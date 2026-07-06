@@ -408,3 +408,34 @@ func LoadLoCoMoSessions(path string) (*Dataset, error) {
 	}
 	return d, nil
 }
+
+// SplitHoldout filters longmemeval questions into a deterministic tune/held
+// split: every 10th question by load order is "held" (50 of 500), the rest are
+// "tune" (450). "all" (or empty) returns the dataset unchanged. Items are
+// pruned to the surviving questions' groups, and the name is suffixed so
+// results files don't collide across splits.
+func SplitHoldout(ds *Dataset, mode string) (*Dataset, error) {
+	switch mode {
+	case "", "all":
+		return ds, nil
+	case "tune", "held":
+	default:
+		return nil, fmt.Errorf("unknown holdout %q (want tune|held|all)", mode)
+	}
+	wantHeld := mode == "held"
+	groups := map[string]bool{}
+	qs := make([]Question, 0, len(ds.Questions))
+	for i, q := range ds.Questions {
+		if (i%10 == 9) == wantHeld {
+			qs = append(qs, q)
+			groups[q.Group] = true
+		}
+	}
+	items := make([]Item, 0, len(ds.Items))
+	for _, it := range ds.Items {
+		if groups[it.Group] {
+			items = append(items, it)
+		}
+	}
+	return &Dataset{Name: ds.Name + "-" + mode, Items: items, Questions: qs}, nil
+}

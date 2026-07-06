@@ -78,7 +78,7 @@ func run() error {
 	if *suite == "longmemeval" && *sessionDoc != "" && *sessionDoc != string(bench.DocFull) {
 		ds.Name += "-" + *sessionDoc
 	}
-	ds, err = splitHoldout(ds, *holdout)
+	ds, err = bench.SplitHoldout(ds, *holdout)
 	if err != nil {
 		return err
 	}
@@ -376,37 +376,6 @@ func loadDataset(suite, path string, docMode bench.DocMode) (*bench.Dataset, err
 	default:
 		return nil, fmt.Errorf("unknown suite %q", suite)
 	}
-}
-
-// splitHoldout filters longmemeval questions into a deterministic tune/held
-// split: every 10th question by load order is "held" (50 of 500), the rest are
-// "tune" (450). "all" returns the dataset unchanged. Items are pruned to the
-// surviving questions' groups, and ds.Name is suffixed so results files don't
-// collide across splits.
-func splitHoldout(ds *bench.Dataset, mode string) (*bench.Dataset, error) {
-	switch mode {
-	case "", "all":
-		return ds, nil
-	case "tune", "held":
-	default:
-		return nil, fmt.Errorf("unknown holdout %q (want tune|held|all)", mode)
-	}
-	wantHeld := mode == "held"
-	groups := map[string]bool{}
-	qs := make([]bench.Question, 0, len(ds.Questions))
-	for i, q := range ds.Questions {
-		if (i%10 == 9) == wantHeld {
-			qs = append(qs, q)
-			groups[q.Group] = true
-		}
-	}
-	items := make([]bench.Item, 0, len(ds.Items))
-	for _, it := range ds.Items {
-		if groups[it.Group] {
-			items = append(items, it)
-		}
-	}
-	return &bench.Dataset{Name: ds.Name + "-" + mode, Items: items, Questions: qs}, nil
 }
 
 func requirePath(p string) string {
