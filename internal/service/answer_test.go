@@ -59,8 +59,66 @@ func TestAnswerGroundsOnRecall(t *testing.T) {
 	// The system prompt instructs the model to resolve relative dates against
 	// the [bracketed] date each memory carries — pin that the annotation is
 	// actually rendered (1_700_000_000 = 2023-11-14 UTC).
-	if !strings.Contains(ans.user, "- [2023-11-14] postgres is a relational database") {
-		t.Fatalf("reader prompt should date-prefix the recalled memory; got %q", ans.user)
+	if !strings.Contains(ans.user, "1. [2023-11-14] postgres is a relational database") {
+		t.Fatalf("reader prompt should number and date-prefix the recalled memory; got %q", ans.user)
+	}
+}
+
+// TestAnswerTagsConflictingMemories pins the deterministic conflict tagging:
+// when recall surfaces two live memories the lexical detector classifies as a
+// value-swap update, both lines carry a [may conflict with #N] tag so the
+// reader can apply the conflict rule instead of silently picking one.
+func TestAnswerTagsConflictingMemories(t *testing.T) {
+	ctx := context.Background()
+	ans := &fakeAnswerer{resp: "60 seconds"}
+	st := openTestStore(t)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	clock := now
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithAnswerer(ans),
+		service.WithClock(func() time.Time { return clock }))
+
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the api timeout is 30 seconds", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember old: %v", err)
+	}
+	clock = now.Add(24 * time.Hour)
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the api timeout is 60 seconds", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember new: %v", err)
+	}
+
+	if _, err := svc.Answer(ctx, service.AnswerInput{Namespace: "alice", Query: "api timeout", Limit: 5}); err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if got := strings.Count(ans.user, "[may conflict with #"); got != 2 {
+		t.Fatalf("both sides of the value swap should be tagged, got %d tag(s) in %q", got, ans.user)
+	}
+}
+
+// TestAnswerPrefersValidFromDate pins that a backdated fact is annotated with
+// when it was true (ValidFrom), not when it was recorded, so relative time
+// references resolve against the right anchor.
+func TestAnswerPrefersValidFromDate(t *testing.T) {
+	ctx := context.Background()
+	ans := &fakeAnswerer{resp: "ok"}
+	st := openTestStore(t)
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithAnswerer(ans),
+		service.WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }))
+
+	validFrom := time.Date(2021, 6, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "moved to berlin for the platform job", Tier: memory.TierSemantic,
+		ValidFrom: &validFrom,
+	}); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	if _, err := svc.Answer(ctx, service.AnswerInput{Namespace: "alice", Query: "berlin", Limit: 5}); err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if !strings.Contains(ans.user, "[2021-06-01] moved to berlin") {
+		t.Fatalf("reader prompt should anchor on ValidFrom; got %q", ans.user)
 	}
 }
 

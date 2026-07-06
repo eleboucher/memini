@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eleboucher/memini/internal/contradict"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/store"
 )
@@ -13,15 +14,22 @@ import (
 // answerSystem is memini's default reader prompt for Answer. It follows the
 // conventions the LoCoMo/LongMemEval leaders converged on (mem0, mnemory):
 // resolve relative dates against the memory's own dates, prefer the most recent
-// on conflict, allow inference across memories, answer in a short phrase, and
-// only decline when nothing relevant was retrieved.
+// on conflict, allow inference across memories, answer in a short phrase — plus
+// two hardening rules: abstain instead of fabricating a specific the memories
+// don't state (finding related context is not finding the answer), and never
+// silently pick a side of a tagged conflict that dates cannot order.
 const answerSystem = "You answer the question using ONLY the provided memories. " +
 	"A memory may carry a date in [brackets]; use those dates to resolve relative time " +
 	"references ('last year', 'two months ago') to a specific date, month, or year, and answer " +
 	"with the absolute value — never repeat the relative phrase. If memories conflict, prefer the " +
-	"most recent. Connect facts across memories and infer the answer when it is implied rather than " +
-	"stated outright. Reply with the fact only, in 6 words or fewer (a name, date, number, or short " +
-	"phrase); do not explain or restate the question. Only if no memory is relevant, reply \"I don't know\"."
+	"most recent; memories tagged [may conflict with #N] disagree on the same claim — when their " +
+	"dates cannot order them, reply \"conflicting memories\" rather than silently picking one. " +
+	"Connect facts across memories and infer the answer when it is implied rather than stated " +
+	"outright, but never invent a specific (name, date, number, place) that no memory states or " +
+	"implies: finding related context is not the same as finding the answer, and a wrong guess is " +
+	"worse than admitting absence. Reply with the fact only, in 6 words or fewer (a name, date, " +
+	"number, or short phrase); do not explain or restate the question. If no memory is relevant, " +
+	"or the specific fact asked for is missing, reply \"I don't know\"."
 
 // AnswerInput is a retrieve-then-generate request.
 type AnswerInput struct {
@@ -61,11 +69,25 @@ func (s *Service) Answer(ctx context.Context, in AnswerInput) (AnswerResult, err
 		s.metrics.AnswerResult("error")
 		return AnswerResult{}, err
 	}
+	// Tag conflicting pairs deterministically before formatting: the write-path
+	// detector only compares at write time, so recall can surface live pairs it
+	// never saw side by side. The lexical classifier is precision-first — a tag
+	// means a real same-claim disagreement, not embedding-space proximity.
+	conflicts := conflictTags(res)
 	var b strings.Builder
-	for _, r := range res {
-		// The date annotation the system prompt refers to: anchor each memory
-		// on its creation date so relative time references can be resolved.
-		fmt.Fprintf(&b, "- [%s] %s\n", r.Memory.CreatedAt.Format("2006-01-02"), r.Memory.Content)
+	for i, r := range res {
+		// The date annotation the system prompt refers to: anchor each memory on
+		// when it was true (ValidFrom) rather than when it was recorded, so
+		// backdated facts resolve relative time references correctly.
+		date := r.Memory.CreatedAt
+		if r.Memory.ValidFrom != nil {
+			date = *r.Memory.ValidFrom
+		}
+		fmt.Fprintf(&b, "%d. [%s] %s", i+1, date.Format("2006-01-02"), r.Memory.Content)
+		if tagged := conflicts[i]; len(tagged) > 0 {
+			fmt.Fprintf(&b, " [may conflict with %s]", refList(tagged))
+		}
+		b.WriteByte('\n')
 	}
 	ans, err := s.answerer.Complete(ctx, answerSystem,
 		"Memories:\n"+b.String()+"\nQuestion: "+in.Query+"\nAnswer:")
@@ -75,4 +97,34 @@ func (s *Service) Answer(ctx context.Context, in AnswerInput) (AnswerResult, err
 	}
 	s.metrics.AnswerResult("ok")
 	return AnswerResult{Answer: strings.TrimSpace(ans), Sources: res}, nil
+}
+
+// conflictTags classifies every recalled pair with the lexical contradiction
+// detector and returns, per memory index, the 1-based indices it disagrees
+// with. Answer's recall is small (default 10), so the pairwise scan is
+// negligible next to the LLM call.
+func conflictTags(res []store.Scored) map[int][]int {
+	tags := map[int][]int{}
+	for i := range res {
+		for j := i + 1; j < len(res); j++ {
+			newer, older := res[i].Memory, res[j].Memory
+			if older.CreatedAt.After(newer.CreatedAt) {
+				newer, older = older, newer
+			}
+			if contradict.Classify(newer.Content, older.Content, contradict.Default).Class == contradict.Update {
+				tags[i] = append(tags[i], j+1)
+				tags[j] = append(tags[j], i+1)
+			}
+		}
+	}
+	return tags
+}
+
+// refList renders 1-based memory indices as "#2, #5".
+func refList(ids []int) string {
+	parts := make([]string, len(ids))
+	for i, n := range ids {
+		parts[i] = fmt.Sprintf("#%d", n)
+	}
+	return strings.Join(parts, ", ")
 }
