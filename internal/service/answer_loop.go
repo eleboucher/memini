@@ -48,14 +48,24 @@ func (r ReasoningLevel) iterations() int {
 // only opens when this first pass cannot settle the question.
 const answerGateSystem = answerSystem +
 	" Exception: you are the first pass of a deeper memory search, so instead of guessing or replying " +
-	"\"I don't know\", reply with exactly INSUFFICIENT when the provided memories do not settle the " +
-	"question: the specific fact asked for is missing, the question aggregates across time or sessions " +
-	"(how many, list all, first/last), the memories conflict without a clear latest value, or the answer " +
-	"depends on an update these memories may not include. If the memories do settle the question, answer " +
-	"it directly."
+	"\"I don't know\", reply with exactly INSUFFICIENT when the provided memories do not plainly settle " +
+	"the question. You MUST reply INSUFFICIENT when any of these hold: the specific fact asked for is " +
+	"not stated by a provided memory; the question needs several memories combined (how many, list all, " +
+	"first/last, what changed, comparisons across time or sessions); the memories conflict; or the " +
+	"question asks what is true now and the memory stating it could have been superseded since its date. " +
+	"Only when one provided memory plainly states the asked-for fact should you answer directly."
 
-// answerInsufficient is the gate's escape hatch sentinel.
+// answerInsufficient is the gate's escape hatch sentinel. A gate that replies
+// "I don't know" is treated the same way: the loop should search before the
+// answer gives up.
 const answerInsufficient = "INSUFFICIENT"
+
+// gateInsufficient reports whether the first-pass reply demands the tool loop.
+func gateInsufficient(reply string) bool {
+	up := strings.ToUpper(reply)
+	return strings.Contains(up, answerInsufficient) ||
+		strings.Contains(up, "DON'T KNOW") || strings.Contains(up, "DO NOT KNOW")
+}
 
 // answerLoopSystem extends the single-shot reader prompt with tool guidance.
 const answerLoopSystem = answerSystem +
@@ -142,13 +152,16 @@ func (s *Service) answerAgentic(ctx context.Context, in AnswerInput, tc llm.Tool
 
 	// Early-exit gate: if the prefetched context already answers the question,
 	// return that answer at single-shot cost instead of entering the loop.
+	// (A structural variant that skipped the gate on conflict-tagged context
+	// was tried and measured worse: the loop re-answered conflict questions
+	// the first pass already got right. See CODINGAGENT.md.)
 	direct, err := s.answerer.Complete(ctx, answerGateSystem,
 		"Memories:\n"+formatAnswerContext(prefetch)+"\nQuestion: "+in.Query+"\nAnswer:")
 	if err != nil {
 		s.metrics.AnswerResult("error")
 		return AnswerResult{}, fmt.Errorf("answer: gate: %w", err)
 	}
-	if !strings.Contains(strings.ToUpper(direct), answerInsufficient) {
+	if !gateInsufficient(direct) {
 		s.metrics.AnswerResult("ok")
 		return AnswerResult{Answer: strings.TrimSpace(direct), Sources: sources}, nil
 	}
