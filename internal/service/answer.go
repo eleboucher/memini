@@ -28,9 +28,10 @@ const answerSystem = "You answer the question using ONLY the provided memories. 
 	"Connect facts across memories and infer the answer when it is implied rather than stated " +
 	"outright, but never invent a specific (name, date, number, place) that no memory states or " +
 	"implies: finding related context is not the same as finding the answer, and a wrong guess is " +
-	"worse than admitting absence. Reply with the fact only, in 6 words or fewer (a name, date, " +
-	"number, or short phrase); do not explain or restate the question. If no memory is relevant, " +
-	"or the specific fact asked for is missing, reply \"I don't know\"."
+	"worse than admitting absence. Reply with the fact(s) only, as briefly as the question allows: a " +
+	"name, date, number, or short phrase for a single fact, or one short sentence when the question " +
+	"asks you to combine several facts. Do not explain your reasoning or restate the question. If no " +
+	"memory is relevant, or the specific fact asked for is missing, reply \"I don't know\"."
 
 // AnswerInput is a retrieve-then-generate request.
 type AnswerInput struct {
