@@ -15,13 +15,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/eleboucher/memini/bench"
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/llm"
-	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/search"
 	"github.com/eleboucher/memini/internal/service"
 	"github.com/eleboucher/memini/internal/store/sqlitevec"
@@ -41,7 +39,7 @@ type result struct {
 }
 
 func run() error {
-	suite := flag.String("suite", "locomo", "locomo | longmemeval")
+	suite := flag.String("suite", "locomo", "locomo | longmemeval | codingagent")
 	data := flag.String("data", "", "dataset path")
 	holdout := flag.String("holdout", "all", "longmemeval question split: tune (450) | held (50) | all")
 	sessionDoc := flag.String("session-doc", "full", "longmemeval doc construction: full | user-only | dated")
@@ -141,9 +139,9 @@ func run() error {
 	}
 	switch *ingestMode {
 	case "upsert":
-		err = ingestUpsert(ctx, st, embedder, ds.Items)
+		err = bench.IngestQAUpsert(ctx, st, embedder, ds.Items)
 	case "write":
-		err = ingestWrite(ctx, st, embedder, ds.Items, distiller)
+		err = bench.IngestQAWrite(ctx, st, embedder, ds.Items, distiller)
 	default:
 		err = fmt.Errorf("unknown -ingest %q (want upsert|write)", *ingestMode)
 	}
@@ -171,10 +169,14 @@ func run() error {
 		wg.Go(func() {
 			for i := range jobs {
 				q := ds.Questions[i]
-				correct, err := answerAndJudge(ctx, svcFor(q.Group), chat, q, *k, service.ReasoningLevel(*reasoning))
+				correct, ans, err := bench.AnswerAndJudge(ctx, svcFor(q.Group), chat, q, *k, service.ReasoningLevel(*reasoning))
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "q%d error: %v\n", i, err)
 					continue
+				}
+				if debug {
+					fmt.Fprintf(os.Stderr, "\n[Q] %s\n[group=%s cat=%s]\n[gold] %s\n[answer] %s\n[correct] %v\n",
+						q.Query, q.Group, q.Category, q.Answer, ans, correct)
 				}
 				mu.Lock()
 				if err := json.NewEncoder(ckpt).Encode(result{Index: i, Category: q.Category, Correct: correct}); err != nil {
@@ -222,6 +224,9 @@ func loadSuite(suite, data, sessionDoc, holdout string) (*bench.Dataset, error) 
 		return nil, fmt.Errorf("-data is required")
 	}
 	switch suite {
+	case "codingagent":
+		ds, _, err := bench.LoadCodingAgent(data)
+		return ds, err
 	case "locomo":
 		return bench.LoadLoCoMo(data)
 	case "longmemeval":
@@ -240,7 +245,7 @@ func loadSuite(suite, data, sessionDoc, holdout string) (*bench.Dataset, error) 
 		}
 		return ds, nil
 	default:
-		return nil, fmt.Errorf("unknown suite %q (want locomo|longmemeval)", suite)
+		return nil, fmt.Errorf("unknown suite %q (want locomo|longmemeval|codingagent)", suite)
 	}
 }
 
@@ -267,172 +272,7 @@ func subsetQuestions(ds *bench.Dataset, limit int) {
 	ds.Items = kept
 }
 
-// ingestUpsert loads items directly into the store (retrieval-only baseline):
-// semantic tier, dated at the session time so temporal targeting can aim.
-func ingestUpsert(ctx context.Context, st *sqlitevec.Store, e embed.Embedder, items []bench.Item) error {
-	const batch = 25
-	now := time.Unix(1_700_000_000, 0).UTC()
-	for start := 0; start < len(items); start += batch {
-		end := min(start+batch, len(items))
-		texts := make([]string, end-start)
-		for i, it := range items[start:end] {
-			texts[i] = it.Content
-		}
-		vecs, err := e.Embed(ctx, texts)
-		if err != nil {
-			return err
-		}
-		for i, it := range items[start:end] {
-			ts := now
-			var validFrom *time.Time
-			if !it.Time.IsZero() {
-				ts = it.Time
-				validFrom = &it.Time
-			}
-			if err := st.Upsert(ctx, &memory.Memory{
-				ID: it.ID, Namespace: nsOf(it.Group), Tier: memory.TierSemantic, Content: it.Content,
-				CreatedAt: ts, UpdatedAt: ts, LastAccessedAt: ts, ValidFrom: validFrom,
-				Embedding: vecs[i],
-			}); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// ingestWrite feeds items through service.Remember sequentially in dataset
-// order, mirroring the shipped server's no-LLM write wiring (tier
-// classification, gates, fingerprint/write dedup, corroboration, contradiction
-// invalidation, heuristic extract). distiller, when non-nil, additionally
-// wires LLM distill-on-write (superseding the heuristic extractor, as in
-// production) — one completion per capture, so only use it on a subset run.
-// Each write is clocked at its item's session time, and TTL is overridden to
-// never-expire: classifier-routed episodic memories carry a 90d TTL, and
-// benchmark question dates can fall months after the sessions — the bench
-// measures answer quality, not retention policy.
-func ingestWrite(ctx context.Context, st *sqlitevec.Store, e embed.Embedder, items []bench.Item, distiller llm.Distiller) error {
-	// The clock advances per item while detached write-path work (extract,
-	// distill) reads it from background goroutines, so it must be atomic.
-	var clock atomic.Pointer[time.Time]
-	start := time.Unix(1_700_000_000, 0).UTC()
-	clock.Store(&start)
-	opts := []service.Option{
-		service.WithSyncReinforce(),
-		service.WithClock(func() time.Time { return *clock.Load() }),
-		service.WithWriteDedup(0.625, service.WriteDedupHint),
-		service.WithCorroboration(0.70),
-		service.WithContradictionDownrank(0.625),
-		service.WithEpisodicMinChars(120),
-		service.WithExtractOnWrite(true),
-	}
-	if distiller != nil {
-		opts = append(opts, service.WithDistiller(distiller), service.WithDistillOnWrite(true))
-	}
-	svc := service.New(st, e, opts...)
-	never := -time.Second
-	var gated, merged int
-	seen := map[string]bool{}
-	for _, it := range items {
-		if !it.Time.IsZero() {
-			t := it.Time.UTC()
-			clock.Store(&t)
-		}
-		var validFrom *time.Time
-		if !it.Time.IsZero() {
-			vf := it.Time.UTC()
-			validFrom = &vf
-		}
-		m, err := svc.Remember(ctx, service.RememberInput{
-			Namespace: nsOf(it.Group), Content: it.Content, TTL: &never, ValidFrom: validFrom,
-		})
-		if err != nil {
-			return fmt.Errorf("write-mode ingest %s: %w", it.ID, err)
-		}
-		if m == nil { // dropped by the episodic low-signal gate: accepted, not stored
-			gated++
-			continue
-		}
-		if seen[m.ID] {
-			merged++
-		}
-		seen[m.ID] = true
-	}
-	svc.WaitBackground()
-	fmt.Fprintf(os.Stderr, "write-mode ingest: %d items -> %d memories, %d gated, %d merged\n",
-		len(items), len(seen), gated, merged)
-	return nil
-}
-
-func nsOf(group string) string {
-	if group == "" {
-		return "default"
-	}
-	return group
-}
-
-// Judge rubrics. The base rubric grades fact equivalence; knowledge-update and
-// temporal questions get the leniency the official LongMemEval evaluation
-// applies, and abstention questions grade the decline itself.
-const judgeBase = "You grade answers. Given a question, the reference answer, and a candidate answer, " +
-	"reply with exactly CORRECT or INCORRECT. The candidate is CORRECT if it conveys the same key fact(s) " +
-	"as the reference, even if phrased differently or with extra words."
-
-const judgeKnowledgeUpdate = judgeBase +
-	" The reference is the UPDATED value of a fact that changed over time: the candidate is CORRECT if it " +
-	"states the updated value (even if it also mentions the earlier value as outdated), and INCORRECT if it " +
-	"gives only the earlier, superseded value."
-
-const judgeTemporal = judgeBase +
-	" Dates within one day of the reference are CORRECT (timezone and relative-date arithmetic slack)."
-
-const judgeAbstention = "You grade answers to questions that are NOT answerable from the conversation the " +
-	"candidate saw. Reply with exactly CORRECT or INCORRECT. The candidate is CORRECT only if it declines to " +
-	"answer — says it doesn't know, the information wasn't mentioned, or the question can't be answered. Any " +
-	"substantive invented answer is INCORRECT."
-
-func judgeSystemFor(category string) string {
-	switch {
-	case strings.HasSuffix(category, "_abs"):
-		return judgeAbstention
-	case category == "knowledge-update":
-		return judgeKnowledgeUpdate
-	case category == "temporal-reasoning":
-		return judgeTemporal
-	default:
-		return judgeBase
-	}
-}
-
 var debug bool
-
-// answerAndJudge runs the production answer path (recall + service.Answer's
-// reader prompt; the agentic loop when a reasoning level is set) and grades
-// the reply against the reference.
-func answerAndJudge(
-	ctx context.Context, svc *service.Service, chat llm.Completer, q bench.Question, k int, level service.ReasoningLevel,
-) (bool, error) {
-	res, err := svc.Answer(ctx, service.AnswerInput{Namespace: q.Group, Query: q.Query, Limit: k, Reasoning: level})
-	if err != nil {
-		return false, err
-	}
-	ref := q.Answer
-	if ref == "" {
-		ref = "(no reference; unanswerable)"
-	}
-	grade, err := chat.Complete(ctx, judgeSystemFor(q.Category),
-		fmt.Sprintf("Question: %s\nReference: %s\nCandidate: %s\nGrade:", q.Query, ref, res.Answer))
-	if err != nil {
-		return false, err
-	}
-	g := strings.ToUpper(grade)
-	correct := strings.Contains(g, "CORRECT") && !strings.Contains(g, "INCORRECT")
-	if debug {
-		fmt.Fprintf(os.Stderr, "\n[Q] %s\n[group=%s cat=%s sources=%d]\n[gold] %s\n[answer] %s\n[grade] %s => %v\n",
-			q.Query, q.Group, q.Category, len(res.Sources), q.Answer, res.Answer, strings.TrimSpace(grade), correct)
-	}
-	return correct, nil
-}
 
 func loadCheckpoint(path string) (map[int]bool, error) {
 	done := map[int]bool{}

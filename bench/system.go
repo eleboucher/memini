@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eleboucher/memini/internal/embed"
@@ -64,6 +65,25 @@ type System interface {
 	Recall(ctx context.Context, group, query string, k int) ([]RecallHit, error)
 }
 
+// SystemOpts configures MeminiSystemsOpts. The zero value reproduces
+// MeminiSystems' historical defaults (fixed benchClock, undated ingest).
+type SystemOpts struct {
+	Concurrency int
+	QueryPrefix string
+	FusionAlpha float64 // < 0 uses RRF; >= 0 uses convex score fusion
+	PoolFactor  int
+	PoolFloor   int
+	Mode        IngestMode
+	Distiller   llm.Distiller
+	// Dated honors Item.Time instead of the fixed benchClock: upsert rows are
+	// stamped and dated at Item.Time; write-mode ingest advances a per-item clock
+	// (with ValidFrom, never-TTL, and session_id metadata), so contradiction and
+	// temporal recall see the real chronology. RecallNow is the clock recall runs
+	// under once ingest completes (zero = benchClock). Ignored when Dated is false.
+	Dated     bool
+	RecallNow time.Time
+}
+
 // meminiBackend holds the store/embedder shared across retrieval strategies;
 // ingestion runs once and is reused.
 type meminiBackend struct {
@@ -73,11 +93,27 @@ type meminiBackend struct {
 	queryPrefix string
 	concurrency int
 	mode        IngestMode
+	distiller   llm.Distiller
+	// dated honors Item.Time; clock is the advancing/adjustable time source the
+	// service reads when dated (nil-load never happens: set before svc is built),
+	// and recallNow is the clock recall runs under after ingest.
+	dated     bool
+	clock     atomic.Pointer[time.Time]
+	recallNow time.Time
 	// alias maps stored memory ID -> the dataset item IDs that landed on it
 	// (write mode only; built once during ingest, read-only afterwards).
 	alias  map[string][]string
 	once   sync.Once
 	ingErr error
+}
+
+// effectiveNow is the time recall (and derived-row listing) runs under: the
+// configured RecallNow when dated, otherwise the fixed benchClock.
+func (b *meminiBackend) effectiveNow() time.Time {
+	if b.dated && !b.recallNow.IsZero() {
+		return b.recallNow
+	}
+	return benchClock()
 }
 
 // benchClock pins recall's time source to the ingest timestamp so a benchmark
@@ -87,22 +123,32 @@ type meminiBackend struct {
 // free of background writes racing the next query.
 var benchClock = func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
 
-func newMeminiBackend(
-	st store.Store, e embed.Embedder, concurrency int, queryPrefix string, fusionAlpha float64,
-	poolFactor, poolFloor int, mode IngestMode, distiller llm.Distiller,
-) *meminiBackend {
-	if concurrency < 1 {
-		concurrency = 1
+func newMeminiBackend(st store.Store, e embed.Embedder, o SystemOpts) *meminiBackend {
+	if o.Concurrency < 1 {
+		o.Concurrency = 1
 	}
-	if mode == "" {
-		mode = IngestUpsert
+	if o.Mode == "" {
+		o.Mode = IngestUpsert
+	}
+	b := &meminiBackend{
+		store: st, embedder: e, queryPrefix: o.QueryPrefix, concurrency: o.Concurrency,
+		mode: o.Mode, distiller: o.Distiller, dated: o.Dated, recallNow: o.RecallNow,
+	}
+	// When dated, the service reads a mutable clock: ingest advances it per item,
+	// then parks it at effectiveNow for the recall phase. Undated runs keep the
+	// fixed benchClock so historical LongMemEval/LoCoMo numbers are unchanged.
+	clockFn := benchClock
+	if o.Dated {
+		start := benchClock()
+		b.clock.Store(&start)
+		clockFn = func() time.Time { return *b.clock.Load() }
 	}
 	opts := []service.Option{
-		service.WithClock(benchClock), service.WithSyncReinforce(),
-		service.WithQueryPrefix(queryPrefix), service.WithScoreFusion(fusionAlpha),
-		service.WithRecallPool(poolFactor, poolFloor),
+		service.WithClock(clockFn), service.WithSyncReinforce(),
+		service.WithQueryPrefix(o.QueryPrefix), service.WithScoreFusion(o.FusionAlpha),
+		service.WithRecallPool(o.PoolFactor, o.PoolFloor),
 	}
-	if mode == IngestWrite {
+	if o.Mode == IngestWrite {
 		// Mirror the shipped server's write-path wiring (cmd/memini/root.go):
 		// write-dedup hint band, corroboration, contradiction invalidation, the
 		// episodic low-signal gate, and heuristic extract-on-write. Recall-side
@@ -117,17 +163,16 @@ func newMeminiBackend(
 		)
 		// Distill-on-write mirrors the shipped server's LLM wiring: with a
 		// distiller set it supersedes the heuristic extractor (production
-		// behavior). Batching stays off — bench items carry no session_id, so
-		// each capture (one whole session doc) is distilled per-capture.
-		if distiller != nil {
+		// behavior).
+		if o.Distiller != nil {
 			opts = append(opts,
-				service.WithDistiller(distiller),
+				service.WithDistiller(o.Distiller),
 				service.WithDistillOnWrite(true),
 			)
 		}
 	}
-	svc := service.New(st, e, opts...)
-	return &meminiBackend{store: st, embedder: e, svc: svc, queryPrefix: queryPrefix, concurrency: concurrency, mode: mode}
+	b.svc = service.New(st, e, opts...)
+	return b
 }
 
 // ingest loads the corpus once: direct upserts (upsert mode) or the production
@@ -182,10 +227,17 @@ func (b *meminiBackend) ingestUpsert(ctx context.Context, items []Item) {
 			upsertMu.Lock()
 			defer upsertMu.Unlock()
 			for i, it := range window {
+				ts := now
+				var validFrom *time.Time
+				if b.dated && !it.Time.IsZero() {
+					ts = it.Time
+					vf := it.Time
+					validFrom = &vf
+				}
 				if err := b.store.Upsert(ctx, &memory.Memory{
 					ID: it.ID, Namespace: nsOf(it.Group), Tier: memory.TierSemantic,
-					Content: it.Content, CreatedAt: now, UpdatedAt: now, LastAccessedAt: now,
-					Embedding: vecs[i],
+					Content: it.Content, CreatedAt: ts, UpdatedAt: ts, LastAccessedAt: ts,
+					ValidFrom: validFrom, Embedding: vecs[i],
 				}); err != nil {
 					setErr(err)
 					return
@@ -194,6 +246,12 @@ func (b *meminiBackend) ingestUpsert(ctx context.Context, items []Item) {
 		}(items[start:end])
 	}
 	wg.Wait()
+	// Park the recall clock at effectiveNow so temporal targeting aims from the
+	// query's reference time, not the ingest start.
+	if b.dated {
+		rn := b.effectiveNow()
+		b.clock.Store(&rn)
+	}
 }
 
 // ingestWrite feeds items through service.Remember sequentially in dataset
@@ -207,9 +265,27 @@ func (b *meminiBackend) ingestWrite(ctx context.Context, items []Item) {
 			"bench: MEMINI_EMBED_DOC_PREFIX ignored with write-mode ingest (production Remember embeds raw content)")
 	}
 	b.alias = make(map[string][]string, len(items))
+	never := -time.Second
 	var gated, merged int
 	for _, it := range items {
-		m, err := b.svc.Remember(ctx, service.RememberInput{Namespace: nsOf(it.Group), Content: it.Content})
+		in := service.RememberInput{Namespace: nsOf(it.Group), Content: it.Content}
+		if b.dated {
+			// Advance the per-item clock so corroborate/contradict and valid_to
+			// invalidation see the real chronology; never-expire TTL (question
+			// dates can fall long after a session); session_id metadata for the
+			// session-echo guard.
+			if !it.Time.IsZero() {
+				t := it.Time.UTC()
+				b.clock.Store(&t)
+				vf := it.Time.UTC()
+				in.ValidFrom = &vf
+			}
+			in.TTL = &never
+			if it.Session != "" {
+				in.Metadata = map[string]any{"session_id": it.Session}
+			}
+		}
+		m, err := b.svc.Remember(ctx, in)
 		if err != nil {
 			b.ingErr = fmt.Errorf("write-mode ingest %s: %w", it.ID, err)
 			return
@@ -222,6 +298,10 @@ func (b *meminiBackend) ingestWrite(ctx context.Context, items []Item) {
 			merged++
 		}
 		b.alias[m.ID] = append(b.alias[m.ID], it.ID)
+	}
+	if b.dated {
+		rn := b.effectiveNow()
+		b.clock.Store(&rn)
 	}
 	// Settle detached side-effects (extract, corroborate, contradict,
 	// auto-supersede) and any queued LLM consolidation before the first recall.
@@ -250,7 +330,7 @@ func (b *meminiBackend) attributeDerived(ctx context.Context, items []Item) erro
 	}
 	derived := 0
 	for ns := range namespaces {
-		mems, err := b.store.List(ctx, ns, store.Filter{Now: benchClock()}, 0)
+		mems, err := b.store.List(ctx, ns, store.Filter{Now: b.effectiveNow()}, 0)
 		if err != nil {
 			return err
 		}
@@ -333,7 +413,16 @@ func MeminiSystems(
 	st store.Store, e embed.Embedder, concurrency int, queryPrefix string, fusionAlpha float64,
 	poolFactor, poolFloor int, mode IngestMode, distiller llm.Distiller,
 ) []System {
-	b := newMeminiBackend(st, e, concurrency, queryPrefix, fusionAlpha, poolFactor, poolFloor, mode, distiller)
+	return MeminiSystemsOpts(st, e, SystemOpts{
+		Concurrency: concurrency, QueryPrefix: queryPrefix, FusionAlpha: fusionAlpha,
+		PoolFactor: poolFactor, PoolFloor: poolFloor, Mode: mode, Distiller: distiller,
+	})
+}
+
+// MeminiSystemsOpts is MeminiSystems with the full option set, including dated
+// ingest (SystemOpts.Dated) for temporally-ordered corpora.
+func MeminiSystemsOpts(st store.Store, e embed.Embedder, o SystemOpts) []System {
+	b := newMeminiBackend(st, e, o)
 	return []System{
 		&hybridSystem{b},
 		&vectorSystem{b},

@@ -34,6 +34,12 @@ type Item struct {
 	Content string    `json:"content"`
 	Group   string    `json:"group,omitempty"`
 	Time    time.Time `json:"-"`
+	// Session is a dev-session key (coding-agent suite): passed as session_id
+	// metadata on write-mode ingest. Source is a provenance pointer to the
+	// primary source the item was mined from (git hash, note file, plan). Both
+	// are zero for the LongMemEval/LoCoMo loaders.
+	Session string `json:"session,omitempty"`
+	Source  string `json:"source,omitempty"`
 }
 
 // Question is a query plus the gold memory IDs it should retrieve. Group must
@@ -47,6 +53,13 @@ type Question struct {
 	Answer   string    `json:"answer,omitempty"`
 	Category string    `json:"category,omitempty"`
 	Now      time.Time `json:"-"`
+	// GoldAll is the full evidence set for synthesis questions (answering
+	// requires combining every id); recall Gold credits any-hit, GoldAll drives
+	// coverage@k. Empty falls back to Gold. Provenance points at the primary
+	// source the gold answer was verified against. Both are used only by the
+	// coding-agent suite.
+	GoldAll    []string `json:"gold_all,omitempty"`
+	Provenance string   `json:"provenance,omitempty"`
 }
 
 // Dataset is a normalized retrieval benchmark.

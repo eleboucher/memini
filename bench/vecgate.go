@@ -44,7 +44,9 @@ func VecGateSweep(
 	ctx context.Context, st store.Store, e embed.Embedder, ds *Dataset,
 	k int, thresholds []float64, concurrency int, queryPrefix string, fusionAlpha float64,
 ) ([]VecGateResult, error) {
-	b := newMeminiBackend(st, e, concurrency, queryPrefix, fusionAlpha, 0, 0, IngestUpsert, nil)
+	b := newMeminiBackend(st, e, SystemOpts{
+		Concurrency: concurrency, QueryPrefix: queryPrefix, FusionAlpha: fusionAlpha, Mode: IngestUpsert,
+	})
 	if err := b.ingest(ctx, ds.Items); err != nil {
 		return nil, fmt.Errorf("bench: vecgate ingest: %w", err)
 	}
