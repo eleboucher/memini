@@ -220,13 +220,18 @@ func TestCodingAgentHeadroom(t *testing.T) {
 	}
 }
 
-// TestCodingAgentDiscrimination runs the 2x2 that LongMemEval could not separate:
-// {extract, distill} write-path ingest x {single-shot, agentic} answering. It
-// needs a live embedder and MEMINI_LLM_* (skips otherwise). Each of the four
-// cells ingests its own fresh store (re-ingest, not file-copy: copying a live
-// WAL-mode SQLite DB with vec0/fts5 shadow tables corrupts it, and a shared
-// store would let the first answer pass's recall reinforcement contaminate the
-// second). Results checkpoint to bench/results so a long run resumes.
+// TestCodingAgentDiscrimination runs the answer-strategy 3-way LongMemEval
+// could not separate, on the extract write-path ingest: single-shot vs cheap
+// query-expansion (one rewrite call, unioned recalls, one synthesis) vs the
+// gated agentic tool loop. The distill ingest axis was retired after the pilot
+// 2x2: the distiller emitted 0 facts on all 67 calls, making distill cells a
+// tie by construction (CODINGAGENT.md §7). It needs a live embedder and
+// MEMINI_LLM_* (skips otherwise). Each cell ingests its own fresh store
+// (re-ingest, not file-copy: copying a live WAL-mode SQLite DB with vec0/fts5
+// shadow tables corrupts it, and a shared store would let one arm's recall
+// reinforcement contaminate the next; the extract ingest is deterministic, so
+// all cells still answer over identical stores and the paired contrasts are
+// clean). Results checkpoint to bench/results so a long run resumes.
 func TestCodingAgentDiscrimination(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
 	t.Cleanup(cancel)
@@ -249,7 +254,6 @@ func TestCodingAgentDiscrimination(t *testing.T) {
 
 	verdicts := map[caCell][]bool{} // per-question correctness, question order
 	catAcc := map[caCell]map[string][2]int{}
-	distillStats := map[string]bench.DistillStats{}
 	chatStats := map[caCell]bench.ChatStats{}
 
 	levels := []struct {
@@ -257,59 +261,42 @@ func TestCodingAgentDiscrimination(t *testing.T) {
 		level service.ReasoningLevel
 	}{
 		{"single", ""},
+		{"expand", service.ReasoningExpand},
 		{"agentic", "medium"},
 	}
 
-	// Each of the four cells ingests its own fresh store. Copying a live WAL-mode
-	// SQLite DB with vec0/fts5 shadow tables corrupts it, and sharing one store
-	// across the two answer levels would let recall reinforcement from the first
-	// pass (AccessCount/usage bumps) contaminate the second. Re-ingesting is the
-	// robust choice: the extract ingest is deterministic (no LLM, fixed order) so
-	// its two cells get identical stores and C1 is clean; the two distill ingests
-	// are independent LLM draws, so within-distill contrasts carry ingest variance
-	// (noted in CODINGAGENT.md).
-	for _, ingest := range []string{"extract", "distill"} {
-		for _, lv := range levels {
-			key := caCell{ingest, lv.name}
-			ckpt := filepath.Join("results", fmt.Sprintf("codingagent_%s_%s.jsonl", ingest, lv.name))
-			cellPath := filepath.Join(t.TempDir(), fmt.Sprintf("ca-%s-%s.db", ingest, lv.name))
-			cellSt, err := sqlitevec.Open(ctx, cellPath, dims)
-			if err != nil {
-				t.Fatalf("open cell store %v: %v", key, err)
-			}
-			var distiller llm.Distiller
-			var counting *bench.CountingDistiller
-			if ingest == "distill" {
-				counting = bench.NewCountingDistiller(chat)
-				distiller = counting
-			}
-			t.Logf("cell %v: ingesting %d items...", key, len(ds.Items))
-			if err := bench.IngestQAWrite(ctx, cellSt, e, ds.Items, distiller); err != nil {
-				t.Fatalf("ingest %v: %v", key, err)
-			}
-			if counting != nil {
-				distillStats[ingest] = counting.Stats()
-			}
-			cc := bench.NewCountingChat(chat)
-			v, ca := runAnswerCell(ctx, t, cellSt, e, chat, cc, judge, ds, lv.level, ckpt)
-			verdicts[key] = v
-			catAcc[key] = ca
-			chatStats[key] = cc.Stats()
-			_ = cellSt.Close()
+	for _, lv := range levels {
+		key := caCell{"extract", lv.name}
+		ckpt := filepath.Join("results", fmt.Sprintf("codingagent_extract_%s.jsonl", lv.name))
+		cellPath := filepath.Join(t.TempDir(), fmt.Sprintf("ca-extract-%s.db", lv.name))
+		cellSt, err := sqlitevec.Open(ctx, cellPath, dims)
+		if err != nil {
+			t.Fatalf("open cell store %v: %v", key, err)
 		}
+		t.Logf("cell %v: ingesting %d items...", key, len(ds.Items))
+		if err := bench.IngestQAWrite(ctx, cellSt, e, ds.Items, nil); err != nil {
+			t.Fatalf("ingest %v: %v", key, err)
+		}
+		cc := bench.NewCountingChat(chat)
+		v, ca, cost := runAnswerCell(ctx, t, cellSt, e, cc, judge, ds, lv.level, ckpt)
+		verdicts[key] = v
+		catAcc[key] = ca
+		chatStats[key] = cost
+		_ = cellSt.Close()
 	}
 
-	printDiscrimination(t, ds, verdicts, catAcc, distillStats, chatStats)
+	printDiscrimination(t, ds, verdicts, catAcc, chatStats)
 }
 
 // runAnswerCell answers every question over cellSt at the given reasoning level,
-// resuming from ckpt. Returns per-question correctness (question order) and a
-// per-category [correct,total] tally.
+// resuming from ckpt. Returns per-question correctness (question order), a
+// per-category [correct,total] tally, and the cell's answer-path cost summed
+// from the per-question checkpoint deltas (so a resumed run reports real cost).
 func runAnswerCell(
 	ctx context.Context, t *testing.T, cellSt *sqlitevec.Store, e embed.Embedder,
-	answerer llm.Client, cc *bench.CountingChat, judge llm.Completer,
+	cc *bench.CountingChat, judge llm.Completer,
 	ds *bench.Dataset, level service.ReasoningLevel, ckpt string,
-) ([]bool, map[string][2]int) {
+) ([]bool, map[string][2]int, bench.ChatStats) {
 	t.Helper()
 
 	// One answering service per distinct question date, clocked at that date so
@@ -343,15 +330,18 @@ func runAnswerCell(
 	defer func() { _ = f.Close() }()
 
 	correct := make([]bool, len(ds.Questions))
+	var cost bench.ChatStats
 	for i, q := range ds.Questions {
-		if v, ok := done[i]; ok {
-			correct[i] = v
+		if r, ok := done[i]; ok && r.Query == q.Query {
+			correct[i] = r.Correct
+			cost = cost.Add(r.Cost)
 			continue
 		}
 		// Local JIT model servers (LM Studio) transiently unload the chat model
 		// when the embedder is hit on the same endpoint, returning a 400
 		// "Model unloaded"; the next request reloads it. Retry so one eviction
 		// doesn't abort a multi-hour run.
+		before := cc.Stats()
 		var ok bool
 		var err error
 		for attempt := 0; attempt < 6; attempt++ {
@@ -366,7 +356,9 @@ func runAnswerCell(
 			t.Fatalf("answer q%d (%s/%v) after retries: %v", i, q.Category, level, err)
 		}
 		correct[i] = ok
-		if err := json.NewEncoder(f).Encode(ckptRow{Index: i, Category: q.Category, Correct: ok}); err != nil {
+		qCost := cc.Stats().Sub(before)
+		cost = cost.Add(qCost)
+		if err := json.NewEncoder(f).Encode(ckptRow{Index: i, Query: q.Query, Category: q.Category, Correct: ok, Cost: qCost}); err != nil {
 			t.Fatalf("checkpoint q%d: %v", i, err)
 		}
 	}
@@ -380,7 +372,7 @@ func runAnswerCell(
 		}
 		catAcc[q.Category] = c
 	}
-	return correct, catAcc
+	return correct, catAcc, cost
 }
 
 // printDiscrimination renders the per-cell accuracy tables, the pre-registered
@@ -389,11 +381,10 @@ func printDiscrimination(
 	t *testing.T, ds *bench.Dataset,
 	verdicts map[caCell][]bool,
 	catAcc map[caCell]map[string][2]int,
-	distillStats map[string]bench.DistillStats,
 	chatStats map[caCell]bench.ChatStats,
 ) {
 	t.Helper()
-	cells := []caCell{{"extract", "single"}, {"extract", "agentic"}, {"distill", "single"}, {"distill", "agentic"}}
+	cells := []caCell{{"extract", "single"}, {"extract", "expand"}, {"extract", "agentic"}}
 
 	cats := map[string]bool{}
 	for _, q := range ds.Questions {
@@ -406,9 +397,9 @@ func printDiscrimination(
 	sort.Strings(catList)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "\n## Discrimination — %d questions, 2x2 (ingest x answer)\n\n", len(ds.Questions))
-	fmt.Fprintf(&b, "| category | ext/single | ext/agentic | dist/single | dist/agentic |\n")
-	fmt.Fprintf(&b, "|----------|-----------:|------------:|------------:|-------------:|\n")
+	fmt.Fprintf(&b, "\n## Discrimination — %d questions, answer-strategy 3-way (extract ingest)\n\n", len(ds.Questions))
+	fmt.Fprintf(&b, "| category | single | expand | agentic |\n")
+	fmt.Fprintf(&b, "|----------|-------:|-------:|--------:|\n")
 	for _, c := range catList {
 		fmt.Fprintf(&b, "| %s |", c)
 		for _, k := range cells {
@@ -425,19 +416,16 @@ func printDiscrimination(
 	b.WriteString("\n")
 
 	fmt.Fprintf(&b, "\n### Pre-registered paired contrasts (McNemar exact)\n\n")
-	contrast(&b, "C1 agentic vs single (extract)", ds, verdicts[caCell{"extract", "agentic"}], verdicts[caCell{"extract", "single"}])
-	contrast(&b, "C2 distill vs extract (single)", ds, verdicts[caCell{"distill", "single"}], verdicts[caCell{"extract", "single"}])
-	contrast(&b, "C3 distill+agentic vs extract+single", ds, verdicts[caCell{"distill", "agentic"}], verdicts[caCell{"extract", "single"}])
+	contrast(&b, "C1 expand vs single", ds, verdicts[caCell{"extract", "expand"}], verdicts[caCell{"extract", "single"}])
+	contrast(&b, "C2 agentic(gated) vs single", ds, verdicts[caCell{"extract", "agentic"}], verdicts[caCell{"extract", "single"}])
+	contrast(&b, "C3 agentic(gated) vs expand", ds, verdicts[caCell{"extract", "agentic"}], verdicts[caCell{"extract", "expand"}])
 
 	fmt.Fprintf(&b, "\n### Cost\n\n")
-	for ingest, s := range distillStats {
-		fmt.Fprintf(&b, "distill(%s): %d calls, %d episodes-in, %d facts-out, ~%d in / ~%d out tokens\n",
-			ingest, s.Calls, s.Episodes, s.Facts, s.InTokens, s.OutTokens)
-	}
 	for _, k := range cells {
 		s := chatStats[k]
-		fmt.Fprintf(&b, "answer(%s/%s): %d completes, %d tool-rounds, ~%d in / ~%d out tokens\n",
-			k.ingest, k.level, s.Completes, s.ToolRounds, s.InTokens, s.OutTokens)
+		fmt.Fprintf(&b, "answer(%s/%s): %d completes, %d tool-rounds, ~%d in / ~%d out tokens, %.1fs LLM (%.1fs/q)\n",
+			k.ingest, k.level, s.Completes, s.ToolRounds, s.InTokens, s.OutTokens,
+			float64(s.LatencyMS)/1000, float64(s.LatencyMS)/1000/float64(max(len(ds.Questions), 1)))
 	}
 	fmt.Print(b.String())
 }
@@ -523,14 +511,22 @@ func printCoverage(ctx context.Context, t *testing.T, sys bench.System, ds *benc
 
 // --- small helpers ---
 
+// ckptRow is one answered question in a cell checkpoint. Cost carries the
+// CountingChat delta for that question so a resumed run still reports the full
+// cell cost — a fresh in-memory counter reads 0 for every checkpointed row,
+// which is how the 2x2 cost table went blank the first time. Query stamps the
+// question text so rows from an older dataset revision (indices shift when the
+// corpus grows) are ignored instead of silently miscounted.
 type ckptRow struct {
-	Index    int    `json:"i"`
-	Category string `json:"category"`
-	Correct  bool   `json:"correct"`
+	Index    int             `json:"i"`
+	Query    string          `json:"q"`
+	Category string          `json:"category"`
+	Correct  bool            `json:"correct"`
+	Cost     bench.ChatStats `json:"cost"`
 }
 
-func loadResultCkpt(path string) map[int]bool {
-	done := map[int]bool{}
+func loadResultCkpt(path string) map[int]ckptRow {
+	done := map[int]ckptRow{}
 	f, err := os.Open(path)
 	if err != nil {
 		return done
@@ -541,7 +537,7 @@ func loadResultCkpt(path string) map[int]bool {
 	for sc.Scan() {
 		var r ckptRow
 		if json.Unmarshal(sc.Bytes(), &r) == nil {
-			done[r.Index] = r.Correct
+			done[r.Index] = r
 		}
 	}
 	return done

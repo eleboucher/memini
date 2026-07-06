@@ -206,6 +206,7 @@ type CountingChat struct {
 	toolRounds atomic.Int64
 	inTokens   atomic.Int64
 	outTokens  atomic.Int64
+	elapsedNS  atomic.Int64
 }
 
 // NewCountingChat wraps c; if c implements llm.ToolChat the agentic loop is
@@ -223,7 +224,9 @@ func NewCountingChat(c llm.Client) *CountingChat {
 func (c *CountingChat) Complete(ctx context.Context, system, user string) (string, error) {
 	c.completes.Add(1)
 	c.inTokens.Add(int64(estimateTokens(system) + estimateTokens(user)))
+	start := time.Now()
 	out, err := c.completer.Complete(ctx, system, user)
+	c.elapsedNS.Add(int64(time.Since(start)))
 	if err != nil {
 		return "", err
 	}
@@ -244,7 +247,9 @@ func (c *CountingChat) ChatTools(
 		in += estimateTokens(t.Text)
 	}
 	c.inTokens.Add(int64(in))
+	start := time.Now()
 	res, err := c.tools.ChatTools(ctx, system, turns, tools, choice)
+	c.elapsedNS.Add(int64(time.Since(start)))
 	if err != nil {
 		return res, err
 	}
@@ -256,12 +261,14 @@ func (c *CountingChat) ChatTools(
 	return res, nil
 }
 
-// ChatStats is a snapshot of a CountingChat's counters.
+// ChatStats is a snapshot of a CountingChat's counters. LatencyMS is the wall
+// clock spent inside the wrapped LLM calls (not recall or judging).
 type ChatStats struct {
 	Completes  int64 `json:"completes"`
 	ToolRounds int64 `json:"tool_rounds"`
 	InTokens   int64 `json:"in_tokens_est"`
 	OutTokens  int64 `json:"out_tokens_est"`
+	LatencyMS  int64 `json:"latency_ms"`
 }
 
 // Stats returns the current counter values.
@@ -271,5 +278,29 @@ func (c *CountingChat) Stats() ChatStats {
 		ToolRounds: c.toolRounds.Load(),
 		InTokens:   c.inTokens.Load(),
 		OutTokens:  c.outTokens.Load(),
+		LatencyMS:  c.elapsedNS.Load() / int64(time.Millisecond),
+	}
+}
+
+// Sub returns the counter deltas s-o: the cost of the work done between two
+// snapshots (one benchmark question, typically).
+func (s ChatStats) Sub(o ChatStats) ChatStats {
+	return ChatStats{
+		Completes:  s.Completes - o.Completes,
+		ToolRounds: s.ToolRounds - o.ToolRounds,
+		InTokens:   s.InTokens - o.InTokens,
+		OutTokens:  s.OutTokens - o.OutTokens,
+		LatencyMS:  s.LatencyMS - o.LatencyMS,
+	}
+}
+
+// Add returns the field-wise sum s+o, for re-aggregating per-question deltas.
+func (s ChatStats) Add(o ChatStats) ChatStats {
+	return ChatStats{
+		Completes:  s.Completes + o.Completes,
+		ToolRounds: s.ToolRounds + o.ToolRounds,
+		InTokens:   s.InTokens + o.InTokens,
+		OutTokens:  s.OutTokens + o.OutTokens,
+		LatencyMS:  s.LatencyMS + o.LatencyMS,
 	}
 }
