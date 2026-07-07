@@ -28,6 +28,10 @@ func nsOf(group string) string {
 	return group
 }
 
+// NamespaceOf exposes nsOf to the external bench_test package (the synthesis
+// spike needs the store namespace a question group maps to).
+func NamespaceOf(group string) string { return nsOf(group) }
+
 // docPrefix is prepended to document text before embedding (not stored), for
 // asymmetric embedders that need a document-side instruction (e.g. nomic's
 // "search_document: "). Empty by default; query-instruction-only models like
