@@ -370,6 +370,9 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 	if req.IncludeFreshTurns != nil {
 		in.IncludeFreshTurns = *req.IncludeFreshTurns
 	}
+	if req.QueryRewrite != nil {
+		in.QueryRewrite = *req.QueryRewrite
+	}
 	in.Limit = deref(req.Limit)
 	in.IncludeExpired = deref(req.IncludeExpired)
 	in.IncludeSuperseded = deref(req.IncludeSuperseded)

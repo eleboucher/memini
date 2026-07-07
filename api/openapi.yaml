@@ -510,6 +510,13 @@ components:
             Default (false) drops them — a just-captured turn is live context,
             not long-term memory, and echoing it back makes the agent parrot
             itself. Opt in only when you genuinely need fresh turns.
+        query_rewrite:
+          type: boolean
+          default: false
+          description: >
+            When true and an LLM is configured, rewrite the query into 2-3
+            diverse variants before recall and fuse results via RRF. Cheapest
+            read-path LLM lever; opt-in per call.
         limit: { type: integer, default: 10 }
         include_expired: { type: boolean, default: false }
         include_superseded: { type: boolean, default: false }

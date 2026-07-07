@@ -265,6 +265,7 @@ type recallArgs struct {
 	Metadata          map[string]string `json:"metadata,omitempty" jsonschema:"only memories whose metadata has each key=value pair (AND)"`
 	ExcludeMetadata   map[string]string `json:"exclude_metadata,omitempty" jsonschema:"inverse of metadata; drops matching memories"`
 	IncludeFreshTurns bool              `json:"include_fresh_turns,omitempty" jsonschema:"keep just-captured turns the echo guard would drop"`
+	QueryRewrite      bool              `json:"query_rewrite,omitempty" jsonschema:"rewrite query into 2-3 variants and fuse via RRF"`
 	Limit             int               `json:"limit,omitempty" jsonschema:"max results (default 10)"`
 	Scope             string            `json:"scope,omitempty" jsonschema:"'subtree' also searches nested namespaces; default 'exact'"`
 	AsOf              string            `json:"as_of,omitempty" jsonschema:"RFC3339 time for time-travel recall (facts true then)"`
@@ -313,6 +314,7 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 		Metadata:          in.Metadata,
 		ExcludeMetadata:   in.ExcludeMetadata,
 		IncludeFreshTurns: in.IncludeFreshTurns,
+		QueryRewrite:      in.QueryRewrite,
 		Limit:             in.Limit,
 		Subtree:           strings.EqualFold(strings.TrimSpace(in.Scope), "subtree"),
 	}

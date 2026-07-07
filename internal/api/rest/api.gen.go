@@ -285,7 +285,9 @@ type SearchRequest struct {
 	ExcludeMetadata *map[string]string `json:"exclude_metadata,omitempty"`
 
 	// IncludeFreshTurns When true, disable the server-side temporal echo guard for this call: just-captured episodic turn captures (metadata.format="turn" younger than the server's window) are NOT dropped. Default (false) drops them — a just-captured turn is live context, not long-term memory. Opt in only when you genuinely need fresh turns.
-	IncludeFreshTurns *bool    `json:"include_fresh_turns,omitempty"`
+	IncludeFreshTurns *bool `json:"include_fresh_turns,omitempty"`
+	// QueryRewrite When true and an LLM is configured, rewrite the query into 2-3 diverse variants before recall and fuse the results. Cheapest read-path LLM lever.
+	QueryRewrite      *bool    `json:"query_rewrite,omitempty"`
 	IncludeExpired    *bool    `json:"include_expired,omitempty"`
 	IncludeSuperseded *bool    `json:"include_superseded,omitempty"`
 	Levels            *[]Level `json:"levels,omitempty"`

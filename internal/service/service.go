@@ -1315,7 +1315,12 @@ type RecallInput struct {
 	// when a caller genuinely needs fresh turns (e.g. a "what did I just say"
 	// debug query).
 	IncludeFreshTurns bool
-	Limit             int
+	// QueryRewrite, when true and an LLM answerer is configured, rewrites the
+	// query into 2-3 diverse variants before recall and fuses the results via
+	// RRF. Cheapest read-path LLM lever; opt-in per call. No-op when no answerer
+	// is configured (falls through to single-query recall).
+	QueryRewrite bool
+	Limit        int
 	// IncludeExpired / IncludeSuperseded relax the default live-only filter.
 	IncludeExpired    bool
 	IncludeSuperseded bool
@@ -1409,6 +1414,10 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		AsOf:              in.AsOf,
 	}
 
+	if results, ok := s.tryQueryRewrite(ctx, in); ok {
+		return results, nil
+	}
+
 	// Embed the query and resolve namespaces concurrently: two independent
 	// blocking calls, so overlapping them keeps only the slower on the critical
 	// path. Namespaces default to in.Namespace; a subtree recall adds everything
@@ -1472,16 +1481,6 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	// pool back down to k.
 	poolK := max(k*s.poolFactor, s.poolFloor)
 
-	// Fuse the vector and keyword legs of one namespace into a single best-first
-	// list (RRF by default, or convex score fusion).
-	fuseLegs := func(v, kw []store.Scored) []store.Scored {
-		if s.scoreFusionAlpha >= 0 {
-			return search.FuseScores([][]store.Scored{v, kw},
-				[]float64{s.scoreFusionAlpha, 1 - s.scoreFusionAlpha}, 0)
-		}
-		return search.Fuse([][]store.Scored{v, kw}, 0, search.DefaultRRFK)
-	}
-
 	// Run both legs of every namespace concurrently into pre-sized,
 	// index-addressed slots so there is no shared append to guard. SetLimit caps
 	// in-flight store calls so a deep subtree can't exhaust the connection pool.
@@ -1527,7 +1526,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 
 	perNS := make([][]store.Scored, len(namespaces))
 	for i := range namespaces {
-		perNS[i] = fuseLegs(vres[i], kres[i])
+		perNS[i] = s.fuseLegs(vres[i], kres[i])
 	}
 
 	// Merge the per-namespace lists so each namespace's hits rank by their own
@@ -1584,6 +1583,16 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	return results, nil
 }
 
+// fuseLegs fuses the vector and keyword legs of one namespace into a single
+// best-first list (RRF by default, or convex score fusion).
+func (s *Service) fuseLegs(v, kw []store.Scored) []store.Scored {
+	if s.scoreFusionAlpha >= 0 {
+		return search.FuseScores([][]store.Scored{v, kw},
+			[]float64{s.scoreFusionAlpha, 1 - s.scoreFusionAlpha}, 0)
+	}
+	return search.Fuse([][]store.Scored{v, kw}, 0, search.DefaultRRFK)
+}
+
 // resolveSemanticFloor returns the per-call MinSemanticScore override when set,
 // else the server-wide recallMinSemanticScore.
 func (s *Service) resolveSemanticFloor(in RecallInput) float64 {
@@ -1610,6 +1619,32 @@ func (s *Service) resolveTurnEchoWindow(in RecallInput) time.Duration {
 		return 0
 	}
 	return s.turnEchoWindow
+}
+
+// tryQueryRewrite handles the query-expansion path: when QueryRewrite is set
+// and an answerer is configured, it rewrites the query into 2-3 variants,
+// recalls each, and fuses via RRF. Returns (results, true) when the path
+// fires; (nil, false) to fall through to single-query recall.
+func (s *Service) tryQueryRewrite(ctx context.Context, in RecallInput) ([]store.Scored, bool) {
+	if !in.QueryRewrite || s.answerer == nil {
+		return nil, false
+	}
+	queries := s.expandQueries(ctx, in.Query)
+	if len(queries) <= 1 {
+		return nil, false
+	}
+	results := make([][]store.Scored, 0, len(queries))
+	for _, q := range queries {
+		sub := in
+		sub.Query = q
+		sub.QueryRewrite = false // prevent recursion
+		res, err := s.Recall(ctx, sub)
+		if err != nil {
+			return nil, false
+		}
+		results = append(results, res)
+	}
+	return search.Fuse(results, in.Limit, search.DefaultRRFK), true
 }
 
 // applyTurnEchoGuard drops just-captured episodic turns (metadata.format="turn"
