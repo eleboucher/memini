@@ -49,6 +49,15 @@ per-question private haystack, and the source of the retrieval headroom. Dense
 topic overlap (many recall/dedup/rerank/contradict items) supplies natural
 near-duplicate distractors.
 
+**Scaled corpus (`codingagent_v1.json`, 2026-07-07):** 206 items / 166 questions,
+same mining rules and namespace, built by mining previously-unmined commits, new
+temporal-supersession chains, docs, and memory notes, plus a synthesis-question
+pass over the whole item set. Every mined item carries a `verify` verbatim
+excerpt that the merge step (`.bench-mining/merge_verify.py`) checks against its
+cited source (`git show` / note / doc) before admission — 0 rejects. Selected via
+`MEMINI_CODINGAGENT_DATA`. This is the corpus the §7.1 result runs on; the pilot
+(`codingagent_pilot.json`) is retained as the default.
+
 **Contradiction chains (10)** — each version is its own dated item with a
 `superseded_by` link; `gold` for the temporal-update question is the _latest_
 version only:
@@ -82,9 +91,11 @@ Extends the normalized bench schema (`bench/dataset.go`), loaded by
 
 **Categories (7):** decision, convention, rationale, current-state, synthesis
 (≥2 evidence memories), temporal-update (answer depends on when / what
-superseded what), abstention (genuinely not in the corpus). 45 questions:
-decision 8, convention 7, rationale 8, current-state 6, synthesis 6,
-temporal-update 6, abstention 4.
+superseded what), abstention (genuinely not in the corpus). Pilot: 45 questions
+(decision 8, convention 7, rationale 8, current-state 6, synthesis 6,
+temporal-update 6, abstention 4). Scaled v1: 166 questions (decision 28,
+convention 23, rationale 26, current-state 26, synthesis 32, temporal-update 16,
+abstention 15) — weighted toward synthesis, the highest-headroom category.
 
 ## 4. Metrics
 
