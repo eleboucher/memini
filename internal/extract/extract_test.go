@@ -22,6 +22,15 @@ func TestTypedClassifies(t *testing.T) {
 		{"problem and fix",
 			"The bug was a nil deref in the auth middleware. The fix was to guard the token lookup before dereferencing it.",
 			KindProblem},
+		{"architecture fact",
+			"The store uses sqlite-vec for hybrid vector search because it keeps the index in the same SQLite database as the metadata. By default the vector index is built at write time.",
+			KindFact},
+		{"configuration fact",
+			"By default the server listens on :8080, but you can override it with the MEMINI_HTTP_ADDR environment variable.",
+			KindFact},
+		{"how-to instruction",
+			"To configure the echo guard, you need to set MEMINI_TURN_ECHO_WINDOW to a duration like 5m. Then you must restart the server for the change to take effect.",
+			KindHowTo},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := Typed(tc.text)
@@ -72,6 +81,8 @@ func TestKindTier(t *testing.T) {
 		{KindPreference, memory.TierProcedural},
 		{KindDecision, memory.TierSemantic},
 		{KindProblem, memory.TierSemantic},
+		{KindFact, memory.TierSemantic},
+		{KindHowTo, memory.TierProcedural},
 	} {
 		if got := tc.kind.Tier(); got != tc.want {
 			t.Errorf("%s.Tier() = %q, want %q", tc.kind, got, tc.want)

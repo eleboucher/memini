@@ -20,12 +20,14 @@ const (
 	KindDecision   Kind = "decision"
 	KindPreference Kind = "preference"
 	KindProblem    Kind = "problem"
+	KindFact       Kind = "fact"  // architecture/config/factual statement
+	KindHowTo      Kind = "howto" // setup/instruction steps
 )
 
 // Tier maps an extracted kind to its memory tier: a preference is a how-to rule,
 // so it's procedural; decisions and problems are durable facts, so semantic.
 func (k Kind) Tier() memory.Tier {
-	if k == KindPreference {
+	if k == KindPreference || k == KindHowTo {
 		return memory.TierProcedural
 	}
 	return memory.TierSemantic
@@ -82,6 +84,21 @@ var markerSets = func() []markerSet {
 			`\bthe fix (is|was)\b`, `\bworkaround\b`,
 			`\bfixed (it|the|by)\b`, `\bsolution (is|was)\b`,
 			`\bresolved\b`, `\bpatched\b`,
+		})},
+		{KindFact, compile([]string{
+			`\bthe (system|app|server|service|backend|store|database|frontend|api|project|repo|codebase|module|package) ` +
+				`(uses|runs on|is|requires|relies on|depends on|is built with|is written in)\b`,
+			`\bdeploy(ed|s|ment) (to|on|via|using)\b`,
+			`\b(tests?|ci|pipeline) run (on|in|via|using)\b`,
+			`\bby default[,;]?\s+(the|it|they|we|this)\b`,
+			`\bthe (config|configuration) (is|file is|lives in|is at)\b`,
+			`\b(environment variable|env var)\b`,
+		})},
+		{KindHowTo, compile([]string{
+			`\bto (set up|configure|install|deploy|run|test|debug|enable|disable)\b`,
+			`\byou (need to|have to|must) (set|configure|run|install|add|create|enable|disable)\b`,
+			`\bsteps? (are|to|for)\b`,
+			`\brun (the (command|following)|this (command|snippet))\b`,
 		})},
 	}
 }()
