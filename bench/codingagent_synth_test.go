@@ -126,14 +126,14 @@ func printSynthAB(
 		pctOf(blc, bln), blc, bln, pctOf(syc, syn), syc, syn, pctOf(syc, syn)-pctOf(blc, bln))
 
 	fmt.Fprintf(&b, "\n### Paired contrasts (McNemar exact) — synth vs baseline\n\n")
-	contrast(&b, "PRIMARY synthesis", ds, catVerdicts(ds, verdicts["synth"], "synthesis"), catVerdicts(ds, verdicts["baseline"], "synthesis"))
-	contrast(&b, "overall", ds, verdicts["synth"], verdicts["baseline"])
+	contrast(&b, "PRIMARY synthesis", catVerdicts(ds, verdicts["synth"], "synthesis"), catVerdicts(ds, verdicts["baseline"], "synthesis"))
+	contrast(&b, "overall", verdicts["synth"], verdicts["baseline"])
 	fmt.Fprintf(&b, "\n_guardrail (poisoning) — the six non-synthesis categories must not regress:_\n")
 	for _, c := range catList {
 		if c == "synthesis" {
 			continue
 		}
-		contrast(&b, "guardrail "+c, ds, catVerdicts(ds, verdicts["synth"], c), catVerdicts(ds, verdicts["baseline"], c))
+		contrast(&b, "guardrail "+c, catVerdicts(ds, verdicts["synth"], c), catVerdicts(ds, verdicts["baseline"], c))
 	}
 
 	fmt.Fprintf(&b, "\n### Cost\n\nsynthesizer: %d clusters, %d LLM calls, %d facts stored (+%d items), ~%d in / ~%d out tokens\n",

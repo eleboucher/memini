@@ -37,10 +37,16 @@ func Synthesize(
 ) (SynthStats, error) {
 	var stats SynthStats
 
-	durable := []memory.Tier{memory.TierSemantic, memory.TierProcedural}
-	mems, err := st.List(ctx, namespace, store.Filter{Tiers: durable, Now: now}, 100000)
+	// Cluster over every non-scratch tier, not just the durable ones: the
+	// production write path classifies precision-first (extract.Classify rarely
+	// promotes to semantic), so on this corpus the facts overwhelmingly land in
+	// EPISODIC. Filtering to [semantic,procedural] left a ~5-item pool and formed
+	// only 5 clusters — the null runs were measuring an empty synthesizer, not
+	// the idea. Synthesized output is still written as semantic/deduced.
+	pool := []memory.Tier{memory.TierEpisodic, memory.TierSemantic, memory.TierProcedural}
+	mems, err := st.List(ctx, namespace, store.Filter{Tiers: pool, Now: now}, 100000)
 	if err != nil {
-		return stats, fmt.Errorf("synthesize: list durable: %w", err)
+		return stats, fmt.Errorf("synthesize: list memories: %w", err)
 	}
 	// Stable order so the run is deterministic given a fixed store.
 	sort.Slice(mems, func(i, j int) bool { return mems[i].ID < mems[j].ID })
@@ -57,14 +63,22 @@ func Synthesize(
 			return stats, fmt.Errorf("synthesize: embed seed %s: %w", seed.ID, err)
 		}
 		neighbors, err := st.VectorSearch(ctx, namespace, vec,
-			store.Filter{Tiers: durable, Now: now}, synthClusterK+1)
+			store.Filter{Tiers: pool, Now: now}, synthClusterK+1)
 		if err != nil {
 			return stats, fmt.Errorf("synthesize: neighbor search: %w", err)
 		}
 
+		// Relative top-K clustering: take the seed's nearest unvisited durable
+		// neighbours (best-first), NO absolute score floor. On this store vector
+		// scores are 1/(1+L2) and are only meaningful as a within-query ranking
+		// (recall itself min-max-normalizes them before fusing), so an absolute
+		// floor is meaningless — a 0.55 then 0.40 cut both formed ~2-5 clusters
+		// over 171 memories and left the idea untested. The LLM prompt is the
+		// precision gate: an incoherent cluster costs one call returning [],
+		// not a bad fact.
 		cluster := []*memory.Memory{seed}
 		for _, n := range neighbors {
-			if n.Memory.ID == seed.ID || visited[n.Memory.ID] || n.Score < synthClusterFloor {
+			if n.Memory.ID == seed.ID || visited[n.Memory.ID] {
 				continue
 			}
 			visited[n.Memory.ID] = true
@@ -74,7 +88,7 @@ func Synthesize(
 			}
 		}
 		if len(cluster) < 2 {
-			continue // nothing to combine
+			continue // seed had no unvisited neighbour left
 		}
 		stats.Clusters++
 
@@ -109,13 +123,12 @@ func Synthesize(
 	return stats, nil
 }
 
-// Cluster tuning: how many neighbours to consider, the cosine-fused similarity
-// floor to admit one, and the cluster size cap. Deliberately conservative — a
-// tight cluster keeps the synthesis grounded and the LLM input small.
+// Cluster tuning: how many nearest neighbours to pull per seed and the cluster
+// size cap. There is no absolute similarity floor — see the relative top-K
+// rationale at the cluster loop.
 const (
-	synthClusterK     = 6
-	synthClusterMax   = 6
-	synthClusterFloor = 0.55
+	synthClusterK   = 8
+	synthClusterMax = 6
 )
 
 // synthFact is one validated synthesized fact and the 1-based cluster members

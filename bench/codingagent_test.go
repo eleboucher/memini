@@ -426,9 +426,9 @@ func printDiscrimination(
 	b.WriteString("\n")
 
 	fmt.Fprintf(&b, "\n### Pre-registered paired contrasts (McNemar exact)\n\n")
-	contrast(&b, "C1 expand vs single", ds, verdicts[caCell{"extract", "expand"}], verdicts[caCell{"extract", "single"}])
-	contrast(&b, "C2 agentic(gated) vs single", ds, verdicts[caCell{"extract", "agentic"}], verdicts[caCell{"extract", "single"}])
-	contrast(&b, "C3 agentic(gated) vs expand", ds, verdicts[caCell{"extract", "agentic"}], verdicts[caCell{"extract", "expand"}])
+	contrast(&b, "C1 expand vs single", verdicts[caCell{"extract", "expand"}], verdicts[caCell{"extract", "single"}])
+	contrast(&b, "C2 agentic(gated) vs single", verdicts[caCell{"extract", "agentic"}], verdicts[caCell{"extract", "single"}])
+	contrast(&b, "C3 agentic(gated) vs expand", verdicts[caCell{"extract", "agentic"}], verdicts[caCell{"extract", "expand"}])
 
 	fmt.Fprintf(&b, "\n### Cost\n\n")
 	for _, k := range cells {
@@ -442,9 +442,12 @@ func printDiscrimination(
 
 // contrast prints arm A vs arm B: per-question win/loss/tie, the discordant
 // question indices (for inspection), and the two-sided McNemar exact p.
-func contrast(b *strings.Builder, name string, ds *bench.Dataset, a, bb []bool) {
-	if len(a) != len(bb) || len(a) != len(ds.Questions) {
-		fmt.Fprintf(b, "- %s: incomplete (a=%d b=%d q=%d)\n", name, len(a), len(bb), len(ds.Questions))
+func contrast(b *strings.Builder, name string, a, bb []bool) {
+	// a and bb must be paired (same questions, same order); they may be a
+	// category-projected subset rather than the full question set, so only their
+	// mutual length is required.
+	if len(a) != len(bb) {
+		fmt.Fprintf(b, "- %s: incomplete (a=%d b=%d)\n", name, len(a), len(bb))
 		return
 	}
 	var aWin, bWin, tie int
