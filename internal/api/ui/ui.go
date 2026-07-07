@@ -28,9 +28,22 @@ var assets embed.FS
 // operator pasting it — which exposes the key to anyone who can load the page,
 // so only set it where reaching the UI already implies trust.
 func Mount(r chi.Router, apiKey string) error {
-	dist, err := fs.Sub(assets, "dist")
+	h, err := Handler(apiKey)
 	if err != nil {
 		return err
+	}
+	r.Handle("/*", h)
+	return nil
+}
+
+// Handler returns the SPA handler that Mount installs as a catch-all. It is
+// exposed so the server can serve the shell on a dedicated listener (see
+// MEMINI_UI_ADDR) instead of the main API port, keeping the token-embedding
+// shell off any port that carries the token-free API.
+func Handler(apiKey string) (http.Handler, error) {
+	dist, err := fs.Sub(assets, "dist")
+	if err != nil {
+		return nil, err
 	}
 	index, err := fs.ReadFile(dist, "index.html")
 	if err != nil {
@@ -39,7 +52,7 @@ func Mount(r chi.Router, apiKey string) error {
 	index = injectToken(index, apiKey)
 	fileServer := http.FileServer(http.FS(dist))
 
-	r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		name := strings.TrimPrefix(req.URL.Path, "/")
 		// SPA shell is GET-only; non-GET methods and the reserved /.well-known/*
 		// namespace (RFC 8615) 404 so MCP clients never parse the shell or chi's
@@ -68,8 +81,7 @@ func Mount(r chi.Router, apiKey string) error {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
 		_, _ = w.Write(index)
-	}))
-	return nil
+	}), nil
 }
 
 func exists(fsys fs.FS, name string) bool {

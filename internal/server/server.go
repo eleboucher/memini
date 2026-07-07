@@ -33,6 +33,9 @@ type Server struct {
 	// metricsHandler is non-nil only when metrics run on a dedicated port (see
 	// Options.MetricsAddr); Run serves it on its own listener.
 	metricsHandler http.Handler
+	// uiHandler is non-nil only when the UI runs on a dedicated port (see
+	// Options.UIAddr); Run serves it on its own listener.
+	uiHandler http.Handler
 
 	ready atomic.Pointer[ReadinessFunc]
 }
@@ -49,6 +52,11 @@ type Options struct {
 	// unauthenticated listener instead of the main router — a port meant to stay
 	// in-cluster (keep it off any public route).
 	MetricsAddr string
+	// UIAddr, when set and distinct from Addr, serves the admin UI on its own
+	// listener instead of the main router (see MountUI). The shell embeds the
+	// API key, so isolating it keeps that key off the main port — expose UIAddr
+	// only on a trusted (LAN) gateway.
+	UIAddr string
 }
 
 // New builds a Server with base middleware, /healthz, /readyz and /metrics.
@@ -87,6 +95,29 @@ func New(opts Options, log *slog.Logger, reg *prometheus.Registry) *Server {
 // Router exposes the underlying router so other packages can mount routes.
 func (s *Server) Router() chi.Router { return s.router }
 
+// MountUI arranges for the SPA handler to be served. When UIAddr is set and
+// distinct from Addr, spa is served ONLY on that dedicated listener, which
+// delegates requests matching an API route to the main router so the
+// same-origin SPA can still call /v1 — keeping the token-embedding shell off
+// the main port. Otherwise spa is mounted as a catch-all on the main router,
+// serving it on the main port (single-listener default).
+func (s *Server) MountUI(spa http.Handler) {
+	if s.cfg.UIAddr != "" && s.cfg.UIAddr != s.cfg.Addr {
+		mux, _ := s.router.(*chi.Mux)
+		s.uiHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Requests that match an API route go to the main router (with its
+			// middleware); everything else falls through to the SPA shell.
+			if mux != nil && mux.Match(chi.NewRouteContext(), r.Method, r.URL.Path) {
+				s.router.ServeHTTP(w, r)
+				return
+			}
+			spa.ServeHTTP(w, r)
+		})
+		return
+	}
+	s.router.Handle("/*", spa)
+}
+
 // bearerAuth wraps h, requiring a valid bearer token.
 func bearerAuth(key string, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -116,13 +147,33 @@ func (s *Server) Run(ctx context.Context) error {
 		IdleTimeout: 120 * time.Second,
 	}
 
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 3)
 	go func() {
 		s.log.Info("http server listening", "addr", s.cfg.Addr, "version", version.String())
 		if err := s.http.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
+
+	// Dedicated UI listener (Options.UIAddr): serves the token-embedding SPA
+	// shell (and delegates API routes to the main router), on a port meant to
+	// stay behind a trusted gateway — kept off the main port.
+	var uiSrv *http.Server
+	if s.uiHandler != nil {
+		uiSrv = &http.Server{
+			Addr:              s.cfg.UIAddr,
+			Handler:           s.uiHandler,
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
+		go func() {
+			s.log.Info("ui server listening", "addr", s.cfg.UIAddr)
+			if err := uiSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- err
+			}
+		}()
+	}
 
 	// Dedicated metrics listener (Options.MetricsAddr): serves only /metrics,
 	// unauthenticated, on an in-cluster port.
@@ -154,6 +205,9 @@ func (s *Server) Run(ctx context.Context) error {
 		defer cancel()
 		if metricsSrv != nil {
 			_ = metricsSrv.Shutdown(shutdownCtx)
+		}
+		if uiSrv != nil {
+			_ = uiSrv.Shutdown(shutdownCtx)
 		}
 		return s.http.Shutdown(shutdownCtx)
 	}

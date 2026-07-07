@@ -50,6 +50,14 @@ type Config struct {
 	// Empty (the default) keeps /metrics on the main port, where MEMINI_API_KEY
 	// gates it.
 	MetricsAddr string `env:"MEMINI_METRICS_ADDR"`
+	// UIAddr, when set (e.g. ":8081") and distinct from HTTPAddr, serves the
+	// admin UI on its own listener instead of the main HTTP port. The shell
+	// embeds MEMINI_API_KEY, so isolating it to a dedicated port lets operators
+	// expose that port only on a trusted (LAN) gateway while the main port
+	// carries the token-free API. The UI listener also serves the API so the
+	// same-origin SPA can call /v1. Empty (the default) keeps the UI on the main
+	// port when MEMINI_UI_ENABLED is true.
+	UIAddr string `env:"MEMINI_UI_ADDR"`
 
 	// Logging.
 	LogLevel  string `env:"MEMINI_LOG_LEVEL" envDefault:"info"`  // debug|info|warn|error

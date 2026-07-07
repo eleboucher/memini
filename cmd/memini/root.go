@@ -116,6 +116,7 @@ func newServer(
 		ShutdownTimeout: cfg.ShutdownTimeout,
 		APIKey:          cfg.APIKey,
 		MetricsAddr:     cfg.MetricsAddr,
+		UIAddr:          cfg.UIAddr,
 	}, log, reg)
 	srv.SetReady(func(ctx context.Context) error { return st.Ping(ctx) })
 
@@ -130,15 +131,23 @@ func newServer(
 	srv.Router().Handle("/mcp/*", mcpHandler)
 
 	if cfg.UIEnabled {
-		if cfg.APIKey != "" {
+		dedicated := cfg.UIAddr != "" && cfg.UIAddr != cfg.HTTPAddr
+		if cfg.APIKey != "" && !dedicated {
 			log.Warn("the admin UI embeds MEMINI_API_KEY in its unauthenticated shell " +
 				"so the browser can call the API; anyone who can load / can read the key. " +
-				"Set MEMINI_UI_ENABLED=false if the port is reachable by untrusted clients")
+				"Set MEMINI_UI_ADDR to a dedicated port on a trusted gateway, or " +
+				"MEMINI_UI_ENABLED=false if the port is reachable by untrusted clients")
 		}
-		if err := ui.Mount(srv.Router(), cfg.APIKey); err != nil {
+		spa, err := ui.Handler(cfg.APIKey)
+		if err != nil {
 			return nil, fmt.Errorf("mount ui: %w", err)
 		}
-		log.Info("admin UI mounted at /")
+		srv.MountUI(spa)
+		if dedicated {
+			log.Info("admin UI served on dedicated listener", "addr", cfg.UIAddr)
+		} else {
+			log.Info("admin UI mounted at /")
+		}
 	}
 
 	return srv, nil

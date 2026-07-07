@@ -367,6 +367,12 @@
                           "title": "MEMINI_SWEEP_INTERVAL",
                           "type": "string"
                         },
+                        "MEMINI_UI_ADDR": {
+                          "default": ":8081",
+                          "description": "Dedicated admin-UI listener. The UI shell embeds MEMINI_API_KEY so\nthe browser can call /v1; serving it on its own port keeps that key off\nthe main port (which then carries only the token-free API). Expose this\nport only on a trusted (LAN) gateway — see route.ui. \"\" serves the UI\non the main port instead (the key then rides / on the main port).",
+                          "title": "MEMINI_UI_ADDR",
+                          "type": "string"
+                        },
                         "MEMINI_UI_ENABLED": {
                           "default": "true",
                           "description": "Serve the embedded admin SPA at /. Set \"false\" for headless API/MCP.",
@@ -908,7 +914,7 @@
       "description": "Gateway API HTTPRoutes (the modern replacement for Ingress). BOTH disabled\nby default — the operator enables and attaches them to an existing Gateway.\nExposing /v1 or /mcp REQUIRES bearer auth: set MEMINI_API_KEY (see env above).",
       "properties": {
         "main": {
-          "description": "Public API + MCP surface. Enable, set the gateway in parentRefs, and the\nhostname, then scope to the token-gated paths via rules[].matches.",
+          "description": "Public API + MCP surface, on the token-free `http` port. Enable, set the\ngateway in parentRefs and the hostname. Because MEMINI_UI_ADDR moves the\ntoken-embedding shell to its own port, this route can safely forward all of\n`http` (only /v1, /mcp, /healthz, /readyz live there — no API key). Add\nrules[].matches to scope it further if you want to keep the probes private.",
           "properties": {
             "enabled": {
               "default": false,
@@ -963,84 +969,6 @@
                         },
                         "title": "backendRefs",
                         "type": "array"
-                      },
-                      "matches": {
-                        "items": {
-                          "anyOf": [
-                            {
-                              "properties": {
-                                "path": {
-                                  "properties": {
-                                    "type": {
-                                      "default": "PathPrefix",
-                                      "title": "type",
-                                      "type": "string"
-                                    },
-                                    "value": {
-                                      "default": "/v1",
-                                      "title": "value",
-                                      "type": "string"
-                                    }
-                                  },
-                                  "required": [],
-                                  "title": "path",
-                                  "type": "object"
-                                }
-                              },
-                              "required": [],
-                              "type": "object"
-                            },
-                            {
-                              "properties": {
-                                "path": {
-                                  "properties": {
-                                    "type": {
-                                      "default": "PathPrefix",
-                                      "title": "type",
-                                      "type": "string"
-                                    },
-                                    "value": {
-                                      "default": "/mcp",
-                                      "title": "value",
-                                      "type": "string"
-                                    }
-                                  },
-                                  "required": [],
-                                  "title": "path",
-                                  "type": "object"
-                                }
-                              },
-                              "required": [],
-                              "type": "object"
-                            },
-                            {
-                              "properties": {
-                                "path": {
-                                  "properties": {
-                                    "type": {
-                                      "default": "PathPrefix",
-                                      "title": "type",
-                                      "type": "string"
-                                    },
-                                    "value": {
-                                      "default": "/.well-known/",
-                                      "title": "value",
-                                      "type": "string"
-                                    }
-                                  },
-                                  "required": [],
-                                  "title": "path",
-                                  "type": "object"
-                                }
-                              },
-                              "required": [],
-                              "type": "object"
-                            }
-                          ],
-                          "required": []
-                        },
-                        "title": "matches",
-                        "type": "array"
                       }
                     },
                     "required": [],
@@ -1058,7 +986,7 @@
           "type": "object"
         },
         "ui": {
-          "description": "Admin UI catch-all. Disabled by default — flip to true on installs that\nwant the SPA reachable through a Gateway. Wire it to an internal gateway\nso the SPA and its embedded API key never leave the LAN. The in-process\nserver still serves the SPA on / regardless of this flag.",
+          "description": "Admin UI, on the `ui` port (MEMINI_UI_ADDR) whose shell embeds the API\nkey. Disabled by default; enable on installs that want the SPA through a\nGateway, and wire it to an INTERNAL gateway so the key never leaves the LAN.\nIf MEMINI_UI_ADDR is \"\" the UI rides the main port instead — then point this\nat `port: http` and treat that whole route as trusted.",
           "properties": {
             "enabled": {
               "default": false,
@@ -1100,7 +1028,7 @@
                                   "type": "string"
                                 },
                                 "port": {
-                                  "default": "http",
+                                  "default": "ui",
                                   "title": "port",
                                   "type": "string"
                                 }
@@ -1199,6 +1127,19 @@
                   },
                   "required": [],
                   "title": "metrics",
+                  "type": "object"
+                },
+                "ui": {
+                  "description": "Dedicated admin-UI port (MEMINI_UI_ADDR). Carries the token-embedding\nshell; wire route.ui to it and keep that route on an internal gateway.",
+                  "properties": {
+                    "port": {
+                      "default": 8081,
+                      "title": "port",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [],
+                  "title": "ui",
                   "type": "object"
                 }
               },

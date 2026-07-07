@@ -79,6 +79,12 @@ controllers:
           # -- Dedicated metrics listener; keeps /metrics off the main port and
           # every route, so it needs no bearer token. "" serves it on the main port.
           MEMINI_METRICS_ADDR: ":9090"
+          # -- Dedicated admin-UI listener. The UI shell embeds MEMINI_API_KEY so
+          # the browser can call /v1; serving it on its own port keeps that key off
+          # the main port (which then carries only the token-free API). Expose this
+          # port only on a trusted (LAN) gateway — see route.ui. "" serves the UI
+          # on the main port instead (the key then rides / on the main port).
+          MEMINI_UI_ADDR: ":8081"
           # -- Storage backend: "sqlite" (default) or "postgres". For postgres,
           # set this to "postgres", switch controllers.main.type to deployment,
           # disable persistence.data, and wire MEMINI_POSTGRES_DSN below.
@@ -220,6 +226,10 @@ service:
       http:
         port: 8080
         primary: true
+      # -- Dedicated admin-UI port (MEMINI_UI_ADDR). Carries the token-embedding
+      # shell; wire route.ui to it and keep that route on an internal gateway.
+      ui:
+        port: 8081
       # -- Dedicated metrics port (MEMINI_METRICS_ADDR). Not referenced by any
       # route, so /metrics stays in-cluster.
       metrics:
@@ -260,32 +270,12 @@ serviceMonitor:
 # by default — the operator enables and attaches them to an existing Gateway.
 # Exposing /v1 or /mcp REQUIRES bearer auth: set MEMINI_API_KEY (see env above).
 route:
-  # -- Public API + MCP surface. Enable, set the gateway in parentRefs, and the
-  # hostname, then scope to the token-gated paths via rules[].matches.
+  # -- Public API + MCP surface, on the token-free `http` port. Enable, set the
+  # gateway in parentRefs and the hostname. Because MEMINI_UI_ADDR moves the
+  # token-embedding shell to its own port, this route can safely forward all of
+  # `http` (only /v1, /mcp, /healthz, /readyz live there — no API key). Add
+  # rules[].matches to scope it further if you want to keep the probes private.
   main:
-    enabled: false
-    kind: HTTPRoute
-    parentRefs: []
-    hostnames: []
-    rules:
-      - matches:
-          - path:
-              type: PathPrefix
-              value: /v1
-          - path:
-              type: PathPrefix
-              value: /mcp
-          - path:
-              type: PathPrefix
-              value: /.well-known/
-        backendRefs:
-          - identifier: main
-            port: http
-  # -- Admin UI catch-all. Disabled by default — flip to true on installs that
-  # want the SPA reachable through a Gateway. Wire it to an internal gateway
-  # so the SPA and its embedded API key never leave the LAN. The in-process
-  # server still serves the SPA on / regardless of this flag.
-  ui:
     enabled: false
     kind: HTTPRoute
     parentRefs: []
@@ -294,6 +284,20 @@ route:
       - backendRefs:
           - identifier: main
             port: http
+  # -- Admin UI, on the `ui` port (MEMINI_UI_ADDR) whose shell embeds the API
+  # key. Disabled by default; enable on installs that want the SPA through a
+  # Gateway, and wire it to an INTERNAL gateway so the key never leaves the LAN.
+  # If MEMINI_UI_ADDR is "" the UI rides the main port instead — then point this
+  # at `port: http` and treat that whole route as trusted.
+  ui:
+    enabled: false
+    kind: HTTPRoute
+    parentRefs: []
+    hostnames: []
+    rules:
+      - backendRefs:
+          - identifier: main
+            port: ui
 # -- Bundled Grafana dashboards, rendered as ConfigMaps for the grafana-operator
 # (a custom chart key, not part of the common library). Point your Grafana CR's
 # `dashboardsConfigMaps` selector at this release's namespace; the operator picks
