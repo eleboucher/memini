@@ -280,3 +280,43 @@ decision-closing null — the bench did its job: it turned "the loop feels helpf
 different corpus or model regime that moves C2 past p<0.05. The distill-on-write
 axis remains parked (needs a turn-shaped corpus + a distiller verified to emit
 facts) — unchanged from the pilot.
+
+## 9. Write-time synthesis spike (negative)
+
+Follow-up to §8.4: since the synthesis headroom is a retrieval/consolidation gap,
+not an answering one, could precomputing the combined fact at **write time** —
+one retrievable durable memory — beat doing it at answer time (which §7 showed
+does not pay)? This is honcho's "dreamer" inductive half, minus the tool loop
+(`bench/synthesize.go`, `TestCodingAgentSynthesis`). It clusters the corpus by
+nearest-neighbour proximity and, per cluster, makes one LLM call that emits facts
+entailed by ≥2 members, stored as new `Level=deduced` semantic memories. It is
+**question-blind** (sees only the store) — the validity crux.
+
+A/B on `codingagent_v1`, both arms single-shot (66 facts synthesized from 46
+clusters, ~17k/6k tokens):
+
+| category                |      baseline |    +synthesis |                Δ |
+| ----------------------- | ------------: | ------------: | ---------------: |
+| **synthesis (primary)** |   69% (22/32) |   69% (22/32) | **+0pp** (p=1.0) |
+| decision                |   82% (23/28) |   96% (27/28) |  +14pp (p=0.125) |
+| overall                 | 86% (142/166) | 87% (144/166) |    +1pp (p=0.80) |
+
+_(other categories moved within noise: convention +4, current-state −4, rationale
+−4, temporal −6, abstention +0 — each ≤2 questions, all p=1.0.)_
+
+**Verdict: NO.** Precomputing combined facts did not move the primary endpoint
+(synthesis +0pp). Two reasons, both diagnosable: (1) question-blind bottom-up
+synthesis produces facts that don't align with the specific combinations the
+questions ask — the pre-registered validity risk, realised; (2) the single-shot
+reader already combines the retrieved episodics to 69% on its own (coverage@5≈80%),
+so a precomputed combination adds nothing on top. The synthesis headroom is real
+at the retrieval level but resists both answer-time and write-time attack on this
+corpus. **Guardrail:** no systematic poisoning from the 66 added facts.
+
+**One live thread, not chased:** synthesized durable facts lifted the _decision_
+category +14pp (4 questions gained, 0 lost, p=0.125) — plausibly because a clean
+"we decided X" durable fact answers a decision question more directly than the raw
+episodic capture does. Off the synthesis hypothesis and underpowered; a targeted
+"promote decision episodics to durable facts" experiment could revisit it, but it
+is not a reason to ship the synthesizer. The spike stays bench-only (build-tagged);
+it is **not** promoted to a `service.Synthesizer`.
