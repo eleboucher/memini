@@ -42,6 +42,7 @@ const typeboxConfigSchema = Type.Object(
     expose_tools: Type.Optional(Type.Boolean()),
     recall_limit: Type.Optional(Type.Number()),
     recall_max_tokens: Type.Optional(Type.Number()),
+    min_capture_chars: Type.Optional(Type.Number()),
   },
   { additionalProperties: false },
 );
@@ -110,6 +111,15 @@ export function resolveConfig(pluginConfig: any) {
       Number.isFinite(c.recall_max_tokens) && c.recall_max_tokens > 0
         ? c.recall_max_tokens
         : intEnv("MEMINI_INJECT_RECALL_MAX_TOK", 0),
+    // Minimum length (chars) of the stripped user turn required to capture it.
+    // Off (0) by default — capture is additive and dropping turns is lossy, so
+    // it stays opt-in (see the defaults policy). Set it (e.g. 30) when a gateway
+    // still emits short residual-noise turns after preamble stripping. Config
+    // wins; otherwise MEMINI_MIN_CAPTURE_CHARS.
+    min_capture_chars:
+      Number.isFinite(c.min_capture_chars) && c.min_capture_chars > 0
+        ? c.min_capture_chars
+        : intEnv("MEMINI_MIN_CAPTURE_CHARS", 0),
   };
 }
 
@@ -260,6 +270,19 @@ export function stripRuntimePreambles(text: any) {
     out = out.replace(UNTRUSTED_METADATA_BLOCK, "");
   }
   return out.trim();
+}
+
+// OpenClaw's production turn text keeps a leading role label ("User: ") even
+// after preamble stripping, so a raw startsWith would miss "User: [cron: …]".
+// detectSystemKind (ctx.trigger) is the primary cron/heartbeat signal; this
+// text backstop catches a NOISE_PREFIXES marker that still reaches the captured
+// content, whether it leads the turn or sits just behind that role label. A
+// real message that merely mentions a marker mid-sentence is not matched.
+const ROLE_LABEL = /^(?:user|assistant|system)\s*:\s*/i;
+
+export function startsWithNoisePrefix(text: string) {
+  const body = text.replace(ROLE_LABEL, "");
+  return NOISE_PREFIXES.some((p) => body.startsWith(p));
 }
 
 // Mirrors the opencode plugin's labels toggle. Default is plain bullets (no
@@ -760,7 +783,8 @@ const plugin: {
       // Drop OpenClaw runtime plumbing from the captured turn: untrusted-metadata
       // preambles, and subagent task delegations (framing, not conversation).
       const captureUser = stripRuntimePreambles(userText);
-      if (!captureUser || NOISE_PREFIXES.some((p) => captureUser.startsWith(p))) return;
+      if (!captureUser || startsWithNoisePrefix(captureUser)) return;
+      if (captureUser.length < cfg.min_capture_chars) return;
       const ns = effectiveNamespace(cfg, ctx);
       if (ns == null) return;
       const session = sessionIdentity(ctx);

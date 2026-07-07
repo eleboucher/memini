@@ -12,6 +12,7 @@ import {
   resolveConfig,
   sessionIdentity,
   shouldSkipSystemTurn,
+  startsWithNoisePrefix,
   stripRuntimePreambles,
   type ResolvedConfig,
 } from "../src/index.ts";
@@ -156,6 +157,35 @@ test("stripRuntimePreambles: drops multiple stacked blocks", () => {
 test("stripRuntimePreambles: leaves a normal message untouched", () => {
   assert.equal(stripRuntimePreambles("plain message"), "plain message");
   assert.equal(stripRuntimePreambles(""), "");
+});
+
+// Ground truth: the exact shape of a cron turn found captured in production —
+// "User: [cron:<uuid> <name>] <task>". The role label defeats a bare
+// startsWith("[cron:"), which is how this leaked into the corpus.
+test("startsWithNoisePrefix: real production cron turn behind a User: label is noise", () => {
+  const text =
+    "User: [cron:b571428f-243c-4604-919e-effb800d44c0 homelab-peers-commits] " +
+    "You are a homelab commit watcher. Check these repos and post to Discord.";
+  assert.equal(startsWithNoisePrefix(text), true);
+});
+
+test("startsWithNoisePrefix: bare and role-labelled markers both match", () => {
+  assert.equal(startsWithNoisePrefix("[cron:abc job] do a thing"), true);
+  assert.equal(startsWithNoisePrefix("User: [Subagent Context] delegated task"), true);
+  assert.equal(startsWithNoisePrefix("Assistant: [cron:x] ..."), true);
+});
+
+test("startsWithNoisePrefix: a real message that merely mentions a marker is kept", () => {
+  assert.equal(startsWithNoisePrefix("User: how do I write a [cron: job]?"), false);
+  assert.equal(startsWithNoisePrefix("please set up a cron for backups"), false);
+});
+
+test("resolveConfig: min_capture_chars off by default; config and env override", () => {
+  assert.equal(resolveConfig({}).min_capture_chars, 0);
+  assert.equal(resolveConfig({ min_capture_chars: 30 }).min_capture_chars, 30);
+  process.env.MEMINI_MIN_CAPTURE_CHARS = "25";
+  assert.equal(resolveConfig({}).min_capture_chars, 25);
+  delete process.env.MEMINI_MIN_CAPTURE_CHARS;
 });
 
 test("stripRuntimePreambles: returns empty when the turn is only metadata", () => {

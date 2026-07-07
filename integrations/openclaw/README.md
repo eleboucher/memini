@@ -90,6 +90,13 @@ dropped with a truncation footer). `recall_max_tokens` also reads
 `MEMINI_INJECT_RECALL_MAX_TOK`, and `MEMINI_INJECT_LABELS` (`tier`, `confidence`,
 `age`) toggles the per-bullet tag prefix.
 
+Capture filtering: cron/heartbeat turns are skipped by default (`skip_system_turns`),
+runtime `(untrusted metadata)` preambles are stripped, and turns beginning with a
+`[cron:` / `[Subagent Context]` marker (even behind a `User:` label) are dropped.
+As an extra backstop, `min_capture_chars` (env `MEMINI_MIN_CAPTURE_CHARS`, default
+**0** = off) drops a capture whose stripped user turn is shorter than N characters —
+set it (e.g. `30`) if a gateway still emits short residual-noise turns.
+
 **There is no relevance-score floor knob — by design.** Bounding per-turn volume
 is `recall_limit`'s job, not a score gate, because benchmarking
 (`cmd/bench -vec-gate`) showed neither score can decide "inject nothing when
