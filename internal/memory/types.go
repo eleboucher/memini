@@ -50,7 +50,7 @@ func (t Tier) DefaultTTL() time.Duration {
 	case TierWorking:
 		return 24 * time.Hour
 	case TierEpisodic:
-		return 90 * 24 * time.Hour
+		return 30 * 24 * time.Hour
 	default: // semantic, procedural: durable
 		return 0
 	}

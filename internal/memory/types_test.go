@@ -32,7 +32,7 @@ func TestTierDefaultTTL(t *testing.T) {
 		want time.Duration
 	}{
 		{memory.TierWorking, 24 * time.Hour},
-		{memory.TierEpisodic, 90 * 24 * time.Hour},
+		{memory.TierEpisodic, 30 * 24 * time.Hour},
 		{memory.TierSemantic, 0},
 		{memory.TierProcedural, 0},
 		{memory.Tier("unknown"), 0},
