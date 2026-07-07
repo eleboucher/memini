@@ -149,6 +149,16 @@ func (im *Importer) Import(ctx context.Context, recs []Record, opts Options) (Re
 
 	clean := make([]Record, 0, len(recs))
 	for _, r := range recs {
+		// Drop runtime plumbing that isn't knowledge: peel an untrusted-metadata
+		// preamble off the front, then skip the turn whole if what remains is
+		// cron/subagent framing. Order (strip then check) mirrors the OpenClaw
+		// plugin's capture-time filter so re-importing content captured before that
+		// fix doesn't reintroduce it.
+		r.Content = stripRuntimePreambles(r.Content)
+		if isNoiseFraming(r.Content) {
+			rep.Skipped++
+			continue
+		}
 		if len(strings.TrimSpace(r.Content)) < max(1, opts.MinContentLen) {
 			rep.Skipped++
 			continue

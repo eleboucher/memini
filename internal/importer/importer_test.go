@@ -98,6 +98,45 @@ func TestImportQualityGates(t *testing.T) {
 	}
 }
 
+func TestImportDropsRuntimeNoise(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "import.db"), 32)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	recs := []importer.Record{
+		{ID: "cron", Namespace: "p", Importance: 0.5, Content: "User: [cron:abc watcher] check repos and post to Discord"},
+		{ID: "meta", Namespace: "p", Importance: 0.5, Content: "Info (untrusted metadata):\n```json\n{\"chat_id\":1}\n```\nUser: real question"},
+		// Metadata preamble stacked in front of a cron marker: strip-then-check drops it.
+		{ID: "metacron", Namespace: "p", Importance: 0.5, Content: "Info (untrusted metadata):\n```json\n{}\n```\nUser: [cron:x] do it"},
+		{ID: "clean", Namespace: "p", Importance: 0.5, Content: "a genuine memory worth keeping"},
+	}
+
+	rep, err := importer.NewLocal(st, embedtest.New(32)).Import(ctx, recs, importer.Options{})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if rep.Imported != 2 || rep.Skipped != 2 {
+		t.Fatalf("report = %+v, want imported=2 skipped=2", rep)
+	}
+	if _, err := st.Get(ctx, "p", "cron"); err == nil {
+		t.Error("cron framing record should be dropped")
+	}
+	if _, err := st.Get(ctx, "p", "metacron"); err == nil {
+		t.Error("metadata-then-cron record should be dropped (strip then check)")
+	}
+	// The metadata preamble is peeled; the real message survives.
+	m, err := st.Get(ctx, "p", "meta")
+	if err != nil {
+		t.Fatalf("meta should be imported (preamble stripped): %v", err)
+	}
+	if m.Content != "User: real question" {
+		t.Errorf("meta content = %q, want %q", m.Content, "User: real question")
+	}
+}
+
 func TestImportPreservesSourceNamespaces(t *testing.T) {
 	ctx := context.Background()
 	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "import.db"), 32)

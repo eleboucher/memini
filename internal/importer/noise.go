@@ -48,6 +48,46 @@ var noisePatterns = func() []*regexp.Regexp {
 	return pats
 }()
 
+// untrustedMetadataBlock matches a leading OpenClaw "<Label> (untrusted
+// metadata):" preamble followed by either a fenced JSON object or flat
+// key=value lines — the runtime plumbing the OpenClaw plugin strips at capture.
+// Ported here so a re-import of content captured before that fix (or exported
+// from another memini) doesn't reintroduce it. Anchored at the start; the flat
+// branch requires a bare key=value so a real message merely containing "=" is
+// not consumed. See integrations/openclaw/plugin/src/index.ts.
+var untrustedMetadataBlock = regexp.MustCompile(
+	"^\\s*[^\\n]*\\(untrusted metadata\\):\\s*" +
+		"(?:```(?:json)?\\s*[\\s\\S]*?```\\s*|(?:[ \\t]*[A-Za-z_][\\w.-]*=[^\\n]*\\n?)+)")
+
+// stripRuntimePreambles removes leading untrusted-metadata blocks (stacked
+// blocks are peeled one per pass) and trims the result.
+func stripRuntimePreambles(s string) string {
+	for untrustedMetadataBlock.MatchString(s) {
+		s = untrustedMetadataBlock.ReplaceAllString(s, "")
+	}
+	return strings.TrimSpace(s)
+}
+
+// noiseFramingPrefixes mark a turn that is runtime framing, not knowledge: a
+// cron/scheduled job definition or a subagent task delegation.
+var noiseFramingPrefixes = []string{"[cron:", "[Subagent Context]"}
+
+// roleLabel is an optional leading "User:"/"Assistant:"/"System:" that OpenClaw's
+// turn text keeps in front of the content — it must not defeat the prefix match.
+var roleLabel = regexp.MustCompile(`(?i)^(?:user|assistant|system)\s*:\s*`)
+
+// isNoiseFraming reports whether content begins with a framing marker (behind an
+// optional role label). A message that merely mentions a marker mid-line is kept.
+func isNoiseFraming(s string) bool {
+	body := roleLabel.ReplaceAllString(strings.TrimSpace(s), "")
+	for _, p := range noiseFramingPrefixes {
+		if strings.HasPrefix(body, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // blankRuns collapses 4+ consecutive newlines (left behind by removals) to 3.
 var blankRuns = regexp.MustCompile(`\n{4,}`)
 
