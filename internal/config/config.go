@@ -177,6 +177,13 @@ type Config struct {
 	// Reserved slots are relevance-gated — a durable memory is only promoted in
 	// when it is relevance-competitive with the entry it displaces.
 	RecallSemanticReserve int `env:"MEMINI_RECALL_SEMANTIC_RESERVE" envDefault:"2"`
+	// TurnEchoWindow is the server-wide temporal exclusion window for
+	// freshly-captured episodic turns. A just-captured turn
+	// (metadata.format="turn") younger than this is dropped from recall by
+	// default — a just-captured turn is live context, not long-term memory,
+	// and echoing it back makes the agent parrot itself. Callers opt out per
+	// call via include_fresh_turns. Default 5m; zero disables it server-wide.
+	TurnEchoWindow time.Duration `env:"MEMINI_TURN_ECHO_WINDOW" envDefault:"5m"`
 	// Fusion weight stays baked in cmd/memini (tuned via the benchmark harness).
 
 	// EpisodicMinChars drops an episodic write whose substantive content (role

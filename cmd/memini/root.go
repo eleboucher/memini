@@ -244,6 +244,7 @@ func buildServiceStack(
 		service.WithRecallEmbedTimeout(cfg.RecallEmbedTimeout),
 		service.WithRecallMinScore(cfg.RecallMinScore),
 		service.WithRecallSemanticReserve(cfg.RecallSemanticReserve),
+		service.WithTurnEchoWindow(cfg.TurnEchoWindow),
 		service.WithEpisodicMinChars(cfg.EpisodicMinChars),
 		// Write-time fact building self-selects: distill (LLM) no-ops without a
 		// consolidator; extract (heuristic) only fires when no LLM is configured.

@@ -282,11 +282,14 @@ type SearchRequest struct {
 	AsOf *time.Time `json:"as_of,omitempty"`
 
 	// ExcludeMetadata Drop memories whose top-level metadata carries any of these key=value pairs (the inverse of metadata). Lets a caller keep its own just-written memories out of recall — e.g. excluding the current session's captured turns so they are not echoed back as memory.
-	ExcludeMetadata   *map[string]string `json:"exclude_metadata,omitempty"`
-	IncludeExpired    *bool              `json:"include_expired,omitempty"`
-	IncludeSuperseded *bool              `json:"include_superseded,omitempty"`
-	Levels            *[]Level           `json:"levels,omitempty"`
-	Limit             *int               `json:"limit,omitempty"`
+	ExcludeMetadata *map[string]string `json:"exclude_metadata,omitempty"`
+
+	// IncludeFreshTurns When true, disable the server-side temporal echo guard for this call: just-captured episodic turn captures (metadata.format="turn" younger than the server's window) are NOT dropped. Default (false) drops them — a just-captured turn is live context, not long-term memory. Opt in only when you genuinely need fresh turns.
+	IncludeFreshTurns *bool    `json:"include_fresh_turns,omitempty"`
+	IncludeExpired    *bool    `json:"include_expired,omitempty"`
+	IncludeSuperseded *bool    `json:"include_superseded,omitempty"`
+	Levels            *[]Level `json:"levels,omitempty"`
+	Limit             *int     `json:"limit,omitempty"`
 
 	// Metadata A memory's top-level metadata must contain every listed key=value pair (AND).
 	Metadata *map[string]string `json:"metadata,omitempty"`

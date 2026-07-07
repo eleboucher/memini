@@ -327,6 +327,7 @@ test("recall sends recall_limit and no min_score on /v1/search", async () => {
     const search = JSON.parse(requests.find((r) => r.url.endsWith("/v1/search")).init.body);
     assert.equal(search.limit, 2);
     assert.equal(search.min_score, undefined, "the plugin no longer sends a relevance-score floor");
+    assert.equal(search.exclude_turns_younger_than, undefined, "server-side guard is on by default; plugin does not opt in");
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -417,6 +418,7 @@ test("recall searches memini and prepends results; capture writes the episodic t
     assert.match(recall.prependContext, /prior fact/);
     const search = requests.find((r) => r.url.endsWith("/v1/search"));
     assert.equal(JSON.parse(search.init.body).query, "how did we fix auth?");
+    assert.equal(JSON.parse(search.init.body).exclude_turns_younger_than, undefined, "server-side guard is on by default; plugin does not opt in");
 
     // agent_end is the raw-conversation hook: when the host grants conversation
     // access, event.messages is present and the turn is captured as episodic.
@@ -531,6 +533,78 @@ test("without a session id, auto-recall stays unscoped and capture is skipped", 
       undefined,
       "capture without a session identity must be skipped",
     );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// The session-id exclusion misses when the session id is absent/rolled at
+// recall. The message-ID guard (keyed by namespace) survives that asymmetry.
+test("recall drops a just-captured turn by ID (message-ID echo guard)", async () => {
+  const hooks = {};
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const body = String(url).endsWith("/v1/search")
+      ? {
+          results: [
+            { memory: { id: "echo-1", summary: "just-captured turn", tier: "episodic", metadata: { format: "turn", session_id: "sess-other" } }, score: 0.95 },
+            { memory: { id: "prior", summary: "prior fact", tier: "semantic", metadata: {} }, score: 0.8 },
+          ],
+        }
+      : { id: "echo-1" };
+    return { ok: true, async json() { return body; }, async text() { return ""; } };
+  };
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    await hooks.agent_end(
+      { success: true, messages: [{ role: "user", content: "q" }, { role: "assistant", content: "a" }] },
+      { sessionId: "sess-capture" },
+    );
+    // No session id at recall: exclude_metadata absent, so the server returns
+    // the just-captured turn. The message-ID guard must still drop it.
+    const recall = await hooks.before_prompt_build({ prompt: "q" }, {});
+    assert.ok(recall, "recall should still inject real memories");
+    assert.doesNotMatch(recall.prependContext, /just-captured turn/, "the just-captured turn must not be echoed back");
+    assert.match(recall.prependContext, /prior fact/, "older long-term memories must still surface");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("the echo guard is scoped per namespace — another agent's captures don't suppress recall", async () => {
+  const hooks = {};
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const body = String(url).endsWith("/v1/search")
+      ? {
+          results: [
+            { memory: { id: "alice-cap", summary: "alice's turn", tier: "episodic", metadata: { format: "turn" } }, score: 0.9 },
+          ],
+        }
+      : { id: "alice-cap" };
+    return { ok: true, async json() { return body; }, async text() { return ""; } };
+  };
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: true, namespace_template: "{namespace}-{agent}" },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    await hooks.agent_end(
+      { success: true, messages: [{ role: "user", content: "q" }, { role: "assistant", content: "a" }] },
+      { sessionId: "sess-alice", agentId: "alice" },
+    );
+    const recall = await hooks.before_prompt_build({ prompt: "q" }, { agentId: "bob" });
+    assert.ok(recall, "bob's recall should not be suppressed by alice's capture");
+    assert.match(recall.prependContext, /alice's turn/, "a different namespace's captures must still surface");
   } finally {
     globalThis.fetch = realFetch;
   }

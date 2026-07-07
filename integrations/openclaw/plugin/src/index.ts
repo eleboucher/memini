@@ -729,6 +729,32 @@ const plugin: {
       for (const id of ids) if (id) seen.add(id);
     };
 
+    // Echo guard: track IDs this namespace just captured so the next recall can
+    // drop them. Keyed by namespace (agent identity) not session, because the
+    // session id can be absent/rolled at recall while the namespace is stable.
+    // Bounded: oldest captures age out and become recallable again.
+    const recentlyCaptured = new Map<string, Set<string>>();
+    const MAX_CAPTURED_PER_NS = 5;
+    const MAX_CAPTURED_NAMESPACES = 200;
+    const rememberCaptured = (ns: string, id: string) => {
+      let seen = recentlyCaptured.get(ns);
+      if (!seen) {
+        seen = new Set<string>();
+        recentlyCaptured.set(ns, seen);
+        while (recentlyCaptured.size > MAX_CAPTURED_NAMESPACES) {
+          const oldest = recentlyCaptured.keys().next().value;
+          if (oldest === undefined) break;
+          recentlyCaptured.delete(oldest);
+        }
+      }
+      seen.add(id);
+      while (seen.size > MAX_CAPTURED_PER_NS) {
+        const oldest = seen.values().next().value;
+        if (oldest === undefined) break;
+        seen.delete(oldest);
+      }
+    };
+
     const recallHandler = async (event: any, ctx: any) => {
       if (!cfg.enabled) return;
       const prompt = typeof event?.prompt === "string" ? event.prompt.trim() : "";
@@ -742,8 +768,15 @@ const plugin: {
       // "long-term memory". agent_end tags each capture with session_id.
       const session = sessionIdentity(ctx);
       if (session) body.exclude_metadata = { session_id: session };
+      // The server-side temporal echo guard is on by default (5 min window),
+      // backstopping the client-side message-ID guard (lost on gateway restart)
+      // and the session-id exclusion (misses when session id is absent/rolled).
       const result = await client.postJson("/v1/search", body, ns);
       let results = Array.isArray(result?.results) ? result.results : [];
+      // Drop just-captured turns: they're live context, not long-term memory.
+      // Survives session-id asymmetry (keyed by stable namespace).
+      const captured = recentlyCaptured.get(ns);
+      if (captured?.size) results = results.filter((r: any) => !captured.has(r?.memory?.id));
       // Suppress memories this session has already been shown so a multi-step
       // turn doesn't re-inject the same block on every tool call (#21).
       if (session) {
@@ -795,12 +828,14 @@ const plugin: {
       if (!session) return;
       const metadata: any = { source: "openclaw", format: "turn", session_id: session };
       if (!event?.success) metadata.failed = true;
-      await client.postJson("/v1/memories", {
+      const writeResult = await client.postJson("/v1/memories", {
         content: `${captureUser.slice(0, 1000)}\n\n${assistantText.slice(0, 3000)}`,
         tier: "episodic",
         tags: ["openclaw"],
         metadata,
       }, ns);
+      // Record the captured ID so the next recall can drop it.
+      if (writeResult?.id) rememberCaptured(ns, String(writeResult.id));
     };
     addHook("agent_end", captureHandler);
 

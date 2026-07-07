@@ -500,6 +500,16 @@ components:
             pairs (the inverse of metadata). Lets a caller keep its own
             just-written memories out of recall — e.g. excluding the current
             session's captured turns so they are not echoed back as memory.
+        include_fresh_turns:
+          type: boolean
+          default: false
+          description: >
+            When true, disable the server-side temporal echo guard for this
+            call: just-captured episodic turn captures (metadata.format="turn"
+            younger than the server's window, default 5m) are NOT dropped.
+            Default (false) drops them — a just-captured turn is live context,
+            not long-term memory, and echoing it back makes the agent parrot
+            itself. Opt in only when you genuinely need fresh turns.
         limit: { type: integer, default: 10 }
         include_expired: { type: boolean, default: false }
         include_superseded: { type: boolean, default: false }

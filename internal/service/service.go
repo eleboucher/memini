@@ -259,6 +259,10 @@ type Service struct {
 
 	// shortTermCap bounds short-term memories per namespace during fsck (0 = off).
 	shortTermCap int
+	// turnEchoWindow is the server-wide default temporal exclusion window for
+	// freshly-captured episodic turns. It fires by default on every recall; a
+	// caller opts out via IncludeFreshTurns. Zero disables it server-wide.
+	turnEchoWindow time.Duration
 	// queryPrefix is prepended to recall queries before embedding, enabling the
 	// asymmetric instruction mode of instruction-tuned embedders. Documents are
 	// always embedded bare.
@@ -407,6 +411,11 @@ func WithSyncReinforce() Option { return func(s *Service) { s.syncReinforce = tr
 
 // WithShortTermCap bounds short-term memories per namespace, enforced by fsck.
 func WithShortTermCap(cap int) Option { return func(s *Service) { s.shortTermCap = cap } }
+
+// WithTurnEchoWindow sets the server-wide default temporal exclusion window
+// for freshly-captured episodic turns. It fires by default on every recall; a
+// caller opts out via IncludeFreshTurns. Zero disables it server-wide.
+func WithTurnEchoWindow(d time.Duration) Option { return func(s *Service) { s.turnEchoWindow = d } }
 
 // WithQueryPrefix prepends an instruction to recall queries before embedding
 // (e.g. the retrieval instruct expected by Qwen3-Embedding or bge models).
@@ -1298,7 +1307,15 @@ type RecallInput struct {
 	// listed key=value pair (AND), applied after Metadata. Lets a caller exclude
 	// its own session's just-captured turns from auto-recall.
 	ExcludeMetadata map[string]string
-	Limit           int
+	// IncludeFreshTurns, when true, disables the server-side temporal echo
+	// guard for this call: just-captured episodic turns (metadata.format="turn"
+	// younger than the server's turnEchoWindow) are NOT dropped. Default
+	// (false) means the guard fires — a just-captured turn is still live
+	// context and must not be recalled back as long-term memory. Opt out only
+	// when a caller genuinely needs fresh turns (e.g. a "what did I just say"
+	// debug query).
+	IncludeFreshTurns bool
+	Limit             int
 	// IncludeExpired / IncludeSuperseded relax the default live-only filter.
 	IncludeExpired    bool
 	IncludeSuperseded bool
@@ -1560,6 +1577,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	// Reserve slots for durable tiers so episodic chatter can't crowd out
 	// consolidated facts/rules; the pool is already relevance-filtered upstream.
 	ranked = reserveDurableTiers(ranked, k, s.resolveSemanticReserve(in), s.reservePromoteRatio, s.reserveTopAnchor, s.reserveGatePercentile)
+	ranked = s.applyTurnEchoGuard(in, ranked)
 	results := s.finalizeRecall(ctx, in.Query, ranked, k)
 	s.reinforceResults(ctx, results)
 	s.metrics.RecallResult("ok", tf, hitsBucket(len(results)))
@@ -1582,6 +1600,45 @@ func (s *Service) resolveSemanticReserve(in RecallInput) int {
 		return in.SemanticReserve
 	}
 	return s.recallSemanticReserve
+}
+
+// resolveTurnEchoWindow returns the effective temporal echo window: the
+// server-wide default, unless the caller opted out via IncludeFreshTurns
+// (returns 0 = disabled).
+func (s *Service) resolveTurnEchoWindow(in RecallInput) time.Duration {
+	if in.IncludeFreshTurns {
+		return 0
+	}
+	return s.turnEchoWindow
+}
+
+// applyTurnEchoGuard drops just-captured episodic turns (metadata.format="turn"
+// younger than the server's window) unless the caller opted out. A just-captured
+// turn is live context, not long-term memory — echoing it back makes the agent
+// parrot itself.
+func (s *Service) applyTurnEchoGuard(in RecallInput, ranked []store.Scored) []store.Scored {
+	window := s.resolveTurnEchoWindow(in)
+	if window <= 0 {
+		return ranked
+	}
+	cutoff := s.now().Add(-window)
+	filtered := ranked[:0]
+	for _, r := range ranked {
+		if r.Memory.Tier == memory.TierEpisodic &&
+			r.Memory.CreatedAt.After(cutoff) &&
+			isTurnCapture(r.Memory.Metadata) {
+			continue
+		}
+		filtered = append(filtered, r)
+	}
+	return filtered
+}
+
+// isTurnCapture reports whether metadata marks this memory as a captured turn
+// (format="turn"), the content the echo guard targets.
+func isTurnCapture(meta map[string]any) bool {
+	v, ok := meta["format"].(string)
+	return ok && v == "turn"
 }
 
 // buildFactsOnWrite routes a fresh episodic capture to write-time fact
