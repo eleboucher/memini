@@ -124,125 +124,148 @@ for the single-fact categories therefore has to come from **answer quality**
 for abstention; does it _combine_ memories for synthesis), not from recall — which
 is exactly the axis LongMemEval's saturation hid.
 
-**Discrimination (Test C).** The 2×2 is {extract, distill} write-path ingest ×
-{single-shot, agentic} answering. The bench is judged to discriminate iff at
-least one pre-registered contrast holds:
+**Discrimination (Test C).** After the pilot (§7.0) the design changed twice, for
+diagnosable reasons:
 
-- **C1** agentic vs single-shot (within extract): ≥15pp overall, or ≥20pp on
-  {synthesis, temporal-update} pooled, with McNemar exact p < 0.05.
-- **C2** distill vs extract (within single-shot): same thresholds; expected on
-  {current-state, temporal-update}.
-- **C3** interaction (distill+agentic) vs (extract+single): ≥20pp overall, p < 0.05.
+- The **distill ingest axis was retired.** The pilot distiller emitted 0 facts on
+  all 67 calls (the corpus is fact-shaped commit/note text with nothing to
+  compress), so the distill cells were a tie by construction. Keeping it would
+  only re-measure that inertness.
+- A third **answer strategy** was added: **`expand`** — one query-rewrite
+  completion, a unioned multi-query recall, and one synthesis pass, with no tool
+  loop. It is the cheap form of what the agentic loop does the expensive way, and
+  the pre-registered question became: does the full ReAct loop beat this cheap
+  arm enough to justify its cost?
 
-**Failure/iterate path:** if all three tie, one iteration only — raise distractor
-density and convert the flattest category's weakest 5 questions to 2-hop
-synthesis — then re-run B then C. If still tied, the honest finding is
-**no-scale**: on-domain saturation reproduced, and the discrimination bottleneck
-is elsewhere (report it).
+So Test C is a **3-way over the extract ingest**: single-shot vs `expand` vs the
+gated agentic loop. Pre-registered **go/no-go** (the standing stop condition):
+
+> The agentic loop ships **on** only if it (C2) clears **p < 0.05 over single-shot**
+> **and** (C3) justifies its cost over the cheap `expand` arm. If either fails,
+> **LLM-answer is settled**: it ships **opt-in / off-by-default** and we stop
+> investing. A null is a valid, decision-closing result — not a failure to iterate.
 
 ## 6. Run commands
 
-```sh
-# Local model server: keep embedder + chat co-resident to avoid JIT thrash
-lms load text-embedding-qwen3-embedding-0.6b --ttl 86400 --yes
-lms load qwen3.5-9b --ttl 86400 --yes
+The answerer must be a **capable** model — a mini tier (the local 9B) makes the
+loop look better than it is by leaving a weak single-shot baseline for it to beat
+(see §7). The scaled run used the embedder local and the LLM via the litellm
+gateway.
 
+```sh
+# Embedder local (keep co-resident to avoid JIT thrash); LLM via litellm.
 export MEMINI_EMBED_BASE_URL=http://127.0.0.1:8001/v1 \
        MEMINI_EMBED_MODEL=text-embedding-qwen3-embedding-0.6b MEMINI_EMBED_DIMS=1024
-export MEMINI_LLM_API=openai MEMINI_LLM_BASE_URL=http://127.0.0.1:8001/v1 \
-       MEMINI_LLM_MODEL=qwen3.5-9b
+export MEMINI_LLM_API=openai MEMINI_LLM_BASE_URL=https://litellm.erwanleboucher.dev/v1 \
+       MEMINI_LLM_API_KEY=$LITELLM_API_KEY MEMINI_LLM_MODEL=neuralwatt/qwen3.6-35b-fast
+
+# scaled corpus (166 q); omit to use the 45-q pilot
+export MEMINI_CODINGAGENT_DATA=data/codingagent_v1.json
 
 # 1. gold audit (offline, instant — run after every dataset edit)
 go test -tags bench ./bench -run TestCodingAgentGoldAudit -v
 # 2. headroom (embedder only)
 go test -tags bench ./bench -run TestCodingAgentHeadroom -v -timeout 20m
-# 3. discrimination 2x2 (embedder + LLM; checkpointed/resumable)
+# 3. discrimination 3-way (embedder + LLM; checkpointed/resumable)
 go test -tags bench ./bench -run TestCodingAgentDiscrimination -v -timeout 6h
 # ad-hoc single-arm rerun
-go run ./cmd/qa -suite codingagent -data bench/data/codingagent_pilot.json \
-  -ingest write [-distill] -reasoning [""|medium] -k 10
+go run ./cmd/qa -suite codingagent -data bench/data/codingagent_v1.json \
+  -ingest write -reasoning [""|expand|medium] -k 10
 ```
 
-## 7. Results (2026-07-06, qwen3.5-9b answerer+judge, qwen3-embedding-0.6b)
+## 7. Results
 
-Per-category LLM-judged accuracy, 45 questions, 2×2:
+### 7.0 Pilot (2026-07-06, qwen3.5-9b, 45 q, the retired 2×2)
 
-| category        |      ext/single |     ext/agentic | dist/single | dist/agentic |
-| --------------- | --------------: | --------------: | ----------: | -----------: |
-| abstention      |      100% (4/4) |            100% |        100% |         100% |
-| convention      |       86% (6/7) |             86% |         86% |          86% |
-| current-state   |       83% (5/6) |        **100%** |         83% |     **100%** |
-| decision        |       75% (6/8) |        **100%** |         75% |     **100%** |
-| rationale       |       88% (7/8) |             75% |         88% |          75% |
-| synthesis       |       33% (2/6) |         **50%** |         33% |      **50%** |
-| temporal-update |       67% (4/6) |         **83%** |         67% |      **83%** |
-| **overall**     | **76% (34/45)** | **84% (38/45)** |         76% |          84% |
+The pilot (45 q, extract×distill × single×agentic) put the ungated agentic loop
+at **84% vs 76% single (+9pp, p=0.29)** — directionally real, underpowered, and
+concentrated on decision/current-state/synthesis/temporal-update, while it
+_regressed_ rationale (88→75%) by over-searching direct-answer questions. The
+distiller emitted **0 facts on all 67 calls** (fact-shaped corpus → nothing to
+compress), so both distill cells tied by construction. Those two findings drove
+the redesign: an **early-exit gate** on the loop (answer directly unless the first
+pass is insufficient), a cheap **`expand`** arm, retirement of the distill axis,
+and a scaled corpus. One confound surfaced only on a capable model (below): the
+reader prompt's hard "6-words-or-fewer" cap made synthesis answers impossible; the
+9B masked it by disobeying, so the pilot's synthesis numbers are unreliable. Fixed
+in `answerSystem` before the scaled run.
+
+### 7.1 Scaled 3-way (2026-07-07, qwen3.6-35b via litellm, qwen3-embedding-0.6b, 166 q)
+
+Answerer + judge = `neuralwatt/qwen3.6-35b-fast` (a **capable** tier — see §6).
+Corpus `codingagent_v1.json` (206 items / 166 q; headroom recall@5 = 88.0%, IN
+BAND). Per-category LLM-judged accuracy:
+
+| category        |            single |            expand |           agentic |
+| --------------- | ----------------: | ----------------: | ----------------: |
+| abstention      |      100% (15/15) |      100% (15/15) |      100% (15/15) |
+| convention      |       91% (21/23) |       96% (22/23) |       87% (20/23) |
+| current-state   |       85% (22/26) |       85% (22/26) |       88% (23/26) |
+| decision        |       82% (23/28) |       86% (24/28) |       89% (25/28) |
+| rationale       |       92% (24/26) |       92% (24/26) |       96% (25/26) |
+| synthesis       |       75% (24/32) |       81% (26/32) |       72% (23/32) |
+| temporal-update |       81% (13/16) |       88% (14/16) |       81% (13/16) |
+| **overall**     | **86% (142/166)** | **89% (147/166)** | **87% (144/166)** |
 
 Pre-registered paired contrasts (McNemar exact):
 
-- **C1** agentic vs single (extract): 84% vs 76%, **Δ +9pp**; A-only=6, B-only=2, tie=37; **p=0.29**.
-- **C2** distill vs extract (single): 76% vs 76%, **Δ 0pp**; 45 ties; p=1.0.
-- **C3** distill+agentic vs extract+single: 84% vs 76%, Δ +9pp; p=0.29 (≡ C1).
+- **C1** expand vs single: 89% vs 86%, **Δ +3pp**; A-only=6, B-only=1, tie=159; **p=0.125**.
+- **C2** agentic(gated) vs single: 87% vs 86%, **Δ +1pp**; A-only=5, B-only=3, tie=158; **p=0.73**.
+- **C3** agentic(gated) vs expand: 87% vs 89%, **Δ −2pp**; A-only=5, B-only=8, tie=153; **p=0.58**.
 
-Cost: agentic ≈43.5k input tokens vs single ≈36.8k (+18%) for the +9pp;
-distill ingest = 67 calls, **0 facts produced**.
+Cost (LLM only, ~4 B/token estimate):
 
-### What the bench showed
+| arm     | completes | tool-rounds | in tok | out tok |  s/q |
+| ------- | --------: | ----------: | -----: | ------: | ---: |
+| single  |       166 |           0 |   147k |    3.7k |  2.8 |
+| expand  |       332 |           0 |   241k |    9.4k | 10.4 |
+| agentic |       166 |          29 |   227k |    4.3k |  9.5 |
 
-1. **It discriminates where LongMemEval is blind.** LongMemEval recall@5 is a flat
-   ~100%, so single vs agentic there is a wash. Here the agentic loop produces a
-   consistent, mechanistically-sensible per-category signal: it _wins_ on the
-   categories that need iterative/multi-fact retrieval — decision (75→100%),
-   current-state (83→100%), synthesis (33→50%), temporal-update (67→83%) — and
-   _loses_ on rationale (88→75%, where extra tool-searching dilutes a direct
-   answer). That per-category structure is exactly the resolution the saturated
-   suite cannot give.
+### 7.2 Verdict — the loop is NOT worth it (NO-GO / settle)
 
-2. **No contrast cleared the pre-registered p<0.05 bar.** The agentic effect is
-   real in direction but +9pp overall (6 vs 2 discordant) is underpowered at
-   n=45 (p=0.29). Pooled {synthesis, temporal-update} is +17pp but only ~2 net
-   discordant — still under-powered. The pilot's job was to measure the effect
-   size so a full bench can be sized; a paired ~9pp effect needs on the order of
-   ~150–250 questions for 80% power.
+Both go conditions fail:
 
-3. **The distill arm is inert here, for a diagnosable reason.** The distiller
-   returned **0 facts on all 67 calls**, so distill-on-write added nothing and
-   C2 is a 45/45 tie by construction. The cause is corpus shape: items were mined
-   from commit messages and memory notes, so they are _already atomic facts_.
-   Distill-on-write compresses verbose _turns_ into facts; given fact-shaped input
-   there is nothing to compress. (This also explains why the prior distill-on-write
-   A/B "bottomed out in noise" — with an inert distiller there is no signal to
-   find. The bench surfaces that cleanly via the 0-facts cost counter.)
+- **C2** agentic vs single is **+1pp, p=0.73** — nowhere near the p<0.05 bar.
+- **C3** agentic vs expand is **−2pp** at essentially the **same cost** (9.5 vs
+  10.4 s/q; 227k vs 241k input tokens) — so even against the cheap arm the full
+  tool loop does not justify itself; it is slightly _worse_.
 
-4. **Abstention works and is already saturated** (100% every cell): single-shot
-   declines correctly on all four genuinely-absent questions, so abstention does
-   not discriminate single vs agentic on this set — a real finding, not a gap.
+Against single-shot, the loop costs **+54% input tokens and 3.4× latency for a
+non-significant +1pp.** The gate did its job — it made the loop non-regressive
+(rationale 92→96, no category collapses) — but in doing so it removed almost all
+of the pilot's apparent +9pp: on a capable model with the prompt confound fixed,
+single-shot is already strong (86%) and the headroom the ungated loop exploited
+was mostly the weak-baseline artifact the §7.0 pilot warned about.
 
-## 8. Recommendation
+The cheap **`expand`** arm is the best of the three (89%) and the only one that
+beats single directionally, but at **+3pp, p=0.125** it too fails to clear
+significance — and it doubles the completion count. It is not a win either.
 
-**Worth scaling — with two targeted changes.** The pilot succeeded at its actual
-purpose: it produces per-category, headroom-bearing numbers that separate
-configurations LongMemEval flattens to 100%, and it measured the effect sizes and
-failure modes needed to design a full bench. It did not _certify_ discrimination
-at p<0.05, but that is a power problem at n=45, not a design failure.
+**Decision (honoring the pre-registered stop condition): LLM-answer is settled.**
+The agentic answer loop ships **opt-in / off-by-default** (`Reasoning` empty =
+single-shot remains the default). `expand` stays available as an opt-in for
+callers who want the small multi-query lift and can pay 2× completions. We stop
+investing in the answer loop as a default-on feature. This is the pre-registered,
+decision-closing null — the bench did its job: it turned "the loop feels helpful"
+(the +9pp mirage on a weak model at n=45) into a powered, cost-aware "no."
 
-For a full bench:
+## 8. What the instrument proved
 
-1. **Scale to ~150–250 hand-verified questions** (same mining rules, same
-   categories) to power the ~9pp paired agentic effect to p<0.05. Weight toward
-   synthesis and temporal-update, where the headroom and the effect are largest.
-2. **Add a turn-shaped subcorpus for the write-enrichment axis.** Fact-shaped
-   commit/note items can't exercise distill-on-write. To A/B distill vs extract
-   honestly, ingest real _conversational_ transcripts (option b) as episodic
-   turns, or use a distiller model/prompt verified to emit facts (the local 9B
-   produced none). Keep the fact-shaped corpus for the answer-strategy axis.
+1. **The bench discriminates and is now powered.** At n=166 the paired contrasts
+   have tight confidence (tie counts ~155/166), so a +1–3pp effect is measured as
+   _not significant_ rather than _unknown_ — the resolution LongMemEval's ~100%
+   recall saturation could never provide.
+2. **Model tier changes the answer.** The pilot's +9pp was largely a weak-baseline
+   artifact: a capable answerer lifts single-shot enough to erase it. Any future
+   answer-strategy claim must be measured on a capable model, not a mini tier.
+3. **Prompt confounds hide in weak models.** The 6-word cap zeroed synthesis on
+   the capable model while the 9B's disobedience masked it. Fixing it lifted
+   single-shot synthesis to 75% — most of what the loop had appeared to add there.
+4. **Retrieval is not the bottleneck** (single-fact recall ~100%); the residual
+   headroom is in synthesis coverage (@5≈80%), and none of the three answer
+   strategies closes it — a retrieval/consolidation problem, not an answering one.
 
-**First LLM experiment to run against it:** the **agentic answer loop** (depth and
-tool mix), because it shows the clearest, most mechanistically-coherent lift —
-synthesis and temporal-update, the multi-memory categories where LongMemEval is
-saturated and blind. Investigate the rationale regression (agentic 88→75%) as
-part of it: bounding tool calls when the single-shot answer is already grounded.
-
-**Do not** invest further in the distill-on-write A/B until (a) the distiller is
-verified to emit facts and (b) a turn-shaped corpus exists — otherwise it will
-keep bottoming out in the same inert-distiller noise as before.
+**Do not** reopen the answer loop as a default-on investment without a materially
+different corpus or model regime that moves C2 past p<0.05. The distill-on-write
+axis remains parked (needs a turn-shaped corpus + a distiller verified to emit
+facts) — unchanged from the pilot.
