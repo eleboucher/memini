@@ -283,12 +283,10 @@ type SearchRequest struct {
 
 	// ExcludeMetadata Drop memories whose top-level metadata carries any of these key=value pairs (the inverse of metadata). Lets a caller keep its own just-written memories out of recall — e.g. excluding the current session's captured turns so they are not echoed back as memory.
 	ExcludeMetadata *map[string]string `json:"exclude_metadata,omitempty"`
+	IncludeExpired  *bool              `json:"include_expired,omitempty"`
 
-	// IncludeFreshTurns When true, disable the server-side temporal echo guard for this call: just-captured episodic turn captures (metadata.format="turn" younger than the server's window) are NOT dropped. Default (false) drops them — a just-captured turn is live context, not long-term memory. Opt in only when you genuinely need fresh turns.
-	IncludeFreshTurns *bool `json:"include_fresh_turns,omitempty"`
-	// QueryRewrite When true and an LLM is configured, rewrite the query into 2-3 diverse variants before recall and fuse the results. Cheapest read-path LLM lever.
-	QueryRewrite      *bool    `json:"query_rewrite,omitempty"`
-	IncludeExpired    *bool    `json:"include_expired,omitempty"`
+	// IncludeFreshTurns When true, disable the server-side temporal echo guard for this call: just-captured episodic turn captures (metadata.format="turn" younger than the server's window, default 5m) are NOT dropped. Default (false) drops them — a just-captured turn is live context, not long-term memory, and echoing it back makes the agent parrot itself. Opt in only when you genuinely need fresh turns.
+	IncludeFreshTurns *bool    `json:"include_fresh_turns,omitempty"`
 	IncludeSuperseded *bool    `json:"include_superseded,omitempty"`
 	Levels            *[]Level `json:"levels,omitempty"`
 	Limit             *int     `json:"limit,omitempty"`
@@ -299,6 +297,9 @@ type SearchRequest struct {
 	// MinScore Per-call relevance floor on the fused score. Candidates below it are dropped server-side before re-ranking. 0 (or unset) falls back to the server's baked relevance floor (0.1). Only meaningful with score fusion (RRF scores are not comparable to this threshold).
 	MinScore *float64 `json:"min_score,omitempty"`
 	Query    string   `json:"query"`
+
+	// QueryRewrite When true and an LLM is configured, rewrite the query into 2-3 diverse variants before recall and fuse results via RRF. Cheapest read-path LLM lever; opt-in per call.
+	QueryRewrite *bool `json:"query_rewrite,omitempty"`
 
 	// Scope exact (default) searches only the request namespace; subtree also searches namespaces nested under it ("project" reads "project/agent"), for the multi-agent read-shared-plus-private pattern.
 	Scope *SearchRequestScope `json:"scope,omitempty"`
