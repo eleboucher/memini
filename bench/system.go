@@ -86,6 +86,12 @@ type SystemOpts struct {
 	// under once ingest completes (zero = benchClock). Ignored when Dated is false.
 	Dated     bool
 	RecallNow time.Time
+	// QueryRewrite enables LLM query expansion on the hybrid system's Recall
+	// path — the A/B lever for measuring read-path LLM value. Needs Answerer.
+	QueryRewrite bool
+	// Answerer, when non-nil, enables LLM-backed recall features (query
+	// expansion). Must implement llm.Completer.
+	Answerer llm.Completer
 }
 
 // meminiBackend holds the store/embedder shared across retrieval strategies;
@@ -104,6 +110,8 @@ type meminiBackend struct {
 	dated     bool
 	clock     atomic.Pointer[time.Time]
 	recallNow time.Time
+	// queryRewrite enables LLM query expansion on the hybrid Recall path.
+	queryRewrite bool
 	// alias maps stored memory ID -> the dataset item IDs that landed on it
 	// (write mode only; built once during ingest, read-only afterwards).
 	alias  map[string][]string
@@ -137,6 +145,7 @@ func newMeminiBackend(st store.Store, e embed.Embedder, o SystemOpts) *meminiBac
 	b := &meminiBackend{
 		store: st, embedder: e, queryPrefix: o.QueryPrefix, concurrency: o.Concurrency,
 		mode: o.Mode, distiller: o.Distiller, dated: o.Dated, recallNow: o.RecallNow,
+		queryRewrite: o.QueryRewrite,
 	}
 	// When dated, the service reads a mutable clock: ingest advances it per item,
 	// then parks it at effectiveNow for the recall phase. Undated runs keep the
@@ -151,6 +160,9 @@ func newMeminiBackend(st store.Store, e embed.Embedder, o SystemOpts) *meminiBac
 		service.WithClock(clockFn), service.WithSyncReinforce(),
 		service.WithQueryPrefix(o.QueryPrefix), service.WithScoreFusion(o.FusionAlpha),
 		service.WithRecallPool(o.PoolFactor, o.PoolFloor),
+	}
+	if o.Answerer != nil {
+		opts = append(opts, service.WithAnswerer(o.Answerer))
 	}
 	if o.Mode == IngestWrite {
 		// Mirror the shipped server's write-path wiring (cmd/memini/root.go):
@@ -436,10 +448,15 @@ func MeminiSystemsOpts(st store.Store, e embed.Embedder, o SystemOpts) []System 
 
 type hybridSystem struct{ b *meminiBackend }
 
-func (s *hybridSystem) Name() string                                { return "memini-hybrid" }
+func (s *hybridSystem) Name() string {
+	if s.b.queryRewrite {
+		return "memini-hybrid-rewrite"
+	}
+	return "memini-hybrid"
+}
 func (s *hybridSystem) Ingest(ctx context.Context, it []Item) error { return s.b.ingest(ctx, it) }
 func (s *hybridSystem) Recall(ctx context.Context, group, q string, k int) ([]RecallHit, error) {
-	res, err := s.b.svc.Recall(ctx, service.RecallInput{Namespace: nsOf(group), Query: q, Limit: k})
+	res, err := s.b.svc.Recall(ctx, service.RecallInput{Namespace: nsOf(group), Query: q, Limit: k, QueryRewrite: s.b.queryRewrite})
 	if err != nil {
 		return nil, err
 	}

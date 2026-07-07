@@ -67,6 +67,9 @@ func run() error {
 	distill := flag.Bool("distill", false,
 		"with -ingest=write: distill each episodic capture into durable facts at write time "+
 			"via the MEMINI_LLM_* chat backend (supersedes the heuristic extractor, as in production)")
+	rewrite := flag.Bool("rewrite", false,
+		"enable LLM query expansion on the hybrid recall path (needs MEMINI_LLM_*); "+
+			"rewrites the query into 2-3 variants and fuses via RRF")
 	flag.Parse()
 
 	ingestMode, err := parseIngestMode(*ingest)
@@ -157,8 +160,25 @@ func run() error {
 	}
 
 	var results []bench.Result
-	systems := bench.MeminiSystems(st, embedder, *concurrency, queryPrefix, *fusionAlpha,
-		*poolFactor, *poolFloor, ingestMode, distiller)
+	opts := bench.SystemOpts{
+		Concurrency: *concurrency, QueryPrefix: queryPrefix, FusionAlpha: *fusionAlpha,
+		PoolFactor: *poolFactor, PoolFloor: *poolFloor, Mode: ingestMode, Distiller: distiller,
+	}
+	if *rewrite {
+		client, err := llm.New(llm.API(os.Getenv("MEMINI_LLM_API")), llm.Config{
+			BaseURL: os.Getenv("MEMINI_LLM_BASE_URL"),
+			APIKey:  os.Getenv("MEMINI_LLM_API_KEY"),
+			Model:   os.Getenv("MEMINI_LLM_MODEL"),
+		})
+		if err != nil {
+			return err
+		}
+		opts.QueryRewrite = true
+		opts.Answerer = client
+		fmt.Fprintf(os.Stderr, "query-rewrite: model %s via %s\n",
+			os.Getenv("MEMINI_LLM_MODEL"), os.Getenv("MEMINI_LLM_BASE_URL"))
+	}
+	systems := bench.MeminiSystemsOpts(st, embedder, opts)
 	for _, sys := range systems {
 		rs, err := bench.Run(ctx, sys, ds, ks)
 		if err != nil {
