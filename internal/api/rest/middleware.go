@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/eleboucher/memini/internal/httputil"
 )
@@ -13,7 +14,12 @@ type ctxKey int
 
 const namespaceKey ctxKey = iota
 
-// AuthConfig configures the optional bearer-token auth and namespace resolution.
+// AuthConfig configures the optional bearer-token auth and namespace
+// resolution applied by Mount to the /v1 route group. Despite the name it also
+// carries RequestTimeout: Mount's auth/namespace/timeout middleware are all
+// installed together on the same route group, and adding a second options
+// struct just for one field would be more ceremony than reuse — see
+// internal/api/rest/rest.go's Mount for where each field is consumed.
 type AuthConfig struct {
 	// APIKey, when non-empty, is required as "Authorization: Bearer <key>".
 	APIKey string
@@ -21,6 +27,13 @@ type AuthConfig struct {
 	NamespaceHeader string
 	// DefaultNamespace is used when the header is absent.
 	DefaultNamespace string
+	// RequestTimeout bounds how long a single /v1 request may run
+	// (chi/middleware.Timeout, applied only to the /v1 group Mount attaches —
+	// never to /mcp, /healthz, /readyz, or /metrics). It cancels the request
+	// context once the timeout elapses; handlers that don't observe
+	// ctx.Done() are not forcibly aborted, they just run to completion as
+	// before (see chi's Timeout doc comment). 0 disables it.
+	RequestTimeout time.Duration
 }
 
 // namespaceMiddleware resolves the tenant namespace from the configured header

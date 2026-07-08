@@ -44,6 +44,18 @@ type Config struct {
 	// HTTP server.
 	HTTPAddr        string        `env:"MEMINI_HTTP_ADDR" envDefault:":8080"`
 	ShutdownTimeout time.Duration `env:"MEMINI_SHUTDOWN_TIMEOUT" envDefault:"15s"`
+	// RequestTimeout bounds how long a single /v1 REST request may run before
+	// chi's Timeout middleware cancels its context (internal/api/rest.Mount).
+	// It never applies to /mcp (long-lived SSE), /healthz, /readyz, or
+	// /metrics. Default 60s rather than a more conservative 30s: the LLM HTTP
+	// client's own timeout is 120s (internal/llm/llm.go defaultHTTPTimeout),
+	// and POST /v1/answer can ride that full call chain (e.g. a
+	// reasoning_level=high rewrite/answer). A 30s default would systematically
+	// cut off those legitimate long-running answer calls; 60s cuts that risk
+	// roughly in half without going as high as the LLM client's own ceiling.
+	// It still doesn't fully cover a 120s LLM call — deployments that
+	// regularly hit that ceiling should raise this explicitly. 0 disables it.
+	RequestTimeout time.Duration `env:"MEMINI_REQUEST_TIMEOUT" envDefault:"60s"`
 	// MetricsAddr, when set (e.g. ":9090"), serves /metrics on its own listener
 	// instead of the main HTTP port. The dedicated port is meant to stay
 	// in-cluster — keep it out of any public route and it needs no bearer token.
@@ -427,6 +439,9 @@ func (c *Config) validate() error {
 	}
 	if c.EmbedDims <= 0 {
 		return fmt.Errorf("MEMINI_EMBED_DIMS must be positive, got %d", c.EmbedDims)
+	}
+	if c.RequestTimeout < 0 {
+		return fmt.Errorf("MEMINI_REQUEST_TIMEOUT must be >= 0, got %v", c.RequestTimeout)
 	}
 	// The sweeper always runs (there is no "disabled" mode), and time.NewTicker
 	// panics on a non-positive duration, so a zero/negative interval must be
