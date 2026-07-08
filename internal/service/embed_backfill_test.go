@@ -154,6 +154,47 @@ func TestBackfillEmbeddingsEmbedderDownLeavesRowsPending(t *testing.T) {
 	}
 }
 
+// TestBackfillEmbeddingsBoundsEmbedWithWriteTimeout confirms each row's embed
+// is bounded by the write-embed timeout: a slow-but-not-erroring embedder (a
+// network stall, exactly the degraded scenario backfill exists to recover
+// from) must not hang the tick. With WithWriteEmbedTimeout(50ms) and an
+// embedder that blocks for 10s unless its ctx is cancelled, one tick must
+// return promptly, leave the row pending, and report the backlog.
+func TestBackfillEmbeddingsBoundsEmbedWithWriteTimeout(t *testing.T) {
+	st := openTestStore(t)
+	ids := seedPendingEmbed(t, st, 1, "the deploy key rotates every 90 days")
+
+	m := &countingMetrics{}
+	svc := service.New(st, slowEmbedder{d: 10 * time.Second}, service.WithSyncReinforce(),
+		service.WithWriteEmbedTimeout(50*time.Millisecond), service.WithMetrics(m))
+
+	start := time.Now()
+	n, err := svc.BackfillEmbeddings(context.Background())
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("BackfillEmbeddings should not hard-fail on a stalled embedder: %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("BackfillEmbeddings took %v; the row embed is not bounded by the write-embed timeout", elapsed)
+	}
+	if n != 0 {
+		t.Fatalf("BackfillEmbeddings backfilled = %d, want 0", n)
+	}
+
+	mems, err := st.List(context.Background(), "alice", store.Filter{}, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, mm := range mems {
+		if mm.ID == ids[0] && mm.Metadata["pending_embed"] != "true" {
+			t.Fatalf("row %s: pending_embed cleared despite the embed timing out", mm.ID)
+		}
+	}
+	if m.embedBackfillPending != 1 {
+		t.Fatalf("EmbedBackfillPending = %d, want 1 (backlog)", m.embedBackfillPending)
+	}
+}
+
 // TestRunEmbedBackfillNoIntervalReturnsImmediately confirms RunEmbedBackfill
 // is a no-op with interval<=0: it must return promptly instead of blocking
 // forever on a ticker that never fires.

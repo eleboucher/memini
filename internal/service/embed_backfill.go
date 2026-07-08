@@ -80,7 +80,7 @@ func (s *Service) BackfillEmbeddings(ctx context.Context) (int, error) {
 
 	backfilled := 0
 	for i, m := range pending {
-		vec, err := embed.EmbedOne(ctx, s.embedder, m.Content)
+		vec, err := s.embedForBackfill(ctx, m.Content)
 		if err != nil {
 			if i == 0 {
 				slog.WarnContext(ctx, "embed backfill: embedder unavailable, deferring tick",
@@ -102,4 +102,21 @@ func (s *Service) BackfillEmbeddings(ctx context.Context) (int, error) {
 	}
 	s.metrics.EmbedBackfillPending(found - backfilled)
 	return backfilled, nil
+}
+
+// embedForBackfill embeds one pending row's content under the same budget the
+// write path uses (writeEmbedTimeout, see embedForRemember): a
+// slow-but-not-erroring embedder — a network stall, exactly the degraded
+// scenario backfill exists to recover from — must surface as a per-row error
+// (aborting or skipping per BackfillEmbeddings' rules) instead of hanging the
+// tick and every tick after it. writeEmbedTimeout <= 0 keeps the embed
+// unbounded, matching the write path's fail-fast default. Being its own
+// function scopes the cancel to one row rather than deferring it in a loop.
+func (s *Service) embedForBackfill(ctx context.Context, content string) ([]float32, error) {
+	if s.writeEmbedTimeout <= 0 {
+		return embed.EmbedOne(ctx, s.embedder, content)
+	}
+	ectx, cancel := context.WithTimeout(ctx, s.writeEmbedTimeout)
+	defer cancel()
+	return embed.EmbedOne(ectx, s.embedder, content)
 }
