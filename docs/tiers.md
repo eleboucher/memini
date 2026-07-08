@@ -8,7 +8,7 @@ classify a memory by _topic_.)
 | tier         | holds                                           | lifetime      |
 | ------------ | ----------------------------------------------- | ------------- |
 | `working`    | raw, short-lived observations (session scratch) | 24h TTL       |
-| `episodic`   | summaries of what happened in a session         | 90-day TTL    |
+| `episodic`   | summaries of what happened in a session         | 30-day TTL    |
 | `semantic`   | durable extracted facts — "what I know"         | never expires |
 | `procedural` | workflows and how-to knowledge                  | never expires |
 
@@ -82,7 +82,7 @@ auditing) — and anything else defaults to `episodic`. Classification never pic
 
 Bulk imports map each source's native kind onto a tier (e.g. agentmemory
 `workflow` → `procedural`, mem0 facts → `semantic`); sources with no recognized
-kind default to `episodic` with a fresh 90-day TTL.
+kind default to `episodic` with a fresh 30-day TTL.
 
 ## Filtering by tier
 

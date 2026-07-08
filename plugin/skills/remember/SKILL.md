@@ -30,6 +30,22 @@ tool with:
   recalled, so saving a real, lasting fact as `semantic` (not `working`) is what
   lets it rise above one-off noise over time.
 
+## Result fields to check
+
+- `stored: false` — the write was dropped by the episodic value gate (low-signal
+  content, e.g. too short); not an error, just not saved. Rephrase with more
+  substance if it's actually worth keeping.
+- `merge_hint` — present when the content nearly duplicates an existing memory
+  (`merge_hint.similar_id`, `.similar_content`, `.score`). The new content was
+  still stored as its own memory; call the `memory_update` MCP tool with
+  `id: merge_hint.similar_id` to fold the new information into the existing
+  memory instead of leaving two near-duplicates, or ignore the hint to keep
+  both as-is.
+- `degraded: "pending_embed"` — embeddings were unavailable at write time, so
+  the memory was stored without a vector (still keyword-searchable). It is
+  backfilled with a vector automatically in the background — don't retry the
+  write or treat this as a failure.
+
 ## When to call
 
 - The user says "remember this", "save this", "don't forget", "note that".
