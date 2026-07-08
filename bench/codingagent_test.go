@@ -284,7 +284,7 @@ func TestCodingAgentDiscrimination(t *testing.T) {
 			t.Fatalf("open cell store %v: %v", key, err)
 		}
 		t.Logf("cell %v: ingesting %d items...", key, len(ds.Items))
-		if err := bench.IngestQAWrite(ctx, cellSt, e, ds.Items, nil); err != nil {
+		if err := bench.IngestQAWrite(ctx, cellSt, e, ds.Items, nil, nil); err != nil {
 			t.Fatalf("ingest %v: %v", key, err)
 		}
 		cc := bench.NewCountingChat(chat)

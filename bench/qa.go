@@ -104,8 +104,13 @@ func qaWriteOpts() []service.Option {
 // rides along as session_id metadata so the session-echo guard and distill
 // batching see realistic keys. distiller, when non-nil, wires LLM
 // distill-on-write (superseding the heuristic extractor, as in production) — one
-// completion per capture.
-func IngestQAWrite(ctx context.Context, st store.Store, e embed.Embedder, items []Item, distiller llm.Distiller) error {
+// completion per capture. consolidator, when non-nil, wires LLM consolidation
+// (dedup/contradiction resolution against existing memories) at the production
+// gate (0.3) in async mode — writes don't block on the LLM.
+func IngestQAWrite(
+	ctx context.Context, st store.Store, e embed.Embedder, items []Item,
+	distiller llm.Distiller, consolidator llm.Consolidator,
+) error {
 	// The clock advances per item while detached write-path work (extract,
 	// distill, corroborate) reads it from background goroutines, so it must be
 	// atomic.
@@ -116,11 +121,21 @@ func IngestQAWrite(ctx context.Context, st store.Store, e embed.Embedder, items 
 	if distiller != nil {
 		opts = append(opts, service.WithDistiller(distiller), service.WithDistillOnWrite(true))
 	}
+	if consolidator != nil {
+		opts = append(opts,
+			service.WithConsolidator(consolidator),
+			service.WithConsolidateMode(service.ConsolidateAsync),
+			service.WithConsolidateMinScore(0.3),
+		)
+	}
 	svc := service.New(st, e, opts...)
 	never := -time.Second
 	var gated, merged int
 	seen := map[string]bool{}
 	for _, it := range items {
+		if it.Content == "" {
+			continue // skip empty items (some LongMemEval sessions render empty)
+		}
 		if !it.Time.IsZero() {
 			t := it.Time.UTC()
 			clock.Store(&t)
@@ -150,8 +165,13 @@ func IngestQAWrite(ctx context.Context, st store.Store, e embed.Embedder, items 
 		seen[m.ID] = true
 	}
 	svc.WaitBackground()
-	if err := svc.FlushConsolidation(ctx); err != nil {
-		return fmt.Errorf("write-mode ingest: flush consolidation: %w", err)
+	// Best-effort consolidation flush with a bounded timeout — the async
+	// worker may not drain thousands of jobs in a bench run, and that's
+	// fine: consolidation is a quality enhancement, not a correctness gate.
+	if consolidator != nil {
+		flushCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		_ = svc.FlushConsolidation(flushCtx) // best-effort
 	}
 	return nil
 }

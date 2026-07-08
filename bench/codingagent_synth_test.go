@@ -63,7 +63,7 @@ func TestCodingAgentSynthesis(t *testing.T) {
 			t.Fatalf("open %s store: %v", arm.name, err)
 		}
 		t.Logf("arm %s: ingesting %d items...", arm.name, len(ds.Items))
-		if err := bench.IngestQAWrite(ctx, st, e, ds.Items, nil); err != nil {
+		if err := bench.IngestQAWrite(ctx, st, e, ds.Items, nil, nil); err != nil {
 			t.Fatalf("ingest %s: %v", arm.name, err)
 		}
 		if arm.synthesize {

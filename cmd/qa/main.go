@@ -58,7 +58,7 @@ func run() error {
 			"via the MEMINI_LLM_* chat backend (supersedes the heuristic extractor, as in production)")
 	flag.Parse()
 	debug = *dbg
-	if *distill && *ingestMode != "write" {
+	if *distill && *ingestMode != "write" { //nolint:goconst // bench CLI flag string
 		return fmt.Errorf("-distill requires -ingest=write")
 	}
 	if *ckptPath == "" {
@@ -135,14 +135,20 @@ func run() error {
 
 	fmt.Fprintf(os.Stderr, "ingesting %d items (%s)...\n", len(ds.Items), *ingestMode)
 	var distiller llm.Distiller
+	var consolidator llm.Consolidator
 	if *distill {
 		distiller = chat
+	}
+	// Wire consolidation independently of distill when LLM is available and
+	// the write path is active — it's async and doesn't block ingestion.
+	if *ingestMode == "write" {
+		consolidator = chat
 	}
 	switch *ingestMode {
 	case "upsert":
 		err = bench.IngestQAUpsert(ctx, st, embedder, ds.Items)
 	case "write":
-		err = bench.IngestQAWrite(ctx, st, embedder, ds.Items, distiller)
+		err = bench.IngestQAWrite(ctx, st, embedder, ds.Items, distiller, consolidator)
 	default:
 		err = fmt.Errorf("unknown -ingest %q (want upsert|write)", *ingestMode)
 	}
