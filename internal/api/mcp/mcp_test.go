@@ -203,13 +203,52 @@ func TestBriefingToolPerSectionCaps(t *testing.T) {
 	}
 
 	// per_section_procedures shrinks just that section while keeping the
-	// others at the per_section default. The MCP args are int (not *int), so
-	// a user can't disable a section by passing 0 — that's REST-only — but
-	// they can shrink it.
+	// others at the per_section default.
 	got = call(map[string]any{"per_section": 5, "per_section_procedures": 2})
 	if len(got.Procedures) != 2 || len(got.Facts) != 5 || len(got.Pinned) != 3 {
 		t.Fatalf("per_section_procedures=2 should cap procs at 2 while keeping facts=5 pinned=3, got facts=%d procs=%d pinned=%d",
 			len(got.Facts), len(got.Procedures), len(got.Pinned))
+	}
+}
+
+// TestBriefingZeroDisablesSection verifies that per_section_recent=0
+// explicitly disables the recent section over MCP, and that omitting it
+// falls back to the default (recent included). Before the *int change, 0
+// was indistinguishable from "unset" and could not disable a section.
+func TestBriefingZeroDisablesSection(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_remember",
+		Arguments: map[string]any{"content": "deployed the new build", "tier": "episodic"},
+	}); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+
+	type b struct {
+		Recent []struct{ Content string } `json:"recent"`
+	}
+	call := func(args map[string]any) b {
+		res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{Name: "memory_briefing", Arguments: args})
+		if err != nil {
+			t.Fatalf("briefing: %v", err)
+		}
+		var out b
+		structured(t, res, &out)
+		return out
+	}
+
+	// per_section_recent unset: the recent episodic memory shows up.
+	got := call(map[string]any{})
+	if len(got.Recent) != 1 {
+		t.Fatalf("recent should include the seeded episodic memory when unset, got %+v", got.Recent)
+	}
+
+	// per_section_recent=0: the recent section is disabled entirely.
+	got = call(map[string]any{"per_section_recent": 0})
+	if len(got.Recent) != 0 {
+		t.Fatalf("per_section_recent=0 should disable the recent section, got %+v", got.Recent)
 	}
 }
 
@@ -456,6 +495,55 @@ func TestListToolFilters(t *testing.T) {
 	structured(t, res, &listed)
 	if len(listed.Memories) != 1 || listed.Memories[0].Content != "tuned the auth handler latency" {
 		t.Fatalf("tag AND browse: want only the perf memory, got %+v", listed.Memories)
+	}
+}
+
+// TestListToolDefaultLimitAndOffset verifies memory_list caps at 20 results
+// by default (an unbounded list is a context blowout for LLM callers) and
+// that offset pages past the first page.
+func TestListToolDefaultLimitAndOffset(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	for i := range 25 {
+		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+			Name:      "memory_remember",
+			Arguments: map[string]any{"content": fmt.Sprintf("memo-%02d", i), "tier": "semantic"},
+		}); err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+	}
+
+	var listed struct {
+		Memories []struct {
+			Content string `json:"content"`
+		} `json:"memories"`
+	}
+
+	// No limit given: capped at the default of 20, not all 25.
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_list",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	structured(t, res, &listed)
+	if len(listed.Memories) != 20 {
+		t.Fatalf("default list should cap at 20, got %d", len(listed.Memories))
+	}
+
+	// offset=20 pages past the first 20, returning the remaining 5.
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_list",
+		Arguments: map[string]any{"offset": 20},
+	})
+	if err != nil {
+		t.Fatalf("list offset: %v", err)
+	}
+	structured(t, res, &listed)
+	if len(listed.Memories) != 5 {
+		t.Fatalf("offset=20 should return the remaining 5, got %d", len(listed.Memories))
 	}
 }
 

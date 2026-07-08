@@ -402,11 +402,11 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 }
 
 type briefingArgs struct {
-	PerSection       int    `json:"per_section,omitempty" jsonschema:"default cap for any section when its dedicated cap is unset (default 5)"`
-	PerSectionPinned int    `json:"per_section_pinned,omitempty" jsonschema:"max pinned memories; 0 disables this section"`
-	PerSectionFacts  int    `json:"per_section_facts,omitempty" jsonschema:"max durable semantic facts; 0 disables"`
-	PerSectionProc   int    `json:"per_section_procedures,omitempty" jsonschema:"max procedural how-to memories; 0 disables"`
-	PerSectionRecent int    `json:"per_section_recent,omitempty" jsonschema:"max recent episodic entries; 0 disables"`
+	PerSection       *int   `json:"per_section,omitempty" jsonschema:"default cap for any section when its dedicated cap is unset (default 5)"`
+	PerSectionPinned *int   `json:"per_section_pinned,omitempty" jsonschema:"max pinned memories; 0 disables this section"`
+	PerSectionFacts  *int   `json:"per_section_facts,omitempty" jsonschema:"max durable semantic facts; 0 disables"`
+	PerSectionProc   *int   `json:"per_section_procedures,omitempty" jsonschema:"max procedural how-to memories; 0 disables"`
+	PerSectionRecent *int   `json:"per_section_recent,omitempty" jsonschema:"max recent episodic entries; 0 disables"`
 	Namespace        string `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 }
 
@@ -435,17 +435,15 @@ func (t *tools) briefing(ctx context.Context, _ *mcpsdk.CallToolRequest, in brie
 		return nil, briefingResult{}, err
 	}
 	// PerSection is the default cap applied to any section whose dedicated
-	// per_section_X is unset (0). Matches the REST /briefing semantics so MCP
-	// and HTTP callers see the same shape. We pass pointers so "unset"
-	// (omitted) and "explicitly 0" (disable) are distinguishable downstream.
-	pick := func(dedicated int) *int {
-		if dedicated != 0 {
-			return &dedicated
+	// per_section_X is unset (nil). Matches the REST /briefing semantics so
+	// MCP and HTTP callers see the same shape: nil = default, 0 = disable.
+	// The section fields are *int so "unset" (omitted) and "explicitly 0"
+	// (disable) are distinguishable — a plain int can't express that.
+	pick := func(dedicated *int) *int {
+		if dedicated != nil {
+			return dedicated
 		}
-		if in.PerSection != 0 {
-			return &in.PerSection
-		}
-		return nil
+		return in.PerSection
 	}
 	b, err := t.svc.Briefing(ctx, ns, service.BriefingOpts{
 		Pinned:     pick(in.PerSectionPinned),
@@ -572,12 +570,18 @@ func (t *tools) get(ctx context.Context, _ *mcpsdk.CallToolRequest, in idArgs) (
 	return nil, toMemoryItem(m), nil
 }
 
+// defaultListLimit caps memory_list results when the caller omits (or sets
+// non-positive) limit. This is an MCP-only cap: an unbounded list is a
+// context blowout for LLM callers. The REST API keeps its 0 = all semantics.
+const defaultListLimit = 20
+
 type listArgs struct {
 	Tiers     []string          `json:"tiers,omitempty" jsonschema:"restrict to tiers (working/episodic/semantic/procedural); empty means all"`
 	Levels    []string          `json:"levels,omitempty" jsonschema:"restrict to levels (explicit/deduced); empty means all"`
 	Tags      []string          `json:"tags,omitempty" jsonschema:"only memories carrying every listed tag (AND)"`
 	Metadata  map[string]string `json:"metadata,omitempty" jsonschema:"only memories whose metadata has each key=value pair (AND)"`
-	Limit     int               `json:"limit,omitempty" jsonschema:"max results (0 = all, newest first)"`
+	Limit     int               `json:"limit,omitempty" jsonschema:"max results (default 20, newest first)"`
+	Offset    int               `json:"offset,omitempty" jsonschema:"skip this many results for paging"`
 	Namespace string            `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 }
 
@@ -598,16 +602,27 @@ func (t *tools) list(ctx context.Context, _ *mcpsdk.CallToolRequest, in listArgs
 	if err != nil {
 		return nil, listResult{}, err
 	}
+	limit := in.Limit
+	if limit <= 0 {
+		limit = defaultListLimit
+	}
 	mems, err := t.svc.List(ctx, service.ListInput{
 		Namespace: ns,
 		Tiers:     tiers,
 		Levels:    levels,
 		Tags:      in.Tags,
 		Metadata:  in.Metadata,
-		Limit:     in.Limit,
+		Limit:     limit + in.Offset,
 	})
 	if err != nil {
 		return nil, listResult{}, err
+	}
+	if in.Offset > 0 {
+		if in.Offset >= len(mems) {
+			mems = nil
+		} else {
+			mems = mems[in.Offset:]
+		}
 	}
 	out := listResult{Memories: make([]memoryItem, len(mems))}
 	for i, m := range mems {
