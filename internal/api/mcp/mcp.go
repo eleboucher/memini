@@ -341,12 +341,15 @@ type recallItem struct {
 	Level      string   `json:"level,omitempty"`
 	Score      float64  `json:"score"`
 	Confidence *float64 `json:"confidence,omitempty"`
+	CreatedAt  string   `json:"created_at"`
+	Tags       []string `json:"tags,omitempty"`
 }
 
 func scoredItem(s store.Scored) recallItem {
 	return recallItem{
 		ID: s.Memory.ID, Content: s.Memory.Content, Tier: string(s.Memory.Tier),
 		Level: string(s.Memory.Level), Score: s.Score, Confidence: s.Memory.Confidence,
+		CreatedAt: s.Memory.CreatedAt.Format(time.RFC3339), Tags: s.Memory.Tags,
 	}
 }
 
@@ -418,7 +421,10 @@ type briefingResult struct {
 func briefingItems(mems []*memory.Memory) []recallItem {
 	out := make([]recallItem, len(mems))
 	for i, m := range mems {
-		out[i] = recallItem{ID: m.ID, Content: m.Content, Tier: string(m.Tier), Confidence: m.Confidence}
+		out[i] = recallItem{
+			ID: m.ID, Content: m.Content, Tier: string(m.Tier), Confidence: m.Confidence,
+			CreatedAt: m.CreatedAt.Format(time.RFC3339), Tags: m.Tags,
+		}
 	}
 	return out
 }

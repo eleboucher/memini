@@ -638,3 +638,125 @@ func TestToolAnnotations(t *testing.T) {
 		}
 	}
 }
+
+func TestRecallAndBriefingIncludeCreatedAtAndTags(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	// Remember a memory with tags
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_remember",
+		Arguments: map[string]any{
+			"content": "kubernetes uses etcd for state management",
+			"tier":    "semantic",
+			"tags":    []string{"distributed-systems", "kubernetes"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	var remembered struct {
+		ID string `json:"id"`
+	}
+	structured(t, res, &remembered)
+	if remembered.ID == "" {
+		t.Fatalf("remember returned empty ID")
+	}
+
+	// Recall and verify created_at and tags are present
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_recall",
+		Arguments: map[string]any{"query": "etcd kubernetes", "limit": 5},
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	var recalled struct {
+		Results []struct {
+			ID        string   `json:"id"`
+			Content   string   `json:"content"`
+			CreatedAt string   `json:"created_at"`
+			Tags      []string `json:"tags"`
+		} `json:"results"`
+	}
+	structured(t, res, &recalled)
+	if len(recalled.Results) == 0 {
+		t.Fatalf("recall returned no results")
+	}
+
+	item := recalled.Results[0]
+	if item.ID != remembered.ID {
+		t.Errorf("recall returned wrong memory ID: got %q, want %q", item.ID, remembered.ID)
+	}
+
+	// Verify created_at is present and valid RFC3339
+	if item.CreatedAt == "" {
+		t.Errorf("recall item missing created_at")
+	} else {
+		_, err := time.Parse(time.RFC3339, item.CreatedAt)
+		if err != nil {
+			t.Errorf("created_at is not valid RFC3339: %q (error: %v)", item.CreatedAt, err)
+		}
+	}
+
+	// Verify tags round-trip
+	if len(item.Tags) != 2 {
+		t.Errorf("recall item has wrong number of tags: got %d, want 2", len(item.Tags))
+	}
+	expectedTags := map[string]bool{"distributed-systems": false, "kubernetes": false}
+	for _, tag := range item.Tags {
+		if _, ok := expectedTags[tag]; !ok {
+			t.Errorf("unexpected tag in recall item: %q", tag)
+		} else {
+			expectedTags[tag] = true
+		}
+	}
+	for tag, found := range expectedTags {
+		if !found {
+			t.Errorf("recall item missing expected tag: %q", tag)
+		}
+	}
+
+	// Test briefing also includes created_at
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_briefing",
+		Arguments: map[string]any{"per_section": 10},
+	})
+	if err != nil {
+		t.Fatalf("briefing: %v", err)
+	}
+	var briefed struct {
+		Facts []struct {
+			ID        string   `json:"id"`
+			CreatedAt string   `json:"created_at"`
+			Tags      []string `json:"tags"`
+		} `json:"facts"`
+	}
+	structured(t, res, &briefed)
+	if len(briefed.Facts) == 0 {
+		t.Fatalf("briefing returned no facts")
+	}
+
+	// Find our memory in the facts
+	found := false
+	for _, fact := range briefed.Facts {
+		if fact.ID == remembered.ID {
+			found = true
+			if fact.CreatedAt == "" {
+				t.Errorf("briefing fact missing created_at")
+			} else {
+				_, err := time.Parse(time.RFC3339, fact.CreatedAt)
+				if err != nil {
+					t.Errorf("briefing fact created_at is not valid RFC3339: %q (error: %v)", fact.CreatedAt, err)
+				}
+			}
+			if len(fact.Tags) != 2 {
+				t.Errorf("briefing fact has wrong number of tags: got %d, want 2", len(fact.Tags))
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("briefing did not include our remembered memory")
+	}
+}
