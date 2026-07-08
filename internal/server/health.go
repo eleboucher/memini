@@ -23,11 +23,14 @@ type depBlock struct {
 	LastSuccess string `json:"last_success,omitempty"`
 }
 
-// llmDepBlock adds Configured ahead of the shared depBlock fields: an
-// unconfigured LLM has no ok/error/success to report, only that it's off.
+// llmDepBlock adds Configured ahead of the shared depBlock fields. OK must
+// NOT be omitempty: false is the zero value, so omitempty would drop the
+// "ok" key exactly when the LLM is configured but down — the one signal
+// this block exists to report. An unconfigured LLM renders ok:false too;
+// consumers gate on configured first.
 type llmDepBlock struct {
 	Configured  bool   `json:"configured"`
-	OK          bool   `json:"ok,omitempty"`
+	OK          bool   `json:"ok"`
 	LastError   string `json:"last_error,omitempty"`
 	LastSuccess string `json:"last_success,omitempty"`
 }

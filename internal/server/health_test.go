@@ -216,6 +216,47 @@ func TestHealthzVerboseLLMConfigured(t *testing.T) {
 	}
 }
 
+func TestHealthzVerboseLLMConfiguredButDown(t *testing.T) {
+	// The failure mode the endpoint exists to expose: an LLM that is
+	// configured but failing must render ok:false explicitly. Assert via a
+	// raw map so an omitempty tag silently dropping the false "ok" key fails
+	// the test instead of json.Unmarshal defaulting a struct field to false.
+	srv := newTestServer(t)
+	deps := server.NewDepTracker()
+	deps.Record("llm", errors.New("upstream 502"))
+	srv.SetDeps(deps)
+	srv.SetLLMConfigured(true)
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz?verbose=1", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	var raw struct {
+		Deps struct {
+			LLM map[string]any `json:"llm"`
+		} `json:"deps"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("unmarshal body %q: %v", rec.Body.String(), err)
+	}
+	llm := raw.Deps.LLM
+
+	if got, want := llm["configured"], true; got != want {
+		t.Errorf("llm.configured = %v, want %v", got, want)
+	}
+	ok, present := llm["ok"]
+	if !present {
+		t.Fatalf("llm block %v: \"ok\" key missing — must be rendered explicitly when configured", llm)
+	}
+	if ok != false {
+		t.Errorf("llm.ok = %v, want false", ok)
+	}
+	lastErr, _ := llm["last_error"].(string)
+	if lastErr == "" {
+		t.Errorf("llm.last_error = %v, want the recorded error", llm["last_error"])
+	}
+}
+
 func TestHealthzVerboseNoDepsTrackerInstalled(t *testing.T) {
 	// SetDeps is never called (e.g. a hand-built Server in a unit test):
 	// verbose healthz must still respond instead of panicking on a nil tracker.
