@@ -61,6 +61,10 @@ type Decision struct {
 	Summary string `json:"summary"`
 	// Reason explains the decision (for logs/debugging).
 	Reason string `json:"reason"`
+	// LinkedIDs are IDs of existing memories related to this one (same
+	// entity/topic) but neither duplicate nor contradiction. Empty for "new"
+	// with no related candidates or update/supersede actions.
+	LinkedIDs []string `json:"linked_ids,omitempty"`
 }
 
 // Consolidator decides how a new memory relates to existing candidates.
@@ -181,7 +185,8 @@ func New(api API, cfg Config) (Client, error) {
 const systemPrompt = `You maintain an AI agent's long-term memory. Given a NEW memory and a list of
 EXISTING candidate memories, decide how the new one relates to them. Respond with a single JSON object:
 {"action":"new|update|supersede","target":"<candidate id or empty>",
- "content":"<text to store>","summary":"<one line>","reason":"<short>"}
+ "content":"<text to store>","summary":"<one line>","reason":"<short>",
+ "linked_ids":["<id>",...]}
 
 A DUPLICATE restates the same fact in different words (same value, same subject, same meaning).
 A CONTRADICTION makes the old fact wrong or outdated: the SAME property now has a DIFFERENT value,
@@ -197,6 +202,9 @@ Rules:
   Set target to that candidate's id and content to the merged, deduplicated text.
 - "supersede": the new memory CONTRADICTS a candidate — same property, different value, or corrected.
   Set target to that candidate's id and content to the new memory text.
+- "linked_ids": for "new" actions, include the IDs of any candidate about the same entity/topic
+  but that is a DISTINCT fact (not duplicate, not contradiction). Skip candidates that are
+  a different entity/topic entirely. For "update" and "supersede", leave empty.
 
 Test: would the NEW memory make the EXISTING candidate FALSE if both were stored? If yes → supersede.
 Can both be true simultaneously? If yes → update (same fact) or new (different fact).

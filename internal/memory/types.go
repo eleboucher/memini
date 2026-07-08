@@ -133,6 +133,13 @@ type Memory struct {
 	// treated as fully trusted so existing data is never retroactively penalized.
 	Confidence *float64 `json:"confidence,omitempty"`
 
+	// LinkedMemoryIDs references related memories (same entity/topic but distinct
+	// facts). Populated by the LLM consolidator when a new memory is related but
+	// neither a duplicate nor a contradiction. At recall, IncludeLinked expands
+	// results 1-hop via these links. Links are advisory — stale links (target
+	// superseded) are resolved at recall time.
+	LinkedMemoryIDs []string `json:"linked_memory_ids,omitempty"`
+
 	// Embedding is the dense vector for similarity search. It is required when
 	// writing to the store and is omitted from API responses.
 	Embedding []float32 `json:"-"`

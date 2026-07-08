@@ -203,6 +203,8 @@ func (s *Service) consolidateSync(ctx context.Context, m *memory.Memory) (*memor
 		return nil, false, nil
 	}
 
+	m.LinkedMemoryIDs = dec.LinkedIDs
+
 	switch dec.Action {
 	case llm.ActionUpdate:
 		return s.applyUpdate(ctx, m, dec)
@@ -330,6 +332,12 @@ func (s *Service) consolidateOne(ctx context.Context, job consolidateJob) {
 		s.asyncSupersede(ctx, m, dec)
 	default: // ActionNew
 		s.metrics.ConsolidateResult("new")
+		if len(dec.LinkedIDs) > 0 {
+			m.LinkedMemoryIDs = dec.LinkedIDs
+			if err := s.store.Upsert(ctx, m); err != nil {
+				slog.WarnContext(ctx, "consolidate: link stored memory", "id", m.ID, "err", err)
+			}
+		}
 	}
 }
 

@@ -18,7 +18,7 @@ import (
 
 const memoryColumns = `id, namespace, tier, content, summary, metadata, tags, importance,
 	created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-	valid_from, valid_to, confidence, level`
+	valid_from, valid_to, confidence, level, linked_memory_ids`
 
 // Store is a Postgres/VectorChord backed store.Store.
 type Store struct {
@@ -97,6 +97,7 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 			confidence       double precision,
 			fingerprint      text NOT NULL DEFAULT '',
 			level            text NOT NULL DEFAULT '',
+			linked_memory_ids text NOT NULL DEFAULT '[]',
 			embedding        vector(%d) NOT NULL,
 			fts              tsvector GENERATED ALWAYS AS (
 				to_tsvector('english',
@@ -114,6 +115,7 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS confidence double precision`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS fingerprint text NOT NULL DEFAULT ''`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS level text NOT NULL DEFAULT ''`,
+		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS linked_memory_ids text NOT NULL DEFAULT '[]'`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_fingerprint ON memories(namespace, tier, fingerprint)`,
 		// Key/value store for store-level metadata (e.g. the embedding model the
 		// vectors were produced with — see EmbedModel/SetEmbedModel).
@@ -136,6 +138,14 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 	metaJSON, err := json.Marshal(store.OrEmptyMap(m.Metadata))
 	if err != nil {
 		return fmt.Errorf("postgres: marshal metadata: %w", err)
+	}
+	linkedIDs := m.LinkedMemoryIDs
+	if linkedIDs == nil {
+		linkedIDs = []string{}
+	}
+	linkedJSON, err := json.Marshal(linkedIDs)
+	if err != nil {
+		return fmt.Errorf("postgres: marshal linked memory ids: %w", err)
 	}
 
 	tx, err := s.pool.Begin(ctx)
@@ -169,8 +179,8 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		INSERT INTO memories
 			(id, namespace, tier, content, summary, metadata, tags, importance,
 			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-			 valid_from, valid_to, confidence, fingerprint, level, embedding)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+			 valid_from, valid_to, confidence, fingerprint, level, linked_memory_ids, embedding)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 		ON CONFLICT (id) DO UPDATE SET
 			tier=EXCLUDED.tier, content=EXCLUDED.content,
 			summary=EXCLUDED.summary, metadata=EXCLUDED.metadata, tags=EXCLUDED.tags,
@@ -179,12 +189,13 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 			expires_at=EXCLUDED.expires_at, superseded_by=EXCLUDED.superseded_by,
 			valid_from=EXCLUDED.valid_from, valid_to=EXCLUDED.valid_to,
 			confidence=EXCLUDED.confidence, fingerprint=EXCLUDED.fingerprint,
-			level=EXCLUDED.level, embedding=EXCLUDED.embedding
+			level=EXCLUDED.level, linked_memory_ids=EXCLUDED.linked_memory_ids,
+			embedding=EXCLUDED.embedding
 		WHERE memories.namespace = EXCLUDED.namespace`,
 		m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, metaJSON, store.OrEmptySlice(m.Tags),
 		m.Importance, m.CreatedAt, m.UpdatedAt, m.LastAccessedAt, m.AccessCount,
 		m.ExpiresAt, m.SupersededBy, m.ValidFrom, m.ValidTo, m.Confidence, memory.Fingerprint(m.Content),
-		string(m.Level),
+		string(m.Level), linkedJSON,
 		pgvector.NewVector(m.Embedding))
 	if err != nil {
 		return fmt.Errorf("postgres: upsert: %w", err)

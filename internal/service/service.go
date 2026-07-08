@@ -1460,6 +1460,10 @@ type RecallInput struct {
 	// recallSemanticReserve (durable-tier slot reservation) for this call. 0
 	// falls back to the server-wide value.
 	SemanticReserve int
+	// IncludeLinked, when true, expands recall to include memories linked to
+	// any result via LinkedMemoryIDs (1-hop expansion). Linked memories that
+	// are superseded are skipped. Default (false) is no expansion.
+	IncludeLinked bool
 }
 
 // Recall runs hybrid (vector + keyword) retrieval fused with RRF.
@@ -1691,6 +1695,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	ranked = reserveDurableTiers(ranked, k, s.resolveSemanticReserve(in), s.reservePromoteRatio, s.reserveTopAnchor, s.reserveGatePercentile)
 	ranked = s.applyTurnEchoGuard(in, ranked)
 	results := s.finalizeRecall(ctx, in.Query, ranked, k)
+	results = s.maybeExpandLinked(ctx, in, results, k)
 	s.reinforceResults(ctx, results)
 	s.metrics.RecallResult("ok", tf, hitsBucket(len(results)))
 	return results, nil
@@ -2064,6 +2069,82 @@ func (s *Service) subtreeNamespaces(ctx context.Context, root string) ([]string,
 		}
 	}
 	return out, nil
+}
+
+// maybeExpandLinked conditionally expands results to include linked memories.
+func (s *Service) maybeExpandLinked(ctx context.Context, in RecallInput, results []store.Scored, k int) []store.Scored {
+	if !in.IncludeLinked || len(results) == 0 {
+		return results
+	}
+	return s.expandLinked(ctx, in.Namespace, results, k)
+}
+
+// expandLinked expands results by including memories linked via LinkedMemoryIDs
+// (1-hop expansion). Linked memories that are superseded or already in results
+// are skipped. Linked results get a score penalty (multiplied by 0.5) so they
+// rank below direct hits. The result is re-sorted and truncated to k.
+func (s *Service) expandLinked(ctx context.Context, namespace string, results []store.Scored, k int) []store.Scored {
+	// Collect unique linked IDs not already in results.
+	seen := make(map[string]bool, len(results))
+	for _, r := range results {
+		seen[r.Memory.ID] = true
+	}
+	var toFetch []string
+	for _, r := range results {
+		for _, lid := range r.Memory.LinkedMemoryIDs {
+			if !seen[lid] {
+				seen[lid] = true
+				toFetch = append(toFetch, lid)
+			}
+		}
+	}
+	if len(toFetch) == 0 {
+		return results
+	}
+
+	// Fetch each linked memory. Skip superseded ones.
+	var linked []store.Scored
+	// Assign linked memories a score penalty: 0.5 × the minimum score among
+	// direct results. This ensures linked hits rank below all direct hits.
+	minScore := results[len(results)-1].Score
+	for _, lid := range toFetch {
+		m, err := s.store.Get(ctx, namespace, lid)
+		if errors.Is(err, store.ErrNotFound) {
+			continue // stale link: memory was deleted
+		}
+		if err != nil {
+			slog.WarnContext(ctx, "recall: linked fetch failed", "id", lid, "err", err)
+			continue
+		}
+		if m.SupersededBy != nil {
+			continue // stale link: target was superseded
+		}
+		linked = append(linked, store.Scored{
+			Memory: m,
+			Score:  minScore * 0.5, // penalty factor
+		})
+	}
+	if len(linked) == 0 {
+		return results
+	}
+
+	// Merge, sort by score descending, truncate to k.
+	merged := make([]store.Scored, 0, len(results)+len(linked))
+	merged = append(merged, results...)
+	merged = append(merged, linked...)
+	slices.SortFunc(merged, func(a, b store.Scored) int {
+		if a.Score > b.Score {
+			return -1
+		}
+		if a.Score < b.Score {
+			return 1
+		}
+		return 0
+	})
+	if k > 0 && len(merged) > k {
+		merged = merged[:k]
+	}
+	return merged
 }
 
 // finalizeRecall dedups the composite-ranked candidates to the result set. With
