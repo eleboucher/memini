@@ -300,6 +300,100 @@ func TestRecallSubtreeScopeViaMCP(t *testing.T) {
 	}
 }
 
+// errEmbedder fails every embed call, forcing recall onto the keyword-only
+// fallback path (with a recall embed budget configured).
+type errEmbedder struct{ dims int }
+
+func (e errEmbedder) Embed(context.Context, []string) ([][]float32, error) {
+	return nil, fmt.Errorf("embed boom")
+}
+func (e errEmbedder) Dims() int { return e.dims }
+
+// TestRecallDegradedSurfacedViaMCP confirms that when recall falls back to
+// keyword-only search (query embed erroring), the memory_recall structured
+// result carries degraded="keyword_only" plus a human-readable note, so an
+// agent consuming the tool knows the results may be incomplete. A healthy
+// embedder must leave both fields absent (omitempty).
+func TestRecallDegradedSurfacedViaMCP(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "degraded.db")
+
+	st, err := sqlitevec.Open(ctx, dbPath, dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	// Seed with a healthy embedder so the memory exists for keyword search to find.
+	seed := service.New(st, embedtest.New(dims))
+	if _, err := seed.Remember(ctx, service.RememberInput{Namespace: "default", Content: "hello world", Tier: "semantic"}); err != nil {
+		t.Fatalf("seed remember: %v", err)
+	}
+
+	connectDegraded := func(t *testing.T) *mcpsdk.ClientSession {
+		t.Helper()
+		svc := service.New(st, errEmbedder{dims: dims}, service.WithRecallEmbedTimeout(time.Second))
+		srv := meminimcp.NewServer(svc, "default")
+		clientT, serverT := mcpsdk.NewInMemoryTransports()
+		if _, err := srv.Connect(ctx, serverT, nil); err != nil {
+			t.Fatalf("server connect: %v", err)
+		}
+		client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "test", Version: "0"}, nil)
+		cs, err := client.Connect(ctx, clientT, nil)
+		if err != nil {
+			t.Fatalf("client connect: %v", err)
+		}
+		t.Cleanup(func() { _ = cs.Close() })
+		return cs
+	}
+
+	t.Run("degraded", func(t *testing.T) {
+		cs := connectDegraded(t)
+		res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+			Name:      "memory_recall",
+			Arguments: map[string]any{"query": "hello", "limit": 5},
+		})
+		if err != nil {
+			t.Fatalf("recall: %v", err)
+		}
+		var out struct {
+			Degraded string `json:"degraded"`
+			Note     string `json:"note"`
+		}
+		structured(t, res, &out)
+		if out.Degraded != "keyword_only" {
+			t.Fatalf("degraded = %q, want %q", out.Degraded, "keyword_only")
+		}
+		if out.Note == "" {
+			t.Fatal("note should explain the degradation, got empty")
+		}
+	})
+
+	t.Run("healthy", func(t *testing.T) {
+		cs := connect(t)
+		ctx := context.Background()
+		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+			Name:      "memory_remember",
+			Arguments: map[string]any{"content": "hello world", "tier": "semantic"},
+		}); err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+		res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+			Name:      "memory_recall",
+			Arguments: map[string]any{"query": "hello", "limit": 5},
+		})
+		if err != nil {
+			t.Fatalf("recall: %v", err)
+		}
+		if _, ok := res.StructuredContent.(map[string]any)["degraded"]; ok {
+			t.Fatalf("degraded key should be omitted on healthy recall, got %+v", res.StructuredContent)
+		}
+		if _, ok := res.StructuredContent.(map[string]any)["note"]; ok {
+			t.Fatalf("note key should be omitted on healthy recall, got %+v", res.StructuredContent)
+		}
+	})
+}
+
 func TestHTTPHandlerAuth(t *testing.T) {
 	ctx := context.Background()
 	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "auth.db"), dims)

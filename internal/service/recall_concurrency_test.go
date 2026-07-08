@@ -201,6 +201,51 @@ func TestRecallEmbedErrorFallsBackToKeyword(t *testing.T) {
 	}
 }
 
+// TestRecallDegradedOutParamSetOnFallback confirms that when a recall falls
+// back to keyword-only search, RecallInput.Degraded (when non-nil) receives
+// the same reason string recorded via RecallDegraded, so callers (MCP/REST)
+// can surface the degradation without scraping metrics.
+func TestRecallDegradedOutParamSetOnFallback(t *testing.T) {
+	st := openTestStore(t)
+	seedHello(t, st)
+
+	m := &countingMetrics{}
+	svc := service.New(st, errEmbedder{dims: dims}, service.WithSyncReinforce(),
+		service.WithRecallEmbedTimeout(time.Second), service.WithMetrics(m))
+
+	var degraded string
+	_, err := svc.Recall(context.Background(), service.RecallInput{
+		Namespace: "alice", Query: "hello", Limit: 5, Degraded: &degraded,
+	})
+	if err != nil {
+		t.Fatalf("recall should degrade, not error: %v", err)
+	}
+	if degraded != "embed_error" {
+		t.Fatalf("Degraded out-param = %q, want %q", degraded, "embed_error")
+	}
+}
+
+// TestRecallDegradedOutParamEmptyOnHealthyEmbed confirms the Degraded
+// out-param is left untouched (empty) when the query embed succeeds, so
+// callers can distinguish a healthy recall from a degraded one.
+func TestRecallDegradedOutParamEmptyOnHealthyEmbed(t *testing.T) {
+	st := openTestStore(t)
+	seedHello(t, st)
+
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce())
+
+	var degraded string
+	_, err := svc.Recall(context.Background(), service.RecallInput{
+		Namespace: "alice", Query: "hello", Limit: 5, Degraded: &degraded,
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if degraded != "" {
+		t.Fatalf("Degraded out-param = %q, want empty on healthy embed", degraded)
+	}
+}
+
 // TestRecallRerankSkippedWhenNoTimeLeft confirms that when the caller's deadline
 // leaves no margin, recall skips the reranker and returns composite order rather
 // than racing (or blowing) the deadline.

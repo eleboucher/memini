@@ -366,6 +366,13 @@ func scoredItem(s store.Scored) recallItem {
 
 type recallResult struct {
 	Results []recallItem `json:"results"`
+	// Degraded is set to "keyword_only" when the query embed failed or timed
+	// out and recall fell back to keyword-only search; omitted on a healthy
+	// (vector+keyword) recall.
+	Degraded string `json:"degraded,omitempty"`
+	// Note explains Degraded in plain language for an agent consuming the
+	// tool result; omitted alongside Degraded on a healthy recall.
+	Note string `json:"note,omitempty"`
 }
 
 func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recallArgs) (*mcpsdk.CallToolResult, recallResult, error) {
@@ -401,6 +408,8 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 		}
 		input.AsOf = asOf.UTC()
 	}
+	var degraded string
+	input.Degraded = &degraded
 	res, err := t.svc.Recall(ctx, input)
 	if err != nil {
 		return nil, recallResult{}, err
@@ -408,6 +417,10 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 	out := recallResult{Results: make([]recallItem, len(res))}
 	for i, s := range res {
 		out.Results[i] = scoredItem(s)
+	}
+	if degraded != "" {
+		out.Degraded = "keyword_only"
+		out.Note = "semantic search unavailable (" + degraded + "); results are keyword-only and may be incomplete"
 	}
 	return nil, out, nil
 }

@@ -1353,6 +1353,13 @@ type RecallInput struct {
 	// recallSemanticReserve (durable-tier slot reservation) for this call. 0
 	// falls back to the server-wide value.
 	SemanticReserve int
+	// Degraded (output-only) is set to the degradation reason
+	// ("embed_error"/"embed_timeout") when this recall fell back to
+	// keyword-only search because the query embed failed or timed out. The
+	// caller passes the address of a local string; it is left untouched
+	// (empty) on a healthy recall. nil disables reporting. Same out-param
+	// pattern as MergeHint/AutoSuperseded on RememberInput.
+	Degraded *string
 }
 
 // Recall runs hybrid (vector + keyword) retrieval fused with RRF.
@@ -1385,6 +1392,25 @@ func durableTiers(requested []memory.Tier) []memory.Tier {
 		}
 	}
 	return out
+}
+
+// reportRecallDegraded records and surfaces a query-embed failure that
+// downgraded a recall to keyword-only search. It is a no-op when embedErr is
+// nil (the healthy path). degraded, when non-nil, receives the reason
+// ("embed_error"/"embed_timeout") — the RecallInput.Degraded out-param.
+func (s *Service) reportRecallDegraded(ctx context.Context, embedErr error, degraded *string) {
+	if embedErr == nil {
+		return
+	}
+	reason := "embed_error"
+	if errors.Is(embedErr, context.DeadlineExceeded) {
+		reason = "embed_timeout"
+	}
+	slog.WarnContext(ctx, "recall: query embed failed, falling back to keyword-only search", "reason", reason, "err", embedErr)
+	s.metrics.RecallDegraded(reason)
+	if degraded != nil {
+		*degraded = reason
+	}
 }
 
 func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, error) {
@@ -1472,14 +1498,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	// every other namespace uses the requested one.
 	namespaces, globalIdx, globalTiers := s.addGlobalNamespace(namespaces, in)
 	s.metrics.OpDuration("recall_embed", time.Since(embedStart))
-	if embedErr != nil {
-		reason := "embed_error"
-		if errors.Is(embedErr, context.DeadlineExceeded) {
-			reason = "embed_timeout"
-		}
-		slog.WarnContext(ctx, "recall: query embed failed, falling back to keyword-only search", "reason", reason, "err", embedErr)
-		s.metrics.RecallDegraded(reason)
-	}
+	s.reportRecallDegraded(ctx, embedErr, in.Degraded)
 
 	// Over-fetch a deep candidate pool from each strategy: a memory ranked just
 	// outside the top k in both legs is invisible at pool depth k, yet RRF would

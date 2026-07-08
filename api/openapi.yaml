@@ -558,6 +558,17 @@ components:
         results:
           type: array
           items: { $ref: "#/components/schemas/ScoredMemory" }
+        degraded:
+          type: string
+          description: >-
+            Set to "keyword_only" when the query embed failed or timed out and
+            this search fell back to keyword-only matching; omitted on a
+            healthy (vector+keyword) search.
+        note:
+          type: string
+          description: >-
+            Human-readable explanation of `degraded`; omitted alongside it on
+            a healthy search.
     AnswerRequest:
       type: object
       required: [query]

@@ -385,13 +385,22 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 	if req.MinScore != nil {
 		in.MinScore = *req.MinScore
 	}
+	var degraded string
+	in.Degraded = &degraded
 
 	res, err := h.svc.Recall(r.Context(), in)
 	if err != nil {
 		writeError(w, r, statusFor(err), err)
 		return
 	}
-	httputil.JSON(w, http.StatusOK, SearchResponse{Results: apiScored(res)})
+	out := SearchResponse{Results: apiScored(res)}
+	if degraded != "" {
+		keywordOnly := "keyword_only"
+		note := "semantic search unavailable (" + degraded + "); results are keyword-only and may be incomplete"
+		out.Degraded = &keywordOnly
+		out.Note = &note
+	}
+	httputil.JSON(w, http.StatusOK, out)
 }
 
 // AnswerQuestion implements POST /v1/answer.
