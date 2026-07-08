@@ -100,6 +100,14 @@ is the exception: its native plugin is deliberately tool-free (automatic recall 
 capture only), so to give it `memory_forget` (or any tool) wire the memini MCP
 server alongside the plugin.
 
+**`memory_update` (partial update by id) is MCP-only** — there is no REST
+update endpoint. Claude Code, Codex, and any host wired to the memini MCP
+server get it; Hermes, Pi, OpenClaw, Open WebUI, and opencode's native plugins
+talk REST (`/v1/search`, `/v1/memories`) and do **not** expose it, so their
+tool descriptions correctly point to `memory_forget` (delete + re-remember) as
+the only way to correct a stored fact. Wire the MCP server alongside a native
+plugin if a host needs `memory_update`.
+
 Two host-specific differences remain by design:
 
 - **Relevance floor (`MEMINI_INJECT_RECALL_MIN_SCORE`)** is honored by

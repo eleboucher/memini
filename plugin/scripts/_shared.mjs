@@ -769,6 +769,8 @@ Rules:
 - Each content should be a self-contained fact (readable without context).
 - Omit the block entirely when nothing is worth keeping — don't emit empty arrays.
 - This is reference memory, not scratch space. Prefer quality over quantity.
+- If a stale or wrong fact turns up (rather than a new one), correct it in place
+  with the memory_update MCP tool instead of emitting a duplicate here.
 </memini-inline-memory>`;
 
 /**
