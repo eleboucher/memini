@@ -256,6 +256,12 @@ type Config struct {
 	// pass to specific tiers (working,episodic,semantic,procedural). Empty
 	// means all tiers.
 	DedupTiers string `env:"MEMINI_DEDUP_TIERS" envDefault:""`
+	// DedupLLMMerge (opt-in, default off) enables LLM-based content merging
+	// during the periodic dedup pass. Each cluster's content is merged into a
+	// single comprehensive memory before tombstoning duplicates. Requires an
+	// LLM (MEMINI_LLM_BASE_URL); when false or no LLM, the representative
+	// keeps its original content. Defaults off to preserve existing behavior.
+	DedupLLMMerge bool `env:"MEMINI_DEDUP_LLM_MERGE" envDefault:"false"`
 
 	// UIEnabled mounts the embedded admin UI at /. Enabled by default; set
 	// MEMINI_UI_ENABLED=false to run a headless API/MCP-only service.

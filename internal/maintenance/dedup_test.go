@@ -13,6 +13,7 @@ import (
 
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/embed/embedtest"
+	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/maintenance"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/store"
@@ -498,6 +499,217 @@ func TestDedupRespectsContextCancellation(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", err)
+	}
+}
+
+// mockMerger implements llm.Merger for testing cluster merge behaviour.
+type mockMerger struct {
+	merged string
+	err    error
+	called int
+}
+
+var _ llm.Merger = (*mockMerger)(nil)
+
+func (m *mockMerger) MergeMemories(_ context.Context, _ []string) (string, error) {
+	m.called++
+	if m.err != nil {
+		return "", m.err
+	}
+	return m.merged, nil
+}
+
+func TestDedupLLMMergeUpdatesRepresentative(t *testing.T) {
+	ctx := context.Background()
+	st, emb := openStoreAndFake(t)
+
+	// Put three near-duplicates with different content to test merge.
+	putContent(t, st, emb, "a", "bob lives in paris near the eiffel tower", 0.8)
+	putContent(t, st, emb, "b", "bob lives in paris", 0.5)
+	putContent(t, st, emb, "c", "robert lives in paris", 0.3)
+
+	merger := &mockMerger{merged: "bob also known as robert lives in paris near the eiffel tower"}
+
+	rep, err := maintenance.Dedup(ctx, st, emb, maintenance.DedupOptions{
+		Similarity: 0.5,
+		Now:        nowFixed(t),
+		Merger:     merger,
+	})
+	if err != nil {
+		t.Fatalf("dedup: %v", err)
+	}
+	if merger.called != 1 {
+		t.Fatalf("merger called %d times, want 1", merger.called)
+	}
+	if rep.ClustersFound != 1 || rep.Tombstoned != 2 {
+		t.Fatalf("report=%+v, want 1 cluster/2 tombstoned", rep)
+	}
+
+	// The representative (a, highest importance) should have merged content.
+	m, err := st.Get(ctx, dedupTestNS, "a")
+	if err != nil {
+		t.Fatalf("get a: %v", err)
+	}
+	if m.Content != merger.merged {
+		t.Errorf("representative content=%q, want merged=%q", m.Content, merger.merged)
+	}
+	// The duplicates should be tombstoned pointing at a.
+	for _, id := range []string{"b", "c"} {
+		m, err := st.Get(ctx, dedupTestNS, id)
+		if err != nil {
+			t.Errorf("get %s: %v", id, err)
+			continue
+		}
+		if m.SupersededBy == nil || *m.SupersededBy != "a" {
+			t.Errorf("%s superseded_by=%v, want a", id, m.SupersededBy)
+		}
+	}
+}
+
+func TestDedupLLMMergeFailureFallsThrough(t *testing.T) {
+	// When MergeMemories errors, the pass keeps going: representative stays
+	// with its original content, duplicates are still tombstoned.
+	ctx := context.Background()
+	st, emb := openStoreAndFake(t)
+
+	putContent(t, st, emb, "keep", "the sky is blue today and sunny", 0.9)
+	putContent(t, st, emb, "drop", "the sky is blue today", 0.1)
+
+	merger := &mockMerger{err: errors.New("llm timeout")}
+
+	rep, err := maintenance.Dedup(ctx, st, emb, maintenance.DedupOptions{
+		Similarity: 0.5,
+		Now:        nowFixed(t),
+		Merger:     merger,
+	})
+	if err != nil {
+		t.Fatalf("dedup: %v", err)
+	}
+	if merger.called != 1 {
+		t.Fatalf("merger called %d times, want 1", merger.called)
+	}
+	if rep.ClustersFound != 1 || rep.Tombstoned != 1 {
+		t.Fatalf("report=%+v, want 1 cluster/1 tombstoned", rep)
+	}
+
+	// Representative keeps original content.
+	m, err := st.Get(ctx, dedupTestNS, "keep")
+	if err != nil {
+		t.Fatalf("get keep: %v", err)
+	}
+	if m.Content != "the sky is blue today and sunny" {
+		t.Errorf("representative content=%q, want original unchanged", m.Content)
+	}
+	// Drop is still tombstoned.
+	drop, err := st.Get(ctx, dedupTestNS, "drop")
+	if err != nil {
+		t.Fatalf("get drop: %v", err)
+	}
+	if drop.SupersededBy == nil || *drop.SupersededBy != "keep" {
+		t.Errorf("drop superseded_by=%v, want keep", drop.SupersededBy)
+	}
+}
+
+func TestDedupLLMMergeNoopOnMergerNil(t *testing.T) {
+	// When Merger is nil, behaviour is identical to before (no merge, no error).
+	ctx := context.Background()
+	st, emb := openStoreAndFake(t)
+
+	putContent(t, st, emb, "dup-lo", "the sky is blue", 0.1)
+	putContent(t, st, emb, "dup-hi", "the sky is blue", 0.9)
+
+	rep, err := maintenance.Dedup(ctx, st, emb, maintenance.DedupOptions{
+		Similarity: 0.5, Now: nowFixed(t),
+		// Merger intentionally nil — default.
+	})
+	if err != nil {
+		t.Fatalf("dedup: %v", err)
+	}
+	if rep.ClustersFound != 1 || rep.Tombstoned != 1 {
+		t.Fatalf("report=%+v, want 1 cluster/1 tombstoned", rep)
+	}
+
+	// Representative keeps its original content.
+	m, err := st.Get(ctx, dedupTestNS, "dup-hi")
+	if err != nil {
+		t.Fatalf("get dup-hi: %v", err)
+	}
+	if m.Content != "the sky is blue" {
+		t.Errorf("content=%q, want original unchanged", m.Content)
+	}
+}
+
+func TestDedupLLMMergeDryRunDoesNotUpsert(t *testing.T) {
+	ctx := context.Background()
+	st, emb := openStoreAndFake(t)
+
+	putContent(t, st, emb, "a", "bob lives in paris", 0.8)
+	putContent(t, st, emb, "b", "bob is in paris", 0.5)
+
+	merger := &mockMerger{merged: "bob lives in paris, france"}
+
+	_, err := maintenance.Dedup(ctx, st, emb, maintenance.DedupOptions{
+		Similarity: 0.5, DryRun: true, Now: nowFixed(t),
+		Merger: merger,
+	})
+	if err != nil {
+		t.Fatalf("dedup: %v", err)
+	}
+	if merger.called != 1 {
+		t.Fatalf("merger called %d times, want 1", merger.called)
+	}
+
+	// Dry-run: neither tombstoned nor merged content persisted.
+	for _, id := range []string{"a", "b"} {
+		m, err := st.Get(ctx, dedupTestNS, id)
+		if err != nil {
+			t.Fatalf("get %s: %v", id, err)
+		}
+		if m.SupersededBy != nil {
+			t.Errorf("dry-run tombstoned %s: superseded_by=%v", id, *m.SupersededBy)
+		}
+		// a's content should remain original (dry-run doesn't upsert).
+		if id == "a" && m.Content != "bob lives in paris" {
+			t.Errorf("dry-run should not upsert merged content, got %q", m.Content)
+		}
+	}
+}
+
+func TestDedupLLMMergeClusterSizeBounded(t *testing.T) {
+	ctx := context.Background()
+	st, emb := openStoreAndFake(t)
+
+	// Put 4 near-duplicates, MaxMergeClusterSize=2 only sends the first 2.
+	putContent(t, st, emb, "a", "alpha beta gamma delta omega", 0.8)
+	putContent(t, st, emb, "b", "alpha beta gamma delta", 0.7)
+	putContent(t, st, emb, "c", "alpha beta gamma", 0.6)
+	putContent(t, st, emb, "d", "alpha beta gamma delta mu", 0.5)
+
+	merger := &mockMerger{merged: "alpha beta gamma delta omega mu (merged from bounded input)"}
+
+	rep, err := maintenance.Dedup(ctx, st, emb, maintenance.DedupOptions{
+		Similarity:          0.5,
+		Now:                 nowFixed(t),
+		Merger:              merger,
+		MaxMergeClusterSize: 2,
+	})
+	if err != nil {
+		t.Fatalf("dedup: %v", err)
+	}
+	if merger.called != 1 {
+		t.Fatalf("merger called %d times, want 1", merger.called)
+	}
+	if rep.ClustersFound != 1 || rep.Tombstoned != 3 {
+		t.Fatalf("report=%+v, want 1 cluster/3 tombstoned", rep)
+	}
+
+	// Representative has merged content.
+	m, err := st.Get(ctx, dedupTestNS, "a")
+	if err != nil {
+		t.Fatalf("get a: %v", err)
+	}
+	if m.Content != merger.merged {
+		t.Errorf("representative content=%q, want merged=%q", m.Content, merger.merged)
 	}
 }
 

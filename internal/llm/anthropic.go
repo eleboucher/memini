@@ -75,6 +75,32 @@ func (c *AnthropicClient) Complete(ctx context.Context, system, user string) (st
 	return c.chat(ctx, system, user)
 }
 
+// MergeMemories merges a cluster of near-duplicate memory texts into one
+// comprehensive memory via LLM, using the mergePrompt.
+func (c *AnthropicClient) MergeMemories(ctx context.Context, contents []string) (string, error) {
+	if len(contents) < 2 {
+		if len(contents) == 1 {
+			return contents[0], nil
+		}
+		return "", nil
+	}
+	input, err := json.Marshal(contents)
+	if err != nil {
+		return "", err
+	}
+	content, err := c.chat(ctx, mergePrompt, string(input))
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Content string `json:"content"`
+	}
+	if err := unmarshalLoose(content, &out); err != nil {
+		return "", err
+	}
+	return out.Content, nil
+}
+
 // ChatTools runs one round of a tool-calling conversation, translating the
 // canonical tool/choice vocabulary to the Messages encoding: tool results
 // become tool_result blocks in a user message (consecutive results coalesce

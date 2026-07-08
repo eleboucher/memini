@@ -112,12 +112,21 @@ type Distiller interface {
 	Distill(ctx context.Context, in DistillInput) ([]Fact, error)
 }
 
-// Client is a chat backend that can consolidate memories, distill facts, and
-// answer single-turn prompts.
+// Merger merges a cluster of near-duplicate memories into a single, comprehensive
+// memory text. Used by the batch dedup job (maintenance.DedupJob) to produce
+// merged content for cluster representatives, rather than keeping the
+// representative's original (potentially incomplete) text.
+type Merger interface {
+	MergeMemories(ctx context.Context, contents []string) (string, error)
+}
+
+// Client is a chat backend that can consolidate memories, distill facts,
+// answer single-turn prompts, and merge memory clusters.
 type Client interface {
 	Consolidator
 	Completer
 	Distiller
+	Merger
 }
 
 // Config configures a chat client. The same fields apply to both the
@@ -253,6 +262,19 @@ speculative or second-hand facts. Clamp to [0.1, 0.7] — no fact starts above 0
 Respond with a single JSON object:
 {"facts":[{"content":"<durable item>","summary":"<one line>","category":"preference|procedure|fact","confidence":0.0_to_1.0}]}
 Return {"facts":[]} if nothing is durable. Output only the JSON object.`
+
+// mergePrompt instructs the model to merge a cluster of near-duplicate memories
+// into a single comprehensive text, used by the dedup batch merge step.
+const mergePrompt = `You merge a cluster of near-duplicate memories into one comprehensive memory.
+Input is a JSON array of memory texts that are semantically similar (near-duplicates or
+restatements of the same fact). Produce a single, comprehensive memory text that:
+1. Captures ALL unique information from every input.
+2. Resolves contradictions by keeping the most recent/authoritative value.
+3. Is self-contained and readable without the inputs.
+4. Is concise — no repetition, no meta-commentary about the merge.
+
+Respond with a single JSON object: {"content":"<merged memory text>"}
+Output only the JSON object.`
 
 // trimFence strips a leading/trailing markdown code fence some models wrap JSON
 // in despite instructions, and surrounding whitespace.

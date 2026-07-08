@@ -72,6 +72,32 @@ func (c *OpenAIClient) Complete(ctx context.Context, system, user string) (strin
 	return c.chat(ctx, system, user, false)
 }
 
+// MergeMemories merges a cluster of near-duplicate memory texts into one
+// comprehensive memory via LLM, using the mergePrompt.
+func (c *OpenAIClient) MergeMemories(ctx context.Context, contents []string) (string, error) {
+	if len(contents) < 2 {
+		if len(contents) == 1 {
+			return contents[0], nil
+		}
+		return "", nil
+	}
+	input, err := json.Marshal(contents)
+	if err != nil {
+		return "", err
+	}
+	content, err := c.chat(ctx, mergePrompt, string(input), true)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Content string `json:"content"`
+	}
+	if err := unmarshalLoose(content, &out); err != nil {
+		return "", err
+	}
+	return out.Content, nil
+}
+
 // ChatTools runs one round of a tool-calling conversation, translating the
 // canonical tool/choice vocabulary to the /chat/completions encoding.
 func (c *OpenAIClient) ChatTools(

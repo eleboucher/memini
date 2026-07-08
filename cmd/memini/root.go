@@ -274,10 +274,15 @@ func buildServiceStack(
 	})
 	workers.Go(func() { sweeper.Run(workerCtx) })
 	if cfg.DedupInterval > 0 {
-		dedupJob := maintenance.NewDedupJob(st, embedder, metricsImpl, log, cfg.DedupInterval, maintenance.DedupOptions{
+		dedupOpts := maintenance.DedupOptions{
 			Similarity: cfg.DedupSimilarity,
 			Tiers:      cfg.DedupTierList(),
-		})
+		}
+		if cfg.DedupLLMMerge && chatClient != nil {
+			dedupOpts.Merger = chatClient
+			log.Info("dedup LLM merge enabled", "model", cfg.LLMModel)
+		}
+		dedupJob := maintenance.NewDedupJob(st, embedder, metricsImpl, log, cfg.DedupInterval, dedupOpts)
 		workers.Go(func() { dedupJob.Run(workerCtx) })
 		log.Info("periodic dedup enabled",
 			"interval", cfg.DedupInterval,
