@@ -52,18 +52,37 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 	h := &tools{svc: svc, defaultNS: defaultNS}
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name:        "memory_remember",
-		Title:       "Remember a fact",
-		Description: "Store a memory for later recall. Returns the new memory's ID.",
+		Name:  "memory_remember",
+		Title: "Remember a fact",
+		Description: "Store a fact, decision, preference, or event for later recall. Call " +
+			"proactively when the user says 'remember this', after an architectural decision " +
+			"(capture the why), after discovering a non-obvious bug or convention, or when a " +
+			"stated preference should outlive this session. Keep memories atomic — one " +
+			"self-contained fact per call; search works better on small records. Do NOT store " +
+			"facts already in project docs/CLAUDE.md or trivially recoverable from code. tier: " +
+			"semantic=durable fact, procedural=how-to, episodic=event, working=scratch (omit to " +
+			"auto-classify). If the result carries merge_hint, the content nearly duplicates an " +
+			"existing memory — either call memory_remember with id (or memory_update, if " +
+			"available) on merge_hint.similar_id to fold them together, or ignore it to keep " +
+			"both. Returns {id, tier, stored}; stored=false means a low-signal write was dropped " +
+			"by the value gate (not an error).",
 		Annotations: additive,
 	}, h.remember)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:  "memory_recall",
 		Title: "Recall memories",
-		Description: "Recall relevant memories via hybrid (semantic + keyword) search. " +
-			"Supports time-travel (as_of) and reading nested namespaces (scope=subtree). " +
-			"When the current session's turns are being captured as memories, pass " +
-			"exclude_metadata {\"session_id\": \"<current session id>\"} so the session's " +
+		Description: "Search prior context via hybrid (semantic + keyword) retrieval, ranked by " +
+			"relevance, recency, and corroboration. Call BEFORE starting work that may have " +
+			"history: editing an unfamiliar file, debugging a recurring issue, making a " +
+			"non-obvious decision, or when asked 'what do we know about X'. Prefer a short " +
+			"descriptive query ('JWT auth setup'). Results include created_at — on conflicting " +
+			"memories prefer the most recent and surface the conflict. Empty results mean " +
+			"nothing is known: proceed from first principles, never invent a remembered fact. A " +
+			"degraded field means semantic search was unavailable and results are keyword-only — " +
+			"treat as incomplete. Supports time-travel (as_of), nested namespaces (scope=subtree), " +
+			"and query_rewrite (LLM expands the query into variants, fused via RRF — better " +
+			"recall, slower). When the current session's turns are being captured as memories, " +
+			"pass exclude_metadata {\"session_id\": \"<current session id>\"} so the session's " +
 			"own captured turns are not echoed back as memory.",
 		Annotations: readOnly,
 	}, h.recall)
@@ -72,32 +91,40 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 		Title: "Session briefing",
 		Description: "Layered session-start briefing for this namespace — pinned context, " +
 			"durable facts, how-to procedures, and recent activity — in one query-less call. " +
-			"Call it when a session opens to orient yourself.",
+			"Call it when a session opens to orient yourself. Prefer this over broad recall " +
+			"queries at session start.",
 		Annotations: readOnly,
 	}, h.briefing)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name:        "memory_answer",
-		Title:       "Answer from memory",
-		Description: "Recall relevant memories and answer a question grounded on them (requires an LLM).",
+		Name:  "memory_answer",
+		Title: "Answer from memory",
+		Description: "Recall relevant memories and answer a question grounded on them (requires " +
+			"an LLM). Slower than memory_recall; use when you want a synthesized answer with " +
+			"sources rather than raw memories.",
 		Annotations: readOnly,
 	}, h.answer)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:  "memory_list",
 		Title: "Browse memories",
 		Description: "Browse memories without a query — filter by tier, tags, or metadata " +
-			"(e.g. all procedural memories, or everything tagged/categorized X). Newest first.",
+			"(e.g. all procedural memories, or everything tagged/categorized X). Returns at " +
+			"most limit (default 20) newest-first; page with offset. For relevance-ranked " +
+			"search use memory_recall.",
 		Annotations: readOnly,
 	}, h.list)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name:        "memory_get",
-		Title:       "Get a memory",
-		Description: "Fetch a single memory by its ID.",
+		Name:  "memory_get",
+		Title: "Get a memory",
+		Description: "Fetch one memory with full metadata, tags, and timestamps by ID (ids come " +
+			"from memory_recall / memory_list results).",
 		Annotations: readOnly,
 	}, h.get)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name:        "memory_forget",
-		Title:       "Forget a memory",
-		Description: "Delete a memory by its ID.",
+		Name:  "memory_forget",
+		Title: "Forget a memory",
+		Description: "Permanently delete a memory by ID — use for wrong, outdated, or unwanted " +
+			"memories. To correct a fact instead, prefer memory_remember with id (or " +
+			"memory_update, if available) so history is preserved.",
 		Annotations: destructive,
 	}, h.forget)
 

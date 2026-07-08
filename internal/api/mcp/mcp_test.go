@@ -584,6 +584,34 @@ func listTools(t *testing.T) map[string]*mcpsdk.Tool {
 	return tools
 }
 
+// TestToolDescriptions pins that each tool's Description carries the
+// load-bearing usage-protocol phrases ported from plugin/skills/{recall,
+// remember}/SKILL.md, so bare-MCP clients (no plugin) get the same
+// when-to-call / when-not / result-handling guidance as plugin clients.
+func TestToolDescriptions(t *testing.T) {
+	tools := listTools(t)
+	want := map[string][]string{
+		"memory_remember": {"atomic", "merge_hint", "proactively", "CLAUDE.md", "stored=false"},
+		"memory_recall":   {"created_at", "Empty results", "degraded", "BEFORE starting work"},
+		"memory_briefing": {"session start"},
+		"memory_answer":   {"memory_recall"},
+		"memory_list":     {"offset"},
+		"memory_get":      {"memory_recall"},
+		"memory_forget":   {"delete", "memory_update"},
+	}
+	for name, phrases := range want {
+		tool := tools[name]
+		if tool == nil {
+			t.Fatalf("%s: tool not found", name)
+		}
+		for _, phrase := range phrases {
+			if !strings.Contains(tool.Description, phrase) {
+				t.Errorf("%s description missing phrase %q, got: %s", name, phrase, tool.Description)
+			}
+		}
+	}
+}
+
 func TestToolAnnotations(t *testing.T) {
 	tools := listTools(t)
 	want := map[string]struct{ readOnly, destructive bool }{
