@@ -165,6 +165,11 @@ type Config struct {
 	// on a slow or stuck embeddings backend. Defaults to 2s so a wedged backend
 	// can't hang recall indefinitely; set 0 to restore an unbounded query embed.
 	RecallEmbedTimeout time.Duration `env:"MEMINI_RECALL_EMBED_TIMEOUT" envDefault:"2s"`
+	// RecallRewriteTimeout bounds the LLM query-expansion call on query_rewrite
+	// recalls; past it, recall proceeds with the original query alone rather
+	// than riding along the LLM client's much longer HTTP timeout. Default 3s;
+	// set 0 to restore an unbounded rewrite call.
+	RecallRewriteTimeout time.Duration `env:"MEMINI_RECALL_REWRITE_TIMEOUT" envDefault:"3s"`
 	// WriteEmbedTimeout bounds the content embed on the remember path; past it, or on
 	// embed error, the memory is stored without a vector (keyword-searchable) and
 	// marked pending_embed for background backfill. 0 restores fail-fast writes.

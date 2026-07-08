@@ -213,6 +213,11 @@ type Service struct {
 	// any embed error, recall degrades to keyword-only search instead of failing.
 	// 0 keeps the query embed unbounded and an embed error fatal.
 	recallEmbedTimeout time.Duration
+	// recallRewriteTimeout bounds the LLM query-expansion call on query_rewrite
+	// recalls; past it, expansion yields just the original query and recall
+	// falls through to normal single-query recall. 0 keeps the rewrite call
+	// unbounded (rides along the LLM client's own HTTP timeout).
+	recallRewriteTimeout time.Duration
 	// writeEmbedTimeout bounds the content embed on the remember path; past it, or
 	// on any embed error, the write degrades to a vectorless (keyword-searchable
 	// only) row marked pending_embed instead of failing. 0 keeps the content embed
@@ -415,6 +420,19 @@ func WithRecallEmbedTimeout(d time.Duration) Option {
 	return func(s *Service) {
 		if d > 0 {
 			s.recallEmbedTimeout = d
+		}
+	}
+}
+
+// WithRecallRewriteTimeout bounds the LLM query-expansion call on
+// query_rewrite recalls. Past the deadline, expansion yields just the
+// original query and recall falls through to normal single-query recall,
+// rather than blocking on the LLM client's much longer HTTP timeout. d <= 0
+// keeps the rewrite call unbounded (the default).
+func WithRecallRewriteTimeout(d time.Duration) Option {
+	return func(s *Service) {
+		if d > 0 {
+			s.recallRewriteTimeout = d
 		}
 	}
 }
@@ -1719,9 +1737,22 @@ func (s *Service) resolveTurnEchoWindow(in RecallInput) time.Duration {
 }
 
 // tryQueryRewrite handles the query-expansion path: when QueryRewrite is set
-// and an answerer is configured, it rewrites the query into 2-3 variants,
-// recalls each, and fuses via RRF. Returns (results, true) when the path
-// fires; (nil, false) to fall through to single-query recall.
+// and an answerer is configured, it rewrites the query into 2-3 variants and
+// recalls each concurrently (bounded by recallSearchConcurrency), then fuses
+// via RRF. Returns (results, true) when the path fires; (nil, false) to fall
+// through to single-query recall.
+//
+// Results are collected into a pre-sized, index-addressed slice (one slot per
+// variant) so fusion always sees the variants in expansion order regardless
+// of which goroutine finishes first -- same fused order as the old sequential
+// loop, just running concurrently.
+//
+// RecallInput.Degraded is a *string out-param; `sub := in` only copies the
+// pointer, so handing every variant goroutine the SAME pointer would be a
+// data race the moment more than one variant degrades at once. Each variant
+// instead gets its own local slot; once every variant has joined, the
+// coordinating goroutine (this one, after g.Wait()) aggregates them into the
+// caller's Degraded exactly once.
 func (s *Service) tryQueryRewrite(ctx context.Context, in RecallInput) ([]store.Scored, bool) {
 	if !in.QueryRewrite || s.answerer == nil {
 		return nil, false
@@ -1730,16 +1761,34 @@ func (s *Service) tryQueryRewrite(ctx context.Context, in RecallInput) ([]store.
 	if len(queries) <= 1 {
 		return nil, false
 	}
-	results := make([][]store.Scored, 0, len(queries))
-	for _, q := range queries {
-		sub := in
-		sub.Query = q
-		sub.QueryRewrite = false // prevent recursion
-		res, err := s.Recall(ctx, sub)
-		if err != nil {
-			return nil, false
+	results := make([][]store.Scored, len(queries))
+	degradedReasons := make([]string, len(queries))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(recallSearchConcurrency)
+	for i, q := range queries {
+		g.Go(func() error {
+			sub := in
+			sub.Query = q
+			sub.QueryRewrite = false // prevent recursion into tryQueryRewrite
+			sub.Degraded = &degradedReasons[i]
+			res, err := s.Recall(gctx, sub)
+			if err != nil {
+				return err
+			}
+			results[i] = res
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, false
+	}
+	if in.Degraded != nil {
+		for _, reason := range degradedReasons {
+			if reason != "" {
+				*in.Degraded = reason
+				break
+			}
 		}
-		results = append(results, res)
 	}
 	return search.Fuse(results, in.Limit, search.DefaultRRFK), true
 }

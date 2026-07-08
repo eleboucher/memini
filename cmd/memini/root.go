@@ -242,6 +242,7 @@ func buildServiceStack(
 		service.WithGlobalNamespace(cfg.GlobalNamespace),
 		service.WithTemporalTargeting(defaultTemporalBoost, search.RegexAnchorExtractor{}),
 		service.WithRecallEmbedTimeout(cfg.RecallEmbedTimeout),
+		service.WithRecallRewriteTimeout(cfg.RecallRewriteTimeout),
 		service.WithWriteEmbedTimeout(cfg.WriteEmbedTimeout),
 		service.WithRecallMinScore(cfg.RecallMinScore),
 		service.WithRecallSemanticReserve(cfg.RecallSemanticReserve),
