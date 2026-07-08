@@ -102,6 +102,7 @@ func scanRow(s rowScanner, metric *float64) (*memory.Memory, error) {
 		m                  memory.Memory
 		tier, level        string
 		metaBytes          []byte
+		linkedBytes        []byte
 		expires            sql.NullTime
 		superseded         sql.NullString
 		validFrom, validTo sql.NullTime
@@ -110,7 +111,7 @@ func scanRow(s rowScanner, metric *float64) (*memory.Memory, error) {
 	dest := []any{
 		&m.ID, &m.Namespace, &tier, &m.Content, &m.Summary, &metaBytes, &m.Tags,
 		&m.Importance, &m.CreatedAt, &m.UpdatedAt, &m.LastAccessedAt, &m.AccessCount,
-		&expires, &superseded, &validFrom, &validTo, &confidence, &level,
+		&expires, &superseded, &validFrom, &validTo, &confidence, &level, &linkedBytes,
 	}
 	if metric != nil {
 		dest = append(dest, metric)
@@ -147,6 +148,11 @@ func scanRow(s rowScanner, metric *float64) (*memory.Memory, error) {
 	if confidence.Valid {
 		c := confidence.Float64
 		m.Confidence = &c
+	}
+	if len(linkedBytes) > 0 {
+		if err := json.Unmarshal(linkedBytes, &m.LinkedMemoryIDs); err != nil {
+			return nil, err
+		}
 	}
 	return &m, nil
 }

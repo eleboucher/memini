@@ -1,0 +1,3 @@
+# Make .slim/deepwork/ readable to OpenCode despite .gitignore.
+!.slim/deepwork/
+!.slim/deepwork/**

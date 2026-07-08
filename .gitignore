@@ -34,3 +34,6 @@ qa_*.jsonl
 # Chart.lock is committed).
 /charts/*/charts/
 .bench-mining/
+
+# Deepwork session state (local planning, not committed).
+.slim/deepwork/

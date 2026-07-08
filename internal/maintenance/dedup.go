@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/eleboucher/memini/internal/embed"
+	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/store"
 )
@@ -48,6 +49,14 @@ type DedupOptions struct {
 	Now time.Time
 	// Log receives progress messages; nil falls back to slog.Default().
 	Log *slog.Logger
+	// Merger, when set, merges each cluster's content into a single
+	// comprehensive memory before tombstoning the duplicates. When nil, the
+	// representative keeps its original content (existing behavior).
+	Merger llm.Merger
+	// MaxMergeClusterSize bounds the cluster size sent to the LLM (larger
+	// clusters would exceed token limits). Clusters larger than this are
+	// merged in chunks or skipped. 0 defaults to 10.
+	MaxMergeClusterSize int
 }
 
 // ClusterAction describes one near-duplicate cluster found by a pass and the
@@ -169,6 +178,10 @@ type nsDedup struct {
 // fan-out, so it is the unit a store-wide pass isolates failures to.
 func dedupNamespace(ctx context.Context, st store.Store, emb embed.Embedder, ns string, opts DedupOptions) (nsDedup, error) {
 	var res nsDedup
+	log := opts.Log
+	if log == nil {
+		log = slog.Default()
+	}
 	f := store.Filter{Tiers: opts.Tiers, Now: opts.Now}
 	mems, err := st.List(ctx, ns, f, 0)
 	if err != nil {
@@ -246,6 +259,10 @@ func dedupNamespace(ctx context.Context, st store.Store, emb embed.Embedder, ns 
 		})
 		res.clustersFound++
 
+		// LLM merge: if a merger is available, merge the cluster's content
+		// into a single comprehensive memory and update the representative.
+		mergeCluster(ctx, log, st, emb, ns, keep, comp, opts)
+
 		if opts.DryRun {
 			res.tombstoned += len(rest)
 			continue
@@ -261,6 +278,51 @@ func dedupNamespace(ctx context.Context, st store.Store, emb embed.Embedder, ns 
 		}
 	}
 	return res, nil
+}
+
+// mergeCluster merges a cluster's content into the representative via LLM when
+// a merger is configured. Best-effort: LLM or embed errors fall through to the
+// existing behavior (representative keeps its original content).
+func mergeCluster(
+	ctx context.Context, log *slog.Logger, st store.Store, emb embed.Embedder,
+	ns string, keep *memory.Memory, comp []*memory.Memory, opts DedupOptions,
+) {
+	if opts.Merger == nil || len(comp) < 2 {
+		return
+	}
+	maxCluster := opts.MaxMergeClusterSize
+	if maxCluster <= 0 {
+		maxCluster = 10
+	}
+	mergeContents := make([]string, 0, len(comp))
+	for _, m := range comp {
+		if len(mergeContents) >= maxCluster {
+			break
+		}
+		mergeContents = append(mergeContents, m.Content)
+	}
+	merged, err := opts.Merger.MergeMemories(ctx, mergeContents)
+	if err != nil {
+		log.WarnContext(ctx, "dedup: LLM merge failed, keeping representative as-is",
+			"namespace", ns, "cluster_size", len(comp), "err", err)
+		return
+	}
+	if merged == "" || merged == keep.Content {
+		return
+	}
+	vec, err := embed.EmbedOne(ctx, emb, merged)
+	if err != nil {
+		log.WarnContext(ctx, "dedup: re-embed merged content failed", "err", err)
+		return
+	}
+	keep.Content = merged
+	keep.Embedding = vec
+	keep.UpdatedAt = opts.Now
+	if !opts.DryRun {
+		if err := st.Upsert(ctx, keep); err != nil {
+			log.WarnContext(ctx, "dedup: update representative with merged content failed", "err", err)
+		}
+	}
 }
 
 // betterRepresentative reports whether a is a better cluster representative

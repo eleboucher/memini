@@ -24,7 +24,7 @@ const overFetch = 4
 // memoryColumns is the canonical column order for scanning a memory row.
 const memoryColumns = `id, namespace, tier, content, summary, metadata, tags, importance,
 	created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-	valid_from, valid_to, confidence, level`
+	valid_from, valid_to, confidence, level, linked_memory_ids`
 
 // Store is a sqlite-vec backed store.Store.
 type Store struct {
@@ -77,6 +77,7 @@ var backfillColumns = []struct{ name, decl string }{
 	{"confidence", "REAL"},
 	{"fingerprint", "TEXT NOT NULL DEFAULT ''"},
 	{"level", "TEXT NOT NULL DEFAULT ''"},
+	{"linked_memory_ids", "TEXT NOT NULL DEFAULT '[]'"},
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -101,7 +102,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			valid_to         INTEGER,
 			confidence       REAL,
 			fingerprint      TEXT NOT NULL DEFAULT '',
-			level            TEXT NOT NULL DEFAULT ''
+			level            TEXT NOT NULL DEFAULT '',
+			linked_memory_ids TEXT NOT NULL DEFAULT '[]'
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at)`,
@@ -225,6 +227,14 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 	if err != nil {
 		return fmt.Errorf("sqlitevec: marshal tags: %w", err)
 	}
+	linkedIDs := m.LinkedMemoryIDs
+	if linkedIDs == nil {
+		linkedIDs = []string{}
+	}
+	linkedJSON, err := json.Marshal(linkedIDs)
+	if err != nil {
+		return fmt.Errorf("sqlitevec: marshal linked memory ids: %w", err)
+	}
 	var vec []byte
 	if len(m.Embedding) != 0 {
 		vec, err = sqlitevec.SerializeFloat32(m.Embedding)
@@ -249,12 +259,12 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		res, ierr := tx.ExecContext(ctx, `INSERT INTO memories
 			(id, namespace, tier, content, summary, metadata, tags, importance,
 			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-			 valid_from, valid_to, confidence, fingerprint, level)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			 valid_from, valid_to, confidence, fingerprint, level, linked_memory_ids)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
 			m.Importance, ms(m.CreatedAt), ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
 			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), f64Ptr(m.Confidence),
-			memory.Fingerprint(m.Content), string(m.Level))
+			memory.Fingerprint(m.Content), string(m.Level), string(linkedJSON))
 		if ierr != nil {
 			return fmt.Errorf("sqlitevec: insert memory: %w", ierr)
 		}
@@ -274,12 +284,12 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		if _, uerr := tx.ExecContext(ctx, `UPDATE memories SET
 			tier=?, content=?, summary=?, metadata=?, tags=?, importance=?,
 			updated_at=?, last_accessed_at=?, access_count=?, expires_at=?, superseded_by=?,
-			valid_from=?, valid_to=?, confidence=?, fingerprint=?, level=?
+			valid_from=?, valid_to=?, confidence=?, fingerprint=?, level=?, linked_memory_ids=?
 			WHERE rowid=?`,
 			string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
 			m.Importance, ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
 			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), f64Ptr(m.Confidence),
-			memory.Fingerprint(m.Content), string(m.Level), rowID); uerr != nil {
+			memory.Fingerprint(m.Content), string(m.Level), string(linkedJSON), rowID); uerr != nil {
 			return fmt.Errorf("sqlitevec: update memory: %w", uerr)
 		}
 	}

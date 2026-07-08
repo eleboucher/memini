@@ -128,6 +128,12 @@ type Config struct {
 	//     WriteDedupFingerprint, still runs independently).
 	WriteDedupAction string `env:"MEMINI_WRITE_DEDUP_ACTION" envDefault:"hint"`
 
+	// SplitDedupLLMMerge (opt-in, default off) routes ambiguous split-dedup
+	// candidates (≥2 close neighbours) through the LLM consolidator for a
+	// merge/supersede verdict before the deterministic action fires. Requires
+	// a consolidator to be configured.
+	SplitDedupLLMMerge bool `env:"MEMINI_SPLIT_DEDUP_LLM_MERGE" envDefault:"false"`
+
 	// ContradictionDownrank (default on) invalidates a durable fact when a fresh
 	// durable write contradicts it (changed value or flipped polarity, confirmed
 	// by the lexical detector): the stale fact's valid_to is stamped so it leaves
@@ -276,6 +282,12 @@ type Config struct {
 	// pass to specific tiers (working,episodic,semantic,procedural). Empty
 	// means all tiers.
 	DedupTiers string `env:"MEMINI_DEDUP_TIERS" envDefault:""`
+	// DedupLLMMerge (opt-in, default off) enables LLM-based content merging
+	// during the periodic dedup pass. Each cluster's content is merged into a
+	// single comprehensive memory before tombstoning duplicates. Requires an
+	// LLM (MEMINI_LLM_BASE_URL); when false or no LLM, the representative
+	// keeps its original content. Defaults off to preserve existing behavior.
+	DedupLLMMerge bool `env:"MEMINI_DEDUP_LLM_MERGE" envDefault:"false"`
 
 	// UIEnabled mounts the embedded admin UI at /. Enabled by default; set
 	// MEMINI_UI_ENABLED=false to run a headless API/MCP-only service.
