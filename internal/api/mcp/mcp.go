@@ -62,10 +62,9 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 			"facts already in project docs/CLAUDE.md or trivially recoverable from code. tier: " +
 			"semantic=durable fact, procedural=how-to, episodic=event, working=scratch (omit to " +
 			"auto-classify). If the result carries merge_hint, the content nearly duplicates an " +
-			"existing memory — either call memory_remember with id (or memory_update, if " +
-			"available) on merge_hint.similar_id to fold them together, or ignore it to keep " +
-			"both. Returns {id, tier, stored}; stored=false means a low-signal write was dropped " +
-			"by the value gate (not an error).",
+			"existing memory — either call memory_update with id=merge_hint.similar_id to fold " +
+			"them together, or ignore it to keep both. Returns {id, tier, stored}; stored=false " +
+			"means a low-signal write was dropped by the value gate (not an error).",
 		Annotations: additive,
 	}, h.remember)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
@@ -124,11 +123,19 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 		Annotations: readOnly,
 	}, h.get)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:  "memory_update",
+		Title: "Update a memory",
+		Description: "Update fields of an existing memory by ID (partial: only provided fields " +
+			"change; metadata merges key-by-key). Use to correct or enrich a fact — e.g. to fold " +
+			"a near-duplicate flagged by memory_remember's merge_hint into the surviving memory. " +
+			"To delete instead, use memory_forget.",
+		Annotations: additive,
+	}, h.update)
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:  "memory_forget",
 		Title: "Forget a memory",
 		Description: "Permanently delete a memory by ID — use for wrong, outdated, or unwanted " +
-			"memories. To correct a fact instead, prefer memory_remember with id (or " +
-			"memory_update, if available) so history is preserved.",
+			"memories. To correct a fact instead, prefer memory_update so history is preserved.",
 		Annotations: destructive,
 	}, h.forget)
 
@@ -568,6 +575,74 @@ func (t *tools) get(ctx context.Context, _ *mcpsdk.CallToolRequest, in idArgs) (
 		return nil, memoryItem{}, err
 	}
 	m, err := t.svc.Get(ctx, ns, in.ID)
+	if err != nil {
+		return nil, memoryItem{}, err
+	}
+	return nil, toMemoryItem(m), nil
+}
+
+type updateArgs struct {
+	ID         string         `json:"id" jsonschema:"the memory ID to update (from memory_recall/memory_list)"`
+	Content    string         `json:"content,omitempty" jsonschema:"replacement content; omit to keep"`
+	Summary    string         `json:"summary,omitempty" jsonschema:"replacement summary; omit to keep"`
+	Tier       string         `json:"tier,omitempty" jsonschema:"move to this tier; omit to keep"`
+	Tags       []string       `json:"tags,omitempty" jsonschema:"replacement tag set; omit to keep"`
+	Metadata   map[string]any `json:"metadata,omitempty" jsonschema:"merged into existing metadata key-by-key"`
+	Importance *float64       `json:"importance,omitempty" jsonschema:"0..1; omit to keep"`
+	Confidence *float64       `json:"confidence,omitempty" jsonschema:"0..1; omit to keep"`
+	Namespace  string         `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+}
+
+// update composes svc.Get + svc.Remember with the current ID (the documented
+// upsert path): it re-embeds content and re-runs the write-time lifecycle
+// (corroborate/contradict), so an update is not a bare field patch. Only
+// fields explicitly provided in in are changed; everything else carries over
+// from the current record. Metadata merges key-by-key rather than replacing
+// wholesale, so a caller enriching one key never has to resend the rest.
+func (t *tools) update(ctx context.Context, _ *mcpsdk.CallToolRequest, in updateArgs) (*mcpsdk.CallToolResult, memoryItem, error) {
+	ns, err := t.ns(in.Namespace)
+	if err != nil {
+		return nil, memoryItem{}, err
+	}
+	cur, err := t.svc.Get(ctx, ns, in.ID)
+	if err != nil {
+		return nil, memoryItem{}, fmt.Errorf("no memory %q in namespace %q — get ids from memory_recall or memory_list: %w", in.ID, ns, err)
+	}
+	upd := service.RememberInput{
+		Namespace: ns, ID: cur.ID,
+		Content: cur.Content, Summary: cur.Summary, Tier: cur.Tier,
+		Tags: cur.Tags, Metadata: cur.Metadata, Importance: cur.Importance, Confidence: cur.Confidence,
+		ValidFrom: cur.ValidFrom, ValidTo: cur.ValidTo,
+	}
+	if in.Content != "" {
+		upd.Content = in.Content
+	}
+	if in.Summary != "" {
+		upd.Summary = in.Summary
+	}
+	if in.Tier != "" {
+		tr := memory.Tier(in.Tier)
+		if !tr.Valid() {
+			return nil, memoryItem{}, fmt.Errorf("invalid tier %q: want working|episodic|semantic|procedural", in.Tier)
+		}
+		upd.Tier = tr
+	}
+	if in.Tags != nil {
+		upd.Tags = in.Tags
+	}
+	for k, v := range in.Metadata {
+		if upd.Metadata == nil {
+			upd.Metadata = map[string]any{}
+		}
+		upd.Metadata[k] = v
+	}
+	if in.Importance != nil {
+		upd.Importance = *in.Importance
+	}
+	if in.Confidence != nil {
+		upd.Confidence = in.Confidence
+	}
+	m, err := t.svc.Remember(ctx, upd)
 	if err != nil {
 		return nil, memoryItem{}, err
 	}

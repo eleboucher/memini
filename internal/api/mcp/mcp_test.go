@@ -387,6 +387,145 @@ func TestRememberFullArgsRoundTripViaGet(t *testing.T) {
 	}
 }
 
+// TestUpdateToolContentOnly pins memory_update's partial-update semantics:
+// passing only content leaves tags, tier, and metadata untouched while the
+// content itself changes.
+func TestUpdateToolContentOnly(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_remember",
+		Arguments: map[string]any{
+			"content":  "the deploy pipeline runs on forgejo",
+			"tier":     "semantic",
+			"tags":     []string{"ci", "deploy"},
+			"metadata": map[string]any{"source": "test"},
+			"id":       "update-content-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	structured(t, res, &struct{}{})
+
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_update",
+		Arguments: map[string]any{
+			"id":      "update-content-1",
+			"content": "the deploy pipeline runs on gitea actions now",
+		},
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	var updated struct {
+		ID       string         `json:"id"`
+		Content  string         `json:"content"`
+		Tier     string         `json:"tier"`
+		Tags     []string       `json:"tags"`
+		Metadata map[string]any `json:"metadata"`
+	}
+	structured(t, res, &updated)
+	if updated.Content != "the deploy pipeline runs on gitea actions now" {
+		t.Fatalf("content = %q, want the updated content", updated.Content)
+	}
+	if updated.Tier != "semantic" {
+		t.Fatalf("tier = %q, want preserved semantic", updated.Tier)
+	}
+	if len(updated.Tags) != 2 {
+		t.Fatalf("tags = %+v, want preserved [ci deploy]", updated.Tags)
+	}
+	if updated.Metadata["source"] != "test" {
+		t.Fatalf("metadata = %+v, want preserved source=test", updated.Metadata)
+	}
+
+	// The change must persist, not just be reflected in the call's return value.
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_get",
+		Arguments: map[string]any{"id": "update-content-1"},
+	})
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	var got struct {
+		Content string `json:"content"`
+	}
+	structured(t, res, &got)
+	if got.Content != "the deploy pipeline runs on gitea actions now" {
+		t.Fatalf("persisted content = %q, want the updated content", got.Content)
+	}
+}
+
+// TestUpdateToolTagsOnly pins that updating only tags leaves content
+// untouched.
+func TestUpdateToolTagsOnly(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_remember",
+		Arguments: map[string]any{
+			"content": "the deploy pipeline runs on forgejo",
+			"tags":    []string{"ci"},
+			"id":      "update-tags-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	structured(t, res, &struct{}{})
+
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_update",
+		Arguments: map[string]any{
+			"id":   "update-tags-1",
+			"tags": []string{"ci", "deploy", "forgejo"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	var updated struct {
+		Content string   `json:"content"`
+		Tags    []string `json:"tags"`
+	}
+	structured(t, res, &updated)
+	if updated.Content != "the deploy pipeline runs on forgejo" {
+		t.Fatalf("content = %q, want preserved", updated.Content)
+	}
+	if len(updated.Tags) != 3 {
+		t.Fatalf("tags = %+v, want the replacement set of 3", updated.Tags)
+	}
+}
+
+// TestUpdateToolMissingID pins that updating an unknown id fails with an
+// error that points the caller at memory_recall/memory_list to find a valid
+// id, rather than a bare not-found error.
+func TestUpdateToolMissingID(t *testing.T) {
+	cs := connect(t)
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "memory_update",
+		Arguments: map[string]any{"id": "does-not-exist", "content": "x"},
+	})
+	if err != nil {
+		t.Fatalf("update transport: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("updating a missing id must be a tool error")
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("error result has no content")
+	}
+	tc, ok := res.Content[0].(*mcpsdk.TextContent)
+	if !ok {
+		t.Fatalf("error content = %T, want *mcpsdk.TextContent", res.Content[0])
+	}
+	if !strings.Contains(tc.Text, "memory_recall") {
+		t.Fatalf("error text = %q, want it to mention memory_recall", tc.Text)
+	}
+}
+
 func TestRecallTierFilter(t *testing.T) {
 	cs := connect(t)
 	ctx := context.Background()
@@ -743,6 +882,7 @@ func TestToolDescriptions(t *testing.T) {
 		"memory_list":     {"offset"},
 		"memory_get":      {"memory_recall"},
 		"memory_forget":   {"delete", "memory_update"},
+		"memory_update":   {"partial", "memory_forget"},
 	}
 	for name, phrases := range want {
 		tool := tools[name]
@@ -766,6 +906,7 @@ func TestToolAnnotations(t *testing.T) {
 		"memory_briefing": {readOnly: true},
 		"memory_answer":   {readOnly: true},
 		"memory_remember": {readOnly: false, destructive: false},
+		"memory_update":   {readOnly: false, destructive: false},
 		"memory_forget":   {readOnly: false, destructive: true},
 	}
 	for name, w := range want {

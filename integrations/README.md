@@ -11,7 +11,7 @@ transports:
 Tools exposed:
 
 - `memory_remember`, `memory_recall`, `memory_briefing`, `memory_answer`
-- `memory_list`, `memory_get`, `memory_forget`
+- `memory_list`, `memory_get`, `memory_update`, `memory_forget`
 
 ## Recommended: install the plugin
 
