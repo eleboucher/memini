@@ -394,6 +394,76 @@ func TestRecallDegradedSurfacedViaMCP(t *testing.T) {
 	})
 }
 
+// TestRememberDegradedSurfacedViaMCP confirms that when a write embed budget
+// is set and the embedder is down, memory_remember stores the memory
+// keyword-searchable only (no vector) and the structured result carries
+// degraded="pending_embed" plus a human-readable note, so an agent consuming
+// the tool knows the memory will need a vector backfill. A healthy embedder
+// must leave both fields absent (omitempty).
+func TestRememberDegradedSurfacedViaMCP(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "remember-degraded.db")
+
+	st, err := sqlitevec.Open(ctx, dbPath, dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	svc := service.New(st, errEmbedder{dims: dims}, service.WithWriteEmbedTimeout(time.Second))
+	srv := meminimcp.NewServer(svc, "default")
+	clientT, serverT := mcpsdk.NewInMemoryTransports()
+	if _, err := srv.Connect(ctx, serverT, nil); err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "test", Version: "0"}, nil)
+	cs, err := client.Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_remember",
+		Arguments: map[string]any{"content": "hello world", "tier": "semantic"},
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	var out struct {
+		Stored   bool   `json:"stored"`
+		Degraded string `json:"degraded"`
+		Note     string `json:"note"`
+	}
+	structured(t, res, &out)
+	if !out.Stored {
+		t.Fatal("stored = false, want true (degraded write is still stored)")
+	}
+	if out.Degraded != "pending_embed" {
+		t.Fatalf("degraded = %q, want %q", out.Degraded, "pending_embed")
+	}
+	if out.Note == "" {
+		t.Fatal("note should explain the degradation, got empty")
+	}
+
+	t.Run("healthy", func(t *testing.T) {
+		cs := connect(t)
+		res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+			Name:      "memory_remember",
+			Arguments: map[string]any{"content": "hello healthy world", "tier": "semantic"},
+		})
+		if err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+		if _, ok := res.StructuredContent.(map[string]any)["degraded"]; ok {
+			t.Fatalf("degraded key should be omitted on a healthy write, got %+v", res.StructuredContent)
+		}
+		if _, ok := res.StructuredContent.(map[string]any)["note"]; ok {
+			t.Fatalf("note key should be omitted on a healthy write, got %+v", res.StructuredContent)
+		}
+	})
+}
+
 func TestHTTPHandlerAuth(t *testing.T) {
 	ctx := context.Background()
 	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "auth.db"), dims)

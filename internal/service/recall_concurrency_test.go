@@ -77,9 +77,10 @@ func (e errEmbedder) Dims() int { return e.dims }
 // countingMetrics counts recall error and keyword-only-degrade events;
 // everything else is a no-op. Safe for concurrent use.
 type countingMetrics struct {
-	mu        sync.Mutex
-	recallErr int
-	degraded  map[string]int
+	mu               sync.Mutex
+	recallErr        int
+	degraded         map[string]int
+	rememberDegraded map[string]int
 }
 
 func (m *countingMetrics) RecallResult(result, _, _ string) {
@@ -95,6 +96,14 @@ func (m *countingMetrics) RecallDegraded(reason string) {
 		m.degraded = map[string]int{}
 	}
 	m.degraded[reason]++
+	m.mu.Unlock()
+}
+func (m *countingMetrics) RememberDegraded(reason string) {
+	m.mu.Lock()
+	if m.rememberDegraded == nil {
+		m.rememberDegraded = map[string]int{}
+	}
+	m.rememberDegraded[reason]++
 	m.mu.Unlock()
 }
 func (m *countingMetrics) WriteSanitized(string)            {}

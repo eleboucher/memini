@@ -116,6 +116,10 @@ type Metrics interface {
 	// because the query embed failed or timed out. reason is "embed_timeout" or
 	// "embed_error".
 	RecallDegraded(reason string)
+	// RememberDegraded records one write that stored without a vector (embedding
+	// omitted, keyword-searchable only, marked pending_embed) because the content
+	// embed failed or timed out. reason is "embed_timeout" or "embed_error".
+	RememberDegraded(reason string)
 	// WriteSanitized records one ingestion content-hygiene action: "cleaned"
 	// (unambiguous corruption stripped from content) or "quarantined"
 	// (script-salad downranked when corruption quarantine is enabled).
@@ -156,6 +160,7 @@ func (nopMetrics) OpDuration(string, time.Duration)    {}
 func (nopMetrics) AnswerResult(string)                 {}
 func (nopMetrics) RerankResult(string, string)         {}
 func (nopMetrics) RecallDegraded(string)               {}
+func (nopMetrics) RememberDegraded(string)             {}
 func (nopMetrics) WriteSanitized(string)               {}
 func (nopMetrics) ReinforceResult(string)              {}
 func (nopMetrics) DedupTombstoned(int)                 {}
@@ -204,6 +209,11 @@ type Service struct {
 	// any embed error, recall degrades to keyword-only search instead of failing.
 	// 0 keeps the query embed unbounded and an embed error fatal.
 	recallEmbedTimeout time.Duration
+	// writeEmbedTimeout bounds the content embed on the remember path; past it, or
+	// on any embed error, the write degrades to a vectorless (keyword-searchable
+	// only) row marked pending_embed instead of failing. 0 keeps the content embed
+	// unbounded and an embed error fatal (fail-fast, the pre-fallback default).
+	writeEmbedTimeout time.Duration
 	// recallMinScore is an absolute relevance floor on the fused score; candidates
 	// below it are dropped before composite re-ranking. 0 disables filtering.
 	recallMinScore float64
@@ -401,6 +411,19 @@ func WithRecallEmbedTimeout(d time.Duration) Option {
 	return func(s *Service) {
 		if d > 0 {
 			s.recallEmbedTimeout = d
+		}
+	}
+}
+
+// WithWriteEmbedTimeout bounds the content embed on the remember path. Past the
+// deadline, or on any embed error, the write degrades to a vectorless
+// (keyword-searchable only) row marked pending_embed rather than failing or
+// stalling on a slow embeddings backend. d <= 0 keeps the content embed
+// unbounded and an embed error fatal (the default).
+func WithWriteEmbedTimeout(d time.Duration) Option {
+	return func(s *Service) {
+		if d > 0 {
+			s.writeEmbedTimeout = d
 		}
 	}
 }
@@ -802,6 +825,43 @@ func validateRememberInput(in RememberInput) (memory.Tier, error) {
 	return tier, nil
 }
 
+// embedForRemember embeds fresh write content. When writeEmbedTimeout is set
+// (> 0), the embed is bounded and a timeout or error degrades the write: it
+// returns a nil vector (the caller stores the memory keyword-searchable only)
+// and stamps in.Metadata["pending_embed"] = "true" so a background backfill
+// can pick it up later, rather than failing the write. writeEmbedTimeout <= 0
+// keeps the embed unbounded and any error fatal — the pre-fallback,
+// fail-fast default. in.Metadata is mutated in place (allocated if nil),
+// mirroring stampClassifiedTier/scrubInput: callers that share a Metadata map
+// across writes will see the flag too.
+func (s *Service) embedForRemember(ctx context.Context, in *RememberInput) ([]float32, error) {
+	if s.writeEmbedTimeout <= 0 {
+		vec, err := embed.EmbedOne(ctx, s.embedder, in.Content)
+		if err != nil {
+			return nil, fmt.Errorf("remember: embed: %w", err)
+		}
+		return vec, nil
+	}
+	ectx, cancel := context.WithTimeout(ctx, s.writeEmbedTimeout)
+	defer cancel()
+	vec, err := embed.EmbedOne(ectx, s.embedder, in.Content)
+	if err == nil {
+		return vec, nil
+	}
+	reason := "embed_error"
+	if errors.Is(err, context.DeadlineExceeded) {
+		reason = "embed_timeout"
+	}
+	slog.WarnContext(ctx, "remember: content embed failed, storing without vector",
+		"namespace", in.Namespace, "reason", reason, "err", err)
+	s.metrics.RememberDegraded(reason)
+	if in.Metadata == nil {
+		in.Metadata = map[string]any{}
+	}
+	in.Metadata["pending_embed"] = "true"
+	return nil, nil
+}
+
 // Remember embeds and stores a memory, returning the persisted record.
 func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memory, error) {
 	start := time.Now()
@@ -845,10 +905,10 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		return existing, nil
 	}
 
-	vec, err := embed.EmbedOne(ctx, s.embedder, in.Content)
+	vec, err := s.embedForRemember(ctx, &in)
 	if err != nil {
 		s.metrics.RememberResult("error", string(tier))
-		return nil, fmt.Errorf("remember: embed: %w", err)
+		return nil, err
 	}
 
 	now := s.now()
@@ -922,8 +982,10 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	}
 
 	// Sync mode resolves the write against existing memories before storing, so
-	// the caller sees the consolidated result.
-	if consolidate && s.consolidateMode == ConsolidateSync {
+	// the caller sees the consolidated result. Skipped for a vectorless write
+	// (embed degraded, see embedForRemember): the search it needs has no query
+	// vector to run with, so the write falls through to a normal insert instead.
+	if consolidate && s.consolidateMode == ConsolidateSync && len(m.Embedding) > 0 {
 		if result, handled, err := s.consolidateSync(ctx, m); err != nil {
 			s.metrics.RememberResult("error", string(tier))
 			return nil, err
@@ -975,6 +1037,12 @@ func (s *Service) runSplitDedup(
 	ctx context.Context, m *memory.Memory, in RememberInput,
 ) (handled bool, result *memory.Memory, supersedeID string) {
 	if s.writeDedupScore <= 0 || s.writeDedupAction == WriteDedupOff || s.writeDedupAction == "" {
+		return false, nil, ""
+	}
+	// A vectorless write (embed degraded, see embedForRemember) has nothing for
+	// dedupCheck's vector search to run against; skip the gate and let the write
+	// proceed as a normal insert rather than searching on an empty vector.
+	if len(m.Embedding) == 0 {
 		return false, nil, ""
 	}
 	// The hint action is scoped to durable tiers (semantic/procedural): that's

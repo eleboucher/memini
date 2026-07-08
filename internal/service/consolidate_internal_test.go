@@ -46,6 +46,7 @@ func (m *countingMetrics) OpDuration(string, time.Duration)    {}
 func (m *countingMetrics) AnswerResult(string)                 {}
 func (m *countingMetrics) RerankResult(string, string)         {}
 func (m *countingMetrics) RecallDegraded(string)               {}
+func (m *countingMetrics) RememberDegraded(string)             {}
 func (m *countingMetrics) WriteSanitized(string)               {}
 func (m *countingMetrics) ReinforceResult(r string)            { m.results["reinforce:"+r]++ }
 func (m *countingMetrics) DedupTombstoned(int)                 {}

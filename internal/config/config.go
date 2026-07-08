@@ -165,6 +165,10 @@ type Config struct {
 	// on a slow or stuck embeddings backend. Defaults to 2s so a wedged backend
 	// can't hang recall indefinitely; set 0 to restore an unbounded query embed.
 	RecallEmbedTimeout time.Duration `env:"MEMINI_RECALL_EMBED_TIMEOUT" envDefault:"2s"`
+	// WriteEmbedTimeout bounds the content embed on the remember path; past it, or on
+	// embed error, the memory is stored without a vector (keyword-searchable) and
+	// marked pending_embed for background backfill. 0 restores fail-fast writes.
+	WriteEmbedTimeout time.Duration `env:"MEMINI_WRITE_EMBED_TIMEOUT" envDefault:"5s"`
 	// RecallMinScore is the fused-score floor: candidates below it are dropped
 	// before ranking. The default (0.1) is the benched value; it is exposed so a
 	// deployment on a different embedder can raise it to trim loosely-relevant

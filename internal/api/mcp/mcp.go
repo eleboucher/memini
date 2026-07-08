@@ -271,6 +271,13 @@ type rememberResult struct {
 	// (via memory_update) when the write landed in the merge-hint band. nil
 	// otherwise.
 	MergeHint *mergeHintResult `json:"merge_hint,omitempty"`
+	// Degraded is set to "pending_embed" when the content embed failed or timed
+	// out (WriteEmbedTimeout) and the memory was stored keyword-searchable only,
+	// without a vector. Empty on a healthy write.
+	Degraded string `json:"degraded,omitempty"`
+	// Note explains Degraded in plain language for an agent consuming the tool
+	// result; omitted alongside Degraded on a healthy write.
+	Note string `json:"note,omitempty"`
 }
 
 // mergeHintResult mirrors service.MergeHint for the MCP wire shape.
@@ -327,6 +334,10 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 			Score:          hint.Score,
 			Tier:           string(hint.Tier),
 		}
+	}
+	if pending, ok := m.Metadata["pending_embed"].(string); ok && pending == "true" {
+		res.Degraded = "pending_embed"
+		res.Note = "embeddings unavailable; stored keyword-searchable only, vector will be backfilled automatically"
 	}
 	return nil, res, nil
 }
