@@ -21,14 +21,31 @@ import (
 
 const dims = 64
 
+// fakeAnswerer is a stand-in llm.Completer: it returns a canned answer without
+// making any real call, so tests can exercise the memory_answer tool without a
+// configured LLM backend.
+type fakeAnswerer struct{ resp string }
+
+func (f *fakeAnswerer) Complete(_ context.Context, _, _ string) (string, error) {
+	return f.resp, nil
+}
+
 func connect(t *testing.T) *mcpsdk.ClientSession {
+	t.Helper()
+	return connectWithOptions(t)
+}
+
+// connectWithOptions builds an MCP server over a service.Service configured
+// with opts (e.g. service.WithAnswerer), so tests can exercise
+// answerer-gated behavior like the conditional memory_answer registration.
+func connectWithOptions(t *testing.T, opts ...service.Option) *mcpsdk.ClientSession {
 	t.Helper()
 	st, err := sqlitevec.Open(context.Background(), filepath.Join(t.TempDir(), "mcp.db"), dims)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	svc := service.New(st, embedtest.New(dims))
+	svc := service.New(st, embedtest.New(dims), opts...)
 
 	srv := meminimcp.NewServer(svc, "default")
 	clientT, serverT := mcpsdk.NewInMemoryTransports()
@@ -417,12 +434,37 @@ func TestRecallTierFilter(t *testing.T) {
 	}
 }
 
+// TestMemoryAnswerToolConditional pins that memory_answer is only advertised
+// when the service has an LLM answerer configured: headless deployments (no
+// answerer) don't list a tool that would only ever error at call time, and
+// answerer-backed deployments still get it, with its read-only annotation
+// intact.
+func TestMemoryAnswerToolConditional(t *testing.T) {
+	t.Run("no answerer", func(t *testing.T) {
+		tools := listTools(t)
+		if _, ok := tools["memory_answer"]; ok {
+			t.Fatal("memory_answer must not be listed when the service has no answerer configured")
+		}
+	})
+	t.Run("with answerer", func(t *testing.T) {
+		tools := listTools(t, service.WithAnswerer(&fakeAnswerer{resp: "n/a"}))
+		tool, ok := tools["memory_answer"]
+		if !ok {
+			t.Fatal("memory_answer must be listed when the service has an answerer configured")
+		}
+		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
+			t.Fatalf("memory_answer readOnlyHint: got %+v, want true", tool.Annotations)
+		}
+	})
+}
+
 // TestAnswerToolValidatesTiers pins that memory_answer exposes and validates the
 // same tiers filter as recall/list (parity with the service AnswerInput and the
 // REST /v1/answer surface). An unknown tier is rejected before the answerer is
-// consulted, so this needs no LLM.
+// consulted, but memory_answer is only registered when an LLM is configured,
+// so this test still needs a (fake) answerer to reach the tool at all.
 func TestAnswerToolValidatesTiers(t *testing.T) {
-	cs := connect(t)
+	cs := connectWithOptions(t, service.WithAnswerer(&fakeAnswerer{resp: "n/a"}))
 	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
 		Name:      "memory_answer",
 		Arguments: map[string]any{"query": "anything", "tiers": []string{"semantik"}},
@@ -673,9 +715,9 @@ func TestRememberPositiveTTL(t *testing.T) {
 	}
 }
 
-func listTools(t *testing.T) map[string]*mcpsdk.Tool {
+func listTools(t *testing.T, opts ...service.Option) map[string]*mcpsdk.Tool {
 	t.Helper()
-	cs := connect(t)
+	cs := connectWithOptions(t, opts...)
 	res, err := cs.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
@@ -692,7 +734,7 @@ func listTools(t *testing.T) map[string]*mcpsdk.Tool {
 // remember}/SKILL.md, so bare-MCP clients (no plugin) get the same
 // when-to-call / when-not / result-handling guidance as plugin clients.
 func TestToolDescriptions(t *testing.T) {
-	tools := listTools(t)
+	tools := listTools(t, service.WithAnswerer(&fakeAnswerer{resp: "n/a"}))
 	want := map[string][]string{
 		"memory_remember": {"atomic", "merge_hint", "proactively", "CLAUDE.md", "stored=false"},
 		"memory_recall":   {"created_at", "Empty results", "degraded", "BEFORE starting work"},
@@ -716,12 +758,13 @@ func TestToolDescriptions(t *testing.T) {
 }
 
 func TestToolAnnotations(t *testing.T) {
-	tools := listTools(t)
+	tools := listTools(t, service.WithAnswerer(&fakeAnswerer{resp: "n/a"}))
 	want := map[string]struct{ readOnly, destructive bool }{
 		"memory_recall":   {readOnly: true},
 		"memory_get":      {readOnly: true},
 		"memory_list":     {readOnly: true},
 		"memory_briefing": {readOnly: true},
+		"memory_answer":   {readOnly: true},
 		"memory_remember": {readOnly: false, destructive: false},
 		"memory_forget":   {readOnly: false, destructive: true},
 	}

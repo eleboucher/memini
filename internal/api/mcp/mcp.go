@@ -95,14 +95,18 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 			"queries at session start.",
 		Annotations: readOnly,
 	}, h.briefing)
-	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name:  "memory_answer",
-		Title: "Answer from memory",
-		Description: "Recall relevant memories and answer a question grounded on them (requires " +
-			"an LLM). Slower than memory_recall; use when you want a synthesized answer with " +
-			"sources rather than raw memories.",
-		Annotations: readOnly,
-	}, h.answer)
+	// memory_answer requires an LLM; only advertise it when one is configured,
+	// so headless deployments don't list a tool that would error on every call.
+	if svc.HasAnswerer() {
+		mcpsdk.AddTool(s, &mcpsdk.Tool{
+			Name:  "memory_answer",
+			Title: "Answer from memory",
+			Description: "Recall relevant memories and answer a question grounded on them (requires " +
+				"an LLM). Slower than memory_recall; use when you want a synthesized answer with " +
+				"sources rather than raw memories.",
+			Annotations: readOnly,
+		}, h.answer)
+	}
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:  "memory_list",
 		Title: "Browse memories",

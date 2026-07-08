@@ -356,6 +356,12 @@ func WithDistiller(d llm.Distiller) Option { return func(s *Service) { s.distill
 // from them with this chat client.
 func WithAnswerer(c llm.Completer) Option { return func(s *Service) { s.answerer = c } }
 
+// HasAnswerer reports whether an LLM completer is configured for answering.
+// Callers (e.g. the MCP server) use this to decide whether to expose
+// answer-dependent surfaces at all, rather than exposing them and erroring on
+// every call in a headless deployment.
+func (s *Service) HasAnswerer() bool { return s.answerer != nil }
+
 // defaultRerankTimeout bounds a single reranker call; past it, recall falls
 // back to composite order.
 const defaultRerankTimeout = 10 * time.Second
