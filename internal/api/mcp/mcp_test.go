@@ -1336,6 +1336,84 @@ func TestRecallResponseFormatConcise(t *testing.T) {
 	}
 }
 
+// TestRecallResponseFormatConciseMultiByte pins that concise truncation is
+// decided on RUNE length, not byte length. Two regressions guarded:
+//  1. content over 240 runes of multi-byte chars is truncated to exactly 240
+//     runes + "…" without splitting a UTF-8 sequence;
+//  2. content whose BYTE length exceeds 240 but rune length does not (e.g.
+//     200 three-byte CJK chars = 600 bytes) is returned verbatim with NO
+//     spurious "…" — the pre-fix code appended the ellipsis to unsliced
+//     content because the guard checked bytes while truncation checked runes.
+func TestRecallResponseFormatConciseMultiByte(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	// 300 runes of a 3-byte CJK char: 900 bytes, 300 runes → must truncate.
+	overRunes := strings.Repeat("記", 300)
+	// 200 runes of the same class: 600 bytes (>240), 200 runes (<=240) → verbatim.
+	underRunes := strings.Repeat("憶", 200)
+
+	for id, content := range map[string]string{
+		"multibyte-over-1":  overRunes,
+		"multibyte-under-1": underRunes,
+	} {
+		res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+			Name: "memory_remember",
+			Arguments: map[string]any{
+				"content": content, "tier": "semantic", "id": id,
+			},
+		})
+		if err != nil {
+			t.Fatalf("remember %s: %v", id, err)
+		}
+		structured(t, res, &struct{}{})
+	}
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_recall",
+		Arguments: map[string]any{
+			"query":           "記 憶",
+			"limit":           5,
+			"response_format": "concise",
+		},
+	})
+	if err != nil {
+		t.Fatalf("recall concise: %v", err)
+	}
+	var concise struct {
+		Results []struct {
+			ID      string `json:"id"`
+			Content string `json:"content"`
+		} `json:"results"`
+	}
+	structured(t, res, &concise)
+
+	var over, under string
+	for _, item := range concise.Results {
+		switch item.ID {
+		case "multibyte-over-1":
+			over = item.Content
+		case "multibyte-under-1":
+			under = item.Content
+		}
+	}
+	if over == "" || under == "" {
+		t.Fatalf("concise recall did not return both multi-byte memories: %+v", concise.Results)
+	}
+
+	// Over 240 runes: truncated to exactly 240 runes + "…".
+	wantOver := strings.Repeat("記", 240) + "…"
+	if over != wantOver {
+		t.Fatalf("over-240-rune content: got %d runes, want exactly 240 runes + ellipsis", len([]rune(over)))
+	}
+
+	// Under 240 runes (but over 240 bytes): verbatim, no spurious ellipsis.
+	if under != underRunes {
+		t.Fatalf("under-240-rune content must be returned verbatim without ellipsis; got %d runes, ends with %q",
+			len([]rune(under)), under[len(under)-3:])
+	}
+}
+
 func TestRecallAndBriefingIncludeCreatedAtAndTags(t *testing.T) {
 	cs := connect(t)
 	ctx := context.Background()

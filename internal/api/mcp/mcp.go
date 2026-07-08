@@ -344,7 +344,8 @@ type recallArgs struct {
 	Scope             string            `json:"scope,omitempty" jsonschema:"'subtree' also searches nested namespaces; default 'exact'"`
 	AsOf              string            `json:"as_of,omitempty" jsonschema:"RFC3339 time for time-travel recall (facts true then)"`
 	Namespace         string            `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
-	ResponseFormat    string            `json:"response_format,omitempty" jsonschema:"concise (truncate) or detailed (default: full)"`
+	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
+	ResponseFormat string `json:"response_format,omitempty" jsonschema:"'concise' returns summary-or-truncated content (~1 line each; fetch full text with memory_get); 'detailed' (default) returns full content"`
 }
 
 type recallItem struct {
@@ -358,25 +359,23 @@ type recallItem struct {
 	Tags       []string `json:"tags,omitempty"`
 }
 
-// conciseContentMax is the character limit for concise content (before truncation).
+// conciseContentMax is the rune limit for concise content (before truncation).
 const conciseContentMax = 240
 
 // conciseContent returns a concise representation of memory content: the summary
-// if present, or the first ~240 chars (truncated on a rune boundary) with "…" suffix
-// if no summary. Used when response_format="concise" for token-efficient recall.
+// if present, or the first 240 runes with a "…" suffix if no summary. Both the
+// truncation decision and the cut are in runes — deciding on bytes would append
+// a spurious "…" to multi-byte content under the rune limit, and cutting on
+// bytes could split a UTF-8 sequence. Used when response_format="concise".
 func conciseContent(m *memory.Memory) string {
 	if m.Summary != "" {
 		return m.Summary
 	}
-	if len(m.Content) <= conciseContentMax {
+	runes := []rune(m.Content)
+	if len(runes) <= conciseContentMax {
 		return m.Content
 	}
-	// Truncate on rune boundary to avoid cutting multi-byte UTF-8 sequences.
-	runes := []rune(m.Content)
-	if len(runes) > conciseContentMax {
-		runes = runes[:conciseContentMax]
-	}
-	return string(runes) + "…"
+	return string(runes[:conciseContentMax]) + "…"
 }
 
 func scoredItem(s store.Scored, responseFormat string) recallItem {
