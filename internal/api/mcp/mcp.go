@@ -20,6 +20,27 @@ import (
 	"github.com/eleboucher/memini/internal/version"
 )
 
+// boolPtr returns a pointer to a bool value.
+func boolPtr(b bool) *bool { return &b }
+
+// Annotation sets for tool discovery and auto-approval by MCP clients.
+var (
+	readOnly = &mcpsdk.ToolAnnotations{
+		ReadOnlyHint:  true,
+		OpenWorldHint: boolPtr(false),
+	}
+	additive = &mcpsdk.ToolAnnotations{
+		DestructiveHint: boolPtr(false),
+		IdempotentHint:  true,
+		OpenWorldHint:   boolPtr(false),
+	}
+	destructive = &mcpsdk.ToolAnnotations{
+		DestructiveHint: boolPtr(true),
+		IdempotentHint:  true,
+		OpenWorldHint:   boolPtr(false),
+	}
+)
+
 // NewServer builds an MCP server exposing memini's memory tools. defaultNS is
 // used whenever a tool call omits the namespace argument.
 func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
@@ -32,38 +53,52 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "memory_remember",
+		Title:       "Remember a fact",
 		Description: "Store a memory for later recall. Returns the new memory's ID.",
+		Annotations: additive,
 	}, h.remember)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name: "memory_recall",
+		Name:  "memory_recall",
+		Title: "Recall memories",
 		Description: "Recall relevant memories via hybrid (semantic + keyword) search. " +
 			"Supports time-travel (as_of) and reading nested namespaces (scope=subtree). " +
 			"When the current session's turns are being captured as memories, pass " +
 			"exclude_metadata {\"session_id\": \"<current session id>\"} so the session's " +
 			"own captured turns are not echoed back as memory.",
+		Annotations: readOnly,
 	}, h.recall)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name: "memory_briefing",
+		Name:  "memory_briefing",
+		Title: "Session briefing",
 		Description: "Layered session-start briefing for this namespace — pinned context, " +
 			"durable facts, how-to procedures, and recent activity — in one query-less call. " +
 			"Call it when a session opens to orient yourself.",
+		Annotations: readOnly,
 	}, h.briefing)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "memory_answer",
+		Title:       "Answer from memory",
 		Description: "Recall relevant memories and answer a question grounded on them (requires an LLM).",
+		Annotations: readOnly,
 	}, h.answer)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name: "memory_list",
+		Name:  "memory_list",
+		Title: "Browse memories",
 		Description: "Browse memories without a query — filter by tier, tags, or metadata " +
 			"(e.g. all procedural memories, or everything tagged/categorized X). Newest first.",
+		Annotations: readOnly,
 	}, h.list)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "memory_get",
+		Title:       "Get a memory",
 		Description: "Fetch a single memory by its ID.",
+		Annotations: readOnly,
 	}, h.get)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "memory_forget",
+		Title:       "Forget a memory",
 		Description: "Delete a memory by its ID.",
+		Annotations: destructive,
 	}, h.forget)
 
 	return s

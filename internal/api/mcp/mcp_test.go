@@ -569,3 +569,44 @@ func TestRememberPositiveTTL(t *testing.T) {
 		t.Fatalf("ttl_seconds=3600 produced expiry %v after creation, want 1h", d)
 	}
 }
+
+func listTools(t *testing.T) map[string]*mcpsdk.Tool {
+	t.Helper()
+	cs := connect(t)
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	tools := make(map[string]*mcpsdk.Tool)
+	for _, tool := range res.Tools {
+		tools[tool.Name] = tool
+	}
+	return tools
+}
+
+func TestToolAnnotations(t *testing.T) {
+	tools := listTools(t)
+	want := map[string]struct{ readOnly, destructive bool }{
+		"memory_recall":   {readOnly: true},
+		"memory_get":      {readOnly: true},
+		"memory_list":     {readOnly: true},
+		"memory_briefing": {readOnly: true},
+		"memory_remember": {readOnly: false, destructive: false},
+		"memory_forget":   {readOnly: false, destructive: true},
+	}
+	for name, w := range want {
+		tool := tools[name]
+		if tool.Annotations == nil {
+			t.Fatalf("%s: no annotations", name)
+		}
+		if tool.Annotations.ReadOnlyHint != w.readOnly {
+			t.Errorf("%s readOnlyHint: got %v, want %v", name, tool.Annotations.ReadOnlyHint, w.readOnly)
+		}
+		if !w.readOnly && (tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint != w.destructive) {
+			t.Errorf("%s destructiveHint", name)
+		}
+		if tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint {
+			t.Errorf("%s openWorldHint should be false", name)
+		}
+	}
+}
