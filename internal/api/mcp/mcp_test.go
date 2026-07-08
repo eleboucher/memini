@@ -1169,6 +1169,173 @@ func TestRecallInvalidTierListsValidValues(t *testing.T) {
 	}
 }
 
+// TestRecallResponseFormatConcise pins that memory_recall with response_format="concise"
+// returns truncated content (~240 chars) for memories without a summary, but
+// returns the summary verbatim if one exists. Default/omitted response_format
+// returns full content for backward compatibility.
+func TestRecallResponseFormatConcise(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	// Remember a long memory without a summary
+	longContent := strings.Repeat("the deployment pipeline runs tests in parallel across 16 cores to minimize latency. ", 30)
+	if len(longContent) < 2000 {
+		t.Fatalf("setup: long content must be >2000 chars, got %d", len(longContent))
+	}
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_remember",
+		Arguments: map[string]any{
+			"content": longContent,
+			"tier":    "semantic",
+			"id":      "long-memory-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("remember long: %v", err)
+	}
+	structured(t, res, &struct{}{})
+
+	// Remember a memory with a summary
+	summaryText := "deployment pipeline runs tests in parallel"
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_remember",
+		Arguments: map[string]any{
+			"content": "this is a long detailed explanation about the deployment pipeline " + longContent,
+			"summary": summaryText,
+			"tier":    "semantic",
+			"id":      "summary-memory-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("remember with summary: %v", err)
+	}
+	structured(t, res, &struct{}{})
+
+	type recallResult struct {
+		Results []struct {
+			ID      string `json:"id"`
+			Content string `json:"content"`
+		} `json:"results"`
+	}
+
+	// Recall with response_format="detailed" → full content
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_recall",
+		Arguments: map[string]any{
+			"query":           "deployment pipeline",
+			"limit":           5,
+			"response_format": "detailed",
+		},
+	})
+	if err != nil {
+		t.Fatalf("recall detailed: %v", err)
+	}
+	var detailed recallResult
+	structured(t, res, &detailed)
+	if len(detailed.Results) < 2 {
+		t.Fatalf("recall returned %d results, want at least 2", len(detailed.Results))
+	}
+
+	// Find the two memories by ID
+	var longDetailedContent string
+	var summaryDetailedContent string
+	for _, item := range detailed.Results {
+		if item.ID == "long-memory-1" {
+			longDetailedContent = item.Content
+		}
+		if item.ID == "summary-memory-1" {
+			summaryDetailedContent = item.Content
+		}
+	}
+	if longDetailedContent == "" {
+		t.Fatal("detailed recall: long memory not found")
+	}
+	if summaryDetailedContent == "" {
+		t.Fatal("detailed recall: summary memory not found")
+	}
+	if len(longDetailedContent) < 2000 {
+		t.Fatalf("detailed recall: long memory should be >=2000 chars, got %d", len(longDetailedContent))
+	}
+
+	// Recall without response_format → full content (backward compat)
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_recall",
+		Arguments: map[string]any{
+			"query": "deployment pipeline",
+			"limit": 5,
+		},
+	})
+	if err != nil {
+		t.Fatalf("recall default: %v", err)
+	}
+	var defaultResult recallResult
+	structured(t, res, &defaultResult)
+	if len(defaultResult.Results) < 2 {
+		t.Fatalf("recall returned %d results, want at least 2", len(defaultResult.Results))
+	}
+
+	// Verify full content is returned by default (same as detailed)
+	var longDefaultContent string
+	for _, item := range defaultResult.Results {
+		if item.ID == "long-memory-1" {
+			longDefaultContent = item.Content
+		}
+	}
+	if longDefaultContent != longDetailedContent {
+		t.Fatalf("default recall should match detailed: got %d vs %d chars", len(longDefaultContent), len(longDetailedContent))
+	}
+
+	// Recall with response_format="concise" → truncated or summary
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_recall",
+		Arguments: map[string]any{
+			"query":           "deployment pipeline",
+			"limit":           5,
+			"response_format": "concise",
+		},
+	})
+	if err != nil {
+		t.Fatalf("recall concise: %v", err)
+	}
+	var concise recallResult
+	structured(t, res, &concise)
+	if len(concise.Results) < 2 {
+		t.Fatalf("recall returned %d results, want at least 2", len(concise.Results))
+	}
+
+	// Find the memories by ID and verify concise behavior
+	var longConciseContent string
+	var summaryConciseContent string
+	for _, item := range concise.Results {
+		if item.ID == "long-memory-1" {
+			longConciseContent = item.Content
+		}
+		if item.ID == "summary-memory-1" {
+			summaryConciseContent = item.Content
+		}
+	}
+	if longConciseContent == "" {
+		t.Fatal("concise recall: long memory not found")
+	}
+	if summaryConciseContent == "" {
+		t.Fatal("concise recall: summary memory not found")
+	}
+
+	// Long memory without summary should be truncated
+	if len(longConciseContent) > 250 {
+		t.Fatalf("concise recall: long memory should be truncated to ~240 chars, got %d", len(longConciseContent))
+	}
+	if !strings.HasSuffix(longConciseContent, "…") {
+		t.Fatalf("concise recall: truncated content should end with …, got: %q", longConciseContent)
+	}
+
+	// Memory with summary should return the summary verbatim
+	if summaryConciseContent != summaryText {
+		t.Fatalf("concise recall: summary memory should return summary verbatim %q, got %q", summaryText, summaryConciseContent)
+	}
+}
+
 func TestRecallAndBriefingIncludeCreatedAtAndTags(t *testing.T) {
 	cs := connect(t)
 	ctx := context.Background()

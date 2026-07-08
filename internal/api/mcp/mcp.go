@@ -344,6 +344,7 @@ type recallArgs struct {
 	Scope             string            `json:"scope,omitempty" jsonschema:"'subtree' also searches nested namespaces; default 'exact'"`
 	AsOf              string            `json:"as_of,omitempty" jsonschema:"RFC3339 time for time-travel recall (facts true then)"`
 	Namespace         string            `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+	ResponseFormat    string            `json:"response_format,omitempty" jsonschema:"concise (truncate) or detailed (default: full)"`
 }
 
 type recallItem struct {
@@ -357,9 +358,34 @@ type recallItem struct {
 	Tags       []string `json:"tags,omitempty"`
 }
 
-func scoredItem(s store.Scored) recallItem {
+// conciseContentMax is the character limit for concise content (before truncation).
+const conciseContentMax = 240
+
+// conciseContent returns a concise representation of memory content: the summary
+// if present, or the first ~240 chars (truncated on a rune boundary) with "…" suffix
+// if no summary. Used when response_format="concise" for token-efficient recall.
+func conciseContent(m *memory.Memory) string {
+	if m.Summary != "" {
+		return m.Summary
+	}
+	if len(m.Content) <= conciseContentMax {
+		return m.Content
+	}
+	// Truncate on rune boundary to avoid cutting multi-byte UTF-8 sequences.
+	runes := []rune(m.Content)
+	if len(runes) > conciseContentMax {
+		runes = runes[:conciseContentMax]
+	}
+	return string(runes) + "…"
+}
+
+func scoredItem(s store.Scored, responseFormat string) recallItem {
+	content := s.Memory.Content
+	if responseFormat == "concise" {
+		content = conciseContent(s.Memory)
+	}
 	return recallItem{
-		ID: s.Memory.ID, Content: s.Memory.Content, Tier: string(s.Memory.Tier),
+		ID: s.Memory.ID, Content: content, Tier: string(s.Memory.Tier),
 		Level: string(s.Memory.Level), Score: s.Score, Confidence: s.Memory.Confidence,
 		CreatedAt: s.Memory.CreatedAt.Format(time.RFC3339), Tags: s.Memory.Tags,
 	}
@@ -417,7 +443,7 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 	}
 	out := recallResult{Results: make([]recallItem, len(res))}
 	for i, s := range res {
-		out.Results[i] = scoredItem(s)
+		out.Results[i] = scoredItem(s, in.ResponseFormat)
 	}
 	if degraded != "" {
 		out.Degraded = "keyword_only"
@@ -534,7 +560,7 @@ func (t *tools) answer(ctx context.Context, _ *mcpsdk.CallToolRequest, in answer
 	}
 	out := answerResult{Answer: res.Answer, Sources: make([]recallItem, len(res.Sources))}
 	for i, s := range res.Sources {
-		out.Sources[i] = scoredItem(s)
+		out.Sources[i] = scoredItem(s, "")
 	}
 	return nil, out, nil
 }
