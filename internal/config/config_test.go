@@ -77,6 +77,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.PromoteMinAccess != 3 {
 		t.Errorf("PromoteMinAccess = %d, want 3", cfg.PromoteMinAccess)
 	}
+	if cfg.BackfillInterval != time.Minute {
+		t.Errorf("BackfillInterval = %v, want 1m", cfg.BackfillInterval)
+	}
 	if cfg.DefaultNamespace != "stable-test-cwd" {
 		t.Errorf("DefaultNamespace = %q, want stable-test-cwd", cfg.DefaultNamespace)
 	}
@@ -269,7 +272,7 @@ var meminiEnvKeys = []string{
 	"MEMINI_RERANK", "MEMINI_RERANK_MODEL", "MEMINI_RERANK_API_KEY",
 	"MEMINI_RERANK_TIMEOUT", "MEMINI_RERANK_MAX_BATCH_CHARS",
 	"MEMINI_CONSOLIDATE_MODE", "MEMINI_CONSOLIDATE_MIN_SCORE",
-	"MEMINI_PROMOTE_INTERVAL", "MEMINI_PROMOTE_MIN_ACCESS",
+	"MEMINI_PROMOTE_INTERVAL", "MEMINI_PROMOTE_MIN_ACCESS", "MEMINI_BACKFILL_INTERVAL",
 	"MEMINI_SWEEP_INTERVAL", "MEMINI_SHORT_TERM_CAP", "MEMINI_UI_ENABLED",
 	"MEMINI_API_KEY",
 	"MEMINI_DEFAULT_NAMESPACE", "MEMINI_NAMESPACE",

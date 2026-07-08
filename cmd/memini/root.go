@@ -266,6 +266,7 @@ func buildServiceStack(
 	workers.Go(func() { svc.StartConsolidator(workerCtx) })
 	workers.Go(func() { svc.StartDistillBatcher(workerCtx) })
 	workers.Go(func() { svc.RunPromoter(workerCtx, cfg.PromoteInterval) })
+	workers.Go(func() { svc.RunEmbedBackfill(workerCtx, cfg.BackfillInterval) })
 	sweeper := maintenance.NewSweeper(st, log, maintenance.SweeperConfig{
 		Interval:     cfg.SweepInterval,
 		ShortTermCap: cfg.ShortTermCap,

@@ -223,6 +223,11 @@ type Config struct {
 	// considered for promotion.
 	PromoteMinAccess int `env:"MEMINI_PROMOTE_MIN_ACCESS" envDefault:"3"`
 
+	// BackfillInterval is how often the vector backfill loop re-embeds
+	// memories left vectorless by a degraded write (metadata pending_embed);
+	// 0 disables it.
+	BackfillInterval time.Duration `env:"MEMINI_BACKFILL_INTERVAL" envDefault:"1m"`
+
 	// SweepInterval is how often the decay sweeper purges expired memories.
 	SweepInterval time.Duration `env:"MEMINI_SWEEP_INTERVAL" envDefault:"1h"`
 	// ShortTermCap bounds short-term (working+episodic) memories per namespace;

@@ -144,6 +144,9 @@ type Metrics interface {
 	// TierClassified records an omitted-tier write the marker classifier
 	// routed to a durable tier; tier is "semantic" or "procedural".
 	TierClassified(tier string)
+	// EmbedBackfillPending reports the number of memories still marked
+	// pending_embed after one backfill tick (0 once the queue is drained).
+	EmbedBackfillPending(n int)
 }
 
 type nopMetrics struct{}
@@ -167,6 +170,7 @@ func (nopMetrics) DedupTombstoned(int)                 {}
 func (nopMetrics) CorroborateResult(string)            {}
 func (nopMetrics) ContradictResult(string)             {}
 func (nopMetrics) TierClassified(string)               {}
+func (nopMetrics) EmbedBackfillPending(int)            {}
 
 // ErrInvalidInput marks errors caused by the caller's request (missing fields,
 // unknown tiers) as opposed to backend failures. API layers map it to 400;

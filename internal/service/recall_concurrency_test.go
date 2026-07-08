@@ -77,10 +77,12 @@ func (e errEmbedder) Dims() int { return e.dims }
 // countingMetrics counts recall error and keyword-only-degrade events;
 // everything else is a no-op. Safe for concurrent use.
 type countingMetrics struct {
-	mu               sync.Mutex
-	recallErr        int
-	degraded         map[string]int
-	rememberDegraded map[string]int
+	mu                   sync.Mutex
+	recallErr            int
+	degraded             map[string]int
+	rememberDegraded     map[string]int
+	embedBackfillPending int
+	embedBackfillCalls   int
 }
 
 func (m *countingMetrics) RecallResult(result, _, _ string) {
@@ -122,6 +124,12 @@ func (m *countingMetrics) DedupTombstoned(int)              {}
 func (m *countingMetrics) CorroborateResult(string)         {}
 func (m *countingMetrics) ContradictResult(string)          {}
 func (m *countingMetrics) TierClassified(string)            {}
+func (m *countingMetrics) EmbedBackfillPending(n int) {
+	m.mu.Lock()
+	m.embedBackfillPending = n
+	m.embedBackfillCalls++
+	m.mu.Unlock()
+}
 
 // TestRecallEmbedErrorFailsOnce confirms an embed failure still hard-fails
 // recall with the original wrap and reports the error metric exactly once.
