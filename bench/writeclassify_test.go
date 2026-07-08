@@ -17,6 +17,7 @@ import (
 	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/service"
+	"github.com/eleboucher/memini/internal/store"
 	"github.com/eleboucher/memini/internal/store/sqlitevec"
 )
 
@@ -596,4 +597,164 @@ func TestWriteClassifyLiveSplitDedupLLM(t *testing.T) {
 	}
 	svc.WaitBackground()
 	sb.report(t)
+}
+
+// TestWriteClassifyDiagnose logs which pairs are misclassified and whether
+// the actual match was in the consolidation candidate set. This distinguishes
+// retrieval misses (candidate not found) from decision misses (LLM says new
+// despite seeing the match). Uses sync consolidation.
+//
+// Run: MEMINI_EMBED_BASE_URL=... MEMINI_LLM_BASE_URL=... go test -tags bench -run TestWriteClassifyDiagnose -timeout 30m ./bench/ -v
+func TestWriteClassifyDiagnose(t *testing.T) {
+	ctx := context.Background()
+
+	baseURL := envOr("MEMINI_EMBED_BASE_URL", "http://127.0.0.1:8001/v1")
+	model := envOr("MEMINI_EMBED_MODEL", "text-embedding-qwen3-embedding-0.6b")
+	dims := envIntOr("MEMINI_EMBED_DIMS", 1024)
+
+	e, err := embed.NewOpenAI(embed.OpenAIConfig{BaseURL: baseURL, Model: model, Dims: dims, HTTPClient: httpClientWithHeaders()})
+	if err != nil {
+		t.Skipf("embedder config: %v", err)
+	}
+	probe, err := e.Embed(ctx, []string{"connectivity probe"})
+	if err != nil {
+		t.Skipf("live embedder unreachable: %v", err)
+	}
+	if len(probe) != 1 || len(probe[0]) != dims {
+		t.Skipf("embedder dim mismatch: %d vs %d", len(probe[0]), dims)
+	}
+
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "wc_diag.db"), dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	now := time.Unix(1_700_000_000, 0).UTC()
+	llmURL := os.Getenv("MEMINI_LLM_BASE_URL")
+	if llmURL == "" {
+		t.Skip("MEMINI_LLM_BASE_URL not set")
+	}
+	llmModel := envOr("MEMINI_LLM_MODEL", "qwen3-coder-30b-a3b-instruct")
+	client, cerr := llm.NewOpenAI(llm.Config{BaseURL: llmURL, Model: llmModel, HTTPClient: httpClientWithHeaders()})
+	if cerr != nil {
+		t.Fatalf("llm config: %v", cerr)
+	}
+	opts := []service.Option{
+		service.WithClock(func() time.Time { return now }),
+		service.WithSyncReinforce(),
+		service.WithWriteDedup(0.625, service.WriteDedupHint),
+		service.WithConsolidator(client),
+		service.WithConsolidateMode(service.ConsolidateSync),
+		service.WithConsolidateMinScore(0.0), // disable gate to see all candidates
+		service.WithContradictionDownrank(0.625),
+		service.WithCorroboration(0.70),
+	}
+	svc := service.New(st, e, opts...)
+
+	const ns = "wc-diag"
+	var misses int
+
+	allPairs := append(buildPairsFromTriples(), buildPairsFromQuads()...)
+	for _, pair := range allPairs {
+		// Write base.
+		baseRes, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: ns, Content: pair.base, Tier: memory.TierSemantic,
+		})
+		if err != nil || baseRes == nil {
+			continue
+		}
+		baseID := baseRes.ID
+
+		// Write candidate.
+		var hint service.MergeHint
+		var autoSuperseded bool
+		candRes, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: ns, Content: pair.candidate, Tier: memory.TierSemantic,
+			MergeHint: &hint, AutoSuperseded: &autoSuperseded,
+		})
+		if err != nil || candRes == nil {
+			continue
+		}
+
+		// Classify outcome.
+		out := writeOutcome{}
+		if candRes.ID == baseID {
+			out.merged = true
+		} else {
+			out.wasNew = true
+		}
+		if hint.SimilarID != "" {
+			out.hinted = true
+		}
+		if autoSuperseded {
+			out.contradicted = true
+		}
+		if candRes.ID != baseID && !autoSuperseded {
+			base, err := svc.Get(ctx, ns, baseID)
+			if err == nil && base.SupersededBy != nil && *base.SupersededBy == candRes.ID {
+				out.contradicted = true
+				out.wasNew = false
+			}
+		}
+
+		// Check if this is a miss (expected dup/contra but classified as new).
+		predCoalesce := out.merged || out.hinted
+		predContra := out.contradicted
+		isMiss := false
+		switch pair.expect {
+		case wantCoalesce:
+			if !predCoalesce && !predContra {
+				isMiss = true
+			}
+		case wantContradict:
+			if !predContra {
+				isMiss = true
+			}
+		}
+		if !isMiss {
+			continue
+		}
+		misses++
+
+		// For misses, check if baseID was in the candidate set by doing a
+		// fresh vector search for the candidate content.
+		candVec, _ := embed.EmbedOne(ctx, e, pair.candidate)
+		cands, _ := st.VectorSearch(ctx, ns, candVec,
+			store.Filter{Now: now}, 20)
+
+		found := false
+		var baseScore float64
+		for _, c := range cands {
+			if c.Memory.ID == baseID {
+				found = true
+				baseScore = c.Score
+				break
+			}
+		}
+
+		t.Logf("MISS [%s] base=%q cand=%q | base_in_top20=%v score=%.4f | pred=new merged=%v hinted=%v contrad=%v",
+			pairLabel(pair.expect), truncate(pair.base, 60), truncate(pair.candidate, 60),
+			found, baseScore, out.merged, out.hinted, out.contradicted)
+	}
+	t.Logf("total misses: %d / %d pairs", misses, len(allPairs))
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+func pairLabel(e writeExpect) string {
+	switch e {
+	case wantNew:
+		return "new"
+	case wantCoalesce:
+		return "dup"
+	case wantContradict:
+		return "contra"
+	}
+	return "?"
 }
