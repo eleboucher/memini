@@ -989,6 +989,12 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		LastAccessedAt: now,
 		Embedding:      vec,
 	}
+	// An update by ID preserves the original creation time, so a tag- or
+	// metadata-only edit doesn't make an old memory appear freshly created and
+	// win every "prefer the most recent" recency conflict in recall/answer.
+	if existing != nil {
+		m.CreatedAt = existing.CreatedAt
+	}
 	if exp := resolveExpiry(now, tier, in.TTL); exp != nil {
 		m.ExpiresAt = exp
 		markCustomTTL(m, in.TTL)

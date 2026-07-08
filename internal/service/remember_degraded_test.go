@@ -256,3 +256,43 @@ func TestRememberUpdateRecoveryClearsPendingEmbed(t *testing.T) {
 		t.Fatalf("stored Metadata[pending_embed] = %v, want absent", stored.Metadata["pending_embed"])
 	}
 }
+
+// TestRememberUpdatePreservesCreatedAt confirms that an update by ID keeps the
+// original creation time, so a tag- or metadata-only edit on an old memory
+// does not make it appear freshly created and win every "prefer the most
+// recent" recency conflict in recall/answer. UpdatedAt advances to now.
+func TestRememberUpdatePreservesCreatedAt(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	birth := time.Unix(1_700_000_000, 0).UTC()
+	clock := birth
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(),
+		service.WithClock(func() time.Time { return clock }))
+
+	created, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "original fact", Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("seed remember: %v", err)
+	}
+	if !created.CreatedAt.Equal(birth) {
+		t.Fatalf("CreatedAt = %v, want %v", created.CreatedAt, birth)
+	}
+
+	// Advance the clock well past the creation time and update tags only.
+	later := birth.Add(72 * time.Hour)
+	clock = later
+	updated, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "alice", ID: created.ID, Content: "original fact", Tier: memory.TierSemantic,
+		Tags: []string{"refreshed"},
+	})
+	if err != nil {
+		t.Fatalf("update remember: %v", err)
+	}
+	if !updated.CreatedAt.Equal(birth) {
+		t.Fatalf("CreatedAt = %v after update, want preserved %v", updated.CreatedAt, birth)
+	}
+	if !updated.UpdatedAt.Equal(later) {
+		t.Fatalf("UpdatedAt = %v, want advanced %v", updated.UpdatedAt, later)
+	}
+}
