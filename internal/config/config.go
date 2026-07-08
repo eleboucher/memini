@@ -215,7 +215,7 @@ type Config struct {
 	ConsolidateMode string `env:"MEMINI_CONSOLIDATE_MODE" envDefault:"async"`
 	// ConsolidateMinScore gates the LLM: it runs only when the nearest candidate
 	// scores at least this. 0 disables the gate.
-	ConsolidateMinScore float64 `env:"MEMINI_CONSOLIDATE_MIN_SCORE" envDefault:"0.6"`
+	ConsolidateMinScore float64 `env:"MEMINI_CONSOLIDATE_MIN_SCORE" envDefault:"0.3"`
 
 	// Promotion (episodic→semantic distillation). Uses the LLM when configured,
 	// the marker extractor otherwise, so it also runs LLM-less.

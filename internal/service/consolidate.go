@@ -15,7 +15,9 @@ import (
 
 // consolidateCandidates is how many near-neighbours are offered to the LLM when
 // deciding whether a new memory is novel, a refinement, or a contradiction.
-const consolidateCandidates = 5
+// 10 matches mem0's candidate count; the LLM needs enough context to find the
+// actual match when it ranks below the nearest by vector similarity alone.
+const consolidateCandidates = 10
 
 // Async-consolidation tuning.
 const (
@@ -142,20 +144,49 @@ func (s *Service) enqueueConsolidate(namespace, id string) {
 
 // candidates returns the near-neighbour durable memories offered to the LLM for
 // consolidation, optionally excluding excludeID (the memory itself, once stored).
+// Uses hybrid retrieval: vector search for semantic similarity + keyword search
+// for shared terms, fused via dedup-by-ID. Vector-only misses value-swap
+// contradictions ("Postmark"→"SES") that share keywords but have different
+// embeddings; the keyword leg catches those.
 func (s *Service) candidates(ctx context.Context, m *memory.Memory, excludeID string) ([]store.Scored, error) {
 	limit := consolidateCandidates
 	if excludeID != "" {
 		limit++ // room to drop the self-match
 	}
-	cands, err := s.store.VectorSearch(ctx, m.Namespace, m.Embedding,
-		store.Filter{Tiers: []memory.Tier{memory.TierSemantic, memory.TierProcedural}, Now: s.now()}, limit)
+	f := store.Filter{Tiers: []memory.Tier{memory.TierSemantic, memory.TierProcedural}, Now: s.now()}
+
+	// Vector leg: semantic similarity.
+	vecCands, err := s.store.VectorSearch(ctx, m.Namespace, m.Embedding, f, limit)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]store.Scored, 0, len(cands))
-	for _, c := range cands {
+
+	// Keyword leg: shared terms (BM25/FTS5). Catches value-swap contradictions
+	// that share keywords but have different embeddings.
+	kwCands, err := s.store.KeywordSearch(ctx, m.Namespace, m.Content, f, limit)
+	if err != nil {
+		// Best-effort: if keyword search fails, use vector results alone.
+		kwCands = nil
+	}
+
+	// Fuse: dedup by memory ID, keeping the higher score. Vector results
+	// come first (higher confidence for semantic match), keyword results fill
+	// in any gaps the vector leg missed.
+	seen := make(map[string]struct{}, len(vecCands)+len(kwCands))
+	out := make([]store.Scored, 0, len(vecCands)+len(kwCands))
+	for _, c := range vecCands {
 		if c.Memory.ID == excludeID {
 			continue
+		}
+		seen[c.Memory.ID] = struct{}{}
+		out = append(out, c)
+	}
+	for _, c := range kwCands {
+		if c.Memory.ID == excludeID {
+			continue
+		}
+		if _, ok := seen[c.Memory.ID]; ok {
+			continue // already in vector results
 		}
 		out = append(out, c)
 	}

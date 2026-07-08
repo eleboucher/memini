@@ -65,8 +65,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ConsolidateMode != "async" {
 		t.Errorf("ConsolidateMode = %q, want async", cfg.ConsolidateMode)
 	}
-	if cfg.ConsolidateMinScore != 0.6 {
-		t.Errorf("ConsolidateMinScore = %v, want 0.6", cfg.ConsolidateMinScore)
+	if cfg.ConsolidateMinScore != 0.3 {
+		t.Errorf("ConsolidateMinScore = %v, want 0.3", cfg.ConsolidateMinScore)
 	}
 	if cfg.RerankMaxBatchChars != 6000 {
 		t.Errorf("RerankMaxBatchChars = %d, want 6000", cfg.RerankMaxBatchChars)

@@ -657,7 +657,7 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 		store:                st,
 		embedder:             e,
 		consolidateMode:      ConsolidateAsync,
-		consolidateMinScore:  0.6,
+		consolidateMinScore:  0.3,
 		promoteMinAccess:     3,
 		rerankTimeout:        defaultRerankTimeout,
 		scoreFusionAlpha:     search.DefaultFusionAlpha, // convex score fusion by default; negative selects RRF

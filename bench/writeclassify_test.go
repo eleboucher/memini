@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -757,4 +758,163 @@ func pairLabel(e writeExpect) string {
 		return "contra"
 	}
 	return "?"
+}
+
+// TestGateSweep shows the score distribution of the nearest candidate for each
+// pair class (dup/contra/new) and what % of dup/contra would be gated at each
+// threshold. This is instant (no LLM) and identifies the minimum gate that
+// catches all misses.
+//
+// Run: MEMINI_EMBED_BASE_URL=... go test -tags bench -run TestGateSweep -timeout 5m ./bench/ -v
+func TestGateSweep(t *testing.T) {
+	ctx := context.Background()
+
+	baseURL := envOr("MEMINI_EMBED_BASE_URL", "http://127.0.0.1:8001/v1")
+	model := envOr("MEMINI_EMBED_MODEL", "text-embedding-qwen3-embedding-0.6b")
+	dims := envIntOr("MEMINI_EMBED_DIMS", 1024)
+
+	e, err := embed.NewOpenAI(embed.OpenAIConfig{BaseURL: baseURL, Model: model, Dims: dims, HTTPClient: httpClientWithHeaders()})
+	if err != nil {
+		t.Skipf("embedder config: %v", err)
+	}
+	probe, err := e.Embed(ctx, []string{"connectivity probe"})
+	if err != nil {
+		t.Skipf("live embedder unreachable: %v", err)
+	}
+	if len(probe) != 1 || len(probe[0]) != dims {
+		t.Skipf("embedder dim mismatch: %d vs %d", len(probe[0]), dims)
+	}
+
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "gate_sweep.db"), dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	now := time.Unix(1_700_000_000, 0).UTC()
+	svc := service.New(st, e,
+		service.WithClock(func() time.Time { return now }),
+		service.WithSyncReinforce(),
+		service.WithWriteDedup(0.625, service.WriteDedupHint),
+	)
+	const ns = "gate-sweep"
+
+	type scoreRec struct {
+		expect writeExpect
+		score  float64
+	}
+	var records []scoreRec
+
+	allPairs := append(buildPairsFromTriples(), buildPairsFromQuads()...)
+	for _, pair := range allPairs {
+		// Write base.
+		baseRes, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: ns, Content: pair.base, Tier: memory.TierSemantic,
+		})
+		if err != nil || baseRes == nil {
+			continue
+		}
+		baseID := baseRes.ID
+
+		// Vector search for the candidate content (no write, no LLM).
+		candVec, err := embed.EmbedOne(ctx, e, pair.candidate)
+		if err != nil {
+			continue
+		}
+		cands, err := st.VectorSearch(ctx, ns, candVec,
+			store.Filter{Tiers: []memory.Tier{memory.TierSemantic}, Now: now}, 10)
+		if err != nil {
+			continue
+		}
+
+		// Find the base memory's score in the results.
+		var baseScore float64
+		found := false
+		for _, c := range cands {
+			if c.Memory.ID == baseID {
+				baseScore = c.Score
+				found = true
+				break
+			}
+		}
+		if !found {
+			// Base not in top-10 — score effectively 0 for gate purposes.
+			baseScore = 0
+		}
+		records = append(records, scoreRec{expect: pair.expect, score: baseScore})
+	}
+
+	// Score distribution per class.
+	t.Logf("========== Gate Sweep: Score Distribution ==========")
+	t.Logf("total pairs: %d", len(records))
+
+	thresholds := []float64{0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6}
+
+	for _, class := range []writeExpect{wantCoalesce, wantContradict, wantNew} {
+		var scores []float64
+		var label string
+		switch class {
+		case wantCoalesce:
+			label = "dup"
+		case wantContradict:
+			label = "contra"
+		case wantNew:
+			label = "new"
+		}
+		for _, r := range records {
+			if r.expect == class {
+				scores = append(scores, r.score)
+			}
+		}
+		if len(scores) == 0 {
+			continue
+		}
+		sort.Float64s(scores)
+
+		p10 := scores[len(scores)/10]
+		p25 := scores[len(scores)/4]
+		p50 := scores[len(scores)/2]
+		p75 := scores[len(scores)*3/4]
+		p90 := scores[len(scores)*9/10]
+		min := scores[0]
+		max := scores[len(scores)-1]
+
+		t.Logf("")
+		t.Logf("%s (n=%d): min=%.3f p10=%.3f p25=%.3f p50=%.3f p75=%.3f p90=%.3f max=%.3f",
+			label, len(scores), min, p10, p25, p50, p75, p90, max)
+
+		// For each threshold, how many are gated (below threshold)?
+		for _, th := range thresholds {
+			below := 0
+			for _, s := range scores {
+				if s < th {
+					below++
+				}
+			}
+			t.Logf("  %s @ gate=%.1f: gated=%d/%d (%.0f%%)", label, th, below, len(scores), float64(below)/float64(len(scores))*100)
+		}
+	}
+
+	// Summary: for each threshold, what % of dup+contra would be missed (gated)?
+	t.Logf("")
+	t.Logf("========== Miss Rate by Gate Threshold ==========")
+	t.Logf("threshold | dup_miss | contra_miss | total_miss | new_wasted")
+	t.Logf("----------|----------|-------------|------------|-----------")
+	for _, th := range thresholds {
+		dupMiss, contraMiss, newWasted := 0, 0, 0
+		for _, r := range records {
+			if r.score < th {
+				switch r.expect {
+				case wantCoalesce:
+					dupMiss++
+				case wantContradict:
+					contraMiss++
+				case wantNew:
+					newWasted++
+				}
+			}
+		}
+		totalMiss := dupMiss + contraMiss
+		t.Logf("%.1f       | %d        | %d           | %d          | %d", th, dupMiss, contraMiss, totalMiss, newWasted)
+	}
 }
