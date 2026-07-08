@@ -68,7 +68,7 @@ jobs:
       # the default `go test ./...` (they need a live embedder and take minutes).
       # Compile them here and let them skip without an embedder, so they can't rot.
       - name: Compile-check bench harnesses
-        run: CGO_ENABLED=1 go test -race -count=1 -timeout 120s -tags bench ./bench/
+        run: CGO_ENABLED=1 go test -race -count=1 -timeout 120s -run=^$ -tags bench ./bench/
 
   plugins:
     runs-on: docker
