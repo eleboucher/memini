@@ -210,8 +210,11 @@ func (s *Store) addColumnIfMissing(ctx context.Context, table, column, decl stri
 }
 
 // Upsert inserts or replaces a memory and its vector/keyword index entries.
+// When m.Embedding is empty the row is stored with no vec_memories entry
+// (keyword index still written) — the write path used when embedding
+// generation is unavailable; any other length must equal the store's dims.
 func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
-	if len(m.Embedding) != s.dims {
+	if len(m.Embedding) != 0 && len(m.Embedding) != s.dims {
 		return fmt.Errorf("sqlitevec: embedding has %d dims, store expects %d", len(m.Embedding), s.dims)
 	}
 	metaJSON, err := json.Marshal(store.OrEmptyMap(m.Metadata))
@@ -222,9 +225,12 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 	if err != nil {
 		return fmt.Errorf("sqlitevec: marshal tags: %w", err)
 	}
-	vec, err := sqlitevec.SerializeFloat32(m.Embedding)
-	if err != nil {
-		return fmt.Errorf("sqlitevec: serialize embedding: %w", err)
+	var vec []byte
+	if len(m.Embedding) != 0 {
+		vec, err = sqlitevec.SerializeFloat32(m.Embedding)
+		if err != nil {
+			return fmt.Errorf("sqlitevec: serialize embedding: %w", err)
+		}
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -278,14 +284,19 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		}
 	}
 
-	// Rewrite the vector and FTS rows keyed by the stable rowid.
+	// Rewrite the vector and FTS rows keyed by the stable rowid. The DELETE
+	// always runs (even when the new embedding is empty) so a re-upsert that
+	// drops the vector removes the stale vec_memories row instead of leaving
+	// it orphaned and reachable by an unrelated future VectorSearch.
 	if _, err := tx.ExecContext(ctx, `DELETE FROM vec_memories WHERE rowid=?`, rowID); err != nil {
 		return fmt.Errorf("sqlitevec: clear vector: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO vec_memories(rowid, namespace, embedding) VALUES (?,?,?)`,
-		rowID, m.Namespace, vec); err != nil {
-		return fmt.Errorf("sqlitevec: insert vector: %w", err)
+	if len(m.Embedding) != 0 {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO vec_memories(rowid, namespace, embedding) VALUES (?,?,?)`,
+			rowID, m.Namespace, vec); err != nil {
+			return fmt.Errorf("sqlitevec: insert vector: %w", err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM fts_memories WHERE rowid=?`, rowID); err != nil {
 		return fmt.Errorf("sqlitevec: clear fts: %w", err)
@@ -630,7 +641,9 @@ func (s *Store) DeleteNamespace(ctx context.Context, namespace string) (int64, e
 // Reassign moves memories from fromNS to toNS, updating the namespace column
 // and rewriting the vec0 partition row (the FTS row carries no namespace). IDs
 // absent from fromNS are skipped; IDs are globally unique so a move never
-// collides in toNS.
+// collides in toNS. The lookup is a LEFT JOIN (not an inner join) because a
+// vectorless memory (see Upsert) has no vec_memories row at all — an inner
+// join would silently skip it as "not found" instead of moving it.
 func (s *Store) Reassign(ctx context.Context, fromNS string, ids []string, toNS string) (int64, error) {
 	if len(ids) == 0 || fromNS == toNS {
 		return 0, nil
@@ -646,7 +659,7 @@ func (s *Store) Reassign(ctx context.Context, fromNS string, ids []string, toNS 
 		var rowID int64
 		var emb []byte
 		err := tx.QueryRowContext(ctx,
-			`SELECT m.rowid, v.embedding FROM memories m JOIN vec_memories v ON v.rowid = m.rowid
+			`SELECT m.rowid, v.embedding FROM memories m LEFT JOIN vec_memories v ON v.rowid = m.rowid
 			 WHERE m.id = ? AND m.namespace = ?`, id, fromNS).Scan(&rowID, &emb)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue // not in the source namespace; skip
@@ -661,9 +674,11 @@ func (s *Store) Reassign(ctx context.Context, fromNS string, ids []string, toNS 
 		if _, err := tx.ExecContext(ctx, `DELETE FROM vec_memories WHERE rowid=?`, rowID); err != nil {
 			return moved, fmt.Errorf("sqlitevec: reassign clear vector: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO vec_memories(rowid, namespace, embedding) VALUES (?,?,?)`, rowID, toNS, emb); err != nil {
-			return moved, fmt.Errorf("sqlitevec: reassign insert vector: %w", err)
+		if emb != nil {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO vec_memories(rowid, namespace, embedding) VALUES (?,?,?)`, rowID, toNS, emb); err != nil {
+				return moved, fmt.Errorf("sqlitevec: reassign insert vector: %w", err)
+			}
 		}
 		moved++
 	}

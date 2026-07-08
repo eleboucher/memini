@@ -97,7 +97,7 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 			confidence       double precision,
 			fingerprint      text NOT NULL DEFAULT '',
 			level            text NOT NULL DEFAULT '',
-			embedding        vector(%d) NOT NULL,
+			embedding        vector(%d),
 			fts              tsvector GENERATED ALWAYS AS (
 				to_tsvector('english',
 					content || ' ' || summary || ' ' || memini_tags_to_text(tags))
@@ -114,6 +114,10 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS confidence double precision`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS fingerprint text NOT NULL DEFAULT ''`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS level text NOT NULL DEFAULT ''`,
+		// Allow a NULL embedding for vectorless rows (the write path used when
+		// embedding generation is unavailable — see Upsert). Idempotent: a no-op
+		// on a column that is already nullable, so this is safe on every Open.
+		`ALTER TABLE memories ALTER COLUMN embedding DROP NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_fingerprint ON memories(namespace, tier, fingerprint)`,
 		// Key/value store for store-level metadata (e.g. the embedding model the
 		// vectors were produced with — see EmbedModel/SetEmbedModel).
@@ -127,15 +131,25 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 	return nil
 }
 
-// Upsert inserts or replaces a memory. Returns ErrConflict when the ID already
-// exists under a different namespace.
+// Upsert inserts or replaces a memory. When m.Embedding is empty the row is
+// stored with a NULL embedding (keyword index still written) — the write path
+// used when embedding generation is unavailable; any other length must equal
+// the store's dims. Returns ErrConflict when the ID already exists under a
+// different namespace.
 func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
-	if len(m.Embedding) != s.dims {
+	if len(m.Embedding) != 0 && len(m.Embedding) != s.dims {
 		return fmt.Errorf("postgres: embedding has %d dims, store expects %d", len(m.Embedding), s.dims)
 	}
 	metaJSON, err := json.Marshal(store.OrEmptyMap(m.Metadata))
 	if err != nil {
 		return fmt.Errorf("postgres: marshal metadata: %w", err)
+	}
+	// A literal Go nil (not a typed nil *pgvector.Vector) so pgx's nil-value
+	// fast path encodes SQL NULL directly; pgvector.Vector.Value() has a value
+	// receiver, so calling it through a nil *Vector would panic instead.
+	var embArg any
+	if len(m.Embedding) != 0 {
+		embArg = pgvector.NewVector(m.Embedding)
 	}
 
 	tx, err := s.pool.Begin(ctx)
@@ -185,7 +199,7 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		m.Importance, m.CreatedAt, m.UpdatedAt, m.LastAccessedAt, m.AccessCount,
 		m.ExpiresAt, m.SupersededBy, m.ValidFrom, m.ValidTo, m.Confidence, memory.Fingerprint(m.Content),
 		string(m.Level),
-		pgvector.NewVector(m.Embedding))
+		embArg)
 	if err != nil {
 		return fmt.Errorf("postgres: upsert: %w", err)
 	}
@@ -351,7 +365,7 @@ func (s *Store) VectorSearch(ctx context.Context, namespace string, vec []float3
 	q := fmt.Sprintf(`
 		SELECT %s, embedding <-> %s AS distance
 		FROM memories
-		WHERE namespace = %s%s
+		WHERE namespace = %s AND embedding IS NOT NULL%s
 		ORDER BY embedding <-> %s
 		LIMIT %s`,
 		memoryColumns, qv, ns, where, qv, b.add(k))
