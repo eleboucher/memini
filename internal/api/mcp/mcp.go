@@ -602,6 +602,12 @@ func (t *tools) list(ctx context.Context, _ *mcpsdk.CallToolRequest, in listArgs
 	if err != nil {
 		return nil, listResult{}, err
 	}
+	// Clamp a negative offset to 0: limit+offset below would otherwise go
+	// <= 0, which the service layer treats as "no limit" — reintroducing
+	// the unbounded listing the default cap exists to prevent.
+	if in.Offset < 0 {
+		in.Offset = 0
+	}
 	limit := in.Limit
 	if limit <= 0 {
 		limit = defaultListLimit

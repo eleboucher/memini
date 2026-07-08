@@ -545,6 +545,21 @@ func TestListToolDefaultLimitAndOffset(t *testing.T) {
 	if len(listed.Memories) != 5 {
 		t.Fatalf("offset=20 should return the remaining 5, got %d", len(listed.Memories))
 	}
+
+	// A negative offset must not defeat the default cap: without clamping,
+	// limit+offset would be <= 0, which the service treats as "no limit"
+	// and all 25 memories would come back.
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_list",
+		Arguments: map[string]any{"offset": -20},
+	})
+	if err != nil {
+		t.Fatalf("list negative offset: %v", err)
+	}
+	structured(t, res, &listed)
+	if len(listed.Memories) != 20 {
+		t.Fatalf("offset=-20 should be clamped and keep the default cap of 20, got %d", len(listed.Memories))
+	}
 }
 
 func TestInvalidNamespaceIsRejected(t *testing.T) {
