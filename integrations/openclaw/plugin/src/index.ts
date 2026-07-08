@@ -654,10 +654,10 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
     {
       name: "memory_forget",
       description:
-        "Delete a memory from long-term memory (memini) by its id — use when a recalled memory is wrong, " +
-        "outdated, or poisoned. Get the id from memory_recall or memory_list. This is a soft delete " +
-        "(tombstone). To correct a fact, forget the stale one and remember the corrected version — this " +
-        "plugin talks to memini over REST, which has no partial-update endpoint.",
+        "Permanently delete a memory from long-term memory (memini) by its id — use when a recalled " +
+        "memory is wrong, outdated, or poisoned. Get the id from memory_recall or memory_list. To " +
+        "correct a fact, forget the stale one and remember the corrected version — this plugin talks " +
+        "to memini over REST, which has no partial-update endpoint.",
       parameters: Type.Object({
         id: Type.String({ description: "The id of the memory to forget (from memory_recall / memory_list)." }),
       }),

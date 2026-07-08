@@ -126,13 +126,21 @@ func (s *Server) MountUI(spa http.Handler) {
 // bearerAuth wraps h, requiring a valid bearer token.
 func bearerAuth(key string, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(token), []byte(key)) != 1 {
+		if !validBearer(r, key) {
 			http.Error(w, `{"error":"missing or invalid bearer token"}`, http.StatusUnauthorized)
 			return
 		}
 		h.ServeHTTP(w, r)
 	})
+}
+
+// validBearer reports whether r carries a bearer token matching key, compared
+// in constant time like the rest of the server's auth. Shared by bearerAuth
+// and the verbose healthz gate (see health.go) so both apply the identical
+// check.
+func validBearer(r *http.Request, key string) bool {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return subtle.ConstantTimeCompare([]byte(token), []byte(key)) == 1
 }
 
 // SetReady installs the readiness check used by /readyz.

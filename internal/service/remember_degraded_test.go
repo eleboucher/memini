@@ -209,3 +209,50 @@ func TestRememberUpdatePreservesPendingEmbed(t *testing.T) {
 		t.Fatalf("RememberDegraded(embed_error) = %d, want 1", m.rememberDegraded["embed_error"])
 	}
 }
+
+// TestRememberUpdateRecoveryClearsPendingEmbed confirms that once the embedder
+// recovers, updating a row left pending_embed="true" by an earlier degraded
+// write clears the flag: the stored metadata carries no pending_embed and the
+// row has a fresh vector, so it no longer reads as degraded and the backfill
+// gauge/next tick don't redundantly pick it up.
+func TestRememberUpdateRecoveryClearsPendingEmbed(t *testing.T) {
+	st := openTestStore(t)
+
+	degraded := service.New(st, errEmbedder{dims: dims}, service.WithSyncReinforce(),
+		service.WithWriteEmbedTimeout(time.Second))
+	created, err := degraded.Remember(context.Background(), service.RememberInput{
+		Namespace: "alice", Content: "original content", Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("seed degraded remember: %v", err)
+	}
+	if created.Metadata["pending_embed"] != "true" {
+		t.Fatalf("seed Metadata[pending_embed] = %v, want \"true\"", created.Metadata["pending_embed"])
+	}
+
+	// Mirror the mcp memory_update path: re-Get the row and reuse its
+	// Metadata map (carrying the stale pending_embed flag) as the update's
+	// input Metadata, now against a healthy embedder.
+	healthy := service.New(st, embedtest.New(dims), service.WithSyncReinforce())
+	updated, err := healthy.Remember(context.Background(), service.RememberInput{
+		Namespace: "alice", ID: created.ID, Content: "updated content", Tier: memory.TierSemantic,
+		Metadata: created.Metadata,
+	})
+	if err != nil {
+		t.Fatalf("recovery update: %v", err)
+	}
+	if _, ok := updated.Metadata["pending_embed"]; ok {
+		t.Fatalf("Metadata[pending_embed] = %v, want absent after a healthy re-embed", updated.Metadata["pending_embed"])
+	}
+	if len(updated.Embedding) == 0 {
+		t.Fatal("Embedding empty, want a vector on a successful re-embed")
+	}
+
+	stored, err := st.Get(context.Background(), "alice", created.ID)
+	if err != nil {
+		t.Fatalf("Get stored row: %v", err)
+	}
+	if _, ok := stored.Metadata["pending_embed"]; ok {
+		t.Fatalf("stored Metadata[pending_embed] = %v, want absent", stored.Metadata["pending_embed"])
+	}
+}

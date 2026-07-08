@@ -619,6 +619,20 @@ func toMemoryItem(m *memory.Memory) memoryItem {
 	return out
 }
 
+// notFoundErr wraps err with the standard "no memory" guidance when err is
+// store.ErrNotFound, and returns err unchanged otherwise — a transient store
+// error must never be misreported as "this id doesn't exist", which would
+// send an agent down the wrong path (fabricating an id or giving up) instead
+// of retrying. Used by get, forget, and update so the wording is identical
+// across all three surfaces.
+func notFoundErr(id, ns string, err error) error {
+	if !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	return fmt.Errorf("no memory %q in namespace %q — ids come from memory_recall "+
+		"or memory_list results: %w", id, ns, err)
+}
+
 func (t *tools) get(ctx context.Context, _ *mcpsdk.CallToolRequest, in idArgs) (*mcpsdk.CallToolResult, memoryItem, error) {
 	ns, err := t.ns(in.Namespace)
 	if err != nil {
@@ -626,12 +640,7 @@ func (t *tools) get(ctx context.Context, _ *mcpsdk.CallToolRequest, in idArgs) (
 	}
 	m, err := t.svc.Get(ctx, ns, in.ID)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			msg := fmt.Sprintf("no memory %q in namespace %q — ids come from memory_recall "+
-				"or memory_list results", in.ID, ns)
-			return nil, memoryItem{}, fmt.Errorf("%s: %w", msg, err)
-		}
-		return nil, memoryItem{}, err
+		return nil, memoryItem{}, notFoundErr(in.ID, ns, err)
 	}
 	return nil, toMemoryItem(m), nil
 }
@@ -661,7 +670,7 @@ func (t *tools) update(ctx context.Context, _ *mcpsdk.CallToolRequest, in update
 	}
 	cur, err := t.svc.Get(ctx, ns, in.ID)
 	if err != nil {
-		return nil, memoryItem{}, fmt.Errorf("no memory %q in namespace %q — get ids from memory_recall or memory_list: %w", in.ID, ns, err)
+		return nil, memoryItem{}, notFoundErr(in.ID, ns, err)
 	}
 	upd := service.RememberInput{
 		Namespace: ns, ID: cur.ID,
@@ -789,12 +798,7 @@ func (t *tools) forget(ctx context.Context, _ *mcpsdk.CallToolRequest, in idArgs
 		return nil, forgetResult{}, err
 	}
 	if err := t.svc.Forget(ctx, ns, in.ID); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			msg := fmt.Sprintf("no memory %q in namespace %q — ids come from memory_recall "+
-				"or memory_list results", in.ID, ns)
-			return nil, forgetResult{}, fmt.Errorf("%s: %w", msg, err)
-		}
-		return nil, forgetResult{}, err
+		return nil, forgetResult{}, notFoundErr(in.ID, ns, err)
 	}
 	return nil, forgetResult{Deleted: true}, nil
 }

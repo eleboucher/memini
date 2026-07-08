@@ -513,11 +513,11 @@ class MeminiMemoryProvider(MemoryProvider):
             },
             {
                 "name": "memory_forget",
-                "description": "Delete a memory from long-term memory (memini) by its id — use when a recalled "
-                               "memory is wrong, outdated, or poisoned. Get the id from memory_recall or "
-                               "memory_list. Soft delete (tombstone). To correct a fact, forget the stale one "
-                               "and remember the corrected version — this provider talks to memini over REST, "
-                               "which has no partial-update endpoint.",
+                "description": "Permanently delete a memory from long-term memory (memini) by its id — use when "
+                               "a recalled memory is wrong, outdated, or poisoned. Get the id from memory_recall "
+                               "or memory_list. To correct a fact, forget the stale one and remember the "
+                               "corrected version — this provider talks to memini over REST, which has no "
+                               "partial-update endpoint.",
                 "parameters": {
                     "type": "object",
                     "properties": {

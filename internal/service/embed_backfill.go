@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -91,10 +92,34 @@ func (s *Service) BackfillEmbeddings(ctx context.Context) (int, error) {
 			slog.WarnContext(ctx, "embed backfill: embed row", "namespace", m.Namespace, "id", m.ID, "err", err)
 			continue
 		}
-		delete(m.Metadata, "pending_embed")
-		m.Embedding = vec
-		m.UpdatedAt = s.now()
-		if err := s.store.Upsert(ctx, m); err != nil {
+
+		// The embed above can take up to writeEmbedTimeout (default 5s); a
+		// memory_update may have landed on this row while it was in flight.
+		// Re-Get and compare UpdatedAt against the List snapshot taken before
+		// the embed: on any mismatch (or the row having vanished — deleted or
+		// superseded meanwhile) skip it rather than upserting a vector for
+		// now-stale content over a concurrent writer's change. A skipped row
+		// is simply re-listed next tick if it is still pending; if the
+		// concurrent update itself hit a healthy embedder it already carries
+		// a vector and had its own pending_embed flag stripped, so it won't
+		// even show up as pending.
+		fresh, gerr := s.store.Get(ctx, m.Namespace, m.ID)
+		if gerr != nil {
+			if !errors.Is(gerr, store.ErrNotFound) {
+				slog.WarnContext(ctx, "embed backfill: re-get row", "namespace", m.Namespace, "id", m.ID, "err", gerr)
+			}
+			continue
+		}
+		if !fresh.UpdatedAt.Equal(m.UpdatedAt) {
+			slog.InfoContext(ctx, "embed backfill: row changed concurrently, deferring to next tick",
+				"namespace", m.Namespace, "id", m.ID)
+			continue
+		}
+
+		delete(fresh.Metadata, "pending_embed")
+		fresh.Embedding = vec
+		fresh.UpdatedAt = s.now()
+		if err := s.store.Upsert(ctx, fresh); err != nil {
 			slog.WarnContext(ctx, "embed backfill: upsert row", "namespace", m.Namespace, "id", m.ID, "err", err)
 			continue
 		}

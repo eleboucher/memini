@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -289,5 +290,94 @@ func TestHealthzVerboseStoreDown(t *testing.T) {
 	}
 	if body.Deps.Store.LastError == "" {
 		t.Errorf("store.last_error empty, want the ping error")
+	}
+}
+
+// newTestServerWithAPIKey builds a server with an API key configured, so
+// verbose healthz auth-gating tests can exercise the with-token / without-token
+// paths.
+func newTestServerWithAPIKey(t *testing.T, key string) *server.Server {
+	t.Helper()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return server.New(server.Options{Addr: ":0", ShutdownTimeout: time.Second, APIKey: key}, log, prometheus.NewRegistry())
+}
+
+// TestHealthzVerboseRequiresAuthWhenAPIKeySet confirms that with an API key
+// configured, ?verbose=1 without a valid bearer token degrades to the plain
+// body (200, no deps block, no leaked error internals) rather than 401ing —
+// probes and naive monitors polling ?verbose=1 keep working.
+func TestHealthzVerboseRequiresAuthWhenAPIKeySet(t *testing.T) {
+	srv := newTestServerWithAPIKey(t, "s3cr3t")
+	deps := server.NewDepTracker()
+	deps.Record("embedder", errors.New("dial tcp 10.0.0.5:1234: connection refused"))
+	srv.SetDeps(deps)
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz?verbose=1", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (degrade, don't 401)", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "10.0.0.5") {
+		t.Fatalf("body = %q, leaked internal dependency error to an unauthenticated caller", rec.Body.String())
+	}
+
+	var body verboseHealthBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal body %q: %v", rec.Body.String(), err)
+	}
+	if body.Status != "ok" {
+		t.Errorf("status = %q, want ok", body.Status)
+	}
+	if body.Deps.Embedder.LastError != "" || body.Deps.Store.LastError != "" {
+		t.Errorf("deps = %+v, want the plain body with no deps detail", body.Deps)
+	}
+}
+
+// TestHealthzVerboseWithValidBearerReturnsFullPayload confirms the verbose
+// deps payload is still available with the correct bearer token.
+func TestHealthzVerboseWithValidBearerReturnsFullPayload(t *testing.T) {
+	srv := newTestServerWithAPIKey(t, "s3cr3t")
+	deps := server.NewDepTracker()
+	deps.Record("embedder", errors.New("dial tcp 10.0.0.5:1234: connection refused"))
+	srv.SetDeps(deps)
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz?verbose=1", nil)
+	req.Header.Set("Authorization", "Bearer s3cr3t")
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body verboseHealthBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal body %q: %v", rec.Body.String(), err)
+	}
+	if body.Deps.Embedder.OK {
+		t.Errorf("embedder.ok = true, want false")
+	}
+	if body.Deps.Embedder.LastError == "" {
+		t.Errorf("embedder.last_error empty, want the recorded error with a valid bearer token")
+	}
+}
+
+// TestHealthzVerboseUnauthenticatedWithoutAPIKeyConfigured confirms behavior
+// is unchanged when no API key is configured at all: verbose works
+// unauthenticated, as before this fix.
+func TestHealthzVerboseUnauthenticatedWithoutAPIKeyConfigured(t *testing.T) {
+	srv := newTestServer(t) // no APIKey set
+	deps := server.NewDepTracker()
+	deps.Record("embedder", errors.New("dial tcp: connection refused"))
+	srv.SetDeps(deps)
+
+	code, body := getVerboseHealth(t, srv)
+
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if body.Deps.Embedder.LastError == "" {
+		t.Errorf("embedder.last_error empty, want the recorded error (no API key configured, verbose stays open)")
 	}
 }

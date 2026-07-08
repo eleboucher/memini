@@ -862,12 +862,21 @@ func (s *Service) embedForRemember(ctx context.Context, in *RememberInput) ([]fl
 		if err != nil {
 			return nil, fmt.Errorf("remember: embed: %w", err)
 		}
+		delete(in.Metadata, "pending_embed")
 		return vec, nil
 	}
 	ectx, cancel := context.WithTimeout(ctx, s.writeEmbedTimeout)
 	defer cancel()
 	vec, err := embed.EmbedOne(ectx, s.embedder, in.Content)
 	if err == nil {
+		// Clear a pre-existing pending_embed flag: this row is being
+		// re-embedded (e.g. memory_update after the embedder recovered) and
+		// now carries a fresh vector, so it must not still read as degraded —
+		// a stale flag would falsely report degraded:"pending_embed" to the
+		// caller, inflate the backfill gauge, and cause a redundant
+		// re-embed next tick. delete on a nil map is a no-op, so this is
+		// safe even when in.Metadata was never set.
+		delete(in.Metadata, "pending_embed")
 		return vec, nil
 	}
 	reason := "embed_error"

@@ -197,11 +197,11 @@ class Tools:
 
     async def forget_memory(self, id: str, __event_emitter__=None) -> str:
         """
-        Delete a memory from long-term memory by its id. Call this when a recalled
-        memory is wrong, outdated, or poisoned. Get the id from recall_memory (each
-        hit is annotated with its id). This is a soft delete (tombstone). To correct
-        a fact, forget the stale one and remember_memory the corrected version —
-        this tool talks to memini over REST, which has no partial-update endpoint.
+        Permanently delete a memory from long-term memory by its id. Call this when
+        a recalled memory is wrong, outdated, or poisoned. Get the id from
+        recall_memory (each hit is annotated with its id). To correct a fact,
+        forget the stale one and remember_memory the corrected version — this tool
+        talks to memini over REST, which has no partial-update endpoint.
 
         :param id: The id of the memory to forget, as shown by recall_memory.
         :return: Confirmation that the memory was forgotten.

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/embed/embedtest"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/service"
@@ -192,6 +193,116 @@ func TestBackfillEmbeddingsBoundsEmbedWithWriteTimeout(t *testing.T) {
 	}
 	if m.embedBackfillPending != 1 {
 		t.Fatalf("EmbedBackfillPending = %d, want 1 (backlog)", m.embedBackfillPending)
+	}
+}
+
+// hookEmbedder calls fn synchronously before delegating to the wrapped
+// embedder, so a test can perform a concurrent mutation exactly while a
+// backfill row's embed is in flight.
+type hookEmbedder struct {
+	embed.Embedder
+	fn func()
+}
+
+func (h hookEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	h.fn()
+	return h.Embedder.Embed(ctx, texts)
+}
+
+// TestBackfillEmbeddingsSkipsRowUpdatedConcurrently confirms the re-Get/
+// UpdatedAt guard: if a memory_update lands on a pending row while its
+// backfill embed is in flight (up to writeEmbedTimeout), the backfill must
+// not clobber the concurrent write with a vector for the stale content --
+// it detects the UpdatedAt mismatch and skips the row entirely, leaving the
+// updated content and (if the concurrent write had a healthy embedder) its
+// own fresh vector intact.
+//
+// A shared, monotonically-increasing fake clock (rather than wall time)
+// guarantees the seed write, the concurrent update, and the backfill's own
+// stamps land at distinct instants, so the UpdatedAt comparison can't
+// coincidentally collide at millisecond storage precision.
+func TestBackfillEmbeddingsSkipsRowUpdatedConcurrently(t *testing.T) {
+	st := openTestStore(t)
+
+	var tick int64
+	clock := func() time.Time {
+		tick++
+		return time.Unix(0, tick*int64(time.Millisecond))
+	}
+
+	degraded := service.New(st, errEmbedder{dims: dims}, service.WithSyncReinforce(),
+		service.WithWriteEmbedTimeout(time.Second), service.WithClock(clock))
+	seeded, err := degraded.Remember(context.Background(), service.RememberInput{
+		Namespace: "alice", Content: "the deploy key rotates every 90 days", Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("seed pending row: %v", err)
+	}
+	if seeded.Metadata["pending_embed"] != "true" {
+		t.Fatal("seed row: pending_embed not set")
+	}
+	id := seeded.ID
+
+	// The concurrent writer: a healthy-embedder service that updates the row
+	// mid-backfill-embed, changing its content and clearing pending_embed
+	// (per Fix 1) via its own successful embed.
+	updater := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithClock(clock))
+	fired := false
+	he := hookEmbedder{Embedder: embedtest.New(dims), fn: func() {
+		if fired {
+			return
+		}
+		fired = true
+		if _, err := updater.Remember(context.Background(), service.RememberInput{
+			Namespace: "alice", ID: id, Content: "the deploy key now rotates every 30 days",
+			Tier: memory.TierSemantic,
+		}); err != nil {
+			t.Errorf("concurrent update: %v", err)
+		}
+	}}
+
+	m := &countingMetrics{}
+	svc := service.New(st, he, service.WithSyncReinforce(), service.WithMetrics(m), service.WithClock(clock))
+
+	n, err := svc.BackfillEmbeddings(context.Background())
+	if err != nil {
+		t.Fatalf("BackfillEmbeddings: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("BackfillEmbeddings backfilled = %d, want 0 (the only row changed concurrently and must be skipped)", n)
+	}
+
+	got, err := st.Get(context.Background(), "alice", id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Content != "the deploy key now rotates every 30 days" {
+		t.Fatalf("content = %q, want the concurrent update's content preserved (no stale overwrite)", got.Content)
+	}
+	if _, ok := got.Metadata["pending_embed"]; ok {
+		t.Fatalf("pending_embed still set = %v, want cleared by the concurrent update's own healthy embed", got.Metadata["pending_embed"])
+	}
+
+	// Get omits the embedding by design; confirm the concurrent update's own
+	// vector (not a backfill-produced one for stale content) is live via
+	// VectorSearch, the same way TestBackfillEmbeddingsHealthyEmbedderClearsQueue
+	// verifies a successful backfill.
+	qvec, err := embedtest.New(dims).Embed(context.Background(), []string{"deploy key now rotates every 30 days"})
+	if err != nil {
+		t.Fatalf("embed query: %v", err)
+	}
+	hits, err := st.VectorSearch(context.Background(), "alice", qvec[0], store.Filter{}, 5)
+	if err != nil {
+		t.Fatalf("vector search: %v", err)
+	}
+	found := false
+	for _, h := range hits {
+		if h.Memory.ID == id {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("vector search did not find the row; want the concurrent update's own vector preserved")
 	}
 }
 

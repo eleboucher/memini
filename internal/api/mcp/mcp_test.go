@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,9 @@ import (
 
 	meminimcp "github.com/eleboucher/memini/internal/api/mcp"
 	"github.com/eleboucher/memini/internal/embed/embedtest"
+	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/service"
+	"github.com/eleboucher/memini/internal/store"
 	"github.com/eleboucher/memini/internal/store/sqlitevec"
 )
 
@@ -754,6 +757,68 @@ func TestUpdateToolMissingID(t *testing.T) {
 	}
 	if !strings.Contains(tc.Text, "memory_recall") {
 		t.Fatalf("error text = %q, want it to mention memory_recall", tc.Text)
+	}
+}
+
+// errGetStore wraps a store.Store and makes every Get call fail with a
+// transient, non-ErrNotFound error, so tests can distinguish "the store is
+// having trouble" from "this id doesn't exist".
+type errGetStore struct {
+	store.Store
+}
+
+func (errGetStore) Get(context.Context, string, string) (*memory.Memory, error) {
+	return nil, errors.New("connection reset by peer")
+}
+
+// TestUpdateToolTransientStoreErrorNotMisreportedAsNotFound pins that
+// memory_update surfaces a transient (non-ErrNotFound) store error as-is: it
+// must not wrap it in the "no memory ... " not-found guidance, which would
+// falsely tell the caller the id doesn't exist when the store is merely
+// unavailable.
+func TestUpdateToolTransientStoreErrorNotMisreportedAsNotFound(t *testing.T) {
+	base, err := sqlitevec.Open(context.Background(), filepath.Join(t.TempDir(), "mcp-errget.db"), dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = base.Close() })
+	svc := service.New(errGetStore{Store: base}, embedtest.New(dims))
+
+	srv := meminimcp.NewServer(svc, "default")
+	clientT, serverT := mcpsdk.NewInMemoryTransports()
+	ctx := context.Background()
+	if _, err := srv.Connect(ctx, serverT, nil); err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "test", Version: "0"}, nil)
+	cs, err := client.Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_update",
+		Arguments: map[string]any{"id": "whatever", "content": "x"},
+	})
+	if err != nil {
+		t.Fatalf("update transport: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("update over a broken store must be a tool error")
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("error result has no content")
+	}
+	tc, ok := res.Content[0].(*mcpsdk.TextContent)
+	if !ok {
+		t.Fatalf("error content = %T, want *mcpsdk.TextContent", res.Content[0])
+	}
+	if strings.Contains(tc.Text, "no memory") {
+		t.Fatalf("error text = %q, must not claim the id doesn't exist for a transient store error", tc.Text)
+	}
+	if !strings.Contains(tc.Text, "connection reset by peer") {
+		t.Fatalf("error text = %q, want the underlying store error preserved", tc.Text)
 	}
 }
 

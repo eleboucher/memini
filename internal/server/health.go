@@ -46,7 +46,18 @@ type verboseHealth struct {
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Query().Get("verbose") != "1" {
+	// /healthz is mounted outside bearer auth on purpose (probes must reach
+	// it unauthenticated), but ?verbose=1 leaks dependency error internals
+	// (hostnames, driver errors). When an API key is configured, require it
+	// for the verbose view; an absent/invalid token degrades to the plain
+	// body instead of 401ing, so probes and naive monitors polling
+	// ?verbose=1 keep working. No API key configured leaves verbose open,
+	// matching prior behavior.
+	verbose := r.URL.Query().Get("verbose") == "1"
+	if verbose && s.cfg.APIKey != "" && !validBearer(r, s.cfg.APIKey) {
+		verbose = false
+	}
+	if !verbose {
 		httputil.JSON(w, http.StatusOK, map[string]string{
 			keyStatus: "ok",
 			"version": version.Version,
