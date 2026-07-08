@@ -288,6 +288,10 @@ type Service struct {
 	// writeDedupAction is what happens at/above writeDedupScore: hint, coalesce,
 	// supersede, or off. See WriteDedupAction.
 	writeDedupAction WriteDedupAction
+	// splitDedupLLMMerge (opt-in, default off) routes ambiguous split-dedup
+	// candidates (≥2 close neighbours) through the LLM consolidator for a
+	// merge/supersede verdict before the deterministic action fires.
+	splitDedupLLMMerge bool
 	// globalNamespace, when set, is merged read-only into every other
 	// namespace's recall and briefing — durable tiers only. See
 	// WithGlobalNamespace. Empty disables it.
@@ -559,6 +563,15 @@ func WithWriteDedup(score float64, action WriteDedupAction) Option {
 		s.writeDedupScore = score
 		s.writeDedupAction = action
 	}
+}
+
+// WithSplitDedupLLMMerge enables the opt-in LLM merge path in the split-dedup
+// pipeline: when ≥2 candidates score above writeDedupScore and are within 0.05
+// of each other, the LLM consolidator is consulted for a merge/supersede
+// verdict before the deterministic action fires. Default off — requires a
+// consolidator (WithConsolidator) to have any effect.
+func WithSplitDedupLLMMerge(b bool) Option {
+	return func(s *Service) { s.splitDedupLLMMerge = b }
 }
 
 // WithCorroboration enables corroboration routing: a fresh short-term write
@@ -889,7 +902,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	if tier.Term() == memory.LongTerm {
 		switch {
 		case in.Confidence != nil:
-			c := *in.Confidence
+			c := clampConfidence(*in.Confidence)
 			m.Confidence = &c
 		case existing != nil:
 			m.Confidence = existing.Confidence
@@ -989,7 +1002,17 @@ func (s *Service) runSplitDedup(
 	return false, nil, supersedeID
 }
 
-// dedupCheck looks up the nearest same-tier memory and, when it scores at or
+// dedupCandidates is the number of nearest neighbours checked for write-time
+// dedup. k>1 lets the action pick the best-fit from a small pool rather than
+// relying on a single nearest neighbour.
+const dedupCandidates = 5
+
+// dedupLLMCloseness is the max score gap between the top two candidates that
+// triggers the opt-in LLM merge path: when ≥2 candidates are above the dedup
+// threshold AND within this gap, the LLM consolidator is consulted.
+const dedupLLMCloseness = 0.05
+
+// dedupCheck looks up the nearest same-tier memories and, when one scores at or
 // above writeDedupScore, applies writeDedupAction. It returns:
 //   - hit: the existing memory the write was coalesced into (action "coalesce");
 //     the caller stores nothing new.
@@ -1003,16 +1026,33 @@ func (s *Service) runSplitDedup(
 // At most one is non-zero; all empty when nothing scores above the threshold.
 func (s *Service) dedupCheck(ctx context.Context, m *memory.Memory) (hit *memory.Memory, hint *MergeHint, supersedeID string) {
 	cands, err := s.store.VectorSearch(ctx, m.Namespace, m.Embedding,
-		store.Filter{Tiers: []memory.Tier{m.Tier}, Now: s.now()}, 1)
+		store.Filter{Tiers: []memory.Tier{m.Tier}, Now: s.now()}, dedupCandidates)
 	if err != nil {
 		slog.WarnContext(ctx, "remember: dedup search failed, storing without dedup",
 			"namespace", m.Namespace, "err", err)
 		return nil, nil, ""
 	}
-	if len(cands) == 0 || cands[0].Score < s.writeDedupScore {
+	// Filter to candidates at or above the dedup threshold (sorted by score
+	// descending from the store).
+	var above []store.Scored
+	for _, c := range cands {
+		if c.Score >= s.writeDedupScore {
+			above = append(above, c)
+		}
+	}
+	if len(above) == 0 {
 		return nil, nil, ""
 	}
-	existing := cands[0].Memory
+	existing := above[0].Memory
+
+	// C2: opt-in LLM merge when ≥2 close candidates indicate genuine ambiguity.
+	if s.splitDedupLLMMerge && s.consolidator != nil && len(above) >= 2 &&
+		above[0].Score-above[1].Score < dedupLLMCloseness {
+		if llmHit, llmSid := s.dedupLLMMerge(ctx, m, above); llmHit != nil || llmSid != "" {
+			return llmHit, nil, llmSid
+		}
+		// LLM error or no decision: fall through to deterministic dedup.
+	}
 
 	switch s.writeDedupAction {
 	case WriteDedupSupersede:
@@ -1025,7 +1065,7 @@ func (s *Service) dedupCheck(ctx context.Context, m *memory.Memory) (hit *memory
 		return nil, &MergeHint{
 			SimilarID:      existing.ID,
 			SimilarContent: preview,
-			Score:          cands[0].Score,
+			Score:          above[0].Score,
 			Tier:           existing.Tier,
 		}, ""
 	case WriteDedupCoalesce:
@@ -1048,6 +1088,65 @@ func (s *Service) dedupCheck(ctx context.Context, m *memory.Memory) (hit *memory
 	return nil, nil, ""
 }
 
+// dedupLLMMerge consults the LLM consolidator with the top dedup candidates to
+// resolve genuine ambiguity (≥2 close neighbours). On LLM error or no decision,
+// returns all-zero so the caller falls through to deterministic dedup.
+func (s *Service) dedupLLMMerge(
+	ctx context.Context, m *memory.Memory, above []store.Scored,
+) (hit *memory.Memory, supersedeID string) {
+	cands := make([]llm.Candidate, 0, len(above))
+	for _, c := range above {
+		cands = append(cands, llm.Candidate{ID: c.Memory.ID, Content: c.Memory.Content})
+	}
+	dec, err := s.consolidator.Consolidate(ctx, llm.Input{
+		New:        m.Content,
+		Tier:       string(m.Tier),
+		Candidates: cands,
+	})
+	if err != nil {
+		slog.WarnContext(ctx, "remember: split-dedup LLM merge failed, falling back to deterministic",
+			"namespace", m.Namespace, "err", err)
+		return nil, ""
+	}
+	switch dec.Action {
+	case llm.ActionNew:
+		return nil, ""
+	case llm.ActionSupersede:
+		if dec.Target != "" {
+			return nil, dec.Target
+		}
+	case llm.ActionUpdate:
+		// Merge content into target: rewrite the target's content with the
+		// merged text and re-embed. Falls through to store on error.
+		if dec.Target == "" {
+			return nil, ""
+		}
+		content := dec.Content
+		if content == "" {
+			content = m.Content
+		}
+		target, err := s.store.Get(ctx, m.Namespace, dec.Target)
+		if err != nil {
+			return nil, ""
+		}
+		vec, err := embed.EmbedOne(ctx, s.embedder, content)
+		if err != nil {
+			return nil, ""
+		}
+		target.Content = content
+		target.Embedding = vec
+		if dec.Summary != "" {
+			target.Summary = dec.Summary
+		}
+		if err := s.store.Upsert(ctx, target); err != nil {
+			return nil, ""
+		}
+		s.metrics.ConsolidateResult("split-merge-update")
+		return target, ""
+	}
+	return nil, ""
+}
+
 // wordSetScore measures how informative a phrasing is: total words plus a 10×
 // premium on distinct words, so added detail wins the coalesce tiebreak but
 // repetition alone doesn't.
@@ -1058,6 +1157,20 @@ func wordSetScore(s string) int {
 		uniq[w] = struct{}{}
 	}
 	return len(words) + 10*len(uniq)
+}
+
+// clampConfidence bounds a confidence value to [0.1, 0.7], the LLM-provided seed
+// range. Below 0.1 is too uncertain to use as a seed; above 0.7 is too high for
+// a fact that has never been corroborated.
+func clampConfidence(c float64) float64 {
+	switch {
+	case c < 0.1:
+		return 0.1
+	case c > 0.7:
+		return 0.7
+	default:
+		return c
+	}
 }
 
 // autoSupersede tombstones oldID (replaced by newID) in the background, after

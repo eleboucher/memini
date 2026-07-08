@@ -116,6 +116,12 @@ type Config struct {
 	//     WriteDedupFingerprint, still runs independently).
 	WriteDedupAction string `env:"MEMINI_WRITE_DEDUP_ACTION" envDefault:"hint"`
 
+	// SplitDedupLLMMerge (opt-in, default off) routes ambiguous split-dedup
+	// candidates (≥2 close neighbours) through the LLM consolidator for a
+	// merge/supersede verdict before the deterministic action fires. Requires
+	// a consolidator to be configured.
+	SplitDedupLLMMerge bool `env:"MEMINI_SPLIT_DEDUP_LLM_MERGE" envDefault:"false"`
+
 	// ContradictionDownrank (default on) invalidates a durable fact when a fresh
 	// durable write contradicts it (changed value or flipped polarity, confirmed
 	// by the lexical detector): the stale fact's valid_to is stamped so it leaves

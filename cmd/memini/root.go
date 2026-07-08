@@ -237,6 +237,7 @@ func buildServiceStack(
 		service.WithQueryPrefix(cfg.EmbedQueryPrefix),
 		service.WithScoreFusion(search.DefaultFusionAlpha),
 		service.WithWriteDedup(cfg.WriteDedupScore, service.WriteDedupAction(cfg.WriteDedupAction)),
+		service.WithSplitDedupLLMMerge(cfg.SplitDedupLLMMerge),
 		service.WithCorroboration(defaultCorroborateMinScore),
 		service.WithContradictionDownrank(contradictMinScore(cfg)),
 		service.WithGlobalNamespace(cfg.GlobalNamespace),

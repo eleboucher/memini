@@ -148,7 +148,7 @@ func (s *Service) promote(ctx context.Context, ns string, batch []*memory.Memory
 		}
 		in := RememberInput{
 			Namespace: ns, Content: f.Content, Summary: f.Summary, Tier: tierForCategory(f.Category),
-			Level: memory.LevelDeduced, Metadata: meta,
+			Level: memory.LevelDeduced, Metadata: meta, Confidence: f.Confidence,
 		}
 		if _, err := s.Remember(ctx, in); err != nil {
 			slog.WarnContext(ctx, "promote: store fact", "err", err)

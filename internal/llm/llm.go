@@ -80,6 +80,9 @@ type Fact struct {
 	// Category routes the fact to a tier: "procedure" (incl. error→recovery) →
 	// procedural; "preference" and "fact" → semantic. Empty defaults to semantic.
 	Category string `json:"category,omitempty"`
+	// Confidence is the LLM's self-assessed reliability of this fact, in [0.1, 0.7].
+	// nil means unset; the service layer falls back to ConfidenceSeedFresh.
+	Confidence *float64 `json:"confidence,omitempty"`
 }
 
 // Episode is one episodic memory to distill, paired with the date it was
@@ -179,14 +182,42 @@ const systemPrompt = `You maintain an AI agent's long-term memory. Given a NEW m
 EXISTING candidate memories, decide how the new one relates to them. Respond with a single JSON object:
 {"action":"new|update|supersede","target":"<candidate id or empty>",
  "content":"<text to store>","summary":"<one line>","reason":"<short>"}
+
+A DUPLICATE restates the same fact in different words (same value, same subject, same meaning).
+A CONTRADICTION makes the old fact wrong or outdated: the SAME property now has a DIFFERENT value,
+the state changed, or an error was corrected. When two memories assign different values to the same
+property (different number, different name, different provider, different setting), the newer one
+CONTRADICTS the older one — they cannot both be true.
+Two facts about DIFFERENT properties or DIFFERENT events of the same entity are DISTINCT (new).
+
 Rules:
-- "new": the new memory is distinct from all candidates.
+- "new": the new memory is about a different property, event, or topic than all candidates.
   Set content to the new memory text and target to empty.
-- "update": the new memory duplicates or refines a candidate.
+- "update": the new memory DUPLICATES a candidate (same fact, same value, reworded or refined).
   Set target to that candidate's id and content to the merged, deduplicated text.
-- "supersede": the new memory contradicts a candidate (it is now wrong/outdated).
+- "supersede": the new memory CONTRADICTS a candidate — same property, different value, or corrected.
   Set target to that candidate's id and content to the new memory text.
-Prefer "new" unless there is a clear match. Output only the JSON object.`
+
+Test: would the NEW memory make the EXISTING candidate FALSE if both were stored? If yes → supersede.
+Can both be true simultaneously? If yes → update (same fact) or new (different fact).
+
+Examples:
+- EXISTING "Cache entries expire after a 10 minute TTL" / NEW "Cached items live for ten minutes"
+  → update (same value 10 min, reworded)
+- EXISTING "Cache entries expire after a 10 minute TTL" / NEW "Cache entries expire after a 30 minute TTL"
+  → supersede (same property TTL, different value 10→30)
+- EXISTING "The reranker is served on port 8002" / NEW "The reranker is served on port 9002"
+  → supersede (same property port, different value)
+- EXISTING "Email is sent through Postmark" / NEW "Email is sent through SES"
+  → supersede (same property email provider, different value)
+- EXISTING "The frontend is built with React and Vite" / NEW "The frontend is built with Svelte and Vite"
+  → supersede (same property frontend framework, different value)
+- EXISTING "Bob ran 5 miles on Tuesday" / NEW "Bob ran 3 miles on Wednesday"
+  → new (different events on different days, both can be true)
+- EXISTING "The cache is sharded across four nodes" / NEW "Cache entries expire after a 30 minute TTL"
+  → new (different properties of the same system, both can be true)
+
+Output only the JSON object.`
 
 // distillPrompt instructs the model to compress episodic memories into durable
 // semantic facts, used by the promotion job.
@@ -199,15 +230,20 @@ worth keeping long-term and classify each item with a "category":
 - "fact": a stable fact, decision, or convention that is neither of the above.
 Episodes prefixed with "[failed]" were captured from a failed turn or command; pair one with a later
 success to form an error→recovery "procedure".
-Discard transient noise (one-off actions, routine file edits with no lasting lesson). Merge overlapping
-observations into single items.
+	Discard transient noise (one-off actions, routine file edits with no lasting lesson). Split compound
+facts into separate items: "User's name is John and works at Google" becomes two items ("User's name is
+John" and "User works at Google"). Each item must be a single atomic fact.
 Each item must be self-contained and readable without the episodes: name the subject explicitly (no bare
 "he/she/it/this"), and keep the context that makes it actionable ("prefers pnpm for the frontend repo",
 not "prefers pnpm").
 When an episode states a relative time (e.g. "yesterday", "last week", "two days ago"), resolve it to an
 absolute YYYY-MM-DD date in the item, grounding against that episode's "date" (or "now" if it has none).
-Leave already-absolute dates unchanged. Respond with a single JSON object:
-{"facts":[{"content":"<durable item>","summary":"<one line>","category":"preference|procedure|fact"}]}
+	Leave already-absolute dates unchanged.
+Assign each fact a confidence score (0.0 to 1.0) reflecting how certain you are it is a durable, accurate
+observation: 0.9+ for explicit user statements ("I prefer X"), 0.6-0.8 for inferred preferences, 0.3-0.5 for
+speculative or second-hand facts. Clamp to [0.1, 0.7] — no fact starts above 0.7; corroboration raises it later.
+Respond with a single JSON object:
+{"facts":[{"content":"<durable item>","summary":"<one line>","category":"preference|procedure|fact","confidence":0.0_to_1.0}]}
 Return {"facts":[]} if nothing is durable. Output only the JSON object.`
 
 // trimFence strips a leading/trailing markdown code fence some models wrap JSON
