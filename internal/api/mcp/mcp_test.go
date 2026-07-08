@@ -1087,6 +1087,88 @@ func TestToolAnnotations(t *testing.T) {
 	}
 }
 
+// TestGetUnknownIDErrorMessage pins that memory_get with unknown id returns
+// an error telling the caller to use memory_recall or memory_list to find ids.
+func TestGetUnknownIDErrorMessage(t *testing.T) {
+	cs := connect(t)
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "memory_get",
+		Arguments: map[string]any{"id": "does-not-exist"},
+	})
+	if err != nil {
+		t.Fatalf("get transport: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("getting unknown id must be a tool error")
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("error result has no content")
+	}
+	tc, ok := res.Content[0].(*mcpsdk.TextContent)
+	if !ok {
+		t.Fatalf("error content = %T, want *mcpsdk.TextContent", res.Content[0])
+	}
+	if !strings.Contains(tc.Text, "memory_recall") {
+		t.Fatalf("error text = %q, want it to mention memory_recall", tc.Text)
+	}
+}
+
+// TestForgetUnknownIDErrorMessage pins that memory_forget with unknown id returns
+// an error telling the caller to use memory_recall or memory_list to find ids.
+func TestForgetUnknownIDErrorMessage(t *testing.T) {
+	cs := connect(t)
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "memory_forget",
+		Arguments: map[string]any{"id": "does-not-exist"},
+	})
+	if err != nil {
+		t.Fatalf("forget transport: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("forgetting unknown id must be a tool error")
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("error result has no content")
+	}
+	tc, ok := res.Content[0].(*mcpsdk.TextContent)
+	if !ok {
+		t.Fatalf("error content = %T, want *mcpsdk.TextContent", res.Content[0])
+	}
+	if !strings.Contains(tc.Text, "memory_recall") {
+		t.Fatalf("error text = %q, want it to mention memory_recall", tc.Text)
+	}
+}
+
+// TestRecallInvalidTierListsValidValues pins that memory_recall with invalid
+// tier lists all four valid tiers in the error message.
+func TestRecallInvalidTierListsValidValues(t *testing.T) {
+	cs := connect(t)
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "memory_recall",
+		Arguments: map[string]any{"query": "anything", "tiers": []string{"bogus"}},
+	})
+	if err != nil {
+		t.Fatalf("recall transport: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("recall with invalid tier must be a tool error")
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("error result has no content")
+	}
+	tc, ok := res.Content[0].(*mcpsdk.TextContent)
+	if !ok {
+		t.Fatalf("error content = %T, want *mcpsdk.TextContent", res.Content[0])
+	}
+	errText := tc.Text
+	validTiers := []string{"working", "episodic", "semantic", "procedural"}
+	for _, tier := range validTiers {
+		if !strings.Contains(errText, tier) {
+			t.Fatalf("error text = %q, want it to include valid tier %q", errText, tier)
+		}
+	}
+}
+
 func TestRecallAndBriefingIncludeCreatedAtAndTags(t *testing.T) {
 	cs := connect(t)
 	ctx := context.Background()

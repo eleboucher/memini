@@ -6,6 +6,7 @@ package mcp
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -193,7 +194,7 @@ func parseTiers(in []string) ([]memory.Tier, error) {
 	for _, v := range in {
 		t := memory.Tier(strings.TrimSpace(v))
 		if !t.Valid() {
-			return nil, fmt.Errorf("invalid tier %q", t)
+			return nil, fmt.Errorf("invalid tier %q: want one of working|episodic|semantic|procedural", t)
 		}
 		tiers = append(tiers, t)
 	}
@@ -207,7 +208,7 @@ func parseLevels(in []string) ([]memory.Level, error) {
 	for _, v := range in {
 		l := memory.Level(strings.TrimSpace(v))
 		if !l.Valid() {
-			return nil, fmt.Errorf("invalid level %q", l)
+			return nil, fmt.Errorf("invalid level %q: want one of explicit|deduced", l)
 		}
 		levels = append(levels, l)
 	}
@@ -589,6 +590,11 @@ func (t *tools) get(ctx context.Context, _ *mcpsdk.CallToolRequest, in idArgs) (
 	}
 	m, err := t.svc.Get(ctx, ns, in.ID)
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			msg := fmt.Sprintf("no memory %q in namespace %q — ids come from memory_recall "+
+				"or memory_list results", in.ID, ns)
+			return nil, memoryItem{}, fmt.Errorf("%s: %w", msg, err)
+		}
 		return nil, memoryItem{}, err
 	}
 	return nil, toMemoryItem(m), nil
@@ -747,6 +753,11 @@ func (t *tools) forget(ctx context.Context, _ *mcpsdk.CallToolRequest, in idArgs
 		return nil, forgetResult{}, err
 	}
 	if err := t.svc.Forget(ctx, ns, in.ID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			msg := fmt.Sprintf("no memory %q in namespace %q — ids come from memory_recall "+
+				"or memory_list results", in.ID, ns)
+			return nil, forgetResult{}, fmt.Errorf("%s: %w", msg, err)
+		}
 		return nil, forgetResult{}, err
 	}
 	return nil, forgetResult{Deleted: true}, nil
