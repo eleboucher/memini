@@ -499,6 +499,73 @@ func TestUpdateToolTagsOnly(t *testing.T) {
 	}
 }
 
+// TestUpdateToolValueGatedResult pins that memory_update survives the
+// episodic value gate: service.Remember returns (nil, nil) when it drops a
+// low-signal episodic write, and the handler must turn that into a tool
+// error — not a nil dereference that kills the whole MCP server — leaving
+// the original memory untouched.
+func TestUpdateToolValueGatedResult(t *testing.T) {
+	cs := connectWithOptions(t, service.WithEpisodicMinChars(120))
+	ctx := context.Background()
+
+	longContent := strings.Repeat("the deploy pipeline failed on the flaky integration step again ", 3)
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_remember",
+		Arguments: map[string]any{
+			"content": longContent,
+			"tier":    "episodic",
+			"id":      "update-gated-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	var remembered struct {
+		Stored bool `json:"stored"`
+	}
+	structured(t, res, &remembered)
+	if !remembered.Stored {
+		t.Fatal("setup write was value-gated; content must clear the 120-char gate")
+	}
+
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_update",
+		Arguments: map[string]any{"id": "update-gated-1", "content": "x"},
+	})
+	if err != nil {
+		t.Fatalf("update transport: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("a value-gated update must be a tool error, not success or a panic")
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("error result has no content")
+	}
+	tc, ok := res.Content[0].(*mcpsdk.TextContent)
+	if !ok {
+		t.Fatalf("error content = %T, want *mcpsdk.TextContent", res.Content[0])
+	}
+	if !strings.Contains(tc.Text, "value gate") {
+		t.Fatalf("error text = %q, want it to mention the value gate", tc.Text)
+	}
+
+	// The server must survive and the original memory must be unchanged.
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_get",
+		Arguments: map[string]any{"id": "update-gated-1"},
+	})
+	if err != nil {
+		t.Fatalf("get after gated update: %v", err)
+	}
+	var got struct {
+		Content string `json:"content"`
+	}
+	structured(t, res, &got)
+	if got.Content != longContent {
+		t.Fatalf("original content changed after a gated update: %q", got.Content)
+	}
+}
+
 // TestUpdateToolMissingID pins that updating an unknown id fails with an
 // error that points the caller at memory_recall/memory_list to find a valid
 // id, rather than a bare not-found error.

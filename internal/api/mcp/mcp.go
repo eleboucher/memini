@@ -646,6 +646,14 @@ func (t *tools) update(ctx context.Context, _ *mcpsdk.CallToolRequest, in update
 	if err != nil {
 		return nil, memoryItem{}, err
 	}
+	// The episodic value gate returns (nil, nil) when it drops a low-signal
+	// write. For memory_remember that is a stored=false result, but here the
+	// caller asked to change an existing memory and nothing changed — surface
+	// it as an error rather than dereferencing nil or claiming success.
+	if m == nil {
+		return nil, memoryItem{}, fmt.Errorf("update dropped: the new content is below the episodic value gate " +
+			"(too short/low-signal); provide more substantive content or set a durable tier")
+	}
 	return nil, toMemoryItem(m), nil
 }
 
