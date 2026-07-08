@@ -446,6 +446,12 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
           `current workspace state and the user's instructions):`,
         ...fit.items,
       ];
+      // /v1/search sets `degraded: "keyword_only"` (plus a `note`) when the
+      // query embed was unavailable and it fell back to keyword-only matching;
+      // both are already on `result`, so surfacing them is a one-line addition.
+      if (result && result.degraded) {
+        lines.push(`[memini: ${result.note || "semantic search unavailable — results are keyword-only and may be incomplete"}]`);
+      }
       if (fit.dropped > 0) lines.push(`[... ${fit.dropped} item(s) truncated by token budget]`);
       // opencode's part schema requires ids to start with `prt`.
       output.parts.unshift({

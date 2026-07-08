@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -686,6 +687,78 @@ func TestNamespacesEmptyStoreIsArray(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"namespaces":[]`) {
 		t.Fatalf("empty store must marshal namespaces as [], got %s", rec.Body)
 	}
+}
+
+// errEmbedder fails every embed call, forcing search onto the keyword-only
+// fallback path (with a recall embed budget configured).
+type errEmbedder struct{ dims int }
+
+func (e errEmbedder) Embed(context.Context, []string) ([][]float32, error) {
+	return nil, errors.New("embed boom")
+}
+func (e errEmbedder) Dims() int { return e.dims }
+
+// TestSearchDegradedSurfacesKeywordOnly confirms that when the query embed
+// fails and search falls back to keyword-only matching, the REST response
+// carries "degraded":"keyword_only" (plus a note); a healthy embedder leaves
+// both fields absent (omitempty), matching the MCP recall semantics.
+func TestSearchDegradedSurfacesKeywordOnly(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "degraded.db")
+	st, err := sqlitevec.Open(ctx, dbPath, dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	// Seed with a healthy embedder so keyword search has something to find.
+	seed := service.New(st, embedtest.New(dims))
+	if _, err := seed.Remember(ctx, service.RememberInput{
+		Namespace: "ns", Content: "hello world", Tier: "semantic",
+	}); err != nil {
+		t.Fatalf("seed remember: %v", err)
+	}
+
+	mount := func(svc *service.Service) http.Handler {
+		r := chi.NewRouter()
+		rest.New(svc, rest.AuthConfig{
+			APIKey: apiKey, NamespaceHeader: nsHdr, DefaultNamespace: "default",
+		}).Mount(r)
+		return r
+	}
+
+	t.Run("degraded", func(t *testing.T) {
+		h := mount(service.New(st, errEmbedder{dims: dims}, service.WithRecallEmbedTimeout(time.Second)))
+		rec := do(t, h, http.MethodPost, "/v1/search", "ns", apiKey, map[string]any{"query": "hello", "limit": 5})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("search: want 200, got %d (%s)", rec.Code, rec.Body)
+		}
+		var sr map[string]any
+		mustJSON(t, rec, &sr)
+		if sr["degraded"] != "keyword_only" {
+			t.Fatalf("degraded = %v, want %q", sr["degraded"], "keyword_only")
+		}
+		note, _ := sr["note"].(string)
+		if note == "" {
+			t.Fatal("note should explain the degradation, got empty")
+		}
+	})
+
+	t.Run("healthy", func(t *testing.T) {
+		h := mount(service.New(st, embedtest.New(dims)))
+		rec := do(t, h, http.MethodPost, "/v1/search", "ns", apiKey, map[string]any{"query": "hello", "limit": 5})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("search: want 200, got %d (%s)", rec.Code, rec.Body)
+		}
+		var sr map[string]any
+		mustJSON(t, rec, &sr)
+		if _, ok := sr["degraded"]; ok {
+			t.Fatalf("degraded key should be omitted on healthy search, got %+v", sr)
+		}
+		if _, ok := sr["note"]; ok {
+			t.Fatalf("note key should be omitted on healthy search, got %+v", sr)
+		}
+	})
 }
 
 // failingStore wraps a real store but fails every Upsert, to exercise the

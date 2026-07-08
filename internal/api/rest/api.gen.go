@@ -314,6 +314,11 @@ type SearchRequestScope string
 
 // SearchResponse defines model for SearchResponse.
 type SearchResponse struct {
+	// Degraded Set to "keyword_only" when the query embed failed or timed out and this search fell back to keyword-only matching; omitted on a healthy (vector+keyword) search.
+	Degraded *string `json:"degraded,omitempty"`
+
+	// Note Human-readable explanation of `degraded`; omitted alongside it on a healthy search.
+	Note    *string        `json:"note,omitempty"`
 	Results []ScoredMemory `json:"results"`
 }
 

@@ -81,7 +81,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// would be invisible at /metrics.
 	reg := prometheus.NewRegistry()
 
-	svc, st, joinWorkers, cleanup, err := buildServiceStack(ctx, cfg, log, reg)
+	svc, st, deps, joinWorkers, cleanup, err := buildServiceStack(ctx, cfg, log, reg)
 	if err != nil {
 		return err
 	}
@@ -94,7 +94,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			"anyone who can reach the port")
 	}
 
-	srv, err := newServer(cfg, svc, st, log, reg)
+	srv, err := newServer(cfg, svc, st, deps, log, reg)
 	if err != nil {
 		return err
 	}
@@ -109,7 +109,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 // to, otherwise /metrics exposes only HTTP-side series and every
 // app/store/embed collector stays invisible.
 func newServer(
-	cfg *config.Config, svc *service.Service, st store.Store, log *slog.Logger, reg *prometheus.Registry,
+	cfg *config.Config, svc *service.Service, st store.Store, deps *server.DepTracker,
+	log *slog.Logger, reg *prometheus.Registry,
 ) (*server.Server, error) {
 	srv := server.New(server.Options{
 		Addr:            cfg.HTTPAddr,
@@ -119,11 +120,14 @@ func newServer(
 		UIAddr:          cfg.UIAddr,
 	}, log, reg)
 	srv.SetReady(func(ctx context.Context) error { return st.Ping(ctx) })
+	srv.SetDeps(deps)
+	srv.SetLLMConfigured(cfg.LLMEnabled())
 
 	rest.New(svc, rest.AuthConfig{
 		APIKey:           cfg.APIKey,
 		NamespaceHeader:  config.DefaultNamespaceHeader,
 		DefaultNamespace: cfg.DefaultNamespace,
+		RequestTimeout:   cfg.RequestTimeout,
 	}).Mount(srv.Router())
 
 	mcpHandler := mcpapi.HTTPHandler(svc, config.DefaultNamespaceHeader, cfg.DefaultNamespace, cfg.APIKey)
@@ -154,26 +158,30 @@ func newServer(
 }
 
 // buildServiceStack constructs the store, embedder, service, and starts
-// background workers. Returns the service, a join function for workers,
-// and a cleanup function that closes the store. reg is the shared
-// Prometheus registry the service-side metrics are written to; the HTTP
-// server reads from the same registry to expose them at /metrics.
+// background workers. Returns the service, the store, a dependency tracker
+// recording embedder/LLM call outcomes (feeds GET /healthz?verbose=1; wire
+// it via server.SetDeps), a join function for workers, and a cleanup
+// function that closes the store. reg is the shared Prometheus registry the
+// service-side metrics are written to; the HTTP server reads from the same
+// registry to expose them at /metrics.
 func buildServiceStack(
 	ctx context.Context, cfg *config.Config, log *slog.Logger, reg *prometheus.Registry,
-) (*service.Service, store.Store, func(), func(), error) {
+) (*service.Service, store.Store, *server.DepTracker, func(), func(), error) {
 	// openStore (not buildStore): the embed-model reconciliation below needs the
 	// embedder to re-embed on a model change, which the buildStore guard can't do.
 	st, err := openStore(ctx, cfg)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
+
+	deps := server.NewDepTracker()
 
 	metricsImpl := newConsolidateMetrics(reg)
 
 	embedder, err := buildEmbedder(cfg, log, metricsImpl.EmbedInFlight)
 	if err != nil {
 		_ = st.Close()
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
 	if sm, ok := st.(interface{ SetMetrics(store.Metrics) }); ok {
@@ -183,10 +191,21 @@ func buildServiceStack(
 		em.SetMetrics(metricsImpl)
 	}
 	embedder = embed.Instrument(embedder, outerBackendLabel(embedder), metricsImpl)
+	// Outermost wrap: every Embed call from here on (service pipeline, the
+	// reconcile/backfill/dedup jobs below, and the boot probe) feeds the
+	// dependency tracker that verbose healthz reads.
+	embedder = recordingEmbedder{Embedder: embedder, deps: deps}
 
 	if err := reconcileEmbedModel(ctx, st, embedder, cfg, log); err != nil {
 		_ = st.Close()
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
+	}
+
+	// Boot probe: surface an unreachable embeddings endpoint in the startup
+	// log immediately rather than on the first write. Skipped when no
+	// endpoint is configured (embed.Disabled) — there is nothing to reach.
+	if cfg.EmbedBaseURL != "" {
+		probeEmbedder(ctx, embedder, log)
 	}
 
 	var svcOpts []service.Option
@@ -197,15 +216,15 @@ func buildServiceStack(
 		})
 		if err != nil {
 			_ = st.Close()
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, err
 		}
-		chatClient = client
+		chatClient = recordingLLM{Client: client, deps: deps}
 		// The distiller is shared by write-time distillation and the batch
 		// promoter, so wire it whenever an LLM is configured — not only when the
 		// promoter is on, or MEMINI_PROMOTE_INTERVAL=0 would silently disable
 		// distill-on-write too.
-		svcOpts = append(svcOpts, service.WithConsolidator(client), service.WithAnswerer(client),
-			service.WithDistiller(client))
+		svcOpts = append(svcOpts, service.WithConsolidator(chatClient), service.WithAnswerer(chatClient),
+			service.WithDistiller(chatClient))
 		log.Info("LLM consolidation + answering enabled",
 			"api", cfg.LLMAPI, "model", cfg.LLMModel, "mode", cfg.ConsolidateMode)
 	}
@@ -221,7 +240,7 @@ func buildServiceStack(
 		reranker, name, err := buildReranker(cfg, chatClient, log, metricsImpl.RerankInFlight)
 		if err != nil {
 			_ = st.Close()
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, err
 		}
 		if reranker != nil {
 			svcOpts = append(svcOpts,
@@ -243,6 +262,8 @@ func buildServiceStack(
 		service.WithGlobalNamespace(cfg.GlobalNamespace),
 		service.WithTemporalTargeting(defaultTemporalBoost, search.RegexAnchorExtractor{}),
 		service.WithRecallEmbedTimeout(cfg.RecallEmbedTimeout),
+		service.WithRecallRewriteTimeout(cfg.RecallRewriteTimeout),
+		service.WithWriteEmbedTimeout(cfg.WriteEmbedTimeout),
 		service.WithRecallMinScore(cfg.RecallMinScore),
 		service.WithRecallSemanticReserve(cfg.RecallSemanticReserve),
 		service.WithTurnEchoWindow(cfg.TurnEchoWindow),
@@ -266,6 +287,7 @@ func buildServiceStack(
 	workers.Go(func() { svc.StartConsolidator(workerCtx) })
 	workers.Go(func() { svc.StartDistillBatcher(workerCtx) })
 	workers.Go(func() { svc.RunPromoter(workerCtx, cfg.PromoteInterval) })
+	workers.Go(func() { svc.RunEmbedBackfill(workerCtx, cfg.BackfillInterval) })
 	sweeper := maintenance.NewSweeper(st, log, maintenance.SweeperConfig{
 		Interval:     cfg.SweepInterval,
 		ShortTermCap: cfg.ShortTermCap,
@@ -295,7 +317,7 @@ func buildServiceStack(
 		}
 	}
 
-	return svc, st, joinWorkers, cleanup, nil
+	return svc, st, deps, joinWorkers, cleanup, nil
 }
 
 func loopbackAddr(addr string) bool {

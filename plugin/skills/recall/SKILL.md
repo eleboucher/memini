@@ -25,17 +25,23 @@ memini is a memory service. To search for prior context, call the
   plus per-agent memory; default `exact`.
 - `as_of` (optional) — an RFC3339 time for "what was true then" queries; returns
   facts valid at that instant, including ones since superseded.
+- `response_format` (optional) — `concise` returns each result's summary (or the
+  first ~240 characters of content, truncated) instead of full content; use it
+  for a token-efficient first pass over many results, then call `memory_get` on
+  the ones worth reading in full. Default `detailed` returns full content.
 
 To browse without a query — "show me everything tagged X" or "all procedural
 memories in the `deployment_runbook` category" — call `memory_list` instead. It
-takes the same `tiers` / `tags` / `metadata` filters plus `limit`, and returns
-matching memories newest-first with no relevance query.
+takes the same `tiers` / `tags` / `metadata` filters plus `limit` (default 20)
+and `offset` for paging past it, and returns matching memories newest-first
+with no relevance query.
 
 `memory_recall` runs hybrid retrieval (vector + keyword), then ranks by
 relevance and memory quality (a corroborated, durable, frequently-recalled fact
 outranks a one-off note), so natural-language queries work as well as exact
-keywords. Results carry a `confidence` for durable facts — treat a low-confidence
-memory as a weak signal. Prefer a short descriptive query ("JWT auth setup").
+keywords. Each result carries `confidence` (durable facts only — treat a
+low-confidence memory as a weak signal), `created_at`, and `tags`. Prefer a
+short descriptive query ("JWT auth setup").
 
 To orient at the start of a session without a query, call `memory_briefing`
 instead: it returns pinned context, durable facts, how-to procedures, and recent
@@ -60,7 +66,7 @@ activity in one call.
 
 ## After recall
 
-Read the returned `results[].memory.content`. Don't dump the raw list to
+Read the returned `results[].content`. Don't dump the raw list to
 the user — synthesize: "I remember we chose X because Y, and last time we
 hit Z." When you state a fact that came from memory, quote the stored
 content verbatim rather than paraphrasing it into something it didn't say;
@@ -70,9 +76,14 @@ if a memory is ambiguous, say so instead of guessing.
 
 - **No results**: say memini has nothing on this and proceed from first
   principles — never invent a "remembered" fact to fill the gap.
-- **Conflicting results**: prefer the most recent (a newer memory may
-  supersede an older one), but surface the conflict and let the user
-  resolve it.
+- **Conflicting results**: prefer the one with the later `created_at` (a
+  newer memory may supersede an older one), but surface the conflict and let
+  the user resolve it.
+- **Degraded (keyword-only) results**: a top-level `degraded: "keyword_only"`
+  (with a `note`) means semantic search was unavailable and the results came
+  from keyword matching alone — treat them as incomplete, not exhaustive; a
+  relevant memory may exist but not have matched. Don't report "nothing
+  found" as a confident negative when this flag is set.
 - **Tool errors / server unreachable**: report that memini is unavailable
   and suggest running `memini doctor`; continue without memory rather than
   blocking.

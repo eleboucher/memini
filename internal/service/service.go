@@ -116,6 +116,10 @@ type Metrics interface {
 	// because the query embed failed or timed out. reason is "embed_timeout" or
 	// "embed_error".
 	RecallDegraded(reason string)
+	// RememberDegraded records one write that stored without a vector (embedding
+	// omitted, keyword-searchable only, marked pending_embed) because the content
+	// embed failed or timed out. reason is "embed_timeout" or "embed_error".
+	RememberDegraded(reason string)
 	// WriteSanitized records one ingestion content-hygiene action: "cleaned"
 	// (unambiguous corruption stripped from content) or "quarantined"
 	// (script-salad downranked when corruption quarantine is enabled).
@@ -140,6 +144,9 @@ type Metrics interface {
 	// TierClassified records an omitted-tier write the marker classifier
 	// routed to a durable tier; tier is "semantic" or "procedural".
 	TierClassified(tier string)
+	// EmbedBackfillPending reports the number of memories still marked
+	// pending_embed after one backfill tick (0 once the queue is drained).
+	EmbedBackfillPending(n int)
 }
 
 type nopMetrics struct{}
@@ -156,12 +163,14 @@ func (nopMetrics) OpDuration(string, time.Duration)    {}
 func (nopMetrics) AnswerResult(string)                 {}
 func (nopMetrics) RerankResult(string, string)         {}
 func (nopMetrics) RecallDegraded(string)               {}
+func (nopMetrics) RememberDegraded(string)             {}
 func (nopMetrics) WriteSanitized(string)               {}
 func (nopMetrics) ReinforceResult(string)              {}
 func (nopMetrics) DedupTombstoned(int)                 {}
 func (nopMetrics) CorroborateResult(string)            {}
 func (nopMetrics) ContradictResult(string)             {}
 func (nopMetrics) TierClassified(string)               {}
+func (nopMetrics) EmbedBackfillPending(int)            {}
 
 // ErrInvalidInput marks errors caused by the caller's request (missing fields,
 // unknown tiers) as opposed to backend failures. API layers map it to 400;
@@ -204,6 +213,16 @@ type Service struct {
 	// any embed error, recall degrades to keyword-only search instead of failing.
 	// 0 keeps the query embed unbounded and an embed error fatal.
 	recallEmbedTimeout time.Duration
+	// recallRewriteTimeout bounds the LLM query-expansion call on query_rewrite
+	// recalls; past it, expansion yields just the original query and recall
+	// falls through to normal single-query recall. 0 keeps the rewrite call
+	// unbounded (rides along the LLM client's own HTTP timeout).
+	recallRewriteTimeout time.Duration
+	// writeEmbedTimeout bounds the content embed on the remember path; past it, or
+	// on any embed error, the write degrades to a vectorless (keyword-searchable
+	// only) row marked pending_embed instead of failing. 0 keeps the content embed
+	// unbounded and an embed error fatal (fail-fast, the pre-fallback default).
+	writeEmbedTimeout time.Duration
 	// recallMinScore is an absolute relevance floor on the fused score; candidates
 	// below it are dropped before composite re-ranking. 0 disables filtering.
 	recallMinScore float64
@@ -360,6 +379,12 @@ func WithDistiller(d llm.Distiller) Option { return func(s *Service) { s.distill
 // from them with this chat client.
 func WithAnswerer(c llm.Completer) Option { return func(s *Service) { s.answerer = c } }
 
+// HasAnswerer reports whether an LLM completer is configured for answering.
+// Callers (e.g. the MCP server) use this to decide whether to expose
+// answer-dependent surfaces at all, rather than exposing them and erroring on
+// every call in a headless deployment.
+func (s *Service) HasAnswerer() bool { return s.answerer != nil }
+
 // defaultRerankTimeout bounds a single reranker call; past it, recall falls
 // back to composite order.
 const defaultRerankTimeout = 10 * time.Second
@@ -399,6 +424,32 @@ func WithRecallEmbedTimeout(d time.Duration) Option {
 	return func(s *Service) {
 		if d > 0 {
 			s.recallEmbedTimeout = d
+		}
+	}
+}
+
+// WithRecallRewriteTimeout bounds the LLM query-expansion call on
+// query_rewrite recalls. Past the deadline, expansion yields just the
+// original query and recall falls through to normal single-query recall,
+// rather than blocking on the LLM client's much longer HTTP timeout. d <= 0
+// keeps the rewrite call unbounded (the default).
+func WithRecallRewriteTimeout(d time.Duration) Option {
+	return func(s *Service) {
+		if d > 0 {
+			s.recallRewriteTimeout = d
+		}
+	}
+}
+
+// WithWriteEmbedTimeout bounds the content embed on the remember path. Past the
+// deadline, or on any embed error, the write degrades to a vectorless
+// (keyword-searchable only) row marked pending_embed rather than failing or
+// stalling on a slow embeddings backend. d <= 0 keeps the content embed
+// unbounded and an embed error fatal (the default).
+func WithWriteEmbedTimeout(d time.Duration) Option {
+	return func(s *Service) {
+		if d > 0 {
+			s.writeEmbedTimeout = d
 		}
 	}
 }
@@ -809,6 +860,52 @@ func validateRememberInput(in RememberInput) (memory.Tier, error) {
 	return tier, nil
 }
 
+// embedForRemember embeds fresh write content. When writeEmbedTimeout is set
+// (> 0), the embed is bounded and a timeout or error degrades the write: it
+// returns a nil vector (the caller stores the memory keyword-searchable only)
+// and stamps in.Metadata["pending_embed"] = "true" so a background backfill
+// can pick it up later, rather than failing the write. writeEmbedTimeout <= 0
+// keeps the embed unbounded and any error fatal — the pre-fallback,
+// fail-fast default. in.Metadata is mutated in place (allocated if nil),
+// mirroring stampClassifiedTier/scrubInput: callers that share a Metadata map
+// across writes will see the flag too.
+func (s *Service) embedForRemember(ctx context.Context, in *RememberInput) ([]float32, error) {
+	if s.writeEmbedTimeout <= 0 {
+		vec, err := embed.EmbedOne(ctx, s.embedder, in.Content)
+		if err != nil {
+			return nil, fmt.Errorf("remember: embed: %w", err)
+		}
+		delete(in.Metadata, "pending_embed")
+		return vec, nil
+	}
+	ectx, cancel := context.WithTimeout(ctx, s.writeEmbedTimeout)
+	defer cancel()
+	vec, err := embed.EmbedOne(ectx, s.embedder, in.Content)
+	if err == nil {
+		// Clear a pre-existing pending_embed flag: this row is being
+		// re-embedded (e.g. memory_update after the embedder recovered) and
+		// now carries a fresh vector, so it must not still read as degraded —
+		// a stale flag would falsely report degraded:"pending_embed" to the
+		// caller, inflate the backfill gauge, and cause a redundant
+		// re-embed next tick. delete on a nil map is a no-op, so this is
+		// safe even when in.Metadata was never set.
+		delete(in.Metadata, "pending_embed")
+		return vec, nil
+	}
+	reason := "embed_error"
+	if errors.Is(err, context.DeadlineExceeded) {
+		reason = "embed_timeout"
+	}
+	slog.WarnContext(ctx, "remember: content embed failed, storing without vector",
+		"namespace", in.Namespace, "reason", reason, "err", err)
+	s.metrics.RememberDegraded(reason)
+	if in.Metadata == nil {
+		in.Metadata = map[string]any{}
+	}
+	in.Metadata["pending_embed"] = "true"
+	return nil, nil
+}
+
 // Remember embeds and stores a memory, returning the persisted record.
 func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memory, error) {
 	start := time.Now()
@@ -852,10 +949,10 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		return existing, nil
 	}
 
-	vec, err := embed.EmbedOne(ctx, s.embedder, in.Content)
+	vec, err := s.embedForRemember(ctx, &in)
 	if err != nil {
 		s.metrics.RememberResult("error", string(tier))
-		return nil, fmt.Errorf("remember: embed: %w", err)
+		return nil, err
 	}
 
 	now := s.now()
@@ -929,8 +1026,10 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	}
 
 	// Sync mode resolves the write against existing memories before storing, so
-	// the caller sees the consolidated result.
-	if consolidate && s.consolidateMode == ConsolidateSync {
+	// the caller sees the consolidated result. Skipped for a vectorless write
+	// (embed degraded, see embedForRemember): the search it needs has no query
+	// vector to run with, so the write falls through to a normal insert instead.
+	if consolidate && s.consolidateMode == ConsolidateSync && len(m.Embedding) > 0 {
 		if result, handled, err := s.consolidateSync(ctx, m); err != nil {
 			s.metrics.RememberResult("error", string(tier))
 			return nil, err
@@ -982,6 +1081,12 @@ func (s *Service) runSplitDedup(
 	ctx context.Context, m *memory.Memory, in RememberInput,
 ) (handled bool, result *memory.Memory, supersedeID string) {
 	if s.writeDedupScore <= 0 || s.writeDedupAction == WriteDedupOff || s.writeDedupAction == "" {
+		return false, nil, ""
+	}
+	// A vectorless write (embed degraded, see embedForRemember) has nothing for
+	// dedupCheck's vector search to run against; skip the gate and let the write
+	// proceed as a normal insert rather than searching on an empty vector.
+	if len(m.Embedding) == 0 {
 		return false, nil, ""
 	}
 	// The hint action is scoped to durable tiers (semantic/procedural): that's
@@ -1460,6 +1565,13 @@ type RecallInput struct {
 	// recallSemanticReserve (durable-tier slot reservation) for this call. 0
 	// falls back to the server-wide value.
 	SemanticReserve int
+	// Degraded (output-only) is set to the degradation reason
+	// ("embed_error"/"embed_timeout") when this recall fell back to
+	// keyword-only search because the query embed failed or timed out. The
+	// caller passes the address of a local string; it is left untouched
+	// (empty) on a healthy recall. nil disables reporting. Same out-param
+	// pattern as MergeHint/AutoSuperseded on RememberInput.
+	Degraded *string
 	// IncludeLinked, when true, expands recall to include memories linked to
 	// any result via LinkedMemoryIDs (1-hop expansion). Linked memories that
 	// are superseded are skipped. Default (false) is no expansion.
@@ -1496,6 +1608,25 @@ func durableTiers(requested []memory.Tier) []memory.Tier {
 		}
 	}
 	return out
+}
+
+// reportRecallDegraded records and surfaces a query-embed failure that
+// downgraded a recall to keyword-only search. It is a no-op when embedErr is
+// nil (the healthy path). degraded, when non-nil, receives the reason
+// ("embed_error"/"embed_timeout") — the RecallInput.Degraded out-param.
+func (s *Service) reportRecallDegraded(ctx context.Context, embedErr error, degraded *string) {
+	if embedErr == nil {
+		return
+	}
+	reason := "embed_error"
+	if errors.Is(embedErr, context.DeadlineExceeded) {
+		reason = "embed_timeout"
+	}
+	slog.WarnContext(ctx, "recall: query embed failed, falling back to keyword-only search", "reason", reason, "err", embedErr)
+	s.metrics.RecallDegraded(reason)
+	if degraded != nil {
+		*degraded = reason
+	}
 }
 
 func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, error) {
@@ -1583,14 +1714,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	// every other namespace uses the requested one.
 	namespaces, globalIdx, globalTiers := s.addGlobalNamespace(namespaces, in)
 	s.metrics.OpDuration("recall_embed", time.Since(embedStart))
-	if embedErr != nil {
-		reason := "embed_error"
-		if errors.Is(embedErr, context.DeadlineExceeded) {
-			reason = "embed_timeout"
-		}
-		slog.WarnContext(ctx, "recall: query embed failed, falling back to keyword-only search", "reason", reason, "err", embedErr)
-		s.metrics.RecallDegraded(reason)
-	}
+	s.reportRecallDegraded(ctx, embedErr, in.Degraded)
 
 	// Over-fetch a deep candidate pool from each strategy: a memory ranked just
 	// outside the top k in both legs is invisible at pool depth k, yet RRF would
@@ -1740,9 +1864,22 @@ func (s *Service) resolveTurnEchoWindow(in RecallInput) time.Duration {
 }
 
 // tryQueryRewrite handles the query-expansion path: when QueryRewrite is set
-// and an answerer is configured, it rewrites the query into 2-3 variants,
-// recalls each, and fuses via RRF. Returns (results, true) when the path
-// fires; (nil, false) to fall through to single-query recall.
+// and an answerer is configured, it rewrites the query into 2-3 variants and
+// recalls each concurrently (bounded by recallSearchConcurrency), then fuses
+// via RRF. Returns (results, true) when the path fires; (nil, false) to fall
+// through to single-query recall.
+//
+// Results are collected into a pre-sized, index-addressed slice (one slot per
+// variant) so fusion always sees the variants in expansion order regardless
+// of which goroutine finishes first -- same fused order as the old sequential
+// loop, just running concurrently.
+//
+// RecallInput.Degraded is a *string out-param; `sub := in` only copies the
+// pointer, so handing every variant goroutine the SAME pointer would be a
+// data race the moment more than one variant degrades at once. Each variant
+// instead gets its own local slot; once every variant has joined, the
+// coordinating goroutine (this one, after g.Wait()) aggregates them into the
+// caller's Degraded exactly once.
 func (s *Service) tryQueryRewrite(ctx context.Context, in RecallInput) ([]store.Scored, bool) {
 	if !in.QueryRewrite || s.answerer == nil {
 		return nil, false
@@ -1751,16 +1888,34 @@ func (s *Service) tryQueryRewrite(ctx context.Context, in RecallInput) ([]store.
 	if len(queries) <= 1 {
 		return nil, false
 	}
-	results := make([][]store.Scored, 0, len(queries))
-	for _, q := range queries {
-		sub := in
-		sub.Query = q
-		sub.QueryRewrite = false // prevent recursion
-		res, err := s.Recall(ctx, sub)
-		if err != nil {
-			return nil, false
+	results := make([][]store.Scored, len(queries))
+	degradedReasons := make([]string, len(queries))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(recallSearchConcurrency)
+	for i, q := range queries {
+		g.Go(func() error {
+			sub := in
+			sub.Query = q
+			sub.QueryRewrite = false // prevent recursion into tryQueryRewrite
+			sub.Degraded = &degradedReasons[i]
+			res, err := s.Recall(gctx, sub)
+			if err != nil {
+				return err
+			}
+			results[i] = res
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, false
+	}
+	if in.Degraded != nil {
+		for _, reason := range degradedReasons {
+			if reason != "" {
+				*in.Degraded = reason
+				break
+			}
 		}
-		results = append(results, res)
 	}
 	return search.Fuse(results, in.Limit, search.DefaultRRFK), true
 }

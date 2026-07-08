@@ -26,6 +26,11 @@ curl -sf -X POST "${MEMINI_BASE_URL:-$MEMINI_URL}/v1/search" \
 ```
 
 Read the returned `results[].memory.content` and factor them into your plan.
+Each `results[].memory` also carries `created_at` and `tags` — on conflicting
+memories prefer the most recent and surface the conflict. A top-level
+`degraded: "keyword_only"` (with a `note`) means the query embed was
+unavailable and the results came from keyword matching alone; treat them as
+incomplete, not exhaustive.
 
 Narrow recall with `tags` (a memory must carry every listed tag) and/or
 `metadata` (top-level key=value pairs), e.g. only auth bug-fix memories:

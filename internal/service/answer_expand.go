@@ -21,13 +21,25 @@ const answerExpandSystem = "You rewrite a question into memory-search queries. R
 
 // expandQueries calls the LLM to rewrite a query into 2-3 lexically diverse
 // variants, returning the original + rewrites. Returns just the original when
-// no answerer is configured, the LLM call fails, or the query is too short
-// to benefit from expansion (< 3 words, quoted, or a UUID/error-code lookup).
+// no answerer is configured, the LLM call fails or times out, or the query is
+// too short to benefit from expansion (< 3 words, quoted, or a UUID/error-code
+// lookup).
+//
+// The call is bounded by recallRewriteTimeout so an enabled query_rewrite
+// can't ride along the LLM client's much longer HTTP timeout (120s) and hold
+// up recall; a timeout is just another Complete error and falls back to the
+// original query alone.
 func (s *Service) expandQueries(ctx context.Context, query string) []string {
 	if s.answerer == nil || !shouldExpandQuery(query) {
 		return []string{query}
 	}
-	rewrites, err := s.answerer.Complete(ctx, answerExpandSystem, "Question: "+query)
+	cctx := ctx
+	if s.recallRewriteTimeout > 0 {
+		var cancel context.CancelFunc
+		cctx, cancel = context.WithTimeout(ctx, s.recallRewriteTimeout)
+		defer cancel()
+	}
+	rewrites, err := s.answerer.Complete(cctx, answerExpandSystem, "Question: "+query)
 	if err != nil {
 		return []string{query}
 	}

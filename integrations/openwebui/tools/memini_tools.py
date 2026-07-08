@@ -120,7 +120,9 @@ class Tools:
         """
         Search long-term memory for facts relevant to a query. Call this when the
         user refers to past conversations, prior decisions, or anything you might
-        have been told before.
+        have been told before. Call before starting work that may have history —
+        editing an unfamiliar file, debugging a recurring issue, or answering
+        "what do we know about X".
 
         :param query: What to look up in memory.
         :return: The matching memories, or a note that none were found.
@@ -152,7 +154,16 @@ class Tools:
             await __event_emitter__(
                 {"type": "status", "data": {"description": f"Recalled {len(lines)} memories", "done": True}}
             )
-        return "Relevant memories:\n" + "\n".join(lines)
+        header = "Relevant memories:"
+        # /v1/search sets degraded="keyword_only" (plus a note) when the query
+        # embed was unavailable and it fell back to keyword-only matching; the
+        # field is already on `result`, so surfacing it is a one-line addition.
+        if (result or {}).get("degraded"):
+            note = (result or {}).get("note") or (
+                "semantic search unavailable — these results are keyword-only and may be incomplete"
+            )
+            header += f" (degraded: {note})"
+        return header + "\n" + "\n".join(lines)
 
     async def remember_memory(self, content: str, __event_emitter__=None) -> str:
         """
@@ -186,9 +197,11 @@ class Tools:
 
     async def forget_memory(self, id: str, __event_emitter__=None) -> str:
         """
-        Delete a memory from long-term memory by its id. Call this when a recalled
-        memory is wrong, outdated, or poisoned. Get the id from recall_memory (each
-        hit is annotated with its id). This is a soft delete (tombstone).
+        Permanently delete a memory from long-term memory by its id. Call this when
+        a recalled memory is wrong, outdated, or poisoned. Get the id from
+        recall_memory (each hit is annotated with its id). To correct a fact,
+        forget the stale one and remember_memory the corrected version — this tool
+        talks to memini over REST, which has no partial-update endpoint.
 
         :param id: The id of the memory to forget, as shown by recall_memory.
         :return: Confirmation that the memory was forgotten.

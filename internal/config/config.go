@@ -44,6 +44,18 @@ type Config struct {
 	// HTTP server.
 	HTTPAddr        string        `env:"MEMINI_HTTP_ADDR" envDefault:":8080"`
 	ShutdownTimeout time.Duration `env:"MEMINI_SHUTDOWN_TIMEOUT" envDefault:"15s"`
+	// RequestTimeout bounds how long a single /v1 REST request may run before
+	// chi's Timeout middleware cancels its context (internal/api/rest.Mount).
+	// It never applies to /mcp (long-lived SSE), /healthz, /readyz, or
+	// /metrics. Default 60s rather than a more conservative 30s: the LLM HTTP
+	// client's own timeout is 120s (internal/llm/llm.go defaultHTTPTimeout),
+	// and POST /v1/answer can ride that full call chain (e.g. a
+	// reasoning_level=high rewrite/answer). A 30s default would systematically
+	// cut off those legitimate long-running answer calls; 60s cuts that risk
+	// roughly in half without going as high as the LLM client's own ceiling.
+	// It still doesn't fully cover a 120s LLM call — deployments that
+	// regularly hit that ceiling should raise this explicitly. 0 disables it.
+	RequestTimeout time.Duration `env:"MEMINI_REQUEST_TIMEOUT" envDefault:"60s"`
 	// MetricsAddr, when set (e.g. ":9090"), serves /metrics on its own listener
 	// instead of the main HTTP port. The dedicated port is meant to stay
 	// in-cluster — keep it out of any public route and it needs no bearer token.
@@ -171,6 +183,15 @@ type Config struct {
 	// on a slow or stuck embeddings backend. Defaults to 2s so a wedged backend
 	// can't hang recall indefinitely; set 0 to restore an unbounded query embed.
 	RecallEmbedTimeout time.Duration `env:"MEMINI_RECALL_EMBED_TIMEOUT" envDefault:"2s"`
+	// RecallRewriteTimeout bounds the LLM query-expansion call on query_rewrite
+	// recalls; past it, recall proceeds with the original query alone rather
+	// than riding along the LLM client's much longer HTTP timeout. Default 3s;
+	// set 0 to restore an unbounded rewrite call.
+	RecallRewriteTimeout time.Duration `env:"MEMINI_RECALL_REWRITE_TIMEOUT" envDefault:"3s"`
+	// WriteEmbedTimeout bounds the content embed on the remember path; past it, or on
+	// embed error, the memory is stored without a vector (keyword-searchable) and
+	// marked pending_embed for background backfill. 0 restores fail-fast writes.
+	WriteEmbedTimeout time.Duration `env:"MEMINI_WRITE_EMBED_TIMEOUT" envDefault:"5s"`
 	// RecallMinScore is the fused-score floor: candidates below it are dropped
 	// before ranking. The default (0.1) is the benched value; it is exposed so a
 	// deployment on a different embedder can raise it to trim loosely-relevant
@@ -224,6 +245,11 @@ type Config struct {
 	// PromoteMinAccess is the minimum access_count for an episodic memory to be
 	// considered for promotion.
 	PromoteMinAccess int `env:"MEMINI_PROMOTE_MIN_ACCESS" envDefault:"3"`
+
+	// BackfillInterval is how often the vector backfill loop re-embeds
+	// memories left vectorless by a degraded write (metadata pending_embed);
+	// 0 disables it.
+	BackfillInterval time.Duration `env:"MEMINI_BACKFILL_INTERVAL" envDefault:"1m"`
 
 	// SweepInterval is how often the decay sweeper purges expired memories.
 	SweepInterval time.Duration `env:"MEMINI_SWEEP_INTERVAL" envDefault:"1h"`
@@ -425,6 +451,9 @@ func (c *Config) validate() error {
 	}
 	if c.EmbedDims <= 0 {
 		return fmt.Errorf("MEMINI_EMBED_DIMS must be positive, got %d", c.EmbedDims)
+	}
+	if c.RequestTimeout < 0 {
+		return fmt.Errorf("MEMINI_REQUEST_TIMEOUT must be >= 0, got %v", c.RequestTimeout)
 	}
 	// The sweeper always runs (there is no "disabled" mode), and time.NewTicker
 	// panics on a non-positive duration, so a zero/negative interval must be

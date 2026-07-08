@@ -32,11 +32,13 @@ func (*sanitizeRecorder) OpDuration(string, time.Duration)    {}
 func (*sanitizeRecorder) AnswerResult(string)                 {}
 func (*sanitizeRecorder) RerankResult(string, string)         {}
 func (*sanitizeRecorder) RecallDegraded(string)               {}
+func (*sanitizeRecorder) RememberDegraded(string)             {}
 func (*sanitizeRecorder) ReinforceResult(string)              {}
 func (*sanitizeRecorder) DedupTombstoned(int)                 {}
 func (*sanitizeRecorder) CorroborateResult(string)            {}
 func (*sanitizeRecorder) ContradictResult(string)             {}
 func (*sanitizeRecorder) TierClassified(string)               {}
+func (*sanitizeRecorder) EmbedBackfillPending(int)            {}
 
 // A garbled, script-salad digest of the kind an upstream model/harness glitch
 // produces: Latin glued to CJK over and over. Triggers sanitize.Garbled.

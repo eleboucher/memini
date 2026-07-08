@@ -11,7 +11,7 @@ transports:
 Tools exposed:
 
 - `memory_remember`, `memory_recall`, `memory_briefing`, `memory_answer`
-- `memory_list`, `memory_get`, `memory_forget`
+- `memory_list`, `memory_get`, `memory_update`, `memory_forget`
 
 ## Recommended: install the plugin
 
@@ -92,13 +92,21 @@ the live conversation back.
 
 Where a host exposes explicit memory tools, the set is the same:
 `memory_recall`, `memory_list`, `memory_remember`, and **`memory_forget`**
-(delete a wrong/outdated/poisoned memory by its id — a soft tombstone). Hermes
+(permanently delete a wrong/outdated/poisoned memory by its id). Hermes
 and Open WebUI (Tools module) always expose them; Pi registers them natively via
 `pi.registerTool`; OpenClaw exposes them behind `expose_tools: true`; Claude
 Code / Codex get them from the MCP server. **opencode**
 is the exception: its native plugin is deliberately tool-free (automatic recall +
 capture only), so to give it `memory_forget` (or any tool) wire the memini MCP
 server alongside the plugin.
+
+**`memory_update` (partial update by id) is MCP-only** — there is no REST
+update endpoint. Claude Code, Codex, and any host wired to the memini MCP
+server get it; Hermes, Pi, OpenClaw, Open WebUI, and opencode's native plugins
+talk REST (`/v1/search`, `/v1/memories`) and do **not** expose it, so their
+tool descriptions correctly point to `memory_forget` (delete + re-remember) as
+the only way to correct a stored fact. Wire the MCP server alongside a native
+plugin if a host needs `memory_update`.
 
 Two host-specific differences remain by design:
 

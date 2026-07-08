@@ -438,6 +438,14 @@ export default function meminiExtension(pi: ExtensionAPI): void {
         "current workspace state and the user's instructions):",
       ...fit.items,
     ];
+    // /v1/search sets `degraded: "keyword_only"` (plus a `note`) when the query
+    // embed was unavailable and it fell back to keyword-only matching; both are
+    // already on `result`, so surfacing them is a one-line addition.
+    if (result?.degraded) {
+      lines.push(
+        `[memini: ${result.note || "semantic search unavailable — results are keyword-only and may be incomplete"}]`,
+      );
+    }
     if (fit.dropped > 0) lines.push(`[... ${fit.dropped} item(s) truncated by token budget]`);
 
     return {
@@ -493,7 +501,11 @@ export default function meminiExtension(pi: ExtensionAPI): void {
     name: "memory_recall",
     label: "Recall memory",
     description:
-      "Recall relevant memories from long-term memory (memini) via hybrid (semantic + keyword) search.",
+      "Recall relevant memories from long-term memory (memini) via hybrid (semantic + keyword) search. " +
+      "Call before starting work that may have history: editing an unfamiliar file, debugging a recurring " +
+      "issue, or when asked what's known about something. A degraded:\"keyword_only\" field in the result " +
+      "means semantic search was unavailable and results came from keyword matching alone — treat as " +
+      "incomplete, not exhaustive.",
     parameters: Type.Object({
       query: Type.String({ description: "What to search for" }),
       limit: Type.Optional(Type.Number({ description: "Max results (default 3)" })),
@@ -512,7 +524,9 @@ export default function meminiExtension(pi: ExtensionAPI): void {
         tier: r?.memory?.tier || "",
         score: typeof r?.score === "number" ? r.score : 0,
       }));
-      return text({ results });
+      // /v1/search already carries `degraded`/`note` on `res`; pass them through
+      // rather than dropping them silently.
+      return text(res?.degraded ? { results, degraded: res.degraded, note: res.note } : { results });
     },
   });
 
@@ -548,7 +562,10 @@ export default function meminiExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_remember",
     label: "Remember",
-    description: "Store a durable fact, decision, or preference in long-term memory (memini).",
+    description:
+      "Store a durable fact, decision, or preference in long-term memory (memini). Call proactively when " +
+      "the user says 'remember this', after an architectural decision (capture the why), or after " +
+      "discovering a non-obvious bug or convention. Keep memories atomic — one self-contained fact per call.",
     parameters: Type.Object({
       content: Type.String({ description: "The fact to remember" }),
       tier: Type.Optional(
@@ -584,8 +601,10 @@ export default function meminiExtension(pi: ExtensionAPI): void {
     name: "memory_forget",
     label: "Forget",
     description:
-      "Delete a memory from long-term memory (memini) by its id — use when a recalled memory is wrong, " +
-      "outdated, or poisoned. Get the id from memory_recall or memory_list. This is a soft delete (tombstone).",
+      "Permanently delete a memory from long-term memory (memini) by its id — use when a recalled memory " +
+      "is wrong, outdated, or poisoned. Get the id from memory_recall or memory_list. To correct a fact, " +
+      "forget the stale one and remember the corrected version — this integration talks to memini over " +
+      "REST, which has no partial-update endpoint.",
     parameters: Type.Object({
       id: Type.String({ description: "The id of the memory to forget (from memory_recall / memory_list)." }),
     }),

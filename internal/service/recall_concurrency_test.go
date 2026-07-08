@@ -77,9 +77,12 @@ func (e errEmbedder) Dims() int { return e.dims }
 // countingMetrics counts recall error and keyword-only-degrade events;
 // everything else is a no-op. Safe for concurrent use.
 type countingMetrics struct {
-	mu        sync.Mutex
-	recallErr int
-	degraded  map[string]int
+	mu                   sync.Mutex
+	recallErr            int
+	degraded             map[string]int
+	rememberDegraded     map[string]int
+	embedBackfillPending int
+	embedBackfillCalls   int
 }
 
 func (m *countingMetrics) RecallResult(result, _, _ string) {
@@ -95,6 +98,14 @@ func (m *countingMetrics) RecallDegraded(reason string) {
 		m.degraded = map[string]int{}
 	}
 	m.degraded[reason]++
+	m.mu.Unlock()
+}
+func (m *countingMetrics) RememberDegraded(reason string) {
+	m.mu.Lock()
+	if m.rememberDegraded == nil {
+		m.rememberDegraded = map[string]int{}
+	}
+	m.rememberDegraded[reason]++
 	m.mu.Unlock()
 }
 func (m *countingMetrics) WriteSanitized(string)            {}
@@ -113,6 +124,12 @@ func (m *countingMetrics) DedupTombstoned(int)              {}
 func (m *countingMetrics) CorroborateResult(string)         {}
 func (m *countingMetrics) ContradictResult(string)          {}
 func (m *countingMetrics) TierClassified(string)            {}
+func (m *countingMetrics) EmbedBackfillPending(n int) {
+	m.mu.Lock()
+	m.embedBackfillPending = n
+	m.embedBackfillCalls++
+	m.mu.Unlock()
+}
 
 // TestRecallEmbedErrorFailsOnce confirms an embed failure still hard-fails
 // recall with the original wrap and reports the error metric exactly once.
@@ -198,6 +215,51 @@ func TestRecallEmbedErrorFallsBackToKeyword(t *testing.T) {
 	}
 	if m.degraded["embed_error"] != 1 {
 		t.Fatalf("RecallDegraded(embed_error) = %d, want 1", m.degraded["embed_error"])
+	}
+}
+
+// TestRecallDegradedOutParamSetOnFallback confirms that when a recall falls
+// back to keyword-only search, RecallInput.Degraded (when non-nil) receives
+// the same reason string recorded via RecallDegraded, so callers (MCP/REST)
+// can surface the degradation without scraping metrics.
+func TestRecallDegradedOutParamSetOnFallback(t *testing.T) {
+	st := openTestStore(t)
+	seedHello(t, st)
+
+	m := &countingMetrics{}
+	svc := service.New(st, errEmbedder{dims: dims}, service.WithSyncReinforce(),
+		service.WithRecallEmbedTimeout(time.Second), service.WithMetrics(m))
+
+	var degraded string
+	_, err := svc.Recall(context.Background(), service.RecallInput{
+		Namespace: "alice", Query: "hello", Limit: 5, Degraded: &degraded,
+	})
+	if err != nil {
+		t.Fatalf("recall should degrade, not error: %v", err)
+	}
+	if degraded != "embed_error" {
+		t.Fatalf("Degraded out-param = %q, want %q", degraded, "embed_error")
+	}
+}
+
+// TestRecallDegradedOutParamEmptyOnHealthyEmbed confirms the Degraded
+// out-param is left untouched (empty) when the query embed succeeds, so
+// callers can distinguish a healthy recall from a degraded one.
+func TestRecallDegradedOutParamEmptyOnHealthyEmbed(t *testing.T) {
+	st := openTestStore(t)
+	seedHello(t, st)
+
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce())
+
+	var degraded string
+	_, err := svc.Recall(context.Background(), service.RecallInput{
+		Namespace: "alice", Query: "hello", Limit: 5, Degraded: &degraded,
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if degraded != "" {
+		t.Fatalf("Degraded out-param = %q, want empty on healthy embed", degraded)
 	}
 }
 

@@ -46,12 +46,14 @@ func (m *countingMetrics) OpDuration(string, time.Duration)    {}
 func (m *countingMetrics) AnswerResult(string)                 {}
 func (m *countingMetrics) RerankResult(string, string)         {}
 func (m *countingMetrics) RecallDegraded(string)               {}
+func (m *countingMetrics) RememberDegraded(string)             {}
 func (m *countingMetrics) WriteSanitized(string)               {}
 func (m *countingMetrics) ReinforceResult(r string)            { m.results["reinforce:"+r]++ }
 func (m *countingMetrics) DedupTombstoned(int)                 {}
 func (m *countingMetrics) CorroborateResult(string)            {}
 func (m *countingMetrics) ContradictResult(string)             {}
 func (m *countingMetrics) TierClassified(string)               {}
+func (m *countingMetrics) EmbedBackfillPending(int)            {}
 
 func newAsyncSvc(t *testing.T, fc llm.Consolidator, minScore float64, mx Metrics) (*Service, store.Store) {
 	t.Helper()

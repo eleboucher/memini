@@ -40,7 +40,7 @@ func runMCP(cmd *cobra.Command, _ []string) error {
 	defer stop()
 
 	reg := prometheus.NewRegistry()
-	svc, _, joinWorkers, cleanup, err := buildServiceStack(ctx, cfg, log, reg)
+	svc, _, _, joinWorkers, cleanup, err := buildServiceStack(ctx, cfg, log, reg)
 	if err != nil {
 		return err
 	}

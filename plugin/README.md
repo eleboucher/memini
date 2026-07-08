@@ -63,7 +63,8 @@ Plus 3 skills (`remember`, `recall`, `recap`) the agent invokes directly.
 ```
 Install the memini plugin for persistent memory: run `/plugin marketplace add eleboucher/memini`
 then `/plugin install memini`. The plugin registers 6 hooks + 3 skills + the memini MCP server
-so the agent has memory_remember / memory_recall / memory_get / memory_forget without extra
+so the agent has memory_remember / memory_recall / memory_get / memory_update / memory_forget /
+memory_list / memory_briefing (plus memory_answer, when an LLM is configured) without extra
 config. Verify with `curl http://localhost:8080/healthz`.
 ```
 

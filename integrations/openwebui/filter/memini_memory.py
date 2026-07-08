@@ -103,6 +103,19 @@ def format_results(results: list, limit: int) -> str:
     return "\n".join(lines)
 
 
+def degraded_note(result: Optional[dict]) -> str:
+    """Render the /v1/search degraded marker as a one-line note, or "" when the
+    search was healthy. `degraded`/`note` are already on the response, set when
+    the query embed was unavailable and search fell back to keyword-only
+    matching — surface them so a keyword-only result isn't read as exhaustive."""
+    if not isinstance(result, dict) or not result.get("degraded"):
+        return ""
+    note = result.get("note") or (
+        "semantic search unavailable — these results are keyword-only and may be incomplete"
+    )
+    return f"[memini: {note}]"
+
+
 def uses_plaintext_bearer(base_url: str, secret: str) -> bool:
     """True when a bearer token would cross plaintext HTTP to a non-loopback host."""
     if not secret:
@@ -220,6 +233,9 @@ class Filter:
         block = format_results((result or {}).get("results"), self.valves.recall_limit)
         if not block:
             return body
+        note = degraded_note(result)
+        if note:
+            block += "\n" + note
         context = {
             "role": "system",
             "content": (

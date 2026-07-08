@@ -40,13 +40,23 @@ func New(svc *service.Service, auth AuthConfig) *Server {
 
 // Mount attaches the spec-generated /v1 routes to r, wrapped in namespace +
 // auth middleware. Binding failures on declared parameters (e.g. ?limit=abc)
-// are rejected with 400 by the generated wrappers.
+// are rejected with 400 by the generated wrappers. Callers that also mount
+// long-lived streaming routes (e.g. the MCP SSE handler) must mount those
+// directly on r, outside this group — Timeout below would sever them.
 func (h *Server) Mount(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		// Authentication first: an unauthenticated caller gets 401, never a
 		// 400 that leaks namespace-validation behavior.
 		r.Use(h.auth.authMiddleware)
 		r.Use(h.auth.namespaceMiddleware)
+		// Timeout is innermost (closest to the handler) so it bounds only
+		// the generated handler's own work, not the surrounding auth checks.
+		// It cancels the request context past the deadline; it does not
+		// forcibly abort a handler that ignores ctx.Done() (see AuthConfig's
+		// RequestTimeout doc).
+		if h.auth.RequestTimeout > 0 {
+			r.Use(middleware.Timeout(h.auth.RequestTimeout))
+		}
 		HandlerWithOptions(h, ChiServerOptions{
 			BaseRouter: r,
 			ErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -385,13 +395,22 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 	if req.MinScore != nil {
 		in.MinScore = *req.MinScore
 	}
+	var degraded string
+	in.Degraded = &degraded
 
 	res, err := h.svc.Recall(r.Context(), in)
 	if err != nil {
 		writeError(w, r, statusFor(err), err)
 		return
 	}
-	httputil.JSON(w, http.StatusOK, SearchResponse{Results: apiScored(res)})
+	out := SearchResponse{Results: apiScored(res)}
+	if degraded != "" {
+		keywordOnly := "keyword_only"
+		note := "semantic search unavailable (" + degraded + "); results are keyword-only and may be incomplete"
+		out.Degraded = &keywordOnly
+		out.Note = &note
+	}
+	httputil.JSON(w, http.StatusOK, out)
 }
 
 // AnswerQuestion implements POST /v1/answer.

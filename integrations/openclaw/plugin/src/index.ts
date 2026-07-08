@@ -560,7 +560,12 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
   const buildTools = (ns: string) => [
     {
       name: "memory_recall",
-      description: "Search long-term memory (memini) for relevant past facts and context.",
+      description:
+        "Search long-term memory (memini) for relevant past facts and context. Call before starting work " +
+        "that may have history: editing an unfamiliar file, debugging a recurring issue, or when asked " +
+        "what's known about something. A degraded:\"keyword_only\" field in the result means semantic " +
+        "search was unavailable and results came from keyword matching alone — treat as incomplete, not " +
+        "exhaustive.",
       parameters: Type.Object({
         query: Type.String({ description: "What to search for" }),
         limit: Type.Optional(Type.Number({ description: "Max results (default 3)" })),
@@ -579,7 +584,9 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
           tier: r?.memory?.tier || "",
           score: typeof r?.score === "number" ? r.score : 0,
         }));
-        return text({ results });
+        // /v1/search already carries degraded/note on `res`; pass them through
+        // rather than dropping them silently.
+        return text(res?.degraded ? { results, degraded: res.degraded, note: res.note } : { results });
       },
     },
     {
@@ -611,7 +618,10 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
     },
     {
       name: "memory_remember",
-      description: "Store a durable fact, decision, or preference in long-term memory (memini).",
+      description:
+        "Store a durable fact, decision, or preference in long-term memory (memini). Call proactively when " +
+        "the user says 'remember this', after an architectural decision (capture the why), or after " +
+        "discovering a non-obvious bug or convention. Keep memories atomic — one self-contained fact per call.",
       parameters: Type.Object({
         content: Type.String({ description: "The fact to remember" }),
         tier: Type.Optional(
@@ -644,8 +654,10 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
     {
       name: "memory_forget",
       description:
-        "Delete a memory from long-term memory (memini) by its id — use when a recalled memory is wrong, " +
-        "outdated, or poisoned. Get the id from memory_recall or memory_list. This is a soft delete (tombstone).",
+        "Permanently delete a memory from long-term memory (memini) by its id — use when a recalled " +
+        "memory is wrong, outdated, or poisoned. Get the id from memory_recall or memory_list. To " +
+        "correct a fact, forget the stale one and remember the corrected version — this plugin talks " +
+        "to memini over REST, which has no partial-update endpoint.",
       parameters: Type.Object({
         id: Type.String({ description: "The id of the memory to forget (from memory_recall / memory_list)." }),
       }),
@@ -794,6 +806,14 @@ const plugin: {
         rememberInjected(session, results.map((r: any) => r?.memory?.id).filter(Boolean));
       }
       const lines = [`Relevant long-term memory from memini:`, ...fit.items];
+      // /v1/search sets `degraded: "keyword_only"` (plus a `note`) when the
+      // query embed was unavailable and it fell back to keyword-only matching;
+      // both are already on `result`, so surfacing them is a one-line addition.
+      if (result?.degraded) {
+        lines.push(
+          `[memini: ${result.note || "semantic search unavailable — results are keyword-only and may be incomplete"}]`,
+        );
+      }
       if (fit.dropped > 0) lines.push(`[... ${fit.dropped} item(s) truncated by token budget]`);
       return { prependContext: lines.join("\n") };
     };

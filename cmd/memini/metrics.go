@@ -19,22 +19,24 @@ type consolidateMetrics struct {
 	queueDepth prometheus.Gauge
 
 	// service-level (added with the dashboards work)
-	rememberResults    *prometheus.CounterVec
-	recallResults      *prometheus.CounterVec
-	forgetResults      *prometheus.CounterVec
-	supersedeResults   *prometheus.CounterVec
-	promoteResults     *prometheus.CounterVec
-	fsckResults        *prometheus.CounterVec
-	answerResults      *prometheus.CounterVec
-	rerankResults      *prometheus.CounterVec
-	recallDegraded     *prometheus.CounterVec
-	corroborateResults *prometheus.CounterVec
-	contradictResults  *prometheus.CounterVec
-	tierClassified     *prometheus.CounterVec
-	promoteFacts       prometheus.Counter
-	reinforceResults   *prometheus.CounterVec
-	writeSanitized     *prometheus.CounterVec
-	opDuration         *prometheus.HistogramVec
+	rememberResults      *prometheus.CounterVec
+	recallResults        *prometheus.CounterVec
+	forgetResults        *prometheus.CounterVec
+	supersedeResults     *prometheus.CounterVec
+	promoteResults       *prometheus.CounterVec
+	fsckResults          *prometheus.CounterVec
+	answerResults        *prometheus.CounterVec
+	rerankResults        *prometheus.CounterVec
+	recallDegraded       *prometheus.CounterVec
+	rememberDegraded     *prometheus.CounterVec
+	corroborateResults   *prometheus.CounterVec
+	contradictResults    *prometheus.CounterVec
+	tierClassified       *prometheus.CounterVec
+	promoteFacts         prometheus.Counter
+	reinforceResults     *prometheus.CounterVec
+	writeSanitized       *prometheus.CounterVec
+	opDuration           *prometheus.HistogramVec
+	embedBackfillPending prometheus.Gauge
 
 	// store-level
 	storeUpsert     *prometheus.CounterVec
@@ -118,6 +120,10 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 			Name: "memini_recall_degraded_total",
 			Help: "Recalls that fell back to keyword-only search by reason (embed_timeout, embed_error).",
 		}, []string{labelReason}),
+		rememberDegraded: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "memini_remember_degraded_total",
+			Help: "Writes that stored without a vector (keyword-searchable only, pending_embed) by reason (embed_timeout, embed_error).",
+		}, []string{labelReason}),
 		corroborateResults: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_corroborate_results_total",
 			Help: "Corroboration-routing attempts on fresh short-term writes (corroborated, cooldown, miss, error).",
@@ -147,6 +153,10 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 			Help:    "End-to-end latency of public service operations.",
 			Buckets: prometheus.DefBuckets,
 		}, []string{labelOp}),
+		embedBackfillPending: factory.NewGauge(prometheus.GaugeOpts{
+			Name: "memini_embed_backfill_pending",
+			Help: "Memories still marked pending_embed (stored vectorless) after the most recent backfill tick.",
+		}),
 		storeUpsert: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_store_upserts_total",
 			Help: "Store upsert outcomes (insert, update) by tier and typed-extraction memory_type.",
@@ -252,6 +262,10 @@ func (m *consolidateMetrics) RecallDegraded(reason string) {
 	m.recallDegraded.WithLabelValues(reason).Inc()
 }
 
+func (m *consolidateMetrics) RememberDegraded(reason string) {
+	m.rememberDegraded.WithLabelValues(reason).Inc()
+}
+
 func (m *consolidateMetrics) WriteSanitized(action string) {
 	m.writeSanitized.WithLabelValues(action).Inc()
 }
@@ -292,6 +306,10 @@ func (m *consolidateMetrics) ContradictResult(result string) {
 
 func (m *consolidateMetrics) TierClassified(tier string) {
 	m.tierClassified.WithLabelValues(tier).Inc()
+}
+
+func (m *consolidateMetrics) EmbedBackfillPending(n int) {
+	m.embedBackfillPending.Set(float64(n))
 }
 
 func (m *consolidateMetrics) DedupTombstoned(n int) {

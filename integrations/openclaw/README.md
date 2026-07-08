@@ -149,13 +149,18 @@ By default the plugin only fills the memory slot — recall and capture are
 automatic, with no tool calls. Set `"expose_tools": true` in the plugin config to
 _also_ register explicit tools the agent can call on demand, alongside the slot:
 
-- **`memory_recall`** — search, with optional `tags` / `metadata` filters.
+- **`memory_recall`** — search, with optional `tags` / `metadata` filters. A
+  `degraded: "keyword_only"` field in the result means semantic search was
+  unavailable and results came from keyword matching alone.
 - **`memory_list`** — query-less browse by tier / tags / metadata category
   (e.g. "all procedural memories" or "everything categorized `bug_fixes`"; see
   `docs/categories.md`).
 - **`memory_remember`** — store a fact, with optional `tags` and a `category`.
-- **`memory_forget`** — delete a memory by `id` (from recall/list) when it's
-  wrong, outdated, or poisoned. Soft delete (tombstone).
+- **`memory_forget`** — permanently delete a memory by `id` (from recall/list)
+  when it's wrong, outdated, or poisoned. There is no `memory_update` here —
+  this plugin talks to memini over REST, which has no partial-update
+  endpoint; forget the stale memory and remember the corrected version
+  instead.
 
 Each tool resolves the same per-agent namespace as the hooks, and is registered
 `optional`. Parameter schemas use [typebox](https://github.com/sinclairzx81/typebox),

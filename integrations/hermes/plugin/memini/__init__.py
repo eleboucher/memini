@@ -348,6 +348,12 @@ class MeminiMemoryProvider(MemoryProvider):
         block = "\n".join(kept)
         if dropped > 0:
             block += f"\n[... {dropped} item(s) truncated by token budget]"
+        # /v1/search sets degraded="keyword_only" (plus a note) when the query
+        # embed was unavailable and it fell back to keyword-only matching;
+        # both are already on `result`, so surfacing them is a one-line addition.
+        if result and result.get("degraded"):
+            note = result.get("note") or "semantic search unavailable — results are keyword-only and may be incomplete"
+            block += f"\n[memini: {note}]"
         return f"{header}\n{block}"
 
     def _recall_body(self, query: str) -> dict:
@@ -420,7 +426,12 @@ class MeminiMemoryProvider(MemoryProvider):
         return [
             {
                 "name": "memory_recall",
-                "description": "Search long-term memory (memini) for relevant past facts and context.",
+                "description": "Search long-term memory (memini) for relevant past facts and context. Call "
+                               "before starting work that may have history: editing an unfamiliar file, "
+                               "debugging a recurring issue, or when asked what's known about something. A "
+                               "degraded:\"keyword_only\" field in the result means semantic search was "
+                               "unavailable and results came from keyword matching alone — treat as "
+                               "incomplete, not exhaustive.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -470,7 +481,10 @@ class MeminiMemoryProvider(MemoryProvider):
             },
             {
                 "name": "memory_remember",
-                "description": "Store a durable fact, decision, or preference in long-term memory (memini).",
+                "description": "Store a durable fact, decision, or preference in long-term memory (memini). "
+                               "Call proactively when the user says 'remember this', after an architectural "
+                               "decision (capture the why), or after discovering a non-obvious bug or "
+                               "convention. Keep memories atomic — one self-contained fact per call.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -499,9 +513,11 @@ class MeminiMemoryProvider(MemoryProvider):
             },
             {
                 "name": "memory_forget",
-                "description": "Delete a memory from long-term memory (memini) by its id — use when a recalled "
-                               "memory is wrong, outdated, or poisoned. Get the id from memory_recall or "
-                               "memory_list. Soft delete (tombstone).",
+                "description": "Permanently delete a memory from long-term memory (memini) by its id — use when "
+                               "a recalled memory is wrong, outdated, or poisoned. Get the id from memory_recall "
+                               "or memory_list. To correct a fact, forget the stale one and remember the "
+                               "corrected version — this provider talks to memini over REST, which has no "
+                               "partial-update endpoint.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -533,7 +549,14 @@ class MeminiMemoryProvider(MemoryProvider):
                     "tier": mem.get("tier", ""),
                     "score": r.get("score", 0),
                 })
-            return json.dumps({"results": items})
+            # /v1/search already carries degraded/note on `result`; pass them
+            # through rather than dropping them silently.
+            out = {"results": items}
+            if (result or {}).get("degraded"):
+                out["degraded"] = result["degraded"]
+                if result.get("note"):
+                    out["note"] = result["note"]
+            return json.dumps(out)
 
         if name == "memory_list":
             result = self._call(_list_path(args), None, method="GET")

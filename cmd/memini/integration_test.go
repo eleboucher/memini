@@ -122,13 +122,13 @@ func startStack(t *testing.T, backend, dsn string) harness {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	reg := prometheus.NewRegistry()
-	svc, st, joinWorkers, cleanup, err := buildServiceStack(ctx, cfg, log, reg)
+	svc, st, deps, joinWorkers, cleanup, err := buildServiceStack(ctx, cfg, log, reg)
 	if err != nil {
 		cancel()
 		t.Fatalf("buildServiceStack: %v", err)
 	}
 
-	srv, err := newServer(cfg, svc, st, log, reg)
+	srv, err := newServer(cfg, svc, st, deps, log, reg)
 	if err != nil {
 		cancel()
 		joinWorkers()

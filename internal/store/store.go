@@ -67,8 +67,13 @@ type Filter struct {
 // must be safe for concurrent use.
 type Store interface {
 	// Upsert inserts or replaces a memory (matched by ID within its namespace),
-	// including its embedding and keyword-search index entry. Returns ErrConflict
-	// when the given ID already exists under a different namespace.
+	// including its keyword-search index entry. When len(m.Embedding) == 0 the
+	// row is stored with no vector-index entry — kept keyword-searchable only,
+	// the write path used when embedding generation is unavailable; a stale
+	// vector-index entry from a prior upsert of the same ID is removed. Any
+	// other embedding length must equal the store's configured dims, or
+	// Upsert errors. VectorSearch never returns a vectorless row. Returns
+	// ErrConflict when the given ID already exists under a different namespace.
 	Upsert(ctx context.Context, m *memory.Memory) error
 
 	// Get returns a memory by ID, or ErrNotFound.

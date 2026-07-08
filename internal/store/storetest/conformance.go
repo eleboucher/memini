@@ -46,6 +46,96 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("MarkContradicted", func(t *testing.T) { testMarkContradicted(t, st, dims) })
 	t.Run("GetByFingerprint", func(t *testing.T) { testGetByFingerprint(t, st, dims) })
 	t.Run("LevelFilter", func(t *testing.T) { testLevelFilter(t, st, dims) })
+	t.Run("VectorlessRow", func(t *testing.T) { testVectorlessRow(t, st, dims) })
+}
+
+// testVectorlessRow verifies stores accept memories with no embedding
+// (len(m.Embedding) == 0): the row is stored and keyword-searchable but never
+// surfaces from VectorSearch. This is the write path memini falls back to when
+// the embedding provider is unavailable (Task 11). Re-upserting with a real
+// vector must make it vector-searchable; re-upserting a vectored row without a
+// vector must remove the now-stale vector-index entry, not just leave it
+// unreachable through the new write.
+func testVectorlessRow(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+	const content = "the office wifi password is on the whiteboard"
+
+	// (a) upsert with nil embedding succeeds.
+	mustUpsert(t, st, mem(ns, "row", content, nil))
+	got, err := st.Get(ctx, ns, id(ns, "row"))
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Content != content {
+		t.Fatalf("content mismatch: %q", got.Content)
+	}
+
+	// (b) KeywordSearch finds it.
+	kres, err := st.KeywordSearch(ctx, ns, "whiteboard", store.Filter{}, 10)
+	if err != nil {
+		t.Fatalf("keyword search: %v", err)
+	}
+	if !slices.Contains(idsOf(kres), id(ns, "row")) {
+		t.Fatalf("vectorless memory should be keyword-searchable, got %v", idsOf(kres))
+	}
+
+	// (c) VectorSearch does not.
+	vres, err := st.VectorSearch(ctx, ns, vec(dims, 1), store.Filter{}, 10)
+	if err != nil {
+		t.Fatalf("vector search: %v", err)
+	}
+	if slices.Contains(idsOf(vres), id(ns, "row")) {
+		t.Fatalf("vectorless memory should not be vector-searchable, got %v", idsOf(vres))
+	}
+
+	// (d) re-upsert the same id WITH a vector: VectorSearch now finds it.
+	mustUpsert(t, st, mem(ns, "row", content, vec(dims, 1)))
+	vres, err = st.VectorSearch(ctx, ns, vec(dims, 1), store.Filter{}, 10)
+	if err != nil {
+		t.Fatalf("vector search after gaining an embedding: %v", err)
+	}
+	if !slices.Contains(idsOf(vres), id(ns, "row")) {
+		t.Fatalf("memory should be vector-searchable after gaining an embedding, got %v", idsOf(vres))
+	}
+
+	// (e) re-upsert again WITHOUT a vector: the stale vec-index entry must be
+	// removed (VectorSearch stops finding it) while KeywordSearch still does.
+	mustUpsert(t, st, mem(ns, "row", content, nil))
+	vres, err = st.VectorSearch(ctx, ns, vec(dims, 1), store.Filter{}, 10)
+	if err != nil {
+		t.Fatalf("vector search after losing the embedding: %v", err)
+	}
+	if slices.Contains(idsOf(vres), id(ns, "row")) {
+		t.Fatalf("stale vector-index entry not removed on re-upsert without an embedding, got %v", idsOf(vres))
+	}
+	kres, err = st.KeywordSearch(ctx, ns, "whiteboard", store.Filter{}, 10)
+	if err != nil {
+		t.Fatalf("keyword search after losing the embedding: %v", err)
+	}
+	if !slices.Contains(idsOf(kres), id(ns, "row")) {
+		t.Fatalf("keyword search should still find the memory after the vector is removed, got %v", idsOf(kres))
+	}
+
+	// (f) a wrong non-zero embedding length must still error.
+	if err := st.Upsert(ctx, mem(ns, "bad", "wrong dims", vec(dims-1, 1))); err == nil {
+		t.Fatalf("expected an error for a wrong non-zero embedding length")
+	}
+
+	// A vectorless memory must still be movable by Reassign: a driver whose
+	// lookup inner-joins the vector index would otherwise silently skip it
+	// (no vec-index row to join against), reporting 0 moved instead of moving it.
+	toNS := ns + "-moved"
+	n, err := st.Reassign(ctx, ns, []string{id(ns, "row")}, toNS)
+	if err != nil {
+		t.Fatalf("reassign vectorless memory: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("reassign vectorless memory moved %d, want 1", n)
+	}
+	if _, err := st.Get(ctx, toNS, id(ns, "row")); err != nil {
+		t.Fatalf("vectorless memory not found after reassign: %v", err)
+	}
 }
 
 func testGetByFingerprint(t *testing.T, st store.Store, dims int) {
