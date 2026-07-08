@@ -676,7 +676,7 @@ func (t *tools) update(ctx context.Context, _ *mcpsdk.CallToolRequest, in update
 		Namespace: ns, ID: cur.ID,
 		Content: cur.Content, Summary: cur.Summary, Tier: cur.Tier,
 		Tags: cur.Tags, Metadata: cur.Metadata, Importance: cur.Importance, Confidence: cur.Confidence,
-		ValidFrom: cur.ValidFrom, ValidTo: cur.ValidTo,
+		Level: cur.Level, ValidFrom: cur.ValidFrom, ValidTo: cur.ValidTo,
 	}
 	if in.Content != "" {
 		upd.Content = in.Content
