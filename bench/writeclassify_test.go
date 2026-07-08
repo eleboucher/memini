@@ -509,3 +509,91 @@ func TestWriteClassifyLive(t *testing.T) {
 
 	sb.report(t)
 }
+
+// TestWriteClassifyLiveSplitDedupLLM runs the write pipeline with consolidation
+// OFF and split-dedup LLM merge ON. This exercises C2 in the path where it
+// actually fires: the split dedup runs (because consolidation is off) and the
+// LLM is consulted when ≥2 close candidates are found. Uses supersede action
+// so autoSuperseded is set for contradiction detection.
+//
+// Configuration via env vars (same as TestWriteClassifyLive plus):
+//
+//	MEMINI_EMBED_BASE_URL, MEMINI_EMBED_MODEL, MEMINI_EMBED_DIMS
+//	MEMINI_LLM_BASE_URL, MEMINI_LLM_MODEL
+//	MEMINI_HTTP_HEADERS (for custom auth headers)
+func TestWriteClassifyLiveSplitDedupLLM(t *testing.T) {
+	ctx := context.Background()
+
+	baseURL := envOr("MEMINI_EMBED_BASE_URL", "http://127.0.0.1:8001/v1")
+	model := envOr("MEMINI_EMBED_MODEL", "text-embedding-qwen3-embedding-0.6b")
+	dims := envIntOr("MEMINI_EMBED_DIMS", 1024)
+
+	e, err := embed.NewOpenAI(embed.OpenAIConfig{BaseURL: baseURL, Model: model, Dims: dims, HTTPClient: httpClientWithHeaders()})
+	if err != nil {
+		t.Skipf("embedder config: %v", err)
+	}
+	probe, err := e.Embed(ctx, []string{"connectivity probe"})
+	if err != nil {
+		t.Skipf("live embedder unreachable at %s (%s): %v", baseURL, model, err)
+	}
+	if len(probe) != 1 || len(probe[0]) != dims {
+		t.Skipf("embedder returned %d-dim vectors, configured for %d — set MEMINI_EMBED_DIMS", len(probe[0]), dims)
+	}
+
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "wc_split_llm.db"), dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	now := time.Unix(1_700_000_000, 0).UTC()
+	opts := []service.Option{
+		service.WithClock(func() time.Time { return now }),
+		service.WithSyncReinforce(),
+		service.WithWriteDedup(0.625, service.WriteDedupSupersede),
+		service.WithContradictionDownrank(0.625),
+		service.WithCorroboration(0.70),
+	}
+
+	// Wire consolidator with ConsolidateOff so split dedup runs (not
+	// consolidation), and enable split-dedup LLM merge (C2).
+	llmURL := os.Getenv("MEMINI_LLM_BASE_URL")
+	if llmURL == "" {
+		t.Skip("MEMINI_LLM_BASE_URL not set; C2 requires a consolidator")
+	}
+	llmModel := envOr("MEMINI_LLM_MODEL", "qwen3-coder-30b-a3b-instruct")
+	client, cerr := llm.NewOpenAI(llm.Config{BaseURL: llmURL, Model: llmModel, HTTPClient: httpClientWithHeaders()})
+	if cerr != nil {
+		t.Fatalf("llm config: %v", cerr)
+	}
+	opts = append(opts,
+		service.WithConsolidator(client),
+		service.WithConsolidateMode(service.ConsolidateOff),
+		service.WithSplitDedupLLMMerge(true),
+	)
+	t.Logf("Split-dedup LLM merge (C2): consolidation OFF, split dedup LLM ON: %s (%s)", llmURL, llmModel)
+
+	svc := service.New(st, e, opts...)
+
+	const ns = "wc-split-llm"
+	var sb classifyScoreboard
+
+	for _, pair := range buildPairsFromTriples() {
+		out, _, err := runOnePair(ctx, svc, ns, pair)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pair error (skipping): %v\n", err)
+			continue
+		}
+		sb.record(pair, out)
+	}
+	for _, pair := range buildPairsFromQuads() {
+		out, _, err := runOnePair(ctx, svc, ns, pair)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pair error (skipping): %v\n", err)
+			continue
+		}
+		sb.record(pair, out)
+	}
+	svc.WaitBackground()
+	sb.report(t)
+}
