@@ -46,18 +46,34 @@ memory: remember a fact in Claude Code, recall it in Codex.
 - stdio transport: set `MEMINI_DEFAULT_NAMESPACE`.
 - Either way, individual tool calls may override it with a `namespace` argument.
 
+As an alternative to one shared namespace, agents can keep private namespaces
+and still see each other's durable memory read-only: a persistent
+**namespace link** (`memini namespace link --from A --to B`) or
+`MEMINI_READ_NAMESPACES` merges another namespace's semantic/procedural
+memories into every recall and briefing, without merging writes. This also
+composes with the `project/<agent>` subtree pattern (`MEMINI_AGENT` nests each
+agent's namespace under the project's): read the parent namespace with
+`scope=subtree` to see every agent's memory while each still writes to its own
+namespace; that pattern now works in briefings as well as recall. See
+[README.md#retrieval-scope-read-sets](../README.md#retrieval-scope-read-sets)
+for the full model.
+
 ### How the namespace is resolved
 
 **Authoritative source: the plugin hooks.** Each hook script calls
-`resolveProject(data.cwd)` and sends the result as the
-`X-Memini-Namespace` header. Resolution order: `MEMINI_NAMESPACE` env >
-`git rev-parse --show-toplevel` basename > `basename(cwd)`. This
-matches how agentmemory does it.
+`resolveProject(data.cwd)` and sends the result as the `X-Memini-Namespace`
+header. Resolution order: `MEMINI_NAMESPACE` env > repo name from `git remote
+get-url origin` (stable across worktrees and clones) > `git rev-parse
+--show-toplevel` basename > `basename(cwd)`, cached in a self-healing project
+map so a later folder move or dropped remote resolves back to the same
+namespace. See [`../plugin/README.md`](../plugin/README.md#how-the-namespace-gets-resolved)
+for the full order.
 
 **Server-side fallback:** if no `X-Memini-Namespace` header is sent
 (typical for stdio without a plugin, or HTTP clients that forget it),
-the server falls back to the same resolver at startup time, with the
-same priority. The result and its source (`env` / `git` / `cwd` /
+the server falls back to a similar resolver at startup time (it skips the
+git-remote step, so existing stores keyed by the worktree basename stay
+put). The result and its source (`env` / `git` / `cwd` /
 `fallback`) are logged at startup. This is the only correct behavior
 for the stdio case, but **wrong** for HTTP — in HTTP mode the server
 runs detached from the agent's cwd, so install the plugin (or send the
