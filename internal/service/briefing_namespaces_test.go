@@ -53,7 +53,8 @@ func TestBriefingSubtreeSurfacesChildDurableFacts(t *testing.T) {
 }
 
 // TestBriefingExplicitNamespaces: opts.Namespaces replaces the default read
-// set (namespace + global), same replace semantics as Recall.
+// set (namespace, subtree/links/env-configured namespaces, and the global
+// namespace), same replace semantics as Recall.
 func TestBriefingExplicitNamespaces(t *testing.T) {
 	svc := newService(t, service.WithGlobalNamespace("global"))
 	ctx := context.Background()

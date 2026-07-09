@@ -244,13 +244,15 @@ paths:
           in: query
           description: >
             exact (default) briefs only the namespace; subtree also includes
-            namespaces nested under it ("project" reads "project/agent").
+            namespaces nested under it ("project" reads "project/agent"). Any
+            value other than "exact" or "subtree" is rejected with 400.
           schema: { type: string, enum: [exact, subtree], default: exact }
         - name: namespaces
           in: query
           description: >-
             Repeatable. Brief exactly these namespaces instead of the default read
-            set (namespace + global). An entry ending in "/*" also includes
+            set (the namespace, its subtree/links/env-configured namespaces, and
+            the global namespace). An entry ending in "/*" also includes
             namespaces nested under it. Writes are unaffected.
           schema: { type: array, maxItems: 16, items: { type: string } }
       responses:
@@ -611,9 +613,10 @@ components:
           maxItems: 16
           items: { type: string }
           description: >-
-            Search exactly these namespaces instead of the default read set (request
-            namespace + global). An entry ending in "/*" also includes namespaces nested
-            under it. Writes are unaffected.
+            Search exactly these namespaces instead of the default read set (the request
+            namespace, its subtree/links/env-configured namespaces, and the global
+            namespace). An entry ending in "/*" also includes namespaces nested under it.
+            Writes are unaffected.
         as_of:
           type: string
           format: date-time
