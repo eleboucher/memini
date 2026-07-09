@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,42 @@ import (
 	"github.com/eleboucher/memini/internal/service"
 	"github.com/eleboucher/memini/internal/store/sqlitevec"
 )
+
+// qaHTTPWithHeaders returns an *http.Client that injects headers from
+// the MEMINI_HTTP_HEADERS env var (format: "key:value;key:value"). Returns
+// nil when unset, so callers fall back to the SDK default.
+func qaHTTPWithHeaders() *http.Client {
+	raw := os.Getenv("MEMINI_HTTP_HEADERS")
+	if raw == "" {
+		return nil
+	}
+	headers := make(map[string]string)
+	for _, pair := range strings.Split(raw, ";") {
+		kv := strings.SplitN(pair, ":", 2)
+		if len(kv) == 2 {
+			headers[strings.TrimSpace(kv[0])] = strings.TrimSpace(kv[1])
+		}
+	}
+	if len(headers) == 0 {
+		return nil
+	}
+	return &http.Client{
+		Timeout:   120 * time.Second,
+		Transport: &headerTransport{base: http.DefaultTransport, headers: headers},
+	}
+}
+
+type headerTransport struct {
+	base    http.RoundTripper
+	headers map[string]string
+}
+
+func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	for k, v := range t.headers {
+		req.Header.Set(k, v)
+	}
+	return t.base.RoundTrip(req)
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -69,6 +106,7 @@ func run() error {
 	client, err := embed.NewOpenAI(embed.OpenAIConfig{
 		BaseURL: os.Getenv("MEMINI_EMBED_BASE_URL"), APIKey: os.Getenv("MEMINI_EMBED_API_KEY"),
 		Model: os.Getenv("MEMINI_EMBED_MODEL"), Dims: dims,
+		HTTPClient: qaHTTPWithHeaders(),
 	})
 	if err != nil {
 		return err
@@ -79,7 +117,8 @@ func run() error {
 	}
 	chat, err := llm.New(llm.API(os.Getenv("MEMINI_LLM_API")), llm.Config{
 		BaseURL: os.Getenv("MEMINI_LLM_BASE_URL"), APIKey: os.Getenv("MEMINI_LLM_API_KEY"),
-		Model: os.Getenv("MEMINI_LLM_MODEL"),
+		Model:      os.Getenv("MEMINI_LLM_MODEL"),
+		HTTPClient: qaHTTPWithHeaders(),
 	})
 	if err != nil {
 		return err
