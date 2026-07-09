@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,6 +139,78 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if !cfg.LLMEnabled() {
 		t.Error("LLMEnabled() = false, want true")
+	}
+}
+
+// TestLoadDefaultNamespacePreservesSlash is the sanitize-slash-fix regression
+// through the public Load() entry point: MEMINI_DEFAULT_NAMESPACE=team/proj
+// must resolve to "team/proj", not be flattened to "proj".
+func TestLoadDefaultNamespacePreservesSlash(t *testing.T) {
+	clearMeminiEnv(t)
+	t.Setenv("MEMINI_DEFAULT_NAMESPACE", "team/proj")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DefaultNamespace != "team/proj" {
+		t.Errorf("DefaultNamespace = %q, want team/proj", cfg.DefaultNamespace)
+	}
+	if cfg.NamespaceSrc != config.NamespaceFromEnv {
+		t.Errorf("NamespaceSrc = %q, want env", cfg.NamespaceSrc)
+	}
+}
+
+func TestReadNamespacesParsing(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    []string
+		wantErr bool
+	}{
+		{name: "unset disables it", value: "", want: nil},
+		{name: "single entry", value: "shared", want: []string{"shared"}},
+		{
+			name:  "list splits and trims whitespace",
+			value: " shared , rules/go ",
+			want:  []string{"shared", "rules/go"},
+		},
+		{name: "subtree pattern preserved", value: "rules/*", want: []string{"rules/*"}},
+		{
+			name:  "empty entries dropped",
+			value: "shared,,  ,rules/*",
+			want:  []string{"shared", "rules/*"},
+		},
+		{name: "invalid entry rejected", value: strings.Repeat("x", 300), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearMeminiEnv(t)
+			if tt.value != "" {
+				t.Setenv("MEMINI_READ_NAMESPACES", tt.value)
+			}
+			cfg, err := config.Load()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("Load: expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), "MEMINI_READ_NAMESPACES") {
+					t.Errorf("error = %q, want it to name MEMINI_READ_NAMESPACES", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if len(cfg.ReadNamespaces) != len(tt.want) {
+				t.Fatalf("ReadNamespaces = %v, want %v", cfg.ReadNamespaces, tt.want)
+			}
+			for i := range tt.want {
+				if cfg.ReadNamespaces[i] != tt.want[i] {
+					t.Errorf("ReadNamespaces[%d] = %q, want %q", i, cfg.ReadNamespaces[i], tt.want[i])
+				}
+			}
+		})
 	}
 }
 
@@ -279,4 +352,5 @@ var meminiEnvKeys = []string{
 	"MEMINI_DEDUP_INTERVAL", "MEMINI_DEDUP_SIMILARITY", "MEMINI_DEDUP_TIERS",
 	"MEMINI_WRITE_EMBED_TIMEOUT", "MEMINI_RECALL_EMBED_TIMEOUT",
 	"MEMINI_RECALL_REWRITE_TIMEOUT", "MEMINI_REQUEST_TIMEOUT",
+	"MEMINI_GLOBAL_NAMESPACE", "MEMINI_READ_NAMESPACES",
 }

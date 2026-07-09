@@ -9,6 +9,7 @@ import (
 
 	"github.com/caarlos0/env/v11"
 
+	"github.com/eleboucher/memini/internal/httputil"
 	"github.com/eleboucher/memini/internal/memory"
 )
 
@@ -149,6 +150,12 @@ type Config struct {
 	// slops", commit conventions, ...). Empty (the default) disables it, keeping
 	// namespaces fully isolated. Pin a global memory so it stays top-of-mind.
 	GlobalNamespace string `env:"MEMINI_GLOBAL_NAMESPACE" envDefault:""`
+
+	// ReadNamespaces lists extra namespaces whose durable (semantic/procedural)
+	// memories merge read-only into every recall and briefing — MEMINI_GLOBAL_NAMESPACE
+	// generalized to a list. An entry ending in "/*" also includes namespaces nested
+	// under it. Empty disables it.
+	ReadNamespaces []string `env:"MEMINI_READ_NAMESPACES" envSeparator:","`
 
 	// LLM (opt-in; empty BaseURL disables the consolidation pipeline).
 	LLMBaseURL string `env:"MEMINI_LLM_BASE_URL"`
@@ -390,7 +397,7 @@ func resolveDefaultNamespace() (string, NamespaceSource) {
 		os.Getenv("MEMINI_DEFAULT_NAMESPACE"),
 		os.Getenv("MEMINI_NAMESPACE"),
 	); v != "" {
-		return sanitizeNamespace(v), NamespaceFromEnv
+		return sanitizeNamespacePath(v), NamespaceFromEnv
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -405,7 +412,10 @@ func resolveDefaultNamespace() (string, NamespaceSource) {
 // sanitizeNamespace strips path separators and trims whitespace so a
 // basename like "my-project" survives but a user-supplied multi-segment
 // value gets reduced to its last segment. Empty after sanitization falls
-// back to the literal default.
+// back to the literal default. Only appropriate for git/cwd-derived values,
+// where taking the basename is the intent — see sanitizeNamespacePath for
+// env-sourced values, which are a deliberate multi-segment namespace, not a
+// path to flatten.
 func sanitizeNamespace(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -413,6 +423,25 @@ func sanitizeNamespace(s string) string {
 	}
 	s = filepath.Base(s)
 	if s == "" || s == "." || s == string(filepath.Separator) {
+		return defaultNamespace
+	}
+	return s
+}
+
+// sanitizeNamespacePath trims whitespace and leading/trailing "/", and
+// collapses runs of "/" to one — cleanup without a basename, so a
+// deliberate multi-segment value like "project/agent" survives intact
+// instead of being flattened to "agent". Empty after cleanup falls back to
+// the literal default. Used for env-sourced namespace values
+// (MEMINI_DEFAULT_NAMESPACE / MEMINI_NAMESPACE); see sanitizeNamespace for
+// git/cwd-derived values, where a basename is the intent.
+func sanitizeNamespacePath(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, "/")
+	for strings.Contains(s, "//") {
+		s = strings.ReplaceAll(s, "//", "/")
+	}
+	if s == "" {
 		return defaultNamespace
 	}
 	return s
@@ -502,6 +531,37 @@ func (c *Config) validate() error {
 	default:
 		return fmt.Errorf("unknown MEMINI_WRITE_DEDUP_ACTION %q (want off|hint|coalesce|supersede)", c.WriteDedupAction)
 	}
+	if err := c.normalizeReadNamespaces(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// normalizeReadNamespaces trims and validates MEMINI_READ_NAMESPACES in
+// place: whitespace-trimmed, empty entries dropped, an optional trailing
+// "/*" stripped before validating the base namespace and restored in the
+// stored value afterward, so internal/service's resolveDefaultReadSet can
+// act on the entries directly. A no-op when the list is empty.
+func (c *Config) normalizeReadNamespaces() error {
+	if len(c.ReadNamespaces) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(c.ReadNamespaces))
+	for _, raw := range c.ReadNamespaces {
+		s := strings.TrimSpace(raw)
+		if s == "" {
+			continue
+		}
+		base, isSubtree := strings.CutSuffix(s, "/*")
+		if err := httputil.ValidateNamespace(base); err != nil {
+			return fmt.Errorf("invalid entry %q in MEMINI_READ_NAMESPACES: %w", raw, err)
+		}
+		if isSubtree {
+			base += "/*"
+		}
+		out = append(out, base)
+	}
+	c.ReadNamespaces = out
 	return nil
 }
 
