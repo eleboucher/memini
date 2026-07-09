@@ -357,10 +357,9 @@ simple and isolated while letting reads pull in related context on purpose.
 
 **Default read set** (no per-call `namespaces` argument): the request namespace, plus
 
-- its subtree, when the call passes `scope=subtree` (`project` also reads
-  `project/agent-a`, `project/agent-b`, ...),
-- every `MEMINI_READ_NAMESPACES` entry (durable tiers only),
-- the request namespace's own persistent namespace links (tier mode per link), and
+- its subtree, when the call passes `scope=subtree` (`work/memini` also reads
+  `work/memini/orchestrator`, `work/memini/reviewer`, ...),
+- every `MEMINI_READ_NAMESPACES` entry (durable tiers only), and
 - `MEMINI_GLOBAL_NAMESPACE` (durable only), when set.
 
 **Per-call `namespaces`** (recall, briefing, and `POST /v1/search`): passing a
@@ -375,34 +374,61 @@ subtree/pattern expansion; an oversized set is clamped to the front (primary and
 global namespace protected first) with a logged warning, and `memini doctor` reports
 when a configured read set exceeds the cap.
 
-**Namespace links** are a persistent, read-only attachment: `memini namespace link
---from A --to B` makes A's default read set also see B, one hop only (B's own links
-are never followed, so linking A to B does not transitively expose whatever B links
-to). `--tiers durable` (default) surfaces only B's semantic/procedural memories;
-`--tiers all` also includes episodic/working. A namespace may declare at most 16
-outgoing links. Manage them via the `memini namespace link` / `unlink` / `links` CLI
-subcommands, the `memory_namespace_link` MCP tool (present only when the backend
-supports links), or `GET` / `PUT` / `DELETE /v1/namespaces/{name}/links[/{target}]`.
-Every read result carries a `namespace` field so callers can tell which partition each
-hit came from.
+| Mechanism                      | Contributes                   | Tier access                   |
+| ------------------------------ | ----------------------------- | ----------------------------- |
+| Request namespace              | the namespace itself          | the request's own tier filter |
+| `scope=subtree`                | nested child namespaces       | the request's own tier filter |
+| `namespaces: [...]` (per-call) | exactly the listed namespaces | the request's own tier filter |
+| `MEMINI_READ_NAMESPACES`       | each listed namespace         | semantic + procedural only    |
+| `MEMINI_GLOBAL_NAMESPACE`      | one shared namespace          | semantic + procedural only    |
 
-| Mechanism                       | Contributes                   | Tier access                   |
-| ------------------------------- | ----------------------------- | ----------------------------- |
-| Request namespace               | the namespace itself          | the request's own tier filter |
-| `scope=subtree`                 | nested child namespaces       | the request's own tier filter |
-| `namespaces: [...]` (per-call)  | exactly the listed namespaces | the request's own tier filter |
-| Namespace link, `tiers=durable` | the linked namespace          | semantic + procedural only    |
-| Namespace link, `tiers=all`     | the linked namespace          | the request's own tier filter |
-| `MEMINI_READ_NAMESPACES`        | each listed namespace         | semantic + procedural only    |
-| `MEMINI_GLOBAL_NAMESPACE`       | one shared namespace          | semantic + procedural only    |
+### Tenant roots (config file)
 
-**Worked example:** two related repos, `api` and `web`, each with their own memory.
-Link them one-way with `memini namespace link --from api --to web --tiers durable`.
-A recall in `api` now also surfaces `web`'s durable facts and procedures (its episodic
-chatter stays out), so an agent working in `api` can see a decision recorded while
-working in `web`. Writes made from `api` still land only in `api`; `web`'s recall is
-unaffected unless it links back. Run `memini doctor` to see the resolved read set for
-any namespace, including which links and env entries are currently contributing to it.
+For setups that share one memini instance across distinct contexts (work vs personal,
+multiple projects), a config file at `~/.config/memini/config.json` (or
+`$XDG_CONFIG_HOME/memini/config.json`) lets you map filesystem paths to tenant
+segments so the namespace is derived automatically without per-repo configuration:
+
+```json
+{
+  "tenantRoots": [
+    { "path": "~/dev/work", "tenant": "work" },
+    { "path": "~/dev/personal", "tenant": "personal" }
+  ],
+  "template": "{tenant}/{project}/{agent}"
+}
+```
+
+When a plugin resolves the namespace, it checks the working directory against the
+tenant roots. A match prefixes the namespace with the tenant name: working in
+`~/dev/work/memini` produces `work/memini` (plus `/agent-name` if `MEMINI_AGENT`
+is set). No match falls through to the existing git/cwd resolution, so a missing
+config file is identical to today's behavior — zero migration required.
+
+The `@memini/namespace-resolver` package (`packages/namespace-resolver/`) provides
+the shared implementation. Integrations that ship as standalone files (opencode,
+Hermes) inline a compact reader for the same config format. OpenClaw keeps its
+per-agent template (`{namespace}-{agent}` → `openclaw-miso`) and gains a
+`namespace_prefix` config field for nesting under a tenant (e.g.
+`namespace_prefix: "work/"` → `work/openclaw-miso`).
+
+**Recommended layout:**
+
+```
+global                   # universal prefs (MEMINI_GLOBAL_NAMESPACE)
+work/_shared             # work-domain facts, readable via subtree from any work/*
+work/<project>/<agent>   # per-project + per-agent isolation
+personal/<project>       # personal projects, isolated from work
+```
+
+A recall from `work/memini` with `scope=subtree` reads all `work/*` siblings (shared
+work knowledge) plus its own memories, never touching `personal/*`. The global
+namespace merges durable facts into every recall.
+
+**Moving memories between namespaces:** `POST /v1/namespaces/{name}/move` relocates
+an entire namespace, `POST /v1/namespaces/{name}/split` regroups by metadata, and
+`POST /v1/memories/{id}/reassign` moves a single memory — all backed by the existing
+`Store.Reassign` operation.
 
 ## Web UI
 

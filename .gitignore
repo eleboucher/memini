@@ -37,3 +37,5 @@ qa_*.jsonl
 
 # Deepwork session state (local planning, not committed).
 .slim/deepwork/
+packages/namespace-resolver/dist/
+packages/namespace-resolver/node_modules/
