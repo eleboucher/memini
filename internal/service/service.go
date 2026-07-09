@@ -1593,10 +1593,11 @@ type RecallInput struct {
 	// so cross-agent recall never happens unless asked for.
 	Subtree bool
 	// Namespaces, when non-empty, REPLACES the default read set (Namespace +
-	// subtree + global namespace) with exactly these namespaces — no global
-	// merge, no subtree of Namespace unless an entry spells it with "/*". An
-	// entry ending in "/*" also includes every namespace nested under it. Max
-	// 16 entries; each is searched with the request's own tier filter (Tiers).
+	// subtree + links + read-namespaces + global namespace) with exactly these
+	// namespaces — no global/link/env merge, no subtree of Namespace unless an
+	// entry spells it with "/*". An entry ending in "/*" also includes every
+	// namespace nested under it. Max 16 entries; each is searched with the
+	// request's own tier filter (Tiers).
 	Namespaces []string
 	// MinScore, when > 0, overrides the server's default recallMinScore for
 	// this call. Lets a caller request a stricter relevance floor per

@@ -199,9 +199,10 @@ type BriefingOpts struct {
 	Facts      *int
 	Procedures *int
 	Recent     *int
-	// Namespaces, when non-empty, REPLACES the default read set (namespace +
-	// global) with exactly these namespaces — same replace-not-extend
-	// semantics as RecallInput.Namespaces. Each is read with all tiers.
+	// Namespaces, when non-empty, REPLACES the default read set (namespace,
+	// subtree/links/read-namespaces, and the global namespace) with exactly
+	// these namespaces — same replace-not-extend semantics as
+	// RecallInput.Namespaces. Each is read with all tiers.
 	Namespaces []string
 	// Subtree expands the briefing to namespace and every namespace nested
 	// under it, same semantics as RecallInput.Subtree. Ignored when Namespaces

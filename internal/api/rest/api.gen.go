@@ -379,7 +379,7 @@ type SearchRequest struct {
 	// MinScore Per-call relevance floor on the fused score. Candidates below it are dropped server-side before re-ranking. 0 (or unset) falls back to the server's baked relevance floor (0.1). Only meaningful with score fusion (RRF scores are not comparable to this threshold).
 	MinScore *float64 `json:"min_score,omitempty"`
 
-	// Namespaces Search exactly these namespaces instead of the default read set (request namespace + global). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected.
+	// Namespaces Search exactly these namespaces instead of the default read set (the request namespace, its subtree/links/env-configured namespaces, and the global namespace). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected.
 	Namespaces *[]string `json:"namespaces,omitempty"`
 	Query      string    `json:"query"`
 
@@ -547,10 +547,10 @@ type GetBriefingParams struct {
 	// PerSectionRecent Max recent episodic entries. Overrides per_section. 0 disables the section.
 	PerSectionRecent *int `form:"per_section_recent,omitempty" json:"per_section_recent,omitempty"`
 
-	// Scope exact (default) briefs only the namespace; subtree also includes namespaces nested under it ("project" reads "project/agent").
+	// Scope exact (default) briefs only the namespace; subtree also includes namespaces nested under it ("project" reads "project/agent"). Any value other than "exact" or "subtree" is rejected with 400.
 	Scope *GetBriefingParamsScope `form:"scope,omitempty" json:"scope,omitempty"`
 
-	// Namespaces Repeatable. Brief exactly these namespaces instead of the default read set (namespace + global). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected.
+	// Namespaces Repeatable. Brief exactly these namespaces instead of the default read set (the namespace, its subtree/links/env-configured namespaces, and the global namespace). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected.
 	Namespaces *[]string `form:"namespaces,omitempty" json:"namespaces,omitempty"`
 }
 

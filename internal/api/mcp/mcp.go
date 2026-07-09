@@ -375,7 +375,7 @@ type recallArgs struct {
 	AsOf              string            `json:"as_of,omitempty" jsonschema:"RFC3339 time for time-travel recall (facts true then)"`
 	Namespace         string            `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
-	Namespaces []string `json:"namespaces,omitempty" jsonschema:"search exactly these namespaces instead of the default read set (namespace + global); entry 'ns/*' also includes namespaces nested under ns; max 16; writes are unaffected"`
+	Namespaces []string `json:"namespaces,omitempty" jsonschema:"search exactly these namespaces instead of the default read set (namespace, its subtree/links/env-configured namespaces, and the global namespace); entry 'ns/*' also includes namespaces nested under ns; max 16; writes are unaffected"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
 	ResponseFormat string `json:"response_format,omitempty" jsonschema:"'concise' returns summary-or-truncated content (~1 line each; fetch full text with memory_get); 'detailed' (default) returns full content"`
 }
@@ -498,7 +498,7 @@ type briefingArgs struct {
 	Namespace        string `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 	Scope            string `json:"scope,omitempty" jsonschema:"'subtree' also includes namespaces nested under the namespace; default 'exact'; any other value is rejected as an error"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
-	Namespaces []string `json:"namespaces,omitempty" jsonschema:"brief exactly these namespaces instead of the default read set (namespace + global); entry 'ns/*' also includes namespaces nested under ns; max 16; writes are unaffected"`
+	Namespaces []string `json:"namespaces,omitempty" jsonschema:"brief exactly these namespaces instead of the default read set (namespace, its subtree/links/env-configured namespaces, and the global namespace); entry 'ns/*' also includes namespaces nested under ns; max 16; writes are unaffected"`
 }
 
 type briefingResult struct {
