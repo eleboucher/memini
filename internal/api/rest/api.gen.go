@@ -337,7 +337,7 @@ type SearchRequest struct {
 	// QueryRewrite When true and an LLM is configured, rewrite the query into 2-3 diverse variants before recall and fuse results via RRF. Cheapest read-path LLM lever; opt-in per call.
 	QueryRewrite *bool `json:"query_rewrite,omitempty"`
 
-	// Scope exact (default) searches only the request namespace; subtree also searches namespaces nested under it ("project" reads "project/agent"), for the multi-agent read-shared-plus-private pattern. Any value other than "subtree" is treated as "exact" rather than rejected.
+	// Scope exact (default) searches only the request namespace; subtree also searches namespaces nested under it ("project" reads "project/agent"), for the multi-agent read-shared-plus-private pattern. Any other value is rejected with 400.
 	Scope *SearchRequestScope `json:"scope,omitempty"`
 
 	// Tags A memory must carry every listed tag (AND).
@@ -345,7 +345,7 @@ type SearchRequest struct {
 	Tiers *[]Tier   `json:"tiers,omitempty"`
 }
 
-// SearchRequestScope exact (default) searches only the request namespace; subtree also searches namespaces nested under it ("project" reads "project/agent"), for the multi-agent read-shared-plus-private pattern. Any value other than "subtree" is treated as "exact" rather than rejected.
+// SearchRequestScope exact (default) searches only the request namespace; subtree also searches namespaces nested under it ("project" reads "project/agent"), for the multi-agent read-shared-plus-private pattern. Any other value is rejected with 400.
 type SearchRequestScope string
 
 // SearchResponse defines model for SearchResponse.

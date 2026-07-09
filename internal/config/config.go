@@ -537,11 +537,13 @@ func (c *Config) validate() error {
 	return nil
 }
 
-// normalizeReadNamespaces trims and validates MEMINI_READ_NAMESPACES in
-// place: whitespace-trimmed, empty entries dropped, an optional trailing
-// "/*" stripped before validating the base namespace and restored in the
-// stored value afterward, so internal/service's resolveDefaultReadSet can
-// act on the entries directly. A no-op when the list is empty.
+// normalizeReadNamespaces normalizes and validates MEMINI_READ_NAMESPACES in
+// place: whitespace and surrounding slashes trimmed, duplicate separators
+// collapsed (matching sanitizeNamespacePath, so "shared/" or "a//b" match
+// stored namespaces), empty entries dropped, an optional trailing "/*"
+// stripped before validating the base namespace and restored in the stored
+// value afterward, so internal/service's resolveDefaultReadSet can act on the
+// entries directly. A no-op when the list is empty.
 func (c *Config) normalizeReadNamespaces() error {
 	if len(c.ReadNamespaces) == 0 {
 		return nil
@@ -552,7 +554,10 @@ func (c *Config) normalizeReadNamespaces() error {
 		if s == "" {
 			continue
 		}
+		// Cut the pattern suffix before normalizing so a bare "/*" still fails
+		// validation (empty base) instead of collapsing to a literal "*".
 		base, isSubtree := strings.CutSuffix(s, "/*")
+		base = httputil.NormalizeNamespace(base)
 		if err := httputil.ValidateNamespace(base); err != nil {
 			return fmt.Errorf("invalid entry %q in MEMINI_READ_NAMESPACES: %w", raw, err)
 		}

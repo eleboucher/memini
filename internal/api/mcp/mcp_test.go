@@ -1861,3 +1861,27 @@ func TestBriefingInvalidScopeViaMCP(t *testing.T) {
 		t.Fatalf("error text = %q, want it to list the valid scopes", tc.Text)
 	}
 }
+
+// TestRecallInvalidScopeViaMCP pins that memory_recall rejects an unknown
+// scope value as a tool error instead of silently searching as exact
+// (mirrors memory_briefing).
+func TestRecallInvalidScopeViaMCP(t *testing.T) {
+	cs := connect(t)
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "memory_recall",
+		Arguments: map[string]any{"query": "x", "scope": "bogus"},
+	})
+	if err != nil {
+		t.Fatalf("recall transport: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("recall with invalid scope must be a tool error")
+	}
+	tc, ok := res.Content[0].(*mcpsdk.TextContent)
+	if !ok {
+		t.Fatalf("error content = %T, want *mcpsdk.TextContent", res.Content[0])
+	}
+	if !strings.Contains(tc.Text, "subtree") {
+		t.Fatalf("error text = %q, want it to list the valid scopes", tc.Text)
+	}
+}

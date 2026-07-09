@@ -1144,3 +1144,132 @@ func TestGetBriefingNamespacesCapRejected(t *testing.T) {
 		t.Fatalf("error should mention the 16 entry cap, got %s", rec.Body)
 	}
 }
+
+// TestSearchInvalidScope pins that /v1/search rejects an unknown scope value
+// with 400 instead of silently searching as exact (mirrors GetBriefing).
+func TestSearchInvalidScope(t *testing.T) {
+	h := newServer(t)
+	rec := do(t, h, http.MethodPost, "/v1/search", "proj", apiKey, map[string]any{
+		"query": "x", "scope": "bogus",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad scope: want 400, got %d (%s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "subtree") {
+		t.Fatalf("error should list the valid scopes, got %s", rec.Body)
+	}
+}
+
+// TestReassignMemory covers the reassign endpoint's semantics: target
+// normalization, 404 for an ID absent from the request namespace, and 400 for
+// a same-namespace or pattern-bearing target.
+func TestReassignMemory(t *testing.T) {
+	h := newServer(t)
+
+	rec := do(t, h, http.MethodPost, "/v1/memories", "alice", apiKey, map[string]any{
+		"content": "movable fact", "tier": "semantic",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("remember: want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created.ID == "" {
+		t.Fatalf("decode created: %v (%s)", err, rec.Body)
+	}
+
+	// The target is normalized before use: " bob/ " must land in "bob".
+	rec = do(t, h, http.MethodPost, "/v1/memories/"+created.ID+"/reassign", "alice", apiKey,
+		map[string]any{"to": " bob/ "})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reassign: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"moved":1`) {
+		t.Fatalf("reassign: want moved:1, got %s", rec.Body)
+	}
+	rec = do(t, h, http.MethodGet, "/v1/memories/"+created.ID, "bob", apiKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("memory should be readable from bob after reassign, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	// The ID now lives in bob, so reassigning it from alice is a 404 — both
+	// stores skip absent IDs rather than erroring, so zero rows moved is the
+	// only not-found signal.
+	rec = do(t, h, http.MethodPost, "/v1/memories/"+created.ID+"/reassign", "alice", apiKey,
+		map[string]any{"to": "carol"})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("reassign from wrong namespace: want 404, got %d (%s)", rec.Code, rec.Body)
+	}
+	rec = do(t, h, http.MethodPost, "/v1/memories/no-such-id/reassign", "alice", apiKey,
+		map[string]any{"to": "carol"})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("reassign unknown id: want 404, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	// Same-namespace and pattern-bearing targets are caller mistakes, not
+	// silent no-ops.
+	rec = do(t, h, http.MethodPost, "/v1/memories/"+created.ID+"/reassign", "bob", apiKey,
+		map[string]any{"to": "bob"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("reassign to same namespace: want 400, got %d (%s)", rec.Code, rec.Body)
+	}
+	rec = do(t, h, http.MethodPost, "/v1/memories/"+created.ID+"/reassign", "bob", apiKey,
+		map[string]any{"to": "work/*"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("reassign to pattern: want 400, got %d (%s)", rec.Code, rec.Body)
+	}
+}
+
+// TestSplitNamespaceNestedName pins that a nested (percent-encoded) namespace
+// reaches the split operation decoded — without the unescape, split silently
+// operates on the literal escaped string and reports an empty result.
+func TestSplitNamespaceNestedName(t *testing.T) {
+	h := newServer(t)
+
+	rec := do(t, h, http.MethodPost, "/v1/memories", "work/memini", apiKey, map[string]any{
+		"content": "pooled fact", "tier": "semantic",
+		"metadata": map[string]any{"user_id": "work/erwan"},
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("remember: want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	// dry_run reports the grouping without moving anything.
+	rec = do(t, h, http.MethodPost, "/v1/namespaces/work%2Fmemini/split", "work/memini", apiKey,
+		map[string]any{"dry_run": true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("split dry-run: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var rep struct {
+		Moved int `json:"moved"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &rep); err != nil {
+		t.Fatalf("decode report: %v (%s)", err, rec.Body)
+	}
+	if rep.Moved != 1 {
+		t.Fatalf("dry-run should report moved=1, got %s", rec.Body)
+	}
+	// The dry run must not have moved anything: the target namespace is empty.
+	rec = do(t, h, http.MethodGet, "/v1/memories?limit=10", "work/erwan", apiKey, nil)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "pooled fact") {
+		t.Fatalf("dry-run moved rows into the target namespace: %d (%s)", rec.Code, rec.Body)
+	}
+
+	rec = do(t, h, http.MethodPost, "/v1/namespaces/work%2Fmemini/split", "work/memini", apiKey,
+		map[string]any{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("split: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	rep.Moved = 0
+	if err := json.Unmarshal(rec.Body.Bytes(), &rep); err != nil {
+		t.Fatalf("decode report: %v (%s)", err, rec.Body)
+	}
+	if rep.Moved != 1 {
+		t.Fatalf("apply should move the pooled fact, got %s", rec.Body)
+	}
+	rec = do(t, h, http.MethodGet, "/v1/memories?limit=10", "work/erwan", apiKey, nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "pooled fact") {
+		t.Fatalf("apply should land the fact in work/erwan: %d (%s)", rec.Code, rec.Body)
+	}
+}

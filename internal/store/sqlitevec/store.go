@@ -117,16 +117,6 @@ func (s *Store) migrate(ctx context.Context) error {
 		// Key/value store for store-level metadata (e.g. the embedding model the
 		// vectors were produced with — see EmbedModel/SetEmbedModel).
 		`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
-		// Persistent read-only namespace links (see LinkStore in internal/store).
-		// PRIMARY KEY (namespace, target) makes PutNamespaceLink's upsert
-		// idempotent for free.
-		`CREATE TABLE IF NOT EXISTS namespace_links (
-			namespace  TEXT NOT NULL,
-			target     TEXT NOT NULL,
-			tiers      TEXT NOT NULL DEFAULT 'durable',
-			created_at INTEGER NOT NULL,
-			PRIMARY KEY (namespace, target)
-		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -685,19 +675,19 @@ func (s *Store) Reassign(ctx context.Context, fromNS string, ids []string, toNS 
 			continue // not in the source namespace; skip
 		}
 		if err != nil {
-			return moved, fmt.Errorf("sqlitevec: reassign lookup %q: %w", id, err)
+			return 0, fmt.Errorf("sqlitevec: reassign lookup %q: %w", id, err)
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE memories SET namespace=? WHERE rowid=?`, toNS, rowID); err != nil {
-			return moved, fmt.Errorf("sqlitevec: reassign memory: %w", err)
+			return 0, fmt.Errorf("sqlitevec: reassign memory: %w", err)
 		}
 		// vec_memories.namespace is a partition key; rewrite the row under it.
 		if _, err := tx.ExecContext(ctx, `DELETE FROM vec_memories WHERE rowid=?`, rowID); err != nil {
-			return moved, fmt.Errorf("sqlitevec: reassign clear vector: %w", err)
+			return 0, fmt.Errorf("sqlitevec: reassign clear vector: %w", err)
 		}
 		if emb != nil {
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO vec_memories(rowid, namespace, embedding) VALUES (?,?,?)`, rowID, toNS, emb); err != nil {
-				return moved, fmt.Errorf("sqlitevec: reassign insert vector: %w", err)
+				return 0, fmt.Errorf("sqlitevec: reassign insert vector: %w", err)
 			}
 		}
 		moved++

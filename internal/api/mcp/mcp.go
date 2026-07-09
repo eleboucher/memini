@@ -353,11 +353,12 @@ type recallArgs struct {
 	IncludeFreshTurns bool              `json:"include_fresh_turns,omitempty" jsonschema:"keep just-captured turns the echo guard would drop"`
 	QueryRewrite      bool              `json:"query_rewrite,omitempty" jsonschema:"rewrite query into 2-3 variants and fuse via RRF"`
 	Limit             int               `json:"limit,omitempty" jsonschema:"max results (default 10)"`
-	Scope             string            `json:"scope,omitempty" jsonschema:"'subtree' also searches nested namespaces; default 'exact'; any other value is treated as 'exact'"`
-	AsOf              string            `json:"as_of,omitempty" jsonschema:"RFC3339 time for time-travel recall (facts true then)"`
-	Namespace         string            `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
-	Namespaces []string `json:"namespaces,omitempty" jsonschema:"search exactly these namespaces instead of the default read set (namespace, its subtree/links/env-configured namespaces, and the global namespace); entry 'ns/*' also includes namespaces nested under ns; max 16; writes are unaffected"`
+	Scope     string `json:"scope,omitempty" jsonschema:"'subtree' also searches nested namespaces; default 'exact'; any other value is rejected as an error"`
+	AsOf      string `json:"as_of,omitempty" jsonschema:"RFC3339 time for time-travel recall (facts true then)"`
+	Namespace string `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
+	Namespaces []string `json:"namespaces,omitempty" jsonschema:"search exactly these namespaces instead of the default read set (namespace, its subtree/env-configured namespaces, and the global namespace); entry 'ns/*' also includes namespaces nested under ns; max 16; writes are unaffected"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
 	ResponseFormat string `json:"response_format,omitempty" jsonschema:"'concise' returns summary-or-truncated content (~1 line each; fetch full text with memory_get); 'detailed' (default) returns full content"`
 }
@@ -433,6 +434,14 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 	if err != nil {
 		return nil, recallResult{}, err
 	}
+	var subtree bool
+	switch scope := strings.TrimSpace(in.Scope); {
+	case scope == "" || strings.EqualFold(scope, "exact"):
+	case strings.EqualFold(scope, "subtree"):
+		subtree = true
+	default:
+		return nil, recallResult{}, fmt.Errorf("invalid scope %q: want exact or subtree", in.Scope)
+	}
 	input := service.RecallInput{
 		Namespace:         ns,
 		Query:             in.Query,
@@ -444,7 +453,7 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 		IncludeFreshTurns: in.IncludeFreshTurns,
 		QueryRewrite:      in.QueryRewrite,
 		Limit:             in.Limit,
-		Subtree:           strings.EqualFold(strings.TrimSpace(in.Scope), "subtree"),
+		Subtree:           subtree,
 		Namespaces:        in.Namespaces,
 	}
 	if in.AsOf != "" {
@@ -478,9 +487,10 @@ type briefingArgs struct {
 	PerSectionProc   *int   `json:"per_section_procedures,omitempty" jsonschema:"max procedural how-to memories; 0 disables"`
 	PerSectionRecent *int   `json:"per_section_recent,omitempty" jsonschema:"max recent episodic entries; 0 disables"`
 	Namespace        string `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
-	Scope            string `json:"scope,omitempty" jsonschema:"'subtree' also includes namespaces nested under the namespace; default 'exact'; any other value is rejected as an error"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
-	Namespaces []string `json:"namespaces,omitempty" jsonschema:"brief exactly these namespaces instead of the default read set (namespace, its subtree/links/env-configured namespaces, and the global namespace); entry 'ns/*' also includes namespaces nested under ns; max 16; writes are unaffected"`
+	Scope string `json:"scope,omitempty" jsonschema:"'subtree' also includes namespaces nested under the namespace; default 'exact'; any other value is rejected as an error"`
+	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
+	Namespaces []string `json:"namespaces,omitempty" jsonschema:"brief exactly these namespaces instead of the default read set (namespace, its subtree/env-configured namespaces, and the global namespace); entry 'ns/*' also includes namespaces nested under ns; max 16; writes are unaffected"`
 }
 
 type briefingResult struct {

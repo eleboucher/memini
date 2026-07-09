@@ -195,7 +195,14 @@ func (s *Service) resolveExplicitReadSet(ctx context.Context, raw []string) ([]s
 		}
 	}
 	for _, r := range raw {
-		ns, isSubtree := strings.CutSuffix(r, "/*")
+		// Normalize before matching: entries are compared literally against
+		// stored namespaces, so an untrimmed " work" or "work/" would silently
+		// match nothing (config-sourced entries get the same treatment in
+		// normalizeReadNamespaces). The pattern suffix is cut first so a bare
+		// "/*" still fails validation (empty base) instead of collapsing to a
+		// literal "*".
+		ns, isSubtree := strings.CutSuffix(strings.TrimSpace(r), "/*")
+		ns = httputil.NormalizeNamespace(ns)
 		if err := httputil.ValidateNamespace(ns); err != nil {
 			return nil, invalidInputf("read-set: invalid namespace %q: %v", r, err)
 		}

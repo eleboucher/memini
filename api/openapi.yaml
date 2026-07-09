@@ -323,8 +323,10 @@ paths:
       summary: Move a single memory to a different namespace
       description: >
         Relocates one memory to the target namespace. The memory must exist in
-        the request namespace (via the X-Memini-Namespace header). Backed by
-        Store.Reassign.
+        the request namespace (via the X-Memini-Namespace header); otherwise
+        404. The target is normalized (surrounding whitespace/slashes trimmed,
+        duplicate separators collapsed) and rejected with 400 when it contains
+        "*" or equals the request namespace. Backed by Store.Reassign.
       parameters:
         - { $ref: "#/components/parameters/Namespace" }
         - name: id
@@ -352,7 +354,7 @@ paths:
                 properties:
                   moved:
                     type: integer
-                    description: 1 if moved, 0 if the memory was not found.
+                    description: Always 1 (a missing memory is a 404, not moved=0).
         "400": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
@@ -619,8 +621,8 @@ components:
           description: >
             exact (default) searches only the request namespace; subtree also
             searches namespaces nested under it ("project" reads "project/agent"),
-            for the multi-agent read-shared-plus-private pattern. Any value other
-            than "subtree" is treated as "exact" rather than rejected.
+            for the multi-agent read-shared-plus-private pattern. Any other
+            value is rejected with 400.
         namespaces:
           type: array
           maxItems: 16

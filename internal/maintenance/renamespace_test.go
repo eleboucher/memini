@@ -3,6 +3,7 @@ package maintenance_test
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,5 +105,36 @@ func TestMoveRelocatesNamespace(t *testing.T) {
 	}
 	if len(mems) != 2 {
 		t.Errorf("new namespace has %d memories, want 2", len(mems))
+	}
+}
+
+func TestSplitSkipsInvalidTargets(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "m.db"), 4)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	// Targets come from stored metadata, so hostile or malformed values must
+	// stay put instead of minting unaddressable namespaces. The slash-wrapped
+	// value is valid after normalization and lands in "alice".
+	seedPooled(t, st, "pool", map[string]string{
+		"ok":      " alice/ ",
+		"toolong": strings.Repeat("x", 300),
+		"nulbyte": "bad\x00ns",
+		"pattern": "work/*",
+		"slashes": "///",
+	})
+
+	rep, err := maintenance.Split(ctx, st, "pool", nil, false)
+	if err != nil {
+		t.Fatalf("split: %v", err)
+	}
+	if rep.Moved != 1 || rep.Skipped != 4 {
+		t.Fatalf("split report = %+v, want moved=1 skipped=4", rep)
+	}
+	if _, err := st.Get(ctx, "alice", "ok"); err != nil {
+		t.Errorf("normalized target should land in alice: %v", err)
 	}
 }

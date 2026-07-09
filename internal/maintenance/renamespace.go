@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/eleboucher/memini/internal/httputil"
 	"github.com/eleboucher/memini/internal/store"
 )
 
@@ -83,8 +84,13 @@ func Split(ctx context.Context, st store.Store, fromNS string, byKeys []string, 
 	}
 	groups := map[string][]string{}
 	for i, meta := range metas {
-		target := firstMetaValue(meta, byKeys)
-		if target == "" || target == fromNS {
+		// Targets come from stored metadata values, so normalize and validate
+		// before minting a namespace from one: an oversized, NUL-bearing, or
+		// "*"-bearing value would create a namespace the namespace header (or
+		// read-set patterns) cannot address. Invalid targets stay put.
+		target := httputil.NormalizeNamespace(firstMetaValue(meta, byKeys))
+		if target == "" || target == fromNS ||
+			httputil.ValidateNamespace(target) != nil || strings.Contains(target, "*") {
 			rep.Skipped++
 			continue
 		}

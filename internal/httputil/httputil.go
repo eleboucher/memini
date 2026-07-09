@@ -22,6 +22,19 @@ func Error(w http.ResponseWriter, status int, msg string) {
 	JSON(w, status, map[string]string{"error": msg})
 }
 
+// NormalizeNamespace trims surrounding whitespace and slashes and collapses
+// duplicate separators into the canonical form stored namespaces use, so
+// " work//memini/" addresses the same rows as "work/memini". It does not
+// validate; pair with ValidateNamespace.
+func NormalizeNamespace(ns string) string {
+	ns = strings.TrimSpace(ns)
+	ns = strings.Trim(ns, "/")
+	for strings.Contains(ns, "//") {
+		ns = strings.ReplaceAll(ns, "//", "/")
+	}
+	return ns
+}
+
 // ValidateNamespace returns a non-nil error when ns is not a valid namespace.
 // Valid namespaces are 1–256 bytes, contain no NUL character.
 func ValidateNamespace(ns string) error {

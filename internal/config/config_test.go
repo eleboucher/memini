@@ -182,6 +182,12 @@ func TestReadNamespacesParsing(t *testing.T) {
 			want:  []string{"shared", "rules/*"},
 		},
 		{name: "invalid entry rejected", value: strings.Repeat("x", 300), wantErr: true},
+		{
+			name:  "surrounding slashes and duplicate separators normalized",
+			value: "shared/,/team,a//b,rules//*",
+			want:  []string{"shared", "team", "a/b", "rules/*"},
+		},
+		{name: "bare pattern rejected", value: "/*", wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -390,8 +390,15 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 	if req.AsOf != nil {
 		in.AsOf = req.AsOf.UTC()
 	}
-	if req.Scope != nil && *req.Scope == SearchRequestScopeSubtree {
-		in.Subtree = true
+	// The generated binding does not enforce the spec enum, so an unknown
+	// scope must be rejected here rather than silently searched as exact
+	// (mirrors GetBriefing).
+	if req.Scope != nil {
+		if !req.Scope.Valid() {
+			httputil.Error(w, http.StatusBadRequest, fmt.Sprintf("invalid scope %q: want exact or subtree", *req.Scope))
+			return
+		}
+		in.Subtree = *req.Scope == SearchRequestScopeSubtree
 	}
 	// Explicit namespaces REPLACE the default read set; the service layer
 	// validates entries and enforces the 16-entry cap (ErrInvalidInput → 400).
@@ -667,13 +674,30 @@ func (h *Server) DeleteNamespace(w http.ResponseWriter, r *http.Request, name st
 // namespace by metadata keys, moving each record to the namespace named by the
 // first of the given keys it carries.
 func (h *Server) SplitNamespace(w http.ResponseWriter, r *http.Request, name string) {
-	byKeysParam := r.URL.Query().Get("by")
+	// chi binds the raw escaped path segment, so a nested namespace ("project/
+	// agent") arrives as "project%2Fagent" and must be decoded to match storage.
+	decoded, ok := unescapeID(name)
+	if !ok {
+		httputil.Error(w, http.StatusBadRequest, "invalid namespace encoding")
+		return
+	}
+	name = decoded
+	if err := httputil.ValidateNamespace(name); err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid namespace: "+err.Error())
+		return
+	}
+	var req SplitNamespaceJSONBody
+	if !decode(w, r, &req) {
+		return
+	}
 	var by []string
-	if byKeysParam != "" {
-		parts := strings.Split(byKeysParam, ",")
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p != "" {
+	if req.By != nil {
+		by = *req.By
+	}
+	// Undocumented ?by=a,b fallback kept for callers that predate the body.
+	if len(by) == 0 {
+		for _, p := range strings.Split(r.URL.Query().Get("by"), ",") {
+			if p = strings.TrimSpace(p); p != "" {
 				by = append(by, p)
 			}
 		}
@@ -681,7 +705,8 @@ func (h *Server) SplitNamespace(w http.ResponseWriter, r *http.Request, name str
 	if len(by) == 0 {
 		by = maintenance.DefaultSplitKeys
 	}
-	rep, err := maintenance.Split(r.Context(), h.svc.Store(), name, by, false)
+	dryRun := req.DryRun != nil && *req.DryRun
+	rep, err := maintenance.Split(r.Context(), h.svc.Store(), name, by, dryRun)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, err)
 		return
@@ -701,18 +726,32 @@ func (h *Server) ReassignMemory(w http.ResponseWriter, r *http.Request, id strin
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := httputil.ValidateNamespace(req.To); err != nil {
+	// Normalize before validating: reassign CREATES the target namespace, so a
+	// stray "work/" or " x" would mint a namespace unreachable through the
+	// namespace header, and "*" would masquerade as a read-set subtree pattern.
+	to := httputil.NormalizeNamespace(req.To)
+	if err := httputil.ValidateNamespace(to); err != nil {
 		httputil.Error(w, http.StatusBadRequest, "invalid target namespace: "+err.Error())
 		return
 	}
-	ns := namespaceFromContext(r.Context())
-	n, err := h.svc.Store().Reassign(r.Context(), ns, []string{boundID}, req.To)
-	if errors.Is(err, store.ErrNotFound) {
-		httputil.Error(w, http.StatusNotFound, "memory not found")
+	if strings.Contains(to, "*") {
+		httputil.Error(w, http.StatusBadRequest, "invalid target namespace: \"*\" is reserved for read-set patterns")
 		return
 	}
+	ns := namespaceFromContext(r.Context())
+	if to == ns {
+		httputil.Error(w, http.StatusBadRequest, "target namespace equals the request namespace")
+		return
+	}
+	n, err := h.svc.Store().Reassign(r.Context(), ns, []string{boundID}, to)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	// Both stores skip IDs absent from the request namespace rather than
+	// erroring, so zero rows moved is the only "memory not found" signal.
+	if n == 0 {
+		httputil.Error(w, http.StatusNotFound, "memory not found in the request namespace")
 		return
 	}
 	httputil.JSON(w, http.StatusOK, map[string]int{"moved": int(n)})

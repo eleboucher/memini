@@ -24,15 +24,6 @@ func hasColumn(t *testing.T, db *sql.DB, name string) bool {
 	return err == nil
 }
 
-func hasTable(t *testing.T, db *sql.DB, name string) bool {
-	t.Helper()
-	err := db.QueryRow(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(new(int))
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("check table %s: %v", name, err)
-	}
-	return err == nil
-}
-
 func hasIndex(t *testing.T, db *sql.DB, name string) bool {
 	t.Helper()
 	err := db.QueryRow(`SELECT 1 FROM sqlite_master WHERE type='index' AND name=?`, name).Scan(new(int))
@@ -228,40 +219,5 @@ func TestMigrateBackfillsEveryNewerColumn(t *testing.T) {
 	}
 	if !hasIndex(t, st2.db, "idx_memories_fingerprint") {
 		t.Error("idx_memories_fingerprint not restored by migrate")
-	}
-}
-
-// TestMigrateAddsNamespaceLinksTable guards a DB created before namespace
-// links existed: opening it must add the namespace_links table cleanly
-// (CREATE TABLE IF NOT EXISTS is a no-op on a DB that already has it, so this
-// exercises the actual create-on-upgrade path) and leave it usable.
-func TestMigrateAddsNamespaceLinksTable(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "pre-links.db")
-
-	st, err := Open(ctx, path, 8)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	if _, err := st.db.ExecContext(ctx, "DROP TABLE namespace_links"); err != nil {
-		t.Fatalf("drop namespace_links: %v", err)
-	}
-	if err := st.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-
-	st2, err := Open(ctx, path, 8)
-	if err != nil {
-		t.Fatalf("re-migrate pre-links DB: %v", err)
-	}
-	t.Cleanup(func() { _ = st2.Close() })
-
-	if !hasTable(t, st2.db, "namespace_links") {
-		t.Fatal("namespace_links table not restored by migrate")
-	}
-	if err := st2.PutNamespaceLink(ctx, store.NamespaceLink{
-		Namespace: "a", Target: "b", Tiers: "durable", CreatedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("put namespace link after migrate: %v", err)
 	}
 }

@@ -26,9 +26,8 @@ func newReadsetSvc(t *testing.T, opts ...Option) (*Service, *sqlitevec.Store) {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	base := []Option{
-		WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }),
-	}
+	base := make([]Option, 0, 1+len(opts))
+	base = append(base, WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }))
 	svc := New(st, embedtest.New(readsetTestDims), append(base, opts...)...)
 	return svc, st
 }
@@ -412,29 +411,6 @@ func TestResolveReadSetReadNamespacesListNamespacesCalls(t *testing.T) {
 	})
 }
 
-// TestResolveReadSetLinkDurableMergesDurableOnly: a "durable"-tiers link
-// contributes a durable-only leg, exactly like the global namespace.
-// TestResolveReadSetLinkAllMergesFullTiers: an "all"-tiers link carries nil
-// (full, request's own filter) tiers — unlike global/read-namespaces, which
-// are always durable-only.
-// TestResolveReadSetLinkAllSurvivesEpisodicOnlyFilter: an "all"-tiers link is
-// never skipped by the durable-admission gate (unlike a durable-only link),
-// since its nil tiers just pass through the request's own filter.
-// TestResolveReadSetLinkDurableSkippedForEpisodicOnlyFilter: a durable-only
-// link is skipped entirely (no ListNamespaces call for a "/*" target) when
-// the request's tier filter admits no durable tier — same rule as global.
-// TestResolveReadSetLinkOneHop: A links to B, B links to C. Resolving A's
-// default read set must never surface C — links are 1-hop, not transitive.
-// TestResolveReadSetLinkIgnoredOnExplicit: links are part of the default path
-// only — an explicit per-call namespace list must not pick up A's links.
-// TestResolveReadSetLinkOverlapWidensTiers: two overlapping links for the
-// same primary (a "/*" pattern link, durable, whose expansion covers an
-// exact-match link, all, on one of its own members) must leave that member
-// with full (all) tier access, not the pattern's narrower durable-only
-// override. store.LinkStore's ListNamespaceLinks returns links ordered by
-// target ("*" sorts before "c", so "b/*" is always processed before "b/c"
-// regardless of which was created first), so this exercises the actual
-// processing order addEntry must handle correctly in both directions.
 // TestResolveReadSetClampKeepsGlobal: a subtree expansion past the 64-entry
 // clamp must not push the global namespace's merged entry off the end; the
 // clamp keeps the front of the slice, so the global entry must be
@@ -494,6 +470,30 @@ func TestResolveReadSetUnderCapKeepsGlobalLast(t *testing.T) {
 	}
 }
 
-// TestResolveReadSetLinkSubtreeTargetExpands: a link to "ns/*" expands to the
-// bare namespace plus every namespace nested under it, sharing the read-set's
-// single lazy ListNamespaces call.
+func TestResolveReadSetExplicitNormalizesEntries(t *testing.T) {
+	svc, st := newReadsetSvc(t)
+	seedNamespace(t, st, "work/memini")
+	seedNamespace(t, st, "shared")
+	seedNamespace(t, st, "shared/a")
+
+	// Untrimmed, slash-wrapped, and doubled-separator entries must address the
+	// stored namespaces literally, and normalized duplicates must collapse.
+	got, err := svc.resolveReadSet(context.Background(), readScope{
+		primary:  "work/memini",
+		explicit: []string{" work//memini/ ", "work/memini", "shared//* "},
+	})
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	assertNamespaces(t, got, []string{"work/memini", "shared", "shared/a"})
+}
+
+func TestResolveReadSetExplicitBarePatternRejected(t *testing.T) {
+	svc, _ := newReadsetSvc(t)
+	// A bare "/*" has an empty base namespace; it must fail loudly rather
+	// than normalize into a literal "*" entry that silently matches nothing.
+	_, err := svc.resolveReadSet(context.Background(), readScope{primary: "A", explicit: []string{"/*"}})
+	if err == nil || !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("error = %v, want ErrInvalidInput for a bare \"/*\" entry", err)
+	}
+}
