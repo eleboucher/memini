@@ -14,12 +14,11 @@ modes behind "my agent stopped remembering things":
   import collapsing many sources into one pool.
 
 It also reports the **retrieval scope**: `MEMINI_GLOBAL_NAMESPACE`,
-`MEMINI_READ_NAMESPACES`, the persistent namespace links of both the server
-default and plugin-resolved namespaces, and the resolved effective read set
-(namespace, tier access, and source: default/subtree-pattern/env/link/global)
-for the plugin namespace, answering "why does recall see/miss X". It warns on
-a link or env target holding zero memories (dangling), a redundant or
-self-referencing entry, and a read set past the 64-entry clamp.
+`MEMINI_READ_NAMESPACES`, and the resolved effective read set (namespace,
+tier access, and source: default/subtree-pattern/env/global) for the plugin
+namespace, answering "why does recall see/miss X". It warns on an env target
+holding zero memories (dangling), a redundant or self-referencing entry, and
+a read set past the 64-entry clamp.
 
 If it reports warnings, explain them plainly and point the user at the suggested
 fix (`memini namespace split` for a collapsed pool, setting

@@ -425,10 +425,10 @@ A recall from `work/memini` with `scope=subtree` reads all `work/*` siblings (sh
 work knowledge) plus its own memories, never touching `personal/*`. The global
 namespace merges durable facts into every recall.
 
-**Moving memories between namespaces:** `POST /v1/namespaces/{name}/move` relocates
-an entire namespace, `POST /v1/namespaces/{name}/split` regroups by metadata, and
-`POST /v1/memories/{id}/reassign` moves a single memory — all backed by the existing
-`Store.Reassign` operation.
+**Moving memories between namespaces:** `memini namespace move --from A --to B`
+relocates an entire namespace (CLI only), `POST /v1/namespaces/{name}/split`
+regroups by metadata, and `POST /v1/memories/{id}/reassign` moves a single
+memory — all backed by the existing `Store.Reassign` operation.
 
 ## Web UI
 

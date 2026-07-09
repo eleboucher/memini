@@ -47,8 +47,7 @@ memory: remember a fact in Claude Code, recall it in Codex.
 - Either way, individual tool calls may override it with a `namespace` argument.
 
 As an alternative to one shared namespace, agents can keep private namespaces
-and still see each other's durable memory read-only: a persistent
-**namespace link** (`memini namespace link --from A --to B`) or
+and still see each other's durable memory read-only:
 `MEMINI_READ_NAMESPACES` merges another namespace's semantic/procedural
 memories into every recall and briefing, without merging writes. This also
 composes with the `project/<agent>` subtree pattern (`MEMINI_AGENT` nests each
