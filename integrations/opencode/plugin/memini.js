@@ -476,7 +476,6 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       if (lastAssistantFailed(res && res.data)) metadata.failed = true;
       const stored = await rest.postJson("/v1/memories", {
         content: `${userText.slice(0, 1000)}\n\n${assistantText.slice(0, 3000)}`,
-        tier: "episodic",
         tags: ["opencode"],
         metadata,
       });

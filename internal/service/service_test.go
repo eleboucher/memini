@@ -175,11 +175,11 @@ func TestRememberAssignsDefaults(t *testing.T) {
 	if m.ID == "" {
 		t.Fatal("expected generated ID")
 	}
-	if m.Tier != memory.TierEpisodic {
-		t.Fatalf("default tier = %q, want episodic", m.Tier)
+	if m.Tier != memory.TierWorking {
+		t.Fatalf("default tier = %q, want working", m.Tier)
 	}
 	if m.ExpiresAt == nil {
-		t.Fatal("episodic tier should get a default TTL")
+		t.Fatal("working tier should get a default TTL")
 	}
 
 	// Semantic tier is durable (no expiry).

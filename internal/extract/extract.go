@@ -1,7 +1,7 @@
 // Package extract distils conversation prose into durable, classified facts
 // without an LLM — a port of mempalace's heuristic extractor. It pulls the
-// decisions, preferences, and problems worth keeping out of an episodic
-// exchange, as durable memories that earn trust on recall. Marker-driven and
+// decisions, preferences, and problems worth keeping out of a short-term intake
+// capture, as durable memories that earn trust on recall. Marker-driven and
 // deliberately conservative: a miss just means no extra memory, never a wrong
 // one. Both the backfill importer and write-time extraction share this logic.
 package extract
@@ -234,7 +234,7 @@ const ClassifyMaxChars = 400
 // than Typed because the verdict covers the full text rather than an extracted
 // segment: the content must be short, prose-shaped, unhedged, not a transcript,
 // and clear the same marker-confidence gate. ok=false means no confident call —
-// callers fall back to the episodic default.
+// callers fall back to the working-intake default.
 func Classify(text string) (Kind, bool) {
 	seg := strings.TrimSpace(text)
 	if len(seg) < 20 || len(seg) > ClassifyMaxChars {

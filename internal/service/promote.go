@@ -19,8 +19,8 @@ const promoteBatch = 20
 // + source stamping) so a slow provider cannot stall the promoter tick.
 const promoteBatchTimeout = 90 * time.Second
 
-// RunPromoter periodically distills frequently-accessed episodic memories into
-// durable semantic facts until ctx is cancelled. It is a no-op without a
+// RunPromoter periodically distills frequently-accessed short-term memories
+// into durable semantic facts until ctx is cancelled. It is a no-op without a
 // positive interval. Call once, typically in its own goroutine.
 func (s *Service) RunPromoter(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
@@ -36,18 +36,20 @@ func (s *Service) RunPromoter(ctx context.Context, interval time.Duration) {
 			if n, err := s.Promote(ctx); err != nil {
 				slog.WarnContext(ctx, "promotion failed", "err", err)
 			} else if n > 0 {
-				slog.InfoContext(ctx, "promoted episodic memories to semantic", "facts", n)
+				slog.InfoContext(ctx, "promoted short-term memories to semantic", "facts", n)
 			}
 		}
 	}
 }
 
-// Promote distills frequently-accessed, not-yet-promoted episodic memories in
-// each namespace into durable semantic facts (written via Remember so they get
-// the similarity gate and consolidation dedup), then stamps the sources so they
-// aren't reprocessed. Without a distiller it falls back to the marker
-// extractor, so usage-earned promotion also works on LLM-less deployments.
-// Returns the number of facts written.
+// Promote distills frequently-accessed, not-yet-promoted short-term memories
+// (working and episodic) in each namespace into durable semantic facts (written
+// via Remember so they get the similarity gate and consolidation dedup), then
+// stamps the sources so they aren't reprocessed. Working memories that have
+// proven valuable (AccessCount >= promoteMinAccess) are first retiered to
+// episodic, then the combined pool is distilled. Without a distiller it falls
+// back to the marker extractor, so usage-earned promotion also works on
+// LLM-less deployments. Returns the number of facts written.
 func (s *Service) Promote(ctx context.Context) (int, error) {
 	start := time.Now()
 	defer func() { s.metrics.OpDuration("promote", time.Since(start)) }()
@@ -59,11 +61,18 @@ func (s *Service) Promote(ctx context.Context) (int, error) {
 	now := s.now()
 	total := 0
 	for _, ns := range namespaces {
-		eps, err := s.store.List(ctx, ns, store.Filter{Tiers: []memory.Tier{memory.TierEpisodic}, Now: s.now()}, 0)
+		// Broaden from episodic-only to the full short-term set: working is the
+		// default intake tier, so the dominant pool now lives there.
+		eps, err := s.store.List(ctx, ns, store.Filter{Tiers: []memory.Tier{memory.TierWorking, memory.TierEpisodic}, Now: s.now()}, 0)
 		if err != nil {
 			s.metrics.PromoteResult("error", total)
 			return total, err
 		}
+		// Retier valuable working memories to episodic before durable extraction:
+		// a working memory that was recalled enough to earn promotion has proven
+		// worth keeping longer than the 72h intake TTL. Stamped so it isn't
+		// re-retiered on the next tick.
+		s.retierWorkingToEpisodic(ctx, ns, eps, now)
 		var pending []*memory.Memory
 		for _, m := range eps {
 			if m.AccessCount >= s.promoteMinAccess && !alreadyPromoted(m) {
@@ -262,4 +271,49 @@ func alreadyPromoted(m *memory.Memory) bool {
 	}
 	_, ok := m.Metadata["promoted_at"]
 	return ok
+}
+
+// retieredToEpisodic is the metadata stamp marking a working memory that was
+// promoted to episodic, so it isn't re-retiered on the next tick.
+const retieredToEpisodic = "episodic"
+
+// retierWorkingToEpisodic promotes working memories that have been recalled
+// enough to clear promoteMinAccess from the 72h intake tier to episodic (30d
+// TTL), so content that proved valuable survives longer than raw scratch. The
+// memory must have its embedding loaded (List omits it); a missing embedding
+// skips the retier rather than failing the promote pass. Stamped with
+// metadata["retiered_to"]="episodic" so it isn't re-retiered next tick.
+// Best-effort: a per-memory failure is logged and skipped.
+func (s *Service) retierWorkingToEpisodic(ctx context.Context, ns string, mems []*memory.Memory, now time.Time) {
+	for _, m := range mems {
+		if m.Tier != memory.TierWorking {
+			continue
+		}
+		if m.AccessCount < s.promoteMinAccess {
+			continue
+		}
+		if m.Metadata != nil {
+			if v, ok := m.Metadata["retiered_to"].(string); ok && v == retieredToEpisodic {
+				continue
+			}
+		}
+		// Re-embed: List omits embeddings, and Upsert's dim check needs one.
+		vecs, err := s.embedder.Embed(ctx, []string{m.Content})
+		if err != nil {
+			slog.WarnContext(ctx, "promote: retier embed", "namespace", ns, "id", m.ID, "err", err)
+			continue
+		}
+		m.Tier = memory.TierEpisodic
+		m.Embedding = vecs[0]
+		m.UpdatedAt = now
+		exp := now.Add(memory.TierEpisodic.DefaultTTL())
+		m.ExpiresAt = &exp
+		if m.Metadata == nil {
+			m.Metadata = map[string]any{}
+		}
+		m.Metadata["retiered_to"] = retieredToEpisodic
+		if err := s.store.Upsert(ctx, m); err != nil {
+			slog.WarnContext(ctx, "promote: retier to episodic", "namespace", ns, "id", m.ID, "err", err)
+		}
+	}
 }

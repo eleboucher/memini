@@ -102,7 +102,9 @@ var answerTools = []llm.Tool{
 			"Phrase each call differently; repeating a failed query verbatim wastes an iteration.",
 		Schema: objectSchema(map[string]any{
 			argQuery: strProp("natural-language search query"),
-			"tier":   strProp("episodic = raw conversation captures; durable = distilled facts; default all", "all", "episodic", "durable"),
+			"tier": strProp("episodic = recent captures (working+episodic); "+
+				"durable = distilled facts; default all",
+				"all", string(memory.TierEpisodic), "durable"),
 		}, "query"),
 	},
 	{
@@ -226,8 +228,8 @@ func (s *Service) execAnswerTool(
 		ri := RecallInput{Namespace: in.Namespace, Query: args.Query, Limit: k,
 			Levels: in.Levels, Tags: in.Tags, Metadata: in.Metadata}
 		switch args.Tier {
-		case "episodic":
-			ri.Tiers = []memory.Tier{memory.TierEpisodic}
+		case string(memory.TierEpisodic):
+			ri.Tiers = []memory.Tier{memory.TierWorking, memory.TierEpisodic}
 		case "durable":
 			ri.Tiers = []memory.Tier{memory.TierSemantic, memory.TierProcedural}
 		default:

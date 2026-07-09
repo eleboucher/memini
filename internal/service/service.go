@@ -831,10 +831,10 @@ func (s *Service) sanitizeContent(ctx context.Context, in RememberInput, tier me
 }
 
 // validateRememberInput checks the required fields and resolves the tier. An
-// omitted tier is classified from the content by the marker heuristic — a
-// terse, unhedged decision/preference/problem statement lands durable — and
-// falls back to episodic. Classification only ever raises the tier from the
-// episodic default, never down to working, so a miss costs nothing. The
+// omitted tier defaults to working (the intake tier), but the marker heuristic
+// can classify a terse, unhedged decision/preference/problem statement directly
+// into a durable tier. Classification only ever raises the tier from the
+// working default, never lowers it, so a miss costs nothing. The
 // returned tier is "" for the namespace/content errors and the offending tier
 // for an invalid-tier error, matching the metric label the caller records.
 func validateRememberInput(in RememberInput) (memory.Tier, error) {
@@ -846,7 +846,7 @@ func validateRememberInput(in RememberInput) (memory.Tier, error) {
 	}
 	tier := in.Tier
 	if tier == "" {
-		tier = memory.TierEpisodic
+		tier = memory.TierWorking
 		if kind, ok := extract.Classify(in.Content); ok {
 			tier = kind.Tier()
 		}
@@ -1938,7 +1938,7 @@ func (s *Service) applyTurnEchoGuard(in RecallInput, ranked []store.Scored) []st
 	cutoff := s.now().Add(-window)
 	filtered := ranked[:0]
 	for _, r := range ranked {
-		if r.Memory.Tier == memory.TierEpisodic &&
+		if r.Memory.Tier.Term() == memory.ShortTerm &&
 			r.Memory.CreatedAt.After(cutoff) &&
 			isTurnCapture(r.Memory.Metadata) {
 			continue
@@ -1955,45 +1955,52 @@ func isTurnCapture(meta map[string]any) bool {
 	return ok && v == "turn"
 }
 
-// buildFactsOnWrite routes a fresh episodic capture to write-time fact
+// buildFactsOnWrite routes a fresh short-term capture to write-time fact
 // building: LLM distillation (batched per session when configured and the
 // capture carries a session_id, else per-capture) or the heuristic extractor
 // when no LLM is set.
 func (s *Service) buildFactsOnWrite(ctx context.Context, m *memory.Memory, tier memory.Tier, isCreate bool) {
 	switch {
-	case s.shouldDistillOnWrite(tier, isCreate):
+	case s.shouldDistillShortTermOnWrite(tier, isCreate):
 		if !s.enqueueDistillBatch(m) {
-			s.distillEpisodicAsync(ctx, m)
+			s.distillShortTermAsync(ctx, m)
 		}
-	case s.shouldExtractOnWrite(tier, isCreate):
-		s.extractEpisodicAsync(ctx, m)
+	case s.shouldExtractShortTermOnWrite(tier, isCreate):
+		s.extractShortTermAsync(ctx, m)
 	}
 }
 
-// shouldDistillOnWrite reports whether a fresh episodic capture should be
-// distilled into durable facts at write time. isCreate must be false for an
-// update (an existing row re-written by ID, e.g. a re-fired session digest), so
-// a capture is distilled once on creation and never again when it's overwritten.
-func (s *Service) shouldDistillOnWrite(tier memory.Tier, isCreate bool) bool {
-	return s.distillOnWrite && s.distiller != nil && tier == memory.TierEpisodic && isCreate
+// shouldDistillShortTermOnWrite reports whether a fresh short-term capture
+// should be distilled into durable facts at write time. isCreate must be false
+// for an update (an existing row re-written by ID, e.g. a re-fired session
+// digest), so a capture is distilled once on creation and never again when
+// it's overwritten.
+func (s *Service) shouldDistillShortTermOnWrite(tier memory.Tier, isCreate bool) bool {
+	return s.distillOnWrite && s.distiller != nil && tier.Term() == memory.ShortTerm && isCreate
 }
 
-// shouldExtractOnWrite mirrors shouldDistillOnWrite for the heuristic path: it
-// requires no distiller, so distill-on-write supersedes it when an LLM is set.
-func (s *Service) shouldExtractOnWrite(tier memory.Tier, isCreate bool) bool {
-	return s.extractOnWrite && s.distiller == nil && tier == memory.TierEpisodic && isCreate
+// shouldExtractShortTermOnWrite mirrors shouldDistillShortTermOnWrite for the
+// heuristic path: it requires no distiller, so distill-on-write supersedes it
+// when an LLM is set.
+func (s *Service) shouldExtractShortTermOnWrite(tier memory.Tier, isCreate bool) bool {
+	return s.extractOnWrite && s.distiller == nil && tier.Term() == memory.ShortTerm && isCreate
 }
 
-// distillEpisodicAsync distils a freshly-written episodic into durable facts in
-// the background, detached from the request so the capture isn't blocked on the
-// LLM. It reuses the promote path (stamp → distill → write deduped facts) for
-// one memory, bounded by distillSem so a write burst can't fan out unbounded
-// LLM calls. Best-effort: a failure is logged, the episodic stays.
-func (s *Service) distillEpisodicAsync(ctx context.Context, m *memory.Memory) {
+// distillShortTermAsync distils a freshly-written short-term memory into durable
+// facts in the background, detached from the request so the capture isn't
+// blocked on the LLM. It reuses the promote path (stamp → distill → write
+// deduped facts) for one memory, bounded by distillSem so a write burst can't
+// fan out unbounded LLM calls. Best-effort: a failure is logged, the source
+// stays. Observes semaphore-wait time via OpDuration so queue saturation is
+// visible before it silently loses facts to TTL expiry.
+func (s *Service) distillShortTermAsync(ctx context.Context, m *memory.Memory) {
 	bg := context.WithoutCancel(ctx)
 	s.bg.Go(func() {
+		semStart := time.Now()
 		s.distillSem <- struct{}{}
+		semWait := time.Since(semStart)
 		defer func() { <-s.distillSem }()
+		s.metrics.OpDuration("distill_sem_wait", semWait)
 		dctx, cancel := context.WithTimeout(bg, distillOnWriteTimeout)
 		defer cancel()
 		n, err := s.promote(dctx, m.Namespace, []*memory.Memory{m}, s.now())
@@ -2002,23 +2009,22 @@ func (s *Service) distillEpisodicAsync(ctx context.Context, m *memory.Memory) {
 			return
 		}
 		// Drop-when-no-fact: the LLM found nothing durable in this turn, so delete
-		// the kept episodic rather than let low-value chatter the heuristic missed
-		// sit for 90 days.
+		// the kept source rather than let low-value chatter sit for its full TTL.
 		if n == 0 && s.distillDropNoFact {
 			if err := s.store.Delete(dctx, m.Namespace, m.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
-				slog.WarnContext(dctx, "distill-on-write: drop no-fact episodic", "namespace", m.Namespace, "id", m.ID, "err", err)
+				slog.WarnContext(dctx, "distill-on-write: drop no-fact source", "namespace", m.Namespace, "id", m.ID, "err", err)
 				return
 			}
-			s.metrics.RememberResult("dropped", string(memory.TierEpisodic))
+			s.metrics.RememberResult("dropped", string(m.Tier))
 		}
 	})
 }
 
-// extractEpisodicAsync stores the heuristic extractor's typed facts from a
-// freshly-written episodic. The marker scan runs inline; only the embed+store of
-// each fact is detached. The raw episodic is kept; a per-fact failure is logged
-// without blocking the rest.
-func (s *Service) extractEpisodicAsync(ctx context.Context, m *memory.Memory) {
+// extractShortTermAsync stores the heuristic extractor's typed facts from a
+// freshly-written short-term memory. The marker scan runs inline; only the
+// embed+store of each fact is detached. The raw source is kept; a per-fact
+// failure is logged without blocking the rest.
+func (s *Service) extractShortTermAsync(ctx context.Context, m *memory.Memory) {
 	results := extract.Typed(m.Content)
 	if len(results) == 0 {
 		return
@@ -2467,7 +2473,7 @@ func resolveImportance(in RememberInput, existing *memory.Memory, tier memory.Ti
 
 // seedImportance is the tier-based importance floor for a fresh write that
 // carried none: durable curated tiers outrank episodic turns, which outrank
-// ephemeral working notes.
+// raw working-intake notes.
 func seedImportance(tier memory.Tier) float64 {
 	switch tier {
 	case memory.TierSemantic, memory.TierProcedural:

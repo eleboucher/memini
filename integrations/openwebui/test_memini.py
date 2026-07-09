@@ -40,10 +40,15 @@ class Helpers(unittest.TestCase):
     def test_last_assistant_failed(self):
         self.assertTrue(
             flt.last_assistant_failed(
-                [{"role": "user", "content": "x"}, {"role": "assistant", "content": "y", "error": "boom"}]
+                [
+                    {"role": "user", "content": "x"},
+                    {"role": "assistant", "content": "y", "error": "boom"},
+                ]
             )
         )
-        self.assertFalse(flt.last_assistant_failed([{"role": "assistant", "content": "ok"}]))
+        self.assertFalse(
+            flt.last_assistant_failed([{"role": "assistant", "content": "ok"}])
+        )
         self.assertFalse(flt.last_assistant_failed(None))
 
     def test_extract_last_user_string(self):
@@ -99,7 +104,11 @@ class FilterFlow(unittest.TestCase):
         async def fake_post(path, payload, namespace):
             captured_calls.append((path, payload, namespace))
             if path == "/v1/search":
-                return {"results": [{"memory": {"summary": "prior note", "tier": "episodic"}}]}
+                return {
+                    "results": [
+                        {"memory": {"summary": "prior note", "tier": "episodic"}}
+                    ]
+                }
             return {"id": "mem_1"}
 
         f._post_json = fake_post
@@ -165,7 +174,7 @@ class FilterFlow(unittest.TestCase):
         asyncio.run(f.outlet(body))  # dedup: second call is a no-op
         memory_writes = [c for c in calls if c[0] == "/v1/memories"]
         self.assertEqual(len(memory_writes), 1)
-        self.assertEqual(memory_writes[0][1]["tier"], "episodic")
+        self.assertNotIn("tier", memory_writes[0][1])
 
     def test_outlet_without_chat_id_skips_capture(self):
         # A capture without a chat id can never be excluded by inlet recall,

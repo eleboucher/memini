@@ -5,17 +5,17 @@ _kind_ — how consolidated and durable it is — and sets how long it survives
 before it ages out. (Tiers are orthogonal to [categories](categories.md), which
 classify a memory by _topic_.)
 
-| tier         | holds                                           | lifetime      |
-| ------------ | ----------------------------------------------- | ------------- |
-| `working`    | raw, short-lived observations (session scratch) | 24h TTL       |
-| `episodic`   | summaries of what happened in a session         | 30-day TTL    |
-| `semantic`   | durable extracted facts — "what I know"         | never expires |
-| `procedural` | workflows and how-to knowledge                  | never expires |
+| tier         | holds                                          | lifetime      |
+| ------------ | ---------------------------------------------- | ------------- |
+| `working`    | raw, short-lived observations (default intake) | 72h TTL       |
+| `episodic`   | summaries of what happened in a session        | 30-day TTL    |
+| `semantic`   | durable extracted facts — "what I know"        | never expires |
+| `procedural` | workflows and how-to knowledge                 | never expires |
 
 `working` and `episodic` are **short-term** (TTL'd); `semantic` and
 `procedural` are **long-term** (durable, curated). A store is normally
-lopsided toward `episodic` — most rows are session history, with a smaller core
-of `semantic`/`procedural` knowledge.
+lopsided toward `working` — most rows are raw intake — with a smaller core of
+`episodic` session summaries and `semantic`/`procedural` knowledge.
 
 ## The lifecycle
 
@@ -27,19 +27,22 @@ working ──▶ episodic ──(distilled at write / recalled repeatedly)─�
                  └──────────────────(unused, low-value)────────────────────┘
 ```
 
-- **Distillation (write-time)** — each fresh `episodic` capture is distilled by
-  the LLM into durable `semantic`/`procedural` facts immediately, so a fact
-  stated once is durable without first having to be recalled. Automatic when an
-  LLM is configured. The raw episodic is always kept.
+- **Distillation (write-time)** — each fresh short-term capture (working or
+  episodic) is distilled by the LLM into durable `semantic`/`procedural` facts
+  immediately, so a fact stated once is durable without first having to be
+  recalled. Automatic when an LLM is configured. The raw source is always kept.
 - **Heuristic extraction (write-time, no LLM)** — when no LLM is configured (the
   embedder-only and embedder+reranker deployments), a marker-based extractor
-  pulls decisions/preferences/problems out of each fresh `episodic` capture into
+  pulls decisions/preferences/problems out of each fresh short-term capture into
   durable typed facts. Automatic when no LLM is present (the distiller supersedes
   it otherwise). Conservative — a miss just means no extra fact, and the raw
-  episodic is always kept.
-- **Promotion** — a backstop for episodic memories that were not distilled at
-  write time: frequently-recalled `episodic` memories are periodically distilled
-  into durable `semantic` facts. Eligibility kicks in at
+  source is always kept.
+- **Working→episodic promotion** — a `working` memory recalled enough to clear
+  `MEMINI_PROMOTE_MIN_ACCESS` (default `3`) is retiered to `episodic` (30d TTL)
+  so content that proved valuable survives longer than the 72h intake TTL.
+- **Promotion** — a backstop for short-term memories that were not distilled at
+  write time: frequently-recalled `working`/`episodic` memories are periodically
+  distilled into durable `semantic` facts. Eligibility kicks in at
   `MEMINI_PROMOTE_MIN_ACCESS` recalls (default `3`); the pass runs every
   `MEMINI_PROMOTE_INTERVAL` (default `24h`). Uses the LLM when configured, the
   marker extractor otherwise (a short source with no extractable segment is
@@ -67,11 +70,11 @@ promotion, and corroboration all fall back to the marker heuristics.
 
 ## Setting a tier
 
-On write, set `tier` explicitly. When omitted, the content is classified by the
-marker heuristic — a terse, unhedged decision/preference/problem statement lands
-in `semantic`/`procedural` (stamped `metadata.tier_classified=marker` for
-auditing) — and anything else defaults to `episodic`. Classification never picks
-`working`; transient scratch must be explicit.
+On write, set `tier` explicitly. When omitted, the content defaults to `working`
+(the intake tier) and is classified by the marker heuristic — a terse, unhedged
+decision/preference/problem statement lands in `semantic`/`procedural` (stamped
+`metadata.tier_classified=marker` for auditing). Classification only raises:
+it never lowers a write to `working`, and `working` is already the default.
 
 ```jsonc
 {
@@ -82,7 +85,7 @@ auditing) — and anything else defaults to `episodic`. Classification never pic
 
 Bulk imports map each source's native kind onto a tier (e.g. agentmemory
 `workflow` → `procedural`, mem0 facts → `semantic`); sources with no recognized
-kind default to `episodic` with a fresh 30-day TTL.
+kind default to `working` with a fresh 72h TTL.
 
 ## Filtering by tier
 

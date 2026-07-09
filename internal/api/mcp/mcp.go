@@ -61,7 +61,7 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 			"stated preference should outlive this session. Keep memories atomic — one " +
 			"self-contained fact per call; search works better on small records. Do NOT store " +
 			"facts already in project docs/CLAUDE.md or trivially recoverable from code. tier: " +
-			"semantic=durable fact, procedural=how-to, episodic=event, working=scratch (omit to " +
+			"semantic=durable fact, procedural=how-to, episodic=event, working=scratch (default intake, omit to " +
 			"auto-classify). If the result carries merge_hint, the content nearly duplicates an " +
 			"existing memory — either call memory_update with id=merge_hint.similar_id to fold " +
 			"them together, or ignore it to keep both. Returns {id, tier, stored}; stored=false " +

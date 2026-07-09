@@ -48,7 +48,7 @@ func (t Tier) Term() Term {
 func (t Tier) DefaultTTL() time.Duration {
 	switch t {
 	case TierWorking:
-		return 24 * time.Hour
+		return 72 * time.Hour
 	case TierEpisodic:
 		return 30 * 24 * time.Hour
 	default: // semantic, procedural: durable

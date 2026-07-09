@@ -25,7 +25,7 @@ export function MemoryCard({ memory: m, score, onOpen, showNamespace }: Props) {
           </span>
         )}
         {promotedFrom(m) && (
-          <span class="chip" title="Distilled from a frequently-recalled session memory">
+          <span class="chip" title="Distilled from a frequently-recalled short-term memory">
             promoted
           </span>
         )}

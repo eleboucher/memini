@@ -96,7 +96,9 @@ def format_results(results: list, limit: int) -> str:
     lines = []
     for index, result in enumerate(results[: max(limit, 0)]):
         mem = (result or {}).get("memory") or {}
-        text = str(mem.get("summary") or mem.get("content") or f"Memory {index + 1}").strip()
+        text = str(
+            mem.get("summary") or mem.get("content") or f"Memory {index + 1}"
+        ).strip()
         if text:
             # Plain bullets, matching the opencode/hermes/openclaw/Claude default.
             lines.append(f"- {text[:300]}")
@@ -131,18 +133,26 @@ def uses_plaintext_bearer(base_url: str, secret: str) -> bool:
 class Filter:
     class Valves(BaseModel):
         base_url: str = Field(
-            default_factory=lambda: os.environ.get("MEMINI_BASE_URL")
-            or os.environ.get("MEMINI_URL")
-            or DEFAULT_BASE_URL,
+            default_factory=lambda: (
+                os.environ.get("MEMINI_BASE_URL")
+                or os.environ.get("MEMINI_URL")
+                or DEFAULT_BASE_URL
+            ),
             description="memini REST base URL (defaults from MEMINI_BASE_URL / MEMINI_URL env)",
         )
         namespace: str = Field(
             default=DEFAULT_NAMESPACE,
             description="Tenant the memory is scoped to (X-Memini-Namespace). Share it across agents to pool memory.",
         )
-        recall: bool = Field(default=True, description="Recall memories before each turn")
-        capture: bool = Field(default=True, description="Capture the completed turn after each response")
-        recall_limit: int = Field(default=3, description="Max memories injected per turn")
+        recall: bool = Field(
+            default=True, description="Recall memories before each turn"
+        )
+        capture: bool = Field(
+            default=True, description="Capture the completed turn after each response"
+        )
+        recall_limit: int = Field(
+            default=3, description="Max memories injected per turn"
+        )
         timeout_ms: int = Field(default=5000, description="Per-request timeout (ms)")
         fallback_on_error: bool = Field(
             default=True,
@@ -171,9 +181,13 @@ class Filter:
                 ns = f"{ns}-{uid}"
         return sanitize_namespace(ns) or DEFAULT_NAMESPACE
 
-    async def _post_json(self, path: str, payload: dict, namespace: str) -> Optional[dict]:
+    async def _post_json(
+        self, path: str, payload: dict, namespace: str
+    ) -> Optional[dict]:
         base_url = str(self.valves.base_url).rstrip("/")
-        secret = os.environ.get("MEMINI_API_KEY") or os.environ.get("MEMINI_TOKEN") or ""
+        secret = (
+            os.environ.get("MEMINI_API_KEY") or os.environ.get("MEMINI_TOKEN") or ""
+        )
         if uses_plaintext_bearer(base_url, secret):
             message = (
                 f"memini: MEMINI_API_KEY would cross plaintext HTTP to {base_url}; "
@@ -222,7 +236,12 @@ class Filter:
         # transcript, so recalling them just echoes the conversation back a turn
         # behind. Captures from other (past) chats are still recalled. On inlet
         # the chat id arrives via injected __chat_id__/__metadata__, not body.
-        chat_id = __chat_id__ or (__metadata__ or {}).get("chat_id") or body.get("chat_id") or ""
+        chat_id = (
+            __chat_id__
+            or (__metadata__ or {}).get("chat_id")
+            or body.get("chat_id")
+            or ""
+        )
         if chat_id:
             payload["exclude_metadata"] = {"chat_id": chat_id}
         result = await self._post_json(
@@ -267,7 +286,12 @@ class Filter:
         # Same resolution as inlet; the outlet payload also carries body["chat_id"].
         # (Open WebUI never injects __chat_id__ on outlet — the metadata/body legs
         # are the ones that resolve here.)
-        chat_id = __chat_id__ or (__metadata__ or {}).get("chat_id") or body.get("chat_id") or ""
+        chat_id = (
+            __chat_id__
+            or (__metadata__ or {}).get("chat_id")
+            or body.get("chat_id")
+            or ""
+        )
         if not chat_id:
             # A capture without a chat id can never be excluded by inlet recall,
             # so it would echo this chat's own turns back forever. Skip it.
@@ -282,7 +306,6 @@ class Filter:
             "/v1/memories",
             {
                 "content": f"{user_text[:1000]}\n\n{assistant_text[:3000]}",
-                "tier": "episodic",
                 "tags": ["openwebui"],
                 "metadata": metadata,
             },

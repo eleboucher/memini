@@ -413,7 +413,8 @@ components:
             Omit to let the server choose: the content is classified by the
             marker heuristic (a terse, unhedged decision/preference/problem
             lands in semantic/procedural, stamped metadata.tier_classified=marker),
-            falling back to episodic. Classification never picks working.
+            falling back to working. Classification never picks working
+            (the default) — it only raises to semantic/procedural.
         summary: { type: string }
         tags: { type: array, items: { type: string } }
         metadata: { type: object, additionalProperties: true }

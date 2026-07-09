@@ -21,8 +21,8 @@ func TestRememberClassifiesOmittedTier(t *testing.T) {
 	}{
 		{"decision", "We decided to use Postgres instead of MySQL for the vector store.", memory.TierSemantic},
 		{"preference", "I prefer table-driven tests, please always use them instead of ad-hoc asserts.", memory.TierProcedural},
-		{"chatter", "Met with the platform team about quarterly planning this afternoon.", memory.TierEpisodic},
-		{"hedged", "Maybe we should go with Postgres instead of MySQL for this.", memory.TierEpisodic},
+		{"chatter", "Met with the platform team about quarterly planning this afternoon.", memory.TierWorking},
+		{"hedged", "Maybe we should go with Postgres instead of MySQL for this.", memory.TierWorking},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -41,7 +41,7 @@ func TestRememberClassifiesOmittedTier(t *testing.T) {
 					t.Fatalf("metadata tier_classified = %v, want marker", m.Metadata["tier_classified"])
 				}
 			} else if _, ok := m.Metadata["tier_classified"]; ok {
-				t.Fatal("episodic fallback must not carry the classification stamp")
+				t.Fatal("working fallback must not carry the classification stamp")
 			}
 		})
 	}

@@ -475,7 +475,6 @@ export default function meminiExtension(pi: ExtensionAPI): void {
 
     const stored = await client.postJson("/v1/memories", {
       content: buildTurnContent(userText, assistantText),
-      tier: "episodic",
       tags: ["pi"],
       metadata,
     });

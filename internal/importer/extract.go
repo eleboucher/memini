@@ -17,10 +17,10 @@ import (
 func ExtractTyped(recs []Record) []Record {
 	var out []Record
 	for _, r := range recs {
-		// Only conversational episodic records carry extractable prose. Skip
+		// Only conversational short-term records carry extractable prose. Skip
 		// durable or already-typed records (e.g. a memini re-import of prior
 		// extractions) so we don't re-classify and duplicate them.
-		if r.Tier != memory.TierEpisodic {
+		if r.Tier.Term() == memory.LongTerm {
 			continue
 		}
 		if _, typed := r.Metadata["memory_type"]; typed {

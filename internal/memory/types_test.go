@@ -31,7 +31,7 @@ func TestTierDefaultTTL(t *testing.T) {
 		tier memory.Tier
 		want time.Duration
 	}{
-		{memory.TierWorking, 24 * time.Hour},
+		{memory.TierWorking, 72 * time.Hour},
 		{memory.TierEpisodic, 30 * 24 * time.Hour},
 		{memory.TierSemantic, 0},
 		{memory.TierProcedural, 0},

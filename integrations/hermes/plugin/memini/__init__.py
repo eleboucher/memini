@@ -56,12 +56,25 @@ except ImportError:  # allow import/testing outside a Hermes install
         def get_tool_schemas(self) -> list[dict]: ...
         @abstractmethod
         def handle_tool_call(self, name: str, args: dict, **kwargs: Any) -> str: ...
-        def get_config_schema(self) -> list[dict]: return []
-        def save_config(self, values: dict, hermes_home: str) -> None: pass
-        def prefetch(self, query: str, **kwargs: Any) -> str: return ""
-        def sync_turn(self, user: str, assistant: str, **kwargs: Any) -> None: pass
-        def on_pre_compress(self, messages: list, **kwargs: Any) -> str: return ""
-        def on_memory_write(self, action: str, target: str, content: str, **kwargs: Any) -> None: pass
+        def get_config_schema(self) -> list[dict]:
+            return []
+
+        def save_config(self, values: dict, hermes_home: str) -> None:
+            pass
+
+        def prefetch(self, query: str, **kwargs: Any) -> str:
+            return ""
+
+        def sync_turn(self, user: str, assistant: str, **kwargs: Any) -> None:
+            pass
+
+        def on_pre_compress(self, messages: list, **kwargs: Any) -> str:
+            return ""
+
+        def on_memory_write(
+            self, action: str, target: str, content: str, **kwargs: Any
+        ) -> None:
+            pass
 
 
 DEFAULT_BASE_URL = "http://localhost:8080"
@@ -94,7 +107,9 @@ def _uses_plaintext_bearer_auth(base: str, secret: str) -> bool:
     return parsed.scheme == "http" and host not in LOOPBACK_HOSTS
 
 
-def _check_plaintext_bearer_guard(base: str, secret: str, warn: Callable[[str], None] | None = None) -> None:
+def _check_plaintext_bearer_guard(
+    base: str, secret: str, warn: Callable[[str], None] | None = None
+) -> None:
     global _plaintext_bearer_warned
     if not _uses_plaintext_bearer_auth(base, secret):
         return
@@ -132,8 +147,14 @@ def _valid_url(base: str) -> bool:
     return parsed.scheme in ("http", "https") and bool(parsed.hostname)
 
 
-def _api(base: str, path: str, body: dict | None, namespace: str, secret: str,
-         method: str = "POST") -> dict | None:
+def _api(
+    base: str,
+    path: str,
+    body: dict | None,
+    namespace: str,
+    secret: str,
+    method: str = "POST",
+) -> dict | None:
     if not _valid_url(base):
         return None
     headers = {"Content-Type": "application/json", "X-Memini-Namespace": namespace}
@@ -268,9 +289,12 @@ class MeminiMemoryProvider(MemoryProvider):
         # Hermes' initialize kwargs carry no project path (agent_workspace is a
         # label, not a dir), so the working directory is the only signal for the
         # default namespace; set MEMINI_NAMESPACE to scope explicitly.
-        self._namespace = _sanitize_namespace(
-            _env("MEMINI_NAMESPACE") or os.path.basename(os.getcwd().rstrip("/"))
-        ) or "hermes"
+        self._namespace = (
+            _sanitize_namespace(
+                _env("MEMINI_NAMESPACE") or os.path.basename(os.getcwd().rstrip("/"))
+            )
+            or "hermes"
+        )
         # Recall-shaping knobs, read once. Defaults match the other integrations
         # (limit 3, no floor, unbounded, plain bullets).
         limit = _int_env("MEMINI_RECALL_LIMIT", 3)
@@ -289,12 +313,25 @@ class MeminiMemoryProvider(MemoryProvider):
 
     def get_config_schema(self) -> list[dict]:
         return [
-            {"key": "url", "description": "memini server URL",
-             "default": DEFAULT_BASE_URL, "env_var": "MEMINI_BASE_URL"},
-            {"key": "namespace", "description": "memory namespace (tenant)",
-             "required": False, "env_var": "MEMINI_NAMESPACE"},
-            {"key": "secret", "description": "memini bearer token (optional)",
-             "secret": True, "required": False, "env_var": "MEMINI_API_KEY"},
+            {
+                "key": "url",
+                "description": "memini server URL",
+                "default": DEFAULT_BASE_URL,
+                "env_var": "MEMINI_BASE_URL",
+            },
+            {
+                "key": "namespace",
+                "description": "memory namespace (tenant)",
+                "required": False,
+                "env_var": "MEMINI_NAMESPACE",
+            },
+            {
+                "key": "secret",
+                "description": "memini bearer token (optional)",
+                "secret": True,
+                "required": False,
+                "env_var": "MEMINI_API_KEY",
+            },
         ]
 
     def save_config(self, values: dict, hermes_home: str) -> None:
@@ -329,7 +366,9 @@ class MeminiMemoryProvider(MemoryProvider):
             tags: list[str] = []
             if "tier" in labels and mem.get("tier"):
                 tags.append(str(mem["tier"]))
-            if "confidence" in labels and isinstance(mem.get("confidence"), (int, float)):
+            if "confidence" in labels and isinstance(
+                mem.get("confidence"), (int, float)
+            ):
                 tags.append(f"conf={mem['confidence']:.2f}")
             if "age" in labels:
                 age = _format_age(mem.get("created_at"))
@@ -352,7 +391,10 @@ class MeminiMemoryProvider(MemoryProvider):
         # embed was unavailable and it fell back to keyword-only matching;
         # both are already on `result`, so surfacing them is a one-line addition.
         if result and result.get("degraded"):
-            note = result.get("note") or "semantic search unavailable — results are keyword-only and may be incomplete"
+            note = (
+                result.get("note")
+                or "semantic search unavailable — results are keyword-only and may be incomplete"
+            )
             block += f"\n[memini: {note}]"
         return f"{header}\n{block}"
 
@@ -382,7 +424,9 @@ class MeminiMemoryProvider(MemoryProvider):
             role = m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
             if role != "user":
                 continue
-            content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+            content = (
+                m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+            )
             if isinstance(content, str) and content.strip():
                 query = content.strip()
                 break
@@ -407,14 +451,18 @@ class MeminiMemoryProvider(MemoryProvider):
             # A capture without a session id can never be excluded; storing it
             # would echo this session's turns back forever.
             return
-        self._call_bg("/v1/memories", {
-            "content": f"{user[:1000]}\n\n{assistant[:3000]}",
-            "tier": "episodic",
-            "tags": ["hermes"],
-            "metadata": {"source": "hermes", "session_id": sid, "format": "turn"},
-        })
+        self._call_bg(
+            "/v1/memories",
+            {
+                "content": f"{user[:1000]}\n\n{assistant[:3000]}",
+                "tags": ["hermes"],
+                "metadata": {"source": "hermes", "session_id": sid, "format": "turn"},
+            },
+        )
 
-    def on_memory_write(self, action: str, target: str, content: str, **kwargs: Any) -> None:
+    def on_memory_write(
+        self, action: str, target: str, content: str, **kwargs: Any
+    ) -> None:
         # Hermes emits action ∈ {add, replace, remove}; mirror those that add
         # content. Tier is omitted so the server classifies it (a decision or
         # preference lands durable, chatter stays episodic) rather than forcing
@@ -427,16 +475,23 @@ class MeminiMemoryProvider(MemoryProvider):
             {
                 "name": "memory_recall",
                 "description": "Search long-term memory (memini) for relevant past facts and context. Call "
-                               "before starting work that may have history: editing an unfamiliar file, "
-                               "debugging a recurring issue, or when asked what's known about something. A "
-                               "degraded:\"keyword_only\" field in the result means semantic search was "
-                               "unavailable and results came from keyword matching alone — treat as "
-                               "incomplete, not exhaustive.",
+                "before starting work that may have history: editing an unfamiliar file, "
+                "debugging a recurring issue, or when asked what's known about something. A "
+                'degraded:"keyword_only" field in the result means semantic search was '
+                "unavailable and results came from keyword matching alone — treat as "
+                "incomplete, not exhaustive.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "What to search for"},
-                        "limit": {"type": "integer", "description": "Max results", "default": 3},
+                        "query": {
+                            "type": "string",
+                            "description": "What to search for",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max results",
+                            "default": 3,
+                        },
                         "tags": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -446,7 +501,7 @@ class MeminiMemoryProvider(MemoryProvider):
                             "type": "object",
                             "additionalProperties": {"type": "string"},
                             "description": "Restrict to memories whose metadata contains each "
-                                           "key=value pair, e.g. {\"category\": \"bug_fixes\"}.",
+                            'key=value pair, e.g. {"category": "bug_fixes"}.',
                         },
                     },
                     "required": ["query"],
@@ -455,8 +510,8 @@ class MeminiMemoryProvider(MemoryProvider):
             {
                 "name": "memory_list",
                 "description": "Browse long-term memory (memini) without a query — filter by tier, "
-                               "tags, or metadata category (e.g. all procedural memories, or "
-                               "everything categorized bug_fixes). Newest first.",
+                "tags, or metadata category (e.g. all procedural memories, or "
+                "everything categorized bug_fixes). Newest first.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -475,26 +530,33 @@ class MeminiMemoryProvider(MemoryProvider):
                             "additionalProperties": {"type": "string"},
                             "description": "Restrict to memories whose metadata contains each key=value pair.",
                         },
-                        "limit": {"type": "integer", "description": "Max results (0 = all)", "default": 20},
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max results (0 = all)",
+                            "default": 20,
+                        },
                     },
                 },
             },
             {
                 "name": "memory_remember",
                 "description": "Store a durable fact, decision, or preference in long-term memory (memini). "
-                               "Call proactively when the user says 'remember this', after an architectural "
-                               "decision (capture the why), or after discovering a non-obvious bug or "
-                               "convention. Keep memories atomic — one self-contained fact per call.",
+                "Call proactively when the user says 'remember this', after an architectural "
+                "decision (capture the why), or after discovering a non-obvious bug or "
+                "convention. Keep memories atomic — one self-contained fact per call.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "content": {"type": "string", "description": "The fact to remember"},
+                        "content": {
+                            "type": "string",
+                            "description": "The fact to remember",
+                        },
                         "tier": {
                             "type": "string",
                             "enum": list(VALID_TIERS),
                             "description": "semantic=durable knowledge, procedural=how-to, "
-                                           "episodic=what happened, working=transient "
-                                           "(omit to let the server classify from the content)",
+                            "episodic=what happened, working=transient "
+                            "(omit to let the server classify from the content)",
                         },
                         "tags": {
                             "type": "array",
@@ -504,8 +566,8 @@ class MeminiMemoryProvider(MemoryProvider):
                         "category": {
                             "type": "string",
                             "description": "Optional topic bucket stored as metadata.category "
-                                           "(e.g. bug_fixes, architecture_decisions, coding_conventions) "
-                                           "so the memory can be browsed by subject later.",
+                            "(e.g. bug_fixes, architecture_decisions, coding_conventions) "
+                            "so the memory can be browsed by subject later.",
                         },
                     },
                     "required": ["content"],
@@ -514,10 +576,10 @@ class MeminiMemoryProvider(MemoryProvider):
             {
                 "name": "memory_forget",
                 "description": "Permanently delete a memory from long-term memory (memini) by its id — use when "
-                               "a recalled memory is wrong, outdated, or poisoned. Get the id from memory_recall "
-                               "or memory_list. To correct a fact, forget the stale one and remember the "
-                               "corrected version — this provider talks to memini over REST, which has no "
-                               "partial-update endpoint.",
+                "a recalled memory is wrong, outdated, or poisoned. Get the id from memory_recall "
+                "or memory_list. To correct a fact, forget the stale one and remember the "
+                "corrected version — this provider talks to memini over REST, which has no "
+                "partial-update endpoint.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -542,13 +604,15 @@ class MeminiMemoryProvider(MemoryProvider):
             items = []
             for r in (result or {}).get("results", []):
                 mem = r.get("memory") or {}
-                items.append({
-                    "id": mem.get("id", ""),
-                    "content": mem.get("content", ""),
-                    "summary": mem.get("summary", ""),
-                    "tier": mem.get("tier", ""),
-                    "score": r.get("score", 0),
-                })
+                items.append(
+                    {
+                        "id": mem.get("id", ""),
+                        "content": mem.get("content", ""),
+                        "summary": mem.get("summary", ""),
+                        "tier": mem.get("tier", ""),
+                        "score": r.get("score", 0),
+                    }
+                )
             # /v1/search already carries degraded/note on `result`; pass them
             # through rather than dropping them silently.
             out = {"results": items}
@@ -562,14 +626,16 @@ class MeminiMemoryProvider(MemoryProvider):
             result = self._call(_list_path(args), None, method="GET")
             items = []
             for mem in (result or {}).get("memories", []):
-                items.append({
-                    "id": mem.get("id", ""),
-                    "content": mem.get("content", ""),
-                    "summary": mem.get("summary", ""),
-                    "tier": mem.get("tier", ""),
-                    "tags": mem.get("tags", []),
-                    "metadata": mem.get("metadata", {}),
-                })
+                items.append(
+                    {
+                        "id": mem.get("id", ""),
+                        "content": mem.get("content", ""),
+                        "summary": mem.get("summary", ""),
+                        "tier": mem.get("tier", ""),
+                        "tags": mem.get("tags", []),
+                        "metadata": mem.get("metadata", {}),
+                    }
+                )
             return json.dumps({"memories": items})
 
         if name == "memory_remember":
@@ -584,13 +650,17 @@ class MeminiMemoryProvider(MemoryProvider):
             if args.get("category"):
                 body["metadata"] = {"category": args["category"]}
             result = self._call("/v1/memories", body)
-            return json.dumps({"id": (result or {}).get("id"), "success": result is not None})
+            return json.dumps(
+                {"id": (result or {}).get("id"), "success": result is not None}
+            )
 
         if name == "memory_forget":
             mem_id = args.get("id")
             if not mem_id:
                 return json.dumps({"forgotten": False, "error": "id is required"})
-            result = self._call(f"/v1/memories/{quote(str(mem_id), safe='')}", None, method="DELETE")
+            result = self._call(
+                f"/v1/memories/{quote(str(mem_id), safe='')}", None, method="DELETE"
+            )
             return json.dumps({"forgotten": result is not None})
 
         return json.dumps({"error": f"Unknown tool: {name}"})

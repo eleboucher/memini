@@ -850,7 +850,6 @@ const plugin: {
       if (!event?.success) metadata.failed = true;
       const writeResult = await client.postJson("/v1/memories", {
         content: `${captureUser.slice(0, 1000)}\n\n${assistantText.slice(0, 3000)}`,
-        tier: "episodic",
         tags: ["openclaw"],
         metadata,
       }, ns);

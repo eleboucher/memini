@@ -13,8 +13,8 @@ export function tierColor(t: Tier): string {
 
 // One-line meaning of each tier (and its lifetime), surfaced as legend tooltips.
 const TIER_DESC: Record<Tier, string> = {
-  working: 'Raw, short-lived observations — session scratch (24h TTL).',
-  episodic: 'Summaries of what happened in a session (90-day TTL).',
+  working: 'Default intake — raw scratch (72h TTL).',
+  episodic: 'Summaries of what happened in a session (30-day TTL).',
   semantic: 'Durable extracted facts — what I know (never expires).',
   procedural: 'Workflows and how-to knowledge (never expires).',
 }
