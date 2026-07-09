@@ -141,6 +141,23 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 			"memories. To correct a fact instead, prefer memory_update so history is preserved.",
 		Annotations: destructive,
 	}, h.forget)
+	// memory_namespace_link only appears when the backend supports persistent
+	// links, so headless deployments never see a tool that would error on
+	// every call — same gating memory_answer uses for HasAnswerer above.
+	if svc.HasNamespaceLinks() {
+		mcpsdk.AddTool(s, &mcpsdk.Tool{
+			Name:  "memory_namespace_link",
+			Title: "Manage namespace links",
+			Description: "Manage persistent, read-only links between namespaces. action=add attaches " +
+				"target so reads in namespace (recall/briefing without an explicit per-call namespaces " +
+				"list) also see it — 1-hop only, target's own links are never followed. tiers='durable' " +
+				"(default) surfaces only target's semantic/procedural memories; 'all' also includes " +
+				"episodic/working. action=remove detaches target. action=list ignores target/tiers. " +
+				"Writes always land in the request namespace and are never affected by links. Returns " +
+				"the full current link list after the action.",
+			Annotations: additive,
+		}, h.namespaceLink)
+	}
 
 	return s
 }
@@ -825,4 +842,66 @@ func (t *tools) forget(ctx context.Context, _ *mcpsdk.CallToolRequest, in idArgs
 		return nil, forgetResult{}, notFoundErr(in.ID, ns, err)
 	}
 	return nil, forgetResult{Deleted: true}, nil
+}
+
+type linkArgs struct {
+	Action    string `json:"action" jsonschema:"'add', 'remove', or 'list'"`
+	Target    string `json:"target,omitempty" jsonschema:"namespace to attach read-only (required for add/remove); 'ns/*' also includes namespaces nested under ns"`
+	Tiers     string `json:"tiers,omitempty" jsonschema:"'durable' (default: semantic+procedural only) or 'all'"`
+	Namespace string `json:"namespace,omitempty" jsonschema:"the namespace whose read set changes; defaults to the server namespace"`
+}
+
+// linkItem is the wire DTO for one namespace link.
+type linkItem struct {
+	Target    string `json:"target"`
+	Tiers     string `json:"tiers"`
+	CreatedAt string `json:"created_at"`
+}
+
+func toLinkItem(l store.NamespaceLink) linkItem {
+	return linkItem{Target: l.Target, Tiers: l.Tiers, CreatedAt: l.CreatedAt.Format(time.RFC3339)}
+}
+
+type linkResult struct {
+	Links []linkItem `json:"links"`
+}
+
+// namespaceLink implements memory_namespace_link: add/remove a persistent
+// read-only link, or list the namespace's current links. Every action
+// (including list) returns the full current link list, so a caller sees the
+// result of add/remove without a follow-up call.
+func (t *tools) namespaceLink(ctx context.Context, _ *mcpsdk.CallToolRequest, in linkArgs) (*mcpsdk.CallToolResult, linkResult, error) {
+	ns, err := t.ns(in.Namespace)
+	if err != nil {
+		return nil, linkResult{}, err
+	}
+	switch in.Action {
+	case "add":
+		if in.Target == "" {
+			return nil, linkResult{}, fmt.Errorf("target is required for action=%q", in.Action)
+		}
+		if err := t.svc.LinkNamespaces(ctx, ns, in.Target, in.Tiers); err != nil {
+			return nil, linkResult{}, err
+		}
+	case "remove":
+		if in.Target == "" {
+			return nil, linkResult{}, fmt.Errorf("target is required for action=%q", in.Action)
+		}
+		if err := t.svc.UnlinkNamespaces(ctx, ns, in.Target); err != nil {
+			return nil, linkResult{}, err
+		}
+	case "list":
+		// Nothing to do; fall through to the current-links read below.
+	default:
+		return nil, linkResult{}, fmt.Errorf("invalid action %q: want add, remove, or list", in.Action)
+	}
+	links, err := t.svc.NamespaceLinks(ctx, ns)
+	if err != nil {
+		return nil, linkResult{}, err
+	}
+	out := linkResult{Links: make([]linkItem, len(links))}
+	for i, l := range links {
+		out.Links[i] = toLinkItem(l)
+	}
+	return nil, out, nil
 }
