@@ -110,7 +110,7 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	warnings += warnEnvSlashMigration(out, cfg, stats)
-	warnings += printRetrievalScope(cmd.Context(), out, cfg, st, stats, serverNS, pluginNS)
+	warnings += printRetrievalScope(out, cfg, stats, pluginNS)
 
 	fmt.Fprintf(out, "Store (%s): reachable, %d namespace(s)\n", cfg.Backend, len(stats)) //nolint:errcheck
 	warnings += printStoreStats(out, stats, pluginNS)
@@ -414,48 +414,60 @@ func printWritePathSignals(out io.Writer, stats []nsStat) {
 // resolution order instead of calling into a running server.
 const doctorReadSetClamp = 64
 
+// Tier-access labels and the unset-value placeholder doctor's retrieval-scope
+// output uses (constants to keep goconst quiet, not exported semantics).
+const (
+	tiersAll     = "all"
+	tiersDurable = "durable"
+	labelUnset   = "(unset)"
+	srcDefault   = "default" // the request namespace's own read-set entry
+)
+
 // doctorReadEntry is one namespace in doctor's reconstruction of a plain
 // recall/briefing's default read set for a namespace.
 type doctorReadEntry struct {
-	ns     string
-	tiers  string // "all" (the request's own tier filter) or "durable" (semantic+procedural only)
-	source string // "default", "global", "env"
+	ns          string
+	tiers       string // "all" (the request's own tier filter) or "durable" (semantic+procedural only)
+	source      string // "default", "global", "env", "subtree-pattern"
+	patternBase bool   // the bare base of a "/*" entry: an anchor for its children, may itself be empty
 }
 
 // resolveDoctorReadSet reconstructs the default read set for primary,
 // mirroring internal/service/readset.go's resolveDefaultReadSet: primary
-// itself, then its persistent namespace links, then MEMINI_GLOBAL_NAMESPACE,
-// then MEMINI_READ_NAMESPACES, the order that makes "the widest tier access
-// wins, never narrowed" hold when two sources name the same namespace. It
-// omits the parts only a live request carries: scope=subtree on primary (that
-// would only add more namespaces to what's shown here) and a per-call tier
-// filter (assumed absent, i.e. every tier admitted, the common case). Pure:
-// allNamespaces (for "/*" pattern expansion) and links are pre-fetched by the
-// caller, which already has both from namespaceStats and store.LinkStore.
+// itself, then MEMINI_GLOBAL_NAMESPACE, then MEMINI_READ_NAMESPACES, the
+// order that makes "the widest tier access wins, never narrowed" hold when
+// two sources name the same namespace. It omits the parts only a live request
+// carries: scope=subtree on primary (that would only add more namespaces to
+// what's shown here) and a per-call tier filter (assumed absent, i.e. every
+// tier admitted, the common case). Pure: allNamespaces (for "/*" pattern
+// expansion) is pre-fetched by the caller, which already has it from
+// namespaceStats.
 //
-// The second return value lists redundant-configuration notes: an env/link
+// The second return value lists redundant-configuration notes: an env
 // entry naming primary itself (a no-op, since primary is already included),
 // or two different sources naming the same namespace (redundant, but when
 // the later source grants "all" tiers and the earlier one only "durable",
 // the entry is widened to "all" in place rather than narrowed, mirroring
 // resolveDefaultReadSet's addEntry: the widest tier access any source grants
 // always wins, regardless of order).
-func resolveDoctorReadSet(primary string, readNamespaces []string, globalNamespace string, links []store.NamespaceLink, allNamespaces []string) ([]doctorReadEntry, []string) {
-	entries := []doctorReadEntry{{ns: primary, tiers: "all", source: "default"}}
+func resolveDoctorReadSet(
+	primary string, readNamespaces []string, globalNamespace string, allNamespaces []string,
+) ([]doctorReadEntry, []string) {
+	entries := []doctorReadEntry{{ns: primary, tiers: tiersAll, source: srcDefault}}
 	seen := map[string]bool{primary: true}
 	claimedBy := map[string]string{primary: "the request namespace itself"}
 	var notes []string
 
-	add := func(ns, tiers, source, desc string) {
+	add := func(ns, tiers, source, desc string, patternBase bool) {
 		if seen[ns] {
 			if ns == primary {
 				notes = append(notes, fmt.Sprintf("%s names %q, which is already the request namespace (no effect)", desc, ns))
 				return
 			}
-			if tiers == "all" {
+			if tiers == tiersAll {
 				for i := range entries {
 					if entries[i].ns == ns {
-						entries[i].tiers = "all"
+						entries[i].tiers = tiersAll
 						break
 					}
 				}
@@ -465,47 +477,43 @@ func resolveDoctorReadSet(primary string, readNamespaces []string, globalNamespa
 		}
 		seen[ns] = true
 		claimedBy[ns] = desc
-		entries = append(entries, doctorReadEntry{ns: ns, tiers: tiers, source: source})
+		entries = append(entries, doctorReadEntry{ns: ns, tiers: tiers, source: source, patternBase: patternBase})
 	}
 	addSubtree := func(base, tiers, desc string) {
 		prefix := base + "/"
 		for _, n := range allNamespaces {
 			if n != base && strings.HasPrefix(n, prefix) {
-				add(n, tiers, "subtree-pattern", desc+" subtree")
+				add(n, tiers, "subtree-pattern", desc+" subtree", false)
 			}
 		}
 	}
 
-	for _, l := range links {
-		if l.Namespace != primary {
-			continue
-		}
-		tiers := "durable"
-		if l.Tiers == "all" {
-			tiers = "all"
-		}
-		base, isSubtree := strings.CutSuffix(l.Target, "/*")
-		desc := fmt.Sprintf("link to %q", l.Target)
-		add(base, tiers, "link", desc)
-		if isSubtree {
-			addSubtree(base, tiers, desc)
-		}
-	}
-
 	if globalNamespace != "" {
-		add(globalNamespace, "durable", "global", "MEMINI_GLOBAL_NAMESPACE")
+		add(globalNamespace, tiersDurable, "global", "MEMINI_GLOBAL_NAMESPACE", false)
 	}
 
 	for _, rn := range readNamespaces {
 		base, isSubtree := strings.CutSuffix(rn, "/*")
 		desc := fmt.Sprintf("MEMINI_READ_NAMESPACES entry %q", rn)
-		add(base, "durable", "env", desc)
+		add(base, tiersDurable, "env", desc, isSubtree)
 		if isSubtree {
-			addSubtree(base, "durable", desc)
+			addSubtree(base, tiersDurable, desc)
 		}
 	}
 
 	return entries, notes
+}
+
+// hasChildEntry reports whether entries contains a namespace nested under
+// base (base + "/...").
+func hasChildEntry(entries []doctorReadEntry, base string) bool {
+	prefix := base + "/"
+	for _, e := range entries {
+		if e.ns != base && strings.HasPrefix(e.ns, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // statsTotal returns ns's memory count from stats, and whether ns appears in
@@ -523,7 +531,7 @@ func statsTotal(stats []nsStat, ns string) (int, bool) {
 // single value: "(unset)" when empty, else comma-joined.
 func orUnsetList(vs []string) string {
 	if len(vs) == 0 {
-		return "(unset)"
+		return labelUnset
 	}
 	return strings.Join(vs, ", ")
 }
@@ -559,16 +567,20 @@ func warnEnvSlashMigration(out io.Writer, cfg *config.Config, stats []nsStat) in
 // MEMINI_READ_NAMESPACES) and the resolved
 // effective read set for the plugin-resolved namespace, so "why does recall
 // see/miss X" is answerable without reading the resolver's source.
-func printRetrievalScope(ctx context.Context, out io.Writer, cfg *config.Config, st store.Store, stats []nsStat, serverNS, pluginNS string) int {
+func printRetrievalScope(out io.Writer, cfg *config.Config, stats []nsStat, pluginNS string) int {
 	var warnings int
-	//nolint:ctxcheck
 	fmt.Fprintln(out, "Retrieval scope")                                                 //nolint:errcheck
 	fmt.Fprintf(out, "  MEMINI_GLOBAL_NAMESPACE: %s\n", orUnset(cfg.GlobalNamespace))    //nolint:errcheck
 	fmt.Fprintf(out, "  MEMINI_READ_NAMESPACES:  %s\n", orUnsetList(cfg.ReadNamespaces)) //nolint:errcheck
 
-	// Without persistent links, the read set is purely the request namespace
-	// plus optional global / env entries.
-	entries, notes := resolveDoctorReadSet(pluginNS, cfg.ReadNamespaces, cfg.GlobalNamespace, nil, nil)
+	// stats covers every namespace that holds memories — the same universe
+	// ListNamespaces gives the live resolver — so "/*" patterns expand here
+	// exactly as they do on a real read.
+	all := make([]string, len(stats))
+	for i, s := range stats {
+		all[i] = s.namespace
+	}
+	entries, notes := resolveDoctorReadSet(pluginNS, cfg.ReadNamespaces, cfg.GlobalNamespace, all)
 
 	fmt.Fprintf(out, "  effective read set for %q (plain recall/briefing, no per-call namespaces list):\n", pluginNS) //nolint:errcheck
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
@@ -583,7 +595,12 @@ func printRetrievalScope(ctx context.Context, out io.Writer, cfg *config.Config,
 		warnf(out, "%s.", n)
 	}
 	for _, e := range entries {
-		if e.source == "default" {
+		if e.source == srcDefault {
+			continue
+		}
+		// A pattern base is only an anchor for its children; stay quiet about
+		// it as long as the pattern matched at least one nested namespace.
+		if e.patternBase && hasChildEntry(entries, e.ns) {
 			continue
 		}
 		if total, _ := statsTotal(stats, e.ns); total == 0 {
@@ -634,7 +651,7 @@ func lastWriteStr(t time.Time) string {
 
 func orUnset(s string) string {
 	if s == "" {
-		return "(unset)"
+		return labelUnset
 	}
 	return fmt.Sprintf("%q", s)
 }

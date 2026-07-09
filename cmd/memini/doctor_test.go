@@ -166,10 +166,10 @@ func TestPrintWritePathSignals(t *testing.T) {
 	}
 }
 
-// TestResolveDoctorReadSetDefault: with no links, env, or global namespace,
-// the read set is just primary itself.
+// TestResolveDoctorReadSetDefault: with no env or global namespace, the read
+// set is just primary itself.
 func TestResolveDoctorReadSetDefault(t *testing.T) {
-	entries, notes := resolveDoctorReadSet("proj", nil, "", nil, nil)
+	entries, notes := resolveDoctorReadSet("proj", nil, "", nil)
 	if len(notes) != 0 {
 		t.Fatalf("expected no notes, got %v", notes)
 	}
@@ -178,19 +178,14 @@ func TestResolveDoctorReadSetDefault(t *testing.T) {
 	}
 }
 
-// TestResolveDoctorReadSetComposesAllSources: links, global namespace, and
+// TestResolveDoctorReadSetComposesAllSources: the global namespace and
 // read-namespaces (including a "/*" subtree pattern) all contribute, in the
-// order the real resolver applies them (primary, links, global,
-// read-namespaces) so a namespace claimed by an earlier source keeps its
-// tier access rather than being narrowed by a later one.
+// order the real resolver applies them (primary, global, read-namespaces) so
+// a namespace claimed by an earlier source keeps its tier access rather than
+// being narrowed by a later one.
 func TestResolveDoctorReadSetComposesAllSources(t *testing.T) {
-	links := []store.NamespaceLink{
-		{Namespace: "proj", Target: "shared", Tiers: "all"},
-		{Namespace: "proj", Target: "team/*", Tiers: "durable"},
-		{Namespace: "other", Target: "ignored"}, // different namespace, must not appear
-	}
-	all := []string{"proj", "shared", "team", "team/a", "team/b", "unrelated"}
-	entries, notes := resolveDoctorReadSet("proj", []string{"rn1", "rn2/*"}, "glob", links, all)
+	all := []string{"proj", "team", "team/a", "team/b", "unrelated"}
+	entries, notes := resolveDoctorReadSet("proj", []string{"rn1", "team/*"}, "glob", all)
 	if len(notes) != 0 {
 		t.Fatalf("expected no notes, got %v", notes)
 	}
@@ -201,12 +196,11 @@ func TestResolveDoctorReadSetComposesAllSources(t *testing.T) {
 	}
 	want := map[string]doctorReadEntry{
 		"proj":   {ns: "proj", tiers: "all", source: "default"},
-		"shared": {ns: "shared", tiers: "all", source: "link"},
-		"team":   {ns: "team", tiers: "durable", source: "link"},
-		"team/a": {ns: "team/a", tiers: "durable", source: "subtree-pattern"},
-		"team/b": {ns: "team/b", tiers: "durable", source: "subtree-pattern"},
 		"glob":   {ns: "glob", tiers: "durable", source: "global"},
 		"rn1":    {ns: "rn1", tiers: "durable", source: "env"},
+		"team":   {ns: "team", tiers: "durable", source: "env", patternBase: true},
+		"team/a": {ns: "team/a", tiers: "durable", source: "subtree-pattern"},
+		"team/b": {ns: "team/b", tiers: "durable", source: "subtree-pattern"},
 	}
 	for ns, wantEntry := range want {
 		if got, ok := byNS[ns]; !ok || got != wantEntry {
@@ -216,24 +210,12 @@ func TestResolveDoctorReadSetComposesAllSources(t *testing.T) {
 	if _, ok := byNS["unrelated"]; ok {
 		t.Errorf("unrelated namespace must not appear in the read set")
 	}
-	if _, ok := byNS["ignored"]; ok {
-		t.Errorf("another namespace's link must not appear")
-	}
-	// rn2/* has no matching namespaces in `all`, so it contributes no subtree members.
-	if _, ok := byNS["rn2"]; !ok {
-		t.Errorf("rn2 base entry missing")
-	}
 }
 
-// TestResolveDoctorReadSetFlagsSelfAndDuplicateEntries: a link/env entry
-// naming primary itself, and two sources naming the same namespace, both
-// surface as notes instead of silently vanishing.
+// TestResolveDoctorReadSetFlagsSelfAndDuplicateEntries: two sources naming
+// the same namespace surface as a note instead of silently vanishing.
 func TestResolveDoctorReadSetFlagsSelfAndDuplicateEntries(t *testing.T) {
-	links := []store.NamespaceLink{
-		{Namespace: "proj", Target: "proj/*", Tiers: "durable"}, // self-subtree link: legal, not a "self" note
-		{Namespace: "proj", Target: "shared", Tiers: "durable"},
-	}
-	entries, notes := resolveDoctorReadSet("proj", []string{"shared"}, "shared", links, nil)
+	entries, notes := resolveDoctorReadSet("proj", []string{"shared"}, "shared", nil)
 
 	foundDup := false
 	for _, n := range notes {
@@ -244,13 +226,13 @@ func TestResolveDoctorReadSetFlagsSelfAndDuplicateEntries(t *testing.T) {
 	if !foundDup {
 		t.Errorf("expected a redundant-entry note for %q, got notes: %v", "shared", notes)
 	}
-	// shared must appear exactly once, with the earliest (link) source.
+	// shared must appear exactly once, with the earliest (global) source.
 	count := 0
 	for _, e := range entries {
 		if e.ns == "shared" {
 			count++
-			if e.source != "link" {
-				t.Errorf("shared should keep the link's tier access, got source %q", e.source)
+			if e.source != "global" {
+				t.Errorf("shared should keep the global entry's source, got %q", e.source)
 			}
 		}
 	}
@@ -262,46 +244,9 @@ func TestResolveDoctorReadSetFlagsSelfAndDuplicateEntries(t *testing.T) {
 // TestResolveDoctorReadSetSelfEntryNote: an env entry naming primary itself
 // is a no-op and surfaces as a note.
 func TestResolveDoctorReadSetSelfEntryNote(t *testing.T) {
-	_, notes := resolveDoctorReadSet("proj", []string{"proj"}, "", nil, nil)
+	_, notes := resolveDoctorReadSet("proj", []string{"proj"}, "", nil)
 	if len(notes) != 1 || !strings.Contains(notes[0], "already the request namespace") {
 		t.Fatalf("expected a self-entry note, got %v", notes)
-	}
-}
-
-// TestResolveDoctorReadSetLinkOverlapWidensTiers mirrors
-// internal/service's TestResolveReadSetLinkOverlapWidensTiers: two
-// overlapping links for the same primary (a "/*" pattern link, durable,
-// whose subtree expansion covers an exact-match link, all, on one of its own
-// members) must leave that member with "all" tier access, not the
-// pattern's narrower "durable" override, regardless of which order the
-// links list carries them in.
-func TestResolveDoctorReadSetLinkOverlapWidensTiers(t *testing.T) {
-	subtreeLink := store.NamespaceLink{Namespace: "proj", Target: "b/*", Tiers: "durable"}
-	exactLink := store.NamespaceLink{Namespace: "proj", Target: "b/c", Tiers: "all"}
-	all := []string{"proj", "b", "b/c"}
-
-	for _, tc := range []struct {
-		name  string
-		links []store.NamespaceLink
-	}{
-		{name: "pattern link first", links: []store.NamespaceLink{subtreeLink, exactLink}},
-		{name: "exact link first", links: []store.NamespaceLink{exactLink, subtreeLink}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			entries, _ := resolveDoctorReadSet("proj", nil, "", tc.links, all)
-			var found bool
-			for _, e := range entries {
-				if e.ns == "b/c" {
-					found = true
-					if e.tiers != "all" {
-						t.Fatalf("b/c tiers = %q, want %q (widened from the durable subtree link)", e.tiers, "all")
-					}
-				}
-			}
-			if !found {
-				t.Fatal("b/c missing from resolved read set")
-			}
-		})
 	}
 }
 
@@ -385,17 +330,11 @@ func TestOrUnsetList(t *testing.T) {
 	}
 }
 
-// TestPrintRetrievalScopeReportsDanglingLinkAndClamp has been removed with namespace link support.
-func _TestPrintRetrievalScopeReportsDanglingLinkAndClamp(t *testing.T) {
-	t.Skip("removed with namespace link support")
-}
-
-// TestPrintRetrievalScopeDegradesWithoutLinkStore: a store that doesn't
-// implement store.LinkStore is handled gracefully (links are no longer
-// reported, so the function just shows global/read-namespaces only).
-func TestPrintRetrievalScopeDegradesWithoutLinkStore(t *testing.T) {
+// TestPrintRetrievalScopeDefaultOnly: with no configuration, the section
+// renders just the request namespace and warns about nothing.
+func TestPrintRetrievalScopeDefaultOnly(t *testing.T) {
 	var out bytes.Buffer
-	warnings := printRetrievalScope(context.Background(), &out, &config.Config{}, noLinkStore{}, nil, "proj", "proj")
+	warnings := printRetrievalScope(&out, &config.Config{}, nil, "proj")
 	got := out.String()
 	if !strings.Contains(got, "Retrieval scope") {
 		t.Errorf("missing section header, got:\n%s", got)
@@ -408,23 +347,18 @@ func TestPrintRetrievalScopeDegradesWithoutLinkStore(t *testing.T) {
 	}
 }
 
-// noLinkStore is a minimal store.Store that deliberately does not implement
-// store.LinkStore, to exercise printRetrievalScope's degrade path.
-type noLinkStore struct{ store.Store }
-
 // TestResolveDoctorReadSetClampWarningInput builds a read set past the
 // 64-entry clamp via MEMINI_READ_NAMESPACES and checks resolveDoctorReadSet
 // actually returns more than doctorReadSetClamp entries, so
 // printRetrievalScope's len(entries) > doctorReadSetClamp check has
 // something to warn about (printRetrievalScope itself is exercised against a
-// real store in TestPrintRetrievalScopeReportsDanglingLinkAndClamp's sibling
-// below).
+// real store in TestPrintRetrievalScopeWarnsOnClamp below).
 func TestResolveDoctorReadSetClampWarningInput(t *testing.T) {
 	readNamespaces := make([]string, 0, doctorReadSetClamp+5)
 	for i := 0; i < doctorReadSetClamp+5; i++ {
 		readNamespaces = append(readNamespaces, "rn-"+strconv.Itoa(i))
 	}
-	entries, notes := resolveDoctorReadSet("proj", readNamespaces, "", nil, nil)
+	entries, notes := resolveDoctorReadSet("proj", readNamespaces, "", nil)
 	if len(notes) != 0 {
 		t.Fatalf("expected no redundancy notes, got %v", notes)
 	}
@@ -446,7 +380,7 @@ func TestPrintRetrievalScopeWarnsOnClamp(t *testing.T) {
 	}
 	cfg := &config.Config{ReadNamespaces: readNamespaces}
 	var out bytes.Buffer
-	warnings := printRetrievalScope(context.Background(), &out, cfg, st, stats, "proj", "proj")
+	warnings := printRetrievalScope(&out, cfg, stats, "proj")
 	if !strings.Contains(out.String(), "above the 64-entry clamp") {
 		t.Errorf("expected a clamp warning, got:\n%s", out.String())
 	}
