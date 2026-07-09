@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -200,11 +201,11 @@ describe("resolveNamespace", () => {
     assert.ok(result.namespace.startsWith("work/"));
   });
 
-  it("resolves agent from agentId", () => {
+  it("resolves agent from agentId (config file present)", () => {
     const result = resolveNamespace({
       cwd: "/tmp/some-project",
       env: {},
-      configPath: "/nonexistent/config.json",
+      configPath: tempConfig({}),
       agentId: "orchestrator",
     });
     assert.equal(result.segments.agent, "orchestrator");
@@ -213,11 +214,11 @@ describe("resolveNamespace", () => {
     assert.ok(result.namespace.includes("orchestrator"));
   });
 
-  it("resolves agent from MEMINI_AGENT env", () => {
+  it("resolves agent from MEMINI_AGENT env (config file present)", () => {
     const result = resolveNamespace({
       cwd: "/tmp/myproject",
       env: { MEMINI_AGENT: "reviewer" },
-      configPath: "/nonexistent/config.json",
+      configPath: tempConfig({}),
     });
     assert.equal(result.segments.agent, "reviewer");
   });
@@ -294,7 +295,7 @@ describe("resolveNamespace", () => {
     const result = resolveNamespace({
       cwd: "/tmp/project",
       env: {},
-      configPath: "/nonexistent/config.json",
+      configPath: tempConfig({}),
       agentId: "agent with spaces & symbols!",
     });
     assert.ok(result.segments.agent);
@@ -329,5 +330,59 @@ describe("resolveNamespace", () => {
     assert.notEqual(workResult.segments.tenant, personalResult.segments.tenant);
     assert.ok(!personalResult.namespace.startsWith("work/"));
     assert.ok(!workResult.namespace.startsWith("personal/"));
+  });
+
+  // ─── No-config legacy path (zero-migration guarantee) ─────────────
+
+  it("no config file → cwd basename even inside a git repo with a remote", () => {
+    // Pre-config Pi derived the namespace from the cwd basename only; with no
+    // config file the resolver must not prefer the git remote name, or
+    // existing users' namespaces get silently renamed.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mnr-git-"));
+    execSync("git init -q", { cwd: dir });
+    execSync("git remote add origin https://github.com/acme/other-name.git", { cwd: dir });
+    const result = resolveNamespace({
+      cwd: dir,
+      env: {},
+      configPath: "/nonexistent/config.json",
+    });
+    assert.equal(result.namespace, path.basename(dir));
+    assert.equal(result.source, "cwd");
+  });
+
+  it("no config file → agentId does not append a segment", () => {
+    const result = resolveNamespace({
+      cwd: "/tmp/legacy-project",
+      env: {},
+      configPath: "/nonexistent/config.json",
+      agentId: "orchestrator",
+    });
+    assert.equal(result.namespace, "legacy-project");
+    assert.equal(result.segments.agent, undefined);
+  });
+
+  it("no config file → MEMINI_AGENT does not append a segment", () => {
+    const result = resolveNamespace({
+      cwd: "/tmp/legacy-project",
+      env: { MEMINI_AGENT: "reviewer" },
+      configPath: "/nonexistent/config.json",
+    });
+    assert.equal(result.namespace, "legacy-project");
+    assert.equal(result.segments.agent, undefined);
+  });
+
+  it("no config file → MEMINI_NAMESPACE env still wins", () => {
+    const result = resolveNamespace({
+      cwd: "/tmp/legacy-project",
+      env: { MEMINI_NAMESPACE: "forced-ns" },
+      configPath: "/nonexistent/config.json",
+    });
+    assert.equal(result.namespace, "forced-ns");
+    assert.equal(result.source, "env");
+  });
+
+  it("readConfig reports found=true for a present file, false for a missing one", () => {
+    assert.equal(readConfig(tempConfig({})).found, true);
+    assert.equal(readConfig("/nonexistent/config.json").found, false);
   });
 });

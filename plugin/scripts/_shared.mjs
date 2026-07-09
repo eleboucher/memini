@@ -62,15 +62,29 @@ export function repoSlugFromRemote(url) {
  * Order: MEMINI_NAMESPACE env > git remote origin > git toplevel basename > cwd basename.
  * The remote wins over the toplevel so worktrees and /tmp clones get a
  * stable, canonical name.
+ *
+ * When a tenant config file exists, the result becomes
+ * {tenant}/{project}/{MEMINI_AGENT} — the tenant prefix and agent suffix are
+ * applied after the (un-prefixed) cached base, so removing the config file
+ * restores today's exact namespaces. No config file = no prefix, no agent
+ * suffix, zero migration.
  */
 export function resolveProject(cwd) {
-  return withAgent(resolveProjectBase(cwd));
+  const nsEnv = process.env["MEMINI_NAMESPACE"];
+  if (nsEnv && nsEnv.trim()) return nsEnv.trim();
+  const dir = cwd && cwd.trim() ? cwd : process.cwd();
+  const base = resolveProjectBase(dir);
+  const config = readTenantConfig();
+  if (!config) return base;
+  const tenant = resolveTenant(dir, config);
+  return withAgent(tenant ? `${tenant}/${base}` : base);
 }
 
 // withAgent nests the project namespace under a per-agent segment when
 // MEMINI_AGENT is set ("myproject" -> "myproject/reviewer"), so several agents
 // sharing a repo keep private memory. Recall with scope=subtree on the project
-// reads across all of them. Unset (the default) leaves the namespace untouched.
+// reads across all of them. Only applied when a tenant config file exists —
+// the feature opt-in — so config-less installs keep today's namespaces.
 function withAgent(ns) {
   const agent = (process.env["MEMINI_AGENT"] || "").trim();
   if (!agent) return ns;
@@ -95,25 +109,43 @@ function gitOut(args, dir) {
 }
 
 /**
- * resolveTenant reads ~/.config/memini/config.json and returns the tenant name
- * if cwd is under a configured tenant root. Returns null when no config, no
- * match, or any error — so the existing resolution chain remains the fallback.
+ * readTenantConfig reads $XDG_CONFIG_HOME/memini/config.json (falling back to
+ * ~/.config/memini/config.json). Returns the parsed object, or null when the
+ * file is missing or malformed — null means "feature off, today's behavior".
  */
-function resolveTenant(cwd) {
+function readTenantConfig() {
   try {
-    const xdg = process.env["XDG_CONFIG_HOME"] || join(homedir() || tmpdir(), "config");
+    const xdg = process.env["XDG_CONFIG_HOME"] || join(homedir() || tmpdir(), ".config");
     const configPath = join(xdg, "memini", "config.json");
-    const raw = fs.readFileSync(configPath, "utf8");
-    const config = JSON.parse(raw);
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    return config && typeof config === "object" ? config : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * resolveTenant returns the tenant name from a parsed config if cwd is under a
+ * configured tenant root. Returns null when no match or any error — so the
+ * existing resolution chain remains the fallback.
+ */
+function resolveTenant(cwd, config) {
+  try {
     if (!Array.isArray(config.tenantRoots)) return null;
     const resolved = resolve(cwd || process.cwd());
+    const sep = process.platform === "win32" ? "\\" : "/";
     for (const root of config.tenantRoots) {
-      let rootPath = root.path || "";
+      if (!root || typeof root !== "object") continue;
+      let rootPath = root.path;
+      // An empty/missing path would startsWith-match every cwd; skip it.
+      if (typeof rootPath !== "string" || !rootPath) continue;
       if (rootPath === "~") rootPath = homedir() || "";
       else if (rootPath.startsWith("~/")) rootPath = join(homedir() || tmpdir(), rootPath.slice(2));
-      const sep = process.platform === "win32" ? "\\" : "/";
+      if (!rootPath) continue;
+      // Normalize so a configured trailing slash or relative path still matches.
+      rootPath = resolve(rootPath);
       if (resolved === rootPath || resolved.startsWith(rootPath + sep)) {
-        const tenant = (root.tenant || "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+        const tenant = String(root.tenant || "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
         if (tenant) return tenant;
       }
     }
@@ -124,8 +156,6 @@ function resolveTenant(cwd) {
 }
 
 function resolveProjectBase(cwd) {
-  const nsEnv = process.env["MEMINI_NAMESPACE"];
-  if (nsEnv && nsEnv.trim()) return nsEnv.trim();
   const dir = cwd && cwd.trim() ? cwd : process.cwd();
 
   const remote = gitOut("remote get-url origin", dir);
@@ -151,12 +181,6 @@ function resolveProjectBase(cwd) {
   if (remote) ns = (ownerRepo ? repoSlugFromRemote(remote) : repoNameFromRemote(remote)) || "";
   if (!ns && toplevel) ns = basename(toplevel);
   if (!ns) ns = basename(dir);
-
-  // Check tenant root config for a tenant prefix.
-  const tenant = resolveTenant(dir);
-  if (tenant) {
-    ns = tenant + "/" + ns;
-  }
 
   // Remember the derivation under every stable key we have, so a later move or
   // remote change resolves back to this same namespace.

@@ -151,17 +151,19 @@ def _resolve_tenant(cwd: str) -> str | None:
         roots = config.get("tenantRoots")
         if not isinstance(roots, list):
             return None
-        cwd_resolved = Path(cwd).resolve()
+        # Lexical path handling (expanduser + abspath, no symlink resolution)
+        # so configured roots match the way the node integrations compare them.
+        cwd_abs = os.path.abspath(cwd)
         for root in roots:
-            root_path = root.get("path", "")
-            if root_path == "~":
-                root_path = os.path.expanduser("~")
-            elif root_path.startswith("~/"):
-                root_path = os.path.join(os.path.expanduser("~"), root_path[2:])
-            root_resolved = Path(root_path).resolve()
-            if cwd_resolved == root_resolved or root_resolved in cwd_resolved.parents:
-                tenant = root.get("tenant", "")
-                tenant = re.sub(r"[^A-Za-z0-9._-]+", "-", tenant).strip("-")
+            if not isinstance(root, dict):
+                continue
+            root_path = root.get("path")
+            # An empty/missing path would abspath to the cwd and match it; skip.
+            if not isinstance(root_path, str) or not root_path:
+                continue
+            root_abs = os.path.abspath(os.path.expanduser(root_path))
+            if cwd_abs == root_abs or cwd_abs.startswith(root_abs + os.sep):
+                tenant = re.sub(r"[^A-Za-z0-9._-]+", "-", str(root.get("tenant", ""))).strip("-")
                 if tenant:
                     return tenant
         return None
@@ -323,12 +325,17 @@ class MeminiMemoryProvider(MemoryProvider):
         tenant = _resolve_tenant(os.getcwd())
         project = os.path.basename(os.getcwd().rstrip("/"))
         if _env("MEMINI_NAMESPACE"):
-            ns = _env("MEMINI_NAMESPACE")
+            ns = _sanitize_namespace(_env("MEMINI_NAMESPACE"))
         elif tenant:
-            ns = f"{tenant}/{project}"
+            # Sanitize per segment so the "/" separator survives: the other
+            # integrations produce work/memini, and a whole-value sanitize
+            # would flatten it to work-memini, splitting memory across them.
+            ns = "/".join(
+                s for s in (tenant, _sanitize_namespace(project)) if s
+            )
         else:
-            ns = project
-        self._namespace = _sanitize_namespace(ns) or "hermes"
+            ns = _sanitize_namespace(project)
+        self._namespace = ns or "hermes"
         # Recall-shaping knobs, read once. Defaults match the other integrations
         # (limit 3, no floor, unbounded, plain bullets).
         limit = _int_env("MEMINI_RECALL_LIMIT", 3)

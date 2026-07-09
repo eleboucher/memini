@@ -1,6 +1,9 @@
 // Run: node --test (from this directory). Not shipped by install.sh.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, basename } from "node:path";
 import {
   MeminiPlugin,
   resolveConfig,
@@ -16,6 +19,19 @@ import {
   fitByTokens,
   truncate,
 } from "./memini.js";
+
+// Point XDG_CONFIG_HOME at an empty temp dir so a developer's real
+// ~/.config/memini/config.json can't leak tenant prefixes into these tests
+// (resolveConfig reads it at call time). Tenant tests write their own.
+process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "memini-test-config-"));
+
+// A temp XDG_CONFIG_HOME with the given memini/config.json contents.
+function freshConfig(config) {
+  const dir = mkdtempSync(join(tmpdir(), "memini-test-config-"));
+  mkdirSync(join(dir, "memini"), { recursive: true });
+  writeFileSync(join(dir, "memini", "config.json"), JSON.stringify(config));
+  return dir;
+}
 
 test("namespace derives from the git worktree basename", () => {
   assert.equal(deriveNamespace("/home/me/dev/memini"), "memini");
@@ -55,6 +71,52 @@ test("base_url falls back to the MEMINI_URL alias; MEMINI_BASE_URL canonical win
 
 test("namespace falls back to the default when nothing resolves", () => {
   assert.equal(resolveConfig({}, undefined, "").namespace, "opencode");
+});
+
+test("tenant config prefixes the namespace and derives {project} from git", async () => {
+  const { execSync } = await import("node:child_process");
+  const parent = mkdtempSync(join(tmpdir(), "memini-tenant-"));
+  const dir = join(parent, "memini-fork");
+  mkdirSync(dir);
+  execSync("git init -q", { cwd: dir });
+  execSync("git remote add origin https://github.com/eleboucher/memini.git", { cwd: dir });
+  const prev = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = freshConfig({ tenantRoots: [{ path: parent, tenant: "work" }] });
+  try {
+    // The git remote name wins over the cwd basename, so the same repo lands
+    // in the same namespace as the other integrations (work/memini, not
+    // work/memini-fork), with the "/" separator preserved.
+    assert.equal(resolveConfig({}, undefined, dir).namespace, "work/memini");
+  } finally {
+    process.env.XDG_CONFIG_HOME = prev;
+  }
+});
+
+test("without a config file the namespace stays the legacy cwd basename, even in a git repo", async () => {
+  const { execSync } = await import("node:child_process");
+  const dir = mkdtempSync(join(tmpdir(), "memini-legacy-"));
+  execSync("git init -q", { cwd: dir });
+  execSync("git remote add origin https://github.com/eleboucher/other-name.git", { cwd: dir });
+  assert.equal(resolveConfig({}, undefined, dir).namespace, basename(dir));
+});
+
+test("tenant roots with an empty/missing path or a non-object entry are skipped", () => {
+  const parent = mkdtempSync(join(tmpdir(), "memini-tenant-"));
+  const dir = join(parent, "proj");
+  mkdirSync(dir);
+  const outside = mkdtempSync(join(tmpdir(), "memini-outside-"));
+  const prev = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = freshConfig({
+    tenantRoots: [{ path: "", tenant: "evil" }, "junk", { tenant: "nopath" }, { path: parent, tenant: "work" }],
+  });
+  try {
+    // The empty-path entry must not startsWith-match every cwd...
+    assert.equal(resolveConfig({}, undefined, outside).namespace, basename(outside));
+    // ...and bad entries must not abort the scan before the valid root.
+    assert.equal(resolveConfig({}, undefined, dir).namespace, "work/proj");
+  } finally {
+    process.env.XDG_CONFIG_HOME = prev;
+  }
 });
 
 test("capture can be disabled via env", () => {

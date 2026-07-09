@@ -7,6 +7,7 @@
 import json
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -17,6 +18,9 @@ import memini  # noqa: E402
 # over a test that sets only MEMINI_URL).
 for _v in ("MEMINI_BASE_URL", "MEMINI_URL", "MEMINI_API_KEY", "MEMINI_TOKEN"):
     os.environ.pop(_v, None)
+# Point XDG_CONFIG_HOME at an empty temp dir so a developer's real
+# ~/.config/memini/config.json can't leak tenant prefixes into these tests.
+os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="memini-test-config-")
 
 
 def make_provider(call_stub):
@@ -322,6 +326,46 @@ class RecallShapingTest(unittest.TestCase):
         self.assertIn("alpha beta gamma", out)
         self.assertNotIn("delta", out)
         self.assertIn("truncated by token budget", out)
+
+
+class ResolveTenantTest(unittest.TestCase):
+    def _write_config(self, config):
+        xdg = tempfile.mkdtemp(prefix="memini-test-config-")
+        os.makedirs(os.path.join(xdg, "memini"))
+        with open(os.path.join(xdg, "memini", "config.json"), "w") as f:
+            json.dump(config, f)
+        prev = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = xdg
+        self.addCleanup(lambda: os.environ.__setitem__("XDG_CONFIG_HOME", prev))
+
+    def test_tenant_separator_preserved_in_namespace(self):
+        # work/proj, not work-proj: a flattened separator splits memory from
+        # the other integrations, which all send the "/" form.
+        parent = tempfile.mkdtemp(prefix="memini-tenant-")
+        proj = os.path.join(parent, "proj")
+        os.makedirs(proj)
+        self._write_config({"tenantRoots": [{"path": parent, "tenant": "work"}]})
+        os.environ["MEMINI_URL"] = "http://localhost:8080"
+        os.environ.pop("MEMINI_NAMESPACE", None)
+        prev_cwd = os.getcwd()
+        os.chdir(proj)
+        self.addCleanup(lambda: os.chdir(prev_cwd))
+        p = memini.MeminiMemoryProvider()
+        p.initialize("sess-tenant")
+        self.assertEqual(p._namespace, "work/proj")
+
+    def test_empty_path_entry_is_ignored(self):
+        # Path("").resolve() used to equal the cwd, turning an empty path into
+        # a spurious exact match for whatever directory hermes runs in.
+        self._write_config({"tenantRoots": [{"path": "", "tenant": "evil"}]})
+        self.assertIsNone(memini._resolve_tenant(os.getcwd()))
+
+    def test_non_dict_entry_skipped_without_aborting_later_roots(self):
+        parent = tempfile.mkdtemp(prefix="memini-tenant-")
+        self._write_config(
+            {"tenantRoots": ["junk", {"tenant": "nopath"}, {"path": parent, "tenant": "work"}]}
+        )
+        self.assertEqual(memini._resolve_tenant(os.path.join(parent, "proj")), "work")
 
 
 class IsAvailableTest(unittest.TestCase):

@@ -45,6 +45,13 @@ export interface NamespaceConfig {
   template: string;
   /** Per-integration overrides keyed by integration name. */
   overrides: Record<string, IntegrationOverride>;
+  /**
+   * True when a config file was found and parsed. False (no file / unreadable /
+   * malformed JSON) makes resolveNamespace reproduce the pre-config behavior
+   * exactly — templates and agent segments only apply once a user opts in by
+   * creating the file.
+   */
+  found: boolean;
 }
 
 export interface ResolveOptions {
@@ -109,10 +116,11 @@ export function readConfig(configPath?: string): NamespaceConfig {
       template: typeof parsed.template === "string" ? parsed.template : DEFAULT_TEMPLATE,
       overrides:
         parsed.overrides && typeof parsed.overrides === "object" ? parsed.overrides : {},
+      found: true,
     };
   } catch {
     // File missing or malformed — backward compat: empty config, today's behavior
-    return { tenantRoots: [], template: DEFAULT_TEMPLATE, overrides: {} };
+    return { tenantRoots: [], template: DEFAULT_TEMPLATE, overrides: {}, found: false };
   }
 }
 
@@ -195,9 +203,12 @@ function sanitizeSegment(s: string): string {
 function resolveTenant(cwd: string, config: NamespaceConfig): string | undefined {
   const resolvedCwd = path.resolve(cwd);
   for (const root of config.tenantRoots) {
+    if (!root || typeof root !== "object") continue;
+    // An empty/missing path would resolve to the process cwd and match it; skip.
+    if (typeof root.path !== "string" || !root.path) continue;
     const rootPath = path.resolve(expandTilde(root.path));
     if (resolvedCwd === rootPath || resolvedCwd.startsWith(rootPath + path.sep)) {
-      const t = sanitizeSegment(root.tenant);
+      const t = sanitizeSegment(String(root.tenant || ""));
       if (t) return t;
     }
   }
@@ -307,8 +318,18 @@ export function resolveNamespace(opts: ResolveOptions): ResolveResult {
     return { namespace: nsEnv, segments: {}, source: "env" };
   }
 
-  // 2. Read config (absent/malformed → empty config → today's behavior)
+  // 2. Read config. No config file = today's exact behavior: the namespace is
+  //    the cwd basename (the pre-resolver Pi derivation) — no tenant, no
+  //    template, no agent segment, no git preference. Zero migration.
   const config = readConfig(opts.configPath);
+  if (!config.found) {
+    const project = sanitizeSegment(basename(cwd));
+    return {
+      namespace: project,
+      segments: project ? { project } : {},
+      source: "cwd",
+    };
+  }
 
   // 3. Resolve segments
   const tenant = resolveTenant(cwd, config);

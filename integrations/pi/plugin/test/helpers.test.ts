@@ -13,6 +13,14 @@ import {
   extractLastAssistantText,
   buildTurnContent,
 } from "../src/index.ts";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// Hermetic: the resolver reads $XDG_CONFIG_HOME/memini/config.json, so point
+// it at a temp dir instead of the developer's real config.
+const xdgDir = mkdtempSync(join(tmpdir(), "pi-memini-test-"));
+process.env["XDG_CONFIG_HOME"] = xdgDir;
 
 test("deriveNamespace takes the cwd basename and sanitizes it", () => {
   assert.equal(deriveNamespace("/home/me/dev/My Repo"), "My-Repo");
@@ -46,6 +54,10 @@ test("resolveConfig defaults, with env overriding and cwd fallback", () => {
 
 test("resolveConfig falls back to the 'pi' default namespace with no cwd or env", () => {
   assert.equal(resolveConfig({}, undefined).namespace, "pi");
+});
+
+test("resolveConfig honours MEMINI_NAMESPACE even when cwd is unavailable", () => {
+  assert.equal(resolveConfig({ MEMINI_NAMESPACE: "forced-ns" }, undefined).namespace, "forced-ns");
 });
 
 test("formatResults renders bullets and respects labels", () => {
@@ -203,4 +215,16 @@ test("an HTTP error on recall is logged even when fallback_on_error degrades it"
     globalThis.fetch = realFetch;
     console.error = realError;
   }
+});
+
+test("tenant path from a config file keeps its separator", () => {
+  // Written last: earlier resolveConfig tests rely on no config being present.
+  const dir = join(xdgDir, "memini");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "config.json"),
+    JSON.stringify({ tenantRoots: [{ path: "/x", tenant: "work" }], template: "{tenant}/{project}" }),
+  );
+  const cfg = resolveConfig({}, "/x/proj");
+  assert.equal(cfg.namespace, "work/proj");
 });

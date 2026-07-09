@@ -16,6 +16,7 @@
  * the environment. See the options/env table in ../README.md.
  */
 
+import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
@@ -48,9 +49,38 @@ export function deriveNamespace(worktree) {
   return sanitizeNamespace(base);
 }
 
+// gitProject derives {project} the way the other integrations do when a config
+// file is present: git remote repo name > git toplevel basename > cwd basename.
+// Only used on the tenant path — without a config file the namespace stays the
+// legacy cwd basename.
+function gitProject(cwd) {
+  const gitOut = (args) => {
+    try {
+      return execSync(`git ${args}`, { cwd, stdio: ["ignore", "pipe", "ignore"], timeout: 500 })
+        .toString()
+        .trim();
+    } catch {
+      return "";
+    }
+  };
+  const remote = gitOut("remote get-url origin");
+  if (remote) {
+    const cleaned = remote.replace(/\/+$/, "").replace(/\.git$/i, "");
+    const scpMatch = cleaned.match(/^[^/:]+:[^/]/);
+    const p = scpMatch ? cleaned.slice(scpMatch[0].indexOf(":") + 1) : cleaned;
+    const name = sanitizeNamespace(p.split("/").filter(Boolean).pop() || "");
+    if (name) return name;
+  }
+  const toplevel = gitOut("rev-parse --show-toplevel");
+  if (toplevel) return deriveNamespace(toplevel);
+  return deriveNamespace(cwd);
+}
+
 // resolveTenantNamespace reads ~/.config/memini/config.json and resolves a
 // tenant-prefixed namespace. Returns null when no config or no tenant match,
-// so the caller falls back to the existing deriveNamespace chain.
+// so the caller falls back to the existing deriveNamespace chain. Each segment
+// is sanitized individually, so the returned value is header-safe as-is —
+// re-sanitizing it whole would flatten the "/" separators.
 function resolveTenantNamespace(cwd) {
   try {
     const xdg = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
@@ -60,7 +90,10 @@ function resolveTenantNamespace(cwd) {
     if (!Array.isArray(config.tenantRoots)) return null;
     const resolvedCwd = resolve(cwd);
     for (const root of config.tenantRoots) {
-      let rootPath = root.path || "";
+      if (!root || typeof root !== "object") continue;
+      let rootPath = root.path;
+      // An empty/missing path would startsWith-match every cwd; skip it.
+      if (typeof rootPath !== "string" || !rootPath) continue;
       if (rootPath === "~") rootPath = homedir();
       else if (rootPath.startsWith("~/")) rootPath = join(homedir(), rootPath.slice(2));
       rootPath = resolve(rootPath);
@@ -70,7 +103,7 @@ function resolveTenantNamespace(cwd) {
           .replace(/^-+|-+$/g, "");
         if (!tenant) continue;
         const template = config.template || "{tenant}/{project}/{agent}";
-        const project = deriveNamespace(cwd);
+        const project = gitProject(cwd);
         const agent =
           (process.env.MEMINI_AGENT || "").trim()
             .replace(/[^A-Za-z0-9._-]+/g, "-")
@@ -95,8 +128,13 @@ function resolveTenantNamespace(cwd) {
 export function resolveConfig(env, options, worktree) {
   const e = env || {};
   const o = options || {};
+  // The tenant namespace is kept apart from the sanitize below: its segments
+  // are already sanitized and whole-value sanitizing would flatten the "/"
+  // (work/memini -> work-memini), splitting memory from the other integrations.
+  const tenantNs =
+    !o.namespace && !e.MEMINI_NAMESPACE ? resolveTenantNamespace(worktree || process.cwd()) : null;
   const namespace =
-    o.namespace || e.MEMINI_NAMESPACE || resolveTenantNamespace(worktree || process.cwd()) || deriveNamespace(worktree) || DEFAULT_NAMESPACE;
+    o.namespace || e.MEMINI_NAMESPACE || deriveNamespace(worktree) || DEFAULT_NAMESPACE;
   // Number.isFinite guard: malformed env / option falls through to the next
   // source instead of NaN flowing into the request body.
   const recall_limit = (() => {
@@ -108,7 +146,7 @@ export function resolveConfig(env, options, worktree) {
   })();
   return {
     base_url: o.base_url || e.MEMINI_BASE_URL || e.MEMINI_URL || DEFAULT_BASE_URL,
-    namespace: sanitizeNamespace(namespace) || DEFAULT_NAMESPACE,
+    namespace: tenantNs || sanitizeNamespace(namespace) || DEFAULT_NAMESPACE,
     recall: o.recall !== undefined ? o.recall !== false : envBool(e.MEMINI_RECALL, true),
     capture: o.capture !== undefined ? o.capture !== false : envBool(e.MEMINI_CAPTURE, true),
     recall_limit,

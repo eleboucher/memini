@@ -78,6 +78,18 @@ export function sanitizeNamespace(s: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+// sanitizeNamespacePath sanitizes a hierarchical namespace per segment,
+// preserving the "/" separators the resolver's tenant paths carry
+// (work/memini must not flatten to work-memini — the other integrations keep
+// the separator, and flattening would split memory across integrations).
+export function sanitizeNamespacePath(s: string): string {
+  return String(s)
+    .split("/")
+    .map(sanitizeNamespace)
+    .filter(Boolean)
+    .join("/");
+}
+
 // deriveNamespace scopes memory to the project: the basename of the working
 // directory, the same scheme memini auto-resolves from a git repo. Returns ""
 // when no path is given.
@@ -111,9 +123,11 @@ export function resolveConfig(env: NodeJS.ProcessEnv, cwd?: string): ResolvedCon
       env: e as Record<string, string>,
       integration: "pi",
     });
-    namespace = resolvedNs || DEFAULT_NAMESPACE;
+    // Per-segment sanitize: resolver output may be a tenant path (work/memini).
+    namespace = sanitizeNamespacePath(resolvedNs) || DEFAULT_NAMESPACE;
   } else {
-    namespace = DEFAULT_NAMESPACE;
+    // No cwd to resolve against, but an explicit MEMINI_NAMESPACE must still win.
+    namespace = sanitizeNamespace(e.MEMINI_NAMESPACE || "") || DEFAULT_NAMESPACE;
   }
   const recall_limit = (() => {
     const n = Number(e.MEMINI_RECALL_LIMIT);
@@ -121,7 +135,10 @@ export function resolveConfig(env: NodeJS.ProcessEnv, cwd?: string): ResolvedCon
   })();
   return {
     base_url: e.MEMINI_BASE_URL || e.MEMINI_URL || DEFAULT_BASE_URL,
-    namespace: sanitizeNamespace(namespace) || DEFAULT_NAMESPACE,
+    // Both branches above already sanitized (per segment on the resolver
+    // path, whole-value on the env path); re-sanitizing here would flatten
+    // tenant separators.
+    namespace: namespace || DEFAULT_NAMESPACE,
     recall: envBool(e.MEMINI_RECALL, true),
     capture: envBool(e.MEMINI_CAPTURE, true),
     recall_limit,

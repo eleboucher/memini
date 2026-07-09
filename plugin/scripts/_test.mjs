@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, basename } from "node:path";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
@@ -23,10 +23,46 @@ import http from "node:http";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS = __dirname;
 
+// Point XDG_CONFIG_HOME at an empty temp dir for the whole run (spawned hooks
+// inherit it) so a developer's real ~/.config/memini/config.json can't leak
+// tenant prefixes into these tests. Tenant tests override it per-test.
+process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "memini-config-"));
+
 // Each test that touches the session buffer gets an isolated cache dir so runs
 // don't pollute the real ~/.cache or each other.
 function freshCache() {
   return mkdtempSync(join(tmpdir(), "memini-test-"));
+}
+
+// A temp XDG_CONFIG_HOME dir; when `config` is given it is written as
+// memini/config.json inside it.
+function freshConfig(config) {
+  const dir = mkdtempSync(join(tmpdir(), "memini-config-"));
+  if (config !== undefined) {
+    mkdirSync(join(dir, "memini"), { recursive: true });
+    writeFileSync(join(dir, "memini", "config.json"), JSON.stringify(config));
+  }
+  return dir;
+}
+
+// Run `fn` with process.env overrides applied (undefined deletes), restoring
+// the previous values after — tenant tests exercise _shared.mjs in-process, so
+// env must be isolated by hand.
+async function withEnv(overrides, fn) {
+  const prev = {};
+  for (const [k, v] of Object.entries(overrides)) {
+    prev[k] = process.env[k];
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const [k, v] of Object.entries(prev)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
 }
 
 function runHook(script, payload, env = {}) {
@@ -201,6 +237,145 @@ test("resolveProject: self-heals to the same namespace after the remote is remov
     else process.env["XDG_CACHE_HOME"] = prevCache;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- tenant roots config ($XDG_CONFIG_HOME/memini/config.json) --------------
+
+test("resolveProject: tenant prefix applies on fresh derivation AND on a cache-hit; cache stays un-prefixed", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "memini-tenant-"));
+  const dir = join(parent, "projx");
+  mkdirSync(dir);
+  const configHome = freshConfig({ tenantRoots: [{ path: parent, tenant: "work" }] });
+  await withEnv(
+    {
+      XDG_CONFIG_HOME: configHome,
+      XDG_CACHE_HOME: freshCache(),
+      MEMINI_NAMESPACE: undefined,
+      MEMINI_AGENT: undefined,
+    },
+    async () => {
+      const { resolveProject } = await import("./_shared.mjs?cb=tenant-" + Date.now());
+      assert.equal(resolveProject(dir), "work/projx", "fresh derivation gets the tenant prefix");
+      // Second call resolves from the project map; the prefix must still apply.
+      assert.equal(resolveProject(dir), "work/projx", "cache-hit gets the tenant prefix too");
+      // Removing the config removes the prefix — the cache stores the bare base.
+      process.env.XDG_CONFIG_HOME = freshConfig();
+      assert.equal(resolveProject(dir), "projx", "no config file -> no prefix, even for cached projects");
+    },
+  );
+});
+
+test("resolveProject: XDG fallback is ~/.config, not ~/config", async () => {
+  const home = mkdtempSync(join(tmpdir(), "memini-home-"));
+  const parent = mkdtempSync(join(tmpdir(), "memini-tenant-"));
+  const dir = join(parent, "projy");
+  mkdirSync(dir);
+  mkdirSync(join(home, ".config", "memini"), { recursive: true });
+  writeFileSync(
+    join(home, ".config", "memini", "config.json"),
+    JSON.stringify({ tenantRoots: [{ path: parent, tenant: "work" }] }),
+  );
+  await withEnv(
+    {
+      XDG_CONFIG_HOME: undefined,
+      HOME: home,
+      XDG_CACHE_HOME: freshCache(),
+      MEMINI_NAMESPACE: undefined,
+      MEMINI_AGENT: undefined,
+    },
+    async () => {
+      const { resolveProject } = await import("./_shared.mjs?cb=xdg-" + Date.now());
+      assert.equal(resolveProject(dir), "work/projy", "config under ~/.config must be honored");
+    },
+  );
+});
+
+test("resolveProject: empty-path and non-object tenant roots match nothing, later roots still work", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "memini-tenant-"));
+  const dir = join(parent, "projz");
+  mkdirSync(dir);
+  const outside = mkdtempSync(join(tmpdir(), "memini-outside-"));
+  const configHome = freshConfig({
+    tenantRoots: [{ path: "", tenant: "evil" }, "junk", { tenant: "nopath" }, { path: parent, tenant: "work" }],
+  });
+  await withEnv(
+    {
+      XDG_CONFIG_HOME: configHome,
+      XDG_CACHE_HOME: freshCache(),
+      MEMINI_NAMESPACE: undefined,
+      MEMINI_AGENT: undefined,
+    },
+    async () => {
+      const { resolveProject } = await import("./_shared.mjs?cb=empty-" + Date.now());
+      // The empty-path entry must not startsWith-match every absolute cwd...
+      assert.equal(resolveProject(outside), basename(outside), "empty path must not match everything");
+      // ...and bad entries must not abort the scan before the valid root.
+      assert.equal(resolveProject(dir), "work/projz", "valid root after bad entries still matches");
+    },
+  );
+});
+
+test("resolveProject: a configured trailing slash on the root still matches", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "memini-tenant-"));
+  const dir = join(parent, "projt");
+  mkdirSync(dir);
+  const configHome = freshConfig({ tenantRoots: [{ path: parent + "/", tenant: "work" }] });
+  await withEnv(
+    {
+      XDG_CONFIG_HOME: configHome,
+      XDG_CACHE_HOME: freshCache(),
+      MEMINI_NAMESPACE: undefined,
+      MEMINI_AGENT: undefined,
+    },
+    async () => {
+      const { resolveProject } = await import("./_shared.mjs?cb=slash-" + Date.now());
+      assert.equal(resolveProject(dir), "work/projt");
+    },
+  );
+});
+
+test("resolveProject: MEMINI_AGENT suffix applies only when a config file exists", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "memini-tenant-"));
+  const dir = join(parent, "proja");
+  mkdirSync(dir);
+  const withConfig = freshConfig({ tenantRoots: [{ path: parent, tenant: "work" }] });
+  const noConfig = freshConfig();
+  await withEnv(
+    {
+      XDG_CACHE_HOME: freshCache(),
+      MEMINI_NAMESPACE: undefined,
+      MEMINI_AGENT: "reviewer",
+    },
+    async () => {
+      process.env.XDG_CONFIG_HOME = withConfig;
+      const { resolveProject } = await import("./_shared.mjs?cb=agent-" + Date.now());
+      assert.equal(resolveProject(dir), "work/proja/reviewer", "config present -> agent suffix");
+      process.env.XDG_CONFIG_HOME = noConfig;
+      assert.equal(resolveProject(dir), "proja", "no config -> no agent suffix, even with MEMINI_AGENT set");
+    },
+  );
+});
+
+test("resolveProject: a tenant root matches on a path boundary, not a string prefix", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "memini-tenant-"));
+  const workRoot = join(parent, "work");
+  const workspace = join(parent, "workspace");
+  mkdirSync(workRoot);
+  mkdirSync(workspace);
+  const configHome = freshConfig({ tenantRoots: [{ path: workRoot, tenant: "work" }] });
+  await withEnv(
+    {
+      XDG_CONFIG_HOME: configHome,
+      XDG_CACHE_HOME: freshCache(),
+      MEMINI_NAMESPACE: undefined,
+      MEMINI_AGENT: undefined,
+    },
+    async () => {
+      const { resolveProject } = await import("./_shared.mjs?cb=bound-" + Date.now());
+      assert.equal(resolveProject(workspace), "workspace", "~/dev/workspace must not match a ~/dev/work root");
+      assert.equal(resolveProject(workRoot), "work/work", "the root itself does match");
+    },
+  );
 });
 
 test("session-start.mjs: fetches the briefing with right namespace, writes context to stdout", async () => {
