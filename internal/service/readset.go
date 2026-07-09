@@ -35,11 +35,12 @@ type readScope struct {
 //     addGlobalNamespace performed before this mechanism existed.
 //
 // The primary namespace, when present in the result, is always ordered first
-// and is never dropped by the post-expansion clamp; the configured global
-// namespace (default path only) is front-ordered right after it for the same
-// reason (see promoteGlobal). At most one ListNamespaces call is made —
-// shared by subtree expansion and every "/*" pattern — and none when neither
-// is present.
+// and is never dropped by the post-expansion clamp; on the default path, a
+// configured global namespace is likewise clamp-proof, front-ordered right
+// after primary, but only when the set actually exceeds the cap (see
+// promoteGlobal; under-cap sets keep global last, preserving tie-break
+// order). At most one ListNamespaces call is made — shared by subtree
+// expansion and every "/*" pattern — and none when neither is present.
 func (s *Service) resolveReadSet(ctx context.Context, sc readScope) ([]scopeEntry, error) {
 	var entries []scopeEntry
 	var err error
@@ -268,13 +269,19 @@ func (s *Service) resolveExplicitReadSet(ctx context.Context, raw []string) ([]s
 // promoteGlobal moves the global namespace's entry (when present, and not
 // already primary) to immediately after primary, so the post-expansion clamp
 // (which keeps the front of the slice) never drops it out from behind a
-// large subtree/pattern expansion. Safe regardless of position: addEntry
-// above only ever widens an existing entry, never narrows it, so moving an
-// entry earlier cannot change its tier access, only guarantee it survives
-// the clamp. A no-op when globalNamespace is unset, absent from entries, or
-// already at (or before) index 1.
+// large subtree/pattern expansion. It only reorders when the clamp will
+// actually fire (len > readSetMaxEntries): entry order is observable beyond
+// the clamp (FuseScores breaks exact score ties by first-seen order across
+// namespaces), so an under-cap read set keeps global in its traditional last
+// position, preserving pre-read-set tie-break behavior exactly. Over the cap
+// the reorder is safe: addEntry above only ever widens an existing entry,
+// never narrows it, so moving an entry earlier cannot change its tier
+// access, only guarantee it survives the clamp (and an over-cap set is new
+// behavior with no prior ordering to preserve). A no-op when
+// globalNamespace is unset, absent from entries, already at (or before)
+// index 1, or the set is within the cap.
 func promoteGlobal(entries []scopeEntry, globalNamespace string) []scopeEntry {
-	if globalNamespace == "" || len(entries) < 3 {
+	if globalNamespace == "" || len(entries) <= readSetMaxEntries {
 		return entries
 	}
 	idx := -1

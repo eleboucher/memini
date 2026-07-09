@@ -649,6 +649,37 @@ func TestResolveReadSetClampKeepsGlobal(t *testing.T) {
 	}
 }
 
+// TestResolveReadSetUnderCapKeepsGlobalLast: with a small subtree (well
+// under the 64-entry clamp) plus a configured global namespace, the global
+// entry must stay in its traditional LAST position. Entry order is
+// observable beyond the clamp: FuseScores breaks exact score ties by
+// first-seen order across namespaces, so front-ordering global on an
+// under-cap set would let its tied hits outrank subtree children where they
+// previously ranked last, a default-path behavior change this branch must
+// not make. promoteGlobal therefore only reorders when the clamp will
+// actually fire.
+func TestResolveReadSetUnderCapKeepsGlobalLast(t *testing.T) {
+	svc, st := newReadsetSvc(t, WithGlobalNamespace("global"))
+	seedNamespace(t, st, "global")
+	for i := 0; i < 10; i++ {
+		seedNamespace(t, st, fmt.Sprintf("root/ns%02d", i))
+	}
+	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "root", subtree: true})
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	// primary + 10 children + global, well under the clamp.
+	if len(got) != 12 {
+		t.Fatalf("len(got) = %d, want 12 (primary + 10 children + global)", len(got))
+	}
+	if got[0].ns != "root" {
+		t.Fatalf("got[0].ns = %q, want primary %q first", got[0].ns, "root")
+	}
+	if last := got[len(got)-1].ns; last != "global" {
+		t.Fatalf("got[last].ns = %q, want %q last (pre-branch merge order preserved under the cap)", last, "global")
+	}
+}
+
 // TestResolveReadSetLinkSubtreeTargetExpands: a link to "ns/*" expands to the
 // bare namespace plus every namespace nested under it, sharing the read-set's
 // single lazy ListNamespaces call.
