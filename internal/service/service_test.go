@@ -948,3 +948,44 @@ func TestGlobalNamespaceMergesDurableOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestGlobalNamespaceSkippedForEpisodicOnlyFilter: a recall whose tier filter
+// admits no durable tier (episodic only) must not fan out to the global
+// namespace at all — durableTiers(episodic-only) is empty, so the global leg
+// would search nothing anyway; resolveReadSet skips adding it.
+func TestGlobalNamespaceSkippedForEpisodicOnlyFilter(t *testing.T) {
+	svc := newService(t, service.WithGlobalNamespace("global"))
+	ctx := context.Background()
+
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "global", Content: "global fact about deploy pipelines", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember global semantic: %v", err)
+	}
+	// If the skip were missing, this episodic memory in the global namespace
+	// would be reachable via a full-tier fallback merge — it must never be,
+	// regardless of what episodic content the global namespace holds.
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "global", Content: "global episodic note about deploy pipelines", Tier: memory.TierEpisodic,
+	}); err != nil {
+		t.Fatalf("remember global episodic: %v", err)
+	}
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "proj", Content: "proj episodic note about deploy pipelines", Tier: memory.TierEpisodic,
+	}); err != nil {
+		t.Fatalf("remember proj: %v", err)
+	}
+
+	res, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "proj", Query: "deploy pipelines", Limit: 10,
+		Tiers: []memory.Tier{memory.TierEpisodic},
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	for _, r := range res {
+		if r.Memory.Namespace == "global" {
+			t.Fatal("episodic-only tier filter must skip the global namespace entirely")
+		}
+	}
+}
