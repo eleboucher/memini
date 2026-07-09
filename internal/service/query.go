@@ -199,6 +199,14 @@ type BriefingOpts struct {
 	Facts      *int
 	Procedures *int
 	Recent     *int
+	// Namespaces, when non-empty, REPLACES the default read set (namespace +
+	// global) with exactly these namespaces — same replace-not-extend
+	// semantics as RecallInput.Namespaces. Each is read with all tiers.
+	Namespaces []string
+	// Subtree expands the briefing to namespace and every namespace nested
+	// under it, same semantics as RecallInput.Subtree. Ignored when Namespaces
+	// is set.
+	Subtree bool
 }
 
 // DefaultPerSection is the briefing cap applied to any section whose dedicated
@@ -224,29 +232,34 @@ func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingO
 	procsN := resolve(opts.Procedures)
 	recentN := resolve(opts.Recent)
 	now := s.now()
-	mems, err := s.store.List(ctx, namespace, store.Filter{Now: now}, 0)
+	entries, err := s.resolveReadSet(ctx, readScope{
+		primary:  namespace,
+		explicit: opts.Namespaces,
+		subtree:  opts.Subtree,
+	})
 	if err != nil {
 		return Briefing{}, err
 	}
 	b := Briefing{Namespace: namespace}
 	var facts, procs, recent []*memory.Memory
-	// bucket sorts a memory into the briefing's sections. Global-namespace
-	// memories contribute durable tiers only (no episodic/working), so shared
-	// cross-project rules surface without dragging global chatter into every
-	// project.
-	bucket := func(m *memory.Memory, global bool) {
+	// bucket sorts a memory into the briefing's sections. A durable-only entry
+	// (the default read set's global-namespace merge; explicit entries are
+	// never durable-only) contributes semantic/procedural facts only — no
+	// episodic/working — so shared cross-project rules surface without
+	// dragging global chatter into every project.
+	bucket := func(m *memory.Memory, durableOnly bool) {
 		switch m.Tier {
 		case memory.TierSemantic:
 			facts = append(facts, m)
 		case memory.TierProcedural:
 			procs = append(procs, m)
 		case memory.TierEpisodic:
-			if global {
+			if durableOnly {
 				return
 			}
 			recent = append(recent, m)
 		default:
-			if global {
+			if durableOnly {
 				return
 			}
 		}
@@ -254,16 +267,16 @@ func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingO
 			b.Pinned = append(b.Pinned, m)
 		}
 	}
-	for _, m := range mems {
-		bucket(m, false)
-	}
-	if s.globalNamespace != "" && s.globalNamespace != namespace {
-		gmems, err := s.store.List(ctx, s.globalNamespace, store.Filter{Now: now}, 0)
+	for _, e := range entries {
+		// Push the entry's tier override into the List filter so a
+		// durable-only entry never loads episodic/working rows in the first
+		// place, rather than fetching and discarding them in bucket.
+		mems, err := s.store.List(ctx, e.ns, store.Filter{Now: now, Tiers: e.tiers}, 0)
 		if err != nil {
 			return Briefing{}, err
 		}
-		for _, m := range gmems {
-			bucket(m, true)
+		for _, m := range mems {
+			bucket(m, e.tiers != nil)
 		}
 	}
 	// Rank durable sections by DurableScore (no recency decay), scored once per
