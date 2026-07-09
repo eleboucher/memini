@@ -36,7 +36,7 @@ func resolvePluginBase(dir string) (string, NamespaceSource) {
 		os.Getenv("MEMINI_NAMESPACE"),
 		os.Getenv("MEMINI_DEFAULT_NAMESPACE"),
 	); v != "" {
-		return sanitizeNamespace(v), NamespaceFromEnv
+		return sanitizeNamespacePath(v), NamespaceFromEnv
 	}
 	if dir == "" {
 		cwd, err := os.Getwd()

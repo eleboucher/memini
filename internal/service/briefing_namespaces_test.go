@@ -85,3 +85,41 @@ func TestBriefingExplicitNamespaces(t *testing.T) {
 		t.Fatal("explicit Namespaces must replace the default read set, not extend it with global")
 	}
 }
+
+// TestBriefingReadNamespacesMergesDurableOnly: WithReadNamespaces merges into
+// Briefing the same way as WithGlobalNamespace — durable facts only, never
+// episodic — end-to-end through the public Briefing() call, not just the
+// resolveReadSet unit tests.
+func TestBriefingReadNamespacesMergesDurableOnly(t *testing.T) {
+	svc := newService(t, service.WithReadNamespaces([]string{"shared"}))
+	ctx := context.Background()
+
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "shared", Content: "shared: always use conventional commits", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember shared semantic: %v", err)
+	}
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "shared", Content: "shared: chatter about lunch plans", Tier: memory.TierEpisodic,
+	}); err != nil {
+		t.Fatalf("remember shared episodic: %v", err)
+	}
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "proj", Content: "proj: deploys with helm charts", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember proj: %v", err)
+	}
+
+	b, err := svc.Briefing(ctx, "proj", service.BriefingOpts{})
+	if err != nil {
+		t.Fatalf("briefing: %v", err)
+	}
+	if !hasFact(b.Facts, "shared: always use conventional commits") {
+		t.Fatal("briefing facts should include the read-namespace's durable fact")
+	}
+	for _, m := range b.Recent {
+		if m.Content == "shared: chatter about lunch plans" {
+			t.Fatal("read-namespace episodic memories must not appear in briefing recent")
+		}
+	}
+}

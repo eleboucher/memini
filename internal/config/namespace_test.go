@@ -175,3 +175,40 @@ func TestSanitizeNamespace(t *testing.T) {
 		}
 	}
 }
+
+// TestSanitizeNamespacePath covers the env-sourced sanitizer, which must
+// preserve a deliberate multi-segment namespace like "project/agent" instead
+// of flattening it to a basename (the sanitizeNamespace bug this fixes).
+func TestSanitizeNamespacePath(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"project/agent", "project/agent"},
+		{"", "default"},
+		{"   ", "default"},
+		{"/x/", "x"},
+		{"a//b", "a/b"},
+		{"my-project", "my-project"},   // basename-style values unaffected
+		{"  team/proj  ", "team/proj"}, // surrounding whitespace trimmed
+		{"///", "default"},
+	}
+	for _, tt := range tests {
+		if got := sanitizeNamespacePath(tt.in); got != tt.want {
+			t.Errorf("sanitizeNamespacePath(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestResolveDefaultNamespace_EnvPreservesSlash is the sanitize-slash-fix
+// regression: MEMINI_DEFAULT_NAMESPACE=team/proj must resolve to "team/proj",
+// not be flattened to "proj" by a basename pass.
+func TestResolveDefaultNamespace_EnvPreservesSlash(t *testing.T) {
+	t.Setenv("MEMINI_DEFAULT_NAMESPACE", "team/proj")
+	t.Setenv("MEMINI_NAMESPACE", "")
+	stubRunGit(t, gitOK("/home/dev/some-repo"))
+
+	ns, src := resolveDefaultNamespace()
+	if ns != "team/proj" || src != NamespaceFromEnv {
+		t.Fatalf("got (%q,%q), want (team/proj, env)", ns, src)
+	}
+}

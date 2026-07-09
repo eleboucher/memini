@@ -54,37 +54,86 @@ func (s *Service) resolveReadSet(ctx context.Context, sc readScope) ([]scopeEntr
 }
 
 // resolveDefaultReadSet builds primary (+ subtree, when requested) plus the
-// global namespace merge, mirroring the pre-read-set addGlobalNamespace exactly:
-// skipped when unset, already present (primary or a subtree member), or the
-// request's tier filter admits no durable tier.
+// durable-only merge legs — the single global namespace and the configured
+// read-namespaces list (MEMINI_READ_NAMESPACES / WithReadNamespaces) —
+// mirroring the pre-read-set addGlobalNamespace exactly, for each: skipped
+// when unset, already present (primary, a subtree member, or an earlier merge
+// leg — widest tiers win, never narrowed), or the request's tier filter
+// admits no durable tier. An entry ending in "/*" expands to itself plus every
+// namespace nested under it. All "/*" expansion (subtree and read-namespaces
+// alike) shares one lazy ListNamespaces call.
 func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]scopeEntry, error) {
+	var all []string
+	var listed bool
+	listAll := func() ([]string, error) {
+		if !listed {
+			var err error
+			all, err = s.store.ListNamespaces(ctx)
+			listed = true
+			if err != nil {
+				return nil, err
+			}
+		}
+		return all, nil
+	}
+
 	names := []string{sc.primary}
 	if sc.subtree {
-		ns, err := s.subtreeNamespaces(ctx, sc.primary)
+		list, err := listAll()
 		if err != nil {
 			return nil, err
 		}
-		names = ns
+		names = subtreeFrom(list, sc.primary)
 	}
 	entries := make([]scopeEntry, len(names))
 	for i, n := range names {
 		entries[i] = scopeEntry{ns: n}
 	}
-	if s.globalNamespace != "" && !containsNamespace(entries, s.globalNamespace) {
-		if gt := durableTiers(sc.reqTiers); len(gt) > 0 {
-			entries = append(entries, scopeEntry{ns: s.globalNamespace, tiers: gt})
+
+	gt := durableTiers(sc.reqTiers)
+	if len(gt) == 0 {
+		// No durable tier is admitted, so every merge leg below would search
+		// nothing — skip them all without an unnecessary ListNamespaces call.
+		return entries, nil
+	}
+	// addDurable merges ns as a durable-only leg unless it's already present
+	// (primary, a subtree member, or an earlier leg), which always keeps the
+	// wider (nil-tiers) entry rather than narrowing it.
+	addDurable := func(ns string) {
+		if !containsNamespace(entries, ns) {
+			entries = append(entries, scopeEntry{ns: ns, tiers: gt})
 		}
 	}
+
+	if s.globalNamespace != "" {
+		addDurable(s.globalNamespace)
+	}
+
+	for _, rn := range s.readNamespaces {
+		base, isSubtree := strings.CutSuffix(rn, "/*")
+		addDurable(base)
+		if !isSubtree {
+			continue
+		}
+		list, err := listAll()
+		if err != nil {
+			return nil, fmt.Errorf("read-set: list namespaces: %w", err)
+		}
+		prefix := base + "/"
+		for _, n := range list {
+			if n != base && strings.HasPrefix(n, prefix) {
+				addDurable(n)
+			}
+		}
+	}
+
 	return entries, nil
 }
 
-// subtreeNamespaces returns root and every namespace nested under it (root +
-// "root/..."), the set a subtree read searches.
-func (s *Service) subtreeNamespaces(ctx context.Context, root string) ([]string, error) {
-	all, err := s.store.ListNamespaces(ctx)
-	if err != nil {
-		return nil, err
-	}
+// subtreeFrom filters all to root and every namespace nested under it (root +
+// "root/..."), the set a subtree read searches. Pure — callers fetch all via
+// the shared lazy ListNamespaces call.
+func subtreeFrom(all []string, root string) []string {
 	prefix := root + "/"
 	out := []string{root}
 	for _, ns := range all {
@@ -92,7 +141,7 @@ func (s *Service) subtreeNamespaces(ctx context.Context, root string) ([]string,
 			out = append(out, ns)
 		}
 	}
-	return out, nil
+	return out
 }
 
 // resolveExplicitReadSet validates and expands a per-call namespace list into
