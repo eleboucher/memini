@@ -338,3 +338,46 @@ func TestPrintRetrievalScopeDegradesWithoutLinkStore(t *testing.T) {
 // noLinkStore is a minimal store.Store that deliberately does not implement
 // store.LinkStore, to exercise printRetrievalScope's degrade path.
 type noLinkStore struct{ store.Store }
+
+// TestResolveDoctorReadSetClampWarningInput builds a read set past the
+// 64-entry clamp via MEMINI_READ_NAMESPACES and checks resolveDoctorReadSet
+// actually returns more than doctorReadSetClamp entries, so
+// printRetrievalScope's len(entries) > doctorReadSetClamp check has
+// something to warn about (printRetrievalScope itself is exercised against a
+// real store in TestPrintRetrievalScopeReportsDanglingLinkAndClamp's sibling
+// below).
+func TestResolveDoctorReadSetClampWarningInput(t *testing.T) {
+	readNamespaces := make([]string, 0, doctorReadSetClamp+5)
+	for i := 0; i < doctorReadSetClamp+5; i++ {
+		readNamespaces = append(readNamespaces, "rn-"+strconv.Itoa(i))
+	}
+	entries, notes := resolveDoctorReadSet("proj", readNamespaces, "", nil, nil)
+	if len(notes) != 0 {
+		t.Fatalf("expected no redundancy notes, got %v", notes)
+	}
+	if len(entries) <= doctorReadSetClamp {
+		t.Fatalf("expected more than %d entries, got %d", doctorReadSetClamp, len(entries))
+	}
+}
+
+// TestPrintRetrievalScopeWarnsOnClamp: printRetrievalScope itself flags a
+// read set past the 64-entry clamp.
+func TestPrintRetrievalScopeWarnsOnClamp(t *testing.T) {
+	st := openTestStore(t)
+	seedPool(t, st, "proj", 1, 0)
+	stats := statsFor(t, st)
+
+	readNamespaces := make([]string, 0, doctorReadSetClamp+5)
+	for i := 0; i < doctorReadSetClamp+5; i++ {
+		readNamespaces = append(readNamespaces, "rn-"+strconv.Itoa(i))
+	}
+	cfg := &config.Config{ReadNamespaces: readNamespaces}
+	var out bytes.Buffer
+	warnings := printRetrievalScope(context.Background(), &out, cfg, st, stats, "proj", "proj")
+	if !strings.Contains(out.String(), "above the 64-entry clamp") {
+		t.Errorf("expected a clamp warning, got:\n%s", out.String())
+	}
+	if warnings == 0 {
+		t.Errorf("expected at least 1 warning for the oversized read set, got 0")
+	}
+}
