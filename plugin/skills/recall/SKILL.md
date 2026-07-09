@@ -23,11 +23,11 @@ memini is a memory service. To search for prior context, call the
 - `scope` (optional) — `subtree` also searches namespaces nested under this one
   (a `project` namespace then also reads `project/<agent>`), for reading shared
   plus per-agent memory; default `exact`.
-- `namespaces` (optional) — search exactly these namespaces instead of the
+- `namespaces` (optional): search exactly these namespaces instead of the
   default read set (namespace, its subtree/links/env-configured namespaces,
-  and the global namespace); replaces it entirely rather than adding to it.
-  An entry ending in `/*` also includes namespaces nested under it. Max 16;
-  the current namespace isn't added automatically, so list it too if you
+  and the global namespace), replacing it entirely rather than adding to it.
+  An entry ending in `/*` also includes namespaces nested under it. Max 16,
+  and the current namespace isn't added automatically, so list it too if you
   still want it searched.
 - `as_of` (optional) — an RFC3339 time for "what was true then" queries; returns
   facts valid at that instant, including ones since superseded.
