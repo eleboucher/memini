@@ -405,7 +405,7 @@ func printWritePathSignals(out io.Writer, stats []nsStat) {
 // doctorReadSetClamp mirrors internal/service/service.go's unexported
 // readSetMaxEntries: the entry count a live read-set expansion clamps to.
 // Duplicated here (rather than exported) because doctor reconstructs the
-// resolver's logic wholesale — see resolveDoctorReadSet — following the same
+// resolver's logic wholesale (see resolveDoctorReadSet), following the same
 // precedent as the namespace-divergence check above, which mirrors
 // config.ResolvePluginNamespace's resolution order instead of calling into a
 // running server.
@@ -422,7 +422,7 @@ type doctorReadEntry struct {
 // resolveDoctorReadSet reconstructs the default read set for primary,
 // mirroring internal/service/readset.go's resolveDefaultReadSet: primary
 // itself, then its persistent namespace links, then MEMINI_GLOBAL_NAMESPACE,
-// then MEMINI_READ_NAMESPACES — the order that makes "the widest tier access
+// then MEMINI_READ_NAMESPACES, the order that makes "the widest tier access
 // wins, never narrowed" hold when two sources name the same namespace. It
 // omits the parts only a live request carries: scope=subtree on primary (that
 // would only add more namespaces to what's shown here) and a per-call tier
@@ -433,7 +433,7 @@ type doctorReadEntry struct {
 // The second return value lists redundant-configuration notes: an env/link
 // entry naming primary itself (a no-op, since primary is already included),
 // or two different sources naming the same namespace (the later one has no
-// effect — the earlier source's tier access wins).
+// effect; the earlier source's tier access wins).
 func resolveDoctorReadSet(primary string, readNamespaces []string, globalNamespace string, links []store.NamespaceLink, allNamespaces []string) ([]doctorReadEntry, []string) {
 	entries := []doctorReadEntry{{ns: primary, tiers: "all", source: "default"}}
 	seen := map[string]bool{primary: true}
@@ -589,7 +589,7 @@ func printRetrievalScope(ctx context.Context, out io.Writer, cfg *config.Config,
 	}
 	if len(entries) > doctorReadSetClamp {
 		warnings++
-		warnf(out, "resolved read set has %d entries, above the %d-entry clamp — recall/briefing drops the tail.",
+		warnf(out, "resolved read set has %d entries, above the %d-entry clamp; recall/briefing drops the tail.",
 			len(entries), doctorReadSetClamp)
 	}
 	fmt.Fprintln(out) //nolint:errcheck
