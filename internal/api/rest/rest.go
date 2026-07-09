@@ -20,6 +20,7 @@ import (
 
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/httputil"
+	"github.com/eleboucher/memini/internal/maintenance"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/service"
 	"github.com/eleboucher/memini/internal/store"
@@ -569,6 +570,25 @@ func apiMemoryList(mems []*memory.Memory) *[]Memory {
 	return &out
 }
 
+// apiRenamespaceReport converts a maintenance.RenamespaceReport into the
+// spec-generated RenamespaceReport, only setting fields that are non-zero.
+func apiRenamespaceReport(r maintenance.RenamespaceReport) RenamespaceReport {
+	out := RenamespaceReport{}
+	if r.Moved > 0 {
+		out.Moved = &r.Moved
+	}
+	if len(r.Targets) > 0 {
+		out.Targets = &r.Targets
+	}
+	if r.Skipped > 0 {
+		out.Skipped = &r.Skipped
+	}
+	if r.DryRun {
+		out.DryRun = &r.DryRun
+	}
+	return out
+}
+
 // GetStats implements GET /v1/stats.
 func (h *Server) GetStats(w http.ResponseWriter, r *http.Request, params GetStatsParams) {
 	var s service.Stats
@@ -625,6 +645,14 @@ func (h *Server) ListNamespaces(w http.ResponseWriter, r *http.Request) {
 
 // DeleteNamespace implements DELETE /v1/namespaces/{name}.
 func (h *Server) DeleteNamespace(w http.ResponseWriter, r *http.Request, name string) {
+	// chi binds the raw escaped path segment; decode hierarchical names like
+	// "work%2Fmemini" → "work/memini" to match storage.
+	decoded, ok := unescapeID(name)
+	if !ok {
+		httputil.Error(w, http.StatusBadRequest, "invalid namespace encoding")
+		return
+	}
+	name = decoded
 	if err := httputil.ValidateNamespace(name); err != nil {
 		httputil.Error(w, http.StatusBadRequest, "invalid namespace: "+err.Error())
 		return
@@ -637,12 +665,76 @@ func (h *Server) DeleteNamespace(w http.ResponseWriter, r *http.Request, name st
 	httputil.JSON(w, http.StatusOK, DeleteNamespaceResponse{Deleted: int(n)})
 }
 
-// ListNamespaceLinks implements GET /v1/namespaces/{name}/links.
-func (h *Server) ListNamespaceLinks(w http.ResponseWriter, r *http.Request, name string) {
+// MoveNamespace implements POST /v1/namespaces/{name}/move. Moves every memory
+// (including superseded and expired) from one namespace to another.
+func (h *Server) MoveNamespace(w http.ResponseWriter, r *http.Request, name string) {
+	var req MoveNamespaceJSONBody
+	if !decode(w, r, &req) {
+		return
+	}
+	// chi binds the raw escaped path segment; decode hierarchical names like
+	// "work%2Fmemini" → "work/memini" to match storage.
+	decoded, ok := unescapeID(name)
+	if !ok {
+		httputil.Error(w, http.StatusBadRequest, "invalid namespace encoding")
+		return
+	}
+	name = decoded
+	if err := httputil.ValidateNamespace(name); err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid source namespace: "+err.Error())
+		return
+	}
+	if err := httputil.ValidateNamespace(req.To); err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid target namespace: "+err.Error())
+		return
+	}
+	dryRun := false
+	if req.DryRun != nil {
+		dryRun = *req.DryRun
+	}
+	rep, err := maintenance.Move(r.Context(), h.svc.Store(), name, req.To, dryRun)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	httputil.JSON(w, http.StatusOK, apiRenamespaceReport(rep))
+}
+
+// SplitNamespace implements POST /v1/namespaces/{name}/split. Regroups a
+// namespace by metadata keys, moving each record to the namespace named by the
+// first of the given keys it carries.
+func (h *Server) SplitNamespace(w http.ResponseWriter, r *http.Request, name string) {
+	var req SplitNamespaceJSONBody
+	if !decode(w, r, &req) {
+		return
+	}
+	// chi binds the raw escaped path segment; decode hierarchical names like
+	// "work%2Fmemini" → "work/memini" to match storage.
+	decoded, ok := unescapeID(name)
+	if !ok {
+		httputil.Error(w, http.StatusBadRequest, "invalid namespace encoding")
+		return
+	}
+	name = decoded
 	if err := httputil.ValidateNamespace(name); err != nil {
 		httputil.Error(w, http.StatusBadRequest, "invalid namespace: "+err.Error())
 		return
 	}
+	byKeys := deref(req.By)
+	dryRun := false
+	if req.DryRun != nil {
+		dryRun = *req.DryRun
+	}
+	rep, err := maintenance.Split(r.Context(), h.svc.Store(), name, byKeys, dryRun)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	httputil.JSON(w, http.StatusOK, apiRenamespaceReport(rep))
+}
+
+// ListNamespaceLinks implements GET /v1/namespaces/{name}/links.
+func (h *Server) ListNamespaceLinks(w http.ResponseWriter, r *http.Request, name string) {
 	links, err := h.svc.NamespaceLinks(r.Context(), name)
 	if err != nil {
 		writeError(w, r, statusFor(err), err)
@@ -697,6 +789,35 @@ func (h *Server) DeleteNamespaceLink(w http.ResponseWriter, r *http.Request, nam
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ReassignMemory implements POST /v1/memories/{id}/reassign. Moves a single
+// memory from the request namespace to the target namespace.
+func (h *Server) ReassignMemory(w http.ResponseWriter, r *http.Request, id string, _ ReassignMemoryParams) {
+	boundID, ok := unescapeID(id)
+	if !ok {
+		httputil.Error(w, http.StatusBadRequest, "invalid memory ID encoding")
+		return
+	}
+	var req ReassignMemoryJSONBody
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := httputil.ValidateNamespace(req.To); err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid target namespace: "+err.Error())
+		return
+	}
+	ns := namespaceFromContext(r.Context())
+	n, err := h.svc.Store().Reassign(r.Context(), ns, []string{boundID}, req.To)
+	if errors.Is(err, store.ErrNotFound) {
+		httputil.Error(w, http.StatusNotFound, "memory not found")
+		return
+	}
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	httputil.JSON(w, http.StatusOK, map[string]int{"moved": int(n)})
 }
 
 // apiMemory maps the domain memory onto the spec model. Optional fields are

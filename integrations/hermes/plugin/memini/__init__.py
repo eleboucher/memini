@@ -138,6 +138,37 @@ def _sanitize_namespace(value: str) -> str:
     return collapsed.strip("-")
 
 
+def _resolve_tenant(cwd: str) -> str | None:
+    """Read ~/.config/memini/config.json and return the tenant name if cwd
+    is under a configured tenant root. Returns None when no config file,
+    no match, or any error — so the existing namespace resolution is the fallback."""
+    try:
+        xdg = os.environ.get(
+            "XDG_CONFIG_HOME", os.path.join(os.path.expanduser("~"), ".config")
+        )
+        config_path = Path(xdg) / "memini" / "config.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        roots = config.get("tenantRoots")
+        if not isinstance(roots, list):
+            return None
+        cwd_resolved = Path(cwd).resolve()
+        for root in roots:
+            root_path = root.get("path", "")
+            if root_path == "~":
+                root_path = os.path.expanduser("~")
+            elif root_path.startswith("~/"):
+                root_path = os.path.join(os.path.expanduser("~"), root_path[2:])
+            root_resolved = Path(root_path).resolve()
+            if cwd_resolved == root_resolved or root_resolved in cwd_resolved.parents:
+                tenant = root.get("tenant", "")
+                tenant = re.sub(r"[^A-Za-z0-9._-]+", "-", tenant).strip("-")
+                if tenant:
+                    return tenant
+        return None
+    except Exception:
+        return None
+
+
 def _valid_url(base: str) -> bool:
     try:
         parsed = urlparse(base)
@@ -289,12 +320,15 @@ class MeminiMemoryProvider(MemoryProvider):
         # Hermes' initialize kwargs carry no project path (agent_workspace is a
         # label, not a dir), so the working directory is the only signal for the
         # default namespace; set MEMINI_NAMESPACE to scope explicitly.
-        self._namespace = (
-            _sanitize_namespace(
-                _env("MEMINI_NAMESPACE") or os.path.basename(os.getcwd().rstrip("/"))
-            )
-            or "hermes"
-        )
+        tenant = _resolve_tenant(os.getcwd())
+        project = os.path.basename(os.getcwd().rstrip("/"))
+        if _env("MEMINI_NAMESPACE"):
+            ns = _env("MEMINI_NAMESPACE")
+        elif tenant:
+            ns = f"{tenant}/{project}"
+        else:
+            ns = project
+        self._namespace = _sanitize_namespace(ns) or "hermes"
         # Recall-shaping knobs, read once. Defaults match the other integrations
         # (limit 3, no floor, unbounded, plain bullets).
         limit = _int_env("MEMINI_RECALL_LIMIT", 3)

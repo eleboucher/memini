@@ -373,6 +373,11 @@ type Service struct {
 // stopped and before closing the store.
 func (s *Service) WaitBackground() { s.bg.Wait() }
 
+// Store returns the underlying store so the REST layer can call
+// maintenance-level operations (reassign, split, move) without a separate
+// service facade. Exported sparingly; callers should not mutate internal state.
+func (s *Service) Store() store.Store { return s.store }
+
 // Option customizes a Service.
 type Option func(*Service)
 

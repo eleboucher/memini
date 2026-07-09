@@ -20,6 +20,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { resolveNamespace } from "@memini/namespace-resolver";
 
 const DEFAULT_BASE_URL = "http://localhost:8080";
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -103,7 +104,17 @@ export interface ResolvedConfig {
 // testing.
 export function resolveConfig(env: NodeJS.ProcessEnv, cwd?: string): ResolvedConfig {
   const e = env || {};
-  const namespace = e.MEMINI_NAMESPACE || deriveNamespace(cwd) || DEFAULT_NAMESPACE;
+  let namespace: string;
+  if (cwd) {
+    const { namespace: resolvedNs } = resolveNamespace({
+      cwd,
+      env: e as Record<string, string>,
+      integration: "pi",
+    });
+    namespace = resolvedNs || DEFAULT_NAMESPACE;
+  } else {
+    namespace = DEFAULT_NAMESPACE;
+  }
   const recall_limit = (() => {
     const n = Number(e.MEMINI_RECALL_LIMIT);
     return Number.isFinite(n) && n >= 0 ? n : DEFAULT_RECALL_LIMIT;

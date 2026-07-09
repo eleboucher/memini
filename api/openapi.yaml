@@ -305,6 +305,42 @@ paths:
               schema: { $ref: "#/components/schemas/NamespaceLinksResponse" }
         "400": { $ref: "#/components/responses/Error" }
         "501": { $ref: "#/components/responses/Error" }
+  /v1/namespaces/{name}/move:
+    post:
+      operationId: moveNamespace
+      tags: [memory]
+      summary: Move every memory from one namespace to another
+      description: >
+        Relocates all memories (including superseded and expired) from the
+        source namespace to the target. Supports dry-run. Backed by the same
+        Reassign operation as `memini namespace move`.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to:
+                  type: string
+                  description: Target namespace.
+                dry_run:
+                  type: boolean
+                  default: false
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RenamespaceReport" }
+        "400": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /v1/namespaces/{name}/links/{target}:
     parameters:
       - name: name
@@ -344,6 +380,82 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "501": { $ref: "#/components/responses/Error" }
+  /v1/namespaces/{name}/split:
+    post:
+      operationId: splitNamespace
+      tags: [memory]
+      summary: Split a namespace by metadata keys
+      description: >
+        Regroups a namespace by metadata, moving each record to the namespace
+        named by the first of the given keys it carries. Supports dry-run.
+        Backed by the same Split operation as `memini namespace split`.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                by:
+                  type: array
+                  items: { type: string }
+                  description: Metadata keys to group by. Defaults to import_source_namespace, user_id, agent_id, run_id, project.
+                dry_run:
+                  type: boolean
+                  default: false
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RenamespaceReport" }
+        "400": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /v1/memories/{id}/reassign:
+    post:
+      operationId: reassignMemory
+      tags: [memory]
+      summary: Move a single memory to a different namespace
+      description: >
+        Relocates one memory to the target namespace. The memory must exist in
+        the request namespace (via the X-Memini-Namespace header). Backed by
+        Store.Reassign.
+      parameters:
+        - { $ref: "#/components/parameters/Namespace" }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to:
+                  type: string
+                  description: Target namespace.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  moved:
+                    type: integer
+                    description: 1 if moved, 0 if the memory was not found.
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /v1/memories/{id}:
     parameters:
       - { $ref: "#/components/parameters/Namespace" }
@@ -788,6 +900,22 @@ components:
       required: [deleted]
       properties:
         deleted: { type: integer, description: Number of memories deleted }
+    RenamespaceReport:
+      type: object
+      properties:
+        moved:
+          type: integer
+          description: Number of memories moved.
+        targets:
+          type: object
+          additionalProperties: { type: integer }
+          description: Memories moved into each destination namespace.
+        skipped:
+          type: integer
+          description: Memories left in place (no grouping key, or already in place).
+        dry_run:
+          type: boolean
+          description: Whether this was a dry run.
     FsckReport:
       type: object
       required: [expired_purged, short_term_evicted, namespaces]

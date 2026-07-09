@@ -12,6 +12,7 @@
     "typecheck": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
+    "@memini/namespace-resolver": "workspace:*",
     "typebox": "^1.1.38"
   },
   "devDependencies": {

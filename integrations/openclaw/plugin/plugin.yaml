@@ -20,6 +20,7 @@ config:
   namespace: openclaw
   namespace_per_agent: true
   namespace_template: "{namespace}-{agent}"
+  namespace_prefix: ""
   fallback_on_error: true
   timeout_ms: 5000
   expose_tools: false

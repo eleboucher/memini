@@ -19,6 +19,7 @@
 
 import { Type } from "typebox";
 import { buildJsonPluginConfigSchema, definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import { applyTemplate, DEFAULT_TEMPLATE as RESOLVER_DEFAULT_TEMPLATE } from "@memini/namespace-resolver";
 
 const DEFAULT_BASE_URL = "http://localhost:8080";
 const DEFAULT_TIMEOUT_MS = 5000;
@@ -43,6 +44,7 @@ const typeboxConfigSchema = Type.Object(
     recall_limit: Type.Optional(Type.Number()),
     recall_max_tokens: Type.Optional(Type.Number()),
     min_capture_chars: Type.Optional(Type.Number()),
+    namespace_prefix: Type.Optional(Type.String()),
   },
   { additionalProperties: false },
 );
@@ -120,6 +122,7 @@ export function resolveConfig(pluginConfig: any) {
       Number.isFinite(c.min_capture_chars) && c.min_capture_chars > 0
         ? c.min_capture_chars
         : intEnv("MEMINI_MIN_CAPTURE_CHARS", 0),
+    namespace_prefix: c.namespace_prefix || "",
   };
 }
 
@@ -178,11 +181,16 @@ function agentIdentity(ctx: any) {
 // recall, no write, no fallback namespace). Useful for gateways where
 // unattributable sessions (cron, heartbeat) should not pollute memory.
 export function effectiveNamespace(cfg: ResolvedConfig, ctx: any) {
-  if (!cfg.namespace_per_agent) return cfg.namespace;
+  // Apply namespace_prefix to the base namespace if set
+  const baseNs = cfg.namespace_prefix
+    ? cfg.namespace_prefix.replace(/\/+$/, "") + "/" + cfg.namespace
+    : cfg.namespace;
+
+  if (!cfg.namespace_per_agent) return baseNs;
   const id = sanitizeNsSegment(agentIdentity(ctx));
-  if (!id) return cfg.skip_without_agent ? null : cfg.namespace;
+  if (!id) return cfg.skip_without_agent ? null : baseNs;
   const tmpl = cfg.namespace_template || DEFAULT_NAMESPACE_TEMPLATE;
-  return tmpl.replaceAll("{agent}", id).replaceAll("{namespace}", cfg.namespace);
+  return applyTemplate(tmpl, { agent: id, namespace: baseNs });
 }
 
 // detectSystemKind returns the system-turn kind from the hook context, else "".

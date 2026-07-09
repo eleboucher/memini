@@ -12,7 +12,7 @@
 // Hooks are .mjs (not .ts) so they run in plain `node` without a build step.
 
 import { execSync } from "node:child_process";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import fs from "node:fs";
 
@@ -94,6 +94,35 @@ function gitOut(args, dir) {
   }
 }
 
+/**
+ * resolveTenant reads ~/.config/memini/config.json and returns the tenant name
+ * if cwd is under a configured tenant root. Returns null when no config, no
+ * match, or any error — so the existing resolution chain remains the fallback.
+ */
+function resolveTenant(cwd) {
+  try {
+    const xdg = process.env["XDG_CONFIG_HOME"] || join(homedir() || tmpdir(), "config");
+    const configPath = join(xdg, "memini", "config.json");
+    const raw = fs.readFileSync(configPath, "utf8");
+    const config = JSON.parse(raw);
+    if (!Array.isArray(config.tenantRoots)) return null;
+    const resolved = resolve(cwd || process.cwd());
+    for (const root of config.tenantRoots) {
+      let rootPath = root.path || "";
+      if (rootPath === "~") rootPath = homedir() || "";
+      else if (rootPath.startsWith("~/")) rootPath = join(homedir() || tmpdir(), rootPath.slice(2));
+      const sep = process.platform === "win32" ? "\\" : "/";
+      if (resolved === rootPath || resolved.startsWith(rootPath + sep)) {
+        const tenant = (root.tenant || "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+        if (tenant) return tenant;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function resolveProjectBase(cwd) {
   const nsEnv = process.env["MEMINI_NAMESPACE"];
   if (nsEnv && nsEnv.trim()) return nsEnv.trim();
@@ -122,6 +151,12 @@ function resolveProjectBase(cwd) {
   if (remote) ns = (ownerRepo ? repoSlugFromRemote(remote) : repoNameFromRemote(remote)) || "";
   if (!ns && toplevel) ns = basename(toplevel);
   if (!ns) ns = basename(dir);
+
+  // Check tenant root config for a tenant prefix.
+  const tenant = resolveTenant(dir);
+  if (tenant) {
+    ns = tenant + "/" + ns;
+  }
 
   // Remember the derivation under every stable key we have, so a later move or
   // remote change resolves back to this same namespace.

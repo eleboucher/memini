@@ -28,8 +28,9 @@
       "fallback_on_error": { "type": "boolean" },
       "timeout_ms": { "type": "number" },
       "expose_tools": { "type": "boolean" },
-      "recall_limit": { "type": "number" },
-      "recall_max_tokens": { "type": "number" }
+    "recall_limit": { "type": "number" },
+    "recall_max_tokens": { "type": "number" },
+    "namespace_prefix": { "type": "string" }
     }
   },
   "activation": {

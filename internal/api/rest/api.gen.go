@@ -339,7 +339,7 @@ type RememberRequest struct {
 	Summary  *string                 `json:"summary,omitempty"`
 	Tags     *[]string               `json:"tags,omitempty"`
 
-	// Tier Omit to let the server choose: the content is classified by the marker heuristic (a terse, unhedged decision/preference/problem lands in semantic/procedural, stamped metadata.tier_classified=marker), falling back to episodic. Classification never picks working.
+	// Tier Omit to let the server choose: the content is classified by the marker heuristic (a terse, unhedged decision/preference/problem lands in semantic/procedural, stamped metadata.tier_classified=marker), falling back to working. Classification never picks working (the default) — it only raises to semantic/procedural.
 	Tier *Tier `json:"tier,omitempty"`
 
 	// TtlSeconds Overrides the tier default TTL; negative means never expire.
@@ -350,6 +350,21 @@ type RememberRequest struct {
 
 	// ValidTo End of the interval the fact was true (for recording a fact that was true only in the past). Omit for a fact that is still true.
 	ValidTo *time.Time `json:"valid_to,omitempty"`
+}
+
+// RenamespaceReport defines model for RenamespaceReport.
+type RenamespaceReport struct {
+	// DryRun Whether this was a dry run.
+	DryRun *bool `json:"dry_run,omitempty"`
+
+	// Moved Number of memories moved.
+	Moved *int `json:"moved,omitempty"`
+
+	// Skipped Memories left in place (no grouping key, or already in place).
+	Skipped *int `json:"skipped,omitempty"`
+
+	// Targets Memories moved into each destination namespace.
+	Targets *map[string]int `json:"targets,omitempty"`
 }
 
 // ScoredMemory defines model for ScoredMemory.
@@ -524,6 +539,18 @@ type GetMemoryHistoryParams struct {
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
+// ReassignMemoryJSONBody defines parameters for ReassignMemory.
+type ReassignMemoryJSONBody struct {
+	// To Target namespace.
+	To string `json:"to"`
+}
+
+// ReassignMemoryParams defines parameters for ReassignMemory.
+type ReassignMemoryParams struct {
+	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
+}
+
 // SupersedeMemoryParams defines parameters for SupersedeMemory.
 type SupersedeMemoryParams struct {
 	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
@@ -557,6 +584,21 @@ type GetBriefingParams struct {
 // GetBriefingParamsScope defines parameters for GetBriefing.
 type GetBriefingParamsScope string
 
+// MoveNamespaceJSONBody defines parameters for MoveNamespace.
+type MoveNamespaceJSONBody struct {
+	DryRun *bool `json:"dry_run,omitempty"`
+
+	// To Target namespace.
+	To string `json:"to"`
+}
+
+// SplitNamespaceJSONBody defines parameters for SplitNamespace.
+type SplitNamespaceJSONBody struct {
+	// By Metadata keys to group by. Defaults to import_source_namespace, user_id, agent_id, run_id, project.
+	By     *[]string `json:"by,omitempty"`
+	DryRun *bool     `json:"dry_run,omitempty"`
+}
+
 // SearchMemoriesParams defines parameters for SearchMemories.
 type SearchMemoriesParams struct {
 	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
@@ -581,11 +623,20 @@ type RunDedupJSONRequestBody = DedupRequest
 // RememberMemoryJSONRequestBody defines body for RememberMemory for application/json ContentType.
 type RememberMemoryJSONRequestBody = RememberRequest
 
+// ReassignMemoryJSONRequestBody defines body for ReassignMemory for application/json ContentType.
+type ReassignMemoryJSONRequestBody ReassignMemoryJSONBody
+
 // SupersedeMemoryJSONRequestBody defines body for SupersedeMemory for application/json ContentType.
 type SupersedeMemoryJSONRequestBody = SupersedeRequest
 
 // PutNamespaceLinkJSONRequestBody defines body for PutNamespaceLink for application/json ContentType.
 type PutNamespaceLinkJSONRequestBody = PutNamespaceLinkRequest
+
+// MoveNamespaceJSONRequestBody defines body for MoveNamespace for application/json ContentType.
+type MoveNamespaceJSONRequestBody MoveNamespaceJSONBody
+
+// SplitNamespaceJSONRequestBody defines body for SplitNamespace for application/json ContentType.
+type SplitNamespaceJSONRequestBody SplitNamespaceJSONBody
 
 // SearchMemoriesJSONRequestBody defines body for SearchMemories for application/json ContentType.
 type SearchMemoriesJSONRequestBody = SearchRequest
@@ -619,6 +670,9 @@ type ServerInterface interface {
 	// The full version chain (supersession lineage) of a memory
 	// (GET /v1/memories/{id}/history)
 	GetMemoryHistory(w http.ResponseWriter, r *http.Request, id string, params GetMemoryHistoryParams)
+	// Move a single memory to a different namespace
+	// (POST /v1/memories/{id}/reassign)
+	ReassignMemory(w http.ResponseWriter, r *http.Request, id string, params ReassignMemoryParams)
 	// Tombstone a memory, recording it was replaced by `by`.
 	// (POST /v1/memories/{id}/supersede)
 	SupersedeMemory(w http.ResponseWriter, r *http.Request, id string, params SupersedeMemoryParams)
@@ -640,6 +694,12 @@ type ServerInterface interface {
 	// Create or update a read-only link from `name` to `target`
 	// (PUT /v1/namespaces/{name}/links/{target})
 	PutNamespaceLink(w http.ResponseWriter, r *http.Request, name string, target string)
+	// Move every memory from one namespace to another
+	// (POST /v1/namespaces/{name}/move)
+	MoveNamespace(w http.ResponseWriter, r *http.Request, name string)
+	// Split a namespace by metadata keys
+	// (POST /v1/namespaces/{name}/split)
+	SplitNamespace(w http.ResponseWriter, r *http.Request, name string)
 	// Recall memories via hybrid (vector + keyword) search
 	// (POST /v1/search)
 	SearchMemories(w http.ResponseWriter, r *http.Request, params SearchMemoriesParams)
@@ -706,6 +766,12 @@ func (_ Unimplemented) GetMemoryHistory(w http.ResponseWriter, r *http.Request, 
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Move a single memory to a different namespace
+// (POST /v1/memories/{id}/reassign)
+func (_ Unimplemented) ReassignMemory(w http.ResponseWriter, r *http.Request, id string, params ReassignMemoryParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // Tombstone a memory, recording it was replaced by `by`.
 // (POST /v1/memories/{id}/supersede)
 func (_ Unimplemented) SupersedeMemory(w http.ResponseWriter, r *http.Request, id string, params SupersedeMemoryParams) {
@@ -745,6 +811,18 @@ func (_ Unimplemented) DeleteNamespaceLink(w http.ResponseWriter, r *http.Reques
 // Create or update a read-only link from `name` to `target`
 // (PUT /v1/namespaces/{name}/links/{target})
 func (_ Unimplemented) PutNamespaceLink(w http.ResponseWriter, r *http.Request, name string, target string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Move every memory from one namespace to another
+// (POST /v1/namespaces/{name}/move)
+func (_ Unimplemented) MoveNamespace(w http.ResponseWriter, r *http.Request, name string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Split a namespace by metadata keys
+// (POST /v1/namespaces/{name}/split)
+func (_ Unimplemented) SplitNamespace(w http.ResponseWriter, r *http.Request, name string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1336,6 +1414,62 @@ func (siw *ServerInterfaceWrapper) GetMemoryHistory(w http.ResponseWriter, r *ht
 	handler.ServeHTTP(w, r)
 }
 
+// ReassignMemory operation middleware
+func (siw *ServerInterfaceWrapper) ReassignMemory(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ReassignMemoryParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Memini-Namespace" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Memini-Namespace")]; found {
+		var XMeminiNamespace Namespace
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Memini-Namespace", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Memini-Namespace", valueList[0], &XMeminiNamespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Memini-Namespace", Err: err})
+			return
+		}
+
+		params.XMeminiNamespace = &XMeminiNamespace
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReassignMemory(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // SupersedeMemory operation middleware
 func (siw *ServerInterfaceWrapper) SupersedeMemory(w http.ResponseWriter, r *http.Request) {
 
@@ -1602,6 +1736,38 @@ func (siw *ServerInterfaceWrapper) ListNamespaceLinks(w http.ResponseWriter, r *
 	handler.ServeHTTP(w, r)
 }
 
+// MoveNamespace operation middleware
+func (siw *ServerInterfaceWrapper) MoveNamespace(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.MoveNamespace(w, r, name)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // DeleteNamespaceLink operation middleware
 func (siw *ServerInterfaceWrapper) DeleteNamespaceLink(w http.ResponseWriter, r *http.Request) {
 
@@ -1634,6 +1800,38 @@ func (siw *ServerInterfaceWrapper) DeleteNamespaceLink(w http.ResponseWriter, r 
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.DeleteNamespaceLink(w, r, name, target)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SplitNamespace operation middleware
+func (siw *ServerInterfaceWrapper) SplitNamespace(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SplitNamespace(w, r, name)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1932,6 +2130,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/v1/memories/{id}/history", wrapper.GetMemoryHistory)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/memories/{id}/reassign", wrapper.ReassignMemory)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/memories/{id}/supersede", wrapper.SupersedeMemory)
 	})
 	r.Group(func(r chi.Router) {
@@ -1951,6 +2152,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Put(options.BaseURL+"/v1/namespaces/{name}/links/{target}", wrapper.PutNamespaceLink)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/namespaces/{name}/move", wrapper.MoveNamespace)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/namespaces/{name}/split", wrapper.SplitNamespace)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/search", wrapper.SearchMemories)

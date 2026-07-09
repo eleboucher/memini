@@ -16,6 +16,10 @@
  * the environment. See the options/env table in ../README.md.
  */
 
+import { readFileSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+
 const DEFAULT_BASE_URL = "http://localhost:8080";
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_RECALL_LIMIT = 3;
@@ -44,13 +48,55 @@ export function deriveNamespace(worktree) {
   return sanitizeNamespace(base);
 }
 
+// resolveTenantNamespace reads ~/.config/memini/config.json and resolves a
+// tenant-prefixed namespace. Returns null when no config or no tenant match,
+// so the caller falls back to the existing deriveNamespace chain.
+function resolveTenantNamespace(cwd) {
+  try {
+    const xdg = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+    const configPath = join(xdg, "memini", "config.json");
+    const raw = readFileSync(configPath, "utf8");
+    const config = JSON.parse(raw);
+    if (!Array.isArray(config.tenantRoots)) return null;
+    const resolvedCwd = resolve(cwd);
+    for (const root of config.tenantRoots) {
+      let rootPath = root.path || "";
+      if (rootPath === "~") rootPath = homedir();
+      else if (rootPath.startsWith("~/")) rootPath = join(homedir(), rootPath.slice(2));
+      rootPath = resolve(rootPath);
+      if (resolvedCwd === rootPath || resolvedCwd.startsWith(rootPath + sep)) {
+        const tenant = String(root.tenant || "")
+          .replace(/[^A-Za-z0-9._-]+/g, "-")
+          .replace(/^-+|-+$/g, "");
+        if (!tenant) continue;
+        const template = config.template || "{tenant}/{project}/{agent}";
+        const project = deriveNamespace(cwd);
+        const agent =
+          (process.env.MEMINI_AGENT || "").trim()
+            .replace(/[^A-Za-z0-9._-]+/g, "-")
+            .replace(/^-+|-+$/g, "");
+        let ns = template
+          .replace(/\{tenant\}/g, tenant)
+          .replace(/\{project\}/g, project)
+          .replace(/\{agent\}/g, agent)
+          .replace(/\{namespace\}/g, "");
+        ns = ns.replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "");
+        return ns || null;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // resolveConfig merges env vars with the options object (options win), filling
 // in defaults. Exported for testing.
 export function resolveConfig(env, options, worktree) {
   const e = env || {};
   const o = options || {};
   const namespace =
-    o.namespace || e.MEMINI_NAMESPACE || deriveNamespace(worktree) || DEFAULT_NAMESPACE;
+    o.namespace || e.MEMINI_NAMESPACE || resolveTenantNamespace(worktree || process.cwd()) || deriveNamespace(worktree) || DEFAULT_NAMESPACE;
   // Number.isFinite guard: malformed env / option falls through to the next
   // source instead of NaN flowing into the request body.
   const recall_limit = (() => {
