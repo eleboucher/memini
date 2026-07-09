@@ -66,6 +66,11 @@ const (
 	// namespaces. A subtree recall fans out two legs per namespace; this bound
 	// keeps a deep subtree from exhausting the store's connection pool.
 	recallSearchConcurrency = 16
+
+	// readSetMaxEntries caps a read-set after subtree/pattern expansion (raw
+	// per-call namespace lists are capped separately, at 16, before expansion).
+	// A read-set over the cap is clamped, keeping the primary namespace first.
+	readSetMaxEntries = 64
 )
 
 // RecallPoolSize is the per-leg candidate pool Recall over-fetches for a
@@ -1557,6 +1562,12 @@ type RecallInput struct {
 	// multi-agent "read shared + private" pattern. Default (false) is exact scope,
 	// so cross-agent recall never happens unless asked for.
 	Subtree bool
+	// Namespaces, when non-empty, REPLACES the default read set (Namespace +
+	// subtree + global namespace) with exactly these namespaces — no global
+	// merge, no subtree of Namespace unless an entry spells it with "/*". An
+	// entry ending in "/*" also includes every namespace nested under it. Max
+	// 16 entries; each is searched with the request's own tier filter (Tiers).
+	Namespaces []string
 	// MinScore, when > 0, overrides the server's default recallMinScore for
 	// this call. Lets a caller request a stricter relevance floor per
 	// integration (e.g. the pre-tool-use hook only injects highly-relevant
@@ -1582,22 +1593,6 @@ type RecallInput struct {
 	// any result via LinkedMemoryIDs (1-hop expansion). Linked memories that
 	// are superseded are skipped. Default (false) is no expansion.
 	IncludeLinked bool
-}
-
-// Recall runs hybrid (vector + keyword) retrieval fused with RRF.
-// addGlobalNamespace appends the configured global namespace to the recall
-// fan-out (when set, distinct, and not already present), returning the new list,
-// the global namespace's index (-1 when none was added), and the durable tier
-// filter it should use — the global namespace contributes durable tiers only.
-func (s *Service) addGlobalNamespace(namespaces []string, in RecallInput) ([]string, int, []memory.Tier) {
-	if s.globalNamespace == "" || s.globalNamespace == in.Namespace || slices.Contains(namespaces, s.globalNamespace) {
-		return namespaces, -1, nil
-	}
-	gt := durableTiers(in.Tiers)
-	if len(gt) == 0 {
-		return namespaces, -1, nil
-	}
-	return append(namespaces, s.globalNamespace), len(namespaces), gt
 }
 
 // durableTiers restricts a requested tier set to the durable tiers (semantic,
@@ -1635,6 +1630,7 @@ func (s *Service) reportRecallDegraded(ctx context.Context, embedErr error, degr
 	}
 }
 
+// Recall runs hybrid (vector + keyword) retrieval fused with RRF.
 func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, error) {
 	start := time.Now()
 	tf := tierFilterLabel(in.Tiers)
@@ -1672,13 +1668,13 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		return results, nil
 	}
 
-	// Embed the query and resolve namespaces concurrently: two independent
-	// blocking calls, so overlapping them keeps only the slower on the critical
-	// path. Namespaces default to in.Namespace; a subtree recall adds everything
-	// nested under it.
+	// Embed the query and resolve the read-set concurrently: two independent
+	// blocking calls (embedding, and — for subtree/explicit-namespace recalls —
+	// a store.ListNamespaces scan), so overlapping them keeps only the slower on
+	// the critical path.
 	var vec []float32
 	var embedErr error
-	namespaces := []string{in.Namespace}
+	var entries []scopeEntry
 	embedStart := time.Now()
 	g1, g1ctx := errgroup.WithContext(ctx)
 	g1.Go(func() error {
@@ -1701,24 +1697,23 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		vec = v
 		return nil
 	})
-	if in.Subtree {
-		g1.Go(func() error {
-			ns, err := s.subtreeNamespaces(g1ctx, in.Namespace)
-			if err != nil {
-				return fmt.Errorf("recall: resolve subtree: %w", err)
-			}
-			namespaces = ns
-			return nil
+	g1.Go(func() error {
+		es, err := s.resolveReadSet(g1ctx, readScope{
+			primary:  in.Namespace,
+			explicit: in.Namespaces,
+			subtree:  in.Subtree,
+			reqTiers: in.Tiers,
 		})
-	}
+		if err != nil {
+			return fmt.Errorf("recall: resolve read-set: %w", err)
+		}
+		entries = es
+		return nil
+	})
 	if err := g1.Wait(); err != nil {
 		s.metrics.RecallResult("error", tf, "0")
 		return nil, err
 	}
-	// Merge the global namespace (durable tiers only) into the fan-out so shared
-	// cross-project rules surface in every recall. It gets its own tier filter;
-	// every other namespace uses the requested one.
-	namespaces, globalIdx, globalTiers := s.addGlobalNamespace(namespaces, in)
 	s.metrics.OpDuration("recall_embed", time.Since(embedStart))
 	s.reportRecallDegraded(ctx, embedErr, in.Degraded)
 
@@ -1732,14 +1727,15 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	// index-addressed slots so there is no shared append to guard. SetLimit caps
 	// in-flight store calls so a deep subtree can't exhaust the connection pool.
 	searchStart := time.Now()
-	vres := make([][]store.Scored, len(namespaces))
-	kres := make([][]store.Scored, len(namespaces))
+	vres := make([][]store.Scored, len(entries))
+	kres := make([][]store.Scored, len(entries))
 	g2, g2ctx := errgroup.WithContext(ctx)
 	g2.SetLimit(recallSearchConcurrency)
-	for i, ns := range namespaces {
+	for i, e := range entries {
+		ns := e.ns
 		f := filter
-		if i == globalIdx {
-			f.Tiers = globalTiers // global namespace contributes durable tiers only
+		if e.tiers != nil {
+			f.Tiers = e.tiers // per-entry override (e.g. global namespace: durable tiers only)
 		}
 		if vec != nil {
 			g2.Go(func() error {
@@ -1771,8 +1767,8 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	// off-topic memory on a shared token.
 	gateSemantic(vres, kres, s.resolveSemanticFloor(in))
 
-	perNS := make([][]store.Scored, len(namespaces))
-	for i := range namespaces {
+	perNS := make([][]store.Scored, len(entries))
+	for i := range entries {
 		perNS[i] = s.fuseLegs(vres[i], kres[i])
 	}
 
@@ -2221,47 +2217,35 @@ func gateSemantic(vres, kres [][]store.Scored, floor float64) {
 	}
 }
 
-// subtreeNamespaces returns root and every namespace nested under it (root +
-// "root/..."), the set a subtree recall searches.
-func (s *Service) subtreeNamespaces(ctx context.Context, root string) ([]string, error) {
-	all, err := s.store.ListNamespaces(ctx)
-	if err != nil {
-		return nil, err
-	}
-	prefix := root + "/"
-	out := []string{root}
-	for _, ns := range all {
-		if ns != root && strings.HasPrefix(ns, prefix) {
-			out = append(out, ns)
-		}
-	}
-	return out, nil
-}
-
 // maybeExpandLinked conditionally expands results to include linked memories.
 func (s *Service) maybeExpandLinked(ctx context.Context, in RecallInput, results []store.Scored, k int) []store.Scored {
 	if !in.IncludeLinked || len(results) == 0 {
 		return results
 	}
-	return s.expandLinked(ctx, in.Namespace, results, k)
+	return s.expandLinked(ctx, results, k)
 }
 
 // expandLinked expands results by including memories linked via LinkedMemoryIDs
 // (1-hop expansion). Linked memories that are superseded or already in results
 // are skipped. Linked results get a score penalty (multiplied by 0.5) so they
 // rank below direct hits. The result is re-sorted and truncated to k.
-func (s *Service) expandLinked(ctx context.Context, namespace string, results []store.Scored, k int) []store.Scored {
-	// Collect unique linked IDs not already in results.
+func (s *Service) expandLinked(ctx context.Context, results []store.Scored, k int) []store.Scored {
+	// Collect unique linked IDs not already in results, paired with the
+	// namespace of the result that linked to them: LinkedMemoryIDs is written
+	// alongside its owning memory, so a link always resolves within that
+	// memory's own namespace — which, with a multi-namespace read-set, may
+	// differ from the request's primary namespace.
+	type fetch struct{ id, ns string }
 	seen := make(map[string]bool, len(results))
 	for _, r := range results {
 		seen[r.Memory.ID] = true
 	}
-	var toFetch []string
+	var toFetch []fetch
 	for _, r := range results {
 		for _, lid := range r.Memory.LinkedMemoryIDs {
 			if !seen[lid] {
 				seen[lid] = true
-				toFetch = append(toFetch, lid)
+				toFetch = append(toFetch, fetch{id: lid, ns: r.Memory.Namespace})
 			}
 		}
 	}
@@ -2274,13 +2258,13 @@ func (s *Service) expandLinked(ctx context.Context, namespace string, results []
 	// Assign linked memories a score penalty: 0.5 × the minimum score among
 	// direct results. This ensures linked hits rank below all direct hits.
 	minScore := results[len(results)-1].Score
-	for _, lid := range toFetch {
-		m, err := s.store.Get(ctx, namespace, lid)
+	for _, f := range toFetch {
+		m, err := s.store.Get(ctx, f.ns, f.id)
 		if errors.Is(err, store.ErrNotFound) {
 			continue // stale link: memory was deleted
 		}
 		if err != nil {
-			slog.WarnContext(ctx, "recall: linked fetch failed", "id", lid, "err", err)
+			slog.WarnContext(ctx, "recall: linked fetch failed", "id", f.id, "namespace", f.ns, "err", err)
 			continue
 		}
 		if m.SupersededBy != nil {
