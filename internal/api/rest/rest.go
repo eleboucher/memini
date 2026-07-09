@@ -79,6 +79,8 @@ func statusFor(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, embed.ErrDisabled):
 		return http.StatusServiceUnavailable
+	case errors.Is(err, service.ErrLinksUnsupported):
+		return http.StatusNotImplemented
 	default:
 		return http.StatusInternalServerError
 	}
@@ -633,6 +635,68 @@ func (h *Server) DeleteNamespace(w http.ResponseWriter, r *http.Request, name st
 		return
 	}
 	httputil.JSON(w, http.StatusOK, DeleteNamespaceResponse{Deleted: int(n)})
+}
+
+// ListNamespaceLinks implements GET /v1/namespaces/{name}/links.
+func (h *Server) ListNamespaceLinks(w http.ResponseWriter, r *http.Request, name string) {
+	if err := httputil.ValidateNamespace(name); err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid namespace: "+err.Error())
+		return
+	}
+	links, err := h.svc.NamespaceLinks(r.Context(), name)
+	if err != nil {
+		writeError(w, r, statusFor(err), err)
+		return
+	}
+	out := NamespaceLinksResponse{Links: make([]NamespaceLink, len(links))}
+	for i, l := range links {
+		out.Links[i] = NamespaceLink{
+			Target:    l.Target,
+			Tiers:     NamespaceLinkTiers(l.Tiers),
+			CreatedAt: l.CreatedAt,
+		}
+	}
+	httputil.JSON(w, http.StatusOK, out)
+}
+
+// PutNamespaceLink implements PUT /v1/namespaces/{name}/links/{target}. The
+// body is optional; an absent body (or an absent tiers field) defaults to
+// "durable". Idempotent — a second call for the same pair overwrites tiers.
+func (h *Server) PutNamespaceLink(w http.ResponseWriter, r *http.Request, name string, boundTarget string) {
+	target, ok := unescapeID(boundTarget)
+	if !ok {
+		httputil.Error(w, http.StatusBadRequest, "invalid target")
+		return
+	}
+	var tiers string
+	if r.ContentLength != 0 {
+		var req PutNamespaceLinkRequest
+		if !decode(w, r, &req) {
+			return
+		}
+		if req.Tiers != nil {
+			tiers = string(*req.Tiers)
+		}
+	}
+	if err := h.svc.LinkNamespaces(r.Context(), name, target, tiers); err != nil {
+		writeError(w, r, statusFor(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// DeleteNamespaceLink implements DELETE /v1/namespaces/{name}/links/{target}.
+func (h *Server) DeleteNamespaceLink(w http.ResponseWriter, r *http.Request, name string, boundTarget string) {
+	target, ok := unescapeID(boundTarget)
+	if !ok {
+		httputil.Error(w, http.StatusBadRequest, "invalid target")
+		return
+	}
+	if err := h.svc.UnlinkNamespaces(r.Context(), name, target); err != nil {
+		writeError(w, r, statusFor(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // apiMemory maps the domain memory onto the spec model. Optional fields are
