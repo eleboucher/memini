@@ -605,7 +605,8 @@ components:
           description: >
             exact (default) searches only the request namespace; subtree also
             searches namespaces nested under it ("project" reads "project/agent"),
-            for the multi-agent read-shared-plus-private pattern.
+            for the multi-agent read-shared-plus-private pattern. Any value other
+            than "subtree" is treated as "exact" rather than rejected.
         namespaces:
           type: array
           maxItems: 16

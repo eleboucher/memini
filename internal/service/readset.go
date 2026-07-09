@@ -197,7 +197,7 @@ func subtreeFrom(all []string, root string) []string {
 // resolveExplicitReadSet validates and expands a per-call namespace list into
 // the read set it becomes verbatim, in first-occurrence order. An entry
 // ending in "/*" expands to the bare namespace plus every namespace strictly
-// nested under it (mirrors subtreeNamespaces); every entry — including one
+// nested under it (mirrors subtreeFrom); every entry — including one
 // that happens to name the global namespace — keeps nil tiers, i.e. the
 // request's own tier filter, not the default merge's durable-only override.
 func (s *Service) resolveExplicitReadSet(ctx context.Context, raw []string) ([]scopeEntry, error) {
