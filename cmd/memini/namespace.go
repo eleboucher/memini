@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -227,10 +228,10 @@ func runNamespaceLinks(cmd *cobra.Command, _ []string) error {
 		for _, l := range links {
 			if nsNamespace != "" {
 				fmt.Fprintf(out, "%-30s tiers=%-8s created=%s\n", l.Target, l.Tiers, //nolint:errcheck
-					l.CreatedAt.Format("2006-01-02T15:04:05Z"))
+					l.CreatedAt.UTC().Format(time.RFC3339))
 			} else {
 				fmt.Fprintf(out, "%-30s -> %-30s tiers=%-8s created=%s\n", l.Namespace, l.Target, l.Tiers, //nolint:errcheck
-					l.CreatedAt.Format("2006-01-02T15:04:05Z"))
+					l.CreatedAt.UTC().Format(time.RFC3339))
 			}
 		}
 		return nil
