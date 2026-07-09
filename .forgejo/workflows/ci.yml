@@ -115,7 +115,7 @@ jobs:
       - name: Test OpenClaw plugin
         run: |
           cd integrations/openclaw/plugin
-          pnpm install --no-audit --no-fund
+          pnpm install
           npx tsc -p tsconfig.json
           node --test test/regression.test.mjs
           npx tsx --test test/helpers.test.ts
@@ -125,7 +125,7 @@ jobs:
       - name: Test Pi plugin
         run: |
           cd integrations/pi/plugin
-          pnpm install --no-audit --no-fund
+          pnpm install
           pnpm run build
           npx tsx --test test/helpers.test.ts
 

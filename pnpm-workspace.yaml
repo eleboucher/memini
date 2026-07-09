@@ -1,0 +1,4 @@
+packages:
+  - packages/*
+  - integrations/openclaw/plugin
+  - integrations/pi/plugin
