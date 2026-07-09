@@ -83,8 +83,11 @@ func (s *Service) LinkNamespaces(ctx context.Context, ns, target, tiers string) 
 	return nil
 }
 
-// UnlinkNamespaces removes a link. Returns store.ErrNotFound when no such
-// link exists (API layers map it to 404).
+// UnlinkNamespaces removes a link. Returns an error wrapping store.ErrNotFound
+// when no such link exists: errors.Is(err, store.ErrNotFound) still holds
+// (REST maps it to 404), but the message names the missing link instead of
+// surfacing store.ErrNotFound's bare "memory not found", which doesn't apply
+// to a namespace link.
 func (s *Service) UnlinkNamespaces(ctx context.Context, ns, target string) error {
 	if s.linkStore == nil {
 		return ErrLinksUnsupported
@@ -96,7 +99,13 @@ func (s *Service) UnlinkNamespaces(ctx context.Context, ns, target string) error
 	if err := httputil.ValidateNamespace(bareTarget); err != nil {
 		return invalidInputf("namespace unlink: invalid target %q: %v", target, err)
 	}
-	return s.linkStore.DeleteNamespaceLink(ctx, ns, target)
+	if err := s.linkStore.DeleteNamespaceLink(ctx, ns, target); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("namespace link %q -> %q not found: %w", ns, target, store.ErrNotFound)
+		}
+		return err
+	}
+	return nil
 }
 
 // NamespaceLinks returns ns's outgoing links, ordered by target.

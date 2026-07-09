@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,9 +141,20 @@ func TestLinkNamespacesCap(t *testing.T) {
 func TestUnlinkNamespacesNotFound(t *testing.T) {
 	svc, _ := newReadsetSvc(t)
 	ctx := context.Background()
-	if err := svc.UnlinkNamespaces(ctx, "A", "never-linked"); !errors.Is(err, store.ErrNotFound) {
+	err := svc.UnlinkNamespaces(ctx, "A", "never-linked")
+	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("UnlinkNamespaces on an absent link = %v, want store.ErrNotFound", err)
 	}
+	// The message names the missing link instead of surfacing
+	// store.ErrNotFound's bare "memory not found", which doesn't apply to a
+	// namespace link.
+	if !strings.Contains(err.Error(), `"A"`) || !strings.Contains(err.Error(), `"never-linked"`) {
+		t.Fatalf("error message = %q, want it to name the namespace and target", err.Error())
+	}
+	if err.Error() == store.ErrNotFound.Error() {
+		t.Fatalf("error message = %q, want it wrapped, not the bare store.ErrNotFound text", err.Error())
+	}
+
 	if err := svc.LinkNamespaces(ctx, "A", "B", "durable"); err != nil {
 		t.Fatalf("link: %v", err)
 	}
