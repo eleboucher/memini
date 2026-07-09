@@ -240,12 +240,26 @@ paths:
           in: query
           description: Max recent episodic entries. Overrides per_section. 0 disables the section.
           schema: { type: integer }
+        - name: scope
+          in: query
+          description: >
+            exact (default) briefs only the namespace; subtree also includes
+            namespaces nested under it ("project" reads "project/agent").
+          schema: { type: string, enum: [exact, subtree], default: exact }
+        - name: namespaces
+          in: query
+          description: >-
+            Repeatable. Brief exactly these namespaces instead of the default read
+            set (namespace + global). An entry ending in "/*" also includes
+            namespaces nested under it. Writes are unaffected.
+          schema: { type: array, maxItems: 16, items: { type: string } }
       responses:
         "200":
           description: OK
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Briefing" }
+        "400": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /v1/namespaces/{name}:
     delete:
@@ -529,6 +543,14 @@ components:
             exact (default) searches only the request namespace; subtree also
             searches namespaces nested under it ("project" reads "project/agent"),
             for the multi-agent read-shared-plus-private pattern.
+        namespaces:
+          type: array
+          maxItems: 16
+          items: { type: string }
+          description: >-
+            Search exactly these namespaces instead of the default read set (request
+            namespace + global). An entry ending in "/*" also includes namespaces nested
+            under it. Writes are unaffected.
         as_of:
           type: string
           format: date-time
