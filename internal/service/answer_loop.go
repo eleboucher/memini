@@ -163,7 +163,7 @@ func (s *Service) answerAgentic(ctx context.Context, in AnswerInput, tc llm.Tool
 	}
 	if !gateInsufficient(direct) {
 		s.metrics.AnswerResult("ok")
-		return AnswerResult{Answer: strings.TrimSpace(direct), Sources: sources}, nil
+		return AnswerResult{Answer: stripMemThinking(strings.TrimSpace(direct)), Sources: sources}, nil
 	}
 
 	turns := []llm.ChatTurn{{Role: "user", Text: "Memories:\n" + formatAnswerContext(prefetch) +
@@ -176,7 +176,7 @@ func (s *Service) answerAgentic(ctx context.Context, in AnswerInput, tc llm.Tool
 		}
 		if len(res.Calls) == 0 {
 			s.metrics.AnswerResult("ok")
-			return AnswerResult{Answer: strings.TrimSpace(res.Text), Sources: sources}, nil
+			return AnswerResult{Answer: stripMemThinking(strings.TrimSpace(res.Text)), Sources: sources}, nil
 		}
 		turns = append(turns, llm.ChatTurn{Role: "assistant", Text: res.Text, Calls: res.Calls})
 		for _, call := range res.Calls {
@@ -194,7 +194,7 @@ func (s *Service) answerAgentic(ctx context.Context, in AnswerInput, tc llm.Tool
 		return AnswerResult{}, fmt.Errorf("answer: forced synthesis: %w", err)
 	}
 	s.metrics.AnswerResult("ok")
-	return AnswerResult{Answer: strings.TrimSpace(res.Text), Sources: sources}, nil
+	return AnswerResult{Answer: stripMemThinking(strings.TrimSpace(res.Text)), Sources: sources}, nil
 }
 
 // execAnswerTool runs one read-only tool call and formats its result for the

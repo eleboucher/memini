@@ -133,5 +133,5 @@ func (s *Service) answerExpand(ctx context.Context, in AnswerInput) (AnswerResul
 		return AnswerResult{}, fmt.Errorf("answer: expand synthesis: %w", err)
 	}
 	s.metrics.AnswerResult("ok")
-	return AnswerResult{Answer: strings.TrimSpace(ans), Sources: sources}, nil
+	return AnswerResult{Answer: stripMemThinking(strings.TrimSpace(ans)), Sources: sources}, nil
 }
