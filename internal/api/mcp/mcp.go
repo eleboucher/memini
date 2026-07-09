@@ -869,7 +869,9 @@ type linkResult struct {
 // namespaceLink implements memory_namespace_link: add/remove a persistent
 // read-only link, or list the namespace's current links. Every action
 // (including list) returns the full current link list, so a caller sees the
-// result of add/remove without a follow-up call.
+// result of add/remove without a follow-up call. action=remove of an already
+// absent link is a no-op rather than an error, matching the tool's
+// IdempotentHint annotation.
 func (t *tools) namespaceLink(ctx context.Context, _ *mcpsdk.CallToolRequest, in linkArgs) (*mcpsdk.CallToolResult, linkResult, error) {
 	ns, err := t.ns(in.Namespace)
 	if err != nil {
@@ -887,7 +889,14 @@ func (t *tools) namespaceLink(ctx context.Context, _ *mcpsdk.CallToolRequest, in
 		if in.Target == "" {
 			return nil, linkResult{}, fmt.Errorf("target is required for action=%q", in.Action)
 		}
-		if err := t.svc.UnlinkNamespaces(ctx, ns, in.Target); err != nil {
+		// Removing an already-absent link is a no-op, not an error: the tool
+		// is annotated IdempotentHint (see the additive annotation set
+		// above), so a second remove of the same target must succeed and
+		// just return the current (unchanged) link list, matching REST's
+		// idempotent-DELETE semantics (REST itself still returns 404 for
+		// this case, since HTTP DELETE-of-absent is conventionally a client
+		// error there).
+		if err := t.svc.UnlinkNamespaces(ctx, ns, in.Target); err != nil && !errors.Is(err, store.ErrNotFound) {
 			return nil, linkResult{}, err
 		}
 	case "list":
