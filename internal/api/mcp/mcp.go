@@ -371,7 +371,7 @@ type recallArgs struct {
 	IncludeFreshTurns bool              `json:"include_fresh_turns,omitempty" jsonschema:"keep just-captured turns the echo guard would drop"`
 	QueryRewrite      bool              `json:"query_rewrite,omitempty" jsonschema:"rewrite query into 2-3 variants and fuse via RRF"`
 	Limit             int               `json:"limit,omitempty" jsonschema:"max results (default 10)"`
-	Scope             string            `json:"scope,omitempty" jsonschema:"'subtree' also searches nested namespaces; default 'exact'"`
+	Scope             string            `json:"scope,omitempty" jsonschema:"'subtree' also searches nested namespaces; default 'exact'; any other value is treated as 'exact'"`
 	AsOf              string            `json:"as_of,omitempty" jsonschema:"RFC3339 time for time-travel recall (facts true then)"`
 	Namespace         string            `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
@@ -496,7 +496,7 @@ type briefingArgs struct {
 	PerSectionProc   *int   `json:"per_section_procedures,omitempty" jsonschema:"max procedural how-to memories; 0 disables"`
 	PerSectionRecent *int   `json:"per_section_recent,omitempty" jsonschema:"max recent episodic entries; 0 disables"`
 	Namespace        string `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
-	Scope            string `json:"scope,omitempty" jsonschema:"'subtree' also includes namespaces nested under the namespace; default 'exact'"`
+	Scope            string `json:"scope,omitempty" jsonschema:"'subtree' also includes namespaces nested under the namespace; default 'exact'; any other value is rejected as an error"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
 	Namespaces []string `json:"namespaces,omitempty" jsonschema:"brief exactly these namespaces instead of the default read set (namespace + global); entry 'ns/*' also includes namespaces nested under ns; max 16; writes are unaffected"`
 }
