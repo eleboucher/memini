@@ -389,9 +389,12 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 	if req.AsOf != nil {
 		in.AsOf = req.AsOf.UTC()
 	}
-	if req.Scope != nil && *req.Scope == Subtree {
+	if req.Scope != nil && *req.Scope == SearchRequestScopeSubtree {
 		in.Subtree = true
 	}
+	// Explicit namespaces REPLACE the default read set; the service layer
+	// validates entries and enforces the 16-entry cap (ErrInvalidInput → 400).
+	in.Namespaces = deref(req.Namespaces)
 	if req.MinScore != nil {
 		in.MinScore = *req.MinScore
 	}
@@ -524,6 +527,18 @@ func (h *Server) GetBriefing(w http.ResponseWriter, r *http.Request, name string
 		Facts:      pick(params.PerSectionFacts, params.PerSection),
 		Procedures: pick(params.PerSectionProcedures, params.PerSection),
 		Recent:     pick(params.PerSectionRecent, params.PerSection),
+		// Explicit namespaces REPLACE the default read set; the service layer
+		// validates entries and enforces the 16-entry cap (ErrInvalidInput → 400).
+		Namespaces: deref(params.Namespaces),
+	}
+	// The generated binding does not enforce the spec enum, so an unknown
+	// scope must be rejected here rather than silently briefed as exact.
+	if params.Scope != nil {
+		if !params.Scope.Valid() {
+			httputil.Error(w, http.StatusBadRequest, fmt.Sprintf("invalid scope %q: want exact or subtree", *params.Scope))
+			return
+		}
+		opts.Subtree = *params.Scope == GetBriefingParamsScopeSubtree
 	}
 	b, err := h.svc.Briefing(r.Context(), name, opts)
 	if err != nil {

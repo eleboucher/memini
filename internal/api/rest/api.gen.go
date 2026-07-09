@@ -38,16 +38,16 @@ func (e Level) Valid() bool {
 
 // Defines values for SearchRequestScope.
 const (
-	Exact   SearchRequestScope = "exact"
-	Subtree SearchRequestScope = "subtree"
+	SearchRequestScopeExact   SearchRequestScope = "exact"
+	SearchRequestScopeSubtree SearchRequestScope = "subtree"
 )
 
 // Valid indicates whether the value is a known member of the SearchRequestScope enum.
 func (e SearchRequestScope) Valid() bool {
 	switch e {
-	case Exact:
+	case SearchRequestScopeExact:
 		return true
-	case Subtree:
+	case SearchRequestScopeSubtree:
 		return true
 	default:
 		return false
@@ -72,6 +72,24 @@ func (e Tier) Valid() bool {
 	case Semantic:
 		return true
 	case Working:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetBriefingParamsScope.
+const (
+	GetBriefingParamsScopeExact   GetBriefingParamsScope = "exact"
+	GetBriefingParamsScopeSubtree GetBriefingParamsScope = "subtree"
+)
+
+// Valid indicates whether the value is a known member of the GetBriefingParamsScope enum.
+func (e GetBriefingParamsScope) Valid() bool {
+	switch e {
+	case GetBriefingParamsScopeExact:
+		return true
+	case GetBriefingParamsScopeSubtree:
 		return true
 	default:
 		return false
@@ -296,7 +314,10 @@ type SearchRequest struct {
 
 	// MinScore Per-call relevance floor on the fused score. Candidates below it are dropped server-side before re-ranking. 0 (or unset) falls back to the server's baked relevance floor (0.1). Only meaningful with score fusion (RRF scores are not comparable to this threshold).
 	MinScore *float64 `json:"min_score,omitempty"`
-	Query    string   `json:"query"`
+
+	// Namespaces Search exactly these namespaces instead of the default read set (request namespace + global). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected.
+	Namespaces *[]string `json:"namespaces,omitempty"`
+	Query      string    `json:"query"`
 
 	// QueryRewrite When true and an LLM is configured, rewrite the query into 2-3 diverse variants before recall and fuse results via RRF. Cheapest read-path LLM lever; opt-in per call.
 	QueryRewrite *bool `json:"query_rewrite,omitempty"`
@@ -461,7 +482,16 @@ type GetBriefingParams struct {
 
 	// PerSectionRecent Max recent episodic entries. Overrides per_section. 0 disables the section.
 	PerSectionRecent *int `form:"per_section_recent,omitempty" json:"per_section_recent,omitempty"`
+
+	// Scope exact (default) briefs only the namespace; subtree also includes namespaces nested under it ("project" reads "project/agent").
+	Scope *GetBriefingParamsScope `form:"scope,omitempty" json:"scope,omitempty"`
+
+	// Namespaces Repeatable. Brief exactly these namespaces instead of the default read set (namespace + global). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected.
+	Namespaces *[]string `form:"namespaces,omitempty" json:"namespaces,omitempty"`
 }
+
+// GetBriefingParamsScope defines parameters for GetBriefing.
+type GetBriefingParamsScope string
 
 // SearchMemoriesParams defines parameters for SearchMemories.
 type SearchMemoriesParams struct {
@@ -1405,6 +1435,32 @@ func (siw *ServerInterfaceWrapper) GetBriefing(w http.ResponseWriter, r *http.Re
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "per_section_recent"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "per_section_recent", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "scope" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "scope", r.URL.Query(), &params.Scope, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "scope"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "scope", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "namespaces" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "namespaces", r.URL.Query(), &params.Namespaces, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "namespaces"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "namespaces", Err: err})
 		}
 		return
 	}

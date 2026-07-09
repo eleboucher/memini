@@ -959,3 +959,188 @@ func TestDedupAllNamespacesDryRun(t *testing.T) {
 		t.Fatalf("dry-run should not have tombstoned; real pass on bob wanted 1, got %d", out.Tombstoned)
 	}
 }
+
+// TestSearchExplicitNamespaces pins that POST /v1/search with a namespaces
+// body field REPLACES the default read set: results span exactly the listed
+// namespaces (a third namespace never leaks in) and each result's memory
+// carries its source namespace.
+func TestSearchExplicitNamespaces(t *testing.T) {
+	h := newServer(t)
+	remember := func(ns, content string) {
+		rec := do(t, h, http.MethodPost, "/v1/memories", ns, apiKey, map[string]any{
+			"content": content, "tier": "semantic",
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("remember %s: %d (%s)", ns, rec.Code, rec.Body)
+		}
+	}
+	remember("team-a", "the deploy pipeline is written in Go")
+	remember("team-b", "the CLI tooling is written in Go")
+	remember("team-c", "this Go namespace must not leak into the read set")
+
+	rec := do(t, h, http.MethodPost, "/v1/search", "team-a", apiKey, map[string]any{
+		"query": "Go", "namespaces": []string{"team-a", "team-b"}, "limit": 10,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search: %d (%s)", rec.Code, rec.Body)
+	}
+	var out struct {
+		Results []struct {
+			Memory struct {
+				Content   string `json:"content"`
+				Namespace string `json:"namespace"`
+			} `json:"memory"`
+		} `json:"results"`
+	}
+	mustJSON(t, rec, &out)
+	got := map[string]bool{}
+	for _, r := range out.Results {
+		if r.Memory.Namespace == "" {
+			t.Errorf("result %q missing namespace provenance", r.Memory.Content)
+		}
+		got[r.Memory.Namespace] = true
+	}
+	if !got["team-a"] || !got["team-b"] {
+		t.Fatalf("explicit namespaces should span team-a and team-b, got %v", got)
+	}
+	if got["team-c"] {
+		t.Fatalf("team-c is outside the explicit read set, got %v", got)
+	}
+}
+
+// TestSearchNamespacesCapRejected pins that more than 16 namespaces entries
+// maps to 400 invalid input, not 500.
+func TestSearchNamespacesCapRejected(t *testing.T) {
+	h := newServer(t)
+	over := make([]string, 17)
+	for i := range over {
+		over[i] = fmt.Sprintf("ns-%d", i)
+	}
+	rec := do(t, h, http.MethodPost, "/v1/search", "alice", apiKey, map[string]any{
+		"query": "x", "namespaces": over,
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("17 namespaces: want 400, got %d (%s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "16") {
+		t.Fatalf("error should mention the 16 entry cap, got %s", rec.Body)
+	}
+}
+
+// TestGetBriefingSubtreeScope pins that ?scope=subtree also briefs namespaces
+// nested under the path namespace, while the default (exact) does not.
+func TestGetBriefingSubtreeScope(t *testing.T) {
+	h := newServer(t)
+	remember := func(ns, content string) {
+		rec := do(t, h, http.MethodPost, "/v1/memories", ns, apiKey, map[string]any{
+			"content": content, "tier": "semantic",
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("remember %s: %d (%s)", ns, rec.Code, rec.Body)
+		}
+	}
+	remember("proj", "shared: the service is written in Go")
+	remember("proj/agent-a", "private: agent-a fact")
+
+	type briefing struct {
+		Facts []struct {
+			Content   string `json:"content"`
+			Namespace string `json:"namespace"`
+		} `json:"facts"`
+	}
+	get := func(q string) briefing {
+		rec := do(t, h, http.MethodGet, q, "proj", apiKey, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("briefing %s: %d (%s)", q, rec.Code, rec.Body)
+		}
+		var b briefing
+		mustJSON(t, rec, &b)
+		return b
+	}
+
+	exact := get("/v1/namespaces/proj/briefing")
+	if len(exact.Facts) != 1 {
+		t.Fatalf("exact briefing should see only proj's fact, got %+v", exact.Facts)
+	}
+
+	sub := get("/v1/namespaces/proj/briefing?scope=subtree")
+	if len(sub.Facts) != 2 {
+		t.Fatalf("subtree briefing should span proj and proj/agent-a, got %+v", sub.Facts)
+	}
+	got := map[string]bool{}
+	for _, f := range sub.Facts {
+		got[f.Namespace] = true
+	}
+	if !got["proj"] || !got["proj/agent-a"] {
+		t.Fatalf("subtree facts should carry namespace provenance for both, got %v", got)
+	}
+}
+
+// TestGetBriefingExplicitNamespaces pins that repeated ?namespaces= params
+// REPLACE the default read set: only the listed namespaces are briefed and
+// the path namespace is not force-added.
+func TestGetBriefingExplicitNamespaces(t *testing.T) {
+	h := newServer(t)
+	remember := func(ns, content string) {
+		rec := do(t, h, http.MethodPost, "/v1/memories", ns, apiKey, map[string]any{
+			"content": content, "tier": "semantic",
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("remember %s: %d (%s)", ns, rec.Code, rec.Body)
+		}
+	}
+	remember("team-a", "fact in team-a")
+	remember("team-b", "fact in team-b")
+	remember("team-c", "fact in team-c")
+
+	rec := do(t, h, http.MethodGet, "/v1/namespaces/team-a/briefing?namespaces=team-b&namespaces=team-c", "team-a", apiKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("briefing: %d (%s)", rec.Code, rec.Body)
+	}
+	var b struct {
+		Facts []struct {
+			Content   string `json:"content"`
+			Namespace string `json:"namespace"`
+		} `json:"facts"`
+	}
+	mustJSON(t, rec, &b)
+	got := map[string]bool{}
+	for _, f := range b.Facts {
+		got[f.Namespace] = true
+	}
+	if got["team-a"] {
+		t.Fatalf("explicit namespaces must not force-add the path namespace, got %v", got)
+	}
+	if !got["team-b"] || !got["team-c"] || len(b.Facts) != 2 {
+		t.Fatalf("explicit namespaces should brief exactly team-b and team-c, got %+v", b.Facts)
+	}
+}
+
+// TestGetBriefingInvalidScope pins that an unknown ?scope= value is 400.
+func TestGetBriefingInvalidScope(t *testing.T) {
+	h := newServer(t)
+	rec := do(t, h, http.MethodGet, "/v1/namespaces/proj/briefing?scope=bogus", "proj", apiKey, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad scope: want 400, got %d (%s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "subtree") {
+		t.Fatalf("error should list the valid scopes, got %s", rec.Body)
+	}
+}
+
+// TestGetBriefingNamespacesCapRejected pins that more than 16 ?namespaces=
+// entries maps to 400 invalid input, not 500.
+func TestGetBriefingNamespacesCapRejected(t *testing.T) {
+	h := newServer(t)
+	q := "/v1/namespaces/proj/briefing?"
+	for i := range 17 {
+		q += fmt.Sprintf("namespaces=ns-%d&", i)
+	}
+	rec := do(t, h, http.MethodGet, strings.TrimSuffix(q, "&"), "proj", apiKey, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("17 namespaces: want 400, got %d (%s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "16") {
+		t.Fatalf("error should mention the 16 entry cap, got %s", rec.Body)
+	}
+}
