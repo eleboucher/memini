@@ -71,6 +71,11 @@ const (
 	// per-call namespace lists are capped separately, at 16, before expansion).
 	// A read-set over the cap is clamped, keeping the primary namespace first.
 	readSetMaxEntries = 64
+
+	// maxNamespaceLinks caps how many outgoing links a namespace may declare,
+	// enforced at link-create time (an upsert of an already-linked target
+	// doesn't count against the cap). See internal/service/links.go.
+	maxNamespaceLinks = 16
 )
 
 // RecallPoolSize is the per-leg candidate pool Recall over-fetches for a
@@ -191,6 +196,10 @@ func invalidInputf(format string, args ...any) error {
 type Service struct {
 	store    store.Store
 	embedder embed.Embedder
+	// linkStore is store re-asserted as store.LinkStore, or nil when the
+	// backend doesn't implement it — checked once here rather than on every
+	// link call. See internal/service/links.go.
+	linkStore store.LinkStore
 	// consolidator is optional; when set, durable writes are deduplicated and
 	// contradiction-resolved against existing memories.
 	consolidator llm.Consolidator
@@ -394,6 +403,12 @@ func WithAnswerer(c llm.Completer) Option { return func(s *Service) { s.answerer
 // answer-dependent surfaces at all, rather than exposing them and erroring on
 // every call in a headless deployment.
 func (s *Service) HasAnswerer() bool { return s.answerer != nil }
+
+// HasNamespaceLinks reports whether the backing store supports persistent
+// namespace links (store.LinkStore) — gates surfaces that would otherwise
+// advertise a capability that always errors (e.g. the MCP
+// memory_namespace_link tool).
+func (s *Service) HasNamespaceLinks() bool { return s.linkStore != nil }
 
 // defaultRerankTimeout bounds a single reranker call; past it, recall falls
 // back to composite order.
@@ -722,9 +737,11 @@ func WithCorruptionQuarantine(on bool) Option {
 
 // New builds a Service from a store and embedder.
 func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
+	linkStore, _ := st.(store.LinkStore)
 	s := &Service{
 		store:                st,
 		embedder:             e,
+		linkStore:            linkStore,
 		consolidateMode:      ConsolidateAsync,
 		consolidateMinScore:  0.3,
 		promoteMinAccess:     3,
