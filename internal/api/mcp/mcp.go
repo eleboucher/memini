@@ -80,6 +80,7 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 			"nothing is known: proceed from first principles, never invent a remembered fact. A " +
 			"degraded field means semantic search was unavailable and results are keyword-only — " +
 			"treat as incomplete. Supports time-travel (as_of), nested namespaces (scope=subtree), " +
+			"an exact per-call read set (namespaces — replaces the default; writes are unaffected), " +
 			"and query_rewrite (LLM expands the query into variants, fused via RRF — better " +
 			"recall, slower). When the current session's turns are being captured as memories, " +
 			"pass exclude_metadata {\"session_id\": \"<current session id>\"} so the session's " +
@@ -92,7 +93,8 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 		Description: "Layered session-start briefing for this namespace — pinned context, " +
 			"durable facts, how-to procedures, and recent activity — in one query-less call. " +
 			"Call it when a session opens to orient yourself. Prefer this over broad recall " +
-			"queries at session start.",
+			"queries at session start. scope=subtree also briefs nested namespaces; namespaces " +
+			"briefs an exact read set instead of the default (writes are unaffected).",
 		Annotations: readOnly,
 	}, h.briefing)
 	// memory_answer requires an LLM; only advertise it when one is configured,
@@ -356,14 +358,20 @@ type recallArgs struct {
 	AsOf              string            `json:"as_of,omitempty" jsonschema:"RFC3339 time for time-travel recall (facts true then)"`
 	Namespace         string            `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
+	Namespaces []string `json:"namespaces,omitempty" jsonschema:"search exactly these namespaces instead of the default read set (namespace + global); entry 'ns/*' also includes namespaces nested under ns; max 16; writes are unaffected"`
+	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
 	ResponseFormat string `json:"response_format,omitempty" jsonschema:"'concise' returns summary-or-truncated content (~1 line each; fetch full text with memory_get); 'detailed' (default) returns full content"`
 }
 
 type recallItem struct {
-	ID         string   `json:"id"`
-	Content    string   `json:"content"`
-	Tier       string   `json:"tier"`
-	Level      string   `json:"level,omitempty"`
+	ID      string `json:"id"`
+	Content string `json:"content"`
+	Tier    string `json:"tier"`
+	Level   string `json:"level,omitempty"`
+	// Namespace is read provenance: the namespace the memory lives in. With a
+	// multi-namespace read set (namespaces/scope=subtree) it tells the caller
+	// which partition each hit came from.
+	Namespace  string   `json:"namespace,omitempty"`
 	Score      float64  `json:"score"`
 	Confidence *float64 `json:"confidence,omitempty"`
 	CreatedAt  string   `json:"created_at"`
@@ -396,7 +404,8 @@ func scoredItem(s store.Scored, responseFormat string) recallItem {
 	}
 	return recallItem{
 		ID: s.Memory.ID, Content: content, Tier: string(s.Memory.Tier),
-		Level: string(s.Memory.Level), Score: s.Score, Confidence: s.Memory.Confidence,
+		Level: string(s.Memory.Level), Namespace: s.Memory.Namespace,
+		Score: s.Score, Confidence: s.Memory.Confidence,
 		CreatedAt: s.Memory.CreatedAt.Format(time.RFC3339), Tags: s.Memory.Tags,
 	}
 }
@@ -437,6 +446,7 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 		QueryRewrite:      in.QueryRewrite,
 		Limit:             in.Limit,
 		Subtree:           strings.EqualFold(strings.TrimSpace(in.Scope), "subtree"),
+		Namespaces:        in.Namespaces,
 	}
 	if in.AsOf != "" {
 		asOf, perr := time.Parse(time.RFC3339, in.AsOf)
@@ -469,6 +479,9 @@ type briefingArgs struct {
 	PerSectionProc   *int   `json:"per_section_procedures,omitempty" jsonschema:"max procedural how-to memories; 0 disables"`
 	PerSectionRecent *int   `json:"per_section_recent,omitempty" jsonschema:"max recent episodic entries; 0 disables"`
 	Namespace        string `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+	Scope            string `json:"scope,omitempty" jsonschema:"'subtree' also includes namespaces nested under the namespace; default 'exact'"`
+	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
+	Namespaces []string `json:"namespaces,omitempty" jsonschema:"brief exactly these namespaces instead of the default read set (namespace + global); entry 'ns/*' also includes namespaces nested under ns; max 16; writes are unaffected"`
 }
 
 type briefingResult struct {
@@ -483,8 +496,9 @@ func briefingItems(mems []*memory.Memory) []recallItem {
 	out := make([]recallItem, len(mems))
 	for i, m := range mems {
 		out[i] = recallItem{
-			ID: m.ID, Content: m.Content, Tier: string(m.Tier), Confidence: m.Confidence,
-			CreatedAt: m.CreatedAt.Format(time.RFC3339), Tags: m.Tags,
+			ID: m.ID, Content: m.Content, Tier: string(m.Tier), Namespace: m.Namespace,
+			Confidence: m.Confidence,
+			CreatedAt:  m.CreatedAt.Format(time.RFC3339), Tags: m.Tags,
 		}
 	}
 	return out
@@ -494,6 +508,14 @@ func (t *tools) briefing(ctx context.Context, _ *mcpsdk.CallToolRequest, in brie
 	ns, err := t.ns(in.Namespace)
 	if err != nil {
 		return nil, briefingResult{}, err
+	}
+	var subtree bool
+	switch scope := strings.TrimSpace(in.Scope); {
+	case scope == "" || strings.EqualFold(scope, "exact"):
+	case strings.EqualFold(scope, "subtree"):
+		subtree = true
+	default:
+		return nil, briefingResult{}, fmt.Errorf("invalid scope %q: want exact or subtree", in.Scope)
 	}
 	// PerSection is the default cap applied to any section whose dedicated
 	// per_section_X is unset (nil). Matches the REST /briefing semantics so
@@ -511,6 +533,8 @@ func (t *tools) briefing(ctx context.Context, _ *mcpsdk.CallToolRequest, in brie
 		Facts:      pick(in.PerSectionFacts),
 		Procedures: pick(in.PerSectionProc),
 		Recent:     pick(in.PerSectionRecent),
+		Namespaces: in.Namespaces,
+		Subtree:    subtree,
 	})
 	if err != nil {
 		return nil, briefingResult{}, err

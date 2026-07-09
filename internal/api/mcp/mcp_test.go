@@ -1670,3 +1670,194 @@ func TestRecallAndBriefingIncludeCreatedAtAndTags(t *testing.T) {
 		t.Errorf("briefing did not include our remembered memory")
 	}
 }
+
+// TestRecallExplicitNamespacesViaMCP pins that memory_recall's namespaces
+// argument REPLACES the default read set: results span exactly the listed
+// namespaces (a third namespace never leaks in) and every item carries its
+// source namespace as provenance.
+func TestRecallExplicitNamespacesViaMCP(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	remember := func(ns, content string) {
+		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+			Name:      "memory_remember",
+			Arguments: map[string]any{"content": content, "tier": "semantic", "namespace": ns},
+		}); err != nil {
+			t.Fatalf("remember %s: %v", ns, err)
+		}
+	}
+	remember("team-a", "the deploy pipeline is written in Go")
+	remember("team-b", "the CLI tooling is written in Go")
+	remember("team-c", "this Go namespace must not leak into the read set")
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_recall",
+		Arguments: map[string]any{
+			"query": "Go", "namespace": "team-a",
+			"namespaces": []string{"team-a", "team-b"}, "limit": 10,
+		},
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	var recalled struct {
+		Results []struct {
+			Content   string `json:"content"`
+			Namespace string `json:"namespace"`
+		} `json:"results"`
+	}
+	structured(t, res, &recalled)
+	got := map[string]bool{}
+	for _, r := range recalled.Results {
+		if r.Namespace == "" {
+			t.Errorf("result %q missing namespace provenance", r.Content)
+		}
+		got[r.Namespace] = true
+	}
+	if !got["team-a"] || !got["team-b"] {
+		t.Fatalf("explicit namespaces should span team-a and team-b, got %v", got)
+	}
+	if got["team-c"] {
+		t.Fatalf("team-c is outside the explicit read set, got %v", got)
+	}
+}
+
+// TestRecallNamespacesCapViaMCP pins that more than 16 namespaces entries is a
+// clean tool error (service-side invalid input), never a crash.
+func TestRecallNamespacesCapViaMCP(t *testing.T) {
+	cs := connect(t)
+	over := make([]string, 17)
+	for i := range over {
+		over[i] = fmt.Sprintf("ns-%d", i)
+	}
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "memory_recall",
+		Arguments: map[string]any{"query": "anything", "namespaces": over},
+	})
+	if err != nil {
+		t.Fatalf("recall transport: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("recall with 17 namespaces must be a tool error")
+	}
+	tc, ok := res.Content[0].(*mcpsdk.TextContent)
+	if !ok {
+		t.Fatalf("error content = %T, want *mcpsdk.TextContent", res.Content[0])
+	}
+	if !strings.Contains(tc.Text, "16") {
+		t.Fatalf("error text = %q, want it to mention the 16 entry cap", tc.Text)
+	}
+}
+
+// TestBriefingSubtreeScopeViaMCP pins that memory_briefing scope=subtree also
+// briefs namespaces nested under the request namespace, with per-item
+// namespace provenance, while the default (exact) scope does not.
+func TestBriefingSubtreeScopeViaMCP(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	remember := func(ns, content string) {
+		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+			Name:      "memory_remember",
+			Arguments: map[string]any{"content": content, "tier": "semantic", "namespace": ns},
+		}); err != nil {
+			t.Fatalf("remember %s: %v", ns, err)
+		}
+	}
+	remember("proj", "shared: the service is written in Go")
+	remember("proj/agent-a", "private: agent-a fact")
+
+	type b struct {
+		Facts []struct {
+			Content   string `json:"content"`
+			Namespace string `json:"namespace"`
+		} `json:"facts"`
+	}
+	call := func(args map[string]any) b {
+		res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{Name: "memory_briefing", Arguments: args})
+		if err != nil {
+			t.Fatalf("briefing: %v", err)
+		}
+		var out b
+		structured(t, res, &out)
+		return out
+	}
+
+	exact := call(map[string]any{"namespace": "proj"})
+	if len(exact.Facts) != 1 {
+		t.Fatalf("exact briefing should see only proj's fact, got %+v", exact.Facts)
+	}
+
+	sub := call(map[string]any{"namespace": "proj", "scope": "subtree"})
+	if len(sub.Facts) != 2 {
+		t.Fatalf("subtree briefing should span proj and proj/agent-a, got %+v", sub.Facts)
+	}
+	got := map[string]bool{}
+	for _, f := range sub.Facts {
+		got[f.Namespace] = true
+	}
+	if !got["proj"] || !got["proj/agent-a"] {
+		t.Fatalf("subtree facts should carry namespace provenance for both, got %v", got)
+	}
+}
+
+// TestBriefingExplicitNamespacesViaMCP pins that memory_briefing's namespaces
+// argument REPLACES the default read set: only the listed namespaces are
+// briefed, and the request namespace is not force-added.
+func TestBriefingExplicitNamespacesViaMCP(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	remember := func(ns, content string) {
+		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+			Name:      "memory_remember",
+			Arguments: map[string]any{"content": content, "tier": "semantic", "namespace": ns},
+		}); err != nil {
+			t.Fatalf("remember %s: %v", ns, err)
+		}
+	}
+	remember("team-a", "fact in team-a")
+	remember("team-b", "fact in team-b")
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_briefing",
+		Arguments: map[string]any{"namespace": "team-a", "namespaces": []string{"team-b"}},
+	})
+	if err != nil {
+		t.Fatalf("briefing: %v", err)
+	}
+	var out struct {
+		Facts []struct {
+			Content   string `json:"content"`
+			Namespace string `json:"namespace"`
+		} `json:"facts"`
+	}
+	structured(t, res, &out)
+	if len(out.Facts) != 1 || out.Facts[0].Namespace != "team-b" {
+		t.Fatalf("explicit namespaces should brief exactly team-b, got %+v", out.Facts)
+	}
+}
+
+// TestBriefingInvalidScopeViaMCP pins that an unknown scope value is a tool
+// error rather than being silently treated as exact.
+func TestBriefingInvalidScopeViaMCP(t *testing.T) {
+	cs := connect(t)
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "memory_briefing",
+		Arguments: map[string]any{"scope": "bogus"},
+	})
+	if err != nil {
+		t.Fatalf("briefing transport: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("briefing with invalid scope must be a tool error")
+	}
+	tc, ok := res.Content[0].(*mcpsdk.TextContent)
+	if !ok {
+		t.Fatalf("error content = %T, want *mcpsdk.TextContent", res.Content[0])
+	}
+	if !strings.Contains(tc.Text, "subtree") {
+		t.Fatalf("error text = %q, want it to list the valid scopes", tc.Text)
+	}
+}
