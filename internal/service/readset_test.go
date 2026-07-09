@@ -566,6 +566,89 @@ func TestResolveReadSetLinkIgnoredOnExplicit(t *testing.T) {
 	assertNamespaces(t, got, []string{"A"})
 }
 
+// TestResolveReadSetLinkOverlapWidensTiers: two overlapping links for the
+// same primary (a "/*" pattern link, durable, whose expansion covers an
+// exact-match link, all, on one of its own members) must leave that member
+// with full (all) tier access, not the pattern's narrower durable-only
+// override. store.LinkStore's ListNamespaceLinks returns links ordered by
+// target ("*" sorts before "c", so "b/*" is always processed before "b/c"
+// regardless of which was created first), so this exercises the actual
+// processing order addEntry must handle correctly in both directions.
+func TestResolveReadSetLinkOverlapWidensTiers(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		create1 string // created first
+		create2 string // created second
+	}{
+		{name: "subtree link created first", create1: "b/*", create2: "b/c"},
+		{name: "exact link created first", create1: "b/c", create2: "b/*"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, st := newReadsetSvc(t)
+			seedNamespace(t, st, "b")
+			seedNamespace(t, st, "b/c")
+
+			tiersFor := func(target string) string {
+				if target == "b/c" {
+					return "all"
+				}
+				return "durable"
+			}
+			if err := svc.LinkNamespaces(context.Background(), "A", tc.create1, tiersFor(tc.create1)); err != nil {
+				t.Fatalf("LinkNamespaces %q: %v", tc.create1, err)
+			}
+			if err := svc.LinkNamespaces(context.Background(), "A", tc.create2, tiersFor(tc.create2)); err != nil {
+				t.Fatalf("LinkNamespaces %q: %v", tc.create2, err)
+			}
+
+			got, err := svc.resolveReadSet(context.Background(), readScope{primary: "A"})
+			if err != nil {
+				t.Fatalf("resolveReadSet: %v", err)
+			}
+			var found bool
+			for _, e := range got {
+				if e.ns == "b/c" {
+					found = true
+					if e.tiers != nil {
+						t.Fatalf("b/c tiers = %v, want nil (all, widened from the durable-only subtree link)", e.tiers)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("b/c missing from resolved read set")
+			}
+		})
+	}
+}
+
+// TestResolveReadSetClampKeepsGlobal: a subtree expansion past the 64-entry
+// clamp must not push the global namespace's merged entry off the end; the
+// clamp keeps the front of the slice, so the global entry must be
+// front-ordered (right after primary) before clamping, per promoteGlobal.
+func TestResolveReadSetClampKeepsGlobal(t *testing.T) {
+	svc, st := newReadsetSvc(t, WithGlobalNamespace("global"))
+	seedNamespace(t, st, "global")
+	for i := 0; i < 70; i++ {
+		seedNamespace(t, st, fmt.Sprintf("root/ns%02d", i))
+	}
+	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "root", subtree: true})
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	if len(got) != readSetMaxEntries {
+		t.Fatalf("len(got) = %d, want %d (clamped)", len(got), readSetMaxEntries)
+	}
+	var found bool
+	for _, e := range got {
+		if e.ns == "global" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("global namespace was clamped away")
+	}
+}
+
 // TestResolveReadSetLinkSubtreeTargetExpands: a link to "ns/*" expands to the
 // bare namespace plus every namespace nested under it, sharing the read-set's
 // single lazy ListNamespaces call.

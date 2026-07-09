@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -108,6 +109,7 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	warnings += warnEnvSlashMigration(out, cfg, stats)
 	warnings += printRetrievalScope(cmd.Context(), out, cfg, st, stats, serverNS, pluginNS)
 
 	fmt.Fprintf(out, "Store (%s): reachable, %d namespace(s)\n", cfg.Backend, len(stats)) //nolint:errcheck
@@ -432,8 +434,11 @@ type doctorReadEntry struct {
 //
 // The second return value lists redundant-configuration notes: an env/link
 // entry naming primary itself (a no-op, since primary is already included),
-// or two different sources naming the same namespace (the later one has no
-// effect; the earlier source's tier access wins).
+// or two different sources naming the same namespace (redundant, but when
+// the later source grants "all" tiers and the earlier one only "durable",
+// the entry is widened to "all" in place rather than narrowed, mirroring
+// resolveDefaultReadSet's addEntry: the widest tier access any source grants
+// always wins, regardless of order).
 func resolveDoctorReadSet(primary string, readNamespaces []string, globalNamespace string, links []store.NamespaceLink, allNamespaces []string) ([]doctorReadEntry, []string) {
 	entries := []doctorReadEntry{{ns: primary, tiers: "all", source: "default"}}
 	seen := map[string]bool{primary: true}
@@ -444,9 +449,17 @@ func resolveDoctorReadSet(primary string, readNamespaces []string, globalNamespa
 		if seen[ns] {
 			if ns == primary {
 				notes = append(notes, fmt.Sprintf("%s names %q, which is already the request namespace (no effect)", desc, ns))
-			} else {
-				notes = append(notes, fmt.Sprintf("%s names %q, already in the read set via %s (redundant)", desc, ns, claimedBy[ns]))
+				return
 			}
+			if tiers == "all" {
+				for i := range entries {
+					if entries[i].ns == ns {
+						entries[i].tiers = "all"
+						break
+					}
+				}
+			}
+			notes = append(notes, fmt.Sprintf("%s names %q, already in the read set via %s (redundant)", desc, ns, claimedBy[ns]))
 			return
 		}
 		seen[ns] = true
@@ -524,6 +537,33 @@ func printNamespaceLinks(out io.Writer, ns string, links []store.NamespaceLink) 
 	for _, l := range links {
 		fmt.Fprintf(out, "    -> %s (tiers=%s)\n", l.Target, l.Tiers) //nolint:errcheck
 	}
+}
+
+// warnEnvSlashMigration flags a migration hazard fixed alongside read sets:
+// MEMINI_DEFAULT_NAMESPACE / MEMINI_NAMESPACE values containing "/" (e.g.
+// "team/project") used to be flattened to their basename ("project"); they
+// are now preserved as-is (see config.sanitizeNamespacePath). A deployment
+// upgrading across that fix now reads/writes the full path, "team/project",
+// while pre-upgrade data may still sit under the old basename, "project";
+// two namespaces silently diverging unless the operator notices. Only fires
+// when the basename actually holds memories; a fresh deployment (or one that
+// already migrated) has nothing there and gets no warning.
+func warnEnvSlashMigration(out io.Writer, cfg *config.Config, stats []nsStat) int {
+	if cfg.NamespaceSrc != config.NamespaceFromEnv || !strings.Contains(cfg.DefaultNamespace, "/") {
+		return 0
+	}
+	basename := filepath.Base(cfg.DefaultNamespace)
+	if basename == cfg.DefaultNamespace || basename == "." || basename == string(filepath.Separator) {
+		return 0
+	}
+	total, ok := statsTotal(stats, basename)
+	if !ok || total == 0 {
+		return 0
+	}
+	warnf(out, "MEMINI_DEFAULT_NAMESPACE %q contains \"/\"; older memini versions flattened this to %q, "+
+		"which still holds %d memories, while reads/writes now go to %q.", cfg.DefaultNamespace, basename, total, cfg.DefaultNamespace)
+	note(out, fmt.Sprintf("Merge the old data forward with: memini namespace move --from %s --to %s", basename, cfg.DefaultNamespace))
+	return 1
 }
 
 // printRetrievalScope reports the read-set inputs (MEMINI_GLOBAL_NAMESPACE,

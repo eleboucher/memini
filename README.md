@@ -315,7 +315,10 @@ projects without per-project config.
 
 Namespace values from env (`MEMINI_NAMESPACE`, `MEMINI_DEFAULT_NAMESPACE`) may contain
 `/`, e.g. `project/agent`, and are preserved as-is; only git- and cwd-derived values are
-reduced to a basename.
+reduced to a basename. Older memini versions flattened a slash-containing env value to
+its basename too; if you are upgrading from one of those and `memini doctor` warns that
+your old basename namespace still holds memories, merge it forward with `memini
+namespace move --from <basename> --to <full-path>`.
 
 When the header is absent (for example a stdio MCP launch without the plugin, or an HTTP
 call that forgot to set it), the server falls back to a similar resolver at startup time,
@@ -362,9 +365,15 @@ simple and isolated while letting reads pull in related context on purpose.
 
 **Per-call `namespaces`** (recall, briefing, and `POST /v1/search`): passing a
 `namespaces` list replaces the default read set entirely with exactly those
-namespaces, in the order given. An entry ending in `/*` also includes every namespace
+namespaces, in first-occurrence order, except the request namespace, if included, is
+always moved to the front. An entry ending in `/*` also includes every namespace
 nested under it. Max 16 entries; the request namespace is not force-added, so include
 it explicitly if you still want it searched. Writes are never affected either way.
+
+However it's composed, the fully resolved read set is capped at 64 entries after
+subtree/pattern expansion; an oversized set is clamped to the front (primary and the
+global namespace protected first) with a logged warning, and `memini doctor` reports
+when a configured read set exceeds the cap.
 
 **Namespace links** are a persistent, read-only attachment: `memini namespace link
 --from A --to B` makes A's default read set also see B, one hop only (B's own links

@@ -268,6 +268,101 @@ func TestResolveDoctorReadSetSelfEntryNote(t *testing.T) {
 	}
 }
 
+// TestResolveDoctorReadSetLinkOverlapWidensTiers mirrors
+// internal/service's TestResolveReadSetLinkOverlapWidensTiers: two
+// overlapping links for the same primary (a "/*" pattern link, durable,
+// whose subtree expansion covers an exact-match link, all, on one of its own
+// members) must leave that member with "all" tier access, not the
+// pattern's narrower "durable" override, regardless of which order the
+// links list carries them in.
+func TestResolveDoctorReadSetLinkOverlapWidensTiers(t *testing.T) {
+	subtreeLink := store.NamespaceLink{Namespace: "proj", Target: "b/*", Tiers: "durable"}
+	exactLink := store.NamespaceLink{Namespace: "proj", Target: "b/c", Tiers: "all"}
+	all := []string{"proj", "b", "b/c"}
+
+	for _, tc := range []struct {
+		name  string
+		links []store.NamespaceLink
+	}{
+		{name: "pattern link first", links: []store.NamespaceLink{subtreeLink, exactLink}},
+		{name: "exact link first", links: []store.NamespaceLink{exactLink, subtreeLink}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entries, _ := resolveDoctorReadSet("proj", nil, "", tc.links, all)
+			var found bool
+			for _, e := range entries {
+				if e.ns == "b/c" {
+					found = true
+					if e.tiers != "all" {
+						t.Fatalf("b/c tiers = %q, want %q (widened from the durable subtree link)", e.tiers, "all")
+					}
+				}
+			}
+			if !found {
+				t.Fatal("b/c missing from resolved read set")
+			}
+		})
+	}
+}
+
+// TestWarnEnvSlashMigration: an env-sourced default namespace containing "/"
+// whose pre-fix, basename-flattened namespace still holds memories triggers
+// a warning naming the remediation command; a fresh namespace (no memories
+// under the old basename) or a non-slash / non-env-sourced namespace stays
+// silent.
+func TestWarnEnvSlashMigration(t *testing.T) {
+	t.Run("warns when the flattened basename holds memories", func(t *testing.T) {
+		st := openTestStore(t)
+		seedPool(t, st, "project", 3, 0) // pre-fix flattened basename
+		stats := statsFor(t, st)
+		cfg := &config.Config{DefaultNamespace: "team/project", NamespaceSrc: config.NamespaceFromEnv}
+		var out bytes.Buffer
+		if n := warnEnvSlashMigration(&out, cfg, stats); n != 1 {
+			t.Fatalf("warnings = %d, want 1", n)
+		}
+		got := out.String()
+		if !strings.Contains(got, `"team/project"`) || !strings.Contains(got, `"project"`) {
+			t.Errorf("expected both namespaces named in the warning, got:\n%s", got)
+		}
+		if !strings.Contains(got, "memini namespace move --from project --to team/project") {
+			t.Errorf("expected the remediation command, got:\n%s", got)
+		}
+	})
+
+	t.Run("silent when the basename has no memories", func(t *testing.T) {
+		st := openTestStore(t)
+		seedPool(t, st, "team/project", 1, 0) // already fully migrated
+		stats := statsFor(t, st)
+		cfg := &config.Config{DefaultNamespace: "team/project", NamespaceSrc: config.NamespaceFromEnv}
+		var out bytes.Buffer
+		if n := warnEnvSlashMigration(&out, cfg, stats); n != 0 {
+			t.Fatalf("warnings = %d, want 0, output:\n%s", n, out.String())
+		}
+	})
+
+	t.Run("silent when the namespace has no slash", func(t *testing.T) {
+		st := openTestStore(t)
+		seedPool(t, st, "project", 1, 0)
+		stats := statsFor(t, st)
+		cfg := &config.Config{DefaultNamespace: "project", NamespaceSrc: config.NamespaceFromEnv}
+		var out bytes.Buffer
+		if n := warnEnvSlashMigration(&out, cfg, stats); n != 0 {
+			t.Fatalf("warnings = %d, want 0, output:\n%s", n, out.String())
+		}
+	})
+
+	t.Run("silent when the namespace source is not env", func(t *testing.T) {
+		st := openTestStore(t)
+		seedPool(t, st, "project", 1, 0)
+		stats := statsFor(t, st)
+		cfg := &config.Config{DefaultNamespace: "team/project", NamespaceSrc: config.NamespaceFromGit}
+		var out bytes.Buffer
+		if n := warnEnvSlashMigration(&out, cfg, stats); n != 0 {
+			t.Fatalf("warnings = %d, want 0, output:\n%s", n, out.String())
+		}
+	})
+}
+
 func TestStatsTotal(t *testing.T) {
 	stats := []nsStat{{namespace: "a", total: 3}, {namespace: "b", total: 0}}
 	if total, ok := statsTotal(stats, "a"); total != 3 || !ok {
