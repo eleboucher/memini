@@ -35,9 +35,11 @@ type readScope struct {
 //     addGlobalNamespace performed before this mechanism existed.
 //
 // The primary namespace, when present in the result, is always ordered first
-// and is never dropped by the post-expansion clamp. At most one ListNamespaces
-// call is made — shared by subtree expansion and every "/*" pattern — and none
-// when neither is present.
+// and is never dropped by the post-expansion clamp; the configured global
+// namespace (default path only) is front-ordered right after it for the same
+// reason (see promoteGlobal). At most one ListNamespaces call is made —
+// shared by subtree expansion and every "/*" pattern — and none when neither
+// is present.
 func (s *Service) resolveReadSet(ctx context.Context, sc readScope) ([]scopeEntry, error) {
 	var entries []scopeEntry
 	var err error
@@ -93,13 +95,24 @@ func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]sc
 		entries[i] = scopeEntry{ns: n}
 	}
 
-	// addEntry merges ns into entries with the given tier override unless it's
+	// addEntry merges ns into entries with the given tier override. When ns is
 	// already present (primary, a subtree member, or an earlier merge leg),
-	// which always keeps the wider (nil-tiers) entry rather than narrowing it.
+	// the wider entry always wins: an incoming nil (full) tier override
+	// widens an existing narrower one in place, but a narrower incoming
+	// override never displaces an existing nil one. This holds regardless of
+	// merge-leg order: e.g. two overlapping namespace links, one a "/*"
+	// pattern (durable) and one an exact match (all), so link ordering can
+	// never narrow access below what any single source grants.
 	addEntry := func(ns string, tiers []memory.Tier) {
-		if !containsNamespace(entries, ns) {
-			entries = append(entries, scopeEntry{ns: ns, tiers: tiers})
+		for i := range entries {
+			if entries[i].ns == ns {
+				if tiers == nil {
+					entries[i].tiers = nil
+				}
+				return
+			}
 		}
+		entries = append(entries, scopeEntry{ns: ns, tiers: tiers})
 	}
 
 	gt := durableTiers(sc.reqTiers)
@@ -150,7 +163,7 @@ func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]sc
 		// No durable tier is admitted, so every remaining merge leg (global,
 		// read-namespaces — both always durable-only) would search nothing —
 		// skip them without an unnecessary ListNamespaces call.
-		return entries, nil
+		return promoteGlobal(entries, s.globalNamespace), nil
 	}
 	// addDurable merges ns as a durable-only leg — see addEntry above.
 	addDurable := func(ns string) { addEntry(ns, gt) }
@@ -177,7 +190,7 @@ func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]sc
 		}
 	}
 
-	return entries, nil
+	return promoteGlobal(entries, s.globalNamespace), nil
 }
 
 // subtreeFrom filters all to root and every namespace nested under it (root +
@@ -201,8 +214,8 @@ func subtreeFrom(all []string, root string) []string {
 // that happens to name the global namespace — keeps nil tiers, i.e. the
 // request's own tier filter, not the default merge's durable-only override.
 func (s *Service) resolveExplicitReadSet(ctx context.Context, raw []string) ([]scopeEntry, error) {
-	if len(raw) > 16 {
-		return nil, invalidInputf("read-set: %d namespaces exceeds the 16 entry cap", len(raw))
+	if len(raw) > readSetMaxExplicit {
+		return nil, invalidInputf("read-set: %d namespaces exceeds the %d entry cap", len(raw), readSetMaxExplicit)
 	}
 
 	// All "/*" patterns share one ListNamespaces call, fetched lazily so a
@@ -252,15 +265,33 @@ func (s *Service) resolveExplicitReadSet(ctx context.Context, raw []string) ([]s
 	return entries, nil
 }
 
-// containsNamespace reports whether entries already holds ns, regardless of
-// its tier override.
-func containsNamespace(entries []scopeEntry, ns string) bool {
-	for _, e := range entries {
-		if e.ns == ns {
-			return true
+// promoteGlobal moves the global namespace's entry (when present, and not
+// already primary) to immediately after primary, so the post-expansion clamp
+// (which keeps the front of the slice) never drops it out from behind a
+// large subtree/pattern expansion. Safe regardless of position: addEntry
+// above only ever widens an existing entry, never narrows it, so moving an
+// entry earlier cannot change its tier access, only guarantee it survives
+// the clamp. A no-op when globalNamespace is unset, absent from entries, or
+// already at (or before) index 1.
+func promoteGlobal(entries []scopeEntry, globalNamespace string) []scopeEntry {
+	if globalNamespace == "" || len(entries) < 3 {
+		return entries
+	}
+	idx := -1
+	for i := 2; i < len(entries); i++ { // index 0 is primary, index 1 is already promoted
+		if entries[i].ns == globalNamespace {
+			idx = i
+			break
 		}
 	}
-	return false
+	if idx < 0 {
+		return entries
+	}
+	out := make([]scopeEntry, 0, len(entries))
+	out = append(out, entries[0], entries[idx])
+	out = append(out, entries[1:idx]...)
+	out = append(out, entries[idx+1:]...)
+	return out
 }
 
 // primaryFirst moves primary's entry to the front when present, preserving

@@ -68,9 +68,14 @@ const (
 	recallSearchConcurrency = 16
 
 	// readSetMaxEntries caps a read-set after subtree/pattern expansion (raw
-	// per-call namespace lists are capped separately, at 16, before expansion).
-	// A read-set over the cap is clamped, keeping the primary namespace first.
+	// per-call namespace lists are capped separately, at readSetMaxExplicit,
+	// before expansion). A read-set over the cap is clamped, keeping the
+	// primary namespace first.
 	readSetMaxEntries = 64
+
+	// readSetMaxExplicit caps the raw per-call namespaces list before
+	// subtree/pattern expansion; see resolveExplicitReadSet.
+	readSetMaxExplicit = 16
 
 	// maxNamespaceLinks caps how many outgoing links a namespace may declare,
 	// enforced at link-create time (an upsert of an already-linked target
