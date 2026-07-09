@@ -404,13 +404,14 @@ func printWritePathSignals(out io.Writer, stats []nsStat) {
 		corroborated, memory.ConfidenceSeedFresh)
 }
 
+// nsStat is the per-namespace summary doctor reports.
+
 // doctorReadSetClamp mirrors internal/service/service.go's unexported
 // readSetMaxEntries: the entry count a live read-set expansion clamps to.
 // Duplicated here (rather than exported) because doctor reconstructs the
-// resolver's logic wholesale (see resolveDoctorReadSet), following the same
-// precedent as the namespace-divergence check above, which mirrors
-// config.ResolvePluginNamespace's resolution order instead of calling into a
-// running server.
+// resolver's logic wholesale, following the same precedent as the
+// namespace-divergence check that mirrors config.ResolvePluginNamespace's
+// resolution order instead of calling into a running server.
 const doctorReadSetClamp = 64
 
 // doctorReadEntry is one namespace in doctor's reconstruction of a plain
@@ -418,7 +419,7 @@ const doctorReadSetClamp = 64
 type doctorReadEntry struct {
 	ns     string
 	tiers  string // "all" (the request's own tier filter) or "durable" (semantic+procedural only)
-	source string // "default", "subtree-pattern", "env", "link", "global"
+	source string // "default", "global", "env"
 }
 
 // resolveDoctorReadSet reconstructs the default read set for primary,
@@ -527,18 +528,6 @@ func orUnsetList(vs []string) string {
 	return strings.Join(vs, ", ")
 }
 
-// printNamespaceLinks prints ns's outgoing persistent links, or "none".
-func printNamespaceLinks(out io.Writer, ns string, links []store.NamespaceLink) {
-	if len(links) == 0 {
-		fmt.Fprintf(out, "  links (%s): none\n", ns) //nolint:errcheck
-		return
-	}
-	fmt.Fprintf(out, "  links (%s):\n", ns) //nolint:errcheck
-	for _, l := range links {
-		fmt.Fprintf(out, "    -> %s (tiers=%s)\n", l.Target, l.Tiers) //nolint:errcheck
-	}
-}
-
 // warnEnvSlashMigration flags a migration hazard fixed alongside read sets:
 // MEMINI_DEFAULT_NAMESPACE / MEMINI_NAMESPACE values containing "/" (e.g.
 // "team/project") used to be flattened to their basename ("project"); they
@@ -567,44 +556,19 @@ func warnEnvSlashMigration(out io.Writer, cfg *config.Config, stats []nsStat) in
 }
 
 // printRetrievalScope reports the read-set inputs (MEMINI_GLOBAL_NAMESPACE,
-// MEMINI_READ_NAMESPACES, persistent namespace links) and the resolved
+// MEMINI_READ_NAMESPACES) and the resolved
 // effective read set for the plugin-resolved namespace, so "why does recall
-// see/miss X" is answerable without reading the resolver's source. Degrades
-// gracefully when the backend doesn't implement store.LinkStore: the links
-// lines note that instead of failing, and the effective read set is still
-// shown (env + global only, since no links can be consulted).
+// see/miss X" is answerable without reading the resolver's source.
 func printRetrievalScope(ctx context.Context, out io.Writer, cfg *config.Config, st store.Store, stats []nsStat, serverNS, pluginNS string) int {
 	var warnings int
+	//nolint:ctxcheck
 	fmt.Fprintln(out, "Retrieval scope")                                                 //nolint:errcheck
 	fmt.Fprintf(out, "  MEMINI_GLOBAL_NAMESPACE: %s\n", orUnset(cfg.GlobalNamespace))    //nolint:errcheck
 	fmt.Fprintf(out, "  MEMINI_READ_NAMESPACES:  %s\n", orUnsetList(cfg.ReadNamespaces)) //nolint:errcheck
 
-	var pluginLinks []store.NamespaceLink
-	if ls, ok := st.(store.LinkStore); !ok {
-		fmt.Fprintln(out, "  links: not supported by this backend") //nolint:errcheck
-	} else {
-		serverLinks, err := ls.ListNamespaceLinks(ctx, serverNS)
-		if err != nil {
-			warnings++
-			warnf(out, "cannot list links for %q: %v", serverNS, err)
-		} else {
-			printNamespaceLinks(out, serverNS, serverLinks)
-		}
-		if pluginNS == serverNS {
-			pluginLinks = serverLinks
-		} else if pluginLinks, err = ls.ListNamespaceLinks(ctx, pluginNS); err != nil {
-			warnings++
-			warnf(out, "cannot list links for %q: %v", pluginNS, err)
-		} else {
-			printNamespaceLinks(out, pluginNS, pluginLinks)
-		}
-	}
-
-	allNamespaces := make([]string, len(stats))
-	for i, s := range stats {
-		allNamespaces[i] = s.namespace
-	}
-	entries, notes := resolveDoctorReadSet(pluginNS, cfg.ReadNamespaces, cfg.GlobalNamespace, pluginLinks, allNamespaces)
+	// Without persistent links, the read set is purely the request namespace
+	// plus optional global / env entries.
+	entries, notes := resolveDoctorReadSet(pluginNS, cfg.ReadNamespaces, cfg.GlobalNamespace, nil, nil)
 
 	fmt.Fprintf(out, "  effective read set for %q (plain recall/briefing, no per-call namespaces list):\n", pluginNS) //nolint:errcheck
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)

@@ -36,42 +36,6 @@ func (e Level) Valid() bool {
 	}
 }
 
-// Defines values for NamespaceLinkTiers.
-const (
-	NamespaceLinkTiersAll     NamespaceLinkTiers = "all"
-	NamespaceLinkTiersDurable NamespaceLinkTiers = "durable"
-)
-
-// Valid indicates whether the value is a known member of the NamespaceLinkTiers enum.
-func (e NamespaceLinkTiers) Valid() bool {
-	switch e {
-	case NamespaceLinkTiersAll:
-		return true
-	case NamespaceLinkTiersDurable:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for PutNamespaceLinkRequestTiers.
-const (
-	PutNamespaceLinkRequestTiersAll     PutNamespaceLinkRequestTiers = "all"
-	PutNamespaceLinkRequestTiersDurable PutNamespaceLinkRequestTiers = "durable"
-)
-
-// Valid indicates whether the value is a known member of the PutNamespaceLinkRequestTiers enum.
-func (e PutNamespaceLinkRequestTiers) Valid() bool {
-	switch e {
-	case PutNamespaceLinkRequestTiersAll:
-		return true
-	case PutNamespaceLinkRequestTiersDurable:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for SearchRequestScope.
 const (
 	SearchRequestScopeExact   SearchRequestScope = "exact"
@@ -290,38 +254,10 @@ type MergeHint struct {
 	Tier      *Tier   `json:"tier,omitempty"`
 }
 
-// NamespaceLink defines model for NamespaceLink.
-type NamespaceLink struct {
-	CreatedAt time.Time `json:"created_at"`
-
-	// Target The linked (read-only) namespace.
-	Target string `json:"target"`
-
-	// Tiers "durable" (default) surfaces only the target's semantic/procedural memories; "all" also surfaces episodic/working.
-	Tiers NamespaceLinkTiers `json:"tiers"`
-}
-
-// NamespaceLinkTiers "durable" (default) surfaces only the target's semantic/procedural memories; "all" also surfaces episodic/working.
-type NamespaceLinkTiers string
-
-// NamespaceLinksResponse defines model for NamespaceLinksResponse.
-type NamespaceLinksResponse struct {
-	Links []NamespaceLink `json:"links"`
-}
-
 // NamespacesResponse defines model for NamespacesResponse.
 type NamespacesResponse struct {
 	Namespaces []string `json:"namespaces"`
 }
-
-// PutNamespaceLinkRequest defines model for PutNamespaceLinkRequest.
-type PutNamespaceLinkRequest struct {
-	// Tiers Omit for the default, "durable".
-	Tiers *PutNamespaceLinkRequestTiers `json:"tiers,omitempty"`
-}
-
-// PutNamespaceLinkRequestTiers Omit for the default, "durable".
-type PutNamespaceLinkRequestTiers string
 
 // RememberRequest defines model for RememberRequest.
 type RememberRequest struct {
@@ -394,7 +330,7 @@ type SearchRequest struct {
 	// MinScore Per-call relevance floor on the fused score. Candidates below it are dropped server-side before re-ranking. 0 (or unset) falls back to the server's baked relevance floor (0.1). Only meaningful with score fusion (RRF scores are not comparable to this threshold).
 	MinScore *float64 `json:"min_score,omitempty"`
 
-	// Namespaces Search exactly these namespaces instead of the default read set (the request namespace, its subtree/links/env-configured namespaces, and the global namespace). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected.
+	// Namespaces Search exactly these namespaces instead of the default read set (the request namespace, its subtree, and the global namespace). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected.
 	Namespaces *[]string `json:"namespaces,omitempty"`
 	Query      string    `json:"query"`
 
@@ -577,20 +513,12 @@ type GetBriefingParams struct {
 	// Scope exact (default) briefs only the namespace; subtree also includes namespaces nested under it ("project" reads "project/agent"). Any value other than "exact" or "subtree" is rejected with 400.
 	Scope *GetBriefingParamsScope `form:"scope,omitempty" json:"scope,omitempty"`
 
-	// Namespaces Repeatable. Brief exactly these namespaces instead of the default read set (the namespace, its subtree/links/env-configured namespaces, and the global namespace). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected.
+	// Namespaces Repeatable. Brief exactly these namespaces instead of the default read set (the namespace, its subtree, and the global namespace). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected.
 	Namespaces *[]string `form:"namespaces,omitempty" json:"namespaces,omitempty"`
 }
 
 // GetBriefingParamsScope defines parameters for GetBriefing.
 type GetBriefingParamsScope string
-
-// MoveNamespaceJSONBody defines parameters for MoveNamespace.
-type MoveNamespaceJSONBody struct {
-	DryRun *bool `json:"dry_run,omitempty"`
-
-	// To Target namespace.
-	To string `json:"to"`
-}
 
 // SplitNamespaceJSONBody defines parameters for SplitNamespace.
 type SplitNamespaceJSONBody struct {
@@ -628,12 +556,6 @@ type ReassignMemoryJSONRequestBody ReassignMemoryJSONBody
 
 // SupersedeMemoryJSONRequestBody defines body for SupersedeMemory for application/json ContentType.
 type SupersedeMemoryJSONRequestBody = SupersedeRequest
-
-// PutNamespaceLinkJSONRequestBody defines body for PutNamespaceLink for application/json ContentType.
-type PutNamespaceLinkJSONRequestBody = PutNamespaceLinkRequest
-
-// MoveNamespaceJSONRequestBody defines body for MoveNamespace for application/json ContentType.
-type MoveNamespaceJSONRequestBody MoveNamespaceJSONBody
 
 // SplitNamespaceJSONRequestBody defines body for SplitNamespace for application/json ContentType.
 type SplitNamespaceJSONRequestBody SplitNamespaceJSONBody
@@ -685,18 +607,6 @@ type ServerInterface interface {
 	// Layered session-start briefing for a namespace
 	// (GET /v1/namespaces/{name}/briefing)
 	GetBriefing(w http.ResponseWriter, r *http.Request, name string, params GetBriefingParams)
-	// List a namespace's outgoing read-only links
-	// (GET /v1/namespaces/{name}/links)
-	ListNamespaceLinks(w http.ResponseWriter, r *http.Request, name string)
-	// Remove a read-only link
-	// (DELETE /v1/namespaces/{name}/links/{target})
-	DeleteNamespaceLink(w http.ResponseWriter, r *http.Request, name string, target string)
-	// Create or update a read-only link from `name` to `target`
-	// (PUT /v1/namespaces/{name}/links/{target})
-	PutNamespaceLink(w http.ResponseWriter, r *http.Request, name string, target string)
-	// Move every memory from one namespace to another
-	// (POST /v1/namespaces/{name}/move)
-	MoveNamespace(w http.ResponseWriter, r *http.Request, name string)
 	// Split a namespace by metadata keys
 	// (POST /v1/namespaces/{name}/split)
 	SplitNamespace(w http.ResponseWriter, r *http.Request, name string)
@@ -793,30 +703,6 @@ func (_ Unimplemented) DeleteNamespace(w http.ResponseWriter, r *http.Request, n
 // Layered session-start briefing for a namespace
 // (GET /v1/namespaces/{name}/briefing)
 func (_ Unimplemented) GetBriefing(w http.ResponseWriter, r *http.Request, name string, params GetBriefingParams) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// List a namespace's outgoing read-only links
-// (GET /v1/namespaces/{name}/links)
-func (_ Unimplemented) ListNamespaceLinks(w http.ResponseWriter, r *http.Request, name string) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// Remove a read-only link
-// (DELETE /v1/namespaces/{name}/links/{target})
-func (_ Unimplemented) DeleteNamespaceLink(w http.ResponseWriter, r *http.Request, name string, target string) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// Create or update a read-only link from `name` to `target`
-// (PUT /v1/namespaces/{name}/links/{target})
-func (_ Unimplemented) PutNamespaceLink(w http.ResponseWriter, r *http.Request, name string, target string) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// Move every memory from one namespace to another
-// (POST /v1/namespaces/{name}/move)
-func (_ Unimplemented) MoveNamespace(w http.ResponseWriter, r *http.Request, name string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1704,111 +1590,6 @@ func (siw *ServerInterfaceWrapper) GetBriefing(w http.ResponseWriter, r *http.Re
 	handler.ServeHTTP(w, r)
 }
 
-// ListNamespaceLinks operation middleware
-func (siw *ServerInterfaceWrapper) ListNamespaceLinks(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "name" -------------
-	var name string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ListNamespaceLinks(w, r, name)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// MoveNamespace operation middleware
-func (siw *ServerInterfaceWrapper) MoveNamespace(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "name" -------------
-	var name string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.MoveNamespace(w, r, name)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// DeleteNamespaceLink operation middleware
-func (siw *ServerInterfaceWrapper) DeleteNamespaceLink(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "name" -------------
-	var name string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
-		return
-	}
-
-	// ------------- Path parameter "target" -------------
-	var target string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "target", chi.URLParam(r, "target"), &target, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "target", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.DeleteNamespaceLink(w, r, name, target)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // SplitNamespace operation middleware
 func (siw *ServerInterfaceWrapper) SplitNamespace(w http.ResponseWriter, r *http.Request) {
 
@@ -1832,47 +1613,6 @@ func (siw *ServerInterfaceWrapper) SplitNamespace(w http.ResponseWriter, r *http
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SplitNamespace(w, r, name)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// PutNamespaceLink operation middleware
-func (siw *ServerInterfaceWrapper) PutNamespaceLink(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "name" -------------
-	var name string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
-		return
-	}
-
-	// ------------- Path parameter "target" -------------
-	var target string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "target", chi.URLParam(r, "target"), &target, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "target", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.PutNamespaceLink(w, r, name, target)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2143,18 +1883,6 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/namespaces/{name}/briefing", wrapper.GetBriefing)
-	})
-	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/v1/namespaces/{name}/links", wrapper.ListNamespaceLinks)
-	})
-	r.Group(func(r chi.Router) {
-		r.Delete(options.BaseURL+"/v1/namespaces/{name}/links/{target}", wrapper.DeleteNamespaceLink)
-	})
-	r.Group(func(r chi.Router) {
-		r.Put(options.BaseURL+"/v1/namespaces/{name}/links/{target}", wrapper.PutNamespaceLink)
-	})
-	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/v1/namespaces/{name}/move", wrapper.MoveNamespace)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/namespaces/{name}/split", wrapper.SplitNamespace)

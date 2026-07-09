@@ -385,45 +385,23 @@ func TestOrUnsetList(t *testing.T) {
 	}
 }
 
-// TestPrintRetrievalScopeReportsDanglingLinkAndClamp: an end-to-end smoke of
-// printRetrievalScope against a real store, covering the dangling-target
-// warning (a linked namespace with zero memories) and the section header /
-// table it prints.
-func TestPrintRetrievalScopeReportsDanglingLinkAndClamp(t *testing.T) {
-	st := openTestStore(t)
-	seedPool(t, st, "proj", 2, 0)
-	// "empty-target" is linked but never written to -> dangling.
-	svc := linkService(st)
-	if err := svc.LinkNamespaces(context.Background(), "proj", "empty-target", "durable"); err != nil {
-		t.Fatalf("link: %v", err)
-	}
-	stats := statsFor(t, st)
-
-	cfg := &config.Config{}
-	var out bytes.Buffer
-	warnings := printRetrievalScope(context.Background(), &out, cfg, st, stats, "proj", "proj")
-	got := out.String()
-	if !strings.Contains(got, "Retrieval scope") {
-		t.Errorf("missing section header:\n%s", got)
-	}
-	if !strings.Contains(got, "empty-target") {
-		t.Errorf("missing linked namespace in output:\n%s", got)
-	}
-	if !strings.Contains(got, "0 memories") {
-		t.Errorf("expected a dangling-target warning:\n%s", got)
-	}
-	if warnings < 1 {
-		t.Errorf("expected at least 1 warning for the dangling link, got %d", warnings)
-	}
+// TestPrintRetrievalScopeReportsDanglingLinkAndClamp has been removed with namespace link support.
+func _TestPrintRetrievalScopeReportsDanglingLinkAndClamp(t *testing.T) {
+	t.Skip("removed with namespace link support")
 }
 
 // TestPrintRetrievalScopeDegradesWithoutLinkStore: a store that doesn't
-// implement store.LinkStore is handled gracefully, not with a panic or error.
+// implement store.LinkStore is handled gracefully (links are no longer
+// reported, so the function just shows global/read-namespaces only).
 func TestPrintRetrievalScopeDegradesWithoutLinkStore(t *testing.T) {
 	var out bytes.Buffer
 	warnings := printRetrievalScope(context.Background(), &out, &config.Config{}, noLinkStore{}, nil, "proj", "proj")
-	if !strings.Contains(out.String(), "not supported by this backend") {
-		t.Errorf("expected a not-supported note, got:\n%s", out.String())
+	got := out.String()
+	if !strings.Contains(got, "Retrieval scope") {
+		t.Errorf("missing section header, got:\n%s", got)
+	}
+	if !strings.Contains(got, "proj") {
+		t.Errorf("missing request namespace, got:\n%s", got)
 	}
 	if warnings != 0 {
 		t.Errorf("expected no warnings from a bare default-only read set, got %d", warnings)

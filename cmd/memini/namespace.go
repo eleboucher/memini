@@ -5,23 +5,19 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/eleboucher/memini/internal/config"
 	"github.com/eleboucher/memini/internal/maintenance"
-	"github.com/eleboucher/memini/internal/service"
 	"github.com/eleboucher/memini/internal/store"
 )
 
 var (
-	nsFrom      string
-	nsTo        string
-	nsByCSV     string
-	nsDryRun    bool
-	nsLinkTiers string
-	nsNamespace string
+	nsFrom   string
+	nsTo     string
+	nsByCSV  string
+	nsDryRun bool
 )
 
 var namespaceCmd = &cobra.Command{
@@ -50,28 +46,6 @@ var namespaceSplitCmd = &cobra.Command{
 	RunE: runNamespaceSplit,
 }
 
-var namespaceLinkCmd = &cobra.Command{
-	Use:   "link",
-	Short: "Attach a read-only namespace link (reads only — writes always land in the request namespace)",
-	Long: "Reads in --from's default read set (recall/briefing without an explicit per-call " +
-		"namespaces list) will also see --to. 1-hop only: --to's own links are never followed, " +
-		"so linking A to B does not also expose whatever B links to. Idempotent: running it again " +
-		"for the same --from/--to with a different --tiers overwrites rather than duplicating.",
-	RunE: runNamespaceLink,
-}
-
-var namespaceUnlinkCmd = &cobra.Command{
-	Use:   "unlink",
-	Short: "Remove a namespace link",
-	RunE:  runNamespaceUnlink,
-}
-
-var namespaceLinksCmd = &cobra.Command{
-	Use:   "links",
-	Short: "List namespace links (every namespace, or one with --namespace)",
-	RunE:  runNamespaceLinks,
-}
-
 func init() {
 	namespaceMoveCmd.Flags().StringVar(&nsFrom, "from", "", "source namespace (required)")
 	namespaceMoveCmd.Flags().StringVar(&nsTo, "to", "", "destination namespace (required)")
@@ -85,23 +59,7 @@ func init() {
 	namespaceSplitCmd.Flags().BoolVar(&nsDryRun, "dry-run", false, "report the split without writing")
 	_ = namespaceSplitCmd.MarkFlagRequired("from")
 
-	namespaceLinkCmd.Flags().StringVar(&nsFrom, "from", "", "namespace whose read set expands (required)")
-	namespaceLinkCmd.Flags().StringVar(&nsTo, "to", "",
-		"namespace to attach read-only; \"ns/*\" also includes namespaces nested under ns (required)")
-	namespaceLinkCmd.Flags().StringVar(&nsLinkTiers, "tiers", "durable",
-		`"durable" (default: semantic+procedural only) or "all"`)
-	_ = namespaceLinkCmd.MarkFlagRequired("from")
-	_ = namespaceLinkCmd.MarkFlagRequired("to")
-
-	namespaceUnlinkCmd.Flags().StringVar(&nsFrom, "from", "", "namespace the link is removed from (required)")
-	namespaceUnlinkCmd.Flags().StringVar(&nsTo, "to", "", "linked namespace to detach (required)")
-	_ = namespaceUnlinkCmd.MarkFlagRequired("from")
-	_ = namespaceUnlinkCmd.MarkFlagRequired("to")
-
-	namespaceLinksCmd.Flags().StringVar(&nsNamespace, "namespace", "", "show only this namespace's links (default: every namespace)")
-
-	namespaceCmd.AddCommand(namespaceListCmd, namespaceMoveCmd, namespaceSplitCmd,
-		namespaceLinkCmd, namespaceUnlinkCmd, namespaceLinksCmd)
+	namespaceCmd.AddCommand(namespaceListCmd, namespaceMoveCmd, namespaceSplitCmd)
 	rootCmd.AddCommand(namespaceCmd)
 }
 
@@ -169,71 +127,6 @@ func runNamespaceSplit(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 		printRenamespace(cmd, "split", rep)
-		return nil
-	})
-}
-
-// linkService builds a bare service.Service over the local store for the
-// validated link CRUD wrappers (self-link rejection, tiers validation, the
-// per-namespace cap) — the same validation REST/MCP use, so the CLI doesn't
-// re-implement it. No embedder is needed: LinkNamespaces/UnlinkNamespaces/
-// NamespaceLinks never touch it.
-func linkService(st store.Store) *service.Service {
-	return service.New(st, nil)
-}
-
-func runNamespaceLink(cmd *cobra.Command, _ []string) error {
-	return withLocalStore(cmd.Context(), func(st store.Store) error {
-		svc := linkService(st)
-		if err := svc.LinkNamespaces(cmd.Context(), nsFrom, nsTo, nsLinkTiers); err != nil {
-			return err
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "linked %q -> %q (tiers=%s)\n", nsFrom, nsTo, nsLinkTiers) //nolint:errcheck
-		return nil
-	})
-}
-
-func runNamespaceUnlink(cmd *cobra.Command, _ []string) error {
-	return withLocalStore(cmd.Context(), func(st store.Store) error {
-		svc := linkService(st)
-		if err := svc.UnlinkNamespaces(cmd.Context(), nsFrom, nsTo); err != nil {
-			return err
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "unlinked %q -> %q\n", nsFrom, nsTo) //nolint:errcheck
-		return nil
-	})
-}
-
-func runNamespaceLinks(cmd *cobra.Command, _ []string) error {
-	return withLocalStore(cmd.Context(), func(st store.Store) error {
-		ls, ok := st.(store.LinkStore)
-		if !ok {
-			return fmt.Errorf("namespace links are not supported by this backend")
-		}
-		var links []store.NamespaceLink
-		var err error
-		if nsNamespace != "" {
-			links, err = ls.ListNamespaceLinks(cmd.Context(), nsNamespace)
-		} else {
-			links, err = ls.ListAllNamespaceLinks(cmd.Context())
-		}
-		if err != nil {
-			return err
-		}
-		out := cmd.OutOrStdout()
-		if len(links) == 0 {
-			fmt.Fprintln(out, "no namespace links") //nolint:errcheck
-			return nil
-		}
-		for _, l := range links {
-			if nsNamespace != "" {
-				fmt.Fprintf(out, "%-30s tiers=%-8s created=%s\n", l.Target, l.Tiers, //nolint:errcheck
-					l.CreatedAt.UTC().Format(time.RFC3339))
-			} else {
-				fmt.Fprintf(out, "%-30s -> %-30s tiers=%-8s created=%s\n", l.Namespace, l.Target, l.Tiers, //nolint:errcheck
-					l.CreatedAt.UTC().Format(time.RFC3339))
-			}
-		}
 		return nil
 	})
 }

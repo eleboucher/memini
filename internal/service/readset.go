@@ -58,16 +58,15 @@ func (s *Service) resolveReadSet(ctx context.Context, sc readScope) ([]scopeEntr
 
 // resolveDefaultReadSet builds primary (+ subtree, when requested) plus the
 // durable-only merge legs — the single global namespace, the configured
-// read-namespaces list (MEMINI_READ_NAMESPACES / WithReadNamespaces), and
-// primary's own persistent namespace links (store.LinkStore) — mirroring the
-// pre-read-set addGlobalNamespace exactly, for each: skipped when unset,
-// already present (primary, a subtree member, or an earlier merge leg —
+// read-namespaces list (MEMINI_READ_NAMESPACES / WithReadNamespaces) —
+// mirroring the pre-read-set addGlobalNamespace exactly, for each: skipped when
+// unset, already present (primary, a subtree member, or an earlier merge leg —
 // widest tiers win, never narrowed), or the request's tier filter admits no
 // durable tier. An entry ending in "/*" expands to itself plus every
-// namespace nested under it. All "/*" expansion (subtree, read-namespaces,
-// and link targets alike) shares one lazy ListNamespaces call. Links are
-// 1-hop only: a link target's own links are never consulted, matching the
-// non-transitive contract in store.LinkStore's doc.
+// namespace nested under it; subtree, global, and read-namespaces "/*" share
+// one lazy ListNamespaces call. Widest-tier-wins always holds: an incoming
+// nil (full) tier override widens an existing narrower one in place, but a
+// narrower incoming override never displaces an existing nil one.
 func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]scopeEntry, error) {
 	var all []string
 	var listed bool
@@ -100,10 +99,7 @@ func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]sc
 	// already present (primary, a subtree member, or an earlier merge leg),
 	// the wider entry always wins: an incoming nil (full) tier override
 	// widens an existing narrower one in place, but a narrower incoming
-	// override never displaces an existing nil one. This holds regardless of
-	// merge-leg order: e.g. two overlapping namespace links, one a "/*"
-	// pattern (durable) and one an exact match (all), so link ordering can
-	// never narrow access below what any single source grants.
+	// override never displaces an existing nil one.
 	addEntry := func(ns string, tiers []memory.Tier) {
 		for i := range entries {
 			if entries[i].ns == ns {
@@ -118,64 +114,19 @@ func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]sc
 
 	gt := durableTiers(sc.reqTiers)
 
-	// Primary's own persistent namespace links (store.LinkStore), 1-hop only:
-	// only sc.primary's links are consulted — a link target's own links are
-	// never followed, and links of subtree-expanded children are not
-	// consulted either. Unlike global/read-namespaces (always durable-only),
-	// a link's tier mode is per-link: "durable" behaves exactly like the
-	// global merge below (skipped entirely when the request's tier filter
-	// admits no durable tier); "all" carries nil tiers — the request's own
-	// filter — so it is never skipped by the durable gate and must be
-	// resolved before the early-return below.
-	if s.linkStore != nil {
-		links, err := s.linkStore.ListNamespaceLinks(ctx, sc.primary)
-		if err != nil {
-			return nil, fmt.Errorf("read-set: list namespace links: %w", err)
-		}
-		for _, l := range links {
-			base, isSubtree := strings.CutSuffix(l.Target, "/*")
-			var tiers []memory.Tier
-			if l.Tiers == "all" {
-				tiers = nil
-			} else {
-				if len(gt) == 0 {
-					continue // durable-only link, but request admits no durable tier
-				}
-				tiers = gt
-			}
-			addEntry(base, tiers)
-			if !isSubtree {
-				continue
-			}
-			list, err := listAll()
-			if err != nil {
-				return nil, fmt.Errorf("read-set: list namespaces: %w", err)
-			}
-			prefix := base + "/"
-			for _, n := range list {
-				if n != base && strings.HasPrefix(n, prefix) {
-					addEntry(n, tiers)
-				}
-			}
-		}
-	}
-
 	if len(gt) == 0 {
-		// No durable tier is admitted, so every remaining merge leg (global,
-		// read-namespaces — both always durable-only) would search nothing —
-		// skip them without an unnecessary ListNamespaces call.
+		// No durable tier is admitted, so the global namespace would search
+		// nothing — skip it without an unnecessary ListNamespaces call.
 		return promoteGlobal(entries, s.globalNamespace), nil
 	}
-	// addDurable merges ns as a durable-only leg — see addEntry above.
-	addDurable := func(ns string) { addEntry(ns, gt) }
 
 	if s.globalNamespace != "" {
-		addDurable(s.globalNamespace)
+		addEntry(s.globalNamespace, gt)
 	}
 
 	for _, rn := range s.readNamespaces {
 		base, isSubtree := strings.CutSuffix(rn, "/*")
-		addDurable(base)
+		addEntry(base, gt)
 		if !isSubtree {
 			continue
 		}
@@ -186,7 +137,7 @@ func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]sc
 		prefix := base + "/"
 		for _, n := range list {
 			if n != base && strings.HasPrefix(n, prefix) {
-				addDurable(n)
+				addEntry(n, gt)
 			}
 		}
 	}

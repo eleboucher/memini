@@ -81,6 +81,9 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Setup pnpm
+        run: npm install -g pnpm@11
+
       - name: Setup Python
         uses: https://data.forgejo.org/actions/setup-python@v6
         with:
@@ -91,31 +94,39 @@ jobs:
       # resolves it against /tmp rather than the workspace. The `&&` chains make
       # a failed cd abort the step instead of node --test passing on 0 tests.
 
+      # Install workspace deps (namespace-resolver, OpenClaw, Pi) and build the
+      # resolver so dist/ exists for the plugins that import it.
+      - name: Install workspace dependencies
+        run: pnpm install --config.minimumReleaseAge=0
+
+      - name: Build namespace resolver
+        run: pnpm --filter @memini/namespace-resolver build
+
       # Claude Code / Codex hook scripts (pure node, no deps).
       - name: Test Claude Code + Codex plugin scripts
         run: node --test plugin/scripts/_test.mjs
 
-      # opencode plugin (pure node, no deps).
+      # opencode plugin (standalone JS, no deps — ships from npm).
       - name: Test opencode plugin
         run: cd integrations/opencode/plugin && node --test
 
-      # OpenClaw plugin (the expose_tools tests load @sinclair/typebox).
-      # npm ci uses the committed package-lock.json for a reproducible install.
+      # OpenClaw plugin (resolves @memini/namespace-resolver from workspace,
+      # plus @sinclair/typebox from npm).
       - name: Test OpenClaw plugin
         run: |
           cd integrations/openclaw/plugin
-          npm ci --no-audit --no-fund
+          pnpm install --no-audit --no-fund
           npx tsc -p tsconfig.json
           node --test test/regression.test.mjs
           npx tsx --test test/helpers.test.ts
 
-      # Pi extension (typebox runtime dep + tsx/typescript/pi types for build).
-      # npm ci uses the committed package-lock.json for a reproducible install.
+      # Pi extension (resolves @memini/namespace-resolver from workspace, plus
+      # typebox from npm).
       - name: Test Pi plugin
         run: |
           cd integrations/pi/plugin
-          npm ci --no-audit --no-fund
-          npm run build
+          pnpm install --no-audit --no-fund
+          pnpm run build
           npx tsx --test test/helpers.test.ts
 
       # Hermes memory provider (stdlib unittest, uses the inline-ABC fallback).

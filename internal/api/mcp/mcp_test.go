@@ -102,68 +102,6 @@ func TestToolsListed(t *testing.T) {
 	}
 }
 
-// namespaceLinkResult mirrors the unexported linkResult DTO memory_namespace_link
-// returns, for tests in this external package to decode structured content.
-type namespaceLinkResult struct {
-	Links []struct {
-		Target    string `json:"target"`
-		Tiers     string `json:"tiers"`
-		CreatedAt string `json:"created_at"`
-	} `json:"links"`
-}
-
-// TestNamespaceLinkRemoveOfAbsentIsIdempotent: memory_namespace_link is
-// annotated IdempotentHint, so a second remove of an already-detached target
-// must succeed (not error) and return the current link list, matching REST's
-// idempotent-DELETE semantics (REST itself still 404s on this case, since
-// that's the HTTP-conventional response; this only covers the MCP tool).
-func TestNamespaceLinkRemoveOfAbsentIsIdempotent(t *testing.T) {
-	cs := connect(t)
-	ctx := context.Background()
-
-	call := func(action, target, tiers string) namespaceLinkResult {
-		t.Helper()
-		args := map[string]any{"action": action}
-		if target != "" {
-			args["target"] = target
-		}
-		if tiers != "" {
-			args["tiers"] = tiers
-		}
-		res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
-			Name:      "memory_namespace_link",
-			Arguments: args,
-		})
-		if err != nil {
-			t.Fatalf("memory_namespace_link action=%q: %v", action, err)
-		}
-		if res.IsError {
-			t.Fatalf("memory_namespace_link action=%q returned a tool error: %+v", action, res.Content)
-		}
-		var out namespaceLinkResult
-		structured(t, res, &out)
-		return out
-	}
-
-	// Add then remove once: the target is gone.
-	call("add", "other", "durable")
-	first := call("remove", "other", "")
-	for _, l := range first.Links {
-		if l.Target == "other" {
-			t.Fatalf("target %q still present after first remove: %+v", "other", first.Links)
-		}
-	}
-
-	// Second remove of the same, already-absent target: must succeed (not a
-	// tool error) and return the current (still empty-of-"other") link list.
-	second := call("remove", "other", "")
-	for _, l := range second.Links {
-		if l.Target == "other" {
-			t.Fatalf("target %q unexpectedly present after second remove: %+v", "other", second.Links)
-		}
-	}
-}
-
 func TestRememberRecallRoundTrip(t *testing.T) {
 	cs := connect(t)
 	ctx := context.Background()

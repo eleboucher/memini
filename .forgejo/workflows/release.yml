@@ -82,11 +82,16 @@ jobs:
         uses: https://data.forgejo.org/actions/setup-node@v6
         with:
           node-version: "24"
-      - name: Install ClawHub CLI
-        env:
-          # renovate: datasource=npm depName=clawhub
-          CLAWHUB_VERSION: "0.21.0"
-        run: npm install -g "clawhub@${CLAWHUB_VERSION}"
+
+      - name: Install pnpm
+        run: npm install -g pnpm@11
+
+      - name: Install workspace dependencies
+        run: pnpm install --config.minimumReleaseAge=0
+
+      - name: Build namespace resolver
+        run: pnpm --filter @memini/namespace-resolver build
+
       # Build the TypeScript plugin (src/index.ts -> dist/) so the
       # published clawpack contains the ./dist/index.js entry referenced
       # by openclaw.extensions. dist/ is gitignored.
@@ -94,9 +99,15 @@ jobs:
         run: |
           set -euo pipefail
           cd integrations/openclaw/plugin
-          # `npm install` (not `npm ci`) realigns the drifted package-lock.
-          npm install
-          npm run build
+          pnpm install
+          pnpm run build
+
+      - name: Install ClawHub CLI
+        env:
+          # renovate: datasource=npm depName=clawhub
+          CLAWHUB_VERSION: "0.21.0"
+        run: npm install -g "clawhub@${CLAWHUB_VERSION}"
+
       # Publishes the OpenClaw memory-slot plugin as a local-folder code-plugin.
       # The version is taken from the release tag, so it always matches the tag
       # regardless of what bump.yml committed.
@@ -207,21 +218,36 @@ jobs:
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Install pnpm
+        run: npm install -g pnpm@11
+
+      - name: Install workspace dependencies + build resolver
+        run: |
+          pnpm install --config.minimumReleaseAge=0
+          pnpm --filter @memini/namespace-resolver build
+
       - name: Test, build and publish Pi extension to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           TAG: ${{ needs.release.outputs.tag }}
         run: |
           set -euo pipefail
-          # This runner resolves `working-directory:` against /tmp; cd instead.
           cd integrations/pi/plugin
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
             echo "NPM_TOKEN secret is empty or missing" >&2
             exit 1
           fi
-          npm install --no-audit --no-fund
-          npm run build
+          pnpm install --no-audit --no-fund
+          pnpm run build
           npx tsx --test test/helpers.test.ts
+      - name: Bump version and publish Pi extension to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cd integrations/pi/plugin
           VERSION="${TAG#v}"
           npm version "${VERSION}" --no-git-tag-version --allow-same-version
           # Ship the integration README as the npm package page.
