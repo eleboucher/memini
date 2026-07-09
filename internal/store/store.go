@@ -181,6 +181,35 @@ type EmbedModelStore interface {
 	SetEmbedModel(ctx context.Context, model string) error
 }
 
+// NamespaceLink declares a read-only attachment: reads in Namespace also see
+// Target (1-hop, non-transitive — Target's own links are never followed).
+// Writes are unaffected; a link only ever widens what a read sees.
+type NamespaceLink struct {
+	Namespace string // the namespace whose default read set expands
+	Target    string // the namespace being attached (read-only); may end in "/*"
+	Tiers     string // "durable" (semantic+procedural only, the default) or "all"
+	CreatedAt time.Time
+}
+
+// LinkStore is implemented by drivers that persist namespace read-links (see
+// NamespaceLink). Optional, following the EmbedModelStore pattern: a driver
+// that doesn't implement it simply has no link support, and reads behave as
+// before — resolveReadSet skips the link lookup entirely.
+type LinkStore interface {
+	// PutNamespaceLink creates or updates a link. Idempotent: a second call
+	// with the same (namespace, target) overwrites Tiers rather than erroring
+	// or duplicating.
+	PutNamespaceLink(ctx context.Context, l NamespaceLink) error
+	// DeleteNamespaceLink removes a link. Returns ErrNotFound when no such
+	// link exists.
+	DeleteNamespaceLink(ctx context.Context, namespace, target string) error
+	// ListNamespaceLinks returns namespace's outgoing links, ordered by target.
+	ListNamespaceLinks(ctx context.Context, namespace string) ([]NamespaceLink, error)
+	// ListAllNamespaceLinks returns every link across every namespace, for
+	// operator tooling (doctor, CLI `namespace links` with no filter).
+	ListAllNamespaceLinks(ctx context.Context) ([]NamespaceLink, error)
+}
+
 // OrEmptyMap returns m, or an empty map when m is nil, so drivers persist an
 // empty JSON object rather than null for absent metadata.
 func OrEmptyMap(m map[string]any) map[string]any {

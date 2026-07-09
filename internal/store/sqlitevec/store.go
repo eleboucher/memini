@@ -117,6 +117,16 @@ func (s *Store) migrate(ctx context.Context) error {
 		// Key/value store for store-level metadata (e.g. the embedding model the
 		// vectors were produced with — see EmbedModel/SetEmbedModel).
 		`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+		// Persistent read-only namespace links (see LinkStore in internal/store).
+		// PRIMARY KEY (namespace, target) makes PutNamespaceLink's upsert
+		// idempotent for free.
+		`CREATE TABLE IF NOT EXISTS namespace_links (
+			namespace  TEXT NOT NULL,
+			target     TEXT NOT NULL,
+			tiers      TEXT NOT NULL DEFAULT 'durable',
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (namespace, target)
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {

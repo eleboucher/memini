@@ -47,6 +47,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("GetByFingerprint", func(t *testing.T) { testGetByFingerprint(t, st, dims) })
 	t.Run("LevelFilter", func(t *testing.T) { testLevelFilter(t, st, dims) })
 	t.Run("VectorlessRow", func(t *testing.T) { testVectorlessRow(t, st, dims) })
+	t.Run("LinkStore", func(t *testing.T) { testLinkStore(t, st) })
 }
 
 // testVectorlessRow verifies stores accept memories with no embedding
@@ -1257,5 +1258,107 @@ func testConcurrentAccess(t *testing.T, st store.Store, dims int) {
 	want := workers * (iters - deletedPerWorker)
 	if len(mems) != want {
 		t.Fatalf("list = %d memories, want %d", len(mems), want)
+	}
+}
+
+// testLinkStore covers the optional store.LinkStore interface: idempotent
+// upsert (a second Put with different tiers overwrites rather than erroring
+// or duplicating), List ordering by target, Delete returning ErrNotFound on
+// an absent link, and ListAll spanning namespaces. Skipped via type assertion
+// on a backend that doesn't implement it (mirrors the EmbedModelStore
+// pattern), so this block runs against both production backends automatically
+// through their conformance entry points but never fails a minimal fake.
+func testLinkStore(t *testing.T, st store.Store) {
+	ls, ok := st.(store.LinkStore)
+	if !ok {
+		t.Skip("store does not implement LinkStore")
+	}
+	ctx := context.Background()
+	nsA := t.Name() + "-a"
+	nsB := t.Name() + "-b"
+	nsC := t.Name() + "-c"
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Idempotent upsert: a second Put for the same (namespace, target) with a
+	// different tiers value overwrites rather than duplicating.
+	if err := ls.PutNamespaceLink(ctx, store.NamespaceLink{
+		Namespace: nsA, Target: nsB, Tiers: "durable", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("put link (durable): %v", err)
+	}
+	if err := ls.PutNamespaceLink(ctx, store.NamespaceLink{
+		Namespace: nsA, Target: nsB, Tiers: "all", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("put link (overwrite to all): %v", err)
+	}
+	links, err := ls.ListNamespaceLinks(ctx, nsA)
+	if err != nil {
+		t.Fatalf("list links: %v", err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("list links after upsert = %d entries, want 1 (overwrite, not duplicate): %+v", len(links), links)
+	}
+	if links[0].Tiers != "all" {
+		t.Errorf("link tiers = %q after overwrite, want %q", links[0].Tiers, "all")
+	}
+	if links[0].Namespace != nsA || links[0].Target != nsB {
+		t.Errorf("link = %+v, want namespace=%q target=%q", links[0], nsA, nsB)
+	}
+
+	// List ordering: two links come back sorted by target regardless of insert order.
+	if err := ls.PutNamespaceLink(ctx, store.NamespaceLink{
+		Namespace: nsA, Target: nsC, Tiers: "durable", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("put second link: %v", err)
+	}
+	links, err = ls.ListNamespaceLinks(ctx, nsA)
+	if err != nil {
+		t.Fatalf("list links (two): %v", err)
+	}
+	if len(links) != 2 {
+		t.Fatalf("list links = %d entries, want 2", len(links))
+	}
+	wantOrder := []string{nsB, nsC}
+	if nsC < nsB {
+		wantOrder = []string{nsC, nsB}
+	}
+	if links[0].Target != wantOrder[0] || links[1].Target != wantOrder[1] {
+		t.Errorf("list links order = [%s, %s], want [%s, %s]", links[0].Target, links[1].Target, wantOrder[0], wantOrder[1])
+	}
+
+	// Delete removes the link; a second delete of the same pair is ErrNotFound.
+	if err := ls.DeleteNamespaceLink(ctx, nsA, nsC); err != nil {
+		t.Fatalf("delete link: %v", err)
+	}
+	if err := ls.DeleteNamespaceLink(ctx, nsA, nsC); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("delete absent link = %v, want ErrNotFound", err)
+	}
+	if err := ls.DeleteNamespaceLink(ctx, nsA, "never-linked"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("delete never-linked target = %v, want ErrNotFound", err)
+	}
+
+	// ListAll spans namespaces: seed a link from nsB too and require both
+	// namespaces' links appear (the conformance store is shared across
+	// subtests, so assert containment, not exact equality).
+	if err := ls.PutNamespaceLink(ctx, store.NamespaceLink{
+		Namespace: nsB, Target: nsC, Tiers: "durable", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("put link from nsB: %v", err)
+	}
+	all, err := ls.ListAllNamespaceLinks(ctx)
+	if err != nil {
+		t.Fatalf("list all links: %v", err)
+	}
+	foundA, foundB := false, false
+	for _, l := range all {
+		if l.Namespace == nsA && l.Target == nsB {
+			foundA = true
+		}
+		if l.Namespace == nsB && l.Target == nsC {
+			foundB = true
+		}
+	}
+	if !foundA || !foundB {
+		t.Errorf("ListAllNamespaceLinks missing seeded links: got %+v", all)
 	}
 }
