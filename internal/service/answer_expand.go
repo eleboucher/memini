@@ -127,7 +127,8 @@ func (s *Service) answerExpand(ctx context.Context, in AnswerInput) (AnswerResul
 	}
 
 	ans, err := s.answerer.Complete(ctx, answerSystem,
-		"Memories:\n"+formatAnswerContext(sources)+"\nQuestion: "+in.Query+"\nAnswer:")
+		"Today's date: "+s.now().Format("2006-01-02")+
+			"\nMemories:\n"+formatAnswerContext(sources)+"\nQuestion: "+in.Query+"\nAnswer:")
 	if err != nil {
 		s.metrics.AnswerResult("error")
 		return AnswerResult{}, fmt.Errorf("answer: expand synthesis: %w", err)

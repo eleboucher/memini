@@ -158,7 +158,8 @@ func (s *Service) answerAgentic(ctx context.Context, in AnswerInput, tc llm.Tool
 	// was tried and measured worse: the loop re-answered conflict questions
 	// the first pass already got right. See CODINGAGENT.md.)
 	direct, err := s.answerer.Complete(ctx, answerGateSystem,
-		"Memories:\n"+formatAnswerContext(prefetch)+"\nQuestion: "+in.Query+"\nAnswer:")
+		"Today's date: "+s.now().Format("2006-01-02")+
+			"\nMemories:\n"+formatAnswerContext(prefetch)+"\nQuestion: "+in.Query+"\nAnswer:")
 	if err != nil {
 		s.metrics.AnswerResult("error")
 		return AnswerResult{}, fmt.Errorf("answer: gate: %w", err)
@@ -168,7 +169,8 @@ func (s *Service) answerAgentic(ctx context.Context, in AnswerInput, tc llm.Tool
 		return AnswerResult{Answer: stripMemThinking(strings.TrimSpace(direct)), Sources: sources}, nil
 	}
 
-	turns := []llm.ChatTurn{{Role: "user", Text: "Memories:\n" + formatAnswerContext(prefetch) +
+	turns := []llm.ChatTurn{{Role: "user", Text: "Today's date: " + s.now().Format("2006-01-02") +
+		"\nMemories:\n" + formatAnswerContext(prefetch) +
 		"\nQuestion: " + in.Query + "\nA first read found these memories insufficient. Search for what is missing, then answer."}}
 	for range iters {
 		res, err := tc.ChatTools(ctx, answerLoopSystem, turns, answerTools, llm.ToolAuto)

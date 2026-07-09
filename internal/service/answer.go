@@ -108,7 +108,8 @@ func (s *Service) Answer(ctx context.Context, in AnswerInput) (AnswerResult, err
 		return AnswerResult{}, err
 	}
 	ans, err := s.answerer.Complete(ctx, answerSystem,
-		"Memories:\n"+formatAnswerContext(res)+"\nQuestion: "+in.Query+"\nAnswer:")
+		"Today's date: "+s.now().Format("2006-01-02")+
+			"\nMemories:\n"+formatAnswerContext(res)+"\nQuestion: "+in.Query+"\nAnswer:")
 	if err != nil {
 		s.metrics.AnswerResult("error")
 		return AnswerResult{}, fmt.Errorf("answer: generate: %w", err)
