@@ -45,6 +45,9 @@ Before answering, reason step-by-step inside <mem_thinking> tags:
 - List every relevant memory and its date.
 - For temporal questions: identify all dates, compute intervals from the question date.
 - For counting: enumerate each item with its date.
+- For preference questions: scan ALL memories for what the user likes, dislikes,
+  avoids, or prefers — even indirectly stated. Infer implicit preferences from
+  their actions and choices, not just explicit "I prefer" statements.
 - CONTEXT CHECK: Before using a memory's value, verify it applies to the SAME
   context as the question (same person, same topic, same time period).
 After your reasoning, give the final answer on a new line after </mem_thinking>.
