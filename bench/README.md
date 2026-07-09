@@ -310,32 +310,31 @@ reasoning tags, "most-recent-wins" for knowledge updates, temporal grounding
 numbers use GPT-4o as answerer+judge; memini uses Qwen3.6-35b-fast — so this is
 directional, not a controlled head-to-head.
 
-| System                                    | Answerer/Judge       | QA accuracy | Source                                                                  |
-| ----------------------------------------- | -------------------- | ----------: | ----------------------------------------------------------------------- |
-| **mem0**                                  | GPT-4o               |       94.4% | [mem0ai/memory-benchmarks](https://github.com/mem0ai/memory-benchmarks) |
-| **Hindsight** (TEMPR + CARA)              | Gemini-3             |       91.4% | [Hindsight paper](https://arxiv.org/html/2512.12818v1)                  |
-| **memini** (CoT prompt + temporal ground) | **Qwen3.6-35b-fast** |   **80.6%** | measured                                                                |
-| **Zep** (Graphiti)                        | GPT-4o               |       71.0% | published                                                               |
-| Full-context (entire history)             | GPT-4o               |       60.2% | LongMemEval paper                                                       |
+| System                                 | Answerer/Judge       | QA accuracy | Source                                                                  |
+| -------------------------------------- | -------------------- | ----------: | ----------------------------------------------------------------------- |
+| **mem0**                               | GPT-4o               |       94.4% | [mem0ai/memory-benchmarks](https://github.com/mem0ai/memory-benchmarks) |
+| **Hindsight** (TEMPR + CARA)           | Gemini-3             |       91.4% | [Hindsight paper](https://arxiv.org/html/2512.12818v1)                  |
+| **memini** (CoT prompt + agentic loop) | **Qwen3.6-35b-fast** |   **82.8%** | measured                                                                |
+| **Zep** (Graphiti)                     | GPT-4o               |       71.0% | published                                                               |
+| Full-context (entire history)          | GPT-4o               |       60.2% | LongMemEval paper                                                       |
 
 Per-category breakdown (memini, Qwen3.6-35b-fast, k=10, bge-m3):
 
 | Category                  |  Accuracy |   n | vs original prompt |
 | ------------------------- | --------: | --: | -----------------: |
-| single-session-assistant  |     98.2% |  56 |             -1.8pp |
-| single-session-user       |     92.2% |  64 |                  0 |
-| knowledge-update          |     86.1% |  72 |            +16.7pp |
-| temporal-reasoning        |     81.9% | 127 |            +47.3pp |
-| multi-session             |     67.8% | 121 |            +28.1pp |
-| single-session-preference |     40.0% |  30 |            +33.3pp |
-| abstention (all types)    |      ~98% |  36 |               +3pp |
-| **Overall**               | **80.6%** | 500 |        **+23.0pp** |
+| single-session-assistant  |    100.0% |  56 |                  0 |
+| single-session-user       |     93.8% |  64 |             +1.6pp |
+| knowledge-update          |     77.8% |  72 |             +8.4pp |
+| temporal-reasoning        |     86.6% | 127 |            +52.0pp |
+| multi-session             |     72.7% | 121 |            +33.0pp |
+| single-session-preference |     56.7% |  30 |            +50.0pp |
+| abstention (all types)    |      ~92% |  36 |                 ~0 |
+| **Overall**               | **82.8%** | 500 |        **+25.2pp** |
 
 The answer-path improvements (chronological context, CoT reasoning, temporal
-grounding, most-recent-wins, IncludeLinked) lifted overall accuracy from
-57.6% to 80.6% on the same model and embedder — a +23pp gain from prompt
-engineering alone. The biggest single lever was injecting the question date
-into the answer prompt (+4.7pp overall, +15.2pp on temporal-reasoning).
+grounding, most-recent-wins, IncludeLinked, agentic tool loop) lifted overall
+accuracy from 57.6% to 82.8% on the same model and embedder — a +25.2pp gain
+from prompt engineering and tool-loop enablement alone.
 
 **Reproduce:**
 
