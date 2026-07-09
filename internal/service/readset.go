@@ -54,14 +54,17 @@ func (s *Service) resolveReadSet(ctx context.Context, sc readScope) ([]scopeEntr
 }
 
 // resolveDefaultReadSet builds primary (+ subtree, when requested) plus the
-// durable-only merge legs — the single global namespace and the configured
-// read-namespaces list (MEMINI_READ_NAMESPACES / WithReadNamespaces) —
-// mirroring the pre-read-set addGlobalNamespace exactly, for each: skipped
-// when unset, already present (primary, a subtree member, or an earlier merge
-// leg — widest tiers win, never narrowed), or the request's tier filter
-// admits no durable tier. An entry ending in "/*" expands to itself plus every
-// namespace nested under it. All "/*" expansion (subtree and read-namespaces
-// alike) shares one lazy ListNamespaces call.
+// durable-only merge legs — the single global namespace, the configured
+// read-namespaces list (MEMINI_READ_NAMESPACES / WithReadNamespaces), and
+// primary's own persistent namespace links (store.LinkStore) — mirroring the
+// pre-read-set addGlobalNamespace exactly, for each: skipped when unset,
+// already present (primary, a subtree member, or an earlier merge leg —
+// widest tiers win, never narrowed), or the request's tier filter admits no
+// durable tier. An entry ending in "/*" expands to itself plus every
+// namespace nested under it. All "/*" expansion (subtree, read-namespaces,
+// and link targets alike) shares one lazy ListNamespaces call. Links are
+// 1-hop only: a link target's own links are never consulted, matching the
+// non-transitive contract in store.LinkStore's doc.
 func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]scopeEntry, error) {
 	var all []string
 	var listed bool
@@ -90,20 +93,67 @@ func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]sc
 		entries[i] = scopeEntry{ns: n}
 	}
 
-	gt := durableTiers(sc.reqTiers)
-	if len(gt) == 0 {
-		// No durable tier is admitted, so every merge leg below would search
-		// nothing — skip them all without an unnecessary ListNamespaces call.
-		return entries, nil
-	}
-	// addDurable merges ns as a durable-only leg unless it's already present
-	// (primary, a subtree member, or an earlier leg), which always keeps the
-	// wider (nil-tiers) entry rather than narrowing it.
-	addDurable := func(ns string) {
+	// addEntry merges ns into entries with the given tier override unless it's
+	// already present (primary, a subtree member, or an earlier merge leg),
+	// which always keeps the wider (nil-tiers) entry rather than narrowing it.
+	addEntry := func(ns string, tiers []memory.Tier) {
 		if !containsNamespace(entries, ns) {
-			entries = append(entries, scopeEntry{ns: ns, tiers: gt})
+			entries = append(entries, scopeEntry{ns: ns, tiers: tiers})
 		}
 	}
+
+	gt := durableTiers(sc.reqTiers)
+
+	// Primary's own persistent namespace links (store.LinkStore), 1-hop only:
+	// only sc.primary's links are consulted — a link target's own links are
+	// never followed, and links of subtree-expanded children are not
+	// consulted either. Unlike global/read-namespaces (always durable-only),
+	// a link's tier mode is per-link: "durable" behaves exactly like the
+	// global merge below (skipped entirely when the request's tier filter
+	// admits no durable tier); "all" carries nil tiers — the request's own
+	// filter — so it is never skipped by the durable gate and must be
+	// resolved before the early-return below.
+	if s.linkStore != nil {
+		links, err := s.linkStore.ListNamespaceLinks(ctx, sc.primary)
+		if err != nil {
+			return nil, fmt.Errorf("read-set: list namespace links: %w", err)
+		}
+		for _, l := range links {
+			base, isSubtree := strings.CutSuffix(l.Target, "/*")
+			var tiers []memory.Tier
+			if l.Tiers == "all" {
+				tiers = nil
+			} else {
+				if len(gt) == 0 {
+					continue // durable-only link, but request admits no durable tier
+				}
+				tiers = gt
+			}
+			addEntry(base, tiers)
+			if !isSubtree {
+				continue
+			}
+			list, err := listAll()
+			if err != nil {
+				return nil, fmt.Errorf("read-set: list namespaces: %w", err)
+			}
+			prefix := base + "/"
+			for _, n := range list {
+				if n != base && strings.HasPrefix(n, prefix) {
+					addEntry(n, tiers)
+				}
+			}
+		}
+	}
+
+	if len(gt) == 0 {
+		// No durable tier is admitted, so every remaining merge leg (global,
+		// read-namespaces — both always durable-only) would search nothing —
+		// skip them without an unnecessary ListNamespaces call.
+		return entries, nil
+	}
+	// addDurable merges ns as a durable-only leg — see addEntry above.
+	addDurable := func(ns string) { addEntry(ns, gt) }
 
 	if s.globalNamespace != "" {
 		addDurable(s.globalNamespace)

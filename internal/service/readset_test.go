@@ -83,6 +83,26 @@ func (c *countingListStore) ListNamespaces(ctx context.Context) ([]string, error
 	return c.Store.ListNamespaces(ctx)
 }
 
+// countingListStore embeds the store.Store interface (not a concrete type),
+// so LinkStore's methods aren't promoted automatically even when the wrapped
+// store implements it; these pass straight through so tests can still wrap a
+// LinkStore-capable backend (e.g. sqlitevec) and exercise link resolution.
+func (c *countingListStore) PutNamespaceLink(ctx context.Context, l store.NamespaceLink) error {
+	return c.Store.(store.LinkStore).PutNamespaceLink(ctx, l)
+}
+
+func (c *countingListStore) DeleteNamespaceLink(ctx context.Context, namespace, target string) error {
+	return c.Store.(store.LinkStore).DeleteNamespaceLink(ctx, namespace, target)
+}
+
+func (c *countingListStore) ListNamespaceLinks(ctx context.Context, namespace string) ([]store.NamespaceLink, error) {
+	return c.Store.(store.LinkStore).ListNamespaceLinks(ctx, namespace)
+}
+
+func (c *countingListStore) ListAllNamespaceLinks(ctx context.Context) ([]store.NamespaceLink, error) {
+	return c.Store.(store.LinkStore).ListAllNamespaceLinks(ctx)
+}
+
 func TestResolveReadSetExplicitReplacesDefault(t *testing.T) {
 	svc, _ := newReadsetSvc(t, WithGlobalNamespace("global"))
 	got, err := svc.resolveReadSet(context.Background(), readScope{
@@ -410,4 +430,158 @@ func TestResolveReadSetReadNamespacesListNamespacesCalls(t *testing.T) {
 			t.Fatalf("subtree + read-namespace pattern made %d ListNamespaces calls, want 1 (shared)", counting.calls)
 		}
 	})
+}
+
+// TestResolveReadSetLinkDurableMergesDurableOnly: a "durable"-tiers link
+// contributes a durable-only leg, exactly like the global namespace.
+func TestResolveReadSetLinkDurableMergesDurableOnly(t *testing.T) {
+	svc, _ := newReadsetSvc(t)
+	if err := svc.LinkNamespaces(context.Background(), "A", "B", "durable"); err != nil {
+		t.Fatalf("LinkNamespaces: %v", err)
+	}
+	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "A"})
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	assertNamespaces(t, got, []string{"A", "B"})
+	for _, e := range got {
+		if e.ns == "B" {
+			if len(e.tiers) == 0 {
+				t.Fatal("durable link entry should carry a durable-only tier override, got nil (full)")
+			}
+			for _, tr := range e.tiers {
+				if tr != memory.TierSemantic && tr != memory.TierProcedural {
+					t.Fatalf("durable link entry tier %v is not durable", tr)
+				}
+			}
+		}
+	}
+}
+
+// TestResolveReadSetLinkAllMergesFullTiers: an "all"-tiers link carries nil
+// (full, request's own filter) tiers — unlike global/read-namespaces, which
+// are always durable-only.
+func TestResolveReadSetLinkAllMergesFullTiers(t *testing.T) {
+	svc, _ := newReadsetSvc(t)
+	if err := svc.LinkNamespaces(context.Background(), "A", "B", "all"); err != nil {
+		t.Fatalf("LinkNamespaces: %v", err)
+	}
+	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "A"})
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	assertNamespaces(t, got, []string{"A", "B"})
+	for _, e := range got {
+		if e.ns == "B" && e.tiers != nil {
+			t.Fatalf("all-tiers link entry should carry nil (full) tiers, got %v", e.tiers)
+		}
+	}
+}
+
+// TestResolveReadSetLinkAllSurvivesEpisodicOnlyFilter: an "all"-tiers link is
+// never skipped by the durable-admission gate (unlike a durable-only link),
+// since its nil tiers just pass through the request's own filter.
+func TestResolveReadSetLinkAllSurvivesEpisodicOnlyFilter(t *testing.T) {
+	svc, _ := newReadsetSvc(t)
+	if err := svc.LinkNamespaces(context.Background(), "A", "B", "all"); err != nil {
+		t.Fatalf("LinkNamespaces: %v", err)
+	}
+	got, err := svc.resolveReadSet(context.Background(), readScope{
+		primary:  "A",
+		reqTiers: []memory.Tier{memory.TierEpisodic},
+	})
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	assertNamespaces(t, got, []string{"A", "B"})
+}
+
+// TestResolveReadSetLinkDurableSkippedForEpisodicOnlyFilter: a durable-only
+// link is skipped entirely (no ListNamespaces call for a "/*" target) when
+// the request's tier filter admits no durable tier — same rule as global.
+func TestResolveReadSetLinkDurableSkippedForEpisodicOnlyFilter(t *testing.T) {
+	st, err := sqlitevec.Open(context.Background(), filepath.Join(t.TempDir(), "readset-link-episodic.db"), readsetTestDims)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	counting := &countingListStore{Store: st}
+	svc := New(counting, embedtest.New(readsetTestDims),
+		WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }))
+	if err := svc.LinkNamespaces(context.Background(), "A", "rules/*", "durable"); err != nil {
+		t.Fatalf("LinkNamespaces: %v", err)
+	}
+
+	got, err := svc.resolveReadSet(context.Background(), readScope{
+		primary:  "A",
+		reqTiers: []memory.Tier{memory.TierEpisodic},
+	})
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	assertNamespaces(t, got, []string{"A"})
+	if counting.calls != 0 {
+		t.Fatalf("durable link skipped by episodic-only filter made %d ListNamespaces calls, want 0", counting.calls)
+	}
+}
+
+// TestResolveReadSetLinkOneHop: A links to B, B links to C. Resolving A's
+// default read set must never surface C — links are 1-hop, not transitive.
+func TestResolveReadSetLinkOneHop(t *testing.T) {
+	svc, _ := newReadsetSvc(t)
+	ctx := context.Background()
+	if err := svc.LinkNamespaces(ctx, "A", "B", "durable"); err != nil {
+		t.Fatalf("LinkNamespaces A->B: %v", err)
+	}
+	if err := svc.LinkNamespaces(ctx, "B", "C", "durable"); err != nil {
+		t.Fatalf("LinkNamespaces B->C: %v", err)
+	}
+
+	got, err := svc.resolveReadSet(ctx, readScope{primary: "A"})
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	assertNamespaces(t, got, []string{"A", "B"})
+	for _, ns := range namespacesOf(got) {
+		if ns == "C" {
+			t.Fatal("resolveReadSet followed B's link to C — links must be 1-hop, non-transitive")
+		}
+	}
+}
+
+// TestResolveReadSetLinkIgnoredOnExplicit: links are part of the default path
+// only — an explicit per-call namespace list must not pick up A's links.
+func TestResolveReadSetLinkIgnoredOnExplicit(t *testing.T) {
+	svc, _ := newReadsetSvc(t)
+	if err := svc.LinkNamespaces(context.Background(), "A", "B", "durable"); err != nil {
+		t.Fatalf("LinkNamespaces: %v", err)
+	}
+	got, err := svc.resolveReadSet(context.Background(), readScope{
+		primary:  "A",
+		explicit: []string{"A"},
+	})
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	assertNamespaces(t, got, []string{"A"})
+}
+
+// TestResolveReadSetLinkSubtreeTargetExpands: a link to "ns/*" expands to the
+// bare namespace plus every namespace nested under it, sharing the read-set's
+// single lazy ListNamespaces call.
+func TestResolveReadSetLinkSubtreeTargetExpands(t *testing.T) {
+	svc, st := newReadsetSvc(t)
+	seedNamespace(t, st, "team")
+	seedNamespace(t, st, "team/a")
+	seedNamespace(t, st, "team/b")
+	seedNamespace(t, st, "other")
+	if err := svc.LinkNamespaces(context.Background(), "A", "team/*", "durable"); err != nil {
+		t.Fatalf("LinkNamespaces: %v", err)
+	}
+
+	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "A"})
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	assertNamespaces(t, got, []string{"A", "team", "team/a", "team/b"})
 }
