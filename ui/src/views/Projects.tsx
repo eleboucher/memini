@@ -1,6 +1,7 @@
 import { useState } from 'preact/hooks'
+import { useLocation } from 'preact-iso'
 import { api } from '../api'
-import { namespace, route, refreshNonce, refresh } from '../store'
+import { namespace, refreshNonce, refresh } from '../store'
 import { useAsync } from '../hooks'
 import { TIERS, type Stats } from '../types'
 import { tierColor, relTime, num } from '../util'
@@ -171,10 +172,11 @@ function TenantBox({
 }) {
   const [dragOver, setDragOver] = useState(false)
   const [collapsed, setCollapsed] = useState(() => loadCollapsed().has(tenant.tenant))
+  const { route: navigate } = useLocation()
 
   const open = (ns: string) => {
     namespace.value = ns
-    route.value = 'overview'
+    navigate('/')
   }
 
   const toggle = () => {

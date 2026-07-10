@@ -1,4 +1,5 @@
-import { route, theme, type Route } from './store'
+import { LocationProvider, Router, Route, useLocation } from 'preact-iso'
+import { theme } from './store'
 import { NamespaceSelect } from './components/NamespaceSelect'
 import { Projects } from './views/Projects'
 import { Dashboard } from './views/Dashboard'
@@ -19,48 +20,46 @@ import {
   IconSun,
   LogoMark,
 } from './icons'
-import type { JSX } from 'preact'
+import type { AnyComponent, JSX } from 'preact'
 
-const NAV: { id: Route; label: string; Icon: (p: JSX.SVGAttributes<SVGSVGElement>) => JSX.Element }[] = [
-  { id: 'projects', label: 'Projects', Icon: IconProjects },
-  { id: 'overview', label: 'Overview', Icon: IconOverview },
-  { id: 'browse', label: 'Browse', Icon: IconBrowse },
-  { id: 'search', label: 'Search', Icon: IconSearch },
-  { id: 'graph', label: 'Graph', Icon: IconGraph },
-  { id: 'health', label: 'Health', Icon: IconHealth },
-  { id: 'settings', label: 'Settings', Icon: IconSettings },
+// The nav and the routes are one table: path → view. Overview is "/" so a bare
+// load lands there (in "All projects" mode, ns === ''). LocationProvider
+// intercepts clicks on the <a> links for client-side navigation, so the back/
+// forward buttons, shareable deep links, and reloads all resolve to the right
+// view (the server serves index.html on unknown paths — see internal/api/ui).
+//
+// Keep every path single-segment. Vite builds with `base: './'` (relative asset
+// URLs), which resolves correctly only when a deep-link reload is one level deep
+// (/browse → ./assets → /assets). A nested route like /memories/:id would make
+// a reload fetch /memories/assets/* and 404 — switch vite base to '/' first.
+const NAV: {
+  path: string
+  label: string
+  title: string
+  Icon: (p: JSX.SVGAttributes<SVGSVGElement>) => JSX.Element
+  component: AnyComponent
+}[] = [
+  { path: '/projects', label: 'Projects', title: 'Projects', Icon: IconProjects, component: Projects },
+  { path: '/', label: 'Overview', title: 'Overview', Icon: IconOverview, component: Dashboard },
+  { path: '/browse', label: 'Browse', title: 'Memory browser', Icon: IconBrowse, component: Browser },
+  { path: '/search', label: 'Search', title: 'Recall', Icon: IconSearch, component: Search },
+  { path: '/graph', label: 'Graph', title: 'Relationship graph', Icon: IconGraph, component: Graph },
+  { path: '/health', label: 'Health', title: 'Health & fsck', Icon: IconHealth, component: Health },
+  { path: '/settings', label: 'Settings', title: 'Settings', Icon: IconSettings, component: Settings },
 ]
 
-const TITLES: Record<Route, string> = {
-  projects: 'Projects',
-  overview: 'Overview',
-  browse: 'Memory browser',
-  search: 'Recall',
-  graph: 'Relationship graph',
-  health: 'Health & fsck',
-  settings: 'Settings',
-}
-
-function View() {
-  switch (route.value) {
-    case 'projects':
-      return <Projects />
-    case 'overview':
-      return <Dashboard />
-    case 'browse':
-      return <Browser />
-    case 'search':
-      return <Search />
-    case 'graph':
-      return <Graph />
-    case 'health':
-      return <Health />
-    case 'settings':
-      return <Settings />
-  }
-}
-
 export function App() {
+  return (
+    <LocationProvider>
+      <Shell />
+    </LocationProvider>
+  )
+}
+
+function Shell() {
+  const { path } = useLocation()
+  const title = NAV.find((n) => n.path === path)?.title ?? 'memini'
+
   return (
     <div class="shell">
       <nav class="sidebar" aria-label="Primary">
@@ -69,25 +68,24 @@ export function App() {
           <span class="mark">memini</span>
           <span class="dot" aria-hidden="true" />
         </div>
-        {NAV.map(({ id, label, Icon }) => (
-          <button
-            key={id}
-            type="button"
-            class={`nav-item ${route.value === id ? 'active' : ''}`}
-            aria-current={route.value === id ? 'page' : undefined}
+        {NAV.map(({ path: to, label, Icon }) => (
+          <a
+            key={to}
+            href={to}
+            class={`nav-item ${path === to ? 'active' : ''}`}
+            aria-current={path === to ? 'page' : undefined}
             title={label}
-            onClick={() => (route.value = id)}
           >
             <Icon class="nav-icon" aria-hidden="true" />
             <span class="label">{label}</span>
-          </button>
+          </a>
         ))}
         <div class="spacer" />
       </nav>
 
       <main class="main">
         <header class="topbar">
-          <h1 class="title">{TITLES[route.value]}</h1>
+          <h1 class="title">{title}</h1>
           <span class="grow" />
           <NamespaceSelect />
           <button
@@ -99,7 +97,12 @@ export function App() {
           </button>
         </header>
         <div class="content">
-          <View />
+          <Router>
+            {NAV.map(({ path: to, component }) => (
+              <Route key={to} path={to} component={component} />
+            ))}
+            <Route default component={Dashboard} />
+          </Router>
         </div>
       </main>
     </div>

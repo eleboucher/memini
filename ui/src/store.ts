@@ -1,6 +1,5 @@
 import { signal, effect } from '@preact/signals'
 
-export type Route = 'projects' | 'overview' | 'browse' | 'search' | 'graph' | 'health' | 'settings'
 export type Theme = 'ink' | 'ivory'
 
 // Persisted connection settings. baseUrl is empty by default — the UI is served
@@ -44,11 +43,6 @@ function injectedToken(): string {
   return m?.getAttribute('content') ?? ''
 }
 
-// Routing is a single signal — no History API, so no deep links / back-button
-// / shareable URLs, and a reload always lands on the default view. Deliberate
-// simplicity for a single-operator admin panel; switch to hash routing if that
-// changes. Default landing is the Overview in "All projects" mode (ns === '').
-export const route = signal<Route>('overview')
 export const baseUrl = signal(initial.baseUrl)
 export const namespace = signal(initial.namespace)
 export const namespaceHeader = signal(initial.namespaceHeader)
