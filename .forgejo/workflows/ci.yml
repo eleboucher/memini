@@ -110,24 +110,24 @@ jobs:
       - name: Test opencode plugin
         run: cd integrations/opencode/plugin && node --test
 
-      # OpenClaw plugin (resolves @memini/namespace-resolver from workspace,
-      # plus @sinclair/typebox from npm).
+      # OpenClaw plugin. The build (esbuild) bundles @memini/namespace-resolver
+      # into dist/ so the published clawpack is self-contained; typebox stays an
+      # external npm dependency. `test` runs the bundle guard (issue #34) too.
       - name: Test OpenClaw plugin
         run: |
           cd integrations/openclaw/plugin
           pnpm install
-          npx tsc -p tsconfig.json
-          node --test test/regression.test.mjs
-          npx tsx --test test/helpers.test.ts
+          pnpm run build
+          pnpm run test
 
-      # Pi extension (resolves @memini/namespace-resolver from workspace, plus
-      # typebox from npm).
+      # Pi extension. Same bundling as OpenClaw: the resolver is inlined into
+      # dist/ so the npm package installs with only typebox as a runtime dep.
       - name: Test Pi plugin
         run: |
           cd integrations/pi/plugin
           pnpm install
           pnpm run build
-          npx tsx --test test/helpers.test.ts
+          pnpm run test
 
       # Hermes memory provider (stdlib unittest, uses the inline-ABC fallback).
       - name: Test Hermes plugin

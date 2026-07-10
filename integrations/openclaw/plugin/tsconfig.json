@@ -8,7 +8,11 @@
     "strict": true,
     "declaration": true,
     "outDir": "dist",
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@memini/namespace-resolver": ["../../../packages/namespace-resolver/src/index.ts"]
+    }
   },
   "include": ["src/**/*.ts"],
   "exclude": ["test", "node_modules", "dist"]

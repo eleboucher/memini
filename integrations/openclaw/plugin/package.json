@@ -9,16 +9,16 @@
   ],
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "test": "node --test test/regression.test.mjs && npx tsx --test test/helpers.test.ts",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --external:typebox --external:openclaw --alias:@memini/namespace-resolver=../../../packages/namespace-resolver/src/index.ts --outfile=dist/index.js",
+    "test": "node --test test/regression.test.mjs test/bundle.test.mjs && npx tsx --test test/helpers.test.ts",
     "typecheck": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@memini/namespace-resolver": "workspace:*",
     "typebox": "^1.1.38"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "esbuild": "^0.28.1",
     "openclaw": "latest",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
