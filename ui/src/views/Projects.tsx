@@ -6,10 +6,29 @@ import { TIERS, type Stats } from '../types'
 import { tierColor, relTime, num } from '../util'
 import { Loading, ErrorBanner, Empty } from '../components/States'
 import { NamespaceDrawer } from '../components/NamespaceDrawer'
-import { IconTrash, IconSettings } from '../icons'
+import { IconTrash, IconSettings, IconChevron } from '../icons'
 
 // NO_TENANT groups flat (no-slash) namespaces, which have no tenant segment.
 const NO_TENANT = '(no tenant)'
+
+// Collapsed tenant boxes persist across reloads so navigation stays where the
+// user left it.
+const COLLAPSE_KEY = 'memini.collapsedTenants'
+function loadCollapsed(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSE_KEY)
+    return new Set(raw ? (JSON.parse(raw) as string[]) : [])
+  } catch {
+    return new Set()
+  }
+}
+function saveCollapsed(set: Set<string>) {
+  try {
+    localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...set]))
+  } catch {
+    /* best-effort */
+  }
+}
 
 // DRAG_MIME carries the dragged pod's full namespace between dragstart and drop.
 const DRAG_MIME = 'application/x-memini-namespace'
@@ -151,15 +170,25 @@ function TenantBox({
   onDropPod: (draggedName: string, destTenant: string) => void
 }) {
   const [dragOver, setDragOver] = useState(false)
+  const [collapsed, setCollapsed] = useState(() => loadCollapsed().has(tenant.tenant))
 
   const open = (ns: string) => {
     namespace.value = ns
     route.value = 'overview'
   }
 
+  const toggle = () => {
+    const set = loadCollapsed()
+    const next = !collapsed
+    if (next) set.add(tenant.tenant)
+    else set.delete(tenant.tenant)
+    saveCollapsed(set)
+    setCollapsed(next)
+  }
+
   return (
     <section
-      class={`tenant-box${dragOver ? ' drop-target' : ''}`}
+      class={`tenant-box${dragOver ? ' drop-target' : ''}${collapsed ? ' collapsed' : ''}`}
       onDragOver={(e) => {
         // preventDefault marks this a valid drop target; without it onDrop never fires.
         if (e.dataTransfer?.types.includes(DRAG_MIME)) {
@@ -180,18 +209,28 @@ function TenantBox({
         if (dragged) onDropPod(dragged, tenant.tenant)
       }}
     >
-      <div class="tenant-head">
+      <button
+        class="tenant-head"
+        aria-expanded={!collapsed}
+        aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${tenant.tenant}`}
+        onClick={toggle}
+      >
+        <span class={`tenant-chevron${collapsed ? ' collapsed' : ''}`} aria-hidden="true">
+          <IconChevron />
+        </span>
         <span class="tenant-name">{tenant.tenant}</span>
         <span class="tenant-count">
           <span class="v">{num(tenant.total)}</span> memories · {tenant.projects.length}{' '}
           {tenant.projects.length === 1 ? 'project' : 'projects'}
         </span>
-      </div>
-      <div class="pod-grid">
-        {tenant.projects.map((p) => (
-          <Pod key={p.name} name={p.name} label={p.label} stats={p.stats} onOpen={() => open(p.name)} onManage={onManage} />
-        ))}
-      </div>
+      </button>
+      {!collapsed && (
+        <div class="pod-grid">
+          {tenant.projects.map((p) => (
+            <Pod key={p.name} name={p.name} label={p.label} stats={p.stats} onOpen={() => open(p.name)} onManage={onManage} />
+          ))}
+        </div>
+      )}
     </section>
   )
 }
