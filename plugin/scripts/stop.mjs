@@ -35,8 +35,9 @@ const DEFAULT_INTERVAL = 10;
 const autoSaveReason = (n) =>
   `[memini auto-save] ${n} user messages since the last save. Before stopping, ` +
   `review this conversation for durable decisions, facts, and user preferences, ` +
-  `and persist each with the memini memory_remember MCP tool (tier "semantic", ` +
-  `one memory per item). If nothing new is worth keeping, just stop again.`;
+  `and persist each with the memini memory_remember MCP tool (tier "semantic" ` +
+  `for facts/decisions, "procedural" for how-tos; one memory per item). ` +
+  `If nothing new is worth keeping, just stop again.`;
 
 /** Count real user messages in a Claude Code transcript (JSONL string). */
 function countUserMessages(raw) {

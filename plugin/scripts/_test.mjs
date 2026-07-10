@@ -1366,6 +1366,9 @@ test("isRealUserMessage: strings pass, tool_result arrays and command noise skip
   assert.equal(isRealUserMessage('<memini-pretool tool="Read" read-only>x'), false);
   assert.equal(isRealUserMessage('<memini-context project="p" read-only>x'), false);
   assert.equal(isRealUserMessage("<system-reminder>injected</system-reminder>"), false);
+  // Harness-injected background-task events are not user turns either.
+  assert.equal(isRealUserMessage("<task-notification>\n<task-id>abc</task-id>"), false);
+  assert.equal(isRealUserMessage("[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated event"), false);
 });
 
 test("extractLastTurn: returns the final user→assistant turn, skips noise", async () => {

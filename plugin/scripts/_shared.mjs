@@ -881,14 +881,18 @@ export const MEMORY_INSTRUCTION = `
 
 <memini-memory-directive>
 When you learn something durable worth persisting for future sessions (a
-decision, a fact, a convention, a gotcha), save it by calling the memini
-memory_remember MCP tool (tier "semantic", one memory per call).
+decision, a fact, a convention, a gotcha, a user preference), save it by
+calling the memini memory_remember MCP tool — one memory per call.
 
 Rules:
 - Each memory should be a self-contained fact, readable without this
   conversation's context.
+- tier: "semantic" for facts, decisions, and preferences; "procedural"
+  for how-tos and commands. Tag a critical, always-relevant fact "pinned"
+  so it surfaces in every session briefing.
 - Save nothing when nothing is worth keeping. This is reference memory,
-  not scratch space: prefer quality over quantity.
+  not scratch space: prefer quality over quantity, and skip anything
+  already in CLAUDE.md or project docs.
 - If a stale or wrong fact turns up (rather than a new one), correct it in
   place with the memory_update MCP tool instead of saving a duplicate.
 - Never print memory markup or JSON memory payloads in your reply text.
@@ -963,8 +967,10 @@ export function isRealUserMessage(content) {
   if (typeof content !== "string") return false; // arrays are tool_results, not user turns
   // Skipped: slash-command / local-command scaffolding, memini's own injected
   // recall blocks (<memini-context>/<memini-pretool> — capturing one would echo
-  // recalled memories back into memory), and hook-injected system reminders.
-  return !/^\s*<(local-command|command-|memini-|system-reminder)/.test(content);
+  // recalled memories back into memory), hook-injected system reminders, and
+  // harness-injected background-task events (<task-notification> /
+  // "[SYSTEM NOTIFICATION ...]"), which are not user turns.
+  return !/^\s*(<(local-command|command-|memini-|system-reminder|task-notification)|\[SYSTEM NOTIFICATION)/.test(content);
 }
 
 /**

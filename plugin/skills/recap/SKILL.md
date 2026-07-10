@@ -4,7 +4,7 @@ description: >-
   Summarize what's known about a project, area, or topic from memini. Use
   this skill when the user asks "catch me up on X", "what's the state of
   Y", or "summarize what we know about Z". Builds on recall with a
-  larger limit and tiered grouping. The MCP tool name is `memory_recall`.
+  larger limit and tiered grouping. The MCP tool is `memory_recall` on the bundled `memini` server.
 ---
 
 # recap (memini)
