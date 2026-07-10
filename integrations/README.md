@@ -117,13 +117,15 @@ is the exception: its native plugin is deliberately tool-free (automatic recall 
 capture only), so to give it `memory_forget` (or any tool) wire the memini MCP
 server alongside the plugin.
 
-**`memory_update` (partial update by id) is MCP-only** — there is no REST
-update endpoint. Claude Code, Codex, and any host wired to the memini MCP
-server get it; Hermes, Pi, OpenClaw, Open WebUI, and opencode's native plugins
-talk REST (`/v1/search`, `/v1/memories`) and do **not** expose it, so their
-tool descriptions correctly point to `memory_forget` (delete + re-remember) as
-the only way to correct a stored fact. Wire the MCP server alongside a native
-plugin if a host needs `memory_update`.
+**`memory_update` (partial update by id) is MCP-only** — REST has no PATCH
+endpoint, but `POST /v1/memories` **upserts when given an `id`**, replacing the
+memory in place while preserving its identity and history. The REST-backed
+plugins (Hermes, Pi, OpenClaw, Open WebUI) therefore accept an optional `id` on
+`memory_remember`, and their tool descriptions point to re-remember-with-id as
+the way to correct a stored fact; `memory_forget` is only for memories that
+should not exist at all. Wire the MCP server alongside a native plugin if a
+host needs true partial updates (`memory_update` merges field-by-field; the
+REST upsert replaces the record with what you send).
 
 Two host-specific differences remain by design:
 

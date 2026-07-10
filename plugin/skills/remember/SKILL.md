@@ -5,7 +5,7 @@ description: >-
   proactively when the user says "remember this", after discovering a bug,
   after making an architectural decision, after learning a project
   convention, or whenever something learned in this session should outlive
-  the session itself. The MCP tool name is `memory_remember`.
+  the session itself. The MCP tool is `memory_remember` on the bundled `memini` server.
 ---
 
 # remember (memini)

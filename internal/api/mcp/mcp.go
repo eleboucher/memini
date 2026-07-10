@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/eleboucher/memini/internal/httputil"
@@ -42,13 +43,85 @@ var (
 	}
 )
 
+// enumSchema infers the JSON schema for T (keeping the jsonschema struct-tag
+// descriptions) and applies enum constraints, which the tag syntax cannot
+// express. Array-typed properties get the enum on their items. It panics on an
+// unknown property; the vars below run at init, so a typo fails any test run.
+func enumSchema[T any](enums map[string][]any) *jsonschema.Schema {
+	s, err := jsonschema.For[T](&jsonschema.ForOptions{})
+	if err != nil {
+		panic(err)
+	}
+	for name, vals := range enums {
+		p, ok := s.Properties[name]
+		if !ok {
+			panic("enumSchema: no property " + name)
+		}
+		if p.Items != nil { // array property: constrain its items
+			p.Items.Enum = vals
+		} else {
+			p.Enum = vals
+		}
+	}
+	return s
+}
+
+// Property names shared by several enum maps below.
+const (
+	propTiers  = "tiers"
+	propLevels = "levels"
+	propScope  = "scope"
+)
+
+// Input schemas with enum constraints, computed once. get/forget (idArgs) have
+// no enum-valued parameters and keep the SDK's inferred schema.
+var (
+	tierEnum  = []any{"working", "episodic", "semantic", "procedural"}
+	levelEnum = []any{"explicit", "deduced"}
+	scopeEnum = []any{"exact", "subtree"}
+
+	rememberSchema = enumSchema[rememberArgs](map[string][]any{"tier": tierEnum, "level": levelEnum})
+	recallSchema   = enumSchema[recallArgs](map[string][]any{
+		propTiers: tierEnum, propLevels: levelEnum, propScope: scopeEnum,
+		"response_format": {"concise", "detailed"},
+	})
+	briefingSchema = enumSchema[briefingArgs](map[string][]any{propScope: scopeEnum})
+	answerSchema   = enumSchema[answerArgs](map[string][]any{
+		propTiers: tierEnum, propLevels: levelEnum,
+		"reasoning_level": {"minimal", "low", "medium", "high"},
+	})
+	listSchema   = enumSchema[listArgs](map[string][]any{propTiers: tierEnum, propLevels: levelEnum})
+	updateSchema = enumSchema[updateArgs](map[string][]any{"tier": tierEnum})
+)
+
+// serverInstructions is sent to clients in the initialize response. It is the
+// one server-controlled string that can teach cross-tool policy (call order,
+// proactive use, storage conventions) — per-tool descriptions are read in
+// isolation during tool selection and can't express it.
+const serverInstructions = "memini is persistent cross-session memory for this agent. Standing policy:\n" +
+	"- At session start, call memory_briefing once to orient (pinned context, durable facts, " +
+	"how-tos, recent activity). Prefer it over broad recall queries.\n" +
+	"- Before work that may have history — an unfamiliar file, a recurring bug, a non-obvious " +
+	"decision — call memory_recall first.\n" +
+	"- After learning something durable (a decision and its why, a gotcha, a convention, a stated " +
+	"preference), call memory_remember proactively: one atomic, self-contained fact per call. " +
+	"Don't store what's already in project docs/CLAUDE.md or trivially recoverable from code.\n" +
+	"- tier: semantic = durable fact, procedural = how-to/command, episodic = what happened, " +
+	"working = scratch. Omit to auto-classify.\n" +
+	"- Conventions: tag critical always-relevant facts \"pinned\" (they surface in every briefing); " +
+	"set metadata.category to a topic bucket (e.g. bug_fixes, architecture_decisions, coding_conventions).\n" +
+	"- To correct or extend a stored fact, use memory_update on its id rather than writing a " +
+	"near-duplicate; memory_forget only for memories that should not exist.\n" +
+	"- Empty recall means nothing is known — proceed from first principles, never invent a " +
+	"remembered fact. A degraded field means results are keyword-only and incomplete, not a confident negative."
+
 // NewServer builds an MCP server exposing memini's memory tools. defaultNS is
 // used whenever a tool call omits the namespace argument.
 func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 	s := mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    "memini",
 		Version: version.Version,
-	}, nil)
+	}, &mcpsdk.ServerOptions{Instructions: serverInstructions})
 
 	h := &tools{svc: svc, defaultNS: defaultNS}
 
@@ -66,6 +139,7 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 			"existing memory — either call memory_update with id=merge_hint.similar_id to fold " +
 			"them together, or ignore it to keep both. Returns {id, tier, stored}; stored=false " +
 			"means a low-signal write was dropped by the value gate (not an error).",
+		InputSchema: rememberSchema,
 		Annotations: additive,
 	}, h.remember)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
@@ -82,9 +156,8 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 			"treat as incomplete. Supports time-travel (as_of), nested namespaces (scope=subtree), " +
 			"an exact per-call read set (namespaces — replaces the default; writes are unaffected), " +
 			"and query_rewrite (LLM expands the query into variants, fused via RRF — better " +
-			"recall, slower). When the current session's turns are being captured as memories, " +
-			"pass exclude_metadata {\"session_id\": \"<current session id>\"} so the session's " +
-			"own captured turns are not echoed back as memory.",
+			"recall, slower).",
+		InputSchema: recallSchema,
 		Annotations: readOnly,
 	}, h.recall)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
@@ -95,6 +168,7 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 			"Call it when a session opens to orient yourself. Prefer this over broad recall " +
 			"queries at session start. scope=subtree also briefs nested namespaces; namespaces " +
 			"briefs an exact read set instead of the default (writes are unaffected).",
+		InputSchema: briefingSchema,
 		Annotations: readOnly,
 	}, h.briefing)
 	// memory_answer requires an LLM; only advertise it when one is configured,
@@ -106,6 +180,7 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 			Description: "Recall relevant memories and answer a question grounded on them (requires " +
 				"an LLM). Slower than memory_recall; use when you want a synthesized answer with " +
 				"sources rather than raw memories.",
+			InputSchema: answerSchema,
 			Annotations: readOnly,
 		}, h.answer)
 	}
@@ -116,6 +191,7 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 			"(e.g. all procedural memories, or everything tagged/categorized X). Returns at " +
 			"most limit (default 20) newest-first; page with offset. For relevance-ranked " +
 			"search use memory_recall.",
+		InputSchema: listSchema,
 		Annotations: readOnly,
 	}, h.list)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
@@ -132,6 +208,7 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 			"change; metadata merges key-by-key). Use to correct or enrich a fact — e.g. to fold " +
 			"a near-duplicate flagged by memory_remember's merge_hint into the surviving memory. " +
 			"To delete instead, use memory_forget.",
+		InputSchema: updateSchema,
 		Annotations: additive,
 	}, h.update)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
@@ -245,19 +322,22 @@ func (t *tools) ns(arg string) (string, error) {
 }
 
 type rememberArgs struct {
-	Content    string         `json:"content" jsonschema:"the text to remember"`
-	Tier       string         `json:"tier,omitempty" jsonschema:"working, episodic, semantic, or procedural (omit to auto-classify)"`
-	Level      string         `json:"level,omitempty" jsonschema:"explicit (user-stated) or deduced (LLM-distilled); omit to leave unset"`
-	Summary    string         `json:"summary,omitempty" jsonschema:"optional one-line summary"`
-	Tags       []string       `json:"tags,omitempty" jsonschema:"optional labels"`
-	Metadata   map[string]any `json:"metadata,omitempty" jsonschema:"optional structured metadata"`
-	Importance float64        `json:"importance,omitempty" jsonschema:"0..1 bias toward retention"`
-	TTLSeconds *int           `json:"ttl_seconds,omitempty" jsonschema:"overrides the tier default TTL; negative means never expire"`
-	ID         string         `json:"id,omitempty" jsonschema:"upserts an existing memory when provided"`
-	Confidence *float64       `json:"confidence,omitempty" jsonschema:"0..1 seed corroboration for a durable fact; omit for default"`
-	ValidFrom  string         `json:"valid_from,omitempty" jsonschema:"RFC3339 start of the fact's validity; backdate for as_of recall"`
-	ValidTo    string         `json:"valid_to,omitempty" jsonschema:"RFC3339 end of the fact's validity; omit if still true"`
-	Namespace  string         `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+	Content string `json:"content" jsonschema:"the fact to store — atomic and self-contained, readable without this conversation's context"`
+	Tier    string `json:"tier,omitempty" jsonschema:"working, episodic, semantic, or procedural (omit to auto-classify)"`
+	Level   string `json:"level,omitempty" jsonschema:"provenance: explicit = user-stated, deduced = LLM-inferred; omit to leave unset"`
+	Summary string `json:"summary,omitempty" jsonschema:"optional one-line summary"`
+	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
+	Tags []string `json:"tags,omitempty" jsonschema:"topic labels for filtering and keyword search; tag a critical always-relevant fact 'pinned' so it surfaces in every session briefing"`
+	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
+	Metadata map[string]any `json:"metadata,omitempty" jsonschema:"structured key/values for later filtering; set 'category' to a topic bucket (e.g. bug_fixes, architecture_decisions, coding_conventions)"`
+	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
+	Importance float64  `json:"importance,omitempty" jsonschema:"0..1 ranking/retention bias — higher ranks higher and survives pruning longer; omit for the default"`
+	TTLSeconds *int     `json:"ttl_seconds,omitempty" jsonschema:"overrides the tier default TTL; negative means never expire"`
+	ID         string   `json:"id,omitempty" jsonschema:"upserts an existing memory when provided"`
+	Confidence *float64 `json:"confidence,omitempty" jsonschema:"0..1 seed corroboration for a durable fact; omit for default"`
+	ValidFrom  string   `json:"valid_from,omitempty" jsonschema:"RFC3339 start of the fact's validity; backdate for as_of recall"`
+	ValidTo    string   `json:"valid_to,omitempty" jsonschema:"RFC3339 end of the fact's validity; omit if still true"`
+	Namespace  string   `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 }
 
 type rememberResult struct {
@@ -344,17 +424,20 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 }
 
 type recallArgs struct {
-	Query             string            `json:"query" jsonschema:"what to search for"`
-	Tiers             []string          `json:"tiers,omitempty" jsonschema:"restrict to tiers; empty means all"`
-	Levels            []string          `json:"levels,omitempty" jsonschema:"restrict to levels (explicit/deduced); empty means all"`
-	Tags              []string          `json:"tags,omitempty" jsonschema:"only memories carrying every listed tag (AND)"`
-	Metadata          map[string]string `json:"metadata,omitempty" jsonschema:"only memories whose metadata has each key=value pair (AND)"`
-	ExcludeMetadata   map[string]string `json:"exclude_metadata,omitempty" jsonschema:"inverse of metadata; drops matching memories"`
-	IncludeFreshTurns bool              `json:"include_fresh_turns,omitempty" jsonschema:"keep just-captured turns the echo guard would drop"`
-	QueryRewrite      bool              `json:"query_rewrite,omitempty" jsonschema:"rewrite query into 2-3 variants and fuse via RRF"`
-	Limit             int               `json:"limit,omitempty" jsonschema:"max results (default 10)"`
+	Query  string   `json:"query" jsonschema:"natural-language search text; short and descriptive works best (e.g. 'JWT auth setup')"`
+	Tiers  []string `json:"tiers,omitempty" jsonschema:"restrict to tiers; empty means all"`
+	Levels []string `json:"levels,omitempty" jsonschema:"restrict to levels (explicit/deduced); empty means all"`
+	Tags   []string `json:"tags,omitempty" jsonschema:"only memories carrying every listed tag (AND)"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
-	Scope     string `json:"scope,omitempty" jsonschema:"'subtree' also searches nested namespaces; default 'exact'; any other value is rejected as an error"`
+	Metadata map[string]string `json:"metadata,omitempty" jsonschema:"only memories whose metadata has each key=value pair (AND)"`
+	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
+	ExcludeMetadata map[string]string `json:"exclude_metadata,omitempty" jsonschema:"inverse of metadata; drops matching memories (e.g. {\"source\": \"turn_capture\"} hides auto-captured conversation turns)"`
+	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
+	IncludeFreshTurns bool `json:"include_fresh_turns,omitempty" jsonschema:"also return this session's just-captured conversation turns (hidden by default — they are still in your live context); only for 'what did I just say' queries"`
+	QueryRewrite      bool `json:"query_rewrite,omitempty" jsonschema:"rewrite query into 2-3 variants and fuse via RRF"`
+	Limit             int  `json:"limit,omitempty" jsonschema:"max results (default 10)"`
+	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
+	Scope     string `json:"scope,omitempty" jsonschema:"'subtree' also searches nested namespaces; default 'exact'"`
 	AsOf      string `json:"as_of,omitempty" jsonschema:"RFC3339 time for time-travel recall (facts true then)"`
 	Namespace string `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
@@ -488,7 +571,7 @@ type briefingArgs struct {
 	PerSectionRecent *int   `json:"per_section_recent,omitempty" jsonschema:"max recent episodic entries; 0 disables"`
 	Namespace        string `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
-	Scope string `json:"scope,omitempty" jsonschema:"'subtree' also includes namespaces nested under the namespace; default 'exact'; any other value is rejected as an error"`
+	Scope string `json:"scope,omitempty" jsonschema:"'subtree' also includes namespaces nested under the namespace; default 'exact'"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
 	Namespaces []string `json:"namespaces,omitempty" jsonschema:"brief exactly these namespaces instead of the default read set (namespace, its subtree, the tenant-shared namespace, and the global namespace); entry 'ns/*' also includes namespaces nested under ns; max 16; writes are unaffected"`
 }

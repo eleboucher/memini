@@ -1193,6 +1193,52 @@ func TestToolDescriptions(t *testing.T) {
 	}
 }
 
+// TestServerInstructions pins that the initialize response carries the
+// cross-tool usage policy (briefing at session start, recall-before,
+// remember-after, the pinned/category conventions) — the only guidance a
+// bare MCP client sees beyond per-tool descriptions.
+func TestServerInstructions(t *testing.T) {
+	cs := connect(t)
+	instr := cs.InitializeResult().Instructions
+	if instr == "" {
+		t.Fatal("initialize result has no instructions")
+	}
+	for _, phrase := range []string{"memory_briefing", "memory_recall", "memory_remember", "pinned", "category", "memory_update"} {
+		if !strings.Contains(instr, phrase) {
+			t.Errorf("instructions missing %q", phrase)
+		}
+	}
+}
+
+// TestToolSchemaEnums pins that constrained string parameters advertise real
+// JSON Schema enums (not just prose), so clients can validate before calling.
+func TestToolSchemaEnums(t *testing.T) {
+	tools := listTools(t, service.WithAnswerer(&fakeAnswerer{resp: "n/a"}))
+	want := map[string][]string{
+		"memory_remember": {`"tier"`, `"enum":["working","episodic","semantic","procedural"]`},
+		"memory_recall":   {`"enum":["exact","subtree"]`, `"enum":["concise","detailed"]`},
+		"memory_briefing": {`"enum":["exact","subtree"]`},
+		"memory_answer":   {`"enum":["minimal","low","medium","high"]`},
+		"memory_list":     {`"enum":["working","episodic","semantic","procedural"]`},
+		"memory_update":   {`"enum":["working","episodic","semantic","procedural"]`},
+	}
+	for name, fragments := range want {
+		tool := tools[name]
+		if tool == nil {
+			t.Fatalf("%s: tool not found", name)
+		}
+		raw, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatalf("%s: marshal schema: %v", name, err)
+		}
+		for _, frag := range fragments {
+			if !strings.Contains(string(raw), frag) {
+				t.Errorf("%s input schema missing %s, got: %s", name, frag, raw)
+			}
+		}
+	}
+}
+
 func TestToolAnnotations(t *testing.T) {
 	tools := listTools(t, service.WithAnswerer(&fakeAnswerer{resp: "n/a"}))
 	want := map[string]struct{ readOnly, destructive bool }{

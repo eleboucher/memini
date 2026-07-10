@@ -42,6 +42,10 @@ function fakeClient(): MeminiClient & { calls: RecordedCall[] } {
       calls.push({ method: "GET", path, ns });
       return { memories: [{ id: "m1", content: "c", tier: "procedural", tags: ["auth"], metadata: { category: "bug_fixes" } }] };
     },
+    async deleteJson(path: string, ns?: string) {
+      calls.push({ method: "DELETE", path, ns });
+      return {};
+    },
   };
 }
 

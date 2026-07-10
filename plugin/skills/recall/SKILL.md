@@ -5,7 +5,7 @@ description: >-
   current task. Use this skill when the user asks "what do you know
   about X", "did we discuss Y before", or before starting work that may
   have prior context (a file edit, an architectural change, debugging a
-  recurring issue). The MCP tool name is `memory_recall`.
+  recurring issue). The MCP tool is `memory_recall` on the bundled `memini` server.
 ---
 
 # recall (memini)
