@@ -505,16 +505,10 @@ func (h *Server) ListMemories(w http.ResponseWriter, r *http.Request, params Lis
 	httputil.JSON(w, http.StatusOK, out)
 }
 
-// GetBriefing implements GET /v1/namespaces/{name}/briefing.
-func (h *Server) GetBriefing(w http.ResponseWriter, r *http.Request, name string, params GetBriefingParams) {
-	// chi binds the raw escaped path segment, so a nested namespace ("project/
-	// agent") arrives as "project%2Fagent" and must be decoded to match storage.
-	decoded, ok := unescapeID(name)
-	if !ok {
-		httputil.Error(w, http.StatusBadRequest, "invalid namespace encoding")
-		return
-	}
-	name = decoded
+// GetBriefing implements GET /v1/namespaces/briefing. The namespace comes from
+// the X-Memini-Namespace header (via the middleware), not the URL path.
+func (h *Server) GetBriefing(w http.ResponseWriter, r *http.Request, params GetBriefingParams) {
+	name := namespaceFromContext(r.Context())
 	if err := httputil.ValidateNamespace(name); err != nil {
 		httputil.Error(w, http.StatusBadRequest, "invalid namespace: "+err.Error())
 		return
@@ -648,16 +642,11 @@ func (h *Server) ListNamespaces(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusOK, NamespacesResponse{Namespaces: ns})
 }
 
-// DeleteNamespace implements DELETE /v1/namespaces/{name}.
-func (h *Server) DeleteNamespace(w http.ResponseWriter, r *http.Request, name string) {
-	// chi binds the raw escaped path segment; decode hierarchical names like
-	// "work%2Fmemini" → "work/memini" to match storage.
-	decoded, ok := unescapeID(name)
-	if !ok {
-		httputil.Error(w, http.StatusBadRequest, "invalid namespace encoding")
-		return
-	}
-	name = decoded
+// DeleteNamespace implements DELETE /v1/namespaces. The namespace comes from
+// the X-Memini-Namespace header (via the middleware), not the URL path, so a
+// hierarchical name like "work/memini" needs no %2F path encoding.
+func (h *Server) DeleteNamespace(w http.ResponseWriter, r *http.Request, _ DeleteNamespaceParams) {
+	name := namespaceFromContext(r.Context())
 	if err := httputil.ValidateNamespace(name); err != nil {
 		httputil.Error(w, http.StatusBadRequest, "invalid namespace: "+err.Error())
 		return
@@ -670,18 +659,11 @@ func (h *Server) DeleteNamespace(w http.ResponseWriter, r *http.Request, name st
 	httputil.JSON(w, http.StatusOK, DeleteNamespaceResponse{Deleted: int(n)})
 }
 
-// SplitNamespace implements POST /v1/namespaces/{name}/split. Regroups a
-// namespace by metadata keys, moving each record to the namespace named by the
-// first of the given keys it carries.
-func (h *Server) SplitNamespace(w http.ResponseWriter, r *http.Request, name string) {
-	// chi binds the raw escaped path segment, so a nested namespace ("project/
-	// agent") arrives as "project%2Fagent" and must be decoded to match storage.
-	decoded, ok := unescapeID(name)
-	if !ok {
-		httputil.Error(w, http.StatusBadRequest, "invalid namespace encoding")
-		return
-	}
-	name = decoded
+// SplitNamespace implements POST /v1/namespaces/split. Regroups the request
+// namespace (X-Memini-Namespace header) by metadata keys, moving each record to
+// the namespace named by the first of the given keys it carries.
+func (h *Server) SplitNamespace(w http.ResponseWriter, r *http.Request, _ SplitNamespaceParams) {
+	name := namespaceFromContext(r.Context())
 	if err := httputil.ValidateNamespace(name); err != nil {
 		httputil.Error(w, http.StatusBadRequest, "invalid namespace: "+err.Error())
 		return
@@ -714,17 +696,10 @@ func (h *Server) SplitNamespace(w http.ResponseWriter, r *http.Request, name str
 	httputil.JSON(w, http.StatusOK, apiRenamespaceReport(rep))
 }
 
-// MoveNamespace implements POST /v1/namespaces/{name}/move. Relocates every
-// memory in the path namespace to the target namespace.
-func (h *Server) MoveNamespace(w http.ResponseWriter, r *http.Request, name string) {
-	// chi binds the raw escaped path segment, so a nested namespace ("project/
-	// agent") arrives as "project%2Fagent" and must be decoded to match storage.
-	decoded, ok := unescapeID(name)
-	if !ok {
-		httputil.Error(w, http.StatusBadRequest, "invalid namespace encoding")
-		return
-	}
-	name = decoded
+// MoveNamespace implements POST /v1/namespaces/move. Relocates every memory in
+// the request namespace (X-Memini-Namespace header) to the target namespace.
+func (h *Server) MoveNamespace(w http.ResponseWriter, r *http.Request, _ MoveNamespaceParams) {
+	name := namespaceFromContext(r.Context())
 	if err := httputil.ValidateNamespace(name); err != nil {
 		httputil.Error(w, http.StatusBadRequest, "invalid namespace: "+err.Error())
 		return

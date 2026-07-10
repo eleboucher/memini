@@ -152,7 +152,7 @@ func TestGetBriefing(t *testing.T) {
 	listRec := do(t, h, http.MethodGet, "/v1/memories", "proj", apiKey, nil)
 	t.Logf("TestGetBriefing list body: %s", listRec.Body)
 
-	rec := do(t, h, http.MethodGet, "/v1/namespaces/proj/briefing", "proj", apiKey, nil)
+	rec := do(t, h, http.MethodGet, "/v1/namespaces/briefing", "proj", apiKey, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("briefing: %d (%s)", rec.Code, rec.Body)
 	}
@@ -237,7 +237,7 @@ func TestGetBriefingPerSectionCaps(t *testing.T) {
 
 	// Defaults: per_section=5 (omitted), all four sections capped at 5. Pinned
 	// carries 5 candidates (3 semantic + 2 procedural) so it caps at 5.
-	rec := do(t, h, http.MethodGet, "/v1/namespaces/proj/briefing", "proj", apiKey, nil)
+	rec := do(t, h, http.MethodGet, "/v1/namespaces/briefing", "proj", apiKey, nil)
 	b := decode(rec)
 	if len(b.Facts) != 5 || len(b.Procedures) != 5 || len(b.Recent) != 5 || len(b.Pinned) != 5 {
 		t.Fatalf("default per_section=5 should cap all sections to 5, got facts=%d procs=%d recent=%d pinned=%d",
@@ -247,7 +247,7 @@ func TestGetBriefingPerSectionCaps(t *testing.T) {
 	// Per-section overrides win over per_section: pin 2, facts 1, procedures 0
 	// (off), recent 3. Verifies that one section can be disabled (procs=0)
 	// while others get custom caps.
-	q := "/v1/namespaces/proj/briefing?per_section=5&per_section_pinned=2&per_section_facts=1&per_section_procedures=0&per_section_recent=3"
+	q := "/v1/namespaces/briefing?per_section=5&per_section_pinned=2&per_section_facts=1&per_section_procedures=0&per_section_recent=3"
 	rec = do(t, h, http.MethodGet, q, "proj", apiKey, nil)
 	b = decode(rec)
 	if len(b.Pinned) != 2 || len(b.Facts) != 1 || len(b.Procedures) != 0 || len(b.Recent) != 3 {
@@ -1058,12 +1058,12 @@ func TestGetBriefingSubtreeScope(t *testing.T) {
 		return b
 	}
 
-	exact := get("/v1/namespaces/proj/briefing")
+	exact := get("/v1/namespaces/briefing")
 	if len(exact.Facts) != 1 {
 		t.Fatalf("exact briefing should see only proj's fact, got %+v", exact.Facts)
 	}
 
-	sub := get("/v1/namespaces/proj/briefing?scope=subtree")
+	sub := get("/v1/namespaces/briefing?scope=subtree")
 	if len(sub.Facts) != 2 {
 		t.Fatalf("subtree briefing should span proj and proj/agent-a, got %+v", sub.Facts)
 	}
@@ -1093,7 +1093,7 @@ func TestGetBriefingExplicitNamespaces(t *testing.T) {
 	remember("team-b", "fact in team-b")
 	remember("team-c", "fact in team-c")
 
-	rec := do(t, h, http.MethodGet, "/v1/namespaces/team-a/briefing?namespaces=team-b&namespaces=team-c", "team-a", apiKey, nil)
+	rec := do(t, h, http.MethodGet, "/v1/namespaces/briefing?namespaces=team-b&namespaces=team-c", "team-a", apiKey, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("briefing: %d (%s)", rec.Code, rec.Body)
 	}
@@ -1119,7 +1119,7 @@ func TestGetBriefingExplicitNamespaces(t *testing.T) {
 // TestGetBriefingInvalidScope pins that an unknown ?scope= value is 400.
 func TestGetBriefingInvalidScope(t *testing.T) {
 	h := newServer(t)
-	rec := do(t, h, http.MethodGet, "/v1/namespaces/proj/briefing?scope=bogus", "proj", apiKey, nil)
+	rec := do(t, h, http.MethodGet, "/v1/namespaces/briefing?scope=bogus", "proj", apiKey, nil)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad scope: want 400, got %d (%s)", rec.Code, rec.Body)
 	}
@@ -1132,7 +1132,7 @@ func TestGetBriefingInvalidScope(t *testing.T) {
 // entries maps to 400 invalid input, not 500.
 func TestGetBriefingNamespacesCapRejected(t *testing.T) {
 	h := newServer(t)
-	q := "/v1/namespaces/proj/briefing?"
+	q := "/v1/namespaces/briefing?"
 	for i := range 17 {
 		q += fmt.Sprintf("namespaces=ns-%d&", i)
 	}
@@ -1224,6 +1224,9 @@ func TestReassignMemory(t *testing.T) {
 // TestSplitNamespaceNestedName pins that a nested (percent-encoded) namespace
 // reaches the split operation decoded — without the unescape, split silently
 // operates on the literal escaped string and reports an empty result.
+// TestSplitNamespaceNestedName pins that split works for a hierarchical
+// namespace ("work/memini"): the source comes from the X-Memini-Namespace
+// header (not a %2F-encoded path segment), so it needs no path encoding.
 func TestSplitNamespaceNestedName(t *testing.T) {
 	h := newServer(t)
 
@@ -1236,7 +1239,7 @@ func TestSplitNamespaceNestedName(t *testing.T) {
 	}
 
 	// dry_run reports the grouping without moving anything.
-	rec = do(t, h, http.MethodPost, "/v1/namespaces/work%2Fmemini/split", "work/memini", apiKey,
+	rec = do(t, h, http.MethodPost, "/v1/namespaces/split", "work/memini", apiKey,
 		map[string]any{"dry_run": true})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("split dry-run: want 200, got %d (%s)", rec.Code, rec.Body)
@@ -1256,7 +1259,7 @@ func TestSplitNamespaceNestedName(t *testing.T) {
 		t.Fatalf("dry-run moved rows into the target namespace: %d (%s)", rec.Code, rec.Body)
 	}
 
-	rec = do(t, h, http.MethodPost, "/v1/namespaces/work%2Fmemini/split", "work/memini", apiKey,
+	rec = do(t, h, http.MethodPost, "/v1/namespaces/split", "work/memini", apiKey,
 		map[string]any{})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("split: want 200, got %d (%s)", rec.Code, rec.Body)
@@ -1288,7 +1291,7 @@ func TestMoveNamespace(t *testing.T) {
 	}
 
 	// dry_run reports without moving; the untrimmed target normalizes to work/new.
-	rec = do(t, h, http.MethodPost, "/v1/namespaces/work%2Fold/move", "work/old", apiKey,
+	rec = do(t, h, http.MethodPost, "/v1/namespaces/move", "work/old", apiKey,
 		map[string]any{"to": " work/new/ ", "dry_run": true})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("move dry-run: want 200, got %d (%s)", rec.Code, rec.Body)
@@ -1305,7 +1308,7 @@ func TestMoveNamespace(t *testing.T) {
 	}
 
 	// Apply relocates the memory to work/new.
-	rec = do(t, h, http.MethodPost, "/v1/namespaces/work%2Fold/move", "work/old", apiKey,
+	rec = do(t, h, http.MethodPost, "/v1/namespaces/move", "work/old", apiKey,
 		map[string]any{"to": "work/new"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("move: want 200, got %d (%s)", rec.Code, rec.Body)
@@ -1316,12 +1319,12 @@ func TestMoveNamespace(t *testing.T) {
 	}
 
 	// Same-namespace and pattern-bearing targets are caller mistakes.
-	rec = do(t, h, http.MethodPost, "/v1/namespaces/work%2Fnew/move", "work/new", apiKey,
+	rec = do(t, h, http.MethodPost, "/v1/namespaces/move", "work/new", apiKey,
 		map[string]any{"to": "work/new"})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("move to same namespace: want 400, got %d (%s)", rec.Code, rec.Body)
 	}
-	rec = do(t, h, http.MethodPost, "/v1/namespaces/work%2Fnew/move", "work/new", apiKey,
+	rec = do(t, h, http.MethodPost, "/v1/namespaces/move", "work/new", apiKey,
 		map[string]any{"to": "work/*"})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("move to pattern: want 400, got %d (%s)", rec.Code, rec.Body)
@@ -1360,5 +1363,34 @@ func TestNamespaceHeaderCanonicalized(t *testing.T) {
 	rec = do(t, h, http.MethodPost, "/v1/search", "///", apiKey, map[string]any{"query": "x"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("slash-only header should fall back to default, got %d (%s)", rec.Code, rec.Body)
+	}
+}
+
+// TestDeleteNamespaceHierarchical pins that deleting a hierarchical namespace
+// works via the X-Memini-Namespace header (no %2F path segment): DELETE
+// /v1/namespaces removes exactly the header namespace's memories.
+func TestDeleteNamespaceHierarchical(t *testing.T) {
+	h := newServer(t)
+
+	for _, ns := range []string{"work/memini", "work/other"} {
+		rec := do(t, h, http.MethodPost, "/v1/memories", ns, apiKey, map[string]any{
+			"content": "fact in " + ns, "tier": "semantic",
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("remember %s: want 201, got %d (%s)", ns, rec.Code, rec.Body)
+		}
+	}
+
+	rec := do(t, h, http.MethodDelete, "/v1/namespaces", "work/memini", apiKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"deleted":1`) {
+		t.Fatalf("delete: want deleted:1, got %s", rec.Body)
+	}
+	// The sibling namespace is untouched.
+	rec = do(t, h, http.MethodGet, "/v1/memories?limit=10", "work/other", apiKey, nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "fact in work/other") {
+		t.Fatalf("sibling must survive the delete: %d (%s)", rec.Code, rec.Body)
 	}
 }

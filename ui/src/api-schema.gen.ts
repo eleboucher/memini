@@ -155,13 +155,17 @@ export interface paths {
         get: operations["listNamespaces"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete every memory in the request namespace
+         * @description Deletes all memories in the namespace given by the X-Memini-Namespace header. The namespace comes from the header (not the URL path), so a hierarchical name like "work/memini" needs no path encoding and works through any proxy.
+         */
+        delete: operations["deleteNamespace"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/v1/namespaces/{name}/briefing": {
+    "/v1/namespaces/briefing": {
         parameters: {
             query?: never;
             header?: never;
@@ -169,8 +173,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Layered session-start briefing for a namespace
-         * @description A query-less summary for injecting context when a session opens: the most durable facts and procedures, recent episodic activity, and pinned memories. Backs the plugin's SessionStart hook.
+         * Layered session-start briefing for the request namespace
+         * @description A query-less summary for injecting context when a session opens: the most durable facts and procedures, recent episodic activity, and pinned memories. The namespace comes from the X-Memini-Namespace header. Backs the plugin's SessionStart hook.
          */
         get: operations["getBriefing"];
         put?: never;
@@ -181,24 +185,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/namespaces/{name}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** Delete every memory in a namespace */
-        delete: operations["deleteNamespace"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/namespaces/{name}/move": {
+    "/v1/namespaces/move": {
         parameters: {
             query?: never;
             header?: never;
@@ -208,8 +195,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Relocate every memory in a namespace to another namespace
-         * @description Moves all memories (including superseded and expired) from the path namespace to the target namespace. The target is normalized (surrounding whitespace/slashes trimmed, duplicate separators collapsed) and rejected with 400 when it contains "*" or equals the source. Supports dry-run. Backed by the same Move operation as `memini namespace move`.
+         * Relocate every memory in the request namespace to another namespace
+         * @description Moves all memories (including superseded and expired) from the request namespace (X-Memini-Namespace header) to the target namespace. The target is normalized (surrounding whitespace/slashes trimmed, duplicate separators collapsed) and rejected with 400 when it contains "*" or equals the source. Supports dry-run. Backed by the same Move operation as `memini namespace move`.
          */
         post: operations["moveNamespace"];
         delete?: never;
@@ -218,7 +205,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/namespaces/{name}/split": {
+    "/v1/namespaces/split": {
         parameters: {
             query?: never;
             header?: never;
@@ -228,8 +215,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Split a namespace by metadata keys
-         * @description Regroups a namespace by metadata, moving each record to the namespace named by the first of the given keys it carries. Supports dry-run. Backed by the same Split operation as `memini namespace split`.
+         * Split the request namespace by metadata keys
+         * @description Regroups the request namespace (X-Memini-Namespace header) by metadata, moving each record to the namespace named by the first of the given keys it carries. Supports dry-run. Backed by the same Split operation as `memini namespace split`.
          */
         post: operations["splitNamespace"];
         delete?: never;
@@ -934,6 +921,31 @@ export interface operations {
             500: components["responses"]["Error"];
         };
     };
+    deleteNamespace: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteNamespaceResponse"];
+                };
+            };
+            400: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
     getBriefing: {
         parameters: {
             query?: {
@@ -952,10 +964,11 @@ export interface operations {
                 /** @description Repeatable. Brief exactly these namespaces instead of the default read set (the namespace, its subtree, and the global namespace). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected. */
                 namespaces?: string[];
             };
-            header?: never;
-            path: {
-                name: string;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -973,37 +986,14 @@ export interface operations {
             500: components["responses"]["Error"];
         };
     };
-    deleteNamespace: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                name: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeleteNamespaceResponse"];
-                };
-            };
-            400: components["responses"]["Error"];
-            500: components["responses"]["Error"];
-        };
-    };
     moveNamespace: {
         parameters: {
             query?: never;
-            header?: never;
-            path: {
-                name: string;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
@@ -1033,10 +1023,11 @@ export interface operations {
     splitNamespace: {
         parameters: {
             query?: never;
-            header?: never;
-            path: {
-                name: string;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
+            path?: never;
             cookie?: never;
         };
         requestBody: {

@@ -431,11 +431,13 @@ whose recalls merge `personal/_shared` instead. Left off (the default), namespac
 isolated. The global namespace merges durable facts into every recall regardless of
 tenant.
 
-**Moving memories between namespaces:** `POST /v1/namespaces/{name}/move` (or
+**Moving memories between namespaces:** `POST /v1/namespaces/move` (or
 `memini namespace move --from A --to B`) relocates an entire namespace and
-`POST /v1/namespaces/{name}/split` regroups it by metadata — both support
-`dry_run` — while `POST /v1/memories/{id}/reassign` moves a single memory. All
-are backed by the existing `Store.Reassign` operation.
+`POST /v1/namespaces/split` regroups it by metadata — both support `dry_run` —
+while `POST /v1/memories/{id}/reassign` moves a single memory. The source
+namespace is taken from the `X-Memini-Namespace` header (not the URL path), so
+hierarchical names like `work/memini` need no path encoding and work through any
+proxy. All are backed by the existing `Store.Reassign` operation.
 
 ## Web UI
 

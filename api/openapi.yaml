@@ -206,20 +206,37 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/NamespacesResponse" }
         "500": { $ref: "#/components/responses/Error" }
-  /v1/namespaces/{name}/briefing:
+    delete:
+      operationId: deleteNamespace
+      tags: [memory]
+      summary: Delete every memory in the request namespace
+      description: >
+        Deletes all memories in the namespace given by the X-Memini-Namespace
+        header. The namespace comes from the header (not the URL path), so a
+        hierarchical name like "work/memini" needs no path encoding and works
+        through any proxy.
+      parameters:
+        - { $ref: "#/components/parameters/Namespace" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeleteNamespaceResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /v1/namespaces/briefing:
     get:
       operationId: getBriefing
       tags: [memory]
-      summary: Layered session-start briefing for a namespace
+      summary: Layered session-start briefing for the request namespace
       description: >
         A query-less summary for injecting context when a session opens: the
         most durable facts and procedures, recent episodic activity, and pinned
-        memories. Backs the plugin's SessionStart hook.
+        memories. The namespace comes from the X-Memini-Namespace header. Backs
+        the plugin's SessionStart hook.
       parameters:
-        - name: name
-          in: path
-          required: true
-          schema: { type: string }
+        - { $ref: "#/components/parameters/Namespace" }
         - name: per_section
           in: query
           description: Default cap applied to every section when its dedicated cap is unset. Default 5.
@@ -262,41 +279,20 @@ paths:
               schema: { $ref: "#/components/schemas/Briefing" }
         "400": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
-  /v1/namespaces/{name}:
-    delete:
-      operationId: deleteNamespace
-      tags: [memory]
-      summary: Delete every memory in a namespace
-      parameters:
-        - name: name
-          in: path
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/DeleteNamespaceResponse" }
-        "400": { $ref: "#/components/responses/Error" }
-        "500": { $ref: "#/components/responses/Error" }
-  /v1/namespaces/{name}/move:
+  /v1/namespaces/move:
     post:
       operationId: moveNamespace
       tags: [memory]
-      summary: Relocate every memory in a namespace to another namespace
+      summary: Relocate every memory in the request namespace to another namespace
       description: >
-        Moves all memories (including superseded and expired) from the path
-        namespace to the target namespace. The target is normalized
-        (surrounding whitespace/slashes trimmed, duplicate separators
-        collapsed) and rejected with 400 when it contains "*" or equals the
-        source. Supports dry-run. Backed by the same Move operation as
-        `memini namespace move`.
+        Moves all memories (including superseded and expired) from the request
+        namespace (X-Memini-Namespace header) to the target namespace. The
+        target is normalized (surrounding whitespace/slashes trimmed, duplicate
+        separators collapsed) and rejected with 400 when it contains "*" or
+        equals the source. Supports dry-run. Backed by the same Move operation
+        as `memini namespace move`.
       parameters:
-        - name: name
-          in: path
-          required: true
-          schema: { type: string }
+        - { $ref: "#/components/parameters/Namespace" }
       requestBody:
         required: true
         content:
@@ -319,20 +315,18 @@ paths:
               schema: { $ref: "#/components/schemas/RenamespaceReport" }
         "400": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
-  /v1/namespaces/{name}/split:
+  /v1/namespaces/split:
     post:
       operationId: splitNamespace
       tags: [memory]
-      summary: Split a namespace by metadata keys
+      summary: Split the request namespace by metadata keys
       description: >
-        Regroups a namespace by metadata, moving each record to the namespace
-        named by the first of the given keys it carries. Supports dry-run.
-        Backed by the same Split operation as `memini namespace split`.
+        Regroups the request namespace (X-Memini-Namespace header) by metadata,
+        moving each record to the namespace named by the first of the given keys
+        it carries. Supports dry-run. Backed by the same Split operation as
+        `memini namespace split`.
       parameters:
-        - name: name
-          in: path
-          required: true
-          schema: { type: string }
+        - { $ref: "#/components/parameters/Namespace" }
       requestBody:
         required: true
         content:

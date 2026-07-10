@@ -493,6 +493,12 @@ type SupersedeMemoryParams struct {
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
+// DeleteNamespaceParams defines parameters for DeleteNamespace.
+type DeleteNamespaceParams struct {
+	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
+}
+
 // GetBriefingParams defines parameters for GetBriefing.
 type GetBriefingParams struct {
 	// PerSection Default cap applied to every section when its dedicated cap is unset. Default 5.
@@ -515,6 +521,9 @@ type GetBriefingParams struct {
 
 	// Namespaces Repeatable. Brief exactly these namespaces instead of the default read set (the namespace, its subtree, and the global namespace). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected.
 	Namespaces *[]string `form:"namespaces,omitempty" json:"namespaces,omitempty"`
+
+	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
 // GetBriefingParamsScope defines parameters for GetBriefing.
@@ -528,11 +537,23 @@ type MoveNamespaceJSONBody struct {
 	To string `json:"to"`
 }
 
+// MoveNamespaceParams defines parameters for MoveNamespace.
+type MoveNamespaceParams struct {
+	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
+}
+
 // SplitNamespaceJSONBody defines parameters for SplitNamespace.
 type SplitNamespaceJSONBody struct {
 	// By Metadata keys to group by. Defaults to import_source_namespace, user_id, agent_id, run_id, project.
 	By     *[]string `json:"by,omitempty"`
 	DryRun *bool     `json:"dry_run,omitempty"`
+}
+
+// SplitNamespaceParams defines parameters for SplitNamespace.
+type SplitNamespaceParams struct {
+	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
 // SearchMemoriesParams defines parameters for SearchMemories.
@@ -609,21 +630,21 @@ type ServerInterface interface {
 	// Tombstone a memory, recording it was replaced by `by`.
 	// (POST /v1/memories/{id}/supersede)
 	SupersedeMemory(w http.ResponseWriter, r *http.Request, id string, params SupersedeMemoryParams)
+	// Delete every memory in the request namespace
+	// (DELETE /v1/namespaces)
+	DeleteNamespace(w http.ResponseWriter, r *http.Request, params DeleteNamespaceParams)
 	// List the distinct namespaces holding memories
 	// (GET /v1/namespaces)
 	ListNamespaces(w http.ResponseWriter, r *http.Request)
-	// Delete every memory in a namespace
-	// (DELETE /v1/namespaces/{name})
-	DeleteNamespace(w http.ResponseWriter, r *http.Request, name string)
-	// Layered session-start briefing for a namespace
-	// (GET /v1/namespaces/{name}/briefing)
-	GetBriefing(w http.ResponseWriter, r *http.Request, name string, params GetBriefingParams)
-	// Relocate every memory in a namespace to another namespace
-	// (POST /v1/namespaces/{name}/move)
-	MoveNamespace(w http.ResponseWriter, r *http.Request, name string)
-	// Split a namespace by metadata keys
-	// (POST /v1/namespaces/{name}/split)
-	SplitNamespace(w http.ResponseWriter, r *http.Request, name string)
+	// Layered session-start briefing for the request namespace
+	// (GET /v1/namespaces/briefing)
+	GetBriefing(w http.ResponseWriter, r *http.Request, params GetBriefingParams)
+	// Relocate every memory in the request namespace to another namespace
+	// (POST /v1/namespaces/move)
+	MoveNamespace(w http.ResponseWriter, r *http.Request, params MoveNamespaceParams)
+	// Split the request namespace by metadata keys
+	// (POST /v1/namespaces/split)
+	SplitNamespace(w http.ResponseWriter, r *http.Request, params SplitNamespaceParams)
 	// Recall memories via hybrid (vector + keyword) search
 	// (POST /v1/search)
 	SearchMemories(w http.ResponseWriter, r *http.Request, params SearchMemoriesParams)
@@ -702,33 +723,33 @@ func (_ Unimplemented) SupersedeMemory(w http.ResponseWriter, r *http.Request, i
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Delete every memory in the request namespace
+// (DELETE /v1/namespaces)
+func (_ Unimplemented) DeleteNamespace(w http.ResponseWriter, r *http.Request, params DeleteNamespaceParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // List the distinct namespaces holding memories
 // (GET /v1/namespaces)
 func (_ Unimplemented) ListNamespaces(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Delete every memory in a namespace
-// (DELETE /v1/namespaces/{name})
-func (_ Unimplemented) DeleteNamespace(w http.ResponseWriter, r *http.Request, name string) {
+// Layered session-start briefing for the request namespace
+// (GET /v1/namespaces/briefing)
+func (_ Unimplemented) GetBriefing(w http.ResponseWriter, r *http.Request, params GetBriefingParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Layered session-start briefing for a namespace
-// (GET /v1/namespaces/{name}/briefing)
-func (_ Unimplemented) GetBriefing(w http.ResponseWriter, r *http.Request, name string, params GetBriefingParams) {
+// Relocate every memory in the request namespace to another namespace
+// (POST /v1/namespaces/move)
+func (_ Unimplemented) MoveNamespace(w http.ResponseWriter, r *http.Request, params MoveNamespaceParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Relocate every memory in a namespace to another namespace
-// (POST /v1/namespaces/{name}/move)
-func (_ Unimplemented) MoveNamespace(w http.ResponseWriter, r *http.Request, name string) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// Split a namespace by metadata keys
-// (POST /v1/namespaces/{name}/split)
-func (_ Unimplemented) SplitNamespace(w http.ResponseWriter, r *http.Request, name string) {
+// Split the request namespace by metadata keys
+// (POST /v1/namespaces/split)
+func (_ Unimplemented) SplitNamespace(w http.ResponseWriter, r *http.Request, params SplitNamespaceParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1432,6 +1453,53 @@ func (siw *ServerInterfaceWrapper) SupersedeMemory(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// DeleteNamespace operation middleware
+func (siw *ServerInterfaceWrapper) DeleteNamespace(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteNamespaceParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Memini-Namespace" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Memini-Namespace")]; found {
+		var XMeminiNamespace Namespace
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Memini-Namespace", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Memini-Namespace", valueList[0], &XMeminiNamespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Memini-Namespace", Err: err})
+			return
+		}
+
+		params.XMeminiNamespace = &XMeminiNamespace
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteNamespace(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListNamespaces operation middleware
 func (siw *ServerInterfaceWrapper) ListNamespaces(w http.ResponseWriter, r *http.Request) {
 
@@ -1452,52 +1520,11 @@ func (siw *ServerInterfaceWrapper) ListNamespaces(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
-// DeleteNamespace operation middleware
-func (siw *ServerInterfaceWrapper) DeleteNamespace(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "name" -------------
-	var name string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.DeleteNamespace(w, r, name)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // GetBriefing operation middleware
 func (siw *ServerInterfaceWrapper) GetBriefing(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
-
-	// ------------- Path parameter "name" -------------
-	var name string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
-		return
-	}
 
 	ctx := r.Context()
 
@@ -1599,8 +1626,29 @@ func (siw *ServerInterfaceWrapper) GetBriefing(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Memini-Namespace" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Memini-Namespace")]; found {
+		var XMeminiNamespace Namespace
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Memini-Namespace", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Memini-Namespace", valueList[0], &XMeminiNamespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Memini-Namespace", Err: err})
+			return
+		}
+
+		params.XMeminiNamespace = &XMeminiNamespace
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetBriefing(w, r, name, params)
+		siw.Handler.GetBriefing(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1616,23 +1664,38 @@ func (siw *ServerInterfaceWrapper) MoveNamespace(w http.ResponseWriter, r *http.
 	var err error
 	_ = err
 
-	// ------------- Path parameter "name" -------------
-	var name string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
-		return
-	}
-
 	ctx := r.Context()
 
 	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params MoveNamespaceParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Memini-Namespace" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Memini-Namespace")]; found {
+		var XMeminiNamespace Namespace
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Memini-Namespace", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Memini-Namespace", valueList[0], &XMeminiNamespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Memini-Namespace", Err: err})
+			return
+		}
+
+		params.XMeminiNamespace = &XMeminiNamespace
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.MoveNamespace(w, r, name)
+		siw.Handler.MoveNamespace(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1648,23 +1711,38 @@ func (siw *ServerInterfaceWrapper) SplitNamespace(w http.ResponseWriter, r *http
 	var err error
 	_ = err
 
-	// ------------- Path parameter "name" -------------
-	var name string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
-		return
-	}
-
 	ctx := r.Context()
 
 	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SplitNamespaceParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Memini-Namespace" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Memini-Namespace")]; found {
+		var XMeminiNamespace Namespace
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Memini-Namespace", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Memini-Namespace", valueList[0], &XMeminiNamespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Memini-Namespace", Err: err})
+			return
+		}
+
+		params.XMeminiNamespace = &XMeminiNamespace
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.SplitNamespace(w, r, name)
+		siw.Handler.SplitNamespace(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1928,19 +2006,19 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/v1/memories/{id}/supersede", wrapper.SupersedeMemory)
 	})
 	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/namespaces", wrapper.DeleteNamespace)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/namespaces", wrapper.ListNamespaces)
 	})
 	r.Group(func(r chi.Router) {
-		r.Delete(options.BaseURL+"/v1/namespaces/{name}", wrapper.DeleteNamespace)
+		r.Get(options.BaseURL+"/v1/namespaces/briefing", wrapper.GetBriefing)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/v1/namespaces/{name}/briefing", wrapper.GetBriefing)
+		r.Post(options.BaseURL+"/v1/namespaces/move", wrapper.MoveNamespace)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/v1/namespaces/{name}/move", wrapper.MoveNamespace)
-	})
-	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/v1/namespaces/{name}/split", wrapper.SplitNamespace)
+		r.Post(options.BaseURL+"/v1/namespaces/split", wrapper.SplitNamespace)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/search", wrapper.SearchMemories)

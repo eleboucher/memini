@@ -184,26 +184,29 @@ export const api = {
 
   namespaces: listNamespaces,
 
+  // The namespace is sent in the X-Memini-Namespace header (the `ns` arg), not
+  // the URL path, so hierarchical names like "work/memini" need no %2F encoding
+  // — which some proxies reject/normalize before the request reaches memini.
+
   deleteNamespace: (name: string) =>
-    req<{ deleted: number }>('DELETE', `/v1/namespaces/${encodeURIComponent(name)}`),
+    req<{ deleted: number }>('DELETE', '/v1/namespaces', undefined, name),
 
   // moveNamespace relocates every memory in `name` to `to`. dryRun previews the
   // count without moving. The server normalizes `to` and rejects "*" or a
   // target equal to the source with 400.
   moveNamespace: (name: string, to: string, dryRun = false) =>
-    req<RenamespaceReport>('POST', `/v1/namespaces/${encodeURIComponent(name)}/move`, {
-      to,
-      dry_run: dryRun,
-    }),
+    req<RenamespaceReport>('POST', '/v1/namespaces/move', { to, dry_run: dryRun }, name),
 
   // splitNamespace regroups `name` by metadata keys (default keys when `by` is
   // empty), moving each record to the namespace its first matching key names.
   // dryRun previews the grouping without moving.
   splitNamespace: (name: string, by: string[], dryRun = false) =>
-    req<RenamespaceReport>('POST', `/v1/namespaces/${encodeURIComponent(name)}/split`, {
-      by: by.length ? by : undefined,
-      dry_run: dryRun,
-    }),
+    req<RenamespaceReport>(
+      'POST',
+      '/v1/namespaces/split',
+      { by: by.length ? by : undefined, dry_run: dryRun },
+      name,
+    ),
 
   // reassignMemory moves a single memory to `to`. It must scope to the memory's
   // own namespace (like remove) so "All projects" mode targets the right record
