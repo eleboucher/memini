@@ -334,8 +334,6 @@ var deprecatedVars = []struct{ name, guidance string }{
 	{"MEMINI_DISTILL_ON_WRITE", "write-time fact building is automatic (LLM when configured, heuristic extractor otherwise)"},
 	{"MEMINI_EXTRACT_ON_WRITE", "write-time fact building is automatic (LLM when configured, heuristic extractor otherwise)"},
 	{"MEMINI_DISTILL_DROP_NO_FACT", "removed; episodic captures are always kept"},
-	{"MEMINI_READ_NAMESPACES", "removed; the tenant-shared namespace (<tenant>/_shared) now merges automatically, " +
-		"and per-call namespaces covers ad-hoc read sets"},
 }
 
 // DeprecationWarnings returns one message per removed environment variable that

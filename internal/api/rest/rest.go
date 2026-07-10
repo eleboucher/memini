@@ -714,6 +714,50 @@ func (h *Server) SplitNamespace(w http.ResponseWriter, r *http.Request, name str
 	httputil.JSON(w, http.StatusOK, apiRenamespaceReport(rep))
 }
 
+// MoveNamespace implements POST /v1/namespaces/{name}/move. Relocates every
+// memory in the path namespace to the target namespace.
+func (h *Server) MoveNamespace(w http.ResponseWriter, r *http.Request, name string) {
+	// chi binds the raw escaped path segment, so a nested namespace ("project/
+	// agent") arrives as "project%2Fagent" and must be decoded to match storage.
+	decoded, ok := unescapeID(name)
+	if !ok {
+		httputil.Error(w, http.StatusBadRequest, "invalid namespace encoding")
+		return
+	}
+	name = decoded
+	if err := httputil.ValidateNamespace(name); err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid namespace: "+err.Error())
+		return
+	}
+	var req MoveNamespaceJSONBody
+	if !decode(w, r, &req) {
+		return
+	}
+	// Normalize before validating: move CREATES the target namespace, so a
+	// stray "work/" or " x" would mint a namespace unreachable through the
+	// namespace header, and "*" would masquerade as a read-set pattern.
+	to := httputil.NormalizeNamespace(req.To)
+	if err := httputil.ValidateNamespace(to); err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid target namespace: "+err.Error())
+		return
+	}
+	if strings.Contains(to, "*") {
+		httputil.Error(w, http.StatusBadRequest, "invalid target namespace: \"*\" is reserved for read-set patterns")
+		return
+	}
+	if to == name {
+		httputil.Error(w, http.StatusBadRequest, "target namespace equals the source namespace")
+		return
+	}
+	dryRun := req.DryRun != nil && *req.DryRun
+	rep, err := maintenance.Move(r.Context(), h.svc.Store(), name, to, dryRun)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	httputil.JSON(w, http.StatusOK, apiRenamespaceReport(rep))
+}
+
 // ReassignMemory implements POST /v1/memories/{id}/reassign. Moves a single
 // memory from the request namespace to the target namespace.
 func (h *Server) ReassignMemory(w http.ResponseWriter, r *http.Request, id string, _ ReassignMemoryParams) {

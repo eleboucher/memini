@@ -2,7 +2,6 @@ package config_test
 
 import (
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -161,27 +160,6 @@ func TestLoadDefaultNamespacePreservesSlash(t *testing.T) {
 	}
 }
 
-// TestReadNamespacesDeprecated: MEMINI_READ_NAMESPACES is removed — a set
-// value must not fail the load, and DeprecationWarnings must name it so an
-// upgrading operator learns the tenant-shared namespace replaced it.
-func TestReadNamespacesDeprecated(t *testing.T) {
-	clearMeminiEnv(t)
-	t.Setenv("MEMINI_READ_NAMESPACES", "shared,rules/*")
-	if _, err := config.Load(); err != nil {
-		t.Fatalf("Load: a set MEMINI_READ_NAMESPACES must be ignored, not error: %v", err)
-	}
-	warnings := config.DeprecationWarnings()
-	found := false
-	for _, w := range warnings {
-		if strings.Contains(w, "MEMINI_READ_NAMESPACES") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected a deprecation warning naming MEMINI_READ_NAMESPACES, got %v", warnings)
-	}
-}
-
 func TestLoadValidationErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -320,5 +298,5 @@ var meminiEnvKeys = []string{
 	"MEMINI_DEDUP_INTERVAL", "MEMINI_DEDUP_SIMILARITY", "MEMINI_DEDUP_TIERS",
 	"MEMINI_WRITE_EMBED_TIMEOUT", "MEMINI_RECALL_EMBED_TIMEOUT",
 	"MEMINI_RECALL_REWRITE_TIMEOUT", "MEMINI_REQUEST_TIMEOUT",
-	"MEMINI_GLOBAL_NAMESPACE", "MEMINI_READ_NAMESPACES",
+	"MEMINI_GLOBAL_NAMESPACE",
 }

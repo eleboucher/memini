@@ -428,10 +428,11 @@ namespaces (`work/memini/reviewer`, ...) — never touching `personal/*`, whose 
 merge `personal/_shared` instead. The global namespace merges durable facts into every
 recall regardless of tenant.
 
-**Moving memories between namespaces:** `memini namespace move --from A --to B`
-relocates an entire namespace (CLI only), `POST /v1/namespaces/{name}/split`
-regroups by metadata, and `POST /v1/memories/{id}/reassign` moves a single
-memory — all backed by the existing `Store.Reassign` operation.
+**Moving memories between namespaces:** `POST /v1/namespaces/{name}/move` (or
+`memini namespace move --from A --to B`) relocates an entire namespace and
+`POST /v1/namespaces/{name}/split` regroups it by metadata — both support
+`dry_run` — while `POST /v1/memories/{id}/reassign` moves a single memory. All
+are backed by the existing `Store.Reassign` operation.
 
 ## Web UI
 

@@ -520,6 +520,14 @@ type GetBriefingParams struct {
 // GetBriefingParamsScope defines parameters for GetBriefing.
 type GetBriefingParamsScope string
 
+// MoveNamespaceJSONBody defines parameters for MoveNamespace.
+type MoveNamespaceJSONBody struct {
+	DryRun *bool `json:"dry_run,omitempty"`
+
+	// To Target namespace.
+	To string `json:"to"`
+}
+
 // SplitNamespaceJSONBody defines parameters for SplitNamespace.
 type SplitNamespaceJSONBody struct {
 	// By Metadata keys to group by. Defaults to import_source_namespace, user_id, agent_id, run_id, project.
@@ -556,6 +564,9 @@ type ReassignMemoryJSONRequestBody ReassignMemoryJSONBody
 
 // SupersedeMemoryJSONRequestBody defines body for SupersedeMemory for application/json ContentType.
 type SupersedeMemoryJSONRequestBody = SupersedeRequest
+
+// MoveNamespaceJSONRequestBody defines body for MoveNamespace for application/json ContentType.
+type MoveNamespaceJSONRequestBody MoveNamespaceJSONBody
 
 // SplitNamespaceJSONRequestBody defines body for SplitNamespace for application/json ContentType.
 type SplitNamespaceJSONRequestBody SplitNamespaceJSONBody
@@ -607,6 +618,9 @@ type ServerInterface interface {
 	// Layered session-start briefing for a namespace
 	// (GET /v1/namespaces/{name}/briefing)
 	GetBriefing(w http.ResponseWriter, r *http.Request, name string, params GetBriefingParams)
+	// Relocate every memory in a namespace to another namespace
+	// (POST /v1/namespaces/{name}/move)
+	MoveNamespace(w http.ResponseWriter, r *http.Request, name string)
 	// Split a namespace by metadata keys
 	// (POST /v1/namespaces/{name}/split)
 	SplitNamespace(w http.ResponseWriter, r *http.Request, name string)
@@ -703,6 +717,12 @@ func (_ Unimplemented) DeleteNamespace(w http.ResponseWriter, r *http.Request, n
 // Layered session-start briefing for a namespace
 // (GET /v1/namespaces/{name}/briefing)
 func (_ Unimplemented) GetBriefing(w http.ResponseWriter, r *http.Request, name string, params GetBriefingParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Relocate every memory in a namespace to another namespace
+// (POST /v1/namespaces/{name}/move)
+func (_ Unimplemented) MoveNamespace(w http.ResponseWriter, r *http.Request, name string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1590,6 +1610,38 @@ func (siw *ServerInterfaceWrapper) GetBriefing(w http.ResponseWriter, r *http.Re
 	handler.ServeHTTP(w, r)
 }
 
+// MoveNamespace operation middleware
+func (siw *ServerInterfaceWrapper) MoveNamespace(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.MoveNamespace(w, r, name)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // SplitNamespace operation middleware
 func (siw *ServerInterfaceWrapper) SplitNamespace(w http.ResponseWriter, r *http.Request) {
 
@@ -1883,6 +1935,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/namespaces/{name}/briefing", wrapper.GetBriefing)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/namespaces/{name}/move", wrapper.MoveNamespace)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/namespaces/{name}/split", wrapper.SplitNamespace)

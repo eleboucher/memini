@@ -1273,3 +1273,57 @@ func TestSplitNamespaceNestedName(t *testing.T) {
 		t.Fatalf("apply should land the fact in work/erwan: %d (%s)", rec.Code, rec.Body)
 	}
 }
+
+// TestMoveNamespace covers the move endpoint: nested (percent-encoded) source
+// decoding, target normalization, dry-run leaving rows in place, apply
+// relocating them, and 400 for a same-namespace or pattern-bearing target.
+func TestMoveNamespace(t *testing.T) {
+	h := newServer(t)
+
+	rec := do(t, h, http.MethodPost, "/v1/memories", "work/old", apiKey, map[string]any{
+		"content": "relocatable fact", "tier": "semantic",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("remember: want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	// dry_run reports without moving; the untrimmed target normalizes to work/new.
+	rec = do(t, h, http.MethodPost, "/v1/namespaces/work%2Fold/move", "work/old", apiKey,
+		map[string]any{"to": " work/new/ ", "dry_run": true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("move dry-run: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var rep struct {
+		Moved int `json:"moved"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &rep); err != nil || rep.Moved != 1 {
+		t.Fatalf("move dry-run: want moved=1, got %s (%v)", rec.Body, err)
+	}
+	rec = do(t, h, http.MethodGet, "/v1/memories?limit=10", "work/new", apiKey, nil)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "relocatable fact") {
+		t.Fatalf("dry-run must not move anything into work/new: %d (%s)", rec.Code, rec.Body)
+	}
+
+	// Apply relocates the memory to work/new.
+	rec = do(t, h, http.MethodPost, "/v1/namespaces/work%2Fold/move", "work/old", apiKey,
+		map[string]any{"to": "work/new"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("move: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	rec = do(t, h, http.MethodGet, "/v1/memories?limit=10", "work/new", apiKey, nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "relocatable fact") {
+		t.Fatalf("apply should land the fact in work/new: %d (%s)", rec.Code, rec.Body)
+	}
+
+	// Same-namespace and pattern-bearing targets are caller mistakes.
+	rec = do(t, h, http.MethodPost, "/v1/namespaces/work%2Fnew/move", "work/new", apiKey,
+		map[string]any{"to": "work/new"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("move to same namespace: want 400, got %d (%s)", rec.Code, rec.Body)
+	}
+	rec = do(t, h, http.MethodPost, "/v1/namespaces/work%2Fnew/move", "work/new", apiKey,
+		map[string]any{"to": "work/*"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("move to pattern: want 400, got %d (%s)", rec.Code, rec.Body)
+	}
+}
