@@ -11,6 +11,9 @@ import { IconTrash, IconSettings } from '../icons'
 // NO_TENANT groups flat (no-slash) namespaces, which have no tenant segment.
 const NO_TENANT = '(no tenant)'
 
+// DRAG_MIME carries the dragged pod's full namespace between dragstart and drop.
+const DRAG_MIME = 'application/x-memini-namespace'
+
 interface Project {
   name: string // full stored namespace, e.g. "work/memini/reviewer"
   stats: Stats | null
@@ -20,6 +23,23 @@ interface Tenant {
   tenant: string // display label for the k8s-style namespace box
   total: number // memories summed across the tenant's projects
   projects: { name: string; label: string; stats: Stats | null }[]
+}
+
+// projectLeaf is the part of a namespace after its tenant segment (the first
+// slash), or the whole name when it has none. Dropping a pod onto a tenant box
+// re-homes it as "<destTenant>/<leaf>", preserving any sub-path.
+function projectLeaf(name: string): string {
+  const slash = name.indexOf('/')
+  return slash === -1 ? name : name.slice(slash + 1)
+}
+
+// dropTarget computes the namespace a pod becomes when dropped on destTenant.
+// The NO_TENANT bucket un-tenants it (bare leaf). Returns "" when the drop is a
+// no-op (same namespace, i.e. dropped on its own tenant).
+function dropTarget(draggedName: string, destTenant: string): string {
+  const leaf = projectLeaf(draggedName)
+  const target = destTenant === NO_TENANT ? leaf : `${destTenant}/${leaf}`
+  return target === draggedName ? '' : target
 }
 
 // groupByTenant buckets namespaces by their first path segment (the tenant),
@@ -71,6 +91,13 @@ function groupByTenant(projects: Project[]): Tenant[] {
   return tenants
 }
 
+// ManageTarget is the namespace whose Move/Split drawer is open, optionally with
+// a pre-filled Move target (set when opened by a drag-drop).
+interface ManageTarget {
+  name: string
+  moveTo?: string
+}
+
 export function Projects() {
   const { data, error, loading } = useAsync(async () => {
     const names = await api.namespaces()
@@ -78,11 +105,23 @@ export function Projects() {
     return names.map((name, i) => ({ name, stats: stats[i] }))
   }, [refreshNonce.value])
 
+  // The Move/Split drawer is lifted here (not per-pod) so a drop on any tenant
+  // box can open it for the dragged pod, which may live in a different box.
+  const [manage, setManage] = useState<ManageTarget | null>(null)
+
   if (loading && !data) return <div class="view"><Loading /></div>
   if (error) return <div class="view"><ErrorBanner message={error} /></div>
 
   const projects = data ?? []
   const tenants = groupByTenant(projects)
+
+  // Dropping a pod onto a tenant box opens the Move drawer pre-filled with the
+  // derived target, so the drag lands on a dry-run-first confirmation rather
+  // than a silent bulk move. A no-op target (own tenant) is ignored.
+  const onDropPod = (draggedName: string, destTenant: string) => {
+    const target = dropTarget(draggedName, destTenant)
+    if (target) setManage({ name: draggedName, moveTo: target })
+  }
 
   return (
     <div class="view">
@@ -91,21 +130,56 @@ export function Projects() {
       ) : (
         <div class="tenant-list stagger">
           {tenants.map((t) => (
-            <TenantBox key={t.tenant} tenant={t} />
+            <TenantBox key={t.tenant} tenant={t} onManage={(name) => setManage({ name })} onDropPod={onDropPod} />
           ))}
         </div>
+      )}
+      {manage && (
+        <NamespaceDrawer name={manage.name} initialMoveTo={manage.moveTo} onClose={() => setManage(null)} />
       )}
     </div>
   )
 }
 
-function TenantBox({ tenant }: { tenant: Tenant }) {
+function TenantBox({
+  tenant,
+  onManage,
+  onDropPod,
+}: {
+  tenant: Tenant
+  onManage: (name: string) => void
+  onDropPod: (draggedName: string, destTenant: string) => void
+}) {
+  const [dragOver, setDragOver] = useState(false)
+
   const open = (ns: string) => {
     namespace.value = ns
     route.value = 'overview'
   }
+
   return (
-    <section class="tenant-box">
+    <section
+      class={`tenant-box${dragOver ? ' drop-target' : ''}`}
+      onDragOver={(e) => {
+        // preventDefault marks this a valid drop target; without it onDrop never fires.
+        if (e.dataTransfer?.types.includes(DRAG_MIME)) {
+          e.preventDefault()
+          e.dataTransfer.dropEffect = 'move'
+        }
+      }}
+      onDragEnter={() => setDragOver(true)}
+      onDragLeave={(e) => {
+        // Only clear when the pointer actually leaves the box, not when it
+        // crosses into a child element.
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOver(false)
+      }}
+      onDrop={(e) => {
+        e.preventDefault()
+        setDragOver(false)
+        const dragged = e.dataTransfer?.getData(DRAG_MIME)
+        if (dragged) onDropPod(dragged, tenant.tenant)
+      }}
+    >
       <div class="tenant-head">
         <span class="tenant-name">{tenant.tenant}</span>
         <span class="tenant-count">
@@ -115,7 +189,7 @@ function TenantBox({ tenant }: { tenant: Tenant }) {
       </div>
       <div class="pod-grid">
         {tenant.projects.map((p) => (
-          <Pod key={p.name} name={p.name} label={p.label} stats={p.stats} onOpen={() => open(p.name)} />
+          <Pod key={p.name} name={p.name} label={p.label} stats={p.stats} onOpen={() => open(p.name)} onManage={onManage} />
         ))}
       </div>
     </section>
@@ -127,20 +201,17 @@ function Pod({
   label,
   stats,
   onOpen,
+  onManage,
 }: {
   name: string
   label: string
   stats: Stats | null
   onOpen: () => void
+  onManage: (name: string) => void
 }) {
   const [armed, setArmed] = useState(false)
   const [deleting, setDeleting] = useState(false)
-  const [managing, setManaging] = useState(false)
-
-  const manage = (e: Event) => {
-    e.stopPropagation()
-    setManaging(true)
-  }
+  const [dragging, setDragging] = useState(false)
 
   const del = async (e: Event) => {
     e.stopPropagation()
@@ -162,9 +233,16 @@ function Pod({
 
   return (
     <div
-      class="panel pod"
+      class={`panel pod${dragging ? ' dragging' : ''}`}
       role="button"
       tabIndex={0}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer?.setData(DRAG_MIME, name)
+        if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+        setDragging(true)
+      }}
+      onDragEnd={() => setDragging(false)}
       onClick={onOpen}
       onKeyDown={(e) => {
         if (e.key === 'Enter') onOpen()
@@ -177,7 +255,10 @@ function Pod({
             class="icon-btn"
             aria-label={`Manage ${name}`}
             title="Move or split this namespace"
-            onClick={manage}
+            onClick={(e) => {
+              e.stopPropagation()
+              onManage(name)
+            }}
           >
             <IconSettings />
           </button>
@@ -201,13 +282,6 @@ function Pod({
       </div>
       <TierBar stats={stats} />
       <div class="pod-foot">{stats?.last_write_at ? `updated ${relTime(stats.last_write_at)}` : '—'}</div>
-      {managing && (
-        // Preact portals bubble events through the vdom tree, so stop clicks and
-        // keys from the drawer reaching the pod's open/keydown handlers.
-        <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
-          <NamespaceDrawer name={name} onClose={() => setManaging(false)} />
-        </div>
-      )}
     </div>
   )
 }

@@ -8,12 +8,16 @@ import { IconClose, IconRefresh } from '../icons'
 interface Props {
   name: string
   onClose: () => void
+  // Pre-fills the Move target (set when the drawer is opened by dropping a pod
+  // onto a tenant box), so the drag lands on a dry-run-first confirmation
+  // rather than a silent bulk move.
+  initialMoveTo?: string
 }
 
 // NamespaceDrawer manages one namespace's memories: relocate the whole
 // namespace (move) or regroup it by metadata (split). Both preview with a
 // dry-run first, then apply; the server backs both with Store.Reassign.
-export function NamespaceDrawer({ name, onClose }: Props) {
+export function NamespaceDrawer({ name, onClose, initialMoveTo }: Props) {
   const drawerRef = useRef<HTMLElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
 
@@ -42,7 +46,7 @@ export function NamespaceDrawer({ name, onClose }: Props) {
           </button>
         </div>
         <div class="drawer-body">
-          <MoveSection name={name} onDone={onClose} />
+          <MoveSection name={name} onDone={onClose} initialTo={initialMoveTo} />
           <SplitSection name={name} onDone={onClose} />
         </div>
       </aside>
@@ -52,8 +56,8 @@ export function NamespaceDrawer({ name, onClose }: Props) {
 }
 
 // MoveSection relocates every memory in `name` to a target namespace.
-function MoveSection({ name, onDone }: { name: string; onDone: () => void }) {
-  const [to, setTo] = useState('')
+function MoveSection({ name, onDone, initialTo }: { name: string; onDone: () => void; initialTo?: string }) {
+  const [to, setTo] = useState(initialTo ?? '')
   const [report, setReport] = useState<RenamespaceReport | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -84,7 +88,9 @@ function MoveSection({ name, onDone }: { name: string; onDone: () => void }) {
     <section>
       <h4>Move</h4>
       <div class="hint" style={{ marginBottom: '10px' }}>
-        Relocate every memory in "{name}" to another namespace.
+        Relocate every memory in "{name}" to another namespace. If the target
+        already exists, the two merge (no content dedup — run Health → dedup
+        after to collapse duplicates).
       </div>
       <input
         class="input"

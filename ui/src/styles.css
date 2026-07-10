@@ -682,6 +682,25 @@ label.field .desc {
   border-radius: 12px;
   background: var(--surface-1);
   padding: 16px 18px 18px;
+  transition:
+    border-color 0.15s var(--ease),
+    background 0.15s var(--ease);
+}
+/* Highlighted while a pod is dragged over this tenant box (drop target). */
+.tenant-box.drop-target {
+  border-color: var(--accent, var(--line-strong));
+  border-style: dashed;
+  background: var(--surface-2);
+}
+/* The pod being dragged fades so the drop target reads clearly. */
+.pod.dragging {
+  opacity: 0.45;
+}
+.pod[draggable='true'] {
+  cursor: grab;
+}
+.pod.dragging {
+  cursor: grabbing;
 }
 .tenant-head {
   display: flex;
