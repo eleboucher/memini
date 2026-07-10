@@ -161,62 +161,24 @@ func TestLoadDefaultNamespacePreservesSlash(t *testing.T) {
 	}
 }
 
-func TestReadNamespacesParsing(t *testing.T) {
-	tests := []struct {
-		name    string
-		value   string
-		want    []string
-		wantErr bool
-	}{
-		{name: "unset disables it", value: "", want: nil},
-		{name: "single entry", value: "shared", want: []string{"shared"}},
-		{
-			name:  "list splits and trims whitespace",
-			value: " shared , rules/go ",
-			want:  []string{"shared", "rules/go"},
-		},
-		{name: "subtree pattern preserved", value: "rules/*", want: []string{"rules/*"}},
-		{
-			name:  "empty entries dropped",
-			value: "shared,,  ,rules/*",
-			want:  []string{"shared", "rules/*"},
-		},
-		{name: "invalid entry rejected", value: strings.Repeat("x", 300), wantErr: true},
-		{
-			name:  "surrounding slashes and duplicate separators normalized",
-			value: "shared/,/team,a//b,rules//*",
-			want:  []string{"shared", "team", "a/b", "rules/*"},
-		},
-		{name: "bare pattern rejected", value: "/*", wantErr: true},
+// TestReadNamespacesDeprecated: MEMINI_READ_NAMESPACES is removed — a set
+// value must not fail the load, and DeprecationWarnings must name it so an
+// upgrading operator learns the tenant-shared namespace replaced it.
+func TestReadNamespacesDeprecated(t *testing.T) {
+	clearMeminiEnv(t)
+	t.Setenv("MEMINI_READ_NAMESPACES", "shared,rules/*")
+	if _, err := config.Load(); err != nil {
+		t.Fatalf("Load: a set MEMINI_READ_NAMESPACES must be ignored, not error: %v", err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			clearMeminiEnv(t)
-			if tt.value != "" {
-				t.Setenv("MEMINI_READ_NAMESPACES", tt.value)
-			}
-			cfg, err := config.Load()
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("Load: expected error, got nil")
-				}
-				if !strings.Contains(err.Error(), "MEMINI_READ_NAMESPACES") {
-					t.Errorf("error = %q, want it to name MEMINI_READ_NAMESPACES", err.Error())
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("Load: %v", err)
-			}
-			if len(cfg.ReadNamespaces) != len(tt.want) {
-				t.Fatalf("ReadNamespaces = %v, want %v", cfg.ReadNamespaces, tt.want)
-			}
-			for i := range tt.want {
-				if cfg.ReadNamespaces[i] != tt.want[i] {
-					t.Errorf("ReadNamespaces[%d] = %q, want %q", i, cfg.ReadNamespaces[i], tt.want[i])
-				}
-			}
-		})
+	warnings := config.DeprecationWarnings()
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "MEMINI_READ_NAMESPACES") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a deprecation warning naming MEMINI_READ_NAMESPACES, got %v", warnings)
 	}
 }
 

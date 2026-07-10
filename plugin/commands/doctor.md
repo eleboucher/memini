@@ -13,18 +13,18 @@ modes behind "my agent stopped remembering things":
 - a catch-all namespace (`default` / `openclaw`) that has ballooned from a bulk
   import collapsing many sources into one pool.
 
-It also reports the **retrieval scope**: `MEMINI_GLOBAL_NAMESPACE`,
-`MEMINI_READ_NAMESPACES`, and the resolved effective read set (namespace,
-tier access, and source: default/subtree-pattern/env/global) for the plugin
-namespace, answering "why does recall see/miss X". It warns on an env target
-holding zero memories (dangling), a redundant or self-referencing entry, and
-a read set past the 64-entry clamp.
+It also reports the **retrieval scope**: `MEMINI_GLOBAL_NAMESPACE`, the derived
+tenant-shared namespace (`<tenant>/_shared`), and the resolved effective read
+set (namespace, tier access, and source: default/global/tenant-shared) for the
+plugin namespace, answering "why does recall see/miss X". It warns on a
+read-set entry holding zero memories (e.g. an empty tenant-shared namespace)
+and a redundant or self-referencing entry.
 
 If it reports warnings, explain them plainly and point the user at the suggested
 fix (`memini namespace split` for a collapsed pool, setting
-`MEMINI_DEFAULT_NAMESPACE` for a resolution mismatch, or `memini namespace
-unlink` / adjusting `MEMINI_READ_NAMESPACES` for a dangling or redundant
-read-set entry). To let memini remediate a poisoned store itself, run `memini
+`MEMINI_DEFAULT_NAMESPACE` for a resolution mismatch, or writing shared facts
+into `<tenant>/_shared` for an empty tenant-shared namespace). To let memini
+remediate a poisoned store itself, run `memini
 doctor --fix` (preview) and then `memini doctor --fix --yes` to apply. The fix
 chain also backfills nil confidence on legacy (pre-0.0.11) durable memories,
 so they enter the demote lifecycle instead of staying permanently trusted.

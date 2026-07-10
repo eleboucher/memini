@@ -325,11 +325,6 @@ type Service struct {
 	// namespace's recall and briefing — durable tiers only. See
 	// WithGlobalNamespace. Empty disables it.
 	globalNamespace string
-	// readNamespaces lists extra namespaces merged read-only into every other
-	// namespace's recall and briefing — durable tiers only, generalizing
-	// globalNamespace to a list. An entry ending in "/*" also includes
-	// namespaces nested under it. See WithReadNamespaces. Empty disables it.
-	readNamespaces []string
 	// fingerprintDedup (default on) reinforces an exact restatement instead of
 	// storing a duplicate; see WithFingerprintDedup.
 	fingerprintDedup bool
@@ -670,14 +665,6 @@ func WithContradictionDownrank(minScore float64) Option {
 // briefing — a shared space for cross-project rules. Empty disables it.
 func WithGlobalNamespace(ns string) Option {
 	return func(s *Service) { s.globalNamespace = ns }
-}
-
-// WithReadNamespaces sets extra namespaces whose durable (semantic/procedural)
-// memories are merged read-only into every other namespace's recall and
-// briefing, generalizing WithGlobalNamespace to a list. An entry ending in
-// "/*" also includes namespaces nested under it. Empty disables it.
-func WithReadNamespaces(ns []string) Option {
-	return func(s *Service) { s.readNamespaces = ns }
 }
 
 // MergeHint surfaces a near-duplicate the caller may want to merge into.

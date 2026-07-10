@@ -9,7 +9,6 @@ import (
 
 	"github.com/caarlos0/env/v11"
 
-	"github.com/eleboucher/memini/internal/httputil"
 	"github.com/eleboucher/memini/internal/memory"
 )
 
@@ -150,12 +149,6 @@ type Config struct {
 	// slops", commit conventions, ...). Empty (the default) disables it, keeping
 	// namespaces fully isolated. Pin a global memory so it stays top-of-mind.
 	GlobalNamespace string `env:"MEMINI_GLOBAL_NAMESPACE" envDefault:""`
-
-	// ReadNamespaces lists extra namespaces whose durable (semantic/procedural)
-	// memories merge read-only into every recall and briefing — MEMINI_GLOBAL_NAMESPACE
-	// generalized to a list. An entry ending in "/*" also includes namespaces nested
-	// under it. Empty disables it.
-	ReadNamespaces []string `env:"MEMINI_READ_NAMESPACES" envSeparator:","`
 
 	// LLM (opt-in; empty BaseURL disables the consolidation pipeline).
 	LLMBaseURL string `env:"MEMINI_LLM_BASE_URL"`
@@ -341,6 +334,8 @@ var deprecatedVars = []struct{ name, guidance string }{
 	{"MEMINI_DISTILL_ON_WRITE", "write-time fact building is automatic (LLM when configured, heuristic extractor otherwise)"},
 	{"MEMINI_EXTRACT_ON_WRITE", "write-time fact building is automatic (LLM when configured, heuristic extractor otherwise)"},
 	{"MEMINI_DISTILL_DROP_NO_FACT", "removed; episodic captures are always kept"},
+	{"MEMINI_READ_NAMESPACES", "removed; the tenant-shared namespace (<tenant>/_shared) now merges automatically, " +
+		"and per-call namespaces covers ad-hoc read sets"},
 }
 
 // DeprecationWarnings returns one message per removed environment variable that
@@ -531,42 +526,6 @@ func (c *Config) validate() error {
 	default:
 		return fmt.Errorf("unknown MEMINI_WRITE_DEDUP_ACTION %q (want off|hint|coalesce|supersede)", c.WriteDedupAction)
 	}
-	if err := c.normalizeReadNamespaces(); err != nil {
-		return err
-	}
-	return nil
-}
-
-// normalizeReadNamespaces normalizes and validates MEMINI_READ_NAMESPACES in
-// place: whitespace and surrounding slashes trimmed, duplicate separators
-// collapsed (matching sanitizeNamespacePath, so "shared/" or "a//b" match
-// stored namespaces), empty entries dropped, an optional trailing "/*"
-// stripped before validating the base namespace and restored in the stored
-// value afterward, so internal/service's resolveDefaultReadSet can act on the
-// entries directly. A no-op when the list is empty.
-func (c *Config) normalizeReadNamespaces() error {
-	if len(c.ReadNamespaces) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(c.ReadNamespaces))
-	for _, raw := range c.ReadNamespaces {
-		s := strings.TrimSpace(raw)
-		if s == "" {
-			continue
-		}
-		// Cut the pattern suffix before normalizing so a bare "/*" still fails
-		// validation (empty base) instead of collapsing to a literal "*".
-		base, isSubtree := strings.CutSuffix(s, "/*")
-		base = httputil.NormalizeNamespace(base)
-		if err := httputil.ValidateNamespace(base); err != nil {
-			return fmt.Errorf("invalid entry %q in MEMINI_READ_NAMESPACES: %w", raw, err)
-		}
-		if isSubtree {
-			base += "/*"
-		}
-		out = append(out, base)
-	}
-	c.ReadNamespaces = out
 	return nil
 }
 

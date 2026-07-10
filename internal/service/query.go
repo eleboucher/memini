@@ -200,7 +200,7 @@ type BriefingOpts struct {
 	Procedures *int
 	Recent     *int
 	// Namespaces, when non-empty, REPLACES the default read set (namespace,
-	// subtree/links/read-namespaces, and the global namespace) with exactly
+	// subtree, the tenant-shared namespace, and the global namespace) with exactly
 	// these namespaces — same replace-not-extend semantics as
 	// RecallInput.Namespaces. Each is read with all tiers.
 	Namespaces []string

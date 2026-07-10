@@ -166,10 +166,10 @@ func TestPrintWritePathSignals(t *testing.T) {
 	}
 }
 
-// TestResolveDoctorReadSetDefault: with no env or global namespace, the read
-// set is just primary itself.
+// TestResolveDoctorReadSetDefault: a flat (untenanted) namespace with no
+// global namespace reads just itself — no tenant segment, no shared merge.
 func TestResolveDoctorReadSetDefault(t *testing.T) {
-	entries, notes := resolveDoctorReadSet("proj", nil, "", nil)
+	entries, notes := resolveDoctorReadSet("proj", "")
 	if len(notes) != 0 {
 		t.Fatalf("expected no notes, got %v", notes)
 	}
@@ -178,14 +178,11 @@ func TestResolveDoctorReadSetDefault(t *testing.T) {
 	}
 }
 
-// TestResolveDoctorReadSetComposesAllSources: the global namespace and
-// read-namespaces (including a "/*" subtree pattern) all contribute, in the
-// order the real resolver applies them (primary, global, read-namespaces) so
-// a namespace claimed by an earlier source keeps its tier access rather than
-// being narrowed by a later one.
+// TestResolveDoctorReadSetComposesAllSources: the global namespace and the
+// derived tenant-shared namespace both contribute, in the order the real
+// resolver applies them (primary, global, tenant-shared).
 func TestResolveDoctorReadSetComposesAllSources(t *testing.T) {
-	all := []string{"proj", "team", "team/a", "team/b", "unrelated"}
-	entries, notes := resolveDoctorReadSet("proj", []string{"rn1", "team/*"}, "glob", all)
+	entries, notes := resolveDoctorReadSet("work/memini", "glob")
 	if len(notes) != 0 {
 		t.Fatalf("expected no notes, got %v", notes)
 	}
@@ -195,58 +192,67 @@ func TestResolveDoctorReadSetComposesAllSources(t *testing.T) {
 		byNS[e.ns] = e
 	}
 	want := map[string]doctorReadEntry{
-		"proj":   {ns: "proj", tiers: "all", source: "default"},
-		"glob":   {ns: "glob", tiers: "durable", source: "global"},
-		"rn1":    {ns: "rn1", tiers: "durable", source: "env"},
-		"team":   {ns: "team", tiers: "durable", source: "env", patternBase: true},
-		"team/a": {ns: "team/a", tiers: "durable", source: "subtree-pattern"},
-		"team/b": {ns: "team/b", tiers: "durable", source: "subtree-pattern"},
+		"work/memini":  {ns: "work/memini", tiers: "all", source: "default"},
+		"glob":         {ns: "glob", tiers: "durable", source: "global"},
+		"work/_shared": {ns: "work/_shared", tiers: "durable", source: "tenant-shared"},
+	}
+	if len(entries) != len(want) {
+		t.Fatalf("entries = %+v, want %d", entries, len(want))
 	}
 	for ns, wantEntry := range want {
 		if got, ok := byNS[ns]; !ok || got != wantEntry {
 			t.Errorf("entry %q = %+v, want %+v (present=%v)", ns, got, wantEntry, ok)
 		}
 	}
-	if _, ok := byNS["unrelated"]; ok {
-		t.Errorf("unrelated namespace must not appear in the read set")
-	}
 }
 
-// TestResolveDoctorReadSetFlagsSelfAndDuplicateEntries: two sources naming
-// the same namespace surface as a note instead of silently vanishing.
-func TestResolveDoctorReadSetFlagsSelfAndDuplicateEntries(t *testing.T) {
-	entries, notes := resolveDoctorReadSet("proj", []string{"shared"}, "shared", nil)
+// TestResolveDoctorReadSetFlagsDuplicateEntry: the global namespace naming the
+// tenant-shared namespace surfaces as a redundant-entry note instead of
+// silently appearing twice.
+func TestResolveDoctorReadSetFlagsDuplicateEntry(t *testing.T) {
+	entries, notes := resolveDoctorReadSet("work/memini", "work/_shared")
 
 	foundDup := false
 	for _, n := range notes {
-		if strings.Contains(n, "shared") && strings.Contains(n, "redundant") {
+		if strings.Contains(n, "work/_shared") && strings.Contains(n, "redundant") {
 			foundDup = true
 		}
 	}
 	if !foundDup {
-		t.Errorf("expected a redundant-entry note for %q, got notes: %v", "shared", notes)
+		t.Errorf("expected a redundant-entry note for %q, got notes: %v", "work/_shared", notes)
 	}
-	// shared must appear exactly once, with the earliest (global) source.
 	count := 0
 	for _, e := range entries {
-		if e.ns == "shared" {
+		if e.ns == "work/_shared" {
 			count++
 			if e.source != "global" {
-				t.Errorf("shared should keep the global entry's source, got %q", e.source)
+				t.Errorf("work/_shared should keep the global entry's source, got %q", e.source)
 			}
 		}
 	}
 	if count != 1 {
-		t.Errorf("shared should appear exactly once, got %d", count)
+		t.Errorf("work/_shared should appear exactly once, got %d", count)
 	}
 }
 
-// TestResolveDoctorReadSetSelfEntryNote: an env entry naming primary itself
-// is a no-op and surfaces as a note.
+// TestResolveDoctorReadSetSelfEntryNote: the global namespace naming primary
+// itself is a no-op and surfaces as a note.
 func TestResolveDoctorReadSetSelfEntryNote(t *testing.T) {
-	_, notes := resolveDoctorReadSet("proj", []string{"proj"}, "", nil)
+	_, notes := resolveDoctorReadSet("proj", "proj")
 	if len(notes) != 1 || !strings.Contains(notes[0], "already the request namespace") {
 		t.Fatalf("expected a self-entry note, got %v", notes)
+	}
+}
+
+// TestResolveDoctorReadSetSharedNamespaceItself: the tenant-shared namespace
+// reading itself gets no self-merge (work/_shared does not add work/_shared).
+func TestResolveDoctorReadSetSharedNamespaceItself(t *testing.T) {
+	entries, notes := resolveDoctorReadSet("work/_shared", "")
+	if len(notes) != 0 {
+		t.Fatalf("expected no notes, got %v", notes)
+	}
+	if len(entries) != 1 || entries[0].ns != "work/_shared" {
+		t.Fatalf("expected only the primary entry, got %+v", entries)
 	}
 }
 
@@ -321,15 +327,6 @@ func TestStatsTotal(t *testing.T) {
 	}
 }
 
-func TestOrUnsetList(t *testing.T) {
-	if got := orUnsetList(nil); got != "(unset)" {
-		t.Errorf("orUnsetList(nil) = %q, want (unset)", got)
-	}
-	if got := orUnsetList([]string{"a", "b"}); got != "a, b" {
-		t.Errorf("orUnsetList = %q, want %q", got, "a, b")
-	}
-}
-
 // TestPrintRetrievalScopeDefaultOnly: with no configuration, the section
 // renders just the request namespace and warns about nothing.
 func TestPrintRetrievalScopeDefaultOnly(t *testing.T) {
@@ -347,44 +344,23 @@ func TestPrintRetrievalScopeDefaultOnly(t *testing.T) {
 	}
 }
 
-// TestResolveDoctorReadSetClampWarningInput builds a read set past the
-// 64-entry clamp via MEMINI_READ_NAMESPACES and checks resolveDoctorReadSet
-// actually returns more than doctorReadSetClamp entries, so
-// printRetrievalScope's len(entries) > doctorReadSetClamp check has
-// something to warn about (printRetrievalScope itself is exercised against a
-// real store in TestPrintRetrievalScopeWarnsOnClamp below).
-func TestResolveDoctorReadSetClampWarningInput(t *testing.T) {
-	readNamespaces := make([]string, 0, doctorReadSetClamp+5)
-	for i := 0; i < doctorReadSetClamp+5; i++ {
-		readNamespaces = append(readNamespaces, "rn-"+strconv.Itoa(i))
-	}
-	entries, notes := resolveDoctorReadSet("proj", readNamespaces, "", nil)
-	if len(notes) != 0 {
-		t.Fatalf("expected no redundancy notes, got %v", notes)
-	}
-	if len(entries) <= doctorReadSetClamp {
-		t.Fatalf("expected more than %d entries, got %d", doctorReadSetClamp, len(entries))
-	}
-}
-
-// TestPrintRetrievalScopeWarnsOnClamp: printRetrievalScope itself flags a
-// read set past the 64-entry clamp.
-func TestPrintRetrievalScopeWarnsOnClamp(t *testing.T) {
+// TestPrintRetrievalScopeWarnsOnEmptyTenantShared: a tenanted namespace whose
+// tenant-shared sibling holds no memories gets a 0-memories warning.
+func TestPrintRetrievalScopeWarnsOnEmptyTenantShared(t *testing.T) {
 	st := openTestStore(t)
-	seedPool(t, st, "proj", 1, 0)
+	seedPool(t, st, "work/memini", 1, 0) // only the primary holds memories
 	stats := statsFor(t, st)
 
-	readNamespaces := make([]string, 0, doctorReadSetClamp+5)
-	for i := 0; i < doctorReadSetClamp+5; i++ {
-		readNamespaces = append(readNamespaces, "rn-"+strconv.Itoa(i))
-	}
-	cfg := &config.Config{ReadNamespaces: readNamespaces}
 	var out bytes.Buffer
-	warnings := printRetrievalScope(&out, cfg, stats, "proj")
-	if !strings.Contains(out.String(), "above the 64-entry clamp") {
-		t.Errorf("expected a clamp warning, got:\n%s", out.String())
+	warnings := printRetrievalScope(&out, &config.Config{}, stats, "work/memini")
+	got := out.String()
+	if !strings.Contains(got, "work/_shared") {
+		t.Errorf("expected the tenant-shared namespace listed, got:\n%s", got)
+	}
+	if !strings.Contains(got, "0 memories") {
+		t.Errorf("expected a 0-memories warning for the empty shared namespace, got:\n%s", got)
 	}
 	if warnings == 0 {
-		t.Errorf("expected at least 1 warning for the oversized read set, got 0")
+		t.Errorf("expected at least 1 warning, got 0")
 	}
 }

@@ -260,7 +260,6 @@ func buildServiceStack(
 		service.WithCorroboration(defaultCorroborateMinScore),
 		service.WithContradictionDownrank(contradictMinScore(cfg)),
 		service.WithGlobalNamespace(cfg.GlobalNamespace),
-		service.WithReadNamespaces(cfg.ReadNamespaces),
 		service.WithTemporalTargeting(defaultTemporalBoost, search.RegexAnchorExtractor{}),
 		service.WithRecallEmbedTimeout(cfg.RecallEmbedTimeout),
 		service.WithRecallRewriteTimeout(cfg.RecallRewriteTimeout),

@@ -57,16 +57,14 @@ func (s *Service) resolveReadSet(ctx context.Context, sc readScope) ([]scopeEntr
 }
 
 // resolveDefaultReadSet builds primary (+ subtree, when requested) plus the
-// durable-only merge legs — the single global namespace, the configured
-// read-namespaces list (MEMINI_READ_NAMESPACES / WithReadNamespaces) —
-// mirroring the pre-read-set addGlobalNamespace exactly, for each: skipped when
-// unset, already present (primary, a subtree member, or an earlier merge leg —
-// widest tiers win, never narrowed), or the request's tier filter admits no
-// durable tier. An entry ending in "/*" expands to itself plus every
-// namespace nested under it; subtree, global, and read-namespaces "/*" share
-// one lazy ListNamespaces call. Widest-tier-wins always holds: an incoming
-// nil (full) tier override widens an existing narrower one in place, but a
-// narrower incoming override never displaces an existing nil one.
+// durable-only merge legs — the single global namespace and the tenant's
+// shared namespace (see tenantSharedNamespace) — mirroring the pre-read-set
+// addGlobalNamespace exactly, for each: skipped when unset, already present
+// (primary, a subtree member, or an earlier merge leg — widest tiers win,
+// never narrowed), or the request's tier filter admits no durable tier.
+// Widest-tier-wins always holds: an incoming nil (full) tier override widens
+// an existing narrower one in place, but a narrower incoming override never
+// displaces an existing nil one.
 func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]scopeEntry, error) {
 	var all []string
 	var listed bool
@@ -124,25 +122,35 @@ func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]sc
 		addEntry(s.globalNamespace, gt)
 	}
 
-	for _, rn := range s.readNamespaces {
-		base, isSubtree := strings.CutSuffix(rn, "/*")
-		addEntry(base, gt)
-		if !isSubtree {
-			continue
-		}
-		list, err := listAll()
-		if err != nil {
-			return nil, fmt.Errorf("read-set: list namespaces: %w", err)
-		}
-		prefix := base + "/"
-		for _, n := range list {
-			if n != base && strings.HasPrefix(n, prefix) {
-				addEntry(n, gt)
-			}
-		}
+	if ts := tenantSharedNamespace(sc.primary); ts != "" {
+		addEntry(ts, gt)
 	}
 
 	return promoteGlobal(entries, s.globalNamespace), nil
+}
+
+// tenantSharedLeaf is the conventional shared namespace nested directly under
+// a tenant root: facts in work/_shared are readable (durable tiers only) from
+// every work/... namespace, the tenant-wide layer between a project's own
+// namespace and the global one. The name matches the layout README.md
+// recommends.
+const tenantSharedLeaf = "_shared"
+
+// tenantSharedNamespace derives the tenant-shared namespace primary
+// implicitly reads: the first path segment plus "/_shared" ("work/memini" →
+// "work/_shared"). Empty — no merge — when primary has no tenant segment (no
+// "/"), so untenanted flat namespaces keep their exact pre-tenant behavior,
+// and when primary IS the tenant's shared namespace itself.
+func tenantSharedNamespace(primary string) string {
+	tenant, _, ok := strings.Cut(primary, "/")
+	if !ok || tenant == "" {
+		return ""
+	}
+	ts := tenant + "/" + tenantSharedLeaf
+	if ts == primary {
+		return ""
+	}
+	return ts
 }
 
 // subtreeFrom filters all to root and every namespace nested under it (root +

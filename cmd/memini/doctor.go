@@ -406,14 +406,6 @@ func printWritePathSignals(out io.Writer, stats []nsStat) {
 
 // nsStat is the per-namespace summary doctor reports.
 
-// doctorReadSetClamp mirrors internal/service/service.go's unexported
-// readSetMaxEntries: the entry count a live read-set expansion clamps to.
-// Duplicated here (rather than exported) because doctor reconstructs the
-// resolver's logic wholesale, following the same precedent as the
-// namespace-divergence check that mirrors config.ResolvePluginNamespace's
-// resolution order instead of calling into a running server.
-const doctorReadSetClamp = 64
-
 // Tier-access labels and the unset-value placeholder doctor's retrieval-scope
 // output uses (constants to keep goconst quiet, not exported semantics).
 const (
@@ -426,39 +418,53 @@ const (
 // doctorReadEntry is one namespace in doctor's reconstruction of a plain
 // recall/briefing's default read set for a namespace.
 type doctorReadEntry struct {
-	ns          string
-	tiers       string // "all" (the request's own tier filter) or "durable" (semantic+procedural only)
-	source      string // "default", "global", "env", "subtree-pattern"
-	patternBase bool   // the bare base of a "/*" entry: an anchor for its children, may itself be empty
+	ns     string
+	tiers  string // "all" (the request's own tier filter) or "durable" (semantic+procedural only)
+	source string // "default", "global", "tenant-shared"
+}
+
+// tenantSharedNamespace mirrors internal/service/readset.go: the tenant-shared
+// namespace a primary implicitly reads (durable tiers only), "work/memini" →
+// "work/_shared". Empty when primary has no tenant segment or is itself the
+// shared namespace. Duplicated here (rather than exported) because doctor
+// reconstructs the resolver's logic wholesale, the same precedent as the
+// namespace-divergence check.
+func tenantSharedNamespace(primary string) string {
+	tenant, _, ok := strings.Cut(primary, "/")
+	if !ok || tenant == "" {
+		return ""
+	}
+	ts := tenant + "/_shared"
+	if ts == primary {
+		return ""
+	}
+	return ts
 }
 
 // resolveDoctorReadSet reconstructs the default read set for primary,
 // mirroring internal/service/readset.go's resolveDefaultReadSet: primary
-// itself, then MEMINI_GLOBAL_NAMESPACE, then MEMINI_READ_NAMESPACES, the
-// order that makes "the widest tier access wins, never narrowed" hold when
-// two sources name the same namespace. It omits the parts only a live request
-// carries: scope=subtree on primary (that would only add more namespaces to
-// what's shown here) and a per-call tier filter (assumed absent, i.e. every
-// tier admitted, the common case). Pure: allNamespaces (for "/*" pattern
-// expansion) is pre-fetched by the caller, which already has it from
-// namespaceStats.
+// itself, then MEMINI_GLOBAL_NAMESPACE, then the tenant-shared namespace
+// (<tenant>/_shared, see tenantSharedNamespace), the order that makes "the
+// widest tier access wins, never narrowed" hold when two sources name the
+// same namespace. It omits the parts only a live request carries:
+// scope=subtree on primary (that would only add more namespaces to what's
+// shown here) and a per-call tier filter (assumed absent, i.e. every tier
+// admitted, the common case).
 //
-// The second return value lists redundant-configuration notes: an env
-// entry naming primary itself (a no-op, since primary is already included),
-// or two different sources naming the same namespace (redundant, but when
-// the later source grants "all" tiers and the earlier one only "durable",
-// the entry is widened to "all" in place rather than narrowed, mirroring
+// The second return value lists redundant-configuration notes: a source
+// naming primary itself (a no-op, since primary is already included), or two
+// different sources naming the same namespace (redundant, but when the later
+// source grants "all" tiers and the earlier one only "durable", the entry is
+// widened to "all" in place rather than narrowed, mirroring
 // resolveDefaultReadSet's addEntry: the widest tier access any source grants
 // always wins, regardless of order).
-func resolveDoctorReadSet(
-	primary string, readNamespaces []string, globalNamespace string, allNamespaces []string,
-) ([]doctorReadEntry, []string) {
+func resolveDoctorReadSet(primary, globalNamespace string) ([]doctorReadEntry, []string) {
 	entries := []doctorReadEntry{{ns: primary, tiers: tiersAll, source: srcDefault}}
 	seen := map[string]bool{primary: true}
 	claimedBy := map[string]string{primary: "the request namespace itself"}
 	var notes []string
 
-	add := func(ns, tiers, source, desc string, patternBase bool) {
+	add := func(ns, tiers, source, desc string) {
 		if seen[ns] {
 			if ns == primary {
 				notes = append(notes, fmt.Sprintf("%s names %q, which is already the request namespace (no effect)", desc, ns))
@@ -477,43 +483,18 @@ func resolveDoctorReadSet(
 		}
 		seen[ns] = true
 		claimedBy[ns] = desc
-		entries = append(entries, doctorReadEntry{ns: ns, tiers: tiers, source: source, patternBase: patternBase})
-	}
-	addSubtree := func(base, tiers, desc string) {
-		prefix := base + "/"
-		for _, n := range allNamespaces {
-			if n != base && strings.HasPrefix(n, prefix) {
-				add(n, tiers, "subtree-pattern", desc+" subtree", false)
-			}
-		}
+		entries = append(entries, doctorReadEntry{ns: ns, tiers: tiers, source: source})
 	}
 
 	if globalNamespace != "" {
-		add(globalNamespace, tiersDurable, "global", "MEMINI_GLOBAL_NAMESPACE", false)
+		add(globalNamespace, tiersDurable, "global", "MEMINI_GLOBAL_NAMESPACE")
 	}
 
-	for _, rn := range readNamespaces {
-		base, isSubtree := strings.CutSuffix(rn, "/*")
-		desc := fmt.Sprintf("MEMINI_READ_NAMESPACES entry %q", rn)
-		add(base, tiersDurable, "env", desc, isSubtree)
-		if isSubtree {
-			addSubtree(base, tiersDurable, desc)
-		}
+	if ts := tenantSharedNamespace(primary); ts != "" {
+		add(ts, tiersDurable, "tenant-shared", fmt.Sprintf("tenant-shared namespace %q", ts))
 	}
 
 	return entries, notes
-}
-
-// hasChildEntry reports whether entries contains a namespace nested under
-// base (base + "/...").
-func hasChildEntry(entries []doctorReadEntry, base string) bool {
-	prefix := base + "/"
-	for _, e := range entries {
-		if e.ns != base && strings.HasPrefix(e.ns, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 // statsTotal returns ns's memory count from stats, and whether ns appears in
@@ -525,15 +506,6 @@ func statsTotal(stats []nsStat, ns string) (int, bool) {
 		}
 	}
 	return 0, false
-}
-
-// orUnsetList formats a string slice for display the way orUnset formats a
-// single value: "(unset)" when empty, else comma-joined.
-func orUnsetList(vs []string) string {
-	if len(vs) == 0 {
-		return labelUnset
-	}
-	return strings.Join(vs, ", ")
 }
 
 // warnEnvSlashMigration flags a migration hazard fixed alongside read sets:
@@ -563,24 +535,17 @@ func warnEnvSlashMigration(out io.Writer, cfg *config.Config, stats []nsStat) in
 	return 1
 }
 
-// printRetrievalScope reports the read-set inputs (MEMINI_GLOBAL_NAMESPACE,
-// MEMINI_READ_NAMESPACES) and the resolved
-// effective read set for the plugin-resolved namespace, so "why does recall
-// see/miss X" is answerable without reading the resolver's source.
+// printRetrievalScope reports the read-set inputs (MEMINI_GLOBAL_NAMESPACE and
+// the derived tenant-shared namespace) and the resolved effective read set for
+// the plugin-resolved namespace, so "why does recall see/miss X" is answerable
+// without reading the resolver's source.
 func printRetrievalScope(out io.Writer, cfg *config.Config, stats []nsStat, pluginNS string) int {
 	var warnings int
-	fmt.Fprintln(out, "Retrieval scope")                                                 //nolint:errcheck
-	fmt.Fprintf(out, "  MEMINI_GLOBAL_NAMESPACE: %s\n", orUnset(cfg.GlobalNamespace))    //nolint:errcheck
-	fmt.Fprintf(out, "  MEMINI_READ_NAMESPACES:  %s\n", orUnsetList(cfg.ReadNamespaces)) //nolint:errcheck
+	fmt.Fprintln(out, "Retrieval scope")                                                          //nolint:errcheck
+	fmt.Fprintf(out, "  MEMINI_GLOBAL_NAMESPACE: %s\n", orUnset(cfg.GlobalNamespace))             //nolint:errcheck
+	fmt.Fprintf(out, "  tenant-shared namespace: %s\n", orUnset(tenantSharedNamespace(pluginNS))) //nolint:errcheck
 
-	// stats covers every namespace that holds memories — the same universe
-	// ListNamespaces gives the live resolver — so "/*" patterns expand here
-	// exactly as they do on a real read.
-	all := make([]string, len(stats))
-	for i, s := range stats {
-		all[i] = s.namespace
-	}
-	entries, notes := resolveDoctorReadSet(pluginNS, cfg.ReadNamespaces, cfg.GlobalNamespace, all)
+	entries, notes := resolveDoctorReadSet(pluginNS, cfg.GlobalNamespace)
 
 	fmt.Fprintf(out, "  effective read set for %q (plain recall/briefing, no per-call namespaces list):\n", pluginNS) //nolint:errcheck
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
@@ -598,20 +563,10 @@ func printRetrievalScope(out io.Writer, cfg *config.Config, stats []nsStat, plug
 		if e.source == srcDefault {
 			continue
 		}
-		// A pattern base is only an anchor for its children; stay quiet about
-		// it as long as the pattern matched at least one nested namespace.
-		if e.patternBase && hasChildEntry(entries, e.ns) {
-			continue
-		}
 		if total, _ := statsTotal(stats, e.ns); total == 0 {
 			warnings++
 			warnf(out, "read-set entry %q (via %s) currently holds 0 memories.", e.ns, e.source)
 		}
-	}
-	if len(entries) > doctorReadSetClamp {
-		warnings++
-		warnf(out, "resolved read set has %d entries, above the %d-entry clamp; recall/briefing drops the tail.",
-			len(entries), doctorReadSetClamp)
 	}
 	fmt.Fprintln(out) //nolint:errcheck
 	return warnings

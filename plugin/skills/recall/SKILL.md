@@ -24,7 +24,7 @@ memini is a memory service. To search for prior context, call the
   (a `project` namespace then also reads `project/<agent>`), for reading shared
   plus per-agent memory; default `exact`.
 - `namespaces` (optional): search exactly these namespaces instead of the
-  default read set (namespace, its subtree/links/env-configured namespaces,
+  default read set (namespace, its subtree, the tenant-shared namespace,
   and the global namespace), replacing it entirely rather than adding to it.
   An entry ending in `/*` also includes namespaces nested under it. Max 16,
   and the current namespace isn't added automatically, so list it too if you

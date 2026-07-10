@@ -65,12 +65,12 @@ func TestRecallExplicitNamespacesSpansGiven(t *testing.T) {
 	}
 }
 
-// TestRecallReadNamespacesMergesDurableOnly: WithReadNamespaces(["shared"])
-// merges shared's durable memories read-only into another namespace's
-// recall, exactly like the global namespace, and never its episodic ones —
-// end-to-end through the public Recall() call.
-func TestRecallReadNamespacesMergesDurableOnly(t *testing.T) {
-	svc := newService(t, service.WithReadNamespaces([]string{"shared"}))
+// TestRecallTenantSharedMergesDurableOnly: a tenanted namespace implicitly
+// reads its tenant-shared sibling's (work/_shared) durable memories read-only,
+// exactly like the global namespace, and never its episodic ones — end-to-end
+// through the public Recall() call, no config.
+func TestRecallTenantSharedMergesDurableOnly(t *testing.T) {
+	svc := newService(t)
 	ctx := context.Background()
 
 	mk := func(ns, content string, tier memory.Tier) {
@@ -78,9 +78,9 @@ func TestRecallReadNamespacesMergesDurableOnly(t *testing.T) {
 			t.Fatalf("remember %q in %q: %v", content, ns, err)
 		}
 	}
-	mk("shared", "shared durable convention: no AI slop filler comments", memory.TierSemantic)
-	mk("shared", "shared episodic chatter about lunch", memory.TierEpisodic)
-	mk("proj", "proj deploys with helm charts", memory.TierSemantic)
+	mk("work/_shared", "shared durable convention: no AI slop filler comments", memory.TierSemantic)
+	mk("work/_shared", "shared episodic chatter about lunch", memory.TierEpisodic)
+	mk("work/memini", "work/memini deploys with helm charts", memory.TierSemantic)
 
 	has := func(rs []store.Scored, content string) bool {
 		for _, r := range rs {
@@ -92,53 +92,49 @@ func TestRecallReadNamespacesMergesDurableOnly(t *testing.T) {
 	}
 
 	res, err := svc.Recall(ctx, service.RecallInput{
-		Namespace: "proj", Query: "AI slop filler comments", Limit: 10,
+		Namespace: "work/memini", Query: "AI slop filler comments", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
 	if !has(res, "shared durable convention: no AI slop filler comments") {
-		t.Fatal("read-namespace durable memory should surface in proj recall")
+		t.Fatal("tenant-shared durable memory should surface in work/memini recall")
 	}
 
 	res, err = svc.Recall(ctx, service.RecallInput{
-		Namespace: "proj", Query: "shared episodic chatter lunch", Limit: 10,
+		Namespace: "work/memini", Query: "shared episodic chatter lunch", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
 	if has(res, "shared episodic chatter about lunch") {
-		t.Fatal("read-namespace episodic memory must not surface in another namespace's recall")
+		t.Fatal("tenant-shared episodic memory must not surface in another namespace's recall")
 	}
 }
 
-// TestRecallReadNamespacesSubtreePattern: a "/*" read-namespace entry
-// surfaces durable memories from nested namespaces too, end-to-end through
-// Recall().
-func TestRecallReadNamespacesSubtreePattern(t *testing.T) {
-	svc := newService(t, service.WithReadNamespaces([]string{"rules/*"}))
+// TestRecallTenantSharedNeverCrossesTenants: the design's isolation guarantee —
+// a personal/... recall never sees work/_shared, and vice versa, because the
+// shared merge is derived from the request namespace's own tenant segment.
+func TestRecallTenantSharedNeverCrossesTenants(t *testing.T) {
+	svc := newService(t)
 	ctx := context.Background()
 
 	if _, err := svc.Remember(ctx, service.RememberInput{
-		Namespace: "rules/go", Content: "rules/go: prefer table-driven tests", Tier: memory.TierSemantic,
+		Namespace: "work/_shared", Content: "work secret: prod deploy runbook", Tier: memory.TierSemantic,
 	}); err != nil {
-		t.Fatalf("remember rules/go: %v", err)
+		t.Fatalf("remember work/_shared: %v", err)
 	}
 
 	res, err := svc.Recall(ctx, service.RecallInput{
-		Namespace: "proj", Query: "prefer table-driven tests", Limit: 10,
+		Namespace: "personal/blog", Query: "prod deploy runbook", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
-	found := false
 	for _, r := range res {
-		if r.Memory.Content == "rules/go: prefer table-driven tests" {
-			found = true
+		if r.Memory.Namespace == "work/_shared" {
+			t.Fatal("personal/blog recall must never surface work/_shared — tenant isolation")
 		}
-	}
-	if !found {
-		t.Fatal("nested rules/go durable memory should surface via the rules/* read-namespace pattern")
 	}
 }
 

@@ -231,100 +231,109 @@ func TestResolveReadSetClampKeepsPrimaryFirst(t *testing.T) {
 	}
 }
 
-// TestResolveReadSetReadNamespacesMergesDurableOnly: a configured
-// read-namespace contributes durable tiers only, exactly like the global
-// namespace — MEMINI_READ_NAMESPACES generalizes it to a list.
-func TestResolveReadSetReadNamespacesMergesDurableOnly(t *testing.T) {
-	svc, _ := newReadsetSvc(t, WithReadNamespaces([]string{"shared"}))
-	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "proj"})
+// TestResolveReadSetTenantSharedMergesDurableOnly: a tenanted primary
+// ("work/memini") implicitly reads its tenant-shared sibling ("work/_shared")
+// with durable tiers only, exactly like the global namespace — no config.
+func TestResolveReadSetTenantSharedMergesDurableOnly(t *testing.T) {
+	svc, _ := newReadsetSvc(t)
+	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "work/memini"})
 	if err != nil {
 		t.Fatalf("resolveReadSet: %v", err)
 	}
-	assertNamespaces(t, got, []string{"proj", "shared"})
+	assertNamespaces(t, got, []string{"work/memini", "work/_shared"})
 	for _, e := range got {
-		if e.ns == "shared" {
+		if e.ns == "work/_shared" {
 			if len(e.tiers) == 0 {
-				t.Fatal("shared entry should carry a durable-only tier override, got nil (full)")
+				t.Fatal("tenant-shared entry should carry a durable-only tier override, got nil (full)")
 			}
 			for _, tr := range e.tiers {
 				if tr != memory.TierSemantic && tr != memory.TierProcedural {
-					t.Fatalf("shared entry tier %v is not durable", tr)
+					t.Fatalf("tenant-shared entry tier %v is not durable", tr)
 				}
 			}
 		}
 	}
 }
 
-// TestResolveReadSetReadNamespacesSubtreePattern: a "/*" read-namespace entry
-// expands to itself plus every nested namespace, sharing the read-set's
-// single lazy ListNamespaces call.
-func TestResolveReadSetReadNamespacesSubtreePattern(t *testing.T) {
-	svc, st := newReadsetSvc(t, WithReadNamespaces([]string{"rules/*"}))
-	seedNamespace(t, st, "rules")
-	seedNamespace(t, st, "rules/go")
-	seedNamespace(t, st, "rules/py")
-	seedNamespace(t, st, "other")
+// TestResolveReadSetTenantSharedReadsSiblings: the layout the design promises —
+// scope=subtree from work/memini reads its own subtree plus the tenant-shared
+// namespace, never a personal/... sibling.
+func TestResolveReadSetTenantSharedReadsSiblings(t *testing.T) {
+	svc, st := newReadsetSvc(t)
+	seedNamespace(t, st, "work/memini")
+	seedNamespace(t, st, "work/memini/reviewer")
+	seedNamespace(t, st, "work/_shared")
+	seedNamespace(t, st, "personal/blog")
 
+	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "work/memini", subtree: true})
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	assertNamespaces(t, got, []string{"work/memini", "work/memini/reviewer", "work/_shared"})
+}
+
+// TestResolveReadSetFlatNamespaceNoTenantShared: an untenanted (no "/")
+// namespace has no tenant segment, so no shared merge — exact pre-tenant
+// behavior for flat namespaces.
+func TestResolveReadSetFlatNamespaceNoTenantShared(t *testing.T) {
+	svc, _ := newReadsetSvc(t)
 	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "proj"})
 	if err != nil {
 		t.Fatalf("resolveReadSet: %v", err)
 	}
-	assertNamespaces(t, got, []string{"proj", "rules", "rules/go", "rules/py"})
+	assertNamespaces(t, got, []string{"proj"})
 }
 
-// TestResolveReadSetReadNamespacesSkippedForEpisodicOnlyFilter: like the
-// global namespace, a read-namespace entry is skipped entirely (no fan-out,
-// no ListNamespaces call for a "/*" pattern) when the request's tier filter
-// admits no durable tier.
-func TestResolveReadSetReadNamespacesSkippedForEpisodicOnlyFilter(t *testing.T) {
-	st, err := sqlitevec.Open(context.Background(), filepath.Join(t.TempDir(), "readset-episodic.db"), readsetTestDims)
+// TestResolveReadSetTenantSharedItselfNoSelfMerge: reading the tenant-shared
+// namespace directly does not add itself again.
+func TestResolveReadSetTenantSharedItselfNoSelfMerge(t *testing.T) {
+	svc, _ := newReadsetSvc(t)
+	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "work/_shared"})
 	if err != nil {
-		t.Fatalf("open store: %v", err)
+		t.Fatalf("resolveReadSet: %v", err)
 	}
-	t.Cleanup(func() { _ = st.Close() })
-	counting := &countingListStore{Store: st}
-	svc := New(counting, embedtest.New(readsetTestDims),
-		WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }),
-		WithReadNamespaces([]string{"rules/*"}))
+	assertNamespaces(t, got, []string{"work/_shared"})
+}
 
+// TestResolveReadSetTenantSharedSkippedForEpisodicOnlyFilter: like the global
+// namespace, the durable-only tenant-shared merge is skipped when the
+// request's tier filter admits no durable tier.
+func TestResolveReadSetTenantSharedSkippedForEpisodicOnlyFilter(t *testing.T) {
+	svc, _ := newReadsetSvc(t)
 	got, err := svc.resolveReadSet(context.Background(), readScope{
-		primary:  "proj",
+		primary:  "work/memini",
 		reqTiers: []memory.Tier{memory.TierEpisodic},
 	})
 	if err != nil {
 		t.Fatalf("resolveReadSet: %v", err)
 	}
-	assertNamespaces(t, got, []string{"proj"})
-	if counting.calls != 0 {
-		t.Fatalf("episodic-only filter made %d ListNamespaces calls, want 0 (read-namespaces skipped entirely)", counting.calls)
-	}
+	assertNamespaces(t, got, []string{"work/memini"})
 }
 
-// TestResolveReadSetGlobalAndReadNamespacesDedup: WithGlobalNamespace and
-// WithReadNamespaces both naming "g" must not produce a duplicate entry —
-// containsNamespace's dedup covers the merge legs, not just subtree/global.
-func TestResolveReadSetGlobalAndReadNamespacesDedup(t *testing.T) {
-	svc, _ := newReadsetSvc(t, WithGlobalNamespace("g"), WithReadNamespaces([]string{"g", "h"}))
-	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "proj"})
+// TestResolveReadSetGlobalEqualsTenantSharedDedup: when the global namespace
+// happens to be the tenant-shared namespace, it appears once, not twice.
+func TestResolveReadSetGlobalEqualsTenantSharedDedup(t *testing.T) {
+	svc, _ := newReadsetSvc(t, WithGlobalNamespace("work/_shared"))
+	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "work/memini"})
 	if err != nil {
 		t.Fatalf("resolveReadSet: %v", err)
 	}
-	assertNamespaces(t, got, []string{"proj", "g", "h"})
+	assertNamespaces(t, got, []string{"work/memini", "work/_shared"})
 }
 
-// TestResolveReadSetExplicitDoesNotMergeReadNamespaces: explicit per-call
-// namespaces replace the default read set entirely, same as the global
-// namespace — configured read-namespaces must not sneak back in.
-func TestResolveReadSetExplicitDoesNotMergeReadNamespaces(t *testing.T) {
-	svc, _ := newReadsetSvc(t, WithReadNamespaces([]string{"shared"}))
+// TestResolveReadSetExplicitDoesNotMergeTenantShared: explicit per-call
+// namespaces replace the default read set entirely — the tenant-shared merge
+// must not sneak back in.
+func TestResolveReadSetExplicitDoesNotMergeTenantShared(t *testing.T) {
+	svc, _ := newReadsetSvc(t)
 	got, err := svc.resolveReadSet(context.Background(), readScope{
-		primary:  "A",
-		explicit: []string{"A", "B"},
+		primary:  "work/memini",
+		explicit: []string{"work/memini", "work/other"},
 	})
 	if err != nil {
 		t.Fatalf("resolveReadSet: %v", err)
 	}
-	assertNamespaces(t, got, []string{"A", "B"})
+	assertNamespaces(t, got, []string{"work/memini", "work/other"})
 }
 
 func TestResolveReadSetNoListNamespacesUnlessSubtreeOrPattern(t *testing.T) {
@@ -371,44 +380,25 @@ func TestResolveReadSetNoListNamespacesUnlessSubtreeOrPattern(t *testing.T) {
 	}
 }
 
-// TestResolveReadSetReadNamespacesListNamespacesCalls: a literal
-// read-namespace entry never scans (same as the global namespace); a "/*"
-// read-namespace entry scans exactly once, sharing the call with subtree
-// expansion when both are in play.
-func TestResolveReadSetReadNamespacesListNamespacesCalls(t *testing.T) {
-	newCountingSvc := func(t *testing.T, readNamespaces []string) (*Service, *countingListStore) {
-		t.Helper()
-		st, err := sqlitevec.Open(context.Background(), filepath.Join(t.TempDir(), "readset-rn-count.db"), readsetTestDims)
-		if err != nil {
-			t.Fatalf("open store: %v", err)
-		}
-		t.Cleanup(func() { _ = st.Close() })
-		counting := &countingListStore{Store: st}
-		svc := New(counting, embedtest.New(readsetTestDims),
-			WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }),
-			WithReadNamespaces(readNamespaces))
-		return svc, counting
+// TestResolveReadSetTenantSharedMakesZeroScans: the tenant-shared merge is a
+// single literal namespace, so a plain default read (no subtree) never scans,
+// same as the global namespace.
+func TestResolveReadSetTenantSharedMakesZeroScans(t *testing.T) {
+	st, err := sqlitevec.Open(context.Background(), filepath.Join(t.TempDir(), "readset-ts-count.db"), readsetTestDims)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
 	}
+	t.Cleanup(func() { _ = st.Close() })
+	counting := &countingListStore{Store: st}
+	svc := New(counting, embedtest.New(readsetTestDims),
+		WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }))
 
-	t.Run("literal entry makes zero scans", func(t *testing.T) {
-		svc, counting := newCountingSvc(t, []string{"shared"})
-		if _, err := svc.resolveReadSet(context.Background(), readScope{primary: "A"}); err != nil {
-			t.Fatalf("resolveReadSet: %v", err)
-		}
-		if counting.calls != 0 {
-			t.Fatalf("literal read-namespace resolution made %d ListNamespaces calls, want 0", counting.calls)
-		}
-	})
-
-	t.Run("subtree pattern shares the subtree scan", func(t *testing.T) {
-		svc, counting := newCountingSvc(t, []string{"rules/*"})
-		if _, err := svc.resolveReadSet(context.Background(), readScope{primary: "A", subtree: true}); err != nil {
-			t.Fatalf("resolveReadSet: %v", err)
-		}
-		if counting.calls != 1 {
-			t.Fatalf("subtree + read-namespace pattern made %d ListNamespaces calls, want 1 (shared)", counting.calls)
-		}
-	})
+	if _, err := svc.resolveReadSet(context.Background(), readScope{primary: "work/memini"}); err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	if counting.calls != 0 {
+		t.Fatalf("tenant-shared merge made %d ListNamespaces calls, want 0", counting.calls)
+	}
 }
 
 // TestResolveReadSetClampKeepsGlobal: a subtree expansion past the 64-entry
