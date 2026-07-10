@@ -460,6 +460,41 @@ func TestResolveReadSetUnderCapKeepsGlobalLast(t *testing.T) {
 	}
 }
 
+// TestResolveReadSetClampKeepsTenantShared: a subtree expansion past the
+// 64-entry clamp must not push the durable-only tenant-shared merge off the
+// end — it is front-protected alongside the global namespace (promoteProtected),
+// so both survive the clamp rather than being dropped behind a large subtree.
+func TestResolveReadSetClampKeepsTenantShared(t *testing.T) {
+	svc, st := newReadsetSvc(t, WithGlobalNamespace("global"))
+	seedNamespace(t, st, "global")
+	seedNamespace(t, st, "work/_shared")
+	for i := 0; i < 70; i++ {
+		seedNamespace(t, st, fmt.Sprintf("work/ns%02d", i))
+	}
+	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "work", subtree: true})
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	if len(got) != readSetMaxEntries {
+		t.Fatalf("len(got) = %d, want %d (clamped)", len(got), readSetMaxEntries)
+	}
+	var foundShared, foundGlobal bool
+	for _, e := range got {
+		switch e.ns {
+		case "work/_shared":
+			foundShared = true
+		case "global":
+			foundGlobal = true
+		}
+	}
+	if !foundShared {
+		t.Fatal("tenant-shared namespace was clamped away")
+	}
+	if !foundGlobal {
+		t.Fatal("global namespace was clamped away")
+	}
+}
+
 func TestResolveReadSetExplicitNormalizesEntries(t *testing.T) {
 	svc, st := newReadsetSvc(t)
 	seedNamespace(t, st, "work/memini")

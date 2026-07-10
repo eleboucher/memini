@@ -1327,3 +1327,38 @@ func TestMoveNamespace(t *testing.T) {
 		t.Fatalf("move to pattern: want 400, got %d (%s)", rec.Code, rec.Body)
 	}
 }
+
+// TestNamespaceHeaderCanonicalized pins that the namespace header is
+// canonicalized at the middleware boundary: a memory written under a
+// non-canonical header ("work/proj/") is readable under the canonical form
+// ("work/proj"), so a trailing slash never splits a namespace in two.
+func TestNamespaceHeaderCanonicalized(t *testing.T) {
+	h := newServer(t)
+
+	rec := do(t, h, http.MethodPost, "/v1/memories", "work/proj/", apiKey, map[string]any{
+		"content": "canonicalized namespace fact", "tier": "semantic",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("remember: want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+	var created struct {
+		ID        string `json:"id"`
+		Namespace string `json:"namespace"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body)
+	}
+	if created.Namespace != "work/proj" {
+		t.Fatalf("stored namespace = %q, want canonical %q", created.Namespace, "work/proj")
+	}
+	// The canonical header must reach the same record.
+	rec = do(t, h, http.MethodGet, "/v1/memories/"+created.ID, "work/proj", apiKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("canonical read: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	// A slash-only header collapses to empty → falls back to the default namespace.
+	rec = do(t, h, http.MethodPost, "/v1/search", "///", apiKey, map[string]any{"query": "x"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("slash-only header should fall back to default, got %d (%s)", rec.Code, rec.Body)
+	}
+}

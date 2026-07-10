@@ -41,7 +41,13 @@ type AuthConfig struct {
 // 400 when the header is present but contains an invalid value.
 func (a AuthConfig) namespaceMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ns := strings.TrimSpace(r.Header.Get(a.NamespaceHeader))
+		// Canonicalize the header (trim spaces, strip surrounding slashes,
+		// collapse "//") so "work/_shared/" and "work/_shared" address the same
+		// rows, ListNamespaces never splits into non-canonical duplicates, and
+		// the tenant-shared self-merge guard (which compares against the
+		// canonical "<tenant>/_shared") holds. Matches how the server derives
+		// its own default namespace (config.sanitizeNamespacePath).
+		ns := httputil.NormalizeNamespace(r.Header.Get(a.NamespaceHeader))
 		if ns != "" {
 			if err := httputil.ValidateNamespace(ns); err != nil {
 				httputil.Error(w, http.StatusBadRequest, "invalid namespace: "+err.Error())

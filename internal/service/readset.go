@@ -113,9 +113,9 @@ func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]sc
 	gt := durableTiers(sc.reqTiers)
 
 	if len(gt) == 0 {
-		// No durable tier is admitted, so the global namespace would search
-		// nothing — skip it without an unnecessary ListNamespaces call.
-		return promoteGlobal(entries, s.globalNamespace), nil
+		// No durable tier is admitted, so the durable-only merge legs would
+		// search nothing — skip them without an unnecessary ListNamespaces call.
+		return entries, nil
 	}
 
 	if s.globalNamespace != "" {
@@ -126,7 +126,7 @@ func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]sc
 		addEntry(ts, gt)
 	}
 
-	return promoteGlobal(entries, s.globalNamespace), nil
+	return promoteProtected(entries, s.globalNamespace, tenantSharedNamespace(sc.primary)), nil
 }
 
 // tenantSharedLeaf is the conventional shared namespace nested directly under
@@ -205,10 +205,8 @@ func (s *Service) resolveExplicitReadSet(ctx context.Context, raw []string) ([]s
 	for _, r := range raw {
 		// Normalize before matching: entries are compared literally against
 		// stored namespaces, so an untrimmed " work" or "work/" would silently
-		// match nothing (config-sourced entries get the same treatment in
-		// normalizeReadNamespaces). The pattern suffix is cut first so a bare
-		// "/*" still fails validation (empty base) instead of collapsing to a
-		// literal "*".
+		// match nothing. The pattern suffix is cut first so a bare "/*" still
+		// fails validation (empty base) instead of collapsing to a literal "*".
 		ns, isSubtree := strings.CutSuffix(strings.TrimSpace(r), "/*")
 		ns = httputil.NormalizeNamespace(ns)
 		if err := httputil.ValidateNamespace(ns); err != nil {
@@ -234,36 +232,49 @@ func (s *Service) resolveExplicitReadSet(ctx context.Context, raw []string) ([]s
 
 // promoteGlobal moves the global namespace's entry (when present, and not
 // already primary) to immediately after primary, so the post-expansion clamp
-// (which keeps the front of the slice) never drops it out from behind a
-// large subtree/pattern expansion. It only reorders when the clamp will
-// actually fire (len > readSetMaxEntries): entry order is observable beyond
-// the clamp (FuseScores breaks exact score ties by first-seen order across
-// namespaces), so an under-cap read set keeps global in its traditional last
-// position, preserving pre-read-set tie-break behavior exactly. Over the cap
-// the reorder is safe: addEntry above only ever widens an existing entry,
-// never narrows it, so moving an entry earlier cannot change its tier
-// access, only guarantee it survives the clamp (and an over-cap set is new
-// behavior with no prior ordering to preserve). A no-op when
-// globalNamespace is unset, absent from entries, already at (or before)
-// index 1, or the set is within the cap.
-func promoteGlobal(entries []scopeEntry, globalNamespace string) []scopeEntry {
-	if globalNamespace == "" || len(entries) <= readSetMaxEntries {
+// (which keeps the front of the slice) never drops them out from behind a
+// large subtree/pattern expansion. The protected namespaces are the
+// durable-only merge legs — the global namespace and the tenant-shared
+// namespace — front-ordered in the priority order given. It only reorders when
+// the clamp will actually fire (len > readSetMaxEntries): entry order is
+// observable beyond the clamp (FuseScores breaks exact score ties by first-seen
+// order across namespaces), so an under-cap read set keeps these legs in their
+// traditional trailing position, preserving pre-read-set tie-break behavior
+// exactly. Over the cap the reorder is safe: addEntry above only ever widens an
+// existing entry, never narrows it, so moving an entry earlier cannot change its
+// tier access, only guarantee it survives the clamp (and an over-cap set is new
+// behavior with no prior ordering to preserve). A no-op when no protected
+// namespace is present or the set is within the cap.
+func promoteProtected(entries []scopeEntry, protected ...string) []scopeEntry {
+	if len(entries) <= readSetMaxEntries || len(entries) == 0 {
 		return entries
 	}
-	idx := -1
-	for i := 2; i < len(entries); i++ { // index 0 is primary, index 1 is already promoted
-		if entries[i].ns == globalNamespace {
-			idx = i
-			break
+	// entries[0] is primary (kept first). Collect the protected legs in
+	// priority order, skipping empties, primary itself, and any not present.
+	front := []scopeEntry{entries[0]}
+	taken := map[int]bool{0: true}
+	for _, ns := range protected {
+		if ns == "" || ns == entries[0].ns {
+			continue
+		}
+		for i := 1; i < len(entries); i++ {
+			if !taken[i] && entries[i].ns == ns {
+				front = append(front, entries[i])
+				taken[i] = true
+				break
+			}
 		}
 	}
-	if idx < 0 {
-		return entries
+	if len(front) == 1 {
+		return entries // nothing to promote beyond primary
 	}
 	out := make([]scopeEntry, 0, len(entries))
-	out = append(out, entries[0], entries[idx])
-	out = append(out, entries[1:idx]...)
-	out = append(out, entries[idx+1:]...)
+	out = append(out, front...)
+	for i := 1; i < len(entries); i++ {
+		if !taken[i] {
+			out = append(out, entries[i])
+		}
+	}
 	return out
 }
 
