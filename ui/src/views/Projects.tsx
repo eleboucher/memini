@@ -24,14 +24,35 @@ interface Tenant {
 
 // groupByTenant buckets namespaces by their first path segment (the tenant),
 // modeled as k8s namespaces; each namespace under it becomes a "pod" labeled by
-// the remaining path. Flat namespaces fall under NO_TENANT. Tenants and pods are
-// sorted alphabetically, with NO_TENANT last.
+// the remaining path. A flat (no-slash) namespace that equals an existing
+// tenant (e.g. "work" alongside "work/memini") joins that tenant's box as a
+// "(root)" pod rather than the NO_TENANT bucket; a flat namespace with no
+// matching tenant falls under NO_TENANT. Tenants and pods are sorted
+// alphabetically, with NO_TENANT last.
 function groupByTenant(projects: Project[]): Tenant[] {
+  // First pass: the set of tenants that have at least one hierarchical member,
+  // so a bare "work" can be recognized as that tenant's root.
+  const hierarchicalTenants = new Set<string>()
+  for (const p of projects) {
+    const slash = p.name.indexOf('/')
+    if (slash !== -1) hierarchicalTenants.add(p.name.slice(0, slash))
+  }
+
   const byTenant = new Map<string, Tenant>()
   for (const p of projects) {
     const slash = p.name.indexOf('/')
-    const tenant = slash === -1 ? NO_TENANT : p.name.slice(0, slash)
-    const label = slash === -1 ? p.name : p.name.slice(slash + 1)
+    let tenant: string
+    let label: string
+    if (slash !== -1) {
+      tenant = p.name.slice(0, slash)
+      label = p.name.slice(slash + 1)
+    } else if (hierarchicalTenants.has(p.name)) {
+      tenant = p.name // the tenant root itself holds memories directly
+      label = '(root)'
+    } else {
+      tenant = NO_TENANT
+      label = p.name
+    }
     let t = byTenant.get(tenant)
     if (!t) {
       t = { tenant, total: 0, projects: [] }
