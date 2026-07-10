@@ -19,6 +19,7 @@ import {
   getBriefing,
   cleanStaleBuffers,
   writePluginRoot,
+  writeNamespace,
   intEnv,
   envEnabled,
   labelsEnv,
@@ -83,6 +84,10 @@ async function main() {
   const sessionId = payload.session_id || payload.sessionId;
   const cwd = payload.cwd || process.cwd();
   const project = resolveProject(cwd);
+  // Cache the resolved namespace so the MCP headersHelper (which gets neither
+  // the project cwd nor CLAUDE_PROJECT_DIR) targets this project, not the
+  // plugin's version-named install dir.
+  writeNamespace(project);
 
   // Hygiene: drop session buffers left behind by sessions that never ended.
   cleanStaleBuffers(STALE_BUFFER_MS);

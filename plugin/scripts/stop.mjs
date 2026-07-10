@@ -15,6 +15,7 @@ import {
   readStdin,
   parseJSON,
   resolveProject,
+  writeNamespace,
   postRemember,
   readSessionEvents,
   buildSessionDigest,
@@ -133,6 +134,8 @@ async function main() {
   const hasSessionIdentity = sessionId !== "unknown";
   const cwd = payload.cwd || process.cwd();
   const project = resolveProject(cwd);
+  // Keep the MCP headersHelper's namespace cache aligned with this project.
+  writeNamespace(project);
 
   const digest = buildSessionDigest(readSessionEvents(sessionId), project);
 

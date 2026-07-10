@@ -5,10 +5,19 @@
 // and recall target one namespace) and a bearer token when one is configured —
 // which is what makes a single remote memini work per-project.
 
-import { resolveProject, createPlaintextBearerAuthGuard } from "./_shared.mjs";
+import { resolveProject, readCachedNamespace, createPlaintextBearerAuthGuard } from "./_shared.mjs";
 
-const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-const headers = { "X-Memini-Namespace": resolveProject(projectDir) };
+// Per the Claude Code docs, the headersHelper runs with cwd = the plugin's
+// (version-named) install dir and is NOT given CLAUDE_PROJECT_DIR — so
+// process.cwd() must NEVER be used to resolve the namespace (it would yield the
+// plugin version, e.g. "0.6.3", and scatter memories into version namespaces).
+// Prefer CLAUDE_PROJECT_DIR if it's ever present, else the namespace the hooks
+// cached for the active project. If neither is available, omit the header and
+// let the server's default namespace apply — better than a wrong guess.
+const projectDir = process.env.CLAUDE_PROJECT_DIR;
+const ns = projectDir && projectDir.trim() ? resolveProject(projectDir) : readCachedNamespace();
+const headers = {};
+if (ns) headers["X-Memini-Namespace"] = ns;
 
 // Same plaintext-bearer guard as the hooks' REST client. The MCP endpoint is
 // ${MEMINI_BASE_URL}/mcp (see .mcp.json), so check the base URL: warn when the

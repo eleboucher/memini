@@ -19,6 +19,7 @@ import {
   readStdin,
   parseJSON,
   resolveProject,
+  writeNamespace,
   postSearch,
   readToolCall,
   intEnv,
@@ -81,6 +82,8 @@ async function main() {
 
   const args = payload.tool_input ?? payload.toolArgs ?? {};
   const project = resolveProject(cwd);
+  // Keep the MCP headersHelper's namespace cache fresh for the active project.
+  writeNamespace(project);
 
   if (DEBUG)
     console.error(`[memini] PreToolUse tool=${toolName} project=${project} session=${sessionId}`);

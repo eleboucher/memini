@@ -934,6 +934,36 @@ test("mcp-headers.mjs: warns (but still sends) for plaintext non-loopback by def
   assert.match(stderr, /plaintext HTTP/);
 });
 
+// The headersHelper runs with cwd = the plugin's version-named install dir and
+// no CLAUDE_PROJECT_DIR. Resolving from cwd there scattered memories into
+// version namespaces (e.g. "0.6.3"). These pin that it never happens: with no
+// project cwd it uses the hooks' cached namespace, or omits the header.
+test("mcp-headers.mjs: no CLAUDE_PROJECT_DIR + no cache → omits namespace (never cwd)", async () => {
+  const cache = freshCache();
+  const { stdout } = await runHook("mcp-headers.mjs", "", {
+    CLAUDE_PROJECT_DIR: "",
+    XDG_CACHE_HOME: cache,
+    MEMINI_TOKEN: "",
+    MEMINI_API_KEY: "",
+  });
+  const h = JSON.parse(stdout);
+  assert.equal(h["X-Memini-Namespace"], undefined, "must not emit a cwd/version-derived namespace");
+});
+
+test("mcp-headers.mjs: no CLAUDE_PROJECT_DIR → uses the hooks' cached namespace", async () => {
+  const cache = freshCache();
+  const { writeNamespace } = await import("./_shared.mjs");
+  await withEnv({ XDG_CACHE_HOME: cache }, () => writeNamespace("personal/memini"));
+  const { stdout } = await runHook("mcp-headers.mjs", "", {
+    CLAUDE_PROJECT_DIR: "",
+    XDG_CACHE_HOME: cache,
+    MEMINI_TOKEN: "",
+    MEMINI_API_KEY: "",
+  });
+  const h = JSON.parse(stdout);
+  assert.equal(h["X-Memini-Namespace"], "personal/memini", "namespace from the hooks' cache");
+});
+
 test("plaintext bearer guard warns once for http to a non-loopback host", async () => {
   const { createPlaintextBearerAuthGuard } = await import("./_shared.mjs");
   const warnings = [];

@@ -648,6 +648,38 @@ export function writePluginRoot() {
   }
 }
 
+/**
+ * Path of the file recording the active project's resolved namespace. Per the
+ * Claude Code docs, the MCP headersHelper runs with cwd = the plugin's
+ * (version-named) install dir and is NOT given ${CLAUDE_PROJECT_DIR}, so it
+ * cannot resolve the project namespace itself — process.cwd() would yield the
+ * plugin version (e.g. "0.6.3"). The hooks (which DO get the real project cwd)
+ * write the resolved namespace here, and the headersHelper reads it.
+ */
+export function namespaceCacheFile() {
+  return join(meminiCacheDir(), "namespace");
+}
+
+/** Record the resolved project namespace for the MCP headersHelper to read. */
+export function writeNamespace(ns) {
+  if (!ns || !ns.trim()) return;
+  try {
+    fs.mkdirSync(meminiCacheDir(), { recursive: true });
+    fs.writeFileSync(namespaceCacheFile(), ns.trim());
+  } catch (e) {
+    if (DEBUG) console.error("[memini] writeNamespace failed:", e?.message || e);
+  }
+}
+
+/** Read the namespace cached by the hooks; "" when absent/unreadable. */
+export function readCachedNamespace() {
+  try {
+    return fs.readFileSync(namespaceCacheFile(), "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
 /** Sanitize a session id into a safe filename component. */
 function safeId(sessionId) {
   return String(sessionId || "unknown").replace(/[^a-zA-Z0-9._-]/g, "_");
