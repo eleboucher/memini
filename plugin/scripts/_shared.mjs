@@ -63,11 +63,11 @@ export function repoSlugFromRemote(url) {
  * The remote wins over the toplevel so worktrees and /tmp clones get a
  * stable, canonical name.
  *
- * When a tenant config file exists, the result becomes
- * {tenant}/{project}/{MEMINI_AGENT} — the tenant prefix and agent suffix are
- * applied after the (un-prefixed) cached base, so removing the config file
- * restores today's exact namespaces. No config file = no prefix, no agent
- * suffix, zero migration.
+ * The MEMINI_AGENT suffix is applied unconditionally (as it always has been),
+ * so config-less installs that rely on it keep today's exact namespaces. Only
+ * the {tenant} prefix is the new, config-gated behavior — removing the config
+ * file restores the pre-tenant namespace exactly. No config file = no prefix,
+ * zero migration.
  */
 export function resolveProject(cwd) {
   const nsEnv = process.env["MEMINI_NAMESPACE"];
@@ -75,16 +75,16 @@ export function resolveProject(cwd) {
   const dir = cwd && cwd.trim() ? cwd : process.cwd();
   const base = resolveProjectBase(dir);
   const config = readTenantConfig();
-  if (!config) return base;
-  const tenant = resolveTenant(dir, config);
+  const tenant = config ? resolveTenant(dir, config) : null;
   return withAgent(tenant ? `${tenant}/${base}` : base);
 }
 
 // withAgent nests the project namespace under a per-agent segment when
 // MEMINI_AGENT is set ("myproject" -> "myproject/reviewer"), so several agents
 // sharing a repo keep private memory. Recall with scope=subtree on the project
-// reads across all of them. Only applied when a tenant config file exists —
-// the feature opt-in — so config-less installs keep today's namespaces.
+// reads across all of them. Applied unconditionally — MEMINI_AGENT predates the
+// tenant feature, so gating it behind config would drop the segment for
+// config-less installs that already use it.
 function withAgent(ns) {
   const agent = (process.env["MEMINI_AGENT"] || "").trim();
   if (!agent) return ns;

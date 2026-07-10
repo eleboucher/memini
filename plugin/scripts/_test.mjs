@@ -334,7 +334,7 @@ test("resolveProject: a configured trailing slash on the root still matches", as
   );
 });
 
-test("resolveProject: MEMINI_AGENT suffix applies only when a config file exists", async () => {
+test("resolveProject: MEMINI_AGENT suffix applies unconditionally; only the tenant prefix is config-gated", async () => {
   const parent = mkdtempSync(join(tmpdir(), "memini-tenant-"));
   const dir = join(parent, "proja");
   mkdirSync(dir);
@@ -349,9 +349,11 @@ test("resolveProject: MEMINI_AGENT suffix applies only when a config file exists
     async () => {
       process.env.XDG_CONFIG_HOME = withConfig;
       const { resolveProject } = await import("./_shared.mjs?cb=agent-" + Date.now());
-      assert.equal(resolveProject(dir), "work/proja/reviewer", "config present -> agent suffix");
+      assert.equal(resolveProject(dir), "work/proja/reviewer", "config present -> tenant prefix + agent suffix");
       process.env.XDG_CONFIG_HOME = noConfig;
-      assert.equal(resolveProject(dir), "proja", "no config -> no agent suffix, even with MEMINI_AGENT set");
+      // Zero-migration: MEMINI_AGENT predates the tenant feature, so a
+      // config-less install keeps its pre-feature "<project>/<agent>" namespace.
+      assert.equal(resolveProject(dir), "proja/reviewer", "no config -> no tenant prefix, but agent suffix still applies");
     },
   );
 });
