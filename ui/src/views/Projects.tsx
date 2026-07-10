@@ -8,6 +8,48 @@ import { Loading, ErrorBanner, Empty } from '../components/States'
 import { NamespaceDrawer } from '../components/NamespaceDrawer'
 import { IconTrash, IconSettings } from '../icons'
 
+// NO_TENANT groups flat (no-slash) namespaces, which have no tenant segment.
+const NO_TENANT = '(no tenant)'
+
+interface Project {
+  name: string // full stored namespace, e.g. "work/memini/reviewer"
+  stats: Stats | null
+}
+
+interface Tenant {
+  tenant: string // display label for the k8s-style namespace box
+  total: number // memories summed across the tenant's projects
+  projects: { name: string; label: string; stats: Stats | null }[]
+}
+
+// groupByTenant buckets namespaces by their first path segment (the tenant),
+// modeled as k8s namespaces; each namespace under it becomes a "pod" labeled by
+// the remaining path. Flat namespaces fall under NO_TENANT. Tenants and pods are
+// sorted alphabetically, with NO_TENANT last.
+function groupByTenant(projects: Project[]): Tenant[] {
+  const byTenant = new Map<string, Tenant>()
+  for (const p of projects) {
+    const slash = p.name.indexOf('/')
+    const tenant = slash === -1 ? NO_TENANT : p.name.slice(0, slash)
+    const label = slash === -1 ? p.name : p.name.slice(slash + 1)
+    let t = byTenant.get(tenant)
+    if (!t) {
+      t = { tenant, total: 0, projects: [] }
+      byTenant.set(tenant, t)
+    }
+    t.total += p.stats?.total ?? 0
+    t.projects.push({ name: p.name, label, stats: p.stats })
+  }
+  const tenants = [...byTenant.values()]
+  tenants.sort((a, b) => {
+    if (a.tenant === NO_TENANT) return 1
+    if (b.tenant === NO_TENANT) return -1
+    return a.tenant.localeCompare(b.tenant)
+  })
+  for (const t of tenants) t.projects.sort((a, b) => a.label.localeCompare(b.label))
+  return tenants
+}
+
 export function Projects() {
   const { data, error, loading } = useAsync(async () => {
     const names = await api.namespaces()
@@ -15,24 +57,20 @@ export function Projects() {
     return names.map((name, i) => ({ name, stats: stats[i] }))
   }, [refreshNonce.value])
 
-  const open = (ns: string) => {
-    namespace.value = ns
-    route.value = 'overview'
-  }
-
   if (loading && !data) return <div class="view"><Loading /></div>
   if (error) return <div class="view"><ErrorBanner message={error} /></div>
 
   const projects = data ?? []
+  const tenants = groupByTenant(projects)
 
   return (
     <div class="view">
       {projects.length === 0 ? (
         <Empty title="No projects" hint="Namespaces appear here once they hold memories." />
       ) : (
-        <div class="project-grid stagger">
-          {projects.map((p) => (
-            <ProjectCard key={p.name} name={p.name} stats={p.stats} onOpen={() => open(p.name)} />
+        <div class="tenant-list stagger">
+          {tenants.map((t) => (
+            <TenantBox key={t.tenant} tenant={t} />
           ))}
         </div>
       )}
@@ -40,7 +78,40 @@ export function Projects() {
   )
 }
 
-function ProjectCard({ name, stats, onOpen }: { name: string; stats: Stats | null; onOpen: () => void }) {
+function TenantBox({ tenant }: { tenant: Tenant }) {
+  const open = (ns: string) => {
+    namespace.value = ns
+    route.value = 'overview'
+  }
+  return (
+    <section class="tenant-box">
+      <div class="tenant-head">
+        <span class="tenant-name">{tenant.tenant}</span>
+        <span class="tenant-count">
+          <span class="v">{num(tenant.total)}</span> memories · {tenant.projects.length}{' '}
+          {tenant.projects.length === 1 ? 'project' : 'projects'}
+        </span>
+      </div>
+      <div class="pod-grid">
+        {tenant.projects.map((p) => (
+          <Pod key={p.name} name={p.name} label={p.label} stats={p.stats} onOpen={() => open(p.name)} />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function Pod({
+  name,
+  label,
+  stats,
+  onOpen,
+}: {
+  name: string
+  label: string
+  stats: Stats | null
+  onOpen: () => void
+}) {
   const [armed, setArmed] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [managing, setManaging] = useState(false)
@@ -69,54 +140,62 @@ function ProjectCard({ name, stats, onOpen }: { name: string; stats: Stats | nul
   }
 
   return (
-    <div class="panel project-card" role="button" tabIndex={0} onClick={onOpen} onKeyDown={(e) => { if (e.key === 'Enter') onOpen() }}>
-      <div class="project-head">
-        <div class="project-name">{name}</div>
-        <button
-          class="icon-btn"
-          aria-label={`Manage ${name}`}
-          title="Move or split this namespace"
-          onClick={manage}
-        >
-          <IconSettings />
-        </button>
-        <button
-          class={`icon-btn project-del-btn ${armed ? 'danger-on' : ''}`}
-          aria-label={armed ? 'Confirm delete' : `Delete ${name}`}
-          onClick={del}
-          disabled={deleting}
-        >
-          <IconTrash />
-        </button>
-      </div>
-      {managing && (
-        // Preact portals bubble events through the vdom tree, so stop clicks and
-        // keys from the drawer reaching the card's open/keydown handlers.
-        <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
-          <NamespaceDrawer name={name} onClose={() => setManaging(false)} />
+    <div
+      class="panel pod"
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') onOpen()
+      }}
+    >
+      <div class="pod-head">
+        <div class="pod-name" title={name}>{label}</div>
+        <div class="pod-actions">
+          <button
+            class="icon-btn"
+            aria-label={`Manage ${name}`}
+            title="Move or split this namespace"
+            onClick={manage}
+          >
+            <IconSettings />
+          </button>
+          <button
+            class={`icon-btn pod-del-btn ${armed ? 'danger-on' : ''}`}
+            aria-label={armed ? 'Confirm delete' : `Delete ${name}`}
+            onClick={del}
+            disabled={deleting}
+          >
+            <IconTrash />
+          </button>
         </div>
-      )}
+      </div>
       {armed && (
         <div class="banner err" role="status">
           Click trash again to delete all memories in "{name}".
         </div>
       )}
-      <div class="project-count">
+      <div class="pod-count">
         <span class="v">{num(stats?.total ?? 0)}</span> memories
       </div>
       <TierBar stats={stats} />
-      <div class="project-foot">
-        {stats?.last_write_at ? `updated ${relTime(stats.last_write_at)}` : '—'}
-      </div>
+      <div class="pod-foot">{stats?.last_write_at ? `updated ${relTime(stats.last_write_at)}` : '—'}</div>
+      {managing && (
+        // Preact portals bubble events through the vdom tree, so stop clicks and
+        // keys from the drawer reaching the pod's open/keydown handlers.
+        <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+          <NamespaceDrawer name={name} onClose={() => setManaging(false)} />
+        </div>
+      )}
     </div>
   )
 }
 
 function TierBar({ stats }: { stats: Stats | null }) {
   const total = stats?.total ?? 0
-  if (total === 0) return <div class="project-bar empty-bar" />
+  if (total === 0) return <div class="pod-bar empty-bar" />
   return (
-    <div class="project-bar">
+    <div class="pod-bar">
       {TIERS.map((t) => {
         const n = stats?.by_tier[t] ?? 0
         if (n === 0) return null

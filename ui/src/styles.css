@@ -671,39 +671,79 @@ label.field .desc {
    Projects landing
    ============================================================================ */
 
-.project-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
-  gap: 16px;
+/* Tenant view: k8s-style namespace boxes (tenants) holding project "pods". */
+.tenant-list {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
 }
-.project-card {
+.tenant-box {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-1);
+  padding: 16px 18px 18px;
+}
+.tenant-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.tenant-name {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.tenant-count {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+.tenant-count .v {
+  color: var(--text);
+  font-weight: 600;
+}
+.pod-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+.pod {
   text-align: left;
   font-family: var(--font-ui);
   color: var(--text);
   cursor: pointer;
-  padding: 20px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   transition:
     border-color 0.15s var(--ease),
-    transform 0.12s var(--ease),
-    box-shadow 0.2s var(--ease);
+    background 0.15s var(--ease);
 }
-.project-card:hover {
+.pod:hover {
   border-color: var(--line-strong);
   background: var(--surface-2);
 }
-.project-head {
+.pod-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
 }
-.project-del-btn {
+.pod-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.pod-del-btn {
   width: 26px;
   height: 26px;
-  flex-shrink: 0;
   opacity: 0;
   transition:
     opacity 0.15s var(--ease),
@@ -711,47 +751,47 @@ label.field .desc {
     border-color 0.15s,
     background 0.15s;
 }
-.project-card:hover .project-del-btn,
-.project-del-btn.danger-on {
+.pod:hover .pod-del-btn,
+.pod-del-btn.danger-on {
   opacity: 1;
 }
-.project-del-btn svg {
+.pod-del-btn svg {
   width: 14px;
   height: 14px;
 }
-.project-card .banner {
+.pod .banner {
   margin-bottom: 0;
 }
-.project-name {
-  font-family: var(--font-display);
-  font-size: 19px;
-  font-weight: 500;
+.pod-name {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
   letter-spacing: -0.01em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.project-count {
+.pod-count {
   font-size: 13px;
   color: var(--muted);
 }
-.project-count .v {
+.pod-count .v {
   font-family: var(--font-mono);
   color: var(--text);
   font-size: 15px;
   font-weight: 600;
 }
-.project-bar {
+.pod-bar {
   display: flex;
   height: 8px;
   border-radius: 4px;
   overflow: hidden;
   background: var(--surface-3);
 }
-.project-bar.empty-bar {
+.pod-bar.empty-bar {
   opacity: 0.4;
 }
-.project-foot {
+.pod-foot {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--faint);
