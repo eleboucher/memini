@@ -12,7 +12,7 @@ the agent _when_ to use the memory tools.
 | `SessionStart` | Searches prior context, writes a short block to the agent's input                                                                                                             |
 | `PreToolUse`   | Before Edit/Write/Read/Glob/Grep, surfaces related memories                                                                                                                   |
 | `PostToolUse`  | Buffers state-changing tool calls locally (no network, no per-call memory)                                                                                                    |
-| `Stop`         | Distills the buffer into a working-tier checkpoint, captures the last turn as episodic memory, extracts inline `<memory>` facts, and periodically nudges an auto-save (below) |
+| `Stop`         | Distills the buffer into a working-tier checkpoint, captures the last turn as episodic memory, scrapes legacy inline `<memory>` blocks (back-compat), and periodically nudges an auto-save (below) |
 | `PreCompact`   | Before context compaction, distills the buffer into an episodic emergency checkpoint (Claude Code only)                                                                       |
 | `SessionEnd`   | Distills the buffer into one durable episodic **session digest**                                                                                                              |
 
@@ -49,10 +49,13 @@ real memories out of the box — not just session digests:
   stored as an **episodic** memory (deduped on the assistant message id), the
   same automatic per-turn recall layer the opencode plugin gets from
   `session.idle`. Set to `0` to disable.
-- **Inline extraction** (`MEMINI_INLINE_EXTRACT`): `SessionStart` injects a
-  short directive asking the agent to emit `<memory>` blocks for durable facts
-  it learns; `Stop` scans the transcript and persists each as a **semantic**
-  fact. Model-curated, so it stays low-noise. Set to `0` to disable.
+- **Memory directive** (`MEMINI_INLINE_EXTRACT`): `SessionStart` injects a
+  short directive asking the agent to persist durable facts via the
+  `memory_remember` MCP tool (tier `semantic`) instead of printing them into
+  its reply. `Stop` still scans transcripts for legacy `<memory>` blocks and
+  persists those too, as a back-compat fallback for sessions started under the
+  old directive. Model-curated, so it stays low-noise. Set to `0` to disable
+  both.
 
 Plus 3 skills (`remember`, `recall`, `recap`) the agent invokes directly.
 
@@ -67,6 +70,12 @@ so the agent has memory_remember / memory_recall / memory_get / memory_update / 
 memory_list / memory_briefing (plus memory_answer, when an LLM is configured) without extra
 config. Verify with `curl http://localhost:8080/healthz`.
 ```
+
+The memory directive makes the agent call `memory_remember` on its own, which
+triggers a permission prompt on first use. To pre-approve, add the tools to
+`permissions.allow` in your Claude Code settings, e.g.
+`"mcp__plugin_memini_memini__memory_remember"` (plugin-shipped MCP tools are
+namespaced `mcp__plugin_memini_memini__*`).
 
 ### Codex CLI
 
@@ -152,7 +161,7 @@ server is detached from the agent's cwd.
 | `MEMINI_AUTO_SAVE`          | on                       | `Stop` hook           | set to `0` to disable the periodic auto-save nudge                                              |
 | `MEMINI_AUTO_SAVE_INTERVAL` | `10`                     | `Stop` hook           | user messages between auto-save nudges                                                          |
 | `MEMINI_CAPTURE_TURNS`      | on                       | `Stop` hook           | auto-capture each user→assistant turn as episodic memory; set to `0` to disable                 |
-| `MEMINI_INLINE_EXTRACT`     | on                       | SessionStart + `Stop` | inject a directive to emit `<memory>` blocks and persist them as durable facts; `0` to disable  |
+| `MEMINI_INLINE_EXTRACT`     | on                       | SessionStart + `Stop` | inject the memory-save directive (`memory_remember`) and scrape legacy `<memory>` blocks; `0` to disable |
 | `MEMINI_DEBUG`              | —                        | hooks                 | set to `1` for verbose hook logging                                                             |
 
 ### Tuning injection budgets

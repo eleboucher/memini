@@ -786,27 +786,30 @@ export function readToolCall(payload) {
   };
 }
 
-// Inline memory extraction: parse <memory> blocks from agent output.
-// Opt-in via MEMINI_INLINE_EXTRACT=1.
+// Memory directive: at SessionStart the plugin injects a short instruction
+// telling the agent to persist durable facts via the memory_remember MCP
+// tool. On by default; opt out with MEMINI_INLINE_EXTRACT=0. The Stop hook
+// keeps a legacy scraper (parseMemoryBlocks) as a back-compat fallback for
+// sessions still emitting inline <memory> blocks under the old instruction.
 
 export const MEMORY_INSTRUCTION = `
 
-<memini-inline-memory>
-After your response, if you learned something durable worth persisting for
-future sessions (a decision, a fact, a convention, a gotcha), emit a block:
-
-<memory>
-{"memories":[{"content":"concise fact, one per item"}]}
-</memory>
+<memini-memory-directive>
+When you learn something durable worth persisting for future sessions (a
+decision, a fact, a convention, a gotcha), save it by calling the memini
+memory_remember MCP tool (tier "semantic", one memory per call).
 
 Rules:
-- One JSON object, one "memories" array of {"content":"..."} objects.
-- Each content should be a self-contained fact (readable without context).
-- Omit the block entirely when nothing is worth keeping — don't emit empty arrays.
-- This is reference memory, not scratch space. Prefer quality over quantity.
-- If a stale or wrong fact turns up (rather than a new one), correct it in place
-  with the memory_update MCP tool instead of emitting a duplicate here.
-</memini-inline-memory>`;
+- Each memory should be a self-contained fact, readable without this
+  conversation's context.
+- Save nothing when nothing is worth keeping. This is reference memory,
+  not scratch space: prefer quality over quantity.
+- If a stale or wrong fact turns up (rather than a new one), correct it in
+  place with the memory_update MCP tool instead of saving a duplicate.
+- Never print memory markup or JSON memory payloads in your reply text.
+  Memories are saved only through the MCP tools. If the tools are
+  unavailable, do nothing.
+</memini-memory-directive>`;
 
 /**
  * Parse all <memory>...</memory> blocks from a text. Returns an array of

@@ -149,9 +149,11 @@ async function main() {
       metadata: { source: "stop_checkpoint", session_id: sessionId },
     });
 
-  // Inline memory extraction (on by default; opt out with MEMINI_INLINE_EXTRACT=0):
-  // scan the session transcript for <memory> blocks the agent emitted during its
-  // responses and persist each as a durable semantic fact.
+  // Legacy inline-block scrape (on by default; opt out with MEMINI_INLINE_EXTRACT=0):
+  // back-compat fallback for sessions started under the old instruction that asked
+  // for <memory> blocks in the reply text. New sessions save via the memory_remember
+  // MCP tool directly; any block that still shows up here is persisted as a durable
+  // semantic fact so nothing is lost.
   if (envEnabled("MEMINI_INLINE_EXTRACT", true) && hasSessionIdentity && payload.transcript_path) {
     const transcript = readTranscript(payload.transcript_path);
     const assistantTexts = extractAssistantText(transcript);
