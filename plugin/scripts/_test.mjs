@@ -234,6 +234,8 @@ test("session-start.mjs: fetches the briefing with right namespace, writes conte
 
     assert.match(stdout, /<memini-context[^>]*>/, "should emit context block");
     assert.match(stdout, /last session did X/, "should surface prior memory");
+    assert.match(stdout, /memory_remember/, "should inject the memory directive");
+    assert.ok(!stdout.includes("<memory>"), "injected context must not contain memory markup");
     assert.equal(hits.length, 1, `expected 1 briefing call, got ${hits.length}`);
     const [h] = hits;
     assert.equal(h.method, "GET");
@@ -1075,6 +1077,15 @@ test("parseMemoryBlocks: extracts contents, tolerates malformed and empty blocks
   );
   assert.deepEqual(parseMemoryBlocks(""), []);
   assert.deepEqual(parseMemoryBlocks("no blocks here"), []);
+});
+
+test("MEMORY_INSTRUCTION: directs to memory_remember, contains no memory markup", async () => {
+  const { MEMORY_INSTRUCTION } = await import("./_shared.mjs");
+  assert.match(MEMORY_INSTRUCTION, /memory_remember/, "must name the MCP tool");
+  assert.match(MEMORY_INSTRUCTION, /memory_update/, "must keep the stale-fact correction path");
+  assert.match(MEMORY_INSTRUCTION, /semantic/, "must keep tier guidance");
+  assert.ok(!MEMORY_INSTRUCTION.includes("<memory>"), "must not contain a literal <memory> tag the model could echo");
+  assert.ok(!MEMORY_INSTRUCTION.includes("</memory>"), "must not contain a closing memory tag");
 });
 
 test("extractAssistantText: pulls text blocks from a transcript, skips tool-only turns", async () => {

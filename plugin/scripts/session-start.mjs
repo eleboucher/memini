@@ -109,8 +109,8 @@ async function main() {
   if (sessionId && briefingUnchanged(sessionId, contentHash)) {
     if (DEBUG) console.error("[memini] SessionStart: briefing unchanged this session, skipping re-injection");
     // A re-fire usually means the context was rebuilt (resume / clear / compact),
-    // which drops the inline-extraction directive. Skip the unchanged briefing
-    // but re-emit the directive so the agent keeps emitting <memory> blocks.
+    // which drops the memory directive. Skip the unchanged briefing but re-emit
+    // the directive so the agent keeps saving durable facts via memory_remember.
     if (inlineExtract) process.stdout.write(MEMORY_INSTRUCTION);
     return;
   }
@@ -174,9 +174,10 @@ async function main() {
   }
   lines.push("</memini-context>");
 
-  // Inline extraction instruction: when MEMINI_INLINE_EXTRACT=1, append a
-  // directive telling the agent to emit <memory> blocks in its responses.
-  // The Stop hook scans the transcript for these blocks and persists them.
+  // Memory directive: when MEMINI_INLINE_EXTRACT=1 (default), append a
+  // directive telling the agent to persist durable facts via the
+  // memory_remember MCP tool. The Stop hook also scrapes legacy inline
+  // <memory> blocks from the transcript as a back-compat fallback.
   if (inlineExtract) {
     lines.push(MEMORY_INSTRUCTION);
   }
