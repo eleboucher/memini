@@ -571,9 +571,10 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
       description:
         "Search long-term memory (memini) for relevant past facts and context. Call before starting work " +
         "that may have history: editing an unfamiliar file, debugging a recurring issue, or when asked " +
-        "what's known about something. A degraded:\"keyword_only\" field in the result means semantic " +
-        "search was unavailable and results came from keyword matching alone — treat as incomplete, not " +
-        "exhaustive.",
+        "what's known about something. Empty results mean nothing is known — proceed from first " +
+        "principles, never invent a remembered fact. A degraded:\"keyword_only\" field in the result means " +
+        "semantic search was unavailable and results came from keyword matching alone — treat as " +
+        "incomplete, not exhaustive.",
       parameters: Type.Object({
         query: Type.String({ description: "What to search for" }),
         limit: Type.Optional(Type.Number({ description: "Max results (default 3)" })),
@@ -629,9 +630,16 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
       description:
         "Store a durable fact, decision, or preference in long-term memory (memini). Call proactively when " +
         "the user says 'remember this', after an architectural decision (capture the why), or after " +
-        "discovering a non-obvious bug or convention. Keep memories atomic — one self-contained fact per call.",
+        "discovering a non-obvious bug or convention. Keep memories atomic — one self-contained fact per " +
+        "call. Don't store what's already in project docs or trivially recoverable from code. To correct " +
+        "an existing memory, pass its id — the write updates it in place.",
       parameters: Type.Object({
-        content: Type.String({ description: "The fact to remember" }),
+        content: Type.String({ description: "The fact to remember — atomic and self-contained." }),
+        id: Type.Optional(
+          Type.String({
+            description: "Existing memory id (from memory_recall / memory_list) to correct in place instead of writing a new memory.",
+          }),
+        ),
         tier: Type.Optional(
           Type.String({
             description:
@@ -639,7 +647,11 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
               "(omit to let the server classify from the content)",
           }),
         ),
-        tags: Type.Optional(Type.Array(Type.String(), { description: "Optional keywords for later search/filtering." })),
+        tags: Type.Optional(
+          Type.Array(Type.String(), {
+            description: "Topic keywords for later search/filtering; tag a critical always-relevant fact 'pinned'.",
+          }),
+        ),
         category: Type.Optional(
           Type.String({
             description:
@@ -651,6 +663,7 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
         // No client-side tier default: an omitted (or invalid) tier lets the
         // server classify the content and apply its own default.
         const body: any = { content: params.content };
+        if (params.id) body.id = params.id; // POST /v1/memories upserts by id
         const VALID_TIERS = ["working", "episodic", "semantic", "procedural"];
         if (params.tier && VALID_TIERS.includes(params.tier)) body.tier = params.tier;
         if (params.tags?.length) body.tags = params.tags;
@@ -664,8 +677,8 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
       description:
         "Permanently delete a memory from long-term memory (memini) by its id — use when a recalled " +
         "memory is wrong, outdated, or poisoned. Get the id from memory_recall or memory_list. To " +
-        "correct a fact, forget the stale one and remember the corrected version — this plugin talks " +
-        "to memini over REST, which has no partial-update endpoint.",
+        "correct a fact instead, call memory_remember with the existing id (it updates in place, " +
+        "preserving history); forget only memories that should not exist at all.",
       parameters: Type.Object({
         id: Type.String({ description: "The id of the memory to forget (from memory_recall / memory_list)." }),
       }),

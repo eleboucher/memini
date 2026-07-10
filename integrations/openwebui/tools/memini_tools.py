@@ -165,13 +165,15 @@ class Tools:
             header += f" (degraded: {note})"
         return header + "\n" + "\n".join(lines)
 
-    async def remember_memory(self, content: str, __event_emitter__=None) -> str:
+    async def remember_memory(self, content: str, id: str = "", __event_emitter__=None) -> str:
         """
         Store a fact in long-term memory so it can be recalled in future
         conversations. Call this when the user shares a durable preference,
-        decision, or fact worth remembering.
+        decision, or fact worth remembering. To correct an existing memory,
+        pass its id (as shown by recall_memory) — the write updates it in place.
 
         :param content: The fact to remember, written as a self-contained statement.
+        :param id: Optional id of an existing memory to correct in place.
         :return: Confirmation that the memory was stored.
         """
         if __event_emitter__:
@@ -181,14 +183,14 @@ class Tools:
         # No forced tier: this tool is for durable preferences/decisions/facts,
         # so let the server classify the content (a decision or preference lands
         # durable, chatter stays episodic) instead of pinning everything to one tier.
-        await self._post_json(
-            "/v1/memories",
-            {
-                "content": content,
-                "tags": ["openwebui"],
-                "metadata": {"source": "openwebui"},
-            },
-        )
+        body = {
+            "content": content,
+            "tags": ["openwebui"],
+            "metadata": {"source": "openwebui"},
+        }
+        if id:  # POST /v1/memories upserts by id
+            body["id"] = id
+        await self._post_json("/v1/memories", body)
         if __event_emitter__:
             await __event_emitter__(
                 {"type": "status", "data": {"description": "Memory stored", "done": True}}
@@ -199,9 +201,9 @@ class Tools:
         """
         Permanently delete a memory from long-term memory by its id. Call this when
         a recalled memory is wrong, outdated, or poisoned. Get the id from
-        recall_memory (each hit is annotated with its id). To correct a fact,
-        forget the stale one and remember_memory the corrected version — this tool
-        talks to memini over REST, which has no partial-update endpoint.
+        recall_memory (each hit is annotated with its id). To correct a fact
+        instead, call remember_memory with the existing id (it updates in place);
+        forget only memories that should not exist at all.
 
         :param id: The id of the memory to forget, as shown by recall_memory.
         :return: Confirmation that the memory was forgotten.
