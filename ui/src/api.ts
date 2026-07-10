@@ -6,6 +6,7 @@ import type {
   ListResponse,
   Memory,
   NamespacesResponse,
+  RenamespaceReport,
   Scored,
   SearchResponse,
   Stats,
@@ -185,6 +186,35 @@ export const api = {
 
   deleteNamespace: (name: string) =>
     req<{ deleted: number }>('DELETE', `/v1/namespaces/${encodeURIComponent(name)}`),
+
+  // moveNamespace relocates every memory in `name` to `to`. dryRun previews the
+  // count without moving. The server normalizes `to` and rejects "*" or a
+  // target equal to the source with 400.
+  moveNamespace: (name: string, to: string, dryRun = false) =>
+    req<RenamespaceReport>('POST', `/v1/namespaces/${encodeURIComponent(name)}/move`, {
+      to,
+      dry_run: dryRun,
+    }),
+
+  // splitNamespace regroups `name` by metadata keys (default keys when `by` is
+  // empty), moving each record to the namespace its first matching key names.
+  // dryRun previews the grouping without moving.
+  splitNamespace: (name: string, by: string[], dryRun = false) =>
+    req<RenamespaceReport>('POST', `/v1/namespaces/${encodeURIComponent(name)}/split`, {
+      by: by.length ? by : undefined,
+      dry_run: dryRun,
+    }),
+
+  // reassignMemory moves a single memory to `to`. It must scope to the memory's
+  // own namespace (like remove) so "All projects" mode targets the right record
+  // rather than the server default; the source namespace is the request header.
+  reassignMemory: (id: string, to: string, ns?: string) =>
+    req<{ moved: number }>(
+      'POST',
+      `/v1/memories/${encodeURIComponent(id)}/reassign`,
+      { to },
+      ns,
+    ),
 
   get: (id: string, ns?: string) => req<Memory>('GET', `/v1/memories/${encodeURIComponent(id)}`, undefined, ns),
 

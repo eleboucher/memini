@@ -5,7 +5,8 @@ import { useAsync } from '../hooks'
 import { TIERS, type Stats } from '../types'
 import { tierColor, relTime, num } from '../util'
 import { Loading, ErrorBanner, Empty } from '../components/States'
-import { IconTrash } from '../icons'
+import { NamespaceDrawer } from '../components/NamespaceDrawer'
+import { IconTrash, IconSettings } from '../icons'
 
 export function Projects() {
   const { data, error, loading } = useAsync(async () => {
@@ -42,6 +43,12 @@ export function Projects() {
 function ProjectCard({ name, stats, onOpen }: { name: string; stats: Stats | null; onOpen: () => void }) {
   const [armed, setArmed] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [managing, setManaging] = useState(false)
+
+  const manage = (e: Event) => {
+    e.stopPropagation()
+    setManaging(true)
+  }
 
   const del = async (e: Event) => {
     e.stopPropagation()
@@ -66,6 +73,14 @@ function ProjectCard({ name, stats, onOpen }: { name: string; stats: Stats | nul
       <div class="project-head">
         <div class="project-name">{name}</div>
         <button
+          class="icon-btn"
+          aria-label={`Manage ${name}`}
+          title="Move or split this namespace"
+          onClick={manage}
+        >
+          <IconSettings />
+        </button>
+        <button
           class={`icon-btn project-del-btn ${armed ? 'danger-on' : ''}`}
           aria-label={armed ? 'Confirm delete' : `Delete ${name}`}
           onClick={del}
@@ -74,6 +89,13 @@ function ProjectCard({ name, stats, onOpen }: { name: string; stats: Stats | nul
           <IconTrash />
         </button>
       </div>
+      {managing && (
+        // Preact portals bubble events through the vdom tree, so stop clicks and
+        // keys from the drawer reaching the card's open/keydown handlers.
+        <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+          <NamespaceDrawer name={name} onClose={() => setManaging(false)} />
+        </div>
+      )}
       {armed && (
         <div class="banner err" role="status">
           Click trash again to delete all memories in "{name}".

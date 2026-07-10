@@ -19,6 +19,8 @@ export function MemoryDrawer({ memory: m, onClose, wide }: Props) {
   const [armed, setArmed] = useState(false) // delete confirmation (two-click)
   const [deleting, setDeleting] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [reassignTo, setReassignTo] = useState('')
+  const [reassigning, setReassigning] = useState(false)
 
   const drawerRef = useRef<HTMLElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
@@ -87,6 +89,23 @@ export function MemoryDrawer({ memory: m, onClose, wide }: Props) {
       setErr(e instanceof Error ? e.message : String(e))
       setDeleting(false)
       setArmed(false)
+    }
+  }
+
+  const reassign = async () => {
+    const to = reassignTo.trim()
+    if (!to) return
+    setReassigning(true)
+    setErr(null)
+    try {
+      // Scope to the memory's own namespace (the source) so "All projects" mode
+      // targets the right record rather than the server default.
+      await api.reassignMemory(m.id, to, m.namespace || undefined)
+      refresh()
+      onClose()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      setReassigning(false)
     }
   }
 
@@ -205,6 +224,31 @@ export function MemoryDrawer({ memory: m, onClose, wide }: Props) {
                 </span>
               </>
             )}
+          </div>
+
+          <h4>Reassign</h4>
+          <div class="hint" style={{ marginBottom: '8px' }}>
+            Move this memory to another namespace.
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <input
+              class="input"
+              type="text"
+              placeholder="target namespace"
+              value={reassignTo}
+              onInput={(e) => setReassignTo((e.target as HTMLInputElement).value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') reassign()
+              }}
+              style={{ flex: 1 }}
+            />
+            <button
+              class="btn primary"
+              onClick={reassign}
+              disabled={reassigning || reassignTo.trim().length === 0}
+            >
+              Reassign
+            </button>
           </div>
 
           {metaEntries.length > 0 && (

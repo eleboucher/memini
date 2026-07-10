@@ -198,6 +198,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/namespaces/{name}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Relocate every memory in a namespace to another namespace
+         * @description Moves all memories (including superseded and expired) from the path namespace to the target namespace. The target is normalized (surrounding whitespace/slashes trimmed, duplicate separators collapsed) and rejected with 400 when it contains "*" or equals the source. Supports dry-run. Backed by the same Move operation as `memini namespace move`.
+         */
+        post: operations["moveNamespace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/namespaces/{name}/split": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Split a namespace by metadata keys
+         * @description Regroups a namespace by metadata, moving each record to the namespace named by the first of the given keys it carries. Supports dry-run. Backed by the same Split operation as `memini namespace split`.
+         */
+        post: operations["splitNamespace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/memories/{id}/reassign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Move a single memory to a different namespace
+         * @description Relocates one memory to the target namespace. The memory must exist in the request namespace (via the X-Memini-Namespace header); otherwise 404. The target is normalized (surrounding whitespace/slashes trimmed, duplicate separators collapsed) and rejected with 400 when it contains "*" or equals the request namespace. Backed by Store.Reassign.
+         */
+        post: operations["reassignMemory"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/memories/{id}": {
         parameters: {
             query?: never;
@@ -377,6 +437,16 @@ export interface components {
             exclude_metadata?: {
                 [key: string]: string;
             };
+            /**
+             * @description When true, disable the server-side temporal echo guard for this call: just-captured episodic turn captures (metadata.format="turn" younger than the server's window, default 5m) are NOT dropped. Default (false) drops them — a just-captured turn is live context, not long-term memory, and echoing it back makes the agent parrot itself. Opt in only when you genuinely need fresh turns.
+             * @default false
+             */
+            include_fresh_turns: boolean;
+            /**
+             * @description When true and an LLM is configured, rewrite the query into 2-3 diverse variants before recall and fuse results via RRF. Cheapest read-path LLM lever; opt-in per call.
+             * @default false
+             */
+            query_rewrite: boolean;
             /** @default 10 */
             limit: number;
             /** @default false */
@@ -384,11 +454,13 @@ export interface components {
             /** @default false */
             include_superseded: boolean;
             /**
-             * @description exact (default) searches only the request namespace; subtree also searches namespaces nested under it ("project" reads "project/agent"), for the multi-agent read-shared-plus-private pattern.
+             * @description exact (default) searches only the request namespace; subtree also searches namespaces nested under it ("project" reads "project/agent"), for the multi-agent read-shared-plus-private pattern. Any other value is rejected with 400.
              * @default exact
              * @enum {string}
              */
             scope: "exact" | "subtree";
+            /** @description Search exactly these namespaces instead of the default read set (the request namespace, its subtree, and the global namespace). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected. */
+            namespaces?: string[];
             /**
              * Format: date-time
              * @description Time-travel recall: return facts whose validity window contained this instant (including ones since superseded), for "what was true then" queries.
@@ -407,6 +479,10 @@ export interface components {
         };
         SearchResponse: {
             results: components["schemas"]["ScoredMemory"][];
+            /** @description Set to "keyword_only" when the query embed failed or timed out and this search fell back to keyword-only matching; omitted on a healthy (vector+keyword) search. */
+            degraded?: string;
+            /** @description Human-readable explanation of `degraded`; omitted alongside it on a healthy search. */
+            note?: string;
         };
         AnswerRequest: {
             query: string;
@@ -473,6 +549,18 @@ export interface components {
         DeleteByTagResponse: {
             /** @description Number of memories deleted */
             deleted: number;
+        };
+        RenamespaceReport: {
+            /** @description Number of memories moved. */
+            moved?: number;
+            /** @description Memories moved into each destination namespace. */
+            targets?: {
+                [key: string]: number;
+            };
+            /** @description Memories left in place (no grouping key, or already in place). */
+            skipped?: number;
+            /** @description Whether this was a dry run. */
+            dry_run?: boolean;
         };
         FsckReport: {
             expired_purged: number;
@@ -859,6 +947,10 @@ export interface operations {
                 per_section_procedures?: number;
                 /** @description Max recent episodic entries. Overrides per_section. 0 disables the section. */
                 per_section_recent?: number;
+                /** @description exact (default) briefs only the namespace; subtree also includes namespaces nested under it ("project" reads "project/agent"). Any value other than "exact" or "subtree" is rejected with 400. */
+                scope?: "exact" | "subtree";
+                /** @description Repeatable. Brief exactly these namespaces instead of the default read set (the namespace, its subtree, and the global namespace). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected. */
+                namespaces?: string[];
             };
             header?: never;
             path: {
@@ -877,6 +969,7 @@ export interface operations {
                     "application/json": components["schemas"]["Briefing"];
                 };
             };
+            400: components["responses"]["Error"];
             500: components["responses"]["Error"];
         };
     };
@@ -901,6 +994,110 @@ export interface operations {
                 };
             };
             400: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    moveNamespace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Target namespace. */
+                    to: string;
+                    /** @default false */
+                    dry_run?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenamespaceReport"];
+                };
+            };
+            400: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    splitNamespace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Metadata keys to group by. Defaults to import_source_namespace, user_id, agent_id, run_id, project. */
+                    by?: string[];
+                    /** @default false */
+                    dry_run?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenamespaceReport"];
+                };
+            };
+            400: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    reassignMemory: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Target namespace. */
+                    to: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Always 1 (a missing memory is a 404, not moved=0). */
+                        moved?: number;
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
             500: components["responses"]["Error"];
         };
     };
