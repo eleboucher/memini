@@ -10,6 +10,14 @@ import { Loading, ErrorBanner, Empty } from '../components/States'
 import { TIERS } from '../types'
 import { tierColor } from '../util'
 
+// NO_TENANT labels memories in a flat (no-slash) namespace, which have no
+// tenant segment. tenantOf derives the tenant from a namespace's first segment.
+const NO_TENANT = '(no tenant)'
+function tenantOf(ns: string): string {
+  const i = ns.indexOf('/')
+  return i === -1 ? NO_TENANT : ns.slice(0, i)
+}
+
 interface GNode {
   id: string
   tier: Tier
@@ -74,19 +82,27 @@ export function Graph() {
   const [open, setOpen] = useState<Memory | null>(null)
   const openRef = useRef(setOpen)
   openRef.current = setOpen
+  // '' = all tenants. Client-side filter over the loaded set (which spans
+  // tenants in "All projects" mode), so switching tenants is instant.
+  const [tenant, setTenant] = useState('')
 
   const { data, error, loading } = useAsync(
     () => api.list({ includeSuperseded: true, limit: 600 }),
     [namespace.value, refreshNonce.value],
   )
   const memories = data ?? []
-  const byId = new Map(memories.map((m) => [m.id, m]))
+  // Distinct tenants present in the loaded memories, for the filter dropdown.
+  const tenantList = [...new Set(memories.map((m) => tenantOf(m.namespace)))].sort((a, b) =>
+    a === NO_TENANT ? 1 : b === NO_TENANT ? -1 : a.localeCompare(b),
+  )
+  const filtered = tenant ? memories.filter((m) => tenantOf(m.namespace) === tenant) : memories
 
   useEffect(() => {
     const host = hostRef.current
-    if (!host || memories.length === 0) return
+    if (!host || filtered.length === 0) return
 
-    const { nodes, links } = build(memories)
+    const byId = new Map(filtered.map((m) => [m.id, m]))
+    const { nodes, links } = build(filtered)
 
     // Resolve CSS custom properties to concrete colors once — canvas fill/stroke
     // can't consume `var(--x)`. (Theme switches recolor on the next refresh.)
@@ -182,8 +198,9 @@ export function Graph() {
       graph._destructor()
       host.replaceChildren()
     }
-    // Rebuild on data / namespace / refresh; byId & memories derive from data.
-  }, [data, namespace.value, refreshNonce.value])
+    // Rebuild on data / namespace / refresh / tenant filter; filtered & byId
+    // derive from data + tenant.
+  }, [data, namespace.value, refreshNonce.value, tenant])
 
   return (
     <>
@@ -195,8 +212,33 @@ export function Graph() {
           <Empty title="No memories" />
         ) : (
           <div class="panel graph-wrap">
+            {tenantList.length > 1 && (
+              <div class="graph-controls">
+                <label class="hint">
+                  tenant{' '}
+                  <select
+                    class="input"
+                    value={tenant}
+                    onChange={(e) => setTenant((e.target as HTMLSelectElement).value)}
+                  >
+                    <option value="">all</option>
+                    {tenantList.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            )}
             <div class="graph-canvas" ref={hostRef} />
-            <div class="graph-hint">{memories.length} nodes · scroll to zoom · drag to pin</div>
+            {filtered.length === 0 ? (
+              <div class="graph-hint">no memories in "{tenant}"</div>
+            ) : (
+              <div class="graph-hint">
+                {filtered.length} nodes{tenant ? ` · ${tenant}` : ''} · scroll to zoom · drag to pin
+              </div>
+            )}
             <div class="graph-legend">
               {TIERS.map((t) => (
                 <div class="row" key={t}>

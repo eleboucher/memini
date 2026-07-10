@@ -1165,6 +1165,27 @@ pre.json {
   font-family: var(--font-mono);
   color: var(--faint);
 }
+/* Tenant filter, top-left over the canvas. */
+.graph-controls {
+  position: absolute;
+  left: 16px;
+  top: 16px;
+  z-index: 1;
+  background: color-mix(in oklab, var(--surface) 88%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 8px 10px;
+  backdrop-filter: blur(6px);
+}
+.graph-controls label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.graph-controls select {
+  padding: 2px 6px;
+  font-size: 12px;
+}
 .node-label {
   font-family: var(--font-ui);
   font-size: 10px;
