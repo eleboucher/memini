@@ -116,8 +116,14 @@ export interface ResolvedConfig {
 // testing.
 export function resolveConfig(env: NodeJS.ProcessEnv, cwd?: string): ResolvedConfig {
   const e = env || {};
+  const nsEnv = (e.MEMINI_NAMESPACE || "").trim();
   let namespace: string;
-  if (cwd) {
+  if (nsEnv) {
+    // MEMINI_NAMESPACE wins and is used raw-trimmed (the server validates the
+    // header). Routing it through sanitizeNamespacePath would alter an explicit
+    // value — the canonical resolver returns it untouched.
+    namespace = nsEnv;
+  } else if (cwd) {
     const { namespace: resolvedNs } = resolveNamespace({
       cwd,
       env: e as Record<string, string>,
@@ -126,8 +132,8 @@ export function resolveConfig(env: NodeJS.ProcessEnv, cwd?: string): ResolvedCon
     // Per-segment sanitize: resolver output may be a tenant path (work/memini).
     namespace = sanitizeNamespacePath(resolvedNs) || DEFAULT_NAMESPACE;
   } else {
-    // No cwd to resolve against, but an explicit MEMINI_NAMESPACE must still win.
-    namespace = sanitizeNamespace(e.MEMINI_NAMESPACE || "") || DEFAULT_NAMESPACE;
+    // No explicit namespace and no cwd to resolve against.
+    namespace = DEFAULT_NAMESPACE;
   }
   const recall_limit = (() => {
     const n = Number(e.MEMINI_RECALL_LIMIT);
@@ -135,9 +141,9 @@ export function resolveConfig(env: NodeJS.ProcessEnv, cwd?: string): ResolvedCon
   })();
   return {
     base_url: e.MEMINI_BASE_URL || e.MEMINI_URL || DEFAULT_BASE_URL,
-    // Both branches above already sanitized (per segment on the resolver
-    // path, whole-value on the env path); re-sanitizing here would flatten
-    // tenant separators.
+    // namespace is already resolved above (raw-trimmed on the env path,
+    // per-segment sanitized on the resolver path); re-sanitizing here would
+    // flatten tenant separators.
     namespace: namespace || DEFAULT_NAMESPACE,
     recall: envBool(e.MEMINI_RECALL, true),
     capture: envBool(e.MEMINI_CAPTURE, true),

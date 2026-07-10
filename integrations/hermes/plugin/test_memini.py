@@ -39,13 +39,16 @@ class SanitizeNamespaceTest(unittest.TestCase):
         self.assertEqual(memini._sanitize_namespace("repo.name_ok-1"), "repo.name_ok-1")
         self.assertEqual(memini._sanitize_namespace("  --x--  "), "x")
 
-    def test_initialize_sanitizes_the_env_namespace(self):
+    def test_initialize_uses_the_env_namespace_raw_trimmed(self):
+        # MEMINI_NAMESPACE wins and is used raw-trimmed (the server validates the
+        # header); a hierarchical value keeps its "/" instead of flattening, so
+        # it matches the other integrations.
         os.environ["MEMINI_URL"] = "http://localhost:8080"
-        os.environ["MEMINI_NAMESPACE"] = "team space/eu"
+        os.environ["MEMINI_NAMESPACE"] = "  team space/eu  "
         try:
             p = memini.MeminiMemoryProvider()
             p.initialize("sess-1")
-            self.assertEqual(p._namespace, "team-space-eu")
+            self.assertEqual(p._namespace, "team space/eu")
         finally:
             os.environ.pop("MEMINI_NAMESPACE", None)
 
@@ -366,6 +369,64 @@ class ResolveTenantTest(unittest.TestCase):
             {"tenantRoots": ["junk", {"tenant": "nopath"}, {"path": parent, "tenant": "work"}]}
         )
         self.assertEqual(memini._resolve_tenant(os.path.join(parent, "proj")), "work")
+
+    def test_empty_xdg_falls_back_to_home_config(self):
+        # An empty XDG_CONFIG_HOME must behave like unset (fall back to
+        # ~/.config), not build a relative, never-found config path.
+        prev = os.environ.get("XDG_CONFIG_HOME")
+        self.addCleanup(
+            lambda: os.environ.__setitem__("XDG_CONFIG_HOME", prev)
+            if prev is not None
+            else os.environ.pop("XDG_CONFIG_HOME", None)
+        )
+        os.environ["XDG_CONFIG_HOME"] = ""
+        expected = os.path.join(
+            os.path.expanduser("~"), ".config", "memini", "config.json"
+        )
+        self.assertEqual(str(memini._config_path()), expected)
+
+    def test_config_present_derives_project_from_git(self):
+        # Config present -> {project} is the git remote name, so a fork checked
+        # out under a different folder name still lands in work/<repo>.
+        import subprocess
+
+        parent = tempfile.mkdtemp(prefix="memini-tenant-")
+        proj = os.path.join(parent, "memini-fork")
+        os.makedirs(proj)
+        subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "https://github.com/eleboucher/memini.git"],
+            cwd=proj,
+            check=True,
+        )
+        self._write_config({"tenantRoots": [{"path": parent, "tenant": "work"}]})
+        os.environ["MEMINI_URL"] = "http://localhost:8080"
+        os.environ.pop("MEMINI_NAMESPACE", None)
+        os.environ.pop("MEMINI_AGENT", None)
+        self.addCleanup(lambda: os.environ.pop("MEMINI_AGENT", None))
+        prev_cwd = os.getcwd()
+        os.chdir(proj)
+        self.addCleanup(lambda: os.chdir(prev_cwd))
+        p = memini.MeminiMemoryProvider()
+        p.initialize("sess-git")
+        self.assertEqual(p._namespace, "work/memini")
+
+    def test_non_default_template_reshapes_namespace(self):
+        parent = tempfile.mkdtemp(prefix="memini-tenant-")
+        proj = os.path.join(parent, "proj")
+        os.makedirs(proj)
+        self._write_config(
+            {"tenantRoots": [{"path": parent, "tenant": "work"}], "template": "{tenant}-{project}"}
+        )
+        os.environ["MEMINI_URL"] = "http://localhost:8080"
+        os.environ.pop("MEMINI_NAMESPACE", None)
+        prev_cwd = os.getcwd()
+        os.chdir(proj)
+        self.addCleanup(lambda: os.chdir(prev_cwd))
+        p = memini.MeminiMemoryProvider()
+        p.initialize("sess-tmpl")
+        # proj is not a git repo, so {project} falls back to the cwd basename.
+        self.assertEqual(p._namespace, "work-proj")
 
 
 class IsAvailableTest(unittest.TestCase):

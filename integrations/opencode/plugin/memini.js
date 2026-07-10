@@ -51,8 +51,8 @@ export function deriveNamespace(worktree) {
 
 // gitProject derives {project} the way the other integrations do when a config
 // file is present: git remote repo name > git toplevel basename > cwd basename.
-// Only used on the tenant path — without a config file the namespace stays the
-// legacy cwd basename.
+// Used whenever a config file is present (tenant-matched or not) — without a
+// config file the namespace stays the legacy cwd basename.
 function gitProject(cwd) {
   const gitOut = (args) => {
     try {
@@ -76,51 +76,64 @@ function gitProject(cwd) {
   return deriveNamespace(cwd);
 }
 
-// resolveTenantNamespace reads ~/.config/memini/config.json and resolves a
-// tenant-prefixed namespace. Returns null when no config or no tenant match,
-// so the caller falls back to the existing deriveNamespace chain. Each segment
-// is sanitized individually, so the returned value is header-safe as-is —
-// re-sanitizing it whole would flatten the "/" separators.
-function resolveTenantNamespace(cwd) {
+// matchTenant returns the tenant name if cwd is under a configured tenant root,
+// else "". Each segment stays header-safe on its own so the tenant path keeps
+// its "/" separator (work/memini must not flatten to work-memini).
+function matchTenant(cwd, config) {
+  if (!Array.isArray(config.tenantRoots)) return "";
+  const resolvedCwd = resolve(cwd);
+  for (const root of config.tenantRoots) {
+    if (!root || typeof root !== "object") continue;
+    let rootPath = root.path;
+    // An empty/missing path would startsWith-match every cwd; skip it.
+    if (typeof rootPath !== "string" || !rootPath) continue;
+    if (rootPath === "~") rootPath = homedir();
+    else if (rootPath.startsWith("~/")) rootPath = join(homedir(), rootPath.slice(2));
+    rootPath = resolve(rootPath);
+    if (resolvedCwd === rootPath || resolvedCwd.startsWith(rootPath + sep)) {
+      const tenant = String(root.tenant || "")
+        .replace(/[^A-Za-z0-9._-]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+      if (tenant) return tenant;
+    }
+  }
+  return "";
+}
+
+// resolveConfigNamespace reads ~/.config/memini/config.json and renders the
+// config template over the resolved segments. Returns null only when no config
+// file exists (or it's unreadable/malformed), so the caller falls back to the
+// legacy deriveNamespace chain. When a config file is present, {project} is
+// always the git-derived name (repo name > toplevel > cwd basename), matching
+// pi/the shared resolver — even when cwd is under no tenant root.
+function resolveConfigNamespace(cwd) {
+  let config;
   try {
     const xdg = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
     const configPath = join(xdg, "memini", "config.json");
-    const raw = readFileSync(configPath, "utf8");
-    const config = JSON.parse(raw);
-    if (!Array.isArray(config.tenantRoots)) return null;
-    const resolvedCwd = resolve(cwd);
-    for (const root of config.tenantRoots) {
-      if (!root || typeof root !== "object") continue;
-      let rootPath = root.path;
-      // An empty/missing path would startsWith-match every cwd; skip it.
-      if (typeof rootPath !== "string" || !rootPath) continue;
-      if (rootPath === "~") rootPath = homedir();
-      else if (rootPath.startsWith("~/")) rootPath = join(homedir(), rootPath.slice(2));
-      rootPath = resolve(rootPath);
-      if (resolvedCwd === rootPath || resolvedCwd.startsWith(rootPath + sep)) {
-        const tenant = String(root.tenant || "")
-          .replace(/[^A-Za-z0-9._-]+/g, "-")
-          .replace(/^-+|-+$/g, "");
-        if (!tenant) continue;
-        const template = config.template || "{tenant}/{project}/{agent}";
-        const project = gitProject(cwd);
-        const agent =
-          (process.env.MEMINI_AGENT || "").trim()
-            .replace(/[^A-Za-z0-9._-]+/g, "-")
-            .replace(/^-+|-+$/g, "");
-        let ns = template
-          .replace(/\{tenant\}/g, tenant)
-          .replace(/\{project\}/g, project)
-          .replace(/\{agent\}/g, agent)
-          .replace(/\{namespace\}/g, "");
-        ns = ns.replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "");
-        return ns || null;
-      }
-    }
-    return null;
+    config = JSON.parse(readFileSync(configPath, "utf8"));
   } catch {
-    return null;
+    return null; // no config file -> today's behavior, zero migration
   }
+  if (!config || typeof config !== "object") return null;
+  const tenant = matchTenant(cwd, config);
+  const project = gitProject(cwd);
+  const agent = (process.env.MEMINI_AGENT || "")
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const template =
+    typeof config.template === "string" && config.template
+      ? config.template
+      : "{tenant}/{project}/{agent}";
+  const ns = template
+    .replace(/\{tenant\}/g, tenant)
+    .replace(/\{project\}/g, project)
+    .replace(/\{agent\}/g, agent)
+    .replace(/\{namespace\}/g, "")
+    .replace(/\/{2,}/g, "/")
+    .replace(/^\/+|\/+$/g, "");
+  return ns || null;
 }
 
 // resolveConfig merges env vars with the options object (options win), filling
@@ -128,13 +141,21 @@ function resolveTenantNamespace(cwd) {
 export function resolveConfig(env, options, worktree) {
   const e = env || {};
   const o = options || {};
-  // The tenant namespace is kept apart from the sanitize below: its segments
-  // are already sanitized and whole-value sanitizing would flatten the "/"
-  // (work/memini -> work-memini), splitting memory from the other integrations.
-  const tenantNs =
-    !o.namespace && !e.MEMINI_NAMESPACE ? resolveTenantNamespace(worktree || process.cwd()) : null;
-  const namespace =
-    o.namespace || e.MEMINI_NAMESPACE || deriveNamespace(worktree) || DEFAULT_NAMESPACE;
+  // An explicit namespace (option or MEMINI_NAMESPACE env) wins and is used
+  // raw-trimmed: the server validates the header, and flattening "/" here would
+  // split a tenant path like work/memini from the other integrations.
+  const explicit = o.namespace || e.MEMINI_NAMESPACE;
+  let namespace;
+  if (explicit && String(explicit).trim()) {
+    namespace = String(explicit).trim();
+  } else {
+    // Config present -> render the config template (tenant segments already
+    // sanitized, "/" preserved); otherwise fall back to the legacy cwd chain.
+    namespace =
+      resolveConfigNamespace(worktree || process.cwd()) ||
+      deriveNamespace(worktree) ||
+      DEFAULT_NAMESPACE;
+  }
   // Number.isFinite guard: malformed env / option falls through to the next
   // source instead of NaN flowing into the request body.
   const recall_limit = (() => {
@@ -146,7 +167,10 @@ export function resolveConfig(env, options, worktree) {
   })();
   return {
     base_url: o.base_url || e.MEMINI_BASE_URL || e.MEMINI_URL || DEFAULT_BASE_URL,
-    namespace: tenantNs || sanitizeNamespace(namespace) || DEFAULT_NAMESPACE,
+    // namespace is already resolved above (explicit raw-trimmed, or a
+    // per-segment-sanitized config/derived value); re-sanitizing here would
+    // flatten tenant "/" separators.
+    namespace: namespace || DEFAULT_NAMESPACE,
     recall: o.recall !== undefined ? o.recall !== false : envBool(e.MEMINI_RECALL, true),
     capture: o.capture !== undefined ? o.capture !== false : envBool(e.MEMINI_CAPTURE, true),
     recall_limit,

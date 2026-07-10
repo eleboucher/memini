@@ -75,8 +75,37 @@ export function resolveProject(cwd) {
   const dir = cwd && cwd.trim() ? cwd : process.cwd();
   const base = resolveProjectBase(dir);
   const config = readTenantConfig();
-  const tenant = config ? resolveTenant(dir, config) : null;
-  return withAgent(tenant ? `${tenant}/${base}` : base);
+  // No config file -> zero migration: today's exact namespace, with the
+  // MEMINI_AGENT suffix applied unconditionally as it always has been.
+  if (!config) return withAgent(base);
+  // Config present -> render config.template (default "{tenant}/{project}/{agent}")
+  // over the resolved segments, dropping the unresolvable ones. The default
+  // template reproduces the pre-template output exactly:
+  // tenant ? `${tenant}/${base}` : base, then the agent suffix.
+  const tenant = resolveTenant(dir, config);
+  const agent = (process.env["MEMINI_AGENT"] || "")
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const template =
+    typeof config.template === "string" && config.template
+      ? config.template
+      : "{tenant}/{project}/{agent}";
+  return applyTemplate(template, { tenant, project: base, agent }) || base;
+}
+
+/**
+ * applyTemplate substitutes {tenant}/{project}/{agent} placeholders with the
+ * resolved segments, drops the unresolvable ones (empty string), collapses the
+ * orphaned slashes, and trims leading/trailing slashes. Mirrors the shared
+ * resolver's applyTemplate (minus {namespace}, which the hooks don't use).
+ */
+function applyTemplate(template, segments) {
+  const out = template.replace(
+    /\{(tenant|project|agent)\}/g,
+    (_, key) => segments[key] || "",
+  );
+  return out.replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "");
 }
 
 // withAgent nests the project namespace under a per-agent segment when

@@ -92,6 +92,31 @@ test("tenant config prefixes the namespace and derives {project} from git", asyn
   }
 });
 
+test("config present but no tenant match still uses the git project name", async () => {
+  const { execSync } = await import("node:child_process");
+  const parent = mkdtempSync(join(tmpdir(), "memini-notenant-"));
+  const dir = join(parent, "checkout-dir");
+  mkdirSync(dir);
+  execSync("git init -q", { cwd: dir });
+  execSync("git remote add origin https://github.com/eleboucher/widget.git", { cwd: dir });
+  const prev = process.env.XDG_CONFIG_HOME;
+  // A tenant root that does NOT contain `dir`, so no tenant matches.
+  process.env.XDG_CONFIG_HOME = freshConfig({ tenantRoots: [{ path: "/nowhere", tenant: "work" }] });
+  try {
+    // Config present -> {project} is the git remote name (widget), not the cwd
+    // basename (checkout-dir); tenant drops out of the default template.
+    assert.equal(resolveConfig({}, undefined, dir).namespace, "widget");
+  } finally {
+    process.env.XDG_CONFIG_HOME = prev;
+  }
+});
+
+test("MEMINI_NAMESPACE is used raw-trimmed, not flattened", () => {
+  // The server validates the header; a hierarchical value keeps its "/" so it
+  // matches the other integrations instead of collapsing to team-eu.
+  assert.equal(resolveConfig({ MEMINI_NAMESPACE: "  team/eu  " }, undefined, "/repo").namespace, "team/eu");
+});
+
 test("without a config file the namespace stays the legacy cwd basename, even in a git repo", async () => {
   const { execSync } = await import("node:child_process");
   const dir = mkdtempSync(join(tmpdir(), "memini-legacy-"));

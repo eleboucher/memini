@@ -60,6 +60,13 @@ test("resolveConfig honours MEMINI_NAMESPACE even when cwd is unavailable", () =
   assert.equal(resolveConfig({ MEMINI_NAMESPACE: "forced-ns" }, undefined).namespace, "forced-ns");
 });
 
+test("MEMINI_NAMESPACE is used raw-trimmed, not per-segment sanitized", () => {
+  // The server validates the header; an explicit hierarchical value must pass
+  // through untouched (only trimmed), matching the canonical resolver.
+  assert.equal(resolveConfig({ MEMINI_NAMESPACE: "  team space/eu  " }, "/x/proj").namespace, "team space/eu");
+  assert.equal(resolveConfig({ MEMINI_NAMESPACE: "team/eu" }, undefined).namespace, "team/eu");
+});
+
 test("formatResults renders bullets and respects labels", () => {
   const results = [
     { memory: { tier: "semantic", content: "fact one" }, score: 0.9 },

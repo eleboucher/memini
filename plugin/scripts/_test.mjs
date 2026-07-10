@@ -380,6 +380,28 @@ test("resolveProject: a tenant root matches on a path boundary, not a string pre
   );
 });
 
+test("resolveProject: a non-default config.template reshapes the namespace", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "memini-tenant-"));
+  const dir = join(parent, "projtmpl");
+  mkdirSync(dir);
+  const configHome = freshConfig({
+    tenantRoots: [{ path: parent, tenant: "work" }],
+    template: "{tenant}-{project}",
+  });
+  await withEnv(
+    {
+      XDG_CONFIG_HOME: configHome,
+      XDG_CACHE_HOME: freshCache(),
+      MEMINI_NAMESPACE: undefined,
+      MEMINI_AGENT: undefined,
+    },
+    async () => {
+      const { resolveProject } = await import("./_shared.mjs?cb=tmpl-" + Date.now());
+      assert.equal(resolveProject(dir), "work-projtmpl", "template joins segments with a dash");
+    },
+  );
+});
+
 test("session-start.mjs: fetches the briefing with right namespace, writes context to stdout", async () => {
   const hits = [];
   const { url, close } = await startMockServer((req, res, body) => {

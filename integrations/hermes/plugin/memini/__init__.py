@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -78,6 +79,7 @@ except ImportError:  # allow import/testing outside a Hermes install
 
 
 DEFAULT_BASE_URL = "http://localhost:8080"
+DEFAULT_TEMPLATE = "{tenant}/{project}/{agent}"
 TIMEOUT = 5
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 VALID_TIERS = ("working", "episodic", "semantic", "procedural")
@@ -138,37 +140,112 @@ def _sanitize_namespace(value: str) -> str:
     return collapsed.strip("-")
 
 
-def _resolve_tenant(cwd: str) -> str | None:
-    """Read ~/.config/memini/config.json and return the tenant name if cwd
-    is under a configured tenant root. Returns None when no config file,
-    no match, or any error — so the existing namespace resolution is the fallback."""
+def _config_path() -> Path:
+    """$XDG_CONFIG_HOME/memini/config.json, falling back to
+    ~/.config/memini/config.json when XDG_CONFIG_HOME is unset OR empty/blank
+    (an empty value used to yield a relative, never-found path)."""
+    xdg = os.environ.get("XDG_CONFIG_HOME", "")
+    base = xdg if xdg.strip() else os.path.join(os.path.expanduser("~"), ".config")
+    return Path(base) / "memini" / "config.json"
+
+
+def _read_config() -> dict | None:
+    """Read the namespace config file. Returns the parsed dict, or None when the
+    file is missing or malformed — None means today's config-less behavior."""
     try:
-        xdg = os.environ.get(
-            "XDG_CONFIG_HOME", os.path.join(os.path.expanduser("~"), ".config")
-        )
-        config_path = Path(xdg) / "memini" / "config.json"
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-        roots = config.get("tenantRoots")
-        if not isinstance(roots, list):
-            return None
-        # Lexical path handling (expanduser + abspath, no symlink resolution)
-        # so configured roots match the way the node integrations compare them.
-        cwd_abs = os.path.abspath(cwd)
-        for root in roots:
-            if not isinstance(root, dict):
-                continue
-            root_path = root.get("path")
-            # An empty/missing path would abspath to the cwd and match it; skip.
-            if not isinstance(root_path, str) or not root_path:
-                continue
-            root_abs = os.path.abspath(os.path.expanduser(root_path))
-            if cwd_abs == root_abs or cwd_abs.startswith(root_abs + os.sep):
-                tenant = re.sub(r"[^A-Za-z0-9._-]+", "-", str(root.get("tenant", ""))).strip("-")
-                if tenant:
-                    return tenant
-        return None
+        config = json.loads(_config_path().read_text(encoding="utf-8"))
+        return config if isinstance(config, dict) else None
     except Exception:
         return None
+
+
+def _match_tenant(cwd: str, config: dict) -> str | None:
+    """Return the tenant name if cwd is under a configured tenant root, else None.
+    Lexical path handling (expanduser + abspath, no symlink resolution) so
+    configured roots match the way the node integrations compare them."""
+    roots = config.get("tenantRoots")
+    if not isinstance(roots, list):
+        return None
+    cwd_abs = os.path.abspath(cwd)
+    for root in roots:
+        if not isinstance(root, dict):
+            continue
+        root_path = root.get("path")
+        # An empty/missing path would abspath to the cwd and match it; skip.
+        if not isinstance(root_path, str) or not root_path:
+            continue
+        root_abs = os.path.abspath(os.path.expanduser(root_path))
+        if cwd_abs == root_abs or cwd_abs.startswith(root_abs + os.sep):
+            tenant = re.sub(r"[^A-Za-z0-9._-]+", "-", str(root.get("tenant", ""))).strip("-")
+            if tenant:
+                return tenant
+    return None
+
+
+def _resolve_tenant(cwd: str) -> str | None:
+    """Read the config file and return the tenant name if cwd is under a
+    configured tenant root. Returns None when no config file, no match, or any
+    error — so the existing namespace resolution is the fallback."""
+    config = _read_config()
+    if config is None:
+        return None
+    return _match_tenant(cwd, config)
+
+
+def _git_out(args: list[str], cwd: str) -> str:
+    """Run a git command in cwd, returning trimmed stdout or "" on any error
+    (not a repo, git missing, timeout). Best-effort — never raises."""
+    try:
+        out = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=0.5,
+        )
+        return out.stdout.strip() if out.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _repo_name_from_remote(url: str) -> str:
+    """Last path segment of a git remote URL, minus a trailing .git. Handles
+    ssh://, https://, and scp-style host:owner/repo URLs. "" on parse failure."""
+    cleaned = re.sub(r"\.git$", "", url.strip().rstrip("/"), flags=re.IGNORECASE)
+    if not cleaned:
+        return ""
+    # scp form (host:owner/repo): the segment before the first ":" is the host.
+    scp = re.match(r"^[^/:]+:[^/]", cleaned)
+    path = cleaned[cleaned.index(":") + 1 :] if scp else cleaned
+    segs = [s for s in path.split("/") if s]
+    return segs[-1] if segs else ""
+
+
+def _git_project(cwd: str) -> str:
+    """Derive {project} the way the node integrations do: git remote repo name >
+    git toplevel basename > cwd basename."""
+    remote = _git_out(["remote", "get-url", "origin"], cwd)
+    if remote:
+        name = _sanitize_namespace(_repo_name_from_remote(remote))
+        if name:
+            return name
+    toplevel = _git_out(["rev-parse", "--show-toplevel"], cwd)
+    if toplevel:
+        return _sanitize_namespace(os.path.basename(toplevel))
+    return _sanitize_namespace(os.path.basename(cwd.rstrip("/")))
+
+
+def _apply_template(template: str, segments: dict) -> str:
+    """Substitute {tenant}/{project}/{agent} placeholders, drop the unresolvable
+    ones, collapse the orphaned slashes, and trim leading/trailing slashes.
+    Mirrors the shared resolver's applyTemplate (minus {namespace})."""
+    out = re.sub(
+        r"\{(tenant|project|agent)\}",
+        lambda m: segments.get(m.group(1)) or "",
+        template,
+    )
+    out = re.sub(r"/{2,}", "/", out)
+    return out.strip("/")
 
 
 def _valid_url(base: str) -> bool:
@@ -322,19 +399,35 @@ class MeminiMemoryProvider(MemoryProvider):
         # Hermes' initialize kwargs carry no project path (agent_workspace is a
         # label, not a dir), so the working directory is the only signal for the
         # default namespace; set MEMINI_NAMESPACE to scope explicitly.
-        tenant = _resolve_tenant(os.getcwd())
-        project = os.path.basename(os.getcwd().rstrip("/"))
         if _env("MEMINI_NAMESPACE"):
-            ns = _sanitize_namespace(_env("MEMINI_NAMESPACE"))
-        elif tenant:
-            # Sanitize per segment so the "/" separator survives: the other
-            # integrations produce work/memini, and a whole-value sanitize
-            # would flatten it to work-memini, splitting memory across them.
-            ns = "/".join(
-                s for s in (tenant, _sanitize_namespace(project)) if s
-            )
+            # MEMINI_NAMESPACE wins and is used raw-trimmed (the server validates
+            # the header): flattening "/" here would split a tenant path like
+            # work/memini from the other integrations.
+            ns = _env("MEMINI_NAMESPACE")
         else:
-            ns = _sanitize_namespace(project)
+            cwd = os.getcwd()
+            config = _read_config()
+            if config is not None:
+                # Config present -> render config.template (default
+                # "{tenant}/{project}/{agent}") over the resolved segments,
+                # dropping the unresolvable ones. {project} is git-derived (repo
+                # name > toplevel > cwd basename) so the same repo lands in the
+                # same namespace as the other integrations.
+                template = config.get("template")
+                if not isinstance(template, str) or not template:
+                    template = DEFAULT_TEMPLATE
+                ns = _apply_template(
+                    template,
+                    {
+                        "tenant": _match_tenant(cwd, config),
+                        "project": _git_project(cwd),
+                        "agent": _sanitize_namespace(_env("MEMINI_AGENT")),
+                    },
+                )
+            else:
+                # No config file -> zero migration: today's exact behavior, the
+                # cwd basename.
+                ns = _sanitize_namespace(os.path.basename(cwd.rstrip("/")))
         self._namespace = ns or "hermes"
         # Recall-shaping knobs, read once. Defaults match the other integrations
         # (limit 3, no floor, unbounded, plain bullets).
