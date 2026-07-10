@@ -70,7 +70,7 @@ func TestRecallExplicitNamespacesSpansGiven(t *testing.T) {
 // exactly like the global namespace, and never its episodic ones — end-to-end
 // through the public Recall() call, no config.
 func TestRecallTenantSharedMergesDurableOnly(t *testing.T) {
-	svc := newService(t)
+	svc := newService(t, service.WithTenantShared(true))
 	ctx := context.Background()
 
 	mk := func(ns, content string, tier memory.Tier) {
@@ -116,7 +116,7 @@ func TestRecallTenantSharedMergesDurableOnly(t *testing.T) {
 // a personal/... recall never sees work/_shared, and vice versa, because the
 // shared merge is derived from the request namespace's own tenant segment.
 func TestRecallTenantSharedNeverCrossesTenants(t *testing.T) {
-	svc := newService(t)
+	svc := newService(t, service.WithTenantShared(true))
 	ctx := context.Background()
 
 	if _, err := svc.Remember(ctx, service.RememberInput{

@@ -295,6 +295,7 @@ The rest of the table is optional tuning — skip it until you need it.
 | `MEMINI_UI_ENABLED`              | `true`                   | mount the embedded admin UI at `/` (`false` for a headless API/MCP-only service)                                                                                                                                                                                                                                                                                                               |
 | `MEMINI_DEFAULT_NAMESPACE`       | auto                     | fallback namespace (see [Namespace resolution](#namespace-resolution))                                                                                                                                                                                                                                                                                                                         |
 | `MEMINI_GLOBAL_NAMESPACE`        | —                        | a namespace whose durable (semantic/procedural) memories merge read-only into every other namespace's recall and briefing — a shared space for cross-project rules the agent should always remember ("no AI slop", commit conventions). Empty disables it (namespaces stay isolated); pin a memory there to keep it top-of-mind. See [Retrieval scope (read sets)](#retrieval-scope-read-sets) |
+| `MEMINI_TENANT_SHARED`           | `false`                  | when `true`, a namespace under a tenant merges its `<tenant>/_shared` sibling's durable (semantic/procedural) memories read-only into its recall and briefing (`work/memini` reads `work/_shared`). Off by default — opt in for cross-project sharing within a tenant. See [Retrieval scope (read sets)](#retrieval-scope-read-sets)                                                           |
 | `MEMINI_LOG_LEVEL`               | `info`                   | `debug` / `info` / `warn` / `error`                                                                                                                                                                                                                                                                                                                                                            |
 | `MEMINI_LOG_FORMAT`              | `json`                   | `json` or `text`                                                                                                                                                                                                                                                                                                                                                                               |
 
@@ -358,10 +359,11 @@ simple and isolated while letting reads pull in related context on purpose.
 
 - its subtree, when the call passes `scope=subtree` (`work/memini` also reads
   `work/memini/orchestrator`, `work/memini/reviewer`, ...),
-- its **tenant-shared** namespace (durable tiers only): a request in `work/memini`
-  automatically reads `work/_shared`, derived from the first path segment — no config.
-  A flat (untenanted) namespace has no tenant segment, so nothing extra is merged, and
-  `work/_shared` reading itself adds no duplicate, and
+- its **tenant-shared** namespace (durable tiers only), **when `MEMINI_TENANT_SHARED=true`**:
+  a request in `work/memini` reads `work/_shared`, derived from the first path segment.
+  Off by default, so namespaces stay isolated unless you opt in. A flat (untenanted)
+  namespace has no tenant segment, so nothing extra is merged, and `work/_shared` reading
+  itself adds no duplicate, and
 - `MEMINI_GLOBAL_NAMESPACE` (durable only), when set.
 
 **Per-call `namespaces`** (recall, briefing, and `POST /v1/search`): passing a
@@ -375,13 +377,13 @@ However it's composed, the fully resolved read set is capped at 64 entries after
 subtree/pattern expansion; an oversized set is clamped to the front (primary and the
 global namespace protected first) with a logged warning.
 
-| Mechanism                      | Contributes                   | Tier access                   |
-| ------------------------------ | ----------------------------- | ----------------------------- |
-| Request namespace              | the namespace itself          | the request's own tier filter |
-| `scope=subtree`                | nested child namespaces       | the request's own tier filter |
-| `namespaces: [...]` (per-call) | exactly the listed namespaces | the request's own tier filter |
-| tenant-shared (`<t>/_shared`)  | the tenant's shared namespace | semantic + procedural only    |
-| `MEMINI_GLOBAL_NAMESPACE`      | one shared namespace          | semantic + procedural only    |
+| Mechanism                      | Contributes                   | Tier access                                                 |
+| ------------------------------ | ----------------------------- | ----------------------------------------------------------- |
+| Request namespace              | the namespace itself          | the request's own tier filter                               |
+| `scope=subtree`                | nested child namespaces       | the request's own tier filter                               |
+| `namespaces: [...]` (per-call) | exactly the listed namespaces | the request's own tier filter                               |
+| tenant-shared (`<t>/_shared`)  | the tenant's shared namespace | semantic + procedural only (opt-in: `MEMINI_TENANT_SHARED`) |
+| `MEMINI_GLOBAL_NAMESPACE`      | one shared namespace          | semantic + procedural only                                  |
 
 ### Tenant roots (config file)
 
@@ -417,16 +419,17 @@ per-agent template (`{namespace}-{agent}` → `openclaw-miso`) and gains a
 
 ```
 global                   # universal prefs (MEMINI_GLOBAL_NAMESPACE)
-work/_shared             # work-domain facts, auto-merged into every work/... recall
+work/_shared             # work-domain facts, merged into every work/... recall (MEMINI_TENANT_SHARED)
 work/<project>/<agent>   # per-project + per-agent isolation
 personal/<project>       # personal projects, isolated from work
 ```
 
-A recall from `work/memini` automatically merges `work/_shared`'s durable facts
-(shared work knowledge), and with `scope=subtree` also reads its own nested agent
-namespaces (`work/memini/reviewer`, ...) — never touching `personal/*`, whose recalls
-merge `personal/_shared` instead. The global namespace merges durable facts into every
-recall regardless of tenant.
+With `MEMINI_TENANT_SHARED=true`, a recall from `work/memini` merges `work/_shared`'s
+durable facts (shared work knowledge), and with `scope=subtree` also reads its own
+nested agent namespaces (`work/memini/reviewer`, ...) — never touching `personal/*`,
+whose recalls merge `personal/_shared` instead. Left off (the default), namespaces stay
+isolated. The global namespace merges durable facts into every recall regardless of
+tenant.
 
 **Moving memories between namespaces:** `POST /v1/namespaces/{name}/move` (or
 `memini namespace move --from A --to B`) relocates an entire namespace and

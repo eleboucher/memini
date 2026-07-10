@@ -231,11 +231,24 @@ func TestResolveReadSetClampKeepsPrimaryFirst(t *testing.T) {
 	}
 }
 
-// TestResolveReadSetTenantSharedMergesDurableOnly: a tenanted primary
-// ("work/memini") implicitly reads its tenant-shared sibling ("work/_shared")
-// with durable tiers only, exactly like the global namespace — no config.
+// TestResolveReadSetTenantSharedOffByDefault: the tenant-shared merge is
+// opt-in — without WithTenantShared, a tenanted namespace reads only itself,
+// so users who don't want cross-project sharing keep isolated namespaces.
+func TestResolveReadSetTenantSharedOffByDefault(t *testing.T) {
+	svc, st := newReadsetSvc(t) // no WithTenantShared
+	seedNamespace(t, st, "work/_shared")
+	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "work/memini"})
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	assertNamespaces(t, got, []string{"work/memini"})
+}
+
+// TestResolveReadSetTenantSharedMergesDurableOnly: with WithTenantShared, a
+// tenanted primary ("work/memini") reads its tenant-shared sibling
+// ("work/_shared") with durable tiers only, exactly like the global namespace.
 func TestResolveReadSetTenantSharedMergesDurableOnly(t *testing.T) {
-	svc, _ := newReadsetSvc(t)
+	svc, _ := newReadsetSvc(t, WithTenantShared(true))
 	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "work/memini"})
 	if err != nil {
 		t.Fatalf("resolveReadSet: %v", err)
@@ -259,7 +272,7 @@ func TestResolveReadSetTenantSharedMergesDurableOnly(t *testing.T) {
 // scope=subtree from work/memini reads its own subtree plus the tenant-shared
 // namespace, never a personal/... sibling.
 func TestResolveReadSetTenantSharedReadsSiblings(t *testing.T) {
-	svc, st := newReadsetSvc(t)
+	svc, st := newReadsetSvc(t, WithTenantShared(true))
 	seedNamespace(t, st, "work/memini")
 	seedNamespace(t, st, "work/memini/reviewer")
 	seedNamespace(t, st, "work/_shared")
@@ -287,7 +300,7 @@ func TestResolveReadSetFlatNamespaceNoTenantShared(t *testing.T) {
 // TestResolveReadSetTenantSharedItselfNoSelfMerge: reading the tenant-shared
 // namespace directly does not add itself again.
 func TestResolveReadSetTenantSharedItselfNoSelfMerge(t *testing.T) {
-	svc, _ := newReadsetSvc(t)
+	svc, _ := newReadsetSvc(t, WithTenantShared(true))
 	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "work/_shared"})
 	if err != nil {
 		t.Fatalf("resolveReadSet: %v", err)
@@ -299,7 +312,7 @@ func TestResolveReadSetTenantSharedItselfNoSelfMerge(t *testing.T) {
 // namespace, the durable-only tenant-shared merge is skipped when the
 // request's tier filter admits no durable tier.
 func TestResolveReadSetTenantSharedSkippedForEpisodicOnlyFilter(t *testing.T) {
-	svc, _ := newReadsetSvc(t)
+	svc, _ := newReadsetSvc(t, WithTenantShared(true))
 	got, err := svc.resolveReadSet(context.Background(), readScope{
 		primary:  "work/memini",
 		reqTiers: []memory.Tier{memory.TierEpisodic},
@@ -313,7 +326,7 @@ func TestResolveReadSetTenantSharedSkippedForEpisodicOnlyFilter(t *testing.T) {
 // TestResolveReadSetGlobalEqualsTenantSharedDedup: when the global namespace
 // happens to be the tenant-shared namespace, it appears once, not twice.
 func TestResolveReadSetGlobalEqualsTenantSharedDedup(t *testing.T) {
-	svc, _ := newReadsetSvc(t, WithGlobalNamespace("work/_shared"))
+	svc, _ := newReadsetSvc(t, WithGlobalNamespace("work/_shared"), WithTenantShared(true))
 	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "work/memini"})
 	if err != nil {
 		t.Fatalf("resolveReadSet: %v", err)
@@ -391,7 +404,8 @@ func TestResolveReadSetTenantSharedMakesZeroScans(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 	counting := &countingListStore{Store: st}
 	svc := New(counting, embedtest.New(readsetTestDims),
-		WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }))
+		WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }),
+		WithTenantShared(true))
 
 	if _, err := svc.resolveReadSet(context.Background(), readScope{primary: "work/memini"}); err != nil {
 		t.Fatalf("resolveReadSet: %v", err)
@@ -465,7 +479,7 @@ func TestResolveReadSetUnderCapKeepsGlobalLast(t *testing.T) {
 // end — it is front-protected alongside the global namespace (promoteProtected),
 // so both survive the clamp rather than being dropped behind a large subtree.
 func TestResolveReadSetClampKeepsTenantShared(t *testing.T) {
-	svc, st := newReadsetSvc(t, WithGlobalNamespace("global"))
+	svc, st := newReadsetSvc(t, WithGlobalNamespace("global"), WithTenantShared(true))
 	seedNamespace(t, st, "global")
 	seedNamespace(t, st, "work/_shared")
 	for i := 0; i < 70; i++ {

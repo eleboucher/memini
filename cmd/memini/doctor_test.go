@@ -169,7 +169,7 @@ func TestPrintWritePathSignals(t *testing.T) {
 // TestResolveDoctorReadSetDefault: a flat (untenanted) namespace with no
 // global namespace reads just itself — no tenant segment, no shared merge.
 func TestResolveDoctorReadSetDefault(t *testing.T) {
-	entries, notes := resolveDoctorReadSet("proj", "")
+	entries, notes := resolveDoctorReadSet("proj", "", false)
 	if len(notes) != 0 {
 		t.Fatalf("expected no notes, got %v", notes)
 	}
@@ -182,7 +182,7 @@ func TestResolveDoctorReadSetDefault(t *testing.T) {
 // derived tenant-shared namespace both contribute, in the order the real
 // resolver applies them (primary, global, tenant-shared).
 func TestResolveDoctorReadSetComposesAllSources(t *testing.T) {
-	entries, notes := resolveDoctorReadSet("work/memini", "glob")
+	entries, notes := resolveDoctorReadSet("work/memini", "glob", true)
 	if len(notes) != 0 {
 		t.Fatalf("expected no notes, got %v", notes)
 	}
@@ -210,7 +210,7 @@ func TestResolveDoctorReadSetComposesAllSources(t *testing.T) {
 // tenant-shared namespace surfaces as a redundant-entry note instead of
 // silently appearing twice.
 func TestResolveDoctorReadSetFlagsDuplicateEntry(t *testing.T) {
-	entries, notes := resolveDoctorReadSet("work/memini", "work/_shared")
+	entries, notes := resolveDoctorReadSet("work/memini", "work/_shared", true)
 
 	foundDup := false
 	for _, n := range notes {
@@ -238,7 +238,7 @@ func TestResolveDoctorReadSetFlagsDuplicateEntry(t *testing.T) {
 // TestResolveDoctorReadSetSelfEntryNote: the global namespace naming primary
 // itself is a no-op and surfaces as a note.
 func TestResolveDoctorReadSetSelfEntryNote(t *testing.T) {
-	_, notes := resolveDoctorReadSet("proj", "proj")
+	_, notes := resolveDoctorReadSet("proj", "proj", false)
 	if len(notes) != 1 || !strings.Contains(notes[0], "already the request namespace") {
 		t.Fatalf("expected a self-entry note, got %v", notes)
 	}
@@ -247,7 +247,7 @@ func TestResolveDoctorReadSetSelfEntryNote(t *testing.T) {
 // TestResolveDoctorReadSetSharedNamespaceItself: the tenant-shared namespace
 // reading itself gets no self-merge (work/_shared does not add work/_shared).
 func TestResolveDoctorReadSetSharedNamespaceItself(t *testing.T) {
-	entries, notes := resolveDoctorReadSet("work/_shared", "")
+	entries, notes := resolveDoctorReadSet("work/_shared", "", true)
 	if len(notes) != 0 {
 		t.Fatalf("expected no notes, got %v", notes)
 	}
@@ -344,15 +344,16 @@ func TestPrintRetrievalScopeDefaultOnly(t *testing.T) {
 	}
 }
 
-// TestPrintRetrievalScopeWarnsOnEmptyTenantShared: a tenanted namespace whose
-// tenant-shared sibling holds no memories gets a 0-memories warning.
+// TestPrintRetrievalScopeWarnsOnEmptyTenantShared: with the tenant-shared
+// merge opted in (MEMINI_TENANT_SHARED), a tenanted namespace whose shared
+// sibling holds no memories gets a 0-memories warning.
 func TestPrintRetrievalScopeWarnsOnEmptyTenantShared(t *testing.T) {
 	st := openTestStore(t)
 	seedPool(t, st, "work/memini", 1, 0) // only the primary holds memories
 	stats := statsFor(t, st)
 
 	var out bytes.Buffer
-	warnings := printRetrievalScope(&out, &config.Config{}, stats, "work/memini")
+	warnings := printRetrievalScope(&out, &config.Config{TenantShared: true}, stats, "work/memini")
 	got := out.String()
 	if !strings.Contains(got, "work/_shared") {
 		t.Errorf("expected the tenant-shared namespace listed, got:\n%s", got)
@@ -362,5 +363,27 @@ func TestPrintRetrievalScopeWarnsOnEmptyTenantShared(t *testing.T) {
 	}
 	if warnings == 0 {
 		t.Errorf("expected at least 1 warning, got 0")
+	}
+}
+
+// TestPrintRetrievalScopeTenantSharedOffByDefault: without the opt-in, the
+// tenant-shared sibling is absent from the read set and shows as "(off)", with
+// no 0-memories warning for it.
+func TestPrintRetrievalScopeTenantSharedOffByDefault(t *testing.T) {
+	st := openTestStore(t)
+	seedPool(t, st, "work/memini", 1, 0)
+	stats := statsFor(t, st)
+
+	var out bytes.Buffer
+	warnings := printRetrievalScope(&out, &config.Config{}, stats, "work/memini")
+	got := out.String()
+	if !strings.Contains(got, "tenant-shared namespace: (off)") {
+		t.Errorf("expected tenant-shared shown as (off), got:\n%s", got)
+	}
+	if strings.Contains(got, "work/_shared") {
+		t.Errorf("tenant-shared must not appear in the read set when off, got:\n%s", got)
+	}
+	if warnings != 0 {
+		t.Errorf("expected no warnings when tenant-shared is off, got %d", warnings)
 	}
 }

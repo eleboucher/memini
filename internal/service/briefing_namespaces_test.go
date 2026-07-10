@@ -92,7 +92,7 @@ func TestBriefingExplicitNamespaces(t *testing.T) {
 // WithGlobalNamespace — durable facts only, never episodic — end-to-end
 // through the public Briefing() call, no config.
 func TestBriefingTenantSharedMergesDurableOnly(t *testing.T) {
-	svc := newService(t)
+	svc := newService(t, service.WithTenantShared(true))
 	ctx := context.Background()
 
 	if _, err := svc.Remember(ctx, service.RememberInput{

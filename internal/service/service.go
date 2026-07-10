@@ -325,6 +325,10 @@ type Service struct {
 	// namespace's recall and briefing — durable tiers only. See
 	// WithGlobalNamespace. Empty disables it.
 	globalNamespace string
+	// tenantShared, when true, merges a namespace's <tenant>/_shared sibling
+	// read-only into its recall and briefing — durable tiers only. Off by
+	// default (opt-in). See WithTenantShared.
+	tenantShared bool
 	// fingerprintDedup (default on) reinforces an exact restatement instead of
 	// storing a duplicate; see WithFingerprintDedup.
 	fingerprintDedup bool
@@ -665,6 +669,15 @@ func WithContradictionDownrank(minScore float64) Option {
 // briefing — a shared space for cross-project rules. Empty disables it.
 func WithGlobalNamespace(ns string) Option {
 	return func(s *Service) { s.globalNamespace = ns }
+}
+
+// WithTenantShared enables merging a namespace's tenant-shared sibling
+// (<tenant>/_shared, derived from the first path segment) read-only into its
+// recall and briefing — durable tiers only. Off by default (opt-in), so
+// hierarchical-namespace users who don't want cross-project sharing keep
+// isolated namespaces.
+func WithTenantShared(enabled bool) Option {
+	return func(s *Service) { s.tenantShared = enabled }
 }
 
 // MergeHint surfaces a near-duplicate the caller may want to merge into.

@@ -47,10 +47,11 @@ memory: remember a fact in Claude Code, recall it in Codex.
 - Either way, individual tool calls may override it with a `namespace` argument.
 
 As an alternative to one shared namespace, agents can keep private namespaces
-and still see each other's durable memory read-only: any namespace under a
-tenant (`work/...`) automatically merges the tenant-shared namespace
-(`work/_shared`)'s semantic/procedural memories into every recall and briefing,
-without merging writes. This also composes with the `project/<agent>` subtree
+and still see each other's durable memory read-only: with `MEMINI_TENANT_SHARED=true`
+on the server, any namespace under a tenant (`work/...`) merges the tenant-shared
+namespace (`work/_shared`)'s semantic/procedural memories into every recall and
+briefing, without merging writes. It's off by default, so namespaces stay isolated
+unless you opt in. This also composes with the `project/<agent>` subtree
 pattern (`MEMINI_AGENT` nests each agent's namespace under the project's): read
 the parent namespace with `scope=subtree` to see every agent's memory while
 each still writes to its own namespace; that pattern now works in briefings as

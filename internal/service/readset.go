@@ -122,11 +122,17 @@ func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]sc
 		addEntry(s.globalNamespace, gt)
 	}
 
-	if ts := tenantSharedNamespace(sc.primary); ts != "" {
-		addEntry(ts, gt)
+	// The tenant-shared merge is opt-in (WithTenantShared / MEMINI_TENANT_SHARED),
+	// so a namespace stays isolated by default even when it has a tenant segment.
+	ts := ""
+	if s.tenantShared {
+		ts = tenantSharedNamespace(sc.primary)
+		if ts != "" {
+			addEntry(ts, gt)
+		}
 	}
 
-	return promoteProtected(entries, s.globalNamespace, tenantSharedNamespace(sc.primary)), nil
+	return promoteProtected(entries, s.globalNamespace, ts), nil
 }
 
 // tenantSharedLeaf is the conventional shared namespace nested directly under

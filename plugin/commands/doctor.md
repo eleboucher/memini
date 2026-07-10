@@ -13,8 +13,9 @@ modes behind "my agent stopped remembering things":
 - a catch-all namespace (`default` / `openclaw`) that has ballooned from a bulk
   import collapsing many sources into one pool.
 
-It also reports the **retrieval scope**: `MEMINI_GLOBAL_NAMESPACE`, the derived
-tenant-shared namespace (`<tenant>/_shared`), and the resolved effective read
+It also reports the **retrieval scope**: `MEMINI_GLOBAL_NAMESPACE`, the
+tenant-shared namespace (`<tenant>/_shared`, shown as `(off)` unless
+`MEMINI_TENANT_SHARED` is enabled), and the resolved effective read
 set (namespace, tier access, and source: default/global/tenant-shared) for the
 plugin namespace, answering "why does recall see/miss X". It warns on a
 read-set entry holding zero memories (e.g. an empty tenant-shared namespace)

@@ -150,6 +150,14 @@ type Config struct {
 	// namespaces fully isolated. Pin a global memory so it stays top-of-mind.
 	GlobalNamespace string `env:"MEMINI_GLOBAL_NAMESPACE" envDefault:""`
 
+	// TenantShared, when true, merges a namespace's tenant-shared sibling
+	// (<tenant>/_shared, derived from the first path segment) read-only into
+	// its recall and briefing — durable tiers only, like GlobalNamespace but
+	// scoped per tenant. Off by default: namespaces stay isolated unless an
+	// operator opts in, so hierarchical-namespace users who don't want
+	// cross-project sharing are unaffected.
+	TenantShared bool `env:"MEMINI_TENANT_SHARED" envDefault:"false"`
+
 	// LLM (opt-in; empty BaseURL disables the consolidation pipeline).
 	LLMBaseURL string `env:"MEMINI_LLM_BASE_URL"`
 	LLMAPIKey  string `env:"MEMINI_LLM_API_KEY"`

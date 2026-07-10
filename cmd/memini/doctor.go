@@ -458,7 +458,7 @@ func tenantSharedNamespace(primary string) string {
 // widened to "all" in place rather than narrowed, mirroring
 // resolveDefaultReadSet's addEntry: the widest tier access any source grants
 // always wins, regardless of order).
-func resolveDoctorReadSet(primary, globalNamespace string) ([]doctorReadEntry, []string) {
+func resolveDoctorReadSet(primary, globalNamespace string, tenantShared bool) ([]doctorReadEntry, []string) {
 	entries := []doctorReadEntry{{ns: primary, tiers: tiersAll, source: srcDefault}}
 	seen := map[string]bool{primary: true}
 	claimedBy := map[string]string{primary: "the request namespace itself"}
@@ -490,8 +490,10 @@ func resolveDoctorReadSet(primary, globalNamespace string) ([]doctorReadEntry, [
 		add(globalNamespace, tiersDurable, "global", "MEMINI_GLOBAL_NAMESPACE")
 	}
 
-	if ts := tenantSharedNamespace(primary); ts != "" {
-		add(ts, tiersDurable, "tenant-shared", fmt.Sprintf("tenant-shared namespace %q", ts))
+	if tenantShared {
+		if ts := tenantSharedNamespace(primary); ts != "" {
+			add(ts, tiersDurable, "tenant-shared", fmt.Sprintf("tenant-shared namespace %q", ts))
+		}
 	}
 
 	return entries, notes
@@ -541,11 +543,18 @@ func warnEnvSlashMigration(out io.Writer, cfg *config.Config, stats []nsStat) in
 // without reading the resolver's source.
 func printRetrievalScope(out io.Writer, cfg *config.Config, stats []nsStat, pluginNS string) int {
 	var warnings int
-	fmt.Fprintln(out, "Retrieval scope")                                                          //nolint:errcheck
-	fmt.Fprintf(out, "  MEMINI_GLOBAL_NAMESPACE: %s\n", orUnset(cfg.GlobalNamespace))             //nolint:errcheck
-	fmt.Fprintf(out, "  tenant-shared namespace: %s\n", orUnset(tenantSharedNamespace(pluginNS))) //nolint:errcheck
+	// The tenant-shared sibling is only in the read set when opted in
+	// (MEMINI_TENANT_SHARED); show "(off)" otherwise so the report matches
+	// what recall actually does.
+	tenantSharedDisplay := "(off)"
+	if cfg.TenantShared {
+		tenantSharedDisplay = orUnset(tenantSharedNamespace(pluginNS))
+	}
+	fmt.Fprintln(out, "Retrieval scope")                                              //nolint:errcheck
+	fmt.Fprintf(out, "  MEMINI_GLOBAL_NAMESPACE: %s\n", orUnset(cfg.GlobalNamespace)) //nolint:errcheck
+	fmt.Fprintf(out, "  tenant-shared namespace: %s\n", tenantSharedDisplay)          //nolint:errcheck
 
-	entries, notes := resolveDoctorReadSet(pluginNS, cfg.GlobalNamespace)
+	entries, notes := resolveDoctorReadSet(pluginNS, cfg.GlobalNamespace, cfg.TenantShared)
 
 	fmt.Fprintf(out, "  effective read set for %q (plain recall/briefing, no per-call namespaces list):\n", pluginNS) //nolint:errcheck
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
