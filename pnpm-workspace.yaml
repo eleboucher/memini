@@ -2,3 +2,15 @@ packages:
   - packages/*
   - integrations/openclaw/plugin
   - integrations/pi/plugin
+
+# pnpm 11 hard-errors (ERR_PNPM_IGNORED_BUILDS) on dependencies with build
+# scripts unless they're listed here (allowBuilds replaced onlyBuiltDependencies
+# in pnpm 11). These are trusted dev/test deps of the workspace plugins (esbuild
+# backs tsx/vite; the rest are OpenClaw transitive deps); allow their postinstall
+# scripts so a cold-cache `pnpm install` succeeds in CI, as it did under npm.
+allowBuilds:
+  esbuild: true
+  "@google/genai": true
+  protobufjs: true
+  tree-sitter-bash: true
+  openclaw: true
