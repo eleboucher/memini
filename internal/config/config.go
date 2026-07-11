@@ -143,20 +143,11 @@ type Config struct {
 	// disable — the kill-switch; there is no threshold knob.
 	ContradictionDownrank bool `env:"MEMINI_CONTRADICT_DOWNRANK" envDefault:"true"`
 
-	// GlobalNamespace, when set, is a namespace whose memories are merged
-	// read-only into every other namespace's recall and briefing — a shared
-	// space for cross-project rules the agent should always remember ("no AI
-	// slops", commit conventions, ...). Empty (the default) disables it, keeping
-	// namespaces fully isolated. Pin a global memory so it stays top-of-mind.
-	GlobalNamespace string `env:"MEMINI_GLOBAL_NAMESPACE" envDefault:""`
-
-	// TenantShared, when true, merges a namespace's tenant-shared sibling
-	// (<tenant>/_shared, derived from the first path segment) read-only into
-	// its recall and briefing — durable tiers only, like GlobalNamespace but
-	// scoped per tenant. Off by default: namespaces stay isolated unless an
-	// operator opts in, so hierarchical-namespace users who don't want
-	// cross-project sharing are unaffected.
-	TenantShared bool `env:"MEMINI_TENANT_SHARED" envDefault:"false"`
+	// GlobalNamespace and TenantShared (MEMINI_GLOBAL_NAMESPACE /
+	// MEMINI_TENANT_SHARED) are deleted (T12): the old opt-in shared-scope
+	// model is replaced by the always-on ancestor cascade. Both env vars are
+	// now fatal at server boot — see deprecatedVars / FatalDeprecatedVars
+	// below and docs/scopes.md#knobs.
 
 	// LLM (opt-in; empty BaseURL disables the consolidation pipeline).
 	LLMBaseURL string `env:"MEMINI_LLM_BASE_URL"`
@@ -334,42 +325,96 @@ const DefaultHomeHeader = "X-Memini-Home"
 const valueOff = "off"
 
 // deprecatedVars maps removed environment variables to migration guidance. A
-// value set for any of these is ignored at load; DeprecationWarnings surfaces it
-// so an operator upgrading from an older release learns why their tuning no
-// longer applies — without the boot failing.
-var deprecatedVars = []struct{ name, guidance string }{
-	{"MEMINI_WRITE_DEDUP_MIN_SCORE", "use MEMINI_WRITE_DEDUP_SCORE with MEMINI_WRITE_DEDUP_ACTION=coalesce"},
-	{"MEMINI_MERGE_HINT_MIN_SCORE", "use MEMINI_WRITE_DEDUP_SCORE with MEMINI_WRITE_DEDUP_ACTION=hint (the default)"},
-	{"MEMINI_AUTO_SUPERSEDE_MIN_SCORE", "use MEMINI_WRITE_DEDUP_SCORE with MEMINI_WRITE_DEDUP_ACTION=supersede"},
-	{"MEMINI_DEDUP_MIN_CLUSTER_SIZE", "now a fixed internal default (2)"},
-	{"MEMINI_DEDUP_NEIGHBOURS", "now a fixed internal default (20)"},
-	{"MEMINI_EMBED_MAX_ITEM_CHARS", "now a fixed internal default (8000); batch-char budgets stay configurable"},
-	{"MEMINI_CONSOLIDATE_QUEUE_CAP", "now a fixed internal default (1024)"},
-	{"MEMINI_NAMESPACE_HEADER", "the header name is fixed to X-Memini-Namespace"},
-	{"MEMINI_FUSION_ALPHA", "now a baked retrieval default (0.5); tune via the benchmark harness, not env"},
-	{"MEMINI_RECALL_MIN_SEMANTIC_SCORE", "now a baked retrieval default (0, off)"},
-	{"MEMINI_TEMPORAL_BOOST", "now a baked retrieval default (0.40)"},
-	{"MEMINI_RERANK_MAX_DOC_CHARS", "now a fixed internal default (2048); MEMINI_RERANK_MAX_BATCH_CHARS remains configurable"},
-	{"MEMINI_REDACT_SECRETS", "secret redaction is always on"},
-	{"MEMINI_REINFORCE_SKIP_MARKERS", "always on"},
-	{"MEMINI_WRITE_DEDUP_FINGERPRINT", "exact-restatement dedup is always on"},
-	{"MEMINI_QUARANTINE_GARBLED", "removed; garbled-content downranking is no longer configurable"},
-	{"MEMINI_DISTILL_ON_WRITE", "write-time fact building is automatic (LLM when configured, heuristic extractor otherwise)"},
-	{"MEMINI_EXTRACT_ON_WRITE", "write-time fact building is automatic (LLM when configured, heuristic extractor otherwise)"},
-	{"MEMINI_DISTILL_DROP_NO_FACT", "removed; episodic captures are always kept"},
+// non-fatal entry is ignored at load; DeprecationWarnings surfaces it so an
+// operator upgrading from an older release learns why their tuning no longer
+// applies — without the boot failing. A fatal entry is the opposite: the
+// change underneath it is not safe to silently ignore (the scope model
+// itself changed), so FatalDeprecatedVars refuses the boot instead of just
+// warning. See FatalDeprecatedVars for where that refusal is (and, just as
+// importantly, is not) enforced.
+var deprecatedVars = []struct {
+	name     string
+	guidance string
+	fatal    bool
+}{
+	{"MEMINI_WRITE_DEDUP_MIN_SCORE", "use MEMINI_WRITE_DEDUP_SCORE with MEMINI_WRITE_DEDUP_ACTION=coalesce", false},
+	{"MEMINI_MERGE_HINT_MIN_SCORE", "use MEMINI_WRITE_DEDUP_SCORE with MEMINI_WRITE_DEDUP_ACTION=hint (the default)", false},
+	{"MEMINI_AUTO_SUPERSEDE_MIN_SCORE", "use MEMINI_WRITE_DEDUP_SCORE with MEMINI_WRITE_DEDUP_ACTION=supersede", false},
+	{"MEMINI_DEDUP_MIN_CLUSTER_SIZE", "now a fixed internal default (2)", false},
+	{"MEMINI_DEDUP_NEIGHBOURS", "now a fixed internal default (20)", false},
+	{"MEMINI_EMBED_MAX_ITEM_CHARS", "now a fixed internal default (8000); batch-char budgets stay configurable", false},
+	{"MEMINI_CONSOLIDATE_QUEUE_CAP", "now a fixed internal default (1024)", false},
+	{"MEMINI_NAMESPACE_HEADER", "the header name is fixed to X-Memini-Namespace", false},
+	{"MEMINI_FUSION_ALPHA", "now a baked retrieval default (0.5); tune via the benchmark harness, not env", false},
+	{"MEMINI_RECALL_MIN_SEMANTIC_SCORE", "now a baked retrieval default (0, off)", false},
+	{"MEMINI_TEMPORAL_BOOST", "now a baked retrieval default (0.40)", false},
+	{"MEMINI_RERANK_MAX_DOC_CHARS", "now a fixed internal default (2048); MEMINI_RERANK_MAX_BATCH_CHARS remains configurable", false},
+	{"MEMINI_REDACT_SECRETS", "secret redaction is always on", false},
+	{"MEMINI_REINFORCE_SKIP_MARKERS", "always on", false},
+	{"MEMINI_WRITE_DEDUP_FINGERPRINT", "exact-restatement dedup is always on", false},
+	{"MEMINI_QUARANTINE_GARBLED", "removed; garbled-content downranking is no longer configurable", false},
+	{"MEMINI_DISTILL_ON_WRITE", "write-time fact building is automatic (LLM when configured, heuristic extractor otherwise)", false},
+	{"MEMINI_EXTRACT_ON_WRITE", "write-time fact building is automatic (LLM when configured, heuristic extractor otherwise)", false},
+	{"MEMINI_DISTILL_DROP_NO_FACT", "removed; episodic captures are always kept", false},
+	{"MEMINI_GLOBAL_NAMESPACE", "the scope model changed: namespaces are now always merged via the ancestor " +
+		"cascade, replacing the old opt-in global namespace. Run `memini migrate scopes` to fold any " +
+		"<tenant>/_shared data forward, and adopt the old global namespace via MEMINI_HOME (single-operator) " +
+		"or `memini link add <ns> <old-global>` (team-wide, per namespace that needs it) — see docs/scopes.md#knobs", true},
+	{"MEMINI_TENANT_SHARED", "the scope model changed: namespaces are now always merged via the ancestor " +
+		"cascade, replacing the old opt-in tenant-shared merge. Run `memini migrate scopes` to fold each " +
+		"<tenant>/_shared namespace into <tenant>, and adopt MEMINI_HOME or `memini link add` if you also " +
+		"relied on a global namespace — see docs/scopes.md#knobs", true},
 }
 
-// DeprecationWarnings returns one message per removed environment variable that
-// is currently set, telling the operator what to use instead. The variables are
-// ignored either way; this only explains the change. Empty when none are set.
+// DeprecationWarnings returns one message per removed, non-fatal environment
+// variable that is currently set, telling the operator what to use instead.
+// These variables are ignored either way; this only explains the change.
+// Empty when none are set. Fatal deprecated vars (see FatalDeprecatedVars)
+// are excluded — they refuse the boot instead of just warning, so a warning
+// here would never be reached in that path anyway.
 func DeprecationWarnings() []string {
 	var w []string
 	for _, d := range deprecatedVars {
+		if d.fatal {
+			continue
+		}
 		if _, ok := os.LookupEnv(d.name); ok {
 			w = append(w, fmt.Sprintf("%s is removed and ignored; %s", d.name, d.guidance))
 		}
 	}
 	return w
+}
+
+// FatalDeprecatedVars returns one refusal message per fatal deprecated
+// environment variable (MEMINI_GLOBAL_NAMESPACE, MEMINI_TENANT_SHARED) that
+// is currently set. Unlike DeprecationWarnings, these are not safe to boot
+// through silently: both named the old opt-in shared-scope model, which the
+// always-on ancestor cascade replaced outright, so booting as if the var
+// were never set would silently drop the operator's expectation of shared
+// visibility. Empty when neither is set.
+//
+// Deliberately NOT checked inside Load(): `memini migrate scopes`
+// (cmd/memini/migrate.go) also calls config.Load() and separately reads
+// MEMINI_GLOBAL_NAMESPACE via os.Getenv to print adoption instructions for
+// exactly this case. If the refusal lived in Load(), the one command that
+// handles the migration could never run while the var that triggers it is
+// set — an operator deadlock. Instead this is called explicitly from the
+// server-start path (cmd/memini/root.go runServer), which is the only
+// caller that needs the refusal: booting the long-running server with a
+// stale shared-scope expectation baked into the operator's env is the
+// dangerous case; one-shot CLI commands (migrate, doctor, reembed, ...) are
+// not "booting" anything and are unaffected.
+func FatalDeprecatedVars() []string {
+	var msgs []string
+	for _, d := range deprecatedVars {
+		if !d.fatal {
+			continue
+		}
+		if _, ok := os.LookupEnv(d.name); ok {
+			msgs = append(msgs, fmt.Sprintf("%s is set; %s", d.name, d.guidance))
+		}
+	}
+	return msgs
 }
 
 // LLMEnabled reports whether the opt-in LLM pipeline is configured.
