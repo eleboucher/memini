@@ -79,6 +79,9 @@ func TestGenerateAPIKeySecret(t *testing.T) {
 	}
 }
 
+func strPtr(s string) *string { return &s }
+func boolPtr(b bool) *bool    { return &b }
+
 // TestAddAPIKeyGeneratesSecretThatAuthenticates pins the round trip the
 // entire feature depends on: the plaintext secret handed back to the caller
 // hashes (via the canonical apiauth.HashToken helper) to exactly the row
@@ -91,7 +94,9 @@ func TestAddAPIKeyGeneratesSecretThatAuthenticates(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	secret, key, err := addAPIKey(ctx, ks, "alice", "acme/phoenix", "acme/default", false)
+	secret, key, err := addAPIKey(ctx, ks, "alice", keyAddOpts{
+		Home: strPtr("acme/phoenix"), DefaultNS: strPtr("acme/default"),
+	})
 	if err != nil {
 		t.Fatalf("addAPIKey: %v", err)
 	}
@@ -123,7 +128,7 @@ func TestAddAPIKeyDisabledFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("keyStoreOf: %v", err)
 	}
-	_, key, err := addAPIKey(context.Background(), ks, "frank", "", "", true)
+	_, key, err := addAPIKey(context.Background(), ks, "frank", keyAddOpts{Disabled: boolPtr(true)})
 	if err != nil {
 		t.Fatalf("addAPIKey: %v", err)
 	}
@@ -143,13 +148,13 @@ func TestAddAPIKeyRotationPreservesCreatedAtAndInvalidatesOldSecret(t *testing.T
 	}
 	ctx := context.Background()
 
-	oldSecret, first, err := addAPIKey(ctx, ks, "bob", "", "", false)
+	oldSecret, first, err := addAPIKey(ctx, ks, "bob", keyAddOpts{})
 	if err != nil {
 		t.Fatalf("addAPIKey: %v", err)
 	}
 	time.Sleep(2 * time.Millisecond) // guard against a same-instant CreatedAt false-passing the assertion below
 
-	newSecret, second, err := addAPIKey(ctx, ks, "bob", "", "", false)
+	newSecret, second, err := addAPIKey(ctx, ks, "bob", keyAddOpts{})
 	if err != nil {
 		t.Fatalf("re-add (rotate): %v", err)
 	}
@@ -181,6 +186,92 @@ func TestAddAPIKeyRotationPreservesCreatedAtAndInvalidatesOldSecret(t *testing.T
 	}
 }
 
+// TestAddAPIKeyRotationPreservesUnspecifiedFields pins the reviewer-mandated
+// contract: rotating an existing key WITHOUT passing --home /
+// --default-namespace / --disabled carries every one of those fields forward
+// unchanged. Most critically, a key disabled during incident response must
+// NOT be silently re-enabled by a later secret rotation.
+func TestAddAPIKeyRotationPreservesUnspecifiedFields(t *testing.T) {
+	st := openTestStore(t)
+	ks, err := keyStoreOf(st)
+	if err != nil {
+		t.Fatalf("keyStoreOf: %v", err)
+	}
+	ctx := context.Background()
+
+	if _, _, err := addAPIKey(ctx, ks, "ivy", keyAddOpts{
+		Home: strPtr("acme/phoenix"), DefaultNS: strPtr("acme/default"), Disabled: boolPtr(true),
+	}); err != nil {
+		t.Fatalf("addAPIKey: %v", err)
+	}
+
+	_, rotated, err := addAPIKey(ctx, ks, "ivy", keyAddOpts{})
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if rotated.HomeNS != "acme/phoenix" {
+		t.Errorf("rotation must preserve HomeNS, got %q", rotated.HomeNS)
+	}
+	if rotated.DefaultNS != "acme/default" {
+		t.Errorf("rotation must preserve DefaultNS, got %q", rotated.DefaultNS)
+	}
+	if !rotated.Disabled {
+		t.Error("rotation must NOT silently re-enable a disabled key")
+	}
+}
+
+// TestAddAPIKeyRotationExplicitEmptyHomeClears pins that an explicitly passed
+// empty --home (flag present, value "") still clears the binding — "flag
+// omitted" and "flag set to empty" are distinct.
+func TestAddAPIKeyRotationExplicitEmptyHomeClears(t *testing.T) {
+	st := openTestStore(t)
+	ks, err := keyStoreOf(st)
+	if err != nil {
+		t.Fatalf("keyStoreOf: %v", err)
+	}
+	ctx := context.Background()
+
+	if _, _, err := addAPIKey(ctx, ks, "judy", keyAddOpts{
+		Home: strPtr("acme/phoenix"), DefaultNS: strPtr("acme/default"),
+	}); err != nil {
+		t.Fatalf("addAPIKey: %v", err)
+	}
+
+	_, rotated, err := addAPIKey(ctx, ks, "judy", keyAddOpts{Home: strPtr("")})
+	if err != nil {
+		t.Fatalf("rotate with explicit empty --home: %v", err)
+	}
+	if rotated.HomeNS != "" {
+		t.Errorf("explicit empty --home must clear HomeNS, got %q", rotated.HomeNS)
+	}
+	if rotated.DefaultNS != "acme/default" {
+		t.Errorf("unspecified DefaultNS must survive, got %q", rotated.DefaultNS)
+	}
+}
+
+// TestAddAPIKeyRotationExplicitEnableReEnables pins the deliberate inverse:
+// an explicitly passed --disabled=false on rotation re-enables the key —
+// operator intent stated on the command line always wins.
+func TestAddAPIKeyRotationExplicitEnableReEnables(t *testing.T) {
+	st := openTestStore(t)
+	ks, err := keyStoreOf(st)
+	if err != nil {
+		t.Fatalf("keyStoreOf: %v", err)
+	}
+	ctx := context.Background()
+
+	if _, _, err := addAPIKey(ctx, ks, "kim", keyAddOpts{Disabled: boolPtr(true)}); err != nil {
+		t.Fatalf("addAPIKey: %v", err)
+	}
+	_, rotated, err := addAPIKey(ctx, ks, "kim", keyAddOpts{Disabled: boolPtr(false)})
+	if err != nil {
+		t.Fatalf("rotate with explicit --disabled=false: %v", err)
+	}
+	if rotated.Disabled {
+		t.Error("explicit --disabled=false must re-enable the key")
+	}
+}
+
 // TestAddAPIKeyRejectsEmptyName pins that an empty (or all-whitespace) name
 // is refused rather than silently stored: the name is the key's primary
 // label/identifier, and an empty one would be an unusable, easily-collided
@@ -191,10 +282,10 @@ func TestAddAPIKeyRejectsEmptyName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("keyStoreOf: %v", err)
 	}
-	if _, _, err := addAPIKey(context.Background(), ks, "", "", "", false); err == nil {
+	if _, _, err := addAPIKey(context.Background(), ks, "", keyAddOpts{}); err == nil {
 		t.Fatal("expected an empty name to be rejected")
 	}
-	if _, _, err := addAPIKey(context.Background(), ks, "   ", "", "", false); err == nil {
+	if _, _, err := addAPIKey(context.Background(), ks, "   ", keyAddOpts{}); err == nil {
 		t.Fatal("expected an all-whitespace name to be rejected")
 	}
 }
@@ -205,7 +296,9 @@ func TestAddAPIKeyRejectsInvalidHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("keyStoreOf: %v", err)
 	}
-	if _, _, err := addAPIKey(context.Background(), ks, "carol", strings.Repeat("x", 300), "", false); err == nil {
+	if _, _, err := addAPIKey(context.Background(), ks, "carol", keyAddOpts{
+		Home: strPtr(strings.Repeat("x", 300)),
+	}); err == nil {
 		t.Fatal("expected invalid --home namespace to be rejected")
 	}
 }
@@ -216,7 +309,9 @@ func TestAddAPIKeyRejectsInvalidDefaultNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("keyStoreOf: %v", err)
 	}
-	if _, _, err := addAPIKey(context.Background(), ks, "dave", "", strings.Repeat("x", 300), false); err == nil {
+	if _, _, err := addAPIKey(context.Background(), ks, "dave", keyAddOpts{
+		DefaultNS: strPtr(strings.Repeat("x", 300)),
+	}); err == nil {
 		t.Fatal("expected invalid --default-namespace to be rejected")
 	}
 }
@@ -240,7 +335,7 @@ func TestAddAPIKeyWrapsPutAPIKeyError(t *testing.T) {
 		t.Fatalf("keyStoreOf: %v", err)
 	}
 	wrapped := putErrKeyStore{APIKeyStore: ks, err: errors.New("unique constraint failed: api_keys.key_hash")}
-	if _, _, err := addAPIKey(context.Background(), wrapped, "grace", "", "", false); err == nil {
+	if _, _, err := addAPIKey(context.Background(), wrapped, "grace", keyAddOpts{}); err == nil {
 		t.Fatal("expected the store error to propagate")
 	} else if !strings.Contains(err.Error(), "grace") {
 		t.Errorf("wrapped error should name the key, got: %v", err)
@@ -267,7 +362,7 @@ func TestRemoveAPIKeyDeletesExisting(t *testing.T) {
 		t.Fatalf("keyStoreOf: %v", err)
 	}
 	ctx := context.Background()
-	if _, _, err := addAPIKey(ctx, ks, "erin", "", "", false); err != nil {
+	if _, _, err := addAPIKey(ctx, ks, "erin", keyAddOpts{}); err != nil {
 		t.Fatalf("addAPIKey: %v", err)
 	}
 	if err := removeAPIKey(ctx, ks, "erin"); err != nil {

@@ -37,8 +37,11 @@ var keyAddCmd = &cobra.Command{
 	Long: "Create a new named API key, generating a random secret that is printed exactly " +
 		"once to stdout — it is never stored and cannot be recovered or shown again, so " +
 		"save it now. Re-running with a name that already exists ROTATES that key: a new " +
-		"secret is generated and the old one stops authenticating immediately, but the " +
-		"key's CreatedAt (when it was first created) is preserved.",
+		"secret is generated and the old one stops authenticating immediately, while the " +
+		"key's CreatedAt, home/default namespace bindings, and disabled state are all " +
+		"preserved unless the corresponding flag is explicitly passed (an explicit " +
+		"--home \"\" clears the binding; an explicit --disabled=false re-enables a " +
+		"disabled key — rotation alone never re-enables one).",
 	Args: cobra.ExactArgs(1),
 	RunE: runKeyAdd,
 }
@@ -105,25 +108,62 @@ func generateAPIKeySecret() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
+// keyAddOpts carries key add's optional flags with presence tracking: a nil
+// field means the flag was not passed this invocation (preserve the existing
+// key's value on rotation), while a non-nil pointer — including a pointer to
+// the zero value, e.g. an explicit `--home ""` or `--disabled=false` — means
+// the operator stated intent and it overrides. runKeyAdd populates it from
+// cmd.Flags().Changed.
+type keyAddOpts struct {
+	Home      *string
+	DefaultNS *string
+	Disabled  *bool
+}
+
 // addAPIKey validates home/defaultNS, generates a fresh secret, and upserts
 // the key keyed by name. Re-running with an existing name rotates it: a new
 // secret and hash, same row, CreatedAt preserved by PutAPIKey's upsert
-// semantics (store.APIKeyStore.PutAPIKey's doc). Returns the plaintext
-// secret (present exactly here and nowhere else) and the stored row as
-// persisted (re-read via GetAPIKeyByHash so CreatedAt reflects what was
-// actually written, not just the zero value passed in).
-func addAPIKey(ctx context.Context, ks store.APIKeyStore, name, home, defaultNS string, disabled bool) (string, store.APIKey, error) {
+// semantics (store.APIKeyStore.PutAPIKey's doc), and every field whose flag
+// was not passed this invocation (nil in opts) carried forward from the
+// existing row — most critically Disabled: a key disabled during incident
+// response must not be silently re-enabled by a later secret rotation.
+// Returns the plaintext secret (present exactly here and nowhere else) and
+// the stored row as persisted (re-read via GetAPIKeyByHash so CreatedAt
+// reflects what was actually written, not just the zero value passed in).
+func addAPIKey(ctx context.Context, ks store.APIKeyStore, name string, opts keyAddOpts) (string, store.APIKey, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", store.APIKey{}, fmt.Errorf("api key name must not be empty")
 	}
-	home, err := normalizeOptionalNamespace(home)
+	// Seed each field from the existing row (if the name already exists) so
+	// a rotation only changes what the operator explicitly asked to change.
+	// Looked up via ListAPIKeys + filter rather than a new by-name store
+	// method: keys are few, and the store contract stays as-is.
+	var home, defaultNS string
+	var disabled bool
+	existing, err := findAPIKeyByName(ctx, ks, name)
 	if err != nil {
-		return "", store.APIKey{}, err
+		return "", store.APIKey{}, fmt.Errorf("add api key %q: look up existing: %w", name, err)
 	}
-	defaultNS, err = normalizeOptionalNamespace(defaultNS)
-	if err != nil {
-		return "", store.APIKey{}, err
+	if existing != nil {
+		home, defaultNS, disabled = existing.HomeNS, existing.DefaultNS, existing.Disabled
+	}
+	if opts.Home != nil {
+		h, herr := normalizeOptionalNamespace(*opts.Home)
+		if herr != nil {
+			return "", store.APIKey{}, herr
+		}
+		home = h
+	}
+	if opts.DefaultNS != nil {
+		d, derr := normalizeOptionalNamespace(*opts.DefaultNS)
+		if derr != nil {
+			return "", store.APIKey{}, derr
+		}
+		defaultNS = d
+	}
+	if opts.Disabled != nil {
+		disabled = *opts.Disabled
 	}
 	secret, err := generateAPIKeySecret()
 	if err != nil {
@@ -151,6 +191,24 @@ func addAPIKey(ctx context.Context, ks store.APIKeyStore, name, home, defaultNS 
 	return secret, *stored, nil
 }
 
+// findAPIKeyByName returns the stored key with the given name, or nil when
+// none exists. Implemented as ListAPIKeys + filter: the store contract has
+// no by-name getter (only by-hash, the auth path), keys number in the
+// handfuls, and this runs once per CLI invocation — not worth a new store
+// method.
+func findAPIKeyByName(ctx context.Context, ks store.APIKeyStore, name string) (*store.APIKey, error) {
+	keys, err := ks.ListAPIKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range keys {
+		if keys[i].Name == name {
+			return &keys[i], nil
+		}
+	}
+	return nil, nil
+}
+
 // removeAPIKey deletes the named key, erroring when none exists — the same
 // not-found convention as link rm (runLinkRm in link.go).
 func removeAPIKey(ctx context.Context, ks store.APIKeyStore, name string) error {
@@ -170,7 +228,17 @@ func runKeyAdd(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		secret, key, err := addAPIKey(cmd.Context(), ks, args[0], keyHome, keyDefaultNS, keyDisabled)
+		var opts keyAddOpts
+		if cmd.Flags().Changed("home") {
+			opts.Home = &keyHome
+		}
+		if cmd.Flags().Changed("default-namespace") {
+			opts.DefaultNS = &keyDefaultNS
+		}
+		if cmd.Flags().Changed("disabled") {
+			opts.Disabled = &keyDisabled
+		}
+		secret, key, err := addAPIKey(cmd.Context(), ks, args[0], opts)
 		if err != nil {
 			return err
 		}
