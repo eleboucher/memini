@@ -1689,6 +1689,140 @@ func testAPIKeys(t *testing.T, st store.Store, dims int) {
 	t.Run("GetByHashAbsent", func(t *testing.T) { testAPIKeyGetByHashAbsent(t, ks, ns) })
 	t.Run("ListOrderedByName", func(t *testing.T) { testAPIKeyListOrdered(t, ks, ns) })
 	t.Run("DuplicateHashDifferentNameErrors", func(t *testing.T) { testAPIKeyDuplicateHash(t, ks, ns) })
+	t.Run("DefaultNSRoundTrip", func(t *testing.T) { testAPIKeyDefaultNSRoundTrip(t, ks, ns) })
+	t.Run("RenameNamespaces", func(t *testing.T) { testAPIKeyRenameNamespaces(t, ks, ns) })
+}
+
+// apiKeyNSRenamer gates the default-namespace extension subtests: a driver
+// that predates the DefaultNS column also lacks RenameAPIKeyNamespaces, so
+// one probe covers both. Temporary RED-phase scaffolding — once both
+// backends implement the extension the method moves onto store.APIKeyStore
+// and this probe is removed.
+type apiKeyNSRenamer interface {
+	RenameAPIKeyNamespaces(ctx context.Context, from, to string) error
+}
+
+// testAPIKeyDefaultNSRoundTrip covers PutAPIKey/GetAPIKeyByHash/ListAPIKeys
+// round-tripping DefaultNS (the per-key default namespace applied when a
+// request carries no X-Memini-Namespace header; an explicit header wins),
+// including updating and clearing it on upsert.
+func testAPIKeyDefaultNSRoundTrip(t *testing.T, ks store.APIKeyStore, ns string) {
+	if _, ok := ks.(apiKeyNSRenamer); !ok {
+		t.Skip("store does not implement the api-key default-namespace extension")
+	}
+	ctx := context.Background()
+	name := ns + "-defns"
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	k := store.APIKey{
+		Name:      name,
+		Hash:      apiKeyHash(name),
+		HomeNS:    ns + "-home",
+		DefaultNS: ns + "-default",
+		CreatedAt: now,
+	}
+	if err := ks.PutAPIKey(ctx, k); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	got, err := ks.GetAPIKeyByHash(ctx, k.Hash)
+	if err != nil {
+		t.Fatalf("get by hash: %v", err)
+	}
+	if got == nil || got.DefaultNS != k.DefaultNS {
+		t.Fatalf("default_ns round-trip = %+v, want DefaultNS %q", got, k.DefaultNS)
+	}
+	// ListAPIKeys carries it too.
+	all, err := ks.ListAPIKeys(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	found := false
+	for _, l := range all {
+		if l.Name == name {
+			found = true
+			if l.DefaultNS != k.DefaultNS {
+				t.Fatalf("list default_ns = %q, want %q", l.DefaultNS, k.DefaultNS)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("key %q missing from list", name)
+	}
+	// An upsert can clear it back to "" (unbound) — not coalesced away.
+	k.DefaultNS = ""
+	if err := ks.PutAPIKey(ctx, k); err != nil {
+		t.Fatalf("put (clear default_ns): %v", err)
+	}
+	got, err = ks.GetAPIKeyByHash(ctx, k.Hash)
+	if err != nil {
+		t.Fatalf("get by hash after clear: %v", err)
+	}
+	if got == nil || got.DefaultNS != "" {
+		t.Fatalf("default_ns after clearing upsert = %+v, want empty", got)
+	}
+}
+
+// testAPIKeyRenameNamespaces covers RenameAPIKeyNamespaces: every key whose
+// HomeNS or DefaultNS equals from is rewritten to to — both columns in one
+// call, since a namespace move (maintenance.Move, the RenameLinkEndpoints
+// caller) must not leave either binding dangling. Non-matching keys and
+// non-matching columns are untouched, CreatedAt survives, and from == to is
+// a no-op.
+func testAPIKeyRenameNamespaces(t *testing.T, ks store.APIKeyStore, ns string) {
+	rn, ok := ks.(apiKeyNSRenamer)
+	if !ok {
+		t.Skip("store does not implement the api-key default-namespace extension")
+	}
+	ctx := context.Background()
+	from := ns + "-ren-old"
+	to := ns + "-ren-new"
+	other := ns + "-ren-other"
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	seed := []store.APIKey{
+		{Name: ns + "-ren-home", Hash: apiKeyHash(ns + "-ren-home"), HomeNS: from, DefaultNS: other, CreatedAt: now},
+		{Name: ns + "-ren-def", Hash: apiKeyHash(ns + "-ren-def"), HomeNS: other, DefaultNS: from, CreatedAt: now},
+		{Name: ns + "-ren-both", Hash: apiKeyHash(ns + "-ren-both"), HomeNS: from, DefaultNS: from, CreatedAt: now},
+		{Name: ns + "-ren-none", Hash: apiKeyHash(ns + "-ren-none"), HomeNS: other, DefaultNS: "", CreatedAt: now},
+	}
+	for _, k := range seed {
+		if err := ks.PutAPIKey(ctx, k); err != nil {
+			t.Fatalf("put %s: %v", k.Name, err)
+		}
+	}
+
+	if err := rn.RenameAPIKeyNamespaces(ctx, from, to); err != nil {
+		t.Fatalf("rename api key namespaces: %v", err)
+	}
+
+	want := map[string][2]string{ // name -> {HomeNS, DefaultNS}
+		ns + "-ren-home": {to, other},
+		ns + "-ren-def":  {other, to},
+		ns + "-ren-both": {to, to},
+		ns + "-ren-none": {other, ""},
+	}
+	for _, k := range seed {
+		got, err := ks.GetAPIKeyByHash(ctx, k.Hash)
+		if err != nil {
+			t.Fatalf("get %s by hash: %v", k.Name, err)
+		}
+		if got == nil {
+			t.Fatalf("key %s vanished after rename", k.Name)
+		}
+		w := want[k.Name]
+		if got.HomeNS != w[0] || got.DefaultNS != w[1] {
+			t.Errorf("%s after rename = {home %q, default %q}, want {home %q, default %q}",
+				k.Name, got.HomeNS, got.DefaultNS, w[0], w[1])
+		}
+		// CreatedAt untouched by a rename.
+		if !got.CreatedAt.Equal(now) {
+			t.Errorf("%s created_at mutated by rename: %v, want %v", k.Name, got.CreatedAt, now)
+		}
+	}
+
+	// from == to is a no-op, not an error.
+	if err := rn.RenameAPIKeyNamespaces(ctx, to, to); err != nil {
+		t.Fatalf("rename api key namespaces (noop): %v", err)
+	}
 }
 
 // testAPIKeyRoundTrip covers PutAPIKey/GetAPIKeyByHash round-tripping every

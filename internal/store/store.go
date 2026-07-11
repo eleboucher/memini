@@ -254,9 +254,13 @@ type ActivityStore interface {
 // optional home namespace it is bound to, when it was created, and whether
 // it is disabled.
 type APIKey struct {
-	Name      string // unique human label, primary key
-	Hash      string // hex SHA-256 of the secret; never the secret itself
-	HomeNS    string // bound home namespace; "" means unbound
+	Name   string // unique human label, primary key
+	Hash   string // hex SHA-256 of the secret; never the secret itself
+	HomeNS string // bound home namespace; "" means unbound
+	// DefaultNS is the namespace applied to a request that presents this key
+	// but carries no X-Memini-Namespace header; an explicit header always
+	// wins. "" means no per-key default (the server-wide default applies).
+	DefaultNS string
 	CreatedAt time.Time
 	Disabled  bool
 }
