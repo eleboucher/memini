@@ -1630,6 +1630,14 @@ type RecallInput struct {
 	// (empty) on a healthy recall. nil disables reporting. Same out-param
 	// pattern as MergeHint/AutoSuperseded on RememberInput.
 	Degraded *string
+	// ReadSet (output-only) is set to the resolved read-set — every namespace
+	// this recall searched, with the origin recorded when that leg was
+	// appended during resolution (primary/ancestor/home/link/call) and any
+	// per-namespace tier restriction. The caller passes the address of a
+	// local slice; it is left untouched (nil) when ReadSet is nil. Same
+	// out-param pattern as Degraded — lets MCP/REST render read-set
+	// provenance (e.g. "from: acme") without a second resolveReadSet call.
+	ReadSet *[]ReadSetEntry
 	// IncludeLinked, when true, expands recall to include memories linked to
 	// any result via LinkedMemoryIDs (1-hop expansion). Linked memories that
 	// are superseded are skipped. Default (false) is no expansion.
@@ -1764,6 +1772,9 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	}
 	s.metrics.OpDuration("recall_embed", time.Since(embedStart))
 	s.reportRecallDegraded(ctx, embedErr, in.Degraded)
+	if in.ReadSet != nil {
+		*in.ReadSet = toReadSetEntries(entries)
+	}
 
 	// Over-fetch a deep candidate pool from each strategy: a memory ranked just
 	// outside the top k in both legs is invisible at pool depth k, yet RRF would
@@ -1948,6 +1959,15 @@ func (s *Service) tryQueryRewrite(ctx context.Context, in RecallInput) ([]store.
 			sub.Query = q
 			sub.QueryRewrite = false // prevent recursion into tryQueryRewrite
 			sub.Degraded = &degradedReasons[i]
+			if i != 0 {
+				// RecallInput.ReadSet is a *[]ReadSetEntry out-param: handing every
+				// variant goroutine the SAME pointer would race the moment more
+				// than one variant writes concurrently (same hazard as Degraded
+				// above). Every variant resolves an identical read-set (same
+				// namespace/home/scope, only Query differs), so only the first
+				// variant needs to populate it.
+				sub.ReadSet = nil
+			}
 			res, err := s.Recall(gctx, sub)
 			if err != nil {
 				return err

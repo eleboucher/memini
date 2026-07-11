@@ -75,6 +75,16 @@ type AnswerInput struct {
 	// low/medium/high run the bounded tool loop (see ReasoningLevel). Falls
 	// back to single-shot when the configured LLM client can't do tool calls.
 	Reasoning ReasoningLevel
+	// ReadSet (output-only) is set to the read-set this answer draws from —
+	// same out-param pattern as RecallInput.ReadSet. Resolved once up front
+	// (see Answer) rather than threaded through every internal recall: Answer
+	// has no Scope/Namespaces/Subtree field, so every recall it performs
+	// (single-shot, the agentic prefetch, the query-expansion legs, and every
+	// tool-loop search) always resolves the same read-set for a given
+	// Namespace/Home/Tiers — computing it once is both correct and cheaper
+	// than resolving it per call. The caller passes the address of a local
+	// slice; nil disables reporting.
+	ReadSet *[]ReadSetEntry
 }
 
 // AnswerResult is the generated answer and the memories it was grounded on.
@@ -93,6 +103,14 @@ func (s *Service) Answer(ctx context.Context, in AnswerInput) (AnswerResult, err
 	if s.answerer == nil {
 		s.metrics.AnswerResult("error")
 		return AnswerResult{}, fmt.Errorf("answer: no LLM configured (use WithAnswerer)")
+	}
+	if in.ReadSet != nil {
+		rs, err := s.resolveReadSetForTiers(ctx, in.Namespace, in.Home, in.Tiers)
+		if err != nil {
+			s.metrics.AnswerResult("error")
+			return AnswerResult{}, fmt.Errorf("answer: resolve read-set: %w", err)
+		}
+		*in.ReadSet = rs
 	}
 	if in.Reasoning == ReasoningExpand {
 		return s.answerExpand(ctx, in)

@@ -216,6 +216,11 @@ type BriefingOpts struct {
 	// Ignored when Namespaces is set. An unrecognized value is an
 	// invalid-input error.
 	Scope string
+	// ReadSet (output-only) is set to the resolved read-set this briefing
+	// drew from, with per-leg origin — same out-param pattern as
+	// RecallInput.ReadSet. The caller passes the address of a local slice;
+	// nil disables reporting.
+	ReadSet *[]ReadSetEntry
 }
 
 // DefaultPerSection is the briefing cap applied to any section whose dedicated
@@ -254,6 +259,9 @@ func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingO
 	})
 	if err != nil {
 		return Briefing{}, err
+	}
+	if opts.ReadSet != nil {
+		*opts.ReadSet = toReadSetEntries(entries)
 	}
 	b := Briefing{Namespace: namespace}
 	var facts, procs, recent []*memory.Memory

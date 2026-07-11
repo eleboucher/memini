@@ -12,10 +12,77 @@ import (
 	"github.com/eleboucher/memini/internal/store"
 )
 
-// scopeEntry is one namespace in a read-set with an optional tier restriction.
+// Origin values recorded on a read-set leg — see ReadSetEntry.Origin. Each is
+// set once, at the moment the leg is appended during resolution (never
+// re-derived from the resolved set afterwards): "primary" for the request
+// namespace and every member of its subtree expansion (scope=subtree is
+// treated as part of the primary leg, not a distinct origin of its own),
+// "ancestor" for a path-prefix cascade leg, "home" for the caller's personal
+// namespace (X-Memini-Home), "link" for a stored namespace link, and "call"
+// for an explicit per-call namespace (RecallInput.Namespaces /
+// BriefingOpts.Namespaces) other than the primary namespace itself — the
+// primary namespace is always "primary", even when it appears in an explicit
+// list.
+const (
+	OriginPrimary  = "primary"
+	OriginAncestor = "ancestor"
+	OriginHome     = "home"
+	OriginLink     = "link"
+	OriginCall     = "call"
+)
+
+// scopeEntry is one namespace in a read-set with an optional tier restriction
+// and the origin it was appended under (see the Origin constants above).
 type scopeEntry struct {
-	ns    string
-	tiers []memory.Tier // nil = use the request's tier filter; non-nil = override
+	ns     string
+	tiers  []memory.Tier // nil = use the request's tier filter; non-nil = override
+	origin string
+}
+
+// ReadSetEntry is the public shape of one resolved read-set leg: the
+// namespace, why it's in the read-set (Origin, one of the Origin constants
+// above), and any tier restriction applied to it (nil = the request's own
+// tier filter). Recall and Briefing expose the resolved read-set through this
+// type via their ReadSet out-param (mirroring the Degraded out-param
+// pattern), and ResolveReadSetInfo returns it directly for the read-set
+// introspection endpoint (T6).
+type ReadSetEntry struct {
+	NS     string
+	Origin string
+	Tiers  []memory.Tier
+}
+
+// toReadSetEntries maps resolved internal scopeEntry legs to the public
+// ReadSetEntry shape, preserving order.
+func toReadSetEntries(entries []scopeEntry) []ReadSetEntry {
+	out := make([]ReadSetEntry, len(entries))
+	for i, e := range entries {
+		out[i] = ReadSetEntry{NS: e.ns, Origin: e.origin, Tiers: e.tiers}
+	}
+	return out
+}
+
+// resolveReadSetForTiers resolves the default read-set (no scope/explicit
+// override) for ns/home, filtered by the given tier request, and maps it to
+// the public ReadSetEntry shape. Shared by ResolveReadSetInfo (reqTiers nil:
+// the full durable set) and Answer's ReadSet out-param (reqTiers: the
+// answer's own Tiers filter, matching what its internal recalls actually
+// search — see AnswerInput.ReadSet).
+func (s *Service) resolveReadSetForTiers(ctx context.Context, ns, home string, tiers []memory.Tier) ([]ReadSetEntry, error) {
+	entries, err := s.resolveReadSet(ctx, readScope{primary: ns, home: home, reqTiers: tiers})
+	if err != nil {
+		return nil, err
+	}
+	return toReadSetEntries(entries), nil
+}
+
+// ResolveReadSetInfo resolves the default read-set for ns (request
+// namespace) and home (caller's personal namespace) — the same cascade
+// Recall and Briefing use with no scope/explicit-namespace override — as the
+// public ReadSetEntry shape. Used by the read-set introspection endpoint
+// (T6).
+func (s *Service) ResolveReadSetInfo(ctx context.Context, ns, home string) ([]ReadSetEntry, error) {
+	return s.resolveReadSetForTiers(ctx, ns, home, nil)
 }
 
 // readScope carries the scope-control inputs a read accepts.
@@ -51,7 +118,7 @@ func (s *Service) resolveReadSet(ctx context.Context, sc readScope) ([]scopeEntr
 	var entries []scopeEntry
 	var err error
 	if len(sc.explicit) > 0 {
-		entries, err = s.resolveExplicitReadSet(ctx, sc.explicit)
+		entries, err = s.resolveExplicitReadSet(ctx, sc.primary, sc.explicit)
 	} else {
 		entries, err = s.resolveDefaultReadSet(ctx, sc)
 	}
@@ -131,9 +198,12 @@ func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]sc
 		}
 		names = subtreeFrom(list, sc.primary)
 	}
+	// Primary and every member of its subtree expansion are origin "primary":
+	// scope=subtree widens what the primary leg covers, it isn't a cascade leg
+	// of its own — see the Origin constants' doc comment.
 	entries := make([]scopeEntry, len(names))
 	for i, n := range names {
-		entries[i] = scopeEntry{ns: n}
+		entries[i] = scopeEntry{ns: n, origin: OriginPrimary}
 	}
 
 	if sc.bare {
@@ -141,12 +211,16 @@ func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]sc
 		return entries, nil
 	}
 
-	// addEntry merges ns into entries with the given tier override. When ns is
-	// already present (primary, a subtree member, or an earlier cascade leg),
-	// the wider entry always wins: an incoming nil (full) tier override
-	// widens an existing narrower one in place, but a narrower incoming
-	// override never displaces an existing nil one.
-	addEntry := func(ns string, tiers []memory.Tier) {
+	// addEntry merges ns into entries with the given tier override and origin.
+	// When ns is already present (primary, a subtree member, or an earlier
+	// cascade leg), the wider entry always wins: an incoming nil (full) tier
+	// override widens an existing narrower one in place, but a narrower
+	// incoming override never displaces an existing nil one. Origin, by
+	// contrast, is recorded once — at first append — and never overwritten:
+	// an ancestor that also happens to be the home namespace keeps origin
+	// "ancestor", not "home", because that's the leg that put it in the
+	// read-set first.
+	addEntry := func(ns string, tiers []memory.Tier, origin string) {
 		for i := range entries {
 			if entries[i].ns == ns {
 				if tiers == nil {
@@ -155,7 +229,7 @@ func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]sc
 				return
 			}
 		}
-		entries = append(entries, scopeEntry{ns: ns, tiers: tiers})
+		entries = append(entries, scopeEntry{ns: ns, tiers: tiers, origin: origin})
 	}
 
 	gt := durableTiers(sc.reqTiers)
@@ -169,12 +243,12 @@ func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]sc
 
 	// Ancestors: every proper path prefix of primary, nearest first.
 	for _, a := range ancestorsOf(sc.primary) {
-		addEntry(a, gt)
+		addEntry(a, gt, OriginAncestor)
 	}
 
 	// Home: the caller's personal namespace, when configured.
 	if sc.home != "" {
-		addEntry(sc.home, gt)
+		addEntry(sc.home, gt, OriginHome)
 	}
 
 	// Links: stored one-hop read edges from primary. Optional capability —
@@ -192,7 +266,7 @@ func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]sc
 				// global tier rule means it contributes nothing.
 				continue
 			}
-			addEntry(l.Dst, tiers)
+			addEntry(l.Dst, tiers, OriginLink)
 		}
 	}
 
@@ -218,8 +292,9 @@ func subtreeFrom(all []string, root string) []string {
 // ending in "/*" expands to the bare namespace plus every namespace strictly
 // nested under it (mirrors subtreeFrom); every entry keeps nil tiers, i.e.
 // the request's own tier filter, not the default cascade's durable-only
-// override.
-func (s *Service) resolveExplicitReadSet(ctx context.Context, raw []string) ([]scopeEntry, error) {
+// override. Each entry's origin is "call", except primary itself — which is
+// always "primary", even when the caller listed it explicitly.
+func (s *Service) resolveExplicitReadSet(ctx context.Context, primary string, raw []string) ([]scopeEntry, error) {
 	if len(raw) > readSetMaxExplicit {
 		return nil, invalidInputf("read-set: %d namespaces exceeds the %d entry cap", len(raw), readSetMaxExplicit)
 	}
@@ -245,7 +320,11 @@ func (s *Service) resolveExplicitReadSet(ctx context.Context, raw []string) ([]s
 	add := func(ns string) {
 		if !seen[ns] {
 			seen[ns] = true
-			entries = append(entries, scopeEntry{ns: ns})
+			origin := OriginCall
+			if ns == primary {
+				origin = OriginPrimary
+			}
+			entries = append(entries, scopeEntry{ns: ns, origin: origin})
 		}
 	}
 	for _, r := range raw {

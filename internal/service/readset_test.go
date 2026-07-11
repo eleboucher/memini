@@ -709,3 +709,144 @@ func TestResolveReadSetNoListNamespacesUnlessSubtreeOrPattern(t *testing.T) {
 		t.Fatalf("ancestor resolution made %d ListNamespaces calls, want 0", counting.calls)
 	}
 }
+
+// --- origin provenance (T5) -------------------------------------------------
+
+// TestResolveReadSetOriginsAllFiveKinds resolves a read-set that exercises
+// every origin in one shot — primary, ancestor, home, link, and (on the
+// explicit path) call — and asserts each leg's recorded origin matches where
+// it was appended, not some re-derived guess.
+func TestResolveReadSetOriginsAllFiveKinds(t *testing.T) {
+	svc, st := newReadsetSvc(t)
+	putLink(t, st, "acme/phoenix/api", "shared/golang", nil)
+
+	got, err := svc.resolveReadSet(context.Background(), readScope{
+		primary: "acme/phoenix/api", home: "personal/kit",
+	})
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	wantOrigin := map[string]string{
+		"acme/phoenix/api": OriginPrimary,
+		"acme/phoenix":     OriginAncestor,
+		"acme":             OriginAncestor,
+		"personal/kit":     OriginHome,
+		"shared/golang":    OriginLink,
+	}
+	if len(got) != len(wantOrigin) {
+		t.Fatalf("resolveReadSet entries = %v, want namespaces %v", namespacesOf(got), wantOrigin)
+	}
+	for ns, want := range wantOrigin {
+		e, ok := entryFor(got, ns)
+		if !ok {
+			t.Fatalf("namespace %q missing from read-set", ns)
+		}
+		if e.origin != want {
+			t.Fatalf("origin(%q) = %q, want %q", ns, e.origin, want)
+		}
+	}
+
+	// Explicit (per-call) path: a non-primary entry gets "call"; the primary
+	// namespace itself is always "primary" even here.
+	got, err = svc.resolveReadSet(context.Background(), readScope{
+		primary: "acme/phoenix/api", explicit: []string{"acme/phoenix/api", "other/ns"},
+	})
+	if err != nil {
+		t.Fatalf("resolveReadSet (explicit): %v", err)
+	}
+	e, ok := entryFor(got, "acme/phoenix/api")
+	if !ok || e.origin != OriginPrimary {
+		t.Fatalf("explicit primary entry origin = %+v, ok=%v, want %q", e, ok, OriginPrimary)
+	}
+	e, ok = entryFor(got, "other/ns")
+	if !ok || e.origin != OriginCall {
+		t.Fatalf("explicit non-primary entry origin = %+v, ok=%v, want %q", e, ok, OriginCall)
+	}
+}
+
+// TestResolveReadSetSubtreeMembersAreOriginPrimary: subtree expansion of the
+// primary namespace is treated as part of the primary leg — every subtree
+// member gets origin "primary", not a distinct origin of its own.
+func TestResolveReadSetSubtreeMembersAreOriginPrimary(t *testing.T) {
+	svc, st := newReadsetSvc(t)
+	seedNamespace(t, st, "acme")
+	seedNamespace(t, st, "acme/phoenix")
+	seedNamespace(t, st, "acme/phoenix/api")
+
+	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "acme", subtree: true})
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	for _, ns := range []string{"acme", "acme/phoenix", "acme/phoenix/api"} {
+		e, ok := entryFor(got, ns)
+		if !ok || e.origin != OriginPrimary {
+			t.Fatalf("subtree member %q origin = %+v, ok=%v, want %q", ns, e, ok, OriginPrimary)
+		}
+	}
+}
+
+// TestResolveReadSetOriginFirstAppendWins: when addEntry widens an existing
+// entry's tiers (home landing on a namespace already present as an ancestor),
+// the origin recorded at first append is kept — origin is never re-derived
+// or overwritten by a later leg touching the same namespace.
+func TestResolveReadSetOriginFirstAppendWins(t *testing.T) {
+	svc, _ := newReadsetSvc(t)
+	got, err := svc.resolveReadSet(context.Background(), readScope{
+		primary: "acme/phoenix/api", home: "acme/phoenix", // home == an ancestor
+	})
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	e, ok := entryFor(got, "acme/phoenix")
+	if !ok || e.origin != OriginAncestor {
+		t.Fatalf("acme/phoenix origin = %+v, ok=%v, want %q (ancestor appended first)", e, ok, OriginAncestor)
+	}
+}
+
+// TestToReadSetEntriesMapsOriginAndTiers pins the public mapping from the
+// internal scopeEntry slice to the public ReadSetEntry shape T6's read-set
+// endpoint (and Recall/Briefing's out-params) consume.
+func TestToReadSetEntriesMapsOriginAndTiers(t *testing.T) {
+	entries := []scopeEntry{
+		{ns: "acme", origin: OriginPrimary},
+		{ns: "shared/golang", origin: OriginLink, tiers: []memory.Tier{memory.TierSemantic}},
+	}
+	got := toReadSetEntries(entries)
+	want := []ReadSetEntry{
+		{NS: "acme", Origin: OriginPrimary},
+		{NS: "shared/golang", Origin: OriginLink, Tiers: []memory.Tier{memory.TierSemantic}},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("toReadSetEntries = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i].NS != want[i].NS || got[i].Origin != want[i].Origin || !tiersEqual(got[i].Tiers, want[i].Tiers) {
+			t.Fatalf("toReadSetEntries[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestResolveReadSetInfoDefaultScope pins the public
+// ResolveReadSetInfo(ctx, ns, home) wrapper T6's read-set endpoint calls:
+// default-scope resolution (no explicit/subtree override) mapped to
+// []ReadSetEntry.
+func TestResolveReadSetInfoDefaultScope(t *testing.T) {
+	svc, _ := newReadsetSvc(t)
+	got, err := svc.ResolveReadSetInfo(context.Background(), "acme/phoenix", "personal/kit")
+	if err != nil {
+		t.Fatalf("ResolveReadSetInfo: %v", err)
+	}
+	want := map[string]string{
+		"acme/phoenix": OriginPrimary,
+		"acme":         OriginAncestor,
+		"personal/kit": OriginHome,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ResolveReadSetInfo = %+v, want namespaces %v", got, want)
+	}
+	for _, e := range got {
+		if want[e.NS] != e.Origin {
+			t.Fatalf("ResolveReadSetInfo[%s].Origin = %q, want %q", e.NS, e.Origin, want[e.NS])
+		}
+	}
+}
