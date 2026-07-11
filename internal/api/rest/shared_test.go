@@ -16,6 +16,7 @@ import (
 	"github.com/eleboucher/memini/internal/embed/embedtest"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/service"
+	"github.com/eleboucher/memini/internal/store"
 	"github.com/eleboucher/memini/internal/store/sqlitevec"
 )
 
@@ -170,4 +171,115 @@ func TestHomeHeaderNormalizedIdenticallyAcrossSurfaces(t *testing.T) {
 		t.Fatalf("MCP HTTP: raw home %q should normalize to Work/Proj exactly like REST, got %+v",
 			rawHome, mcpOut.Results)
 	}
+}
+
+// TestBoundKeyHomeOverrideIdenticalAcrossSurfaces pins cross-transport parity
+// for the K2 bound-key precedence: a table key bound to a home namespace
+// (APIKey.HomeNS) must win over a CONFLICTING X-Memini-Home header on both
+// REST and MCP HTTP for the exact same key + headers. Before this test, the
+// two surfaces implemented auth independently (REST's authMiddleware vs
+// MCP's HTTPHandler home capture) and could drift; both now resolve through
+// the shared internal/apiauth.Config, and this test is the guarantee that
+// stays true.
+func TestBoundKeyHomeOverrideIdenticalAcrossSurfaces(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "bound-home-parity.db"), dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	var ks store.APIKeyStore = st
+	if err := ks.PutAPIKey(ctx, store.APIKey{
+		Name: "bound-parity-bot", Hash: hashOf("tok-bound-parity"), HomeNS: "acme/parityhome",
+	}); err != nil {
+		t.Fatalf("PutAPIKey: %v", err)
+	}
+	svc := service.New(st, embedtest.New(dims))
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "acme/parityhome", Content: "the release runbook lives in confluence", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("seed remember: %v", err)
+	}
+	const conflictingHome = "someone/elses/home"
+
+	// REST: search from an unrelated namespace with a conflicting home header
+	// and the bound key as the bearer.
+	r := chi.NewRouter()
+	rest.New(svc, rest.AuthConfig{
+		APIKeyStore: ks, NamespaceHeader: nsHdr, DefaultNamespace: "default", HomeHeader: homeHdr,
+	}).Mount(r)
+	rec := doHome(t, r, http.MethodPost, "/v1/search", "acme/unrelated", conflictingHome, "tok-bound-parity", map[string]any{
+		"query": "release runbook", "limit": 5,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("REST search: want 200 (never 400 for the conflict), got %d (%s)", rec.Code, rec.Body)
+	}
+	var restOut struct {
+		Results []struct {
+			Memory struct {
+				Namespace string `json:"namespace"`
+			} `json:"memory"`
+		} `json:"results"`
+	}
+	mustJSON(t, rec, &restOut)
+	if len(restOut.Results) != 1 || restOut.Results[0].Memory.Namespace != "acme/parityhome" {
+		t.Fatalf("REST: bound key home must win over the conflicting header, got %+v", restOut.Results)
+	}
+
+	// MCP over real HTTP: identical key, identical conflicting header.
+	h := meminimcp.HTTPHandler(svc, nsHdr, "default", homeHdr, "", ks)
+	hs := httptest.NewServer(h)
+	t.Cleanup(hs.Close)
+	transport := &mcpsdk.StreamableClientTransport{
+		Endpoint: hs.URL,
+		HTTPClient: &http.Client{Transport: tokenRoundTripperShared{
+			ns: "acme/unrelated", home: conflictingHome, token: "tok-bound-parity",
+		}},
+		DisableStandaloneSSE: true,
+	}
+	cs, err := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "t", Version: "0"}, nil).Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("mcp connect: %v", err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_recall",
+		Arguments: map[string]any{"query": "release runbook", "limit": 5},
+	})
+	if err != nil {
+		t.Fatalf("mcp recall: %v", err)
+	}
+	var mcpOut struct {
+		Results []struct {
+			Namespace string `json:"namespace"`
+		} `json:"results"`
+	}
+	b, _ := json.Marshal(res.StructuredContent)
+	if err := json.Unmarshal(b, &mcpOut); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(mcpOut.Results) != 1 || mcpOut.Results[0].Namespace != "acme/parityhome" {
+		t.Fatalf("MCP HTTP: bound key home must win over the conflicting header exactly like REST, got %+v",
+			mcpOut.Results)
+	}
+}
+
+// tokenRoundTripperShared injects fixed X-Memini-Namespace/X-Memini-Home/
+// Authorization headers, local to this file to avoid depending on the
+// mcp_test package's own tokenRoundTripper (different Go package).
+type tokenRoundTripperShared struct {
+	ns, home, token string
+}
+
+func (t tokenRoundTripperShared) RoundTrip(r *http.Request) (*http.Response, error) {
+	if t.ns != "" {
+		r.Header.Set(nsHdr, t.ns)
+	}
+	if t.home != "" {
+		r.Header.Set(homeHdr, t.home)
+	}
+	if t.token != "" {
+		r.Header.Set("Authorization", "Bearer "+t.token)
+	}
+	return http.DefaultTransport.RoundTrip(r)
 }

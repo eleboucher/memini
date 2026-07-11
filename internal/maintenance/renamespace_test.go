@@ -204,6 +204,97 @@ func TestMoveReportsMovedOnLinkRenameFailure(t *testing.T) {
 	}
 }
 
+// TestMoveRenamesAPIKeyNamespaces verifies the K2 companion to
+// TestMoveRenamesLinkEndpoints: Move rewrites api_keys rows whose home_ns or
+// default_ns matches the moved namespace, since Reassign only relocates
+// memories and RenameAPIKeyNamespaces is keyed by namespace, not memory ID.
+func TestMoveRenamesAPIKeyNamespaces(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "m.db"), 4)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	seedPooled(t, st, "old", map[string]string{"x": ""})
+
+	var ks store.APIKeyStore = st
+	now := time.Now().UTC()
+	if err := ks.PutAPIKey(ctx, store.APIKey{Name: "home-bot", Hash: "h1", HomeNS: "old", CreatedAt: now}); err != nil {
+		t.Fatalf("put home key: %v", err)
+	}
+	if err := ks.PutAPIKey(ctx, store.APIKey{Name: "default-bot", Hash: "h2", DefaultNS: "old", CreatedAt: now}); err != nil {
+		t.Fatalf("put default key: %v", err)
+	}
+	if err := ks.PutAPIKey(ctx, store.APIKey{Name: "unrelated-bot", Hash: "h3", HomeNS: "other", CreatedAt: now}); err != nil {
+		t.Fatalf("put unrelated key: %v", err)
+	}
+
+	if _, err := maintenance.Move(ctx, st, "old", "new", false); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+
+	all, err := ks.ListAPIKeys(ctx)
+	if err != nil {
+		t.Fatalf("list api keys: %v", err)
+	}
+	byName := map[string]store.APIKey{}
+	for _, k := range all {
+		byName[k.Name] = k
+	}
+	if got := byName["home-bot"].HomeNS; got != "new" {
+		t.Errorf("home-bot.HomeNS = %q, want new", got)
+	}
+	if got := byName["default-bot"].DefaultNS; got != "new" {
+		t.Errorf("default-bot.DefaultNS = %q, want new", got)
+	}
+	if got := byName["unrelated-bot"].HomeNS; got != "other" {
+		t.Errorf("unrelated-bot.HomeNS = %q, want untouched other", got)
+	}
+}
+
+// failAPIKeyRenameStore wraps a real store but fails RenameAPIKeyNamespaces,
+// mirroring failRenameStore's link-rename failure test above.
+type failAPIKeyRenameStore struct {
+	store.Store
+	store.APIKeyStore
+}
+
+func (f *failAPIKeyRenameStore) RenameAPIKeyNamespaces(context.Context, string, string) error {
+	return errors.New("simulated api key rename failure")
+}
+
+// TestMoveReportsMovedOnAPIKeyRenameFailure mirrors
+// TestMoveReportsMovedOnLinkRenameFailure: a RenameAPIKeyNamespaces error
+// must surface alongside the true moved count, not a misleading zero.
+func TestMoveReportsMovedOnAPIKeyRenameFailure(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "m.db"), 4)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	seedPooled(t, st, "old", map[string]string{"x": "", "y": ""})
+
+	var ks store.APIKeyStore = st
+	frs := &failAPIKeyRenameStore{Store: st, APIKeyStore: ks}
+	rep, err := maintenance.Move(ctx, frs, "old", "new", false)
+	if err == nil {
+		t.Fatal("move with a failing api key rename should return the error")
+	}
+	if rep.Moved != 2 || rep.Targets["new"] != 2 {
+		t.Fatalf("report = %+v, want Moved=2 Targets[new]=2 despite the api key rename error", rep)
+	}
+	mems, err := st.List(ctx, "new", store.Filter{IncludeSuperseded: true, IncludeExpired: true}, 0)
+	if err != nil {
+		t.Fatalf("list new: %v", err)
+	}
+	if len(mems) != 2 {
+		t.Fatalf("new namespace has %d memories, want 2", len(mems))
+	}
+}
+
 func TestSplitSkipsInvalidTargets(t *testing.T) {
 	ctx := context.Background()
 	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "m.db"), 4)
