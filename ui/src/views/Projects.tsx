@@ -60,9 +60,11 @@ function projectLeaf(name: string): string {
 }
 
 // dropTarget computes the namespace a pod becomes when dropped on destNs.
+// An empty destNs (the shared flat section) un-tenants it to a bare leaf.
 // Returns "" when the drop is a no-op (dropped on its own direct parent).
 function dropTarget(draggedName: string, destNs: string): string {
-  const target = `${destNs}/${projectLeaf(draggedName)}`
+  const leaf = projectLeaf(draggedName)
+  const target = destNs ? `${destNs}/${leaf}` : leaf
   return target === draggedName ? '' : target
 }
 
@@ -110,6 +112,12 @@ export function Projects() {
 
   const projects = data ?? []
   const tree = buildTree(projects)
+  // Only a root node with actual children earns a full box; childless root
+  // leaves (flat namespaces like "docs" or "scratch") share one compact
+  // section of plain pods — the pre-tree "(no tenant)" look — instead of each
+  // spawning a box with a redundant single "(root)" pod inside.
+  const boxRoots = tree.filter((n) => n.children.length > 0)
+  const flatRoots = tree.filter((n) => n.children.length === 0)
 
   // Dropping a pod onto a box opens the Move drawer pre-filled with the
   // derived target, so the drag lands on a dry-run-first confirmation rather
@@ -125,15 +133,107 @@ export function Projects() {
         <Empty title="No projects" hint="Namespaces appear here once they hold memories." />
       ) : (
         <div class="tenant-list stagger">
-          {tree.map((n) => (
+          {boxRoots.map((n) => (
             <NsBox key={n.ns} node={n} onManage={(name) => setManage({ name })} onDropPod={onDropPod} />
           ))}
+          {flatRoots.length > 0 && (
+            <FlatSection nodes={flatRoots} onManage={(name) => setManage({ name })} onDropPod={onDropPod} />
+          )}
         </div>
       )}
       {manage && (
         <NamespaceDrawer name={manage.name} initialMoveTo={manage.moveTo} onClose={() => setManage(null)} />
       )}
     </div>
+  )
+}
+
+// FLAT_SECTION keys the shared flat-namespace section's persisted collapse
+// state — the same key the old "(no tenant)" bucket used, so a collapse saved
+// before the tree refactor still applies.
+const FLAT_SECTION = '(no tenant)'
+
+// FlatSection renders every childless top-level namespace as a plain pod in
+// one shared box, restoring the old compact "(no tenant)" list: three flat
+// namespaces are three pods in one grid, not three boxes with a redundant
+// "(root)" pod each. Dropping a pod here un-tenants it (bare leaf name).
+function FlatSection({
+  nodes,
+  onManage,
+  onDropPod,
+}: {
+  nodes: ProjectNode[]
+  onManage: (name: string) => void
+  onDropPod: (draggedName: string, destNs: string) => void
+}) {
+  const [dragOver, setDragOver] = useState(false)
+  const [collapsed, setCollapsed] = useState(() => loadCollapsed().has(FLAT_SECTION))
+  const { route: navigate } = useLocation()
+
+  const open = (ns: string) => {
+    namespace.value = ns
+    navigate('/')
+  }
+
+  const toggle = () => {
+    const set = loadCollapsed()
+    const next = !collapsed
+    if (next) set.add(FLAT_SECTION)
+    else set.delete(FLAT_SECTION)
+    saveCollapsed(set)
+    setCollapsed(next)
+  }
+
+  const total = nodes.reduce((s, n) => s + n.total, 0)
+
+  return (
+    <section
+      class={`tenant-box${dragOver ? ' drop-target' : ''}${collapsed ? ' collapsed' : ''}`}
+      onDragOver={(e) => {
+        if (e.dataTransfer?.types.includes(DRAG_MIME)) {
+          e.preventDefault()
+          e.dataTransfer.dropEffect = 'move'
+        }
+      }}
+      onDragEnter={(e) => {
+        e.stopPropagation()
+        setDragOver(true)
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOver(false)
+      }}
+      onDrop={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        setDragOver(false)
+        const dragged = e.dataTransfer?.getData(DRAG_MIME)
+        // '' destination = un-tenant to the bare leaf (see dropTarget).
+        if (dragged) onDropPod(dragged, '')
+      }}
+    >
+      <button
+        class="tenant-head"
+        aria-expanded={!collapsed}
+        aria-label={`${collapsed ? 'Expand' : 'Collapse'} top-level projects`}
+        onClick={toggle}
+      >
+        <span class={`tenant-chevron${collapsed ? ' collapsed' : ''}`} aria-hidden="true">
+          <IconChevron />
+        </span>
+        <span class="tenant-name">{FLAT_SECTION}</span>
+        <span class="tenant-count">
+          <span class="v">{num(total)}</span> memories · {nodes.length}{' '}
+          {nodes.length === 1 ? 'project' : 'projects'}
+        </span>
+      </button>
+      {!collapsed && (
+        <div class="pod-grid">
+          {nodes.map((n) => (
+            <Pod key={n.ns} name={n.ns} label={n.label} stats={n.stats} onOpen={() => open(n.ns)} onManage={onManage} />
+          ))}
+        </div>
+      )}
+    </section>
   )
 }
 
