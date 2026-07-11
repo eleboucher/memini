@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -222,5 +223,66 @@ func TestLoadLinksRejectsInvalidTier(t *testing.T) {
 	bad := []byte(`{"links":[{"src":"a","dst":"b","tiers":["bogus"]}]}`)
 	if _, err := loadLinks(importer.SourceMemini, bad); err == nil {
 		t.Fatal("expected an error for an invalid tier in an imported link")
+	}
+}
+
+// TestLoadLinksRejectsSelfLink pins that import enforces the same link
+// invariants as addLink/PutLink: a hand-edited export with src == dst must
+// fail loudly, naming the offending link, not restore an invalid row.
+func TestLoadLinksRejectsSelfLink(t *testing.T) {
+	bad := []byte(`{"links":[{"src":"acme/x","dst":"acme/x"}]}`)
+	if _, err := loadLinks(importer.SourceMemini, bad); err == nil {
+		t.Fatal("expected an error for a self-link in an imported export")
+	} else if !strings.Contains(err.Error(), "acme/x") {
+		t.Errorf("error should name the offending link, got: %v", err)
+	}
+
+	// Normalization must happen before the check: "acme/x/" and "acme/x"
+	// are the same namespace, so this too is a self-link.
+	sneaky := []byte(`{"links":[{"src":"acme/x/","dst":"acme/x"}]}`)
+	if _, err := loadLinks(importer.SourceMemini, sneaky); err == nil {
+		t.Fatal("expected a normalized self-link to be rejected on import")
+	}
+}
+
+// TestLoadLinksRejectsWildcardDst pins the "*"-is-reserved rule on import,
+// matching addLink and the REST PutLink handler.
+func TestLoadLinksRejectsWildcardDst(t *testing.T) {
+	bad := []byte(`{"links":[{"src":"acme/phoenix","dst":"acme/*"}]}`)
+	if _, err := loadLinks(importer.SourceMemini, bad); err == nil {
+		t.Fatal("expected a wildcard dst to be rejected on import")
+	}
+}
+
+// TestLoadLinksRejectsEmptyNamespace pins that a link with a missing or
+// empty src/dst fails validation on import (ValidateNamespace).
+func TestLoadLinksRejectsEmptyNamespace(t *testing.T) {
+	bad := []byte(`{"links":[{"src":"","dst":"acme/phoenix"}]}`)
+	if _, err := loadLinks(importer.SourceMemini, bad); err == nil {
+		t.Fatal("expected an empty src namespace to be rejected on import")
+	}
+}
+
+// TestLoadLinksNormalizesEndpoints pins that a valid link's src/dst are
+// normalized on import (trailing slashes stripped), so the restored row
+// matches what addLink would have written.
+func TestLoadLinksNormalizesEndpoints(t *testing.T) {
+	in := []byte(`{"links":[{"src":"acme/phoenix/","dst":"//shared/golang"}]}`)
+	links, err := loadLinks(importer.SourceMemini, in)
+	if err != nil {
+		t.Fatalf("loadLinks: %v", err)
+	}
+	if len(links) != 1 || links[0].Src != "acme/phoenix" || links[0].Dst != "shared/golang" {
+		t.Fatalf("endpoints should be normalized, got %+v", links)
+	}
+}
+
+// TestLoadLinksRejectsBadCreatedAt pins that an unparseable created_at fails
+// loudly (consistent with the invalid-tier failure) rather than silently
+// zeroing the timestamp.
+func TestLoadLinksRejectsBadCreatedAt(t *testing.T) {
+	bad := []byte(`{"links":[{"src":"acme/phoenix","dst":"shared/golang","created_at":"not-a-time"}]}`)
+	if _, err := loadLinks(importer.SourceMemini, bad); err == nil {
+		t.Fatal("expected an unparseable created_at to be rejected on import")
 	}
 }

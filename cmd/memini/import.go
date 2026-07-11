@@ -392,24 +392,35 @@ func loadLinks(src importer.Source, data []byte) ([]store.NamespaceLink, error) 
 }
 
 // fromExportLink converts an export document's link shape back into a
-// store.NamespaceLink, validating tier names the way addLink (link.go) does
-// for the CLI's own writes.
+// store.NamespaceLink, enforcing the same invariants as addLink (link.go)
+// via the shared validateLinkEndpoints — normalize src/dst, reject "*" in
+// dst, reject self-links — plus tier-name validation, so a hand-edited
+// export cannot restore a link the CLI/REST write path would refuse. Every
+// failure names the offending link. An unparseable created_at fails loudly
+// too (consistent with the bad-tier failure) rather than silently zeroing
+// the timestamp.
 func fromExportLink(el exportLink) (store.NamespaceLink, error) {
-	l := store.NamespaceLink{Src: el.Src, Dst: el.Dst, Note: el.Note}
+	src, dst, err := validateLinkEndpoints(el.Src, el.Dst)
+	if err != nil {
+		return store.NamespaceLink{}, fmt.Errorf("import: link %q -> %q: %w", el.Src, el.Dst, err)
+	}
+	l := store.NamespaceLink{Src: src, Dst: dst, Note: el.Note}
 	if len(el.Tiers) > 0 {
 		l.Tiers = make([]memory.Tier, 0, len(el.Tiers))
 		for _, t := range el.Tiers {
 			mt := memory.Tier(t)
 			if !mt.Valid() {
-				return store.NamespaceLink{}, fmt.Errorf("import: link %s -> %s: invalid tier %q", el.Src, el.Dst, t)
+				return store.NamespaceLink{}, fmt.Errorf("import: link %q -> %q: invalid tier %q", el.Src, el.Dst, t)
 			}
 			l.Tiers = append(l.Tiers, mt)
 		}
 	}
 	if el.CreatedAt != "" {
-		if t, err := time.Parse(time.RFC3339Nano, el.CreatedAt); err == nil {
-			l.CreatedAt = t
+		t, err := time.Parse(time.RFC3339Nano, el.CreatedAt)
+		if err != nil {
+			return store.NamespaceLink{}, fmt.Errorf("import: link %q -> %q: invalid created_at %q: %w", el.Src, el.Dst, el.CreatedAt, err)
 		}
+		l.CreatedAt = t
 	}
 	return l, nil
 }

@@ -104,24 +104,38 @@ func parseLinkTiers(csv string) ([]memory.Tier, error) {
 	return tiers, nil
 }
 
-// addLink validates src/dst/tiers and upserts the link, mirroring PutLink's
-// REST validation (rest.go PutLink ~L1559-1571): normalize both namespaces,
-// reject "*" in dst (reserved for read-set patterns), and reject self-links.
-// dst is not required to already hold memories — namespaces exist implicitly.
-func addLink(ctx context.Context, ls store.LinkStore, src, dst, tiersCSV, note string) (store.NamespaceLink, error) {
+// validateLinkEndpoints normalizes and validates a link's src/dst pair,
+// enforcing the same invariants as the REST PutLink handler (rest.go
+// PutLink ~L591-620): both namespaces normalize+validate, "*" is rejected
+// in dst (reserved for read-set patterns), and self-links are rejected —
+// after normalization, so "acme/x/" vs "acme/x" is still a self-link.
+// Shared by addLink (CLI writes) and fromExportLink (import restores,
+// import.go), so no write path can bypass the invariants.
+func validateLinkEndpoints(src, dst string) (string, string, error) {
 	src, err := normalizeLinkNamespace(src)
 	if err != nil {
-		return store.NamespaceLink{}, err
+		return "", "", err
 	}
 	dst, err = normalizeLinkNamespace(dst)
 	if err != nil {
-		return store.NamespaceLink{}, err
+		return "", "", err
 	}
 	if strings.Contains(dst, "*") {
-		return store.NamespaceLink{}, fmt.Errorf(`invalid dst namespace: "*" is reserved for read-set patterns`)
+		return "", "", fmt.Errorf(`invalid dst namespace: "*" is reserved for read-set patterns`)
 	}
 	if dst == src {
-		return store.NamespaceLink{}, fmt.Errorf("dst namespace equals src namespace (no self-links)")
+		return "", "", fmt.Errorf("dst namespace equals src namespace (no self-links)")
+	}
+	return src, dst, nil
+}
+
+// addLink validates src/dst/tiers and upserts the link, mirroring PutLink's
+// REST validation (see validateLinkEndpoints). dst is not required to
+// already hold memories — namespaces exist implicitly.
+func addLink(ctx context.Context, ls store.LinkStore, src, dst, tiersCSV, note string) (store.NamespaceLink, error) {
+	src, dst, err := validateLinkEndpoints(src, dst)
+	if err != nil {
+		return store.NamespaceLink{}, err
 	}
 	tiers, err := parseLinkTiers(tiersCSV)
 	if err != nil {

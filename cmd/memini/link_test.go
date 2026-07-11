@@ -130,15 +130,23 @@ func TestAddLinkUpsertIdempotent(t *testing.T) {
 
 // TestAddLinkAllowsMissingDestinationNamespace pins the by-design behavior
 // that a link may point at a namespace holding no memories yet (namespaces
-// exist implicitly).
+// exist implicitly), and that the row is actually persisted.
 func TestAddLinkAllowsMissingDestinationNamespace(t *testing.T) {
 	st := openTestStore(t)
 	ls, err := linkStoreOf(st)
 	if err != nil {
 		t.Fatalf("linkStoreOf: %v", err)
 	}
-	if _, err := addLink(context.Background(), ls, "acme/phoenix", "acme/not-yet-created", "", ""); err != nil {
+	ctx := context.Background()
+	if _, err := addLink(ctx, ls, "acme/phoenix", "acme/not-yet-created", "", ""); err != nil {
 		t.Fatalf("linking to a not-yet-existing namespace should be allowed: %v", err)
+	}
+	links, err := ls.ListLinks(ctx, "acme/phoenix")
+	if err != nil {
+		t.Fatalf("ListLinks: %v", err)
+	}
+	if len(links) != 1 || links[0].Src != "acme/phoenix" || links[0].Dst != "acme/not-yet-created" {
+		t.Fatalf("stored link mismatch: %+v", links)
 	}
 }
 
