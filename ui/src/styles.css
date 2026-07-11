@@ -764,6 +764,20 @@ label.field .desc {
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 12px;
 }
+/* A box nested inside another box (e.g. "acme/phoenix" inside "acme") — an
+   indented, left-rule sub-list so multi-level namespace paths (down to
+   "acme/phoenix/api" and beyond) read as a hierarchy rather than a flat pod. */
+.tenant-list.nested {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 14px;
+  padding-left: 20px;
+  border-left: 2px solid var(--line);
+}
+.tenant-box .tenant-box .tenant-name {
+  font-size: 17px;
+}
 .pod {
   text-align: left;
   font-family: var(--font-ui);

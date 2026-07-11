@@ -8,15 +8,7 @@ import type { Memory, Tier } from '../types'
 import { MemoryDrawer } from '../components/MemoryDrawer'
 import { Loading, ErrorBanner, Empty } from '../components/States'
 import { TIERS } from '../types'
-import { tierColor } from '../util'
-
-// NO_TENANT labels memories in a flat (no-slash) namespace, which have no
-// tenant segment. tenantOf derives the tenant from a namespace's first segment.
-const NO_TENANT = '(no tenant)'
-function tenantOf(ns: string): string {
-  const i = ns.indexOf('/')
-  return i === -1 ? NO_TENANT : ns.slice(0, i)
-}
+import { tierColor, rootOf } from '../util'
 
 interface GNode {
   id: string
@@ -91,11 +83,10 @@ export function Graph() {
     [namespace.value, refreshNonce.value],
   )
   const memories = data ?? []
-  // Distinct tenants present in the loaded memories, for the filter dropdown.
-  const tenantList = [...new Set(memories.map((m) => tenantOf(m.namespace)))].sort((a, b) =>
-    a === NO_TENANT ? 1 : b === NO_TENANT ? -1 : a.localeCompare(b),
-  )
-  const filtered = tenant ? memories.filter((m) => tenantOf(m.namespace) === tenant) : memories
+  // Distinct top-level roots present in the loaded memories, for the filter
+  // dropdown (e.g. "acme" for both "acme" and "acme/phoenix/api").
+  const tenantList = [...new Set(memories.map((m) => rootOf(m.namespace)))].sort((a, b) => a.localeCompare(b))
+  const filtered = tenant ? memories.filter((m) => rootOf(m.namespace) === tenant) : memories
 
   useEffect(() => {
     const host = hostRef.current

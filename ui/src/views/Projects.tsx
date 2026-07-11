@@ -4,16 +4,14 @@ import { api } from '../api'
 import { namespace, refreshNonce, refresh } from '../store'
 import { useAsync } from '../hooks'
 import { TIERS, type Stats } from '../types'
-import { tierColor, relTime, num } from '../util'
+import { tierColor, relTime, num, nsTree, type NsNode } from '../util'
 import { Loading, ErrorBanner, Empty } from '../components/States'
 import { NamespaceDrawer } from '../components/NamespaceDrawer'
 import { IconTrash, IconSettings, IconChevron } from '../icons'
 
-// NO_TENANT groups flat (no-slash) namespaces, which have no tenant segment.
-const NO_TENANT = '(no tenant)'
-
-// Collapsed tenant boxes persist across reloads so navigation stays where the
-// user left it.
+// Collapsed namespace boxes persist across reloads (keyed by the box's full
+// namespace path, so collapsing "acme/phoenix" doesn't also collapse "acme")
+// so navigation stays where the user left it.
 const COLLAPSE_KEY = 'memini.collapsedTenants'
 function loadCollapsed(): Set<string> {
   try {
@@ -35,80 +33,58 @@ function saveCollapsed(set: Set<string>) {
 const DRAG_MIME = 'application/x-memini-namespace'
 
 interface Project {
-  name: string // full stored namespace, e.g. "work/memini/reviewer"
+  name: string // full stored namespace, e.g. "acme/phoenix/api"
   stats: Stats | null
 }
 
-interface Tenant {
-  tenant: string // display label for the k8s-style namespace box
-  total: number // memories summed across the tenant's projects
-  projects: { name: string; label: string; stats: Stats | null }[]
+// ProjectNode augments the plain nsTree() shape with the stats for `ns` (when
+// it holds memories of its own) and a recursive `total` across the whole
+// subtree, so a box's header can show an aggregate count without re-walking
+// its children on every render.
+interface ProjectNode {
+  ns: string
+  label: string // the last path segment ("api" for "acme/phoenix/api")
+  leaf: boolean
+  stats: Stats | null
+  total: number
+  children: ProjectNode[]
 }
 
-// projectLeaf is the part of a namespace after its tenant segment (the first
-// slash), or the whole name when it has none. Dropping a pod onto a tenant box
-// re-homes it as "<destTenant>/<leaf>", preserving any sub-path.
+// projectLeaf is the last path segment of a namespace, or the whole name when
+// it has none. Dropping a pod onto a box re-homes it as "<destNs>/<leaf>" —
+// i.e. it becomes a direct child of the box it was dropped on, regardless of
+// how deep it used to sit under its old parent.
 function projectLeaf(name: string): string {
-  const slash = name.indexOf('/')
+  const slash = name.lastIndexOf('/')
   return slash === -1 ? name : name.slice(slash + 1)
 }
 
-// dropTarget computes the namespace a pod becomes when dropped on destTenant.
-// The NO_TENANT bucket un-tenants it (bare leaf). Returns "" when the drop is a
-// no-op (same namespace, i.e. dropped on its own tenant).
-function dropTarget(draggedName: string, destTenant: string): string {
-  const leaf = projectLeaf(draggedName)
-  const target = destTenant === NO_TENANT ? leaf : `${destTenant}/${leaf}`
+// dropTarget computes the namespace a pod becomes when dropped on destNs.
+// Returns "" when the drop is a no-op (dropped on its own direct parent).
+function dropTarget(draggedName: string, destNs: string): string {
+  const target = `${destNs}/${projectLeaf(draggedName)}`
   return target === draggedName ? '' : target
 }
 
-// groupByTenant buckets namespaces by their first path segment (the tenant),
-// modeled as k8s namespaces; each namespace under it becomes a "pod" labeled by
-// the remaining path. A flat (no-slash) namespace that equals an existing
-// tenant (e.g. "work" alongside "work/memini") joins that tenant's box as a
-// "(root)" pod rather than the NO_TENANT bucket; a flat namespace with no
-// matching tenant falls under NO_TENANT. Tenants and pods are sorted
-// alphabetically, with NO_TENANT last.
-function groupByTenant(projects: Project[]): Tenant[] {
-  // First pass: the set of tenants that have at least one hierarchical member,
-  // so a bare "work" can be recognized as that tenant's root.
-  const hierarchicalTenants = new Set<string>()
-  for (const p of projects) {
-    const slash = p.name.indexOf('/')
-    if (slash !== -1) hierarchicalTenants.add(p.name.slice(0, slash))
+// buildTree turns the flat project list into the namespace hierarchy (via
+// nsTree), attaching each node's own stats (when it's a real, leaf namespace)
+// and a recursive memory total across its subtree.
+function buildTree(projects: Project[]): ProjectNode[] {
+  const statsByNs = new Map(projects.map((p) => [p.name, p.stats]))
+  const attach = (n: NsNode): ProjectNode => {
+    const children = n.children.map(attach)
+    const stats = n.leaf ? (statsByNs.get(n.ns) ?? null) : null
+    const total = (stats?.total ?? 0) + children.reduce((s, c) => s + c.total, 0)
+    const slash = n.ns.lastIndexOf('/')
+    return { ns: n.ns, label: slash === -1 ? n.ns : n.ns.slice(slash + 1), leaf: n.leaf, stats, total, children }
   }
+  return nsTree(projects.map((p) => p.name)).map(attach)
+}
 
-  const byTenant = new Map<string, Tenant>()
-  for (const p of projects) {
-    const slash = p.name.indexOf('/')
-    let tenant: string
-    let label: string
-    if (slash !== -1) {
-      tenant = p.name.slice(0, slash)
-      label = p.name.slice(slash + 1)
-    } else if (hierarchicalTenants.has(p.name)) {
-      tenant = p.name // the tenant root itself holds memories directly
-      label = '(root)'
-    } else {
-      tenant = NO_TENANT
-      label = p.name
-    }
-    let t = byTenant.get(tenant)
-    if (!t) {
-      t = { tenant, total: 0, projects: [] }
-      byTenant.set(tenant, t)
-    }
-    t.total += p.stats?.total ?? 0
-    t.projects.push({ name: p.name, label, stats: p.stats })
-  }
-  const tenants = [...byTenant.values()]
-  tenants.sort((a, b) => {
-    if (a.tenant === NO_TENANT) return 1
-    if (b.tenant === NO_TENANT) return -1
-    return a.tenant.localeCompare(b.tenant)
-  })
-  for (const t of tenants) t.projects.sort((a, b) => a.label.localeCompare(b.label))
-  return tenants
+// countProjects is the number of real (leaf) namespaces in a node's subtree,
+// including the node itself.
+function countProjects(node: ProjectNode): number {
+  return (node.leaf ? 1 : 0) + node.children.reduce((s, c) => s + countProjects(c), 0)
 }
 
 // ManageTarget is the namespace whose Move/Split drawer is open, optionally with
@@ -125,21 +101,21 @@ export function Projects() {
     return names.map((name, i) => ({ name, stats: stats[i] }))
   }, [refreshNonce.value])
 
-  // The Move/Split drawer is lifted here (not per-pod) so a drop on any tenant
-  // box can open it for the dragged pod, which may live in a different box.
+  // The Move/Split drawer is lifted here (not per-pod) so a drop on any box
+  // can open it for the dragged pod, which may live in a different box.
   const [manage, setManage] = useState<ManageTarget | null>(null)
 
   if (loading && !data) return <div class="view"><Loading /></div>
   if (error) return <div class="view"><ErrorBanner message={error} /></div>
 
   const projects = data ?? []
-  const tenants = groupByTenant(projects)
+  const tree = buildTree(projects)
 
-  // Dropping a pod onto a tenant box opens the Move drawer pre-filled with the
+  // Dropping a pod onto a box opens the Move drawer pre-filled with the
   // derived target, so the drag lands on a dry-run-first confirmation rather
-  // than a silent bulk move. A no-op target (own tenant) is ignored.
-  const onDropPod = (draggedName: string, destTenant: string) => {
-    const target = dropTarget(draggedName, destTenant)
+  // than a silent bulk move. A no-op target (own parent) is ignored.
+  const onDropPod = (draggedName: string, destNs: string) => {
+    const target = dropTarget(draggedName, destNs)
     if (target) setManage({ name: draggedName, moveTo: target })
   }
 
@@ -149,8 +125,8 @@ export function Projects() {
         <Empty title="No projects" hint="Namespaces appear here once they hold memories." />
       ) : (
         <div class="tenant-list stagger">
-          {tenants.map((t) => (
-            <TenantBox key={t.tenant} tenant={t} onManage={(name) => setManage({ name })} onDropPod={onDropPod} />
+          {tree.map((n) => (
+            <NsBox key={n.ns} node={n} onManage={(name) => setManage({ name })} onDropPod={onDropPod} />
           ))}
         </div>
       )}
@@ -161,17 +137,22 @@ export function Projects() {
   )
 }
 
-function TenantBox({
-  tenant,
+// NsBox renders one namespace level as a k8s-style box: its own memories (if
+// any) as a "(root)" pod, flat children as pods in the same grid, and any
+// child that itself has children as a nested NsBox — so a namespace like
+// "acme/phoenix/api" renders nested under "acme/phoenix" nested under "acme"
+// rather than as a flat pod under "acme".
+function NsBox({
+  node,
   onManage,
   onDropPod,
 }: {
-  tenant: Tenant
+  node: ProjectNode
   onManage: (name: string) => void
-  onDropPod: (draggedName: string, destTenant: string) => void
+  onDropPod: (draggedName: string, destNs: string) => void
 }) {
   const [dragOver, setDragOver] = useState(false)
-  const [collapsed, setCollapsed] = useState(() => loadCollapsed().has(tenant.tenant))
+  const [collapsed, setCollapsed] = useState(() => loadCollapsed().has(node.ns))
   const { route: navigate } = useLocation()
 
   const open = (ns: string) => {
@@ -182,11 +163,17 @@ function TenantBox({
   const toggle = () => {
     const set = loadCollapsed()
     const next = !collapsed
-    if (next) set.add(tenant.tenant)
-    else set.delete(tenant.tenant)
+    if (next) set.add(node.ns)
+    else set.delete(node.ns)
     saveCollapsed(set)
     setCollapsed(next)
   }
+
+  // Children with no further children render as pods in this box's grid;
+  // children that themselves have children recurse into nested boxes.
+  const podChildren = node.children.filter((c) => c.children.length === 0)
+  const boxChildren = node.children.filter((c) => c.children.length > 0)
+  const projectCount = countProjects(node)
 
   return (
     <section
@@ -198,7 +185,12 @@ function TenantBox({
           e.dataTransfer.dropEffect = 'move'
         }
       }}
-      onDragEnter={() => setDragOver(true)}
+      onDragEnter={(e) => {
+        // Stop the enter from also bubbling to an ancestor box, so only the
+        // deepest (most specific) box under the pointer highlights.
+        e.stopPropagation()
+        setDragOver(true)
+      }}
       onDragLeave={(e) => {
         // Only clear when the pointer actually leaves the box, not when it
         // crosses into a child element.
@@ -206,30 +198,43 @@ function TenantBox({
       }}
       onDrop={(e) => {
         e.preventDefault()
+        // Stop the drop from also firing on an ancestor box's onDrop — only
+        // the box actually under the pointer should re-home the pod.
+        e.stopPropagation()
         setDragOver(false)
         const dragged = e.dataTransfer?.getData(DRAG_MIME)
-        if (dragged) onDropPod(dragged, tenant.tenant)
+        if (dragged) onDropPod(dragged, node.ns)
       }}
     >
       <button
         class="tenant-head"
         aria-expanded={!collapsed}
-        aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${tenant.tenant}`}
+        aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${node.ns}`}
         onClick={toggle}
       >
         <span class={`tenant-chevron${collapsed ? ' collapsed' : ''}`} aria-hidden="true">
           <IconChevron />
         </span>
-        <span class="tenant-name">{tenant.tenant}</span>
+        <span class="tenant-name">{node.label}</span>
         <span class="tenant-count">
-          <span class="v">{num(tenant.total)}</span> memories · {tenant.projects.length}{' '}
-          {tenant.projects.length === 1 ? 'project' : 'projects'}
+          <span class="v">{num(node.total)}</span> memories · {projectCount}{' '}
+          {projectCount === 1 ? 'project' : 'projects'}
         </span>
       </button>
-      {!collapsed && (
+      {!collapsed && (node.leaf || podChildren.length > 0) && (
         <div class="pod-grid">
-          {tenant.projects.map((p) => (
-            <Pod key={p.name} name={p.name} label={p.label} stats={p.stats} onOpen={() => open(p.name)} onManage={onManage} />
+          {node.leaf && (
+            <Pod name={node.ns} label="(root)" stats={node.stats} onOpen={() => open(node.ns)} onManage={onManage} />
+          )}
+          {podChildren.map((c) => (
+            <Pod key={c.ns} name={c.ns} label={c.label} stats={c.stats} onOpen={() => open(c.ns)} onManage={onManage} />
+          ))}
+        </div>
+      )}
+      {!collapsed && boxChildren.length > 0 && (
+        <div class="tenant-list nested">
+          {boxChildren.map((c) => (
+            <NsBox key={c.ns} node={c} onManage={onManage} onDropPod={onDropPod} />
           ))}
         </div>
       )}

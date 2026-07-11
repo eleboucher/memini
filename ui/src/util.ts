@@ -95,3 +95,74 @@ export function shortId(id: string): string {
 export function num(n: number): string {
   return n.toLocaleString()
 }
+
+// ---- Namespace hierarchy -----------------------------------------------
+// Namespaces are '/'-separated paths ("acme/phoenix/api"). These helpers turn
+// a flat list of namespace strings into the tree implied by those paths, so
+// every view that groups namespaces (Projects, the namespace selector, the
+// Graph namespace mode) nests consistently at every depth instead of only
+// splitting on the first segment.
+
+export interface NsNode {
+  ns: string // full path, e.g. "acme/phoenix/api"
+  leaf: boolean // true when `ns` itself appeared in the input list (holds memories)
+  children: NsNode[]
+}
+
+// nsTree builds the forest implied by `namespaces`: a node exists for every
+// path prefix that either appears in the list or is an ancestor of one that
+// does (e.g. "acme/phoenix/api" implies synthetic "acme" and "acme/phoenix"
+// nodes when those exact namespaces hold no memories of their own — leaf is
+// false for those). Roots and each node's children are sorted alphabetically.
+export function nsTree(namespaces: string[]): NsNode[] {
+  const byNs = new Map<string, NsNode>()
+  const roots: NsNode[] = []
+
+  const getOrCreate = (ns: string): NsNode => {
+    let node = byNs.get(ns)
+    if (node) return node
+    node = { ns, leaf: false, children: [] }
+    byNs.set(ns, node)
+    const slash = ns.lastIndexOf('/')
+    if (slash === -1) {
+      roots.push(node)
+    } else {
+      getOrCreate(ns.slice(0, slash)).children.push(node)
+    }
+    return node
+  }
+
+  for (const ns of namespaces) getOrCreate(ns).leaf = true
+
+  const sortRec = (nodes: NsNode[]) => {
+    nodes.sort((a, b) => a.ns.localeCompare(b.ns))
+    for (const n of nodes) sortRec(n.children)
+  }
+  sortRec(roots)
+
+  return roots
+}
+
+// ancestorsOf returns every path-prefix ancestor of `ns`, root-first (e.g.
+// "acme/phoenix/api" -> ["acme", "acme/phoenix"]). Empty for a top-level
+// namespace or the empty string.
+export function ancestorsOf(ns: string): string[] {
+  if (!ns) return []
+  const parts = ns.split('/')
+  const out: string[] = []
+  for (let i = 1; i < parts.length; i++) out.push(parts.slice(0, i).join('/'))
+  return out
+}
+
+// depth is the number of path separators in `ns` (0 for a top-level
+// namespace, 2 for "acme/phoenix/api").
+export function depth(ns: string): number {
+  return ns ? ns.split('/').length - 1 : 0
+}
+
+// rootOf returns the top-level (depth-0) segment of `ns`, e.g.
+// "acme/phoenix/api" -> "acme"; a namespace with no separator is its own root.
+export function rootOf(ns: string): string {
+  const i = ns.indexOf('/')
+  return i === -1 ? ns : ns.slice(0, i)
+}
