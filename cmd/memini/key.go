@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"strings"
@@ -99,13 +97,12 @@ func normalizeOptionalNamespace(ns string) (string, error) {
 
 // generateAPIKeySecret returns a fresh 32-byte hex-encoded (64 char) random
 // secret, the plaintext credential handed to the caller exactly once. Only
-// its SHA-256 hash (apiauth.HashToken) is ever persisted.
+// its SHA-256 hash (apiauth.HashToken) is ever persisted. Thin wrapper over
+// apiauth.GenerateSecret — the one canonical generator, shared with the REST
+// key-management API (K3b) so the CLI and REST never risk minting secrets
+// two different ways.
 func generateAPIKeySecret() (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("generate api key secret: %w", err)
-	}
-	return hex.EncodeToString(buf), nil
+	return apiauth.GenerateSecret()
 }
 
 // keyAddOpts carries key add's optional flags with presence tracking: a nil

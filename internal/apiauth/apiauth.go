@@ -9,9 +9,11 @@ package apiauth
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"fmt"
 	"sync"
 	"time"
 
@@ -196,4 +198,39 @@ func (c Config) tableNonEmpty(ctx context.Context) bool {
 func HashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
+}
+
+// GenerateSecret returns a fresh 32-byte hex-encoded (64 char) random secret,
+// the plaintext credential handed to a caller exactly once — over the CLI
+// (cmd/memini/key.go) or the REST key-management API (K3b) — and never
+// stored; only HashToken's digest of it is persisted. Exported as the one
+// canonical secret generator, mirroring HashToken: both surfaces must mint
+// secrets identically rather than risk two implementations drifting apart.
+func GenerateSecret() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate api key secret: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+// Invalidate clears the cached table-emptiness reading so the very next
+// Authenticate call re-queries the store instead of riding out
+// keyTableCacheTTL. Callers that mutate the api_keys table in the SAME
+// process as a running server (K3b's REST create/update/delete handlers)
+// must call this immediately after a successful write: without it, a
+// just-created first key would not enforce auth for up to keyTableCacheTTL
+// (breaking the UI-first bootstrap flow's "create key → auth enforced NOW"
+// guarantee) and a just-deleted last key would keep requiring auth for the
+// same window. The CLI, which writes to the store directly and is very
+// possibly a different OS process than any running server, cannot invalidate
+// a live server's cache this way — that revocation/bootstrap lag against a
+// separately-running server is an accepted, documented TTL tradeoff, not a
+// bug this method can fix. Safe to call even when cache is shared across
+// copies of Config (see the struct doc); resets to the zero Time, which
+// Since() always reports as >= TTL, forcing a re-check on the next read.
+func (c Config) Invalidate() {
+	c.cache.mu.Lock()
+	defer c.cache.mu.Unlock()
+	c.cache.at = time.Time{}
 }

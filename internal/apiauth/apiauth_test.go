@@ -219,6 +219,40 @@ func TestAuthenticateStoreLookupErrorSurfaces(t *testing.T) {
 	}
 }
 
+// TestInvalidateForcesImmediateRecheck pins the K3b cache-invalidation hook:
+// without calling Invalidate, a key inserted after the first Authenticate
+// call rides the TTL (the cached "empty" reading is stale, up to
+// keyTableCacheTTL); Invalidate must force the very next Authenticate call to
+// re-query the store rather than waiting out the cache, so a REST-driven
+// create (the UI-first bootstrap flow) or delete (revocation) takes effect
+// immediately in the SAME process.
+func TestInvalidateForcesImmediateRecheck(t *testing.T) {
+	ks := openKeyStore(t)
+	cfg := apiauth.New("", ks)
+	ctx := context.Background()
+
+	// Prime the cache while the table is still empty: dev mode, allowed.
+	if _, ok, err := cfg.Authenticate(ctx, ""); err != nil || !ok {
+		t.Fatalf("priming Authenticate: (%v, %v)", ok, err)
+	}
+
+	// Insert a key directly (bypassing the cache) — the cached "empty"
+	// reading is now stale but still within TTL.
+	if err := ks.PutAPIKey(ctx, store.APIKey{Name: "bootstrap-bot", Hash: hashOf("tok-bootstrap"), CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("PutAPIKey: %v", err)
+	}
+
+	// Without invalidation the stale cache would still say "empty" and allow
+	// an unauthenticated request; Invalidate must flip that immediately.
+	cfg.Invalidate()
+
+	if _, ok, err := cfg.Authenticate(ctx, ""); err != nil {
+		t.Fatalf("Authenticate after Invalidate: %v", err)
+	} else if ok {
+		t.Fatalf("after Invalidate + a key exists: no-bearer request must be rejected immediately, not after the TTL")
+	}
+}
+
 type failingHashLookupStore struct {
 	store.APIKeyStore
 }
