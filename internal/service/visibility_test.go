@@ -45,6 +45,11 @@ func TestResolveVisibility(t *testing.T) {
 			wantErr: true, errSubstr: "MEMINI_HOME",
 		},
 		{
+			name: "personal with whitespace-only home errors the same as empty", visibility: "personal",
+			namespace: "acme/phoenix", home: "   ", tier: memory.TierSemantic,
+			wantErr: true, errSubstr: "MEMINI_HOME",
+		},
+		{
 			name: "ancestor by exact full path", visibility: "acme/phoenix",
 			namespace: "acme/phoenix/api", tier: memory.TierSemantic, want: "acme/phoenix",
 		},

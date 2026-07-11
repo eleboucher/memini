@@ -57,6 +57,7 @@ const visibilityPersonal = "personal"
 //     `visibility %q not in scope; valid: project, personal, <chain...>`.
 func resolveVisibility(in RememberInput, tier memory.Tier) (string, error) {
 	v := strings.TrimSpace(in.Visibility)
+	home := strings.TrimSpace(in.Home)
 	if v == "" || v == scopeProject {
 		return in.Namespace, nil
 	}
@@ -66,11 +67,11 @@ func resolveVisibility(in RememberInput, tier memory.Tier) (string, error) {
 		return in.Namespace, nil
 	}
 	if v == visibilityPersonal {
-		if in.Home == "" {
+		if home == "" {
 			return "", invalidInputf(
 				"remember: visibility \"personal\" requires a home namespace (set MEMINI_HOME on the client)")
 		}
-		return in.Home, nil
+		return home, nil
 	}
 
 	chain := ancestorsOf(in.Namespace)
