@@ -144,6 +144,21 @@ job:
 The store never knows a namespace has a parent, a home, or a link — it just
 filters by the namespace string(s) the service layer hands it.
 
+## Knobs
+
+The cascade needs almost no configuration — that's the point. One knob is
+live, two are removed (the server refuses to boot with either set), and the
+rest of the control surface is per-call:
+
+| Knob                      | Status                | What it does / migration                                                                                                                                                                                                                                                                                                                                       |
+| ------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEMINI_HOME`             | live, **client-side** | The caller's personal namespace (recommended `personal/<name>`), sent as `X-Memini-Home` on every call. Adds the durable-only home leg to every default read set, and is where `visibility:"personal"` writes land. Absent = no personal leg, and `visibility:"personal"` errors naming this variable.                                                         |
+| `MEMINI_GLOBAL_NAMESPACE` | **removed**           | Was: one namespace merged read-only into every recall instance-wide. The server refuses to start with it set. Run `memini migrate scopes` for adoption guidance — single-operator instances set `MEMINI_HOME=<old global>`; team-shared ones run `memini link add <ns> <old global>` for each namespace that needs it. The command never rewrites it silently. |
+| `MEMINI_TENANT_SHARED`    | **removed**           | Was: opt-in merge of a `<tenant>/_shared` sibling into every namespace under `<tenant>`, depth-1 only. Interior namespaces are now the shared layer directly (always on, any depth). The server refuses to start with it set. Run `memini migrate scopes` to fold each `<tenant>/_shared` into `<tenant>` (dry-run by default, `--yes` to apply, idempotent).  |
+| `namespaces: [...]`       | per-call (REST)       | Replaces the entire default read set with exactly the listed namespaces; `/*` suffix expands a subtree. See [Escape hatches](#escape-hatches).                                                                                                                                                                                                                 |
+| `scope`                   | per-call              | `"project"` / `"full"` (default) / `"everywhere"`. REST also accepts the deprecated aliases `"exact"` (→ `"project"`) and `"subtree"` (→ `"everywhere"`); MCP does not. See [Escape hatches](#escape-hatches).                                                                                                                                                 |
+| `visibility`              | per-call              | Write-side routing: `"project"` (default) / `"personal"` / an ancestor name. See [Data flow: write](#data-flow-write).                                                                                                                                                                                                                                         |
+
 ## Links
 
 Links are the escape hatch for **lateral** sharing — between namespaces that
@@ -207,9 +222,10 @@ REST: `POST /v1/links` (create/replace, keyed on `dst` — idempotent),
 `acme/phoenix` becomes `acme/phoenix/reviewer` for a reviewer subagent). A
 reviewer namespace is now a plain child in the tree, so it automatically
 inherits `acme/phoenix`'s durable memories via the ancestor cascade on every
-`scope:"full"` recall/briefing — no `MEMINI_TENANT_SHARED`, no `_shared`
-sibling, no configuration at all. This is a behavior improvement over the
-old model, where a depth-1-only tenant-shared merge didn't reach a
-second-level nest like this: a reviewer subagent used to be isolated from
-its own project's durable knowledge unless something else compensated for
-it. Under the cascade it just works.
+`scope:"full"` recall/briefing — no opt-in flag, no `_shared` sibling
+namespace, no configuration at all. This is a behavior improvement over the
+old model (the removed `MEMINI_TENANT_SHARED` knob — see [Knobs](#knobs)),
+whose depth-1-only tenant-shared merge didn't reach a second-level nest
+like this: a reviewer subagent used to be isolated from its own project's
+durable knowledge unless something else compensated for it. Under the
+cascade it just works.

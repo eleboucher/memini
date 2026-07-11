@@ -117,8 +117,10 @@ Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2), +1 link
 ```
 
 At an interior namespace, briefing also appends a compact rollup of direct
-child namespaces (name, memory count, pinned/recent titles) — orientation
-only, not a precision change to recall.
+child namespaces — name, memory count, and pinned/recent highlights (MCP
+renders these as compact display titles to keep token size down; REST
+carries the full memory objects for the admin UI) — orientation only, not a
+precision change to recall.
 
 ## New: `memini doctor` additions
 
