@@ -1327,7 +1327,7 @@ components:
         delete all reject a "file" key with 409.
     ApiKey:
       type: object
-      required: [name, created_at, disabled, source]
+      required: [name, disabled, source]
       properties:
         name: { type: string }
         home:
@@ -1338,7 +1338,13 @@ components:
           description: >
             Namespace applied when a request presents this key with no
             explicit X-Memini-Namespace header.
-        created_at: { type: string, format: date-time }
+        created_at:
+          type: string
+          format: date-time
+          description: >
+            Omitted for a source=file key: MEMINI_API_KEYS_FILE entries carry
+            no creation timestamp (the file is the source of truth, not a
+            database row) — always present for source=db.
         disabled: { type: boolean }
         source: { $ref: "#/components/schemas/ApiKeySource" }
     ApiKeysResponse:

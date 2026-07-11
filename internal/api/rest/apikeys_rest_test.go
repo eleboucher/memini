@@ -50,12 +50,12 @@ func newKeysTestServer(t *testing.T, adminKey, fileYAML string) (http.Handler, s
 }
 
 type apiKeyDTO struct {
-	Name             string    `json:"name"`
-	Home             string    `json:"home"`
-	DefaultNamespace string    `json:"default_namespace"`
-	CreatedAt        time.Time `json:"created_at"`
-	Disabled         bool      `json:"disabled"`
-	Source           string    `json:"source"`
+	Name             string     `json:"name"`
+	Home             string     `json:"home"`
+	DefaultNamespace string     `json:"default_namespace"`
+	CreatedAt        *time.Time `json:"created_at"`
+	Disabled         bool       `json:"disabled"`
+	Source           string     `json:"source"`
 }
 
 type apiKeyWithSecretDTO struct {
@@ -141,7 +141,7 @@ func TestCreateApiKeyHappyPath(t *testing.T) {
 	if out.Source != "db" {
 		t.Fatalf("source = %q, want db", out.Source)
 	}
-	if out.CreatedAt.IsZero() {
+	if out.CreatedAt == nil || out.CreatedAt.IsZero() {
 		t.Fatal("created_at should be populated")
 	}
 
@@ -169,6 +169,19 @@ func TestCreateApiKeyEmptyName400(t *testing.T) {
 	rec := do(t, h, http.MethodPost, "/v1/keys", "", "admin-secret", map[string]any{"name": "   "})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("empty name: want 400, got %d (%s)", rec.Code, rec.Body)
+	}
+}
+
+// TestCreateApiKeyNameWithSlashRejected400 pins a routing-safety guard: a
+// name containing "/" would permanently strand the key, since chi's {name}
+// path param on UpdateApiKey/DeleteApiKey/RotateApiKey only matches a single
+// path segment (no unescapeID-style wildcard, unlike the memory {id} routes)
+// -- "/v1/keys/acme/ci-bot" would never route back to such a key.
+func TestCreateApiKeyNameWithSlashRejected400(t *testing.T) {
+	h, _ := newKeysTestServer(t, "admin-secret", "")
+	rec := do(t, h, http.MethodPost, "/v1/keys", "", "admin-secret", map[string]any{"name": "acme/ci-bot"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("name with slash: want 400, got %d (%s)", rec.Code, rec.Body)
 	}
 }
 
@@ -229,6 +242,16 @@ keys:
 	}
 	if bySource["filebot"].Home != "acme/filehome" {
 		t.Errorf("filebot home = %q, want acme/filehome", bySource["filebot"].Home)
+	}
+	if bySource["dbbot"].CreatedAt == nil {
+		t.Error("dbbot (source=db) should have a populated created_at")
+	}
+	// A file-sourced key carries no creation timestamp at all (the file is
+	// the source of truth, not a database row) -- emitting the Go zero time
+	// here would render as a nonsensical "0001-01-01" in the UI rather than
+	// being recognizably absent.
+	if bySource["filebot"].CreatedAt != nil {
+		t.Errorf("filebot (source=file) created_at should be omitted, got %v", bySource["filebot"].CreatedAt)
 	}
 }
 
@@ -409,7 +432,7 @@ func TestRotateApiKeyHappyPath(t *testing.T) {
 	if rotated.Home != "acme/bob" {
 		t.Errorf("rotate must preserve home, got %q", rotated.Home)
 	}
-	if !rotated.CreatedAt.Equal(created.CreatedAt) {
+	if rotated.CreatedAt == nil || created.CreatedAt == nil || !rotated.CreatedAt.Equal(*created.CreatedAt) {
 		t.Errorf("rotate must preserve created_at: got %v, want %v", rotated.CreatedAt, created.CreatedAt)
 	}
 	if rotated.Disabled {

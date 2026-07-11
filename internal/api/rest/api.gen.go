@@ -216,7 +216,8 @@ type AnswerResponse struct {
 
 // ApiKey defines model for ApiKey.
 type ApiKey struct {
-	CreatedAt time.Time `json:"created_at"`
+	// CreatedAt Omitted for a source=file key: MEMINI_API_KEYS_FILE entries carry no creation timestamp (the file is the source of truth, not a database row) — always present for source=db.
+	CreatedAt *time.Time `json:"created_at,omitempty"`
 
 	// DefaultNamespace Namespace applied when a request presents this key with no explicit X-Memini-Namespace header.
 	DefaultNamespace *string `json:"default_namespace,omitempty"`
@@ -235,7 +236,8 @@ type ApiKeySource string
 
 // ApiKeyWithSecret defines model for ApiKeyWithSecret.
 type ApiKeyWithSecret struct {
-	CreatedAt time.Time `json:"created_at"`
+	// CreatedAt Omitted for a source=file key: MEMINI_API_KEYS_FILE entries carry no creation timestamp (the file is the source of truth, not a database row) — always present for source=db.
+	CreatedAt *time.Time `json:"created_at,omitempty"`
 
 	// DefaultNamespace Namespace applied when a request presents this key with no explicit X-Memini-Namespace header.
 	DefaultNamespace *string `json:"default_namespace,omitempty"`

@@ -817,8 +817,11 @@ export interface components {
             home?: string;
             /** @description Namespace applied when a request presents this key with no explicit X-Memini-Namespace header. */
             default_namespace?: string;
-            /** Format: date-time */
-            created_at: string;
+            /**
+             * Format: date-time
+             * @description Omitted for a source=file key: MEMINI_API_KEYS_FILE entries carry no creation timestamp (the file is the source of truth, not a database row) — always present for source=db.
+             */
+            created_at?: string;
             disabled: boolean;
             source: components["schemas"]["ApiKeySource"];
         };

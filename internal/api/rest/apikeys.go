@@ -43,8 +43,16 @@ func requireAdminOrDev(w http.ResponseWriter, r *http.Request) bool {
 // apiKeyModel maps a store.APIKey onto the spec-generated ApiKey shape,
 // tagging it with source (db or file) — never the hash, and (for the
 // no-secret variant used by list/get) never any credential material at all.
+// CreatedAt is omitted (nil) when zero: a file-sourced key's store.APIKey
+// carries no creation timestamp at all (apiauth.validateFileKeyEntry never
+// sets one — MEMINI_API_KEYS_FILE is the source of truth, not a database
+// row), so emitting the Go zero time would render as a nonsensical
+// "0001-01-01" in the UI rather than being recognizably absent.
 func apiKeyModel(k store.APIKey, source ApiKeySource) ApiKey {
-	out := ApiKey{Name: k.Name, CreatedAt: k.CreatedAt, Disabled: k.Disabled, Source: source}
+	out := ApiKey{Name: k.Name, Disabled: k.Disabled, Source: source}
+	if !k.CreatedAt.IsZero() {
+		out.CreatedAt = &k.CreatedAt
+	}
 	if k.HomeNS != "" {
 		out.Home = &k.HomeNS
 	}
@@ -57,10 +65,14 @@ func apiKeyModel(k store.APIKey, source ApiKeySource) ApiKey {
 // apiKeyWithSecretModel is apiKeyModel plus the plaintext secret, for the
 // create/rotate responses that show it exactly once. ApiKeyWithSecret is a
 // flattened struct (oapi-codegen's allOf composition doesn't embed the Go
-// type), so this can't just wrap apiKeyModel's result.
+// type), so this can't just wrap apiKeyModel's result. Only ever called for
+// a source=db key (create/rotate don't apply to file keys), so CreatedAt is
+// always non-zero here — but the same nil-when-zero guard is applied for
+// consistency with apiKeyModel.
 func apiKeyWithSecretModel(k store.APIKey, source ApiKeySource, secret string) ApiKeyWithSecret {
-	out := ApiKeyWithSecret{
-		Name: k.Name, CreatedAt: k.CreatedAt, Disabled: k.Disabled, Source: source, Secret: secret,
+	out := ApiKeyWithSecret{Name: k.Name, Disabled: k.Disabled, Source: source, Secret: secret}
+	if !k.CreatedAt.IsZero() {
+		out.CreatedAt = &k.CreatedAt
 	}
 	if k.HomeNS != "" {
 		out.Home = &k.HomeNS
@@ -152,6 +164,18 @@ func (h *Server) CreateApiKey(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		httputil.Error(w, http.StatusBadRequest, "api key name must not be empty")
+		return
+	}
+	// A name containing '/' would permanently strand the key: chi's {name}
+	// path param (used by UpdateApiKey/DeleteApiKey/RotateApiKey below,
+	// unlike {id} on the memory routes there is no unescapeID-style
+	// wildcard match here) only matches a single path segment, so
+	// "/v1/keys/acme/ci-bot" would never route back to it — only direct
+	// store/CLI access could remove such a key afterward. Reject it here,
+	// the one place a name is minted, rather than let it become
+	// unreachable through this API.
+	if strings.Contains(name, "/") {
+		httputil.Error(w, http.StatusBadRequest, `api key name must not contain "/"`)
 		return
 	}
 	if h.auth.FileKeys.IsFileKey(name) {
