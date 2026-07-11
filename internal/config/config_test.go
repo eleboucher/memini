@@ -96,6 +96,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Home != "" {
 		t.Errorf("Home = %q, want empty (no MEMINI_HOME set)", cfg.Home)
 	}
+	if cfg.APIKeysFile != "" {
+		t.Errorf("APIKeysFile = %q, want empty (no MEMINI_API_KEYS_FILE set) — feature-off must be a no-op", cfg.APIKeysFile)
+	}
 }
 
 // TestLoadHome pins that MEMINI_HOME is resolved into Config.Home the same
@@ -111,6 +114,23 @@ func TestLoadHome(t *testing.T) {
 	}
 	if cfg.Home != "personal/kit" {
 		t.Errorf("Home = %q, want personal/kit", cfg.Home)
+	}
+}
+
+// TestLoadAPIKeysFile pins that MEMINI_API_KEYS_FILE (K2b) is resolved into
+// Config.APIKeysFile verbatim, like any other simple env-backed setting.
+// config.Load itself never opens the file — that's internal/apiauth.LoadFileKeys,
+// called once at server boot (cmd/memini/root.go).
+func TestLoadAPIKeysFile(t *testing.T) {
+	clearMeminiEnv(t)
+	t.Setenv("MEMINI_API_KEYS_FILE", "/etc/memini/api-keys.yaml")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.APIKeysFile != "/etc/memini/api-keys.yaml" {
+		t.Errorf("APIKeysFile = %q, want /etc/memini/api-keys.yaml", cfg.APIKeysFile)
 	}
 }
 
@@ -313,7 +333,7 @@ var meminiEnvKeys = []string{
 	"MEMINI_CONSOLIDATE_MODE", "MEMINI_CONSOLIDATE_MIN_SCORE",
 	"MEMINI_PROMOTE_INTERVAL", "MEMINI_PROMOTE_MIN_ACCESS", "MEMINI_BACKFILL_INTERVAL",
 	"MEMINI_SWEEP_INTERVAL", "MEMINI_SHORT_TERM_CAP", "MEMINI_UI_ENABLED",
-	"MEMINI_API_KEY",
+	"MEMINI_API_KEY", "MEMINI_API_KEYS_FILE",
 	"MEMINI_DEFAULT_NAMESPACE", "MEMINI_NAMESPACE",
 	"MEMINI_DEDUP_INTERVAL", "MEMINI_DEDUP_SIMILARITY", "MEMINI_DEDUP_TIERS",
 	"MEMINI_WRITE_EMBED_TIMEOUT", "MEMINI_RECALL_EMBED_TIMEOUT",
