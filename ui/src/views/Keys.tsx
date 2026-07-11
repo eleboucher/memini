@@ -33,7 +33,7 @@ export function Keys() {
       <div class="view">
         <Empty
           title="Admin key required"
-          hint="Managing API keys needs the server's admin key. Set it under Settings (API token), then reload this page."
+          hint="Managing API keys needs the server's admin key. Set it under Settings (API token), then reload this page. If no admin key is configured yet, set MEMINI_API_KEY on the server or manage keys with the memini CLI (memini key add|rm|ls)."
         />
       </div>
     )
