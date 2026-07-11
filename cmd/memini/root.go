@@ -317,6 +317,7 @@ func buildServiceStack(
 			svcOpts = append(svcOpts,
 				service.WithReranker(reranker, name),
 				service.WithRerankTimeout(cfg.RerankTimeout),
+				service.WithRerankPool(cfg.RerankPool),
 			)
 		}
 	}

@@ -175,12 +175,23 @@ type Config struct {
 	// RerankModel / RerankAPIKey configure the cross-encoder when Rerank is a URL.
 	RerankModel  string `env:"MEMINI_RERANK_MODEL"`
 	RerankAPIKey string `env:"MEMINI_RERANK_API_KEY"`
+	// RerankPool is how many composite-ranked candidates are handed to the
+	// reranker before the result is truncated to the recall limit. 0 (the
+	// default) reranks exactly the limit, which reorders the results but can
+	// never surface a memory that ranked below them — most of a cross-encoder's
+	// value is precisely that rescue, so a deployment with a reranker wants this
+	// set (RecallPoolSize, ~50, is the natural ceiling: recall never retrieves
+	// more). Cost is linear — one model forward pass per candidate — so a deep
+	// pool trades recall latency for accuracy.
+	RerankPool int `env:"MEMINI_RERANK_POOL" envDefault:"0"`
 	// RerankMaxBatchChars caps the total characters across the query and all
-	// documents in a single /rerank request, so a deep candidate pool can never
-	// exceed the model's context window. Set just below the model's effective
-	// context in characters (≈ n_ctx × chars-per-token × (1 − template reserve)).
-	// 6000 keeps ~2 max-size docs per request at the 2048-char doc cap above.
-	// 0 disables proactive batching.
+	// documents in a single /rerank request. This is an HTTP payload guard, not
+	// a context-window guard: a Cohere-style /rerank server scores each
+	// (query, document) pair in its own forward pass, so the model's context
+	// bounds a single pair, never the batch. Sizing this near the model context
+	// shards a deep RerankPool into many *serial* requests (see
+	// rerank.CrossEncoder.Rerank), which is far more likely to blow RerankTimeout
+	// than a large body is to trouble the server. 0 disables proactive batching.
 	RerankMaxBatchChars int `env:"MEMINI_RERANK_MAX_BATCH_CHARS" envDefault:"6000"`
 	// RerankTimeout bounds a single reranker call; past it, recall degrades to
 	// composite order instead of stalling on a slow or congested backend.
