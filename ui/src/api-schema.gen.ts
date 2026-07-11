@@ -397,6 +397,76 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List API keys (name/home/default namespace/created/disabled/source — never a secret or hash)
+         * @description Admin-gated (K3b): allowed only when the request authenticated with the admin env key, or when auth is disabled entirely (dev/bootstrap mode — no admin key, an empty api_keys table, and no MEMINI_API_KEYS_FILE keys). A request authenticated by a named table or file key gets 403. Includes keys from both the api_keys table (source=db, mutable via this API) and the declarative MEMINI_API_KEYS_FILE (source=file, read-only here — see updateApiKey/deleteApiKey/rotateApiKey).
+         */
+        get: operations["listApiKeys"];
+        put?: never;
+        /**
+         * Create a new API key, returning its secret exactly once
+         * @description Admin-gated, see listApiKeys. This is the UI-first bootstrap path: with no admin key configured and no keys yet (auth disabled), create the first key here and auth is enforced immediately afterward — no TTL lag (see apiauth.Config.Invalidate). 409 if the name is already taken, whether by a table key or a MEMINI_API_KEYS_FILE entry. home/default_namespace are normalized and validated exactly like `memini key add`.
+         */
+        post: operations["createApiKey"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/keys/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete an API key
+         * @description Admin-gated, see listApiKeys. 404 if no such key exists; 409 for a MEMINI_API_KEYS_FILE-sourced key (remove it from the file instead).
+         */
+        delete: operations["deleteApiKey"];
+        options?: never;
+        head?: never;
+        /**
+         * Update an API key's home namespace, default namespace, and/or disabled state
+         * @description Admin-gated, see listApiKeys. Preserve-unspecified semantics matching `memini key add`'s rotation contract: an omitted field leaves the stored value unchanged; an explicitly passed field — including an explicit empty home/default_namespace, or disabled=false — overrides it. 404 if no such key exists; 409 for a MEMINI_API_KEYS_FILE-sourced key (managed declaratively via that file, not this API).
+         */
+        patch: operations["updateApiKey"];
+        trace?: never;
+    };
+    "/v1/keys/{name}/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rotate an API key's secret, returning the new secret exactly once
+         * @description Admin-gated, see listApiKeys. Generates a fresh secret (the one canonical generator, apiauth.GenerateSecret); the old secret stops authenticating immediately. Preserves the key's created_at, home/default namespace bindings, and disabled state unchanged. 404 if no such key exists; 409 for a MEMINI_API_KEYS_FILE-sourced key.
+         */
+        post: operations["rotateApiKey"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -735,6 +805,49 @@ export interface components {
             merge_hint?: components["schemas"]["MergeHint"];
             /** @description Optional. Present only on POST /v1/memories responses when the write's nearest same-tier candidate scored at/above MEMINI_WRITE_DEDUP_SCORE with MEMINI_WRITE_DEDUP_ACTION="supersede" and the old memory was tombstoned in the background. The caller still receives the new memory. */
             auto_superseded?: boolean;
+        };
+        /**
+         * @description Where the key is stored: "db" is a row in the api_keys table (mutable via this API); "file" comes from MEMINI_API_KEYS_FILE, loaded once at boot and immutable through this API — update/rotate/ delete all reject a "file" key with 409.
+         * @enum {string}
+         */
+        ApiKeySource: "db" | "file";
+        ApiKey: {
+            name: string;
+            /** @description Bound home namespace; omitted/empty means unbound. */
+            home?: string;
+            /** @description Namespace applied when a request presents this key with no explicit X-Memini-Namespace header. */
+            default_namespace?: string;
+            /** Format: date-time */
+            created_at: string;
+            disabled: boolean;
+            source: components["schemas"]["ApiKeySource"];
+        };
+        ApiKeysResponse: {
+            keys: components["schemas"]["ApiKey"][];
+        };
+        ApiKeyWithSecret: components["schemas"]["ApiKey"] & {
+            /** @description The plaintext credential, shown exactly once, here — it is never stored (only its SHA-256 hash is) and cannot be recovered or displayed again. */
+            secret: string;
+        };
+        CreateApiKeyRequest: {
+            name: string;
+            /** @description Bind the key to a home namespace. */
+            home?: string;
+            /** @description Namespace applied when a request presents this key with no explicit namespace header. */
+            default_namespace?: string;
+            /**
+             * @description Create the key already disabled.
+             * @default false
+             */
+            disabled: boolean;
+        };
+        UpdateApiKeyRequest: {
+            /** @description Omit to leave the current binding unchanged; an explicit empty string clears it. */
+            home?: string;
+            /** @description Omit to leave the current default unchanged; an explicit empty string clears it. */
+            default_namespace?: string;
+            /** @description Omit to leave the current disabled state unchanged. */
+            disabled?: boolean;
         };
     };
     responses: {
@@ -1466,6 +1579,137 @@ export interface operations {
             };
             400: components["responses"]["Error"];
             500: components["responses"]["Error"];
+        };
+    };
+    listApiKeys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeysResponse"];
+                };
+            };
+            403: components["responses"]["Error"];
+            501: components["responses"]["Error"];
+        };
+    };
+    createApiKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateApiKeyRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyWithSecret"];
+                };
+            };
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            501: components["responses"]["Error"];
+        };
+    };
+    deleteApiKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            501: components["responses"]["Error"];
+        };
+    };
+    updateApiKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateApiKeyRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKey"];
+                };
+            };
+            400: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            501: components["responses"]["Error"];
+        };
+    };
+    rotateApiKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyWithSecret"];
+                };
+            };
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            501: components["responses"]["Error"];
         };
     };
 }
