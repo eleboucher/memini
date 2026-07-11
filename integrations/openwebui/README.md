@@ -58,7 +58,8 @@ needed:
 | Valve               | Default                 | Purpose                                                                      |
 | ------------------- | ----------------------- | ---------------------------------------------------------------------------- |
 | `base_url`          | `http://localhost:8080` | memini REST base URL (default seeds from `MEMINI_BASE_URL`/`MEMINI_URL` env) |
-| `namespace`         | `openwebui`             | tenant the memory is scoped to (`X-Memini-Namespace`)                        |
+| `namespace`         | `openwebui`             | project the memory is scoped to (`X-Memini-Namespace`)                       |
+| `home`              | unset (`MEMINI_HOME`)   | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg    |
 | `recall`            | on                      | recall memories before each turn                                             |
 | `capture`           | on                      | capture the completed turn after each response                               |
 | `recall_limit`      | `3`                     | max memories injected per turn                                               |
@@ -80,7 +81,7 @@ Instead of (or alongside) the filter, expose memini's `recall_memory` and
 1. **Workspace → Tools → `+`**, paste
    [`tools/memini_tools.py`](tools/memini_tools.py), **Save**.
 2. Enable the tool for a model in **Workspace → Models** (the tool's checkbox),
-   and set the same Valves (`base_url`, `namespace`, …) in the tool's settings.
+   and set the same Valves (`base_url`, `namespace`, `home`, …) in the tool's settings.
 3. For reliable tool use, set **Function Calling → Native** (Admin Panel →
    Settings → Models, globally or per model); the default prompt-based mode works
    too but is less consistent.

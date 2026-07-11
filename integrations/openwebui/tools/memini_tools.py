@@ -55,7 +55,11 @@ class Tools:
         )
         namespace: str = Field(
             default=DEFAULT_NAMESPACE,
-            description="Tenant the memory is scoped to (X-Memini-Namespace)",
+            description="Project the memory is scoped to (X-Memini-Namespace)",
+        )
+        home: str = Field(
+            default_factory=lambda: os.environ.get("MEMINI_HOME", ""),
+            description="Caller's personal namespace, sent as X-Memini-Home (unset = no home leg)",
         )
         recall_limit: int = Field(default=3, description="Max memories returned by recall_memory")
         timeout_ms: int = Field(default=5000, description="Per-request timeout (ms)")
@@ -66,6 +70,21 @@ class Tools:
 
     def __init__(self):
         self.valves = self.Valves()
+
+    def _headers(self, secret: str, extra: Optional[dict] = None) -> dict:
+        """Build request headers — the single choke point every REST call goes
+        through, so X-Memini-Home (and any future header) only needs wiring
+        once."""
+        headers = {
+            "X-Memini-Namespace": sanitize_namespace(self.valves.namespace) or DEFAULT_NAMESPACE,
+            **(extra or {}),
+        }
+        if secret:
+            headers["Authorization"] = f"Bearer {secret}"
+        home = str(self.valves.home or "").strip()
+        if home:
+            headers["X-Memini-Home"] = home
+        return headers
 
     async def _post_json(self, path: str, payload: dict) -> Optional[dict]:
         base_url = str(self.valves.base_url).rstrip("/")
@@ -78,12 +97,7 @@ class Tools:
             if self.valves.require_https:
                 raise RuntimeError(message)
             print(f"[memini] {message}")
-        headers = {
-            "Content-Type": "application/json",
-            "X-Memini-Namespace": sanitize_namespace(self.valves.namespace) or DEFAULT_NAMESPACE,
-        }
-        if secret:
-            headers["Authorization"] = f"Bearer {secret}"
+        headers = self._headers(secret, {"Content-Type": "application/json"})
         timeout = aiohttp.ClientTimeout(total=self.valves.timeout_ms / 1000)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
@@ -105,9 +119,7 @@ class Tools:
             if self.valves.require_https:
                 raise RuntimeError(message)
             print(f"[memini] {message}")
-        headers = {"X-Memini-Namespace": sanitize_namespace(self.valves.namespace) or DEFAULT_NAMESPACE}
-        if secret:
-            headers["Authorization"] = f"Bearer {secret}"
+        headers = self._headers(secret)
         timeout = aiohttp.ClientTimeout(total=self.valves.timeout_ms / 1000)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.delete(f"{base_url}{path}", headers=headers) as res:

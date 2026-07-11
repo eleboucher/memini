@@ -142,7 +142,11 @@ class Filter:
         )
         namespace: str = Field(
             default=DEFAULT_NAMESPACE,
-            description="Tenant the memory is scoped to (X-Memini-Namespace). Share it across agents to pool memory.",
+            description="Project the memory is scoped to (X-Memini-Namespace). Share it across agents to pool memory.",
+        )
+        home: str = Field(
+            default_factory=lambda: os.environ.get("MEMINI_HOME", ""),
+            description="Caller's personal namespace, sent as X-Memini-Home (unset = no home leg)",
         )
         recall: bool = Field(
             default=True, description="Recall memories before each turn"
@@ -181,6 +185,18 @@ class Filter:
                 ns = f"{ns}-{uid}"
         return sanitize_namespace(ns) or DEFAULT_NAMESPACE
 
+    def _headers(self, namespace: str, secret: str) -> dict:
+        """Build request headers — the single choke point every REST call goes
+        through, so X-Memini-Home (and any future header) only needs wiring
+        once."""
+        headers = {"Content-Type": "application/json", "X-Memini-Namespace": namespace}
+        if secret:
+            headers["Authorization"] = f"Bearer {secret}"
+        home = str(self.valves.home or "").strip()
+        if home:
+            headers["X-Memini-Home"] = home
+        return headers
+
     async def _post_json(
         self, path: str, payload: dict, namespace: str
     ) -> Optional[dict]:
@@ -197,9 +213,7 @@ class Filter:
                 raise RuntimeError(message)
             print(f"[memini] {message}")
 
-        headers = {"Content-Type": "application/json", "X-Memini-Namespace": namespace}
-        if secret:
-            headers["Authorization"] = f"Bearer {secret}"
+        headers = self._headers(namespace, secret)
         timeout = aiohttp.ClientTimeout(total=self.valves.timeout_ms / 1000)
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:

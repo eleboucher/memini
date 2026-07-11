@@ -24,9 +24,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 try:
     flt = _load("memini_memory", os.path.join(HERE, "filter", "memini_memory.py"))
+    tls = _load("memini_tools", os.path.join(HERE, "tools", "memini_tools.py"))
     _HAVE_DEPS = True
 except ModuleNotFoundError:
     flt = None
+    tls = None
     _HAVE_DEPS = False
 
 
@@ -196,6 +198,33 @@ class FilterFlow(unittest.TestCase):
         f.valves.namespace = "team"
         self.assertEqual(f._namespace({"id": "alice"}), "team-alice")
         self.assertEqual(f._namespace(None), "team")
+
+    def test_headers_carry_x_memini_home_when_configured(self):
+        f = flt.Filter()
+        f.valves.home = "personal/acme"
+        headers = f._headers("proj", "")
+        self.assertEqual(headers["X-Memini-Home"], "personal/acme")
+
+    def test_headers_omit_x_memini_home_when_unset(self):
+        f = flt.Filter()
+        f.valves.home = ""
+        headers = f._headers("proj", "")
+        self.assertNotIn("X-Memini-Home", headers)
+
+
+@unittest.skipUnless(_HAVE_DEPS, "pydantic/aiohttp not installed")
+class ToolsHeaders(unittest.TestCase):
+    def test_headers_carry_x_memini_home_when_configured(self):
+        t = tls.Tools()
+        t.valves.home = "personal/acme"
+        headers = t._headers("")
+        self.assertEqual(headers["X-Memini-Home"], "personal/acme")
+
+    def test_headers_omit_x_memini_home_when_unset(self):
+        t = tls.Tools()
+        t.valves.home = ""
+        headers = t._headers("")
+        self.assertNotIn("X-Memini-Home", headers)
 
 
 if __name__ == "__main__":
