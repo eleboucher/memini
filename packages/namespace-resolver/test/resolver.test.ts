@@ -385,4 +385,52 @@ describe("resolveNamespace", () => {
     assert.equal(readConfig(tempConfig({})).found, true);
     assert.equal(readConfig("/nonexistent/config.json").found, false);
   });
+
+  // ─── home (MEMINI_HOME) ────────────────────────────────────────────
+
+  it("resolves home from MEMINI_HOME env, mirroring MEMINI_NAMESPACE precedence", () => {
+    const result = resolveNamespace({
+      cwd: "/tmp/whatever",
+      env: { MEMINI_HOME: "personal/acme" },
+    });
+    assert.equal(result.home, "personal/acme");
+  });
+
+  it("home is undefined when MEMINI_HOME is unset", () => {
+    const result = resolveNamespace({
+      cwd: "/tmp/whatever",
+      env: {},
+      configPath: "/nonexistent/config.json",
+    });
+    assert.equal(result.home, undefined);
+  });
+
+  it("home resolution is env-only: no config file still resolves MEMINI_HOME", () => {
+    const result = resolveNamespace({
+      cwd: "/tmp/legacy-project",
+      env: { MEMINI_HOME: "personal/acme" },
+      configPath: "/nonexistent/config.json",
+    });
+    assert.equal(result.home, "personal/acme");
+    // namespace resolution is unaffected by home (independent legs)
+    assert.equal(result.namespace, "legacy-project");
+  });
+
+  it("home is trimmed and empty/whitespace-only MEMINI_HOME resolves to undefined", () => {
+    const result = resolveNamespace({
+      cwd: "/tmp/whatever",
+      env: { MEMINI_HOME: "   " },
+    });
+    assert.equal(result.home, undefined);
+  });
+
+  it("home has no config-file precedence — MEMINI_HOME wins even with a config file present", () => {
+    const configPath = tempConfig({ tenantRoots: [], template: DEFAULT_TEMPLATE });
+    const result = resolveNamespace({
+      cwd: "/tmp/whatever",
+      env: { MEMINI_HOME: "personal/acme" },
+      configPath,
+    });
+    assert.equal(result.home, "personal/acme");
+  });
 });

@@ -83,6 +83,19 @@ export interface ResolveResult {
   segments: ResolvedSegments;
   /** Which precedence level produced the result. */
   source: "env" | "config" | "git" | "cwd" | "default";
+  /**
+   * The caller's personal namespace (MEMINI_HOME), resolved independently of
+   * `namespace`/`source` above. Env-only — mirrors the MEMINI_NAMESPACE
+   * precedence (wins immediately, no config-file involvement). undefined
+   * when MEMINI_HOME is unset or blank, meaning "no home leg": the caller
+   * should omit X-Memini-Home entirely rather than send it empty.
+   */
+  home?: string;
+  /** Which precedence level produced `home`. Only ever "env" (unset) today —
+   * kept as its own field (rather than reusing `source`) since home and
+   * namespace resolve independently and a future home source (e.g. a config
+   * default) shouldn't collide with the namespace source. */
+  homeSource?: "env";
 }
 
 // ─── Constants ──────────────────────────────────────────────────────
@@ -250,6 +263,18 @@ function resolveAgent(opts: ResolveOptions): string | undefined {
   return sanitizeSegment(agent);
 }
 
+/**
+ * Resolve the caller's personal namespace (MEMINI_HOME). Env-only, mirroring
+ * the MEMINI_NAMESPACE precedence: no config-file involvement, no git/cwd
+ * fallback. Returns undefined when unset/blank — "no home leg" — rather than
+ * a sanitized empty string, so callers can tell "unset" from "resolved to
+ * empty" without an extra check.
+ */
+function resolveHome(env: Record<string, string>): string | undefined {
+  const home = (env["MEMINI_HOME"] || "").trim();
+  return home || undefined;
+}
+
 // ─── Template engine ───────────────────────────────────────────────
 
 /**
@@ -312,10 +337,16 @@ export function resolveNamespace(opts: ResolveOptions): ResolveResult {
   const env = opts.env || process.env as Record<string, string>;
   const cwd = opts.cwd && opts.cwd.trim() ? opts.cwd : process.cwd();
 
+  // home resolves independently of namespace/source — env-only, no
+  // config-file involvement — so it's computed once and merged into every
+  // return path below.
+  const home = resolveHome(env);
+  const homeSource = home ? ("env" as const) : undefined;
+
   // 1. MEMINI_NAMESPACE env wins immediately — unchanged from today
   const nsEnv = (env["MEMINI_NAMESPACE"] || "").trim();
   if (nsEnv) {
-    return { namespace: nsEnv, segments: {}, source: "env" };
+    return { namespace: nsEnv, segments: {}, source: "env", home, homeSource };
   }
 
   // 2. Read config. No config file = today's exact behavior: the namespace is
@@ -328,6 +359,8 @@ export function resolveNamespace(opts: ResolveOptions): ResolveResult {
       namespace: project,
       segments: project ? { project } : {},
       source: "cwd",
+      home,
+      homeSource,
     };
   }
 
@@ -358,5 +391,5 @@ export function resolveNamespace(opts: ResolveOptions): ResolveResult {
   else if (opts.gitRemoteUrl || gitOut("remote get-url origin", cwd)) source = "git";
   else source = "cwd";
 
-  return { namespace, segments, source };
+  return { namespace, segments, source, home, homeSource };
 }

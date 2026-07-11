@@ -74,8 +74,15 @@ interface ResolveResult {
   namespace: string;
   segments: { tenant?: string; project?: string; agent?: string; namespace?: string };
   source: "env" | "config" | "git" | "cwd" | "default";
+  /** Caller's personal namespace (MEMINI_HOME env, resolved independently of `namespace`). */
+  home?: string;
+  homeSource?: "env";
 }
 ```
+
+`home` is resolved from the `MEMINI_HOME` env var only — no config-file or git involvement,
+mirroring the `MEMINI_NAMESPACE` precedence. It's `undefined` when unset/blank, meaning "no home
+leg": callers should omit `X-Memini-Home` entirely rather than send it empty.
 
 ### `applyTemplate(template, segments) → string`
 
