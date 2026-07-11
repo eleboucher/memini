@@ -43,7 +43,7 @@ func TestSharedMemoryAcrossSurfaces(t *testing.T) {
 	}
 
 	// Agent B: recall over MCP, bound to the same namespace and service.
-	srv := meminimcp.NewServer(svc, ns, "")
+	srv := meminimcp.NewServer(svc, ns, "", "")
 	clientT, serverT := mcpsdk.NewInMemoryTransports()
 	if _, err := srv.Connect(ctx, serverT, nil); err != nil {
 		t.Fatalf("mcp server connect: %v", err)
@@ -137,7 +137,7 @@ func TestHomeHeaderNormalizedIdenticallyAcrossSurfaces(t *testing.T) {
 	}
 
 	// MCP over real HTTP: same raw header, same expectation.
-	h := meminimcp.HTTPHandler(svc, nsHdr, "default", homeHdr, "")
+	h := meminimcp.HTTPHandler(svc, nsHdr, "default", homeHdr, "", nil)
 	hs := httptest.NewServer(h)
 	t.Cleanup(hs.Close)
 	transport := &mcpsdk.StreamableClientTransport{

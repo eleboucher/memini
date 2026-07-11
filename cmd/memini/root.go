@@ -138,8 +138,14 @@ func newServer(
 	srv.SetDeps(deps)
 	srv.SetLLMConfigured(cfg.LLMEnabled())
 
+	// keyStore is nil for a backing store that predates APIKeyStore (a driver
+	// that hasn't run the api_keys migration); both the REST and MCP surfaces
+	// degrade to admin-key-only auth in that case — see apiauth.Config.
+	keyStore, _ := st.(store.APIKeyStore)
+
 	rest.New(svc, rest.AuthConfig{
 		APIKey:           cfg.APIKey,
+		APIKeyStore:      keyStore,
 		NamespaceHeader:  config.DefaultNamespaceHeader,
 		DefaultNamespace: cfg.DefaultNamespace,
 		HomeHeader:       config.DefaultHomeHeader,
@@ -147,7 +153,7 @@ func newServer(
 	}).Mount(srv.Router())
 
 	mcpHandler := mcpapi.HTTPHandler(svc, config.DefaultNamespaceHeader, cfg.DefaultNamespace,
-		config.DefaultHomeHeader, cfg.APIKey)
+		config.DefaultHomeHeader, cfg.APIKey, keyStore)
 	srv.Router().Handle("/mcp", mcpHandler)
 	srv.Router().Handle("/mcp/*", mcpHandler)
 

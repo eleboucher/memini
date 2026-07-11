@@ -5,9 +5,9 @@ package mcp
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -15,6 +15,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/eleboucher/memini/internal/apiauth"
 	"github.com/eleboucher/memini/internal/httputil"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/service"
@@ -146,14 +147,18 @@ const serverInstructions = "memini is persistent cross-session memory for this a
 // caller's personal namespace (X-Memini-Home / MEMINI_HOME), merged
 // read-only into every recall/briefing/answer/remember; "" means no home leg.
 // There is no per-call override — home is a transport-level default, fixed
-// for the life of this server instance.
-func NewServer(svc *service.Service, defaultNS, home string) *mcpsdk.Server {
+// for the life of this server instance. author is the name of the NAMED
+// table key that authenticated this session ("" for the admin key, an
+// unauthenticated stdio session, or auth-disabled dev mode); it is stamped
+// as metadata.author on writes via RememberInput.Author — see
+// service.stampAuthor.
+func NewServer(svc *service.Service, defaultNS, home, author string) *mcpsdk.Server {
 	s := mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    "memini",
 		Version: version.Version,
 	}, &mcpsdk.ServerOptions{Instructions: serverInstructions})
 
-	h := &tools{svc: svc, defaultNS: defaultNS, defaultHome: home}
+	h := &tools{svc: svc, defaultNS: defaultNS, defaultHome: home, defaultAuthor: author}
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:  "memory_remember",
@@ -261,20 +266,54 @@ func NewServer(svc *service.Service, defaultNS, home string) *mcpsdk.Server {
 	return s
 }
 
-// HTTPHandler returns an http.Handler serving MCP over Streamable HTTP. The
-// tenant namespace is taken from nsHeader when present, else defaultNS; tool
-// calls may still override it per-call. The caller's personal namespace is
-// taken from homeHeader when present — canonicalized exactly like REST's
-// homeMiddleware so both transports resolve the same client input to the
-// same namespace key — else "" (no home leg — unlike the namespace header
-// there is no default and no per-call override). An invalid nsHeader or
-// homeHeader value is rejected with 400 (matching the REST API) rather than
-// silently falling back to the default tenant. When apiKey is non-empty,
-// requests must present it as a bearer token — required for any remote
-// (non-localhost) deployment.
-func HTTPHandler(svc *service.Service, nsHeader, defaultNS, homeHeader, apiKey string) http.Handler {
+// mcpPrincipalKey is the context key HTTPHandler's outer auth check uses to
+// bridge the resolved apiauth.Principal into the per-session getServer
+// closure below: NewStreamableHTTPHandler calls getServer with the same
+// *http.Request ServeHTTP received (confirmed against the SDK's
+// StreamableHTTPHandler.ServeHTTP, which passes req straight through to
+// h.getServer(req)), so stashing the principal on the request context before
+// calling h.ServeHTTP is sufficient — no other channel is needed between the
+// two closures.
+type mcpCtxKeyType int
+
+const mcpPrincipalKey mcpCtxKeyType = 0
+
+// HTTPHandler returns an http.Handler serving MCP over Streamable HTTP.
+//
+// Auth: apiKey (the admin env key) and keyStore (optional table-key
+// capability, nil when unsupported/unused) are resolved via
+// apiauth.Config.Authenticate exactly like REST's authMiddleware — see its
+// doc for the full enforcement rules, including when table auth becomes
+// mandatory. This guarantees the two HTTP surfaces authenticate identically
+// for the same credentials.
+//
+// Namespace: taken from nsHeader when present, else the authenticated key's
+// DefaultNS, else defaultNS; tool calls may still override it per-call. This
+// is namespace resolution as CONTEXT — the header always wins when present.
+//
+// Home: taken from homeHeader when present — canonicalized exactly like
+// REST's homeMiddleware so both transports resolve the same client input to
+// the same namespace key — else "" (no home leg — unlike the namespace
+// header there is no per-call override). A key bound to a home namespace
+// (HomeNS != "") overrides this outright: the header is ignored entirely
+// (never validated, never consulted), a conflicting value is logged once at
+// debug level, and the request is never rejected for it. This is home
+// resolution as IDENTITY, the deliberate opposite of namespace's
+// header-wins precedence above — see the K2 brief's "SCOPE ADDITION" and
+// REST's homeMiddleware doc for the full rationale.
+//
+// An invalid nsHeader value is always rejected with 400 (matching the REST
+// API); an invalid homeHeader value is rejected with 400 too, UNLESS the
+// authenticated key is bound (in which case the header is never even looked
+// at) — never silently falling back to the default tenant.
+func HTTPHandler(svc *service.Service, nsHeader, defaultNS, homeHeader, apiKey string, keyStore store.APIKeyStore) http.Handler {
+	keyAuth := apiauth.New(apiKey, keyStore)
 	h := mcpsdk.NewStreamableHTTPHandler(func(r *http.Request) *mcpsdk.Server {
+		p, _ := r.Context().Value(mcpPrincipalKey).(apiauth.Principal)
 		ns := defaultNS
+		if p.DefaultNS != "" {
+			ns = p.DefaultNS
+		}
 		if v := strings.TrimSpace(r.Header.Get(nsHeader)); v != "" {
 			ns = v
 		}
@@ -285,15 +324,26 @@ func HTTPHandler(svc *service.Service, nsHeader, defaultNS, homeHeader, apiKey s
 		// above deliberately keeps its pre-existing TrimSpace-only capture —
 		// changing it is out of scope here.
 		home := httputil.NormalizeNamespace(r.Header.Get(homeHeader))
-		return NewServer(svc, ns, home)
+		if p.HomeNS != "" {
+			if home != "" && home != p.HomeNS {
+				slog.DebugContext(r.Context(), "X-Memini-Home ignored: request key is bound to a home namespace",
+					"key", p.Name, "key_home", p.HomeNS, "header_home", home)
+			}
+			home = p.HomeNS
+		}
+		return NewServer(svc, ns, home, p.Name)
 	}, nil)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if apiKey != "" {
-			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if subtle.ConstantTimeCompare([]byte(token), []byte(apiKey)) != 1 {
-				http.Error(w, `{"error":"missing or invalid bearer token"}`, http.StatusUnauthorized)
-				return
-			}
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		p, ok, err := keyAuth.Authenticate(r.Context(), token)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "mcp auth: key store lookup failed", "err", err)
+			http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.Error(w, `{"error":"missing or invalid bearer token"}`, http.StatusUnauthorized)
+			return
 		}
 		if v := strings.TrimSpace(r.Header.Get(nsHeader)); v != "" {
 			if err := httputil.ValidateNamespace(v); err != nil {
@@ -301,14 +351,22 @@ func HTTPHandler(svc *service.Service, nsHeader, defaultNS, homeHeader, apiKey s
 				return
 			}
 		}
-		// Validate the normalized value (matching REST's homeMiddleware): a
-		// header that normalizes to empty ("///") is "no home leg", not an
-		// error, and one that survives normalization must be a valid namespace.
-		if v := httputil.NormalizeNamespace(r.Header.Get(homeHeader)); v != "" {
-			if err := httputil.ValidateNamespace(v); err != nil {
-				http.Error(w, `{"error":"invalid home header"}`, http.StatusBadRequest)
-				return
+		// Skip home-header validation entirely for a bound key: the header is
+		// ignored outright below (see doc comment), so a malformed value must
+		// not 400 a request whose home leg it can never influence.
+		if p == nil || p.HomeNS == "" {
+			// Validate the normalized value (matching REST's homeMiddleware): a
+			// header that normalizes to empty ("///") is "no home leg", not an
+			// error, and one that survives normalization must be a valid namespace.
+			if v := httputil.NormalizeNamespace(r.Header.Get(homeHeader)); v != "" {
+				if err := httputil.ValidateNamespace(v); err != nil {
+					http.Error(w, `{"error":"invalid home header"}`, http.StatusBadRequest)
+					return
+				}
 			}
+		}
+		if p != nil {
+			r = r.WithContext(context.WithValue(r.Context(), mcpPrincipalKey, *p))
 		}
 		h.ServeHTTP(w, r)
 	})
@@ -319,7 +377,7 @@ func HTTPHandler(svc *service.Service, nsHeader, defaultNS, homeHeader, apiKey s
 // home is resolved by the caller from MEMINI_HOME (there are no headers on
 // stdio); "" means no home leg.
 func RunStdio(ctx context.Context, svc *service.Service, defaultNS, home string) error {
-	return NewServer(svc, defaultNS, home).Run(ctx, &mcpsdk.StdioTransport{})
+	return NewServer(svc, defaultNS, home, "").Run(ctx, &mcpsdk.StdioTransport{})
 }
 
 // tools holds the MCP tool handlers.
@@ -330,6 +388,10 @@ type tools struct {
 	// MEMINI_HOME), fixed for the life of this server instance; "" means no
 	// home leg. See NewServer.
 	defaultHome string
+	// defaultAuthor is the NAMED table key that authenticated this session,
+	// fixed for its life; "" for the admin key or an unauthenticated session.
+	// See NewServer.
+	defaultAuthor string
 }
 
 // parseTiers validates a tier filter. An unknown tier is an error rather than
@@ -448,6 +510,7 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 	input := service.RememberInput{
 		Namespace:  t.defaultNS,
 		Home:       t.defaultHome,
+		Author:     t.defaultAuthor,
 		Visibility: in.Visibility,
 		Content:    in.Content,
 		Tier:       memory.Tier(in.Tier),
@@ -948,7 +1011,7 @@ func (t *tools) update(ctx context.Context, _ *mcpsdk.CallToolRequest, in update
 		return nil, memoryItem{}, notFoundErr(in.ID, ns, err)
 	}
 	upd := service.RememberInput{
-		Namespace: ns, Home: t.defaultHome, ID: cur.ID,
+		Namespace: ns, Home: t.defaultHome, Author: t.defaultAuthor, ID: cur.ID,
 		Content: cur.Content, Summary: cur.Summary, Tier: cur.Tier,
 		Tags: cur.Tags, Metadata: cur.Metadata, Importance: cur.Importance, Confidence: cur.Confidence,
 		Level: cur.Level, ValidFrom: cur.ValidFrom, ValidTo: cur.ValidTo,
