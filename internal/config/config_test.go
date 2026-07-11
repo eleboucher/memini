@@ -92,6 +92,25 @@ func TestLoadDefaults(t *testing.T) {
 	if !cfg.UIEnabled {
 		t.Error("UIEnabled = false, want true")
 	}
+	if cfg.Home != "" {
+		t.Errorf("Home = %q, want empty (no MEMINI_HOME set)", cfg.Home)
+	}
+}
+
+// TestLoadHome pins that MEMINI_HOME is resolved into Config.Home the same
+// way other simple env-backed settings are — this is what the stdio MCP
+// server (`memini mcp`) reads to fill in the home leg it has no header for.
+func TestLoadHome(t *testing.T) {
+	clearMeminiEnv(t)
+	t.Setenv("MEMINI_HOME", "personal/kit")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Home != "personal/kit" {
+		t.Errorf("Home = %q, want personal/kit", cfg.Home)
+	}
 }
 
 func TestLoadOverrides(t *testing.T) {
@@ -299,4 +318,5 @@ var meminiEnvKeys = []string{
 	"MEMINI_WRITE_EMBED_TIMEOUT", "MEMINI_RECALL_EMBED_TIMEOUT",
 	"MEMINI_RECALL_REWRITE_TIMEOUT", "MEMINI_REQUEST_TIMEOUT",
 	"MEMINI_GLOBAL_NAMESPACE",
+	"MEMINI_HOME",
 }
