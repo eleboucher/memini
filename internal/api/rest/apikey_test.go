@@ -6,12 +6,14 @@ import (
 	"encoding/hex"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/eleboucher/memini/internal/api/rest"
 	"github.com/eleboucher/memini/internal/embed/embedtest"
+	"github.com/eleboucher/memini/internal/httputil"
 	"github.com/eleboucher/memini/internal/service"
 	"github.com/eleboucher/memini/internal/store"
 	"github.com/eleboucher/memini/internal/store/sqlitevec"
@@ -151,8 +153,10 @@ func TestBoundKeyHomeWinsNoHeader(t *testing.T) {
 }
 
 // TestBoundKeyHomeWinsOverConflictingHeader: a conflicting X-Memini-Home
-// header must be silently ignored (never a 400) for a bound key — the key's
-// own home always wins.
+// header must be ignored (never a 400) for a bound key — the key's own home
+// always wins — but not silently: the override is announced on the response
+// via X-Memini-Warning, since a caller reading the wrong namespace's memories
+// deserves to know why.
 func TestBoundKeyHomeWinsOverConflictingHeader(t *testing.T) {
 	h, ks := newServerWithKeyStore(t, "")
 	if err := ks.PutAPIKey(context.Background(), store.APIKey{
@@ -184,6 +188,62 @@ func TestBoundKeyHomeWinsOverConflictingHeader(t *testing.T) {
 	mustJSON(t, rec, &out)
 	if len(out.Results) != 1 || out.Results[0].Memory.Namespace != "acme/home2" {
 		t.Fatalf("bound key home must win over a conflicting header, got %+v", out.Results)
+	}
+	// The override is announced, not silent.
+	warn := rec.Header().Get(httputil.WarningHeader)
+	if warn == "" {
+		t.Fatal("no X-Memini-Warning on a request whose home header the server overrode")
+	}
+	for _, want := range []string{"someone/elses/home", "acme/home2", "bound-bot2"} {
+		if !strings.Contains(warn, want) {
+			t.Errorf("warning %q does not mention %q; it should name the ignored header, "+
+				"the winning home, and the key that decided it", warn, want)
+		}
+	}
+}
+
+// TestBoundKeyMatchingHomeHeaderIsNotAWarning: a header that agrees with the
+// key's binding is not a conflict, so it must not warn — a warning that fires
+// when nothing was overridden is noise, and noise gets ignored.
+func TestBoundKeyMatchingHomeHeaderIsNotAWarning(t *testing.T) {
+	h, ks := newServerWithKeyStore(t, "")
+	if err := ks.PutAPIKey(context.Background(), store.APIKey{
+		Name: "bound-bot3", Hash: hashOf("tok-bound3"), HomeNS: "acme/home3",
+	}); err != nil {
+		t.Fatalf("PutAPIKey: %v", err)
+	}
+	// Same home the key is bound to, and the non-canonical spelling of it —
+	// both normalize to the key's home, so neither is an override.
+	for _, home := range []string{"acme/home3", "acme/home3/"} {
+		rec := doHome(t, h, http.MethodPost, "/v1/search", "acme/unrelated", home, "tok-bound3", map[string]any{
+			"query": "anything", "limit": 5,
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("search: want 200, got %d (%s)", rec.Code, rec.Body)
+		}
+		if warn := rec.Header().Get(httputil.WarningHeader); warn != "" {
+			t.Errorf("home header %q agrees with the key's binding but still warned: %q", home, warn)
+		}
+	}
+}
+
+// TestUnboundKeyHomeHeaderIsNotAWarning: an unbound key has nothing to
+// override, so an ordinary home header must pass through unremarked.
+func TestUnboundKeyHomeHeaderIsNotAWarning(t *testing.T) {
+	h, ks := newServerWithKeyStore(t, "")
+	if err := ks.PutAPIKey(context.Background(), store.APIKey{
+		Name: "unbound-bot2", Hash: hashOf("tok-unbound2"),
+	}); err != nil {
+		t.Fatalf("PutAPIKey: %v", err)
+	}
+	rec := doHome(t, h, http.MethodPost, "/v1/search", "acme/x", "acme/theirhome", "tok-unbound2", map[string]any{
+		"query": "anything", "limit": 5,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	if warn := rec.Header().Get(httputil.WarningHeader); warn != "" {
+		t.Errorf("unbound key honors the header, so nothing was overridden, but it warned: %q", warn)
 	}
 }
 

@@ -35,6 +35,11 @@ export const IconGraph = base([
   <path d="m8.2 8.4 3 6.5M15.8 7.6 14 14.7M8.4 6.6 15.5 6" opacity="0.7" />,
 ])
 export const IconHealth = base([<path d="M3 12h4l2 6 4-14 2 8h6" />])
+// A clock with a replay arc: the activity feed is what was used, and when.
+export const IconActivity = base([
+  <circle cx="12" cy="12" r="8" />,
+  <path d="M12 7.5V12l3 1.8" />,
+])
 export const IconSettings = base([
   <path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h7M15 18h5" />,
   <circle cx="16" cy="6" r="2" />,

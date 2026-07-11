@@ -49,3 +49,24 @@ func ValidateNamespace(ns string) error {
 	}
 	return nil
 }
+
+// WarningHeader carries a non-fatal advisory about how the server interpreted a
+// request — something the caller almost certainly wants to know but which is not
+// an error, so it must not fail the request. Clients surface it; the UI renders
+// it as a banner.
+const WarningHeader = "X-Memini-Warning"
+
+// HomeConflictWarning describes a home-namespace header the server overrode
+// because the request's API key is bound to a home namespace of its own. The
+// key's binding is identity, so it always wins — but silently ignoring an
+// explicit header is exactly the kind of thing that leaves someone staring at
+// the wrong namespace's memories wondering why. Returns "" when there is no
+// conflict (no binding, no header, or they agree).
+func HomeConflictWarning(keyName, keyHome, headerHome string) string {
+	if keyHome == "" || headerHome == "" || keyHome == headerHome {
+		return ""
+	}
+	return fmt.Sprintf(
+		"home namespace %q from %s ignored: API key %q is bound to home %q, which wins",
+		headerHome, "X-Memini-Home", keyName, keyHome)
+}

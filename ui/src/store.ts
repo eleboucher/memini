@@ -57,6 +57,13 @@ export function refresh() {
   refreshNonce.value++
 }
 
+// The server's last non-fatal advisory (the X-Memini-Warning response header) —
+// e.g. a home namespace header it overrode because the API key is bound to a
+// home of its own. Set on every response, so it clears itself once the
+// condition goes away. The shell renders it as a banner: the request succeeded,
+// but not quite as asked, and that is worth seeing.
+export const serverWarning = signal('')
+
 // Persist settings and reflect the theme on <html> whenever they change.
 effect(() => {
   const data: Persisted = {

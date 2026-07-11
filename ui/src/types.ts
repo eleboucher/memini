@@ -2,13 +2,55 @@
 // (openapi-typescript -> src/api-schema.gen.ts). Don't hand-edit shapes here;
 // change the spec and regenerate, so the UI can't drift from the server.
 
-import type { components } from './api-schema.gen'
+import type { components, operations } from './api-schema.gen'
 
 type Schemas = components['schemas']
+type Operations = operations
 
 export type Tier = Schemas['Tier']
 
 export const TIERS: Tier[] = ['working', 'episodic', 'semantic', 'procedural']
+
+export type Level = Schemas['Level']
+
+export const LEVELS: Level[] = ['explicit', 'deduced']
+
+// The memory types the service stamps onto metadata.memory_type
+// (service.promote/classify). Not a spec enum — it's a metadata value — so this
+// list is the UI's own, matching MemoryTypeBadge's.
+export const MEMORY_TYPES = ['decision', 'preference', 'problem'] as const
+export type MemoryType = (typeof MEMORY_TYPES)[number]
+
+// Sort keys accepted by GET /v1/memories?sort=, from the generated operation.
+export type SortKey = NonNullable<
+  NonNullable<Operations['listMemories']['parameters']['query']>['sort']
+>
+export type SortOrder = NonNullable<
+  NonNullable<Operations['listMemories']['parameters']['query']>['order']
+>
+
+export const SORT_KEYS: { key: SortKey; label: string }[] = [
+  { key: 'created_at', label: 'Created' },
+  { key: 'updated_at', label: 'Updated' },
+  { key: 'last_accessed_at', label: 'Last used' },
+  { key: 'access_count', label: 'Recall count' },
+  { key: 'importance', label: 'Importance' },
+]
+
+export type EventKind = Schemas['EventKind']
+export type ActivityEvent = Schemas['ActivityEvent']
+export type ActivityMemory = Schemas['ActivityMemory']
+export type ActivityResponse = Schemas['ActivityResponse']
+
+export const EVENT_KINDS: EventKind[] = [
+  'recall',
+  'briefing',
+  'get',
+  'remember',
+  'update',
+  'forget',
+  'supersede',
+]
 
 export type Memory = Schemas['Memory']
 export type Scored = Schemas['ScoredMemory']

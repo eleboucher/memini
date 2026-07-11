@@ -59,6 +59,17 @@ func filterClause(b *args, f store.Filter) string {
 		}
 		clause += ex.String()
 	}
+	// MemoryTypes: metadata.memory_type matching ANY listed value (OR), unlike
+	// Metadata's AND-with-one-value-per-key.
+	if len(f.MemoryTypes) > 0 {
+		clause += " AND metadata->>'memory_type' = ANY(" + b.add(f.MemoryTypes) + ")"
+	}
+	if !f.CreatedAfter.IsZero() {
+		clause += " AND created_at >= " + b.add(f.CreatedAfter)
+	}
+	if !f.AccessedAfter.IsZero() {
+		clause += " AND last_accessed_at >= " + b.add(f.AccessedAfter)
+	}
 	// For a time-travel query, "live" means live at AsOf, not at the current
 	// wall clock — a memory that has since expired was still valid then.
 	ref := f.Now
@@ -253,4 +264,36 @@ func tsQuery(query string) string {
 	}
 	flush()
 	return strings.Join(terms, " | ")
+}
+
+// orderClause maps a sort onto an ORDER BY over the memories table. The column
+// comes from a whitelist switch, never from the caller's string, so an
+// unrecognized key degrades to created_at rather than reaching SQL. Ties break
+// on id so a capped listing is deterministic — and so the ordering matches the
+// sqlite driver's byte for byte, which the all-namespaces merge relies on.
+func orderClause(s store.Sort) string {
+	col := "created_at"
+	switch s.Key {
+	case store.SortUpdatedAt:
+		col = "updated_at"
+	case store.SortLastAccessedAt:
+		col = "last_accessed_at"
+	case store.SortAccessCount:
+		col = "access_count"
+	case store.SortImportance:
+		col = "importance"
+	}
+	dir := "DESC"
+	if s.Asc {
+		dir = "ASC"
+	}
+	return " ORDER BY " + col + " " + dir + ", id ASC"
+}
+
+// escapeLike neutralizes LIKE/ILIKE's wildcards so a user's literal "%" or "_"
+// searches for that character instead of matching everything. Pair it with
+// ESCAPE '\' on the LIKE.
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
 }

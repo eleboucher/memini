@@ -512,13 +512,26 @@ func (h *Server) ListMemories(w http.ResponseWriter, r *http.Request, params Lis
 		httputil.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	sort, err := querySort(params.Sort, params.Order)
+	if err != nil {
+		httputil.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	in := service.ListInput{
 		Namespace: namespaceFromContext(r.Context()),
 		Tiers:     tiers,
 		Levels:    levels,
 		Tags:      queryTags(params.Tag),
 		Metadata:  meta,
+		// memory_type is comma-splittable like tags; namespace is not, since a
+		// namespace may legitimately contain characters we would rather not
+		// start carving on.
+		MemoryTypes: queryTags(params.MemoryType),
+		Namespaces:  deref(params.Namespace),
+		Sort:        sort,
 	}
+	in.CreatedAfter = deref(params.CreatedAfter)
+	in.AccessedAfter = deref(params.AccessedAfter)
 	in.IncludeExpired = deref(params.IncludeExpired)
 	in.IncludeSuperseded = deref(params.IncludeSuperseded)
 	in.AllNamespaces = deref(params.AllNamespaces)
@@ -1169,6 +1182,46 @@ func queryTiers(in *[]Tier) ([]memory.Tier, error) {
 		}
 	}
 	return tiers, nil
+}
+
+// querySort maps the ?sort=/?order= params onto a store.Sort. Both are enums in
+// the spec, so an unknown value is the caller's error (400) rather than a
+// silently-ignored parameter that would hand back a differently-ordered list
+// than asked for. Absent params mean the zero Sort: created_at, descending.
+func querySort(sort *ListMemoriesParamsSort, order *ListMemoriesParamsOrder) (store.Sort, error) {
+	var s store.Sort
+	if sort != nil {
+		if !sort.Valid() {
+			return s, fmt.Errorf("invalid sort %q", string(*sort))
+		}
+		s.Key = store.SortKey(*sort)
+	}
+	if order != nil {
+		if !order.Valid() {
+			return s, fmt.Errorf("invalid order %q", string(*order))
+		}
+		s.Asc = *order == Asc
+	}
+	return s, nil
+}
+
+// queryEventKinds expands and validates the ?kind= activity filter. Like ?tier=,
+// it supports repeatable and/or comma-separated values.
+func queryEventKinds(in *[]EventKind) ([]store.EventKind, error) {
+	if in == nil {
+		return nil, nil
+	}
+	var kinds []store.EventKind
+	for _, v := range *in {
+		for part := range strings.SplitSeq(string(v), ",") {
+			k := store.EventKind(strings.TrimSpace(part))
+			if !store.ValidEventKind(k) {
+				return nil, fmt.Errorf("invalid event kind %q", k)
+			}
+			kinds = append(kinds, k)
+		}
+	}
+	return kinds, nil
 }
 
 // queryLevels expands and validates the ?level= filter. Like ?tier=, it supports

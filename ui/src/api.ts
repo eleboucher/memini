@@ -1,13 +1,18 @@
-import { apiToken, baseUrl, namespace, namespaceHeader } from './store'
+import { apiToken, baseUrl, namespace, namespaceHeader, serverWarning } from './store'
 import type {
+  ActivityResponse,
   ApiKeysResponse,
   ApiKeyWithSecret,
   CreateApiKeyRequest,
   DedupReport,
   DedupRequest,
+  EventKind,
   FsckReport,
+  Level,
   ListResponse,
   Memory,
+  SortKey,
+  SortOrder,
   NamespaceLink,
   NamespaceLinksResponse,
   NamespacesResponse,
@@ -56,6 +61,12 @@ async function req<T>(method: string, path: string, body?: unknown, ns?: string)
     throw new ApiError(0, `network error: ${(e as Error).message}`)
   }
 
+  // The server announces non-fatal overrides here — most notably an
+  // X-Memini-Home header it ignored because the API key is bound to a home
+  // namespace of its own. Every request passes through this function, so
+  // capturing it once surfaces it no matter which view made the call.
+  serverWarning.value = res.headers.get('X-Memini-Warning') ?? ''
+
   if (res.status === 204) return undefined as T
   const text = await res.text()
   const data = text ? safeParse(text) : undefined
@@ -76,21 +87,67 @@ function safeParse(text: string): unknown {
 
 export interface ListParams {
   tiers?: Tier[]
+  levels?: Level[]
   tags?: string[]
   metadata?: Record<string, string>
+  memoryTypes?: string[]
+  createdAfter?: string
+  accessedAfter?: string
   includeExpired?: boolean
   includeSuperseded?: boolean
+  sort?: SortKey
+  order?: SortOrder
   limit?: number
+  // namespaces narrows an "All projects" listing; ignored when a namespace is
+  // active (scopedList doesn't send it — the header already scopes the request).
+  namespaces?: string[]
 }
 
-// appendFilters adds the shared tier/tag/meta query params to a list request.
+// appendFilters adds the shared filter/sort query params to a list request.
+// Sorting is server-side: with limit capping the response, sorting in the
+// browser would only ever reorder whichever rows the server happened to return.
 function appendFilters(q: URLSearchParams, p: ListParams) {
   p.tiers?.forEach((t) => q.append('tier', t))
+  p.levels?.forEach((l) => q.append('level', l))
   p.tags?.forEach((t) => q.append('tag', t))
+  p.memoryTypes?.forEach((t) => q.append('memory_type', t))
   Object.entries(p.metadata ?? {}).forEach(([k, v]) => q.append('meta', `${k}=${v}`))
+  if (p.createdAfter) q.set('created_after', p.createdAfter)
+  if (p.accessedAfter) q.set('accessed_after', p.accessedAfter)
   if (p.includeExpired) q.set('include_expired', 'true')
   if (p.includeSuperseded) q.set('include_superseded', 'true')
+  if (p.sort) q.set('sort', p.sort)
+  if (p.order) q.set('order', p.order)
   if (p.limit) q.set('limit', String(p.limit))
+}
+
+export interface ActivityParams {
+  kinds?: EventKind[]
+  tiers?: Tier[]
+  text?: string
+  since?: string
+  namespaces?: string[]
+  limit?: number
+  before?: string
+}
+
+// activity fetches a page of the activity feed. Every filter is applied
+// server-side so paging stays correct — dropping events client-side would make
+// a page of N events arrive as fewer than N and misreport how much is left.
+function fetchActivity(p: ActivityParams): Promise<ActivityResponse> {
+  const q = new URLSearchParams()
+  p.kinds?.forEach((k) => q.append('kind', k))
+  p.tiers?.forEach((t) => q.append('tier', t))
+  if (p.text) q.set('q', p.text)
+  if (p.since) q.set('since', p.since)
+  if (p.limit) q.set('limit', String(p.limit))
+  if (p.before) q.set('before', p.before)
+  if (isAllProjects()) {
+    q.set('all_namespaces', 'true')
+    p.namespaces?.forEach((n) => q.append('namespace', n))
+  }
+  const qs = q.toString()
+  return req<ActivityResponse>('GET', '/v1/activity' + (qs ? `?${qs}` : ''))
 }
 
 // isAllProjects reports the "All projects" aggregate mode: the active namespace
@@ -152,6 +209,10 @@ function listAll(p: ListParams): Promise<Memory[]> {
   const q = new URLSearchParams()
   appendFilters(q, p)
   q.set('all_namespaces', 'true')
+  // Narrowing the aggregate happens server-side: the global limit is applied
+  // under the sort, so filtering the response here could starve a selected
+  // namespace whose rows fell outside the cap.
+  p.namespaces?.forEach((n) => q.append('namespace', n))
   return req<ListResponse>('GET', '/v1/memories?' + q.toString()).then((r) => r.memories ?? [])
 }
 
@@ -184,6 +245,10 @@ export const api = {
   list: (p: ListParams = {}) => (isAllProjects() ? listAll(p) : scopedList(p)),
   search: (query: string, opts: SearchOpts = {}) =>
     isAllProjects() ? searchAll(query, opts) : scopedSearch(query, opts),
+
+  // activity is namespace-aware via the header, or aggregates in All-projects
+  // mode; see fetchActivity.
+  activity: (p: ActivityParams = {}) => fetchActivity(p),
 
   // statsFor fetches stats for one explicit namespace, ignoring the active
   // selection. Backs the Projects landing.

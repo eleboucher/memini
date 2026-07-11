@@ -363,8 +363,11 @@ func HTTPHandlerWithAuth(svc *service.Service, nsHeader, defaultNS, homeHeader s
 		// changing it is out of scope here.
 		home := httputil.NormalizeNamespace(r.Header.Get(homeHeader))
 		if p.HomeNS != "" {
-			if home != "" && home != p.HomeNS {
-				slog.DebugContext(r.Context(), "X-Memini-Home ignored: request key is bound to a home namespace",
+			if warn := httputil.HomeConflictWarning(p.Name, p.HomeNS, home); warn != "" {
+				// Warn, don't whisper: the caller asked for one home namespace and
+				// is getting another. The outer handler also puts this on the
+				// response as X-Memini-Warning (it holds the ResponseWriter).
+				slog.WarnContext(r.Context(), "X-Memini-Home ignored: request key is bound to a home namespace",
 					"key", p.Name, "key_home", p.HomeNS, "header_home", home)
 			}
 			home = p.HomeNS
@@ -405,6 +408,12 @@ func HTTPHandlerWithAuth(svc *service.Service, nsHeader, defaultNS, homeHeader s
 		}
 		if p != nil {
 			r = r.WithContext(context.WithValue(r.Context(), mcpPrincipalKey, *p))
+			// Surface a home-header override on the response, as REST does: the
+			// getServer callback above logs it but never sees the ResponseWriter.
+			if warn := httputil.HomeConflictWarning(p.Name, p.HomeNS,
+				httputil.NormalizeNamespace(r.Header.Get(homeHeader))); warn != "" {
+				w.Header().Set(httputil.WarningHeader, warn)
+			}
 		}
 		h.ServeHTTP(w, r)
 	})

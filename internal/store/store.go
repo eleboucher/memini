@@ -61,6 +61,43 @@ type Filter struct {
 	// treating NULL bounds as open). It overrides the superseded exclusion, so a
 	// fact that was true then but has since been replaced is still returned.
 	AsOf time.Time
+	// MemoryTypes restricts results to memories whose top-level
+	// metadata["memory_type"] equals one of the listed values (OR). Empty means
+	// no constraint. Unlike Metadata (AND, one value per key), this expresses the
+	// multi-select the UI's memory-type filter needs.
+	MemoryTypes []string
+	// CreatedAfter restricts results to memories created at or after the instant.
+	// The zero value means no constraint.
+	CreatedAfter time.Time
+	// AccessedAfter restricts results to memories last accessed at or after the
+	// instant. The zero value means no constraint.
+	AccessedAfter time.Time
+	// Sort orders the results. It is honored by List only: the search methods
+	// return results best-first by relevance and ignore it.
+	Sort Sort
+}
+
+// SortKey names a column List can order by. Values are the wire-level names the
+// REST layer accepts, so an unknown key never reaches SQL — drivers map keys
+// through a whitelist switch and fall back to SortCreatedAt.
+type SortKey string
+
+const (
+	SortCreatedAt      SortKey = "created_at"
+	SortUpdatedAt      SortKey = "updated_at"
+	SortLastAccessedAt SortKey = "last_accessed_at"
+	SortAccessCount    SortKey = "access_count"
+	SortImportance     SortKey = "importance"
+)
+
+// Sort orders a listing. The zero value means created_at descending (newest
+// first) — the order the UI browser wants by default, and the order the
+// all-namespaces aggregate has always merged in.
+type Sort struct {
+	// Key is the column to order by; "" means SortCreatedAt.
+	Key SortKey
+	// Asc orders ascending; the zero value orders descending.
+	Asc bool
 }
 
 // Store is the persistence and retrieval contract for memories. Implementations
@@ -126,6 +163,8 @@ type Store interface {
 
 	// List returns memories in a namespace matching f (without embeddings),
 	// for maintenance tasks (short-term capacity, fsck). limit <= 0 means all.
+	// Results are ordered by f.Sort — newest-created first by default — with
+	// ties broken by id ascending, so a capped listing is deterministic.
 	List(ctx context.Context, namespace string, f Filter, limit int) ([]*memory.Memory, error)
 
 	// ListNamespaces returns the distinct namespaces that hold memories.
@@ -301,6 +340,118 @@ type APIKeyStore interface {
 	// column of a partially-matching key, are untouched; CreatedAt is never
 	// modified. A no-op when from == to.
 	RenameAPIKeyNamespaces(ctx context.Context, from, to string) error
+}
+
+// EventKind names an operation the activity log records. Reads and writes are
+// both logged; the kinds are the wire-level values the REST filter accepts.
+type EventKind string
+
+const (
+	EventRecall    EventKind = "recall"
+	EventGet       EventKind = "get"
+	EventBriefing  EventKind = "briefing"
+	EventRemember  EventKind = "remember"
+	EventUpdate    EventKind = "update"
+	EventForget    EventKind = "forget"
+	EventSupersede EventKind = "supersede"
+)
+
+// ValidEventKind reports whether k is one of the recorded kinds, so the REST
+// layer can reject an unknown filter value before it reaches SQL.
+func ValidEventKind(k EventKind) bool {
+	switch k {
+	case EventRecall, EventGet, EventBriefing, EventRemember, EventUpdate, EventForget, EventSupersede:
+		return true
+	}
+	return false
+}
+
+// Event is one (operation, memory) row of the activity log: what was served or
+// written, when, and — for a recall — the query that pulled it and where it
+// ranked. Memories served by one operation share an OpID, so a recall that
+// returned five memories is five rows the reader regroups into one event.
+//
+// The memory fields are a snapshot taken at event time, not a live join: they
+// keep the feed renderable in one query (no N+1 fetch per row) and keep a
+// forget event readable after its memory is gone.
+type Event struct {
+	// ID is assigned by the store, monotonic within a driver.
+	ID int64
+	// OpID groups the rows of one logical operation.
+	OpID string
+	Kind EventKind
+	// Namespace is the namespace the request was made against, which for a
+	// cascading recall may differ from the served memory's own MemoryNS.
+	Namespace string
+	// Query is the recall query; "" for every other kind.
+	Query string
+	// MemoryID is "" for the sentinel row of a recall that returned nothing —
+	// "the query found nothing" is itself worth recording.
+	MemoryID      string
+	MemoryNS      string
+	MemoryTier    memory.Tier
+	MemorySummary string
+	// Rank is the 1-based position the memory was served at; 0 when not applicable.
+	Rank int
+	// Score is the composite relevance score the memory was served with; nil
+	// when not applicable (every non-recall kind).
+	Score *float64
+	// Detail carries kind-specific context — a recall's degraded mode, a
+	// briefing row's section, a supersession's replacement id.
+	Detail    map[string]any
+	CreatedAt time.Time
+}
+
+// EventFilter narrows an activity-log read. The zero value returns the newest
+// events across every namespace and kind.
+//
+// Tiers and Text select whole operations, not individual rows: an event is a
+// group of rows, so dropping some of a recall's rows would misreport what that
+// recall actually served ("served 2 memories" when it served five). A matching
+// operation is therefore returned intact, with every memory it touched.
+type EventFilter struct {
+	// Namespace restricts to events recorded against this namespace; "" means all.
+	Namespace string
+	// Namespaces restricts to events recorded against any of these namespaces
+	// (OR); empty means no constraint. Used to narrow an all-namespaces feed;
+	// ignored when Namespace is set.
+	Namespaces []string
+	// Kinds restricts to these kinds; empty means all.
+	Kinds []EventKind
+	// Tiers restricts to operations that touched a memory of one of these tiers
+	// (OR); empty means no constraint.
+	Tiers []memory.Tier
+	// Text restricts to operations whose query or any served memory's summary
+	// contains it, case-insensitively. Empty means no constraint.
+	Text string
+	// Since restricts to events recorded at or after the instant; zero means no
+	// constraint.
+	Since time.Time
+	// Before and BeforeID are a keyset cursor: only rows strictly older than
+	// (Before, BeforeID) in the (created_at DESC, id DESC) ordering are
+	// returned. A zero Before starts from the newest row.
+	Before   time.Time
+	BeforeID int64
+	// Limit caps the returned rows (not operations); <= 0 means no cap.
+	Limit int
+}
+
+// EventLogStore is implemented by drivers that persist the activity log. It is
+// an optional capability interface — the EmbedModelStore/LinkStore/APIKeyStore
+// precedent — so callers type-assert and degrade gracefully: the service skips
+// logging and the REST layer answers 501 against a driver that lacks it.
+type EventLogStore interface {
+	// AppendEvents inserts the rows of one operation as a single batch, so they
+	// land contiguously. ListEvents' ordering then keeps an operation's rows
+	// adjacent, which is what lets the reader regroup a flat row page into
+	// whole events without a join table.
+	AppendEvents(ctx context.Context, events []Event) error
+	// ListEvents returns rows matching f, newest first (created_at DESC, id DESC).
+	ListEvents(ctx context.Context, f EventFilter) ([]Event, error)
+	// PruneEvents deletes rows older than olderThan (a zero olderThan prunes
+	// none by age) and, when keepMax > 0, the oldest rows beyond the newest
+	// keepMax. Returns the number of rows deleted.
+	PruneEvents(ctx context.Context, olderThan time.Time, keepMax int) (int64, error)
 }
 
 // OrEmptyMap returns m, or an empty map when m is nil, so drivers persist an

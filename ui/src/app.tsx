@@ -1,10 +1,11 @@
 import { LocationProvider, Router, Route, useLocation } from 'preact-iso'
-import { theme } from './store'
+import { serverWarning, theme } from './store'
 import { NamespaceSelect } from './components/NamespaceSelect'
 import { Projects } from './views/Projects'
 import { Dashboard } from './views/Dashboard'
 import { Browser } from './views/Browser'
 import { Search } from './views/Search'
+import { Activity } from './views/Activity'
 import { Graph } from './views/Graph'
 import { Health } from './views/Health'
 import { Scopes } from './views/Scopes'
@@ -15,6 +16,7 @@ import {
   IconOverview,
   IconBrowse,
   IconSearch,
+  IconActivity,
   IconGraph,
   IconHealth,
   IconScopes,
@@ -47,6 +49,7 @@ const NAV: {
   { path: '/', label: 'Overview', title: 'Overview', Icon: IconOverview, component: Dashboard },
   { path: '/browse', label: 'Browse', title: 'Memory browser', Icon: IconBrowse, component: Browser },
   { path: '/search', label: 'Search', title: 'Recall', Icon: IconSearch, component: Search },
+  { path: '/activity', label: 'Activity', title: 'Recent activity', Icon: IconActivity, component: Activity },
   { path: '/graph', label: 'Graph', title: 'Relationship graph', Icon: IconGraph, component: Graph },
   { path: '/scopes', label: 'Scopes', title: 'Namespace scopes & links', Icon: IconScopes, component: Scopes },
   { path: '/keys', label: 'Keys', title: 'API keys', Icon: IconKey, component: Keys },
@@ -103,6 +106,16 @@ function Shell() {
           </button>
         </header>
         <div class="content">
+          {/* A non-fatal advisory from the server — e.g. the home namespace it
+              overrode because this API key is bound to a home of its own. The
+              request succeeded, just not quite as asked, and the operator would
+              otherwise be left wondering why they are seeing a different
+              namespace's memories than they requested. */}
+          {serverWarning.value && (
+            <div class="banner warn" role="status">
+              {serverWarning.value}
+            </div>
+          )}
           <Router>
             {NAV.map(({ path: to, component }) => (
               <Route key={to} path={to} component={component} />

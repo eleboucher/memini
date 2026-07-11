@@ -1,6 +1,7 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -25,15 +26,28 @@ type ListInput struct {
 	Tags []string
 	// Metadata narrows the listing to memories whose top-level metadata contains
 	// each listed key=value string pair (AND).
-	Metadata          map[string]string
+	Metadata map[string]string
+	// MemoryTypes narrows to memories whose metadata.memory_type is any of the
+	// listed values (OR) — the multi-select the browser's type filter needs,
+	// which Metadata's AND-one-value-per-key semantics cannot express.
+	MemoryTypes []string
+	// CreatedAfter/AccessedAfter narrow to memories created / last accessed at or
+	// after the instant. Zero means no constraint.
+	CreatedAfter      time.Time
+	AccessedAfter     time.Time
 	IncludeExpired    bool
 	IncludeSuperseded bool
+	// Sort orders the listing; the zero value is newest-created first.
+	Sort store.Sort
 	// Limit caps the result count; <= 0 returns all matches.
 	Limit int
 	// AllNamespaces lists across every namespace instead of in.Namespace, with
-	// Limit applied as a single global cap (newest first). Backs the admin UI's
+	// Limit applied as a single global cap under Sort. Backs the admin UI's
 	// "All projects" view.
 	AllNamespaces bool
+	// Namespaces, with AllNamespaces, restricts the aggregate to these namespaces
+	// (exact match); empty means every namespace. Ignored without AllNamespaces.
+	Namespaces []string
 }
 
 // List returns memories in a namespace matching the filter, without embeddings.
@@ -44,34 +58,72 @@ func (s *Service) List(ctx context.Context, in ListInput) ([]*memory.Memory, err
 		Levels:            in.Levels,
 		Tags:              in.Tags,
 		Metadata:          in.Metadata,
+		MemoryTypes:       in.MemoryTypes,
+		CreatedAfter:      in.CreatedAfter,
+		AccessedAfter:     in.AccessedAfter,
 		IncludeExpired:    in.IncludeExpired,
 		IncludeSuperseded: in.IncludeSuperseded,
+		Sort:              in.Sort,
 		Now:               s.now(),
 	}
 	if !in.AllNamespaces {
 		return s.store.List(ctx, in.Namespace, f, in.Limit)
 	}
 
-	names, err := s.store.ListNamespaces(ctx)
-	if err != nil {
-		return nil, err
+	names := in.Namespaces
+	if len(names) == 0 {
+		var err error
+		if names, err = s.store.ListNamespaces(ctx); err != nil {
+			return nil, err
+		}
 	}
 	var all []*memory.Memory
 	for _, ns := range names {
-		// Each namespace contributes its top Limit: any of them may hold the
-		// globally newest memories, decided by the merge sort below.
+		// Each namespace contributes its top Limit under the same sort: any of
+		// them may hold the globally top memories, and a per-namespace top-N
+		// always contains that namespace's share of the global top-N, so the
+		// merge below cannot miss a row the global query would have returned.
 		mems, err := s.store.List(ctx, ns, f, in.Limit)
 		if err != nil {
 			return nil, err
 		}
 		all = append(all, mems...)
 	}
-	// Newest first, so the global cap keeps the most recent memories.
-	sort.SliceStable(all, func(i, j int) bool { return all[i].CreatedAt.After(all[j].CreatedAt) })
+	sortMemories(all, in.Sort)
 	if in.Limit > 0 && len(all) > in.Limit {
 		all = all[:in.Limit]
 	}
 	return all, nil
+}
+
+// sortMemories orders ms the way the store's ORDER BY does, so merging
+// per-namespace pages reproduces the order a single global query would have
+// returned. Keep this in lockstep with the drivers' orderClause — same key,
+// same direction, same id tie-break.
+func sortMemories(ms []*memory.Memory, s store.Sort) {
+	less := func(a, b *memory.Memory) int {
+		var c int
+		switch s.Key {
+		case store.SortUpdatedAt:
+			c = a.UpdatedAt.Compare(b.UpdatedAt)
+		case store.SortLastAccessedAt:
+			c = a.LastAccessedAt.Compare(b.LastAccessedAt)
+		case store.SortAccessCount:
+			c = cmp.Compare(a.AccessCount, b.AccessCount)
+		case store.SortImportance:
+			c = cmp.Compare(a.Importance, b.Importance)
+		default: // store.SortCreatedAt and the zero value
+			c = a.CreatedAt.Compare(b.CreatedAt)
+		}
+		if !s.Asc {
+			c = -c
+		}
+		if c != 0 {
+			return c
+		}
+		return cmp.Compare(a.ID, b.ID) // ties break on id ascending, as in SQL
+	}
+	slices.SortStableFunc(ms, less)
 }
 
 // Stats summarizes a namespace for the UI dashboard. Counts are computed from a
@@ -386,6 +438,13 @@ func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingO
 			return Briefing{}, err
 		}
 	}
+	// Log what the briefing served, after the per-section caps, so the feed
+	// records the memories actually handed to the caller. Logged but never
+	// reinforced: a briefing fires on every session start over the same top-N
+	// regardless of relevance, so counting it as "used" would inflate
+	// access_count uniformly and distort the promotion and ranking that depend
+	// on it. The activity log carries the fact; the counters stay clean.
+	s.logBriefingEvent(ctx, namespace, b)
 	return b, nil
 }
 
