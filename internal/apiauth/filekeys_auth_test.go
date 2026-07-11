@@ -2,12 +2,42 @@ package apiauth_test
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/eleboucher/memini/internal/apiauth"
 	"github.com/eleboucher/memini/internal/store"
 )
+
+// TestAuthenticateExampleFileHashResolves loads the runnable example
+// referenced by config.Config.APIKeysFile's doc (testdata/api_keys.example.yaml)
+// and confirms its documented hash entry ("alex") actually authenticates with
+// the plaintext secret the comment claims it hashes ("swordfish") — a
+// regression guard on the doc staying accurate.
+func TestAuthenticateExampleFileHashResolves(t *testing.T) {
+	fk, err := apiauth.LoadFileKeys(filepath.Join("testdata", "api_keys.example.yaml"))
+	if err != nil {
+		t.Fatalf("LoadFileKeys: %v", err)
+	}
+	cfg := apiauth.New("", nil).WithFileKeys(fk)
+	p, ok, err := cfg.Authenticate(context.Background(), "swordfish")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if !ok || p == nil || p.Name != "alex" {
+		t.Fatalf("example file hash entry: want authenticated as alex, got (%+v, %v, %v)", p, ok, err)
+	}
+
+	// The disabled example entry must reject even with its correct secret.
+	_, ok2, err := cfg.Authenticate(context.Background(), "no-longer-valid")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if ok2 {
+		t.Fatalf("example file disabled entry (retired-bot): want rejected")
+	}
+}
 
 // TestAuthenticateFileKeyPrincipal: a file key authenticates and its
 // Principal carries name/home/default_ns exactly like a table key.

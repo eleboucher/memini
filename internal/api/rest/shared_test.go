@@ -138,7 +138,7 @@ func TestHomeHeaderNormalizedIdenticallyAcrossSurfaces(t *testing.T) {
 	}
 
 	// MCP over real HTTP: same raw header, same expectation.
-	h := meminimcp.HTTPHandler(svc, nsHdr, "default", homeHdr, "", nil)
+	h := meminimcp.HTTPHandler(svc, nsHdr, "default", homeHdr, "", nil, nil)
 	hs := httptest.NewServer(h)
 	t.Cleanup(hs.Close)
 	transport := &mcpsdk.StreamableClientTransport{
@@ -227,7 +227,7 @@ func TestBoundKeyHomeOverrideIdenticalAcrossSurfaces(t *testing.T) {
 	}
 
 	// MCP over real HTTP: identical key, identical conflicting header.
-	h := meminimcp.HTTPHandler(svc, nsHdr, "default", homeHdr, "", ks)
+	h := meminimcp.HTTPHandler(svc, nsHdr, "default", homeHdr, "", ks, nil)
 	hs := httptest.NewServer(h)
 	t.Cleanup(hs.Close)
 	transport := &mcpsdk.StreamableClientTransport{

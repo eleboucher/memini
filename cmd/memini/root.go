@@ -17,6 +17,7 @@ import (
 
 	"github.com/eleboucher/memini/internal/api/rest"
 	"github.com/eleboucher/memini/internal/api/ui"
+	"github.com/eleboucher/memini/internal/apiauth"
 	"github.com/eleboucher/memini/internal/config"
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/llm"
@@ -143,9 +144,40 @@ func newServer(
 	// degrade to admin-key-only auth in that case — see apiauth.Config.
 	keyStore, _ := st.(store.APIKeyStore)
 
+	// fileKeys (K2b) is loaded exactly once here, at boot — see
+	// config.Config.APIKeysFile's doc for the format and why there's no live
+	// reload. A malformed/invalid file is fatal to boot (fail loud): every
+	// validation error names this file and the offending entry (see
+	// apiauth.LoadFileKeys). cfg.APIKeysFile == "" is a complete no-op:
+	// fileKeys stays nil and every downstream apiauth.Config behaves exactly
+	// as it did before this field existed.
+	var fileKeys *apiauth.FileKeySet
+	if cfg.APIKeysFile != "" {
+		fk, ferr := apiauth.LoadFileKeys(cfg.APIKeysFile)
+		if ferr != nil {
+			return nil, ferr
+		}
+		fileKeys = fk
+		// A file key with the same name as an existing DB row doesn't delete
+		// or edit that row — it just always wins at auth time (file checked
+		// before the table, apiauth.Config.Authenticate). Surface that as a
+		// boot-time warning rather than silently shadowing it, so an operator
+		// notices the DB row is now dead weight.
+		shadowed, serr := fk.ShadowedDBKeyNames(context.Background(), keyStore)
+		if serr != nil {
+			return nil, fmt.Errorf("checking MEMINI_API_KEYS_FILE=%s for db-key shadowing: %w", cfg.APIKeysFile, serr)
+		}
+		if len(shadowed) > 0 {
+			log.Warn("declarative api keys file shadows existing db-stored keys by name; "+
+				"the file entry wins at auth time and the db row is unused until removed",
+				"file", cfg.APIKeysFile, "shadowed_keys", shadowed)
+		}
+	}
+
 	rest.New(svc, rest.AuthConfig{
 		APIKey:           cfg.APIKey,
 		APIKeyStore:      keyStore,
+		FileKeys:         fileKeys,
 		NamespaceHeader:  config.DefaultNamespaceHeader,
 		DefaultNamespace: cfg.DefaultNamespace,
 		HomeHeader:       config.DefaultHomeHeader,
@@ -153,7 +185,7 @@ func newServer(
 	}).Mount(srv.Router())
 
 	mcpHandler := mcpapi.HTTPHandler(svc, config.DefaultNamespaceHeader, cfg.DefaultNamespace,
-		config.DefaultHomeHeader, cfg.APIKey, keyStore)
+		config.DefaultHomeHeader, cfg.APIKey, keyStore, fileKeys)
 	srv.Router().Handle("/mcp", mcpHandler)
 	srv.Router().Handle("/mcp/*", mcpHandler)
 

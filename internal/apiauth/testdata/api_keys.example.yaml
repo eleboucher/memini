@@ -1,0 +1,27 @@
+# Example MEMINI_API_KEYS_FILE (K2b). Not loaded by any test automatically —
+# it exists purely as a copy-pasteable reference for the format documented on
+# config.Config.APIKeysFile. Load it yourself with apiauth.LoadFileKeys to see
+# it parse (the hash below is sha256("swordfish") — feel free to swap it for
+# your own `printf %s "$SECRET" | sha256sum` output).
+keys:
+  # A key identified by a pre-computed hash. Use this form when the secret
+  # itself lives elsewhere (e.g. minted by a script that only ever prints the
+  # hash into this file) and never needs to touch disk in plaintext at all.
+  - name: alex
+    hash: "b9f195c5cc7ef6afadbfbc42892ad47d3b24c6bc94bb510c4564a90a14e8b799"
+    home: personal/alex
+    default_namespace: acme
+
+  # A key identified by a plaintext secret. Allowed because the file itself
+  # is the secret store — e.g. SOPS-encrypted at rest in a GitOps repo, only
+  # ever decrypted onto the pod's filesystem at deploy time. memini hashes it
+  # once at load and never keeps the plaintext in memory afterward.
+  - name: ci
+    secret: "correct-horse-battery-staple"
+    disabled: false
+
+  # disabled: true keeps a name+entry around (e.g. mid-rotation) without it
+  # authenticating anything.
+  - name: retired-bot
+    secret: "no-longer-valid"
+    disabled: true

@@ -73,7 +73,7 @@ func TestHTTPHandlerTableKeyAuthenticates(t *testing.T) {
 		t.Fatalf("PutAPIKey: %v", err)
 	}
 	svc := service.New(st, embedtest.New(dims))
-	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "", ks)
+	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "", ks, nil)
 
 	cs, err := connectHTTP(t, h, "acme", "", "tok-bot")
 	if err != nil {
@@ -100,7 +100,7 @@ func TestHTTPHandlerUnknownKeyRejected(t *testing.T) {
 		t.Fatalf("PutAPIKey: %v", err)
 	}
 	svc := service.New(st, embedtest.New(dims))
-	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "", ks)
+	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "", ks, nil)
 
 	if _, err := connectHTTP(t, h, "acme", "", "no-such-token"); err == nil {
 		t.Fatalf("connect with unknown token: want an error (401), got none")
@@ -119,7 +119,7 @@ func TestHTTPHandlerDisabledKeyRejected(t *testing.T) {
 		t.Fatalf("PutAPIKey: %v", err)
 	}
 	svc := service.New(st, embedtest.New(dims))
-	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "", ks)
+	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "", ks, nil)
 
 	if _, err := connectHTTP(t, h, "acme", "", "tok-retired"); err == nil {
 		t.Fatalf("connect with disabled key: want an error (401), got none")
@@ -146,7 +146,7 @@ func TestHTTPHandlerBoundKeyHomeOverridesConflictingHeader(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed remember: %v", err)
 	}
-	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "", ks)
+	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "", ks, nil)
 
 	cs, err := connectHTTP(t, h, "acme/unrelated", "someone/elses/home", "tok-bound")
 	if err != nil {
@@ -186,7 +186,7 @@ func TestHTTPHandlerKeyDefaultNamespace(t *testing.T) {
 		t.Fatalf("PutAPIKey: %v", err)
 	}
 	svc := service.New(st, embedtest.New(dims))
-	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "", ks)
+	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "", ks, nil)
 
 	// No namespace header: lands in the key's DefaultNS.
 	cs, err := connectHTTP(t, h, "", "", "tok-ns")
@@ -243,7 +243,7 @@ func TestHTTPHandlerNamedKeyAttribution(t *testing.T) {
 		t.Fatalf("PutAPIKey: %v", err)
 	}
 	svc := service.New(st, embedtest.New(dims))
-	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "admin-secret", ks)
+	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "admin-secret", ks, nil)
 
 	// Named key: attributed.
 	cs, err := connectHTTP(t, h, "acme", "", "tok-author")

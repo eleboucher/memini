@@ -222,6 +222,24 @@ func TestLoadFileKeysMissingFile(t *testing.T) {
 	}
 }
 
+// TestLoadFileKeysExampleFile loads the runnable example referenced by
+// config.Config.APIKeysFile's doc comment (testdata/api_keys.example.yaml),
+// pinning that it stays valid and its documented hash/secret pair actually
+// resolves the way the comment claims.
+func TestLoadFileKeysExampleFile(t *testing.T) {
+	fk, err := apiauth.LoadFileKeys(filepath.Join("testdata", "api_keys.example.yaml"))
+	if err != nil {
+		t.Fatalf("LoadFileKeys(testdata/api_keys.example.yaml): %v", err)
+	}
+	keys := fk.FileKeys()
+	if len(keys) != 3 {
+		t.Fatalf("want 3 example keys, got %d: %+v", len(keys), keys)
+	}
+	if !fk.IsFileKey("alex") || !fk.IsFileKey("ci") || !fk.IsFileKey("retired-bot") {
+		t.Fatalf("want alex, ci, and retired-bot all recognized, got %+v", keys)
+	}
+}
+
 func TestLoadFileKeysEmptyFileYieldsNoKeys(t *testing.T) {
 	path := writeKeysFile(t, "keys: []\n")
 	fk, err := apiauth.LoadFileKeys(path)

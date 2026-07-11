@@ -35,6 +35,11 @@ type AuthConfig struct {
 	// feature is simply unused — see apiauth.Config.Authenticate for the full
 	// enforcement rules, including when table auth becomes mandatory.
 	APIKeyStore store.APIKeyStore
+	// FileKeys, when non-nil, enables the declarative MEMINI_API_KEYS_FILE
+	// keys (K2b) alongside APIKey/APIKeyStore: checked after APIKey and
+	// before APIKeyStore — see apiauth.Config.Authenticate. nil (the default)
+	// means the feature is unused, matching a server built before it existed.
+	FileKeys *apiauth.FileKeySet
 	// NamespaceHeader names the request header carrying the tenant namespace.
 	NamespaceHeader string
 	// DefaultNamespace is used when the header is absent and the

@@ -498,7 +498,7 @@ func TestHTTPHandlerAuth(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	h := meminimcp.HTTPHandler(service.New(st, embedtest.New(dims)), "X-Memini-Namespace", "default", "X-Memini-Home", "secret", nil)
+	h := meminimcp.HTTPHandler(service.New(st, embedtest.New(dims)), "X-Memini-Namespace", "default", "X-Memini-Home", "secret", nil, nil)
 
 	const body = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
 	req := func(token string) *httptest.ResponseRecorder {
@@ -1176,7 +1176,7 @@ func TestHTTPHandlerNamespaceHeader(t *testing.T) {
 	badNS := strings.Repeat("n", 300)
 
 	t.Run("no api key", func(t *testing.T) {
-		h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "", nil)
+		h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "", nil, nil)
 		if got := req(h, badNS, "").Code; got != http.StatusBadRequest {
 			t.Errorf("invalid namespace without auth: got %d, want 400", got)
 		}
@@ -1186,7 +1186,7 @@ func TestHTTPHandlerNamespaceHeader(t *testing.T) {
 	})
 
 	t.Run("with api key", func(t *testing.T) {
-		h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "secret", nil)
+		h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "secret", nil, nil)
 		if got := req(h, badNS, "secret").Code; got != http.StatusBadRequest {
 			t.Errorf("invalid namespace with valid token: got %d, want 400", got)
 		}
@@ -1221,7 +1221,7 @@ func TestHTTPHandlerHomeHeaderValidation(t *testing.T) {
 		h.ServeHTTP(w, r)
 		return w
 	}
-	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "", nil)
+	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "", nil, nil)
 	badHome := strings.Repeat("n", 300)
 	if got := req(h, badHome).Code; got != http.StatusBadRequest {
 		t.Errorf("invalid home header: got %d, want 400", got)
@@ -1273,7 +1273,7 @@ func TestHTTPHandlerHomeHeaderMergesDurable(t *testing.T) {
 		t.Fatalf("seed remember: %v", err)
 	}
 
-	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "", nil)
+	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "", nil, nil)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 

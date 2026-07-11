@@ -280,12 +280,17 @@ const mcpPrincipalKey mcpCtxKeyType = 0
 
 // HTTPHandler returns an http.Handler serving MCP over Streamable HTTP.
 //
-// Auth: apiKey (the admin env key) and keyStore (optional table-key
+// Auth: apiKey (the admin env key), fileKeys (optional MEMINI_API_KEYS_FILE
+// capability, K2b — nil when unused), and keyStore (optional table-key
 // capability, nil when unsupported/unused) are resolved via
 // apiauth.Config.Authenticate exactly like REST's authMiddleware — see its
-// doc for the full enforcement rules, including when table auth becomes
-// mandatory. This guarantees the two HTTP surfaces authenticate identically
-// for the same credentials.
+// doc for the full enforcement rules, including when table or file-key auth
+// becomes mandatory. This guarantees the two HTTP surfaces authenticate
+// identically for the same credentials.
+//
+// The resolved identity (principal, and the ns/home it carries) is fixed for
+// the lifetime of an MCP session — captured once when the session's server
+// is built below, not re-resolved per tool call — see NewServer's callers.
 //
 // Namespace: taken from nsHeader when present, else the authenticated key's
 // DefaultNS, else defaultNS; tool calls may still override it per-call. This
@@ -306,8 +311,10 @@ const mcpPrincipalKey mcpCtxKeyType = 0
 // API); an invalid homeHeader value is rejected with 400 too, UNLESS the
 // authenticated key is bound (in which case the header is never even looked
 // at) — never silently falling back to the default tenant.
-func HTTPHandler(svc *service.Service, nsHeader, defaultNS, homeHeader, apiKey string, keyStore store.APIKeyStore) http.Handler {
-	keyAuth := apiauth.New(apiKey, keyStore)
+func HTTPHandler(svc *service.Service, nsHeader, defaultNS, homeHeader, apiKey string,
+	keyStore store.APIKeyStore, fileKeys *apiauth.FileKeySet,
+) http.Handler {
+	keyAuth := apiauth.New(apiKey, keyStore).WithFileKeys(fileKeys)
 	h := mcpsdk.NewStreamableHTTPHandler(func(r *http.Request) *mcpsdk.Server {
 		p, _ := r.Context().Value(mcpPrincipalKey).(apiauth.Principal)
 		ns := defaultNS

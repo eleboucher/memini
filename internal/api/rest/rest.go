@@ -37,7 +37,7 @@ var _ ServerInterface = (*Server)(nil)
 
 // New builds the REST server.
 func New(svc *service.Service, auth AuthConfig) *Server {
-	auth.keyAuth = apiauth.New(auth.APIKey, auth.APIKeyStore)
+	auth.keyAuth = apiauth.New(auth.APIKey, auth.APIKeyStore).WithFileKeys(auth.FileKeys)
 	return &Server{svc: svc, auth: auth}
 }
 
