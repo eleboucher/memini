@@ -56,7 +56,8 @@ stay out of any file):
 | Env var                          | Default                 | Purpose                                                                                       |
 | -------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------- |
 | `MEMINI_BASE_URL`                | `http://localhost:8080` | memini REST base URL (alias: `MEMINI_URL`)                                                    |
-| `MEMINI_NAMESPACE`               | cwd basename            | tenant the memory is scoped to (`X-Memini-Namespace`)                                         |
+| `MEMINI_NAMESPACE`               | cwd basename            | project the memory is scoped to (`X-Memini-Namespace`)                                        |
+| `MEMINI_HOME`                    | unset                   | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg                     |
 | `MEMINI_RECALL`                  | on                      | `0`/`false` disables recall-before-turn                                                       |
 | `MEMINI_CAPTURE`                 | on                      | `0`/`false` disables capture-after-turn                                                       |
 | `MEMINI_RECALL_LIMIT`            | `3`                     | max memories injected per turn                                                                |

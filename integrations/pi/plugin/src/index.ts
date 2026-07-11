@@ -102,6 +102,7 @@ export function deriveNamespace(cwd: string | undefined): string {
 export interface ResolvedConfig {
   base_url: string;
   namespace: string;
+  home?: string;
   recall: boolean;
   capture: boolean;
   recall_limit: number;
@@ -139,12 +140,17 @@ export function resolveConfig(env: NodeJS.ProcessEnv, cwd?: string): ResolvedCon
     const n = Number(e.MEMINI_RECALL_LIMIT);
     return Number.isFinite(n) && n >= 0 ? n : DEFAULT_RECALL_LIMIT;
   })();
+  // home: the caller's personal namespace, sent as X-Memini-Home. Env-only,
+  // mirroring MEMINI_NAMESPACE's precedence style — no cwd/derivation
+  // fallback; unset means "no home leg".
+  const homeEnv = (e.MEMINI_HOME || "").trim();
   return {
     base_url: e.MEMINI_BASE_URL || e.MEMINI_URL || DEFAULT_BASE_URL,
     // namespace is already resolved above (raw-trimmed on the env path,
     // per-segment sanitized on the resolver path); re-sanitizing here would
     // flatten tenant separators.
     namespace: namespace || DEFAULT_NAMESPACE,
+    home: homeEnv || undefined,
     recall: envBool(e.MEMINI_RECALL, true),
     capture: envBool(e.MEMINI_CAPTURE, true),
     recall_limit,
@@ -278,6 +284,7 @@ function createClient(cfg: ResolvedConfig, warn: (m: string) => void): MeminiCli
   function headers(extra?: Record<string, string>): Record<string, string> {
     const h: Record<string, string> = { "X-Memini-Namespace": cfg.namespace, ...(extra || {}) };
     if (secret) h.Authorization = `Bearer ${secret}`;
+    if (cfg.home) h["X-Memini-Home"] = cfg.home;
     return h;
   }
 

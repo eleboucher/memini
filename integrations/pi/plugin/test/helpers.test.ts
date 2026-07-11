@@ -67,6 +67,12 @@ test("MEMINI_NAMESPACE is used raw-trimmed, not per-segment sanitized", () => {
   assert.equal(resolveConfig({ MEMINI_NAMESPACE: "team/eu" }, undefined).namespace, "team/eu");
 });
 
+test("resolveConfig: home resolves from MEMINI_HOME env, unset -> undefined", () => {
+  assert.equal(resolveConfig({}, "/x/proj").home, undefined);
+  assert.equal(resolveConfig({ MEMINI_HOME: "personal/acme" }, "/x/proj").home, "personal/acme");
+  assert.equal(resolveConfig({ MEMINI_HOME: "  " }, "/x/proj").home, undefined);
+});
+
 test("formatResults renders bullets and respects labels", () => {
   const results = [
     { memory: { tier: "semantic", content: "fact one" }, score: 0.9 },
@@ -221,6 +227,44 @@ test("an HTTP error on recall is logged even when fallback_on_error degrades it"
   } finally {
     globalThis.fetch = realFetch;
     console.error = realError;
+  }
+});
+
+test("requests carry X-Memini-Home when MEMINI_HOME is set, omit it otherwise", async () => {
+  const { default: meminiExtension } = await import("../src/index.ts?cb=home-" + Date.now());
+  const hooks: Record<string, any> = {};
+  const requests: any[] = [];
+  const realFetch = globalThis.fetch;
+  const prevHome = process.env.MEMINI_HOME;
+  globalThis.fetch = (async (url: any, init: any) => {
+    requests.push({ url: String(url), headers: init?.headers });
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { results: [] };
+      },
+      async text() {
+        return "";
+      },
+    };
+  }) as any;
+  try {
+    process.env.MEMINI_HOME = "personal/acme";
+    meminiExtension({
+      on(name: string, h: any) {
+        hooks[name] = h;
+      },
+      registerTool() {},
+    } as any);
+    const ctx = { sessionManager: { getSessionId: () => "sess-home", getLeafId: () => "leaf-1" } };
+    await hooks.before_agent_start({ prompt: "hello" }, ctx);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].headers["X-Memini-Home"], "personal/acme");
+  } finally {
+    if (prevHome === undefined) delete process.env.MEMINI_HOME;
+    else process.env.MEMINI_HOME = prevHome;
+    globalThis.fetch = realFetch;
   }
 });
 
