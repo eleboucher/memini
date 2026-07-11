@@ -62,27 +62,21 @@ func toReadSetEntries(entries []scopeEntry) []ReadSetEntry {
 	return out
 }
 
-// resolveReadSetForTiers resolves the default read-set (no scope/explicit
-// override) for ns/home, filtered by the given tier request, and maps it to
-// the public ReadSetEntry shape. Shared by ResolveReadSetInfo (reqTiers nil:
-// the full durable set) and Answer's ReadSet out-param (reqTiers: the
-// answer's own Tiers filter, matching what its internal recalls actually
-// search — see AnswerInput.ReadSet).
-func (s *Service) resolveReadSetForTiers(ctx context.Context, ns, home string, tiers []memory.Tier) ([]ReadSetEntry, error) {
-	entries, err := s.resolveReadSet(ctx, readScope{primary: ns, home: home, reqTiers: tiers})
+// ResolveReadSetInfo resolves the default read-set for ns (request
+// namespace) and home (caller's personal namespace) — the same cascade
+// Recall and Briefing use with no scope/explicit-namespace override, and
+// with no tier filter (the full durable cascade). This is the STRUCTURAL
+// read-set: which namespaces are reachable and why (origin), independent of
+// any one request's tier filter — tiers decide what gets searched, not what
+// a namespace is. Used by the read-set introspection endpoint (T6) and by
+// Answer's ReadSet out-param (see AnswerInput.ReadSet for why answer
+// provenance must be tier-independent).
+func (s *Service) ResolveReadSetInfo(ctx context.Context, ns, home string) ([]ReadSetEntry, error) {
+	entries, err := s.resolveReadSet(ctx, readScope{primary: ns, home: home})
 	if err != nil {
 		return nil, err
 	}
 	return toReadSetEntries(entries), nil
-}
-
-// ResolveReadSetInfo resolves the default read-set for ns (request
-// namespace) and home (caller's personal namespace) — the same cascade
-// Recall and Briefing use with no scope/explicit-namespace override — as the
-// public ReadSetEntry shape. Used by the read-set introspection endpoint
-// (T6).
-func (s *Service) ResolveReadSetInfo(ctx context.Context, ns, home string) ([]ReadSetEntry, error) {
-	return s.resolveReadSetForTiers(ctx, ns, home, nil)
 }
 
 // readScope carries the scope-control inputs a read accepts.

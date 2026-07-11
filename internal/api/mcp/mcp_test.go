@@ -16,6 +16,7 @@ import (
 
 	meminimcp "github.com/eleboucher/memini/internal/api/mcp"
 	"github.com/eleboucher/memini/internal/embed/embedtest"
+	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/service"
 	"github.com/eleboucher/memini/internal/store"
@@ -2369,5 +2370,109 @@ func TestAnswerSourcesFromFieldViaMCP(t *testing.T) {
 	}
 	if out.Sources[0].Namespace != "acme/phoenix" || out.Sources[0].From != "acme/phoenix" {
 		t.Fatalf("source = %+v, want namespace/from = acme/phoenix", out.Sources[0])
+	}
+}
+
+// scriptedToolChat is a scriptable llm.ToolChat + llm.Completer: Complete (the
+// agentic early-exit gate) always replies INSUFFICIENT so the tool loop opens,
+// and each ChatTools round pops the next scripted result.
+type scriptedToolChat struct {
+	script []llm.ChatResult
+}
+
+func (f *scriptedToolChat) Complete(context.Context, string, string) (string, error) {
+	return "INSUFFICIENT", nil
+}
+
+func (f *scriptedToolChat) ChatTools(
+	_ context.Context, _ string, _ []llm.ChatTurn, _ []llm.Tool, _ llm.ToolChoice,
+) (llm.ChatResult, error) {
+	if len(f.script) == 0 {
+		return llm.ChatResult{Text: "out of script"}, nil
+	}
+	next := f.script[0]
+	f.script = f.script[1:]
+	return next, nil
+}
+
+// TestAnswerAgenticTierNarrowedSourceKeepsFromLabelViaMCP pins the T5 review
+// defect: a namespace's structural origin (primary/ancestor/home/link) does
+// not depend on the request's tier filter — tiers decide what gets SEARCHED,
+// not what a namespace IS. With a top-level tiers=["episodic"] answer, a
+// tier-dependent read-set resolution would have no durable cascade legs; but
+// the agentic loop's search_memory tool overrides tiers per call
+// (tier="durable"), and its inner recall resolves a FULL cascade, so an
+// ancestor-namespace hit can land in Sources. That source must still render
+// From:"acme/phoenix" — not "", which would falsely present an ancestor
+// memory as primary.
+func TestAnswerAgenticTierNarrowedSourceKeepsFromLabelViaMCP(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "from-agentic.db"), dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	const token = "glockenspiel23"
+	fake := &scriptedToolChat{script: []llm.ChatResult{
+		// Round 1: the model narrows to durable tiers — the inner recall
+		// resolves the full cascade regardless of the top-level episodic
+		// filter, surfacing the ancestor's semantic memory.
+		{Calls: []llm.ToolCall{{ID: "c1", Name: "search_memory",
+			Args: json.RawMessage(`{"query":"` + token + `","tier":"durable"}`)}},
+		},
+		// Round 2: final answer.
+		{Text: "the answer"},
+	}}
+	svc := service.New(st, embedtest.New(dims), service.WithAnswerer(fake))
+
+	// Only the ancestor holds anything: a durable (semantic) memory the
+	// tier="durable" tool search can reach. The primary namespace has no
+	// episodic memory, so the prefetch finds nothing and the gate's
+	// INSUFFICIENT reply opens the loop.
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "acme/phoenix", Content: "ancestor durable fact " + token, Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("seed remember: %v", err)
+	}
+
+	srv := meminimcp.NewServer(svc, "default", "")
+	clientT, serverT := mcpsdk.NewInMemoryTransports()
+	if _, err := srv.Connect(ctx, serverT, nil); err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	cs, err := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "t", Version: "0"}, nil).Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_answer",
+		Arguments: map[string]any{
+			"query": token, "namespace": "acme/phoenix/api",
+			"tiers": []string{"episodic"}, "reasoning_level": "low",
+		},
+	})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	var out struct {
+		Sources []struct {
+			Namespace string `json:"namespace"`
+			From      string `json:"from"`
+		} `json:"sources"`
+	}
+	structured(t, res, &out)
+	if len(out.Sources) != 1 {
+		t.Fatalf("sources = %+v, want exactly 1 (the tool-loop ancestor hit)", out.Sources)
+	}
+	if out.Sources[0].Namespace != "acme/phoenix" {
+		t.Fatalf("source namespace = %q, want acme/phoenix", out.Sources[0].Namespace)
+	}
+	if out.Sources[0].From != "acme/phoenix" {
+		t.Fatalf("tier-narrowed tool-loop source: from = %q, want %q — an ancestor hit must "+
+			"never render as primary just because the top-level tier filter skipped the cascade",
+			out.Sources[0].From, "acme/phoenix")
 	}
 }

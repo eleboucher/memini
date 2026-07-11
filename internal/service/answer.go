@@ -75,15 +75,19 @@ type AnswerInput struct {
 	// low/medium/high run the bounded tool loop (see ReasoningLevel). Falls
 	// back to single-shot when the configured LLM client can't do tool calls.
 	Reasoning ReasoningLevel
-	// ReadSet (output-only) is set to the read-set this answer draws from —
-	// same out-param pattern as RecallInput.ReadSet. Resolved once up front
-	// (see Answer) rather than threaded through every internal recall: Answer
-	// has no Scope/Namespaces/Subtree field, so every recall it performs
-	// (single-shot, the agentic prefetch, the query-expansion legs, and every
-	// tool-loop search) always resolves the same read-set for a given
-	// Namespace/Home/Tiers — computing it once is both correct and cheaper
-	// than resolving it per call. The caller passes the address of a local
-	// slice; nil disables reporting.
+	// ReadSet (output-only) is set to the STRUCTURAL read-set this answer can
+	// draw from — same out-param pattern as RecallInput.ReadSet, but resolved
+	// once up front (see Answer) with the tier-independent default cascade
+	// (ResolveReadSetInfo semantics), NOT filtered by Tiers. A namespace's
+	// origin (primary/ancestor/home/link) is a structural property: tiers
+	// decide what gets SEARCHED, not what a namespace IS, and the agentic
+	// tool loop overrides tiers per search_memory call (tier="durable"), so
+	// its inner recalls can legally reach cascade legs a Tiers-filtered
+	// resolution would have skipped. Resolving the structure unfiltered makes
+	// this set a superset of every inner recall's reach (Answer has no
+	// Scope/Namespaces/Subtree field), so every source always carries a
+	// correct origin label. The caller passes the address of a local slice;
+	// nil disables reporting.
 	ReadSet *[]ReadSetEntry
 }
 
@@ -105,7 +109,12 @@ func (s *Service) Answer(ctx context.Context, in AnswerInput) (AnswerResult, err
 		return AnswerResult{}, fmt.Errorf("answer: no LLM configured (use WithAnswerer)")
 	}
 	if in.ReadSet != nil {
-		rs, err := s.resolveReadSetForTiers(ctx, in.Namespace, in.Home, in.Tiers)
+		// Tier-independent on purpose: see the AnswerInput.ReadSet doc comment.
+		// Passing in.Tiers here would drop the durable cascade legs for e.g. an
+		// episodic-only request, leaving tool-loop tier="durable" hits from an
+		// ancestor/home/link namespace without an origin label — rendered as if
+		// they were primary.
+		rs, err := s.ResolveReadSetInfo(ctx, in.Namespace, in.Home)
 		if err != nil {
 			s.metrics.AnswerResult("error")
 			return AnswerResult{}, fmt.Errorf("answer: resolve read-set: %w", err)
