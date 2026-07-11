@@ -214,6 +214,14 @@ type Config struct {
 	// Reserved slots are relevance-gated — a durable memory is only promoted in
 	// when it is relevance-competitive with the entry it displaces.
 	RecallSemanticReserve int `env:"MEMINI_RECALL_SEMANTIC_RESERVE" envDefault:"2"`
+	// StabilityK is the spaced-repetition strength (Ebbinghaus stability): a
+	// short-term memory's effective recall half-life stretches with reinforcement
+	// as halfLife*(1+StabilityK*ln(1+access_count)), so a frequently-recalled
+	// memory decays more slowly, improving recall of reinforced-but-aged facts
+	// (see bench/reinforcement_test.go). Default 1; set 0 to disable (fixed
+	// half-life). Only affects short-term tiers with access_count > 0 — durable
+	// tiers and never-recalled memories are unchanged.
+	StabilityK float64 `env:"MEMINI_STABILITY_K" envDefault:"1"`
 	// TurnEchoWindow is the server-wide temporal exclusion window for
 	// freshly-captured episodic turns. A just-captured turn
 	// (metadata.format="turn") younger than this is dropped from recall by
@@ -588,6 +596,9 @@ func (c *Config) validate() error {
 	}
 	if c.RecallSemanticReserve < 0 {
 		return fmt.Errorf("MEMINI_RECALL_SEMANTIC_RESERVE must be >= 0, got %d", c.RecallSemanticReserve)
+	}
+	if c.StabilityK < 0 {
+		return fmt.Errorf("MEMINI_STABILITY_K must be >= 0, got %v", c.StabilityK)
 	}
 	if c.EpisodicMinChars < 0 {
 		return fmt.Errorf("MEMINI_EPISODIC_MIN_CHARS must be >= 0, got %d", c.EpisodicMinChars)

@@ -72,6 +72,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.RerankMaxBatchChars != 6000 {
 		t.Errorf("RerankMaxBatchChars = %d, want 6000", cfg.RerankMaxBatchChars)
 	}
+	if cfg.StabilityK != 1 {
+		t.Errorf("StabilityK = %v, want 1", cfg.StabilityK)
+	}
 	if cfg.PromoteInterval != 24*time.Hour {
 		t.Errorf("PromoteInterval = %v, want 24h", cfg.PromoteInterval)
 	}
@@ -248,6 +251,10 @@ func TestLoadValidationErrors(t *testing.T) {
 		{
 			name: "negative episodic min chars",
 			env:  map[string]string{"MEMINI_EPISODIC_MIN_CHARS": "-10"},
+		},
+		{
+			name: "negative stability k",
+			env:  map[string]string{"MEMINI_STABILITY_K": "-0.5"},
 		},
 	}
 	for _, tt := range tests {

@@ -22,6 +22,7 @@ import (
 	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/logging"
 	"github.com/eleboucher/memini/internal/maintenance"
+	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/rerank"
 	"github.com/eleboucher/memini/internal/search"
 	"github.com/eleboucher/memini/internal/server"
@@ -292,6 +293,11 @@ func buildServiceStack(
 		service.WithExtractOnWrite(true),
 		service.WithMetrics(metricsImpl),
 	)
+	// Spaced-repetition stability is a process-global tuning constant (peer to
+	// the fixed retention half-life it modulates), read at ranking time by
+	// memory.Quality — set it here from config rather than threading it through
+	// every recall call.
+	memory.StabilityK = cfg.StabilityK
 	svc := service.New(st, embedder, svcOpts...)
 
 	workerCtx, stopWorkers := context.WithCancel(ctx)

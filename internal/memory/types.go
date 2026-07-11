@@ -154,6 +154,16 @@ func (m *Memory) Expired(now time.Time) bool {
 // of a memory's retention score halves.
 const retentionHalfLife = 7 * 24 * time.Hour
 
+// StabilityK is the spaced-repetition strength (Ebbinghaus stability), read at
+// ranking time by Quality. Above 0 it stretches a short-term memory's effective
+// half-life with reinforcement — S = retentionHalfLife*(1 + StabilityK*ln(1+
+// AccessCount)) — so a frequently-recalled memory forgets more slowly (the curve
+// flattens, not just shifts up); at 0 it is an exact no-op (fixed half-life). The
+// memini server sets it from MEMINI_STABILITY_K (default 1) in cmd/memini; this
+// package-level default stays 0 so direct library callers and unit tests keep
+// the unmodulated baseline unless they opt in. See bench/reinforcement_test.go.
+var StabilityK = 0.0
+
 // tierSalience is the base quality weight of a memory by tier: a durable fact
 // or procedure matters more than a session summary, which matters more than a
 // raw scratch observation. It is the salience taxonomy (memini scopes by tier,
@@ -236,8 +246,11 @@ func (m *Memory) Quality(now time.Time) float64 {
 		return m.DurableScore(now)
 	}
 	age := max(now.Sub(m.LastAccessedAt), 0)
-	recency := math.Exp(-float64(age) / float64(retentionHalfLife))
 	usage := 1 + math.Log1p(float64(m.AccessCount))
+	// Stability grows with reinforcement (StabilityK>0); at the default 0 this
+	// reduces to the fixed retentionHalfLife, so ranking is unchanged.
+	stability := float64(retentionHalfLife) * (1 + StabilityK*math.Log1p(float64(m.AccessCount)))
+	recency := math.Exp(-float64(age) / stability)
 	return m.Salience() * m.EffectiveConfidence(now) * usage * recency
 }
 
