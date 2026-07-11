@@ -247,6 +247,47 @@ func scanLink(s scanner) (store.NamespaceLink, error) {
 	return l, nil
 }
 
+// scanAPIKeys reads every remaining row of rows into APIKeys, closing rows
+// before returning.
+func scanAPIKeys(rows *sql.Rows) ([]store.APIKey, error) {
+	defer func() { _ = rows.Close() }()
+	var out []store.APIKey
+	for rows.Next() {
+		k, err := scanAPIKey(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// scanAPIKey scans a single (name, key_hash, home_ns, created_at, disabled) row.
+func scanAPIKey(s scanner) (store.APIKey, error) {
+	var k store.APIKey
+	var created string
+	var disabled int
+	if err := s.Scan(&k.Name, &k.Hash, &k.HomeNS, &created, &disabled); err != nil {
+		return k, err
+	}
+	t, err := time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return k, fmt.Errorf("sqlitevec: parse api key created_at: %w", err)
+	}
+	k.CreatedAt = t.UTC()
+	k.Disabled = disabled != 0
+	return k, nil
+}
+
+// boolToInt converts a Go bool to the 0/1 SQLite stores its INTEGER boolean
+// columns as (e.g. api_keys.disabled).
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 func distanceToScore(d float64) float64 { return 1 / (1 + d) }
 
 func ms(t time.Time) int64 { return t.UnixMilli() }

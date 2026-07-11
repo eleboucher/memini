@@ -128,6 +128,17 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_at TEXT NOT NULL,
 			PRIMARY KEY (src_ns, dst_ns)
 		)`,
+		// api_keys records API credentials (see store.APIKeyStore): key_hash is
+		// the hex SHA-256 of the secret (the secret itself is never stored) and
+		// is UNIQUE so GetAPIKeyByHash's auth-path lookup can rely on an index;
+		// created_at is an RFC3339 string, as with namespace_links above.
+		`CREATE TABLE IF NOT EXISTS api_keys (
+			name       TEXT PRIMARY KEY,
+			key_hash   TEXT NOT NULL UNIQUE,
+			home_ns    TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			disabled   INTEGER NOT NULL DEFAULT 0
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -985,6 +996,93 @@ func (s *Store) RenameLinkEndpoints(ctx context.Context, from, to string) error 
 		}
 	}
 	return tx.Commit()
+}
+
+var _ store.APIKeyStore = (*Store)(nil)
+
+// PutAPIKey inserts or replaces the key keyed by k.Name.
+//
+// Unlike PutLink (which deliberately overwrites created_at on every upsert,
+// since links carry no recency semantics — see its doc above), this upsert
+// preserves the existing row's created_at when k.CreatedAt is the zero
+// value: API keys are long-lived identity, and rotating a key's hash or
+// home namespace must not reset "when was this key first created". A
+// non-zero k.CreatedAt (e.g. import restore replaying an original
+// timestamp) still overwrites it. The lookup-then-upsert runs in a
+// transaction so a concurrent PutAPIKey for the same name cannot race
+// between the read of the existing created_at and the write.
+func (s *Store) PutAPIKey(ctx context.Context, k store.APIKey) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	created := k.CreatedAt
+	if created.IsZero() {
+		var existing string
+		err := tx.QueryRowContext(ctx, `SELECT created_at FROM api_keys WHERE name=?`, k.Name).Scan(&existing)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			created = time.Now().UTC()
+		case err != nil:
+			return fmt.Errorf("sqlitevec: lookup api key: %w", err)
+		default:
+			created, err = time.Parse(time.RFC3339Nano, existing)
+			if err != nil {
+				return fmt.Errorf("sqlitevec: parse existing api key created_at: %w", err)
+			}
+		}
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO api_keys (name, key_hash, home_ns, created_at, disabled)
+		VALUES (?,?,?,?,?)
+		ON CONFLICT(name) DO UPDATE SET
+			key_hash=excluded.key_hash, home_ns=excluded.home_ns,
+			created_at=excluded.created_at, disabled=excluded.disabled`,
+		k.Name, k.Hash, k.HomeNS, created.Format(time.RFC3339Nano), boolToInt(k.Disabled))
+	if err != nil {
+		return fmt.Errorf("sqlitevec: put api key: %w", err)
+	}
+	return tx.Commit()
+}
+
+// DeleteAPIKey removes the key by name. The bool reports whether a key
+// existed to delete.
+func (s *Store) DeleteAPIKey(ctx context.Context, name string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM api_keys WHERE name=?`, name)
+	if err != nil {
+		return false, fmt.Errorf("sqlitevec: delete api key: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// ListAPIKeys returns every key ordered by name.
+func (s *Store) ListAPIKeys(ctx context.Context) ([]store.APIKey, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT name, key_hash, home_ns, created_at, disabled FROM api_keys ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitevec: list api keys: %w", err)
+	}
+	return scanAPIKeys(rows)
+}
+
+// GetAPIKeyByHash returns the key whose hash matches, or nil, nil when none
+// does.
+func (s *Store) GetAPIKeyByHash(ctx context.Context, hash string) (*store.APIKey, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT name, key_hash, home_ns, created_at, disabled FROM api_keys WHERE key_hash=?`, hash)
+	k, err := scanAPIKey(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sqlitevec: get api key by hash: %w", err)
+	}
+	return &k, nil
 }
 
 // Ping verifies the database is reachable.
