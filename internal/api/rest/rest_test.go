@@ -1603,12 +1603,16 @@ func TestBriefingHomeHeaderMergesDurable(t *testing.T) {
 // TestReadSetEndpoint pins GET /v1/namespaces/read-set's shape and ordering:
 // for a three-level primary namespace, a home header, and one stored link,
 // it returns exactly 5 entries — primary, its two ancestors (nearest first),
-// home, then the link — each with the correct origin.
+// home, then the link — each with the correct origin and tier restriction
+// (primary unrestricted, cascade legs durable-only, the link carrying its
+// own configured restriction).
 func TestReadSetEndpoint(t *testing.T) {
 	h := newServer(t)
 
+	// The link carries its own tier restriction so the entry below provably
+	// reflects the stored link's tiers, not just the durable default.
 	rec := do(t, h, http.MethodPost, "/v1/links", "acme/phoenix/api", apiKey, map[string]any{
-		"dst": "shared/golang",
+		"dst": "shared/golang", "tiers": []string{"semantic"},
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("put link: want 200, got %d (%s)", rec.Code, rec.Body)
@@ -1620,25 +1624,33 @@ func TestReadSetEndpoint(t *testing.T) {
 	}
 	var got struct {
 		Entries []struct {
-			Namespace string `json:"namespace"`
-			Origin    string `json:"origin"`
+			Namespace string   `json:"namespace"`
+			Origin    string   `json:"origin"`
+			Tiers     []string `json:"tiers"`
 		} `json:"entries"`
 	}
 	mustJSON(t, rec, &got)
-	want := []struct{ ns, origin string }{
-		{"acme/phoenix/api", "primary"},
-		{"acme/phoenix", "ancestor"},
-		{"acme", "ancestor"},
-		{"personal/kit", "home"},
-		{"shared/golang", "link"},
+	durable := []string{"semantic", "procedural"}
+	want := []struct {
+		ns, origin string
+		tiers      []string // nil = the field must be omitted (unrestricted)
+	}{
+		{"acme/phoenix/api", "primary", nil},
+		{"acme/phoenix", "ancestor", durable},
+		{"acme", "ancestor", durable},
+		{"personal/kit", "home", durable},
+		{"shared/golang", "link", []string{"semantic"}},
 	}
 	if len(got.Entries) != len(want) {
 		t.Fatalf("want %d entries, got %d: %+v", len(want), len(got.Entries), got.Entries)
 	}
 	for i, w := range want {
-		if got.Entries[i].Namespace != w.ns || got.Entries[i].Origin != w.origin {
-			t.Errorf("entry %d = {%s %s}, want {%s %s}",
-				i, got.Entries[i].Namespace, got.Entries[i].Origin, w.ns, w.origin)
+		e := got.Entries[i]
+		if e.Namespace != w.ns || e.Origin != w.origin {
+			t.Errorf("entry %d = {%s %s}, want {%s %s}", i, e.Namespace, e.Origin, w.ns, w.origin)
+		}
+		if !slices.Equal(e.Tiers, w.tiers) {
+			t.Errorf("entry %d (%s) tiers = %v, want %v", i, w.ns, e.Tiers, w.tiers)
 		}
 	}
 }
@@ -1673,17 +1685,38 @@ func TestLinksCRUD(t *testing.T) {
 		t.Fatalf("put link tiers: %+v", created.Tiers)
 	}
 
-	// List.
+	// Re-POST with the same dst is the documented idempotent upsert: the
+	// tiers/note are replaced in place, never duplicated.
+	rec = do(t, h, http.MethodPost, "/v1/links", "acme/phoenix", apiKey, map[string]any{
+		"dst": "shared/golang", "tiers": []string{"procedural"}, "note": "replaced note",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("re-put link: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	mustJSON(t, rec, &created)
+	if created.Note != "replaced note" || len(created.Tiers) != 1 || created.Tiers[0] != "procedural" {
+		t.Fatalf("re-put should replace tiers/note, got %+v", created)
+	}
+
+	// List: still exactly one row, carrying the replaced tiers/note.
 	rec = do(t, h, http.MethodGet, "/v1/links", "acme/phoenix", apiKey, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list links: want 200, got %d (%s)", rec.Code, rec.Body)
 	}
 	var listed struct {
-		Links []struct{ Dst string } `json:"links"`
+		Links []struct {
+			Dst   string   `json:"dst"`
+			Note  string   `json:"note"`
+			Tiers []string `json:"tiers"`
+		} `json:"links"`
 	}
 	mustJSON(t, rec, &listed)
 	if len(listed.Links) != 1 || listed.Links[0].Dst != "shared/golang" {
 		t.Fatalf("list links: %+v", listed.Links)
+	}
+	if listed.Links[0].Note != "replaced note" ||
+		len(listed.Links[0].Tiers) != 1 || listed.Links[0].Tiers[0] != "procedural" {
+		t.Fatalf("stored link should carry the re-put tiers/note, got %+v", listed.Links[0])
 	}
 
 	// A different namespace sees no links (src-scoped).
