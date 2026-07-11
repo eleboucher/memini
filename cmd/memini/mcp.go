@@ -34,6 +34,7 @@ func runMCP(cmd *cobra.Command, _ []string) error {
 		"version", version.String(),
 		"backend", cfg.Backend,
 		"default_namespace", cfg.DefaultNamespace,
+		"home", cfg.Home,
 	)
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
@@ -48,5 +49,5 @@ func runMCP(cmd *cobra.Command, _ []string) error {
 	defer joinWorkers()
 
 	log.Info("serving MCP over stdio")
-	return mcpapi.RunStdio(ctx, svc, cfg.DefaultNamespace)
+	return mcpapi.RunStdio(ctx, svc, cfg.DefaultNamespace, cfg.Home)
 }

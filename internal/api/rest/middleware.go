@@ -12,7 +12,10 @@ import (
 
 type ctxKey int
 
-const namespaceKey ctxKey = iota
+const (
+	namespaceKey ctxKey = iota
+	homeKey
+)
 
 // AuthConfig configures the optional bearer-token auth and namespace
 // resolution applied by Mount to the /v1 route group. Despite the name it also
@@ -27,6 +30,11 @@ type AuthConfig struct {
 	NamespaceHeader string
 	// DefaultNamespace is used when the header is absent.
 	DefaultNamespace string
+	// HomeHeader names the request header carrying the caller's personal
+	// namespace (see service.RecallInput.Home). Unlike NamespaceHeader there
+	// is no default: an absent or empty header means no home leg for the
+	// request.
+	HomeHeader string
 	// RequestTimeout bounds how long a single /v1 request may run
 	// (chi/middleware.Timeout, applied only to the /v1 group Mount attaches —
 	// never to /mcp, /healthz, /readyz, or /metrics). It cancels the request
@@ -62,6 +70,26 @@ func (a AuthConfig) namespaceMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// homeMiddleware resolves the caller's personal namespace from the configured
+// header and stores it on the request context. Unlike namespaceMiddleware
+// there is no default when the header is absent — an unset home simply means
+// no home leg for the request's read set (RecallInput.Home / BriefingOpts.Home
+// stay empty). Returns 400 when the header is present but contains an invalid
+// value.
+func (a AuthConfig) homeMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		home := httputil.NormalizeNamespace(r.Header.Get(a.HomeHeader))
+		if home != "" {
+			if err := httputil.ValidateNamespace(home); err != nil {
+				httputil.Error(w, http.StatusBadRequest, "invalid home namespace: "+err.Error())
+				return
+			}
+		}
+		ctx := context.WithValue(r.Context(), homeKey, home)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 // authMiddleware enforces the bearer token when an APIKey is configured.
 func (a AuthConfig) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -80,4 +108,11 @@ func (a AuthConfig) authMiddleware(next http.Handler) http.Handler {
 func namespaceFromContext(ctx context.Context) string {
 	ns, _ := ctx.Value(namespaceKey).(string)
 	return ns
+}
+
+// homeFromContext returns the resolved home namespace for the request, or ""
+// when the caller sent no X-Memini-Home header.
+func homeFromContext(ctx context.Context) string {
+	home, _ := ctx.Value(homeKey).(string)
+	return home
 }

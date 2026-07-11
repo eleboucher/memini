@@ -308,11 +308,26 @@ type Config struct {
 	// name itself is fixed (DefaultNamespaceHeader).
 	DefaultNamespace string
 	NamespaceSrc     NamespaceSource
+
+	// Home is the caller's personal namespace: merged read-only (durable
+	// tiers only) into the default read set on every recall/briefing/answer,
+	// on top of the request namespace and its ancestors. Client-side only —
+	// the server never derives it. On HTTP transports it is carried per-request
+	// by the X-Memini-Home header (DefaultHomeHeader); this env var is what the
+	// stdio MCP server (`memini mcp`) resolves instead, since stdio has no
+	// headers. Empty means no home leg (unset by default).
+	Home string `env:"MEMINI_HOME"`
 }
 
 // DefaultNamespaceHeader is the request header carrying the tenant namespace.
 // Fixed (no env override): clients and plugins all send this exact header.
 const DefaultNamespaceHeader = "X-Memini-Namespace"
+
+// DefaultHomeHeader is the request header carrying the caller's personal
+// namespace (see Config.Home). Fixed (no env override), same rationale as
+// DefaultNamespaceHeader. Unlike the namespace header, its absence has no
+// default — no header means no home leg for that request.
+const DefaultHomeHeader = "X-Memini-Home"
 
 // valueOff is the shared "disabled" token for the string-enum settings
 // (MEMINI_RERANK, MEMINI_CONSOLIDATE_MODE, MEMINI_WRITE_DEDUP_ACTION).

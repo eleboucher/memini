@@ -116,14 +116,18 @@ const serverInstructions = "memini is persistent cross-session memory for this a
 	"remembered fact. A degraded field means results are keyword-only and incomplete, not a confident negative."
 
 // NewServer builds an MCP server exposing memini's memory tools. defaultNS is
-// used whenever a tool call omits the namespace argument.
-func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
+// used whenever a tool call omits the namespace argument. home is the
+// caller's personal namespace (X-Memini-Home / MEMINI_HOME), merged
+// read-only into every recall/briefing/answer/remember; "" means no home leg.
+// There is no per-call override — home is a transport-level default, fixed
+// for the life of this server instance.
+func NewServer(svc *service.Service, defaultNS, home string) *mcpsdk.Server {
 	s := mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    "memini",
 		Version: version.Version,
 	}, &mcpsdk.ServerOptions{Instructions: serverInstructions})
 
-	h := &tools{svc: svc, defaultNS: defaultNS}
+	h := &tools{svc: svc, defaultNS: defaultNS, defaultHome: home}
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:  "memory_remember",
@@ -223,17 +227,21 @@ func NewServer(svc *service.Service, defaultNS string) *mcpsdk.Server {
 
 // HTTPHandler returns an http.Handler serving MCP over Streamable HTTP. The
 // tenant namespace is taken from nsHeader when present, else defaultNS; tool
-// calls may still override it per-call. An invalid header value is rejected
-// with 400 (matching the REST API) rather than silently falling back to the
-// default tenant. When apiKey is non-empty, requests must present it as a
-// bearer token — required for any remote (non-localhost) deployment.
-func HTTPHandler(svc *service.Service, nsHeader, defaultNS, apiKey string) http.Handler {
+// calls may still override it per-call. The caller's personal namespace is
+// taken from homeHeader when present, else "" (no home leg — unlike the
+// namespace header there is no default and no per-call override). An invalid
+// nsHeader or homeHeader value is rejected with 400 (matching the REST API)
+// rather than silently falling back to the default tenant. When apiKey is
+// non-empty, requests must present it as a bearer token — required for any
+// remote (non-localhost) deployment.
+func HTTPHandler(svc *service.Service, nsHeader, defaultNS, homeHeader, apiKey string) http.Handler {
 	h := mcpsdk.NewStreamableHTTPHandler(func(r *http.Request) *mcpsdk.Server {
 		ns := defaultNS
 		if v := strings.TrimSpace(r.Header.Get(nsHeader)); v != "" {
 			ns = v
 		}
-		return NewServer(svc, ns)
+		home := strings.TrimSpace(r.Header.Get(homeHeader))
+		return NewServer(svc, ns, home)
 	}, nil)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if apiKey != "" {
@@ -249,20 +257,32 @@ func HTTPHandler(svc *service.Service, nsHeader, defaultNS, apiKey string) http.
 				return
 			}
 		}
+		if v := strings.TrimSpace(r.Header.Get(homeHeader)); v != "" {
+			if err := httputil.ValidateNamespace(v); err != nil {
+				http.Error(w, `{"error":"invalid home header"}`, http.StatusBadRequest)
+				return
+			}
+		}
 		h.ServeHTTP(w, r)
 	})
 }
 
 // RunStdio serves the MCP server over stdio, blocking until ctx is cancelled or
 // the client disconnects. Used by `memini mcp` for local agent integrations.
-func RunStdio(ctx context.Context, svc *service.Service, defaultNS string) error {
-	return NewServer(svc, defaultNS).Run(ctx, &mcpsdk.StdioTransport{})
+// home is resolved by the caller from MEMINI_HOME (there are no headers on
+// stdio); "" means no home leg.
+func RunStdio(ctx context.Context, svc *service.Service, defaultNS, home string) error {
+	return NewServer(svc, defaultNS, home).Run(ctx, &mcpsdk.StdioTransport{})
 }
 
 // tools holds the MCP tool handlers.
 type tools struct {
 	svc       *service.Service
 	defaultNS string
+	// defaultHome is the caller's personal namespace (X-Memini-Home /
+	// MEMINI_HOME), fixed for the life of this server instance; "" means no
+	// home leg. See NewServer.
+	defaultHome string
 }
 
 // parseTiers validates a tier filter. An unknown tier is an error rather than
@@ -376,6 +396,7 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 	}
 	input := service.RememberInput{
 		Namespace:  ns,
+		Home:       t.defaultHome,
 		Content:    in.Content,
 		Tier:       memory.Tier(in.Tier),
 		Level:      memory.Level(in.Level),
@@ -527,6 +548,7 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 	}
 	input := service.RecallInput{
 		Namespace:         ns,
+		Home:              t.defaultHome,
 		Query:             in.Query,
 		Tiers:             tiers,
 		Levels:            levels,
@@ -625,6 +647,7 @@ func (t *tools) briefing(ctx context.Context, _ *mcpsdk.CallToolRequest, in brie
 		Facts:      pick(in.PerSectionFacts),
 		Procedures: pick(in.PerSectionProc),
 		Recent:     pick(in.PerSectionRecent),
+		Home:       t.defaultHome,
 		Namespaces: in.Namespaces,
 		Subtree:    subtree,
 	})
@@ -789,7 +812,7 @@ func (t *tools) update(ctx context.Context, _ *mcpsdk.CallToolRequest, in update
 		return nil, memoryItem{}, notFoundErr(in.ID, ns, err)
 	}
 	upd := service.RememberInput{
-		Namespace: ns, ID: cur.ID,
+		Namespace: ns, Home: t.defaultHome, ID: cur.ID,
 		Content: cur.Content, Summary: cur.Summary, Tier: cur.Tier,
 		Tags: cur.Tags, Metadata: cur.Metadata, Importance: cur.Importance, Confidence: cur.Confidence,
 		Level: cur.Level, ValidFrom: cur.ValidFrom, ValidTo: cur.ValidTo,

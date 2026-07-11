@@ -749,7 +749,11 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 // required; an omitted Tier is classified from the content (episodic when
 // unclear) and TTL follows the tier default.
 type RememberInput struct {
-	Namespace  string
+	Namespace string
+	// Home is the caller's personal namespace (X-Memini-Home / MEMINI_HOME),
+	// threaded through for T4's visibility work; Remember does not yet act
+	// on it.
+	Home       string
 	Content    string
 	Tier       memory.Tier
 	Summary    string

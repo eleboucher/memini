@@ -127,10 +127,12 @@ func newServer(
 		APIKey:           cfg.APIKey,
 		NamespaceHeader:  config.DefaultNamespaceHeader,
 		DefaultNamespace: cfg.DefaultNamespace,
+		HomeHeader:       config.DefaultHomeHeader,
 		RequestTimeout:   cfg.RequestTimeout,
 	}).Mount(srv.Router())
 
-	mcpHandler := mcpapi.HTTPHandler(svc, config.DefaultNamespaceHeader, cfg.DefaultNamespace, cfg.APIKey)
+	mcpHandler := mcpapi.HTTPHandler(svc, config.DefaultNamespaceHeader, cfg.DefaultNamespace,
+		config.DefaultHomeHeader, cfg.APIKey)
 	srv.Router().Handle("/mcp", mcpHandler)
 	srv.Router().Handle("/mcp/*", mcpHandler)
 

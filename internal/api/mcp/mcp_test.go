@@ -50,7 +50,7 @@ func connectWithOptions(t *testing.T, opts ...service.Option) *mcpsdk.ClientSess
 	t.Cleanup(func() { _ = st.Close() })
 	svc := service.New(st, embedtest.New(dims), opts...)
 
-	srv := meminimcp.NewServer(svc, "default")
+	srv := meminimcp.NewServer(svc, "default", "")
 	clientT, serverT := mcpsdk.NewInMemoryTransports()
 
 	ctx := context.Background()
@@ -336,7 +336,7 @@ func TestRecallDegradedSurfacedViaMCP(t *testing.T) {
 	connectDegraded := func(t *testing.T) *mcpsdk.ClientSession {
 		t.Helper()
 		svc := service.New(st, errEmbedder{dims: dims}, service.WithRecallEmbedTimeout(time.Second))
-		srv := meminimcp.NewServer(svc, "default")
+		srv := meminimcp.NewServer(svc, "default", "")
 		clientT, serverT := mcpsdk.NewInMemoryTransports()
 		if _, err := srv.Connect(ctx, serverT, nil); err != nil {
 			t.Fatalf("server connect: %v", err)
@@ -414,7 +414,7 @@ func TestRememberDegradedSurfacedViaMCP(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 
 	svc := service.New(st, errEmbedder{dims: dims}, service.WithWriteEmbedTimeout(time.Second))
-	srv := meminimcp.NewServer(svc, "default")
+	srv := meminimcp.NewServer(svc, "default", "")
 	clientT, serverT := mcpsdk.NewInMemoryTransports()
 	if _, err := srv.Connect(ctx, serverT, nil); err != nil {
 		t.Fatalf("server connect: %v", err)
@@ -474,7 +474,7 @@ func TestHTTPHandlerAuth(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	h := meminimcp.HTTPHandler(service.New(st, embedtest.New(dims)), "X-Memini-Namespace", "default", "secret")
+	h := meminimcp.HTTPHandler(service.New(st, embedtest.New(dims)), "X-Memini-Namespace", "default", "X-Memini-Home", "secret")
 
 	const body = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
 	req := func(token string) *httptest.ResponseRecorder {
@@ -784,7 +784,7 @@ func TestUpdateToolTransientStoreErrorNotMisreportedAsNotFound(t *testing.T) {
 	t.Cleanup(func() { _ = base.Close() })
 	svc := service.New(errGetStore{Store: base}, embedtest.New(dims))
 
-	srv := meminimcp.NewServer(svc, "default")
+	srv := meminimcp.NewServer(svc, "default", "")
 	clientT, serverT := mcpsdk.NewInMemoryTransports()
 	ctx := context.Background()
 	if _, err := srv.Connect(ctx, serverT, nil); err != nil {
@@ -819,6 +819,68 @@ func TestUpdateToolTransientStoreErrorNotMisreportedAsNotFound(t *testing.T) {
 	}
 	if !strings.Contains(tc.Text, "connection reset by peer") {
 		t.Fatalf("error text = %q, want the underlying store error preserved", tc.Text)
+	}
+}
+
+// TestRecallUsesServerDefaultHome pins gap G2's mechanism: NewServer's home
+// parameter threads into every recall as a fixed, non-overridable
+// per-server default (there is no "home" tool argument, unlike namespace).
+// This is exactly what RunStdio passes through from MEMINI_HOME — stdio has
+// no headers, so this constructor-time default is the only way home reaches
+// the stdio server. Config.Home's env resolution itself is pinned separately
+// in internal/config (TestLoadHome).
+func TestRecallUsesServerDefaultHome(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "stdio-home.db"), dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := service.New(st, embedtest.New(dims))
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "personal/kit", Content: "jon's personal laptop ssh key is ed25519", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("seed remember: %v", err)
+	}
+
+	recallWithHome := func(home string) []struct {
+		Namespace string `json:"namespace"`
+	} {
+		srv := meminimcp.NewServer(svc, "default", home)
+		clientT, serverT := mcpsdk.NewInMemoryTransports()
+		if _, err := srv.Connect(ctx, serverT, nil); err != nil {
+			t.Fatalf("server connect: %v", err)
+		}
+		cs, err := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "t", Version: "0"}, nil).Connect(ctx, clientT, nil)
+		if err != nil {
+			t.Fatalf("client connect: %v", err)
+		}
+		defer func() { _ = cs.Close() }()
+
+		res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+			Name:      "memory_recall",
+			Arguments: map[string]any{"query": "ssh key", "namespace": "acme/phoenix", "limit": 5},
+		})
+		if err != nil {
+			t.Fatalf("recall: %v", err)
+		}
+		var out struct {
+			Results []struct {
+				Namespace string `json:"namespace"`
+			} `json:"results"`
+		}
+		structured(t, res, &out)
+		return out.Results
+	}
+
+	withHome := recallWithHome("personal/kit")
+	if len(withHome) != 1 || withHome[0].Namespace != "personal/kit" {
+		t.Fatalf("server-default home should merge personal/kit, got %+v", withHome)
+	}
+
+	noHome := recallWithHome("")
+	if len(noHome) != 0 {
+		t.Fatalf("empty server-default home must not merge personal/kit, got %+v", noHome)
 	}
 }
 
@@ -1085,7 +1147,7 @@ func TestHTTPHandlerNamespaceHeader(t *testing.T) {
 	badNS := strings.Repeat("n", 300)
 
 	t.Run("no api key", func(t *testing.T) {
-		h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "")
+		h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "")
 		if got := req(h, badNS, "").Code; got != http.StatusBadRequest {
 			t.Errorf("invalid namespace without auth: got %d, want 400", got)
 		}
@@ -1095,7 +1157,7 @@ func TestHTTPHandlerNamespaceHeader(t *testing.T) {
 	})
 
 	t.Run("with api key", func(t *testing.T) {
-		h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "secret")
+		h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "secret")
 		if got := req(h, badNS, "secret").Code; got != http.StatusBadRequest {
 			t.Errorf("invalid namespace with valid token: got %d, want 400", got)
 		}
@@ -1104,6 +1166,135 @@ func TestHTTPHandlerNamespaceHeader(t *testing.T) {
 			t.Errorf("bad token + bad namespace: got %d, want 401", got)
 		}
 	})
+}
+
+// TestHTTPHandlerHomeHeaderValidation mirrors TestHTTPHandlerNamespaceHeader
+// for X-Memini-Home: an invalid value is rejected with 400 (matching REST),
+// never silently treated as "no home leg".
+func TestHTTPHandlerHomeHeaderValidation(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "home-hdr.db"), dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := service.New(st, embedtest.New(dims))
+
+	const body = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
+	req := func(h http.Handler, home string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Accept", "application/json, text/event-stream")
+		if home != "" {
+			r.Header.Set("X-Memini-Home", home)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "")
+	badHome := strings.Repeat("n", 300)
+	if got := req(h, badHome).Code; got != http.StatusBadRequest {
+		t.Errorf("invalid home header: got %d, want 400", got)
+	}
+	if got := req(h, "personal/kit").Code; got == http.StatusBadRequest {
+		t.Errorf("valid home header: got 400, want it to pass")
+	}
+	if got := req(h, "").Code; got == http.StatusBadRequest {
+		t.Errorf("absent home header: got 400, want it to pass (no home leg, not an error)")
+	}
+}
+
+// headerRoundTripper injects fixed X-Memini-Namespace/X-Memini-Home headers on
+// every outgoing request, so an mcpsdk.StreamableClientTransport can drive
+// HTTPHandler's per-request namespace/home capture in a test without a full
+// cmd/memini integration harness.
+type headerRoundTripper struct {
+	rt       http.RoundTripper
+	ns, home string
+}
+
+func (h headerRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	if h.ns != "" {
+		r.Header.Set("X-Memini-Namespace", h.ns)
+	}
+	if h.home != "" {
+		r.Header.Set("X-Memini-Home", h.home)
+	}
+	return h.rt.RoundTrip(r)
+}
+
+// TestHTTPHandlerHomeHeaderMergesDurable pins the MCP HTTP path's home
+// capture (mcp.go HTTPHandler, mirroring how it already captures
+// X-Memini-Namespace): a durable memory written to the caller's personal
+// namespace (personal/kit) surfaces in memory_recall from an unrelated
+// request namespace (acme/phoenix) when X-Memini-Home is sent on the
+// request, and is absent when it isn't.
+func TestHTTPHandlerHomeHeaderMergesDurable(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "http-home.db"), dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := service.New(st, embedtest.New(dims))
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "personal/kit", Content: "jon's personal laptop ssh key is ed25519", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("seed remember: %v", err)
+	}
+
+	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "")
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	recallAs := func(ns, home string) []struct {
+		Namespace string `json:"namespace"`
+	} {
+		transport := &mcpsdk.StreamableClientTransport{
+			Endpoint: srv.URL,
+			HTTPClient: &http.Client{Transport: headerRoundTripper{
+				rt: http.DefaultTransport, ns: ns, home: home,
+			}},
+			DisableStandaloneSSE: true,
+		}
+		cs, err := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "t", Version: "0"}, nil).Connect(ctx, transport, nil)
+		if err != nil {
+			t.Fatalf("connect ns=%q home=%q: %v", ns, home, err)
+		}
+		defer func() { _ = cs.Close() }()
+
+		res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+			Name:      "memory_recall",
+			Arguments: map[string]any{"query": "ssh key", "limit": 5},
+		})
+		if err != nil {
+			t.Fatalf("recall: %v", err)
+		}
+		var out struct {
+			Results []struct {
+				Namespace string `json:"namespace"`
+			} `json:"results"`
+		}
+		structured(t, res, &out)
+		return out.Results
+	}
+
+	withHome := recallAs("acme/phoenix", "personal/kit")
+	found := false
+	for _, r := range withHome {
+		if r.Namespace == "personal/kit" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("recall with X-Memini-Home should surface the home-namespace memory, got %+v", withHome)
+	}
+
+	noHome := recallAs("acme/phoenix", "")
+	if len(noHome) != 0 {
+		t.Fatalf("recall without X-Memini-Home must not see the home namespace, got %+v", noHome)
+	}
 }
 
 // TestRememberPositiveTTL pins the seconds→duration conversion: a positive

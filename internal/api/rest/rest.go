@@ -50,6 +50,7 @@ func (h *Server) Mount(r chi.Router) {
 		// 400 that leaks namespace-validation behavior.
 		r.Use(h.auth.authMiddleware)
 		r.Use(h.auth.namespaceMiddleware)
+		r.Use(h.auth.homeMiddleware)
 		// Timeout is innermost (closest to the handler) so it bounds only
 		// the generated handler's own work, not the surrounding auth checks.
 		// It cancels the request context past the deadline; it does not
@@ -185,6 +186,7 @@ func (h *Server) RememberMemory(w http.ResponseWriter, r *http.Request, _ Rememb
 	}
 	in := service.RememberInput{
 		Namespace: namespaceFromContext(r.Context()),
+		Home:      homeFromContext(r.Context()),
 		Content:   req.Content,
 	}
 	in.Tier = memory.Tier(deref(req.Tier))
@@ -371,6 +373,7 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 	}
 	in := service.RecallInput{
 		Namespace: namespaceFromContext(r.Context()),
+		Home:      homeFromContext(r.Context()),
 		Query:     req.Query,
 		Tiers:     tiers,
 		Levels:    levels,
@@ -529,6 +532,7 @@ func (h *Server) GetBriefing(w http.ResponseWriter, r *http.Request, params GetB
 		Facts:      pick(params.PerSectionFacts, params.PerSection),
 		Procedures: pick(params.PerSectionProcedures, params.PerSection),
 		Recent:     pick(params.PerSectionRecent, params.PerSection),
+		Home:       homeFromContext(r.Context()),
 		// Explicit namespaces REPLACE the default read set; the service layer
 		// validates entries and enforces the 16-entry cap (ErrInvalidInput → 400).
 		Namespaces: deref(params.Namespaces),

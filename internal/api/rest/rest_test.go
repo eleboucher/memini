@@ -26,9 +26,10 @@ import (
 )
 
 const (
-	dims   = 64
-	nsHdr  = "X-Memini-Namespace"
-	apiKey = "secret-token"
+	dims    = 64
+	nsHdr   = "X-Memini-Namespace"
+	homeHdr = "X-Memini-Home"
+	apiKey  = "secret-token"
 )
 
 func newServer(t *testing.T) http.Handler {
@@ -42,12 +43,21 @@ func newServer(t *testing.T) http.Handler {
 	svc := service.New(st, embedtest.New(dims))
 	r := chi.NewRouter()
 	rest.New(svc, rest.AuthConfig{
-		APIKey: apiKey, NamespaceHeader: nsHdr, DefaultNamespace: "default",
+		APIKey: apiKey, NamespaceHeader: nsHdr, DefaultNamespace: "default", HomeHeader: homeHdr,
 	}).Mount(r)
 	return r
 }
 
+// do issues a request with no X-Memini-Home header. Most tests don't care
+// about the home leg; doHome below is the variant for the ones that do.
 func do(t *testing.T, h http.Handler, method, path, ns, token string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	return doHome(t, h, method, path, ns, "", token, body)
+}
+
+// doHome is do with an extra home parameter, setting X-Memini-Home when
+// non-empty.
+func doHome(t *testing.T, h http.Handler, method, path, ns, home, token string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	var buf bytes.Buffer
 	if body != nil {
@@ -56,6 +66,9 @@ func do(t *testing.T, h http.Handler, method, path, ns, token string, body any) 
 	req := httptest.NewRequest(method, path, &buf)
 	if ns != "" {
 		req.Header.Set(nsHdr, ns)
+	}
+	if home != "" {
+		req.Header.Set(homeHdr, home)
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -1392,5 +1405,115 @@ func TestDeleteNamespaceHierarchical(t *testing.T) {
 	rec = do(t, h, http.MethodGet, "/v1/memories?limit=10", "work/other", apiKey, nil)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "fact in work/other") {
 		t.Fatalf("sibling must survive the delete: %d (%s)", rec.Code, rec.Body)
+	}
+}
+
+// TestSearchHomeHeaderMergesDurable pins the transport half of the home
+// cascade (T2 built the merge itself): a durable memory written to
+// personal/kit — the caller's home namespace — surfaces in a /v1/search
+// against an unrelated request namespace (acme/phoenix) as long as the
+// caller sends X-Memini-Home: personal/kit. Without the header there is no
+// home leg at all, so the same search must come back empty.
+func TestSearchHomeHeaderMergesDurable(t *testing.T) {
+	h := newServer(t)
+
+	rec := doHome(t, h, http.MethodPost, "/v1/memories", "personal/kit", "", apiKey, map[string]any{
+		"content": "jon's personal laptop ssh key is ed25519", "tier": "semantic",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("remember to personal/kit: want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	// With the home header, acme/phoenix's search sees the personal/kit fact.
+	rec = doHome(t, h, http.MethodPost, "/v1/search", "acme/phoenix", "personal/kit", apiKey, map[string]any{
+		"query": "ssh key", "limit": 5,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search with home header: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var got struct {
+		Results []struct {
+			Memory struct {
+				Namespace string `json:"namespace"`
+				Content   string `json:"content"`
+			} `json:"memory"`
+		} `json:"results"`
+	}
+	mustJSON(t, rec, &got)
+	if len(got.Results) != 1 || got.Results[0].Memory.Namespace != "personal/kit" {
+		t.Fatalf("search with X-Memini-Home should surface the home-namespace fact, got %+v", got.Results)
+	}
+
+	// Without the header, the same search from acme/phoenix sees nothing —
+	// no home leg is added to the read set.
+	rec = do(t, h, http.MethodPost, "/v1/search", "acme/phoenix", apiKey, map[string]any{
+		"query": "ssh key", "limit": 5,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search without home header: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	mustJSON(t, rec, &got)
+	if len(got.Results) != 0 {
+		t.Fatalf("search without X-Memini-Home must not see the home namespace, got %+v", got.Results)
+	}
+}
+
+// TestHomeHeaderInvalidRejected pins that an invalid X-Memini-Home value is
+// rejected with 400, matching X-Memini-Namespace's validation — a typo'd home
+// header must never be silently treated as "no home leg".
+func TestHomeHeaderInvalidRejected(t *testing.T) {
+	h := newServer(t)
+	badHome := strings.Repeat("n", 300)
+	rec := doHome(t, h, http.MethodPost, "/v1/search", "acme/phoenix", badHome, apiKey, map[string]any{"query": "x"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid home header: want 400, got %d (%s)", rec.Code, rec.Body)
+	}
+}
+
+// TestBriefingHomeHeaderMergesDurable mirrors TestSearchHomeHeaderMergesDurable
+// for GET /v1/namespaces/briefing: a durable fact in personal/kit shows up in
+// acme/phoenix's briefing only when X-Memini-Home is sent.
+func TestBriefingHomeHeaderMergesDurable(t *testing.T) {
+	h := newServer(t)
+
+	rec := doHome(t, h, http.MethodPost, "/v1/memories", "personal/kit", "", apiKey, map[string]any{
+		"content": "jon prefers tabs over spaces", "tier": "semantic",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("remember to personal/kit: want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	rec = doHome(t, h, http.MethodGet, "/v1/namespaces/briefing", "acme/phoenix", "personal/kit", apiKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("briefing with home header: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var b struct {
+		Facts []struct{ Content string } `json:"facts"`
+	}
+	mustJSON(t, rec, &b)
+	found := false
+	for _, f := range b.Facts {
+		if f.Content == "jon prefers tabs over spaces" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("briefing with X-Memini-Home should include the home-namespace fact, got %+v", b.Facts)
+	}
+
+	rec = do(t, h, http.MethodGet, "/v1/namespaces/briefing", "acme/phoenix", apiKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("briefing without home header: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	// A fresh decode target: Facts is omitempty, so decoding an empty-facts
+	// response into the same b as above would silently keep its stale value.
+	var b2 struct {
+		Facts []struct{ Content string } `json:"facts"`
+	}
+	mustJSON(t, rec, &b2)
+	for _, f := range b2.Facts {
+		if f.Content == "jon prefers tabs over spaces" {
+			t.Fatalf("briefing without X-Memini-Home must not see the home namespace, got %+v", b2.Facts)
+		}
 	}
 }
