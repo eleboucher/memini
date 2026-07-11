@@ -2,9 +2,12 @@ package storetest
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -49,6 +52,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("VectorlessRow", func(t *testing.T) { testVectorlessRow(t, st, dims) })
 	t.Run("NamespaceLinks", func(t *testing.T) { testNamespaceLinks(t, st, dims) })
 	t.Run("NamespaceActivity", func(t *testing.T) { testNamespaceActivity(t, st, dims) })
+	t.Run("APIKeys", func(t *testing.T) { testAPIKeys(t, st, dims) })
 }
 
 // testNamespaceActivity verifies the optional ActivityStore aggregate: one
@@ -1661,4 +1665,347 @@ func testConcurrentAccess(t *testing.T, st store.Store, dims int) {
 	if len(mems) != want {
 		t.Fatalf("list = %d memories, want %d", len(mems), want)
 	}
+}
+
+// testAPIKeys exercises the optional APIKeyStore capability: put/get-by-hash
+// round-trip (including HomeNS and Disabled), upsert-by-name preserving
+// CreatedAt when the incoming CreatedAt is zero (NOTE: this deliberately
+// differs from namespace_links' PutLink, which resets created_at on every
+// upsert — see store.APIKeyStore.PutAPIKey's doc for why), DeleteAPIKey's
+// existed-bool return, GetAPIKeyByHash absent -> nil,nil, ListAPIKeys
+// ordered by name, and a duplicate hash under a different name surfacing as
+// an error (the unique constraint on key_hash). Stores that do not
+// implement APIKeyStore skip.
+func testAPIKeys(t *testing.T, st store.Store, dims int) {
+	_ = dims // keys carry no embedding; kept for signature parity with the other subtests
+	ks, ok := st.(store.APIKeyStore)
+	if !ok {
+		t.Skip("store does not implement store.APIKeyStore")
+	}
+	ns := t.Name()
+	t.Run("PutGetByHashRoundTrip", func(t *testing.T) { testAPIKeyRoundTrip(t, ks, ns) })
+	t.Run("UpsertPreservesCreatedAt", func(t *testing.T) { testAPIKeyUpsertPreservesCreatedAt(t, ks, ns) })
+	t.Run("DeleteExistedBool", func(t *testing.T) { testAPIKeyDelete(t, ks, ns) })
+	t.Run("GetByHashAbsent", func(t *testing.T) { testAPIKeyGetByHashAbsent(t, ks, ns) })
+	t.Run("ListOrderedByName", func(t *testing.T) { testAPIKeyListOrdered(t, ks, ns) })
+	t.Run("DuplicateHashDifferentNameErrors", func(t *testing.T) { testAPIKeyDuplicateHash(t, ks, ns) })
+	t.Run("DefaultNSRoundTrip", func(t *testing.T) { testAPIKeyDefaultNSRoundTrip(t, ks, ns) })
+	t.Run("RenameNamespaces", func(t *testing.T) { testAPIKeyRenameNamespaces(t, ks, ns) })
+}
+
+// testAPIKeyDefaultNSRoundTrip covers PutAPIKey/GetAPIKeyByHash/ListAPIKeys
+// round-tripping DefaultNS (the per-key default namespace applied when a
+// request carries no X-Memini-Namespace header; an explicit header wins),
+// including updating and clearing it on upsert.
+func testAPIKeyDefaultNSRoundTrip(t *testing.T, ks store.APIKeyStore, ns string) {
+	ctx := context.Background()
+	name := ns + "-defns"
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	k := store.APIKey{
+		Name:      name,
+		Hash:      apiKeyHash(name),
+		HomeNS:    ns + "-home",
+		DefaultNS: ns + "-default",
+		CreatedAt: now,
+	}
+	if err := ks.PutAPIKey(ctx, k); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	got, err := ks.GetAPIKeyByHash(ctx, k.Hash)
+	if err != nil {
+		t.Fatalf("get by hash: %v", err)
+	}
+	if got == nil || got.DefaultNS != k.DefaultNS {
+		t.Fatalf("default_ns round-trip = %+v, want DefaultNS %q", got, k.DefaultNS)
+	}
+	// ListAPIKeys carries it too.
+	all, err := ks.ListAPIKeys(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	found := false
+	for _, l := range all {
+		if l.Name == name {
+			found = true
+			if l.DefaultNS != k.DefaultNS {
+				t.Fatalf("list default_ns = %q, want %q", l.DefaultNS, k.DefaultNS)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("key %q missing from list", name)
+	}
+	// An upsert can clear it back to "" (unbound) — not coalesced away.
+	k.DefaultNS = ""
+	if err := ks.PutAPIKey(ctx, k); err != nil {
+		t.Fatalf("put (clear default_ns): %v", err)
+	}
+	got, err = ks.GetAPIKeyByHash(ctx, k.Hash)
+	if err != nil {
+		t.Fatalf("get by hash after clear: %v", err)
+	}
+	if got == nil || got.DefaultNS != "" {
+		t.Fatalf("default_ns after clearing upsert = %+v, want empty", got)
+	}
+}
+
+// testAPIKeyRenameNamespaces covers RenameAPIKeyNamespaces: every key whose
+// HomeNS or DefaultNS equals from is rewritten to to — both columns in one
+// call, since a namespace move (maintenance.Move, the RenameLinkEndpoints
+// caller) must not leave either binding dangling. Non-matching keys and
+// non-matching columns are untouched, CreatedAt survives, and from == to is
+// a no-op.
+func testAPIKeyRenameNamespaces(t *testing.T, ks store.APIKeyStore, ns string) {
+	ctx := context.Background()
+	from := ns + "-ren-old"
+	to := ns + "-ren-new"
+	other := ns + "-ren-other"
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	seed := []store.APIKey{
+		{Name: ns + "-ren-home", Hash: apiKeyHash(ns + "-ren-home"), HomeNS: from, DefaultNS: other, CreatedAt: now},
+		{Name: ns + "-ren-def", Hash: apiKeyHash(ns + "-ren-def"), HomeNS: other, DefaultNS: from, CreatedAt: now},
+		{Name: ns + "-ren-both", Hash: apiKeyHash(ns + "-ren-both"), HomeNS: from, DefaultNS: from, CreatedAt: now},
+		{Name: ns + "-ren-none", Hash: apiKeyHash(ns + "-ren-none"), HomeNS: other, DefaultNS: "", CreatedAt: now},
+	}
+	for _, k := range seed {
+		if err := ks.PutAPIKey(ctx, k); err != nil {
+			t.Fatalf("put %s: %v", k.Name, err)
+		}
+	}
+
+	if err := ks.RenameAPIKeyNamespaces(ctx, from, to); err != nil {
+		t.Fatalf("rename api key namespaces: %v", err)
+	}
+
+	want := map[string][2]string{ // name -> {HomeNS, DefaultNS}
+		ns + "-ren-home": {to, other},
+		ns + "-ren-def":  {other, to},
+		ns + "-ren-both": {to, to},
+		ns + "-ren-none": {other, ""},
+	}
+	for _, k := range seed {
+		got, err := ks.GetAPIKeyByHash(ctx, k.Hash)
+		if err != nil {
+			t.Fatalf("get %s by hash: %v", k.Name, err)
+		}
+		if got == nil {
+			t.Fatalf("key %s vanished after rename", k.Name)
+		}
+		w := want[k.Name]
+		if got.HomeNS != w[0] || got.DefaultNS != w[1] {
+			t.Errorf("%s after rename = {home %q, default %q}, want {home %q, default %q}",
+				k.Name, got.HomeNS, got.DefaultNS, w[0], w[1])
+		}
+		// CreatedAt untouched by a rename.
+		if !got.CreatedAt.Equal(now) {
+			t.Errorf("%s created_at mutated by rename: %v, want %v", k.Name, got.CreatedAt, now)
+		}
+	}
+
+	// from == to is a no-op, not an error.
+	if err := ks.RenameAPIKeyNamespaces(ctx, to, to); err != nil {
+		t.Fatalf("rename api key namespaces (noop): %v", err)
+	}
+}
+
+// testAPIKeyRoundTrip covers PutAPIKey/GetAPIKeyByHash round-tripping every
+// field, including HomeNS and Disabled.
+func testAPIKeyRoundTrip(t *testing.T, ks store.APIKeyStore, ns string) {
+	ctx := context.Background()
+	name := ns + "-rt"
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	k := store.APIKey{
+		Name:      name,
+		Hash:      apiKeyHash(name),
+		HomeNS:    ns + "-home",
+		DefaultNS: ns + "-default",
+		CreatedAt: now,
+		Disabled:  true,
+	}
+	if err := ks.PutAPIKey(ctx, k); err != nil {
+		t.Fatalf("put api key: %v", err)
+	}
+	got, err := ks.GetAPIKeyByHash(ctx, k.Hash)
+	if err != nil {
+		t.Fatalf("get by hash: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("get by hash: got nil, want a key")
+	}
+	if got.Name != k.Name || got.Hash != k.Hash || got.HomeNS != k.HomeNS ||
+		got.DefaultNS != k.DefaultNS || got.Disabled != k.Disabled {
+		t.Fatalf("round-trip mismatch: %+v, want %+v", got, k)
+	}
+	if !got.CreatedAt.Equal(k.CreatedAt) {
+		t.Fatalf("created_at = %v, want %v", got.CreatedAt, k.CreatedAt)
+	}
+}
+
+// testAPIKeyUpsertPreservesCreatedAt pins the deliberate semantic choice
+// documented on store.APIKeyStore.PutAPIKey: an upsert with a zero
+// CreatedAt preserves the row's original CreatedAt (key rotation must not
+// reset "when was this key first created"), while an upsert with an
+// explicit non-zero CreatedAt (e.g. import restore) overwrites it. This is
+// the opposite default from namespace_links' PutLink, which always
+// overwrites created_at because links carry no recency semantics.
+func testAPIKeyUpsertPreservesCreatedAt(t *testing.T, ks store.APIKeyStore, ns string) {
+	ctx := context.Background()
+	name := ns + "-upsert"
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	original := store.APIKey{
+		Name:      name,
+		Hash:      apiKeyHash(name + "-v1"),
+		HomeNS:    ns + "-home-a",
+		CreatedAt: now,
+	}
+	if err := ks.PutAPIKey(ctx, original); err != nil {
+		t.Fatalf("put original: %v", err)
+	}
+
+	// Rotation: new hash/home, zero CreatedAt.
+	rotated := store.APIKey{
+		Name:   name,
+		Hash:   apiKeyHash(name + "-v2"),
+		HomeNS: ns + "-home-b",
+	}
+	if err := ks.PutAPIKey(ctx, rotated); err != nil {
+		t.Fatalf("put rotated: %v", err)
+	}
+	got, err := ks.GetAPIKeyByHash(ctx, rotated.Hash)
+	if err != nil {
+		t.Fatalf("get by hash after rotation: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("get by hash after rotation: got nil")
+	}
+	if got.HomeNS != rotated.HomeNS {
+		t.Fatalf("home_ns not updated by rotation: got %q, want %q", got.HomeNS, rotated.HomeNS)
+	}
+	if !got.CreatedAt.Equal(original.CreatedAt) {
+		t.Fatalf("created_at = %v, want preserved %v", got.CreatedAt, original.CreatedAt)
+	}
+	// The old hash must no longer resolve — it belongs to no key now.
+	stale, err := ks.GetAPIKeyByHash(ctx, original.Hash)
+	if err != nil {
+		t.Fatalf("get by stale hash: %v", err)
+	}
+	if stale != nil {
+		t.Fatalf("stale hash still resolves: %+v", stale)
+	}
+
+	// Passing a non-zero CreatedAt (e.g. import restore replaying an original
+	// timestamp) does overwrite it.
+	replayed := store.APIKey{
+		Name:      name,
+		Hash:      apiKeyHash(name + "-v3"),
+		HomeNS:    ns + "-home-c",
+		CreatedAt: now.Add(-24 * time.Hour),
+	}
+	if err := ks.PutAPIKey(ctx, replayed); err != nil {
+		t.Fatalf("put replayed: %v", err)
+	}
+	got, err = ks.GetAPIKeyByHash(ctx, replayed.Hash)
+	if err != nil {
+		t.Fatalf("get by hash after replay: %v", err)
+	}
+	if got == nil || !got.CreatedAt.Equal(replayed.CreatedAt) {
+		t.Fatalf("created_at after explicit replay = %+v, want %v", got, replayed.CreatedAt)
+	}
+}
+
+// testAPIKeyDelete covers DeleteAPIKey's existed-bool return and that a
+// deleted key no longer resolves by hash.
+func testAPIKeyDelete(t *testing.T, ks store.APIKeyStore, ns string) {
+	ctx := context.Background()
+	name := ns + "-del"
+	k := store.APIKey{Name: name, Hash: apiKeyHash(name), CreatedAt: time.Now().UTC().Truncate(time.Millisecond)}
+	if err := ks.PutAPIKey(ctx, k); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	existed, err := ks.DeleteAPIKey(ctx, name)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if !existed {
+		t.Fatalf("delete: existed = false, want true")
+	}
+	existed, err = ks.DeleteAPIKey(ctx, name)
+	if err != nil {
+		t.Fatalf("delete (again): %v", err)
+	}
+	if existed {
+		t.Fatalf("delete (again): existed = true, want false")
+	}
+	got, err := ks.GetAPIKeyByHash(ctx, k.Hash)
+	if err != nil {
+		t.Fatalf("get by hash after delete: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("deleted key still resolvable by hash: %+v", got)
+	}
+}
+
+// testAPIKeyGetByHashAbsent covers the nil,nil contract for an unknown hash.
+func testAPIKeyGetByHashAbsent(t *testing.T, ks store.APIKeyStore, ns string) {
+	ctx := context.Background()
+	got, err := ks.GetAPIKeyByHash(ctx, apiKeyHash(ns+"-never-existed"))
+	if err != nil {
+		t.Fatalf("get by hash (absent): %v", err)
+	}
+	if got != nil {
+		t.Fatalf("get by hash (absent) = %+v, want nil", got)
+	}
+}
+
+// testAPIKeyListOrdered covers ListAPIKeys returning rows ordered by name.
+func testAPIKeyListOrdered(t *testing.T, ks store.APIKeyStore, ns string) {
+	ctx := context.Background()
+	names := []string{ns + "-list-c", ns + "-list-a", ns + "-list-b"}
+	for _, n := range names {
+		k := store.APIKey{Name: n, Hash: apiKeyHash(n), CreatedAt: time.Now().UTC().Truncate(time.Millisecond)}
+		if err := ks.PutAPIKey(ctx, k); err != nil {
+			t.Fatalf("put %s: %v", n, err)
+		}
+	}
+	all, err := ks.ListAPIKeys(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	// The store is shared across subtests, so restrict the assertion to this
+	// subtest's own rows.
+	var got []string
+	for _, k := range all {
+		if strings.HasPrefix(k.Name, ns+"-list-") {
+			got = append(got, k.Name)
+		}
+	}
+	want := []string{ns + "-list-a", ns + "-list-b", ns + "-list-c"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("list order = %v, want %v", got, want)
+	}
+}
+
+// testAPIKeyDuplicateHash covers the unique constraint on key_hash: two
+// different names must not be able to share a hash.
+func testAPIKeyDuplicateHash(t *testing.T, ks store.APIKeyStore, ns string) {
+	ctx := context.Background()
+	hash := apiKeyHash(ns + "-dup-shared")
+	first := ns + "-dup-first"
+	second := ns + "-dup-second"
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if err := ks.PutAPIKey(ctx, store.APIKey{Name: first, Hash: hash, CreatedAt: now}); err != nil {
+		t.Fatalf("put first: %v", err)
+	}
+	if err := ks.PutAPIKey(ctx, store.APIKey{Name: second, Hash: hash, CreatedAt: now}); err == nil {
+		t.Fatalf("put second key with duplicate hash under a different name: want an error (unique constraint), got nil")
+	}
+}
+
+// apiKeyHash returns a deterministic hex-encoded SHA-256 digest for seed, so
+// conformance tests can produce distinct, realistic-looking key hashes
+// without depending on a real secret-hashing implementation.
+func apiKeyHash(seed string) string {
+	sum := sha256.Sum256([]byte(seed))
+	return hex.EncodeToString(sum[:])
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/eleboucher/memini/internal/apiauth"
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/httputil"
 	"github.com/eleboucher/memini/internal/maintenance"
@@ -36,6 +37,14 @@ var _ ServerInterface = (*Server)(nil)
 
 // New builds the REST server.
 func New(svc *service.Service, auth AuthConfig) *Server {
+	if auth.KeyAuth != nil {
+		// Use the caller-supplied Config verbatim so its cache pointer (and
+		// any Invalidate() reach) is shared with whatever other surface the
+		// caller also handed this same Config to — see AuthConfig.KeyAuth.
+		auth.keyAuth = *auth.KeyAuth
+	} else {
+		auth.keyAuth = apiauth.New(auth.APIKey, auth.APIKeyStore).WithFileKeys(auth.FileKeys)
+	}
 	return &Server{svc: svc, auth: auth}
 }
 
@@ -188,6 +197,13 @@ func (h *Server) RememberMemory(w http.ResponseWriter, r *http.Request, _ Rememb
 		Namespace: namespaceFromContext(r.Context()),
 		Home:      homeFromContext(r.Context()),
 		Content:   req.Content,
+	}
+	// Attribution: a NAMED table key stamps its name as the write's author
+	// (service.Remember only applies it when metadata.author isn't already
+	// set by the caller); the admin key authenticates with no principal at
+	// all, so it never stamps one.
+	if p, ok := principalFromContext(r.Context()); ok {
+		in.Author = p.Name
 	}
 	in.Tier = memory.Tier(deref(req.Tier))
 	in.Level = memory.Level(deref(req.Level))

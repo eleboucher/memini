@@ -610,6 +610,100 @@ func TestNoteDanglingLinksDegradesWithoutLinkStore(t *testing.T) {
 	}
 }
 
+// --- dangling api key namespace binding note ---
+
+func TestNoteDanglingKeyBindingsFlagsEmptyHome(t *testing.T) {
+	st := openTestStore(t)
+	ks, err := keyStoreOf(st)
+	if err != nil {
+		t.Fatalf("keyStoreOf: %v", err)
+	}
+	if err := ks.PutAPIKey(context.Background(), store.APIKey{Name: "kit", Hash: "deadbeef1", HomeNS: "personal/kit"}); err != nil {
+		t.Fatalf("PutAPIKey: %v", err)
+	}
+	stats := statsFor(t, st) // nothing written anywhere: personal/kit holds 0 memories
+
+	var out bytes.Buffer
+	noteDanglingKeyBindings(context.Background(), &out, st, stats)
+	got := out.String()
+	if !strings.Contains(got, "kit") || !strings.Contains(got, "personal/kit") {
+		t.Errorf("expected the key name and dangling home namespace named, got:\n%s", got)
+	}
+	if !strings.Contains(got, "note:") {
+		t.Errorf("expected a note-level line, got:\n%s", got)
+	}
+	if strings.Contains(got, "WARN:") {
+		t.Errorf("a dangling key binding is legal (a note, not a warning), got:\n%s", got)
+	}
+}
+
+func TestNoteDanglingKeyBindingsFlagsEmptyDefaultNS(t *testing.T) {
+	st := openTestStore(t)
+	ks, err := keyStoreOf(st)
+	if err != nil {
+		t.Fatalf("keyStoreOf: %v", err)
+	}
+	if err := ks.PutAPIKey(context.Background(), store.APIKey{Name: "ci", Hash: "deadbeef2", DefaultNS: "acme"}); err != nil {
+		t.Fatalf("PutAPIKey: %v", err)
+	}
+	stats := statsFor(t, st) // nothing written anywhere: acme holds 0 memories
+
+	var out bytes.Buffer
+	noteDanglingKeyBindings(context.Background(), &out, st, stats)
+	got := out.String()
+	if !strings.Contains(got, "ci") || !strings.Contains(got, "acme") {
+		t.Errorf("expected the key name and dangling default namespace named, got:\n%s", got)
+	}
+}
+
+func TestNoteDanglingKeyBindingsSilentWhenNamespacesHaveMemories(t *testing.T) {
+	st := openTestStore(t)
+	seedPool(t, st, "personal/kit", 1, 0)
+	seedPool(t, st, "acme", 1, 0)
+	ks, err := keyStoreOf(st)
+	if err != nil {
+		t.Fatalf("keyStoreOf: %v", err)
+	}
+	if err := ks.PutAPIKey(context.Background(), store.APIKey{
+		Name: "kit", Hash: "deadbeef3", HomeNS: "personal/kit", DefaultNS: "acme",
+	}); err != nil {
+		t.Fatalf("PutAPIKey: %v", err)
+	}
+	stats := statsFor(t, st)
+
+	var out bytes.Buffer
+	noteDanglingKeyBindings(context.Background(), &out, st, stats)
+	if out.Len() != 0 {
+		t.Errorf("expected no note when both bound namespaces hold memories, got:\n%s", out.String())
+	}
+}
+
+func TestNoteDanglingKeyBindingsSilentWhenUnbound(t *testing.T) {
+	st := openTestStore(t)
+	ks, err := keyStoreOf(st)
+	if err != nil {
+		t.Fatalf("keyStoreOf: %v", err)
+	}
+	if err := ks.PutAPIKey(context.Background(), store.APIKey{Name: "unbound", Hash: "deadbeef4"}); err != nil {
+		t.Fatalf("PutAPIKey: %v", err)
+	}
+	stats := statsFor(t, st)
+
+	var out bytes.Buffer
+	noteDanglingKeyBindings(context.Background(), &out, st, stats)
+	if out.Len() != 0 {
+		t.Errorf("expected no note for a key with no namespace bindings, got:\n%s", out.String())
+	}
+}
+
+func TestNoteDanglingKeyBindingsDegradesWithoutAPIKeyStore(t *testing.T) {
+	var out bytes.Buffer
+	noteDanglingKeyBindings(context.Background(), &out, noKeyStore{}, nil)
+	if out.Len() != 0 {
+		t.Errorf("expected no output against a store without APIKeyStore support, got:\n%s", out.String())
+	}
+}
+
 // --- new warnings: global namespace pin, MEMINI_HOME unset ---
 
 func TestWarnGlobalNamespacePinDiffersFromGit(t *testing.T) {

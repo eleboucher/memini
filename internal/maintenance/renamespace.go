@@ -75,6 +75,17 @@ func Move(ctx context.Context, st store.Store, fromNS, toNS string, dryRun bool)
 			return rep, err
 		}
 	}
+	// API keys' HomeNS/DefaultNS are keyed by namespace too, so Reassign never
+	// touches them either: rewrite any key bound (home) or defaulted
+	// (default) to fromNS, on stores that support the capability at all —
+	// same not-atomic-with-Reassign, partial-progress-reporting convention as
+	// the link rename above (rep.Moved is already recorded, so a failure here
+	// still reports the true moved count rather than a misleading zero).
+	if ks, ok := st.(store.APIKeyStore); ok {
+		if err := ks.RenameAPIKeyNamespaces(ctx, fromNS, toNS); err != nil {
+			return rep, err
+		}
+	}
 	return rep, nil
 }
 

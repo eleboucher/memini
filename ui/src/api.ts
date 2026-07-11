@@ -1,5 +1,8 @@
 import { apiToken, baseUrl, namespace, namespaceHeader } from './store'
 import type {
+  ApiKeysResponse,
+  ApiKeyWithSecret,
+  CreateApiKeyRequest,
   DedupReport,
   DedupRequest,
   FsckReport,
@@ -14,6 +17,7 @@ import type {
   SearchResponse,
   Stats,
   Tier,
+  UpdateApiKeyRequest,
 } from './types'
 
 export class ApiError extends Error {
@@ -264,4 +268,20 @@ export const api = {
     if (isAllProjects()) body.all_namespaces = true
     return req<DedupReport>('POST', '/v1/dedup', body)
   },
+
+  // --- API key management (K3b) -----------------------------------------
+  // /v1/keys is not namespace-scoped (global, like /v1/namespaces); ns is
+  // left to default so the active-namespace header still rides along
+  // harmlessly (the server ignores it here), matching listNamespaces below.
+
+  listKeys: () => req<ApiKeysResponse>('GET', '/v1/keys').then((r) => r.keys ?? []),
+
+  createKey: (body: CreateApiKeyRequest) => req<ApiKeyWithSecret>('POST', '/v1/keys', body),
+
+  updateKey: (name: string, body: UpdateApiKeyRequest) =>
+    req<ApiKeysResponse['keys'][number]>('PATCH', `/v1/keys/${encodeURIComponent(name)}`, body),
+
+  deleteKey: (name: string) => req<void>('DELETE', `/v1/keys/${encodeURIComponent(name)}`),
+
+  rotateKey: (name: string) => req<ApiKeyWithSecret>('POST', `/v1/keys/${encodeURIComponent(name)}/rotate`),
 }

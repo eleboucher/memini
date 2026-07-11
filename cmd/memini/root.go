@@ -17,6 +17,7 @@ import (
 
 	"github.com/eleboucher/memini/internal/api/rest"
 	"github.com/eleboucher/memini/internal/api/ui"
+	"github.com/eleboucher/memini/internal/apiauth"
 	"github.com/eleboucher/memini/internal/config"
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/llm"
@@ -139,16 +140,68 @@ func newServer(
 	srv.SetDeps(deps)
 	srv.SetLLMConfigured(cfg.LLMEnabled())
 
+	// keyStore is nil for a backing store that predates APIKeyStore (a driver
+	// that hasn't run the api_keys migration); both the REST and MCP surfaces
+	// degrade to admin-key-only auth in that case — see apiauth.Config.
+	keyStore, _ := st.(store.APIKeyStore)
+
+	// fileKeys (K2b) is loaded exactly once here, at boot — see
+	// config.Config.APIKeysFile's doc for the format and why there's no live
+	// reload. A malformed/invalid file is fatal to boot (fail loud): every
+	// validation error names this file and the offending entry (see
+	// apiauth.LoadFileKeys). cfg.APIKeysFile == "" is a complete no-op:
+	// fileKeys stays nil and every downstream apiauth.Config behaves exactly
+	// as it did before this field existed.
+	var fileKeys *apiauth.FileKeySet
+	if cfg.APIKeysFile != "" {
+		fk, ferr := apiauth.LoadFileKeys(cfg.APIKeysFile)
+		if ferr != nil {
+			return nil, ferr
+		}
+		fileKeys = fk
+		// A file key with the same name as an existing DB row doesn't delete
+		// or edit that row — it just always wins at auth time (file checked
+		// before the table, apiauth.Config.Authenticate). Surface that as a
+		// boot-time warning rather than silently shadowing it, so an operator
+		// notices the DB row is now dead weight. The check is ADVISORY: a
+		// ListAPIKeys failure here is logged and boot continues — matching
+		// apiauth's tableNonEmpty, which absorbs an error on the very same
+		// query rather than failing the request (see ShadowedDBKeyNames' doc).
+		switch shadowed, serr := fk.ShadowedDBKeyNames(context.Background(), keyStore); {
+		case serr != nil:
+			log.Warn("could not check the declarative api keys file for shadowed db-stored keys; "+
+				"continuing boot — any same-named db key is silently unused until this is re-checked",
+				"file", cfg.APIKeysFile, "error", serr)
+		case len(shadowed) > 0:
+			log.Warn("declarative api keys file shadows existing db-stored keys by name; "+
+				"the file entry wins at auth time and the db row is unused until removed",
+				"file", cfg.APIKeysFile, "shadowed_keys", shadowed)
+		}
+	}
+
+	// One shared apiauth.Config for both HTTP surfaces: Config is a value
+	// type but its table-emptiness cache lives behind a pointer (see
+	// apiauth.Config's doc), so handing REST and MCP their own independent
+	// New(...) call would give each an UNSHARED cache — a REST key mutation's
+	// Invalidate() (apikeys.go) would never reach MCP's copy, leaving /mcp
+	// accepting unauthenticated requests for up to keyTableCacheTTL after the
+	// first key is created via REST. Building it once here and passing this
+	// exact value to both keeps the cache (and Invalidate's reach) shared.
+	keyAuth := apiauth.New(cfg.APIKey, keyStore).WithFileKeys(fileKeys)
+
 	rest.New(svc, rest.AuthConfig{
 		APIKey:           cfg.APIKey,
+		APIKeyStore:      keyStore,
+		FileKeys:         fileKeys,
+		KeyAuth:          &keyAuth,
 		NamespaceHeader:  config.DefaultNamespaceHeader,
 		DefaultNamespace: cfg.DefaultNamespace,
 		HomeHeader:       config.DefaultHomeHeader,
 		RequestTimeout:   cfg.RequestTimeout,
 	}).Mount(srv.Router())
 
-	mcpHandler := mcpapi.HTTPHandler(svc, config.DefaultNamespaceHeader, cfg.DefaultNamespace,
-		config.DefaultHomeHeader, cfg.APIKey)
+	mcpHandler := mcpapi.HTTPHandlerWithAuth(svc, config.DefaultNamespaceHeader, cfg.DefaultNamespace,
+		config.DefaultHomeHeader, keyAuth)
 	srv.Router().Handle("/mcp", mcpHandler)
 	srv.Router().Handle("/mcp/*", mcpHandler)
 

@@ -249,6 +249,60 @@ type ActivityStore interface {
 	NamespaceActivity(ctx context.Context, now time.Time) ([]NamespaceActivity, error)
 }
 
+// APIKey is a persisted API credential: a unique human label, the hex
+// SHA-256 hash of the secret (the secret itself is never stored), an
+// optional home namespace it is bound to, when it was created, and whether
+// it is disabled.
+type APIKey struct {
+	Name   string // unique human label, primary key
+	Hash   string // hex SHA-256 of the secret; never the secret itself
+	HomeNS string // bound home namespace; "" means unbound
+	// DefaultNS is the namespace applied to a request that presents this key
+	// but carries no X-Memini-Namespace header; an explicit header always
+	// wins. "" means no per-key default (the server-wide default applies).
+	DefaultNS string
+	CreatedAt time.Time
+	Disabled  bool
+}
+
+// APIKeyStore is implemented by drivers that persist api_keys, the
+// multiple-API-keys-with-optional-home-namespace feature. It is an optional
+// capability interface — the EmbedModelStore/LinkStore/ActivityStore
+// precedent above — so callers type-assert and degrade gracefully against a
+// driver that predates it. The auth middleware consumes GetAPIKeyByHash on
+// the request path; the CLI consumes Put/Delete/List.
+type APIKeyStore interface {
+	// PutAPIKey inserts or replaces the key keyed by k.Name.
+	//
+	// Unlike PutLink (which deliberately overwrites created_at on every
+	// upsert, since links carry no recency semantics — see its doc above),
+	// this upsert preserves the existing row's CreatedAt when the incoming
+	// k.CreatedAt is the zero value: API keys are long-lived identity, and
+	// rotating a key's hash or home namespace must not reset "when was this
+	// key first created". Passing a non-zero k.CreatedAt (e.g. import
+	// restore replaying an original timestamp) still overwrites it, mirroring
+	// PutLink's own conditional-overwrite convention.
+	PutAPIKey(ctx context.Context, k APIKey) error
+	// DeleteAPIKey removes the key by name. The bool reports whether a key
+	// existed to delete; a missing key is not an error.
+	DeleteAPIKey(ctx context.Context, name string) (bool, error)
+	// ListAPIKeys returns every key ordered by name. Never returns secrets —
+	// only the stored hash — since the plaintext secret is never persisted.
+	ListAPIKeys(ctx context.Context) ([]APIKey, error)
+	// GetAPIKeyByHash returns the key whose Hash matches, or nil, nil when
+	// none does. This is the auth-path lookup, so drivers must maintain an
+	// index/unique constraint on hash for it to stay fast.
+	GetAPIKeyByHash(ctx context.Context, hash string) (*APIKey, error)
+	// RenameAPIKeyNamespaces rewrites every key whose HomeNS or DefaultNS
+	// equals from to to instead — both columns in one call, since a
+	// namespace move (maintenance.Move, which also calls
+	// RenameLinkEndpoints) must not leave either binding pointing at the
+	// old name. Keys matching in neither column, and the non-matching
+	// column of a partially-matching key, are untouched; CreatedAt is never
+	// modified. A no-op when from == to.
+	RenameAPIKeyNamespaces(ctx context.Context, from, to string) error
+}
+
 // OrEmptyMap returns m, or an empty map when m is nil, so drivers persist an
 // empty JSON object rather than null for absent metadata.
 func OrEmptyMap(m map[string]any) map[string]any {

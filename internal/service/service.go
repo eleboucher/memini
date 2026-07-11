@@ -806,6 +806,14 @@ type RememberInput struct {
 	// background supersede. The caller passes the address of a local bool.
 	// nil disables reporting.
 	AutoSuperseded *bool
+	// Author names the NAMED API key that authenticated this write (set by
+	// the REST/MCP handlers from the request principal — see
+	// internal/api/rest's principalFromContext / internal/apiauth.Principal).
+	// "" for the admin key or an unauthenticated/auth-disabled request, which
+	// stamp no author at all. stampAuthor writes this into
+	// metadata["author"], but only when the caller hasn't already set one —
+	// see its doc.
+	Author string
 }
 
 // scrubInput redacts live credentials from a write before it is persisted, so a
@@ -968,6 +976,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		return nil, err
 	}
 	in = s.stampClassifiedTier(in, tier)
+	in = stampAuthor(in)
 
 	// Scrub live credentials before anything persists them — content, the
 	// embedding, and the dedup fingerprint are all computed on the redacted
@@ -1414,6 +1423,27 @@ func (s *Service) stampClassifiedTier(in RememberInput, tier memory.Tier) Rememb
 		in.Metadata = map[string]any{}
 	}
 	in.Metadata["tier_classified"] = "marker"
+	return in
+}
+
+// stampAuthor records who wrote a memory when a NAMED API key authenticated
+// the request, mirroring stampClassifiedTier's "mutate in.Metadata in place"
+// convention. A no-op when in.Author is "" (the admin key or an
+// unauthenticated/auth-disabled request — see RememberInput.Author's doc) OR
+// when the caller already set metadata["author"] explicitly: an
+// importer/migration replaying an original author knows better than the auth
+// layer's guess, so its value always wins over the request principal's.
+func stampAuthor(in RememberInput) RememberInput {
+	if in.Author == "" {
+		return in
+	}
+	if _, ok := in.Metadata["author"]; ok {
+		return in
+	}
+	if in.Metadata == nil {
+		in.Metadata = map[string]any{}
+	}
+	in.Metadata["author"] = in.Author
 	return in
 }
 

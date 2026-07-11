@@ -314,6 +314,44 @@ type Config struct {
 	// Auth (optional). When APIKey is set, requests must present it as a bearer token.
 	APIKey string `env:"MEMINI_API_KEY"`
 
+	// APIKeysFile (optional; K2b), when set, names a YAML file of
+	// declaratively managed API keys — the GitOps-friendly counterpart to
+	// the api_keys table (which is managed imperatively via `memini key
+	// ...` / a future /v1/keys API, K3b). The file is loaded exactly ONCE at
+	// boot (see internal/apiauth.LoadFileKeys); there is no live reload
+	// today — a GitOps rollout restarts the pod on every change to the
+	// file's content, which already picks up edits, so a SIGHUP-triggered
+	// in-process reload is a reasonable future addition but is not built
+	// here. Absent (the default) is a complete no-op: zero behavior change
+	// versus a server built before this field existed.
+	//
+	// Format (see internal/apiauth/testdata/api_keys.example.yaml for a
+	// runnable example):
+	//
+	//	keys:
+	//	  - name: alex                             # required, unique within the file
+	//	    hash: "<hex sha-256 of the secret>"     # exactly one of hash|secret
+	//	    home: personal/alex                     # optional
+	//	    default_namespace: acme                 # optional
+	//	    disabled: false                         # optional, default false
+	//	  - name: ci
+	//	    secret: "plaintext secret"              # allowed: the file itself is
+	//	                                             # the secret store (e.g.
+	//	                                             # SOPS-encrypted at rest);
+	//	                                             # hashed at load, never kept
+	//	                                             # in memory as plaintext
+	//
+	// Boot validation is fail-loud: malformed YAML, a missing name, both or
+	// neither of hash/secret, a hash that isn't valid hex-encoded SHA-256, a
+	// duplicate name within the file, or an invalid home/default_namespace
+	// (httputil.ValidateNamespace, after httputil.NormalizeNamespace) all
+	// refuse the boot with a message naming this file and the offending
+	// entry. A file key that shares a name with an existing api_keys table
+	// row wins at auth time (internal/apiauth.Config.Authenticate: file
+	// checked before the table); the server logs a warning at boot listing
+	// which table keys are shadowed this way.
+	APIKeysFile string `env:"MEMINI_API_KEYS_FILE"`
+
 	// Multi-tenancy. The fallback namespace when no header is sent; the header
 	// name itself is fixed (DefaultNamespaceHeader).
 	DefaultNamespace string

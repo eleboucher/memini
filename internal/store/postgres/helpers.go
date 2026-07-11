@@ -206,6 +206,32 @@ func scanLink(s rowScanner) (store.NamespaceLink, error) {
 	return l, nil
 }
 
+// scanAPIKeys reads every remaining row of rs into APIKeys, closing rs
+// before returning.
+func scanAPIKeys(rs rows) ([]store.APIKey, error) {
+	defer rs.Close()
+	var out []store.APIKey
+	for rs.Next() {
+		k, err := scanAPIKey(rs)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rs.Err()
+}
+
+// scanAPIKey scans a single (name, key_hash, home_ns, default_ns,
+// created_at, disabled) row.
+func scanAPIKey(s rowScanner) (store.APIKey, error) {
+	var k store.APIKey
+	if err := s.Scan(&k.Name, &k.Hash, &k.HomeNS, &k.DefaultNS, &k.CreatedAt, &k.Disabled); err != nil {
+		return k, err
+	}
+	k.CreatedAt = k.CreatedAt.UTC()
+	return k, nil
+}
+
 // tsQuery turns a natural-language query into a Postgres to_tsquery OR-string
 // ("term1 | term2 | ..."), so recall matches rows containing ANY term. Returns
 // "" when there are no usable terms.

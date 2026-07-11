@@ -166,6 +166,14 @@ to boot with either set), and the rest of the control surface is per-call:
 | `scope`                   | per-call              | `"project"` / `"full"` (default) / `"everywhere"`. REST also accepts the deprecated aliases `"exact"` (→ `"project"`) and `"subtree"` (→ `"everywhere"`); MCP does not. See [Escape hatches](#escape-hatches).                                                                                                                                                                                                                                                                  |
 | `visibility`              | per-call              | Write-side routing: `"project"` (default) / `"personal"` / an ancestor name. See [Data flow: write](#data-flow-write).                                                                                                                                                                                                                                                                                                                                                          |
 
+On a shared instance, a per-key `home` binding is the recommended way to set
+the `MEMINI_HOME` equivalent server-side instead of relying on every client to
+export the right env var: `memini key add <name> --home personal/<name>` (or
+`POST /v1/keys`) binds a key's home once, and it beats whatever
+`X-Memini-Home` a client sends — identity, not a per-request default. See
+[api-keys.md](api-keys.md#home-binding-vs-default-namespace-identity-vs-context)
+for the full home-vs-default-namespace precedence rules.
+
 ## Links
 
 Links are the escape hatch for **lateral** sharing — between namespaces that
