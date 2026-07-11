@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -317,6 +318,102 @@ var meminiEnvKeys = []string{
 	"MEMINI_DEDUP_INTERVAL", "MEMINI_DEDUP_SIMILARITY", "MEMINI_DEDUP_TIERS",
 	"MEMINI_WRITE_EMBED_TIMEOUT", "MEMINI_RECALL_EMBED_TIMEOUT",
 	"MEMINI_RECALL_REWRITE_TIMEOUT", "MEMINI_REQUEST_TIMEOUT",
-	"MEMINI_GLOBAL_NAMESPACE",
+	"MEMINI_GLOBAL_NAMESPACE", "MEMINI_TENANT_SHARED",
 	"MEMINI_HOME",
+}
+
+// TestFatalDeprecatedVarsUnset pins the clean-boot case: with neither deleted
+// knob set, FatalDeprecatedVars reports nothing to refuse on.
+func TestFatalDeprecatedVarsUnset(t *testing.T) {
+	clearMeminiEnv(t)
+	if got := config.FatalDeprecatedVars(); len(got) != 0 {
+		t.Errorf("FatalDeprecatedVars() = %v, want empty", got)
+	}
+}
+
+// TestFatalDeprecatedVarsGlobalNamespace and TestFatalDeprecatedVarsTenantShared
+// pin the T12 boot guard: setting either deleted knob produces a refusal
+// message naming the variable (a), explaining the scope model change to the
+// always-on ancestor cascade (b), pointing at `memini migrate scopes` and/or
+// MEMINI_HOME / `memini link add` as the way forward (c), and citing
+// docs/scopes.md#knobs (d).
+func TestFatalDeprecatedVarsGlobalNamespace(t *testing.T) {
+	clearMeminiEnv(t)
+	t.Setenv("MEMINI_GLOBAL_NAMESPACE", "shared/golang")
+
+	got := config.FatalDeprecatedVars()
+	if len(got) != 1 {
+		t.Fatalf("FatalDeprecatedVars() = %v, want exactly one message", got)
+	}
+	msg := got[0]
+	assertFatalMessageComplete(t, msg, "MEMINI_GLOBAL_NAMESPACE")
+}
+
+func TestFatalDeprecatedVarsTenantShared(t *testing.T) {
+	clearMeminiEnv(t)
+	t.Setenv("MEMINI_TENANT_SHARED", "true")
+
+	got := config.FatalDeprecatedVars()
+	if len(got) != 1 {
+		t.Fatalf("FatalDeprecatedVars() = %v, want exactly one message", got)
+	}
+	msg := got[0]
+	assertFatalMessageComplete(t, msg, "MEMINI_TENANT_SHARED")
+}
+
+// TestFatalDeprecatedVarsBoth pins that both knobs set at once produce two
+// distinct messages (not a single collapsed one), so an operator with both
+// stale exports sees guidance for each.
+func TestFatalDeprecatedVarsBoth(t *testing.T) {
+	clearMeminiEnv(t)
+	t.Setenv("MEMINI_GLOBAL_NAMESPACE", "acme")
+	t.Setenv("MEMINI_TENANT_SHARED", "true")
+
+	got := config.FatalDeprecatedVars()
+	if len(got) != 2 {
+		t.Fatalf("FatalDeprecatedVars() = %v, want exactly two messages", got)
+	}
+}
+
+// TestLoadIgnoresFatalDeprecatedVars pins the migrate-scopes exemption: the
+// fatal boot guard is NOT enforced inside config.Load() itself. `memini
+// migrate scopes` calls config.Load() directly (cmd/memini/migrate.go) to
+// read MEMINI_GLOBAL_NAMESPACE via os.Getenv and print adoption instructions
+// — if Load() itself refused to return a config when the var is set, the
+// migration command that handles it could never run, deadlocking the
+// operator. The refusal is enforced instead at the server-start call site
+// (cmd/memini/root.go runServer), which explicitly calls
+// FatalDeprecatedVars() before doing anything else.
+func TestLoadIgnoresFatalDeprecatedVars(t *testing.T) {
+	clearMeminiEnv(t)
+	t.Setenv("MEMINI_GLOBAL_NAMESPACE", "acme")
+	t.Setenv("MEMINI_TENANT_SHARED", "true")
+
+	if _, err := config.Load(); err != nil {
+		t.Fatalf("Load: unexpected error with deleted vars set: %v", err)
+	}
+}
+
+// assertFatalMessageComplete checks all four required elements of a fatal
+// deprecation message: (a) names the variable, (b) explains the always-on
+// ancestor cascade, (c) points at `memini migrate scopes` and MEMINI_HOME /
+// `memini link add`, (d) cites docs/scopes.md#knobs.
+func assertFatalMessageComplete(t *testing.T, msg, varName string) {
+	t.Helper()
+	checks := []struct {
+		label string
+		want  string
+	}{
+		{"names the variable", varName},
+		{"explains the ancestor cascade", "ancestor cascade"},
+		{"points at migrate scopes", "memini migrate scopes"},
+		{"points at MEMINI_HOME", "MEMINI_HOME"},
+		{"points at link add", "memini link add"},
+		{"cites docs", "docs/scopes.md#knobs"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(msg, c.want) {
+			t.Errorf("message missing %s (want substring %q); got: %s", c.label, c.want, msg)
+		}
+	}
 }
