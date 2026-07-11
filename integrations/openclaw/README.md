@@ -82,6 +82,11 @@ OpenClaw.
 `MEMINI_BASE_URL` env var (alias: `MEMINI_URL`); the `config` value wins when
 both are present.
 
+Set `home` (or the `MEMINI_HOME` env var, `config` wins) to the caller's
+personal namespace — every request then carries `X-Memini-Home`, which server-side
+`visibility: "personal"` writes and the read-set's home leg land in. Unset
+means no home leg; there is no derivation, just this explicit config/env pair.
+
 Recall shaping (both optional, matching the opencode/Claude Code plugins):
 `recall_limit` (max memories per turn, default **3**) and `recall_max_tokens`
 (hard token ceiling on the recall block, default **0** = uncapped, matching the

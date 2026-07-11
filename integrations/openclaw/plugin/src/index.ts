@@ -45,6 +45,7 @@ const typeboxConfigSchema = Type.Object(
     recall_max_tokens: Type.Optional(Type.Number()),
     min_capture_chars: Type.Optional(Type.Number()),
     namespace_prefix: Type.Optional(Type.String()),
+    home: Type.Optional(Type.String()),
   },
   { additionalProperties: false },
 );
@@ -123,6 +124,10 @@ export function resolveConfig(pluginConfig: any) {
         ? c.min_capture_chars
         : intEnv("MEMINI_MIN_CAPTURE_CHARS", 0),
     namespace_prefix: c.namespace_prefix || "",
+    // home: the caller's personal namespace, sent as X-Memini-Home. Config
+    // wins over MEMINI_HOME env (same precedence style as base_url); no
+    // git/cwd derivation — unset means "no home leg", not a guess.
+    home: c.home || strEnv("MEMINI_HOME") || undefined,
   };
 }
 
@@ -425,6 +430,7 @@ function createClient(cfg: ResolvedConfig, api: any): MeminiClient {
   const timeoutMs = Number(cfg.timeout_ms || DEFAULT_TIMEOUT_MS);
   const fallbackOnError = cfg.fallback_on_error !== false;
   const secret = process.env.MEMINI_API_KEY || process.env.MEMINI_TOKEN;
+  const home = cfg.home;
   const guardPlaintextBearerAuth = createPlaintextBearerAuthGuard((m: any) => api.logger.warn?.(m));
 
   async function postJson(path: string, payload: any, ns?: string) {
@@ -432,6 +438,7 @@ function createClient(cfg: ResolvedConfig, api: any): MeminiClient {
     guardPlaintextBearerAuth(baseUrl, secret);
     const headers: Record<string, string> = { "Content-Type": "application/json", "X-Memini-Namespace": ns || namespace };
     if (secret) headers.Authorization = `Bearer ${secret}`;
+    if (home) headers["X-Memini-Home"] = home;
     try {
       const res = await fetch(`${baseUrl}${path}`, {
         method: "POST",
@@ -461,6 +468,7 @@ function createClient(cfg: ResolvedConfig, api: any): MeminiClient {
     guardPlaintextBearerAuth(baseUrl, secret);
     const headers: Record<string, string> = { "X-Memini-Namespace": ns || namespace };
     if (secret) headers.Authorization = `Bearer ${secret}`;
+    if (home) headers["X-Memini-Home"] = home;
     try {
       const res = await fetch(`${baseUrl}${path}`, {
         method: "GET",
@@ -487,6 +495,7 @@ function createClient(cfg: ResolvedConfig, api: any): MeminiClient {
     guardPlaintextBearerAuth(baseUrl, secret);
     const headers: Record<string, string> = { "X-Memini-Namespace": ns || namespace };
     if (secret) headers.Authorization = `Bearer ${secret}`;
+    if (home) headers["X-Memini-Home"] = home;
     try {
       const res = await fetch(`${baseUrl}${path}`, {
         method: "DELETE",

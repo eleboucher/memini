@@ -20,7 +20,7 @@ import {
 // A developer shell may export the real memini config; clear it so resolveConfig
 // tests see the documented defaults (the plugin now reads MEMINI_BASE_URL /
 // MEMINI_URL as a fallback under the plugin config).
-for (const k of ["MEMINI_BASE_URL", "MEMINI_URL", "MEMINI_API_KEY", "MEMINI_TOKEN"]) delete process.env[k];
+for (const k of ["MEMINI_BASE_URL", "MEMINI_URL", "MEMINI_API_KEY", "MEMINI_TOKEN", "MEMINI_HOME"]) delete process.env[k];
 
 type MeminiClient = Parameters<typeof registerMeminiTools>[1];
 
@@ -190,6 +190,14 @@ test("resolveConfig: min_capture_chars off by default; config and env override",
   process.env.MEMINI_MIN_CAPTURE_CHARS = "25";
   assert.equal(resolveConfig({}).min_capture_chars, 25);
   delete process.env.MEMINI_MIN_CAPTURE_CHARS;
+});
+
+test("resolveConfig: home is unset by default; config wins over MEMINI_HOME env", () => {
+  assert.equal(resolveConfig({}).home, undefined);
+  process.env.MEMINI_HOME = "personal/acme";
+  assert.equal(resolveConfig({}).home, "personal/acme");
+  assert.equal(resolveConfig({ home: "personal/other" }).home, "personal/other");
+  delete process.env.MEMINI_HOME;
 });
 
 test("stripRuntimePreambles: returns empty when the turn is only metadata", () => {

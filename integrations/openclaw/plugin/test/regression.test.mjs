@@ -333,6 +333,55 @@ test("recall sends recall_limit and no min_score on /v1/search", async () => {
   }
 });
 
+test("requests carry X-Memini-Home when configured, omit it otherwise", async () => {
+  const hooks = {};
+  const requests = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    return {
+      ok: true,
+      async json() { return { results: [] }; },
+      async text() { return ""; },
+    };
+  };
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false, home: "personal/acme" },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    await hooks.before_prompt_build({ prompt: "q" }, {});
+    const search = requests.find((r) => r.url.endsWith("/v1/search"));
+    assert.equal(search.init.headers["X-Memini-Home"], "personal/acme");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  const hooks2 = {};
+  const requests2 = [];
+  globalThis.fetch = async (url, init) => {
+    requests2.push({ url: String(url), init });
+    return { ok: true, async json() { return { results: [] }; }, async text() { return ""; } };
+  };
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks2[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    await hooks2.before_prompt_build({ prompt: "q" }, {});
+    const search2 = requests2.find((r) => r.url.endsWith("/v1/search"));
+    assert.equal(search2.init.headers["X-Memini-Home"], undefined);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 // before_prompt_build fires on every step of a turn; an unchanged query returns
 // the same memories, so without dedup the same block is re-injected on every
 // tool call (eleboucher/memini#21). The same session must only be shown a given
