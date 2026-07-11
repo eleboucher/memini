@@ -242,6 +242,16 @@ func NewServer(svc *service.Service, defaultNS, home string) *mcpsdk.Server {
 		Annotations: readOnly,
 	}, h.get)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:  "memory_history",
+		Title: "Trace a memory's history",
+		Description: "Trace the bi-temporal supersession lineage of a memory by ID: the fact " +
+			"itself plus every fact it superseded and every fact that superseded it, oldest-first, " +
+			"including tombstoned rows. Use to answer \"what was believed before, and what replaced " +
+			"it\" — each result's valid_from/valid_to bound when it was true and superseded_by links " +
+			"the fact that replaced it.",
+		Annotations: readOnly,
+	}, h.history)
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:  "memory_update",
 		Title: "Update a memory",
 		Description: "Update fields of an existing memory by ID (partial: only provided fields " +
@@ -859,20 +869,21 @@ type idArgs struct {
 // results stay slim via recallItem; a get has no score and should not drop
 // the record's metadata).
 type memoryItem struct {
-	ID          string         `json:"id"`
-	Content     string         `json:"content"`
-	Tier        string         `json:"tier"`
-	Level       string         `json:"level,omitempty"`
-	Summary     string         `json:"summary,omitempty"`
-	Tags        []string       `json:"tags,omitempty"`
-	Metadata    map[string]any `json:"metadata,omitempty"`
-	Importance  float64        `json:"importance"`
-	CreatedAt   string         `json:"created_at"`
-	UpdatedAt   string         `json:"updated_at"`
-	AccessCount int            `json:"access_count"`
-	ExpiresAt   string         `json:"expires_at,omitempty"`
-	ValidFrom   string         `json:"valid_from,omitempty"`
-	ValidTo     string         `json:"valid_to,omitempty"`
+	ID           string         `json:"id"`
+	Content      string         `json:"content"`
+	Tier         string         `json:"tier"`
+	Level        string         `json:"level,omitempty"`
+	Summary      string         `json:"summary,omitempty"`
+	Tags         []string       `json:"tags,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
+	Importance   float64        `json:"importance"`
+	CreatedAt    string         `json:"created_at"`
+	UpdatedAt    string         `json:"updated_at"`
+	AccessCount  int            `json:"access_count"`
+	ExpiresAt    string         `json:"expires_at,omitempty"`
+	ValidFrom    string         `json:"valid_from,omitempty"`
+	ValidTo      string         `json:"valid_to,omitempty"`
+	SupersededBy string         `json:"superseded_by,omitempty"`
 }
 
 func toMemoryItem(m *memory.Memory) memoryItem {
@@ -890,6 +901,9 @@ func toMemoryItem(m *memory.Memory) memoryItem {
 	}
 	if m.ValidTo != nil {
 		out.ValidTo = m.ValidTo.Format(time.RFC3339)
+	}
+	if m.SupersededBy != nil {
+		out.SupersededBy = *m.SupersededBy
 	}
 	return out
 }
@@ -918,6 +932,22 @@ func (t *tools) get(ctx context.Context, _ *mcpsdk.CallToolRequest, in idArgs) (
 		return nil, memoryItem{}, notFoundErr(in.ID, ns, err)
 	}
 	return nil, toMemoryItem(m), nil
+}
+
+func (t *tools) history(ctx context.Context, _ *mcpsdk.CallToolRequest, in idArgs) (*mcpsdk.CallToolResult, listResult, error) {
+	ns, err := t.ns(in.Namespace)
+	if err != nil {
+		return nil, listResult{}, err
+	}
+	mems, err := t.svc.History(ctx, ns, in.ID)
+	if err != nil {
+		return nil, listResult{}, notFoundErr(in.ID, ns, err)
+	}
+	out := listResult{Memories: make([]memoryItem, len(mems))}
+	for i, m := range mems {
+		out.Memories[i] = toMemoryItem(m)
+	}
+	return nil, out, nil
 }
 
 type updateArgs struct {

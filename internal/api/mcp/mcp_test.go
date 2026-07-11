@@ -105,6 +105,7 @@ func TestToolsListed(t *testing.T) {
 	want := map[string]bool{
 		"memory_remember": false, "memory_recall": false, "memory_get": false,
 		"memory_forget": false, "memory_briefing": false, "memory_list": false,
+		"memory_history": false,
 	}
 	for _, tool := range res.Tools {
 		if _, ok := want[tool.Name]; ok {
@@ -575,6 +576,61 @@ func TestRememberFullArgsRoundTripViaGet(t *testing.T) {
 	}
 	if got.ExpiresAt != "" {
 		t.Fatalf("negative ttl should mean no expiry, got %q", got.ExpiresAt)
+	}
+}
+
+// TestHistoryToolChain pins memory_history end-to-end: a superseded fact and
+// the fact that replaced it both appear in the lineage, oldest-first, with the
+// superseded row exposing its superseded_by link.
+func TestHistoryToolChain(t *testing.T) {
+	st := openStore(t)
+	svc := service.New(st, embedtest.New(dims))
+	ctx := context.Background()
+
+	oldM, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "default", Content: "the cache TTL is 5 minutes", Tier: memory.TierSemantic, ID: "hist-old",
+	})
+	if err != nil {
+		t.Fatalf("remember old: %v", err)
+	}
+	newM, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "default", Content: "the cache TTL is 10 minutes", Tier: memory.TierSemantic, ID: "hist-new",
+	})
+	if err != nil {
+		t.Fatalf("remember new: %v", err)
+	}
+	if err := svc.Supersede(ctx, "default", oldM.ID, newM.ID); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+
+	cs := connectAt(t, svc, "default", "")
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_history",
+		Arguments: map[string]any{"id": "hist-old"},
+	})
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	var got struct {
+		Memories []struct {
+			ID           string `json:"id"`
+			SupersededBy string `json:"superseded_by"`
+		} `json:"memories"`
+	}
+	structured(t, res, &got)
+
+	byID := make(map[string]string, len(got.Memories))
+	for _, m := range got.Memories {
+		byID[m.ID] = m.SupersededBy
+	}
+	if _, ok := byID["hist-old"]; !ok {
+		t.Errorf("lineage missing the superseded fact hist-old: %+v", got.Memories)
+	}
+	if _, ok := byID["hist-new"]; !ok {
+		t.Errorf("lineage missing the replacement fact hist-new: %+v", got.Memories)
+	}
+	if byID["hist-old"] != "hist-new" {
+		t.Errorf("superseded_by = %q, want hist-new", byID["hist-old"])
 	}
 }
 
