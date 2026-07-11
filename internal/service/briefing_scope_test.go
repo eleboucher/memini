@@ -2,12 +2,18 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/eleboucher/memini/internal/embed/embedtest"
 	"github.com/eleboucher/memini/internal/memory"
+	"github.com/eleboucher/memini/internal/store"
+	"github.com/eleboucher/memini/internal/store/sqlitevec"
 )
 
 // putScopeMem upserts a memory directly into the store with a controlled
@@ -246,4 +252,162 @@ func idList(ms []*memory.Memory) []string {
 		out[i] = m.ID
 	}
 	return out
+}
+
+// TestBriefingChildRollupSkippedForBareAndExplicit: a scope=project (bare)
+// briefing and an explicit-Namespaces briefing render no child rollup, so
+// they must not pay for one — Children stays empty while the default scope
+// still gets the rollup.
+func TestBriefingChildRollupSkippedForBareAndExplicit(t *testing.T) {
+	svc, st := newReadsetSvc(t)
+	ctx := context.Background()
+	base := time.Unix(1_700_000_000, 0).UTC()
+	putScopeMem(t, st, "acme", "root-1", memory.TierSemantic, base.Add(-2*time.Minute))
+	putScopeMem(t, st, "acme/phoenix", "phx-1", memory.TierSemantic, base.Add(-1*time.Minute))
+
+	bare, err := svc.Briefing(ctx, "acme", BriefingOpts{Scope: "project"})
+	if err != nil {
+		t.Fatalf("bare briefing: %v", err)
+	}
+	if len(bare.Children) != 0 || bare.ChildrenTruncated != 0 {
+		t.Fatalf("scope=project briefing children = %+v (truncated %d), want none — no rollup work for a bare read",
+			bare.Children, bare.ChildrenTruncated)
+	}
+
+	explicit, err := svc.Briefing(ctx, "acme", BriefingOpts{Namespaces: []string{"acme", "acme/phoenix"}})
+	if err != nil {
+		t.Fatalf("explicit briefing: %v", err)
+	}
+	if len(explicit.Children) != 0 || explicit.ChildrenTruncated != 0 {
+		t.Fatalf("explicit-namespaces briefing children = %+v (truncated %d), want none",
+			explicit.Children, explicit.ChildrenTruncated)
+	}
+
+	// Control: the default scope still rolls up.
+	def, err := svc.Briefing(ctx, "acme", BriefingOpts{})
+	if err != nil {
+		t.Fatalf("default briefing: %v", err)
+	}
+	if len(def.Children) != 1 {
+		t.Fatalf("default briefing children = %+v, want the acme/phoenix rollup", def.Children)
+	}
+}
+
+// listCall records one store.List invocation for the bounded-cost assertions.
+type listCall struct {
+	ns    string
+	limit int
+}
+
+// rollupRecordingStore wraps a Store, recording every List call (namespace +
+// limit) and forwarding the optional ActivityStore capability of the wrapped
+// driver, so tests can pin that the child rollup issues only bounded queries
+// and only for the children it keeps.
+type rollupRecordingStore struct {
+	store.Store
+	mu    sync.Mutex
+	lists []listCall
+}
+
+func (r *rollupRecordingStore) List(ctx context.Context, ns string, f store.Filter, limit int) ([]*memory.Memory, error) {
+	r.mu.Lock()
+	r.lists = append(r.lists, listCall{ns: ns, limit: limit})
+	r.mu.Unlock()
+	return r.Store.List(ctx, ns, f, limit)
+}
+
+func (r *rollupRecordingStore) NamespaceActivity(ctx context.Context, now time.Time) ([]store.NamespaceActivity, error) {
+	as, ok := r.Store.(store.ActivityStore)
+	if !ok {
+		return nil, errors.New("wrapped store does not implement store.ActivityStore")
+	}
+	return as.NamespaceActivity(ctx, now)
+}
+
+// TestBriefingChildRollupBoundedQueries: the 10-child cap must bound COST,
+// not just output — at a wide interior node the rollup issues no unbounded
+// (limit 0) List for any descendant namespace, and no List at all for the
+// children dropped by the cap. Only the read-set's own section fetches (the
+// primary here) may list unbounded.
+func TestBriefingChildRollupBoundedQueries(t *testing.T) {
+	st, err := sqlitevec.Open(context.Background(), filepath.Join(t.TempDir(), "bounded.db"), readsetTestDims)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	base := time.Unix(1_700_000_000, 0).UTC()
+
+	putScopeMem(t, st, "acme", "root-1", memory.TierSemantic, base)
+	// 12 direct children, team00 newest … team11 oldest, so team10/team11 are
+	// dropped by the cap. team00 also has a grandchild namespace.
+	for i := range 12 {
+		ns := fmt.Sprintf("acme/team%02d", i)
+		putScopeMem(t, st, ns, fmt.Sprintf("t-%02d", i), memory.TierSemantic, base.Add(-time.Duration(i+1)*time.Minute))
+	}
+	putScopeMem(t, st, "acme/team00/api", "gc-1", memory.TierSemantic, base.Add(-30*time.Second))
+
+	rec := &rollupRecordingStore{Store: st}
+	svc := New(rec, embedtest.New(readsetTestDims),
+		WithClock(func() time.Time { return base }))
+
+	b, err := svc.Briefing(context.Background(), "acme", BriefingOpts{})
+	if err != nil {
+		t.Fatalf("briefing: %v", err)
+	}
+	if len(b.Children) != 10 || b.ChildrenTruncated != 2 {
+		t.Fatalf("children = %d (truncated %d), want 10 (truncated 2)", len(b.Children), b.ChildrenTruncated)
+	}
+
+	kept := map[string]bool{}
+	for _, c := range b.Children {
+		kept[c.NS] = true
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	for _, call := range rec.lists {
+		if !strings.HasPrefix(call.ns, "acme/") {
+			continue // the read-set's own section fetch (primary) may be unbounded
+		}
+		if call.limit <= 0 {
+			t.Errorf("unbounded List(%q, limit=%d) for a descendant namespace — rollup queries must be capped", call.ns, call.limit)
+		}
+		// The namespace must belong to a KEPT child's subtree: a child dropped
+		// by the cap must cost nothing beyond the aggregate row.
+		child := call.ns
+		if i := strings.IndexByte(child[len("acme/"):], '/'); i >= 0 {
+			child = child[:len("acme/")+i]
+		}
+		if !kept[child] {
+			t.Errorf("List(%q) queried a namespace under dropped child %q — capped-out children must not be fetched", call.ns, child)
+		}
+	}
+}
+
+// TestBriefingChildRollupDegradesWithoutActivityStore: against a store that
+// predates ActivityStore (countingListStore embeds the Store interface, so
+// the capability is not promoted), the briefing degrades to no rollup —
+// never to the old unbounded per-namespace scan path.
+func TestBriefingChildRollupDegradesWithoutActivityStore(t *testing.T) {
+	st, err := sqlitevec.Open(context.Background(), filepath.Join(t.TempDir(), "degrade.db"), readsetTestDims)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	base := time.Unix(1_700_000_000, 0).UTC()
+	putScopeMem(t, st, "acme", "root-1", memory.TierSemantic, base.Add(-2*time.Minute))
+	putScopeMem(t, st, "acme/phoenix", "phx-1", memory.TierSemantic, base.Add(-1*time.Minute))
+
+	svc := New(&countingListStore{Store: st}, embedtest.New(readsetTestDims),
+		WithClock(func() time.Time { return base }))
+	b, err := svc.Briefing(context.Background(), "acme", BriefingOpts{})
+	if err != nil {
+		t.Fatalf("briefing: %v", err)
+	}
+	if len(b.Children) != 0 || b.ChildrenTruncated != 0 {
+		t.Fatalf("children = %+v (truncated %d), want none — no unbounded fallback without ActivityStore",
+			b.Children, b.ChildrenTruncated)
+	}
+	if !strings.HasPrefix(b.ScopeHeader, "Scope: acme") {
+		t.Fatalf("scope header = %q, want it still present when the rollup degrades", b.ScopeHeader)
+	}
 }

@@ -377,9 +377,14 @@ func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingO
 	b.Recent = topN(recent, recentN)
 	b.Pinned = topN(b.Pinned, pinnedN)
 
-	b.Children, b.ChildrenTruncated, err = s.childRollup(ctx, namespace, now)
-	if err != nil {
-		return Briefing{}, err
+	// The rollup describes the default cascade view of primary's subtree; a
+	// bare (scope=project) or explicit-namespaces briefing renders no rollup,
+	// so it must not pay for one either.
+	if !bare && len(opts.Namespaces) == 0 {
+		b.Children, b.ChildrenTruncated, err = s.childRollup(ctx, namespace, now)
+		if err != nil {
+			return Briefing{}, err
+		}
 	}
 	return b, nil
 }
@@ -442,6 +447,15 @@ func scopeHeader(primary string, entries []scopeEntry, durable map[string]int) s
 	return sb.String()
 }
 
+// childRollupFetchLimit caps each per-namespace highlight fetch inside the
+// child rollup. store.List gives no ordering guarantee, so the fetch has to
+// be complete-enough to sort in the service: it IS complete whenever the
+// namespace holds at most this many matching rows (pinned sets and per-
+// namespace durable counts are typically far smaller), and beyond that the
+// highlight set is approximate — but the cost stays bounded, which is the
+// invariant that matters (never limit 0 on the rollup path).
+const childRollupFetchLimit = 32
+
 // childRollup builds Briefing.Children: one ChildSummary per DIRECT child
 // namespace (one segment deeper than primary), each aggregating its entire
 // subtree — so leaf-heavy trees (memories only in grandchildren) still
@@ -449,15 +463,20 @@ func scopeHeader(primary string, entries []scopeEntry, durable map[string]int) s
 // (name asc on ties) and capped at childRollupMaxChildren, returning the
 // omitted count. A leaf namespace returns (nil, 0, nil).
 //
-// Cost: one ListNamespaces (cheap SELECT DISTINCT) plus one store.List per
-// namespace strictly under primary — the same per-namespace full-list shape
-// Briefing's own subtree path, Stats, and StatsAll already use. Total is an
-// all-tier count and the children sort needs every child's last write, so
-// small-limit queries can't replace the full list until the store grows a
-// count/max aggregate; the wire stays bounded regardless via the per-section
-// (3) and per-children (10) caps.
+// Cost is bounded end to end: totals, last writes, and the recency sort come
+// from ONE store.ActivityStore aggregate query (SELECT namespace, COUNT(*),
+// MAX(created_at) ... GROUP BY namespace); only after the 10-child cap has
+// been applied are pinned/recent highlights fetched, with two
+// childRollupFetchLimit-capped List calls per namespace under the KEPT
+// children — never an unbounded (limit 0) List, and never any fetch for a
+// capped-out child. A store that predates ActivityStore degrades to no
+// rollup at all rather than falling back to per-namespace scans.
 func (s *Service) childRollup(ctx context.Context, primary string, now time.Time) ([]ChildSummary, int, error) {
-	all, err := s.store.ListNamespaces(ctx)
+	as, ok := s.store.(store.ActivityStore)
+	if !ok {
+		return nil, 0, nil
+	}
+	acts, err := as.NamespaceActivity(ctx, now)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -465,15 +484,14 @@ func (s *Service) childRollup(ctx context.Context, primary string, now time.Time
 	type childAgg struct {
 		total     int
 		lastWrite time.Time
-		pinned    []*memory.Memory
-		durable   []*memory.Memory
+		members   []string // namespaces in this child's subtree, for the highlight fetch
 	}
 	aggs := map[string]*childAgg{}
-	for _, ns := range all {
-		if !strings.HasPrefix(ns, prefix) {
+	for _, act := range acts {
+		if !strings.HasPrefix(act.NS, prefix) {
 			continue
 		}
-		seg := ns[len(prefix):]
+		seg := act.NS[len(prefix):]
 		if i := strings.IndexByte(seg, '/'); i >= 0 {
 			seg = seg[:i]
 		}
@@ -483,22 +501,11 @@ func (s *Service) childRollup(ctx context.Context, primary string, now time.Time
 			a = &childAgg{}
 			aggs[child] = a
 		}
-		mems, err := s.store.List(ctx, ns, store.Filter{Now: now}, 0)
-		if err != nil {
-			return nil, 0, err
+		a.total += act.Total
+		if act.LastWrite.After(a.lastWrite) {
+			a.lastWrite = act.LastWrite
 		}
-		for _, m := range mems {
-			a.total++
-			if m.CreatedAt.After(a.lastWrite) {
-				a.lastWrite = m.CreatedAt
-			}
-			if slices.Contains(m.Tags, maintenance.PinnedTag) {
-				a.pinned = append(a.pinned, m)
-			}
-			if m.Tier.Term() == memory.LongTerm {
-				a.durable = append(a.durable, m)
-			}
-		}
+		a.members = append(a.members, act.NS)
 	}
 	if len(aggs) == 0 {
 		return nil, 0, nil
@@ -522,13 +529,28 @@ func (s *Service) childRollup(ctx context.Context, primary string, now time.Time
 	out := make([]ChildSummary, len(names))
 	for i, n := range names {
 		a := aggs[n]
-		sortPinned(a.pinned, now)
-		sort.SliceStable(a.durable, func(x, y int) bool { return a.durable[x].CreatedAt.After(a.durable[y].CreatedAt) })
+		var pinned, durable []*memory.Memory
+		for _, ns := range a.members {
+			p, err := s.store.List(ctx, ns,
+				store.Filter{Now: now, Tags: []string{maintenance.PinnedTag}}, childRollupFetchLimit)
+			if err != nil {
+				return nil, 0, err
+			}
+			pinned = append(pinned, p...)
+			d, err := s.store.List(ctx, ns,
+				store.Filter{Now: now, Tiers: durableTiers(nil)}, childRollupFetchLimit)
+			if err != nil {
+				return nil, 0, err
+			}
+			durable = append(durable, d...)
+		}
+		sortPinned(pinned, now)
+		sort.SliceStable(durable, func(x, y int) bool { return durable[x].CreatedAt.After(durable[y].CreatedAt) })
 		out[i] = ChildSummary{
 			NS:     n,
 			Total:  a.total,
-			Pinned: topN(a.pinned, childRollupPerSection),
-			Recent: topN(a.durable, childRollupPerSection),
+			Pinned: topN(pinned, childRollupPerSection),
+			Recent: topN(durable, childRollupPerSection),
 		}
 	}
 	return out, truncated, nil
