@@ -545,7 +545,7 @@ export interface components {
         };
         Briefing: {
             namespace: string;
-            /** @description A human-readable one-line summary of which namespaces this briefing drew from (its resolved read-set scope). Reserved for a future task — omitted until then. */
+            /** @description A human-readable one-line summary of which namespaces this briefing drew from (its resolved read-set scope), e.g. "Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2), +1 link" — primary first, then each cascade leg that contributed durable memories (nearest ancestor first, home last, counts per leg), then a "+K link(s)" suffix for contributing links. */
             scope_header?: string | null;
             /** @description Durable semantic facts, highest-retention first. */
             facts?: components["schemas"]["BriefingItem"][];
@@ -555,7 +555,7 @@ export interface components {
             recent?: components["schemas"]["BriefingItem"][];
             /** @description Pinned memories (any tier). */
             pinned?: components["schemas"]["BriefingItem"][];
-            /** @description Per-child-namespace rollups (e.g. subtree children), each with its own pinned/recent highlights. Reserved for a future task — omitted until then. */
+            /** @description Direct-child namespace rollups (one segment deeper than the briefed namespace), each aggregating its whole subtree: all-tier live total plus up to 3 pinned and 3 recent-durable highlight memories. Ordered by most-recent write, capped at 10 children; omitted at a leaf namespace. */
             children?: components["schemas"]["BriefingChild"][] | null;
         };
         BriefingItem: {
