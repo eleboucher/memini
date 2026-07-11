@@ -48,49 +48,101 @@ type tableCache struct {
 }
 
 // Config is the shared bearer-token auth policy: the admin env key (checked
-// first, constant-time) and an optional table of named keys (SHA-256 hash
-// lookup). Copy freely — the embedded cache pointer is shared across copies,
-// which is what lets the emptiness cache persist across requests even though
-// each middleware invocation works from its own copy of Config.
+// first, constant-time), an optional immutable set of declaratively managed
+// keys loaded once at boot from MEMINI_API_KEYS_FILE (checked second), and an
+// optional table of named keys (SHA-256 hash lookup, checked last). Copy
+// freely — the embedded cache pointer is shared across copies, which is what
+// lets the emptiness cache persist across requests even though each
+// middleware invocation works from its own copy of Config. fileKeys is safe
+// to share across copies too: FileKeySet is immutable once loaded.
 type Config struct {
 	APIKey   string
 	KeyStore store.APIKeyStore // nil disables table auth entirely
+	fileKeys *FileKeySet       // nil disables file-key auth entirely (MEMINI_API_KEYS_FILE unset)
 	cache    *tableCache
 }
 
 // New builds a Config ready to Authenticate. ks may be nil — no table
-// capability, e.g. a store predating APIKeyStore, or the feature unused.
+// capability, e.g. a store predating APIKeyStore, or the feature unused. Use
+// WithFileKeys to additionally wire in a declarative keys file.
 func New(apiKey string, ks store.APIKeyStore) Config {
 	return Config{APIKey: apiKey, KeyStore: ks, cache: &tableCache{}}
 }
 
+// WithFileKeys returns a copy of c with fk attached as the declaratively
+// managed key set (see FileKeySet's doc), consulted after the admin key and
+// before the table — see Authenticate. fk may be nil, e.g. MEMINI_API_KEYS_FILE
+// is unset: this leaves file-key auth disabled with zero behavior change,
+// same as never calling WithFileKeys at all.
+func (c Config) WithFileKeys(fk *FileKeySet) Config {
+	c.fileKeys = fk
+	return c
+}
+
+// FileKeys returns metadata (including hash, never a plaintext secret) for
+// every key loaded from MEMINI_API_KEYS_FILE, ordered by name — nil when no
+// file is configured. This is the seam a future read-only /v1/keys listing
+// (K3b) uses to fold file keys into its output alongside table keys.
+func (c Config) FileKeys() []store.APIKey {
+	return c.fileKeys.FileKeys()
+}
+
+// IsFileKey reports whether name identifies a key sourced from
+// MEMINI_API_KEYS_FILE. K3b's future key-mutation endpoints must consult this
+// and refuse to rename/rotate/delete a file-sourced key by name — the file
+// owns that identity, not the API.
+func (c Config) IsFileKey(name string) bool {
+	return c.fileKeys.IsFileKey(name)
+}
+
 // Authenticate resolves token (the raw bearer, "" when absent) against the
-// admin key then the table. Semantics (binding, K2 brief):
+// admin key, then the file keys (MEMINI_API_KEYS_FILE, K2b), then the table.
+// Semantics (binding, K2/K2b briefs):
 //
 //   - Admin key configured and token matches it (constant-time) → allowed,
 //     principal nil.
+//   - A bearer is presented AND fileKeys is set → looked up by hex SHA-256
+//     hash. Found (enabled or not) → resolved here, final: enabled means
+//     allowed with a principal identifying the key; disabled means REJECTED
+//     outright, same as a disabled table key below. Found-but-disabled never
+//     falls through to the table — a file entry that names this hash is
+//     authoritative. Not found in the file falls through to the table below
+//     (a token merely not being a file key doesn't make it invalid — it
+//     might still be a DB key).
 //   - A bearer is presented AND KeyStore is set → looked up by hex SHA-256
 //     hash. Found and enabled → allowed, principal identifies the key.
 //     Found-but-disabled, or not found → REJECTED outright; this never falls
 //     through to the "no usable token" allowance below, because a wrong
 //     credential is not the same as no credential.
-//   - No usable token (absent, or a KeyStore that can't be consulted because
-//     it's nil): allowed, principal nil, IFF nothing requires auth — no admin
-//     key AND (no KeyStore, or its table is empty). An admin key configured
-//     with no/wrong token is rejected (unchanged pre-existing behavior). A
-//     configured, non-empty table with no/wrong token is rejected too —
-//     table auth becomes mandatory the instant any key exists, not merely
-//     additive to dev-mode — checked via the cached, possibly-stale
-//     tableNonEmpty read.
+//   - No usable token (absent, or fileKeys/KeyStore that can't be consulted
+//     because they're nil): allowed, principal nil, IFF nothing requires
+//     auth — no admin key AND fileKeys is empty/nil AND (no KeyStore, or its
+//     table is empty). An admin key configured with no/wrong token is
+//     rejected (unchanged pre-existing behavior). A non-empty file key set,
+//     OR a configured non-empty table, with no/wrong token is rejected too —
+//     either one makes auth mandatory the instant it holds any key, not
+//     merely additive to dev-mode. The file set's emptiness is a plain field
+//     read (it's immutable once loaded, unlike the table); the table's is the
+//     cached, possibly-stale tableNonEmpty read.
 //
 // A KeyStore error while looking up a presented token surfaces as err (the
 // caller should respond 500, not 401 — an inability to check the table is
 // not the same as an invalid credential). A KeyStore error while merely
 // probing table emptiness does NOT surface as err; it fails closed (treated
 // as non-empty, i.e. auth required) and is absorbed — see tableNonEmpty.
+// FileKeySet lookups never error (it's an in-memory map), so there is no
+// equivalent failure mode on the file side.
 func (c Config) Authenticate(ctx context.Context, token string) (p *Principal, ok bool, err error) {
 	if c.APIKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(c.APIKey)) == 1 {
 		return nil, true, nil
+	}
+	if token != "" && c.fileKeys != nil {
+		if key, found := c.fileKeys.lookup(hashToken(token)); found {
+			if key.Disabled {
+				return nil, false, nil
+			}
+			return &Principal{Name: key.Name, HomeNS: key.HomeNS, DefaultNS: key.DefaultNS}, true, nil
+		}
 	}
 	if token != "" && c.KeyStore != nil {
 		key, gerr := c.KeyStore.GetAPIKeyByHash(ctx, hashToken(token))
@@ -103,6 +155,9 @@ func (c Config) Authenticate(ctx context.Context, token string) (p *Principal, o
 		return nil, false, nil
 	}
 	if c.APIKey != "" {
+		return nil, false, nil
+	}
+	if c.fileKeys.enforced() {
 		return nil, false, nil
 	}
 	if c.KeyStore != nil && c.tableNonEmpty(ctx) {
