@@ -135,6 +135,16 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 			created_at timestamptz NOT NULL,
 			PRIMARY KEY (src_ns, dst_ns)
 		)`,
+		// api_keys records API credentials (see store.APIKeyStore): key_hash is
+		// the hex SHA-256 of the secret (the secret itself is never stored) and
+		// is UNIQUE so GetAPIKeyByHash's auth-path lookup can rely on an index.
+		`CREATE TABLE IF NOT EXISTS api_keys (
+			name       text PRIMARY KEY,
+			key_hash   text NOT NULL UNIQUE,
+			home_ns    text NOT NULL DEFAULT '',
+			created_at timestamptz NOT NULL,
+			disabled   boolean NOT NULL DEFAULT false
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := conn.Exec(ctx, q); err != nil {
@@ -772,6 +782,83 @@ func (s *Store) RenameLinkEndpoints(ctx context.Context, from, to string) error 
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+var _ store.APIKeyStore = (*Store)(nil)
+
+// PutAPIKey inserts or replaces the key keyed by k.Name.
+//
+// Unlike PutLink (which deliberately overwrites created_at on every upsert,
+// since links carry no recency semantics — see its doc above), this upsert
+// preserves the existing row's created_at when k.CreatedAt is the zero
+// value: API keys are long-lived identity, and rotating a key's hash or
+// home namespace must not reset "when was this key first created". A
+// non-zero k.CreatedAt (e.g. import restore replaying an original
+// timestamp) still overwrites it. The lookup-then-upsert runs in a
+// transaction so a concurrent PutAPIKey for the same name cannot race
+// between the read of the existing created_at and the write.
+func (s *Store) PutAPIKey(ctx context.Context, k store.APIKey) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	created := k.CreatedAt
+	if created.IsZero() {
+		err := tx.QueryRow(ctx, `SELECT created_at FROM api_keys WHERE name=$1`, k.Name).Scan(&created)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			created = time.Now().UTC()
+		case err != nil:
+			return fmt.Errorf("postgres: lookup api key: %w", err)
+		}
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO api_keys (name, key_hash, home_ns, created_at, disabled)
+		VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (name) DO UPDATE SET
+			key_hash=EXCLUDED.key_hash, home_ns=EXCLUDED.home_ns,
+			created_at=EXCLUDED.created_at, disabled=EXCLUDED.disabled`,
+		k.Name, k.Hash, k.HomeNS, created, k.Disabled)
+	if err != nil {
+		return fmt.Errorf("postgres: put api key: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+// DeleteAPIKey removes the key by name. The bool reports whether a key
+// existed to delete.
+func (s *Store) DeleteAPIKey(ctx context.Context, name string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM api_keys WHERE name=$1`, name)
+	if err != nil {
+		return false, fmt.Errorf("postgres: delete api key: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ListAPIKeys returns every key ordered by name.
+func (s *Store) ListAPIKeys(ctx context.Context) ([]store.APIKey, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT name, key_hash, home_ns, created_at, disabled FROM api_keys ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list api keys: %w", err)
+	}
+	return scanAPIKeys(rows)
+}
+
+// GetAPIKeyByHash returns the key whose hash matches, or nil, nil when none
+// does.
+func (s *Store) GetAPIKeyByHash(ctx context.Context, hash string) (*store.APIKey, error) {
+	row := s.pool.QueryRow(ctx,
+		`SELECT name, key_hash, home_ns, created_at, disabled FROM api_keys WHERE key_hash=$1`, hash)
+	k, err := scanAPIKey(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres: get api key by hash: %w", err)
+	}
+	return &k, nil
 }
 
 // Ping verifies the database is reachable.
