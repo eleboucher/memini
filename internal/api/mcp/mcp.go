@@ -78,7 +78,13 @@ const (
 var (
 	tierEnum  = []any{"working", "episodic", "semantic", "procedural"}
 	levelEnum = []any{"explicit", "deduced"}
-	scopeEnum = []any{"exact", "subtree"}
+	// scopeEnum is the LLM-facing semantic scope vocabulary: "project" (this
+	// namespace only), "full" (default: project + inherited ancestor/personal/
+	// link context), or "everywhere" (full + nested sub-projects). It does NOT
+	// include the legacy "exact"/"subtree" values — those remain a REST-only
+	// back-compat alias (internal/api/rest.restScopeAlias); memory_recall and
+	// memory_briefing reject them outright (see service.parseScope).
+	scopeEnum = []any{"project", "full", "everywhere"}
 
 	rememberSchema = enumSchema[rememberArgs](map[string][]any{"tier": tierEnum, "level": levelEnum})
 	recallSchema   = enumSchema[recallArgs](map[string][]any{
@@ -98,20 +104,38 @@ var (
 // one server-controlled string that can teach cross-tool policy (call order,
 // proactive use, storage conventions) — per-tool descriptions are read in
 // isolation during tool selection and can't express it.
-const serverInstructions = "memini is persistent cross-session memory for this agent. Standing policy:\n" +
+const serverInstructions = "memini is persistent cross-session memory for this agent. Namespaces are " +
+	"managed for you — you never construct or type a raw namespace path; you make semantic choices " +
+	"(scope to read, visibility to write) and learn the topology by reading provenance. Standing policy:\n" +
 	"- At session start, call memory_briefing once to orient (pinned context, durable facts, " +
-	"how-tos, recent activity). Prefer it over broad recall queries.\n" +
+	"how-tos, recent activity, and a Scope line spelling out the ancestor chain you inherit from, " +
+	"e.g. \"Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2)\"). Prefer it over " +
+	"broad recall queries.\n" +
 	"- Before work that may have history — an unfamiliar file, a recurring bug, a non-obvious " +
-	"decision — call memory_recall first.\n" +
+	"decision — call memory_recall first. Its scope argument is the only lever: \"project\" (just " +
+	"this project's own memories), \"full\" (default: project + inherited context — ancestors, your " +
+	"personal namespace, links), or \"everywhere\" (full + nested sub-projects).\n" +
 	"- After learning something durable (a decision and its why, a gotcha, a convention, a stated " +
 	"preference), call memory_remember proactively: one atomic, self-contained fact per call. " +
 	"Don't store what's already in project docs/CLAUDE.md or trivially recoverable from code.\n" +
+	"- visibility on memory_remember decides who should know: \"project\" (default, this project " +
+	"only), \"personal\" (about the user, follows them everywhere), or an ancestor namespace name " +
+	"read off the briefing Scope line (e.g. the team or org level) — an unrecognized name errors " +
+	"listing the valid chain. Durable facts worth sharing go up; personal preferences go personal; " +
+	"session/working detail always stays in the project — episodic and working writes are clamped " +
+	"to project regardless of visibility, so a session digest can never pollute a shared ancestor.\n" +
 	"- tier: semantic = durable fact, procedural = how-to/command, episodic = what happened, " +
 	"working = scratch. Omit to auto-classify.\n" +
+	"- Every recall/briefing result carries provenance: an empty/absent \"from\" means it's this " +
+	"project's own memory; otherwise \"from\" names the ancestor or personal namespace it came from, " +
+	"or \"link:<ns>\" for a linked namespace. Read \"from\" (and the briefing Scope line) to learn " +
+	"where knowledge actually lives — never guess or construct a namespace path.\n" +
 	"- Conventions: tag critical always-relevant facts \"pinned\" (they surface in every briefing); " +
 	"set metadata.category to a topic bucket (e.g. bug_fixes, architecture_decisions, coding_conventions).\n" +
 	"- To correct or extend a stored fact, use memory_update on its id rather than writing a " +
-	"near-duplicate; memory_forget only for memories that should not exist.\n" +
+	"near-duplicate; memory_forget only for memories that should not exist. memory_get/update/forget " +
+	"take a namespace argument purely for addressing — copy it verbatim from a memory_recall/" +
+	"memory_list result's namespace field, never type one yourself.\n" +
 	"- Empty recall means nothing is known — proceed from first principles, never invent a " +
 	"remembered fact. A degraded field means results are keyword-only and incomplete, not a confident negative."
 
@@ -139,7 +163,10 @@ func NewServer(svc *service.Service, defaultNS, home string) *mcpsdk.Server {
 			"self-contained fact per call; search works better on small records. Do NOT store " +
 			"facts already in project docs/CLAUDE.md or trivially recoverable from code. tier: " +
 			"semantic=durable fact, procedural=how-to, episodic=event, working=scratch (default intake, omit to " +
-			"auto-classify). If the result carries merge_hint, the content nearly duplicates an " +
+			"auto-classify). visibility: 'project' (default) keeps it here; 'personal' follows the " +
+			"user everywhere; or name an ancestor from the briefing Scope line to share it up that " +
+			"chain — episodic/working writes always stay in project regardless. If the result " +
+			"carries merge_hint, the content nearly duplicates an " +
 			"existing memory — either call memory_update with id=merge_hint.similar_id to fold " +
 			"them together, or ignore it to keep both. Returns {id, tier, stored}; stored=false " +
 			"means a low-signal write was dropped by the value gate (not an error).",
@@ -157,10 +184,12 @@ func NewServer(svc *service.Service, defaultNS, home string) *mcpsdk.Server {
 			"memories prefer the most recent and surface the conflict. Empty results mean " +
 			"nothing is known: proceed from first principles, never invent a remembered fact. A " +
 			"degraded field means semantic search was unavailable and results are keyword-only — " +
-			"treat as incomplete. Supports time-travel (as_of), nested namespaces (scope=subtree), " +
-			"an exact per-call read set (namespaces — replaces the default; writes are unaffected), " +
-			"and query_rewrite (LLM expands the query into variants, fused via RRF — better " +
-			"recall, slower).",
+			"treat as incomplete. scope picks how wide to read: 'project' (just this project), " +
+			"'full' (default: project plus inherited ancestor/personal/link context), or " +
+			"'everywhere' (full plus nested sub-projects). Supports time-travel (as_of) and " +
+			"query_rewrite (LLM expands the query into variants, fused via RRF — better recall, " +
+			"slower). Each result's namespace field is provenance data, not a choice — never " +
+			"construct one; copy it verbatim into memory_get/update/forget to address that memory.",
 		InputSchema: recallSchema,
 		Annotations: readOnly,
 	}, h.recall)
@@ -170,8 +199,10 @@ func NewServer(svc *service.Service, defaultNS, home string) *mcpsdk.Server {
 		Description: "Layered session-start briefing for this namespace — pinned context, " +
 			"durable facts, how-to procedures, and recent activity — in one query-less call. " +
 			"Call it when a session opens to orient yourself. Prefer this over broad recall " +
-			"queries at session start. scope=subtree also briefs nested namespaces; namespaces " +
-			"briefs an exact read set instead of the default (writes are unaffected).",
+			"queries at session start. The scope_header line ('Scope: acme/phoenix/api ← " +
+			"acme/phoenix(3) ← acme(4)') spells out the ancestor chain you inherit from — read it " +
+			"instead of guessing namespace paths. scope='everywhere' also briefs nested sub-projects, " +
+			"surfaced as a compact per-child rollup (name, count, pinned/recent titles).",
 		InputSchema: briefingSchema,
 		Annotations: readOnly,
 	}, h.briefing)
@@ -340,7 +371,14 @@ func parseOptionalTime(s, field string) (*time.Time, error) {
 
 // ns resolves a tool call's namespace argument: empty falls back to the server
 // default, an invalid value is an error (never silently rerouted to the
-// default tenant, which would mix data across namespaces).
+// default tenant, which would mix data across namespaces). Used only by the
+// addressing tools — memory_get/memory_update/memory_forget/memory_list —
+// where namespace identifies an existing memory the caller already knows
+// about (copied verbatim from a prior recall/list result), never a value the
+// LLM chooses. memory_remember/memory_recall/memory_briefing have no
+// namespace argument at all: they always operate on the server's primary
+// namespace, steered only by semantic scope (recall/briefing) or visibility
+// (remember).
 func (t *tools) ns(arg string) (string, error) {
 	arg = strings.TrimSpace(arg)
 	if arg == "" {
@@ -368,7 +406,8 @@ type rememberArgs struct {
 	Confidence *float64 `json:"confidence,omitempty" jsonschema:"0..1 seed corroboration for a durable fact; omit for default"`
 	ValidFrom  string   `json:"valid_from,omitempty" jsonschema:"RFC3339 start of the fact's validity; backdate for as_of recall"`
 	ValidTo    string   `json:"valid_to,omitempty" jsonschema:"RFC3339 end of the fact's validity; omit if still true"`
-	Namespace  string   `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
+	Visibility string `json:"visibility,omitempty" jsonschema:"who should remember this: 'project' (default, this project only), 'personal' (about the user, follows them everywhere), or an ancestor namespace name read off the briefing Scope line (e.g. the team or org level); an unrecognized name errors listing the valid options. Episodic/working writes always stay in project regardless of this value."`
 }
 
 type rememberResult struct {
@@ -401,13 +440,10 @@ type mergeHintResult struct {
 }
 
 func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in rememberArgs) (*mcpsdk.CallToolResult, rememberResult, error) {
-	ns, err := t.ns(in.Namespace)
-	if err != nil {
-		return nil, rememberResult{}, err
-	}
 	input := service.RememberInput{
-		Namespace:  ns,
+		Namespace:  t.defaultNS,
 		Home:       t.defaultHome,
+		Visibility: in.Visibility,
 		Content:    in.Content,
 		Tier:       memory.Tier(in.Tier),
 		Level:      memory.Level(in.Level),
@@ -422,6 +458,7 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 		d := time.Duration(*in.TTLSeconds) * time.Second
 		input.TTL = &d
 	}
+	var err error
 	if input.ValidFrom, err = parseOptionalTime(in.ValidFrom, "valid_from"); err != nil {
 		return nil, rememberResult{}, err
 	}
@@ -469,11 +506,8 @@ type recallArgs struct {
 	QueryRewrite      bool `json:"query_rewrite,omitempty" jsonschema:"rewrite query into 2-3 variants and fuse via RRF"`
 	Limit             int  `json:"limit,omitempty" jsonschema:"max results (default 10)"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
-	Scope     string `json:"scope,omitempty" jsonschema:"'subtree' also searches nested namespaces; default 'exact'"`
-	AsOf      string `json:"as_of,omitempty" jsonschema:"RFC3339 time for time-travel recall (facts true then)"`
-	Namespace string `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
-	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
-	Namespaces []string `json:"namespaces,omitempty" jsonschema:"search exactly these namespaces instead of the default read set (namespace, its subtree, the tenant-shared namespace, and the global namespace); entry 'ns/*' also includes namespaces nested under ns; max 16; writes are unaffected"`
+	Scope string `json:"scope,omitempty" jsonschema:"how wide to read: 'project' = just this project's own memories; 'full' (default) = project plus inherited context (ancestors, your personal namespace, links); 'everywhere' = full plus nested sub-projects"`
+	AsOf  string `json:"as_of,omitempty" jsonschema:"RFC3339 time for time-travel recall (facts true then)"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
 	ResponseFormat string `json:"response_format,omitempty" jsonschema:"'concise' returns summary-or-truncated content (~1 line each; fetch full text with memory_get); 'detailed' (default) returns full content"`
 }
@@ -558,10 +592,6 @@ type recallResult struct {
 }
 
 func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recallArgs) (*mcpsdk.CallToolResult, recallResult, error) {
-	ns, err := t.ns(in.Namespace)
-	if err != nil {
-		return nil, recallResult{}, err
-	}
 	tiers, err := parseTiers(in.Tiers)
 	if err != nil {
 		return nil, recallResult{}, err
@@ -570,16 +600,8 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 	if err != nil {
 		return nil, recallResult{}, err
 	}
-	var subtree bool
-	switch scope := strings.TrimSpace(in.Scope); {
-	case scope == "" || strings.EqualFold(scope, "exact"):
-	case strings.EqualFold(scope, "subtree"):
-		subtree = true
-	default:
-		return nil, recallResult{}, fmt.Errorf("invalid scope %q: want exact or subtree", in.Scope)
-	}
 	input := service.RecallInput{
-		Namespace:         ns,
+		Namespace:         t.defaultNS,
 		Home:              t.defaultHome,
 		Query:             in.Query,
 		Tiers:             tiers,
@@ -590,8 +612,12 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 		IncludeFreshTurns: in.IncludeFreshTurns,
 		QueryRewrite:      in.QueryRewrite,
 		Limit:             in.Limit,
-		Subtree:           subtree,
-		Namespaces:        in.Namespaces,
+		// Scope carries the LLM's semantic choice ("project"/"full"/
+		// "everywhere") straight through — service.Recall validates it via
+		// the shared parseScope, so an old "exact"/"subtree" value (or any
+		// other unrecognized string) errors there with the current vocabulary
+		// rather than being silently aliased.
+		Scope: in.Scope,
 	}
 	if in.AsOf != "" {
 		asOf, perr := time.Parse(time.RFC3339, in.AsOf)
@@ -621,16 +647,13 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 }
 
 type briefingArgs struct {
-	PerSection       *int   `json:"per_section,omitempty" jsonschema:"default cap for any section when its dedicated cap is unset (default 5)"`
-	PerSectionPinned *int   `json:"per_section_pinned,omitempty" jsonschema:"max pinned memories; 0 disables this section"`
-	PerSectionFacts  *int   `json:"per_section_facts,omitempty" jsonschema:"max durable semantic facts; 0 disables"`
-	PerSectionProc   *int   `json:"per_section_procedures,omitempty" jsonschema:"max procedural how-to memories; 0 disables"`
-	PerSectionRecent *int   `json:"per_section_recent,omitempty" jsonschema:"max recent episodic entries; 0 disables"`
-	Namespace        string `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+	PerSection       *int `json:"per_section,omitempty" jsonschema:"default cap for any section when its dedicated cap is unset (default 5)"`
+	PerSectionPinned *int `json:"per_section_pinned,omitempty" jsonschema:"max pinned memories; 0 disables this section"`
+	PerSectionFacts  *int `json:"per_section_facts,omitempty" jsonschema:"max durable semantic facts; 0 disables"`
+	PerSectionProc   *int `json:"per_section_procedures,omitempty" jsonschema:"max procedural how-to memories; 0 disables"`
+	PerSectionRecent *int `json:"per_section_recent,omitempty" jsonschema:"max recent episodic entries; 0 disables"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
-	Scope string `json:"scope,omitempty" jsonschema:"'subtree' also includes namespaces nested under the namespace; default 'exact'"`
-	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
-	Namespaces []string `json:"namespaces,omitempty" jsonschema:"brief exactly these namespaces instead of the default read set (namespace, its subtree, the tenant-shared namespace, and the global namespace); entry 'ns/*' also includes namespaces nested under ns; max 16; writes are unaffected"`
+	Scope string `json:"scope,omitempty" jsonschema:"how wide to brief: 'project' = just this namespace's own memories; 'full' (default) = project plus inherited context (ancestors, your personal namespace, links); 'everywhere' = full plus nested sub-projects"`
 }
 
 type briefingResult struct {
@@ -708,18 +731,6 @@ func briefingItems(mems []*memory.Memory, origins map[string]string) []recallIte
 }
 
 func (t *tools) briefing(ctx context.Context, _ *mcpsdk.CallToolRequest, in briefingArgs) (*mcpsdk.CallToolResult, briefingResult, error) {
-	ns, err := t.ns(in.Namespace)
-	if err != nil {
-		return nil, briefingResult{}, err
-	}
-	var subtree bool
-	switch scope := strings.TrimSpace(in.Scope); {
-	case scope == "" || strings.EqualFold(scope, "exact"):
-	case strings.EqualFold(scope, "subtree"):
-		subtree = true
-	default:
-		return nil, briefingResult{}, fmt.Errorf("invalid scope %q: want exact or subtree", in.Scope)
-	}
 	// PerSection is the default cap applied to any section whose dedicated
 	// per_section_X is unset (nil). Matches the REST /briefing semantics so
 	// MCP and HTTP callers see the same shape: nil = default, 0 = disable.
@@ -732,15 +743,17 @@ func (t *tools) briefing(ctx context.Context, _ *mcpsdk.CallToolRequest, in brie
 		return in.PerSection
 	}
 	var readset []service.ReadSetEntry
-	b, err := t.svc.Briefing(ctx, ns, service.BriefingOpts{
+	b, err := t.svc.Briefing(ctx, t.defaultNS, service.BriefingOpts{
 		Pinned:     pick(in.PerSectionPinned),
 		Facts:      pick(in.PerSectionFacts),
 		Procedures: pick(in.PerSectionProc),
 		Recent:     pick(in.PerSectionRecent),
 		Home:       t.defaultHome,
-		Namespaces: in.Namespaces,
-		Subtree:    subtree,
-		ReadSet:    &readset,
+		// Scope carries the LLM's semantic choice through unvalidated here —
+		// see the matching comment in recall; service.Briefing validates it
+		// via the shared parseScope.
+		Scope:   in.Scope,
+		ReadSet: &readset,
 	})
 	if err != nil {
 		return nil, briefingResult{}, err
