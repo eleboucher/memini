@@ -64,6 +64,77 @@ func TestAnswerGroundsOnRecall(t *testing.T) {
 	}
 }
 
+// TestAnswerGroundsOnHomeNamespace pins gap G1: AnswerInput.Home threads into
+// every recall the single-shot answer path performs (answer.go:104), so a
+// durable fact that lives only in the caller's home namespace (personal/kit)
+// is available as grounding when the question is asked from an unrelated
+// namespace (acme/phoenix) — and is correctly absent when Home is unset.
+func TestAnswerGroundsOnHomeNamespace(t *testing.T) {
+	ctx := context.Background()
+	ans := &fakeAnswerer{resp: "ed25519"}
+	st := openTestStore(t)
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithAnswerer(ans))
+
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "personal/kit", Content: "jon's personal laptop ssh key is ed25519", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+
+	res, err := svc.Answer(ctx, service.AnswerInput{
+		Namespace: "acme/phoenix", Home: "personal/kit", Query: "what is the ssh key type", Limit: 5,
+	})
+	if err != nil {
+		t.Fatalf("answer with home: %v", err)
+	}
+	if len(res.Sources) != 1 || res.Sources[0].Memory.Namespace != "personal/kit" {
+		t.Fatalf("answer sources should include the home-namespace memory, got %+v", res.Sources)
+	}
+
+	res, err = svc.Answer(ctx, service.AnswerInput{
+		Namespace: "acme/phoenix", Query: "what is the ssh key type", Limit: 5,
+	})
+	if err != nil {
+		t.Fatalf("answer without home: %v", err)
+	}
+	if len(res.Sources) != 0 {
+		t.Fatalf("answer without Home must not see the home namespace, got %+v", res.Sources)
+	}
+}
+
+// TestAnswerExpandGroundsOnHomeNamespace pins gap G1 for the expand reasoning
+// strategy (answer_expand.go:113): Home threads into the per-rewrite recalls,
+// so a home-namespace memory is still reachable when Reasoning=expand.
+func TestAnswerExpandGroundsOnHomeNamespace(t *testing.T) {
+	ctx := context.Background()
+	ans := &fakeAnswerer{resp: "ed25519"}
+	st := openTestStore(t)
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithAnswerer(ans))
+
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "personal/kit", Content: "jon's personal laptop ssh key is ed25519", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+
+	res, err := svc.Answer(ctx, service.AnswerInput{
+		Namespace: "acme/phoenix", Home: "personal/kit", Query: "what is the ssh key type",
+		Limit: 5, Reasoning: service.ReasoningExpand,
+	})
+	if err != nil {
+		t.Fatalf("answer expand with home: %v", err)
+	}
+	foundHome := false
+	for _, s := range res.Sources {
+		if s.Memory.Namespace == "personal/kit" {
+			foundHome = true
+		}
+	}
+	if !foundHome {
+		t.Fatalf("expand answer sources missing home-namespace memory, got %+v", res.Sources)
+	}
+}
+
 // TestAnswerTagsConflictingMemories pins the deterministic conflict tagging:
 // when recall surfaces two live memories the lexical detector classifies as a
 // value-swap update, both lines carry a [may conflict with #N] tag so the

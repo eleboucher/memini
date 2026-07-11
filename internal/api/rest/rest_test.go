@@ -1470,6 +1470,81 @@ func TestHomeHeaderInvalidRejected(t *testing.T) {
 	}
 }
 
+// answerStub is a stand-in llm.Completer for exercising POST /v1/answer
+// without a real LLM backend: it returns a fixed response regardless of the
+// prompt, which is enough to prove the grounding sources (not the generated
+// text) reflect the home namespace.
+type answerStub struct{ resp string }
+
+func (a answerStub) Complete(context.Context, string, string) (string, error) {
+	return a.resp, nil
+}
+
+// newServerWithAnswerer is newServer with an LLM answerer configured, so
+// tests can exercise /v1/answer.
+func newServerWithAnswerer(t *testing.T, opts ...service.Option) http.Handler {
+	t.Helper()
+	st, err := sqlitevec.Open(context.Background(), filepath.Join(t.TempDir(), "rest-answer.db"), dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := service.New(st, embedtest.New(dims), opts...)
+	r := chi.NewRouter()
+	rest.New(svc, rest.AuthConfig{
+		APIKey: apiKey, NamespaceHeader: nsHdr, DefaultNamespace: "default", HomeHeader: homeHdr,
+	}).Mount(r)
+	return r
+}
+
+// TestAnswerHomeHeaderGroundsOnHomeNamespace pins gap G1 at the REST surface:
+// POST /v1/answer forwards X-Memini-Home into service.AnswerInput.Home, so a
+// durable fact that only exists in the caller's home namespace (personal/kit)
+// shows up among the answer's grounding sources when asked from an unrelated
+// request namespace (acme/phoenix) — and is absent with no home header.
+func TestAnswerHomeHeaderGroundsOnHomeNamespace(t *testing.T) {
+	h := newServerWithAnswerer(t, service.WithAnswerer(answerStub{resp: "ed25519"}))
+
+	rec := doHome(t, h, http.MethodPost, "/v1/memories", "personal/kit", "", apiKey, map[string]any{
+		"content": "jon's personal laptop ssh key is ed25519", "tier": "semantic",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("remember to personal/kit: want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	rec = doHome(t, h, http.MethodPost, "/v1/answer", "acme/phoenix", "personal/kit", apiKey, map[string]any{
+		"query": "what is the ssh key type", "limit": 5,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("answer with home header: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var got struct {
+		Answer  string `json:"answer"`
+		Sources []struct {
+			Memory struct {
+				Namespace string `json:"namespace"`
+			} `json:"memory"`
+		} `json:"sources"`
+	}
+	mustJSON(t, rec, &got)
+	if len(got.Sources) != 1 || got.Sources[0].Memory.Namespace != "personal/kit" {
+		t.Fatalf("answer sources should include the home-namespace memory, got %+v", got.Sources)
+	}
+
+	// Without the header, the same question from acme/phoenix has no source
+	// at all — no home leg in the read set.
+	rec = do(t, h, http.MethodPost, "/v1/answer", "acme/phoenix", apiKey, map[string]any{
+		"query": "what is the ssh key type", "limit": 5,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("answer without home header: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	mustJSON(t, rec, &got)
+	if len(got.Sources) != 0 {
+		t.Fatalf("answer without X-Memini-Home must not see the home namespace, got %+v", got.Sources)
+	}
+}
+
 // TestBriefingHomeHeaderMergesDurable mirrors TestSearchHomeHeaderMergesDurable
 // for GET /v1/namespaces/briefing: a durable fact in personal/kit shows up in
 // acme/phoenix's briefing only when X-Memini-Home is sent.

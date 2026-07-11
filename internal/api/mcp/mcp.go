@@ -696,6 +696,7 @@ func (t *tools) answer(ctx context.Context, _ *mcpsdk.CallToolRequest, in answer
 	}
 	res, err := t.svc.Answer(ctx, service.AnswerInput{
 		Namespace: ns,
+		Home:      t.defaultHome,
 		Query:     in.Query,
 		Tiers:     tiers,
 		Levels:    levels,

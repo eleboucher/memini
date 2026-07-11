@@ -445,6 +445,7 @@ func (h *Server) AnswerQuestion(w http.ResponseWriter, r *http.Request, _ Answer
 	}
 	in := service.AnswerInput{
 		Namespace: namespaceFromContext(r.Context()),
+		Home:      homeFromContext(r.Context()),
 		Query:     req.Query,
 		Tiers:     tiers,
 		Levels:    levels,

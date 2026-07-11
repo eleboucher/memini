@@ -58,7 +58,11 @@ to combine several facts.`
 // AnswerInput is a retrieve-then-generate request.
 type AnswerInput struct {
 	Namespace string
-	Query     string
+	// Home is the caller's personal namespace, merged read-only into every
+	// recall this answer performs (prefetch, gate, and any tool-loop
+	// searches) — same semantics as RecallInput.Home.
+	Home  string
+	Query string
 	// Limit caps how many recalled memories are given to the reader (default 10).
 	Limit int
 	Tiers []memory.Tier
@@ -102,7 +106,7 @@ func (s *Service) Answer(ctx context.Context, in AnswerInput) (AnswerResult, err
 		// a different capability.
 	}
 	res, err := s.Recall(ctx, RecallInput{
-		Namespace: in.Namespace, Query: in.Query, Limit: in.Limit, Tiers: in.Tiers,
+		Namespace: in.Namespace, Home: in.Home, Query: in.Query, Limit: in.Limit, Tiers: in.Tiers,
 		Levels: in.Levels, Tags: in.Tags, Metadata: in.Metadata,
 		IncludeLinked: true, // C6: expand 1-hop linked memories for multi-hop answers
 	})

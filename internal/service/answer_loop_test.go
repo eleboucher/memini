@@ -105,6 +105,46 @@ func TestAnswerAgenticLoop(t *testing.T) {
 	}
 }
 
+// TestAnswerAgenticGroundsOnHomeNamespace pins gap G1 for the agentic tool
+// loop: Home threads into both the prefetch recall (answer_loop.go:135) and
+// the search_memory tool's recall (answer_loop.go:230), so a memory that
+// lives only in the caller's home namespace is reachable via the tool loop
+// too, not just the single-shot path.
+func TestAnswerAgenticGroundsOnHomeNamespace(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	fake := &fakeToolChat{script: []llm.ChatResult{
+		{Calls: []llm.ToolCall{callOf("search_memory", `{"query":"ssh key"}`)}},
+		{Text: "ed25519"},
+	}}
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithAnswerer(fake))
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "personal/kit", Content: "jon's personal laptop ssh key is ed25519", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+
+	res, err := svc.Answer(ctx, service.AnswerInput{
+		Namespace: "acme/phoenix", Home: "personal/kit", Query: "what is the ssh key type",
+		Limit: 5, Reasoning: service.ReasoningLow,
+	})
+	if err != nil {
+		t.Fatalf("answer agentic with home: %v", err)
+	}
+	if res.Answer != "ed25519" {
+		t.Fatalf("answer = %q, want ed25519", res.Answer)
+	}
+	foundHome := false
+	for _, s := range res.Sources {
+		if s.Memory.Namespace == "personal/kit" {
+			foundHome = true
+		}
+	}
+	if !foundHome {
+		t.Fatalf("agentic answer sources missing home-namespace memory, got %+v", res.Sources)
+	}
+}
+
 // TestAnswerAgenticForcedSynthesis pins the budget: a model that never stops
 // calling tools gets exactly the level's iterations, then one forced
 // text-only synthesis round (ToolNone, no tools).
