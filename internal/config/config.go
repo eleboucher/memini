@@ -308,7 +308,7 @@ type Config struct {
 
 	// APIKeysFile (optional; K2b), when set, names a YAML file of
 	// declaratively managed API keys — the GitOps-friendly counterpart to
-	// the api_keys table (which is managed imperatively via `memini apikey
+	// the api_keys table (which is managed imperatively via `memini key
 	// ...` / a future /v1/keys API, K3b). The file is loaded exactly ONCE at
 	// boot (see internal/apiauth.LoadFileKeys); there is no live reload
 	// today — a GitOps rollout restarts the pod on every change to the
