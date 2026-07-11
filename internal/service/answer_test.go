@@ -135,6 +135,132 @@ func TestAnswerExpandGroundsOnHomeNamespace(t *testing.T) {
 	}
 }
 
+// TestAnswerScopeProjectExcludesAncestors pins AnswerInput.Scope threading
+// into the single-shot grounding recall: "project" restricts grounding to the
+// request namespace's own memories, so an ancestor fact that the default
+// (full) cascade would surface is absent — mirroring RecallInput.Scope.
+func TestAnswerScopeProjectExcludesAncestors(t *testing.T) {
+	ctx := context.Background()
+	ans := &fakeAnswerer{resp: "forgejo"}
+	st := openTestStore(t)
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithAnswerer(ans))
+
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "acme", Content: "acme uses forgejo for CI", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+
+	res, err := svc.Answer(ctx, service.AnswerInput{
+		Namespace: "acme/phoenix", Query: "what CI system", Limit: 5,
+	})
+	if err != nil {
+		t.Fatalf("answer default scope: %v", err)
+	}
+	if len(res.Sources) != 1 || res.Sources[0].Memory.Namespace != "acme" {
+		t.Fatalf("default (full) scope should ground on the ancestor fact, got %+v", res.Sources)
+	}
+
+	res, err = svc.Answer(ctx, service.AnswerInput{
+		Namespace: "acme/phoenix", Query: "what CI system", Limit: 5, Scope: "project",
+	})
+	if err != nil {
+		t.Fatalf("answer scope=project: %v", err)
+	}
+	if len(res.Sources) != 0 {
+		t.Fatalf(`Scope "project" must not ground on ancestor namespaces, got %+v`, res.Sources)
+	}
+}
+
+// TestAnswerScopeEverywhereIncludesSubtree pins the other end of the scope
+// vocabulary on the single-shot path: "everywhere" adds the request
+// namespace's subtree to the grounding read-set, which the default (full)
+// scope does not include.
+func TestAnswerScopeEverywhereIncludesSubtree(t *testing.T) {
+	ctx := context.Background()
+	ans := &fakeAnswerer{resp: "helm"}
+	st := openTestStore(t)
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithAnswerer(ans))
+
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "acme/phoenix", Content: "phoenix deploys with helm", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+
+	res, err := svc.Answer(ctx, service.AnswerInput{
+		Namespace: "acme", Query: "how does phoenix deploy", Limit: 5,
+	})
+	if err != nil {
+		t.Fatalf("answer default scope: %v", err)
+	}
+	if len(res.Sources) != 0 {
+		t.Fatalf("default (full) scope must not ground on nested sub-project memories, got %+v", res.Sources)
+	}
+
+	res, err = svc.Answer(ctx, service.AnswerInput{
+		Namespace: "acme", Query: "how does phoenix deploy", Limit: 5, Scope: "everywhere",
+	})
+	if err != nil {
+		t.Fatalf("answer scope=everywhere: %v", err)
+	}
+	if len(res.Sources) != 1 || res.Sources[0].Memory.Namespace != "acme/phoenix" {
+		t.Fatalf(`Scope "everywhere" should ground on the sub-project fact, got %+v`, res.Sources)
+	}
+}
+
+// TestAnswerScopeInvalidErrors pins that an unrecognized Scope value —
+// including the legacy "subtree"/"exact" — is a caller error listing the
+// valid vocabulary, and that it fails before the LLM is consulted.
+func TestAnswerScopeInvalidErrors(t *testing.T) {
+	ctx := context.Background()
+	ans := &fakeAnswerer{resp: "n/a"}
+	svc := service.New(openTestStore(t), embedtest.New(dims), service.WithAnswerer(ans))
+
+	for _, scope := range []string{"bogus", "subtree", "exact"} {
+		_, err := svc.Answer(ctx, service.AnswerInput{
+			Namespace: "acme", Query: "anything", Scope: scope,
+		})
+		if err == nil {
+			t.Fatalf("Scope %q should be rejected", scope)
+		}
+		if !strings.Contains(err.Error(), "everywhere") {
+			t.Fatalf("Scope %q error = %q, want it to list the valid vocabulary", scope, err)
+		}
+	}
+	if ans.user != "" {
+		t.Fatal("an invalid scope must fail before the LLM is consulted")
+	}
+}
+
+// TestAnswerExpandThreadsScope pins Scope threading into the expand reasoning
+// strategy's per-rewrite recalls (answer_expand.go), mirroring the Home
+// threading test above: with Scope "project", an ancestor fact must not be
+// grounding even though the default cascade would reach it.
+func TestAnswerExpandThreadsScope(t *testing.T) {
+	ctx := context.Background()
+	ans := &fakeAnswerer{resp: "forgejo"}
+	st := openTestStore(t)
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithAnswerer(ans))
+
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "acme", Content: "acme uses forgejo for CI", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+
+	res, err := svc.Answer(ctx, service.AnswerInput{
+		Namespace: "acme/phoenix", Query: "what CI system", Limit: 5,
+		Reasoning: service.ReasoningExpand, Scope: "project",
+	})
+	if err != nil {
+		t.Fatalf("answer expand scope=project: %v", err)
+	}
+	if len(res.Sources) != 0 {
+		t.Fatalf(`expand with Scope "project" must not ground on ancestor namespaces, got %+v`, res.Sources)
+	}
+}
+
 // TestAnswerTagsConflictingMemories pins the deterministic conflict tagging:
 // when recall surfaces two live memories the lexical detector classifies as a
 // value-swap update, both lines carry a [may conflict with #N] tag so the

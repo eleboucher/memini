@@ -75,19 +75,30 @@ type AnswerInput struct {
 	// low/medium/high run the bounded tool loop (see ReasoningLevel). Falls
 	// back to single-shot when the configured LLM client can't do tool calls.
 	Reasoning ReasoningLevel
+	// Scope selects the grounding read-set shape, same vocabulary and
+	// semantics as RecallInput.Scope: "" or "full" (default: Namespace +
+	// ancestors + home + links), "project" (Namespace only, no cascade), or
+	// "everywhere" (full + subtree). Threads into every recall this answer
+	// performs — single-shot, expand's per-rewrite recalls, and the agentic
+	// loop's prefetch and search_memory/recall_as_of tool recalls — the same
+	// way Home does. An unrecognized value is an invalid-input error,
+	// rejected up front before any LLM call.
+	Scope string
 	// ReadSet (output-only) is set to the STRUCTURAL read-set this answer can
 	// draw from — same out-param pattern as RecallInput.ReadSet, but resolved
 	// once up front (see Answer) with the tier-independent default cascade
-	// (ResolveReadSetInfo semantics), NOT filtered by Tiers. A namespace's
-	// origin (primary/ancestor/home/link) is a structural property: tiers
-	// decide what gets SEARCHED, not what a namespace IS, and the agentic
-	// tool loop overrides tiers per search_memory call (tier="durable"), so
-	// its inner recalls can legally reach cascade legs a Tiers-filtered
-	// resolution would have skipped. Resolving the structure unfiltered makes
-	// this set a superset of every inner recall's reach (Answer has no
-	// Scope/Namespaces/Subtree field), so every source always carries a
-	// correct origin label. The caller passes the address of a local slice;
-	// nil disables reporting.
+	// (ResolveReadSetInfo semantics), NOT filtered by Tiers and NOT narrowed
+	// by Scope. A namespace's origin (primary/ancestor/home/link) is a
+	// structural property: tiers decide what gets SEARCHED, not what a
+	// namespace IS, and the agentic tool loop overrides tiers per
+	// search_memory call (tier="durable"), so its inner recalls can legally
+	// reach cascade legs a Tiers-filtered resolution would have skipped.
+	// Scope-independence keeps the labels correct too: Scope "project"
+	// shrinks the inner recalls' reach (a structural superset is harmless for
+	// labeling), and Scope "everywhere" only adds subtree members — which
+	// carry origin "primary" and render with no "from" annotation, exactly
+	// what an absent-from-the-map namespace renders anyway (see ReadSetFrom).
+	// The caller passes the address of a local slice; nil disables reporting.
 	ReadSet *[]ReadSetEntry
 }
 
@@ -107,6 +118,14 @@ func (s *Service) Answer(ctx context.Context, in AnswerInput) (AnswerResult, err
 	if s.answerer == nil {
 		s.metrics.AnswerResult("error")
 		return AnswerResult{}, fmt.Errorf("answer: no LLM configured (use WithAnswerer)")
+	}
+	// Validate Scope up front, once, discarding the flags — every inner recall
+	// re-parses it (Recall owns the parse), but failing here keeps an invalid
+	// scope from first spending a read-set resolution and, on the agentic
+	// path, an LLM gate call before the prefetch recall finally rejects it.
+	if _, _, err := parseScope(in.Scope); err != nil {
+		s.metrics.AnswerResult("error")
+		return AnswerResult{}, err
 	}
 	if in.ReadSet != nil {
 		// Tier-independent on purpose: see the AnswerInput.ReadSet doc comment.
@@ -134,7 +153,7 @@ func (s *Service) Answer(ctx context.Context, in AnswerInput) (AnswerResult, err
 	}
 	res, err := s.Recall(ctx, RecallInput{
 		Namespace: in.Namespace, Home: in.Home, Query: in.Query, Limit: in.Limit, Tiers: in.Tiers,
-		Levels: in.Levels, Tags: in.Tags, Metadata: in.Metadata,
+		Levels: in.Levels, Tags: in.Tags, Metadata: in.Metadata, Scope: in.Scope,
 		IncludeLinked: true, // C6: expand 1-hop linked memories for multi-hop answers
 	})
 	if err != nil {

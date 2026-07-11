@@ -82,8 +82,9 @@ var (
 	// namespace only), "full" (default: project + inherited ancestor/personal/
 	// link context), or "everywhere" (full + nested sub-projects). It does NOT
 	// include the legacy "exact"/"subtree" values — those remain a REST-only
-	// back-compat alias (internal/api/rest.restScopeAlias); memory_recall and
-	// memory_briefing reject them outright (see service.parseScope).
+	// back-compat alias (internal/api/rest.restScopeAlias); memory_recall,
+	// memory_briefing, and memory_answer reject them outright (see
+	// service.parseScope).
 	scopeEnum = []any{"project", "full", "everywhere"}
 
 	rememberSchema = enumSchema[rememberArgs](map[string][]any{"tier": tierEnum, "level": levelEnum})
@@ -93,7 +94,7 @@ var (
 	})
 	briefingSchema = enumSchema[briefingArgs](map[string][]any{propScope: scopeEnum})
 	answerSchema   = enumSchema[answerArgs](map[string][]any{
-		propTiers: tierEnum, propLevels: levelEnum,
+		propTiers: tierEnum, propLevels: levelEnum, propScope: scopeEnum,
 		"reasoning_level": {"minimal", "low", "medium", "high"},
 	})
 	listSchema   = enumSchema[listArgs](map[string][]any{propTiers: tierEnum, propLevels: levelEnum})
@@ -120,10 +121,11 @@ const serverInstructions = "memini is persistent cross-session memory for this a
 	"Don't store what's already in project docs/CLAUDE.md or trivially recoverable from code.\n" +
 	"- visibility on memory_remember decides who should know: \"project\" (default, this project " +
 	"only), \"personal\" (about the user, follows them everywhere), or an ancestor namespace name " +
-	"read off the briefing Scope line (e.g. the team or org level) — an unrecognized name errors " +
-	"listing the valid chain. Durable facts worth sharing go up; personal preferences go personal; " +
-	"session/working detail always stays in the project — episodic and working writes are clamped " +
-	"to project regardless of visibility, so a session digest can never pollute a shared ancestor.\n" +
+	"read off the briefing Scope line (e.g. the team or org level) — on a durable write an " +
+	"unrecognized name errors listing the valid chain. Durable facts worth sharing go up; personal " +
+	"preferences go personal; session/working detail always stays in the project — episodic and " +
+	"working writes are clamped to project regardless of visibility (silently, before name " +
+	"validation), so a session digest can never pollute a shared ancestor.\n" +
 	"- tier: semantic = durable fact, procedural = how-to/command, episodic = what happened, " +
 	"working = scratch. Omit to auto-classify.\n" +
 	"- Every recall/briefing result carries provenance: an empty/absent \"from\" means it's this " +
@@ -214,7 +216,10 @@ func NewServer(svc *service.Service, defaultNS, home string) *mcpsdk.Server {
 			Title: "Answer from memory",
 			Description: "Recall relevant memories and answer a question grounded on them (requires " +
 				"an LLM). Slower than memory_recall; use when you want a synthesized answer with " +
-				"sources rather than raw memories.",
+				"sources rather than raw memories. scope picks how wide to ground, same as " +
+				"memory_recall: 'project' (just this project), 'full' (default: project plus " +
+				"inherited ancestor/personal/link context), or 'everywhere' (full plus nested " +
+				"sub-projects).",
 			InputSchema: answerSchema,
 			Annotations: readOnly,
 		}, h.answer)
@@ -375,10 +380,10 @@ func parseOptionalTime(s, field string) (*time.Time, error) {
 // addressing tools — memory_get/memory_update/memory_forget/memory_list —
 // where namespace identifies an existing memory the caller already knows
 // about (copied verbatim from a prior recall/list result), never a value the
-// LLM chooses. memory_remember/memory_recall/memory_briefing have no
-// namespace argument at all: they always operate on the server's primary
-// namespace, steered only by semantic scope (recall/briefing) or visibility
-// (remember).
+// LLM chooses. memory_remember/memory_recall/memory_briefing/memory_answer
+// have no namespace argument at all: they always operate on the server's
+// primary namespace, steered only by semantic scope (recall/briefing/answer)
+// or visibility (remember).
 func (t *tools) ns(arg string) (string, error) {
 	arg = strings.TrimSpace(arg)
 	if arg == "" {
@@ -407,7 +412,7 @@ type rememberArgs struct {
 	ValidFrom  string   `json:"valid_from,omitempty" jsonschema:"RFC3339 start of the fact's validity; backdate for as_of recall"`
 	ValidTo    string   `json:"valid_to,omitempty" jsonschema:"RFC3339 end of the fact's validity; omit if still true"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
-	Visibility string `json:"visibility,omitempty" jsonschema:"who should remember this: 'project' (default, this project only), 'personal' (about the user, follows them everywhere), or an ancestor namespace name read off the briefing Scope line (e.g. the team or org level); an unrecognized name errors listing the valid options. Episodic/working writes always stay in project regardless of this value."`
+	Visibility string `json:"visibility,omitempty" jsonschema:"who should remember this: 'project' (default, this project only), 'personal' (about the user, follows them everywhere), or an ancestor namespace name read off the briefing Scope line (e.g. the team or org level); for durable writes an unrecognized name errors listing the valid options. Episodic/working writes always stay in project regardless of this value (clamped silently, before name validation)."`
 }
 
 type rememberResult struct {
@@ -790,13 +795,14 @@ func (t *tools) briefing(ctx context.Context, _ *mcpsdk.CallToolRequest, in brie
 }
 
 type answerArgs struct {
-	Query     string            `json:"query" jsonschema:"the question to answer from memory"`
-	Tiers     []string          `json:"tiers,omitempty" jsonschema:"restrict grounding to tiers (working/episodic/semantic/procedural)"`
-	Levels    []string          `json:"levels,omitempty" jsonschema:"restrict grounding to levels (explicit/deduced); empty means all"`
-	Tags      []string          `json:"tags,omitempty" jsonschema:"ground only on memories with every listed tag (AND)"`
-	Metadata  map[string]string `json:"metadata,omitempty" jsonschema:"ground only on memories whose metadata has each key=value pair (AND)"`
-	Limit     int               `json:"limit,omitempty" jsonschema:"max memories to ground on (default 10)"`
-	Namespace string            `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+	Query    string            `json:"query" jsonschema:"the question to answer from memory"`
+	Tiers    []string          `json:"tiers,omitempty" jsonschema:"restrict grounding to tiers (working/episodic/semantic/procedural)"`
+	Levels   []string          `json:"levels,omitempty" jsonschema:"restrict grounding to levels (explicit/deduced); empty means all"`
+	Tags     []string          `json:"tags,omitempty" jsonschema:"ground only on memories with every listed tag (AND)"`
+	Metadata map[string]string `json:"metadata,omitempty" jsonschema:"ground only on memories whose metadata has each key=value pair (AND)"`
+	Limit    int               `json:"limit,omitempty" jsonschema:"max memories to ground on (default 10)"`
+	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
+	Scope string `json:"scope,omitempty" jsonschema:"how wide to ground: 'project' = just this project's own memories; 'full' (default) = project plus inherited context (ancestors, your personal namespace, links); 'everywhere' = full plus nested sub-projects"`
 	// ReasoningLevel is the latency/cost dial: higher levels let the model
 	// search memory iteratively before answering.
 	ReasoningLevel string `json:"reasoning_level,omitempty" jsonschema:"effort: minimal|low|medium|high; higher = iterative search (slower)"`
@@ -808,10 +814,6 @@ type answerResult struct {
 }
 
 func (t *tools) answer(ctx context.Context, _ *mcpsdk.CallToolRequest, in answerArgs) (*mcpsdk.CallToolResult, answerResult, error) {
-	ns, err := t.ns(in.Namespace)
-	if err != nil {
-		return nil, answerResult{}, err
-	}
 	tiers, err := parseTiers(in.Tiers)
 	if err != nil {
 		return nil, answerResult{}, err
@@ -822,7 +824,7 @@ func (t *tools) answer(ctx context.Context, _ *mcpsdk.CallToolRequest, in answer
 	}
 	var readset []service.ReadSetEntry
 	res, err := t.svc.Answer(ctx, service.AnswerInput{
-		Namespace: ns,
+		Namespace: t.defaultNS,
 		Home:      t.defaultHome,
 		Query:     in.Query,
 		Tiers:     tiers,
@@ -831,7 +833,11 @@ func (t *tools) answer(ctx context.Context, _ *mcpsdk.CallToolRequest, in answer
 		Metadata:  in.Metadata,
 		Limit:     in.Limit,
 		Reasoning: service.ReasoningLevel(in.ReasoningLevel),
-		ReadSet:   &readset,
+		// Scope passes through unvalidated here, like recall/briefing —
+		// service.Answer rejects an unrecognized value up front via the
+		// shared parseScope.
+		Scope:   in.Scope,
+		ReadSet: &readset,
 	})
 	if err != nil {
 		return nil, answerResult{}, err

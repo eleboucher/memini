@@ -145,6 +145,39 @@ func TestAnswerAgenticGroundsOnHomeNamespace(t *testing.T) {
 	}
 }
 
+// TestAnswerAgenticThreadsScope pins AnswerInput.Scope threading through the
+// agentic tool loop, mirroring TestAnswerAgenticGroundsOnHomeNamespace: with
+// Scope "project", an ancestor fact must be unreachable from BOTH the
+// prefetch recall and the search_memory tool's inner recall — even when the
+// tool call narrows to durable tiers, which resolves its own read-set.
+func TestAnswerAgenticThreadsScope(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	fake := &fakeToolChat{script: []llm.ChatResult{
+		{Calls: []llm.ToolCall{callOf("search_memory", `{"query":"CI system","tier":"durable"}`)}},
+		{Text: "I don't know"},
+	}}
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithAnswerer(fake))
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "acme", Content: "acme uses forgejo for CI", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+
+	res, err := svc.Answer(ctx, service.AnswerInput{
+		Namespace: "acme/phoenix", Query: "what CI system", Limit: 5,
+		Reasoning: service.ReasoningLow, Scope: "project",
+	})
+	if err != nil {
+		t.Fatalf("answer agentic scope=project: %v", err)
+	}
+	for _, s := range res.Sources {
+		if s.Memory.Namespace == "acme" {
+			t.Fatalf(`agentic answer with Scope "project" grounded on the ancestor namespace: %+v`, res.Sources)
+		}
+	}
+}
+
 // TestAnswerAgenticForcedSynthesis pins the budget: a model that never stops
 // calling tools gets exactly the level's iterations, then one forced
 // text-only synthesis round (ToolNone, no tools).

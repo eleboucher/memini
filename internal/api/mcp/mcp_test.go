@@ -1461,6 +1461,40 @@ func TestRememberVisibilityEpisodicClampedToProjectViaMCP(t *testing.T) {
 	}
 }
 
+// TestRememberVisibilityEpisodicInvalidNameClampsSilentlyViaMCP pins the
+// clamp-precedes-validation ordering end to end: an episodic write whose
+// visibility names NOTHING valid (not project/personal, not an ancestor)
+// still succeeds silently in the primary namespace — the tier clamp decides
+// before the ancestor-name validation ever runs, so "errors listing the
+// valid options" only applies to durable writes. (The service-level ordering
+// is pinned in internal/service/visibility_test.go; this covers the MCP
+// surface and the docstring's qualified wording.)
+func TestRememberVisibilityEpisodicInvalidNameClampsSilentlyViaMCP(t *testing.T) {
+	ctx := context.Background()
+	svc := service.New(openStore(t), embedtest.New(dims))
+	cs := connectAt(t, svc, "acme/phoenix/api", "")
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_remember",
+		Arguments: map[string]any{
+			"content": "deployed the new build just now", "tier": "episodic", "visibility": "bogus-team",
+		},
+	})
+	if err != nil {
+		t.Fatalf("remember transport: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("episodic write with an invalid visibility name must clamp silently, not error: %+v", res.Content)
+	}
+	var remembered struct {
+		ID string `json:"id"`
+	}
+	structured(t, res, &remembered)
+	if _, err := svc.Get(ctx, "acme/phoenix/api", remembered.ID); err != nil {
+		t.Fatalf("clamped write should land in the primary namespace: %v", err)
+	}
+}
+
 // TestUpdateMemoryRecalledFromAncestorNamespaceViaMCP pins gap G3 end to end:
 // a memory recalled from an ancestor namespace (via the default full-scope
 // cascade, no scope argument needed) carries that namespace in its result
@@ -1601,7 +1635,7 @@ func TestToolSchemaEnums(t *testing.T) {
 		"memory_remember": {`"tier"`, `"enum":["working","episodic","semantic","procedural"]`},
 		"memory_recall":   {`"enum":["project","full","everywhere"]`, `"enum":["concise","detailed"]`},
 		"memory_briefing": {`"enum":["project","full","everywhere"]`},
-		"memory_answer":   {`"enum":["minimal","low","medium","high"]`},
+		"memory_answer":   {`"enum":["minimal","low","medium","high"]`, `"enum":["project","full","everywhere"]`},
 		"memory_list":     {`"enum":["working","episodic","semantic","procedural"]`},
 		"memory_update":   {`"enum":["working","episodic","semantic","procedural"]`},
 	}
@@ -1623,15 +1657,17 @@ func TestToolSchemaEnums(t *testing.T) {
 }
 
 // TestNamespaceArgAbsentFromChoiceTools pins gap G3's addressing-vs-choosing
-// split: memory_remember/recall/briefing never let the LLM choose a raw
-// namespace, so "namespace" (and "namespaces") must not appear anywhere in
-// their schemas; memory_get/update/forget/list keep it, since the LLM
+// split: memory_remember/recall/briefing/answer never let the LLM choose a
+// raw namespace, so "namespace" (and "namespaces") must not appear anywhere
+// in their schemas; memory_get/update/forget/list keep it, since the LLM
 // addresses an existing memory by copying namespace verbatim from a prior
-// recall/list result, never by typing one.
+// recall/list result, never by typing one. memory_answer is a choice-side
+// tool too — it reads by query, pointing at no memory id — so it needs the
+// answerer option to be listed at all.
 func TestNamespaceArgAbsentFromChoiceTools(t *testing.T) {
-	tools := listTools(t)
+	tools := listTools(t, service.WithAnswerer(&fakeAnswerer{resp: "n/a"}))
 
-	choice := []string{"memory_remember", "memory_recall", "memory_briefing"}
+	choice := []string{"memory_remember", "memory_recall", "memory_briefing", "memory_answer"}
 	for _, name := range choice {
 		tool := tools[name]
 		if tool == nil {
@@ -2303,6 +2339,77 @@ func TestRecallInvalidScopeViaMCP(t *testing.T) {
 	}
 }
 
+// TestAnswerInvalidScopeViaMCP mirrors the recall/briefing invalid-scope
+// tests for memory_answer: it now carries the same semantic scope argument,
+// and the removed legacy values are rejected, not silently aliased.
+func TestAnswerInvalidScopeViaMCP(t *testing.T) {
+	cs := connectWithOptions(t, service.WithAnswerer(&fakeAnswerer{resp: "n/a"}))
+	for _, scope := range []string{"bogus", "subtree", "exact"} {
+		t.Run(scope, func(t *testing.T) {
+			res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+				Name:      "memory_answer",
+				Arguments: map[string]any{"query": "x", "scope": scope},
+			})
+			if err != nil {
+				t.Fatalf("answer transport: %v", err)
+			}
+			if !res.IsError {
+				t.Fatalf("answer with scope %q must be a tool error", scope)
+			}
+			tc, ok := res.Content[0].(*mcpsdk.TextContent)
+			if !ok {
+				t.Fatalf("error content = %T, want *mcpsdk.TextContent", res.Content[0])
+			}
+			if !strings.Contains(tc.Text, "everywhere") {
+				t.Fatalf("error text = %q, want it to list the valid scopes", tc.Text)
+			}
+		})
+	}
+}
+
+// TestAnswerScopeProjectViaMCP pins memory_answer's scope threading end to
+// end: an ancestor fact that the default (full) cascade grounds on
+// disappears with scope="project" — same semantics as recall's scope, on the
+// answer tool.
+func TestAnswerScopeProjectViaMCP(t *testing.T) {
+	ctx := context.Background()
+	svc := service.New(openStore(t), embedtest.New(dims),
+		service.WithAnswerer(&fakeAnswerer{resp: "forgejo"}))
+
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "acme", Content: "acme uses forgejo for CI", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("seed remember: %v", err)
+	}
+	cs := connectAt(t, svc, "acme/phoenix", "")
+
+	answerSources := func(args map[string]any) []struct {
+		Namespace string `json:"namespace"`
+	} {
+		res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{Name: "memory_answer", Arguments: args})
+		if err != nil {
+			t.Fatalf("answer: %v", err)
+		}
+		var out struct {
+			Sources []struct {
+				Namespace string `json:"namespace"`
+			} `json:"sources"`
+		}
+		structured(t, res, &out)
+		return out.Sources
+	}
+
+	full := answerSources(map[string]any{"query": "what CI system"})
+	if len(full) != 1 || full[0].Namespace != "acme" {
+		t.Fatalf("default (full) scope should ground on the ancestor fact, got %+v", full)
+	}
+
+	project := answerSources(map[string]any{"query": "what CI system", "scope": "project"})
+	if len(project) != 0 {
+		t.Fatalf(`scope "project" must not ground on ancestor namespaces, got %+v`, project)
+	}
+}
+
 // --- read-set provenance: "from" rendering (T5) -----------------------------
 
 // fromRecallResult mirrors just the fields these tests need out of
@@ -2454,12 +2561,7 @@ func TestBriefingFromFieldReflectsOriginViaMCP(t *testing.T) {
 // answer is a different call path.
 func TestAnswerSourcesFromFieldViaMCP(t *testing.T) {
 	ctx := context.Background()
-	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "from-answer.db"), dims)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	svc := service.New(st, embedtest.New(dims), service.WithAnswerer(&fakeAnswerer{resp: "the answer"}))
+	svc := service.New(openStore(t), embedtest.New(dims), service.WithAnswerer(&fakeAnswerer{resp: "the answer"}))
 
 	const token = "marimba99"
 	if _, err := svc.Remember(ctx, service.RememberInput{
@@ -2468,20 +2570,13 @@ func TestAnswerSourcesFromFieldViaMCP(t *testing.T) {
 		t.Fatalf("seed remember: %v", err)
 	}
 
-	srv := meminimcp.NewServer(svc, "default", "")
-	clientT, serverT := mcpsdk.NewInMemoryTransports()
-	if _, err := srv.Connect(ctx, serverT, nil); err != nil {
-		t.Fatalf("server connect: %v", err)
-	}
-	cs, err := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "t", Version: "0"}, nil).Connect(ctx, clientT, nil)
-	if err != nil {
-		t.Fatalf("client connect: %v", err)
-	}
-	t.Cleanup(func() { _ = cs.Close() })
+	// The descendant is the server's primary namespace — memory_answer has no
+	// per-call namespace override (it's a choice-side tool, like recall).
+	cs := connectAt(t, svc, "acme/phoenix/api", "")
 
 	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
 		Name:      "memory_answer",
-		Arguments: map[string]any{"query": token, "namespace": "acme/phoenix/api"},
+		Arguments: map[string]any{"query": token},
 	})
 	if err != nil {
 		t.Fatalf("answer: %v", err)
@@ -2535,11 +2630,6 @@ func (f *scriptedToolChat) ChatTools(
 // memory as primary.
 func TestAnswerAgenticTierNarrowedSourceKeepsFromLabelViaMCP(t *testing.T) {
 	ctx := context.Background()
-	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "from-agentic.db"), dims)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
 
 	const token = "glockenspiel23"
 	fake := &scriptedToolChat{script: []llm.ChatResult{
@@ -2552,7 +2642,7 @@ func TestAnswerAgenticTierNarrowedSourceKeepsFromLabelViaMCP(t *testing.T) {
 		// Round 2: final answer.
 		{Text: "the answer"},
 	}}
-	svc := service.New(st, embedtest.New(dims), service.WithAnswerer(fake))
+	svc := service.New(openStore(t), embedtest.New(dims), service.WithAnswerer(fake))
 
 	// Only the ancestor holds anything: a durable (semantic) memory the
 	// tier="durable" tool search can reach. The primary namespace has no
@@ -2564,21 +2654,14 @@ func TestAnswerAgenticTierNarrowedSourceKeepsFromLabelViaMCP(t *testing.T) {
 		t.Fatalf("seed remember: %v", err)
 	}
 
-	srv := meminimcp.NewServer(svc, "default", "")
-	clientT, serverT := mcpsdk.NewInMemoryTransports()
-	if _, err := srv.Connect(ctx, serverT, nil); err != nil {
-		t.Fatalf("server connect: %v", err)
-	}
-	cs, err := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "t", Version: "0"}, nil).Connect(ctx, clientT, nil)
-	if err != nil {
-		t.Fatalf("client connect: %v", err)
-	}
-	t.Cleanup(func() { _ = cs.Close() })
+	// The descendant is the server's primary namespace — memory_answer has no
+	// per-call namespace override.
+	cs := connectAt(t, svc, "acme/phoenix/api", "")
 
 	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
 		Name: "memory_answer",
 		Arguments: map[string]any{
-			"query": token, "namespace": "acme/phoenix/api",
+			"query": token,
 			"tiers": []string{"episodic"}, "reasoning_level": "low",
 		},
 	})
