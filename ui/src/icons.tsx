@@ -48,6 +48,10 @@ export const IconProjects = base([
   <rect x="14" y="14" width="7" height="7" rx="1.5" />,
 ])
 export const IconChevron = base([<path d="m6 9 6 6 6-6" />])
+export const IconScopes = base([
+  <circle cx="9.5" cy="12" r="6.5" />,
+  <circle cx="15.5" cy="12" r="6.5" opacity="0.6" />,
+])
 export const IconClose = base([<path d="M18 6 6 18M6 6l12 12" />])
 export const IconTrash = base([
   <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" />,
