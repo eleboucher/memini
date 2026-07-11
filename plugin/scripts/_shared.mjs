@@ -274,6 +274,20 @@ export function parseJSON(s) {
 const REST_URL = process.env["MEMINI_BASE_URL"] || process.env["MEMINI_URL"] || "http://localhost:8080";
 const SECRET = process.env["MEMINI_API_KEY"] || process.env["MEMINI_TOKEN"] || "";
 
+/**
+ * resolveHome reads MEMINI_HOME (env-only, mirroring how MEMINI_NAMESPACE is
+ * read above): the caller's personal namespace, sent as X-Memini-Home so
+ * server-side visibility="personal" writes and the read-set's home leg have
+ * somewhere to land. "" (unset) means no home leg — the header is omitted
+ * entirely rather than sent empty.
+ */
+export function resolveHome() {
+  const home = process.env["MEMINI_HOME"];
+  return home && home.trim() ? home.trim() : "";
+}
+
+const HOME = resolveHome();
+
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 function normalizedHostname(hostname) {
@@ -318,6 +332,7 @@ const guardPlaintextBearerAuth = createPlaintextBearerAuthGuard((m) => console.e
 function authHeaders(extra) {
   const h = { "Content-Type": "application/json", ...(extra || {}) };
   if (SECRET) h["Authorization"] = `Bearer ${SECRET}`;
+  if (HOME) h["X-Memini-Home"] = HOME;
   return h;
 }
 
@@ -572,6 +587,12 @@ export async function postRemember(content, namespace, opts = {}) {
   if (typeof opts.importance === "number") body.importance = opts.importance;
   if (opts.id) body.id = opts.id;
   if (opts.metadata) body.metadata = opts.metadata;
+  // visibility: "project" (default, omitted) | "personal" | an ancestor
+  // namespace name. Episodic/working writes are clamped to project
+  // server-side regardless, so hooks that always write episodic (the
+  // session/turn capture path) have no reason to set this — it exists for
+  // callers (e.g. a future /remember command) that let the user choose.
+  if (opts.visibility) body.visibility = opts.visibility;
   return postJSON("/v1/memories", body, namespace);
 }
 

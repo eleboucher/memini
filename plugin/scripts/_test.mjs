@@ -456,6 +456,66 @@ test("session-start.mjs: fetches the briefing with right namespace, writes conte
   }
 });
 
+test("X-Memini-Home header: emitted on GET/POST when MEMINI_HOME is set, absent when unset", async () => {
+  const hits = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    hits.push({ method: req.method, home: req.headers["x-memini-home"] });
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ ok: true }));
+  });
+  const prevUrl = process.env.MEMINI_URL;
+  const prevHome = process.env.MEMINI_HOME;
+  process.env.MEMINI_URL = url;
+  try {
+    process.env.MEMINI_HOME = "personal/acme";
+    const withHome = await import("./_shared.mjs?cb=home-set-" + Date.now());
+    await withHome.getJSON("/v1/whatever", "memini");
+    await withHome.postJSON("/v1/whatever", { x: 1 }, "memini");
+
+    delete process.env.MEMINI_HOME;
+    const withoutHome = await import("./_shared.mjs?cb=home-unset-" + Date.now());
+    await withoutHome.getJSON("/v1/whatever", "memini");
+    await withoutHome.postJSON("/v1/whatever", { x: 1 }, "memini");
+
+    assert.equal(hits.length, 4);
+    assert.equal(hits[0].home, "personal/acme", "GET must carry X-Memini-Home when set");
+    assert.equal(hits[1].home, "personal/acme", "POST must carry X-Memini-Home when set");
+    assert.equal(hits[2].home, undefined, "GET must omit X-Memini-Home when unset");
+    assert.equal(hits[3].home, undefined, "POST must omit X-Memini-Home when unset");
+  } finally {
+    if (prevUrl === undefined) delete process.env.MEMINI_URL;
+    else process.env.MEMINI_URL = prevUrl;
+    if (prevHome === undefined) delete process.env.MEMINI_HOME;
+    else process.env.MEMINI_HOME = prevHome;
+    await close();
+  }
+});
+
+test("postRemember forwards visibility when the caller provides one; omits it otherwise", async () => {
+  const hits = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    hits.push({ body });
+    res.statusCode = 201;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ id: "m1" }));
+  });
+  const prevUrl = process.env.MEMINI_URL;
+  process.env.MEMINI_URL = url;
+  try {
+    const { postRemember } = await import("./_shared.mjs?cb=post-remember-" + Date.now());
+    await postRemember("some fact", "memini", { visibility: "personal" });
+    await postRemember("other fact", "memini", {});
+    assert.equal(hits.length, 2);
+    assert.equal(JSON.parse(hits[0].body).visibility, "personal", "visibility must be forwarded when provided");
+    assert.equal(JSON.parse(hits[1].body).visibility, undefined, "visibility must be omitted when not provided");
+  } finally {
+    if (prevUrl === undefined) delete process.env.MEMINI_URL;
+    else process.env.MEMINI_URL = prevUrl;
+    await close();
+  }
+});
+
 test("session-end.mjs: no events buffered → no POST, no noise", async () => {
   const cache = freshCache(); // empty buffer dir → no digest
   const hits = [];
@@ -915,6 +975,25 @@ test("mcp-headers.mjs: omits Authorization when no token", async () => {
   const h = JSON.parse(stdout);
   assert.equal(h["X-Memini-Namespace"], "memini");
   assert.equal(h.Authorization, undefined);
+});
+
+test("mcp-headers.mjs: emits X-Memini-Home when MEMINI_HOME is set", async () => {
+  const { stdout } = await runHook("mcp-headers.mjs", "", {
+    CLAUDE_PROJECT_DIR: __dirname,
+    MEMINI_HOME: "personal/acme",
+  });
+  const h = JSON.parse(stdout);
+  assert.equal(h["X-Memini-Namespace"], "memini");
+  assert.equal(h["X-Memini-Home"], "personal/acme");
+});
+
+test("mcp-headers.mjs: omits X-Memini-Home when MEMINI_HOME is unset", async () => {
+  const { stdout } = await runHook("mcp-headers.mjs", "", {
+    CLAUDE_PROJECT_DIR: __dirname,
+  });
+  const h = JSON.parse(stdout);
+  assert.equal(h["X-Memini-Namespace"], "memini");
+  assert.equal(h["X-Memini-Home"], undefined);
 });
 
 test("mcp-headers.mjs: MEMINI_REQUIRE_HTTPS=1 omits the bearer for plaintext non-loopback", async () => {
