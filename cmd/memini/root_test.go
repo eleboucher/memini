@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -39,6 +40,38 @@ func TestRunServerRefusesDeletedTenantShared(t *testing.T) {
 	}
 }
 
+// TestRunMCPRefusesDeletedGlobalNamespace and
+// TestRunMCPRefusesDeletedTenantShared pin the same T12 boot guard on the
+// stdio MCP entrypoint (review finding): `memini mcp` builds the identical
+// service stack via buildServiceStack and runs as a persistent server —
+// the standard plugin deployment mode — so it must refuse a stale deleted
+// knob exactly like runServer, not boot silently past it.
+func TestRunMCPRefusesDeletedGlobalNamespace(t *testing.T) {
+	t.Setenv("MEMINI_GLOBAL_NAMESPACE", "shared/golang")
+	t.Setenv("MEMINI_SQLITE_PATH", t.TempDir()+"/memini.db") // never reached; keeps a regressed run from touching a real db
+
+	err := runMCP(&cobra.Command{}, nil)
+	if err == nil {
+		t.Fatal("runMCP: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "MEMINI_GLOBAL_NAMESPACE") {
+		t.Errorf("runMCP error = %q, want it to name MEMINI_GLOBAL_NAMESPACE", err.Error())
+	}
+}
+
+func TestRunMCPRefusesDeletedTenantShared(t *testing.T) {
+	t.Setenv("MEMINI_TENANT_SHARED", "true")
+	t.Setenv("MEMINI_SQLITE_PATH", t.TempDir()+"/memini.db")
+
+	err := runMCP(&cobra.Command{}, nil)
+	if err == nil {
+		t.Fatal("runMCP: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "MEMINI_TENANT_SHARED") {
+		t.Errorf("runMCP error = %q, want it to name MEMINI_TENANT_SHARED", err.Error())
+	}
+}
+
 // TestRunMigrateScopesNotBlockedByGlobalNamespace pins the deadlock-avoidance
 // case (brief's "IMPORTANT subtlety"): `memini migrate scopes` must keep
 // running even with MEMINI_GLOBAL_NAMESPACE set, since it's the very command
@@ -46,6 +79,8 @@ func TestRunServerRefusesDeletedTenantShared(t *testing.T) {
 // enforced inside config.Load() (which runMigrateScopes also calls), this
 // would deadlock the operator. Uses --yes=false (dry-run default) against an
 // empty sqlite store so the command completes without needing an embedder.
+// The output assertions prove the exempted path actually ran through to the
+// report printer (T11's adoption instructions), not merely returned nil.
 func TestRunMigrateScopesNotBlockedByGlobalNamespace(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("MEMINI_BACKEND", "sqlite")
@@ -55,8 +90,21 @@ func TestRunMigrateScopesNotBlockedByGlobalNamespace(t *testing.T) {
 
 	migrateScopesYes = false
 	migrateScopesCmd.SetContext(context.Background())
+	var buf bytes.Buffer
+	migrateScopesCmd.SetOut(&buf)
+	t.Cleanup(func() { migrateScopesCmd.SetOut(nil) })
 
 	if err := runMigrateScopes(migrateScopesCmd, nil); err != nil {
 		t.Fatalf("runMigrateScopes: unexpected error with MEMINI_GLOBAL_NAMESPACE set: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"MEMINI_GLOBAL_NAMESPACE",     // names the dead knob
+		`MEMINI_HOME="shared/golang"`, // single-operator adoption
+		"memini link add",             // team-wide adoption
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("adoption instructions missing %q; got:\n%s", want, out)
+		}
 	}
 }

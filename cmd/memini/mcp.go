@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -24,6 +26,16 @@ func init() {
 }
 
 func runMCP(cmd *cobra.Command, _ []string) error {
+	// Same fatal guard as runServer, for the same reason: `memini mcp` builds
+	// the identical service stack and runs as a persistent server (the
+	// standard plugin deployment mode), so a stale deleted scope-model knob
+	// must refuse the boot here too — not slip through on exactly the path
+	// most users run. See config.FatalDeprecatedVars for the rationale and
+	// the migrate-scopes exemption.
+	if fatal := config.FatalDeprecatedVars(); len(fatal) > 0 {
+		return errors.New(strings.Join(fatal, "\n"))
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		return err
