@@ -137,7 +137,7 @@ func (c Config) Authenticate(ctx context.Context, token string) (p *Principal, o
 		return nil, true, nil
 	}
 	if token != "" && c.fileKeys != nil {
-		if key, found := c.fileKeys.lookup(hashToken(token)); found {
+		if key, found := c.fileKeys.lookup(HashToken(token)); found {
 			if key.Disabled {
 				return nil, false, nil
 			}
@@ -145,7 +145,7 @@ func (c Config) Authenticate(ctx context.Context, token string) (p *Principal, o
 		}
 	}
 	if token != "" && c.KeyStore != nil {
-		key, gerr := c.KeyStore.GetAPIKeyByHash(ctx, hashToken(token))
+		key, gerr := c.KeyStore.GetAPIKeyByHash(ctx, HashToken(token))
 		if gerr != nil {
 			return nil, false, gerr
 		}
@@ -188,9 +188,12 @@ func (c Config) tableNonEmpty(ctx context.Context) bool {
 	return c.cache.nonEmpty
 }
 
-// hashToken hashes a presented bearer secret with hex SHA-256, matching
-// store.APIKey.Hash's format (see its doc).
-func hashToken(token string) string {
+// HashToken hashes a presented bearer secret with hex SHA-256, matching
+// store.APIKey.Hash's format (see its doc). Exported as the one canonical
+// hashing helper: the CLI (cmd/memini/key.go, generating and rotating table
+// keys) and this package's own auth-path lookups must never risk drifting
+// onto two different hash implementations.
+func HashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
 }

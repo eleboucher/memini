@@ -130,7 +130,7 @@ func validateFileKeyEntry(idx int, e fileKeyEntry) (store.APIKey, error) {
 		// Hashed immediately; the plaintext secret is never retained beyond
 		// this call (see FileKeySet's doc: "the file itself is the secret
 		// store", not memini's process memory).
-		hash = hashToken(e.Secret)
+		hash = HashToken(e.Secret)
 	}
 
 	home := httputil.NormalizeNamespace(e.Home)
