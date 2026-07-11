@@ -44,16 +44,31 @@ func connect(t *testing.T) *mcpsdk.ClientSession {
 // answerer-gated behavior like the conditional memory_answer registration.
 func connectWithOptions(t *testing.T, opts ...service.Option) *mcpsdk.ClientSession {
 	t.Helper()
+	return connectAt(t, service.New(openStore(t), embedtest.New(dims), opts...), "default", "")
+}
+
+// openStore opens a fresh sqlite-vec store in a temp dir, closed
+// automatically at test cleanup.
+func openStore(t *testing.T) store.Store {
+	t.Helper()
 	st, err := sqlitevec.Open(context.Background(), filepath.Join(t.TempDir(), "mcp.db"), dims)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	svc := service.New(st, embedtest.New(dims), opts...)
+	return st
+}
 
-	srv := meminimcp.NewServer(svc, "default", "")
+// connectAt connects an MCP client to a server backed by svc with primary
+// namespace ns and home leg home. Since memory_remember has no namespace
+// override argument (gap G3: addressing vs. choosing), a test that needs
+// fixture data in more than one namespace opens one connectAt per namespace
+// — each writes to ITS OWN primary — sharing the same underlying svc/store,
+// exactly mirroring how the real deployment has one server per tenant.
+func connectAt(t *testing.T, svc *service.Service, ns, home string) *mcpsdk.ClientSession {
+	t.Helper()
+	srv := meminimcp.NewServer(svc, ns, home)
 	clientT, serverT := mcpsdk.NewInMemoryTransports()
-
 	ctx := context.Background()
 	if _, err := srv.Connect(ctx, serverT, nil); err != nil {
 		t.Fatalf("server connect: %v", err)
@@ -273,34 +288,42 @@ func TestBriefingZeroDisablesSection(t *testing.T) {
 	}
 }
 
-func TestRecallSubtreeScopeViaMCP(t *testing.T) {
-	cs := connect(t)
+// TestRecallEverywhereScopeViaMCP pins that scope="everywhere" also searches
+// namespaces nested under the primary (the "subtree" behavior, renamed).
+// memory_remember has no namespace override, so the nested fixture is
+// written from its OWN primary connection (connectAt), sharing the store.
+func TestRecallEverywhereScopeViaMCP(t *testing.T) {
 	ctx := context.Background()
+	svc := service.New(openStore(t), embedtest.New(dims))
 
-	remember := func(ns, content string) {
-		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
-			Name:      "memory_remember",
-			Arguments: map[string]any{"content": content, "tier": "semantic", "namespace": ns},
-		}); err != nil {
-			t.Fatalf("remember %s: %v", ns, err)
-		}
+	projCS := connectAt(t, svc, "proj", "")
+	if _, err := projCS.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_remember",
+		Arguments: map[string]any{"content": "shared: the service is written in Go", "tier": "semantic"},
+	}); err != nil {
+		t.Fatalf("remember proj: %v", err)
 	}
-	remember("proj", "shared: the service is written in Go")
-	remember("proj/agent-a", "private: agent-a prefers table tests in Go")
+	agentCS := connectAt(t, svc, "proj/agent-a", "")
+	if _, err := agentCS.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_remember",
+		Arguments: map[string]any{"content": "private: agent-a prefers table tests in Go", "tier": "semantic"},
+	}); err != nil {
+		t.Fatalf("remember proj/agent-a: %v", err)
+	}
 
-	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+	res, err := projCS.CallTool(ctx, &mcpsdk.CallToolParams{
 		Name:      "memory_recall",
-		Arguments: map[string]any{"query": "Go", "namespace": "proj", "scope": "subtree", "limit": 10},
+		Arguments: map[string]any{"query": "Go", "scope": "everywhere", "limit": 10},
 	})
 	if err != nil {
-		t.Fatalf("recall subtree: %v", err)
+		t.Fatalf("recall everywhere: %v", err)
 	}
 	var recalled struct {
 		Results []struct{ Content string } `json:"results"`
 	}
 	structured(t, res, &recalled)
 	if len(recalled.Results) < 2 {
-		t.Fatalf("subtree recall should span proj and proj/agent-a, got %d results", len(recalled.Results))
+		t.Fatalf("everywhere-scope recall should span proj and proj/agent-a, got %d results", len(recalled.Results))
 	}
 }
 
@@ -860,7 +883,7 @@ func TestRecallUsesServerDefaultHome(t *testing.T) {
 
 		res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
 			Name:      "memory_recall",
-			Arguments: map[string]any{"query": "ssh key", "namespace": "acme/phoenix", "limit": 5},
+			Arguments: map[string]any{"query": "ssh key", "limit": 5},
 		})
 		if err != nil {
 			t.Fatalf("recall: %v", err)
@@ -1102,11 +1125,16 @@ func TestListToolDefaultLimitAndOffset(t *testing.T) {
 	}
 }
 
+// TestInvalidNamespaceIsRejected pins that an addressing tool's namespace
+// argument is validated, never silently rerouted to the default tenant.
+// memory_remember/recall/briefing have no namespace argument at all (gap
+// G3: it's addressing-only now); memory_get/update/forget/list still take
+// one, since the LLM copies it verbatim from a prior recall/list result.
 func TestInvalidNamespaceIsRejected(t *testing.T) {
 	cs := connect(t)
 	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
-		Name:      "memory_remember",
-		Arguments: map[string]any{"content": "x", "namespace": strings.Repeat("n", 300)},
+		Name:      "memory_get",
+		Arguments: map[string]any{"id": "whatever", "namespace": strings.Repeat("n", 300)},
 	})
 	if err != nil {
 		t.Fatalf("transport: %v", err)
@@ -1342,6 +1370,164 @@ func TestRememberPositiveTTL(t *testing.T) {
 	}
 }
 
+// TestRememberVisibilityPassthroughViaMCP pins that memory_remember's
+// visibility argument reaches service.RememberInput.Visibility end to end: a
+// durable (semantic) write with visibility naming an ancestor of the primary
+// namespace lands in that ancestor, not the primary — addressable there, and
+// absent from the primary.
+func TestRememberVisibilityPassthroughViaMCP(t *testing.T) {
+	ctx := context.Background()
+	svc := service.New(openStore(t), embedtest.New(dims))
+	cs := connectAt(t, svc, "acme/phoenix/api", "")
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_remember",
+		Arguments: map[string]any{
+			"content": "org-wide fact: acme uses forgejo for CI", "tier": "semantic", "visibility": "acme",
+		},
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	var remembered struct {
+		ID string `json:"id"`
+	}
+	structured(t, res, &remembered)
+
+	if _, err := svc.Get(ctx, "acme", remembered.ID); err != nil {
+		t.Fatalf("visibility=acme write not found in the ancestor namespace acme: %v", err)
+	}
+	if _, err := svc.Get(ctx, "acme/phoenix/api", remembered.ID); err == nil {
+		t.Fatal("visibility=acme write must not land in the primary namespace")
+	}
+}
+
+// TestRememberVisibilityInvalidAncestorErrorsViaMCP pins that an unrecognized
+// visibility value is a tool error that lists the valid ancestor chain —
+// resolveVisibility's error is the LLM's teacher for the topology, so its
+// wording must survive the MCP transport unmangled.
+func TestRememberVisibilityInvalidAncestorErrorsViaMCP(t *testing.T) {
+	svc := service.New(openStore(t), embedtest.New(dims))
+	cs := connectAt(t, svc, "acme/phoenix/api", "")
+
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "memory_remember",
+		Arguments: map[string]any{"content": "x", "tier": "semantic", "visibility": "bogus-team"},
+	})
+	if err != nil {
+		t.Fatalf("remember transport: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("unrecognized visibility must be a tool error")
+	}
+	tc, ok := res.Content[0].(*mcpsdk.TextContent)
+	if !ok {
+		t.Fatalf("error content = %T, want *mcpsdk.TextContent", res.Content[0])
+	}
+	if !strings.Contains(tc.Text, "acme") {
+		t.Fatalf("error text = %q, want it to list the valid ancestor chain (acme, acme/phoenix)", tc.Text)
+	}
+}
+
+// TestRememberVisibilityEpisodicClampedToProjectViaMCP pins the tier clamp
+// end to end over MCP: an episodic write with visibility naming an ancestor
+// still lands in the primary namespace — session/working detail never
+// pollutes a shared ancestor, silently (no error), regardless of what
+// visibility asked for.
+func TestRememberVisibilityEpisodicClampedToProjectViaMCP(t *testing.T) {
+	ctx := context.Background()
+	svc := service.New(openStore(t), embedtest.New(dims))
+	cs := connectAt(t, svc, "acme/phoenix/api", "")
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_remember",
+		Arguments: map[string]any{
+			"content": "deployed the new build just now", "tier": "episodic", "visibility": "acme",
+		},
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	var remembered struct {
+		ID string `json:"id"`
+	}
+	structured(t, res, &remembered)
+
+	if _, err := svc.Get(ctx, "acme/phoenix/api", remembered.ID); err != nil {
+		t.Fatalf("episodic write must clamp to the primary namespace despite visibility=acme: %v", err)
+	}
+	if _, err := svc.Get(ctx, "acme", remembered.ID); err == nil {
+		t.Fatal("episodic write must not travel to the ancestor namespace even when visibility asks for it")
+	}
+}
+
+// TestUpdateMemoryRecalledFromAncestorNamespaceViaMCP pins gap G3 end to end:
+// a memory recalled from an ancestor namespace (via the default full-scope
+// cascade, no scope argument needed) carries that namespace in its result
+// item, and memory_update can address it by copying the namespace verbatim
+// — the one place a raw namespace remains a tool argument, and only for
+// addressing, never for choosing where to read or write.
+func TestUpdateMemoryRecalledFromAncestorNamespaceViaMCP(t *testing.T) {
+	ctx := context.Background()
+	svc := service.New(openStore(t), embedtest.New(dims))
+
+	ancestorCS := connectAt(t, svc, "acme", "")
+	rem, err := ancestorCS.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_remember",
+		Arguments: map[string]any{"content": "acme uses forgejo for CI", "tier": "semantic"},
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	var remembered struct {
+		ID string `json:"id"`
+	}
+	structured(t, rem, &remembered)
+
+	childCS := connectAt(t, svc, "acme/phoenix", "")
+	rec, err := childCS.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_recall",
+		Arguments: map[string]any{"query": "forgejo CI", "limit": 5},
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	var recalled struct {
+		Results []struct {
+			ID        string `json:"id"`
+			Namespace string `json:"namespace"`
+		} `json:"results"`
+	}
+	structured(t, rec, &recalled)
+	if len(recalled.Results) == 0 {
+		t.Fatal("recall from the descendant should surface the ancestor's fact via the default full-scope cascade")
+	}
+	item := recalled.Results[0]
+	if item.Namespace != "acme" {
+		t.Fatalf("result namespace = %q, want the ancestor acme (copied verbatim for addressing)", item.Namespace)
+	}
+
+	upd, err := childCS.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_update",
+		Arguments: map[string]any{
+			"id": item.ID, "namespace": item.Namespace, "content": "acme uses forgejo for CI (updated)",
+		},
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if upd.IsError {
+		t.Fatalf("update addressed by the recalled namespace should succeed, got error: %+v", upd.Content)
+	}
+	var updated struct {
+		Content string `json:"content"`
+	}
+	structured(t, upd, &updated)
+	if updated.Content != "acme uses forgejo for CI (updated)" {
+		t.Fatalf("content = %q, want the updated content", updated.Content)
+	}
+}
+
 func listTools(t *testing.T, opts ...service.Option) map[string]*mcpsdk.Tool {
 	t.Helper()
 	cs := connectWithOptions(t, opts...)
@@ -1395,7 +1581,12 @@ func TestServerInstructions(t *testing.T) {
 	if instr == "" {
 		t.Fatal("initialize result has no instructions")
 	}
-	for _, phrase := range []string{"memory_briefing", "memory_recall", "memory_remember", "pinned", "category", "memory_update"} {
+	for _, phrase := range []string{
+		"memory_briefing", "memory_recall", "memory_remember", "pinned", "category", "memory_update",
+		// gap G3 / semantic-scope guidance (T8): the LLM makes semantic
+		// choices (scope, visibility) and reads provenance, never raw paths.
+		"visibility", "personal", "everywhere", "provenance",
+	} {
 		if !strings.Contains(instr, phrase) {
 			t.Errorf("instructions missing %q", phrase)
 		}
@@ -1408,8 +1599,8 @@ func TestToolSchemaEnums(t *testing.T) {
 	tools := listTools(t, service.WithAnswerer(&fakeAnswerer{resp: "n/a"}))
 	want := map[string][]string{
 		"memory_remember": {`"tier"`, `"enum":["working","episodic","semantic","procedural"]`},
-		"memory_recall":   {`"enum":["exact","subtree"]`, `"enum":["concise","detailed"]`},
-		"memory_briefing": {`"enum":["exact","subtree"]`},
+		"memory_recall":   {`"enum":["project","full","everywhere"]`, `"enum":["concise","detailed"]`},
+		"memory_briefing": {`"enum":["project","full","everywhere"]`},
 		"memory_answer":   {`"enum":["minimal","low","medium","high"]`},
 		"memory_list":     {`"enum":["working","episodic","semantic","procedural"]`},
 		"memory_update":   {`"enum":["working","episodic","semantic","procedural"]`},
@@ -1428,6 +1619,83 @@ func TestToolSchemaEnums(t *testing.T) {
 				t.Errorf("%s input schema missing %s, got: %s", name, frag, raw)
 			}
 		}
+	}
+}
+
+// TestNamespaceArgAbsentFromChoiceTools pins gap G3's addressing-vs-choosing
+// split: memory_remember/recall/briefing never let the LLM choose a raw
+// namespace, so "namespace" (and "namespaces") must not appear anywhere in
+// their schemas; memory_get/update/forget/list keep it, since the LLM
+// addresses an existing memory by copying namespace verbatim from a prior
+// recall/list result, never by typing one.
+func TestNamespaceArgAbsentFromChoiceTools(t *testing.T) {
+	tools := listTools(t)
+
+	choice := []string{"memory_remember", "memory_recall", "memory_briefing"}
+	for _, name := range choice {
+		tool := tools[name]
+		if tool == nil {
+			t.Fatalf("%s: tool not found", name)
+		}
+		raw, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatalf("%s: marshal schema: %v", name, err)
+		}
+		if strings.Contains(string(raw), `"namespace`) { // catches both namespace and namespaces
+			t.Errorf("%s schema must not expose namespace as a choice, got: %s", name, raw)
+		}
+	}
+
+	addressing := []string{"memory_get", "memory_update", "memory_forget", "memory_list"}
+	for _, name := range addressing {
+		tool := tools[name]
+		if tool == nil {
+			t.Fatalf("%s: tool not found", name)
+		}
+		raw, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatalf("%s: marshal schema: %v", name, err)
+		}
+		if !strings.Contains(string(raw), `"namespace"`) {
+			t.Errorf("%s schema must keep namespace for addressing, got: %s", name, raw)
+		}
+	}
+}
+
+// TestRememberVisibilityArgIsPlainString pins deliverable 2: visibility is a
+// bare string, not a JSON Schema enum — valid ancestor names are dynamic
+// (they depend on the caller's primary namespace), so they can't be
+// enumerated up front the way tier/level/scope can.
+func TestRememberVisibilityArgIsPlainString(t *testing.T) {
+	tools := listTools(t)
+	raw, err := json.Marshal(tools["memory_remember"].InputSchema)
+	if err != nil {
+		t.Fatalf("marshal schema: %v", err)
+	}
+	// Properties decode into raw messages first — sibling properties like
+	// confidence/tags use an array-valued "type" (["null","number"], for a
+	// nilable pointer/slice field), which a single shared struct shape can't
+	// unmarshal; only the one property under test (a plain non-pointer
+	// string, always just "type":"string") needs the typed shape.
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
+	}
+	rawProp, ok := schema.Properties["visibility"]
+	if !ok {
+		t.Fatalf("memory_remember schema missing visibility property, got: %s", raw)
+	}
+	var prop struct {
+		Type string `json:"type"`
+		Enum []any  `json:"enum"`
+	}
+	if err := json.Unmarshal(rawProp, &prop); err != nil {
+		t.Fatalf("visibility property has a non-plain-string shape %s: %v", rawProp, err)
+	}
+	if prop.Type != "string" || prop.Enum != nil {
+		t.Errorf("visibility = %+v, want a plain string with no enum", prop)
 	}
 }
 
@@ -1909,102 +2177,42 @@ func TestRecallAndBriefingIncludeCreatedAtAndTags(t *testing.T) {
 	}
 }
 
-// TestRecallExplicitNamespacesViaMCP pins that memory_recall's namespaces
-// argument REPLACES the default read set: results span exactly the listed
-// namespaces (a third namespace never leaks in) and every item carries its
-// source namespace as provenance.
-func TestRecallExplicitNamespacesViaMCP(t *testing.T) {
-	cs := connect(t)
+// Explicit per-call "namespaces" (replacing the default read set) and the
+// legacy "namespace" override are no longer part of memory_recall/
+// memory_briefing's MCP surface (deliverable 3: choices, not addressing) —
+// what used to be TestRecallExplicitNamespacesViaMCP, TestRecallNamespacesCapViaMCP,
+// TestBriefingExplicitNamespacesViaMCP, and TestRecallFromFieldCallOriginViaMCP
+// tested unreachable-via-MCP behavior and were removed; the capability
+// itself is still exercised at the service layer (internal/service) and via
+// REST. TestNamespaceArgAbsentFromChoiceTools above pins the schema-level
+// removal; the MCP SDK's own JSON Schema validation (additionalProperties:
+// false) now rejects a stray "namespace"/"namespaces" argument automatically,
+// before the handler even runs.
+
+// TestBriefingEverywhereScopeViaMCP pins that scope="everywhere" also briefs
+// namespaces nested under the primary, with per-item namespace provenance,
+// while the default (full) scope does not — same rename as
+// TestRecallEverywhereScopeViaMCP ("subtree" -> "everywhere").
+// memory_remember has no namespace override, so the nested fixture is
+// written from its own primary connection (connectAt).
+func TestBriefingEverywhereScopeViaMCP(t *testing.T) {
 	ctx := context.Background()
+	svc := service.New(openStore(t), embedtest.New(dims))
 
-	remember := func(ns, content string) {
-		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
-			Name:      "memory_remember",
-			Arguments: map[string]any{"content": content, "tier": "semantic", "namespace": ns},
-		}); err != nil {
-			t.Fatalf("remember %s: %v", ns, err)
-		}
+	projCS := connectAt(t, svc, "proj", "")
+	if _, err := projCS.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_remember",
+		Arguments: map[string]any{"content": "shared: the service is written in Go", "tier": "semantic"},
+	}); err != nil {
+		t.Fatalf("remember proj: %v", err)
 	}
-	remember("team-a", "the deploy pipeline is written in Go")
-	remember("team-b", "the CLI tooling is written in Go")
-	remember("team-c", "this Go namespace must not leak into the read set")
-
-	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
-		Name: "memory_recall",
-		Arguments: map[string]any{
-			"query": "Go", "namespace": "team-a",
-			"namespaces": []string{"team-a", "team-b"}, "limit": 10,
-		},
-	})
-	if err != nil {
-		t.Fatalf("recall: %v", err)
+	agentCS := connectAt(t, svc, "proj/agent-a", "")
+	if _, err := agentCS.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_remember",
+		Arguments: map[string]any{"content": "private: agent-a fact", "tier": "semantic"},
+	}); err != nil {
+		t.Fatalf("remember proj/agent-a: %v", err)
 	}
-	var recalled struct {
-		Results []struct {
-			Content   string `json:"content"`
-			Namespace string `json:"namespace"`
-		} `json:"results"`
-	}
-	structured(t, res, &recalled)
-	got := map[string]bool{}
-	for _, r := range recalled.Results {
-		if r.Namespace == "" {
-			t.Errorf("result %q missing namespace provenance", r.Content)
-		}
-		got[r.Namespace] = true
-	}
-	if !got["team-a"] || !got["team-b"] {
-		t.Fatalf("explicit namespaces should span team-a and team-b, got %v", got)
-	}
-	if got["team-c"] {
-		t.Fatalf("team-c is outside the explicit read set, got %v", got)
-	}
-}
-
-// TestRecallNamespacesCapViaMCP pins that more than 16 namespaces entries is a
-// clean tool error (service-side invalid input), never a crash.
-func TestRecallNamespacesCapViaMCP(t *testing.T) {
-	cs := connect(t)
-	over := make([]string, 17)
-	for i := range over {
-		over[i] = fmt.Sprintf("ns-%d", i)
-	}
-	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
-		Name:      "memory_recall",
-		Arguments: map[string]any{"query": "anything", "namespaces": over},
-	})
-	if err != nil {
-		t.Fatalf("recall transport: %v", err)
-	}
-	if !res.IsError {
-		t.Fatal("recall with 17 namespaces must be a tool error")
-	}
-	tc, ok := res.Content[0].(*mcpsdk.TextContent)
-	if !ok {
-		t.Fatalf("error content = %T, want *mcpsdk.TextContent", res.Content[0])
-	}
-	if !strings.Contains(tc.Text, "16") {
-		t.Fatalf("error text = %q, want it to mention the 16 entry cap", tc.Text)
-	}
-}
-
-// TestBriefingSubtreeScopeViaMCP pins that memory_briefing scope=subtree also
-// briefs namespaces nested under the request namespace, with per-item
-// namespace provenance, while the default (exact) scope does not.
-func TestBriefingSubtreeScopeViaMCP(t *testing.T) {
-	cs := connect(t)
-	ctx := context.Background()
-
-	remember := func(ns, content string) {
-		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
-			Name:      "memory_remember",
-			Arguments: map[string]any{"content": content, "tier": "semantic", "namespace": ns},
-		}); err != nil {
-			t.Fatalf("remember %s: %v", ns, err)
-		}
-	}
-	remember("proj", "shared: the service is written in Go")
-	remember("proj/agent-a", "private: agent-a fact")
 
 	type b struct {
 		Facts []struct {
@@ -2013,7 +2221,7 @@ func TestBriefingSubtreeScopeViaMCP(t *testing.T) {
 		} `json:"facts"`
 	}
 	call := func(args map[string]any) b {
-		res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{Name: "memory_briefing", Arguments: args})
+		res, err := projCS.CallTool(ctx, &mcpsdk.CallToolParams{Name: "memory_briefing", Arguments: args})
 		if err != nil {
 			t.Fatalf("briefing: %v", err)
 		}
@@ -2022,105 +2230,76 @@ func TestBriefingSubtreeScopeViaMCP(t *testing.T) {
 		return out
 	}
 
-	exact := call(map[string]any{"namespace": "proj"})
-	if len(exact.Facts) != 1 {
-		t.Fatalf("exact briefing should see only proj's fact, got %+v", exact.Facts)
+	def := call(map[string]any{})
+	if len(def.Facts) != 1 {
+		t.Fatalf("default (full) scope should see only proj's own fact (proj has no ancestors), got %+v", def.Facts)
 	}
 
-	sub := call(map[string]any{"namespace": "proj", "scope": "subtree"})
-	if len(sub.Facts) != 2 {
-		t.Fatalf("subtree briefing should span proj and proj/agent-a, got %+v", sub.Facts)
+	everywhere := call(map[string]any{"scope": "everywhere"})
+	if len(everywhere.Facts) != 2 {
+		t.Fatalf("everywhere-scope briefing should span proj and proj/agent-a, got %+v", everywhere.Facts)
 	}
 	got := map[string]bool{}
-	for _, f := range sub.Facts {
+	for _, f := range everywhere.Facts {
 		got[f.Namespace] = true
 	}
 	if !got["proj"] || !got["proj/agent-a"] {
-		t.Fatalf("subtree facts should carry namespace provenance for both, got %v", got)
+		t.Fatalf("everywhere facts should carry namespace provenance for both, got %v", got)
 	}
 }
 
-// TestBriefingExplicitNamespacesViaMCP pins that memory_briefing's namespaces
-// argument REPLACES the default read set: only the listed namespaces are
-// briefed, and the request namespace is not force-added.
-func TestBriefingExplicitNamespacesViaMCP(t *testing.T) {
-	cs := connect(t)
-	ctx := context.Background()
-
-	remember := func(ns, content string) {
-		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
-			Name:      "memory_remember",
-			Arguments: map[string]any{"content": content, "tier": "semantic", "namespace": ns},
-		}); err != nil {
-			t.Fatalf("remember %s: %v", ns, err)
-		}
-	}
-	remember("team-a", "fact in team-a")
-	remember("team-b", "fact in team-b")
-
-	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
-		Name:      "memory_briefing",
-		Arguments: map[string]any{"namespace": "team-a", "namespaces": []string{"team-b"}},
-	})
-	if err != nil {
-		t.Fatalf("briefing: %v", err)
-	}
-	var out struct {
-		Facts []struct {
-			Content   string `json:"content"`
-			Namespace string `json:"namespace"`
-		} `json:"facts"`
-	}
-	structured(t, res, &out)
-	if len(out.Facts) != 1 || out.Facts[0].Namespace != "team-b" {
-		t.Fatalf("explicit namespaces should brief exactly team-b, got %+v", out.Facts)
-	}
-}
-
-// TestBriefingInvalidScopeViaMCP pins that an unknown scope value is a tool
-// error rather than being silently treated as exact.
+// TestBriefingInvalidScopeViaMCP pins that an unknown scope value — including
+// the removed legacy "exact"/"subtree" values — is a tool error rather than
+// being silently treated as the default.
 func TestBriefingInvalidScopeViaMCP(t *testing.T) {
 	cs := connect(t)
-	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
-		Name:      "memory_briefing",
-		Arguments: map[string]any{"scope": "bogus"},
-	})
-	if err != nil {
-		t.Fatalf("briefing transport: %v", err)
-	}
-	if !res.IsError {
-		t.Fatal("briefing with invalid scope must be a tool error")
-	}
-	tc, ok := res.Content[0].(*mcpsdk.TextContent)
-	if !ok {
-		t.Fatalf("error content = %T, want *mcpsdk.TextContent", res.Content[0])
-	}
-	if !strings.Contains(tc.Text, "subtree") {
-		t.Fatalf("error text = %q, want it to list the valid scopes", tc.Text)
+	for _, scope := range []string{"bogus", "subtree", "exact"} {
+		t.Run(scope, func(t *testing.T) {
+			res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+				Name:      "memory_briefing",
+				Arguments: map[string]any{"scope": scope},
+			})
+			if err != nil {
+				t.Fatalf("briefing transport: %v", err)
+			}
+			if !res.IsError {
+				t.Fatalf("briefing with scope %q must be a tool error", scope)
+			}
+			tc, ok := res.Content[0].(*mcpsdk.TextContent)
+			if !ok {
+				t.Fatalf("error content = %T, want *mcpsdk.TextContent", res.Content[0])
+			}
+			if !strings.Contains(tc.Text, "everywhere") {
+				t.Fatalf("error text = %q, want it to list the valid scopes", tc.Text)
+			}
+		})
 	}
 }
 
-// TestRecallInvalidScopeViaMCP pins that memory_recall rejects an unknown
-// scope value as a tool error instead of silently searching as exact
-// (mirrors memory_briefing).
+// TestRecallInvalidScopeViaMCP mirrors TestBriefingInvalidScopeViaMCP for
+// memory_recall, including the removed legacy "exact"/"subtree" values.
 func TestRecallInvalidScopeViaMCP(t *testing.T) {
 	cs := connect(t)
-	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
-		Name:      "memory_recall",
-		Arguments: map[string]any{"query": "x", "scope": "bogus"},
-	})
-	if err != nil {
-		t.Fatalf("recall transport: %v", err)
-	}
-	if !res.IsError {
-		t.Fatal("recall with invalid scope must be a tool error")
-	}
-	tc, ok := res.Content[0].(*mcpsdk.TextContent)
-	if !ok {
-		t.Fatalf("error content = %T, want *mcpsdk.TextContent", res.Content[0])
-	}
-	if !strings.Contains(tc.Text, "subtree") {
-		t.Fatalf("error text = %q, want it to list the valid scopes", tc.Text)
+	for _, scope := range []string{"bogus", "subtree", "exact"} {
+		t.Run(scope, func(t *testing.T) {
+			res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+				Name:      "memory_recall",
+				Arguments: map[string]any{"query": "x", "scope": scope},
+			})
+			if err != nil {
+				t.Fatalf("recall transport: %v", err)
+			}
+			if !res.IsError {
+				t.Fatalf("recall with scope %q must be a tool error", scope)
+			}
+			tc, ok := res.Content[0].(*mcpsdk.TextContent)
+			if !ok {
+				t.Fatalf("error content = %T, want *mcpsdk.TextContent", res.Content[0])
+			}
+			if !strings.Contains(tc.Text, "everywhere") {
+				t.Fatalf("error text = %q, want it to list the valid scopes", tc.Text)
+			}
+		})
 	}
 }
 
@@ -2170,20 +2349,14 @@ func TestRecallFromFieldReflectsOriginViaMCP(t *testing.T) {
 		t.Fatalf("put link: %v", err)
 	}
 
-	srv := meminimcp.NewServer(svc, "default", "personal/kit")
-	clientT, serverT := mcpsdk.NewInMemoryTransports()
-	if _, err := srv.Connect(ctx, serverT, nil); err != nil {
-		t.Fatalf("server connect: %v", err)
-	}
-	cs, err := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "t", Version: "0"}, nil).Connect(ctx, clientT, nil)
-	if err != nil {
-		t.Fatalf("client connect: %v", err)
-	}
-	t.Cleanup(func() { _ = cs.Close() })
+	// The primary namespace here is acme/phoenix/api itself — no per-call
+	// override — so connectAt is used directly instead of the "default"
+	// connect(t) helper.
+	cs := connectAt(t, svc, "acme/phoenix/api", "personal/kit")
 
 	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
 		Name:      "memory_recall",
-		Arguments: map[string]any{"query": token, "namespace": "acme/phoenix/api", "limit": 10},
+		Arguments: map[string]any{"query": token, "limit": 10},
 	})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
@@ -2216,79 +2389,34 @@ func TestRecallFromFieldReflectsOriginViaMCP(t *testing.T) {
 	}
 }
 
-// TestRecallFromFieldCallOriginViaMCP pins the "call:<ns>" rendering for an
-// explicit per-call namespace (RecallInput.Namespaces) that is not the
-// primary namespace.
-func TestRecallFromFieldCallOriginViaMCP(t *testing.T) {
-	cs := connect(t)
-	ctx := context.Background()
-
-	remember := func(ns, content string) {
-		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
-			Name:      "memory_remember",
-			Arguments: map[string]any{"content": content, "tier": "semantic", "namespace": ns},
-		}); err != nil {
-			t.Fatalf("remember %s: %v", ns, err)
-		}
-	}
-	const token = "flugelhorn17"
-	remember("acme/phoenix", "primary "+token)
-	remember("other/ns", "explicit "+token)
-
-	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
-		Name: "memory_recall",
-		Arguments: map[string]any{
-			"query": token, "namespace": "acme/phoenix",
-			"namespaces": []string{"acme/phoenix", "other/ns"}, "limit": 10,
-		},
-	})
-	if err != nil {
-		t.Fatalf("recall: %v", err)
-	}
-	var out fromRecallResult
-	structured(t, res, &out)
-
-	wantFrom := map[string]string{"acme/phoenix": "", "other/ns": "call:other/ns"}
-	seen := map[string]bool{}
-	for _, r := range out.Results {
-		want, ok := wantFrom[r.Namespace]
-		if !ok {
-			t.Fatalf("unexpected namespace %q in results", r.Namespace)
-		}
-		seen[r.Namespace] = true
-		if r.From != want {
-			t.Errorf("namespace %q: from = %q, want %q", r.Namespace, r.From, want)
-		}
-	}
-	for ns := range wantFrom {
-		if !seen[ns] {
-			t.Errorf("namespace %q missing from recall results", ns)
-		}
-	}
-}
-
 // TestBriefingFromFieldReflectsOriginViaMCP mirrors
 // TestRecallFromFieldReflectsOriginViaMCP for memory_briefing: an ancestor
 // fact briefed alongside the primary namespace's own fact must carry "from",
-// the primary's must not.
+// the primary's must not. memory_remember has no namespace override, so the
+// primary and ancestor facts are written from their own connectAt
+// connections.
 func TestBriefingFromFieldReflectsOriginViaMCP(t *testing.T) {
-	cs := connect(t)
 	ctx := context.Background()
+	svc := service.New(openStore(t), embedtest.New(dims))
 
-	remember := func(ns, content string) {
-		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
-			Name:      "memory_remember",
-			Arguments: map[string]any{"content": content, "tier": "semantic", "namespace": ns},
-		}); err != nil {
-			t.Fatalf("remember %s: %v", ns, err)
-		}
+	primaryCS := connectAt(t, svc, "acme/phoenix/api", "")
+	if _, err := primaryCS.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_remember",
+		Arguments: map[string]any{"content": "primary fact", "tier": "semantic"},
+	}); err != nil {
+		t.Fatalf("remember primary: %v", err)
 	}
-	remember("acme/phoenix/api", "primary fact")
-	remember("acme/phoenix", "ancestor fact")
+	ancestorCS := connectAt(t, svc, "acme/phoenix", "")
+	if _, err := ancestorCS.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_remember",
+		Arguments: map[string]any{"content": "ancestor fact", "tier": "semantic"},
+	}); err != nil {
+		t.Fatalf("remember ancestor: %v", err)
+	}
 
-	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+	res, err := primaryCS.CallTool(ctx, &mcpsdk.CallToolParams{
 		Name:      "memory_briefing",
-		Arguments: map[string]any{"namespace": "acme/phoenix/api"},
+		Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("briefing: %v", err)
@@ -2483,22 +2611,25 @@ func TestAnswerAgenticTierNarrowedSourceKeepsFromLabelViaMCP(t *testing.T) {
 // memory objects, because the briefing is LLM-facing context and token size
 // matters.
 func TestBriefingScopeHeaderAndChildrenViaMCP(t *testing.T) {
-	cs := connect(t)
 	ctx := context.Background()
+	svc := service.New(openStore(t), embedtest.New(dims))
 
-	remember := func(args map[string]any) {
+	remember := func(cs *mcpsdk.ClientSession, args map[string]any) {
 		t.Helper()
 		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{Name: "memory_remember", Arguments: args}); err != nil {
 			t.Fatalf("remember: %v", err)
 		}
 	}
-	remember(map[string]any{"namespace": "acme", "content": "acme root fact", "tier": "semantic"})
-	longContent := strings.Repeat("phoenix design decision ", 5) // 120 chars, no summary
-	remember(map[string]any{"namespace": "acme/phoenix", "content": longContent, "tier": "semantic", "tags": []string{"pinned"}})
-	remember(map[string]any{"namespace": "acme/phoenix", "content": "phoenix deploys with helm", "tier": "semantic", "summary": "phoenix helm summary"})
+	acmeCS := connectAt(t, svc, "acme", "")
+	remember(acmeCS, map[string]any{"content": "acme root fact", "tier": "semantic"})
 
-	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
-		Name: "memory_briefing", Arguments: map[string]any{"namespace": "acme"},
+	phoenixCS := connectAt(t, svc, "acme/phoenix", "")
+	longContent := strings.Repeat("phoenix design decision ", 5) // 120 chars, no summary
+	remember(phoenixCS, map[string]any{"content": longContent, "tier": "semantic", "tags": []string{"pinned"}})
+	remember(phoenixCS, map[string]any{"content": "phoenix deploys with helm", "tier": "semantic", "summary": "phoenix helm summary"})
+
+	res, err := acmeCS.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_briefing", Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("briefing: %v", err)
@@ -2549,21 +2680,23 @@ func TestBriefingScopeHeaderAndChildrenViaMCP(t *testing.T) {
 // TestBriefingChildrenTruncationNoteViaMCP: over the 10-child cap the MCP
 // render appends an "… and N more" note instead of ballooning the result.
 func TestBriefingChildrenTruncationNoteViaMCP(t *testing.T) {
-	cs := connect(t)
 	ctx := context.Background()
+	svc := service.New(openStore(t), embedtest.New(dims))
 
 	for i := range 12 {
 		ns := fmt.Sprintf("acme/team%02d", i)
+		cs := connectAt(t, svc, ns, "")
 		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
 			Name:      "memory_remember",
-			Arguments: map[string]any{"namespace": ns, "content": "fact for " + ns, "tier": "semantic"},
+			Arguments: map[string]any{"content": "fact for " + ns, "tier": "semantic"},
 		}); err != nil {
 			t.Fatalf("remember %s: %v", ns, err)
 		}
 	}
 
-	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
-		Name: "memory_briefing", Arguments: map[string]any{"namespace": "acme"},
+	acmeCS := connectAt(t, svc, "acme", "")
+	res, err := acmeCS.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_briefing", Arguments: map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("briefing: %v", err)
