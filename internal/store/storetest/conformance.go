@@ -47,6 +47,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("GetByFingerprint", func(t *testing.T) { testGetByFingerprint(t, st, dims) })
 	t.Run("LevelFilter", func(t *testing.T) { testLevelFilter(t, st, dims) })
 	t.Run("VectorlessRow", func(t *testing.T) { testVectorlessRow(t, st, dims) })
+	t.Run("NamespaceLinks", func(t *testing.T) { testNamespaceLinks(t, st, dims) })
 }
 
 // testVectorlessRow verifies stores accept memories with no embedding
@@ -135,6 +136,188 @@ func testVectorlessRow(t *testing.T, st store.Store, dims int) {
 	}
 	if _, err := st.Get(ctx, toNS, id(ns, "row")); err != nil {
 		t.Fatalf("vectorless memory not found after reassign: %v", err)
+	}
+}
+
+// testNamespaceLinks exercises the optional LinkStore capability: put/list
+// round-trip (including tiers and note), upsert-overwrites on a (src,dst)
+// conflict, DeleteLink's existed-bool return, ListLinks/ListAllLinks scoping,
+// the DeleteNamespace cascade (gap G5), and RenameLinkEndpoints rewriting both
+// sides of a link. Stores that do not implement LinkStore skip.
+func testNamespaceLinks(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	ls, ok := st.(store.LinkStore)
+	if !ok {
+		t.Skip("store does not implement store.LinkStore")
+	}
+	ns := t.Name()
+	src := ns + "-src"
+	dst := ns + "-dst"
+	other := ns + "-other"
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	// Put/list round-trip, including tiers and note.
+	link := store.NamespaceLink{
+		Src: src, Dst: dst,
+		Tiers:     []memory.Tier{memory.TierSemantic, memory.TierProcedural},
+		Note:      "shared golang helpers",
+		CreatedAt: now,
+	}
+	if err := ls.PutLink(ctx, link); err != nil {
+		t.Fatalf("put link: %v", err)
+	}
+	got, err := ls.ListLinks(ctx, src)
+	if err != nil {
+		t.Fatalf("list links: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("list links = %d, want 1", len(got))
+	}
+	if got[0].Src != src || got[0].Dst != dst || got[0].Note != link.Note {
+		t.Fatalf("round-trip mismatch: %+v", got[0])
+	}
+	if !slices.Equal(got[0].Tiers, link.Tiers) {
+		t.Fatalf("tiers = %v, want %v", got[0].Tiers, link.Tiers)
+	}
+	if !got[0].CreatedAt.Equal(now) {
+		t.Fatalf("created_at = %v, want %v", got[0].CreatedAt, now)
+	}
+
+	// Upsert overwrites in place: same (src,dst), different tiers/note. Must
+	// not duplicate the row.
+	overwrite := store.NamespaceLink{
+		Src: src, Dst: dst,
+		Tiers:     []memory.Tier{memory.TierSemantic},
+		Note:      "updated note",
+		CreatedAt: now.Add(time.Minute),
+	}
+	if err := ls.PutLink(ctx, overwrite); err != nil {
+		t.Fatalf("put link (overwrite): %v", err)
+	}
+	got, err = ls.ListLinks(ctx, src)
+	if err != nil {
+		t.Fatalf("list links after overwrite: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("list links after overwrite = %d, want 1 (upsert must not duplicate)", len(got))
+	}
+	if got[0].Note != "updated note" || !slices.Equal(got[0].Tiers, overwrite.Tiers) {
+		t.Fatalf("overwrite not applied: %+v", got[0])
+	}
+
+	// A second, distinct link from src, plus one from another source, to
+	// exercise ListLinks scoping and ListAllLinks.
+	link2 := store.NamespaceLink{Src: src, Dst: other, CreatedAt: now}
+	if err := ls.PutLink(ctx, link2); err != nil {
+		t.Fatalf("put link2: %v", err)
+	}
+	link3 := store.NamespaceLink{Src: other, Dst: dst, CreatedAt: now}
+	if err := ls.PutLink(ctx, link3); err != nil {
+		t.Fatalf("put link3: %v", err)
+	}
+
+	got, err = ls.ListLinks(ctx, src)
+	if err != nil {
+		t.Fatalf("list links (src): %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("list links (src) = %d, want 2", len(got))
+	}
+
+	all, err := ls.ListAllLinks(ctx)
+	if err != nil {
+		t.Fatalf("list all links: %v", err)
+	}
+	if len(all) < 3 {
+		t.Fatalf("list all links = %d, want >= 3", len(all))
+	}
+
+	// Empty/unknown src -> empty list, no error.
+	empty, err := ls.ListLinks(ctx, ns+"-unknown")
+	if err != nil {
+		t.Fatalf("list links (unknown src): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("list links (unknown src) = %d, want 0", len(empty))
+	}
+
+	// DeleteLink returns existed=true, then existed=false on the second call.
+	existed, err := ls.DeleteLink(ctx, src, other)
+	if err != nil {
+		t.Fatalf("delete link: %v", err)
+	}
+	if !existed {
+		t.Fatalf("delete link: existed = false, want true")
+	}
+	existed, err = ls.DeleteLink(ctx, src, other)
+	if err != nil {
+		t.Fatalf("delete link (again): %v", err)
+	}
+	if existed {
+		t.Fatalf("delete link (again): existed = true, want false")
+	}
+
+	// --- DeleteNamespace cascade (gap G5): links referencing the deleted
+	// namespace on either side must be dropped too.
+	cascSrc := ns + "-casc-src"
+	cascDst := ns + "-casc-dst"
+	if err := ls.PutLink(ctx, store.NamespaceLink{Src: cascSrc, Dst: cascDst, CreatedAt: now}); err != nil {
+		t.Fatalf("put cascade link (as src): %v", err)
+	}
+	if err := ls.PutLink(ctx, store.NamespaceLink{Src: cascDst, Dst: cascSrc, CreatedAt: now}); err != nil {
+		t.Fatalf("put cascade link (as dst): %v", err)
+	}
+	if _, err := st.DeleteNamespace(ctx, cascSrc); err != nil {
+		t.Fatalf("delete namespace: %v", err)
+	}
+	remaining, err := ls.ListAllLinks(ctx)
+	if err != nil {
+		t.Fatalf("list all links after delete namespace: %v", err)
+	}
+	for _, l := range remaining {
+		if l.Src == cascSrc || l.Dst == cascSrc {
+			t.Fatalf("link referencing deleted namespace %q survived: %+v", cascSrc, l)
+		}
+	}
+
+	// --- RenameLinkEndpoints (gap G5): rewrites both the src and dst sides. ---
+	from := ns + "-rename-from"
+	to := ns + "-rename-to"
+	third := ns + "-rename-third"
+	if err := ls.PutLink(ctx, store.NamespaceLink{Src: from, Dst: third, Note: "from as src", CreatedAt: now}); err != nil {
+		t.Fatalf("put rename link (as src): %v", err)
+	}
+	if err := ls.PutLink(ctx, store.NamespaceLink{Src: third, Dst: from, Note: "from as dst", CreatedAt: now}); err != nil {
+		t.Fatalf("put rename link (as dst): %v", err)
+	}
+	if err := ls.RenameLinkEndpoints(ctx, from, to); err != nil {
+		t.Fatalf("rename link endpoints: %v", err)
+	}
+	toLinks, err := ls.ListLinks(ctx, to)
+	if err != nil {
+		t.Fatalf("list links (to): %v", err)
+	}
+	if len(toLinks) != 1 || toLinks[0].Dst != third || toLinks[0].Note != "from as src" {
+		t.Fatalf("rename did not rewrite src side: %+v", toLinks)
+	}
+	thirdLinks, err := ls.ListLinks(ctx, third)
+	if err != nil {
+		t.Fatalf("list links (third): %v", err)
+	}
+	if len(thirdLinks) != 1 || thirdLinks[0].Dst != to || thirdLinks[0].Note != "from as dst" {
+		t.Fatalf("rename did not rewrite dst side: %+v", thirdLinks)
+	}
+	fromLinks, err := ls.ListLinks(ctx, from)
+	if err != nil {
+		t.Fatalf("list links (from, after rename): %v", err)
+	}
+	if len(fromLinks) != 0 {
+		t.Fatalf("old src namespace %q still has links after rename: %v", from, fromLinks)
+	}
+
+	// Rename is a no-op when from == to.
+	if err := ls.RenameLinkEndpoints(ctx, to, to); err != nil {
+		t.Fatalf("rename link endpoints (noop): %v", err)
 	}
 }
 

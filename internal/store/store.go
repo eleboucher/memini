@@ -181,6 +181,43 @@ type EmbedModelStore interface {
 	SetEmbedModel(ctx context.Context, model string) error
 }
 
+// NamespaceLink is a directed cross-namespace read link: recall scoped to Src
+// additionally reads durable memories from Dst. Tiers restricts which tiers
+// cross the boundary; nil means the service layer applies its durable-tier
+// default (only semantic/procedural cross namespace boundaries — episodic and
+// working never do, in either direction). Note is a free-text annotation for
+// operators explaining why the link exists.
+type NamespaceLink struct {
+	Src, Dst  string
+	Tiers     []memory.Tier // nil = durable default applied by service
+	Note      string
+	CreatedAt time.Time
+}
+
+// LinkStore is implemented by drivers that persist namespace_links, the
+// cross-namespace read-linking table (namespace-cascade design). It is an
+// optional capability interface — the EmbedModelStore precedent above — so
+// callers type-assert and degrade gracefully against a driver that predates
+// it.
+type LinkStore interface {
+	// PutLink inserts or replaces the link keyed by (l.Src, l.Dst).
+	PutLink(ctx context.Context, l NamespaceLink) error
+	// DeleteLink removes the link from src to dst. The bool reports whether a
+	// link existed to delete; a missing link is not an error.
+	DeleteLink(ctx context.Context, src, dst string) (bool, error)
+	// ListLinks returns the links whose Src is src, ordered by Dst. Empty (not
+	// an error) when src has no outgoing links.
+	ListLinks(ctx context.Context, src string) ([]NamespaceLink, error)
+	// ListAllLinks returns every link in the store, for the CLI/UI.
+	ListAllLinks(ctx context.Context) ([]NamespaceLink, error)
+	// RenameLinkEndpoints rewrites every link whose Src or Dst equals from to
+	// to instead, used when a namespace is moved (maintenance.Move). A link
+	// that collides with an existing row after the rewrite overwrites it
+	// (last-write-wins, mirroring PutLink's upsert semantics). A no-op when
+	// from == to.
+	RenameLinkEndpoints(ctx context.Context, from, to string) error
+}
+
 // OrEmptyMap returns m, or an empty map when m is nil, so drivers persist an
 // empty JSON object rather than null for absent metadata.
 func OrEmptyMap(m map[string]any) map[string]any {
