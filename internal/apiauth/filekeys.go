@@ -59,6 +59,9 @@ type FileKeySet struct {
 //     secret) or secret (the plaintext, hashed here and never retained —
 //     see fileKeyEntry.Secret)
 //   - hash, when given, must decode as exactly 32 bytes of hex
+//   - no two entries may resolve to the same hash (i.e. share a secret),
+//     regardless of whether each declared it as hash or secret — the error
+//     names both entries by name, never echoing the hash or secret
 //   - home / default_namespace, when given, are normalized
 //     (httputil.NormalizeNamespace) and must pass httputil.ValidateNamespace
 func LoadFileKeys(path string) (*FileKeySet, error) {
@@ -80,6 +83,16 @@ func LoadFileKeys(path string) (*FileKeySet, error) {
 		}
 		if _, dup := byName[key.Name]; dup {
 			return nil, fmt.Errorf("api keys file %s: entry #%d (name %q): duplicate name", path, i+1, key.Name)
+		}
+		// Two entries sharing a hash (i.e. the same secret, whether declared
+		// via hash or plaintext secret) would collide last-wins in the auth
+		// lookup: non-deterministic attribution, and the losing key
+		// unreachable while still LOOKING live in FileKeys()/IsFileKey().
+		// Refuse instead, naming both entries by NAME only — never the hash
+		// (retrievable from the file itself) and never the secret.
+		if prev, dup := byHash[key.Hash]; dup {
+			return nil, fmt.Errorf("api keys file %s: entry #%d (name %q): hash collides with entry for %q",
+				path, i+1, key.Name, prev.Name)
 		}
 		byName[key.Name] = key
 		byHash[key.Hash] = key
@@ -196,6 +209,12 @@ func (fk *FileKeySet) FileKeys() []store.APIKey {
 // at boot, only when a file is configured, so an operator sees a warning
 // naming exactly which DB keys are shadowed. fk nil or ks nil (no file
 // configured, or no table capability) returns (nil, nil) — nothing to check.
+//
+// The check is ADVISORY: a ListAPIKeys error is returned so the caller can
+// log it, but it must never be treated as boot-fatal — the same query
+// failing inside tableNonEmpty is absorbed too (fail closed and continue),
+// and refusing a boot over a warning the server can live without would be
+// strictly worse than that precedent. See cmd/memini/root.go's newServer.
 func (fk *FileKeySet) ShadowedDBKeyNames(ctx context.Context, ks store.APIKeyStore) ([]string, error) {
 	if fk == nil || ks == nil || len(fk.byName) == 0 {
 		return nil, nil

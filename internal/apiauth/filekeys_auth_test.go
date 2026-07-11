@@ -238,6 +238,25 @@ func TestAuthenticateNoFileKeysUnchanged(t *testing.T) {
 	}
 }
 
+// TestAuthenticateEmptyFileKeysDoesNotForceAuth pins the documented
+// empty-means-dev-mode reading: a MEMINI_API_KEYS_FILE that loads
+// successfully but holds ZERO entries (keys: []) does NOT make auth
+// mandatory — mirroring the table's own empty-table rule, where merely
+// having the capability wired and unused leaves dev mode intact. Only a
+// non-empty set forces auth (TestAuthenticateFileKeysEnforceAuthRegardlessOfEmptyTable).
+// Locked in so the semantics can't silently flip to "file configured at all".
+func TestAuthenticateEmptyFileKeysDoesNotForceAuth(t *testing.T) {
+	fk, err := apiauth.LoadFileKeys(writeKeysFile(t, "keys: []\n"))
+	if err != nil {
+		t.Fatalf("LoadFileKeys: %v", err)
+	}
+	cfg := apiauth.New("", nil).WithFileKeys(fk)
+	p, ok, err := cfg.Authenticate(context.Background(), "")
+	if err != nil || !ok || p != nil {
+		t.Fatalf("empty keys file, no bearer: want dev mode (nil, true, nil), got (%+v, %v, %v)", p, ok, err)
+	}
+}
+
 // TestConfigFileKeysAccessors: Config exposes the loaded file keys' metadata
 // (for a future K3b read-only listing) and IsFileKey by name.
 func TestConfigFileKeysAccessors(t *testing.T) {

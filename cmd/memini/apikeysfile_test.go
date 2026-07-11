@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -163,5 +164,105 @@ keys:
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("file key write: want 201, got %d", resp.StatusCode)
+	}
+}
+
+// failingListStore wraps a real store but errors on ListAPIKeys, to exercise
+// the boot-time shadow check's advisory (never boot-fatal) failure mode.
+// The other APIKeyStore methods delegate so auth-path lookups keep working.
+type failingListStore struct {
+	store.Store
+	ks store.APIKeyStore
+}
+
+func (f failingListStore) PutAPIKey(ctx context.Context, k store.APIKey) error {
+	return f.ks.PutAPIKey(ctx, k)
+}
+
+func (f failingListStore) DeleteAPIKey(ctx context.Context, name string) (bool, error) {
+	return f.ks.DeleteAPIKey(ctx, name)
+}
+
+func (f failingListStore) ListAPIKeys(context.Context) ([]store.APIKey, error) {
+	return nil, errors.New("simulated ListAPIKeys outage")
+}
+
+func (f failingListStore) GetAPIKeyByHash(ctx context.Context, hash string) (*store.APIKey, error) {
+	return f.ks.GetAPIKeyByHash(ctx, hash)
+}
+
+func (f failingListStore) RenameAPIKeyNamespaces(ctx context.Context, from, to string) error {
+	return f.ks.RenameAPIKeyNamespaces(ctx, from, to)
+}
+
+// TestNewServerShadowCheckErrorDoesNotAbortBoot pins that a ListAPIKeys
+// failure during the boot-time shadow WARNING (an advisory check) never
+// refuses the boot — matching apiauth's tableNonEmpty precedent, which
+// absorbs an error on the very same query rather than failing the request.
+// The failure must instead be logged as a warning naming the file, so an
+// operator still learns the check couldn't run.
+func TestNewServerShadowCheckErrorDoesNotAbortBoot(t *testing.T) {
+	ctx := context.Background()
+
+	keysFile := writeAPIKeysFile(t, `
+keys:
+  - name: alex
+    secret: "file-secret"
+`)
+
+	t.Setenv("MEMINI_BACKEND", "sqlite")
+	t.Setenv("MEMINI_SQLITE_PATH", filepath.Join(t.TempDir(), "memini.db"))
+	t.Setenv("MEMINI_EMBED_DIMS", "8")
+	t.Setenv("MEMINI_API_KEYS_FILE", keysFile)
+	t.Setenv("MEMINI_UI_ENABLED", "false")
+	t.Setenv("MEMINI_DEFAULT_NAMESPACE", "it-shadow-err-test")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	reg := prometheus.NewRegistry()
+	svc, st, deps, joinWorkers, cleanup, err := buildServiceStack(ctx, cfg, log, reg)
+	if err != nil {
+		t.Fatalf("buildServiceStack: %v", err)
+	}
+	t.Cleanup(func() { joinWorkers(); cleanup() })
+
+	ks, ok := st.(store.APIKeyStore)
+	if !ok {
+		t.Fatalf("sqlite store must implement store.APIKeyStore")
+	}
+	wrapped := failingListStore{Store: st, ks: ks}
+
+	srv, err := newServer(cfg, svc, wrapped, deps, log, reg)
+	if err != nil {
+		t.Fatalf("newServer: a shadow-check ListAPIKeys error must not abort boot, got %v", err)
+	}
+
+	logOut := logBuf.String()
+	if !strings.Contains(logOut, keysFile) || !strings.Contains(logOut, "simulated ListAPIKeys outage") {
+		t.Errorf("boot log must warn about the failed shadow check, naming the file %q and the error; got:\n%s",
+			keysFile, logOut)
+	}
+
+	// The file key still authenticates: the advisory check failing changes
+	// nothing about the auth path itself.
+	ts := httptest.NewServer(srv.Router())
+	t.Cleanup(ts.Close)
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/memories", strings.NewReader(
+		`{"content":"boot survived","tier":"semantic"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer file-secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("file key write after failed shadow check: want 201, got %d", resp.StatusCode)
 	}
 }

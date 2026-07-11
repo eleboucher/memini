@@ -162,12 +162,16 @@ func newServer(
 		// or edit that row — it just always wins at auth time (file checked
 		// before the table, apiauth.Config.Authenticate). Surface that as a
 		// boot-time warning rather than silently shadowing it, so an operator
-		// notices the DB row is now dead weight.
-		shadowed, serr := fk.ShadowedDBKeyNames(context.Background(), keyStore)
-		if serr != nil {
-			return nil, fmt.Errorf("checking MEMINI_API_KEYS_FILE=%s for db-key shadowing: %w", cfg.APIKeysFile, serr)
-		}
-		if len(shadowed) > 0 {
+		// notices the DB row is now dead weight. The check is ADVISORY: a
+		// ListAPIKeys failure here is logged and boot continues — matching
+		// apiauth's tableNonEmpty, which absorbs an error on the very same
+		// query rather than failing the request (see ShadowedDBKeyNames' doc).
+		switch shadowed, serr := fk.ShadowedDBKeyNames(context.Background(), keyStore); {
+		case serr != nil:
+			log.Warn("could not check the declarative api keys file for shadowed db-stored keys; "+
+				"continuing boot — any same-named db key is silently unused until this is re-checked",
+				"file", cfg.APIKeysFile, "error", serr)
+		case len(shadowed) > 0:
 			log.Warn("declarative api keys file shadows existing db-stored keys by name; "+
 				"the file entry wins at auth time and the db row is unused until removed",
 				"file", cfg.APIKeysFile, "shadowed_keys", shadowed)

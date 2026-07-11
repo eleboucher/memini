@@ -187,6 +187,36 @@ keys:
 	assertErrNamesFile(t, err, path)
 }
 
+// TestLoadFileKeysDuplicateHashes: two entries sharing the same underlying
+// secret (one declared via hash, one via plaintext secret — the sneakiest
+// variant of the collision) must refuse the load. A silent last-wins
+// collision in the hash map would make attribution non-deterministic and
+// leave one key unreachable while still LOOKING live in
+// FileKeys()/IsFileKey(). The error must name both entries by NAME and never
+// echo the secret or the hash (the hash is retrievable from the file itself;
+// repeating it in a log-bound error buys nothing).
+func TestLoadFileKeysDuplicateHashes(t *testing.T) {
+	path := writeKeysFile(t, `
+keys:
+  - name: first
+    hash: "`+hashOf("shared-collision-secret")+`"
+  - name: second
+    secret: "shared-collision-secret"
+`)
+	_, err := apiauth.LoadFileKeys(path)
+	if err == nil {
+		t.Fatalf("want an error for two entries sharing a hash")
+	}
+	assertErrNamesFile(t, err, path)
+	msg := err.Error()
+	if !contains(msg, `"first"`) || !contains(msg, `"second"`) {
+		t.Fatalf("error %q must name both colliding entries (first, second)", msg)
+	}
+	if contains(msg, "shared-collision-secret") || contains(msg, hashOf("shared-collision-secret")) {
+		t.Fatalf("error %q must echo neither the secret nor the hash", msg)
+	}
+}
+
 func TestLoadFileKeysInvalidHomeNamespace(t *testing.T) {
 	path := writeKeysFile(t, `
 keys:
