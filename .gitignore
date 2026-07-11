@@ -39,3 +39,4 @@ qa_*.jsonl
 .slim/deepwork/
 packages/namespace-resolver/dist/
 packages/namespace-resolver/node_modules/
+.superpowers/
