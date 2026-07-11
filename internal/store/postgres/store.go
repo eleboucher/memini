@@ -482,6 +482,36 @@ func (s *Store) ListNamespaces(ctx context.Context) ([]string, error) {
 	return out, rows.Err()
 }
 
+// NamespaceActivity implements store.ActivityStore: one aggregate query for
+// per-namespace live count and most recent created_at. Liveness reuses
+// filterClause with an empty Filter so it stays byte-identical to what a
+// default List applies (not expired at now, not superseded, validity window
+// not closed).
+func (s *Store) NamespaceActivity(ctx context.Context, now time.Time) ([]store.NamespaceActivity, error) {
+	b := &args{}
+	where := filterClause(b, store.Filter{Now: now})
+	q := `SELECT namespace, COUNT(*), MAX(created_at) FROM memories WHERE true` +
+		where + ` GROUP BY namespace ORDER BY namespace`
+	rows, err := s.pool.Query(ctx, q, b.vals...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []store.NamespaceActivity
+	for rows.Next() {
+		var a store.NamespaceActivity
+		var total int64
+		if err := rows.Scan(&a.NS, &total, &a.LastWrite); err != nil {
+			return nil, err
+		}
+		a.Total = int(total)
+		a.LastWrite = a.LastWrite.UTC()
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 // DeleteNamespace removes every memory in a namespace, plus any
 // namespace_links row that references the namespace on either side (gap G5:
 // a deleted namespace must not leave a dangling link). Returns the number of

@@ -83,8 +83,10 @@ func scanRow(s scanner, metric *float64) (*memory.Memory, error) {
 }
 
 // filterClause builds the SQL suffix and args that restrict a search to the
-// subset described by f. alias is the table alias of the memories table.
-func filterClause(f store.Filter, alias string) (string, []any) {
+// subset described by f. Every query aliases the memories table as "m", so
+// the alias is a constant here rather than a parameter.
+func filterClause(f store.Filter) (string, []any) {
+	const alias = "m"
 	var b strings.Builder
 	var args []any
 

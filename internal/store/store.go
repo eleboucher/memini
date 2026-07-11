@@ -219,6 +219,32 @@ type LinkStore interface {
 	RenameLinkEndpoints(ctx context.Context, from, to string) error
 }
 
+// NamespaceActivity summarizes one namespace's live activity: the count of
+// live memories (excluding expired, superseded, and closed-validity rows —
+// the same liveness a default List filter applies) and the most recent
+// created_at among them (the "last write" column Stats.LastWriteAt uses;
+// unlike Stats, tombstoned rows do not advance it, since a single aggregate
+// query shares one liveness WHERE for both figures).
+type NamespaceActivity struct {
+	NS        string
+	Total     int
+	LastWrite time.Time
+}
+
+// ActivityStore is implemented by drivers that can compute per-namespace
+// activity in a single aggregate query (SELECT namespace, COUNT(*),
+// MAX(created_at) ... GROUP BY namespace). It is an optional capability
+// interface — the EmbedModelStore/LinkStore precedent — so callers
+// type-assert and degrade gracefully against a driver that predates it: the
+// briefing child rollup skips itself entirely rather than falling back to
+// per-namespace scans.
+type ActivityStore interface {
+	// NamespaceActivity returns one row per namespace holding at least one
+	// live memory, ordered by namespace. now is the expiry-evaluation instant
+	// (mirroring Filter.Now); the zero value means the wall clock.
+	NamespaceActivity(ctx context.Context, now time.Time) ([]NamespaceActivity, error)
+}
+
 // OrEmptyMap returns m, or an empty map when m is nil, so drivers persist an
 // empty JSON object rather than null for absent metadata.
 func OrEmptyMap(m map[string]any) map[string]any {

@@ -48,6 +48,87 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("LevelFilter", func(t *testing.T) { testLevelFilter(t, st, dims) })
 	t.Run("VectorlessRow", func(t *testing.T) { testVectorlessRow(t, st, dims) })
 	t.Run("NamespaceLinks", func(t *testing.T) { testNamespaceLinks(t, st, dims) })
+	t.Run("NamespaceActivity", func(t *testing.T) { testNamespaceActivity(t, st, dims) })
+}
+
+// testNamespaceActivity verifies the optional ActivityStore aggregate: one
+// row per namespace holding live memories, with Total counting only live rows
+// (expired and superseded rows excluded) and LastWrite the max created_at
+// among those live rows — a tombstoned row must neither count nor advance the
+// clock. A namespace holding only non-live rows yields no row at all. Stores
+// that do not implement ActivityStore skip.
+func testNamespaceActivity(t *testing.T, st store.Store, dims int) {
+	as, ok := st.(store.ActivityStore)
+	if !ok {
+		t.Skip("store does not implement store.ActivityStore")
+	}
+	ctx := context.Background()
+	ns := t.Name()
+	nsA, nsB, nsDead := ns+"-a", ns+"-b", ns+"-dead"
+	base := time.Now().UTC().Truncate(time.Millisecond)
+
+	older := mem(nsA, "older", "older live fact", vec(dims, 1))
+	older.CreatedAt = base.Add(-2 * time.Hour)
+	mustUpsert(t, st, older)
+	newest := mem(nsA, "newest", "newest live fact", vec(dims, 2))
+	newest.CreatedAt = base.Add(-1 * time.Hour)
+	mustUpsert(t, st, newest)
+	// An expired row CREATED AFTER the newest live one: it must not count
+	// toward Total and must not advance LastWrite past the live max.
+	expired := mem(nsA, "expired", "expired fact", vec(dims, 3))
+	expired.CreatedAt = base.Add(-30 * time.Minute)
+	exp := base.Add(-10 * time.Minute)
+	expired.ExpiresAt = &exp
+	mustUpsert(t, st, expired)
+	// Same for a superseded row created after the newest live one.
+	sup := mem(nsA, "sup", "superseded fact", vec(dims, 4))
+	sup.CreatedAt = base.Add(-20 * time.Minute)
+	by := id(nsA, "newest")
+	sup.SupersededBy = &by
+	mustUpsert(t, st, sup)
+
+	bOnly := mem(nsB, "only", "b live fact", vec(dims, 5))
+	bOnly.CreatedAt = base.Add(-3 * time.Hour)
+	mustUpsert(t, st, bOnly)
+
+	// A namespace whose every row is expired must yield no activity row.
+	dead := mem(nsDead, "gone", "expired-only namespace", vec(dims, 6))
+	dead.CreatedAt = base.Add(-2 * time.Hour)
+	deadExp := base.Add(-1 * time.Hour)
+	dead.ExpiresAt = &deadExp
+	mustUpsert(t, st, dead)
+
+	acts, err := as.NamespaceActivity(ctx, base)
+	if err != nil {
+		t.Fatalf("namespace activity: %v", err)
+	}
+	// The store is shared across conformance subtests, so assert only on this
+	// test's namespaces rather than on the full row set.
+	byNS := map[string]store.NamespaceActivity{}
+	for _, a := range acts {
+		byNS[a.NS] = a
+	}
+	a, ok := byNS[nsA]
+	if !ok {
+		t.Fatalf("no activity row for %s (rows: %v)", nsA, acts)
+	}
+	if a.Total != 2 {
+		t.Errorf("%s total = %d, want 2 (live rows only — expired/superseded excluded)", nsA, a.Total)
+	}
+	if !a.LastWrite.Equal(newest.CreatedAt) {
+		t.Errorf("%s last write = %v, want %v (max created_at among LIVE rows; the newer tombstoned rows must not advance it)",
+			nsA, a.LastWrite, newest.CreatedAt)
+	}
+	b, ok := byNS[nsB]
+	if !ok {
+		t.Fatalf("no activity row for %s (rows: %v)", nsB, acts)
+	}
+	if b.Total != 1 || !b.LastWrite.Equal(bOnly.CreatedAt) {
+		t.Errorf("%s = {total %d, last %v}, want {total 1, last %v}", nsB, b.Total, b.LastWrite, bOnly.CreatedAt)
+	}
+	if _, ok := byNS[nsDead]; ok {
+		t.Errorf("%s holds only expired rows and must yield no activity row, got %+v", nsDead, byNS[nsDead])
+	}
 }
 
 // testVectorlessRow verifies stores accept memories with no embedding

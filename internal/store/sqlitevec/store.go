@@ -523,7 +523,7 @@ func (s *Store) VectorSearch(ctx context.Context, namespace string, vec []float3
 	if err != nil {
 		return nil, err
 	}
-	where, args := filterClause(f, "m")
+	where, args := filterClause(f)
 	q := fmt.Sprintf(`
 		SELECT %s, v.distance
 		FROM vec_memories v
@@ -543,7 +543,7 @@ func (s *Store) KeywordSearch(ctx context.Context, namespace, query string, f st
 	if match == "" {
 		return nil, nil
 	}
-	where, args := filterClause(f, "m")
+	where, args := filterClause(f)
 	q := fmt.Sprintf(`
 		SELECT %s, bm25(fts_memories) AS rank
 		FROM fts_memories
@@ -581,7 +581,7 @@ func (s *Store) ListExpired(ctx context.Context, now time.Time, limit int) ([]*m
 
 // List returns memories in a namespace matching f (without embeddings).
 func (s *Store) List(ctx context.Context, namespace string, f store.Filter, limit int) ([]*memory.Memory, error) {
-	where, args := filterClause(f, "m")
+	where, args := filterClause(f)
 	q := `SELECT ` + memoryColumns + ` FROM memories m WHERE m.namespace = ?` + where
 	callArgs := append([]any{namespace}, args...)
 	if limit > 0 {
@@ -620,6 +620,35 @@ func (s *Store) ListNamespaces(ctx context.Context) ([]string, error) {
 			return nil, err
 		}
 		out = append(out, ns)
+	}
+	return out, rows.Err()
+}
+
+// NamespaceActivity implements store.ActivityStore: one aggregate query for
+// per-namespace live count and most recent created_at. Liveness reuses
+// filterClause with an empty Filter so it stays byte-identical to what a
+// default List applies (not expired at now, not superseded, validity window
+// not closed).
+func (s *Store) NamespaceActivity(ctx context.Context, now time.Time) ([]store.NamespaceActivity, error) {
+	where, args := filterClause(store.Filter{Now: now})
+	q := `SELECT m.namespace, COUNT(*), MAX(m.created_at) FROM memories m WHERE 1=1` +
+		where + ` GROUP BY m.namespace ORDER BY m.namespace`
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []store.NamespaceActivity
+	for rows.Next() {
+		var a store.NamespaceActivity
+		var total, last int64
+		if err := rows.Scan(&a.NS, &total, &last); err != nil {
+			return nil, err
+		}
+		a.Total = int(total)
+		a.LastWrite = fromMs(last)
+		out = append(out, a)
 	}
 	return out, rows.Err()
 }
