@@ -23,6 +23,13 @@ tool with:
   and filtered by subject later (e.g. `bug_fixes`, `architecture_decisions`,
   `coding_conventions`). Use a canonical value from `docs/categories.md`. This is
   orthogonal to `tier`: tier is the memory's _kind_, category is its _topic_.
+- `visibility` (optional) — who should know this: `project` (default, this
+  project only), `personal` (about the user, follows them everywhere), or an
+  ancestor namespace name read off the `memory_briefing` Scope line (e.g. the
+  team or org level) to share it up that chain. An unrecognized ancestor name
+  errors listing the valid chain. Ignored for `episodic`/`working` writes —
+  those always stay in the project regardless of `visibility`, so a session
+  digest can never pollute a shared ancestor or the user's personal namespace.
 - `summary` (optional) — short summary; defaults to first 200 chars of content
 - `confidence` (optional) — 0..1 for durable (`semantic`/`procedural`) facts;
   omit to let it start uncorroborated and earn trust as the fact recurs. Durable

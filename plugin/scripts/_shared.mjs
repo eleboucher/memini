@@ -110,10 +110,11 @@ function applyTemplate(template, segments) {
 
 // withAgent nests the project namespace under a per-agent segment when
 // MEMINI_AGENT is set ("myproject" -> "myproject/reviewer"), so several agents
-// sharing a repo keep private memory. Recall with scope=subtree on the project
-// reads across all of them. Applied unconditionally — MEMINI_AGENT predates the
-// tenant feature, so gating it behind config would drop the segment for
-// config-less installs that already use it.
+// sharing a repo keep private memory. Recall with scope=everywhere on the
+// project reads across all of them (the project namespace's own subtree).
+// Applied unconditionally — MEMINI_AGENT predates the tenant feature, so
+// gating it behind config would drop the segment for config-less installs
+// that already use it.
 function withAgent(ns) {
   const agent = (process.env["MEMINI_AGENT"] || "").trim();
   if (!agent) return ns;

@@ -20,15 +20,12 @@ memini is a memory service. To search for prior context, call the
 - `tags` (optional) — restrict to memories carrying every listed tag (AND)
 - `metadata` (optional) — restrict to memories whose metadata contains each
   key=value pair, e.g. `{"category":"bug_fixes"}` (see `docs/categories.md`)
-- `scope` (optional) — `subtree` also searches namespaces nested under this one
-  (a `project` namespace then also reads `project/<agent>`), for reading shared
-  plus per-agent memory; default `exact`.
-- `namespaces` (optional): search exactly these namespaces instead of the
-  default read set (namespace, its subtree, the tenant-shared namespace,
-  and the global namespace), replacing it entirely rather than adding to it.
-  An entry ending in `/*` also includes namespaces nested under it. Max 16,
-  and the current namespace isn't added automatically, so list it too if you
-  still want it searched.
+- `scope` (optional) — how wide to read: `project` (just this project's own
+  memories), `full` (default: project plus inherited context — ancestors, your
+  personal namespace, links), or `everywhere` (full plus nested sub-projects).
+  There is no per-call namespace override — namespaces are managed for you;
+  read the `from` field on each result (and the briefing's Scope line) to see
+  where a memory actually lives, never construct a namespace path yourself.
 - `as_of` (optional) — an RFC3339 time for "what was true then" queries; returns
   facts valid at that instant, including ones since superseded.
 - `response_format` (optional) — `concise` returns each result's summary (or the

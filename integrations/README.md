@@ -42,20 +42,41 @@ Every request is scoped to a **namespace** (tenant/agent). Point multiple
 agents at the same memini with the **same namespace** and they share one
 memory: remember a fact in Claude Code, recall it in Codex.
 
-- Remote transport: set the `X-Memini-Namespace` header.
-- stdio transport: set `MEMINI_DEFAULT_NAMESPACE`.
-- Either way, individual tool calls may override it with a `namespace` argument.
+- Remote transport: set the `X-Memini-Namespace` header (also set `X-Memini-Home`
+  to give the agent a personal namespace — see below).
+- stdio transport: set `MEMINI_DEFAULT_NAMESPACE` (and `MEMINI_HOME`).
+- REST callers may additionally override the namespace(s) searched with a
+  per-call `namespaces` argument; the MCP tools don't expose this — namespaces
+  are managed for you there, resolved from the request/env, never typed by
+  the model.
 
 As an alternative to one shared namespace, agents can keep private namespaces
-and still see each other's durable memory read-only: with `MEMINI_TENANT_SHARED=true`
-on the server, any namespace under a tenant (`work/...`) merges the tenant-shared
-namespace (`work/_shared`)'s semantic/procedural memories into every recall and
-briefing, without merging writes. It's off by default, so namespaces stay isolated
-unless you opt in. This also composes with the `project/<agent>` subtree
-pattern (`MEMINI_AGENT` nests each agent's namespace under the project's): read
-the parent namespace with `scope=subtree` to see every agent's memory while
-each still writes to its own namespace; that pattern now works in briefings as
-well as recall. See
+and still see relevant memory read-only, via memini's ancestor/home/link
+cascade — no server-wide opt-in flag required:
+
+- **Ancestors**: a namespace automatically inherits its durable (semantic/
+  procedural) memories from every ancestor in its path — `acme/phoenix/api`
+  reads from `acme/phoenix` and `acme` too. Writing a fact with
+  `visibility: "personal"` writes it to the caller's home namespace instead;
+  naming an ancestor writes it there. `memory_remember`'s `visibility` field
+  (default `project`) controls this on write; recall/briefing always inherit
+  the chain automatically.
+- **Home**: set `X-Memini-Home` / `MEMINI_HOME` to a personal namespace (e.g.
+  `personal/kit`) and it merges into every recall/briefing as a read-only leg,
+  independent of which project namespace the agent is scoped to.
+- **Links**: `POST /v1/links` (`{"dst": "<namespace>"}`, X-Memini-Namespace as
+  the src) stores an explicit one-way durable-tier read link between two
+  namespaces (e.g. sharing conventions across unrelated repos) without an
+  ancestor relationship.
+- `scope` on `memory_recall`/`memory_briefing`/`memory_answer` picks how wide
+  to read: `project` (just this namespace), `full` (default: project plus the
+  ancestor/home/link cascade), or `everywhere` (`full` plus nested
+  sub-projects — the old subtree pattern, now built in rather than requiring
+  `MEMINI_AGENT` nesting).
+
+Every result carries `from` provenance (which ancestor/home/link it came
+from, or absent for the primary namespace) so an agent can see where
+knowledge lives without guessing. See
 [README.md#retrieval-scope-read-sets](../README.md#retrieval-scope-read-sets)
 for the full model.
 

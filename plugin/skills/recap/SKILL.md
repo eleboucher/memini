@@ -12,7 +12,13 @@ description: >-
 memini is a memory service. The fastest recap is the `memory_briefing` tool: it
 returns pinned context, durable facts, how-to procedures, and recent activity
 for the namespace in one query-less call, already grouped — use it for a
-"where are we" overview. For a topic-specific recap, call `memory_recall` with a
+"where are we" overview. Its `scope_header` line spells out the ancestor chain
+you inherit from (e.g. `Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4)`);
+read it instead of guessing where knowledge lives. `scope` widens the call:
+`project` (just this namespace), `full` (default: project plus inherited
+ancestor/personal/link context), or `everywhere` (full plus a rollup of nested
+sub-projects) — use `everywhere` when the user wants a recap spanning
+sub-projects too. For a topic-specific recap, call `memory_recall` with a
 broad query and a higher `limit` (10–20) and group the results by `tier`.
 
 ## When to call
