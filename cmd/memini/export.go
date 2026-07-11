@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -45,8 +46,24 @@ type exportRecord struct {
 	ExpiresAt  string         `json:"expires_at,omitempty"`
 }
 
+// exportLink is the round-trippable shape for a namespace link (see
+// store.NamespaceLink) in the native export document. It matches the fields
+// `import --source memini` reads back (see loadLinks in import.go).
+type exportLink struct {
+	Src       string   `json:"src"`
+	Dst       string   `json:"dst"`
+	Tiers     []string `json:"tiers,omitempty"`
+	Note      string   `json:"note,omitempty"`
+	CreatedAt string   `json:"created_at,omitempty"`
+}
+
+// exportFile is the native export document. Links is a top-level array
+// (gap G6): a link crosses namespace boundaries by nature, so it doesn't
+// belong to any single memory record. Older exports carry no "links" key at
+// all — import.go's loadLinks treats that as an empty list, not an error.
 type exportFile struct {
 	Memories []exportRecord `json:"memories"`
+	Links    []exportLink   `json:"links,omitempty"`
 }
 
 var exportCmd = &cobra.Command{
@@ -100,7 +117,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 		ns = cfg.DefaultNamespace
 	}
 
-	recs := []exportRecord{}
+	var ef exportFile
 	err = withLocalStore(cmd.Context(), func(st store.Store) error {
 		namespaces := []string{ns}
 		if exportAllNamespaces {
@@ -111,16 +128,9 @@ func runExport(cmd *cobra.Command, args []string) error {
 			sort.Strings(names)
 			namespaces = names
 		}
-		for _, n := range namespaces {
-			mems, lerr := st.List(cmd.Context(), n, f, 0)
-			if lerr != nil {
-				return lerr
-			}
-			for _, m := range mems {
-				recs = append(recs, toExportRecord(m))
-			}
-		}
-		return nil
+		var gerr error
+		ef, gerr = gatherExport(cmd.Context(), st, namespaces, exportAllNamespaces, f)
+		return gerr
 	})
 	if err != nil {
 		return err
@@ -137,11 +147,57 @@ func runExport(cmd *cobra.Command, args []string) error {
 		enc.SetIndent("", "  ")
 	}
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(exportFile{Memories: recs}); err != nil {
+	if err := enc.Encode(ef); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.ErrOrStderr(), "exported %d memories\n", len(recs)) //nolint:errcheck
+	fmt.Fprintf(cmd.ErrOrStderr(), "exported %d memories, %d links\n", len(ef.Memories), len(ef.Links)) //nolint:errcheck
 	return nil
+}
+
+// gatherExport collects the exportable memories and namespace links for
+// namespaces (each memory keeps its own namespace; namespaces is either one
+// namespace or the full set of namespaces holding memories, for
+// --all-namespaces). Links come from ListAllLinks.
+//
+// allNamespaces must be true whenever the caller resolved namespaces via
+// ListNamespaces (i.e. --all-namespaces): that call only returns namespaces
+// with at least one memory row, but a link may point at a namespace that
+// holds none (namespaces exist implicitly, by design — see link.go). Filtering
+// links against that memory-only set would silently drop such links even
+// though --all-namespaces means "everything". So allNamespaces=true exports
+// every link unconditionally; otherwise a link is kept only when its Src or
+// Dst is in namespaces.
+//
+// LinkStore is an optional store capability: a backend that predates
+// namespace links yields no Links, not an error (graceful degrade, the
+// EmbedModelStore precedent).
+func gatherExport(ctx context.Context, st store.Store, namespaces []string, allNamespaces bool, f store.Filter) (exportFile, error) {
+	ef := exportFile{Memories: []exportRecord{}}
+	nsSet := make(map[string]bool, len(namespaces))
+	for _, n := range namespaces {
+		nsSet[n] = true
+	}
+	for _, n := range namespaces {
+		mems, err := st.List(ctx, n, f, 0)
+		if err != nil {
+			return exportFile{}, err
+		}
+		for _, m := range mems {
+			ef.Memories = append(ef.Memories, toExportRecord(m))
+		}
+	}
+	if ls, ok := st.(store.LinkStore); ok {
+		all, err := ls.ListAllLinks(ctx)
+		if err != nil {
+			return exportFile{}, err
+		}
+		for _, l := range all {
+			if allNamespaces || nsSet[l.Src] || nsSet[l.Dst] {
+				ef.Links = append(ef.Links, toExportLink(l))
+			}
+		}
+	}
+	return ef, nil
 }
 
 func toExportRecord(m *memory.Memory) exportRecord {
@@ -161,6 +217,21 @@ func toExportRecord(m *memory.Memory) exportRecord {
 		r.ExpiresAt = m.ExpiresAt.UTC().Format(time.RFC3339Nano)
 	}
 	return r
+}
+
+// toExportLink converts a stored link to its round-trippable export shape.
+func toExportLink(l store.NamespaceLink) exportLink {
+	el := exportLink{Src: l.Src, Dst: l.Dst, Note: l.Note}
+	if len(l.Tiers) > 0 {
+		el.Tiers = make([]string, len(l.Tiers))
+		for i, t := range l.Tiers {
+			el.Tiers[i] = string(t)
+		}
+	}
+	if !l.CreatedAt.IsZero() {
+		el.CreatedAt = l.CreatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return el
 }
 
 // exportWriter resolves the output sink: -o flag, then a positional path, then

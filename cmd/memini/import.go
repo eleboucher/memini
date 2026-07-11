@@ -3,12 +3,14 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -16,6 +18,8 @@ import (
 	"github.com/eleboucher/memini/internal/importer"
 	"github.com/eleboucher/memini/internal/logging"
 	"github.com/eleboucher/memini/internal/maintenance"
+	"github.com/eleboucher/memini/internal/memory"
+	"github.com/eleboucher/memini/internal/store"
 )
 
 var (
@@ -119,7 +123,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
-	recs, err := loadRecords(importer.Source(importSource), path, w, loadProgress)
+	recs, rawData, err := loadRecords(importer.Source(importSource), path, w, loadProgress)
 	if err != nil {
 		return err
 	}
@@ -150,7 +154,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	im, target, dedup, closeFn, err := buildImporter(cmd.Context(), cfg, log, importRemote, importToken)
+	im, target, dedup, linkStore, closeFn, err := buildImporter(cmd.Context(), cfg, log, importRemote, importToken)
 	if err != nil {
 		return err
 	}
@@ -193,6 +197,10 @@ func runImport(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("import completed with %d errors", len(rep.Errors))
 	}
 
+	if err := restoreImportedLinks(cmd.Context(), out, linkStore, importer.Source(importSource), rawData, importDryRun); err != nil {
+		return err
+	}
+
 	// Collapse near-duplicates created or exposed by the import, scoped to the
 	// namespaces it touched so other tenants are untouched.
 	if !importDryRun && !importNoDedup && dedup != nil && rep.Imported > 0 {
@@ -207,9 +215,12 @@ func runImport(cmd *cobra.Command, args []string) error {
 // one-line summary to out.
 type dedupFunc func(ctx context.Context, namespaces []string, similarity float64, out io.Writer) error
 
+// buildImporter also returns the target's store.LinkStore capability (nil
+// for a remote target, or a local backend that predates namespace links) so
+// runImport can restore links from a native export after the memory import.
 func buildImporter(
 	ctx context.Context, cfg *config.Config, log *slog.Logger, remote, token string,
-) (*importer.Importer, string, dedupFunc, func(), error) {
+) (*importer.Importer, string, dedupFunc, store.LinkStore, func(), error) {
 	if remote != "" {
 		client := importer.NewRemoteClient(remote, token, config.DefaultNamespaceHeader)
 		dedup := func(ctx context.Context, namespaces []string, sim float64, out io.Writer) error {
@@ -234,16 +245,16 @@ func buildImporter(
 			}
 			return nil
 		}
-		return importer.NewRemote(client), remote, dedup, func() {}, nil
+		return importer.NewRemote(client), remote, dedup, nil, func() {}, nil
 	}
 	st, err := buildStore(ctx, cfg)
 	if err != nil {
-		return nil, "", nil, nil, err
+		return nil, "", nil, nil, nil, err
 	}
 	embedder, err := buildEmbedder(cfg, log, nil)
 	if err != nil {
 		_ = st.Close()
-		return nil, "", nil, nil, err
+		return nil, "", nil, nil, nil, err
 	}
 	dedup := func(ctx context.Context, namespaces []string, sim float64, out io.Writer) error {
 		rep, err := maintenance.Dedup(ctx, st, embedder, maintenance.DedupOptions{
@@ -258,7 +269,8 @@ func buildImporter(
 			rep.ClustersFound, rep.Tombstoned, rep.Namespaces)
 		return nil
 	}
-	return importer.NewLocal(st, embedder), "local store", dedup, func() { _ = st.Close() }, nil
+	linkStore, _ := st.(store.LinkStore)
+	return importer.NewLocal(st, embedder), "local store", dedup, linkStore, func() { _ = st.Close() }, nil
 }
 
 // distinctNamespaces returns the sorted set of namespaces the records carry
@@ -325,19 +337,118 @@ func readInput(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-func loadRecords(src importer.Source, path string, w io.Writer, onProgress func(done, total int)) ([]importer.Record, error) {
+// loadRecords parses path into portable Records. It also returns the raw
+// input bytes (nil for the claude-code directory-scan branch, which has no
+// single JSON payload) so callers can separately extract a native export's
+// top-level "links" array (see loadLinks) without re-reading stdin, which
+// would return EOF on a second read.
+func loadRecords(
+	src importer.Source, path string, w io.Writer, onProgress func(done, total int),
+) ([]importer.Record, []byte, error) {
 	if src == importer.SourceClaudeCode && path != "" && path != "-" {
 		if info, err := os.Stat(path); err == nil && info.IsDir() {
 			recs, warns, err := importer.LoadClaudeCodeWithProgress(path, onProgress)
 			for _, warn := range warns {
 				fmt.Fprintln(w, "  warning:", warn) //nolint:errcheck
 			}
-			return recs, err
+			return recs, nil, err
 		}
 	}
 	data, err := readInput(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return importer.Parse(src, data)
+	recs, err := importer.Parse(src, data)
+	return recs, data, err
+}
+
+// loadLinks extracts a native memini export's top-level "links" array (gap
+// G6). Only importer.SourceMemini carries links; every other source (and a
+// nil data, e.g. the claude-code directory-scan path) yields nil, nil. An
+// export from before links existed has no "links" key at all — unmarshaling
+// into a struct with an omittable field simply leaves it empty, so an old
+// export keeps importing without error.
+func loadLinks(src importer.Source, data []byte) ([]store.NamespaceLink, error) {
+	if src != importer.SourceMemini || len(data) == 0 {
+		return nil, nil
+	}
+	var wrapper struct {
+		Links []exportLink `json:"links"`
+	}
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		// A bare-array native export (the other historical shape) isn't a
+		// JSON object and has no links key either way.
+		return nil, nil //nolint:nilerr
+	}
+	links := make([]store.NamespaceLink, 0, len(wrapper.Links))
+	for _, el := range wrapper.Links {
+		l, err := fromExportLink(el)
+		if err != nil {
+			return nil, err
+		}
+		links = append(links, l)
+	}
+	return links, nil
+}
+
+// fromExportLink converts an export document's link shape back into a
+// store.NamespaceLink, validating tier names the way addLink (link.go) does
+// for the CLI's own writes.
+func fromExportLink(el exportLink) (store.NamespaceLink, error) {
+	l := store.NamespaceLink{Src: el.Src, Dst: el.Dst, Note: el.Note}
+	if len(el.Tiers) > 0 {
+		l.Tiers = make([]memory.Tier, 0, len(el.Tiers))
+		for _, t := range el.Tiers {
+			mt := memory.Tier(t)
+			if !mt.Valid() {
+				return store.NamespaceLink{}, fmt.Errorf("import: link %s -> %s: invalid tier %q", el.Src, el.Dst, t)
+			}
+			l.Tiers = append(l.Tiers, mt)
+		}
+	}
+	if el.CreatedAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, el.CreatedAt); err == nil {
+			l.CreatedAt = t
+		}
+	}
+	return l, nil
+}
+
+// restoreLinks upserts links into ls via PutLink, an insert-or-replace keyed
+// by (Src, Dst) — so restoring the same export twice never duplicates rows.
+// It returns the number successfully written before any error, so a partial
+// failure's progress is visible.
+func restoreLinks(ctx context.Context, ls store.LinkStore, links []store.NamespaceLink) (int, error) {
+	for i, l := range links {
+		if err := ls.PutLink(ctx, l); err != nil {
+			return i, fmt.Errorf("link %s -> %s: %w", l.Src, l.Dst, err)
+		}
+	}
+	return len(links), nil
+}
+
+// restoreImportedLinks parses and restores a native export's namespace links
+// after the memory import succeeds (gap G6). It is a no-op for a dry run, a
+// remote target, or a backend that predates namespace links (linkStore
+// nil); loadLinks itself is a no-op for any source but memini, or an export
+// carrying no links (old-format-compatible).
+func restoreImportedLinks(
+	ctx context.Context, out io.Writer, linkStore store.LinkStore, src importer.Source, rawData []byte, dryRun bool,
+) error {
+	if dryRun || linkStore == nil {
+		return nil
+	}
+	links, err := loadLinks(src, rawData)
+	if err != nil {
+		return err
+	}
+	if len(links) == 0 {
+		return nil
+	}
+	n, err := restoreLinks(ctx, linkStore, links)
+	if err != nil {
+		return fmt.Errorf("restore %d/%d namespace link(s): %w", n, len(links), err)
+	}
+	fmt.Fprintf(out, "restored %d namespace link(s)\n", n) //nolint:errcheck
+	return nil
 }
