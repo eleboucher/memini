@@ -2,6 +2,7 @@ package maintenance_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -156,6 +157,50 @@ func TestMoveRenamesLinkEndpoints(t *testing.T) {
 	}
 	if len(oldLinks) != 0 {
 		t.Fatalf("old namespace still has links after move: %v", oldLinks)
+	}
+}
+
+// failRenameStore wraps a real store but fails RenameLinkEndpoints, to test
+// Move's reporting when the link rename errors after Reassign has committed.
+// The embedded interfaces supply every other Store/LinkStore method.
+type failRenameStore struct {
+	store.Store
+	store.LinkStore
+}
+
+func (f *failRenameStore) RenameLinkEndpoints(context.Context, string, string) error {
+	return errors.New("simulated link-rename failure")
+}
+
+// TestMoveReportsMovedOnLinkRenameFailure pins Move's partial-failure
+// reporting: Reassign has already committed when RenameLinkEndpoints runs, so
+// a link-rename error must surface alongside the true moved count — not a
+// misleading zero indistinguishable from "nothing moved".
+func TestMoveReportsMovedOnLinkRenameFailure(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "m.db"), 4)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	seedPooled(t, st, "old", map[string]string{"x": "", "y": ""})
+
+	frs := &failRenameStore{Store: st, LinkStore: st}
+	rep, err := maintenance.Move(ctx, frs, "old", "new", false)
+	if err == nil {
+		t.Fatal("move with a failing link rename should return the error")
+	}
+	if rep.Moved != 2 || rep.Targets["new"] != 2 {
+		t.Fatalf("report = %+v, want Moved=2 Targets[new]=2 despite the link-rename error", rep)
+	}
+	// The memories really did move (Reassign committed before the failure).
+	mems, err := st.List(ctx, "new", store.Filter{IncludeSuperseded: true, IncludeExpired: true}, 0)
+	if err != nil {
+		t.Fatalf("list new: %v", err)
+	}
+	if len(mems) != 2 {
+		t.Fatalf("new namespace has %d memories, want 2", len(mems))
 	}
 }
 

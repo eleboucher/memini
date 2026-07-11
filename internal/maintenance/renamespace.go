@@ -62,6 +62,11 @@ func Move(ctx context.Context, st store.Store, fromNS, toNS string, dryRun bool)
 	if err != nil {
 		return rep, err
 	}
+	// Record the move immediately: Reassign has committed, so if the link
+	// rename below fails the report must still say what actually moved rather
+	// than a misleading zero.
+	rep.Moved = int(n)
+	rep.Targets[toNS] = int(n)
 	// Namespace links are keyed by namespace, not by memory ID, so Reassign
 	// never touches them: rewrite any link endpoint pointing at fromNS to
 	// toNS too, on stores that support links at all (gap G5).
@@ -70,8 +75,6 @@ func Move(ctx context.Context, st store.Store, fromNS, toNS string, dryRun bool)
 			return rep, err
 		}
 	}
-	rep.Moved = int(n)
-	rep.Targets[toNS] = int(n)
 	return rep, nil
 }
 
