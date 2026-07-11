@@ -200,7 +200,11 @@ type NamespaceLink struct {
 // callers type-assert and degrade gracefully against a driver that predates
 // it.
 type LinkStore interface {
-	// PutLink inserts or replaces the link keyed by (l.Src, l.Dst).
+	// PutLink inserts or replaces the link keyed by (l.Src, l.Dst). An
+	// upsert overwrites created_at — deliberately, unlike memory Put's
+	// preserve-on-upsert: links have no recency semantics, and import
+	// restore relies on this to replay a link's original CreatedAt rather
+	// than stamping "now".
 	PutLink(ctx context.Context, l NamespaceLink) error
 	// DeleteLink removes the link from src to dst. The bool reports whether a
 	// link existed to delete; a missing link is not an error.

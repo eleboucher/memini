@@ -126,8 +126,9 @@ precision change to recall.
 
 `memini doctor` now shows the effective read set for the current namespace,
 warns when `MEMINI_NAMESPACE` is pinned globally (the "catch-all namespace"
-trap), and warns when `MEMINI_HOME` is unset while `visibility: "personal"`
-has been attempted recently.
+trap), and warns unconditionally when `MEMINI_HOME` is unset — since without
+it, `visibility: "personal"` writes error out and no personal-namespace leg
+merges into recall/briefing's default read set.
 
 ## New: `GET /v1/namespaces/read-set`
 
@@ -136,6 +137,15 @@ A read-set introspection endpoint: header-scoped like `/v1/namespaces/briefing`
 `X-Memini-Home`), it returns the resolved structural read set — namespace,
 origin (`primary`/`ancestor`/`home`/`link`), and tier restriction — for
 debugging what a given namespace/home pair actually sees.
+
+## Follow-ups (tracked, not blocking)
+
+Two gaps identified in review are being tracked rather than fixed in this
+branch: the agentic answer loop's `keyword_search` tool searches the primary
+namespace only, with no ancestor/home/link cascade, unlike its `search_memory`
+and `recall_as_of` siblings; and the REST `POST /v1/answer` endpoint has no
+`scope` parameter yet, so it always runs the full default cascade regardless
+of what an MCP caller could otherwise select.
 
 ## Docs
 

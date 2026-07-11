@@ -141,7 +141,7 @@ func (e GetBriefingParamsScope) Valid() bool {
 	}
 }
 
-// AnswerRequest defines model for AnswerRequest.
+// AnswerRequest Scope selection (the `scope` argument on the MCP `memory_answer` tool) is currently MCP-only: this REST request has no `scope` field, so `POST /v1/answer` always runs the full default ancestor/home/link cascade and cannot be narrowed to project-only or widened to everywhere per call.
 type AnswerRequest struct {
 	Levels *[]Level `json:"levels,omitempty"`
 

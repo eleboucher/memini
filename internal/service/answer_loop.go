@@ -110,7 +110,8 @@ var answerTools = []llm.Tool{
 	{
 		Name: "keyword_search",
 		Description: "Exact lexical (BM25) search. Use for enumeration/counting questions and for rare " +
-			"exact terms (names, codes, quoted phrases) semantic search misses.",
+			"exact terms (names, codes, quoted phrases) semantic search misses. Unlike search_memory and " +
+			"recall_as_of, this searches only the current namespace, not its ancestor/home/link cascade.",
 		Schema: objectSchema(map[string]any{
 			argQuery: strProp("the exact terms to match"),
 		}, "query"),

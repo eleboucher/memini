@@ -520,6 +520,7 @@ export interface components {
             /** @description Human-readable explanation of `degraded`; omitted alongside it on a healthy search. */
             note?: string;
         };
+        /** @description Scope selection (the `scope` argument on the MCP `memory_answer` tool) is currently MCP-only: this REST request has no `scope` field, so `POST /v1/answer` always runs the full default ancestor/home/link cascade and cannot be narrowed to project-only or widened to everywhere per call. */
         AnswerRequest: {
             query: string;
             tiers?: components["schemas"]["Tier"][];

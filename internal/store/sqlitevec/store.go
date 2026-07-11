@@ -860,6 +860,13 @@ func (s *Store) SetEmbedModel(ctx context.Context, model string) error {
 var _ store.LinkStore = (*Store)(nil)
 
 // PutLink inserts or replaces the link keyed by (l.Src, l.Dst).
+//
+// Unlike memory Put (created_at is immutable after insert, see the comment
+// on its INSERT above), an upsert here overwrites created_at. This is
+// intentional, not an oversight: links carry no recency semantics that a
+// stable created_at would protect, and import restore relies on the
+// overwrite being conditional on l.CreatedAt being non-zero (below) so it
+// can replay a link's original creation time instead of stamping "now".
 func (s *Store) PutLink(ctx context.Context, l store.NamespaceLink) error {
 	tiersJSON, err := json.Marshal(tiersOrEmpty(l.Tiers))
 	if err != nil {

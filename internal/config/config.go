@@ -399,8 +399,8 @@ func DeprecationWarnings() []string {
 // exactly this case. If the refusal lived in Load(), the one command that
 // handles the migration could never run while the var that triggers it is
 // set — an operator deadlock. Instead this is called explicitly from the
-// server-start path (cmd/memini/root.go runServer), which is the only
-// caller that needs the refusal: booting the long-running server with a
+// server-boot paths (cmd/memini/root.go runServer and runMCP), the callers
+// that need the refusal: booting a long-running server (REST or MCP) with a
 // stale shared-scope expectation baked into the operator's env is the
 // dangerous case; one-shot CLI commands (migrate, doctor, reembed, ...) are
 // not "booting" anything and are unaffected.

@@ -118,6 +118,11 @@ briefing `Scope:` header), never by constructing a namespace path itself.
   isolation valve; it's an explicit per-call downward reach, never on by
   default.
 
+**Known limitations:** the agentic answer loop's `keyword_search` tool
+searches the primary namespace only — no ancestor/home/link cascade — unlike
+its `search_memory`/`recall_as_of` siblings; tracked as a follow-up, not
+fixed here.
+
 ## Isolation contract
 
 | Relationship                   | What crosses                                                                                                                                    | Effort                                   |
