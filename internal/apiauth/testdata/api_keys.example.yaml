@@ -1,8 +1,9 @@
-# Example MEMINI_API_KEYS_FILE (K2b). Not loaded by any test automatically —
-# it exists purely as a copy-pasteable reference for the format documented on
-# config.Config.APIKeysFile. Load it yourself with apiauth.LoadFileKeys to see
-# it parse (the hash below is sha256("swordfish") — feel free to swap it for
-# your own `printf %s "$SECRET" | sha256sum` output).
+# Example MEMINI_API_KEYS_FILE (K2b): a copy-pasteable reference for the
+# format documented on config.Config.APIKeysFile. Loaded and authenticated
+# against in filekeys_test.go/filekeys_auth_test.go, so it's also a
+# regression guard on this doc staying accurate (the hash below is
+# sha256("swordfish") — feel free to swap it for your own
+# `printf %s "$SECRET" | sha256sum` output when copying this elsewhere).
 keys:
   # A key identified by a pre-computed hash. Use this form when the secret
   # itself lives elsewhere (e.g. minted by a script that only ever prints the
