@@ -260,10 +260,17 @@ paths:
         - name: scope
           in: query
           description: >
-            exact (default) briefs only the namespace; subtree also includes
-            namespaces nested under it ("project" reads "project/agent"). Any
-            value other than "exact" or "subtree" is rejected with 400.
-          schema: { type: string, enum: [exact, subtree], default: exact }
+            "full" (default) briefs the namespace plus its ancestor/home/link
+            cascade; "project" briefs only the namespace (no cascade);
+            "everywhere" is "full" plus namespaces nested under it ("project"
+            also reads "project/agent"). "exact" and "subtree" are deprecated
+            aliases kept for back-compat: "exact" behaves as "project" (its
+            original, pre-cascade meaning) and "subtree" behaves as
+            "everywhere". Any other value is rejected with 400.
+          schema:
+            type: string
+            enum: [project, full, everywhere, exact, subtree]
+            default: full
         - name: namespaces
           in: query
           description: >-
@@ -279,6 +286,104 @@ paths:
               schema: { $ref: "#/components/schemas/Briefing" }
         "400": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /v1/namespaces/read-set:
+    get:
+      operationId: getReadSet
+      tags: [memory]
+      summary: Resolve the structural read-set for the request namespace
+      description: >
+        Introspection endpoint: which namespaces a recall/briefing on the
+        request namespace would draw from by default, and why (origin) —
+        independent of any one request's tier filter. Header-scoped like
+        `/v1/namespaces/briefing` (no path param): the namespace comes from
+        X-Memini-Namespace, and X-Memini-Home, when set, contributes the home
+        leg.
+      parameters:
+        - { $ref: "#/components/parameters/Namespace" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadSetResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /v1/links:
+    parameters:
+      - { $ref: "#/components/parameters/Namespace" }
+    post:
+      operationId: putLink
+      tags: [memory]
+      summary: Create or replace a namespace link (cross-namespace read edge)
+      description: >
+        Adds a durable-tier read link from the request namespace
+        (X-Memini-Namespace header, the src) to another namespace (dst):
+        recall/briefing scoped to src additionally reads dst's durable
+        (semantic/procedural) memories, same as an ancestor namespace.
+        Idempotent — POSTing again with the same dst replaces its tiers/note.
+        dst is normalized and rejected with 400 when empty, invalid, or equal
+        to src (no self-links).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dst]
+              properties:
+                dst:
+                  type: string
+                  description: Target namespace.
+                tiers:
+                  type: array
+                  items: { $ref: "#/components/schemas/Tier" }
+                  description: >
+                    Restrict which tiers cross the link; empty/omitted means
+                    the durable default (semantic, procedural) — non-durable
+                    tiers never cross a link regardless.
+                note:
+                  type: string
+                  description: Free-text annotation for operators.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NamespaceLink" }
+        "400": { $ref: "#/components/responses/Error" }
+    get:
+      operationId: listLinks
+      tags: [memory]
+      summary: List outgoing namespace links from the request namespace
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NamespaceLinksResponse" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteLink
+      tags: [memory]
+      summary: Delete a namespace link
+      parameters:
+        - name: dst
+          in: query
+          required: false
+          description: Target namespace to unlink. Required, via query or JSON body.
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dst: { type: string, description: Target namespace to unlink. }
+      responses:
+        "204": { description: Deleted }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /v1/namespaces/move:
     post:
       operationId: moveNamespace
@@ -577,6 +682,18 @@ components:
           description: >
             Seed corroboration for a durable fact (e.g. a trusted import). Omit
             to use the default seed; ignored for short-term tiers.
+        visibility:
+          type: string
+          description: >
+            Write-side namespace scoping. Omit or "project" (default) writes to
+            the request namespace itself. "personal" writes to the caller's
+            home namespace (X-Memini-Home header / MEMINI_HOME on the client)
+            instead — an error if no home namespace is configured. Any other
+            value must name an ancestor of the request namespace, either its
+            full path or an unambiguous last path segment (e.g. "acme" for
+            request namespace "acme/phoenix/api"), and the write lands there
+            instead. Ignored for non-durable writes: an episodic/working memory
+            always stays in the request namespace regardless of visibility.
     SupersedeRequest:
       type: object
       required: [by]
@@ -649,13 +766,17 @@ components:
         include_superseded: { type: boolean, default: false }
         scope:
           type: string
-          enum: [exact, subtree]
-          default: exact
+          enum: [project, full, everywhere, exact, subtree]
+          default: full
           description: >
-            exact (default) searches only the request namespace; subtree also
-            searches namespaces nested under it ("project" reads "project/agent"),
-            for the multi-agent read-shared-plus-private pattern. Any other
-            value is rejected with 400.
+            "full" (default) searches the request namespace plus its
+            ancestor/home/link cascade; "project" searches only the request
+            namespace (no cascade); "everywhere" is "full" plus the request
+            namespace's subtree, for the multi-agent read-shared-plus-private
+            pattern. "exact" and "subtree" are deprecated aliases kept for
+            back-compat: "exact" behaves as "project" (its original,
+            pre-cascade meaning — the request namespace only) and "subtree"
+            behaves as "everywhere". Any other value is rejected with 400.
         namespaces:
           type: array
           maxItems: 16
@@ -687,6 +808,17 @@ components:
       properties:
         memory: { $ref: "#/components/schemas/Memory" }
         score: { type: number, format: double }
+        from:
+          type: string
+          description: >
+            Read-set provenance beyond memory.namespace: omitted for a hit
+            from the request (primary) namespace — the common case, no
+            annotation needed — the ancestor/home namespace name itself for
+            those two origins ("acme", "personal/kit"), and a prefixed form
+            for a stored link or an explicit per-call namespace
+            ("link:shared/golang", "call:acme/other"). Only populated when the
+            read drew from a resolved read-set (recall/answer); omitted
+            otherwise.
     SearchResponse:
       type: object
       required: [results]
@@ -744,21 +876,61 @@ components:
       required: [namespace]
       properties:
         namespace: { type: string }
+        scope_header:
+          type: string
+          nullable: true
+          description: >
+            A human-readable one-line summary of which namespaces this
+            briefing drew from (its resolved read-set scope). Reserved for a
+            future task — omitted until then.
         facts:
           type: array
           description: Durable semantic facts, highest-retention first.
-          items: { $ref: "#/components/schemas/Memory" }
+          items: { $ref: "#/components/schemas/BriefingItem" }
         procedures:
           type: array
           description: Procedural how-to memories, highest-retention first.
-          items: { $ref: "#/components/schemas/Memory" }
+          items: { $ref: "#/components/schemas/BriefingItem" }
         recent:
           type: array
           description: Recent episodic activity, newest first.
-          items: { $ref: "#/components/schemas/Memory" }
+          items: { $ref: "#/components/schemas/BriefingItem" }
         pinned:
           type: array
           description: Pinned memories (any tier).
+          items: { $ref: "#/components/schemas/BriefingItem" }
+        children:
+          type: array
+          nullable: true
+          description: >
+            Per-child-namespace rollups (e.g. subtree children), each with its
+            own pinned/recent highlights. Reserved for a future task —
+            omitted until then.
+          items: { $ref: "#/components/schemas/BriefingChild" }
+    BriefingItem:
+      type: object
+      required: [memory]
+      properties:
+        memory: { $ref: "#/components/schemas/Memory" }
+        from:
+          type: string
+          description: >
+            Read-set provenance beyond memory.namespace — same semantics as
+            ScoredMemory.from (see there). Omitted for a primary-namespace
+            item.
+    BriefingChild:
+      type: object
+      required: [namespace, total]
+      properties:
+        namespace: { type: string }
+        total:
+          type: integer
+          description: Live memory count in this child namespace.
+        pinned:
+          type: array
+          items: { $ref: "#/components/schemas/Memory" }
+        recent:
+          type: array
           items: { $ref: "#/components/schemas/Memory" }
     Stats:
       type: object
@@ -808,6 +980,55 @@ components:
       required: [deleted]
       properties:
         deleted: { type: integer, description: Number of memories deleted }
+    NamespaceLink:
+      type: object
+      required: [src, dst, created_at]
+      properties:
+        src: { type: string }
+        dst: { type: string }
+        tiers:
+          type: array
+          items: { $ref: "#/components/schemas/Tier" }
+          description: >
+            Tier restriction on the link; empty/omitted means the durable
+            default (semantic, procedural).
+        note: { type: string }
+        created_at: { type: string, format: date-time }
+    NamespaceLinksResponse:
+      type: object
+      required: [links]
+      properties:
+        links:
+          type: array
+          items: { $ref: "#/components/schemas/NamespaceLink" }
+    ReadSetOrigin:
+      type: string
+      description: >
+        Why a namespace is in the read-set: "primary" is the request
+        namespace (and its subtree, when expanded), "ancestor" is a
+        path-prefix cascade leg, "home" is the caller's personal namespace,
+        "link" is a stored namespace link, and "call" is an explicit per-call
+        namespace.
+      enum: [primary, ancestor, home, link, call]
+    ReadSetEntryItem:
+      type: object
+      required: [namespace, origin]
+      properties:
+        namespace: { type: string }
+        origin: { $ref: "#/components/schemas/ReadSetOrigin" }
+        tiers:
+          type: array
+          items: { $ref: "#/components/schemas/Tier" }
+          description: >
+            Tier restriction applied to this namespace; omitted means the
+            request's own tier filter, unrestricted beyond that.
+    ReadSetResponse:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/ReadSetEntryItem" }
     RenamespaceReport:
       type: object
       properties:

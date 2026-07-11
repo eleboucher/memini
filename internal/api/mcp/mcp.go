@@ -501,37 +501,13 @@ type recallItem struct {
 	From string `json:"from,omitempty"`
 }
 
-// readSetFrom renders a resolved read-set origin (service.Origin*) into
-// recallItem.From: the origin recorded when ns's leg was appended during
-// read-set resolution (see service.ReadSetEntry), not re-derived here. origins
-// maps namespace -> origin, built once per call from the ReadSet out-param
-// (Recall/Briefing/Answer's ReadSetEntry slice) — see originMapFrom. A
-// namespace absent from origins (read-set info wasn't resolved, or the tool
-// didn't ask for it) renders empty rather than guessing.
-func readSetFrom(origins map[string]string, ns string) string {
-	switch origins[ns] {
-	case service.OriginAncestor, service.OriginHome:
-		return ns
-	case service.OriginLink:
-		return "link:" + ns
-	case service.OriginCall:
-		return "call:" + ns
-	default: // "" (unresolved) or service.OriginPrimary: no annotation
-		return ""
-	}
-}
-
-// originMapFrom builds the namespace -> origin lookup readSetFrom needs, from
-// a resolved read-set's ReadSetEntry slice. entries is typically empty (the
-// ReadSet out-param's zero value) when the caller never asked for read-set
-// info, in which case every lookup falls through readSetFrom's default case.
-func originMapFrom(entries []service.ReadSetEntry) map[string]string {
-	m := make(map[string]string, len(entries))
-	for _, e := range entries {
-		m[e.NS] = e.Origin
-	}
-	return m
-}
+// readSetFrom and originMapFrom render read-set provenance into recallItem.From
+// — see service.ReadSetFrom / service.OriginMap, shared with the REST layer
+// (internal/api/rest) so both surfaces render "from" identically.
+var (
+	readSetFrom   = service.ReadSetFrom
+	originMapFrom = service.OriginMap
+)
 
 // conciseContentMax is the rune limit for concise content (before truncation).
 const conciseContentMax = 240

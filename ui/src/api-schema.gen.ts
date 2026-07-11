@@ -185,6 +185,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/namespaces/read-set": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resolve the structural read-set for the request namespace
+         * @description Introspection endpoint: which namespaces a recall/briefing on the request namespace would draw from by default, and why (origin) — independent of any one request's tier filter. Header-scoped like `/v1/namespaces/briefing` (no path param): the namespace comes from X-Memini-Namespace, and X-Memini-Home, when set, contributes the home leg.
+         */
+        get: operations["getReadSet"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/links": {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        /** List outgoing namespace links from the request namespace */
+        get: operations["listLinks"];
+        put?: never;
+        /**
+         * Create or replace a namespace link (cross-namespace read edge)
+         * @description Adds a durable-tier read link from the request namespace (X-Memini-Namespace header, the src) to another namespace (dst): recall/briefing scoped to src additionally reads dst's durable (semantic/procedural) memories, same as an ancestor namespace. Idempotent — POSTing again with the same dst replaces its tiers/note. dst is normalized and rejected with 400 when empty, invalid, or equal to src (no self-links).
+         */
+        post: operations["putLink"];
+        /** Delete a namespace link */
+        delete: operations["deleteLink"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/namespaces/move": {
         parameters: {
             query?: never;
@@ -392,6 +437,8 @@ export interface components {
              * @description Seed corroboration for a durable fact (e.g. a trusted import). Omit to use the default seed; ignored for short-term tiers.
              */
             confidence?: number;
+            /** @description Write-side namespace scoping. Omit or "project" (default) writes to the request namespace itself. "personal" writes to the caller's home namespace (X-Memini-Home header / MEMINI_HOME on the client) instead — an error if no home namespace is configured. Any other value must name an ancestor of the request namespace, either its full path or an unambiguous last path segment (e.g. "acme" for request namespace "acme/phoenix/api"), and the write lands there instead. Ignored for non-durable writes: an episodic/working memory always stays in the request namespace regardless of visibility. */
+            visibility?: string;
         };
         SupersedeRequest: {
             /** @description ID of the memory that replaces the target. */
@@ -441,11 +488,11 @@ export interface components {
             /** @default false */
             include_superseded: boolean;
             /**
-             * @description exact (default) searches only the request namespace; subtree also searches namespaces nested under it ("project" reads "project/agent"), for the multi-agent read-shared-plus-private pattern. Any other value is rejected with 400.
-             * @default exact
+             * @description "full" (default) searches the request namespace plus its ancestor/home/link cascade; "project" searches only the request namespace (no cascade); "everywhere" is "full" plus the request namespace's subtree, for the multi-agent read-shared-plus-private pattern. "exact" and "subtree" are deprecated aliases kept for back-compat: "exact" behaves as "project" (its original, pre-cascade meaning — the request namespace only) and "subtree" behaves as "everywhere". Any other value is rejected with 400.
+             * @default full
              * @enum {string}
              */
-            scope: "exact" | "subtree";
+            scope: "project" | "full" | "everywhere" | "exact" | "subtree";
             /** @description Search exactly these namespaces instead of the default read set (the request namespace, its subtree, and the global namespace). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected. */
             namespaces?: string[];
             /**
@@ -463,6 +510,8 @@ export interface components {
             memory: components["schemas"]["Memory"];
             /** Format: double */
             score: number;
+            /** @description Read-set provenance beyond memory.namespace: omitted for a hit from the request (primary) namespace — the common case, no annotation needed — the ancestor/home namespace name itself for those two origins ("acme", "personal/kit"), and a prefixed form for a stored link or an explicit per-call namespace ("link:shared/golang", "call:acme/other"). Only populated when the read drew from a resolved read-set (recall/answer); omitted otherwise. */
+            from?: string;
         };
         SearchResponse: {
             results: components["schemas"]["ScoredMemory"][];
@@ -496,14 +545,30 @@ export interface components {
         };
         Briefing: {
             namespace: string;
+            /** @description A human-readable one-line summary of which namespaces this briefing drew from (its resolved read-set scope). Reserved for a future task — omitted until then. */
+            scope_header?: string | null;
             /** @description Durable semantic facts, highest-retention first. */
-            facts?: components["schemas"]["Memory"][];
+            facts?: components["schemas"]["BriefingItem"][];
             /** @description Procedural how-to memories, highest-retention first. */
-            procedures?: components["schemas"]["Memory"][];
+            procedures?: components["schemas"]["BriefingItem"][];
             /** @description Recent episodic activity, newest first. */
-            recent?: components["schemas"]["Memory"][];
+            recent?: components["schemas"]["BriefingItem"][];
             /** @description Pinned memories (any tier). */
+            pinned?: components["schemas"]["BriefingItem"][];
+            /** @description Per-child-namespace rollups (e.g. subtree children), each with its own pinned/recent highlights. Reserved for a future task — omitted until then. */
+            children?: components["schemas"]["BriefingChild"][] | null;
+        };
+        BriefingItem: {
+            memory: components["schemas"]["Memory"];
+            /** @description Read-set provenance beyond memory.namespace — same semantics as ScoredMemory.from (see there). Omitted for a primary-namespace item. */
+            from?: string;
+        };
+        BriefingChild: {
+            namespace: string;
+            /** @description Live memory count in this child namespace. */
+            total: number;
             pinned?: components["schemas"]["Memory"][];
+            recent?: components["schemas"]["Memory"][];
         };
         Stats: {
             namespace: string;
@@ -536,6 +601,32 @@ export interface components {
         DeleteByTagResponse: {
             /** @description Number of memories deleted */
             deleted: number;
+        };
+        NamespaceLink: {
+            src: string;
+            dst: string;
+            /** @description Tier restriction on the link; empty/omitted means the durable default (semantic, procedural). */
+            tiers?: components["schemas"]["Tier"][];
+            note?: string;
+            /** Format: date-time */
+            created_at: string;
+        };
+        NamespaceLinksResponse: {
+            links: components["schemas"]["NamespaceLink"][];
+        };
+        /**
+         * @description Why a namespace is in the read-set: "primary" is the request namespace (and its subtree, when expanded), "ancestor" is a path-prefix cascade leg, "home" is the caller's personal namespace, "link" is a stored namespace link, and "call" is an explicit per-call namespace.
+         * @enum {string}
+         */
+        ReadSetOrigin: "primary" | "ancestor" | "home" | "link" | "call";
+        ReadSetEntryItem: {
+            namespace: string;
+            origin: components["schemas"]["ReadSetOrigin"];
+            /** @description Tier restriction applied to this namespace; omitted means the request's own tier filter, unrestricted beyond that. */
+            tiers?: components["schemas"]["Tier"][];
+        };
+        ReadSetResponse: {
+            entries: components["schemas"]["ReadSetEntryItem"][];
         };
         RenamespaceReport: {
             /** @description Number of memories moved. */
@@ -959,8 +1050,8 @@ export interface operations {
                 per_section_procedures?: number;
                 /** @description Max recent episodic entries. Overrides per_section. 0 disables the section. */
                 per_section_recent?: number;
-                /** @description exact (default) briefs only the namespace; subtree also includes namespaces nested under it ("project" reads "project/agent"). Any value other than "exact" or "subtree" is rejected with 400. */
-                scope?: "exact" | "subtree";
+                /** @description "full" (default) briefs the namespace plus its ancestor/home/link cascade; "project" briefs only the namespace (no cascade); "everywhere" is "full" plus namespaces nested under it ("project" also reads "project/agent"). "exact" and "subtree" are deprecated aliases kept for back-compat: "exact" behaves as "project" (its original, pre-cascade meaning) and "subtree" behaves as "everywhere". Any other value is rejected with 400. */
+                scope?: "project" | "full" | "everywhere" | "exact" | "subtree";
                 /** @description Repeatable. Brief exactly these namespaces instead of the default read set (the namespace, its subtree, and the global namespace). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected. */
                 namespaces?: string[];
             };
@@ -984,6 +1075,123 @@ export interface operations {
             };
             400: components["responses"]["Error"];
             500: components["responses"]["Error"];
+        };
+    };
+    getReadSet: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadSetResponse"];
+                };
+            };
+            400: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    listLinks: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NamespaceLinksResponse"];
+                };
+            };
+            500: components["responses"]["Error"];
+        };
+    };
+    putLink: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Target namespace. */
+                    dst: string;
+                    /** @description Restrict which tiers cross the link; empty/omitted means the durable default (semantic, procedural) — non-durable tiers never cross a link regardless. */
+                    tiers?: components["schemas"]["Tier"][];
+                    /** @description Free-text annotation for operators. */
+                    note?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NamespaceLink"];
+                };
+            };
+            400: components["responses"]["Error"];
+        };
+    };
+    deleteLink: {
+        parameters: {
+            query?: {
+                /** @description Target namespace to unlink. Required, via query or JSON body. */
+                dst?: string;
+            };
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description Target namespace to unlink. */
+                    dst?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
         };
     };
     moveNamespace: {

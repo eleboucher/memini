@@ -170,11 +170,11 @@ func TestGetBriefing(t *testing.T) {
 		t.Fatalf("briefing: %d (%s)", rec.Code, rec.Body)
 	}
 	var b struct {
-		Namespace  string                     `json:"namespace"`
-		Facts      []struct{ Content string } `json:"facts"`
-		Procedures []struct{ Content string } `json:"procedures"`
-		Recent     []struct{ Content string } `json:"recent"`
-		Pinned     []struct{ Content string } `json:"pinned"`
+		Namespace  string             `json:"namespace"`
+		Facts      []briefingItemJSON `json:"facts"`
+		Procedures []briefingItemJSON `json:"procedures"`
+		Recent     []briefingItemJSON `json:"recent"`
+		Pinned     []briefingItemJSON `json:"pinned"`
 	}
 	mustJSON(t, rec, &b)
 	if b.Namespace != "proj" {
@@ -218,11 +218,11 @@ func TestGetBriefingPerSectionCaps(t *testing.T) {
 	}
 
 	type result struct {
-		Namespace  string                     `json:"namespace"`
-		Facts      []struct{ Content string } `json:"facts"`
-		Procedures []struct{ Content string } `json:"procedures"`
-		Recent     []struct{ Content string } `json:"recent"`
-		Pinned     []struct{ Content string } `json:"pinned"`
+		Namespace  string             `json:"namespace"`
+		Facts      []briefingItemJSON `json:"facts"`
+		Procedures []briefingItemJSON `json:"procedures"`
+		Recent     []briefingItemJSON `json:"recent"`
+		Pinned     []briefingItemJSON `json:"pinned"`
 	}
 	decode := func(rec *httptest.ResponseRecorder) result {
 		var b result
@@ -619,6 +619,16 @@ func mustJSON(t *testing.T, rec *httptest.ResponseRecorder, v any) {
 	if err := json.Unmarshal(rec.Body.Bytes(), v); err != nil {
 		t.Fatalf("decode response: %v (%s)", err, rec.Body)
 	}
+}
+
+// briefingItemJSON decodes one Briefing section item: the spec's BriefingItem
+// shape (a nested memory object plus read-set provenance).
+type briefingItemJSON struct {
+	Memory struct {
+		Content   string `json:"content"`
+		Namespace string `json:"namespace"`
+	} `json:"memory"`
+	From string `json:"from"`
 }
 
 // TestListQueryParamValidation pins the ?tier= / ?limit= contract: unknown
@@ -1056,10 +1066,7 @@ func TestGetBriefingSubtreeScope(t *testing.T) {
 	remember("proj/agent-a", "private: agent-a fact")
 
 	type briefing struct {
-		Facts []struct {
-			Content   string `json:"content"`
-			Namespace string `json:"namespace"`
-		} `json:"facts"`
+		Facts []briefingItemJSON `json:"facts"`
 	}
 	get := func(q string) briefing {
 		rec := do(t, h, http.MethodGet, q, "proj", apiKey, nil)
@@ -1082,7 +1089,7 @@ func TestGetBriefingSubtreeScope(t *testing.T) {
 	}
 	got := map[string]bool{}
 	for _, f := range sub.Facts {
-		got[f.Namespace] = true
+		got[f.Memory.Namespace] = true
 	}
 	if !got["proj"] || !got["proj/agent-a"] {
 		t.Fatalf("subtree facts should carry namespace provenance for both, got %v", got)
@@ -1111,15 +1118,12 @@ func TestGetBriefingExplicitNamespaces(t *testing.T) {
 		t.Fatalf("briefing: %d (%s)", rec.Code, rec.Body)
 	}
 	var b struct {
-		Facts []struct {
-			Content   string `json:"content"`
-			Namespace string `json:"namespace"`
-		} `json:"facts"`
+		Facts []briefingItemJSON `json:"facts"`
 	}
 	mustJSON(t, rec, &b)
 	got := map[string]bool{}
 	for _, f := range b.Facts {
-		got[f.Namespace] = true
+		got[f.Memory.Namespace] = true
 	}
 	if got["team-a"] {
 		t.Fatalf("explicit namespaces must not force-add the path namespace, got %v", got)
@@ -1563,13 +1567,16 @@ func TestBriefingHomeHeaderMergesDurable(t *testing.T) {
 		t.Fatalf("briefing with home header: want 200, got %d (%s)", rec.Code, rec.Body)
 	}
 	var b struct {
-		Facts []struct{ Content string } `json:"facts"`
+		Facts []briefingItemJSON `json:"facts"`
 	}
 	mustJSON(t, rec, &b)
 	found := false
 	for _, f := range b.Facts {
-		if f.Content == "jon prefers tabs over spaces" {
+		if f.Memory.Content == "jon prefers tabs over spaces" {
 			found = true
+			if f.From != "personal/kit" {
+				t.Errorf("home-origin fact should carry from=%q, got %q", "personal/kit", f.From)
+			}
 		}
 	}
 	if !found {
@@ -1583,11 +1590,11 @@ func TestBriefingHomeHeaderMergesDurable(t *testing.T) {
 	// A fresh decode target: Facts is omitempty, so decoding an empty-facts
 	// response into the same b as above would silently keep its stale value.
 	var b2 struct {
-		Facts []struct{ Content string } `json:"facts"`
+		Facts []briefingItemJSON `json:"facts"`
 	}
 	mustJSON(t, rec, &b2)
 	for _, f := range b2.Facts {
-		if f.Content == "jon prefers tabs over spaces" {
+		if f.Memory.Content == "jon prefers tabs over spaces" {
 			t.Fatalf("briefing without X-Memini-Home must not see the home namespace, got %+v", b2.Facts)
 		}
 	}

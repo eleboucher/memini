@@ -36,16 +36,52 @@ func (e Level) Valid() bool {
 	}
 }
 
+// Defines values for ReadSetOrigin.
+const (
+	Ancestor ReadSetOrigin = "ancestor"
+	Call     ReadSetOrigin = "call"
+	Home     ReadSetOrigin = "home"
+	Link     ReadSetOrigin = "link"
+	Primary  ReadSetOrigin = "primary"
+)
+
+// Valid indicates whether the value is a known member of the ReadSetOrigin enum.
+func (e ReadSetOrigin) Valid() bool {
+	switch e {
+	case Ancestor:
+		return true
+	case Call:
+		return true
+	case Home:
+		return true
+	case Link:
+		return true
+	case Primary:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SearchRequestScope.
 const (
-	SearchRequestScopeExact   SearchRequestScope = "exact"
-	SearchRequestScopeSubtree SearchRequestScope = "subtree"
+	SearchRequestScopeEverywhere SearchRequestScope = "everywhere"
+	SearchRequestScopeExact      SearchRequestScope = "exact"
+	SearchRequestScopeFull       SearchRequestScope = "full"
+	SearchRequestScopeProject    SearchRequestScope = "project"
+	SearchRequestScopeSubtree    SearchRequestScope = "subtree"
 )
 
 // Valid indicates whether the value is a known member of the SearchRequestScope enum.
 func (e SearchRequestScope) Valid() bool {
 	switch e {
+	case SearchRequestScopeEverywhere:
+		return true
 	case SearchRequestScopeExact:
+		return true
+	case SearchRequestScopeFull:
+		return true
+	case SearchRequestScopeProject:
 		return true
 	case SearchRequestScopeSubtree:
 		return true
@@ -80,14 +116,23 @@ func (e Tier) Valid() bool {
 
 // Defines values for GetBriefingParamsScope.
 const (
-	GetBriefingParamsScopeExact   GetBriefingParamsScope = "exact"
-	GetBriefingParamsScopeSubtree GetBriefingParamsScope = "subtree"
+	GetBriefingParamsScopeEverywhere GetBriefingParamsScope = "everywhere"
+	GetBriefingParamsScopeExact      GetBriefingParamsScope = "exact"
+	GetBriefingParamsScopeFull       GetBriefingParamsScope = "full"
+	GetBriefingParamsScopeProject    GetBriefingParamsScope = "project"
+	GetBriefingParamsScopeSubtree    GetBriefingParamsScope = "subtree"
 )
 
 // Valid indicates whether the value is a known member of the GetBriefingParamsScope enum.
 func (e GetBriefingParamsScope) Valid() bool {
 	switch e {
+	case GetBriefingParamsScopeEverywhere:
+		return true
 	case GetBriefingParamsScopeExact:
+		return true
+	case GetBriefingParamsScopeFull:
+		return true
+	case GetBriefingParamsScopeProject:
 		return true
 	case GetBriefingParamsScopeSubtree:
 		return true
@@ -120,18 +165,41 @@ type AnswerResponse struct {
 
 // Briefing defines model for Briefing.
 type Briefing struct {
+	// Children Per-child-namespace rollups (e.g. subtree children), each with its own pinned/recent highlights. Reserved for a future task — omitted until then.
+	Children *[]BriefingChild `json:"children,omitempty"`
+
 	// Facts Durable semantic facts, highest-retention first.
-	Facts     *[]Memory `json:"facts,omitempty"`
-	Namespace string    `json:"namespace"`
+	Facts     *[]BriefingItem `json:"facts,omitempty"`
+	Namespace string          `json:"namespace"`
 
 	// Pinned Pinned memories (any tier).
-	Pinned *[]Memory `json:"pinned,omitempty"`
+	Pinned *[]BriefingItem `json:"pinned,omitempty"`
 
 	// Procedures Procedural how-to memories, highest-retention first.
-	Procedures *[]Memory `json:"procedures,omitempty"`
+	Procedures *[]BriefingItem `json:"procedures,omitempty"`
 
 	// Recent Recent episodic activity, newest first.
-	Recent *[]Memory `json:"recent,omitempty"`
+	Recent *[]BriefingItem `json:"recent,omitempty"`
+
+	// ScopeHeader A human-readable one-line summary of which namespaces this briefing drew from (its resolved read-set scope). Reserved for a future task — omitted until then.
+	ScopeHeader *string `json:"scope_header,omitempty"`
+}
+
+// BriefingChild defines model for BriefingChild.
+type BriefingChild struct {
+	Namespace string    `json:"namespace"`
+	Pinned    *[]Memory `json:"pinned,omitempty"`
+	Recent    *[]Memory `json:"recent,omitempty"`
+
+	// Total Live memory count in this child namespace.
+	Total int `json:"total"`
+}
+
+// BriefingItem defines model for BriefingItem.
+type BriefingItem struct {
+	// From Read-set provenance beyond memory.namespace — same semantics as ScoredMemory.from (see there). Omitted for a primary-namespace item.
+	From   *string `json:"from,omitempty"`
+	Memory Memory  `json:"memory"`
 }
 
 // ClusterAction defines model for ClusterAction.
@@ -254,9 +322,44 @@ type MergeHint struct {
 	Tier      *Tier   `json:"tier,omitempty"`
 }
 
+// NamespaceLink defines model for NamespaceLink.
+type NamespaceLink struct {
+	CreatedAt time.Time `json:"created_at"`
+	Dst       string    `json:"dst"`
+	Note      *string   `json:"note,omitempty"`
+	Src       string    `json:"src"`
+
+	// Tiers Tier restriction on the link; empty/omitted means the durable default (semantic, procedural).
+	Tiers *[]Tier `json:"tiers,omitempty"`
+}
+
+// NamespaceLinksResponse defines model for NamespaceLinksResponse.
+type NamespaceLinksResponse struct {
+	Links []NamespaceLink `json:"links"`
+}
+
 // NamespacesResponse defines model for NamespacesResponse.
 type NamespacesResponse struct {
 	Namespaces []string `json:"namespaces"`
+}
+
+// ReadSetEntryItem defines model for ReadSetEntryItem.
+type ReadSetEntryItem struct {
+	Namespace string `json:"namespace"`
+
+	// Origin Why a namespace is in the read-set: "primary" is the request namespace (and its subtree, when expanded), "ancestor" is a path-prefix cascade leg, "home" is the caller's personal namespace, "link" is a stored namespace link, and "call" is an explicit per-call namespace.
+	Origin ReadSetOrigin `json:"origin"`
+
+	// Tiers Tier restriction applied to this namespace; omitted means the request's own tier filter, unrestricted beyond that.
+	Tiers *[]Tier `json:"tiers,omitempty"`
+}
+
+// ReadSetOrigin Why a namespace is in the read-set: "primary" is the request namespace (and its subtree, when expanded), "ancestor" is a path-prefix cascade leg, "home" is the caller's personal namespace, "link" is a stored namespace link, and "call" is an explicit per-call namespace.
+type ReadSetOrigin string
+
+// ReadSetResponse defines model for ReadSetResponse.
+type ReadSetResponse struct {
+	Entries []ReadSetEntryItem `json:"entries"`
 }
 
 // RememberRequest defines model for RememberRequest.
@@ -286,6 +389,9 @@ type RememberRequest struct {
 
 	// ValidTo End of the interval the fact was true (for recording a fact that was true only in the past). Omit for a fact that is still true.
 	ValidTo *time.Time `json:"valid_to,omitempty"`
+
+	// Visibility Write-side namespace scoping. Omit or "project" (default) writes to the request namespace itself. "personal" writes to the caller's home namespace (X-Memini-Home header / MEMINI_HOME on the client) instead — an error if no home namespace is configured. Any other value must name an ancestor of the request namespace, either its full path or an unambiguous last path segment (e.g. "acme" for request namespace "acme/phoenix/api"), and the write lands there instead. Ignored for non-durable writes: an episodic/working memory always stays in the request namespace regardless of visibility.
+	Visibility *string `json:"visibility,omitempty"`
 }
 
 // RenamespaceReport defines model for RenamespaceReport.
@@ -305,6 +411,8 @@ type RenamespaceReport struct {
 
 // ScoredMemory defines model for ScoredMemory.
 type ScoredMemory struct {
+	// From Read-set provenance beyond memory.namespace: omitted for a hit from the request (primary) namespace — the common case, no annotation needed — the ancestor/home namespace name itself for those two origins ("acme", "personal/kit"), and a prefixed form for a stored link or an explicit per-call namespace ("link:shared/golang", "call:acme/other"). Only populated when the read drew from a resolved read-set (recall/answer); omitted otherwise.
+	From   *string `json:"from,omitempty"`
 	Memory Memory  `json:"memory"`
 	Score  float64 `json:"score"`
 }
@@ -337,7 +445,7 @@ type SearchRequest struct {
 	// QueryRewrite When true and an LLM is configured, rewrite the query into 2-3 diverse variants before recall and fuse results via RRF. Cheapest read-path LLM lever; opt-in per call.
 	QueryRewrite *bool `json:"query_rewrite,omitempty"`
 
-	// Scope exact (default) searches only the request namespace; subtree also searches namespaces nested under it ("project" reads "project/agent"), for the multi-agent read-shared-plus-private pattern. Any other value is rejected with 400.
+	// Scope "full" (default) searches the request namespace plus its ancestor/home/link cascade; "project" searches only the request namespace (no cascade); "everywhere" is "full" plus the request namespace's subtree, for the multi-agent read-shared-plus-private pattern. "exact" and "subtree" are deprecated aliases kept for back-compat: "exact" behaves as "project" (its original, pre-cascade meaning — the request namespace only) and "subtree" behaves as "everywhere". Any other value is rejected with 400.
 	Scope *SearchRequestScope `json:"scope,omitempty"`
 
 	// Tags A memory must carry every listed tag (AND).
@@ -345,7 +453,7 @@ type SearchRequest struct {
 	Tiers *[]Tier   `json:"tiers,omitempty"`
 }
 
-// SearchRequestScope exact (default) searches only the request namespace; subtree also searches namespaces nested under it ("project" reads "project/agent"), for the multi-agent read-shared-plus-private pattern. Any other value is rejected with 400.
+// SearchRequestScope "full" (default) searches the request namespace plus its ancestor/home/link cascade; "project" searches only the request namespace (no cascade); "everywhere" is "full" plus the request namespace's subtree, for the multi-agent read-shared-plus-private pattern. "exact" and "subtree" are deprecated aliases kept for back-compat: "exact" behaves as "project" (its original, pre-cascade meaning — the request namespace only) and "subtree" behaves as "everywhere". Any other value is rejected with 400.
 type SearchRequestScope string
 
 // SearchResponse defines model for SearchResponse.
@@ -412,6 +520,45 @@ type RunDedupParams struct {
 
 // RunFsckParams defines parameters for RunFsck.
 type RunFsckParams struct {
+	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
+}
+
+// DeleteLinkJSONBody defines parameters for DeleteLink.
+type DeleteLinkJSONBody struct {
+	// Dst Target namespace to unlink.
+	Dst *string `json:"dst,omitempty"`
+}
+
+// DeleteLinkParams defines parameters for DeleteLink.
+type DeleteLinkParams struct {
+	// Dst Target namespace to unlink. Required, via query or JSON body.
+	Dst *string `form:"dst,omitempty" json:"dst,omitempty"`
+
+	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
+}
+
+// ListLinksParams defines parameters for ListLinks.
+type ListLinksParams struct {
+	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
+}
+
+// PutLinkJSONBody defines parameters for PutLink.
+type PutLinkJSONBody struct {
+	// Dst Target namespace.
+	Dst string `json:"dst"`
+
+	// Note Free-text annotation for operators.
+	Note *string `json:"note,omitempty"`
+
+	// Tiers Restrict which tiers cross the link; empty/omitted means the durable default (semantic, procedural) — non-durable tiers never cross a link regardless.
+	Tiers *[]Tier `json:"tiers,omitempty"`
+}
+
+// PutLinkParams defines parameters for PutLink.
+type PutLinkParams struct {
 	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
@@ -516,7 +663,7 @@ type GetBriefingParams struct {
 	// PerSectionRecent Max recent episodic entries. Overrides per_section. 0 disables the section.
 	PerSectionRecent *int `form:"per_section_recent,omitempty" json:"per_section_recent,omitempty"`
 
-	// Scope exact (default) briefs only the namespace; subtree also includes namespaces nested under it ("project" reads "project/agent"). Any value other than "exact" or "subtree" is rejected with 400.
+	// Scope "full" (default) briefs the namespace plus its ancestor/home/link cascade; "project" briefs only the namespace (no cascade); "everywhere" is "full" plus namespaces nested under it ("project" also reads "project/agent"). "exact" and "subtree" are deprecated aliases kept for back-compat: "exact" behaves as "project" (its original, pre-cascade meaning) and "subtree" behaves as "everywhere". Any other value is rejected with 400.
 	Scope *GetBriefingParamsScope `form:"scope,omitempty" json:"scope,omitempty"`
 
 	// Namespaces Repeatable. Brief exactly these namespaces instead of the default read set (the namespace, its subtree, and the global namespace). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected.
@@ -539,6 +686,12 @@ type MoveNamespaceJSONBody struct {
 
 // MoveNamespaceParams defines parameters for MoveNamespace.
 type MoveNamespaceParams struct {
+	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
+}
+
+// GetReadSetParams defines parameters for GetReadSet.
+type GetReadSetParams struct {
 	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
@@ -577,6 +730,12 @@ type AnswerQuestionJSONRequestBody = AnswerRequest
 // RunDedupJSONRequestBody defines body for RunDedup for application/json ContentType.
 type RunDedupJSONRequestBody = DedupRequest
 
+// DeleteLinkJSONRequestBody defines body for DeleteLink for application/json ContentType.
+type DeleteLinkJSONRequestBody DeleteLinkJSONBody
+
+// PutLinkJSONRequestBody defines body for PutLink for application/json ContentType.
+type PutLinkJSONRequestBody PutLinkJSONBody
+
 // RememberMemoryJSONRequestBody defines body for RememberMemory for application/json ContentType.
 type RememberMemoryJSONRequestBody = RememberRequest
 
@@ -606,6 +765,15 @@ type ServerInterface interface {
 	// Run a consistency sweep (purge expired, enforce short-term cap, audit duplicates)
 	// (POST /v1/fsck)
 	RunFsck(w http.ResponseWriter, r *http.Request, params RunFsckParams)
+	// Delete a namespace link
+	// (DELETE /v1/links)
+	DeleteLink(w http.ResponseWriter, r *http.Request, params DeleteLinkParams)
+	// List outgoing namespace links from the request namespace
+	// (GET /v1/links)
+	ListLinks(w http.ResponseWriter, r *http.Request, params ListLinksParams)
+	// Create or replace a namespace link (cross-namespace read edge)
+	// (POST /v1/links)
+	PutLink(w http.ResponseWriter, r *http.Request, params PutLinkParams)
 	// Delete every memory in the namespace carrying a tag
 	// (DELETE /v1/memories)
 	ForgetByTag(w http.ResponseWriter, r *http.Request, params ForgetByTagParams)
@@ -642,6 +810,9 @@ type ServerInterface interface {
 	// Relocate every memory in the request namespace to another namespace
 	// (POST /v1/namespaces/move)
 	MoveNamespace(w http.ResponseWriter, r *http.Request, params MoveNamespaceParams)
+	// Resolve the structural read-set for the request namespace
+	// (GET /v1/namespaces/read-set)
+	GetReadSet(w http.ResponseWriter, r *http.Request, params GetReadSetParams)
 	// Split the request namespace by metadata keys
 	// (POST /v1/namespaces/split)
 	SplitNamespace(w http.ResponseWriter, r *http.Request, params SplitNamespaceParams)
@@ -672,6 +843,24 @@ func (_ Unimplemented) RunDedup(w http.ResponseWriter, r *http.Request, params R
 // Run a consistency sweep (purge expired, enforce short-term cap, audit duplicates)
 // (POST /v1/fsck)
 func (_ Unimplemented) RunFsck(w http.ResponseWriter, r *http.Request, params RunFsckParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Delete a namespace link
+// (DELETE /v1/links)
+func (_ Unimplemented) DeleteLink(w http.ResponseWriter, r *http.Request, params DeleteLinkParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List outgoing namespace links from the request namespace
+// (GET /v1/links)
+func (_ Unimplemented) ListLinks(w http.ResponseWriter, r *http.Request, params ListLinksParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Create or replace a namespace link (cross-namespace read edge)
+// (POST /v1/links)
+func (_ Unimplemented) PutLink(w http.ResponseWriter, r *http.Request, params PutLinkParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -744,6 +933,12 @@ func (_ Unimplemented) GetBriefing(w http.ResponseWriter, r *http.Request, param
 // Relocate every memory in the request namespace to another namespace
 // (POST /v1/namespaces/move)
 func (_ Unimplemented) MoveNamespace(w http.ResponseWriter, r *http.Request, params MoveNamespaceParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Resolve the structural read-set for the request namespace
+// (GET /v1/namespaces/read-set)
+func (_ Unimplemented) GetReadSet(w http.ResponseWriter, r *http.Request, params GetReadSetParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -906,6 +1101,160 @@ func (siw *ServerInterfaceWrapper) RunFsck(w http.ResponseWriter, r *http.Reques
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.RunFsck(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteLink operation middleware
+func (siw *ServerInterfaceWrapper) DeleteLink(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteLinkParams
+
+	// ------------- Optional query parameter "dst" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "dst", r.URL.Query(), &params.Dst, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "dst"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "dst", Err: err})
+		}
+		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Memini-Namespace" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Memini-Namespace")]; found {
+		var XMeminiNamespace Namespace
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Memini-Namespace", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Memini-Namespace", valueList[0], &XMeminiNamespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Memini-Namespace", Err: err})
+			return
+		}
+
+		params.XMeminiNamespace = &XMeminiNamespace
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteLink(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListLinks operation middleware
+func (siw *ServerInterfaceWrapper) ListLinks(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListLinksParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Memini-Namespace" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Memini-Namespace")]; found {
+		var XMeminiNamespace Namespace
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Memini-Namespace", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Memini-Namespace", valueList[0], &XMeminiNamespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Memini-Namespace", Err: err})
+			return
+		}
+
+		params.XMeminiNamespace = &XMeminiNamespace
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListLinks(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutLink operation middleware
+func (siw *ServerInterfaceWrapper) PutLink(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PutLinkParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Memini-Namespace" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Memini-Namespace")]; found {
+		var XMeminiNamespace Namespace
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Memini-Namespace", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Memini-Namespace", valueList[0], &XMeminiNamespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Memini-Namespace", Err: err})
+			return
+		}
+
+		params.XMeminiNamespace = &XMeminiNamespace
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutLink(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1705,6 +2054,53 @@ func (siw *ServerInterfaceWrapper) MoveNamespace(w http.ResponseWriter, r *http.
 	handler.ServeHTTP(w, r)
 }
 
+// GetReadSet operation middleware
+func (siw *ServerInterfaceWrapper) GetReadSet(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetReadSetParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Memini-Namespace" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Memini-Namespace")]; found {
+		var XMeminiNamespace Namespace
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Memini-Namespace", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Memini-Namespace", valueList[0], &XMeminiNamespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Memini-Namespace", Err: err})
+			return
+		}
+
+		params.XMeminiNamespace = &XMeminiNamespace
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetReadSet(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // SplitNamespace operation middleware
 func (siw *ServerInterfaceWrapper) SplitNamespace(w http.ResponseWriter, r *http.Request) {
 
@@ -1982,6 +2378,15 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/v1/fsck", wrapper.RunFsck)
 	})
 	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/links", wrapper.DeleteLink)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/links", wrapper.ListLinks)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/links", wrapper.PutLink)
+	})
+	r.Group(func(r chi.Router) {
 		r.Delete(options.BaseURL+"/v1/memories", wrapper.ForgetByTag)
 	})
 	r.Group(func(r chi.Router) {
@@ -2016,6 +2421,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/namespaces/move", wrapper.MoveNamespace)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/namespaces/read-set", wrapper.GetReadSet)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/namespaces/split", wrapper.SplitNamespace)

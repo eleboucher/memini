@@ -199,6 +199,7 @@ func (h *Server) RememberMemory(w http.ResponseWriter, r *http.Request, _ Rememb
 	in.Confidence = req.Confidence
 	in.ValidFrom = req.ValidFrom
 	in.ValidTo = req.ValidTo
+	in.Visibility = deref(req.Visibility)
 	if req.TtlSeconds != nil {
 		d := time.Duration(*req.TtlSeconds) * time.Second
 		in.TTL = &d
@@ -398,10 +399,10 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 	// (mirrors GetBriefing).
 	if req.Scope != nil {
 		if !req.Scope.Valid() {
-			httputil.Error(w, http.StatusBadRequest, fmt.Sprintf("invalid scope %q: want exact or subtree", *req.Scope))
+			httputil.Error(w, http.StatusBadRequest, invalidScopeMsg(string(*req.Scope)))
 			return
 		}
-		in.Subtree = *req.Scope == SearchRequestScopeSubtree
+		in.Scope = restScopeAlias(string(*req.Scope))
 	}
 	// Explicit namespaces REPLACE the default read set; the service layer
 	// validates entries and enforces the 16-entry cap (ErrInvalidInput → 400).
@@ -411,13 +412,15 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 	}
 	var degraded string
 	in.Degraded = &degraded
+	var readset []service.ReadSetEntry
+	in.ReadSet = &readset
 
 	res, err := h.svc.Recall(r.Context(), in)
 	if err != nil {
 		writeError(w, r, statusFor(err), err)
 		return
 	}
-	out := SearchResponse{Results: apiScored(res)}
+	out := SearchResponse{Results: apiScored(res, service.OriginMap(readset))}
 	if degraded != "" {
 		keywordOnly := "keyword_only"
 		note := "semantic search unavailable (" + degraded + "); results are keyword-only and may be incomplete"
@@ -453,13 +456,17 @@ func (h *Server) AnswerQuestion(w http.ResponseWriter, r *http.Request, _ Answer
 	in.Tags = deref(req.Tags)
 	in.Metadata = deref(req.Metadata)
 	in.Limit = deref(req.Limit)
+	var readset []service.ReadSetEntry
+	in.ReadSet = &readset
 
 	res, err := h.svc.Answer(r.Context(), in)
 	if err != nil {
 		writeError(w, r, statusFor(err), err)
 		return
 	}
-	httputil.JSON(w, http.StatusOK, AnswerResponse{Answer: res.Answer, Sources: apiScored(res.Sources)})
+	httputil.JSON(w, http.StatusOK, AnswerResponse{
+		Answer: res.Answer, Sources: apiScored(res.Sources, service.OriginMap(readset)),
+	})
 }
 
 // ListMemories implements GET /v1/memories.
@@ -509,6 +516,195 @@ func (h *Server) ListMemories(w http.ResponseWriter, r *http.Request, params Lis
 	httputil.JSON(w, http.StatusOK, out)
 }
 
+// restScopeAlias maps the REST scope enum onto the service's
+// project/full/everywhere vocabulary (service.RecallInput.Scope /
+// service.BriefingOpts.Scope, parsed by the unexported service.parseScope).
+// "project", "full", and "everywhere" pass through unchanged; "exact" and
+// "subtree" are deprecated back-compat aliases: "exact" maps to "project"
+// (its original, pre-cascade meaning — the request namespace only, no
+// ancestor/home/link cascade) and "subtree" maps to "everywhere" (the
+// cascade plus the request namespace's subtree — every scope now inherits
+// the cascade legs that didn't exist when "subtree" was coined). MCP still
+// speaks exact/subtree literally; its enum swap to
+// project/full/everywhere is T8's job, not this REST-only mapping.
+func restScopeAlias(scope string) string {
+	switch scope {
+	case "exact":
+		return scopeProject
+	case "subtree":
+		return "everywhere"
+	default:
+		return scope
+	}
+}
+
+// invalidScopeMsg formats the 400 body for an unrecognized scope value,
+// shared by SearchMemories and GetBriefing.
+func invalidScopeMsg(scope string) string {
+	return fmt.Sprintf("invalid scope %q: want project, full, everywhere, exact, or subtree", scope)
+}
+
+// scopeProject is the REST-layer mirror of service.scopeProject (unexported
+// there); duplicated as a literal here rather than importing an unexported
+// identifier — see restScopeAlias.
+const scopeProject = "project"
+
+// GetReadSet implements GET /v1/namespaces/read-set. Header-scoped like
+// GetBriefing: the namespace comes from X-Memini-Namespace, and
+// X-Memini-Home, when set, contributes the home leg.
+func (h *Server) GetReadSet(w http.ResponseWriter, r *http.Request, _ GetReadSetParams) {
+	name := namespaceFromContext(r.Context())
+	if err := httputil.ValidateNamespace(name); err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid namespace: "+err.Error())
+		return
+	}
+	entries, err := h.svc.ResolveReadSetInfo(r.Context(), name, homeFromContext(r.Context()))
+	if err != nil {
+		writeError(w, r, statusFor(err), err)
+		return
+	}
+	out := ReadSetResponse{Entries: make([]ReadSetEntryItem, len(entries))}
+	for i, e := range entries {
+		item := ReadSetEntryItem{Namespace: e.NS, Origin: ReadSetOrigin(e.Origin)}
+		if len(e.Tiers) > 0 {
+			tiers := make([]Tier, len(e.Tiers))
+			for j, t := range e.Tiers {
+				tiers[j] = Tier(t)
+			}
+			item.Tiers = &tiers
+		}
+		out.Entries[i] = item
+	}
+	httputil.JSON(w, http.StatusOK, out)
+}
+
+// linkStore type-asserts the backing store to store.LinkStore, the optional
+// capability interface namespace links require (sqlitevec and postgres both
+// implement it; see store.LinkStore's doc comment). Returns false — a 501 to
+// the caller — for a driver that predates it, mirroring resolveReadSet's
+// graceful degrade.
+func (h *Server) linkStore() (store.LinkStore, bool) {
+	ls, ok := h.svc.Store().(store.LinkStore)
+	return ls, ok
+}
+
+// PutLink implements POST /v1/links. Creates or replaces a durable-tier read
+// link from the request namespace (src) to the given destination.
+func (h *Server) PutLink(w http.ResponseWriter, r *http.Request, _ PutLinkParams) {
+	ls, ok := h.linkStore()
+	if !ok {
+		httputil.Error(w, http.StatusNotImplemented, "namespace links are not supported by this storage backend")
+		return
+	}
+	src := namespaceFromContext(r.Context())
+	if err := httputil.ValidateNamespace(src); err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid namespace: "+err.Error())
+		return
+	}
+	var req PutLinkJSONBody
+	if !decode(w, r, &req) {
+		return
+	}
+	dst := httputil.NormalizeNamespace(req.Dst)
+	if err := httputil.ValidateNamespace(dst); err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid dst namespace: "+err.Error())
+		return
+	}
+	if strings.Contains(dst, "*") {
+		httputil.Error(w, http.StatusBadRequest, "invalid dst namespace: \"*\" is reserved for read-set patterns")
+		return
+	}
+	if dst == src {
+		httputil.Error(w, http.StatusBadRequest, "dst namespace equals the request namespace (no self-links)")
+		return
+	}
+	tiers, err := domainTiers(req.Tiers)
+	if err != nil {
+		httputil.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// Both drivers set created_at = this value on every PUT (insert or
+	// replace), so stamping it here — rather than leaving it zero for the
+	// driver to fill in on first insert only — keeps the echoed response
+	// accurate without a second round-trip to re-read the stored row.
+	link := store.NamespaceLink{Src: src, Dst: dst, Tiers: tiers, Note: deref(req.Note), CreatedAt: time.Now().UTC()}
+	if err := ls.PutLink(r.Context(), link); err != nil {
+		writeError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	httputil.JSON(w, http.StatusOK, apiNamespaceLink(link))
+}
+
+// ListLinks implements GET /v1/links: outgoing links from the request namespace.
+func (h *Server) ListLinks(w http.ResponseWriter, r *http.Request, _ ListLinksParams) {
+	ls, ok := h.linkStore()
+	if !ok {
+		httputil.Error(w, http.StatusNotImplemented, "namespace links are not supported by this storage backend")
+		return
+	}
+	src := namespaceFromContext(r.Context())
+	links, err := ls.ListLinks(r.Context(), src)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	out := NamespaceLinksResponse{Links: make([]NamespaceLink, len(links))}
+	for i, l := range links {
+		out.Links[i] = apiNamespaceLink(l)
+	}
+	httputil.JSON(w, http.StatusOK, out)
+}
+
+// DeleteLink implements DELETE /v1/links. dst comes from the query parameter
+// or, when absent, the optional JSON body.
+func (h *Server) DeleteLink(w http.ResponseWriter, r *http.Request, params DeleteLinkParams) {
+	ls, ok := h.linkStore()
+	if !ok {
+		httputil.Error(w, http.StatusNotImplemented, "namespace links are not supported by this storage backend")
+		return
+	}
+	dst := deref(params.Dst)
+	if dst == "" && r.ContentLength != 0 {
+		var body DeleteLinkJSONBody
+		if !decode(w, r, &body) {
+			return
+		}
+		dst = deref(body.Dst)
+	}
+	dst = httputil.NormalizeNamespace(dst)
+	if dst == "" {
+		httputil.Error(w, http.StatusBadRequest, "dst namespace is required (query or body)")
+		return
+	}
+	src := namespaceFromContext(r.Context())
+	found, err := ls.DeleteLink(r.Context(), src, dst)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	if !found {
+		httputil.Error(w, http.StatusNotFound, "link not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// apiNamespaceLink maps a store.NamespaceLink onto the spec model.
+func apiNamespaceLink(l store.NamespaceLink) NamespaceLink {
+	out := NamespaceLink{Src: l.Src, Dst: l.Dst, CreatedAt: l.CreatedAt}
+	if l.Note != "" {
+		out.Note = &l.Note
+	}
+	if len(l.Tiers) > 0 {
+		tiers := make([]Tier, len(l.Tiers))
+		for i, t := range l.Tiers {
+			tiers[i] = Tier(t)
+		}
+		out.Tiers = &tiers
+	}
+	return out
+}
+
 // GetBriefing implements GET /v1/namespaces/briefing. The namespace comes from
 // the X-Memini-Namespace header (via the middleware), not the URL path.
 func (h *Server) GetBriefing(w http.ResponseWriter, r *http.Request, params GetBriefingParams) {
@@ -542,34 +738,44 @@ func (h *Server) GetBriefing(w http.ResponseWriter, r *http.Request, params GetB
 	// scope must be rejected here rather than silently briefed as exact.
 	if params.Scope != nil {
 		if !params.Scope.Valid() {
-			httputil.Error(w, http.StatusBadRequest, fmt.Sprintf("invalid scope %q: want exact or subtree", *params.Scope))
+			httputil.Error(w, http.StatusBadRequest, invalidScopeMsg(string(*params.Scope)))
 			return
 		}
-		opts.Subtree = *params.Scope == GetBriefingParamsScopeSubtree
+		opts.Scope = restScopeAlias(string(*params.Scope))
 	}
+	var readset []service.ReadSetEntry
+	opts.ReadSet = &readset
 	b, err := h.svc.Briefing(r.Context(), name, opts)
 	if err != nil {
 		writeError(w, r, statusFor(err), err)
 		return
 	}
+	origins := service.OriginMap(readset)
 	httputil.JSON(w, http.StatusOK, Briefing{
 		Namespace:  b.Namespace,
-		Facts:      apiMemoryList(b.Facts),
-		Procedures: apiMemoryList(b.Procedures),
-		Recent:     apiMemoryList(b.Recent),
-		Pinned:     apiMemoryList(b.Pinned),
+		Facts:      apiBriefingItems(b.Facts, origins),
+		Procedures: apiBriefingItems(b.Procedures, origins),
+		Recent:     apiBriefingItems(b.Recent, origins),
+		Pinned:     apiBriefingItems(b.Pinned, origins),
 	})
 }
 
-// apiMemoryList maps a slice of memories to API models, returning nil for an
-// empty slice so the field is omitted from the response.
-func apiMemoryList(mems []*memory.Memory) *[]Memory {
+// apiBriefingItems maps a briefing section's memories to the spec-generated
+// BriefingItem shape (memory + read-set provenance), returning nil for an
+// empty slice so the field is omitted from the response. origins is built
+// once per request via service.OriginMap from the Briefing call's ReadSet
+// out-param; see service.ReadSetFrom for the provenance rendering rules.
+func apiBriefingItems(mems []*memory.Memory, origins map[string]string) *[]BriefingItem {
 	if len(mems) == 0 {
 		return nil
 	}
-	out := make([]Memory, len(mems))
+	out := make([]BriefingItem, len(mems))
 	for i, m := range mems {
-		out[i] = apiMemory(m)
+		item := BriefingItem{Memory: apiMemory(m)}
+		if from := service.ReadSetFrom(origins, m.Namespace); from != "" {
+			item.From = &from
+		}
+		out[i] = item
 	}
 	return &out
 }
@@ -816,10 +1022,20 @@ func apiMemory(m *memory.Memory) Memory {
 	return out
 }
 
-func apiScored(res []store.Scored) []ScoredMemory {
+// apiScored maps recall/answer hits to the spec-generated ScoredMemory shape,
+// including read-set provenance ("from"). origins is built once per request
+// via service.OriginMap from the call's ReadSet out-param; see
+// service.ReadSetFrom for the provenance rendering rules. A nil/empty origins
+// map (the caller didn't wire a ReadSet out-param) renders every item's from
+// as "".
+func apiScored(res []store.Scored, origins map[string]string) []ScoredMemory {
 	out := make([]ScoredMemory, len(res))
 	for i, s := range res {
-		out[i] = ScoredMemory{Memory: apiMemory(s.Memory), Score: s.Score}
+		sm := ScoredMemory{Memory: apiMemory(s.Memory), Score: s.Score}
+		if from := service.ReadSetFrom(origins, s.Memory.Namespace); from != "" {
+			sm.From = &from
+		}
+		out[i] = sm
 	}
 	return out
 }

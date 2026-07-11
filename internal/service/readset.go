@@ -62,6 +62,46 @@ func toReadSetEntries(entries []scopeEntry) []ReadSetEntry {
 	return out
 }
 
+// OriginMap builds the namespace -> origin lookup ReadSetFrom needs, from a
+// resolved read-set's ReadSetEntry slice (Recall/Briefing/Answer's ReadSet
+// out-param). entries is typically empty (the out-param's zero value) when
+// the caller never asked for read-set info, in which case every ReadSetFrom
+// lookup falls through to its default case. Shared by the MCP and REST API
+// layers so both surfaces render "from" provenance identically — see
+// ReadSetFrom.
+func OriginMap(entries []ReadSetEntry) map[string]string {
+	m := make(map[string]string, len(entries))
+	for _, e := range entries {
+		m[e.NS] = e.Origin
+	}
+	return m
+}
+
+// ReadSetFrom renders a resolved read-set origin (the Origin* constants
+// above) into API "from" provenance: the origin recorded when ns's leg was
+// appended during read-set resolution (see ReadSetEntry), not re-derived
+// here. origins maps namespace -> origin, built once per call from a
+// resolved read-set via OriginMap. A namespace absent from origins (read-set
+// info wasn't resolved, or the caller didn't ask for it) renders empty
+// rather than guessing.
+//
+// Result: "" for the primary namespace or an unresolved lookup (no
+// annotation needed — the common case); the namespace itself for an
+// ancestor/home leg; "link:<ns>" for a stored link; "call:<ns>" for an
+// explicit per-call namespace.
+func ReadSetFrom(origins map[string]string, ns string) string {
+	switch origins[ns] {
+	case OriginAncestor, OriginHome:
+		return ns
+	case OriginLink:
+		return "link:" + ns
+	case OriginCall:
+		return "call:" + ns
+	default: // "" (unresolved) or OriginPrimary: no annotation
+		return ""
+	}
+}
+
 // ResolveReadSetInfo resolves the default read-set for ns (request
 // namespace) and home (caller's personal namespace) — the same cascade
 // Recall and Briefing use with no scope/explicit-namespace override, and
