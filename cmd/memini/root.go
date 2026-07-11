@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -48,6 +50,19 @@ func Execute() {
 }
 
 func runServer(cmd *cobra.Command, _ []string) error {
+	// Checked first, before config.Load(): a deleted knob set here means the
+	// operator's env still expects the old opt-in shared-scope model, which
+	// no longer exists — booting as if it were never set would silently drop
+	// that expectation. Deliberately NOT inside config.Load() itself: `memini
+	// migrate scopes` (cmd/memini/migrate.go) also calls config.Load() and
+	// needs MEMINI_GLOBAL_NAMESPACE readable to print its own adoption
+	// instructions, so gating Load() would deadlock the one command that
+	// handles this migration. See config.FatalDeprecatedVars for the full
+	// rationale.
+	if fatal := config.FatalDeprecatedVars(); len(fatal) > 0 {
+		return errors.New(strings.Join(fatal, "\n"))
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		return err
