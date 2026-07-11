@@ -166,3 +166,17 @@ export function rootOf(ns: string): string {
   const i = ns.indexOf('/')
   return i === -1 ? ns : ns.slice(0, i)
 }
+
+// fromLabel renders a ScoredMemory/BriefingItem `from` provenance string as a
+// short chip label. Per the schema, the server sends a bare namespace name
+// for both the "ancestor" and "home" read-set origins — the UI tells them
+// apart by checking whether that name is a path-ancestor of the active
+// namespace (an ancestor cascades in by path prefix; home doesn't), and
+// otherwise labels it "personal". "link:" and "call:" values are already
+// prefixed by the server and just get a friendlier separator.
+export function fromLabel(from: string, activeNamespace: string): string {
+  if (from.startsWith('link:')) return `link: ${from.slice(5)}`
+  if (from.startsWith('call:')) return `call: ${from.slice(5)}`
+  if (ancestorsOf(activeNamespace).includes(from)) return from
+  return 'personal'
+}

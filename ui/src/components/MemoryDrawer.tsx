@@ -2,19 +2,22 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import { createPortal } from 'preact/compat'
 import type { Memory } from '../types'
 import { api } from '../api'
-import { refresh } from '../store'
+import { namespace, refresh } from '../store'
 import { TierBadge } from './TierBadge'
 import { MemoryTypeBadge } from './MemoryTypeBadge'
-import { fmtDate, isAutoTiered, memoryType, promotedFrom, relTime } from '../util'
+import { fmtDate, fromLabel, isAutoTiered, memoryType, promotedFrom, relTime } from '../util'
 import { IconClose, IconCopy, IconCheck, IconTrash } from '../icons'
 
 interface Props {
   memory: Memory
   onClose: () => void
   wide?: boolean
+  // Read-set provenance beyond memory.namespace (ScoredMemory.from /
+  // BriefingItem.from) — omitted for a primary-namespace hit.
+  from?: string
 }
 
-export function MemoryDrawer({ memory: m, onClose, wide }: Props) {
+export function MemoryDrawer({ memory: m, onClose, wide, from }: Props) {
   const [copied, setCopied] = useState(false)
   const [armed, setArmed] = useState(false) // delete confirmation (two-click)
   const [deleting, setDeleting] = useState(false)
@@ -181,6 +184,12 @@ export function MemoryDrawer({ memory: m, onClose, wide }: Props) {
             <span class="val">{m.id}</span>
             <span class="key">namespace</span>
             <span class="val">{m.namespace}</span>
+            {from && (
+              <>
+                <span class="key">in scope via</span>
+                <span class="val">{fromLabel(from, namespace.value)}</span>
+              </>
+            )}
             <span class="key">importance</span>
             <span class="val">{(m.importance ?? 0).toFixed(3)}</span>
             {m.confidence != null && (

@@ -17,6 +17,7 @@ export function Search() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [open, setOpen] = useState<Memory | null>(null)
+  const [openFrom, setOpenFrom] = useState<string | undefined>(undefined)
   const [took, setTook] = useState(0)
 
   const showNs = isAllProjects()
@@ -98,7 +99,11 @@ export function Search() {
                     key={r.memory.id}
                     memory={r.memory}
                     score={r.score}
-                    onOpen={setOpen}
+                    from={r.from}
+                    onOpen={(m) => {
+                      setOpen(m)
+                      setOpenFrom(r.from)
+                    }}
                     showNamespace={showNs}
                   />
                 ))}
@@ -110,7 +115,7 @@ export function Search() {
         {results === null && !error && <div class="empty"><div class="big">Search memories</div></div>}
       </div>
 
-      {open && <MemoryDrawer memory={open} onClose={() => setOpen(null)} />}
+      {open && <MemoryDrawer memory={open} from={openFrom} onClose={() => setOpen(null)} />}
     </>
   )
 }

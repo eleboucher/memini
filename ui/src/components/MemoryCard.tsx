@@ -1,16 +1,20 @@
 import type { Memory } from '../types'
+import { namespace } from '../store'
 import { TierBadge } from './TierBadge'
 import { MemoryTypeBadge } from './MemoryTypeBadge'
-import { isAutoTiered, memoryType, promotedFrom, relTime } from '../util'
+import { fromLabel, isAutoTiered, memoryType, promotedFrom, relTime } from '../util'
 
 interface Props {
   memory: Memory
   score?: number
   onOpen: (m: Memory) => void
   showNamespace?: boolean
+  // Read-set provenance beyond memory.namespace (ScoredMemory.from /
+  // BriefingItem.from) — omitted for a primary-namespace hit.
+  from?: string
 }
 
-export function MemoryCard({ memory: m, score, onOpen, showNamespace }: Props) {
+export function MemoryCard({ memory: m, score, onOpen, showNamespace, from }: Props) {
   return (
     <button type="button" class={`mem panel ${m.tier}`} onClick={() => onOpen(m)}>
       <div class="mem-head">
@@ -18,6 +22,11 @@ export function MemoryCard({ memory: m, score, onOpen, showNamespace }: Props) {
         <MemoryTypeBadge type={memoryType(m)} />
         {showNamespace && m.namespace && (
           <span class="chip" title="Project">{m.namespace}</span>
+        )}
+        {from && (
+          <span class="chip" title={`In scope via ${from}`}>
+            {fromLabel(from, namespace.value)}
+          </span>
         )}
         {isAutoTiered(m) && (
           <span class="chip" title="Tier chosen by the write-time classifier — worth a glance">
