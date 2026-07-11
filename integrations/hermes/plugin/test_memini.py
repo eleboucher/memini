@@ -16,7 +16,7 @@ import memini  # noqa: E402
 # A developer shell may export the real memini config; clear it so each test's
 # explicit env is authoritative (canonical MEMINI_BASE_URL would otherwise win
 # over a test that sets only MEMINI_URL).
-for _v in ("MEMINI_BASE_URL", "MEMINI_URL", "MEMINI_API_KEY", "MEMINI_TOKEN"):
+for _v in ("MEMINI_BASE_URL", "MEMINI_URL", "MEMINI_API_KEY", "MEMINI_TOKEN", "MEMINI_HOME"):
     os.environ.pop(_v, None)
 # Point XDG_CONFIG_HOME at an empty temp dir so a developer's real
 # ~/.config/memini/config.json can't leak tenant prefixes into these tests.
@@ -65,6 +65,42 @@ class ApiErrorSurfacingTest(unittest.TestCase):
             out = memini._api("http://127.0.0.1:1", "/v1/search", {}, "ns", "")
         self.assertIsNone(out)
         self.assertIn("[memini] POST /v1/search failed:", err.getvalue())
+
+
+class HomeHeaderTest(unittest.TestCase):
+    def test_home_header_emitted_when_set_omitted_otherwise(self):
+        # _api's Request goes through urllib, which capitalizes header keys as
+        # "X-memini-home" (Request.add_header capitalizes only the first
+        # character); assert on that exact key.
+        captured = []
+
+        class FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b"{}"
+
+        def fake_urlopen(req, timeout=None):
+            captured.append(req)
+            return FakeResp()
+
+        real_urlopen = memini.urlopen
+        memini.urlopen = fake_urlopen
+        try:
+            os.environ["MEMINI_HOME"] = "personal/acme"
+            memini._api("http://localhost:8080", "/v1/search", {}, "ns", "")
+            os.environ.pop("MEMINI_HOME", None)
+            memini._api("http://localhost:8080", "/v1/search", {}, "ns", "")
+        finally:
+            memini.urlopen = real_urlopen
+
+        self.assertEqual(len(captured), 2)
+        self.assertEqual(captured[0].get_header("X-memini-home"), "personal/acme")
+        self.assertIsNone(captured[1].get_header("X-memini-home"))
 
 
 class ListPathTest(unittest.TestCase):

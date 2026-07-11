@@ -60,7 +60,8 @@ Point it at your memini (environment, or the Hermes onboarding prompts):
 | Variable                         | Default                        | Purpose                                                                          |
 | -------------------------------- | ------------------------------ | -------------------------------------------------------------------------------- |
 | `MEMINI_BASE_URL`                | `http://localhost:8080`        | memini service endpoint (alias: `MEMINI_URL`)                                    |
-| `MEMINI_NAMESPACE`               | basename of cwd, else `hermes` | tenant the memory is scoped to                                                   |
+| `MEMINI_NAMESPACE`               | basename of cwd, else `hermes` | project the memory is scoped to                                                  |
+| `MEMINI_HOME`                    | (none)                         | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg        |
 | `MEMINI_API_KEY`                 | (none)                         | bearer token, if memini requires auth (alias: `MEMINI_TOKEN`)                    |
 | `MEMINI_REQUIRE_HTTPS`           | (off)                          | set `1` to refuse sending a token over plaintext HTTP                            |
 | `MEMINI_RECALL_LIMIT`            | `3`                            | max memories recalled per turn                                                   |

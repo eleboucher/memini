@@ -14,7 +14,8 @@ single-select; `plugins.enabled` does not activate them.
 
 Environment:
     MEMINI_BASE_URL                 base URL (default http://localhost:8080; alias: MEMINI_URL)
-    MEMINI_NAMESPACE                tenant to scope memory to (default: cwd basename, else "hermes")
+    MEMINI_NAMESPACE                project to scope memory to (default: cwd basename, else "hermes")
+    MEMINI_HOME                     caller's personal namespace, sent as X-Memini-Home (unset = no home leg)
     MEMINI_API_KEY                  bearer token, if memini requires auth (alias: MEMINI_TOKEN)
     MEMINI_REQUIRE_HTTPS            =1 to refuse sending a token over plaintext HTTP
     MEMINI_RECALL_LIMIT             max memories recalled per turn (default 3)
@@ -99,6 +100,13 @@ def _base_url() -> str:
 
 def _secret() -> str:
     return _env("MEMINI_API_KEY") or _env("MEMINI_TOKEN")
+
+
+def _home() -> str:
+    """The caller's personal namespace, sent as X-Memini-Home. Env-only,
+    mirroring MEMINI_NAMESPACE's precedence style — no cwd/derivation
+    fallback; "" means no home leg."""
+    return _env("MEMINI_HOME")
 
 
 def _uses_plaintext_bearer_auth(base: str, secret: str) -> bool:
@@ -271,6 +279,9 @@ def _api(
     _check_plaintext_bearer_guard(base, secret)
     if secret:
         headers["Authorization"] = f"Bearer {secret}"
+    home = _home()
+    if home:
+        headers["X-Memini-Home"] = home
     data = json.dumps(body).encode() if body is not None else None
     req = Request(f"{base}{path}", data=data, headers=headers, method=method)
     try:
