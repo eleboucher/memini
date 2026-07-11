@@ -1,5 +1,4 @@
 import type { Memory } from '../types'
-import { namespace } from '../store'
 import { TierBadge } from './TierBadge'
 import { MemoryTypeBadge } from './MemoryTypeBadge'
 import { fromLabel, isAutoTiered, memoryType, promotedFrom, relTime } from '../util'
@@ -12,9 +11,14 @@ interface Props {
   // Read-set provenance beyond memory.namespace (ScoredMemory.from /
   // BriefingItem.from) — omitted for a primary-namespace hit.
   from?: string
+  // The namespace the fetch that produced `from` ran under, captured at fetch
+  // time by the owning view — NOT the live namespace signal, which can move
+  // (selector switch) while these results are still on screen and would
+  // silently relabel a stale ancestor hit as "personal" (or vice versa).
+  fromNs?: string
 }
 
-export function MemoryCard({ memory: m, score, onOpen, showNamespace, from }: Props) {
+export function MemoryCard({ memory: m, score, onOpen, showNamespace, from, fromNs }: Props) {
   return (
     <button type="button" class={`mem panel ${m.tier}`} onClick={() => onOpen(m)}>
       <div class="mem-head">
@@ -25,7 +29,7 @@ export function MemoryCard({ memory: m, score, onOpen, showNamespace, from }: Pr
         )}
         {from && (
           <span class="chip" title={`In scope via ${from}`}>
-            {fromLabel(from, namespace.value)}
+            {fromLabel(from, fromNs ?? '')}
           </span>
         )}
         {isAutoTiered(m) && (

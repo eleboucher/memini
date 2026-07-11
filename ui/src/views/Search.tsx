@@ -1,5 +1,6 @@
-import { useState } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 import { api, isAllProjects } from '../api'
+import { namespace } from '../store'
 import type { Memory, Scored, Tier } from '../types'
 import { MemoryCard } from '../components/MemoryCard'
 import { MemoryDrawer } from '../components/MemoryDrawer'
@@ -18,19 +19,38 @@ export function Search() {
   const [error, setError] = useState<string | null>(null)
   const [open, setOpen] = useState<Memory | null>(null)
   const [openFrom, setOpenFrom] = useState<string | undefined>(undefined)
+  // The namespace the current `results` were fetched under, captured at fetch
+  // time. `from` provenance labels disambiguate against THIS (fromLabel), not
+  // the live namespace signal — the signal can move while results are still
+  // on screen, which would silently relabel a stale ancestor hit "personal".
+  const [queriedNs, setQueriedNs] = useState('')
   const [took, setTook] = useState(0)
 
   const showNs = isAllProjects()
+
+  // A namespace switch invalidates the on-screen results outright (they were
+  // answered under a different scope) — clear them rather than letting a
+  // stale list linger under the new selection.
+  useEffect(() => {
+    setResults(null)
+    setError(null)
+    setOpen(null)
+    setOpenFrom(undefined)
+  }, [namespace.value])
 
   const run = async (e?: Event) => {
     e?.preventDefault()
     if (!q.trim() || loading) return // guard double-submit (Enter) racing
     setLoading(true)
     setError(null)
+    // Snapshot the active namespace before the await: it's what this query
+    // actually runs under, and what its results' provenance is relative to.
+    const ns = namespace.value
     const t0 = performance.now()
     try {
       const r = await api.search(q.trim(), { tiers, tags, metadata, limit: 30 })
       setResults(r)
+      setQueriedNs(ns)
       setTook(performance.now() - t0)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -100,6 +120,7 @@ export function Search() {
                     memory={r.memory}
                     score={r.score}
                     from={r.from}
+                    fromNs={queriedNs}
                     onOpen={(m) => {
                       setOpen(m)
                       setOpenFrom(r.from)
@@ -115,7 +136,7 @@ export function Search() {
         {results === null && !error && <div class="empty"><div class="big">Search memories</div></div>}
       </div>
 
-      {open && <MemoryDrawer memory={open} from={openFrom} onClose={() => setOpen(null)} />}
+      {open && <MemoryDrawer memory={open} from={openFrom} fromNs={queriedNs} onClose={() => setOpen(null)} />}
     </>
   )
 }

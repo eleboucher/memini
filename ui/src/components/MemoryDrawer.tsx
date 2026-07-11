@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import { createPortal } from 'preact/compat'
 import type { Memory } from '../types'
 import { api } from '../api'
-import { namespace, refresh } from '../store'
+import { refresh } from '../store'
 import { TierBadge } from './TierBadge'
 import { MemoryTypeBadge } from './MemoryTypeBadge'
 import { fmtDate, fromLabel, isAutoTiered, memoryType, promotedFrom, relTime } from '../util'
@@ -15,9 +15,14 @@ interface Props {
   // Read-set provenance beyond memory.namespace (ScoredMemory.from /
   // BriefingItem.from) — omitted for a primary-namespace hit.
   from?: string
+  // The namespace the fetch that produced `from` ran under, captured at fetch
+  // time by the owning view — NOT the live namespace signal, which can move
+  // (selector switch) while this drawer is still open and would silently
+  // relabel a stale ancestor hit as "personal" (or vice versa).
+  fromNs?: string
 }
 
-export function MemoryDrawer({ memory: m, onClose, wide, from }: Props) {
+export function MemoryDrawer({ memory: m, onClose, wide, from, fromNs }: Props) {
   const [copied, setCopied] = useState(false)
   const [armed, setArmed] = useState(false) // delete confirmation (two-click)
   const [deleting, setDeleting] = useState(false)
@@ -187,7 +192,7 @@ export function MemoryDrawer({ memory: m, onClose, wide, from }: Props) {
             {from && (
               <>
                 <span class="key">in scope via</span>
-                <span class="val">{fromLabel(from, namespace.value)}</span>
+                <span class="val">{fromLabel(from, fromNs ?? '')}</span>
               </>
             )}
             <span class="key">importance</span>
