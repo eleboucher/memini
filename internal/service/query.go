@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/eleboucher/memini/internal/maintenance"
@@ -181,12 +183,52 @@ func (s *Service) Namespaces(ctx context.Context) ([]string, error) {
 // Briefing is a layered session-start summary of a namespace: the most durable
 // facts and procedures, the most recent episodic activity, and pinned memories.
 type Briefing struct {
-	Namespace  string           `json:"namespace"`
-	Facts      []*memory.Memory `json:"facts,omitempty"`      // semantic, highest-retention first
-	Procedures []*memory.Memory `json:"procedures,omitempty"` // procedural, highest-retention first
-	Recent     []*memory.Memory `json:"recent,omitempty"`     // episodic, newest first
-	Pinned     []*memory.Memory `json:"pinned,omitempty"`     // tagged pinned, any tier
+	Namespace string `json:"namespace"`
+	// ScopeHeader is a one-line, human-readable summary of the read-set this
+	// briefing drew from: the primary namespace, then each cascade leg that
+	// actually contributed durable memories (nearest ancestor first, home
+	// last), then a "+K link(s)" suffix counting contributing links. See
+	// scopeHeader for the exact format and edge-case decisions.
+	ScopeHeader string           `json:"scope_header,omitempty"`
+	Facts       []*memory.Memory `json:"facts,omitempty"`      // semantic, highest-retention first
+	Procedures  []*memory.Memory `json:"procedures,omitempty"` // procedural, highest-retention first
+	Recent      []*memory.Memory `json:"recent,omitempty"`     // episodic, newest first
+	Pinned      []*memory.Memory `json:"pinned,omitempty"`     // tagged pinned, any tier
+	// Children summarizes the direct child namespaces (one segment deeper)
+	// under the primary namespace, each aggregating its whole subtree —
+	// most-recent write first, capped at childRollupMaxChildren. Empty at a
+	// leaf namespace.
+	Children []ChildSummary `json:"children,omitempty"`
+	// ChildrenTruncated is the number of direct children omitted by the
+	// childRollupMaxChildren cap (0 when everything fit). The REST wire shape
+	// (T6) has no dedicated field for it, so renderers surface it themselves
+	// (MCP appends an "… and N more" note; REST returns just the capped array).
+	ChildrenTruncated int `json:"children_truncated,omitempty"`
 }
+
+// ChildSummary is one direct-child rollup entry in a Briefing: the child
+// namespace, its all-tier live memory count, and small pinned/recent-durable
+// highlight sets (each capped at childRollupPerSection). All figures aggregate
+// the child's entire subtree, so a leaf-heavy tree (memories only in
+// grandchildren) still surfaces at the interior node.
+type ChildSummary struct {
+	NS     string           `json:"namespace"`
+	Total  int              `json:"total"`
+	Pinned []*memory.Memory `json:"pinned,omitempty"`
+	Recent []*memory.Memory `json:"recent,omitempty"`
+}
+
+const (
+	// childRollupMaxChildren caps how many direct children a briefing rolls up
+	// (gap G9): the most recently written win, the rest are counted in
+	// Briefing.ChildrenTruncated — so a wide tenant root can't balloon
+	// briefing cost or token size.
+	childRollupMaxChildren = 10
+	// childRollupPerSection caps each child's pinned and recent highlight
+	// lists, keeping the rollup a glanceable index rather than a briefing of
+	// its own.
+	childRollupPerSection = 3
+)
 
 // BriefingOpts sets per-section caps for a Briefing. A nil field falls back
 // to DefaultPerSection (5); a pointer to 0 explicitly disables the section so
@@ -290,6 +332,11 @@ func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingO
 			b.Pinned = append(b.Pinned, m)
 		}
 	}
+	// durableByNS tallies, per read-set namespace, the durable (semantic/
+	// procedural) memories that leg contributed to THIS briefing — the counts
+	// the scope header renders. Tallied here, in the same loop that feeds the
+	// sections, so header numbers always match what was actually fetched.
+	durableByNS := make(map[string]int, len(entries))
 	for _, e := range entries {
 		// Push the entry's tier override into the List filter so a
 		// durable-only entry never loads episodic/working rows in the first
@@ -299,9 +346,13 @@ func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingO
 			return Briefing{}, err
 		}
 		for _, m := range mems {
+			if m.Tier.Term() == memory.LongTerm {
+				durableByNS[e.ns]++
+			}
 			bucket(m, e.tiers != nil)
 		}
 	}
+	b.ScopeHeader = scopeHeader(namespace, entries, durableByNS)
 	// Rank durable sections by DurableScore (no recency decay), scored once per
 	// memory rather than inside the comparator.
 	byDurable := func(ms []*memory.Memory) {
@@ -319,20 +370,168 @@ func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingO
 	// injected "top-of-mind" set keeps stable ordering as new pinned memories
 	// land (pinned memories are exempt from demotion, but a fresh pin can still
 	// shadow an older one with lower durability).
-	sort.SliceStable(b.Pinned, func(i, j int) bool {
-		di := b.Pinned[i].DurableScore(now)
-		dj := b.Pinned[j].DurableScore(now)
-		if di != dj {
-			return di > dj
-		}
-		return b.Pinned[i].CreatedAt.After(b.Pinned[j].CreatedAt)
-	})
+	sortPinned(b.Pinned, now)
 
 	b.Facts = topN(facts, factsN)
 	b.Procedures = topN(procs, procsN)
 	b.Recent = topN(recent, recentN)
 	b.Pinned = topN(b.Pinned, pinnedN)
+
+	b.Children, b.ChildrenTruncated, err = s.childRollup(ctx, namespace, now)
+	if err != nil {
+		return Briefing{}, err
+	}
 	return b, nil
+}
+
+// sortPinned orders a pinned set by DurableScore desc, then created_at desc —
+// the briefing's "top-of-mind" ordering, shared by the main Pinned section and
+// each child rollup's pinned highlights.
+func sortPinned(ms []*memory.Memory, now time.Time) {
+	sort.SliceStable(ms, func(i, j int) bool {
+		di := ms[i].DurableScore(now)
+		dj := ms[j].DurableScore(now)
+		if di != dj {
+			return di > dj
+		}
+		return ms[i].CreatedAt.After(ms[j].CreatedAt)
+	})
+}
+
+// scopeHeader renders Briefing.ScopeHeader from the resolved read-set entries
+// (their recorded origins — never re-derived from strings) and the per-leg
+// durable contribution counts tallied in the briefing's fetch loop. Format:
+//
+//	Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2), +1 link
+//
+// Edge decisions (pinned by tests):
+//   - The primary namespace is always shown, even with no legs — a flat
+//     namespace renders just "Scope: acme".
+//   - A leg that contributed zero durable memories to THIS briefing is
+//     omitted (keeps the header short); only primary is unconditional.
+//   - Home renders as its namespace name, after the ancestors (entries keep
+//     cascade order: ancestors nearest-first, then home).
+//   - Links collapse into a "+K link(s)" suffix counting only links that
+//     contributed; no suffix when none did.
+//   - Explicit per-call namespaces (origin "call") are not rendered: an
+//     explicit read-set is already self-described by the caller, so the
+//     header shows just the primary.
+func scopeHeader(primary string, entries []scopeEntry, durable map[string]int) string {
+	var sb strings.Builder
+	sb.WriteString("Scope: ")
+	sb.WriteString(primary)
+	links := 0
+	for _, e := range entries {
+		n := durable[e.ns]
+		if n == 0 {
+			continue
+		}
+		switch e.origin {
+		case OriginAncestor, OriginHome:
+			fmt.Fprintf(&sb, " ← %s(%d)", e.ns, n)
+		case OriginLink:
+			links++
+		}
+	}
+	if links > 0 {
+		fmt.Fprintf(&sb, ", +%d link", links)
+		if links > 1 {
+			sb.WriteString("s")
+		}
+	}
+	return sb.String()
+}
+
+// childRollup builds Briefing.Children: one ChildSummary per DIRECT child
+// namespace (one segment deeper than primary), each aggregating its entire
+// subtree — so leaf-heavy trees (memories only in grandchildren) still
+// surface at the interior node. Children are ordered by most-recent write
+// (name asc on ties) and capped at childRollupMaxChildren, returning the
+// omitted count. A leaf namespace returns (nil, 0, nil).
+//
+// Cost: one ListNamespaces (cheap SELECT DISTINCT) plus one store.List per
+// namespace strictly under primary — the same per-namespace full-list shape
+// Briefing's own subtree path, Stats, and StatsAll already use. Total is an
+// all-tier count and the children sort needs every child's last write, so
+// small-limit queries can't replace the full list until the store grows a
+// count/max aggregate; the wire stays bounded regardless via the per-section
+// (3) and per-children (10) caps.
+func (s *Service) childRollup(ctx context.Context, primary string, now time.Time) ([]ChildSummary, int, error) {
+	all, err := s.store.ListNamespaces(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	prefix := primary + "/"
+	type childAgg struct {
+		total     int
+		lastWrite time.Time
+		pinned    []*memory.Memory
+		durable   []*memory.Memory
+	}
+	aggs := map[string]*childAgg{}
+	for _, ns := range all {
+		if !strings.HasPrefix(ns, prefix) {
+			continue
+		}
+		seg := ns[len(prefix):]
+		if i := strings.IndexByte(seg, '/'); i >= 0 {
+			seg = seg[:i]
+		}
+		child := prefix + seg
+		a := aggs[child]
+		if a == nil {
+			a = &childAgg{}
+			aggs[child] = a
+		}
+		mems, err := s.store.List(ctx, ns, store.Filter{Now: now}, 0)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, m := range mems {
+			a.total++
+			if m.CreatedAt.After(a.lastWrite) {
+				a.lastWrite = m.CreatedAt
+			}
+			if slices.Contains(m.Tags, maintenance.PinnedTag) {
+				a.pinned = append(a.pinned, m)
+			}
+			if m.Tier.Term() == memory.LongTerm {
+				a.durable = append(a.durable, m)
+			}
+		}
+	}
+	if len(aggs) == 0 {
+		return nil, 0, nil
+	}
+	names := make([]string, 0, len(aggs))
+	for n := range aggs {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		wi, wj := aggs[names[i]].lastWrite, aggs[names[j]].lastWrite
+		if !wi.Equal(wj) {
+			return wi.After(wj)
+		}
+		return names[i] < names[j]
+	})
+	truncated := 0
+	if len(names) > childRollupMaxChildren {
+		truncated = len(names) - childRollupMaxChildren
+		names = names[:childRollupMaxChildren]
+	}
+	out := make([]ChildSummary, len(names))
+	for i, n := range names {
+		a := aggs[n]
+		sortPinned(a.pinned, now)
+		sort.SliceStable(a.durable, func(x, y int) bool { return a.durable[x].CreatedAt.After(a.durable[y].CreatedAt) })
+		out[i] = ChildSummary{
+			NS:     n,
+			Total:  a.total,
+			Pinned: topN(a.pinned, childRollupPerSection),
+			Recent: topN(a.durable, childRollupPerSection),
+		}
+	}
+	return out, truncated, nil
 }
 
 func topN(ms []*memory.Memory, n int) []*memory.Memory {
