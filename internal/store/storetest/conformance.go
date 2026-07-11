@@ -156,6 +156,8 @@ func testNamespaceLinks(t *testing.T, st store.Store, dims int) {
 	t.Run("ScopingAndDelete", func(t *testing.T) { testLinkScopingAndDelete(t, ls, ns) })
 	t.Run("DeleteNamespaceCascade", func(t *testing.T) { testLinkDeleteNamespaceCascade(t, st, ls, ns) })
 	t.Run("RenameEndpoints", func(t *testing.T) { testLinkRenameEndpoints(t, ls, ns) })
+	t.Run("RenameCollisionKeepsExisting", func(t *testing.T) { testLinkRenameCollisionKeepsExisting(t, ls, ns) })
+	t.Run("RenameReciprocalPair", func(t *testing.T) { testLinkRenameReciprocalPair(t, ls, ns) })
 }
 
 // testLinkRoundTripAndUpsert covers PutLink/ListLinks round-tripping every
@@ -348,6 +350,113 @@ func testLinkRenameEndpoints(t *testing.T, ls store.LinkStore, ns string) {
 	// Rename is a no-op when from == to.
 	if err := ls.RenameLinkEndpoints(ctx, to, to); err != nil {
 		t.Fatalf("rename link endpoints (noop): %v", err)
+	}
+}
+
+// testLinkRenameCollisionKeepsExisting pins the collision semantics of
+// RenameLinkEndpoints: when a rewritten link lands on a key where the target
+// namespace already has its own link, the pre-existing link survives
+// untouched and the renamed one is dropped — a rename must never silently
+// widen or narrow tier access the target had explicitly configured.
+func testLinkRenameCollisionKeepsExisting(t *testing.T, ls store.LinkStore, ns string) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	a := ns + "-coll-a"
+	b := ns + "-coll-b"
+	c := ns + "-coll-c"
+
+	// B's own, pre-existing grant to C: narrow tiers, distinct note.
+	existing := store.NamespaceLink{
+		Src: b, Dst: c,
+		Tiers:     []memory.Tier{memory.TierSemantic},
+		Note:      "b's own grant",
+		CreatedAt: now,
+	}
+	if err := ls.PutLink(ctx, existing); err != nil {
+		t.Fatalf("put pre-existing link (b,c): %v", err)
+	}
+	// A's link to C: wider tiers. Renaming A->B makes it collide with (b,c).
+	inherited := store.NamespaceLink{
+		Src: a, Dst: c,
+		Tiers:     []memory.Tier{memory.TierSemantic, memory.TierProcedural},
+		Note:      "inherited from a",
+		CreatedAt: now.Add(time.Minute),
+	}
+	if err := ls.PutLink(ctx, inherited); err != nil {
+		t.Fatalf("put colliding link (a,c): %v", err)
+	}
+
+	if err := ls.RenameLinkEndpoints(ctx, a, b); err != nil {
+		t.Fatalf("rename link endpoints: %v", err)
+	}
+
+	got, err := ls.ListLinks(ctx, b)
+	if err != nil {
+		t.Fatalf("list links (b): %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("links from %q after collision = %d, want exactly 1", b, len(got))
+	}
+	if got[0].Note != existing.Note || !slices.Equal(got[0].Tiers, existing.Tiers) {
+		t.Fatalf("pre-existing link was clobbered by the rename: %+v, want note=%q tiers=%v",
+			got[0], existing.Note, existing.Tiers)
+	}
+	if !got[0].CreatedAt.Equal(existing.CreatedAt) {
+		t.Fatalf("pre-existing link created_at was rewritten: %v, want %v", got[0].CreatedAt, existing.CreatedAt)
+	}
+	// The renamed source has nothing left.
+	aLinks, err := ls.ListLinks(ctx, a)
+	if err != nil {
+		t.Fatalf("list links (a): %v", err)
+	}
+	if len(aLinks) != 0 {
+		t.Fatalf("renamed namespace %q still has links: %v", a, aLinks)
+	}
+}
+
+// testLinkRenameReciprocalPair pins the multi-way collision: link(from,to)
+// and link(to,from) both collapse onto the self-link (to,to) when from is
+// renamed to to. Exactly one row must survive, and — with the rename's
+// key-ordered scan — deterministically the first in (src,dst) key order,
+// which is link(from,to).
+func testLinkRenameReciprocalPair(t *testing.T, ls store.LinkStore, ns string) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	from := ns + "-recip-from"
+	to := ns + "-recip-to"
+
+	if err := ls.PutLink(ctx, store.NamespaceLink{Src: from, Dst: to, Note: "from to to", CreatedAt: now}); err != nil {
+		t.Fatalf("put link (from,to): %v", err)
+	}
+	if err := ls.PutLink(ctx, store.NamespaceLink{Src: to, Dst: from, Note: "to to from", CreatedAt: now}); err != nil {
+		t.Fatalf("put link (to,from): %v", err)
+	}
+
+	if err := ls.RenameLinkEndpoints(ctx, from, to); err != nil {
+		t.Fatalf("rename link endpoints (reciprocal pair): %v", err)
+	}
+
+	// Nothing may reference the old namespace anymore, and the pair must have
+	// collapsed to exactly one self-link — not zero (both dropped) and not an
+	// error (unique-key violation).
+	toLinks, err := ls.ListLinks(ctx, to)
+	if err != nil {
+		t.Fatalf("list links (to): %v", err)
+	}
+	if len(toLinks) != 1 || toLinks[0].Dst != to {
+		t.Fatalf("reciprocal pair should collapse to one self-link (to,to), got %+v", toLinks)
+	}
+	// Deterministic winner: (from,to) sorts before (to,from), so its rewrite
+	// is inserted first and the second is dropped on conflict.
+	if toLinks[0].Note != "from to to" {
+		t.Fatalf("self-link note = %q, want %q (first row in key order wins)", toLinks[0].Note, "from to to")
+	}
+	fromLinks, err := ls.ListLinks(ctx, from)
+	if err != nil {
+		t.Fatalf("list links (from): %v", err)
+	}
+	if len(fromLinks) != 0 {
+		t.Fatalf("old namespace %q still has links after rename: %v", from, fromLinks)
 	}
 }
 

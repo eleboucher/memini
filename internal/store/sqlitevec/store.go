@@ -886,9 +886,15 @@ func (s *Store) ListAllLinks(ctx context.Context) ([]store.NamespaceLink, error)
 }
 
 // RenameLinkEndpoints rewrites every link whose src_ns or dst_ns equals from
-// to to instead. A link that collides with an existing row after the rewrite
-// overwrites that row (last-write-wins, mirroring PutLink's upsert
-// semantics). A no-op when from == to.
+// to to instead. When a rewritten link collides with a pre-existing row at
+// its new key, the pre-existing row is kept and the renamed link dropped
+// (ON CONFLICT DO NOTHING): the target namespace's own explicit grant wins
+// over an inherited one, so a rename can never silently widen or narrow tier
+// access the target had already configured. The SELECT is ordered by
+// (src_ns, dst_ns) so which renamed link survives a multi-way collision
+// (e.g. the reciprocal pair link(from,to)+link(to,from) collapsing onto
+// (to,to)) is deterministic: the first row in key order wins. A no-op when
+// from == to.
 func (s *Store) RenameLinkEndpoints(ctx context.Context, from, to string) error {
 	if from == to {
 		return nil
@@ -900,7 +906,8 @@ func (s *Store) RenameLinkEndpoints(ctx context.Context, from, to string) error 
 	defer func() { _ = tx.Rollback() }()
 
 	rows, err := tx.QueryContext(ctx,
-		`SELECT src_ns, dst_ns, tiers, note, created_at FROM namespace_links WHERE src_ns=? OR dst_ns=?`, from, from)
+		`SELECT src_ns, dst_ns, tiers, note, created_at FROM namespace_links
+		 WHERE src_ns=? OR dst_ns=? ORDER BY src_ns, dst_ns`, from, from)
 	if err != nil {
 		return fmt.Errorf("sqlitevec: rename link endpoints: select: %w", err)
 	}
@@ -932,10 +939,11 @@ func (s *Store) RenameLinkEndpoints(ctx context.Context, from, to string) error 
 			`DELETE FROM namespace_links WHERE src_ns=? AND dst_ns=?`, r.src, r.dst); err != nil {
 			return fmt.Errorf("sqlitevec: rename link endpoints: delete: %w", err)
 		}
+		// DO NOTHING, not DO UPDATE: a pre-existing link at the new key is the
+		// target namespace's own configuration and must survive untouched.
 		if _, err := tx.ExecContext(ctx, `INSERT INTO namespace_links (src_ns, dst_ns, tiers, note, created_at)
 			VALUES (?,?,?,?,?)
-			ON CONFLICT(src_ns,dst_ns) DO UPDATE SET
-				tiers=excluded.tiers, note=excluded.note, created_at=excluded.created_at`,
+			ON CONFLICT(src_ns,dst_ns) DO NOTHING`,
 			newSrc, newDst, r.tiers, r.note, r.created); err != nil {
 			return fmt.Errorf("sqlitevec: rename link endpoints: insert: %w", err)
 		}

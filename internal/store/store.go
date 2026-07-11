@@ -211,10 +211,11 @@ type LinkStore interface {
 	// ListAllLinks returns every link in the store, for the CLI/UI.
 	ListAllLinks(ctx context.Context) ([]NamespaceLink, error)
 	// RenameLinkEndpoints rewrites every link whose Src or Dst equals from to
-	// to instead, used when a namespace is moved (maintenance.Move). A link
-	// that collides with an existing row after the rewrite overwrites it
-	// (last-write-wins, mirroring PutLink's upsert semantics). A no-op when
-	// from == to.
+	// to instead, used when a namespace is moved (maintenance.Move). When a
+	// rewritten link collides with a pre-existing row at its new key, the
+	// pre-existing row wins and the renamed link is dropped: the target
+	// namespace's own explicit grant must never be silently widened or
+	// narrowed by an inherited one. A no-op when from == to.
 	RenameLinkEndpoints(ctx context.Context, from, to string) error
 }
 

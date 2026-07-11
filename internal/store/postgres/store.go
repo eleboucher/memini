@@ -668,9 +668,15 @@ func (s *Store) ListAllLinks(ctx context.Context) ([]store.NamespaceLink, error)
 }
 
 // RenameLinkEndpoints rewrites every link whose src_ns or dst_ns equals from
-// to to instead. A link that collides with an existing row after the rewrite
-// overwrites that row (last-write-wins, mirroring PutLink's upsert
-// semantics). A no-op when from == to.
+// to to instead. When a rewritten link collides with a pre-existing row at
+// its new key, the pre-existing row is kept and the renamed link dropped
+// (ON CONFLICT DO NOTHING): the target namespace's own explicit grant wins
+// over an inherited one, so a rename can never silently widen or narrow tier
+// access the target had already configured. The SELECT is ordered by
+// (src_ns, dst_ns) so which renamed link survives a multi-way collision
+// (e.g. the reciprocal pair link(from,to)+link(to,from) collapsing onto
+// (to,to)) is deterministic: the first row in key order wins. A no-op when
+// from == to.
 func (s *Store) RenameLinkEndpoints(ctx context.Context, from, to string) error {
 	if from == to {
 		return nil
@@ -682,7 +688,8 @@ func (s *Store) RenameLinkEndpoints(ctx context.Context, from, to string) error 
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	rows, err := tx.Query(ctx,
-		`SELECT src_ns, dst_ns, tiers, note, created_at FROM namespace_links WHERE src_ns=$1 OR dst_ns=$1`, from)
+		`SELECT src_ns, dst_ns, tiers, note, created_at FROM namespace_links
+		 WHERE src_ns=$1 OR dst_ns=$1 ORDER BY src_ns, dst_ns`, from)
 	if err != nil {
 		return fmt.Errorf("postgres: rename link endpoints: select: %w", err)
 	}
@@ -718,10 +725,11 @@ func (s *Store) RenameLinkEndpoints(ctx context.Context, from, to string) error 
 			`DELETE FROM namespace_links WHERE src_ns=$1 AND dst_ns=$2`, r.src, r.dst); err != nil {
 			return fmt.Errorf("postgres: rename link endpoints: delete: %w", err)
 		}
+		// DO NOTHING, not DO UPDATE: a pre-existing link at the new key is the
+		// target namespace's own configuration and must survive untouched.
 		if _, err := tx.Exec(ctx, `INSERT INTO namespace_links (src_ns, dst_ns, tiers, note, created_at)
 			VALUES ($1,$2,$3,$4,$5)
-			ON CONFLICT (src_ns, dst_ns) DO UPDATE SET
-				tiers=EXCLUDED.tiers, note=EXCLUDED.note, created_at=EXCLUDED.created_at`,
+			ON CONFLICT (src_ns, dst_ns) DO NOTHING`,
 			newSrc, newDst, r.tiers, r.note, r.created); err != nil {
 			return fmt.Errorf("postgres: rename link endpoints: insert: %w", err)
 		}
