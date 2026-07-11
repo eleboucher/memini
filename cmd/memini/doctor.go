@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -82,12 +84,15 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(out, "  env override:    %s\n", orUnset(envNS))                  //nolint:errcheck
 	fmt.Fprintf(out, "  server default:  %q (%s)\n", serverNS, cfg.NamespaceSrc) //nolint:errcheck
 	fmt.Fprintf(out, "  plugin resolves: %q (%s)\n", pluginNS, pluginSrc)        //nolint:errcheck
+	fmt.Fprintf(out, "  home namespace:  %s\n", orUnset(cfg.Home))               //nolint:errcheck
 	if serverNS != pluginNS {
 		warnings++
 		warnf(out, "the plugin reads/writes %q but the server's header-less default is %q.", pluginNS, serverNS)
 		note(out, "Plugins send an explicit namespace header, but bare MCP clients use the server")
 		note(out, fmt.Sprintf("default, so they disagree. Pin one with MEMINI_DEFAULT_NAMESPACE=%q.", pluginNS))
 	}
+	warnings += warnGlobalNamespacePin(out, cwd, envNS)
+	warnings += warnHomeUnset(out, cfg.Home)
 	fmt.Fprintln(out) //nolint:errcheck
 
 	// Store section: read the configured store directly (no server required).
@@ -110,7 +115,15 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	warnings += warnEnvSlashMigration(out, cfg, stats)
-	warnings += printRetrievalScope(out, cfg, stats, pluginNS)
+
+	entries, rsSource, rsErr := resolveReadSet(cmd.Context(), st, pluginNS, cfg.Home)
+	if rsErr != nil {
+		warnings++
+		warnf(out, "could not resolve the read set for %q: %v", pluginNS, rsErr)
+	} else {
+		printRetrievalScope(out, entries, rsSource, pluginNS)
+	}
+	noteDanglingLinks(cmd.Context(), out, st, stats)
 
 	fmt.Fprintf(out, "Store (%s): reachable, %d namespace(s)\n", cfg.Backend, len(stats)) //nolint:errcheck
 	warnings += printStoreStats(out, stats, pluginNS)
@@ -406,97 +419,219 @@ func printWritePathSignals(out io.Writer, stats []nsStat) {
 
 // nsStat is the per-namespace summary doctor reports.
 
-// Tier-access labels and the unset-value placeholder doctor's retrieval-scope
+// Tier-access label and the unset-value placeholder doctor's retrieval-scope
 // output uses (constants to keep goconst quiet, not exported semantics).
 const (
-	tiersAll     = "all"
-	tiersDurable = "durable"
-	labelUnset   = "(unset)"
-	srcDefault   = "default" // the request namespace's own read-set entry
+	tiersAll   = "all"
+	labelUnset = "(unset)"
 )
 
-// doctorReadEntry is one namespace in doctor's reconstruction of a plain
-// recall/briefing's default read set for a namespace.
+// localStoreLabel is the generic "no remote, opened the configured backend
+// directly" source label, shared with import.go's local-store description
+// (both name the same concept) so golangci-lint's goconst doesn't flag two
+// independent literals for it.
+const localStoreLabel = "local store"
+
+// Origin labels for a read-set entry, mirroring internal/service/readset.go's
+// Origin* constants (OriginPrimary/OriginAncestor/OriginHome/OriginLink) —
+// duplicated as literal strings rather than importing internal/service for
+// them: they're also exactly the "origin" values the REST read-set endpoint
+// (GET /v1/namespaces/read-set) puts on the wire, so a local literal here
+// doubles as the JSON vocabulary fetchServerReadSet parses.
+const (
+	originPrimary  = "primary"
+	originAncestor = "ancestor"
+	originHome     = "home"
+	originLink     = "link"
+)
+
+// doctorReadEntry is one namespace in doctor's reconstruction (or the
+// server's own answer, via fetchServerReadSet) of a plain recall/briefing's
+// default read set for a namespace: mirrors internal/service's
+// ReadSetEntry/ReadSetEntryItem.
 type doctorReadEntry struct {
 	ns     string
-	tiers  string // "all" (the request's own tier filter) or "durable" (semantic+procedural only)
-	source string // "default", "global", "tenant-shared"
+	origin string // "primary", "ancestor", "home", or "link" (see the origin* constants)
+	tiers  string // "all" (the request's own tier filter) or a comma-joined tier list
 }
 
-// tenantSharedNamespace mirrors internal/service/readset.go: the tenant-shared
-// namespace a primary implicitly reads (durable tiers only), "work/memini" →
-// "work/_shared". Empty when primary has no tenant segment or is itself the
-// shared namespace. Duplicated here (rather than exported) because doctor
-// reconstructs the resolver's logic wholesale, the same precedent as the
-// namespace-divergence check.
-func tenantSharedNamespace(primary string) string {
-	tenant, _, ok := strings.Cut(primary, "/")
-	if !ok || tenant == "" {
-		return ""
+// durableTierNames is the tier list every ancestor/home cascade leg carries:
+// doctor always reconstructs the *default* read set (no per-call tier
+// filter, matching internal/service's ResolveReadSetInfo, the introspection
+// endpoint's own resolution), so the durable-tier restriction on those legs
+// is always the full set — semantic and procedural, the only tiers that ever
+// cross a namespace boundary. Only a link's own tier override can narrow it
+// further (see intersectLinkTiers).
+var durableTierNames = []string{string(memory.TierSemantic), string(memory.TierProcedural)}
+
+// ancestorsOf returns every proper path prefix of ns, nearest first:
+// "acme/phoenix/api" -> ["acme/phoenix", "acme"]. Duplicates
+// internal/service/readset.go's unexported ancestorsOf — doctor
+// reconstructs the resolver's cascade wholesale rather than importing
+// internal/service's resolution machinery, the same precedent as the
+// read-set/origin duplication above.
+func ancestorsOf(ns string) []string {
+	var out []string
+	for i := strings.LastIndexByte(ns, '/'); i > 0; i = strings.LastIndexByte(ns[:i], '/') {
+		out = append(out, ns[:i])
 	}
-	ts := tenant + "/_shared"
-	if ts == primary {
-		return ""
-	}
-	return ts
+	return out
 }
 
-// resolveDoctorReadSet reconstructs the default read set for primary,
-// mirroring internal/service/readset.go's resolveDefaultReadSet: primary
-// itself, then MEMINI_GLOBAL_NAMESPACE, then the tenant-shared namespace
-// (<tenant>/_shared, see tenantSharedNamespace), the order that makes "the
-// widest tier access wins, never narrowed" hold when two sources name the
-// same namespace. It omits the parts only a live request carries:
-// scope=subtree on primary (that would only add more namespaces to what's
-// shown here) and a per-call tier filter (assumed absent, i.e. every tier
-// admitted, the common case).
-//
-// The second return value lists redundant-configuration notes: a source
-// naming primary itself (a no-op, since primary is already included), or two
-// different sources naming the same namespace (redundant, but when the later
-// source grants "all" tiers and the earlier one only "durable", the entry is
-// widened to "all" in place rather than narrowed, mirroring
-// resolveDefaultReadSet's addEntry: the widest tier access any source grants
-// always wins, regardless of order).
-func resolveDoctorReadSet(primary, globalNamespace string, tenantShared bool) ([]doctorReadEntry, []string) {
-	entries := []doctorReadEntry{{ns: primary, tiers: tiersAll, source: srcDefault}}
+// intersectLinkTiers restricts a link's own tier override to the durable
+// set, mirroring internal/service/readset.go's intersectDurableTiers: an
+// empty override means the full durable set; a non-empty one is intersected
+// with it — the global tier rule (only semantic/procedural cross namespace
+// boundaries) always wins over the link's own configuration. May return an
+// empty slice when the link only lists non-durable tiers.
+func intersectLinkTiers(linkTiers []memory.Tier) []string {
+	if len(linkTiers) == 0 {
+		return durableTierNames
+	}
+	var out []string
+	for _, t := range []memory.Tier{memory.TierSemantic, memory.TierProcedural} {
+		if slices.Contains(linkTiers, t) {
+			out = append(out, string(t))
+		}
+	}
+	return out
+}
+
+// localReadSet mirrors internal/service/readset.go's resolveDefaultReadSet
+// for a store-only doctor run, with no server to ask: primary itself, then
+// the cascade legs in order — ancestors (nearest first), home, then stored
+// links — each contributing durable tiers only. Each leg is skipped when
+// already present (widest-tiers-wins is moot here: ancestors/home always
+// carry the full durable set already, the widest a leg can grant under
+// doctor's fixed "no per-call tier filter" resolution). Degrades gracefully
+// against a store predating LinkStore (no links leg).
+func localReadSet(ctx context.Context, st store.Store, primary, home string) ([]doctorReadEntry, error) {
+	entries := []doctorReadEntry{{ns: primary, origin: originPrimary, tiers: tiersAll}}
 	seen := map[string]bool{primary: true}
-	claimedBy := map[string]string{primary: "the request namespace itself"}
-	var notes []string
 
-	add := func(ns, tiers, source, desc string) {
-		if seen[ns] {
-			if ns == primary {
-				notes = append(notes, fmt.Sprintf("%s names %q, which is already the request namespace (no effect)", desc, ns))
-				return
-			}
-			if tiers == tiersAll {
-				for i := range entries {
-					if entries[i].ns == ns {
-						entries[i].tiers = tiersAll
-						break
-					}
-				}
-			}
-			notes = append(notes, fmt.Sprintf("%s names %q, already in the read set via %s (redundant)", desc, ns, claimedBy[ns]))
+	add := func(ns, origin string, tiers []string) {
+		if ns == "" || seen[ns] || len(tiers) == 0 {
 			return
 		}
 		seen[ns] = true
-		claimedBy[ns] = desc
-		entries = append(entries, doctorReadEntry{ns: ns, tiers: tiers, source: source})
+		entries = append(entries, doctorReadEntry{ns: ns, origin: origin, tiers: strings.Join(tiers, ",")})
 	}
 
-	if globalNamespace != "" {
-		add(globalNamespace, tiersDurable, "global", "MEMINI_GLOBAL_NAMESPACE")
+	for _, a := range ancestorsOf(primary) {
+		add(a, originAncestor, durableTierNames)
 	}
 
-	if tenantShared {
-		if ts := tenantSharedNamespace(primary); ts != "" {
-			add(ts, tiersDurable, "tenant-shared", fmt.Sprintf("tenant-shared namespace %q", ts))
+	if home != "" {
+		add(home, originHome, durableTierNames)
+	}
+
+	ls, ok := st.(store.LinkStore)
+	if !ok {
+		return entries, nil
+	}
+	links, err := ls.ListLinks(ctx, primary)
+	if err != nil {
+		return nil, fmt.Errorf("read-set: list links: %w", err)
+	}
+	for _, l := range links {
+		add(l.Dst, originLink, intersectLinkTiers(l.Tiers))
+	}
+	return entries, nil
+}
+
+// doctorReadSetTimeout bounds doctor's optional "prefer the server"
+// read-set lookup, so an unreachable/hung server falls back to the local
+// mirror promptly instead of hanging the whole command.
+const doctorReadSetTimeout = 3 * time.Second
+
+// remoteReadSetEntry/remoteReadSetResponse mirror the REST API's
+// ReadSetEntryItem/ReadSetResponse (api/openapi.yaml, GET
+// /v1/namespaces/read-set): Tiers omitted means the request's own tier
+// filter, unrestricted beyond that.
+type remoteReadSetEntry struct {
+	Namespace string   `json:"namespace"`
+	Origin    string   `json:"origin"`
+	Tiers     []string `json:"tiers,omitempty"`
+}
+
+type remoteReadSetResponse struct {
+	Entries []remoteReadSetEntry `json:"entries"`
+}
+
+// serverBaseURL and serverAPIKey mirror the plugin hooks' env vars
+// (plugin/scripts/_shared.mjs REST_URL/SECRET): MEMINI_BASE_URL (alias
+// MEMINI_URL) and MEMINI_API_KEY (alias MEMINI_TOKEN). Doctor is a
+// store-only CLI otherwise; these are opt-in so `doctor` can prefer a
+// running server's own read-set resolution over reconstructing it locally.
+func serverBaseURL() string { return firstNonEmptyEnv("MEMINI_BASE_URL", "MEMINI_URL") }
+func serverAPIKey() string  { return firstNonEmptyEnv("MEMINI_API_KEY", "MEMINI_TOKEN") }
+
+// tiersLabelFromStrings renders a wire-format tier list the same way
+// doctorReadEntry.tiers does locally: an empty/omitted list is the request's
+// own filter, unrestricted ("all"); otherwise the tiers joined verbatim.
+func tiersLabelFromStrings(tiers []string) string {
+	if len(tiers) == 0 {
+		return tiersAll
+	}
+	return strings.Join(tiers, ",")
+}
+
+// fetchServerReadSet calls GET /v1/namespaces/read-set on baseURL,
+// header-scoped to primary (X-Memini-Namespace) and home (X-Memini-Home,
+// when set) — config.DefaultNamespaceHeader/DefaultHomeHeader. Returns an
+// error on any failure (unreachable, non-2xx, malformed body) so the caller
+// can fall back to the local mirror: doctor must never hard-fail because a
+// server it merely prefers happens to be down.
+func fetchServerReadSet(ctx context.Context, baseURL, apiKey, primary, home string) ([]doctorReadEntry, error) {
+	ctx, cancel := context.WithTimeout(ctx, doctorReadSetTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		strings.TrimRight(baseURL, "/")+"/v1/namespaces/read-set", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set(config.DefaultNamespaceHeader, primary)
+	if home != "" {
+		req.Header.Set(config.DefaultHomeHeader, home)
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("server returned %s", resp.Status)
+	}
+	var parsed remoteReadSetResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, err
+	}
+	entries := make([]doctorReadEntry, len(parsed.Entries))
+	for i, e := range parsed.Entries {
+		entries[i] = doctorReadEntry{ns: e.Namespace, origin: e.Origin, tiers: tiersLabelFromStrings(e.Tiers)}
+	}
+	return entries, nil
+}
+
+// resolveReadSet returns primary's effective read set: the server's own
+// resolution when MEMINI_BASE_URL/MEMINI_URL is configured and reachable
+// (preferred — it reflects the exact resolver a live recall/briefing uses,
+// including any server-side link/home data doctor's local store might not
+// have), else localReadSet's store-only mirror. The second return value
+// names which source produced it, for display.
+func resolveReadSet(ctx context.Context, st store.Store, primary, home string) ([]doctorReadEntry, string, error) {
+	if baseURL := serverBaseURL(); baseURL != "" {
+		if entries, err := fetchServerReadSet(ctx, baseURL, serverAPIKey(), primary, home); err == nil {
+			return entries, "server (" + baseURL + ")", nil
 		}
+		// Configured but unreachable/erroring: fall through to the local
+		// mirror rather than failing doctor over a server it only prefers.
 	}
-
-	return entries, notes
+	entries, err := localReadSet(ctx, st, primary, home)
+	return entries, localStoreLabel, err
 }
 
 // statsTotal returns ns's memory count from stats, and whether ns appears in
@@ -537,48 +672,95 @@ func warnEnvSlashMigration(out io.Writer, cfg *config.Config, stats []nsStat) in
 	return 1
 }
 
-// printRetrievalScope reports the read-set inputs (MEMINI_GLOBAL_NAMESPACE and
-// the derived tenant-shared namespace) and the resolved effective read set for
-// the plugin-resolved namespace, so "why does recall see/miss X" is answerable
-// without reading the resolver's source.
-func printRetrievalScope(out io.Writer, cfg *config.Config, stats []nsStat, pluginNS string) int {
-	var warnings int
-	// The tenant-shared sibling is only in the read set when opted in
-	// (MEMINI_TENANT_SHARED); show "(off)" otherwise so the report matches
-	// what recall actually does.
-	tenantSharedDisplay := "(off)"
-	if cfg.TenantShared {
-		tenantSharedDisplay = orUnset(tenantSharedNamespace(pluginNS))
-	}
-	fmt.Fprintln(out, "Retrieval scope")                                              //nolint:errcheck
-	fmt.Fprintf(out, "  MEMINI_GLOBAL_NAMESPACE: %s\n", orUnset(cfg.GlobalNamespace)) //nolint:errcheck
-	fmt.Fprintf(out, "  tenant-shared namespace: %s\n", tenantSharedDisplay)          //nolint:errcheck
-
-	entries, notes := resolveDoctorReadSet(pluginNS, cfg.GlobalNamespace, cfg.TenantShared)
-
-	fmt.Fprintf(out, "  effective read set for %q (plain recall/briefing, no per-call namespaces list):\n", pluginNS) //nolint:errcheck
+// printRetrievalScope renders primary's effective read set — resolved by
+// resolveReadSet, either the server's own answer or localReadSet's mirror —
+// as a NAMESPACE/ORIGIN/TIERS table, so "why does recall see/miss X" is
+// answerable without reading the resolver's source. It no longer prints
+// MEMINI_GLOBAL_NAMESPACE or a tenant-shared namespace: both are dead knobs
+// under the ancestor/home/link cascade doctor now reflects (config still
+// carries the fields until T12 deletes them; doctor just stops reading them
+// here).
+func printRetrievalScope(out io.Writer, entries []doctorReadEntry, source, primary string) {
+	fmt.Fprintf(out, "Effective read set for %q (source: %s)\n", primary, source) //nolint:errcheck
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "  NAMESPACE\tTIERS\tSOURCE") //nolint:errcheck
+	fmt.Fprintln(tw, "  NAMESPACE\tORIGIN\tTIERS") //nolint:errcheck
 	for _, e := range entries {
-		fmt.Fprintf(tw, "  %s\t%s\t%s\n", e.ns, e.tiers, e.source) //nolint:errcheck
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", e.ns, e.origin, e.tiers) //nolint:errcheck
 	}
 	_ = tw.Flush()
+	fmt.Fprintln(out) //nolint:errcheck
+}
 
-	for _, n := range notes {
-		warnings++
-		warnf(out, "%s.", n)
+// noteDanglingLinks flags every stored link whose dst namespace holds no
+// memories yet, across the whole store (ListAllLinks), not just primary's
+// own outgoing links — a stale or forward-looking link anywhere surfaces
+// here. This is a note, not a warning: linking ahead of a namespace's first
+// write is legal (e.g. provisioning a link before a team's first commit
+// lands there), so it doesn't count toward doctor's warning tally.
+// Degrades gracefully against a store predating LinkStore.
+func noteDanglingLinks(ctx context.Context, out io.Writer, st store.Store, stats []nsStat) {
+	ls, ok := st.(store.LinkStore)
+	if !ok {
+		return
 	}
-	for _, e := range entries {
-		if e.source == srcDefault {
+	links, err := ls.ListAllLinks(ctx)
+	if err != nil {
+		notef(out, "could not list links to check for dangling destinations: %v", err)
+		return
+	}
+	sort.Slice(links, func(i, j int) bool {
+		if links[i].Src != links[j].Src {
+			return links[i].Src < links[j].Src
+		}
+		return links[i].Dst < links[j].Dst
+	})
+	for _, l := range links {
+		if total, ok := statsTotal(stats, l.Dst); ok && total > 0 {
 			continue
 		}
-		if total, _ := statsTotal(stats, e.ns); total == 0 {
-			warnings++
-			warnf(out, "read-set entry %q (via %s) currently holds 0 memories.", e.ns, e.source)
-		}
+		notef(out, "link %s -> %s: destination has no memories yet (links to future namespaces are legal).", l.Src, l.Dst)
 	}
-	fmt.Fprintln(out) //nolint:errcheck
-	return warnings
+}
+
+// warnGlobalNamespacePin flags MEMINI_NAMESPACE/MEMINI_DEFAULT_NAMESPACE
+// (envNS) pinned while this cwd's git-derived namespace would resolve to
+// something else: a common "catch-all trap" — a global export silently
+// redirects every repo's writes/reads to one namespace regardless of cwd,
+// which is exactly how an oversized shared pool accumulates. Silent when no
+// env override is set, or it happens to agree with what git resolves here.
+func warnGlobalNamespacePin(out io.Writer, cwd, envNS string) int {
+	if envNS == "" {
+		return 0
+	}
+	gitNS, _ := config.ResolveDirNamespace(cwd)
+	if gitNS == "" || gitNS == envNS {
+		return 0
+	}
+	warnf(out, "MEMINI_NAMESPACE/MEMINI_DEFAULT_NAMESPACE pins every namespace resolution to %q, "+
+		"but this directory's git-derived namespace is %q.", envNS, gitNS)
+	note(out, "A global pin silently overrides per-repo isolation everywhere it's exported — the same trap that")
+	note(out, "collapses unrelated repos into one catch-all pool. Recover isolation with `memini namespace split`,")
+	note(out, "or scope the pin to this repo instead of exporting it globally.")
+	return 1
+}
+
+// warnHomeUnset flags a missing MEMINI_HOME (home, Config.Home): without it,
+// visibility:"personal" writes error out and no personal-namespace leg
+// merges into recall/briefing's default read set.
+func warnHomeUnset(out io.Writer, home string) int {
+	if home != "" {
+		return 0
+	}
+	warnf(out, "MEMINI_HOME is unset: visibility:\"personal\" writes will error, and no personal-namespace leg merges into recall/briefing.")
+	note(out, "Set MEMINI_HOME=<your-personal-namespace> (e.g. personal/kit) to enable it.")
+	return 1
+}
+
+// notef prints an indented informational line that does not count toward
+// doctor's warning tally — for a condition that's legal/expected but worth
+// surfacing, distinct from warnf's WARN-prefixed, tallied lines.
+func notef(out io.Writer, format string, args ...any) {
+	fmt.Fprintf(out, "  note: "+format+"\n", args...) //nolint:errcheck
 }
 
 func doctorResult(out io.Writer, warnings int) {

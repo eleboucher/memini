@@ -270,7 +270,7 @@ func buildImporter(
 		return nil
 	}
 	linkStore, _ := st.(store.LinkStore)
-	return importer.NewLocal(st, embedder), "local store", dedup, linkStore, func() { _ = st.Close() }, nil
+	return importer.NewLocal(st, embedder), localStoreLabel, dedup, linkStore, func() { _ = st.Close() }, nil
 }
 
 // distinctNamespaces returns the sorted set of namespaces the records carry

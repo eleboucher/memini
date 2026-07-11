@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -166,96 +168,6 @@ func TestPrintWritePathSignals(t *testing.T) {
 	}
 }
 
-// TestResolveDoctorReadSetDefault: a flat (untenanted) namespace with no
-// global namespace reads just itself — no tenant segment, no shared merge.
-func TestResolveDoctorReadSetDefault(t *testing.T) {
-	entries, notes := resolveDoctorReadSet("proj", "", false)
-	if len(notes) != 0 {
-		t.Fatalf("expected no notes, got %v", notes)
-	}
-	if len(entries) != 1 || entries[0] != (doctorReadEntry{ns: "proj", tiers: "all", source: "default"}) {
-		t.Fatalf("unexpected entries: %+v", entries)
-	}
-}
-
-// TestResolveDoctorReadSetComposesAllSources: the global namespace and the
-// derived tenant-shared namespace both contribute, in the order the real
-// resolver applies them (primary, global, tenant-shared).
-func TestResolveDoctorReadSetComposesAllSources(t *testing.T) {
-	entries, notes := resolveDoctorReadSet("work/memini", "glob", true)
-	if len(notes) != 0 {
-		t.Fatalf("expected no notes, got %v", notes)
-	}
-
-	byNS := make(map[string]doctorReadEntry, len(entries))
-	for _, e := range entries {
-		byNS[e.ns] = e
-	}
-	want := map[string]doctorReadEntry{
-		"work/memini":  {ns: "work/memini", tiers: "all", source: "default"},
-		"glob":         {ns: "glob", tiers: "durable", source: "global"},
-		"work/_shared": {ns: "work/_shared", tiers: "durable", source: "tenant-shared"},
-	}
-	if len(entries) != len(want) {
-		t.Fatalf("entries = %+v, want %d", entries, len(want))
-	}
-	for ns, wantEntry := range want {
-		if got, ok := byNS[ns]; !ok || got != wantEntry {
-			t.Errorf("entry %q = %+v, want %+v (present=%v)", ns, got, wantEntry, ok)
-		}
-	}
-}
-
-// TestResolveDoctorReadSetFlagsDuplicateEntry: the global namespace naming the
-// tenant-shared namespace surfaces as a redundant-entry note instead of
-// silently appearing twice.
-func TestResolveDoctorReadSetFlagsDuplicateEntry(t *testing.T) {
-	entries, notes := resolveDoctorReadSet("work/memini", "work/_shared", true)
-
-	foundDup := false
-	for _, n := range notes {
-		if strings.Contains(n, "work/_shared") && strings.Contains(n, "redundant") {
-			foundDup = true
-		}
-	}
-	if !foundDup {
-		t.Errorf("expected a redundant-entry note for %q, got notes: %v", "work/_shared", notes)
-	}
-	count := 0
-	for _, e := range entries {
-		if e.ns == "work/_shared" {
-			count++
-			if e.source != "global" {
-				t.Errorf("work/_shared should keep the global entry's source, got %q", e.source)
-			}
-		}
-	}
-	if count != 1 {
-		t.Errorf("work/_shared should appear exactly once, got %d", count)
-	}
-}
-
-// TestResolveDoctorReadSetSelfEntryNote: the global namespace naming primary
-// itself is a no-op and surfaces as a note.
-func TestResolveDoctorReadSetSelfEntryNote(t *testing.T) {
-	_, notes := resolveDoctorReadSet("proj", "proj", false)
-	if len(notes) != 1 || !strings.Contains(notes[0], "already the request namespace") {
-		t.Fatalf("expected a self-entry note, got %v", notes)
-	}
-}
-
-// TestResolveDoctorReadSetSharedNamespaceItself: the tenant-shared namespace
-// reading itself gets no self-merge (work/_shared does not add work/_shared).
-func TestResolveDoctorReadSetSharedNamespaceItself(t *testing.T) {
-	entries, notes := resolveDoctorReadSet("work/_shared", "", true)
-	if len(notes) != 0 {
-		t.Fatalf("expected no notes, got %v", notes)
-	}
-	if len(entries) != 1 || entries[0].ns != "work/_shared" {
-		t.Fatalf("expected only the primary entry, got %+v", entries)
-	}
-}
-
 // TestWarnEnvSlashMigration: an env-sourced default namespace containing "/"
 // whose pre-fix, basename-flattened namespace still holds memories triggers
 // a warning naming the remediation command; a fresh namespace (no memories
@@ -327,63 +239,428 @@ func TestStatsTotal(t *testing.T) {
 	}
 }
 
-// TestPrintRetrievalScopeDefaultOnly: with no configuration, the section
-// renders just the request namespace and warns about nothing.
-func TestPrintRetrievalScopeDefaultOnly(t *testing.T) {
-	var out bytes.Buffer
-	warnings := printRetrievalScope(&out, &config.Config{}, nil, "proj")
-	got := out.String()
-	if !strings.Contains(got, "Retrieval scope") {
-		t.Errorf("missing section header, got:\n%s", got)
-	}
-	if !strings.Contains(got, "proj") {
-		t.Errorf("missing request namespace, got:\n%s", got)
-	}
-	if warnings != 0 {
-		t.Errorf("expected no warnings from a bare default-only read set, got %d", warnings)
+// --- read-set: local mirror (ancestor/home/link cascade) ---
+
+func TestAncestorsOfFlatNamespace(t *testing.T) {
+	if got := ancestorsOf("acme"); got != nil {
+		t.Fatalf("ancestorsOf(flat) = %v, want nil", got)
 	}
 }
 
-// TestPrintRetrievalScopeWarnsOnEmptyTenantShared: with the tenant-shared
-// merge opted in (MEMINI_TENANT_SHARED), a tenanted namespace whose shared
-// sibling holds no memories gets a 0-memories warning.
-func TestPrintRetrievalScopeWarnsOnEmptyTenantShared(t *testing.T) {
-	st := openTestStore(t)
-	seedPool(t, st, "work/memini", 1, 0) // only the primary holds memories
-	stats := statsFor(t, st)
-
-	var out bytes.Buffer
-	warnings := printRetrievalScope(&out, &config.Config{TenantShared: true}, stats, "work/memini")
-	got := out.String()
-	if !strings.Contains(got, "work/_shared") {
-		t.Errorf("expected the tenant-shared namespace listed, got:\n%s", got)
+func TestAncestorsOfNested(t *testing.T) {
+	got := ancestorsOf("acme/phoenix/api")
+	want := []string{"acme/phoenix", "acme"}
+	if len(got) != len(want) {
+		t.Fatalf("ancestorsOf = %v, want %v", got, want)
 	}
-	if !strings.Contains(got, "0 memories") {
-		t.Errorf("expected a 0-memories warning for the empty shared namespace, got:\n%s", got)
-	}
-	if warnings == 0 {
-		t.Errorf("expected at least 1 warning, got 0")
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("ancestorsOf[%d] = %q, want %q", i, got[i], want[i])
+		}
 	}
 }
 
-// TestPrintRetrievalScopeTenantSharedOffByDefault: without the opt-in, the
-// tenant-shared sibling is absent from the read set and shows as "(off)", with
-// no 0-memories warning for it.
-func TestPrintRetrievalScopeTenantSharedOffByDefault(t *testing.T) {
+func TestLocalReadSetPrimaryOnly(t *testing.T) {
 	st := openTestStore(t)
-	seedPool(t, st, "work/memini", 1, 0)
+	entries, err := localReadSet(context.Background(), st, "acme", "")
+	if err != nil {
+		t.Fatalf("localReadSet: %v", err)
+	}
+	want := doctorReadEntry{ns: "acme", origin: originPrimary, tiers: tiersAll}
+	if len(entries) != 1 || entries[0] != want {
+		t.Fatalf("entries = %+v, want [%+v]", entries, want)
+	}
+}
+
+func TestLocalReadSetAncestorsNearestFirst(t *testing.T) {
+	st := openTestStore(t)
+	entries, err := localReadSet(context.Background(), st, "acme/phoenix/api", "")
+	if err != nil {
+		t.Fatalf("localReadSet: %v", err)
+	}
+	want := []doctorReadEntry{
+		{ns: "acme/phoenix/api", origin: originPrimary, tiers: tiersAll},
+		{ns: "acme/phoenix", origin: originAncestor, tiers: "semantic,procedural"},
+		{ns: "acme", origin: originAncestor, tiers: "semantic,procedural"},
+	}
+	if len(entries) != len(want) {
+		t.Fatalf("entries = %+v, want %+v", entries, want)
+	}
+	for i := range want {
+		if entries[i] != want[i] {
+			t.Errorf("entries[%d] = %+v, want %+v", i, entries[i], want[i])
+		}
+	}
+}
+
+func TestLocalReadSetHomeLeg(t *testing.T) {
+	st := openTestStore(t)
+	entries, err := localReadSet(context.Background(), st, "acme/phoenix", "personal/kit")
+	if err != nil {
+		t.Fatalf("localReadSet: %v", err)
+	}
+	want := []doctorReadEntry{
+		{ns: "acme/phoenix", origin: originPrimary, tiers: tiersAll},
+		{ns: "acme", origin: originAncestor, tiers: "semantic,procedural"},
+		{ns: "personal/kit", origin: originHome, tiers: "semantic,procedural"},
+	}
+	if len(entries) != len(want) {
+		t.Fatalf("entries = %+v, want %+v", entries, want)
+	}
+	for i := range want {
+		if entries[i] != want[i] {
+			t.Errorf("entries[%d] = %+v, want %+v", i, entries[i], want[i])
+		}
+	}
+}
+
+// TestLocalReadSetDedupesAncestorAlsoHome: when the home namespace coincides
+// with an already-present ancestor, it must not appear twice — the leg that
+// added it first (ancestor, cascade order) keeps the entry.
+func TestLocalReadSetDedupesAncestorAlsoHome(t *testing.T) {
+	st := openTestStore(t)
+	entries, err := localReadSet(context.Background(), st, "acme/phoenix", "acme")
+	if err != nil {
+		t.Fatalf("localReadSet: %v", err)
+	}
+	count := 0
+	for _, e := range entries {
+		if e.ns == "acme" {
+			count++
+			if e.origin != originAncestor {
+				t.Errorf("acme origin = %q, want %q (first leg wins)", e.origin, originAncestor)
+			}
+		}
+	}
+	if count != 1 {
+		t.Errorf("acme should appear exactly once, got %d in %+v", count, entries)
+	}
+}
+
+func TestLocalReadSetLinksLeg(t *testing.T) {
+	st := openTestStore(t)
+	ls, err := linkStoreOf(st)
+	if err != nil {
+		t.Fatalf("linkStoreOf: %v", err)
+	}
+	if err := ls.PutLink(context.Background(), store.NamespaceLink{Src: "acme", Dst: "shared/golang", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("PutLink: %v", err)
+	}
+	entries, err := localReadSet(context.Background(), st, "acme", "")
+	if err != nil {
+		t.Fatalf("localReadSet: %v", err)
+	}
+	want := []doctorReadEntry{
+		{ns: "acme", origin: originPrimary, tiers: tiersAll},
+		{ns: "shared/golang", origin: originLink, tiers: "semantic,procedural"},
+	}
+	if len(entries) != len(want) {
+		t.Fatalf("entries = %+v, want %+v", entries, want)
+	}
+	for i := range want {
+		if entries[i] != want[i] {
+			t.Errorf("entries[%d] = %+v, want %+v", i, entries[i], want[i])
+		}
+	}
+}
+
+func TestLocalReadSetLinkTiersNarrowed(t *testing.T) {
+	st := openTestStore(t)
+	ls, err := linkStoreOf(st)
+	if err != nil {
+		t.Fatalf("linkStoreOf: %v", err)
+	}
+	link := store.NamespaceLink{Src: "acme", Dst: "shared/golang", Tiers: []memory.Tier{memory.TierSemantic}, CreatedAt: time.Now().UTC()}
+	if err := ls.PutLink(context.Background(), link); err != nil {
+		t.Fatalf("PutLink: %v", err)
+	}
+	entries, err := localReadSet(context.Background(), st, "acme", "")
+	if err != nil {
+		t.Fatalf("localReadSet: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.ns == "shared/golang" {
+			found = true
+			if e.tiers != "semantic" {
+				t.Errorf("shared/golang tiers = %q, want %q", e.tiers, "semantic")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected shared/golang in entries, got %+v", entries)
+	}
+}
+
+func TestLocalReadSetDegradesWithoutLinkStore(t *testing.T) {
+	entries, err := localReadSet(context.Background(), noLinkStore{}, "acme", "")
+	if err != nil {
+		t.Fatalf("localReadSet: %v", err)
+	}
+	if len(entries) != 1 || entries[0].ns != "acme" {
+		t.Fatalf("expected only the primary entry, got %+v", entries)
+	}
+}
+
+// --- read-set: server preference + fallback ---
+
+func TestFetchServerReadSetSendsHeaders(t *testing.T) {
+	var gotNS, gotHome, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotNS = r.Header.Get("X-Memini-Namespace")
+		gotHome = r.Header.Get("X-Memini-Home")
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"entries":[]}`))
+	}))
+	defer srv.Close()
+
+	if _, err := fetchServerReadSet(context.Background(), srv.URL, "secret-token", "acme/phoenix", "personal/kit"); err != nil {
+		t.Fatalf("fetchServerReadSet: %v", err)
+	}
+	if gotNS != "acme/phoenix" {
+		t.Errorf("X-Memini-Namespace = %q, want acme/phoenix", gotNS)
+	}
+	if gotHome != "personal/kit" {
+		t.Errorf("X-Memini-Home = %q, want personal/kit", gotHome)
+	}
+	if gotAuth != "Bearer secret-token" {
+		t.Errorf("Authorization = %q, want Bearer secret-token", gotAuth)
+	}
+}
+
+func TestFetchServerReadSetParsesEntries(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"entries":[
+			{"namespace":"acme/phoenix","origin":"primary"},
+			{"namespace":"acme","origin":"ancestor","tiers":["semantic","procedural"]},
+			{"namespace":"shared/golang","origin":"link","tiers":["semantic"]}
+		]}`))
+	}))
+	defer srv.Close()
+
+	entries, err := fetchServerReadSet(context.Background(), srv.URL, "", "acme/phoenix", "")
+	if err != nil {
+		t.Fatalf("fetchServerReadSet: %v", err)
+	}
+	want := []doctorReadEntry{
+		{ns: "acme/phoenix", origin: originPrimary, tiers: tiersAll},
+		{ns: "acme", origin: originAncestor, tiers: "semantic,procedural"},
+		{ns: "shared/golang", origin: originLink, tiers: "semantic"},
+	}
+	if len(entries) != len(want) {
+		t.Fatalf("entries = %+v, want %+v", entries, want)
+	}
+	for i := range want {
+		if entries[i] != want[i] {
+			t.Errorf("entries[%d] = %+v, want %+v", i, entries[i], want[i])
+		}
+	}
+}
+
+func TestFetchServerReadSetNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	if _, err := fetchServerReadSet(context.Background(), srv.URL, "", "acme", ""); err == nil {
+		t.Fatal("expected an error for a non-200 response")
+	}
+}
+
+func TestResolveReadSetPrefersReachableServer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"entries":[{"namespace":"acme","origin":"primary"},{"namespace":"from-server","origin":"link","tiers":["semantic"]}]}`))
+	}))
+	defer srv.Close()
+	t.Setenv("MEMINI_BASE_URL", srv.URL)
+
+	st := openTestStore(t) // empty local store: the server's answer must win, not a local mirror
+	entries, source, err := resolveReadSet(context.Background(), st, "acme", "")
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	if !strings.HasPrefix(source, "server") {
+		t.Errorf("source = %q, want a server-prefixed label", source)
+	}
+	found := false
+	for _, e := range entries {
+		if e.ns == "from-server" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected the server's entries to be used, got %+v", entries)
+	}
+}
+
+func TestResolveReadSetFallsBackWhenServerUnreachable(t *testing.T) {
+	t.Setenv("MEMINI_BASE_URL", "http://127.0.0.1:1") // nothing listens here
+	st := openTestStore(t)
+
+	entries, source, err := resolveReadSet(context.Background(), st, "acme/phoenix", "")
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	if source != "local store" {
+		t.Errorf("source = %q, want local store", source)
+	}
+	want := []doctorReadEntry{
+		{ns: "acme/phoenix", origin: originPrimary, tiers: tiersAll},
+		{ns: "acme", origin: originAncestor, tiers: "semantic,procedural"},
+	}
+	if len(entries) != len(want) {
+		t.Fatalf("entries = %+v, want %+v", entries, want)
+	}
+}
+
+func TestResolveReadSetLocalWhenBaseURLUnset(t *testing.T) {
+	t.Setenv("MEMINI_BASE_URL", "")
+	t.Setenv("MEMINI_URL", "")
+	st := openTestStore(t)
+
+	entries, source, err := resolveReadSet(context.Background(), st, "acme", "")
+	if err != nil {
+		t.Fatalf("resolveReadSet: %v", err)
+	}
+	if source != "local store" {
+		t.Errorf("source = %q, want local store", source)
+	}
+	if len(entries) != 1 || entries[0].ns != "acme" {
+		t.Fatalf("entries = %+v, want just the primary", entries)
+	}
+}
+
+// --- read-set table rendering ---
+
+func TestPrintRetrievalScopeTable(t *testing.T) {
+	var out bytes.Buffer
+	entries := []doctorReadEntry{
+		{ns: "acme/phoenix", origin: originPrimary, tiers: tiersAll},
+		{ns: "acme", origin: originAncestor, tiers: "semantic,procedural"},
+		{ns: "personal/kit", origin: originHome, tiers: "semantic,procedural"},
+		{ns: "shared/golang", origin: originLink, tiers: "semantic"},
+	}
+	printRetrievalScope(&out, entries, "local store", "acme/phoenix")
+	got := out.String()
+	for _, want := range []string{"NAMESPACE", "ORIGIN", "TIERS", "acme/phoenix", "ancestor", "home", "link", "shared/golang", "personal/kit"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "MEMINI_GLOBAL_NAMESPACE") || strings.Contains(got, "MEMINI_TENANT_SHARED") {
+		t.Errorf("dead knobs must not be printed:\n%s", got)
+	}
+}
+
+// --- dangling link note ---
+
+func TestNoteDanglingLinksFlagsEmptyDestination(t *testing.T) {
+	st := openTestStore(t)
+	ls, err := linkStoreOf(st)
+	if err != nil {
+		t.Fatalf("linkStoreOf: %v", err)
+	}
+	if err := ls.PutLink(context.Background(), store.NamespaceLink{Src: "acme", Dst: "shared/golang", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("PutLink: %v", err)
+	}
+	stats := statsFor(t, st) // nothing written anywhere: shared/golang holds 0 memories
+
+	var out bytes.Buffer
+	noteDanglingLinks(context.Background(), &out, st, stats)
+	got := out.String()
+	if !strings.Contains(got, "shared/golang") {
+		t.Errorf("expected the dangling destination named, got:\n%s", got)
+	}
+	if !strings.Contains(got, "note:") {
+		t.Errorf("expected a note-level line, got:\n%s", got)
+	}
+	if strings.Contains(got, "WARN:") {
+		t.Errorf("a dangling link is legal (a note, not a warning), got:\n%s", got)
+	}
+}
+
+func TestNoteDanglingLinksSilentWhenDestinationHasMemories(t *testing.T) {
+	st := openTestStore(t)
+	seedPool(t, st, "shared/golang", 1, 0)
+	ls, err := linkStoreOf(st)
+	if err != nil {
+		t.Fatalf("linkStoreOf: %v", err)
+	}
+	if err := ls.PutLink(context.Background(), store.NamespaceLink{Src: "acme", Dst: "shared/golang", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("PutLink: %v", err)
+	}
 	stats := statsFor(t, st)
 
 	var out bytes.Buffer
-	warnings := printRetrievalScope(&out, &config.Config{}, stats, "work/memini")
+	noteDanglingLinks(context.Background(), &out, st, stats)
+	if out.Len() != 0 {
+		t.Errorf("expected no note when the destination holds memories, got:\n%s", out.String())
+	}
+}
+
+func TestNoteDanglingLinksDegradesWithoutLinkStore(t *testing.T) {
+	var out bytes.Buffer
+	noteDanglingLinks(context.Background(), &out, noLinkStore{}, nil)
+	if out.Len() != 0 {
+		t.Errorf("expected no output against a store without LinkStore support, got:\n%s", out.String())
+	}
+}
+
+// --- new warnings: global namespace pin, MEMINI_HOME unset ---
+
+func TestWarnGlobalNamespacePinDiffersFromGit(t *testing.T) {
+	dir := t.TempDir()
+	var out bytes.Buffer
+	n := warnGlobalNamespacePin(&out, dir, "team-wide-pin")
+	if n != 1 {
+		t.Fatalf("warnings = %d, want 1, output:\n%s", n, out.String())
+	}
 	got := out.String()
-	if !strings.Contains(got, "tenant-shared namespace: (off)") {
-		t.Errorf("expected tenant-shared shown as (off), got:\n%s", got)
+	if !strings.Contains(got, "team-wide-pin") {
+		t.Errorf("expected the pinned namespace named, got:\n%s", got)
 	}
-	if strings.Contains(got, "work/_shared") {
-		t.Errorf("tenant-shared must not appear in the read set when off, got:\n%s", got)
+	if !strings.Contains(got, "memini namespace split") {
+		t.Errorf("expected the remediation command named, got:\n%s", got)
 	}
-	if warnings != 0 {
-		t.Errorf("expected no warnings when tenant-shared is off, got %d", warnings)
+}
+
+func TestWarnGlobalNamespacePinMatchesGit(t *testing.T) {
+	dir := t.TempDir()
+	gitNS, _ := config.ResolveDirNamespace(dir)
+	var out bytes.Buffer
+	n := warnGlobalNamespacePin(&out, dir, gitNS)
+	if n != 0 {
+		t.Fatalf("warnings = %d, want 0 when the pin matches git resolution, output:\n%s", n, out.String())
+	}
+}
+
+func TestWarnGlobalNamespacePinUnset(t *testing.T) {
+	var out bytes.Buffer
+	n := warnGlobalNamespacePin(&out, t.TempDir(), "")
+	if n != 0 {
+		t.Fatalf("warnings = %d, want 0 when no env override is set, output:\n%s", n, out.String())
+	}
+}
+
+func TestWarnHomeUnset(t *testing.T) {
+	var out bytes.Buffer
+	n := warnHomeUnset(&out, "")
+	if n != 1 {
+		t.Fatalf("warnings = %d, want 1, output:\n%s", n, out.String())
+	}
+	if !strings.Contains(out.String(), "MEMINI_HOME") {
+		t.Errorf("expected MEMINI_HOME named, got:\n%s", out.String())
+	}
+}
+
+func TestWarnHomeSet(t *testing.T) {
+	var out bytes.Buffer
+	n := warnHomeUnset(&out, "personal/kit")
+	if n != 0 {
+		t.Fatalf("warnings = %d, want 0 when MEMINI_HOME is set, output:\n%s", n, out.String())
 	}
 }
