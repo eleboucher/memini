@@ -124,6 +124,17 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		// Key/value store for store-level metadata (e.g. the embedding model the
 		// vectors were produced with — see EmbedModel/SetEmbedModel).
 		`CREATE TABLE IF NOT EXISTS meta (key text PRIMARY KEY, value text NOT NULL)`,
+		// namespace_links records cross-namespace read links (namespace-cascade
+		// design, see store.LinkStore); tiers is a JSON array of memory.Tier
+		// strings.
+		`CREATE TABLE IF NOT EXISTS namespace_links (
+			src_ns     text NOT NULL,
+			dst_ns     text NOT NULL,
+			tiers      jsonb NOT NULL DEFAULT '[]',
+			note       text NOT NULL DEFAULT '',
+			created_at timestamptz NOT NULL,
+			PRIMARY KEY (src_ns, dst_ns)
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := conn.Exec(ctx, q); err != nil {
@@ -471,11 +482,28 @@ func (s *Store) ListNamespaces(ctx context.Context) ([]string, error) {
 	return out, rows.Err()
 }
 
-// DeleteNamespace removes every memory in a namespace. Returns the number of
+// DeleteNamespace removes every memory in a namespace, plus any
+// namespace_links row that references the namespace on either side (gap G5:
+// a deleted namespace must not leave a dangling link). Returns the number of
 // memories deleted.
 func (s *Store) DeleteNamespace(ctx context.Context, namespace string) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM memories WHERE namespace=$1`, namespace)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Cascade the link table first: this must happen even when the namespace
+	// holds no memories (a namespace can exist purely as a link endpoint).
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM namespace_links WHERE src_ns=$1 OR dst_ns=$1`, namespace); err != nil {
+		return 0, fmt.Errorf("postgres: delete namespace: cascade links: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM memories WHERE namespace=$1`, namespace)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
 	n := tag.RowsAffected()
@@ -584,6 +612,121 @@ func (s *Store) SetEmbedModel(ctx context.Context, model string) error {
 		return fmt.Errorf("postgres: set embed model: %w", err)
 	}
 	return nil
+}
+
+var _ store.LinkStore = (*Store)(nil)
+
+// PutLink inserts or replaces the link keyed by (l.Src, l.Dst).
+func (s *Store) PutLink(ctx context.Context, l store.NamespaceLink) error {
+	tiersJSON, err := json.Marshal(tiersOrEmpty(l.Tiers))
+	if err != nil {
+		return fmt.Errorf("postgres: marshal link tiers: %w", err)
+	}
+	created := l.CreatedAt
+	if created.IsZero() {
+		created = time.Now().UTC()
+	}
+	_, err = s.pool.Exec(ctx, `INSERT INTO namespace_links (src_ns, dst_ns, tiers, note, created_at)
+		VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (src_ns, dst_ns) DO UPDATE SET
+			tiers=EXCLUDED.tiers, note=EXCLUDED.note, created_at=EXCLUDED.created_at`,
+		l.Src, l.Dst, tiersJSON, l.Note, created)
+	if err != nil {
+		return fmt.Errorf("postgres: put link: %w", err)
+	}
+	return nil
+}
+
+// DeleteLink removes the link from src to dst. The bool reports whether a
+// link existed to delete.
+func (s *Store) DeleteLink(ctx context.Context, src, dst string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM namespace_links WHERE src_ns=$1 AND dst_ns=$2`, src, dst)
+	if err != nil {
+		return false, fmt.Errorf("postgres: delete link: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ListLinks returns the links whose Src is src, ordered by Dst.
+func (s *Store) ListLinks(ctx context.Context, src string) ([]store.NamespaceLink, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT src_ns, dst_ns, tiers, note, created_at FROM namespace_links WHERE src_ns=$1 ORDER BY dst_ns`, src)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list links: %w", err)
+	}
+	return scanLinks(rows)
+}
+
+// ListAllLinks returns every link in the store, ordered by Src then Dst.
+func (s *Store) ListAllLinks(ctx context.Context) ([]store.NamespaceLink, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT src_ns, dst_ns, tiers, note, created_at FROM namespace_links ORDER BY src_ns, dst_ns`)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list all links: %w", err)
+	}
+	return scanLinks(rows)
+}
+
+// RenameLinkEndpoints rewrites every link whose src_ns or dst_ns equals from
+// to to instead. A link that collides with an existing row after the rewrite
+// overwrites that row (last-write-wins, mirroring PutLink's upsert
+// semantics). A no-op when from == to.
+func (s *Store) RenameLinkEndpoints(ctx context.Context, from, to string) error {
+	if from == to {
+		return nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rows, err := tx.Query(ctx,
+		`SELECT src_ns, dst_ns, tiers, note, created_at FROM namespace_links WHERE src_ns=$1 OR dst_ns=$1`, from)
+	if err != nil {
+		return fmt.Errorf("postgres: rename link endpoints: select: %w", err)
+	}
+	type linkRow struct {
+		src, dst, note string
+		tiers          []byte
+		created        time.Time
+	}
+	var toRename []linkRow
+	for rows.Next() {
+		var r linkRow
+		if err := rows.Scan(&r.src, &r.dst, &r.tiers, &r.note, &r.created); err != nil {
+			rows.Close()
+			return err
+		}
+		toRename = append(toRename, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, r := range toRename {
+		newSrc, newDst := r.src, r.dst
+		if newSrc == from {
+			newSrc = to
+		}
+		if newDst == from {
+			newDst = to
+		}
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM namespace_links WHERE src_ns=$1 AND dst_ns=$2`, r.src, r.dst); err != nil {
+			return fmt.Errorf("postgres: rename link endpoints: delete: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO namespace_links (src_ns, dst_ns, tiers, note, created_at)
+			VALUES ($1,$2,$3,$4,$5)
+			ON CONFLICT (src_ns, dst_ns) DO UPDATE SET
+				tiers=EXCLUDED.tiers, note=EXCLUDED.note, created_at=EXCLUDED.created_at`,
+			newSrc, newDst, r.tiers, r.note, r.created); err != nil {
+			return fmt.Errorf("postgres: rename link endpoints: insert: %w", err)
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // Ping verifies the database is reachable.

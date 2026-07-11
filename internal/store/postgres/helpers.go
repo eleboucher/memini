@@ -157,6 +157,55 @@ func scanRow(s rowScanner, metric *float64) (*memory.Memory, error) {
 	return &m, nil
 }
 
+// tiersOrEmpty returns tiers, or an empty slice when tiers is nil, so
+// PutLink persists a JSON array ('[]') rather than a JSON null for an
+// unrestricted (service-default) link.
+func tiersOrEmpty(tiers []memory.Tier) []memory.Tier {
+	if tiers == nil {
+		return []memory.Tier{}
+	}
+	return tiers
+}
+
+// rows is satisfied by pgx.Rows: rowScanner plus iteration.
+type rows interface {
+	rowScanner
+	Next() bool
+	Err() error
+	Close()
+}
+
+// scanLinks reads every remaining row of rs into NamespaceLinks, closing rs
+// before returning.
+func scanLinks(rs rows) ([]store.NamespaceLink, error) {
+	defer rs.Close()
+	var out []store.NamespaceLink
+	for rs.Next() {
+		l, err := scanLink(rs)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rs.Err()
+}
+
+// scanLink scans a single (src_ns, dst_ns, tiers, note, created_at) row.
+func scanLink(s rowScanner) (store.NamespaceLink, error) {
+	var l store.NamespaceLink
+	var tiersBytes []byte
+	if err := s.Scan(&l.Src, &l.Dst, &tiersBytes, &l.Note, &l.CreatedAt); err != nil {
+		return l, err
+	}
+	if len(tiersBytes) > 0 {
+		if err := json.Unmarshal(tiersBytes, &l.Tiers); err != nil {
+			return l, fmt.Errorf("postgres: unmarshal link tiers: %w", err)
+		}
+	}
+	l.CreatedAt = l.CreatedAt.UTC()
+	return l, nil
+}
+
 // tsQuery turns a natural-language query into a Postgres to_tsquery OR-string
 // ("term1 | term2 | ..."), so recall matches rows containing ANY term. Returns
 // "" when there are no usable terms.
