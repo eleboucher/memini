@@ -5,7 +5,10 @@ import type {
   FsckReport,
   ListResponse,
   Memory,
+  NamespaceLink,
+  NamespaceLinksResponse,
   NamespacesResponse,
+  ReadSetResponse,
   RenamespaceReport,
   Scored,
   SearchResponse,
@@ -226,6 +229,28 @@ export const api = {
   // its default namespace and delete the wrong record (or 404).
   remove: (id: string, ns?: string) =>
     req<void>('DELETE', `/v1/memories/${encodeURIComponent(id)}`, undefined, ns),
+
+  // readSet resolves the effective read-set (namespace/origin/tiers) for the
+  // request namespace — header-scoped, like scopedStats. `ns` overrides the
+  // active selection (used by the Graph namespace mode to probe every
+  // namespace in turn, not just the active one).
+  readSet: (ns?: string) => req<ReadSetResponse>('GET', '/v1/namespaces/read-set', undefined, ns),
+
+  // links lists outgoing namespace links (durable-tier read edges) from the
+  // request namespace.
+  links: (ns?: string) =>
+    req<NamespaceLinksResponse>('GET', '/v1/links', undefined, ns).then((r) => r.links ?? []),
+
+  // addLink creates or replaces (idempotent on dst) a link from the active
+  // namespace to `dst`. Omitting tiers falls back to the durable default
+  // (semantic, procedural) — non-durable tiers never cross a link regardless.
+  addLink: (dst: string, tiers?: Tier[], note?: string, ns?: string) =>
+    req<NamespaceLink>('POST', '/v1/links', { dst, tiers, note }, ns),
+
+  // deleteLink removes the link to `dst`. The server accepts dst via query or
+  // body; sending it in the URL keeps this a plain DELETE with no body.
+  deleteLink: (dst: string, ns?: string) =>
+    req<void>('DELETE', `/v1/links?dst=${encodeURIComponent(dst)}`, undefined, ns),
 
   fsck: () => req<FsckReport>('POST', '/v1/fsck'),
 
