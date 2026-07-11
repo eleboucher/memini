@@ -228,19 +228,27 @@ func NewServer(svc *service.Service, defaultNS, home string) *mcpsdk.Server {
 // HTTPHandler returns an http.Handler serving MCP over Streamable HTTP. The
 // tenant namespace is taken from nsHeader when present, else defaultNS; tool
 // calls may still override it per-call. The caller's personal namespace is
-// taken from homeHeader when present, else "" (no home leg — unlike the
-// namespace header there is no default and no per-call override). An invalid
-// nsHeader or homeHeader value is rejected with 400 (matching the REST API)
-// rather than silently falling back to the default tenant. When apiKey is
-// non-empty, requests must present it as a bearer token — required for any
-// remote (non-localhost) deployment.
+// taken from homeHeader when present — canonicalized exactly like REST's
+// homeMiddleware so both transports resolve the same client input to the
+// same namespace key — else "" (no home leg — unlike the namespace header
+// there is no default and no per-call override). An invalid nsHeader or
+// homeHeader value is rejected with 400 (matching the REST API) rather than
+// silently falling back to the default tenant. When apiKey is non-empty,
+// requests must present it as a bearer token — required for any remote
+// (non-localhost) deployment.
 func HTTPHandler(svc *service.Service, nsHeader, defaultNS, homeHeader, apiKey string) http.Handler {
 	h := mcpsdk.NewStreamableHTTPHandler(func(r *http.Request) *mcpsdk.Server {
 		ns := defaultNS
 		if v := strings.TrimSpace(r.Header.Get(nsHeader)); v != "" {
 			ns = v
 		}
-		home := strings.TrimSpace(r.Header.Get(homeHeader))
+		// Canonicalize the home header like REST's homeMiddleware does: the
+		// same client input ("Work/Proj/") must resolve to the same namespace
+		// key on both transports, or a caller switching between REST and MCP
+		// would silently read two different home legs. The namespace header
+		// above deliberately keeps its pre-existing TrimSpace-only capture —
+		// changing it is out of scope here.
+		home := httputil.NormalizeNamespace(r.Header.Get(homeHeader))
 		return NewServer(svc, ns, home)
 	}, nil)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -257,7 +265,10 @@ func HTTPHandler(svc *service.Service, nsHeader, defaultNS, homeHeader, apiKey s
 				return
 			}
 		}
-		if v := strings.TrimSpace(r.Header.Get(homeHeader)); v != "" {
+		// Validate the normalized value (matching REST's homeMiddleware): a
+		// header that normalizes to empty ("///") is "no home leg", not an
+		// error, and one that survives normalization must be a valid namespace.
+		if v := httputil.NormalizeNamespace(r.Header.Get(homeHeader)); v != "" {
 			if err := httputil.ValidateNamespace(v); err != nil {
 				http.Error(w, `{"error":"invalid home header"}`, http.StatusBadRequest)
 				return
