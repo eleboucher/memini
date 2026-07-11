@@ -1599,3 +1599,258 @@ func TestBriefingHomeHeaderMergesDurable(t *testing.T) {
 		}
 	}
 }
+
+// TestReadSetEndpoint pins GET /v1/namespaces/read-set's shape and ordering:
+// for a three-level primary namespace, a home header, and one stored link,
+// it returns exactly 5 entries — primary, its two ancestors (nearest first),
+// home, then the link — each with the correct origin.
+func TestReadSetEndpoint(t *testing.T) {
+	h := newServer(t)
+
+	rec := do(t, h, http.MethodPost, "/v1/links", "acme/phoenix/api", apiKey, map[string]any{
+		"dst": "shared/golang",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put link: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	rec = doHome(t, h, http.MethodGet, "/v1/namespaces/read-set", "acme/phoenix/api", "personal/kit", apiKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("read-set: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var got struct {
+		Entries []struct {
+			Namespace string `json:"namespace"`
+			Origin    string `json:"origin"`
+		} `json:"entries"`
+	}
+	mustJSON(t, rec, &got)
+	want := []struct{ ns, origin string }{
+		{"acme/phoenix/api", "primary"},
+		{"acme/phoenix", "ancestor"},
+		{"acme", "ancestor"},
+		{"personal/kit", "home"},
+		{"shared/golang", "link"},
+	}
+	if len(got.Entries) != len(want) {
+		t.Fatalf("want %d entries, got %d: %+v", len(want), len(got.Entries), got.Entries)
+	}
+	for i, w := range want {
+		if got.Entries[i].Namespace != w.ns || got.Entries[i].Origin != w.origin {
+			t.Errorf("entry %d = {%s %s}, want {%s %s}",
+				i, got.Entries[i].Namespace, got.Entries[i].Origin, w.ns, w.origin)
+		}
+	}
+}
+
+// TestLinksCRUD round-trips POST/GET/DELETE /v1/links and pins the
+// self-link rejection (dst == the request namespace).
+func TestLinksCRUD(t *testing.T) {
+	h := newServer(t)
+
+	// Self-link is rejected.
+	rec := do(t, h, http.MethodPost, "/v1/links", "acme/phoenix", apiKey, map[string]any{"dst": "acme/phoenix"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("self-link: want 400, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	// Create.
+	rec = do(t, h, http.MethodPost, "/v1/links", "acme/phoenix", apiKey, map[string]any{
+		"dst": "shared/golang", "tiers": []string{"semantic"}, "note": "shared team docs",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put link: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var created struct {
+		Src, Dst, Note string
+		Tiers          []string
+	}
+	mustJSON(t, rec, &created)
+	if created.Src != "acme/phoenix" || created.Dst != "shared/golang" || created.Note != "shared team docs" {
+		t.Fatalf("put link response: %+v", created)
+	}
+	if len(created.Tiers) != 1 || created.Tiers[0] != "semantic" {
+		t.Fatalf("put link tiers: %+v", created.Tiers)
+	}
+
+	// List.
+	rec = do(t, h, http.MethodGet, "/v1/links", "acme/phoenix", apiKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list links: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var listed struct {
+		Links []struct{ Dst string } `json:"links"`
+	}
+	mustJSON(t, rec, &listed)
+	if len(listed.Links) != 1 || listed.Links[0].Dst != "shared/golang" {
+		t.Fatalf("list links: %+v", listed.Links)
+	}
+
+	// A different namespace sees no links (src-scoped).
+	rec = do(t, h, http.MethodGet, "/v1/links", "acme/other", apiKey, nil)
+	mustJSON(t, rec, &listed)
+	if len(listed.Links) != 0 {
+		t.Fatalf("unrelated namespace should see no links, got %+v", listed.Links)
+	}
+
+	// Delete.
+	rec = do(t, h, http.MethodDelete, "/v1/links?dst=shared/golang", "acme/phoenix", apiKey, nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete link: want 204, got %d (%s)", rec.Code, rec.Body)
+	}
+	rec = do(t, h, http.MethodGet, "/v1/links", "acme/phoenix", apiKey, nil)
+	mustJSON(t, rec, &listed)
+	if len(listed.Links) != 0 {
+		t.Fatalf("link should be gone after delete, got %+v", listed.Links)
+	}
+
+	// Deleting again (already gone) is 404.
+	rec = do(t, h, http.MethodDelete, "/v1/links?dst=shared/golang", "acme/phoenix", apiKey, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("delete missing link: want 404, got %d (%s)", rec.Code, rec.Body)
+	}
+}
+
+// TestSearchFromProvenanceForAncestorHits pins that /v1/search's ScoredMemory
+// carries "from" provenance for a cascade hit — empty for the primary
+// namespace, the ancestor's own name for an ancestor hit.
+func TestSearchFromProvenanceForAncestorHits(t *testing.T) {
+	h := newServer(t)
+	remember := func(ns, content string) {
+		rec := do(t, h, http.MethodPost, "/v1/memories", ns, apiKey, map[string]any{
+			"content": content, "tier": "semantic",
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("remember %s: %d (%s)", ns, rec.Code, rec.Body)
+		}
+	}
+	remember("acme", "the widget factory uses OAuth2 for authentication")
+	remember("acme/phoenix/api", "the widget service also uses OAuth2 for authentication")
+
+	rec := do(t, h, http.MethodPost, "/v1/search", "acme/phoenix/api", apiKey, map[string]any{
+		"query": "widget OAuth2 authentication", "limit": 10,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search: %d (%s)", rec.Code, rec.Body)
+	}
+	var out struct {
+		Results []struct {
+			Memory struct {
+				Namespace string `json:"namespace"`
+			} `json:"memory"`
+			From string `json:"from"`
+		} `json:"results"`
+	}
+	mustJSON(t, rec, &out)
+	fromByNS := map[string]string{}
+	for _, r := range out.Results {
+		fromByNS[r.Memory.Namespace] = r.From
+	}
+	if len(fromByNS) != 2 {
+		t.Fatalf("want hits from both namespaces, got %+v", out.Results)
+	}
+	if got, ok := fromByNS["acme/phoenix/api"]; !ok || got != "" {
+		t.Errorf("primary hit should carry empty from, got %q", got)
+	}
+	if got, ok := fromByNS["acme"]; !ok || got != "acme" {
+		t.Errorf("ancestor hit should carry from=%q, got %q", "acme", got)
+	}
+}
+
+// TestRememberVisibility pins that POST /v1/memories wires the visibility
+// field through to the service (already unit-tested at that layer): a
+// "personal" write lands in the home namespace when one is configured, and
+// is a 400 when it isn't.
+func TestRememberVisibility(t *testing.T) {
+	h := newServer(t)
+
+	rec := doHome(t, h, http.MethodPost, "/v1/memories", "acme/phoenix/api", "personal/kit", apiKey, map[string]any{
+		"content": "jon likes tabs over spaces", "tier": "semantic", "visibility": "personal",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("remember with visibility=personal: want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+	var created struct {
+		Namespace string `json:"namespace"`
+	}
+	mustJSON(t, rec, &created)
+	if created.Namespace != "personal/kit" {
+		t.Fatalf("visibility=personal should route to the home namespace, got %q", created.Namespace)
+	}
+
+	// No X-Memini-Home configured: visibility=personal is a caller error, not
+	// a silent fallback to the request namespace.
+	rec = do(t, h, http.MethodPost, "/v1/memories", "acme/phoenix/api", apiKey, map[string]any{
+		"content": "no home namespace configured", "tier": "semantic", "visibility": "personal",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("visibility=personal without home: want 400, got %d (%s)", rec.Code, rec.Body)
+	}
+}
+
+// TestScopeAliasesMatchNewTokens pins that the deprecated exact/subtree scope
+// values behave identically to their project/everywhere replacements: exact
+// searches only the primary namespace (no cascade), subtree searches the
+// full cascade plus the primary namespace's subtree.
+func TestScopeAliasesMatchNewTokens(t *testing.T) {
+	h := newServer(t)
+	remember := func(ns, content string) {
+		rec := do(t, h, http.MethodPost, "/v1/memories", ns, apiKey, map[string]any{
+			"content": content, "tier": "semantic",
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("remember %s: %d (%s)", ns, rec.Code, rec.Body)
+		}
+	}
+	remember("acme/phoenix", "the phoenix gadget uses caching heavily")
+	remember("acme/phoenix/api", "the api gadget uses caching heavily too")
+	remember("acme/phoenix/api/sub", "the sub gadget uses caching heavily as well")
+
+	search := func(scope string) map[string]bool {
+		body := map[string]any{"query": "gadget caching", "limit": 10}
+		if scope != "" {
+			body["scope"] = scope
+		}
+		rec := do(t, h, http.MethodPost, "/v1/search", "acme/phoenix/api", apiKey, body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("search scope=%q: %d (%s)", scope, rec.Code, rec.Body)
+		}
+		var out struct {
+			Results []struct {
+				Memory struct {
+					Namespace string `json:"namespace"`
+				} `json:"memory"`
+			} `json:"results"`
+		}
+		mustJSON(t, rec, &out)
+		got := map[string]bool{}
+		for _, r := range out.Results {
+			got[r.Memory.Namespace] = true
+		}
+		return got
+	}
+
+	exact := search("exact")
+	project := search("project")
+	if len(exact) != 1 || !exact["acme/phoenix/api"] {
+		t.Fatalf("scope=exact should see only the primary namespace, got %v", exact)
+	}
+	if fmt.Sprint(exact) != fmt.Sprint(project) {
+		t.Fatalf("scope=exact and scope=project should behave identically, got exact=%v project=%v", exact, project)
+	}
+
+	subtree := search("subtree")
+	everywhere := search("everywhere")
+	if !subtree["acme/phoenix/api"] || !subtree["acme/phoenix"] || !subtree["acme/phoenix/api/sub"] {
+		t.Fatalf("scope=subtree should span primary, ancestor, and subtree child, got %v", subtree)
+	}
+	if fmt.Sprint(subtree) != fmt.Sprint(everywhere) {
+		t.Fatalf("scope=subtree and scope=everywhere should behave identically, got subtree=%v everywhere=%v",
+			subtree, everywhere)
+	}
+
+	def := search("")
+	if !def["acme/phoenix/api"] || !def["acme/phoenix"] || def["acme/phoenix/api/sub"] {
+		t.Fatalf("default scope should include the primary+ancestor but not the subtree child, got %v", def)
+	}
+}
