@@ -1,6 +1,6 @@
 {
   "name": "@eleboucher/pi-memini",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "description": "Shared cross-session memory for the Pi coding agent, backed by a memini service.",
   "files": [
     "dist"
