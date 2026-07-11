@@ -321,6 +321,11 @@ type Service struct {
 	// candidates (≥2 close neighbours) through the LLM consolidator for a
 	// merge/supersede verdict before the deterministic action fires.
 	splitDedupLLMMerge bool
+	// cascade (default on) enables the ancestor/home/link read cascade in
+	// resolveDefaultReadSet. False restores pre-cascade isolation — the default
+	// read set is primary (+ subtree, when asked) only. See WithCascade /
+	// MEMINI_CASCADE.
+	cascade bool
 	// fingerprintDedup (default on) reinforces an exact restatement instead of
 	// storing a duplicate; see WithFingerprintDedup.
 	fingerprintDedup bool
@@ -678,6 +683,16 @@ func WithFingerprintDedup(on bool) Option {
 	return func(s *Service) { s.fingerprintDedup = on }
 }
 
+// WithCascade toggles the ancestor/home/link read cascade (default on). When
+// off, the default read set is the request namespace (and its subtree, when
+// asked) only — pre-cascade isolation — and a Scope of "full"/"everywhere" no
+// longer adds the ancestor, home, or link legs. An explicit per-call
+// Namespaces list is unaffected (it already replaces the cascade outright).
+// See MEMINI_CASCADE.
+func WithCascade(on bool) Option {
+	return func(s *Service) { s.cascade = on }
+}
+
 // WithReinforceSkipMarkers drops session-end / stop marker memories from recall
 // reinforcement. The pre-tool-use hook searches once per edited file, so markers
 // would otherwise inflate their access_count and TTL out of proportion. They
@@ -720,6 +735,7 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 		reserveTopAnchor:     defaultReserveTopAnchor,
 		poolFactor:           recallPoolFactor,
 		poolFloor:            recallPoolFloor,
+		cascade:              true,
 		fingerprintDedup:     true,
 		reinforceSkipMarkers: true,
 		redactSecrets:        true,

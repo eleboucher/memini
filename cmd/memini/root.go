@@ -272,6 +272,7 @@ func buildServiceStack(
 		service.WithConsolidateMinScore(cfg.ConsolidateMinScore),
 		service.WithQueryPrefix(cfg.EmbedQueryPrefix),
 		service.WithScoreFusion(search.DefaultFusionAlpha),
+		service.WithCascade(cfg.Cascade),
 		service.WithWriteDedup(cfg.WriteDedupScore, service.WriteDedupAction(cfg.WriteDedupAction)),
 		service.WithSplitDedupLLMMerge(cfg.SplitDedupLLMMerge),
 		service.WithCorroboration(defaultCorroborateMinScore),

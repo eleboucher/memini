@@ -233,6 +233,56 @@ func TestResolveReadSetHomeAbsentNoHomeLeg(t *testing.T) {
 	assertNamespaces(t, got, []string{"acme/phoenix", "acme"})
 }
 
+// --- cascade off-switch (WithCascade(false) / MEMINI_CASCADE=off) -----------
+
+// TestResolveReadSetCascadeDisabled: the server-wide off-switch collapses the
+// default read set to primary alone — ancestors, home, and links are all
+// suppressed, restoring pre-cascade isolation. Subtree still widens the
+// primary leg (it is part of the primary leg, not a cascade leg), and an
+// explicit Namespaces list is unaffected (it replaces the cascade outright).
+func TestResolveReadSetCascadeDisabled(t *testing.T) {
+	st, err := sqlitevec.Open(context.Background(), filepath.Join(t.TempDir(), "readset.db"), readsetTestDims)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	clk := WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() })
+
+	putLink(t, st, "acme/phoenix", "shared/golang", nil)
+	seedNamespace(t, st, "acme/phoenix/api") // a subtree child of primary
+
+	off := New(st, embedtest.New(readsetTestDims), clk, WithCascade(false))
+	on := New(st, embedtest.New(readsetTestDims), clk) // control: cascade default on
+
+	// Control — cascade on pulls the ancestor, home, and link legs.
+	ctrl, err := on.resolveReadSet(context.Background(), readScope{primary: "acme/phoenix", home: "personal/kit"})
+	if err != nil {
+		t.Fatalf("cascade-on resolveReadSet: %v", err)
+	}
+	assertNamespaces(t, ctrl, []string{"acme/phoenix", "acme", "personal/kit", "shared/golang"})
+
+	// Off — the default read set is primary alone.
+	got, err := off.resolveReadSet(context.Background(), readScope{primary: "acme/phoenix", home: "personal/kit"})
+	if err != nil {
+		t.Fatalf("cascade-off resolveReadSet: %v", err)
+	}
+	assertNamespaces(t, got, []string{"acme/phoenix"})
+
+	// Off + subtree — the primary leg still widens to its nested children.
+	gotSub, err := off.resolveReadSet(context.Background(), readScope{primary: "acme/phoenix", subtree: true, home: "personal/kit"})
+	if err != nil {
+		t.Fatalf("cascade-off subtree resolveReadSet: %v", err)
+	}
+	assertNamespaces(t, gotSub, []string{"acme/phoenix", "acme/phoenix/api"})
+
+	// Off + explicit list — unaffected by the switch.
+	gotEx, err := off.resolveReadSet(context.Background(), readScope{primary: "acme/phoenix", explicit: []string{"acme/phoenix", "other"}})
+	if err != nil {
+		t.Fatalf("cascade-off explicit resolveReadSet: %v", err)
+	}
+	assertNamespaces(t, gotEx, []string{"acme/phoenix", "other"})
+}
+
 // TestResolveReadSetHomeEqualsPrimaryNoDup: home pointing at the caller's own
 // primary namespace must not create a second entry, and primary keeps full
 // (nil) tier access rather than being narrowed to durable-only.

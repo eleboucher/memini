@@ -240,8 +240,9 @@ func (s *Service) resolveDefaultReadSet(ctx context.Context, sc readScope) ([]sc
 		entries[i] = scopeEntry{ns: n, origin: OriginPrimary}
 	}
 
-	if sc.bare {
-		// Scope "project": primary (+ subtree) only, no cascade.
+	if sc.bare || !s.cascade {
+		// Scope "project" (bare) or MEMINI_CASCADE=off (cascade disabled
+		// server-wide): primary (+ subtree) only, no ancestor/home/link legs.
 		return entries, nil
 	}
 

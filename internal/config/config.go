@@ -145,9 +145,20 @@ type Config struct {
 
 	// GlobalNamespace and TenantShared (MEMINI_GLOBAL_NAMESPACE /
 	// MEMINI_TENANT_SHARED) are deleted (T12): the old opt-in shared-scope
-	// model is replaced by the always-on ancestor cascade. Both env vars are
-	// now fatal at server boot — see deprecatedVars / FatalDeprecatedVars
-	// below and docs/scopes.md#knobs.
+	// model is replaced by the ancestor cascade. Both env vars are now fatal
+	// at server boot — see deprecatedVars / FatalDeprecatedVars below and
+	// docs/scopes.md#knobs.
+
+	// Cascade (default true) is the server-wide switch for the ancestor/home/
+	// link read cascade. When true, a recall or briefing in namespace N also
+	// reads N's ancestors, the caller's home namespace, and N's stored links —
+	// durable tiers only. Set false to restore pre-cascade isolation: the
+	// default read set becomes N (and its subtree, when asked) only, and Scope
+	// "full"/"everywhere" no longer add the cascade legs. A per-call Scope of
+	// "project" already suppresses the cascade for one request; this is the
+	// global default for operators (or upgraders) who want isolation without
+	// setting Scope on every call. See docs/scopes.md#knobs.
+	Cascade bool `env:"MEMINI_CASCADE" envDefault:"true"`
 
 	// LLM (opt-in; empty BaseURL disables the consolidation pipeline).
 	LLMBaseURL string `env:"MEMINI_LLM_BASE_URL"`
