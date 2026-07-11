@@ -200,14 +200,22 @@ type BriefingOpts struct {
 	Procedures *int
 	Recent     *int
 	// Namespaces, when non-empty, REPLACES the default read set (namespace,
-	// subtree, the tenant-shared namespace, and the global namespace) with exactly
-	// these namespaces — same replace-not-extend semantics as
-	// RecallInput.Namespaces. Each is read with all tiers.
+	// subtree, ancestors, home, and links) with exactly these namespaces —
+	// same replace-not-extend semantics as RecallInput.Namespaces. Each is
+	// read with all tiers.
 	Namespaces []string
 	// Subtree expands the briefing to namespace and every namespace nested
 	// under it, same semantics as RecallInput.Subtree. Ignored when Namespaces
 	// is set.
 	Subtree bool
+	// Home is the caller's personal namespace, merged read-only into the
+	// default read set — durable tiers only. See RecallInput.Home.
+	Home string
+	// Scope selects the read-set shape, same semantics as RecallInput.Scope:
+	// "" or "full" (default), "project" (bare), or "everywhere" (+ subtree).
+	// Ignored when Namespaces is set. An unrecognized value is an
+	// invalid-input error.
+	Scope string
 }
 
 // DefaultPerSection is the briefing cap applied to any section whose dedicated
@@ -233,10 +241,16 @@ func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingO
 	procsN := resolve(opts.Procedures)
 	recentN := resolve(opts.Recent)
 	now := s.now()
+	bare, scopeSubtree, err := parseScope(opts.Scope)
+	if err != nil {
+		return Briefing{}, err
+	}
 	entries, err := s.resolveReadSet(ctx, readScope{
 		primary:  namespace,
+		home:     opts.Home,
 		explicit: opts.Namespaces,
-		subtree:  opts.Subtree,
+		subtree:  opts.Subtree || scopeSubtree,
+		bare:     bare,
 	})
 	if err != nil {
 		return Briefing{}, err
@@ -244,10 +258,10 @@ func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingO
 	b := Briefing{Namespace: namespace}
 	var facts, procs, recent []*memory.Memory
 	// bucket sorts a memory into the briefing's sections. A durable-only entry
-	// (the default read set's global-namespace merge; explicit entries are
-	// never durable-only) contributes semantic/procedural facts only — no
-	// episodic/working — so shared cross-project rules surface without
-	// dragging global chatter into every project.
+	// (an ancestor/home/link cascade leg; explicit entries are never
+	// durable-only) contributes semantic/procedural facts only — no
+	// episodic/working — so shared cross-namespace context surfaces without
+	// dragging ancestor/home/link chatter into every namespace's briefing.
 	bucket := func(m *memory.Memory, durableOnly bool) {
 		switch m.Tier {
 		case memory.TierSemantic:

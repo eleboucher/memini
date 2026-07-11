@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -16,11 +17,12 @@ import (
 )
 
 // TestRecallExplicitNamespacesSpansGiven: recall with explicit Namespaces
-// searches exactly those namespaces, and a plain recall on the same store
-// (no Namespaces set) stays scoped to the request namespace plus global,
-// unaffected by the explicit call.
+// searches exactly those namespaces, replacing the default cascade (here, a
+// configured Home leg) rather than extending it, and a plain recall on the
+// same store (no Namespaces set) stays scoped to the request namespace plus
+// home, unaffected by the explicit call.
 func TestRecallExplicitNamespacesSpansGiven(t *testing.T) {
-	svc := newService(t, service.WithGlobalNamespace("global"))
+	svc := newService(t)
 	ctx := context.Background()
 
 	mk := func(ns, content string) {
@@ -32,11 +34,11 @@ func TestRecallExplicitNamespacesSpansGiven(t *testing.T) {
 	}
 	mk("A", "widget factory uses a builder pattern")
 	mk("B", "widget factory uses a builder pattern too")
-	mk("global", "widget factory global convention")
+	mk("personal/kit", "widget factory home convention")
 
 	explicit, err := svc.Recall(ctx, service.RecallInput{
 		Namespace: "A", Query: "widget factory builder pattern", Limit: 10,
-		Namespaces: []string{"A", "B"},
+		Namespaces: []string{"A", "B"}, Home: "personal/kit",
 	})
 	if err != nil {
 		t.Fatalf("explicit recall: %v", err)
@@ -48,29 +50,35 @@ func TestRecallExplicitNamespacesSpansGiven(t *testing.T) {
 	if !slices.Contains(gotNS, "A") || !slices.Contains(gotNS, "B") {
 		t.Fatalf("explicit recall should span A and B, got namespaces %v", gotNS)
 	}
-	if slices.Contains(gotNS, "global") {
-		t.Fatal("explicit Namespaces must replace the default read set, not extend it with global")
+	if slices.Contains(gotNS, "personal/kit") {
+		t.Fatal("explicit Namespaces must replace the default read set, not extend it with home")
 	}
 
 	plain, err := svc.Recall(ctx, service.RecallInput{
-		Namespace: "A", Query: "widget factory builder pattern", Limit: 10,
+		Namespace: "A", Query: "widget factory builder pattern", Limit: 10, Home: "personal/kit",
 	})
 	if err != nil {
 		t.Fatalf("plain recall: %v", err)
 	}
+	gotPlainNS := make([]string, 0, len(plain))
 	for _, r := range plain {
 		if r.Memory.Namespace == "B" {
 			t.Fatal("plain recall in A must not leak B without explicit Namespaces")
 		}
+		gotPlainNS = append(gotPlainNS, r.Memory.Namespace)
+	}
+	if !slices.Contains(gotPlainNS, "personal/kit") {
+		t.Fatal("plain recall in A should still see the configured home namespace")
 	}
 }
 
-// TestRecallTenantSharedMergesDurableOnly: a tenanted namespace implicitly
-// reads its tenant-shared sibling's (work/_shared) durable memories read-only,
-// exactly like the global namespace, and never its episodic ones — end-to-end
-// through the public Recall() call, no config.
-func TestRecallTenantSharedMergesDurableOnly(t *testing.T) {
-	svc := newService(t, service.WithTenantShared(true))
+// TestRecallAncestorMergesDurableOnly: a nested namespace implicitly reads
+// its ancestor's ("work", the interior node — the design's replacement for
+// the deleted work/_shared convention) durable memories read-only, and never
+// its episodic ones — end-to-end through the public Recall() call, no
+// config required (ancestors are always on).
+func TestRecallAncestorMergesDurableOnly(t *testing.T) {
+	svc := newService(t)
 	ctx := context.Background()
 
 	mk := func(ns, content string, tier memory.Tier) {
@@ -78,8 +86,8 @@ func TestRecallTenantSharedMergesDurableOnly(t *testing.T) {
 			t.Fatalf("remember %q in %q: %v", content, ns, err)
 		}
 	}
-	mk("work/_shared", "shared durable convention: no AI slop filler comments", memory.TierSemantic)
-	mk("work/_shared", "shared episodic chatter about lunch", memory.TierEpisodic)
+	mk("work", "shared durable convention: no AI slop filler comments", memory.TierSemantic)
+	mk("work", "shared episodic chatter about lunch", memory.TierEpisodic)
 	mk("work/memini", "work/memini deploys with helm charts", memory.TierSemantic)
 
 	has := func(rs []store.Scored, content string) bool {
@@ -98,7 +106,7 @@ func TestRecallTenantSharedMergesDurableOnly(t *testing.T) {
 		t.Fatalf("recall: %v", err)
 	}
 	if !has(res, "shared durable convention: no AI slop filler comments") {
-		t.Fatal("tenant-shared durable memory should surface in work/memini recall")
+		t.Fatal("ancestor durable memory should surface in work/memini recall")
 	}
 
 	res, err = svc.Recall(ctx, service.RecallInput{
@@ -108,21 +116,21 @@ func TestRecallTenantSharedMergesDurableOnly(t *testing.T) {
 		t.Fatalf("recall: %v", err)
 	}
 	if has(res, "shared episodic chatter about lunch") {
-		t.Fatal("tenant-shared episodic memory must not surface in another namespace's recall")
+		t.Fatal("ancestor episodic memory must not surface in another namespace's recall")
 	}
 }
 
-// TestRecallTenantSharedNeverCrossesTenants: the design's isolation guarantee —
-// a personal/... recall never sees work/_shared, and vice versa, because the
-// shared merge is derived from the request namespace's own tenant segment.
-func TestRecallTenantSharedNeverCrossesTenants(t *testing.T) {
-	svc := newService(t, service.WithTenantShared(true))
+// TestRecallSiblingsNeverCrossWithoutLink: the design's isolation guarantee —
+// sibling namespaces share nothing unless explicitly linked, because neither
+// is an ancestor of the other and no link connects them.
+func TestRecallSiblingsNeverCrossWithoutLink(t *testing.T) {
+	svc := newService(t)
 	ctx := context.Background()
 
 	if _, err := svc.Remember(ctx, service.RememberInput{
-		Namespace: "work/_shared", Content: "work secret: prod deploy runbook", Tier: memory.TierSemantic,
+		Namespace: "work/teamA", Content: "work secret: prod deploy runbook", Tier: memory.TierSemantic,
 	}); err != nil {
-		t.Fatalf("remember work/_shared: %v", err)
+		t.Fatalf("remember work/teamA: %v", err)
 	}
 
 	res, err := svc.Recall(ctx, service.RecallInput{
@@ -132,8 +140,81 @@ func TestRecallTenantSharedNeverCrossesTenants(t *testing.T) {
 		t.Fatalf("recall: %v", err)
 	}
 	for _, r := range res {
-		if r.Memory.Namespace == "work/_shared" {
-			t.Fatal("personal/blog recall must never surface work/_shared — tenant isolation")
+		if r.Memory.Namespace == "work/teamA" {
+			t.Fatal("personal/blog recall must never surface work/teamA — sibling isolation without a link")
+		}
+	}
+}
+
+// TestRecallScopeProjectExcludesAncestors: Scope "project" reduces the read
+// set to the primary namespace alone, hiding an ancestor durable fact that a
+// default-scope recall would otherwise surface.
+func TestRecallScopeProjectExcludesAncestors(t *testing.T) {
+	svc := newService(t)
+	ctx := context.Background()
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "work", Content: "ancestor rule about deploy pipelines", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember work: %v", err)
+	}
+
+	res, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "work/memini", Query: "ancestor rule deploy pipelines", Limit: 10, Scope: "project",
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	for _, r := range res {
+		if r.Memory.Namespace == "work" {
+			t.Fatal(`Scope "project" must not surface ancestor namespaces`)
+		}
+	}
+}
+
+// TestRecallScopeInvalidErrors: an unrecognized Scope value is a caller
+// input error, not a silent fallback to the default cascade.
+func TestRecallScopeInvalidErrors(t *testing.T) {
+	svc := newService(t)
+	ctx := context.Background()
+	_, err := svc.Recall(ctx, service.RecallInput{Namespace: "A", Query: "q", Scope: "bogus"})
+	if err == nil || !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("error = %v, want ErrInvalidInput for an unrecognized Scope", err)
+	}
+}
+
+// TestRecallExplicitBeatsScopeEverywhere is the end-to-end precedence test
+// for gap G8: explicit Namespaces replaces the cascade outright even when
+// Scope requests the widest possible default (subtree + ancestors + home +
+// links) — explicit always wins.
+func TestRecallExplicitBeatsScopeEverywhere(t *testing.T) {
+	svc := newService(t)
+	ctx := context.Background()
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "work", Content: "ancestor rule about deploy pipelines", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember work: %v", err)
+	}
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "work/memini/agent", Content: "child rule about deploy pipelines", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember child: %v", err)
+	}
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "other", Content: "explicit rule about deploy pipelines", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember other: %v", err)
+	}
+
+	res, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "work/memini", Query: "rule deploy pipelines", Limit: 10,
+		Scope: "everywhere", Namespaces: []string{"other"},
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	for _, r := range res {
+		if r.Memory.Namespace != "other" {
+			t.Fatalf("explicit Namespaces must replace scope %q entirely, got a hit from %q", "everywhere", r.Memory.Namespace)
 		}
 	}
 }

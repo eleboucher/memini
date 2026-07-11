@@ -321,14 +321,6 @@ type Service struct {
 	// candidates (≥2 close neighbours) through the LLM consolidator for a
 	// merge/supersede verdict before the deterministic action fires.
 	splitDedupLLMMerge bool
-	// globalNamespace, when set, is merged read-only into every other
-	// namespace's recall and briefing — durable tiers only. See
-	// WithGlobalNamespace. Empty disables it.
-	globalNamespace string
-	// tenantShared, when true, merges a namespace's <tenant>/_shared sibling
-	// read-only into its recall and briefing — durable tiers only. Off by
-	// default (opt-in). See WithTenantShared.
-	tenantShared bool
 	// fingerprintDedup (default on) reinforces an exact restatement instead of
 	// storing a duplicate; see WithFingerprintDedup.
 	fingerprintDedup bool
@@ -662,22 +654,6 @@ func WithCorroboration(minScore float64) Option {
 // contradictCooldown. The new write is stored unchanged. minScore <= 0 disables.
 func WithContradictionDownrank(minScore float64) Option {
 	return func(s *Service) { s.contradictMinScore = minScore }
-}
-
-// WithGlobalNamespace sets a namespace whose durable (semantic/procedural)
-// memories are merged read-only into every other namespace's recall and
-// briefing — a shared space for cross-project rules. Empty disables it.
-func WithGlobalNamespace(ns string) Option {
-	return func(s *Service) { s.globalNamespace = ns }
-}
-
-// WithTenantShared enables merging a namespace's tenant-shared sibling
-// (<tenant>/_shared, derived from the first path segment) read-only into its
-// recall and briefing — durable tiers only. Off by default (opt-in), so
-// hierarchical-namespace users who don't want cross-project sharing keep
-// isolated namespaces.
-func WithTenantShared(enabled bool) Option {
-	return func(s *Service) { s.tenantShared = enabled }
 }
 
 // MergeHint surfaces a near-duplicate the caller may want to merge into.
@@ -1586,12 +1562,23 @@ type RecallInput struct {
 	// so cross-agent recall never happens unless asked for.
 	Subtree bool
 	// Namespaces, when non-empty, REPLACES the default read set (Namespace +
-	// subtree + global namespace) with exactly these namespaces — no
-	// global/env merge, no subtree of Namespace unless an entry spells it with
-	// "/*". An entry ending in "/*" also includes every namespace nested under
-	// it. Max 16 entries; each is searched with the request's own tier filter
-	// (Tiers).
+	// ancestors + home + links, optionally + subtree) with exactly these
+	// namespaces — no cascade merge, no subtree of Namespace unless an entry
+	// spells it with "/*". Wins over Scope regardless of its value. An entry
+	// ending in "/*" also includes every namespace nested under it. Max 16
+	// entries; each is searched with the request's own tier filter (Tiers).
 	Namespaces []string
+	// Home is the caller's personal namespace (from the X-Memini-Home
+	// header), merged read-only into the default read set — durable tiers
+	// only, like an ancestor. Empty means no home leg.
+	Home string
+	// Scope selects the read-set shape: "" or "full" (default: Namespace +
+	// ancestors + home + links), "project" (Namespace only, no cascade), or
+	// "everywhere" (full + subtree). An unrecognized value is an invalid-input
+	// error. Namespaces, when set, replaces the cascade outright regardless of
+	// Scope (explicit beats scope). Subtree (legacy) still works standalone;
+	// Scope "everywhere" is equivalent to Subtree: true.
+	Scope string
 	// MinScore, when > 0, overrides the server's default recallMinScore for
 	// this call. Lets a caller request a stricter relevance floor per
 	// integration (e.g. the pre-tool-use hook only injects highly-relevant
@@ -1669,6 +1656,11 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		s.metrics.RecallResult("error", tf, "0")
 		return nil, invalidInputf("recall: query is required")
 	}
+	scopeBare, scopeSubtree, err := parseScope(in.Scope)
+	if err != nil {
+		s.metrics.RecallResult("error", tf, "0")
+		return nil, err
+	}
 	k := in.Limit
 	if k <= 0 {
 		k = 10
@@ -1724,8 +1716,10 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	g1.Go(func() error {
 		es, err := s.resolveReadSet(g1ctx, readScope{
 			primary:  in.Namespace,
+			home:     in.Home,
 			explicit: in.Namespaces,
-			subtree:  in.Subtree,
+			subtree:  in.Subtree || scopeSubtree,
+			bare:     scopeBare,
 			reqTiers: in.Tiers,
 		})
 		if err != nil {

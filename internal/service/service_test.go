@@ -887,18 +887,20 @@ func TestHistoryWalksTheSupersessionChain(t *testing.T) {
 	}
 }
 
-// A global namespace merges its durable memories into every other namespace's
-// recall and briefing, but never its episodic ones.
-func TestGlobalNamespaceMergesDurableOnly(t *testing.T) {
-	svc := newService(t, service.WithGlobalNamespace("global"))
+// A caller's home namespace (RecallInput.Home / BriefingOpts.Home) merges its
+// durable memories into every other namespace's recall and briefing, but
+// never its episodic ones — the per-person replacement for the deleted
+// global namespace.
+func TestHomeMergesDurableOnly(t *testing.T) {
+	svc := newService(t)
 	ctx := context.Background()
 	mk := func(ns, content string, tier memory.Tier) {
 		if _, err := svc.Remember(ctx, service.RememberInput{Namespace: ns, Content: content, Tier: tier}); err != nil {
 			t.Fatalf("remember %q: %v", content, err)
 		}
 	}
-	mk("global", "never write AI slop filler comments", memory.TierSemantic)
-	mk("global", "global session chatter about lunch", memory.TierEpisodic) // must not leak
+	mk("personal/kit", "never write AI slop filler comments", memory.TierSemantic)
+	mk("personal/kit", "home session chatter about lunch", memory.TierEpisodic) // must not leak
 	mk("proj", "proj deploys with helm charts", memory.TierSemantic)
 
 	has := func(rs []store.Scored, content string) bool {
@@ -910,26 +912,30 @@ func TestGlobalNamespaceMergesDurableOnly(t *testing.T) {
 		return false
 	}
 
-	// The durable global rule surfaces in another namespace's recall.
-	res, err := svc.Recall(ctx, service.RecallInput{Namespace: "proj", Query: "AI slop filler comments", Limit: 10})
+	// The durable home rule surfaces in another namespace's recall.
+	res, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "proj", Query: "AI slop filler comments", Limit: 10, Home: "personal/kit",
+	})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
 	if !has(res, "never write AI slop filler comments") {
-		t.Fatalf("durable global rule should surface in proj recall")
+		t.Fatalf("durable home rule should surface in proj recall")
 	}
 
-	// The global episodic must not leak — the global leg is durable-tier only.
-	res, err = svc.Recall(ctx, service.RecallInput{Namespace: "proj", Query: "global session chatter lunch", Limit: 10})
+	// The home episodic must not leak — the home leg is durable-tier only.
+	res, err = svc.Recall(ctx, service.RecallInput{
+		Namespace: "proj", Query: "home session chatter lunch", Limit: 10, Home: "personal/kit",
+	})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
-	if has(res, "global session chatter about lunch") {
-		t.Fatal("global episodic must not surface in another namespace's recall")
+	if has(res, "home session chatter about lunch") {
+		t.Fatal("home episodic must not surface in another namespace's recall")
 	}
 
-	// Briefing in proj carries the global rule under facts, never the episodic.
-	b, err := svc.Briefing(ctx, "proj", service.BriefingOpts{})
+	// Briefing in proj carries the home rule under facts, never the episodic.
+	b, err := svc.Briefing(ctx, "proj", service.BriefingOpts{Home: "personal/kit"})
 	if err != nil {
 		t.Fatalf("briefing: %v", err)
 	}
@@ -940,35 +946,35 @@ func TestGlobalNamespaceMergesDurableOnly(t *testing.T) {
 		}
 	}
 	if !factFound {
-		t.Fatal("briefing facts should include the global rule")
+		t.Fatal("briefing facts should include the home rule")
 	}
 	for _, m := range b.Recent {
-		if m.Content == "global session chatter about lunch" {
-			t.Fatal("global episodic must not appear in briefing recent")
+		if m.Content == "home session chatter about lunch" {
+			t.Fatal("home episodic must not appear in briefing recent")
 		}
 	}
 }
 
-// TestGlobalNamespaceSkippedForEpisodicOnlyFilter: a recall whose tier filter
-// admits no durable tier (episodic only) must not fan out to the global
-// namespace at all — durableTiers(episodic-only) is empty, so the global leg
-// would search nothing anyway; resolveReadSet skips adding it.
-func TestGlobalNamespaceSkippedForEpisodicOnlyFilter(t *testing.T) {
-	svc := newService(t, service.WithGlobalNamespace("global"))
+// TestHomeSkippedForEpisodicOnlyFilter: a recall whose tier filter admits no
+// durable tier (episodic only) must not fan out to the home namespace at
+// all — durableTiers(episodic-only) is empty, so the home leg would search
+// nothing anyway; resolveReadSet skips adding it.
+func TestHomeSkippedForEpisodicOnlyFilter(t *testing.T) {
+	svc := newService(t)
 	ctx := context.Background()
 
 	if _, err := svc.Remember(ctx, service.RememberInput{
-		Namespace: "global", Content: "global fact about deploy pipelines", Tier: memory.TierSemantic,
+		Namespace: "personal/kit", Content: "home fact about deploy pipelines", Tier: memory.TierSemantic,
 	}); err != nil {
-		t.Fatalf("remember global semantic: %v", err)
+		t.Fatalf("remember home semantic: %v", err)
 	}
-	// If the skip were missing, this episodic memory in the global namespace
+	// If the skip were missing, this episodic memory in the home namespace
 	// would be reachable via a full-tier fallback merge — it must never be,
-	// regardless of what episodic content the global namespace holds.
+	// regardless of what episodic content the home namespace holds.
 	if _, err := svc.Remember(ctx, service.RememberInput{
-		Namespace: "global", Content: "global episodic note about deploy pipelines", Tier: memory.TierEpisodic,
+		Namespace: "personal/kit", Content: "home episodic note about deploy pipelines", Tier: memory.TierEpisodic,
 	}); err != nil {
-		t.Fatalf("remember global episodic: %v", err)
+		t.Fatalf("remember home episodic: %v", err)
 	}
 	if _, err := svc.Remember(ctx, service.RememberInput{
 		Namespace: "proj", Content: "proj episodic note about deploy pipelines", Tier: memory.TierEpisodic,
@@ -978,14 +984,14 @@ func TestGlobalNamespaceSkippedForEpisodicOnlyFilter(t *testing.T) {
 
 	res, err := svc.Recall(ctx, service.RecallInput{
 		Namespace: "proj", Query: "deploy pipelines", Limit: 10,
-		Tiers: []memory.Tier{memory.TierEpisodic},
+		Tiers: []memory.Tier{memory.TierEpisodic}, Home: "personal/kit",
 	})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
 	for _, r := range res {
-		if r.Memory.Namespace == "global" {
-			t.Fatal("episodic-only tier filter must skip the global namespace entirely")
+		if r.Memory.Namespace == "personal/kit" {
+			t.Fatal("episodic-only tier filter must skip the home namespace entirely")
 		}
 	}
 }

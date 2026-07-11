@@ -259,8 +259,6 @@ func buildServiceStack(
 		service.WithSplitDedupLLMMerge(cfg.SplitDedupLLMMerge),
 		service.WithCorroboration(defaultCorroborateMinScore),
 		service.WithContradictionDownrank(contradictMinScore(cfg)),
-		service.WithGlobalNamespace(cfg.GlobalNamespace),
-		service.WithTenantShared(cfg.TenantShared),
 		service.WithTemporalTargeting(defaultTemporalBoost, search.RegexAnchorExtractor{}),
 		service.WithRecallEmbedTimeout(cfg.RecallEmbedTimeout),
 		service.WithRecallRewriteTimeout(cfg.RecallRewriteTimeout),
