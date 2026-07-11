@@ -520,7 +520,6 @@ export interface components {
             /** @description Human-readable explanation of `degraded`; omitted alongside it on a healthy search. */
             note?: string;
         };
-        /** @description Scope selection (the `scope` argument on the MCP `memory_answer` tool) is currently MCP-only: this REST request has no `scope` field, so `POST /v1/answer` always runs the full default ancestor/home/link cascade and cannot be narrowed to project-only or widened to everywhere per call. */
         AnswerRequest: {
             query: string;
             tiers?: components["schemas"]["Tier"][];
@@ -531,6 +530,12 @@ export interface components {
             metadata?: {
                 [key: string]: string;
             };
+            /**
+             * @description Selects the grounding read-set shape, same vocabulary as the recall `scope`: "full" (default) grounds on the request namespace plus its ancestor/home/link cascade; "project" grounds on the request namespace only (no cascade); "everywhere" is "full" plus the request namespace's subtree. "exact" and "subtree" are deprecated aliases ("exact" → "project", "subtree" → "everywhere"). Any other value is rejected with 400. Reaches parity with the MCP `memory_answer` tool's `scope` argument.
+             * @default full
+             * @enum {string}
+             */
+            scope: "project" | "full" | "everywhere" | "exact" | "subtree";
             /**
              * @description Caps how many recalled memories ground the answer.
              * @default 10

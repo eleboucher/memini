@@ -118,10 +118,11 @@ briefing `Scope:` header), never by constructing a namespace path itself.
   isolation valve; it's an explicit per-call downward reach, never on by
   default.
 
-**Known limitations:** the agentic answer loop's `keyword_search` tool
-searches the primary namespace only — no ancestor/home/link cascade — unlike
-its `search_memory`/`recall_as_of` siblings; tracked as a follow-up, not
-fixed here.
+The agentic answer loop's `keyword_search` tool honors the same
+ancestor/home/link cascade as its `search_memory`/`recall_as_of` siblings
+(keyword-only across the resolved read set, durable tiers on the cascade
+legs), and `POST /v1/answer` accepts the same `scope` argument as the MCP
+`memory_answer` tool — so grounding is at parity across both surfaces.
 
 ## Isolation contract
 

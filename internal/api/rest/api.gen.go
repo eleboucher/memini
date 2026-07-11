@@ -18,6 +18,33 @@ const (
 	BearerAuthScopes bearerAuthContextKey = "bearerAuth.Scopes"
 )
 
+// Defines values for AnswerRequestScope.
+const (
+	AnswerRequestScopeEverywhere AnswerRequestScope = "everywhere"
+	AnswerRequestScopeExact      AnswerRequestScope = "exact"
+	AnswerRequestScopeFull       AnswerRequestScope = "full"
+	AnswerRequestScopeProject    AnswerRequestScope = "project"
+	AnswerRequestScopeSubtree    AnswerRequestScope = "subtree"
+)
+
+// Valid indicates whether the value is a known member of the AnswerRequestScope enum.
+func (e AnswerRequestScope) Valid() bool {
+	switch e {
+	case AnswerRequestScopeEverywhere:
+		return true
+	case AnswerRequestScopeExact:
+		return true
+	case AnswerRequestScopeFull:
+		return true
+	case AnswerRequestScopeProject:
+		return true
+	case AnswerRequestScopeSubtree:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Level.
 const (
 	Deduced  Level = "deduced"
@@ -116,32 +143,32 @@ func (e Tier) Valid() bool {
 
 // Defines values for GetBriefingParamsScope.
 const (
-	GetBriefingParamsScopeEverywhere GetBriefingParamsScope = "everywhere"
-	GetBriefingParamsScopeExact      GetBriefingParamsScope = "exact"
-	GetBriefingParamsScopeFull       GetBriefingParamsScope = "full"
-	GetBriefingParamsScopeProject    GetBriefingParamsScope = "project"
-	GetBriefingParamsScopeSubtree    GetBriefingParamsScope = "subtree"
+	Everywhere GetBriefingParamsScope = "everywhere"
+	Exact      GetBriefingParamsScope = "exact"
+	Full       GetBriefingParamsScope = "full"
+	Project    GetBriefingParamsScope = "project"
+	Subtree    GetBriefingParamsScope = "subtree"
 )
 
 // Valid indicates whether the value is a known member of the GetBriefingParamsScope enum.
 func (e GetBriefingParamsScope) Valid() bool {
 	switch e {
-	case GetBriefingParamsScopeEverywhere:
+	case Everywhere:
 		return true
-	case GetBriefingParamsScopeExact:
+	case Exact:
 		return true
-	case GetBriefingParamsScopeFull:
+	case Full:
 		return true
-	case GetBriefingParamsScopeProject:
+	case Project:
 		return true
-	case GetBriefingParamsScopeSubtree:
+	case Subtree:
 		return true
 	default:
 		return false
 	}
 }
 
-// AnswerRequest Scope selection (the `scope` argument on the MCP `memory_answer` tool) is currently MCP-only: this REST request has no `scope` field, so `POST /v1/answer` always runs the full default ancestor/home/link cascade and cannot be narrowed to project-only or widened to everywhere per call.
+// AnswerRequest defines model for AnswerRequest.
 type AnswerRequest struct {
 	Levels *[]Level `json:"levels,omitempty"`
 
@@ -152,10 +179,16 @@ type AnswerRequest struct {
 	Metadata *map[string]string `json:"metadata,omitempty"`
 	Query    string             `json:"query"`
 
+	// Scope Selects the grounding read-set shape, same vocabulary as the recall `scope`: "full" (default) grounds on the request namespace plus its ancestor/home/link cascade; "project" grounds on the request namespace only (no cascade); "everywhere" is "full" plus the request namespace's subtree. "exact" and "subtree" are deprecated aliases ("exact" → "project", "subtree" → "everywhere"). Any other value is rejected with 400. Reaches parity with the MCP `memory_answer` tool's `scope` argument.
+	Scope *AnswerRequestScope `json:"scope,omitempty"`
+
 	// Tags Ground only on memories carrying every listed tag (AND).
 	Tags  *[]string `json:"tags,omitempty"`
 	Tiers *[]Tier   `json:"tiers,omitempty"`
 }
+
+// AnswerRequestScope Selects the grounding read-set shape, same vocabulary as the recall `scope`: "full" (default) grounds on the request namespace plus its ancestor/home/link cascade; "project" grounds on the request namespace only (no cascade); "everywhere" is "full" plus the request namespace's subtree. "exact" and "subtree" are deprecated aliases ("exact" → "project", "subtree" → "everywhere"). Any other value is rejected with 400. Reaches parity with the MCP `memory_answer` tool's `scope` argument.
+type AnswerRequestScope string
 
 // AnswerResponse defines model for AnswerResponse.
 type AnswerResponse struct {

@@ -178,6 +178,60 @@ func TestAnswerAgenticThreadsScope(t *testing.T) {
 	}
 }
 
+// TestAnswerAgenticKeywordSearchCascade pins that the keyword_search tool
+// honors the ancestor cascade like its search_memory sibling: it reaches an
+// ancestor's durable fact under the default scope, and is confined to the
+// primary namespace under scope=project.
+func TestAnswerAgenticKeywordSearchCascade(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+
+	seed := service.New(st, embedtest.New(dims), service.WithSyncReinforce())
+	if _, err := seed.Remember(ctx, service.RememberInput{
+		Namespace: "acme", Content: "acme uses forgejo for CI", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+
+	newSvc := func() *service.Service {
+		return service.New(st, embedtest.New(dims), service.WithSyncReinforce(),
+			service.WithAnswerer(&fakeToolChat{script: []llm.ChatResult{
+				{Calls: []llm.ToolCall{callOf("keyword_search", `{"query":"forgejo"}`)}},
+				{Text: "I don't know"},
+			}}))
+	}
+	groundedOnAcme := func(res service.AnswerResult) bool {
+		for _, s := range res.Sources {
+			if s.Memory.Namespace == "acme" {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Default (full) scope: keyword_search reaches the ancestor durable fact.
+	res, err := newSvc().Answer(ctx, service.AnswerInput{
+		Namespace: "acme/phoenix", Query: "which CI", Limit: 5, Reasoning: service.ReasoningLow,
+	})
+	if err != nil {
+		t.Fatalf("answer full: %v", err)
+	}
+	if !groundedOnAcme(res) {
+		t.Fatalf("keyword_search should reach ancestor acme via the cascade; sources: %+v", res.Sources)
+	}
+
+	// scope=project: keyword_search is confined to the primary namespace.
+	res, err = newSvc().Answer(ctx, service.AnswerInput{
+		Namespace: "acme/phoenix", Query: "which CI", Limit: 5, Reasoning: service.ReasoningLow, Scope: "project",
+	})
+	if err != nil {
+		t.Fatalf("answer project: %v", err)
+	}
+	if groundedOnAcme(res) {
+		t.Fatalf("keyword_search with scope=project must not reach ancestor acme; sources: %+v", res.Sources)
+	}
+}
+
 // TestAnswerAgenticForcedSynthesis pins the budget: a model that never stops
 // calling tools gets exactly the level's iterations, then one forced
 // text-only synthesis round (ToolNone, no tools).

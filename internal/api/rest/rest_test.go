@@ -1177,6 +1177,22 @@ func TestSearchInvalidScope(t *testing.T) {
 	}
 }
 
+// TestAnswerInvalidScope: POST /v1/answer now accepts a scope argument (parity
+// with MCP memory_answer), so an unrecognized value is rejected up front with
+// 400 rather than silently running the full cascade.
+func TestAnswerInvalidScope(t *testing.T) {
+	h := newServer(t)
+	rec := do(t, h, http.MethodPost, "/v1/answer", "proj", apiKey, map[string]any{
+		"query": "x", "scope": "bogus",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad scope: want 400, got %d (%s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "subtree") {
+		t.Fatalf("error should list the valid scopes, got %s", rec.Body)
+	}
+}
+
 // TestReassignMemory covers the reassign endpoint's semantics: target
 // normalization, 404 for an ID absent from the request namespace, and 400 for
 // a same-namespace or pattern-bearing target.

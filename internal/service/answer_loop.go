@@ -240,7 +240,7 @@ func (s *Service) execAnswerTool(
 		}
 		res, err = s.Recall(ctx, ri)
 	case "keyword_search":
-		res, err = s.store.KeywordSearch(ctx, in.Namespace, args.Query, store.Filter{Now: s.now()}, k)
+		res, err = s.keywordSearchReadSet(ctx, in.Namespace, in.Home, in.Scope, args.Query, k)
 	case "recall_as_of":
 		asOf, perr := time.Parse("2006-01-02", strings.TrimSpace(args.Date))
 		if perr != nil {

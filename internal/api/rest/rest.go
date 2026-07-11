@@ -456,6 +456,16 @@ func (h *Server) AnswerQuestion(w http.ResponseWriter, r *http.Request, _ Answer
 	in.Tags = deref(req.Tags)
 	in.Metadata = deref(req.Metadata)
 	in.Limit = deref(req.Limit)
+	// The generated binding does not enforce the spec enum, so an unknown
+	// scope must be rejected here rather than silently run as full (mirrors
+	// SearchMemories).
+	if req.Scope != nil {
+		if !req.Scope.Valid() {
+			httputil.Error(w, http.StatusBadRequest, invalidScopeMsg(string(*req.Scope)))
+			return
+		}
+		in.Scope = restScopeAlias(string(*req.Scope))
+	}
 	var readset []service.ReadSetEntry
 	in.ReadSet = &readset
 

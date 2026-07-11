@@ -1902,6 +1902,63 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	return results, nil
 }
 
+// keywordSearchReadSet runs keyword-only search across the read-set for
+// primary (primary at its full tier filter, ancestor/home/link legs
+// durable-only) and fuses the per-namespace lists the way Recall does. It
+// backs the agentic answer loop's keyword_search tool so that tool honors the
+// ancestor/home/link cascade like its semantic siblings (search_memory,
+// recall_as_of), rather than seeing the primary namespace alone. scope selects
+// the read-set shape (same vocabulary as RecallInput.Scope). Keyword-only —
+// no query embedding — so it stays the exact-term fallback its callers expect.
+func (s *Service) keywordSearchReadSet(ctx context.Context, primary, home, scope, query string, k int) ([]store.Scored, error) {
+	bare, subtree, err := parseScope(scope)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := s.resolveReadSet(ctx, readScope{
+		primary: primary, home: home, subtree: subtree, bare: bare,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	now := s.now()
+	perNS := make([][]store.Scored, len(entries))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(recallSearchConcurrency)
+	for i, e := range entries {
+		f := store.Filter{Now: now}
+		if e.tiers != nil {
+			f.Tiers = e.tiers // durable-only override for cascade legs
+		}
+		g.Go(func() error {
+			kw, err := s.store.KeywordSearch(gctx, e.ns, query, f, k)
+			if err != nil {
+				return fmt.Errorf("keyword search: %w", err)
+			}
+			perNS[i] = kw
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	var fused []store.Scored
+	switch {
+	case len(perNS) == 1:
+		fused = perNS[0]
+	case s.scoreFusionAlpha >= 0:
+		fused = search.FuseScores(perNS, nil, 0)
+	default:
+		fused = search.Fuse(perNS, 0, search.DefaultRRFK)
+	}
+	if len(fused) > k {
+		fused = fused[:k]
+	}
+	return fused, nil
+}
+
 // fuseLegs fuses the vector and keyword legs of one namespace into a single
 // best-first list (RRF by default, or convex score fusion).
 func (s *Service) fuseLegs(v, kw []store.Scored) []store.Scored {

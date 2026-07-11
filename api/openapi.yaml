@@ -840,12 +840,6 @@ components:
     AnswerRequest:
       type: object
       required: [query]
-      description: >
-        Scope selection (the `scope` argument on the MCP `memory_answer`
-        tool) is currently MCP-only: this REST request has no `scope` field,
-        so `POST /v1/answer` always runs the full default ancestor/home/link
-        cascade and cannot be narrowed to project-only or widened to
-        everywhere per call.
       properties:
         query: { type: string }
         tiers: { type: array, items: { $ref: "#/components/schemas/Tier" } }
@@ -858,6 +852,19 @@ components:
           type: object
           additionalProperties: { type: string }
           description: Ground only on memories whose top-level metadata contains every listed key=value pair (AND).
+        scope:
+          type: string
+          enum: [project, full, everywhere, exact, subtree]
+          default: full
+          description: >
+            Selects the grounding read-set shape, same vocabulary as the recall
+            `scope`: "full" (default) grounds on the request namespace plus its
+            ancestor/home/link cascade; "project" grounds on the request
+            namespace only (no cascade); "everywhere" is "full" plus the
+            request namespace's subtree. "exact" and "subtree" are deprecated
+            aliases ("exact" → "project", "subtree" → "everywhere"). Any other
+            value is rejected with 400. Reaches parity with the MCP
+            `memory_answer` tool's `scope` argument.
         limit:
           type: integer
           default: 10
