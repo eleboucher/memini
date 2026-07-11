@@ -117,6 +117,17 @@ func (s *Store) migrate(ctx context.Context) error {
 		// Key/value store for store-level metadata (e.g. the embedding model the
 		// vectors were produced with — see EmbedModel/SetEmbedModel).
 		`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+		// namespace_links records cross-namespace read links (namespace-cascade
+		// design, see store.LinkStore); tiers is a JSON array of memory.Tier
+		// strings, created_at an RFC3339 string.
+		`CREATE TABLE IF NOT EXISTS namespace_links (
+			src_ns     TEXT NOT NULL,
+			dst_ns     TEXT NOT NULL,
+			tiers      TEXT NOT NULL DEFAULT '[]',
+			note       TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (src_ns, dst_ns)
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -613,8 +624,10 @@ func (s *Store) ListNamespaces(ctx context.Context) ([]string, error) {
 	return out, rows.Err()
 }
 
-// DeleteNamespace removes every memory in a namespace, including vector and FTS
-// index entries. Returns the number of memories deleted.
+// DeleteNamespace removes every memory in a namespace, including vector and
+// FTS index entries, plus any namespace_links row that references the
+// namespace on either side (gap G5: a deleted namespace must not leave a
+// dangling link). Returns the number of memories deleted.
 func (s *Store) DeleteNamespace(ctx context.Context, namespace string) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -622,21 +635,26 @@ func (s *Store) DeleteNamespace(ctx context.Context, namespace string) (int64, e
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Cascade the link table first: this must happen even when the namespace
+	// holds no memories (a namespace can exist purely as a link endpoint).
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM namespace_links WHERE src_ns=? OR dst_ns=?`, namespace, namespace); err != nil {
+		return 0, fmt.Errorf("sqlitevec: delete namespace: cascade links: %w", err)
+	}
+
 	rowIDs, err := collectRowIDs(tx, ctx, namespace)
 	if err != nil {
 		return 0, err
 	}
-	if len(rowIDs) == 0 {
-		return 0, nil
-	}
-
-	for _, q := range []string{
-		`DELETE FROM vec_memories WHERE rowid IN (SELECT rowid FROM memories WHERE namespace=?)`,
-		`DELETE FROM fts_memories WHERE rowid IN (SELECT rowid FROM memories WHERE namespace=?)`,
-		`DELETE FROM memories WHERE namespace=?`,
-	} {
-		if _, err := tx.ExecContext(ctx, q, namespace); err != nil {
-			return 0, err
+	if len(rowIDs) > 0 {
+		for _, q := range []string{
+			`DELETE FROM vec_memories WHERE rowid IN (SELECT rowid FROM memories WHERE namespace=?)`,
+			`DELETE FROM fts_memories WHERE rowid IN (SELECT rowid FROM memories WHERE namespace=?)`,
+			`DELETE FROM memories WHERE namespace=?`,
+		} {
+			if _, err := tx.ExecContext(ctx, q, namespace); err != nil {
+				return 0, err
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -808,6 +826,121 @@ func (s *Store) SetEmbedModel(ctx context.Context, model string) error {
 		return fmt.Errorf("sqlitevec: set embed model: %w", err)
 	}
 	return nil
+}
+
+var _ store.LinkStore = (*Store)(nil)
+
+// PutLink inserts or replaces the link keyed by (l.Src, l.Dst).
+func (s *Store) PutLink(ctx context.Context, l store.NamespaceLink) error {
+	tiersJSON, err := json.Marshal(tiersOrEmpty(l.Tiers))
+	if err != nil {
+		return fmt.Errorf("sqlitevec: marshal link tiers: %w", err)
+	}
+	created := l.CreatedAt
+	if created.IsZero() {
+		created = time.Now().UTC()
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO namespace_links (src_ns, dst_ns, tiers, note, created_at)
+		VALUES (?,?,?,?,?)
+		ON CONFLICT(src_ns,dst_ns) DO UPDATE SET
+			tiers=excluded.tiers, note=excluded.note, created_at=excluded.created_at`,
+		l.Src, l.Dst, string(tiersJSON), l.Note, created.Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("sqlitevec: put link: %w", err)
+	}
+	return nil
+}
+
+// DeleteLink removes the link from src to dst. The bool reports whether a
+// link existed to delete.
+func (s *Store) DeleteLink(ctx context.Context, src, dst string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM namespace_links WHERE src_ns=? AND dst_ns=?`, src, dst)
+	if err != nil {
+		return false, fmt.Errorf("sqlitevec: delete link: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// ListLinks returns the links whose Src is src, ordered by Dst.
+func (s *Store) ListLinks(ctx context.Context, src string) ([]store.NamespaceLink, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT src_ns, dst_ns, tiers, note, created_at FROM namespace_links WHERE src_ns=? ORDER BY dst_ns`, src)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitevec: list links: %w", err)
+	}
+	return scanLinks(rows)
+}
+
+// ListAllLinks returns every link in the store, ordered by Src then Dst.
+func (s *Store) ListAllLinks(ctx context.Context) ([]store.NamespaceLink, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT src_ns, dst_ns, tiers, note, created_at FROM namespace_links ORDER BY src_ns, dst_ns`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitevec: list all links: %w", err)
+	}
+	return scanLinks(rows)
+}
+
+// RenameLinkEndpoints rewrites every link whose src_ns or dst_ns equals from
+// to to instead. A link that collides with an existing row after the rewrite
+// overwrites that row (last-write-wins, mirroring PutLink's upsert
+// semantics). A no-op when from == to.
+func (s *Store) RenameLinkEndpoints(ctx context.Context, from, to string) error {
+	if from == to {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.QueryContext(ctx,
+		`SELECT src_ns, dst_ns, tiers, note, created_at FROM namespace_links WHERE src_ns=? OR dst_ns=?`, from, from)
+	if err != nil {
+		return fmt.Errorf("sqlitevec: rename link endpoints: select: %w", err)
+	}
+	type linkRow struct{ src, dst, tiers, note, created string }
+	var toRename []linkRow
+	for rows.Next() {
+		var r linkRow
+		if err := rows.Scan(&r.src, &r.dst, &r.tiers, &r.note, &r.created); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		toRename = append(toRename, r)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+
+	for _, r := range toRename {
+		newSrc, newDst := r.src, r.dst
+		if newSrc == from {
+			newSrc = to
+		}
+		if newDst == from {
+			newDst = to
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM namespace_links WHERE src_ns=? AND dst_ns=?`, r.src, r.dst); err != nil {
+			return fmt.Errorf("sqlitevec: rename link endpoints: delete: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO namespace_links (src_ns, dst_ns, tiers, note, created_at)
+			VALUES (?,?,?,?,?)
+			ON CONFLICT(src_ns,dst_ns) DO UPDATE SET
+				tiers=excluded.tiers, note=excluded.note, created_at=excluded.created_at`,
+			newSrc, newDst, r.tiers, r.note, r.created); err != nil {
+			return fmt.Errorf("sqlitevec: rename link endpoints: insert: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 // Ping verifies the database is reachable.

@@ -3,6 +3,7 @@ package sqlitevec
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -199,6 +200,49 @@ func tokenize(s string) []string {
 	}
 	flush()
 	return terms
+}
+
+// tiersOrEmpty returns tiers, or an empty slice when tiers is nil, so
+// PutLink persists a JSON array ('[]') rather than a JSON null for an
+// unrestricted (service-default) link.
+func tiersOrEmpty(tiers []memory.Tier) []memory.Tier {
+	if tiers == nil {
+		return []memory.Tier{}
+	}
+	return tiers
+}
+
+// scanLinks reads every remaining row of rows into NamespaceLinks, closing
+// rows before returning.
+func scanLinks(rows *sql.Rows) ([]store.NamespaceLink, error) {
+	defer func() { _ = rows.Close() }()
+	var out []store.NamespaceLink
+	for rows.Next() {
+		l, err := scanLink(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// scanLink scans a single (src_ns, dst_ns, tiers, note, created_at) row.
+func scanLink(s scanner) (store.NamespaceLink, error) {
+	var l store.NamespaceLink
+	var tiersJSON, created string
+	if err := s.Scan(&l.Src, &l.Dst, &tiersJSON, &l.Note, &created); err != nil {
+		return l, err
+	}
+	if err := json.Unmarshal([]byte(tiersJSON), &l.Tiers); err != nil {
+		return l, fmt.Errorf("sqlitevec: unmarshal link tiers: %w", err)
+	}
+	t, err := time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return l, fmt.Errorf("sqlitevec: parse link created_at: %w", err)
+	}
+	l.CreatedAt = t.UTC()
+	return l, nil
 }
 
 func distanceToScore(d float64) float64 { return 1 / (1 + d) }
