@@ -108,6 +108,57 @@ func TestMoveRelocatesNamespace(t *testing.T) {
 	}
 }
 
+// TestMoveRenamesLinkEndpoints verifies gap G5: Move rewrites namespace_links
+// rows on both sides of the moved namespace, since Reassign only relocates
+// memories (links are keyed by namespace, not memory ID).
+func TestMoveRenamesLinkEndpoints(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "m.db"), 4)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	seedPooled(t, st, "old", map[string]string{"x": ""})
+
+	// sqlitevec.Store implements store.LinkStore directly (asserted by var _
+	// store.LinkStore = (*Store)(nil) in the package), so its concrete methods
+	// are callable without a type assertion here.
+	now := time.Now().UTC()
+	if err := st.PutLink(ctx, store.NamespaceLink{Src: "old", Dst: "other", CreatedAt: now}); err != nil {
+		t.Fatalf("put link (old as src): %v", err)
+	}
+	if err := st.PutLink(ctx, store.NamespaceLink{Src: "other", Dst: "old", CreatedAt: now}); err != nil {
+		t.Fatalf("put link (old as dst): %v", err)
+	}
+
+	if _, err := maintenance.Move(ctx, st, "old", "new", false); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+
+	newLinks, err := st.ListLinks(ctx, "new")
+	if err != nil {
+		t.Fatalf("list links (new): %v", err)
+	}
+	if len(newLinks) != 1 || newLinks[0].Dst != "other" {
+		t.Fatalf("move did not rewrite the src side of the link: %+v", newLinks)
+	}
+	otherLinks, err := st.ListLinks(ctx, "other")
+	if err != nil {
+		t.Fatalf("list links (other): %v", err)
+	}
+	if len(otherLinks) != 1 || otherLinks[0].Dst != "new" {
+		t.Fatalf("move did not rewrite the dst side of the link: %+v", otherLinks)
+	}
+	oldLinks, err := st.ListLinks(ctx, "old")
+	if err != nil {
+		t.Fatalf("list links (old, after move): %v", err)
+	}
+	if len(oldLinks) != 0 {
+		t.Fatalf("old namespace still has links after move: %v", oldLinks)
+	}
+}
+
 func TestSplitSkipsInvalidTargets(t *testing.T) {
 	ctx := context.Background()
 	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "m.db"), 4)

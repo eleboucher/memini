@@ -143,20 +143,30 @@ func testVectorlessRow(t *testing.T, st store.Store, dims int) {
 // round-trip (including tiers and note), upsert-overwrites on a (src,dst)
 // conflict, DeleteLink's existed-bool return, ListLinks/ListAllLinks scoping,
 // the DeleteNamespace cascade (gap G5), and RenameLinkEndpoints rewriting both
-// sides of a link. Stores that do not implement LinkStore skip.
+// sides of a link. Stores that do not implement LinkStore skip. Split into
+// sub-tests (rather than one long function) to keep each check focused.
 func testNamespaceLinks(t *testing.T, st store.Store, dims int) {
-	ctx := context.Background()
+	_ = dims // links carry no embedding; kept for signature parity with the other subtests
 	ls, ok := st.(store.LinkStore)
 	if !ok {
 		t.Skip("store does not implement store.LinkStore")
 	}
 	ns := t.Name()
-	src := ns + "-src"
-	dst := ns + "-dst"
-	other := ns + "-other"
+	t.Run("PutListRoundTripAndUpsert", func(t *testing.T) { testLinkRoundTripAndUpsert(t, ls, ns) })
+	t.Run("ScopingAndDelete", func(t *testing.T) { testLinkScopingAndDelete(t, ls, ns) })
+	t.Run("DeleteNamespaceCascade", func(t *testing.T) { testLinkDeleteNamespaceCascade(t, st, ls, ns) })
+	t.Run("RenameEndpoints", func(t *testing.T) { testLinkRenameEndpoints(t, ls, ns) })
+}
+
+// testLinkRoundTripAndUpsert covers PutLink/ListLinks round-tripping every
+// field (including tiers and note), and that a second PutLink for the same
+// (src,dst) overwrites in place rather than duplicating the row.
+func testLinkRoundTripAndUpsert(t *testing.T, ls store.LinkStore, ns string) {
+	ctx := context.Background()
+	src := ns + "-rt-src"
+	dst := ns + "-rt-dst"
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
-	// Put/list round-trip, including tiers and note.
 	link := store.NamespaceLink{
 		Src: src, Dst: dst,
 		Tiers:     []memory.Tier{memory.TierSemantic, memory.TierProcedural},
@@ -204,19 +214,29 @@ func testNamespaceLinks(t *testing.T, st store.Store, dims int) {
 	if got[0].Note != "updated note" || !slices.Equal(got[0].Tiers, overwrite.Tiers) {
 		t.Fatalf("overwrite not applied: %+v", got[0])
 	}
+}
 
-	// A second, distinct link from src, plus one from another source, to
-	// exercise ListLinks scoping and ListAllLinks.
-	link2 := store.NamespaceLink{Src: src, Dst: other, CreatedAt: now}
-	if err := ls.PutLink(ctx, link2); err != nil {
+// testLinkScopingAndDelete covers ListLinks scoping to a single Src,
+// ListAllLinks returning everything, an unknown Src yielding an empty (not
+// error) list, and DeleteLink's existed-bool return.
+func testLinkScopingAndDelete(t *testing.T, ls store.LinkStore, ns string) {
+	ctx := context.Background()
+	src := ns + "-sc-src"
+	dst := ns + "-sc-dst"
+	other := ns + "-sc-other"
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	if err := ls.PutLink(ctx, store.NamespaceLink{Src: src, Dst: dst, CreatedAt: now}); err != nil {
+		t.Fatalf("put link1: %v", err)
+	}
+	if err := ls.PutLink(ctx, store.NamespaceLink{Src: src, Dst: other, CreatedAt: now}); err != nil {
 		t.Fatalf("put link2: %v", err)
 	}
-	link3 := store.NamespaceLink{Src: other, Dst: dst, CreatedAt: now}
-	if err := ls.PutLink(ctx, link3); err != nil {
+	if err := ls.PutLink(ctx, store.NamespaceLink{Src: other, Dst: dst, CreatedAt: now}); err != nil {
 		t.Fatalf("put link3: %v", err)
 	}
 
-	got, err = ls.ListLinks(ctx, src)
+	got, err := ls.ListLinks(ctx, src)
 	if err != nil {
 		t.Fatalf("list links (src): %v", err)
 	}
@@ -256,9 +276,13 @@ func testNamespaceLinks(t *testing.T, st store.Store, dims int) {
 	if existed {
 		t.Fatalf("delete link (again): existed = true, want false")
 	}
+}
 
-	// --- DeleteNamespace cascade (gap G5): links referencing the deleted
-	// namespace on either side must be dropped too.
+// testLinkDeleteNamespaceCascade covers gap G5: DeleteNamespace must also
+// drop namespace_links rows referencing the namespace on either side.
+func testLinkDeleteNamespaceCascade(t *testing.T, st store.Store, ls store.LinkStore, ns string) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
 	cascSrc := ns + "-casc-src"
 	cascDst := ns + "-casc-dst"
 	if err := ls.PutLink(ctx, store.NamespaceLink{Src: cascSrc, Dst: cascDst, CreatedAt: now}); err != nil {
@@ -279,8 +303,14 @@ func testNamespaceLinks(t *testing.T, st store.Store, dims int) {
 			t.Fatalf("link referencing deleted namespace %q survived: %+v", cascSrc, l)
 		}
 	}
+}
 
-	// --- RenameLinkEndpoints (gap G5): rewrites both the src and dst sides. ---
+// testLinkRenameEndpoints covers gap G5: RenameLinkEndpoints rewrites a
+// namespace wherever it appears, as either Src or Dst, and is a no-op when
+// from == to.
+func testLinkRenameEndpoints(t *testing.T, ls store.LinkStore, ns string) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
 	from := ns + "-rename-from"
 	to := ns + "-rename-to"
 	third := ns + "-rename-third"
