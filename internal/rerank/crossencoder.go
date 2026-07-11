@@ -87,6 +87,11 @@ type rerankResponse struct {
 		Index          int     `json:"index"`
 		RelevanceScore float64 `json:"relevance_score"`
 	} `json:"results"`
+	// Error carries a server-reported error delivered with a 200 status. Some
+	// servers (e.g. LM Studio) answer an unimplemented /rerank route with
+	// HTTP 200 and {"error": "..."} rather than a 4xx, which would otherwise be
+	// misreported as "empty results".
+	Error string `json:"error"`
 }
 
 // Rerank scores every candidate against the query and returns candidate IDs
@@ -227,6 +232,9 @@ func (c *CrossEncoder) scoreBatch(ctx context.Context, query string, candidates 
 	var rr rerankResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxRerankBodyBytes)).Decode(&rr); err != nil {
 		return nil, fmt.Errorf("rerank: decode response: %w", err)
+	}
+	if rr.Error != "" {
+		return nil, fmt.Errorf("rerank: server returned 200 with error: %s", rr.Error)
 	}
 	if len(rr.Results) == 0 {
 		return nil, fmt.Errorf("rerank: empty results for %d documents", len(docs))

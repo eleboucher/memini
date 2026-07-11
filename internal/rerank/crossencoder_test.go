@@ -107,6 +107,27 @@ func TestCrossEncoderErrorsOnBadStatus(t *testing.T) {
 	}
 }
 
+// TestCrossEncoderErrorsOn200WithErrorBody covers servers that answer an
+// unimplemented /rerank route with HTTP 200 and {"error": "..."} (e.g. LM
+// Studio) — the status check passes, so without inspecting the error field this
+// would be misreported as "empty results" and silently degrade to composite order.
+func TestCrossEncoderErrorsOn200WithErrorBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"Unexpected endpoint or method. (POST /v1/rerank)"}`))
+	}))
+	defer srv.Close()
+
+	ce, _ := New(Config{BaseURL: srv.URL})
+	_, err := ce.Rerank(context.Background(), "q", []Candidate{{ID: "a"}, {ID: "b"}})
+	if err == nil {
+		t.Fatal("want error on 200-with-error-body, got nil")
+	}
+	if !strings.Contains(err.Error(), "Unexpected endpoint") {
+		t.Fatalf("error should surface the server message, got: %v", err)
+	}
+}
+
 func TestCrossEncoderBatchesAndMergesByScore(t *testing.T) {
 	var got [][]string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
