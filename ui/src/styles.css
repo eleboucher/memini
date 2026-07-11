@@ -1281,6 +1281,54 @@ pre.json {
   width: 14px;
 }
 
+/* Indented namespace tree inside the menu popover (NamespaceSelect). Each
+   row is a chevron (or a spacer, for leaves) plus the option/group label; depth
+   is expressed as inline padding-left on .tree-row so indentation compounds
+   naturally at any nesting level. */
+.menu.tree {
+  min-width: 260px;
+}
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.tree-row .opt {
+  flex: 1;
+  min-width: 0;
+}
+.tree-chevron {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--muted);
+  cursor: pointer;
+  transition: transform 0.15s var(--ease);
+}
+.tree-chevron svg {
+  width: 12px;
+  height: 12px;
+}
+.tree-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+.tree-spacer {
+  flex: none;
+  width: 20px;
+}
+/* A synthetic path-prefix group (no memories of its own) — not selectable, so
+   it's dimmed and doesn't take the hover/active treatment .opt buttons get. */
+.opt-group {
+  color: var(--faint);
+  cursor: default;
+}
+
 .status-dot {
   width: 8px;
   height: 8px;
