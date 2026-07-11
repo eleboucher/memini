@@ -73,6 +73,15 @@ test("namespace falls back to the default when nothing resolves", () => {
   assert.equal(resolveConfig({}, undefined, "").namespace, "opencode");
 });
 
+test("home resolves from MEMINI_HOME env; option wins over env; unset -> undefined", () => {
+  assert.equal(resolveConfig({}, undefined, "/r").home, undefined);
+  assert.equal(resolveConfig({ MEMINI_HOME: "personal/acme" }, undefined, "/r").home, "personal/acme");
+  assert.equal(
+    resolveConfig({ MEMINI_HOME: "personal/acme" }, { home: "personal/other" }, "/r").home,
+    "personal/other",
+  );
+});
+
 test("tenant config prefixes the namespace and derives {project} from git", async () => {
   const { execSync } = await import("node:child_process");
   const parent = mkdtempSync(join(tmpdir(), "memini-tenant-"));
@@ -508,6 +517,40 @@ test("chat.message never rejects, even when the memini call throws", async () =>
         { parts: [{ type: "text", text: "q", sessionID: "s1", messageID: "m1" }] },
       ),
     );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("requests carry X-Memini-Home when configured, omit it otherwise", async () => {
+  const requests = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), headers: init.headers });
+    return { ok: true, async json() { return { results: [] }; }, async text() { return ""; } };
+  };
+  try {
+    const withHome = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080", home: "personal/acme" },
+    );
+    await withHome["chat.message"](
+      { sessionID: "s1" },
+      { parts: [{ type: "text", text: "hello", sessionID: "s1", messageID: "m1" }] },
+    );
+
+    const withoutHome = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080" },
+    );
+    await withoutHome["chat.message"](
+      { sessionID: "s2" },
+      { parts: [{ type: "text", text: "hello again", sessionID: "s2", messageID: "m2" }] },
+    );
+
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].headers["X-Memini-Home"], "personal/acme");
+    assert.equal(requests[1].headers["X-Memini-Home"], undefined);
   } finally {
     globalThis.fetch = realFetch;
   }

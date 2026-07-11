@@ -165,12 +165,19 @@ export function resolveConfig(env, options, worktree) {
     }
     return DEFAULT_RECALL_LIMIT;
   })();
+  // home: the caller's personal namespace, sent as X-Memini-Home. Same
+  // env-only resolution style as namespace's MEMINI_NAMESPACE (option wins
+  // over env), but no config-file/derivation fallback — unset means "no home
+  // leg", not a guess.
+  const homeRaw = o.home !== undefined ? o.home : e.MEMINI_HOME;
+  const home = homeRaw && String(homeRaw).trim() ? String(homeRaw).trim() : undefined;
   return {
     base_url: o.base_url || e.MEMINI_BASE_URL || e.MEMINI_URL || DEFAULT_BASE_URL,
     // namespace is already resolved above (explicit raw-trimmed, or a
     // per-segment-sanitized config/derived value); re-sanitizing here would
     // flatten tenant "/" separators.
     namespace: namespace || DEFAULT_NAMESPACE,
+    home,
     recall: o.recall !== undefined ? o.recall !== false : envBool(e.MEMINI_RECALL, true),
     capture: o.capture !== undefined ? o.capture !== false : envBool(e.MEMINI_CAPTURE, true),
     recall_limit,
@@ -387,6 +394,7 @@ function createClient(cfg, log) {
     guardPlaintextBearerAuth(baseUrl, secret);
     const headers = { "Content-Type": "application/json", "X-Memini-Namespace": cfg.namespace };
     if (secret) headers.Authorization = `Bearer ${secret}`;
+    if (cfg.home) headers["X-Memini-Home"] = cfg.home;
     try {
       const res = await fetch(`${baseUrl}${path}`, {
         method: "POST",
