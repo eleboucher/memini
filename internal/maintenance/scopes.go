@@ -108,6 +108,14 @@ func MigrateScopes(ctx context.Context, st store.Store, opts ScopesOptions) (Sco
 		}
 		merge, err := mergeShared(ctx, st, ns, parent, opts)
 		if err != nil {
+			// Record the merge even on error when data actually moved: Move
+			// has committed by the time the dedup pass can fail, so the
+			// partial report must carry what moved (same contract as Move's
+			// own rep.Moved on a link-rename failure) rather than dropping
+			// a completed merge.
+			if merge.Moved > 0 {
+				rep.Merges = append(rep.Merges, merge)
+			}
 			return rep, err
 		}
 		rep.Merges = append(rep.Merges, merge)

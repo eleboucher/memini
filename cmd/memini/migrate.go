@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"sort"
@@ -74,13 +75,27 @@ func runMigrateScopes(cmd *cobra.Command, _ []string) error {
 			}
 			opts.Embedder = embedder
 		}
-		rep, err := maintenance.MigrateScopes(cmd.Context(), st, opts)
-		if err != nil {
-			return err
-		}
-		printScopesReport(cmd.OutOrStdout(), rep)
-		return nil
+		return migrateScopesOn(cmd.Context(), cmd.OutOrStdout(), st, opts)
 	})
+}
+
+// migrateScopesOn runs MigrateScopes against st and prints the report. On a
+// mid-migration error the partial report still prints first — merges already
+// committed by then must reach the operator (an aborted 3rd of 5 merges would
+// otherwise leave no record of the 2 that completed) — then the error is
+// returned for the usual non-zero exit.
+func migrateScopesOn(ctx context.Context, out io.Writer, st store.Store, opts maintenance.ScopesOptions) error {
+	rep, err := maintenance.MigrateScopes(ctx, st, opts)
+	if err != nil {
+		if len(rep.Merges) > 0 || len(rep.BareShared) > 0 || rep.GlobalNamespaceEnv != "" {
+			printScopesReport(out, rep)
+		}
+		fmt.Fprintf(out, "migration stopped early: the merges above (if any) have committed; "+ //nolint:errcheck
+			"fix the error and re-run to continue (the command is idempotent)\n")
+		return err
+	}
+	printScopesReport(out, rep)
+	return nil
 }
 
 func printScopesReport(out io.Writer, rep maintenance.ScopesReport) {

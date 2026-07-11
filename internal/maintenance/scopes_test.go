@@ -98,6 +98,81 @@ func TestMigrateScopesMergesSharedIntoParent(t *testing.T) {
 	}
 }
 
+// TestMigrateScopesSiblingShared pins the no-interaction property when a
+// tenant and one of its children both carry a _shared namespace in the same
+// run: a/_shared merges into a and a/b/_shared merges into a/b, with no
+// cross-contamination between the two targets.
+func TestMigrateScopesSiblingShared(t *testing.T) {
+	ctx := context.Background()
+	st, emb := openScopesStore(t)
+
+	putScoped(t, st, emb, "a/_shared", "as1", "tenant shared fact", 0.5)
+	putScoped(t, st, emb, "a/b/_shared", "abs1", "project shared fact", 0.5)
+	putScoped(t, st, emb, "a", "a1", "tenant fact", 0.5)
+	putScoped(t, st, emb, "a/b", "ab1", "project fact", 0.5)
+
+	rep, err := maintenance.MigrateScopes(ctx, st, maintenance.ScopesOptions{Embedder: emb})
+	if err != nil {
+		t.Fatalf("migrate scopes: %v", err)
+	}
+	if len(rep.Merges) != 2 {
+		t.Fatalf("merges=%d, want 2; report=%+v", len(rep.Merges), rep)
+	}
+	byFrom := map[string]maintenance.ScopeMerge{}
+	for _, m := range rep.Merges {
+		byFrom[m.From] = m
+	}
+	if m := byFrom["a/_shared"]; m.To != "a" || m.Moved != 1 {
+		t.Errorf("a/_shared merge = %+v, want To=a Moved=1", m)
+	}
+	if m := byFrom["a/b/_shared"]; m.To != "a/b" || m.Moved != 1 {
+		t.Errorf("a/b/_shared merge = %+v, want To=a/b Moved=1", m)
+	}
+
+	// Each target got exactly its own _shared sibling: nothing from the child
+	// merged up into the tenant or vice versa.
+	if got := listAllNS(t, st, "a"); len(got) != 2 {
+		t.Errorf("a has %d memories, want 2 (own + a/_shared only)", len(got))
+	}
+	if got := listAllNS(t, st, "a/b"); len(got) != 2 {
+		t.Errorf("a/b has %d memories, want 2 (own + a/b/_shared only)", len(got))
+	}
+	if _, err := st.Get(ctx, "a", "abs1"); err == nil {
+		t.Error("a/b/_shared memory leaked into a")
+	}
+	if _, err := st.Get(ctx, "a/b", "as1"); err == nil {
+		t.Error("a/_shared memory leaked into a/b")
+	}
+}
+
+// TestMigrateScopesReportsMergeWhenDedupFails pins the partial-failure
+// contract: Move has committed by the time the dedup pass can fail, so the
+// returned report must still carry the completed merge (Moved > 0) alongside
+// the error — same contract as Move's own rep.Moved on a link-rename failure.
+func TestMigrateScopesReportsMergeWhenDedupFails(t *testing.T) {
+	ctx := context.Background()
+	st, emb := openScopesStore(t)
+
+	// Two memories in the target after the merge (>= MinClusterSize), so the
+	// dedup pass embeds them — and the failEmbedder trips on the marker.
+	putScoped(t, st, emb, "acme", "t1", "tenant marker fact", 0.5)
+	putScoped(t, st, emb, "acme/_shared", "s1", "shared marker fact", 0.5)
+
+	rep, err := maintenance.MigrateScopes(ctx, st, maintenance.ScopesOptions{
+		Embedder: failEmbedder{inner: emb, marker: "marker"},
+	})
+	if err == nil {
+		t.Fatal("want the dedup failure to propagate, got nil")
+	}
+	if len(rep.Merges) != 1 || rep.Merges[0].From != "acme/_shared" || rep.Merges[0].Moved != 1 {
+		t.Fatalf("partial report merges = %+v, want the committed acme/_shared merge (Moved=1)", rep.Merges)
+	}
+	// The move really did commit despite the dedup error.
+	if got := listAllNS(t, st, "acme"); len(got) != 2 {
+		t.Errorf("acme has %d memories, want 2 (the merge committed before dedup failed)", len(got))
+	}
+}
+
 // TestMigrateScopesRepointsLinks pins that the merge goes through
 // maintenance.Move, which already rewrites namespace_links endpoints (gap
 // G5) — a link touching the old _shared namespace must point at the merged
