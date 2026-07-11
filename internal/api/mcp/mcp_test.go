@@ -2476,3 +2476,107 @@ func TestAnswerAgenticTierNarrowedSourceKeepsFromLabelViaMCP(t *testing.T) {
 			out.Sources[0].From, "acme/phoenix")
 	}
 }
+
+// TestBriefingScopeHeaderAndChildrenViaMCP: the MCP briefing result carries
+// the scope header and a compact child rollup — titles only (summary if
+// present, else the first ~60 runes of content with an ellipsis), never full
+// memory objects, because the briefing is LLM-facing context and token size
+// matters.
+func TestBriefingScopeHeaderAndChildrenViaMCP(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	remember := func(args map[string]any) {
+		t.Helper()
+		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{Name: "memory_remember", Arguments: args}); err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+	}
+	remember(map[string]any{"namespace": "acme", "content": "acme root fact", "tier": "semantic"})
+	longContent := strings.Repeat("phoenix design decision ", 5) // 120 chars, no summary
+	remember(map[string]any{"namespace": "acme/phoenix", "content": longContent, "tier": "semantic", "tags": []string{"pinned"}})
+	remember(map[string]any{"namespace": "acme/phoenix", "content": "phoenix deploys with helm", "tier": "semantic", "summary": "phoenix helm summary"})
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_briefing", Arguments: map[string]any{"namespace": "acme"},
+	})
+	if err != nil {
+		t.Fatalf("briefing: %v", err)
+	}
+	var b struct {
+		ScopeHeader string `json:"scope_header"`
+		Children    []struct {
+			Namespace string   `json:"namespace"`
+			Total     int      `json:"total"`
+			Pinned    []string `json:"pinned"`
+			Recent    []string `json:"recent"`
+		} `json:"children"`
+		ChildrenNote string `json:"children_note"`
+	}
+	structured(t, res, &b)
+
+	if b.ScopeHeader != "Scope: acme" {
+		t.Errorf("scope_header = %q, want %q", b.ScopeHeader, "Scope: acme")
+	}
+	if len(b.Children) != 1 {
+		t.Fatalf("children = %+v, want exactly 1 (acme/phoenix)", b.Children)
+	}
+	c := b.Children[0]
+	if c.Namespace != "acme/phoenix" || c.Total != 2 {
+		t.Errorf("child = %s total=%d, want acme/phoenix total=2", c.Namespace, c.Total)
+	}
+	wantTitle := string([]rune(longContent)[:60]) + "…"
+	if len(c.Pinned) != 1 || c.Pinned[0] != wantTitle {
+		t.Errorf("child pinned = %q, want [%q] (title truncated to ~60 runes)", c.Pinned, wantTitle)
+	}
+	foundSummary := false
+	for _, title := range c.Recent {
+		if title == "phoenix helm summary" {
+			foundSummary = true
+		}
+		if len([]rune(title)) > 61 {
+			t.Errorf("recent title %q exceeds the 60-rune cap", title)
+		}
+	}
+	if len(c.Recent) != 2 || !foundSummary {
+		t.Errorf("child recent = %q, want 2 titles including the summary-derived one", c.Recent)
+	}
+	if b.ChildrenNote != "" {
+		t.Errorf("children_note = %q, want empty when nothing was truncated", b.ChildrenNote)
+	}
+}
+
+// TestBriefingChildrenTruncationNoteViaMCP: over the 10-child cap the MCP
+// render appends an "… and N more" note instead of ballooning the result.
+func TestBriefingChildrenTruncationNoteViaMCP(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	for i := range 12 {
+		ns := fmt.Sprintf("acme/team%02d", i)
+		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+			Name:      "memory_remember",
+			Arguments: map[string]any{"namespace": ns, "content": "fact for " + ns, "tier": "semantic"},
+		}); err != nil {
+			t.Fatalf("remember %s: %v", ns, err)
+		}
+	}
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_briefing", Arguments: map[string]any{"namespace": "acme"},
+	})
+	if err != nil {
+		t.Fatalf("briefing: %v", err)
+	}
+	var b struct {
+		Children     []struct{ Namespace string } `json:"children"`
+		ChildrenNote string                       `json:"children_note"`
+	}
+	structured(t, res, &b)
+	if len(b.Children) != 10 {
+		t.Fatalf("children = %d, want 10 (capped)", len(b.Children))
+	}
+	if b.ChildrenNote != "… and 2 more child namespaces" {
+		t.Fatalf("children_note = %q, want %q", b.ChildrenNote, "… and 2 more child namespaces")
+	}
+}

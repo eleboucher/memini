@@ -634,11 +634,64 @@ type briefingArgs struct {
 }
 
 type briefingResult struct {
-	Namespace  string       `json:"namespace"`
-	Pinned     []recallItem `json:"pinned,omitempty"`
-	Facts      []recallItem `json:"facts,omitempty"`
-	Procedures []recallItem `json:"procedures,omitempty"`
-	Recent     []recallItem `json:"recent,omitempty"`
+	Namespace string `json:"namespace"`
+	// ScopeHeader is the service's one-line read-set summary (see
+	// service.Briefing.ScopeHeader), e.g.
+	// "Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2), +1 link".
+	ScopeHeader string       `json:"scope_header,omitempty"`
+	Pinned      []recallItem `json:"pinned,omitempty"`
+	Facts       []recallItem `json:"facts,omitempty"`
+	Procedures  []recallItem `json:"procedures,omitempty"`
+	Recent      []recallItem `json:"recent,omitempty"`
+	// Children is the direct-child rollup, rendered compactly — titles only,
+	// never full memory objects: the briefing is LLM-facing context, so
+	// token size matters (REST carries the full objects for the admin UI).
+	Children []briefingChild `json:"children,omitempty"`
+	// ChildrenNote reports children omitted by the service's 10-child cap
+	// ("… and N more child namespaces"); empty when nothing was truncated.
+	ChildrenNote string `json:"children_note,omitempty"`
+}
+
+// briefingChild is the MCP wire shape of one child rollup entry: namespace,
+// all-tier live count, and compact pinned/recent display titles.
+type briefingChild struct {
+	Namespace string   `json:"namespace"`
+	Total     int      `json:"total"`
+	Pinned    []string `json:"pinned,omitempty"`
+	Recent    []string `json:"recent,omitempty"`
+}
+
+// childTitleMax is the rune limit for a child-rollup display title when the
+// memory has no summary — shorter than conciseContentMax because the rollup
+// is an index of what's under a namespace, not the content itself.
+const childTitleMax = 60
+
+// childTitle derives a child rollup entry's compact display title: the
+// summary when present, else the first childTitleMax runes of content with an
+// ellipsis (rune-based like conciseContent, so multi-byte content is neither
+// mis-truncated nor spuriously suffixed).
+func childTitle(m *memory.Memory) string {
+	if m.Summary != "" {
+		return m.Summary
+	}
+	runes := []rune(m.Content)
+	if len(runes) <= childTitleMax {
+		return m.Content
+	}
+	return string(runes[:childTitleMax]) + "…"
+}
+
+// childTitles maps a rollup highlight set to display titles, nil-for-empty so
+// the JSON field is omitted.
+func childTitles(mems []*memory.Memory) []string {
+	if len(mems) == 0 {
+		return nil
+	}
+	out := make([]string, len(mems))
+	for i, m := range mems {
+		out[i] = childTitle(m)
+	}
+	return out
 }
 
 func briefingItems(mems []*memory.Memory, origins map[string]string) []recallItem {
@@ -693,13 +746,34 @@ func (t *tools) briefing(ctx context.Context, _ *mcpsdk.CallToolRequest, in brie
 		return nil, briefingResult{}, err
 	}
 	origins := originMapFrom(readset)
-	return nil, briefingResult{
-		Namespace:  b.Namespace,
-		Pinned:     briefingItems(b.Pinned, origins),
-		Facts:      briefingItems(b.Facts, origins),
-		Procedures: briefingItems(b.Procedures, origins),
-		Recent:     briefingItems(b.Recent, origins),
-	}, nil
+	out := briefingResult{
+		Namespace:   b.Namespace,
+		ScopeHeader: b.ScopeHeader,
+		Pinned:      briefingItems(b.Pinned, origins),
+		Facts:       briefingItems(b.Facts, origins),
+		Procedures:  briefingItems(b.Procedures, origins),
+		Recent:      briefingItems(b.Recent, origins),
+	}
+	if len(b.Children) > 0 {
+		out.Children = make([]briefingChild, len(b.Children))
+		for i, c := range b.Children {
+			out.Children[i] = briefingChild{
+				Namespace: c.NS,
+				Total:     c.Total,
+				Pinned:    childTitles(c.Pinned),
+				Recent:    childTitles(c.Recent),
+			}
+		}
+	}
+	if n := b.ChildrenTruncated; n > 0 {
+		// The T6 wire shape has no truncated-count field, so the cap is
+		// surfaced here at the render layer as a note.
+		out.ChildrenNote = fmt.Sprintf("… and %d more child namespace", n)
+		if n > 1 {
+			out.ChildrenNote += "s"
+		}
+	}
+	return nil, out, nil
 }
 
 type answerArgs struct {
