@@ -189,7 +189,8 @@ change (CLI or REST/UI) — the per-request credential lookup
 The lag that exists is narrower: whether auth is enforced **at all** in
 dev/bootstrap mode depends on a cached "does the `api_keys` table hold any
 row" reading, refreshed at most every **10 seconds**
-(`apiauth.Config`'s `keyTableCacheTTL`). REST/UI mutations invalidate this
+(`apiauth`'s `keyTableCacheTTL` package-level const, consulted by
+`Config.tableNonEmpty` — not a `Config` field). REST/UI mutations invalidate this
 cache immediately after a write (`apiauth.Config.Invalidate()`), so creating
 the first key (or deleting the last one) through the running server itself
 takes effect right away. The gap is the **CLI-vs-server process** case:
