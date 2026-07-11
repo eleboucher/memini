@@ -124,6 +124,7 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 		printRetrievalScope(out, entries, rsSource, pluginNS)
 	}
 	noteDanglingLinks(cmd.Context(), out, st, stats)
+	noteDanglingKeyBindings(cmd.Context(), out, st, stats)
 
 	fmt.Fprintf(out, "Store (%s): reachable, %d namespace(s)\n", cfg.Backend, len(stats)) //nolint:errcheck
 	warnings += printStoreStats(out, stats, pluginNS)
@@ -719,6 +720,41 @@ func noteDanglingLinks(ctx context.Context, out io.Writer, st store.Store, stats
 			continue
 		}
 		notef(out, "link %s -> %s: destination has no memories yet (links to future namespaces are legal).", l.Src, l.Dst)
+	}
+}
+
+// noteDanglingKeyBindings flags every API key in this store's api_keys table
+// (store.APIKeyStore — not MEMINI_API_KEYS_FILE, which doctor never loads;
+// see cmd/memini/key.go's own "this store's api_keys table only" scoping)
+// whose HomeNS or DefaultNS names a namespace with zero memories yet. Like
+// noteDanglingLinks, this is a note, not a warning: namespaces exist
+// implicitly the moment something is written to them, so binding a key ahead
+// of its own first write (e.g. provisioning a new hire's key before their
+// first session) is a legal, expected pattern rather than a
+// misconfiguration, and it never counts toward doctor's warning tally.
+// Degrades gracefully against a store predating APIKeyStore.
+func noteDanglingKeyBindings(ctx context.Context, out io.Writer, st store.Store, stats []nsStat) {
+	ks, ok := st.(store.APIKeyStore)
+	if !ok {
+		return
+	}
+	keys, err := ks.ListAPIKeys(ctx)
+	if err != nil {
+		notef(out, "could not list api keys to check for dangling namespace bindings: %v", err)
+		return
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i].Name < keys[j].Name })
+	for _, k := range keys {
+		if k.HomeNS != "" {
+			if total, ok := statsTotal(stats, k.HomeNS); !ok || total == 0 {
+				notef(out, "key %q: home namespace %q has no memories yet (dangling bindings are legal by design).", k.Name, k.HomeNS)
+			}
+		}
+		if k.DefaultNS != "" {
+			if total, ok := statsTotal(stats, k.DefaultNS); !ok || total == 0 {
+				notef(out, "key %q: default namespace %q has no memories yet (dangling bindings are legal by design).", k.Name, k.DefaultNS)
+			}
+		}
 	}
 }
 
