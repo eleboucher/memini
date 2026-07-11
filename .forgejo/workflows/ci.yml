@@ -46,6 +46,14 @@ jobs:
           go generate ./internal/api/rest
           git diff --exit-code internal/api/rest/api.gen.go
 
+      # The configuration reference is generated from the env tags and doc
+      # comments on config.Config; fail if the committed page drifted from the
+      # code. This is what stops a new setting from shipping undocumented.
+      - name: Check generated docs are current
+        run: |
+          go generate ./internal/config
+          git diff --exit-code docs/reference/configuration.md
+
       - name: Run tests
         run: CGO_ENABLED=1 go test -race -count=1 -timeout 300s ./...
 
