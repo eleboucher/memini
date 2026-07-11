@@ -28,6 +28,17 @@ const SCRIPTS = __dirname;
 // tenant prefixes into these tests. Tenant tests override it per-test.
 process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "memini-config-"));
 
+// Strip every ambient MEMINI_* env var for the whole run. A developer's shell
+// (or this very plugin, running against a live memini) commonly exports
+// MEMINI_NAMESPACE, MEMINI_CAPTURE_TURNS, MEMINI_BASE_URL, MEMINI_API_KEY,
+// etc. for day-to-day use; those leak into both in-process calls (resolveProject)
+// and spawned hooks (runHook's env is seeded from process.env) and clobber
+// tests that assert the *computed* default. Each test sets whatever MEMINI_*
+// it needs explicitly, so a clean slate here is always safe.
+for (const k of Object.keys(process.env)) {
+  if (k.startsWith("MEMINI_")) delete process.env[k];
+}
+
 // Each test that touches the session buffer gets an isolated cache dir so runs
 // don't pollute the real ~/.cache or each other.
 function freshCache() {
