@@ -37,7 +37,14 @@ var _ ServerInterface = (*Server)(nil)
 
 // New builds the REST server.
 func New(svc *service.Service, auth AuthConfig) *Server {
-	auth.keyAuth = apiauth.New(auth.APIKey, auth.APIKeyStore).WithFileKeys(auth.FileKeys)
+	if auth.KeyAuth != nil {
+		// Use the caller-supplied Config verbatim so its cache pointer (and
+		// any Invalidate() reach) is shared with whatever other surface the
+		// caller also handed this same Config to — see AuthConfig.KeyAuth.
+		auth.keyAuth = *auth.KeyAuth
+	} else {
+		auth.keyAuth = apiauth.New(auth.APIKey, auth.APIKeyStore).WithFileKeys(auth.FileKeys)
+	}
 	return &Server{svc: svc, auth: auth}
 }
 

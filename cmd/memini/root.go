@@ -178,18 +178,29 @@ func newServer(
 		}
 	}
 
+	// One shared apiauth.Config for both HTTP surfaces: Config is a value
+	// type but its table-emptiness cache lives behind a pointer (see
+	// apiauth.Config's doc), so handing REST and MCP their own independent
+	// New(...) call would give each an UNSHARED cache — a REST key mutation's
+	// Invalidate() (apikeys.go) would never reach MCP's copy, leaving /mcp
+	// accepting unauthenticated requests for up to keyTableCacheTTL after the
+	// first key is created via REST. Building it once here and passing this
+	// exact value to both keeps the cache (and Invalidate's reach) shared.
+	keyAuth := apiauth.New(cfg.APIKey, keyStore).WithFileKeys(fileKeys)
+
 	rest.New(svc, rest.AuthConfig{
 		APIKey:           cfg.APIKey,
 		APIKeyStore:      keyStore,
 		FileKeys:         fileKeys,
+		KeyAuth:          &keyAuth,
 		NamespaceHeader:  config.DefaultNamespaceHeader,
 		DefaultNamespace: cfg.DefaultNamespace,
 		HomeHeader:       config.DefaultHomeHeader,
 		RequestTimeout:   cfg.RequestTimeout,
 	}).Mount(srv.Router())
 
-	mcpHandler := mcpapi.HTTPHandler(svc, config.DefaultNamespaceHeader, cfg.DefaultNamespace,
-		config.DefaultHomeHeader, cfg.APIKey, keyStore, fileKeys)
+	mcpHandler := mcpapi.HTTPHandlerWithAuth(svc, config.DefaultNamespaceHeader, cfg.DefaultNamespace,
+		config.DefaultHomeHeader, keyAuth)
 	srv.Router().Handle("/mcp", mcpHandler)
 	srv.Router().Handle("/mcp/*", mcpHandler)
 

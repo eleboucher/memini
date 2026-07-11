@@ -311,10 +311,31 @@ const mcpPrincipalKey mcpCtxKeyType = 0
 // API); an invalid homeHeader value is rejected with 400 too, UNLESS the
 // authenticated key is bound (in which case the header is never even looked
 // at) — never silently falling back to the default tenant.
+//
+// This builds its own apiauth.Config from apiKey/keyStore/fileKeys, which is
+// fine when MCP is the only HTTP surface in the process. When REST is also
+// mounted in the SAME process, use HTTPHandlerWithAuth instead and pass it
+// the exact same apiauth.Config REST uses — otherwise the two surfaces hold
+// independent table-emptiness caches, and an apiauth.Config.Invalidate() call
+// from a REST key mutation never reaches this one (see apiauth.Config's doc
+// on the shared cache pointer).
 func HTTPHandler(svc *service.Service, nsHeader, defaultNS, homeHeader, apiKey string,
 	keyStore store.APIKeyStore, fileKeys *apiauth.FileKeySet,
 ) http.Handler {
-	keyAuth := apiauth.New(apiKey, keyStore).WithFileKeys(fileKeys)
+	return HTTPHandlerWithAuth(svc, nsHeader, defaultNS, homeHeader,
+		apiauth.New(apiKey, keyStore).WithFileKeys(fileKeys))
+}
+
+// HTTPHandlerWithAuth is HTTPHandler but takes an already-built apiauth.Config
+// instead of building one from apiKey/keyStore/fileKeys. Callers that also
+// mount REST in the same process must construct exactly ONE apiauth.Config
+// (e.g. via apiauth.New(...).WithFileKeys(...)) and pass that SAME value to
+// both this function and rest.AuthConfig.KeyAuth — Config is a value type but
+// its cache field is a shared pointer (see apiauth.Config's doc), so a copy
+// still shares the cache and a REST-side Invalidate() reaches MCP immediately.
+func HTTPHandlerWithAuth(svc *service.Service, nsHeader, defaultNS, homeHeader string,
+	keyAuth apiauth.Config,
+) http.Handler {
 	h := mcpsdk.NewStreamableHTTPHandler(func(r *http.Request) *mcpsdk.Server {
 		p, _ := r.Context().Value(mcpPrincipalKey).(apiauth.Principal)
 		ns := defaultNS

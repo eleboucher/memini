@@ -60,10 +60,21 @@ type AuthConfig struct {
 	// before (see chi's Timeout doc comment). 0 disables it.
 	RequestTimeout time.Duration
 
-	// keyAuth is built from APIKey/APIKeyStore by New (never set directly by
-	// callers): apiauth.Config's cache must be a pointer shared across every
-	// copy of AuthConfig (see its doc), so it is allocated exactly once here
-	// rather than per middleware invocation.
+	// KeyAuth, when non-nil, is used verbatim as the auth policy instead of
+	// New building one from APIKey/APIKeyStore/FileKeys. Set this to share
+	// ONE apiauth.Config (and its cache pointer) with another surface mounted
+	// in the same process — e.g. MCP's HTTPHandlerWithAuth — so a cache
+	// invalidation from a key mutation here (see apikeys.go's Invalidate
+	// calls) reaches that surface immediately instead of leaving it to ride
+	// out apiauth's table-emptiness cache TTL. nil (the default) preserves
+	// pre-existing behavior for callers that don't share a Config.
+	KeyAuth *apiauth.Config
+
+	// keyAuth is resolved by New (never set directly by callers): either
+	// copied from KeyAuth above, or built from APIKey/APIKeyStore/FileKeys.
+	// apiauth.Config's cache must be a pointer shared across every copy of
+	// AuthConfig (see its doc), so it is resolved exactly once here rather
+	// than per middleware invocation.
 	keyAuth apiauth.Config
 }
 
