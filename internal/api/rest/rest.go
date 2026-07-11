@@ -751,13 +751,53 @@ func (h *Server) GetBriefing(w http.ResponseWriter, r *http.Request, params GetB
 		return
 	}
 	origins := service.OriginMap(readset)
-	httputil.JSON(w, http.StatusOK, Briefing{
+	resp := Briefing{
 		Namespace:  b.Namespace,
 		Facts:      apiBriefingItems(b.Facts, origins),
 		Procedures: apiBriefingItems(b.Procedures, origins),
 		Recent:     apiBriefingItems(b.Recent, origins),
 		Pinned:     apiBriefingItems(b.Pinned, origins),
-	})
+		Children:   apiBriefingChildren(b.Children),
+	}
+	if b.ScopeHeader != "" {
+		resp.ScopeHeader = &b.ScopeHeader
+	}
+	// b.ChildrenTruncated has no field in the T6 wire shape; REST returns
+	// just the capped children array (MCP surfaces the count as a note).
+	httputil.JSON(w, http.StatusOK, resp)
+}
+
+// apiBriefingChildren maps the service's direct-child rollup to the
+// spec-generated BriefingChild shape — full memory objects (unlike MCP's
+// title-only rendering), since the admin UI consumes them. nil for an empty
+// rollup so the field is omitted at a leaf namespace.
+func apiBriefingChildren(children []service.ChildSummary) *[]BriefingChild {
+	if len(children) == 0 {
+		return nil
+	}
+	out := make([]BriefingChild, len(children))
+	for i, c := range children {
+		out[i] = BriefingChild{
+			Namespace: c.NS,
+			Total:     c.Total,
+			Pinned:    apiMemories(c.Pinned),
+			Recent:    apiMemories(c.Recent),
+		}
+	}
+	return &out
+}
+
+// apiMemories maps a memory slice to the generated wire shape, nil-for-empty
+// so optional fields are omitted.
+func apiMemories(mems []*memory.Memory) *[]Memory {
+	if len(mems) == 0 {
+		return nil
+	}
+	out := make([]Memory, len(mems))
+	for i, m := range mems {
+		out[i] = apiMemory(m)
+	}
+	return &out
 }
 
 // apiBriefingItems maps a briefing section's memories to the spec-generated

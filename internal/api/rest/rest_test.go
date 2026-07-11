@@ -1887,3 +1887,82 @@ func TestScopeAliasesMatchNewTokens(t *testing.T) {
 		t.Fatalf("default scope should include the primary+ancestor but not the subtree child, got %v", def)
 	}
 }
+
+// TestGetBriefingScopeHeaderAndChildren pins the T9 additions to the REST
+// briefing: scope_header (the service's one-line read-set summary) and
+// children (direct-child rollups carrying FULL memory objects — unlike MCP's
+// title-only rendering — since the admin UI consumes them). A leaf namespace
+// omits children but keeps the header.
+func TestGetBriefingScopeHeaderAndChildren(t *testing.T) {
+	h := newServer(t)
+	remember := func(ns, content string, tags []string) {
+		t.Helper()
+		body := map[string]any{"content": content, "tier": "semantic"}
+		if tags != nil {
+			body["tags"] = tags
+		}
+		rec := do(t, h, http.MethodPost, "/v1/memories", ns, apiKey, body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("remember %s: %d (%s)", ns, rec.Code, rec.Body)
+		}
+	}
+	remember("acme", "acme fact one", nil)
+	remember("acme", "acme fact two", nil)
+	remember("acme/phoenix", "phoenix pinned fact", []string{"pinned"})
+	remember("acme/phoenix/api", "api deploy fact", nil)
+
+	type briefingJSON struct {
+		ScopeHeader string `json:"scope_header"`
+		Children    []struct {
+			Namespace string `json:"namespace"`
+			Total     int    `json:"total"`
+			Pinned    []struct {
+				Content string `json:"content"`
+			} `json:"pinned"`
+			Recent []struct {
+				Content string `json:"content"`
+			} `json:"recent"`
+		} `json:"children"`
+	}
+
+	// Interior node: header plus a rollup of the one direct child, which
+	// aggregates its whole subtree (the grandchild's memory counts too).
+	rec := do(t, h, http.MethodGet, "/v1/namespaces/briefing", "acme", apiKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("briefing acme: %d (%s)", rec.Code, rec.Body)
+	}
+	var b briefingJSON
+	mustJSON(t, rec, &b)
+	if b.ScopeHeader != "Scope: acme" {
+		t.Errorf("scope_header = %q, want %q", b.ScopeHeader, "Scope: acme")
+	}
+	if len(b.Children) != 1 {
+		t.Fatalf("children = %+v, want exactly 1 (acme/phoenix)", b.Children)
+	}
+	c := b.Children[0]
+	if c.Namespace != "acme/phoenix" || c.Total != 2 {
+		t.Errorf("child = %s total=%d, want acme/phoenix total=2 (subtree-aggregated)", c.Namespace, c.Total)
+	}
+	if len(c.Pinned) != 1 || c.Pinned[0].Content != "phoenix pinned fact" {
+		t.Errorf("child pinned = %+v, want the full pinned memory object", c.Pinned)
+	}
+	if len(c.Recent) != 2 {
+		t.Errorf("child recent = %+v, want 2 durable memories", c.Recent)
+	}
+
+	// Leaf: no children, header still present with the ancestor legs and
+	// their durable contribution counts.
+	rec = do(t, h, http.MethodGet, "/v1/namespaces/briefing", "acme/phoenix/api", apiKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("briefing leaf: %d (%s)", rec.Code, rec.Body)
+	}
+	b = briefingJSON{}
+	mustJSON(t, rec, &b)
+	if len(b.Children) != 0 {
+		t.Errorf("leaf children = %+v, want none", b.Children)
+	}
+	want := "Scope: acme/phoenix/api ← acme/phoenix(1) ← acme(2)"
+	if b.ScopeHeader != want {
+		t.Errorf("leaf scope_header = %q, want %q", b.ScopeHeader, want)
+	}
+}
