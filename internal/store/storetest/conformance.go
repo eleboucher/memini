@@ -1693,23 +1693,11 @@ func testAPIKeys(t *testing.T, st store.Store, dims int) {
 	t.Run("RenameNamespaces", func(t *testing.T) { testAPIKeyRenameNamespaces(t, ks, ns) })
 }
 
-// apiKeyNSRenamer gates the default-namespace extension subtests: a driver
-// that predates the DefaultNS column also lacks RenameAPIKeyNamespaces, so
-// one probe covers both. Temporary RED-phase scaffolding — once both
-// backends implement the extension the method moves onto store.APIKeyStore
-// and this probe is removed.
-type apiKeyNSRenamer interface {
-	RenameAPIKeyNamespaces(ctx context.Context, from, to string) error
-}
-
 // testAPIKeyDefaultNSRoundTrip covers PutAPIKey/GetAPIKeyByHash/ListAPIKeys
 // round-tripping DefaultNS (the per-key default namespace applied when a
 // request carries no X-Memini-Namespace header; an explicit header wins),
 // including updating and clearing it on upsert.
 func testAPIKeyDefaultNSRoundTrip(t *testing.T, ks store.APIKeyStore, ns string) {
-	if _, ok := ks.(apiKeyNSRenamer); !ok {
-		t.Skip("store does not implement the api-key default-namespace extension")
-	}
 	ctx := context.Background()
 	name := ns + "-defns"
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -1768,10 +1756,6 @@ func testAPIKeyDefaultNSRoundTrip(t *testing.T, ks store.APIKeyStore, ns string)
 // non-matching columns are untouched, CreatedAt survives, and from == to is
 // a no-op.
 func testAPIKeyRenameNamespaces(t *testing.T, ks store.APIKeyStore, ns string) {
-	rn, ok := ks.(apiKeyNSRenamer)
-	if !ok {
-		t.Skip("store does not implement the api-key default-namespace extension")
-	}
 	ctx := context.Background()
 	from := ns + "-ren-old"
 	to := ns + "-ren-new"
@@ -1790,7 +1774,7 @@ func testAPIKeyRenameNamespaces(t *testing.T, ks store.APIKeyStore, ns string) {
 		}
 	}
 
-	if err := rn.RenameAPIKeyNamespaces(ctx, from, to); err != nil {
+	if err := ks.RenameAPIKeyNamespaces(ctx, from, to); err != nil {
 		t.Fatalf("rename api key namespaces: %v", err)
 	}
 
@@ -1820,7 +1804,7 @@ func testAPIKeyRenameNamespaces(t *testing.T, ks store.APIKeyStore, ns string) {
 	}
 
 	// from == to is a no-op, not an error.
-	if err := rn.RenameAPIKeyNamespaces(ctx, to, to); err != nil {
+	if err := ks.RenameAPIKeyNamespaces(ctx, to, to); err != nil {
 		t.Fatalf("rename api key namespaces (noop): %v", err)
 	}
 }
@@ -1835,6 +1819,7 @@ func testAPIKeyRoundTrip(t *testing.T, ks store.APIKeyStore, ns string) {
 		Name:      name,
 		Hash:      apiKeyHash(name),
 		HomeNS:    ns + "-home",
+		DefaultNS: ns + "-default",
 		CreatedAt: now,
 		Disabled:  true,
 	}
@@ -1848,7 +1833,8 @@ func testAPIKeyRoundTrip(t *testing.T, ks store.APIKeyStore, ns string) {
 	if got == nil {
 		t.Fatalf("get by hash: got nil, want a key")
 	}
-	if got.Name != k.Name || got.Hash != k.Hash || got.HomeNS != k.HomeNS || got.Disabled != k.Disabled {
+	if got.Name != k.Name || got.Hash != k.Hash || got.HomeNS != k.HomeNS ||
+		got.DefaultNS != k.DefaultNS || got.Disabled != k.Disabled {
 		t.Fatalf("round-trip mismatch: %+v, want %+v", got, k)
 	}
 	if !got.CreatedAt.Equal(k.CreatedAt) {

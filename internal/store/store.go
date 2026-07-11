@@ -293,6 +293,14 @@ type APIKeyStore interface {
 	// none does. This is the auth-path lookup, so drivers must maintain an
 	// index/unique constraint on hash for it to stay fast.
 	GetAPIKeyByHash(ctx context.Context, hash string) (*APIKey, error)
+	// RenameAPIKeyNamespaces rewrites every key whose HomeNS or DefaultNS
+	// equals from to to instead — both columns in one call, since a
+	// namespace move (maintenance.Move, which also calls
+	// RenameLinkEndpoints) must not leave either binding pointing at the
+	// old name. Keys matching in neither column, and the non-matching
+	// column of a partially-matching key, are untouched; CreatedAt is never
+	// modified. A no-op when from == to.
+	RenameAPIKeyNamespaces(ctx context.Context, from, to string) error
 }
 
 // OrEmptyMap returns m, or an empty map when m is nil, so drivers persist an

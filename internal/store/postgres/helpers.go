@@ -221,10 +221,11 @@ func scanAPIKeys(rs rows) ([]store.APIKey, error) {
 	return out, rs.Err()
 }
 
-// scanAPIKey scans a single (name, key_hash, home_ns, created_at, disabled) row.
+// scanAPIKey scans a single (name, key_hash, home_ns, default_ns,
+// created_at, disabled) row.
 func scanAPIKey(s rowScanner) (store.APIKey, error) {
 	var k store.APIKey
-	if err := s.Scan(&k.Name, &k.Hash, &k.HomeNS, &k.CreatedAt, &k.Disabled); err != nil {
+	if err := s.Scan(&k.Name, &k.Hash, &k.HomeNS, &k.DefaultNS, &k.CreatedAt, &k.Disabled); err != nil {
 		return k, err
 	}
 	k.CreatedAt = k.CreatedAt.UTC()

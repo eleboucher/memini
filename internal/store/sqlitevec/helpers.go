@@ -262,12 +262,13 @@ func scanAPIKeys(rows *sql.Rows) ([]store.APIKey, error) {
 	return out, rows.Err()
 }
 
-// scanAPIKey scans a single (name, key_hash, home_ns, created_at, disabled) row.
+// scanAPIKey scans a single (name, key_hash, home_ns, default_ns,
+// created_at, disabled) row.
 func scanAPIKey(s scanner) (store.APIKey, error) {
 	var k store.APIKey
 	var created string
 	var disabled int
-	if err := s.Scan(&k.Name, &k.Hash, &k.HomeNS, &created, &disabled); err != nil {
+	if err := s.Scan(&k.Name, &k.Hash, &k.HomeNS, &k.DefaultNS, &created, &disabled); err != nil {
 		return k, err
 	}
 	t, err := time.Parse(time.RFC3339Nano, created)

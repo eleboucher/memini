@@ -132,10 +132,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		// the hex SHA-256 of the secret (the secret itself is never stored) and
 		// is UNIQUE so GetAPIKeyByHash's auth-path lookup can rely on an index;
 		// created_at is an RFC3339 string, as with namespace_links above.
+		// default_ns is also ALTER-added below for databases created before it.
 		`CREATE TABLE IF NOT EXISTS api_keys (
 			name       TEXT PRIMARY KEY,
 			key_hash   TEXT NOT NULL UNIQUE,
 			home_ns    TEXT NOT NULL DEFAULT '',
+			default_ns TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			disabled   INTEGER NOT NULL DEFAULT 0
 		)`,
@@ -152,6 +154,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := s.addColumnIfMissing(ctx, "memories", c.name, c.decl); err != nil {
 			return err
 		}
+	}
+	// api_keys.default_ns was added after the table first shipped; ALTER-add
+	// it so databases created before it migrate in place.
+	if err := s.addColumnIfMissing(ctx, "api_keys", "default_ns", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
 	}
 	// After the backfill: on an old DB the fingerprint column exists only now.
 	if _, err := s.db.ExecContext(ctx,
@@ -1034,12 +1041,12 @@ func (s *Store) PutAPIKey(ctx context.Context, k store.APIKey) error {
 			}
 		}
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO api_keys (name, key_hash, home_ns, created_at, disabled)
-		VALUES (?,?,?,?,?)
+	_, err = tx.ExecContext(ctx, `INSERT INTO api_keys (name, key_hash, home_ns, default_ns, created_at, disabled)
+		VALUES (?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET
-			key_hash=excluded.key_hash, home_ns=excluded.home_ns,
+			key_hash=excluded.key_hash, home_ns=excluded.home_ns, default_ns=excluded.default_ns,
 			created_at=excluded.created_at, disabled=excluded.disabled`,
-		k.Name, k.Hash, k.HomeNS, created.Format(time.RFC3339Nano), boolToInt(k.Disabled))
+		k.Name, k.Hash, k.HomeNS, k.DefaultNS, created.Format(time.RFC3339Nano), boolToInt(k.Disabled))
 	if err != nil {
 		return fmt.Errorf("sqlitevec: put api key: %w", err)
 	}
@@ -1063,7 +1070,7 @@ func (s *Store) DeleteAPIKey(ctx context.Context, name string) (bool, error) {
 // ListAPIKeys returns every key ordered by name.
 func (s *Store) ListAPIKeys(ctx context.Context) ([]store.APIKey, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT name, key_hash, home_ns, created_at, disabled FROM api_keys ORDER BY name`)
+		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled FROM api_keys ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlitevec: list api keys: %w", err)
 	}
@@ -1074,7 +1081,7 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]store.APIKey, error) {
 // does.
 func (s *Store) GetAPIKeyByHash(ctx context.Context, hash string) (*store.APIKey, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT name, key_hash, home_ns, created_at, disabled FROM api_keys WHERE key_hash=?`, hash)
+		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled FROM api_keys WHERE key_hash=?`, hash)
 	k, err := scanAPIKey(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -1083,6 +1090,27 @@ func (s *Store) GetAPIKeyByHash(ctx context.Context, hash string) (*store.APIKey
 		return nil, fmt.Errorf("sqlitevec: get api key by hash: %w", err)
 	}
 	return &k, nil
+}
+
+// RenameAPIKeyNamespaces rewrites every key whose home_ns or default_ns
+// equals from to to instead — both columns in one statement, so a namespace
+// move (maintenance.Move, alongside RenameLinkEndpoints) leaves neither
+// binding dangling. Unlike RenameLinkEndpoints there is no collision
+// handling: neither column is part of a key's identity, so a plain UPDATE
+// suffices. A no-op when from == to.
+func (s *Store) RenameAPIKeyNamespaces(ctx context.Context, from, to string) error {
+	if from == to {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE api_keys SET
+			home_ns    = CASE WHEN home_ns    = ? THEN ? ELSE home_ns END,
+			default_ns = CASE WHEN default_ns = ? THEN ? ELSE default_ns END
+		WHERE home_ns = ? OR default_ns = ?`,
+		from, to, from, to, from, from)
+	if err != nil {
+		return fmt.Errorf("sqlitevec: rename api key namespaces: %w", err)
+	}
+	return nil
 }
 
 // Ping verifies the database is reachable.
