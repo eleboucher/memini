@@ -491,6 +491,46 @@ type recallItem struct {
 	Confidence *float64 `json:"confidence,omitempty"`
 	CreatedAt  string   `json:"created_at"`
 	Tags       []string `json:"tags,omitempty"`
+	// From is read-set provenance beyond the raw namespace: empty for a hit
+	// from the primary namespace (the common case — no annotation needed),
+	// the ancestor/home namespace itself for those two origins ("acme",
+	// "personal/kit"), and a prefixed form for a stored link or an explicit
+	// per-call namespace ("link:shared/golang", "call:acme/other"). See
+	// readSetFrom. Omitted (not just empty) so a primary-only recall/briefing
+	// produces no "from" noise at all.
+	From string `json:"from,omitempty"`
+}
+
+// readSetFrom renders a resolved read-set origin (service.Origin*) into
+// recallItem.From: the origin recorded when ns's leg was appended during
+// read-set resolution (see service.ReadSetEntry), not re-derived here. origins
+// maps namespace -> origin, built once per call from the ReadSet out-param
+// (Recall/Briefing/Answer's ReadSetEntry slice) — see originMapFrom. A
+// namespace absent from origins (read-set info wasn't resolved, or the tool
+// didn't ask for it) renders empty rather than guessing.
+func readSetFrom(origins map[string]string, ns string) string {
+	switch origins[ns] {
+	case service.OriginAncestor, service.OriginHome:
+		return ns
+	case service.OriginLink:
+		return "link:" + ns
+	case service.OriginCall:
+		return "call:" + ns
+	default: // "" (unresolved) or service.OriginPrimary: no annotation
+		return ""
+	}
+}
+
+// originMapFrom builds the namespace -> origin lookup readSetFrom needs, from
+// a resolved read-set's ReadSetEntry slice. entries is typically empty (the
+// ReadSet out-param's zero value) when the caller never asked for read-set
+// info, in which case every lookup falls through readSetFrom's default case.
+func originMapFrom(entries []service.ReadSetEntry) map[string]string {
+	m := make(map[string]string, len(entries))
+	for _, e := range entries {
+		m[e.NS] = e.Origin
+	}
+	return m
 }
 
 // conciseContentMax is the rune limit for concise content (before truncation).
@@ -512,7 +552,11 @@ func conciseContent(m *memory.Memory) string {
 	return string(runes[:conciseContentMax]) + "…"
 }
 
-func scoredItem(s store.Scored, responseFormat string) recallItem {
+// scoredItem is the single funnel from a store.Scored hit to the MCP wire
+// shape, shared by memory_recall's results and memory_answer's sources (T5) —
+// origins, built once per call via originMapFrom, is how both get read-set
+// provenance without duplicating the rendering logic.
+func scoredItem(s store.Scored, responseFormat string, origins map[string]string) recallItem {
 	content := s.Memory.Content
 	if responseFormat == "concise" {
 		content = conciseContent(s.Memory)
@@ -522,6 +566,7 @@ func scoredItem(s store.Scored, responseFormat string) recallItem {
 		Level: string(s.Memory.Level), Namespace: s.Memory.Namespace,
 		Score: s.Score, Confidence: s.Memory.Confidence,
 		CreatedAt: s.Memory.CreatedAt.Format(time.RFC3339), Tags: s.Memory.Tags,
+		From: readSetFrom(origins, s.Memory.Namespace),
 	}
 }
 
@@ -581,13 +626,16 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 	}
 	var degraded string
 	input.Degraded = &degraded
+	var readset []service.ReadSetEntry
+	input.ReadSet = &readset
 	res, err := t.svc.Recall(ctx, input)
 	if err != nil {
 		return nil, recallResult{}, err
 	}
+	origins := originMapFrom(readset)
 	out := recallResult{Results: make([]recallItem, len(res))}
 	for i, s := range res {
-		out.Results[i] = scoredItem(s, in.ResponseFormat)
+		out.Results[i] = scoredItem(s, in.ResponseFormat, origins)
 	}
 	if degraded != "" {
 		out.Degraded = "keyword_only"
@@ -617,13 +665,14 @@ type briefingResult struct {
 	Recent     []recallItem `json:"recent,omitempty"`
 }
 
-func briefingItems(mems []*memory.Memory) []recallItem {
+func briefingItems(mems []*memory.Memory, origins map[string]string) []recallItem {
 	out := make([]recallItem, len(mems))
 	for i, m := range mems {
 		out[i] = recallItem{
 			ID: m.ID, Content: m.Content, Tier: string(m.Tier), Namespace: m.Namespace,
 			Confidence: m.Confidence,
 			CreatedAt:  m.CreatedAt.Format(time.RFC3339), Tags: m.Tags,
+			From: readSetFrom(origins, m.Namespace),
 		}
 	}
 	return out
@@ -653,6 +702,7 @@ func (t *tools) briefing(ctx context.Context, _ *mcpsdk.CallToolRequest, in brie
 		}
 		return in.PerSection
 	}
+	var readset []service.ReadSetEntry
 	b, err := t.svc.Briefing(ctx, ns, service.BriefingOpts{
 		Pinned:     pick(in.PerSectionPinned),
 		Facts:      pick(in.PerSectionFacts),
@@ -661,16 +711,18 @@ func (t *tools) briefing(ctx context.Context, _ *mcpsdk.CallToolRequest, in brie
 		Home:       t.defaultHome,
 		Namespaces: in.Namespaces,
 		Subtree:    subtree,
+		ReadSet:    &readset,
 	})
 	if err != nil {
 		return nil, briefingResult{}, err
 	}
+	origins := originMapFrom(readset)
 	return nil, briefingResult{
 		Namespace:  b.Namespace,
-		Pinned:     briefingItems(b.Pinned),
-		Facts:      briefingItems(b.Facts),
-		Procedures: briefingItems(b.Procedures),
-		Recent:     briefingItems(b.Recent),
+		Pinned:     briefingItems(b.Pinned, origins),
+		Facts:      briefingItems(b.Facts, origins),
+		Procedures: briefingItems(b.Procedures, origins),
+		Recent:     briefingItems(b.Recent, origins),
 	}, nil
 }
 
@@ -705,6 +757,7 @@ func (t *tools) answer(ctx context.Context, _ *mcpsdk.CallToolRequest, in answer
 	if err != nil {
 		return nil, answerResult{}, err
 	}
+	var readset []service.ReadSetEntry
 	res, err := t.svc.Answer(ctx, service.AnswerInput{
 		Namespace: ns,
 		Home:      t.defaultHome,
@@ -715,13 +768,15 @@ func (t *tools) answer(ctx context.Context, _ *mcpsdk.CallToolRequest, in answer
 		Metadata:  in.Metadata,
 		Limit:     in.Limit,
 		Reasoning: service.ReasoningLevel(in.ReasoningLevel),
+		ReadSet:   &readset,
 	})
 	if err != nil {
 		return nil, answerResult{}, err
 	}
+	origins := originMapFrom(readset)
 	out := answerResult{Answer: res.Answer, Sources: make([]recallItem, len(res.Sources))}
 	for i, s := range res.Sources {
-		out.Sources[i] = scoredItem(s, "")
+		out.Sources[i] = scoredItem(s, "", origins)
 	}
 	return nil, out, nil
 }

@@ -2122,3 +2122,252 @@ func TestRecallInvalidScopeViaMCP(t *testing.T) {
 		t.Fatalf("error text = %q, want it to list the valid scopes", tc.Text)
 	}
 }
+
+// --- read-set provenance: "from" rendering (T5) -----------------------------
+
+// fromRecallResult mirrors just the fields these tests need out of
+// recallResult/recallItem.
+type fromRecallResult struct {
+	Results []struct {
+		Namespace string `json:"namespace"`
+		Content   string `json:"content"`
+		From      string `json:"from"`
+	} `json:"results"`
+}
+
+// TestRecallFromFieldReflectsOriginViaMCP seeds one memory per read-set leg —
+// primary, ancestor, home, and a stored link — sharing a rare token so a
+// single recall surfaces all four, and asserts memory_recall's "from" field
+// renders per the origin recorded during read-set resolution: empty for the
+// primary hit, the namespace itself for ancestor/home, and "link:<ns>" for a
+// linked namespace. Primary silence is the key assertion: a hit from the
+// namespace the caller asked for must carry no "from" annotation at all.
+func TestRecallFromFieldReflectsOriginViaMCP(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "from-recall.db"), dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := service.New(st, embedtest.New(dims))
+
+	const token = "xylophone42"
+	seed := func(ns, content string) {
+		if _, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: ns, Content: content, Tier: memory.TierSemantic,
+		}); err != nil {
+			t.Fatalf("seed remember %s: %v", ns, err)
+		}
+	}
+	seed("acme/phoenix/api", "primary hit "+token)
+	seed("acme/phoenix", "ancestor hit "+token)
+	seed("acme", "farther ancestor hit "+token)
+	seed("personal/kit", "home hit "+token)
+	seed("shared/golang", "link hit "+token)
+
+	if err := st.PutLink(ctx, store.NamespaceLink{Src: "acme/phoenix/api", Dst: "shared/golang"}); err != nil {
+		t.Fatalf("put link: %v", err)
+	}
+
+	srv := meminimcp.NewServer(svc, "default", "personal/kit")
+	clientT, serverT := mcpsdk.NewInMemoryTransports()
+	if _, err := srv.Connect(ctx, serverT, nil); err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	cs, err := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "t", Version: "0"}, nil).Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_recall",
+		Arguments: map[string]any{"query": token, "namespace": "acme/phoenix/api", "limit": 10},
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	var out fromRecallResult
+	structured(t, res, &out)
+
+	wantFrom := map[string]string{
+		"acme/phoenix/api": "",
+		"acme/phoenix":     "acme/phoenix",
+		"acme":             "acme",
+		"personal/kit":     "personal/kit",
+		"shared/golang":    "link:shared/golang",
+	}
+	seen := map[string]bool{}
+	for _, r := range out.Results {
+		want, ok := wantFrom[r.Namespace]
+		if !ok {
+			t.Fatalf("unexpected namespace %q in results", r.Namespace)
+		}
+		seen[r.Namespace] = true
+		if r.From != want {
+			t.Errorf("namespace %q: from = %q, want %q", r.Namespace, r.From, want)
+		}
+	}
+	for ns := range wantFrom {
+		if !seen[ns] {
+			t.Errorf("namespace %q missing from recall results", ns)
+		}
+	}
+}
+
+// TestRecallFromFieldCallOriginViaMCP pins the "call:<ns>" rendering for an
+// explicit per-call namespace (RecallInput.Namespaces) that is not the
+// primary namespace.
+func TestRecallFromFieldCallOriginViaMCP(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	remember := func(ns, content string) {
+		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+			Name:      "memory_remember",
+			Arguments: map[string]any{"content": content, "tier": "semantic", "namespace": ns},
+		}); err != nil {
+			t.Fatalf("remember %s: %v", ns, err)
+		}
+	}
+	const token = "flugelhorn17"
+	remember("acme/phoenix", "primary "+token)
+	remember("other/ns", "explicit "+token)
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_recall",
+		Arguments: map[string]any{
+			"query": token, "namespace": "acme/phoenix",
+			"namespaces": []string{"acme/phoenix", "other/ns"}, "limit": 10,
+		},
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	var out fromRecallResult
+	structured(t, res, &out)
+
+	wantFrom := map[string]string{"acme/phoenix": "", "other/ns": "call:other/ns"}
+	seen := map[string]bool{}
+	for _, r := range out.Results {
+		want, ok := wantFrom[r.Namespace]
+		if !ok {
+			t.Fatalf("unexpected namespace %q in results", r.Namespace)
+		}
+		seen[r.Namespace] = true
+		if r.From != want {
+			t.Errorf("namespace %q: from = %q, want %q", r.Namespace, r.From, want)
+		}
+	}
+	for ns := range wantFrom {
+		if !seen[ns] {
+			t.Errorf("namespace %q missing from recall results", ns)
+		}
+	}
+}
+
+// TestBriefingFromFieldReflectsOriginViaMCP mirrors
+// TestRecallFromFieldReflectsOriginViaMCP for memory_briefing: an ancestor
+// fact briefed alongside the primary namespace's own fact must carry "from",
+// the primary's must not.
+func TestBriefingFromFieldReflectsOriginViaMCP(t *testing.T) {
+	cs := connect(t)
+	ctx := context.Background()
+
+	remember := func(ns, content string) {
+		if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+			Name:      "memory_remember",
+			Arguments: map[string]any{"content": content, "tier": "semantic", "namespace": ns},
+		}); err != nil {
+			t.Fatalf("remember %s: %v", ns, err)
+		}
+	}
+	remember("acme/phoenix/api", "primary fact")
+	remember("acme/phoenix", "ancestor fact")
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_briefing",
+		Arguments: map[string]any{"namespace": "acme/phoenix/api"},
+	})
+	if err != nil {
+		t.Fatalf("briefing: %v", err)
+	}
+	var out struct {
+		Facts []struct {
+			Namespace string `json:"namespace"`
+			From      string `json:"from"`
+		} `json:"facts"`
+	}
+	structured(t, res, &out)
+
+	wantFrom := map[string]string{"acme/phoenix/api": "", "acme/phoenix": "acme/phoenix"}
+	seen := map[string]bool{}
+	for _, f := range out.Facts {
+		want, ok := wantFrom[f.Namespace]
+		if !ok {
+			t.Fatalf("unexpected namespace %q in briefing facts", f.Namespace)
+		}
+		seen[f.Namespace] = true
+		if f.From != want {
+			t.Errorf("namespace %q: from = %q, want %q", f.Namespace, f.From, want)
+		}
+	}
+	for ns := range wantFrom {
+		if !seen[ns] {
+			t.Errorf("namespace %q missing from briefing facts", ns)
+		}
+	}
+}
+
+// TestAnswerSourcesFromFieldViaMCP proves From flows through the SAME funnel
+// (scoredItem) for memory_answer's sources, not just memory_recall — an
+// ancestor-origin source must carry "from", not be silently dropped because
+// answer is a different call path.
+func TestAnswerSourcesFromFieldViaMCP(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "from-answer.db"), dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := service.New(st, embedtest.New(dims), service.WithAnswerer(&fakeAnswerer{resp: "the answer"}))
+
+	const token = "marimba99"
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "acme/phoenix", Content: "ancestor source " + token, Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("seed remember: %v", err)
+	}
+
+	srv := meminimcp.NewServer(svc, "default", "")
+	clientT, serverT := mcpsdk.NewInMemoryTransports()
+	if _, err := srv.Connect(ctx, serverT, nil); err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	cs, err := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "t", Version: "0"}, nil).Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_answer",
+		Arguments: map[string]any{"query": token, "namespace": "acme/phoenix/api"},
+	})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	var out struct {
+		Sources []struct {
+			Namespace string `json:"namespace"`
+			From      string `json:"from"`
+		} `json:"sources"`
+	}
+	structured(t, res, &out)
+	if len(out.Sources) != 1 {
+		t.Fatalf("sources = %+v, want exactly 1 ancestor-origin source", out.Sources)
+	}
+	if out.Sources[0].Namespace != "acme/phoenix" || out.Sources[0].From != "acme/phoenix" {
+		t.Fatalf("source = %+v, want namespace/from = acme/phoenix", out.Sources[0])
+	}
+}
