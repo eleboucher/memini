@@ -750,10 +750,15 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 // unclear) and TTL follows the tier default.
 type RememberInput struct {
 	Namespace string
-	// Home is the caller's personal namespace (X-Memini-Home / MEMINI_HOME),
-	// threaded through for T4's visibility work; Remember does not yet act
-	// on it.
-	Home       string
+	// Home is the caller's personal namespace (X-Memini-Home / MEMINI_HOME).
+	// Consumed by resolveVisibility when Visibility is "personal".
+	Home string
+	// Visibility steers which namespace the write actually lands in: ""/
+	// "project" (default) is Namespace itself; "personal" is Home; anything
+	// else must name an ancestor of Namespace (by exact path or unambiguous
+	// last segment). See resolveVisibility for the full resolution and the
+	// tier clamp (episodic/working writes always stay in Namespace).
+	Visibility string
 	Content    string
 	Tier       memory.Tier
 	Summary    string
@@ -838,19 +843,35 @@ func (s *Service) sanitizeContent(ctx context.Context, in RememberInput, tier me
 	return in, nil
 }
 
-// validateRememberInput checks the required fields and resolves the tier. An
-// omitted tier defaults to working (the intake tier), but the marker heuristic
-// can classify a terse, unhedged decision/preference/problem statement directly
-// into a durable tier. Classification only ever raises the tier from the
-// working default, never lowers it, so a miss costs nothing. The
-// returned tier is "" for the namespace/content errors and the offending tier
-// for an invalid-tier error, matching the metric label the caller records.
-func validateRememberInput(in RememberInput) (memory.Tier, error) {
+// validateRememberInput checks the required fields, resolves the tier (an
+// omitted tier defaults to working — the intake tier — but the marker
+// heuristic can classify a terse, unhedged decision/preference/problem
+// statement directly into a durable tier; classification only ever raises
+// the tier from the working default, never lowers it, so a miss costs
+// nothing), and resolves in.Namespace against Visibility/Home via
+// resolveVisibility.
+//
+// Visibility resolution is folded in here — rather than left as a separate
+// step in Remember — for two reasons: resolveVisibility's tier clamp must
+// see the FINAL, post-classification tier (see its doc comment), which this
+// function already computes; and doing so keeps Remember's own error
+// handling to one `if err != nil` for the whole validate+resolve phase
+// instead of two, which is also what keeps this the single place upstream
+// of the rest of the write pipeline (dedup gate, fingerprint check,
+// distillation, extraction) that touches in.Namespace, so everything below
+// it sees the resolved target rather than the request primary (gap G4).
+//
+// The returned tier is "" for the namespace/content errors and the
+// offending tier for an invalid-tier/visibility error, matching the metric
+// label the caller records. The returned RememberInput carries the resolved
+// Namespace only on success; an error return leaves it as given, which the
+// caller never uses since it discards in on that path.
+func validateRememberInput(in RememberInput) (RememberInput, memory.Tier, error) {
 	if in.Namespace == "" {
-		return "", invalidInputf("remember: namespace is required")
+		return in, "", invalidInputf("remember: namespace is required")
 	}
 	if in.Content == "" {
-		return "", invalidInputf("remember: content is required")
+		return in, "", invalidInputf("remember: content is required")
 	}
 	tier := in.Tier
 	if tier == "" {
@@ -860,12 +881,17 @@ func validateRememberInput(in RememberInput) (memory.Tier, error) {
 		}
 	}
 	if !tier.Valid() {
-		return tier, invalidInputf("remember: invalid tier %q", tier)
+		return in, tier, invalidInputf("remember: invalid tier %q", tier)
 	}
 	if in.Level != "" && !in.Level.Valid() {
-		return tier, invalidInputf("remember: invalid level %q", in.Level)
+		return in, tier, invalidInputf("remember: invalid level %q", in.Level)
 	}
-	return tier, nil
+	ns, err := resolveVisibility(in, tier)
+	if err != nil {
+		return in, tier, err
+	}
+	in.Namespace = ns
+	return in, tier, nil
 }
 
 // embedForRemember embeds fresh write content. When writeEmbedTimeout is set
@@ -920,7 +946,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	defer func() {
 		s.metrics.OpDuration("remember", time.Since(start))
 	}()
-	tier, err := validateRememberInput(in)
+	in, tier, err := validateRememberInput(in)
 	if err != nil {
 		s.metrics.RememberResult("error", string(tier))
 		return nil, err

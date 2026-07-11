@@ -356,6 +356,13 @@ func clampReadSet(ctx context.Context, entries []scopeEntry) []scopeEntry {
 	return entries[:readSetMaxEntries]
 }
 
+// scopeProject is the "just this namespace, no cascade" token, shared by two
+// request-boundary vocabularies that happen to mean the same thing on their
+// respective sides: RecallInput.Scope/BriefingOpts.Scope (parseScope, below)
+// on the read side, and RememberInput.Visibility (resolveVisibility, in
+// visibility.go) on the write side.
+const scopeProject = "project"
+
 // parseScope maps the client-facing Scope string (RecallInput.Scope,
 // BriefingOpts.Scope) to the readScope bare/subtree flags it contributes.
 // This mapping lives at the request boundary, not inside resolveReadSet:
@@ -372,7 +379,7 @@ func parseScope(scope string) (bare, subtree bool, err error) {
 	switch scope {
 	case "", "full":
 		return false, false, nil
-	case "project":
+	case scopeProject:
 		return true, false, nil
 	case "everywhere":
 		return false, true, nil
