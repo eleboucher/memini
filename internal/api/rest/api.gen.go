@@ -45,6 +45,24 @@ func (e AnswerRequestScope) Valid() bool {
 	}
 }
 
+// Defines values for ApiKeySource.
+const (
+	Db   ApiKeySource = "db"
+	File ApiKeySource = "file"
+)
+
+// Valid indicates whether the value is a known member of the ApiKeySource enum.
+func (e ApiKeySource) Valid() bool {
+	switch e {
+	case Db:
+		return true
+	case File:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Level.
 const (
 	Deduced  Level = "deduced"
@@ -196,6 +214,49 @@ type AnswerResponse struct {
 	Sources []ScoredMemory `json:"sources"`
 }
 
+// ApiKey defines model for ApiKey.
+type ApiKey struct {
+	CreatedAt time.Time `json:"created_at"`
+
+	// DefaultNamespace Namespace applied when a request presents this key with no explicit X-Memini-Namespace header.
+	DefaultNamespace *string `json:"default_namespace,omitempty"`
+	Disabled         bool    `json:"disabled"`
+
+	// Home Bound home namespace; omitted/empty means unbound.
+	Home *string `json:"home,omitempty"`
+	Name string  `json:"name"`
+
+	// Source Where the key is stored: "db" is a row in the api_keys table (mutable via this API); "file" comes from MEMINI_API_KEYS_FILE, loaded once at boot and immutable through this API — update/rotate/ delete all reject a "file" key with 409.
+	Source ApiKeySource `json:"source"`
+}
+
+// ApiKeySource Where the key is stored: "db" is a row in the api_keys table (mutable via this API); "file" comes from MEMINI_API_KEYS_FILE, loaded once at boot and immutable through this API — update/rotate/ delete all reject a "file" key with 409.
+type ApiKeySource string
+
+// ApiKeyWithSecret defines model for ApiKeyWithSecret.
+type ApiKeyWithSecret struct {
+	CreatedAt time.Time `json:"created_at"`
+
+	// DefaultNamespace Namespace applied when a request presents this key with no explicit X-Memini-Namespace header.
+	DefaultNamespace *string `json:"default_namespace,omitempty"`
+	Disabled         bool    `json:"disabled"`
+
+	// Home Bound home namespace; omitted/empty means unbound.
+	Home *string `json:"home,omitempty"`
+	Name string  `json:"name"`
+
+	// Secret The plaintext credential, shown exactly once, here — it is never stored (only its SHA-256 hash is) and cannot be recovered or displayed again.
+	Secret string `json:"secret"`
+
+	// Source Where the key is stored: "db" is a row in the api_keys table (mutable via this API); "file" comes from MEMINI_API_KEYS_FILE, loaded once at boot and immutable through this API — update/rotate/ delete all reject a "file" key with 409.
+	Source ApiKeySource `json:"source"`
+}
+
+// ApiKeysResponse defines model for ApiKeysResponse.
+type ApiKeysResponse struct {
+	Keys []ApiKey `json:"keys"`
+}
+
 // Briefing defines model for Briefing.
 type Briefing struct {
 	// Children Direct-child namespace rollups (one segment deeper than the briefed namespace), each aggregating its whole subtree: all-tier live total plus up to 3 pinned and 3 recent-durable highlight memories. Ordered by most-recent write, capped at 10 children; omitted at a leaf namespace.
@@ -240,6 +301,19 @@ type ClusterAction struct {
 	RepresentativeId string   `json:"representative_id"`
 	Size             int      `json:"size"`
 	TombstonedIds    []string `json:"tombstoned_ids"`
+}
+
+// CreateApiKeyRequest defines model for CreateApiKeyRequest.
+type CreateApiKeyRequest struct {
+	// DefaultNamespace Namespace applied when a request presents this key with no explicit namespace header.
+	DefaultNamespace *string `json:"default_namespace,omitempty"`
+
+	// Disabled Create the key already disabled.
+	Disabled *bool `json:"disabled,omitempty"`
+
+	// Home Bind the key to a home namespace.
+	Home *string `json:"home,omitempty"`
+	Name string  `json:"name"`
 }
 
 // DedupReport defines model for DedupReport.
@@ -528,6 +602,18 @@ type SupersedeRequest struct {
 // Tier defines model for Tier.
 type Tier string
 
+// UpdateApiKeyRequest defines model for UpdateApiKeyRequest.
+type UpdateApiKeyRequest struct {
+	// DefaultNamespace Omit to leave the current default unchanged; an explicit empty string clears it.
+	DefaultNamespace *string `json:"default_namespace,omitempty"`
+
+	// Disabled Omit to leave the current disabled state unchanged.
+	Disabled *bool `json:"disabled,omitempty"`
+
+	// Home Omit to leave the current binding unchanged; an explicit empty string clears it.
+	Home *string `json:"home,omitempty"`
+}
+
 // Namespace defines model for Namespace.
 type Namespace = string
 
@@ -763,6 +849,12 @@ type AnswerQuestionJSONRequestBody = AnswerRequest
 // RunDedupJSONRequestBody defines body for RunDedup for application/json ContentType.
 type RunDedupJSONRequestBody = DedupRequest
 
+// CreateApiKeyJSONRequestBody defines body for CreateApiKey for application/json ContentType.
+type CreateApiKeyJSONRequestBody = CreateApiKeyRequest
+
+// UpdateApiKeyJSONRequestBody defines body for UpdateApiKey for application/json ContentType.
+type UpdateApiKeyJSONRequestBody = UpdateApiKeyRequest
+
 // DeleteLinkJSONRequestBody defines body for DeleteLink for application/json ContentType.
 type DeleteLinkJSONRequestBody DeleteLinkJSONBody
 
@@ -798,6 +890,21 @@ type ServerInterface interface {
 	// Run a consistency sweep (purge expired, enforce short-term cap, audit duplicates)
 	// (POST /v1/fsck)
 	RunFsck(w http.ResponseWriter, r *http.Request, params RunFsckParams)
+	// List API keys (name/home/default namespace/created/disabled/source — never a secret or hash)
+	// (GET /v1/keys)
+	ListApiKeys(w http.ResponseWriter, r *http.Request)
+	// Create a new API key, returning its secret exactly once
+	// (POST /v1/keys)
+	CreateApiKey(w http.ResponseWriter, r *http.Request)
+	// Delete an API key
+	// (DELETE /v1/keys/{name})
+	DeleteApiKey(w http.ResponseWriter, r *http.Request, name string)
+	// Update an API key's home namespace, default namespace, and/or disabled state
+	// (PATCH /v1/keys/{name})
+	UpdateApiKey(w http.ResponseWriter, r *http.Request, name string)
+	// Rotate an API key's secret, returning the new secret exactly once
+	// (POST /v1/keys/{name}/rotate)
+	RotateApiKey(w http.ResponseWriter, r *http.Request, name string)
 	// Delete a namespace link
 	// (DELETE /v1/links)
 	DeleteLink(w http.ResponseWriter, r *http.Request, params DeleteLinkParams)
@@ -876,6 +983,36 @@ func (_ Unimplemented) RunDedup(w http.ResponseWriter, r *http.Request, params R
 // Run a consistency sweep (purge expired, enforce short-term cap, audit duplicates)
 // (POST /v1/fsck)
 func (_ Unimplemented) RunFsck(w http.ResponseWriter, r *http.Request, params RunFsckParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List API keys (name/home/default namespace/created/disabled/source — never a secret or hash)
+// (GET /v1/keys)
+func (_ Unimplemented) ListApiKeys(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Create a new API key, returning its secret exactly once
+// (POST /v1/keys)
+func (_ Unimplemented) CreateApiKey(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Delete an API key
+// (DELETE /v1/keys/{name})
+func (_ Unimplemented) DeleteApiKey(w http.ResponseWriter, r *http.Request, name string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Update an API key's home namespace, default namespace, and/or disabled state
+// (PATCH /v1/keys/{name})
+func (_ Unimplemented) UpdateApiKey(w http.ResponseWriter, r *http.Request, name string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Rotate an API key's secret, returning the new secret exactly once
+// (POST /v1/keys/{name}/rotate)
+func (_ Unimplemented) RotateApiKey(w http.ResponseWriter, r *http.Request, name string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1134,6 +1271,142 @@ func (siw *ServerInterfaceWrapper) RunFsck(w http.ResponseWriter, r *http.Reques
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.RunFsck(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListApiKeys operation middleware
+func (siw *ServerInterfaceWrapper) ListApiKeys(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListApiKeys(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateApiKey operation middleware
+func (siw *ServerInterfaceWrapper) CreateApiKey(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateApiKey(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteApiKey operation middleware
+func (siw *ServerInterfaceWrapper) DeleteApiKey(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteApiKey(w, r, name)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateApiKey operation middleware
+func (siw *ServerInterfaceWrapper) UpdateApiKey(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateApiKey(w, r, name)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RotateApiKey operation middleware
+func (siw *ServerInterfaceWrapper) RotateApiKey(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", chi.URLParam(r, "name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RotateApiKey(w, r, name)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2409,6 +2682,21 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/fsck", wrapper.RunFsck)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/keys", wrapper.ListApiKeys)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/keys", wrapper.CreateApiKey)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/keys/{name}", wrapper.DeleteApiKey)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/v1/keys/{name}", wrapper.UpdateApiKey)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/keys/{name}/rotate", wrapper.RotateApiKey)
 	})
 	r.Group(func(r chi.Router) {
 		r.Delete(options.BaseURL+"/v1/links", wrapper.DeleteLink)

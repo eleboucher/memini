@@ -604,6 +604,127 @@ paths:
               schema: { $ref: "#/components/schemas/AnswerResponse" }
         "400": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /v1/keys:
+    get:
+      operationId: listApiKeys
+      tags: [memory]
+      summary: List API keys (name/home/default namespace/created/disabled/source — never a secret or hash)
+      description: >
+        Admin-gated (K3b): allowed only when the request authenticated with
+        the admin env key, or when auth is disabled entirely (dev/bootstrap
+        mode — no admin key, an empty api_keys table, and no
+        MEMINI_API_KEYS_FILE keys). A request authenticated by a named table
+        or file key gets 403. Includes keys from both the api_keys table
+        (source=db, mutable via this API) and the declarative
+        MEMINI_API_KEYS_FILE (source=file, read-only here — see
+        updateApiKey/deleteApiKey/rotateApiKey).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiKeysResponse" }
+        "403": { $ref: "#/components/responses/Error" }
+        "501": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createApiKey
+      tags: [memory]
+      summary: Create a new API key, returning its secret exactly once
+      description: >
+        Admin-gated, see listApiKeys. This is the UI-first bootstrap path:
+        with no admin key configured and no keys yet (auth disabled), create
+        the first key here and auth is enforced immediately afterward — no
+        TTL lag (see apiauth.Config.Invalidate). 409 if the name is already
+        taken, whether by a table key or a MEMINI_API_KEYS_FILE entry.
+        home/default_namespace are normalized and validated exactly like
+        `memini key add`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateApiKeyRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiKeyWithSecret" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "501": { $ref: "#/components/responses/Error" }
+  /v1/keys/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      operationId: updateApiKey
+      tags: [memory]
+      summary: Update an API key's home namespace, default namespace, and/or disabled state
+      description: >
+        Admin-gated, see listApiKeys. Preserve-unspecified semantics matching
+        `memini key add`'s rotation contract: an omitted field leaves the
+        stored value unchanged; an explicitly passed field — including an
+        explicit empty home/default_namespace, or disabled=false — overrides
+        it. 404 if no such key exists; 409 for a MEMINI_API_KEYS_FILE-sourced
+        key (managed declaratively via that file, not this API).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateApiKeyRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiKey" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "501": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteApiKey
+      tags: [memory]
+      summary: Delete an API key
+      description: >
+        Admin-gated, see listApiKeys. 404 if no such key exists; 409 for a
+        MEMINI_API_KEYS_FILE-sourced key (remove it from the file instead).
+      responses:
+        "204": { description: Deleted }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "501": { $ref: "#/components/responses/Error" }
+  /v1/keys/{name}/rotate:
+    post:
+      operationId: rotateApiKey
+      tags: [memory]
+      summary: Rotate an API key's secret, returning the new secret exactly once
+      description: >
+        Admin-gated, see listApiKeys. Generates a fresh secret (the one
+        canonical generator, apiauth.GenerateSecret); the old secret stops
+        authenticating immediately. Preserves the key's created_at,
+        home/default namespace bindings, and disabled state unchanged. 404 if
+        no such key exists; 409 for a MEMINI_API_KEYS_FILE-sourced key.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiKeyWithSecret" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "501": { $ref: "#/components/responses/Error" }
 components:
   securitySchemes:
     bearerAuth:
@@ -1196,3 +1317,72 @@ components:
             MEMINI_WRITE_DEDUP_SCORE with MEMINI_WRITE_DEDUP_ACTION="supersede"
             and the old memory was tombstoned in the background. The caller
             still receives the new memory.
+    ApiKeySource:
+      type: string
+      enum: [db, file]
+      description: >
+        Where the key is stored: "db" is a row in the api_keys table
+        (mutable via this API); "file" comes from MEMINI_API_KEYS_FILE,
+        loaded once at boot and immutable through this API — update/rotate/
+        delete all reject a "file" key with 409.
+    ApiKey:
+      type: object
+      required: [name, created_at, disabled, source]
+      properties:
+        name: { type: string }
+        home:
+          type: string
+          description: Bound home namespace; omitted/empty means unbound.
+        default_namespace:
+          type: string
+          description: >
+            Namespace applied when a request presents this key with no
+            explicit X-Memini-Namespace header.
+        created_at: { type: string, format: date-time }
+        disabled: { type: boolean }
+        source: { $ref: "#/components/schemas/ApiKeySource" }
+    ApiKeysResponse:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items: { $ref: "#/components/schemas/ApiKey" }
+    ApiKeyWithSecret:
+      allOf:
+        - $ref: "#/components/schemas/ApiKey"
+        - type: object
+          required: [secret]
+          properties:
+            secret:
+              type: string
+              description: >
+                The plaintext credential, shown exactly once, here — it is
+                never stored (only its SHA-256 hash is) and cannot be
+                recovered or displayed again.
+    CreateApiKeyRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        home: { type: string, description: Bind the key to a home namespace. }
+        default_namespace:
+          type: string
+          description: Namespace applied when a request presents this key with no explicit namespace header.
+        disabled: { type: boolean, default: false, description: Create the key already disabled. }
+    UpdateApiKeyRequest:
+      type: object
+      properties:
+        home:
+          type: string
+          description: >
+            Omit to leave the current binding unchanged; an explicit empty
+            string clears it.
+        default_namespace:
+          type: string
+          description: >
+            Omit to leave the current default unchanged; an explicit empty
+            string clears it.
+        disabled:
+          type: boolean
+          description: Omit to leave the current disabled state unchanged.
