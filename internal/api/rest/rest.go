@@ -629,7 +629,7 @@ func (h *Server) PutLink(w http.ResponseWriter, r *http.Request, _ PutLinkParams
 	// accurate without a second round-trip to re-read the stored row.
 	link := store.NamespaceLink{Src: src, Dst: dst, Tiers: tiers, Note: deref(req.Note), CreatedAt: time.Now().UTC()}
 	if err := ls.PutLink(r.Context(), link); err != nil {
-		writeError(w, r, http.StatusInternalServerError, err)
+		writeError(w, r, statusFor(err), err)
 		return
 	}
 	httputil.JSON(w, http.StatusOK, apiNamespaceLink(link))
@@ -645,7 +645,7 @@ func (h *Server) ListLinks(w http.ResponseWriter, r *http.Request, _ ListLinksPa
 	src := namespaceFromContext(r.Context())
 	links, err := ls.ListLinks(r.Context(), src)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, err)
+		writeError(w, r, statusFor(err), err)
 		return
 	}
 	out := NamespaceLinksResponse{Links: make([]NamespaceLink, len(links))}
@@ -679,7 +679,7 @@ func (h *Server) DeleteLink(w http.ResponseWriter, r *http.Request, params Delet
 	src := namespaceFromContext(r.Context())
 	found, err := ls.DeleteLink(r.Context(), src, dst)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, err)
+		writeError(w, r, statusFor(err), err)
 		return
 	}
 	if !found {
