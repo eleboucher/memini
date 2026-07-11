@@ -2,6 +2,7 @@ package maintenance
 
 import (
 	"context"
+	"errors"
 	"os"
 	"sort"
 	"strings"
@@ -75,6 +76,16 @@ func MigrateScopes(ctx context.Context, st store.Store, opts ScopesOptions) (Sco
 	rep := ScopesReport{DryRun: opts.DryRun}
 	if v := os.Getenv(envGlobalNamespace); v != "" {
 		rep.GlobalNamespaceEnv = v
+	}
+
+	// The post-merge dedup pass (gap G14) is mandatory once data actually
+	// moves, so a nil Embedder must fail fast here rather than panic deep
+	// inside dedupNamespace's emb.Embed call after some data has already
+	// moved. Similarity < 0 is the caller's explicit opt-out of dedup, the
+	// one case an apply run legitimately needs no embedder.
+	if !opts.DryRun && opts.Embedder == nil && opts.Dedup.Similarity >= 0 {
+		return rep, errors.New("maintenance: MigrateScopes requires an Embedder to apply " +
+			"(the post-merge dedup pass is mandatory); set opts.Dedup.Similarity < 0 to opt out")
 	}
 
 	names, err := st.ListNamespaces(ctx)

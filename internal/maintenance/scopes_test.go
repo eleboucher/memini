@@ -261,6 +261,38 @@ func TestMigrateScopesDryRun(t *testing.T) {
 	}
 }
 
+// TestMigrateScopesRequiresEmbedderToApply pins a fail-fast guard: applying
+// (DryRun: false) with a merge to do and no Embedder configured must error
+// before moving anything, rather than panicking deep inside the dedup pass
+// on a nil Embedder once Move has already committed.
+func TestMigrateScopesRequiresEmbedderToApply(t *testing.T) {
+	ctx := context.Background()
+	st, _ := openScopesStore(t)
+
+	putScoped(t, st, embedtest.New(scopesDims), "acme/_shared", "s1", "shared fact", 0.5)
+
+	_, err := maintenance.MigrateScopes(ctx, st, maintenance.ScopesOptions{})
+	if err == nil {
+		t.Fatal("want an error applying with no Embedder configured, got nil")
+	}
+	// Nothing moved: the guard fires before any Move.
+	if got := listAllNS(t, st, "acme/_shared"); len(got) != 1 {
+		t.Errorf("acme/_shared has %d memories after a failed apply, want unchanged 1", len(got))
+	}
+
+	// Similarity < 0 is the explicit dedup opt-out, so an apply with no
+	// Embedder is legal in that case.
+	rep, err := maintenance.MigrateScopes(ctx, st, maintenance.ScopesOptions{
+		Dedup: maintenance.DedupOptions{Similarity: -1},
+	})
+	if err != nil {
+		t.Fatalf("migrate scopes with dedup opted out: %v", err)
+	}
+	if len(rep.Merges) != 1 || rep.Merges[0].Moved != 1 {
+		t.Fatalf("merges = %+v, want one merge Moved=1", rep.Merges)
+	}
+}
+
 // TestMigrateScopesGlobalNamespaceEnvNotRewritten pins that a set
 // MEMINI_GLOBAL_NAMESPACE is surfaced in the report (for the CLI to print
 // adoption instructions from) but never used to drive a silent rewrite: with
