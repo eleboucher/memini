@@ -1415,3 +1415,189 @@ pre.json {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---- Activity feed --------------------------------------------------- */
+
+/* Event-kind pill. Reads share the semantic hue, writes the procedural one, and
+   the destructive kinds borrow the working tier's warm accent, so a glance at
+   the feed separates "was read" from "was changed". */
+.evkind {
+  --kc: var(--muted);
+  border-color: color-mix(in oklab, var(--kc) 45%, transparent);
+  color: color-mix(in oklab, var(--kc) 78%, var(--text));
+  background: color-mix(in oklab, var(--kc) 13%, transparent);
+}
+.evkind.recall,
+.evkind.briefing,
+.evkind.get {
+  --kc: var(--tier-episodic);
+}
+.evkind.remember,
+.evkind.update {
+  --kc: var(--tier-semantic);
+}
+.evkind.forget,
+.evkind.supersede {
+  --kc: var(--tier-procedural);
+}
+
+.chip.warn {
+  border-color: color-mix(in oklab, var(--tier-procedural) 50%, transparent);
+  color: color-mix(in oklab, var(--tier-procedural) 80%, var(--text));
+}
+.chip.on {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+.muted {
+  color: var(--muted);
+}
+
+.act-list {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+.act-event {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.act-event:last-child {
+  border-bottom: none;
+}
+.act-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.act-head .grow {
+  flex: 1;
+}
+.act-query {
+  font-weight: 500;
+  color: var(--text);
+}
+.act-what {
+  color: var(--text);
+}
+
+/* Served memories, indented under their event: rank, tier, summary, score. */
+.act-mems {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+  margin-left: 10px;
+  border-left: 1px solid var(--line);
+}
+.act-mem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 10px;
+  background: none;
+  border: none;
+  border-radius: var(--r-sm);
+  text-align: left;
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.act-mem:hover {
+  background: var(--surface-2);
+}
+.act-rank {
+  min-width: 26px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.act-summary {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.act-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+}
+.act-more .chip {
+  cursor: pointer;
+  padding: 6px 14px;
+}
+
+/* ---- Browse: sort + extra filters ------------------------------------ */
+
+.sort-control,
+.recency-filter,
+.ns-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  position: relative;
+}
+.sort-control select,
+.recency-filter select {
+  cursor: pointer;
+  appearance: none;
+}
+.sort-dir {
+  cursor: pointer;
+  padding: 2px 7px;
+}
+.ns-filter > .chip {
+  cursor: pointer;
+}
+.ns-filter-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  min-width: 200px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.ns-filter-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Derivation-level chip: explicit (stated) vs deduced (distilled). */
+.chip.level {
+  --lc: var(--tier-episodic);
+  border-color: color-mix(in oklab, var(--lc) 45%, transparent);
+  color: color-mix(in oklab, var(--lc) 78%, var(--text));
+  background: color-mix(in oklab, var(--lc) 13%, transparent);
+}
+.chip.level.deduced {
+  --lc: var(--tier-working);
+}
+
+/* Activity text filter: a chip-shaped search box, sized to fit a short phrase. */
+.act-search {
+  min-width: 220px;
+  padding: 4px 10px;
+  font-family: var(--font-ui);
+  color: var(--text);
+}
+.act-search::placeholder {
+  color: var(--muted);
+}
+
+/* Server advisory banner: the request worked, but not quite as asked. Shares
+   .banner's layout with .banner.err above; only the palette differs — amber
+   rather than ember, since this is an FYI, not a failure. */
+.banner.warn {
+  border-color: color-mix(in oklab, var(--tier-semantic) 55%, transparent);
+  background: color-mix(in oklab, var(--tier-semantic) 12%, transparent);
+  color: color-mix(in oklab, var(--tier-semantic) 82%, var(--text));
+}

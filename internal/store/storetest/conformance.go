@@ -53,6 +53,405 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("NamespaceLinks", func(t *testing.T) { testNamespaceLinks(t, st, dims) })
 	t.Run("NamespaceActivity", func(t *testing.T) { testNamespaceActivity(t, st, dims) })
 	t.Run("APIKeys", func(t *testing.T) { testAPIKeys(t, st, dims) })
+	t.Run("ListSort", func(t *testing.T) { testListSort(t, st, dims) })
+	t.Run("MemoryTypeFilter", func(t *testing.T) { testMemoryTypeFilter(t, st, dims) })
+	t.Run("ListRecencyWindow", func(t *testing.T) { testListRecencyWindow(t, st, dims) })
+	t.Run("EventLog", func(t *testing.T) { testEventLog(t, st, dims) })
+}
+
+// Fixture labels shared by the sort/filter subtests below. They are constants
+// because the same three memories are asserted on by every ordering case.
+const (
+	memOld = "old"
+	memMid = "mid"
+	memNew = "new"
+
+	typeDecision   = "decision"
+	typePreference = "preference"
+
+	opRecall   = "op-recall"
+	eventQuery = "why sqlite"
+)
+
+// testListSort pins List's ordering contract: results come back ordered by
+// Filter.Sort, the zero value means created_at descending, and a limit takes
+// the top N of that order rather than an arbitrary N. Both drivers must agree
+// byte for byte, since the all-namespaces aggregate merges their outputs with
+// an equivalent Go comparator.
+func testListSort(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+	base := time.Now().UTC().Truncate(time.Millisecond).Add(-72 * time.Hour)
+
+	// Three memories whose orderings differ per key, so a wrong ORDER BY column
+	// cannot accidentally produce the expected sequence.
+	for i, spec := range []struct {
+		short       string
+		createdOff  time.Duration // from base
+		updatedOff  time.Duration
+		accessedOff time.Duration
+		accessCount int
+		importance  float64
+	}{
+		{memOld, 0, 2 * time.Hour, 1 * time.Hour, 7, 0.1},
+		{memMid, 1 * time.Hour, 0, 2 * time.Hour, 1, 0.9},
+		{memNew, 2 * time.Hour, 1 * time.Hour, 0, 4, 0.5},
+	} {
+		m := mem(ns, spec.short, "sortable "+spec.short, vec(dims, float32(i+1)))
+		m.CreatedAt = base.Add(spec.createdOff)
+		m.UpdatedAt = base.Add(spec.updatedOff)
+		m.LastAccessedAt = base.Add(spec.accessedOff)
+		m.AccessCount = spec.accessCount
+		m.Importance = spec.importance
+		mustUpsert(t, st, m)
+	}
+
+	shorts := func(ms []*memory.Memory) []string {
+		out := make([]string, len(ms))
+		for i, m := range ms {
+			out[i] = strings.TrimPrefix(m.ID, ns+"/")
+		}
+		return out
+	}
+
+	for _, tc := range []struct {
+		name string
+		sort store.Sort
+		want []string
+	}{
+		{"default is created desc", store.Sort{}, []string{memNew, memMid, memOld}},
+		{"created asc", store.Sort{Key: store.SortCreatedAt, Asc: true}, []string{memOld, memMid, memNew}},
+		{"updated desc", store.Sort{Key: store.SortUpdatedAt}, []string{memOld, memNew, memMid}},
+		{"accessed desc", store.Sort{Key: store.SortLastAccessedAt}, []string{memMid, memOld, memNew}},
+		{"access count desc", store.Sort{Key: store.SortAccessCount}, []string{memOld, memNew, memMid}},
+		{"access count asc", store.Sort{Key: store.SortAccessCount, Asc: true}, []string{memMid, memNew, memOld}},
+		{"importance desc", store.Sort{Key: store.SortImportance}, []string{memMid, memNew, memOld}},
+		{"importance asc", store.Sort{Key: store.SortImportance, Asc: true}, []string{memOld, memNew, memMid}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := shorts(mustList(t, st, ns, store.Filter{Sort: tc.sort}))
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("order = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// A limit must take the top of the sorted order, not an arbitrary subset:
+	// this is what makes server-side sort + limit meaningful for the browser.
+	top, err := st.List(ctx, ns, store.Filter{Sort: store.Sort{Key: store.SortImportance}}, 1)
+	if err != nil {
+		t.Fatalf("list with limit: %v", err)
+	}
+	if got := shorts(top); !slices.Equal(got, []string{memMid}) {
+		t.Fatalf("limit 1 by importance desc = %v, want [mid]", got)
+	}
+}
+
+// testMemoryTypeFilter covers the OR-semantics metadata.memory_type filter the
+// UI's multi-select needs — distinct from Filter.Metadata, which ANDs one value
+// per key. Memories carrying no memory_type must never match.
+func testMemoryTypeFilter(t *testing.T, st store.Store, dims int) {
+	ns := t.Name()
+
+	decision := mem(ns, "dec", "we chose sqlite", vec(dims, 1))
+	decision.Metadata = map[string]any{"memory_type": typeDecision}
+	mustUpsert(t, st, decision)
+
+	preference := mem(ns, "pref", "user prefers tabs", vec(dims, 2))
+	preference.Metadata = map[string]any{"memory_type": typePreference}
+	mustUpsert(t, st, preference)
+
+	untyped := mem(ns, "untyped", "no memory type at all", vec(dims, 3))
+	mustUpsert(t, st, untyped)
+
+	for _, tc := range []struct {
+		name  string
+		types []string
+		want  []string
+	}{
+		{"empty matches all", nil, []string{id(ns, "dec"), id(ns, "pref"), id(ns, "untyped")}},
+		{"single type", []string{typeDecision}, []string{id(ns, "dec")}},
+		{"two types OR", []string{typeDecision, typePreference}, []string{id(ns, "dec"), id(ns, "pref")}},
+		{"unknown type matches none", []string{"nonesuch"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := memIDs(mustList(t, st, ns, store.Filter{MemoryTypes: tc.types}))
+			slices.Sort(got)
+			want := slices.Clone(tc.want)
+			slices.Sort(want)
+			if !slices.Equal(got, want) {
+				t.Fatalf("memory_type=%v matched %v, want %v", tc.types, got, want)
+			}
+		})
+	}
+}
+
+// testListRecencyWindow covers the CreatedAfter/AccessedAfter window filters,
+// which are inclusive at the boundary (>=).
+func testListRecencyWindow(t *testing.T, st store.Store, dims int) {
+	ns := t.Name()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	cutoff := now.Add(-24 * time.Hour)
+
+	old := mem(ns, "old", "created long ago, accessed long ago", vec(dims, 1))
+	old.CreatedAt = now.Add(-48 * time.Hour)
+	old.LastAccessedAt = now.Add(-48 * time.Hour)
+	mustUpsert(t, st, old)
+
+	// Straddles the window: created before the cutoff but accessed after it, so
+	// each filter selects a different memory — a filter wired to the wrong
+	// column would still pass with a simpler fixture.
+	revisited := mem(ns, "revisited", "created long ago, accessed just now", vec(dims, 2))
+	revisited.CreatedAt = now.Add(-48 * time.Hour)
+	revisited.LastAccessedAt = now
+	mustUpsert(t, st, revisited)
+
+	fresh := mem(ns, "fresh", "created at the cutoff exactly", vec(dims, 3))
+	fresh.CreatedAt = cutoff
+	fresh.LastAccessedAt = now.Add(-48 * time.Hour)
+	mustUpsert(t, st, fresh)
+
+	got := memIDs(mustList(t, st, ns, store.Filter{CreatedAfter: cutoff}))
+	if want := []string{id(ns, "fresh")}; !slices.Equal(got, want) {
+		t.Fatalf("CreatedAfter matched %v, want %v (boundary is inclusive)", got, want)
+	}
+
+	got = memIDs(mustList(t, st, ns, store.Filter{AccessedAfter: cutoff}))
+	if want := []string{id(ns, "revisited")}; !slices.Equal(got, want) {
+		t.Fatalf("AccessedAfter matched %v, want %v", got, want)
+	}
+}
+
+// testEventLog exercises the optional EventLogStore capability. Split into
+// focused subtests over one shared fixture: an append/list round trip, the
+// filters, the keyset cursor, and pruning. Stores that do not implement
+// EventLogStore skip.
+func testEventLog(t *testing.T, st store.Store, _ int) {
+	els, ok := st.(store.EventLogStore)
+	if !ok {
+		t.Skip("store does not implement store.EventLogStore")
+	}
+	ns := t.Name()
+	other := ns + "-other"
+	base := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Hour)
+
+	seedEvents(t, els, ns, other, base)
+
+	// Ordered: the prune subtests destroy the fixture the read subtests rely on,
+	// so they run last.
+	t.Run("RoundTripAndOrder", func(t *testing.T) { testEventRoundTrip(t, els, ns, base) })
+	t.Run("Filters", func(t *testing.T) { testEventFilters(t, els, ns, other, base) })
+	t.Run("Cursor", func(t *testing.T) { testEventCursor(t, els, ns) })
+	t.Run("Prune", func(t *testing.T) { testEventPrune(t, els, ns, base) })
+}
+
+// eventScore is the composite score the seeded recall's top hit was served with.
+const eventScore = 0.75
+
+// seedEvents writes the fixture the event-log subtests read: one recall serving
+// two memories of different tiers (two rows, one op_id, one timestamp), a later
+// write in the same namespace, and one event in another namespace.
+func seedEvents(t *testing.T, els store.EventLogStore, ns, other string, base time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	score := eventScore
+
+	if err := els.AppendEvents(ctx, []store.Event{
+		{
+			OpID: opRecall, Kind: store.EventRecall, Namespace: ns, Query: eventQuery,
+			MemoryID: "m1", MemoryNS: ns, MemoryTier: memory.TierSemantic,
+			MemorySummary: "we chose sqlite", Rank: 1, Score: &score,
+			Detail: map[string]any{"degraded": "vector"}, CreatedAt: base,
+		},
+		{
+			OpID: opRecall, Kind: store.EventRecall, Namespace: ns, Query: eventQuery,
+			MemoryID: "m2", MemoryNS: ns, MemoryTier: memory.TierEpisodic,
+			MemorySummary: "sqlite benchmark", Rank: 2, CreatedAt: base,
+		},
+	}); err != nil {
+		t.Fatalf("append recall: %v", err)
+	}
+	if err := els.AppendEvents(ctx, []store.Event{{
+		OpID: "op-remember", Kind: store.EventRemember, Namespace: ns,
+		MemoryID: "m3", MemoryNS: ns, MemoryTier: memory.TierSemantic,
+		MemorySummary: "a new fact", CreatedAt: base.Add(time.Minute),
+	}}); err != nil {
+		t.Fatalf("append remember: %v", err)
+	}
+	if err := els.AppendEvents(ctx, []store.Event{{
+		OpID: "op-elsewhere", Kind: store.EventGet, Namespace: other,
+		MemoryID: "m4", MemoryNS: other, CreatedAt: base.Add(2 * time.Minute),
+	}}); err != nil {
+		t.Fatalf("append other-namespace event: %v", err)
+	}
+}
+
+func mustListEvents(t *testing.T, els store.EventLogStore, f store.EventFilter) []store.Event {
+	t.Helper()
+	got, err := els.ListEvents(context.Background(), f)
+	if err != nil {
+		t.Fatalf("list events %+v: %v", f, err)
+	}
+	return got
+}
+
+// testEventRoundTrip covers newest-first ordering, an operation's rows staying
+// adjacent, and every field surviving the trip through the driver.
+func testEventRoundTrip(t *testing.T, els store.EventLogStore, ns string, base time.Time) {
+	all := mustListEvents(t, els, store.EventFilter{})
+	if len(all) < 4 {
+		t.Fatalf("expected at least 4 rows, got %d", len(all))
+	}
+	for i := 1; i < len(all); i++ {
+		if all[i-1].CreatedAt.Before(all[i].CreatedAt) {
+			t.Fatalf("rows not newest-first: row %d (%s) older than row %d (%s)",
+				i-1, all[i-1].CreatedAt, i, all[i].CreatedAt)
+		}
+	}
+
+	mine := mustListEvents(t, els, store.EventFilter{Namespace: ns})
+	if len(mine) != 3 {
+		t.Fatalf("namespace filter returned %d rows, want 3", len(mine))
+	}
+	if mine[0].Kind != store.EventRemember || mine[0].MemoryID != "m3" {
+		t.Fatalf("newest row = %+v, want the remember of m3", mine[0])
+	}
+	// The recall's two rows must be adjacent — the grouped reader regroups a
+	// flat page by walking consecutive rows sharing an op_id, so a driver that
+	// interleaved operations here would silently split events in the UI.
+	if mine[1].OpID != opRecall || mine[2].OpID != opRecall {
+		t.Fatalf("recall rows not adjacent: got op_ids %q, %q", mine[1].OpID, mine[2].OpID)
+	}
+	// Rows of one operation share a created_at, so the id-DESC tiebreak hands
+	// them back in reverse insertion order — rank 2 before rank 1. Adjacency is
+	// the store's contract; ordering *within* a group is the reader's job (it
+	// sorts by rank), so find the rows by rank rather than by position.
+	byRank := map[int]store.Event{mine[1].Rank: mine[1], mine[2].Rank: mine[2]}
+	top, ok := byRank[1]
+	if !ok {
+		t.Fatalf("no rank-1 row among the recall rows: %+v", mine[1:3])
+	}
+	if top.Score == nil || *top.Score != eventScore {
+		t.Fatalf("score round trip failed: %v", top.Score)
+	}
+	if top.Query != eventQuery || top.MemoryTier != memory.TierSemantic ||
+		top.MemorySummary != "we chose sqlite" || top.MemoryNS != ns {
+		t.Fatalf("recall row round trip failed: %+v", top)
+	}
+	if got := top.Detail["degraded"]; got != "vector" {
+		t.Fatalf("detail round trip: degraded = %v, want %q", got, "vector")
+	}
+	if !top.CreatedAt.Equal(base) {
+		t.Fatalf("created_at round trip: got %s, want %s", top.CreatedAt, base)
+	}
+	// A nil score must stay nil, not become 0 — "not applicable" and "scored
+	// zero" are different facts.
+	if second := byRank[2]; second.Score != nil {
+		t.Fatalf("rank-2 row score = %v, want nil", *second.Score)
+	}
+}
+
+// testEventFilters covers kind, tier, text, since and namespace narrowing.
+// Tier and text select whole operations, not rows.
+func testEventFilters(t *testing.T, els store.EventLogStore, ns, other string, base time.Time) {
+	if got := mustListEvents(t, els, store.EventFilter{
+		Namespace: ns, Kinds: []store.EventKind{store.EventRecall},
+	}); len(got) != 2 {
+		t.Fatalf("kind filter returned %d rows, want 2", len(got))
+	}
+
+	// The recall touched one semantic and one episodic memory, so filtering on
+	// either tier must return BOTH of its rows. Returning only the matching row
+	// would make the event misreport what it served.
+	for _, tier := range []memory.Tier{memory.TierSemantic, memory.TierEpisodic} {
+		got := mustListEvents(t, els, store.EventFilter{
+			Namespace: ns, Kinds: []store.EventKind{store.EventRecall}, Tiers: []memory.Tier{tier},
+		})
+		if len(got) != 2 {
+			t.Fatalf("tier=%s returned %d rows, want the recall's 2 rows intact "+
+				"(the operation matched, so all of its memories come back)", tier, len(got))
+		}
+	}
+	if got := mustListEvents(t, els, store.EventFilter{
+		Namespace: ns, Tiers: []memory.Tier{memory.TierWorking},
+	}); len(got) != 0 {
+		t.Fatalf("tier=working matched %d rows, want none", len(got))
+	}
+
+	for _, tc := range []struct {
+		name string
+		text string
+		want int
+	}{
+		{"matches a served memory's summary", "benchmark", 2},
+		{"matches the recall query", "why SQLite", 2}, // case-insensitive
+		{"matches a write's summary", "a new fact", 1},
+		{"matches nothing", "kangaroo", 0},
+		{"wildcards are literal, not patterns", "%", 0},
+	} {
+		if got := mustListEvents(t, els, store.EventFilter{Namespace: ns, Text: tc.text}); len(got) != tc.want {
+			t.Errorf("text=%q (%s) returned %d rows, want %d", tc.text, tc.name, len(got), tc.want)
+		}
+	}
+
+	since := mustListEvents(t, els, store.EventFilter{Namespace: ns, Since: base.Add(30 * time.Second)})
+	if len(since) != 1 || since[0].MemoryID != "m3" {
+		t.Fatalf("since filter returned %+v, want only the later remember", since)
+	}
+
+	narrowed := mustListEvents(t, els, store.EventFilter{Namespaces: []string{other}})
+	if len(narrowed) != 1 || narrowed[0].Namespace != other {
+		t.Fatalf("namespaces=[%s] returned %+v, want only that namespace's event", other, narrowed)
+	}
+}
+
+// testEventCursor covers the keyset cursor: paging must neither repeat a row
+// nor skip one.
+func testEventCursor(t *testing.T, els store.EventLogStore, ns string) {
+	page1 := mustListEvents(t, els, store.EventFilter{Namespace: ns, Limit: 1})
+	if len(page1) != 1 || page1[0].MemoryID != "m3" {
+		t.Fatalf("page 1 = %+v, want the single newest row (m3)", page1)
+	}
+	page2 := mustListEvents(t, els, store.EventFilter{
+		Namespace: ns, Limit: 2,
+		Before:   page1[0].CreatedAt,
+		BeforeID: page1[0].ID,
+	})
+	if len(page2) != 2 {
+		t.Fatalf("page 2 returned %d rows, want 2", len(page2))
+	}
+	for _, e := range page2 {
+		if e.ID == page1[0].ID {
+			t.Fatal("cursor re-returned the row it was taken from")
+		}
+	}
+}
+
+// testEventPrune covers pruning by age and by row cap. It destroys the fixture,
+// so it runs last.
+func testEventPrune(t *testing.T, els store.EventLogStore, ns string, base time.Time) {
+	ctx := context.Background()
+
+	// By age: drop the recall's rows (at base), keep everything later.
+	deleted, err := els.PruneEvents(ctx, base.Add(30*time.Second), 0)
+	if err != nil {
+		t.Fatalf("prune by age: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("prune by age deleted %d rows, want 2", deleted)
+	}
+	left := mustListEvents(t, els, store.EventFilter{Namespace: ns})
+	if len(left) != 1 || left[0].MemoryID != "m3" {
+		t.Fatalf("after age prune, remaining = %+v, want only m3", left)
+	}
+
+	// By cap: keep only the newest row across the whole log.
+	if _, err := els.PruneEvents(ctx, time.Time{}, 1); err != nil {
+		t.Fatalf("prune by cap: %v", err)
+	}
+	if remaining := mustListEvents(t, els, store.EventFilter{}); len(remaining) != 1 {
+		t.Fatalf("after cap prune, %d rows remain, want 1", len(remaining))
+	}
 }
 
 // testNamespaceActivity verifies the optional ActivityStore aggregate: one

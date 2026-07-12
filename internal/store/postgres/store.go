@@ -148,6 +148,31 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		)`,
 		// Backfill default_ns on databases whose api_keys table predates it.
 		`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS default_ns text NOT NULL DEFAULT ''`,
+		// memory_events is the activity log (see store.EventLogStore): one row
+		// per (operation, memory), rows of one operation sharing op_id. The
+		// memory_* columns are a snapshot, not a join — they keep the feed a
+		// single query and keep a forget event readable after its memory is gone.
+		`CREATE TABLE IF NOT EXISTS memory_events (
+			id             bigserial PRIMARY KEY,
+			op_id          text NOT NULL,
+			kind           text NOT NULL,
+			namespace      text NOT NULL,
+			query          text NOT NULL DEFAULT '',
+			memory_id      text NOT NULL DEFAULT '',
+			memory_ns      text NOT NULL DEFAULT '',
+			memory_tier    text NOT NULL DEFAULT '',
+			memory_summary text NOT NULL DEFAULT '',
+			rank           integer NOT NULL DEFAULT 0,
+			score          double precision,
+			detail         jsonb NOT NULL DEFAULT '{}',
+			created_at     timestamptz NOT NULL
+		)`,
+		// The read path is always newest-first, optionally narrowed by namespace;
+		// the (created_at DESC, id DESC) tail matches ListEvents' ordering so the
+		// keyset cursor walks the index.
+		`CREATE INDEX IF NOT EXISTS idx_memory_events_ns_time ON memory_events(namespace, created_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_events_time ON memory_events(created_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_events_memory ON memory_events(memory_id)`,
 	}
 	for _, q := range stmts {
 		if _, err := conn.Exec(ctx, q); err != nil {
@@ -450,12 +475,14 @@ func (s *Store) ListExpired(ctx context.Context, now time.Time, limit int) ([]*m
 	return out, rows.Err()
 }
 
-// List returns memories in a namespace matching f (without embeddings).
+// List returns memories in a namespace matching f (without embeddings),
+// ordered by f.Sort (newest-created first by default).
 func (s *Store) List(ctx context.Context, namespace string, f store.Filter, limit int) ([]*memory.Memory, error) {
 	b := &args{}
 	ns := b.add(namespace)
 	where := filterClause(b, f)
-	q := fmt.Sprintf(`SELECT %s FROM memories WHERE namespace = %s%s`, memoryColumns, ns, where)
+	q := fmt.Sprintf(`SELECT %s FROM memories WHERE namespace = %s%s%s`,
+		memoryColumns, ns, where, orderClause(f.Sort))
 	if limit > 0 {
 		q += " LIMIT " + b.add(limit)
 	}

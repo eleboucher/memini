@@ -280,6 +280,19 @@ type Config struct {
 	// removing it is the only irreversible maintenance action. Set e.g. 720h
 	// (30d) to enable.
 	TombstoneTTL time.Duration `env:"MEMINI_TOMBSTONE_TTL" envDefault:"0"`
+
+	// ActivityLog records reads (recall/get/briefing) and writes
+	// (remember/update/forget/supersede) to the activity log that backs the UI's
+	// Activity page. Writes are best-effort and off the request path, so the cost
+	// is storage, not latency; set false to record nothing.
+	ActivityLog bool `env:"MEMINI_ACTIVITY_LOG" envDefault:"true"`
+	// ActivityRetention drops activity events older than this. 0 keeps them
+	// forever (bounded only by ActivityMaxRows).
+	ActivityRetention time.Duration `env:"MEMINI_ACTIVITY_RETENTION" envDefault:"720h"`
+	// ActivityMaxRows caps the activity log, dropping the oldest rows beyond it.
+	// A busy agent writes several rows per recall, so the cap — not the retention
+	// window — is usually what bounds the table. 0 disables the cap.
+	ActivityMaxRows int `env:"MEMINI_ACTIVITY_MAX_ROWS" envDefault:"100000"`
 	// DemoteAfter demotes durable memories older than this to the episodic tier
 	// when they have never been recalled, are not important, and are
 	// uncorroborated (low confidence) — so an old bulk import ages out while

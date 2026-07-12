@@ -145,9 +145,17 @@ func (a AuthConfig) homeMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if p, ok := principalFromContext(r.Context()); ok && p.HomeNS != "" {
 			if raw := strings.TrimSpace(r.Header.Get(a.HomeHeader)); raw != "" {
-				if hdr := httputil.NormalizeNamespace(raw); hdr != "" && hdr != p.HomeNS {
-					slog.DebugContext(r.Context(), "X-Memini-Home ignored: request key is bound to a home namespace",
+				hdr := httputil.NormalizeNamespace(raw)
+				if warn := httputil.HomeConflictWarning(p.Name, p.HomeNS, hdr); warn != "" {
+					// The override is silent from the caller's side — they asked for
+					// one home and got another — so say so loudly enough to be
+					// noticed: a warn-level log for the operator, and a response
+					// header the client (and the admin UI) can surface. Still never
+					// a 400: a shared client config that always sets the header is
+					// not a caller error.
+					slog.WarnContext(r.Context(), "X-Memini-Home ignored: request key is bound to a home namespace",
 						"key", p.Name, "key_home", p.HomeNS, "header_home", hdr)
+					w.Header().Set(httputil.WarningHeader, warn)
 				}
 			}
 			ctx := context.WithValue(r.Context(), homeKey, p.HomeNS)

@@ -145,6 +145,12 @@ type SweeperConfig struct {
 	// DemoteAfter demotes never-recalled, low-importance durable memories older
 	// than this to the episodic tier so unused debris ages out. 0 disables it.
 	DemoteAfter time.Duration
+	// ActivityRetention drops activity-log events older than now-retention.
+	// 0 disables age-based pruning.
+	ActivityRetention time.Duration
+	// ActivityMaxRows caps the activity log, dropping the oldest rows beyond it.
+	// 0 disables the cap. With both bounds 0 the log grows without limit.
+	ActivityMaxRows int
 }
 
 // Sweeper periodically purges expired memories, enforces the short-term cap, and
@@ -206,5 +212,10 @@ func (s *Sweeper) sweep(ctx context.Context) {
 		} else if n > 0 {
 			s.log.Info("demoted stale durable memories to episodic", "count", n)
 		}
+	}
+	if n, err := PruneEvents(ctx, s.store, now, s.cfg.ActivityRetention, s.cfg.ActivityMaxRows); err != nil {
+		s.log.Warn("activity log pruning failed", "error", err)
+	} else if n > 0 {
+		s.log.Info("pruned activity log", "count", n)
 	}
 }

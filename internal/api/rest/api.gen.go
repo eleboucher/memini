@@ -63,6 +63,39 @@ func (e ApiKeySource) Valid() bool {
 	}
 }
 
+// Defines values for EventKind.
+const (
+	EventKindBriefing  EventKind = "briefing"
+	EventKindForget    EventKind = "forget"
+	EventKindGet       EventKind = "get"
+	EventKindRecall    EventKind = "recall"
+	EventKindRemember  EventKind = "remember"
+	EventKindSupersede EventKind = "supersede"
+	EventKindUpdate    EventKind = "update"
+)
+
+// Valid indicates whether the value is a known member of the EventKind enum.
+func (e EventKind) Valid() bool {
+	switch e {
+	case EventKindBriefing:
+		return true
+	case EventKindForget:
+		return true
+	case EventKindGet:
+		return true
+	case EventKindRecall:
+		return true
+	case EventKindRemember:
+		return true
+	case EventKindSupersede:
+		return true
+	case EventKindUpdate:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Level.
 const (
 	Deduced  Level = "deduced"
@@ -159,6 +192,51 @@ func (e Tier) Valid() bool {
 	}
 }
 
+// Defines values for ListMemoriesParamsSort.
+const (
+	AccessCount    ListMemoriesParamsSort = "access_count"
+	CreatedAt      ListMemoriesParamsSort = "created_at"
+	Importance     ListMemoriesParamsSort = "importance"
+	LastAccessedAt ListMemoriesParamsSort = "last_accessed_at"
+	UpdatedAt      ListMemoriesParamsSort = "updated_at"
+)
+
+// Valid indicates whether the value is a known member of the ListMemoriesParamsSort enum.
+func (e ListMemoriesParamsSort) Valid() bool {
+	switch e {
+	case AccessCount:
+		return true
+	case CreatedAt:
+		return true
+	case Importance:
+		return true
+	case LastAccessedAt:
+		return true
+	case UpdatedAt:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListMemoriesParamsOrder.
+const (
+	Asc  ListMemoriesParamsOrder = "asc"
+	Desc ListMemoriesParamsOrder = "desc"
+)
+
+// Valid indicates whether the value is a known member of the ListMemoriesParamsOrder enum.
+func (e ListMemoriesParamsOrder) Valid() bool {
+	switch e {
+	case Asc:
+		return true
+	case Desc:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for GetBriefingParamsScope.
 const (
 	Everywhere GetBriefingParamsScope = "everywhere"
@@ -184,6 +262,54 @@ func (e GetBriefingParamsScope) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// ActivityEvent One logical operation, with the memories it served or wrote.
+type ActivityEvent struct {
+	// Detail Kind-specific context — a recall's degraded mode, a supersession's replacement id.
+	Detail *map[string]interface{} `json:"detail,omitempty"`
+
+	// Kind The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede.
+	Kind EventKind `json:"kind"`
+
+	// Memories Empty for a recall that matched nothing.
+	Memories *[]ActivityMemory `json:"memories,omitempty"`
+
+	// Namespace The namespace the request was made against.
+	Namespace string `json:"namespace"`
+	OpId      string `json:"op_id"`
+
+	// Query The recall query; absent for every other kind.
+	Query *string   `json:"query,omitempty"`
+	Time  time.Time `json:"time"`
+}
+
+// ActivityMemory One memory as it appeared in an event — a snapshot taken at serve time, so a forgotten memory still renders — plus why it was there.
+type ActivityMemory struct {
+	Id string `json:"id"`
+
+	// Namespace The memory's own namespace, which for a cascading recall may differ from the event's.
+	Namespace string `json:"namespace"`
+
+	// Rank 1-based position the memory was served at; absent when not applicable.
+	Rank *int `json:"rank,omitempty"`
+
+	// Score Composite relevance score it was served with; recall only.
+	Score *float64 `json:"score,omitempty"`
+
+	// Section Which briefing section it appeared under; briefing only.
+	Section *string `json:"section,omitempty"`
+	Summary string  `json:"summary"`
+	Tier    Tier    `json:"tier"`
+}
+
+// ActivityResponse defines model for ActivityResponse.
+type ActivityResponse struct {
+	Events  []ActivityEvent `json:"events"`
+	HasMore bool            `json:"has_more"`
+
+	// NextCursor Pass as "before" to fetch the next page; absent on the last page.
+	NextCursor *string `json:"next_cursor,omitempty"`
 }
 
 // AnswerRequest defines model for AnswerRequest.
@@ -365,6 +491,9 @@ type DeleteNamespaceResponse struct {
 	// Deleted Number of memories deleted
 	Deleted int `json:"deleted"`
 }
+
+// EventKind The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede.
+type EventKind string
 
 // FsckReport defines model for FsckReport.
 type FsckReport struct {
@@ -627,6 +756,36 @@ type Error struct {
 // bearerAuthContextKey is the context key for bearerAuth security scheme
 type bearerAuthContextKey string
 
+// ListActivityParams defines parameters for ListActivity.
+type ListActivityParams struct {
+	// Kind Repeatable and/or comma-separated event-kind filter; omitted means all kinds.
+	Kind *[]EventKind `form:"kind,omitempty" json:"kind,omitempty"`
+
+	// Tier Repeatable and/or comma-separated tier filter. Selects whole operations that touched a memory of a listed tier — a matching event is returned with every memory it served, so its counts stay truthful.
+	Tier *[]Tier `form:"tier,omitempty" json:"tier,omitempty"`
+
+	// Q Free-text filter, case-insensitive. Selects whole operations whose recall query or any served memory's summary contains it.
+	Q *string `form:"q,omitempty" json:"q,omitempty"`
+
+	// Since Only events recorded at or after this instant.
+	Since *time.Time `form:"since,omitempty" json:"since,omitempty"`
+
+	// Namespace With all_namespaces=true, restrict the feed to these namespaces (repeatable, exact match); ignored otherwise.
+	Namespace *[]string `form:"namespace,omitempty" json:"namespace,omitempty"`
+
+	// Limit Caps the returned events (operations, not rows). Default 50, max 200.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Before Opaque cursor from a previous response's next_cursor; returns the page of events strictly older than it.
+	Before *string `form:"before,omitempty" json:"before,omitempty"`
+
+	// AllNamespaces Aggregate across every namespace, ignoring the namespace header.
+	AllNamespaces *bool `form:"all_namespaces,omitempty" json:"all_namespaces,omitempty"`
+
+	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
+}
+
 // AnswerQuestionParams defines parameters for AnswerQuestion.
 type AnswerQuestionParams struct {
 	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
@@ -712,12 +871,36 @@ type ListMemoriesParams struct {
 	// Limit Caps the result count; 0 or absent returns all matches.
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 
-	// AllNamespaces Aggregate across every namespace, ignoring the namespace header. The server merges all namespaces and applies limit as a single global cap (newest first), so the admin UI's "All projects" view fetches one response instead of one request per namespace.
+	// AllNamespaces Aggregate across every namespace, ignoring the namespace header. The server merges all namespaces and applies limit as a single global cap under the requested sort, so the admin UI's "All projects" view fetches one response instead of one request per namespace.
 	AllNamespaces *bool `form:"all_namespaces,omitempty" json:"all_namespaces,omitempty"`
+
+	// Namespace With all_namespaces=true, restrict the aggregate to these namespaces (repeatable, exact match); ignored otherwise. Lets the browser narrow an "All projects" listing without changing the active namespace.
+	Namespace *[]string `form:"namespace,omitempty" json:"namespace,omitempty"`
+
+	// MemoryType Repeatable and/or comma-separated metadata.memory_type filter; a memory matches if its type is ANY of the listed values (OR). Distinct from "meta", which ANDs one value per key.
+	MemoryType *[]string `form:"memory_type,omitempty" json:"memory_type,omitempty"`
+
+	// CreatedAfter Only memories created at or after this instant.
+	CreatedAfter *time.Time `form:"created_after,omitempty" json:"created_after,omitempty"`
+
+	// AccessedAfter Only memories last accessed at or after this instant.
+	AccessedAfter *time.Time `form:"accessed_after,omitempty" json:"accessed_after,omitempty"`
+
+	// Sort Column to order by. Defaults to created_at.
+	Sort *ListMemoriesParamsSort `form:"sort,omitempty" json:"sort,omitempty"`
+
+	// Order Sort direction. Defaults to desc (newest / highest first).
+	Order *ListMemoriesParamsOrder `form:"order,omitempty" json:"order,omitempty"`
 
 	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
+
+// ListMemoriesParamsSort defines parameters for ListMemories.
+type ListMemoriesParamsSort string
+
+// ListMemoriesParamsOrder defines parameters for ListMemories.
+type ListMemoriesParamsOrder string
 
 // RememberMemoryParams defines parameters for RememberMemory.
 type RememberMemoryParams struct {
@@ -883,6 +1066,9 @@ type SearchMemoriesJSONRequestBody = SearchRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// Recent memory activity — what was served or written, and why
+	// (GET /v1/activity)
+	ListActivity(w http.ResponseWriter, r *http.Request, params ListActivityParams)
 	// Recall memories and answer a question grounded on them (requires an LLM)
 	// (POST /v1/answer)
 	AnswerQuestion(w http.ResponseWriter, r *http.Request, params AnswerQuestionParams)
@@ -969,6 +1155,12 @@ type ServerInterface interface {
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
 
 type Unimplemented struct{}
+
+// Recent memory activity — what was served or written, and why
+// (GET /v1/activity)
+func (_ Unimplemented) ListActivity(w http.ResponseWriter, r *http.Request, params ListActivityParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
 
 // Recall memories and answer a question grounded on them (requires an LLM)
 // (POST /v1/answer)
@@ -1140,6 +1332,157 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// ListActivity operation middleware
+func (siw *ServerInterfaceWrapper) ListActivity(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListActivityParams
+
+	// ------------- Optional query parameter "kind" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "kind", r.URL.Query(), &params.Kind, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "kind"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "kind", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "tier" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "tier", r.URL.Query(), &params.Tier, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "tier"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tier", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "q" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "q", r.URL.Query(), &params.Q, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "q"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "q", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "since" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "since", r.URL.Query(), &params.Since, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "since"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "since", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "namespace" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "namespace", r.URL.Query(), &params.Namespace, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "namespace"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "namespace", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "before" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "before", r.URL.Query(), &params.Before, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "before"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "before", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "all_namespaces" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "all_namespaces", r.URL.Query(), &params.AllNamespaces, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "all_namespaces"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "all_namespaces", Err: err})
+		}
+		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Memini-Namespace" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Memini-Namespace")]; found {
+		var XMeminiNamespace Namespace
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Memini-Namespace", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Memini-Namespace", valueList[0], &XMeminiNamespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Memini-Namespace", Err: err})
+			return
+		}
+
+		params.XMeminiNamespace = &XMeminiNamespace
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListActivity(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // AnswerQuestion operation middleware
 func (siw *ServerInterfaceWrapper) AnswerQuestion(w http.ResponseWriter, r *http.Request) {
@@ -1747,6 +2090,84 @@ func (siw *ServerInterfaceWrapper) ListMemories(w http.ResponseWriter, r *http.R
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "all_namespaces"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "all_namespaces", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "namespace" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "namespace", r.URL.Query(), &params.Namespace, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "namespace"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "namespace", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "memory_type" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "memory_type", r.URL.Query(), &params.MemoryType, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "memory_type"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "memory_type", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "created_after" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "created_after", r.URL.Query(), &params.CreatedAfter, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "created_after"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "created_after", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "accessed_after" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "accessed_after", r.URL.Query(), &params.AccessedAfter, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "accessed_after"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "accessed_after", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "sort" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "sort", r.URL.Query(), &params.Sort, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "sort"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sort", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "order" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "order", r.URL.Query(), &params.Order, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "order"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "order", Err: err})
 		}
 		return
 	}
@@ -2676,6 +3097,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		ErrorHandlerFunc:   options.ErrorHandlerFunc,
 	}
 
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/activity", wrapper.ListActivity)
+	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/answer", wrapper.AnswerQuestion)
 	})

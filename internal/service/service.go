@@ -192,6 +192,11 @@ func invalidInputf(format string, args ...any) error {
 	return fmt.Errorf(format+": %w", append(args, ErrInvalidInput)...)
 }
 
+// ErrUnsupported marks an operation the configured storage driver cannot serve
+// because it lacks the optional capability the operation needs (e.g. reading
+// the activity log from a driver with no event log). API layers map it to 501.
+var ErrUnsupported = errors.New("unsupported by this storage backend")
+
 // Service wires storage and embeddings together. It is safe for concurrent use.
 type Service struct {
 	store    store.Store
@@ -285,6 +290,10 @@ type Service struct {
 	metrics Metrics
 	// syncReinforce makes recall reinforcement synchronous (deterministic tests).
 	syncReinforce bool
+	// eventLogOn records reads and writes to the activity log (see events.go).
+	eventLogOn bool
+	// syncEventLog makes activity-log writes synchronous (deterministic tests).
+	syncEventLog bool
 
 	// shortTermCap bounds short-term memories per namespace during fsck (0 = off).
 	shortTermCap int
@@ -479,6 +488,13 @@ func WithMetrics(m Metrics) Option { return func(s *Service) { s.metrics = m } }
 
 // WithSyncReinforce makes recall reinforcement run synchronously (tests).
 func WithSyncReinforce() Option { return func(s *Service) { s.syncReinforce = true } }
+
+// WithEventLog records reads and writes to the activity log (see events.go).
+// A no-op against a driver that does not implement store.EventLogStore.
+func WithEventLog(on bool) Option { return func(s *Service) { s.eventLogOn = on } }
+
+// WithSyncEventLog makes activity-log writes run synchronously (tests).
+func WithSyncEventLog() Option { return func(s *Service) { s.syncEventLog = true } }
 
 // WithShortTermCap bounds short-term memories per namespace, enforced by fsck.
 func WithShortTermCap(cap int) Option { return func(s *Service) { s.shortTermCap = cap } }
@@ -1108,6 +1124,8 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		s.metrics.RememberResult("error", string(tier))
 		return nil, fmt.Errorf("remember: store: %w", err)
 	}
+
+	s.logWriteEvent(ctx, m, existing)
 
 	// Auto-supersede: now that the replacement is durably stored, tombstone the
 	// near-duplicate in the background. Deferred to here so a failed Upsert above
@@ -1928,6 +1946,10 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	results := s.finalizeRecall(ctx, in.Query, ranked, k)
 	results = s.maybeExpandLinked(ctx, in, results, k)
 	s.reinforceResults(ctx, results)
+	// Reinforcement rolls usage up into per-memory counters; the activity log
+	// keeps the detail those counters throw away — which query served this
+	// memory, at what rank, with what score.
+	s.logRecallEvent(ctx, in, results)
 	s.metrics.RecallResult("ok", tf, hitsBucket(len(results)))
 	return results, nil
 }
@@ -2682,8 +2704,18 @@ func metaSeconds(v any) (int64, bool) {
 }
 
 // Get returns a single memory by ID.
+//
+// A get is logged to the activity feed but deliberately does not reinforce:
+// reinforcement is a relevance signal (it slides TTLs and gates promotion), and
+// addressing a memory by ID — which is what the UI drawer does — says nothing
+// about whether it answered a question.
 func (s *Service) Get(ctx context.Context, namespace, id string) (*memory.Memory, error) {
-	return s.store.Get(ctx, namespace, id)
+	m, err := s.store.Get(ctx, namespace, id)
+	if err != nil {
+		return nil, err
+	}
+	s.logMemoryEvent(ctx, store.EventGet, namespace, m, nil)
+	return m, nil
 }
 
 // History returns the full supersession lineage of a memory: the memory itself,
@@ -2752,10 +2784,19 @@ func (s *Service) History(ctx context.Context, namespace, id string) ([]*memory.
 func (s *Service) Forget(ctx context.Context, namespace, id string) error {
 	start := time.Now()
 	defer func() { s.metrics.OpDuration("forget", time.Since(start)) }()
+	// Snapshot before deleting: after the row is gone there is nothing left to
+	// describe it, and an activity feed that can only say "some memory was
+	// forgotten" is not worth much. Best-effort — a failed read here must not
+	// block the delete.
+	var doomed *memory.Memory
+	if _, ok := s.eventLog(); ok {
+		doomed, _ = s.store.Get(ctx, namespace, id)
+	}
 	err := s.store.Delete(ctx, namespace, id)
 	switch {
 	case err == nil:
 		s.metrics.ForgetResult("ok")
+		s.logMemoryEvent(ctx, store.EventForget, namespace, doomed, nil)
 	case errors.Is(err, store.ErrNotFound):
 		s.metrics.ForgetResult("not_found")
 	default:
@@ -2776,10 +2817,18 @@ func (s *Service) Supersede(ctx context.Context, namespace, id, supersededBy str
 	if strings.TrimSpace(supersededBy) == "" {
 		return invalidInputf("supersede: supersededBy is required")
 	}
+	// Snapshot the memory as it was before the tombstone, so the feed can say
+	// what was replaced rather than just that something was.
+	var replaced *memory.Memory
+	if _, ok := s.eventLog(); ok {
+		replaced, _ = s.store.Get(ctx, namespace, id)
+	}
 	err := s.store.SetSuperseded(ctx, namespace, id, supersededBy)
 	switch {
 	case err == nil:
 		s.metrics.SupersedeResult("ok")
+		s.logMemoryEvent(ctx, store.EventSupersede, namespace, replaced,
+			map[string]any{"superseded_by": supersededBy})
 	case errors.Is(err, store.ErrNotFound):
 		s.metrics.SupersedeResult("not_found")
 	default:

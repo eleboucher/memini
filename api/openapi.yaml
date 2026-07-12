@@ -137,9 +137,42 @@ paths:
           description: >
             Aggregate across every namespace, ignoring the namespace header. The
             server merges all namespaces and applies limit as a single global cap
-            (newest first), so the admin UI's "All projects" view fetches one
-            response instead of one request per namespace.
+            under the requested sort, so the admin UI's "All projects" view fetches
+            one response instead of one request per namespace.
           schema: { type: boolean, default: false }
+        - name: namespace
+          in: query
+          description: >
+            With all_namespaces=true, restrict the aggregate to these namespaces
+            (repeatable, exact match); ignored otherwise. Lets the browser narrow
+            an "All projects" listing without changing the active namespace.
+          schema: { type: array, items: { type: string } }
+        - name: memory_type
+          in: query
+          description: >
+            Repeatable and/or comma-separated metadata.memory_type filter; a memory
+            matches if its type is ANY of the listed values (OR). Distinct from
+            "meta", which ANDs one value per key.
+          schema: { type: array, items: { type: string } }
+        - name: created_after
+          in: query
+          description: Only memories created at or after this instant.
+          schema: { type: string, format: date-time }
+        - name: accessed_after
+          in: query
+          description: Only memories last accessed at or after this instant.
+          schema: { type: string, format: date-time }
+        - name: sort
+          in: query
+          description: Column to order by. Defaults to created_at.
+          schema:
+            type: string
+            enum: [created_at, updated_at, last_accessed_at, access_count, importance]
+            default: created_at
+        - name: order
+          in: query
+          description: Sort direction. Defaults to desc (newest / highest first).
+          schema: { type: string, enum: [asc, desc], default: desc }
       responses:
         "200":
           description: OK
@@ -725,6 +758,72 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "501": { $ref: "#/components/responses/Error" }
+  /v1/activity:
+    get:
+      operationId: listActivity
+      tags: [memory]
+      summary: Recent memory activity — what was served or written, and why
+      description: >
+        The activity log: reads (recall, get, session briefing) and writes
+        (remember, update, forget, supersede), newest first. A recall event
+        carries the query that ran and, for each memory it served, the rank and
+        composite score it was served at — the "why" that per-memory access
+        counters cannot reconstruct. Events are grouped by operation, so one
+        recall serving five memories is one event with five memories.
+
+        Returns 501 against a storage backend with no activity log.
+      parameters:
+        - { $ref: "#/components/parameters/Namespace" }
+        - name: kind
+          in: query
+          description: Repeatable and/or comma-separated event-kind filter; omitted means all kinds.
+          schema: { type: array, items: { $ref: "#/components/schemas/EventKind" } }
+        - name: tier
+          in: query
+          description: >
+            Repeatable and/or comma-separated tier filter. Selects whole
+            operations that touched a memory of a listed tier — a matching event
+            is returned with every memory it served, so its counts stay truthful.
+          schema: { type: array, items: { $ref: "#/components/schemas/Tier" } }
+        - name: q
+          in: query
+          description: >
+            Free-text filter, case-insensitive. Selects whole operations whose
+            recall query or any served memory's summary contains it.
+          schema: { type: string }
+        - name: since
+          in: query
+          description: Only events recorded at or after this instant.
+          schema: { type: string, format: date-time }
+        - name: namespace
+          in: query
+          description: >
+            With all_namespaces=true, restrict the feed to these namespaces
+            (repeatable, exact match); ignored otherwise.
+          schema: { type: array, items: { type: string } }
+        - name: limit
+          in: query
+          description: Caps the returned events (operations, not rows). Default 50, max 200.
+          schema: { type: integer }
+        - name: before
+          in: query
+          description: >
+            Opaque cursor from a previous response's next_cursor; returns the page
+            of events strictly older than it.
+          schema: { type: string }
+        - name: all_namespaces
+          in: query
+          description: Aggregate across every namespace, ignoring the namespace header.
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActivityResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "501": { $ref: "#/components/responses/Error" }
 components:
   securitySchemes:
     bearerAuth:
@@ -1005,6 +1104,68 @@ components:
         memories:
           type: array
           items: { $ref: "#/components/schemas/Memory" }
+    EventKind:
+      type: string
+      description: >
+        The operation an activity event records. Reads: recall, get, briefing.
+        Writes: remember, update, forget, supersede.
+      enum: [recall, get, briefing, remember, update, forget, supersede]
+    ActivityMemory:
+      type: object
+      description: >
+        One memory as it appeared in an event — a snapshot taken at serve time,
+        so a forgotten memory still renders — plus why it was there.
+      required: [id, namespace, summary, tier]
+      properties:
+        id: { type: string }
+        namespace:
+          type: string
+          description: The memory's own namespace, which for a cascading recall may differ from the event's.
+        summary: { type: string }
+        tier: { $ref: "#/components/schemas/Tier" }
+        rank:
+          type: integer
+          description: 1-based position the memory was served at; absent when not applicable.
+        score:
+          type: number
+          format: double
+          description: Composite relevance score it was served with; recall only.
+        section:
+          type: string
+          description: Which briefing section it appeared under; briefing only.
+    ActivityEvent:
+      type: object
+      description: One logical operation, with the memories it served or wrote.
+      required: [op_id, kind, time, namespace]
+      properties:
+        op_id: { type: string }
+        kind: { $ref: "#/components/schemas/EventKind" }
+        time: { type: string, format: date-time }
+        namespace:
+          type: string
+          description: The namespace the request was made against.
+        query:
+          type: string
+          description: The recall query; absent for every other kind.
+        detail:
+          type: object
+          additionalProperties: true
+          description: Kind-specific context — a recall's degraded mode, a supersession's replacement id.
+        memories:
+          type: array
+          description: Empty for a recall that matched nothing.
+          items: { $ref: "#/components/schemas/ActivityMemory" }
+    ActivityResponse:
+      type: object
+      required: [events, has_more]
+      properties:
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/ActivityEvent" }
+        next_cursor:
+          type: string
+          description: Pass as "before" to fetch the next page; absent on the last page.
+        has_more: { type: boolean }
     Briefing:
       type: object
       required: [namespace]

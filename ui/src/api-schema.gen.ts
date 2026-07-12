@@ -467,6 +467,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Recent memory activity — what was served or written, and why
+         * @description The activity log: reads (recall, get, session briefing) and writes (remember, update, forget, supersede), newest first. A recall event carries the query that ran and, for each memory it served, the rank and composite score it was served at — the "why" that per-memory access counters cannot reconstruct. Events are grouped by operation, so one recall serving five memories is one event with five memories.
+         *     Returns 501 against a storage backend with no activity log.
+         */
+        get: operations["listActivity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -618,6 +639,51 @@ export interface components {
         };
         ListResponse: {
             memories: components["schemas"]["Memory"][];
+        };
+        /**
+         * @description The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede.
+         * @enum {string}
+         */
+        EventKind: "recall" | "get" | "briefing" | "remember" | "update" | "forget" | "supersede";
+        /** @description One memory as it appeared in an event — a snapshot taken at serve time, so a forgotten memory still renders — plus why it was there. */
+        ActivityMemory: {
+            id: string;
+            /** @description The memory's own namespace, which for a cascading recall may differ from the event's. */
+            namespace: string;
+            summary: string;
+            tier: components["schemas"]["Tier"];
+            /** @description 1-based position the memory was served at; absent when not applicable. */
+            rank?: number;
+            /**
+             * Format: double
+             * @description Composite relevance score it was served with; recall only.
+             */
+            score?: number;
+            /** @description Which briefing section it appeared under; briefing only. */
+            section?: string;
+        };
+        /** @description One logical operation, with the memories it served or wrote. */
+        ActivityEvent: {
+            op_id: string;
+            kind: components["schemas"]["EventKind"];
+            /** Format: date-time */
+            time: string;
+            /** @description The namespace the request was made against. */
+            namespace: string;
+            /** @description The recall query; absent for every other kind. */
+            query?: string;
+            /** @description Kind-specific context — a recall's degraded mode, a supersession's replacement id. */
+            detail?: {
+                [key: string]: unknown;
+            };
+            /** @description Empty for a recall that matched nothing. */
+            memories?: components["schemas"]["ActivityMemory"][];
+        };
+        ActivityResponse: {
+            events: components["schemas"]["ActivityEvent"][];
+            /** @description Pass as "before" to fetch the next page; absent on the last page. */
+            next_cursor?: string;
+            has_more: boolean;
         };
         Briefing: {
             namespace: string;
@@ -1005,8 +1071,20 @@ export interface operations {
                 include_superseded?: boolean;
                 /** @description Caps the result count; 0 or absent returns all matches. */
                 limit?: number;
-                /** @description Aggregate across every namespace, ignoring the namespace header. The server merges all namespaces and applies limit as a single global cap (newest first), so the admin UI's "All projects" view fetches one response instead of one request per namespace. */
+                /** @description Aggregate across every namespace, ignoring the namespace header. The server merges all namespaces and applies limit as a single global cap under the requested sort, so the admin UI's "All projects" view fetches one response instead of one request per namespace. */
                 all_namespaces?: boolean;
+                /** @description With all_namespaces=true, restrict the aggregate to these namespaces (repeatable, exact match); ignored otherwise. Lets the browser narrow an "All projects" listing without changing the active namespace. */
+                namespace?: string[];
+                /** @description Repeatable and/or comma-separated metadata.memory_type filter; a memory matches if its type is ANY of the listed values (OR). Distinct from "meta", which ANDs one value per key. */
+                memory_type?: string[];
+                /** @description Only memories created at or after this instant. */
+                created_after?: string;
+                /** @description Only memories last accessed at or after this instant. */
+                accessed_after?: string;
+                /** @description Column to order by. Defaults to created_at. */
+                sort?: "created_at" | "updated_at" | "last_accessed_at" | "access_count" | "importance";
+                /** @description Sort direction. Defaults to desc (newest / highest first). */
+                order?: "asc" | "desc";
             };
             header?: {
                 /** @description Tenant/agent namespace; falls back to the server default. */
@@ -1712,6 +1790,41 @@ export interface operations {
             403: components["responses"]["Error"];
             404: components["responses"]["Error"];
             409: components["responses"]["Error"];
+            501: components["responses"]["Error"];
+        };
+    };
+    listActivity: {
+        parameters: {
+            query?: {
+                /** @description Repeatable and/or comma-separated event-kind filter; omitted means all kinds. */
+                kind?: components["schemas"]["EventKind"][];
+                /** @description Caps the returned events (operations, not rows). Default 50, max 200. */
+                limit?: number;
+                /** @description Opaque cursor from a previous response's next_cursor; returns the page of events strictly older than it. */
+                before?: string;
+                /** @description Aggregate across every namespace, ignoring the namespace header. */
+                all_namespaces?: boolean;
+            };
+            header?: {
+                /** @description Tenant/agent namespace; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivityResponse"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
             501: components["responses"]["Error"];
         };
     };

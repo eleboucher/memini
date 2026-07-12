@@ -141,6 +141,32 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_at TEXT NOT NULL,
 			disabled   INTEGER NOT NULL DEFAULT 0
 		)`,
+		// memory_events is the activity log (see store.EventLogStore): one row
+		// per (operation, memory), rows of one operation sharing op_id. The
+		// memory_* columns are a snapshot, not a join — they keep the feed a
+		// single query and keep a forget event readable after its memory is
+		// gone. Timestamps are unix millis, as in memories above.
+		`CREATE TABLE IF NOT EXISTS memory_events (
+			id             INTEGER PRIMARY KEY,
+			op_id          TEXT NOT NULL,
+			kind           TEXT NOT NULL,
+			namespace      TEXT NOT NULL,
+			query          TEXT NOT NULL DEFAULT '',
+			memory_id      TEXT NOT NULL DEFAULT '',
+			memory_ns      TEXT NOT NULL DEFAULT '',
+			memory_tier    TEXT NOT NULL DEFAULT '',
+			memory_summary TEXT NOT NULL DEFAULT '',
+			rank           INTEGER NOT NULL DEFAULT 0,
+			score          REAL,
+			detail         TEXT NOT NULL DEFAULT '{}',
+			created_at     INTEGER NOT NULL
+		)`,
+		// The read path is always newest-first, optionally narrowed by namespace;
+		// the (created_at DESC, id DESC) tail matches ListEvents' ordering so the
+		// keyset cursor walks the index.
+		`CREATE INDEX IF NOT EXISTS idx_memory_events_ns_time ON memory_events(namespace, created_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_events_time ON memory_events(created_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_events_memory ON memory_events(memory_id)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -597,10 +623,11 @@ func (s *Store) ListExpired(ctx context.Context, now time.Time, limit int) ([]*m
 	return out, rows.Err()
 }
 
-// List returns memories in a namespace matching f (without embeddings).
+// List returns memories in a namespace matching f (without embeddings),
+// ordered by f.Sort (newest-created first by default).
 func (s *Store) List(ctx context.Context, namespace string, f store.Filter, limit int) ([]*memory.Memory, error) {
 	where, args := filterClause(f)
-	q := `SELECT ` + memoryColumns + ` FROM memories m WHERE m.namespace = ?` + where
+	q := `SELECT ` + memoryColumns + ` FROM memories m WHERE m.namespace = ?` + where + orderClause(f.Sort)
 	callArgs := append([]any{namespace}, args...)
 	if limit > 0 {
 		q += " LIMIT ?"

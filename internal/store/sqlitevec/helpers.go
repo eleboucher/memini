@@ -131,6 +131,27 @@ func filterClause(f store.Filter) (string, []any) {
 		b.WriteString(" AND NOT EXISTS (SELECT 1 FROM json_each(" + alias + ".metadata) WHERE key = ? AND value = ?)")
 		args = append(args, k, v)
 	}
+	// MemoryTypes: metadata.memory_type matching ANY listed value (OR), unlike
+	// Metadata's AND-with-one-value-per-key.
+	if len(f.MemoryTypes) > 0 {
+		b.WriteString(" AND EXISTS (SELECT 1 FROM json_each(" + alias + ".metadata) WHERE key = 'memory_type' AND value IN (")
+		for i, t := range f.MemoryTypes {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			b.WriteString("?")
+			args = append(args, t)
+		}
+		b.WriteString("))")
+	}
+	if !f.CreatedAfter.IsZero() {
+		b.WriteString(" AND " + alias + ".created_at >= ?")
+		args = append(args, ms(f.CreatedAfter))
+	}
+	if !f.AccessedAfter.IsZero() {
+		b.WriteString(" AND " + alias + ".last_accessed_at >= ?")
+		args = append(args, ms(f.AccessedAfter))
+	}
 	// For a time-travel query, "live" means live at AsOf, not at the current
 	// wall clock — a memory that has since expired was still valid then.
 	ref := f.Now
@@ -314,4 +335,35 @@ func strPtr(s *string) any {
 		return nil
 	}
 	return *s
+}
+
+// escapeLike neutralizes LIKE's wildcards so a user's literal "%" or "_"
+// searches for that character instead of matching everything. Pair it with
+// ESCAPE '\' on the LIKE.
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
+}
+
+// orderClause maps a sort onto an ORDER BY over the memories table aliased as
+// "m". The column comes from a whitelist switch, never from the caller's
+// string, so an unrecognized key degrades to created_at rather than reaching
+// SQL. Ties break on id so a capped listing is deterministic.
+func orderClause(s store.Sort) string {
+	col := "m.created_at"
+	switch s.Key {
+	case store.SortUpdatedAt:
+		col = "m.updated_at"
+	case store.SortLastAccessedAt:
+		col = "m.last_accessed_at"
+	case store.SortAccessCount:
+		col = "m.access_count"
+	case store.SortImportance:
+		col = "m.importance"
+	}
+	dir := "DESC"
+	if s.Asc {
+		dir = "ASC"
+	}
+	return " ORDER BY " + col + " " + dir + ", m.id ASC"
 }

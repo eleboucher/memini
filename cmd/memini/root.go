@@ -339,6 +339,7 @@ func buildServiceStack(
 		service.WithRecallSemanticReserve(cfg.RecallSemanticReserve),
 		service.WithTurnEchoWindow(cfg.TurnEchoWindow),
 		service.WithEpisodicMinChars(cfg.EpisodicMinChars),
+		service.WithEventLog(cfg.ActivityLog),
 		// Write-time fact building self-selects: distill (LLM) no-ops without a
 		// consolidator; extract (heuristic) only fires when no LLM is configured.
 		service.WithDistillOnWrite(true),
@@ -365,10 +366,12 @@ func buildServiceStack(
 	workers.Go(func() { svc.RunPromoter(workerCtx, cfg.PromoteInterval) })
 	workers.Go(func() { svc.RunEmbedBackfill(workerCtx, cfg.BackfillInterval) })
 	sweeper := maintenance.NewSweeper(st, log, maintenance.SweeperConfig{
-		Interval:     cfg.SweepInterval,
-		ShortTermCap: cfg.ShortTermCap,
-		TombstoneTTL: cfg.TombstoneTTL,
-		DemoteAfter:  cfg.DemoteAfter,
+		Interval:          cfg.SweepInterval,
+		ShortTermCap:      cfg.ShortTermCap,
+		TombstoneTTL:      cfg.TombstoneTTL,
+		DemoteAfter:       cfg.DemoteAfter,
+		ActivityRetention: cfg.ActivityRetention,
+		ActivityMaxRows:   cfg.ActivityMaxRows,
 	})
 	workers.Go(func() { sweeper.Run(workerCtx) })
 	if cfg.DedupInterval > 0 {

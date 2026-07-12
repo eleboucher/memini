@@ -1,0 +1,404 @@
+package service
+
+import (
+	"context"
+	"log/slog"
+	"sort"
+	"time"
+
+	"github.com/eleboucher/memini/internal/memory"
+	"github.com/eleboucher/memini/internal/store"
+)
+
+// eventLogTimeout bounds a detached activity-log write, mirroring
+// reinforceTimeout: the log is best-effort, so a wedged store must not leak a
+// goroutine for the life of the process.
+const eventLogTimeout = 10 * time.Second
+
+// eventSummaryMax caps the snapshot text stored per event row. The feed renders
+// a one-line summary, so storing whole memories would bloat the log for nothing.
+const eventSummaryMax = 200
+
+// defaultEventsLimit and maxEventsLimit bound a page of the activity feed,
+// counted in operations (a recall serving 20 memories is one operation).
+const (
+	defaultEventsLimit = 50
+	maxEventsLimit     = 200
+)
+
+// eventRowFanout is how many flat rows Events fetches per requested operation.
+// One operation is usually 1 row (a write, a get) and at most recall-K rows, so
+// 8x comfortably covers a page of mixed traffic in a single query while keeping
+// a pathological all-recalls page to one extra round trip.
+const eventRowFanout = 8
+
+// eventLog returns the store's activity-log capability, and whether logging is
+// both supported and enabled. Drivers that predate the log simply don't
+// implement it — the type assertion is the same degrade-gracefully pattern the
+// link and API-key capabilities use.
+func (s *Service) eventLog() (store.EventLogStore, bool) {
+	if !s.eventLogOn {
+		return nil, false
+	}
+	els, ok := s.store.(store.EventLogStore)
+	return els, ok
+}
+
+// logEvents appends one operation's rows. By default it runs in the background
+// so the user-facing call's latency excludes the write; tests force synchronous
+// behaviour with WithSyncEventLog. Best-effort throughout: a failure here is
+// logged, never returned — losing an audit row must not fail a recall.
+func (s *Service) logEvents(ctx context.Context, events []store.Event) {
+	els, ok := s.eventLog()
+	if !ok || len(events) == 0 {
+		return
+	}
+	write := func(ctx context.Context) {
+		if err := els.AppendEvents(ctx, events); err != nil {
+			slog.WarnContext(ctx, "activity: append events failed",
+				"kind", string(events[0].Kind), "count", len(events), "err", err)
+		}
+	}
+	if s.syncEventLog {
+		write(ctx)
+		return
+	}
+	// Detach from the request lifetime but keep its values; bound the work.
+	bg := context.WithoutCancel(ctx)
+	s.bg.Go(func() {
+		ectx, cancel := context.WithTimeout(bg, eventLogTimeout)
+		defer cancel()
+		write(ectx)
+	})
+}
+
+// logRecallEvent records what a recall served and why: the query, and each
+// memory's rank and composite score. This is the signal access_count cannot
+// carry — a counter says a memory was used, the log says which question it
+// answered and how well it scored against it.
+//
+// A recall that returned nothing is still recorded, as a single row with no
+// memory: "this query found nothing" is exactly the kind of thing you go to an
+// activity feed to discover.
+func (s *Service) logRecallEvent(ctx context.Context, in RecallInput, results []store.Scored) {
+	if _, ok := s.eventLog(); !ok {
+		return
+	}
+	detail := map[string]any{}
+	if in.Degraded != nil && *in.Degraded != "" {
+		detail["degraded"] = *in.Degraded
+	}
+	base := store.Event{
+		OpID:      s.newID(),
+		Kind:      store.EventRecall,
+		Namespace: in.Namespace,
+		Query:     in.Query,
+		Detail:    detail,
+		CreatedAt: s.now(),
+	}
+	if len(results) == 0 {
+		s.logEvents(ctx, []store.Event{base})
+		return
+	}
+	events := make([]store.Event, 0, len(results))
+	for i, r := range results {
+		e := base
+		e.Rank = i + 1
+		e.Score = &r.Score
+		applyMemory(&e, r.Memory)
+		events = append(events, e)
+	}
+	s.logEvents(ctx, events)
+}
+
+// logBriefingEvent records the memories a session-start briefing served, tagged
+// with the section each appeared in. Unlike recall this does not reinforce:
+// see the note on Briefing's call site.
+func (s *Service) logBriefingEvent(ctx context.Context, namespace string, b Briefing) {
+	if _, ok := s.eventLog(); !ok {
+		return
+	}
+	opID := s.newID()
+	now := s.now()
+	var events []store.Event
+	seen := map[string]bool{}
+	// Section order is the order the briefing itself presents them, so the
+	// first section a memory appears in is the one the reader saw it under.
+	for _, sec := range []struct {
+		name string
+		mems []*memory.Memory
+	}{
+		{"pinned", b.Pinned},
+		{"facts", b.Facts},
+		{"procedures", b.Procedures},
+		{"recent", b.Recent},
+	} {
+		for i, m := range sec.mems {
+			if m == nil || seen[m.ID] {
+				continue
+			}
+			seen[m.ID] = true
+			e := store.Event{
+				OpID:      opID,
+				Kind:      store.EventBriefing,
+				Namespace: namespace,
+				Rank:      i + 1,
+				Detail:    map[string]any{"section": sec.name},
+				CreatedAt: now,
+			}
+			applyMemory(&e, m)
+			events = append(events, e)
+		}
+	}
+	if len(events) == 0 {
+		return
+	}
+	s.logEvents(ctx, events)
+}
+
+// logWriteEvent records a completed write. One Upsert backs both verbs: an ID
+// that already resolved to a row (existing != nil) is an update, anything else
+// is a new memory. Distinguishing them here is what lets the feed say "updated"
+// rather than "remembered" for MCP's memory_update, which composes Get+Remember.
+func (s *Service) logWriteEvent(ctx context.Context, m, existing *memory.Memory) {
+	kind := store.EventRemember
+	if existing != nil {
+		kind = store.EventUpdate
+	}
+	s.logMemoryEvent(ctx, kind, m.Namespace, m, nil)
+}
+
+// logMemoryEvent records a single-memory operation (a get, or a write).
+func (s *Service) logMemoryEvent(ctx context.Context, kind store.EventKind, namespace string, m *memory.Memory, detail map[string]any) {
+	if _, ok := s.eventLog(); !ok || m == nil {
+		return
+	}
+	e := store.Event{
+		OpID:      s.newID(),
+		Kind:      kind,
+		Namespace: namespace,
+		Detail:    detail,
+		CreatedAt: s.now(),
+	}
+	applyMemory(&e, m)
+	s.logEvents(ctx, []store.Event{e})
+}
+
+// applyMemory stamps the memory snapshot onto an event row. The snapshot is
+// what keeps the feed a single query (no per-row fetch) and what keeps a forget
+// event readable once its memory no longer exists.
+func applyMemory(e *store.Event, m *memory.Memory) {
+	e.MemoryID = m.ID
+	e.MemoryNS = m.Namespace
+	e.MemoryTier = m.Tier
+	e.MemorySummary = eventSummary(m)
+}
+
+// eventSummary is the memory's own summary, else a clipped prefix of its content.
+func eventSummary(m *memory.Memory) string {
+	s := m.Summary
+	if s == "" {
+		s = m.Content
+	}
+	if len(s) > eventSummaryMax {
+		// Clip on a rune boundary so a multi-byte character is never halved.
+		r := []rune(s)
+		if len(r) > eventSummaryMax {
+			return string(r[:eventSummaryMax]) + "…"
+		}
+	}
+	return s
+}
+
+// ActivityMemory is one memory as it appeared in an activity event: the
+// snapshot taken at serve time, plus why it was there (rank, score, section).
+type ActivityMemory struct {
+	ID        string
+	Namespace string
+	Summary   string
+	Tier      memory.Tier
+	Rank      int
+	Score     *float64
+	Section   string // briefing only
+}
+
+// ActivityEvent is one logical operation: what happened, when, against which
+// namespace, and — for a recall — the query and the memories it served.
+type ActivityEvent struct {
+	OpID      string
+	Kind      store.EventKind
+	Time      time.Time
+	Namespace string
+	Query     string
+	Detail    map[string]any
+	Memories  []ActivityMemory
+}
+
+// EventsInput selects a page of the activity feed.
+//
+// Tiers and Text select whole operations rather than individual memories — see
+// store.EventFilter — so a filtered recall still reports everything it served.
+type EventsInput struct {
+	// Namespace restricts the feed to one namespace; "" means every namespace.
+	Namespace string
+	// Namespaces narrows an all-namespaces feed to these namespaces (OR);
+	// ignored when Namespace is set.
+	Namespaces []string
+	// Kinds restricts to these event kinds; empty means all.
+	Kinds []store.EventKind
+	// Tiers restricts to operations that touched a memory of one of these tiers.
+	Tiers []memory.Tier
+	// Text restricts to operations whose query or a served memory's summary
+	// contains it, case-insensitively.
+	Text string
+	// Since restricts to events at or after the instant.
+	Since time.Time
+	// Before/BeforeID is the keyset cursor from a previous page.
+	Before   time.Time
+	BeforeID int64
+	// Limit caps the returned operations (not rows); <= 0 uses the default.
+	Limit int
+}
+
+// EventsPage is one page of the feed, with the cursor for the next.
+type EventsPage struct {
+	Events       []ActivityEvent
+	NextBefore   time.Time
+	NextBeforeID int64
+	HasMore      bool
+}
+
+// Events reads the activity feed, regrouping the store's flat (event, memory)
+// rows back into whole operations. Returns ErrUnsupported when the driver has
+// no activity log.
+//
+// The regrouping leans on a property the store guarantees: one operation's rows
+// are written as a single batch, so they share a created_at and sit contiguously
+// in the (created_at DESC, id DESC) ordering. That lets a flat row page be
+// grouped by walking consecutive rows — no join table, no second query.
+func (s *Service) Events(ctx context.Context, in EventsInput) (EventsPage, error) {
+	els, ok := s.store.(store.EventLogStore)
+	if !ok {
+		return EventsPage{}, ErrUnsupported
+	}
+	limit := in.Limit
+	if limit <= 0 {
+		limit = defaultEventsLimit
+	}
+	if limit > maxEventsLimit {
+		limit = maxEventsLimit
+	}
+	rowLimit := limit * eventRowFanout
+
+	rows, err := els.ListEvents(ctx, store.EventFilter{
+		Namespace:  in.Namespace,
+		Namespaces: in.Namespaces,
+		Kinds:      in.Kinds,
+		Tiers:      in.Tiers,
+		Text:       in.Text,
+		Since:      in.Since,
+		Before:     in.Before,
+		BeforeID:   in.BeforeID,
+		Limit:      rowLimit,
+	})
+	if err != nil {
+		return EventsPage{}, err
+	}
+	if len(rows) == 0 {
+		return EventsPage{}, nil
+	}
+
+	groups := groupEvents(rows)
+
+	page := EventsPage{Events: groups}
+	truncated := false
+	switch {
+	case len(groups) > limit:
+		page.Events = groups[:limit]
+		truncated = true
+	case len(rows) == rowLimit && len(groups) > 1:
+		// The fetch hit its row cap, so the oldest group may be only partially
+		// read — its remaining rows sit just past the boundary. Drop it and let
+		// the next page re-read it whole. Guarded on len(groups) > 1 so a single
+		// operation larger than rowLimit still renders (truncated) rather than
+		// vanishing and stalling the cursor.
+		page.Events = groups[:len(groups)-1]
+		truncated = true
+	}
+	if truncated {
+		// The cursor is the oldest row we actually kept, so the next page picks
+		// up strictly after it.
+		last := page.Events[len(page.Events)-1]
+		var oldest store.Event
+		for _, r := range rows {
+			if r.OpID == last.OpID {
+				oldest = r
+			}
+		}
+		page.NextBefore = oldest.CreatedAt
+		page.NextBeforeID = oldest.ID
+		page.HasMore = true
+	}
+	return page, nil
+}
+
+// groupEvents folds consecutive same-operation rows into whole events,
+// preserving the newest-first row order across groups. Within a group the rows
+// arrive in reverse rank order (they share a created_at, so the id tiebreak
+// runs backwards), so memories are re-sorted by rank.
+func groupEvents(rows []store.Event) []ActivityEvent {
+	var out []ActivityEvent
+	for i := 0; i < len(rows); {
+		j := i
+		for j < len(rows) && rows[j].OpID == rows[i].OpID {
+			j++
+		}
+		head := rows[i]
+		ev := ActivityEvent{
+			OpID:      head.OpID,
+			Kind:      head.Kind,
+			Time:      head.CreatedAt,
+			Namespace: head.Namespace,
+			Query:     head.Query,
+			Detail:    head.Detail,
+		}
+		for _, r := range rows[i:j] {
+			// The sentinel row of a zero-hit recall carries no memory.
+			if r.MemoryID == "" {
+				continue
+			}
+			am := ActivityMemory{
+				ID:        r.MemoryID,
+				Namespace: r.MemoryNS,
+				Summary:   r.MemorySummary,
+				Tier:      r.MemoryTier,
+				Rank:      r.Rank,
+				Score:     r.Score,
+			}
+			if sec, ok := r.Detail["section"].(string); ok {
+				am.Section = sec
+			}
+			ev.Memories = append(ev.Memories, am)
+		}
+		sort.SliceStable(ev.Memories, func(a, b int) bool {
+			return ev.Memories[a].Rank < ev.Memories[b].Rank
+		})
+		out = append(out, ev)
+		i = j
+	}
+	return out
+}
+
+// PruneEvents trims the activity log to the configured retention window and row
+// cap. Called by the maintenance sweeper; a no-op against a driver with no
+// activity log, or when both bounds are unset (keep forever).
+func (s *Service) PruneEvents(ctx context.Context, olderThan time.Time, keepMax int) (int64, error) {
+	els, ok := s.store.(store.EventLogStore)
+	if !ok {
+		return 0, nil
+	}
+	if olderThan.IsZero() && keepMax <= 0 {
+		return 0, nil
+	}
+	return els.PruneEvents(ctx, olderThan, keepMax)
+}
