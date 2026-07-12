@@ -40,3 +40,6 @@ qa_*.jsonl
 packages/namespace-resolver/dist/
 packages/namespace-resolver/node_modules/
 .superpowers/
+
+# Stray build output from `go build ./cmd/gendocs`.
+/gendocs
