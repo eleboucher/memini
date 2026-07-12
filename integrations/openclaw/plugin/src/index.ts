@@ -178,9 +178,9 @@ function agentIdentity(ctx: any) {
 
 // effectiveNamespace returns the configured namespace, or a per-agent namespace
 // when namespace_per_agent is enabled and ctx identifies an agent. The per-agent
-// name comes from namespace_template (default "{agent}"), with {agent} and
-// {namespace} substituted — e.g. "{agent}" -> "alice", "openclaw-{agent}" ->
-// "openclaw-alice". Falls back to the base namespace when no agent id is present,
+// name comes from namespace_template (default "{namespace}-{agent}"), with
+// {agent} and {namespace} substituted — e.g. "{namespace}-{agent}" ->
+// "openclaw-alice", "{agent}" -> "alice". Falls back to the base namespace when no agent id is present,
 // preserving the shared-memory behavior — unless skip_without_agent is set, in
 // which case it returns null so the caller skips the operation entirely (no
 // recall, no write, no fallback namespace). Useful for gateways where
