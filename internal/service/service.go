@@ -224,6 +224,11 @@ type Service struct {
 	// rerankTimeout bounds the reranker call; past it, recall falls back to
 	// composite order instead of stalling on a slow backend.
 	rerankTimeout time.Duration
+	// rerankPool is how many composite-ranked candidates reach the reranker
+	// before the result is truncated to the caller's limit. 0 reranks only the
+	// limit itself, which reorders the result set but cannot rescue a candidate
+	// from below it. See WithRerankPool.
+	rerankPool int
 	// recallEmbedTimeout bounds the query embed on the recall path; past it, or on
 	// any embed error, recall degrades to keyword-only search instead of failing.
 	// 0 keeps the query embed unbounded and an embed error fatal.
@@ -428,6 +433,24 @@ func WithReranker(r rerank.Reranker, name string) Option {
 	return func(s *Service) {
 		s.reranker = r
 		s.rerankName = name
+	}
+}
+
+// WithRerankPool sets how many composite-ranked candidates are handed to the
+// reranker before the result is truncated to the caller's limit. n <= 0 (the
+// default) reranks exactly the limit, which reorders the result set but can
+// never surface a memory the vector and keyword legs ranked below it.
+//
+// A cross-encoder scores query and document together, so it is a far better
+// judge of relevance than the fused retrieval score — but only over candidates
+// it is shown. Recall already retrieves RecallPoolSize candidates per leg, so a
+// deeper pool costs reranker time, not another search. That cost is linear: one
+// model forward pass per candidate.
+func WithRerankPool(n int) Option {
+	return func(s *Service) {
+		if n > 0 {
+			s.rerankPool = n
+		}
 	}
 }
 
@@ -2492,14 +2515,20 @@ func (s *Service) expandLinked(ctx context.Context, results []store.Scored, k in
 }
 
 // finalizeRecall dedups the composite-ranked candidates to the result set. With
-// no reranker it simply caps at k; with one it reorders the top k candidates by
-// the reranker's verdict and returns up to k. A rerank failure falls back to
-// the composite order so recall never errors on the reranker's account.
+// no reranker it simply caps at k; with one it reranks the top rerankPool
+// candidates (at least k) by the reranker's verdict and returns up to k. A
+// rerank failure falls back to the composite order so recall never errors on
+// the reranker's account.
 func (s *Service) finalizeRecall(ctx context.Context, query string, ranked []store.Scored, k int) []store.Scored {
 	if s.reranker == nil {
 		return search.Dedup(ranked, k)
 	}
-	pool := search.Dedup(ranked, k)
+	// Rerank deeper than the caller asked for so the reranker can promote a
+	// memory the fused retrieval score left just below the cut. Capping the pool
+	// at k would let it reorder the result set but never change its membership,
+	// which is where most of a cross-encoder's value lives. The candidates are
+	// already retrieved; the extra depth costs reranker time, not another search.
+	pool := search.Dedup(ranked, max(s.rerankPool, k))
 	cands := make([]rerank.Candidate, len(pool))
 	for i, r := range pool {
 		cands[i] = rerank.Candidate{ID: r.Memory.ID, Content: r.Memory.Content}

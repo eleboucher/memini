@@ -123,7 +123,15 @@ controllers:
   # --- Optional recall reranking ---
   # MEMINI_RERANK: "http://reranker:8080/v1" # "" / "off" / "llm" / cross-encoder URL
   # MEMINI_RERANK_MODEL: "bge-reranker-v2-m3"
-  # MEMINI_RERANK_MAX_BATCH_CHARS: "6000"  # per-doc truncation is a fixed 2048
+  # How many candidates reach the reranker before truncating to the recall limit.
+  # 0 reranks only the limit, so the reranker reorders the results but can never
+  # surface a memory that ranked below them. Set it to let the cross-encoder
+  # rescue those; ~50 (the retrieval pool size) is the ceiling. Cost is linear.
+  # MEMINI_RERANK_POOL: "50"
+  # HTTP payload guard, not a context-window guard: a /rerank server scores each
+  # (query, document) pair separately. Too low and a deep RERANK_POOL shards into
+  # many *serial* requests and blows MEMINI_RERANK_TIMEOUT. Per-doc cap is 2048.
+  # MEMINI_RERANK_MAX_BATCH_CHARS: "120000"
 
   # --- postgres backend connection (required when MEMINI_BACKEND=postgres) ---
   # MEMINI_POSTGRES_DSN:
