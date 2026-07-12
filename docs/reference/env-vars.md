@@ -22,10 +22,17 @@ Those four are the reason this page exists.
 | `MEMINI_API_KEY`   | The admin credential the server **requires** from callers. Setting it turns authentication on. | The bearer token the client **sends**. Setting it does not turn anything on.                      |
 | `MEMINI_NAMESPACE` | A fallback, used only when a request arrives with no `X-Memini-Namespace` header.              | The namespace the client **sends** on every call, overriding its own git and directory detection. |
 | `MEMINI_HOME`      | Read only by `memini mcp` (stdio has no headers, so there is nowhere else to get it).          | The caller's personal namespace, sent as `X-Memini-Home` on every call.                           |
-| `MEMINI_AGENT`     | Nests the server's fallback namespace under a per-agent segment.                               | Nests the client's resolved namespace under a per-agent segment.                                  |
+| `MEMINI_AGENT`     | Nothing. The server's own namespace fallback ignores it.                                       | Nests the client's resolved namespace under a per-agent segment.                                  |
 
-The practical consequence: exporting one of these in your shell configures
-**both** the server you start from that shell and the agent you start from it.
+`MEMINI_AGENT` is worth calling out. It is applied by the plugin's namespace
+resolution, not by the server's header-less fallback, so setting it and then
+running a bare `memini mcp` with no plugin does nothing at all. Set
+`MEMINI_NAMESPACE` to the full path (`acme/phoenix/reviewer`) instead.
+`memini doctor` resolves the namespace both ways and tells you when they differ.
+
+The practical consequence of the overlap: exporting one of these in your shell
+configures **both** the server you start from that shell and the agent you start
+from it.
 
 That is usually what you want on a laptop, where the two are the same machine
 and the same person. It is usually wrong on a shared server, where
