@@ -127,7 +127,9 @@ headers.
 The native plugins (opencode, Pi, Hermes, OpenClaw, Open WebUI, and the
 Claude Code plugin) share the same recall defaults: **recall and capture
 on, `recall_limit=3`, recall token budget uncapped**, plain bullet
-formatting (set `MEMINI_INJECT_LABELS=tier` to add a tier prefix). Each
+formatting (set `MEMINI_INJECT_LABELS=tier` to add a tier prefix — supported
+by opencode, Pi, Hermes, and OpenClaw; the Open WebUI filter always emits
+plain bullets). Each
 auto-captures the completed user→assistant turn as episodic memory and
 excludes its **own** session's captures from recall so it never echoes
 the live conversation back.
@@ -155,7 +157,7 @@ REST upsert replaces the record with what you send).
 Two host-specific differences remain by design:
 
 - **Relevance floor (`MEMINI_INJECT_RECALL_MIN_SCORE`)** is honored by
-  opencode and Hermes but not OpenClaw/Open WebUI. It defaults to `0`
+  opencode, Pi, and Hermes but not OpenClaw/Open WebUI. It defaults to `0`
   (off) everywhere, so default behavior is identical; benchmarking found
   no score floor reliably separates signal from noise with the default
   embedder (use `recall_limit` to bound volume instead), which is why

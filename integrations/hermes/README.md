@@ -60,7 +60,8 @@ Point it at your memini (environment, or the Hermes onboarding prompts):
 | Variable                         | Default                        | Purpose                                                                          |
 | -------------------------------- | ------------------------------ | -------------------------------------------------------------------------------- |
 | `MEMINI_BASE_URL`                | `http://localhost:8080`        | memini service endpoint (alias: `MEMINI_URL`)                                    |
-| `MEMINI_NAMESPACE`               | basename of cwd, else `hermes` | project the memory is scoped to                                                  |
+| `MEMINI_NAMESPACE`               | basename of cwd, else `hermes` | project the memory is scoped to (see the config-file note below)                 |
+| `MEMINI_AGENT`                   | (none)                         | `{agent}` segment for the config-file namespace template (see below)             |
 | `MEMINI_HOME`                    | (none)                         | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg        |
 | `MEMINI_API_KEY`                 | (none)                         | bearer token, if memini requires auth (alias: `MEMINI_TOKEN`)                    |
 | `MEMINI_REQUIRE_HTTPS`           | (off)                          | set `1` to refuse sending a token over plaintext HTTP                            |
@@ -68,6 +69,16 @@ Point it at your memini (environment, or the Hermes onboarding prompts):
 | `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                            | fused-score floor (>=) for auto-recall, sent as `min_score`                      |
 | `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                            | hard token ceiling on the recall block (`0` = unbounded; tail dropped w/ footer) |
 | `MEMINI_INJECT_LABELS`           | (none)                         | per-bullet tag prefix toggles: `tier`, `confidence`, `age`                       |
+
+When `MEMINI_NAMESPACE` is unset and `$XDG_CONFIG_HOME/memini/config.json`
+(default `~/.config/memini/config.json`) exists, the namespace is rendered from
+its `template` (default `{tenant}/{project}/{agent}`): `{tenant}` comes from
+the first `tenantRoots` entry whose `path` contains the cwd, `{project}` is
+git-derived (remote repo name > toplevel basename > cwd basename), and
+`{agent}` from `MEMINI_AGENT`; unresolved segments are dropped. This mirrors
+the shared resolver the JS integrations use, so the same repo lands in the
+same namespace everywhere. Without the file, the namespace is just the cwd
+basename.
 
 Restart Hermes. On the next turn, recalled memories appear in context and new
 exchanges are written back. Use the **same `MEMINI_NAMESPACE`** as your other

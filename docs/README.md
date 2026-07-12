@@ -8,6 +8,7 @@ reference when you need a specific setting.
 |                                                |                                                                                             |
 | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | Run it on my laptop                            | [Solo laptop](guides/solo-laptop.md)                                                        |
+| Wire it into my coding agent                   | [Integrations](../integrations/README.md)                                                   |
 | Self-host it for my team                       | [Homelab and team](guides/homelab-team.md)                                                  |
 | **Fix bad recall**                             | [Tuning recall](guides/tuning-recall.md)                                                    |
 | Lay out namespaces for several agents          | [Multi-agent namespaces](guides/multi-agent-namespaces.md)                                  |

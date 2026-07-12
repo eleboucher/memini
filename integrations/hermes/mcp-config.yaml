@@ -11,7 +11,7 @@ mcp_servers:
       X-Memini-Namespace: "my-project"
       # Authorization: "Bearer ${MEMINI_API_KEY}"   # if memini requires auth
     tools:
-      include: [memory_remember, memory_recall, memory_get, memory_forget]
+      include: [memory_remember, memory_recall, memory_list, memory_forget]
 
   # Local (stdio) — Hermes spawns memini as a subprocess. Use INSTEAD of the
   # block above (same server name); don't enable both at once.
@@ -25,4 +25,4 @@ mcp_servers:
   #     MEMINI_SQLITE_PATH: "/home/you/.memini/memini.db"
   #     MEMINI_DEFAULT_NAMESPACE: "my-project"
   #   tools:
-  #     include: [memory_remember, memory_recall, memory_get, memory_forget]
+  #     include: [memory_remember, memory_recall, memory_list, memory_forget]

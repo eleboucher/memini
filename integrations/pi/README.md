@@ -17,8 +17,8 @@ What it wires:
 - **`agent_end`** — once the agent finishes a prompt, stores the completed
   user/assistant turn back into memini (episodic, tagged `pi`, with the session
   id) so it can be recalled later.
-- **Explicit tools** — the same set Claude Code gets from memini's MCP server,
-  registered natively via `pi.registerTool`: `memory_recall`, `memory_list`,
+- **Explicit tools** — modeled on the tool set Claude Code gets from memini's
+  MCP server, registered natively via `pi.registerTool`: `memory_recall`, `memory_list`,
   `memory_remember`, `memory_forget`. The model can call them on demand even
   though the automatic loop already runs.
 
@@ -53,24 +53,25 @@ pi -e ./integrations/pi/plugin/dist/index.js
 All config is via environment variables in the shell that launches Pi (secrets
 stay out of any file):
 
-| Env var                          | Default                 | Purpose                                                                                       |
-| -------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------- |
-| `MEMINI_BASE_URL`                | `http://localhost:8080` | memini REST base URL (alias: `MEMINI_URL`)                                                    |
-| `MEMINI_NAMESPACE`               | cwd basename            | project the memory is scoped to (`X-Memini-Namespace`)                                        |
-| `MEMINI_HOME`                    | unset                   | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg                     |
-| `MEMINI_RECALL`                  | on                      | `0`/`false` disables recall-before-turn                                                       |
-| `MEMINI_CAPTURE`                 | on                      | `0`/`false` disables capture-after-turn                                                       |
-| `MEMINI_RECALL_LIMIT`            | `3`                     | max memories injected per turn                                                                |
-| `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                     | hard ceiling on recall-block tokens (`0` = unbounded); the tail is dropped with a footer      |
-| `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                     | fused-score floor (>=) sent as `min_score` to `/v1/search`                                    |
-| `MEMINI_INJECT_LABELS`           | —                       | comma-separated bullet labels: `tier`, `confidence`, `age`                                    |
-| `MEMINI_TIMEOUT_MS`              | `30000`                 | per-request timeout                                                                           |
-| `MEMINI_FALLBACK`                | on                      | `0`/`false` surfaces errors instead of degrading silently                                     |
-| `MEMINI_API_KEY`                 | —                       | bearer token, if memini needs auth (sent as `Authorization: Bearer …`; alias: `MEMINI_TOKEN`) |
-| `MEMINI_REQUIRE_HTTPS`           | —                       | `1` refuses to send the token over plaintext HTTP                                             |
+| Env var                          | Default                          | Purpose                                                                                       |
+| -------------------------------- | -------------------------------- | --------------------------------------------------------------------------------------------- |
+| `MEMINI_BASE_URL`                | `http://localhost:8080`          | memini REST base URL (alias: `MEMINI_URL`)                                                    |
+| `MEMINI_NAMESPACE`               | git repo name, else cwd basename | project the memory is scoped to (`X-Memini-Namespace`)                                        |
+| `MEMINI_HOME`                    | unset                            | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg                     |
+| `MEMINI_RECALL`                  | on                               | `0`/`false` disables recall-before-turn                                                       |
+| `MEMINI_CAPTURE`                 | on                               | `0`/`false` disables capture-after-turn                                                       |
+| `MEMINI_RECALL_LIMIT`            | `3`                              | max memories injected per turn                                                                |
+| `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                              | hard ceiling on recall-block tokens (`0` = unbounded); the tail is dropped with a footer      |
+| `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                              | fused-score floor (>=) sent as `min_score` to `/v1/search`                                    |
+| `MEMINI_INJECT_LABELS`           | —                                | comma-separated bullet labels: `tier`, `confidence`, `age`                                    |
+| `MEMINI_TIMEOUT_MS`              | `30000`                          | per-request timeout                                                                           |
+| `MEMINI_FALLBACK`                | on                               | `0`/`false` surfaces errors instead of degrading silently                                     |
+| `MEMINI_API_KEY`                 | —                                | bearer token, if memini needs auth (sent as `Authorization: Bearer …`; alias: `MEMINI_TOKEN`) |
+| `MEMINI_REQUIRE_HTTPS`           | —                                | `1` refuses to send the token over plaintext HTTP                                             |
 
-Unset, the namespace is derived from the working-directory basename and sent as
-the `X-Memini-Namespace` header — set it to share one memory pool with your
+Unset, the namespace is derived from the git repo (remote name, then toplevel
+basename), falling back to the working-directory basename, and sent as the
+`X-Memini-Namespace` header — set it to share one memory pool with your
 other agents (Claude Code, opencode, …).
 
 ### Build & test
@@ -78,8 +79,8 @@ other agents (Claude Code, opencode, …).
 ```sh
 cd integrations/pi/plugin
 npm install
-npm run build      # tsc -> dist/index.js
-npm test           # pure-helper unit tests (tsx --test)
+npm run build      # esbuild bundle -> dist/index.js
+npm test           # bundle test (node --test) + pure-helper unit tests (tsx --test)
 ```
 
 ## Alternative: MCP wire

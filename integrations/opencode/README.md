@@ -55,7 +55,7 @@ Pass options inline via the `[name, options]` form:
 | `recall_min_score`  | `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                     | fused-score floor (>=) sent as `min_score` to `/v1/search`                                                                             |
 | `timeout_ms`        | `MEMINI_TIMEOUT_MS`              | `30000`                 | per-request timeout                                                                                                                    |
 | `fallback_on_error` | `MEMINI_FALLBACK`                | on                      | `false` surfaces errors instead of degrading silently                                                                                  |
-| —                   | `MEMINI_INJECT_LABELS`           | —                       | comma-separated label toggles for each bullet: `tier`, `confidence`, `age`                                                             |
+| —                   | `MEMINI_INJECT_LABELS`           | —                       | comma-separated label toggles for each bullet: `tier`, `confidence`, `age`, `reason`                                                   |
 | —                   | `MEMINI_API_KEY`                 | —                       | bearer token, if memini needs auth (env only — secret; alias: `MEMINI_TOKEN`)                                                          |
 | —                   | `MEMINI_REQUIRE_HTTPS`           | —                       | `1` refuses to send the token over plaintext HTTP                                                                                      |
 
@@ -70,6 +70,13 @@ worktree basename and sends it as the `X-Memini-Namespace` header, so scoping
 stays correct even against a remote memini (the HTTP MCP wire below can't — a
 remote server has no access to your cwd). Set it to share one memory pool with
 your other agents.
+
+If `$XDG_CONFIG_HOME/memini/config.json` (default `~/.config/memini/config.json`)
+exists, the unset namespace is instead rendered from its `template` (default
+`{tenant}/{project}/{agent}`): `{tenant}` from the `tenantRoots` entry whose
+`path` contains the cwd, `{project}` from the git repo, `{agent}` from
+`MEMINI_AGENT`; unresolved segments are dropped. The Hermes and Pi integrations
+share this resolver, so one config file scopes them all identically.
 
 ### Tests
 

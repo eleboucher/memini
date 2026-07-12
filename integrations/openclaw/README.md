@@ -38,7 +38,7 @@ cd integrations/openclaw/plugin
 npm install
 npm run build
 mkdir -p ~/.openclaw/extensions/memini
-cp -r dist openclaw.plugin.json package.json plugin.yaml pnpm-workspace.yaml ~/.openclaw/extensions/memini/
+cp -r dist openclaw.plugin.json package.json plugin.yaml ~/.openclaw/extensions/memini/
 ```
 
 Claim the memory slot in `~/.openclaw/openclaw.json`:
@@ -69,7 +69,7 @@ Claim the memory slot in `~/.openclaw/openclaw.json`:
 }
 ```
 
-The `tools.allow` allowlist is required for the three explicit tools to be sent
+The `tools.allow` allowlist is required for the four explicit tools to be sent
 to the model — they're declared `optional: true` in the manifest so OpenClaw
 won't auto-expose them.
 
@@ -161,11 +161,13 @@ _also_ register explicit tools the agent can call on demand, alongside the slot:
   (e.g. "all procedural memories" or "everything categorized `bug_fixes`"; see
   `docs/categories.md`).
 - **`memory_remember`** — store a fact, with optional `tags` and a `category`.
+  To correct an existing memory, pass its `id` (from recall/list) — the write
+  updates it in place (`POST /v1/memories` upserts by id).
 - **`memory_forget`** — permanently delete a memory by `id` (from recall/list)
   when it's wrong, outdated, or poisoned. There is no `memory_update` here —
   this plugin talks to memini over REST, which has no partial-update
-  endpoint; forget the stale memory and remember the corrected version
-  instead.
+  endpoint; re-remember with the memory's `id` to correct it, and reserve
+  forget for memories that shouldn't exist at all.
 
 Each tool resolves the same per-agent namespace as the hooks, and is registered
 `optional`. Parameter schemas use [typebox](https://github.com/sinclairzx81/typebox),

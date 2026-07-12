@@ -11,10 +11,13 @@ description: >-
 
 memini is a memory service reachable at `${MEMINI_BASE_URL:-${MEMINI_URL:-http://localhost:8080}}`.
 All requests are scoped by the `X-Memini-Namespace` header. Set it to a
-project name (e.g. `acme-web`) or to `${MEMINI_NS}` from the gateway env. If
-the header is omitted, the server falls back to its configured default
-namespace — see the top-level README's "Namespace resolution" section. If a
-bearer token is configured, send `Authorization: Bearer $MEMINI_API_KEY`.
+project name (e.g. `acme-web`) or to `${MEMINI_NS}` from the gateway env —
+`MEMINI_NS` is not a memini variable; it's a placeholder your gateway must
+export before the curl examples below send a namespace (unset, the header is
+empty). If the header is omitted, the server falls back to its configured
+default namespace (`MEMINI_DEFAULT_NAMESPACE` — see
+`docs/reference/configuration.md`). If a bearer token is configured, send
+`Authorization: Bearer $MEMINI_API_KEY`.
 
 ## Recall before acting
 
