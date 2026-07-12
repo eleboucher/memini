@@ -8,10 +8,15 @@ transports:
   shared, always-on deployment.
 - **Local (stdio):** `memini mcp` — the agent spawns memini as a subprocess.
 
-Tools exposed:
+Tools exposed: `memory_briefing`, `memory_recall`, `memory_remember`,
+`memory_answer`, `memory_list`, `memory_get`, `memory_history`,
+`memory_update`, `memory_forget`.
 
-- `memory_remember`, `memory_recall`, `memory_briefing`, `memory_answer`
-- `memory_list`, `memory_get`, `memory_update`, `memory_forget`
+`memory_answer` is only registered when the server has an LLM configured;
+without one it does not exist rather than existing and failing. Full
+parameters and the standing policy the server sends on connect are in
+[docs/reference/mcp-tools.md](../docs/reference/mcp-tools.md), which is
+generated from the server itself.
 
 ## Recommended: install the plugin
 
@@ -77,8 +82,7 @@ cascade — no server-wide opt-in flag required:
 Every result carries `from` provenance (which ancestor/home/link it came
 from, or absent for the primary namespace) so an agent can see where
 knowledge lives without guessing. See
-[README.md#retrieval-scope-read-sets](../README.md#retrieval-scope-read-sets)
-for the full model.
+[docs/scopes.md](../docs/scopes.md#data-flow-read) for the full model.
 
 ### How the namespace is resolved
 

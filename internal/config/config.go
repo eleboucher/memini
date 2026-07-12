@@ -42,7 +42,12 @@ const (
 // resolveDefaultNamespace) and carry no tag.
 type Config struct {
 	// HTTP server.
-	HTTPAddr        string        `env:"MEMINI_HTTP_ADDR" envDefault:":8080"`
+
+	// HTTPAddr is the address the main listener binds. It carries the REST API,
+	// the MCP endpoint, and the admin UI unless UIAddr moves the UI elsewhere.
+	HTTPAddr string `env:"MEMINI_HTTP_ADDR" envDefault:":8080"`
+	// ShutdownTimeout is how long in-flight requests get to finish after SIGTERM
+	// before the server stops waiting and exits anyway.
 	ShutdownTimeout time.Duration `env:"MEMINI_SHUTDOWN_TIMEOUT" envDefault:"15s"`
 	// RequestTimeout bounds how long a single /v1 REST request may run before
 	// chi's Timeout middleware cancels its context (internal/api/rest.Mount).
@@ -72,19 +77,53 @@ type Config struct {
 	UIAddr string `env:"MEMINI_UI_ADDR"`
 
 	// Logging.
-	LogLevel  string `env:"MEMINI_LOG_LEVEL" envDefault:"info"`  // debug|info|warn|error
-	LogFormat string `env:"MEMINI_LOG_FORMAT" envDefault:"json"` // json|text
+
+	// LogLevel is one of debug, info, warn or error.
+	LogLevel string `env:"MEMINI_LOG_LEVEL" envDefault:"info"`
+	// LogFormat is json (structured, for a log pipeline) or text (readable, for
+	// a terminal).
+	LogFormat string `env:"MEMINI_LOG_FORMAT" envDefault:"json"`
 
 	// Storage.
-	Backend     Backend `env:"MEMINI_BACKEND" envDefault:"sqlite"`
-	SQLitePath  string  `env:"MEMINI_SQLITE_PATH" envDefault:"memini.db"`
-	PostgresDSN string  `env:"MEMINI_POSTGRES_DSN"`
+
+	// Backend selects the storage driver: sqlite (embedded, the default, no
+	// external dependency) or postgres (pgvector/VectorChord, for a shared
+	// deployment). Postgres additionally requires PostgresDSN.
+	Backend Backend `env:"MEMINI_BACKEND" envDefault:"sqlite"`
+	// SQLitePath is where the embedded database file lives. Give it a path on a
+	// volume that survives restarts; the default is relative to the working
+	// directory, which in a container usually means it does not.
+	SQLitePath string `env:"MEMINI_SQLITE_PATH" envDefault:"memini.db"`
+	// PostgresDSN is the connection string used when Backend is postgres, e.g.
+	// postgres://user:pass@host:5432/memini?sslmode=disable. Required in that
+	// mode; the server refuses to start without it.
+	PostgresDSN string `env:"MEMINI_POSTGRES_DSN"`
 
 	// Embeddings (external OpenAI-compatible endpoint, required for vector search).
+
+	// EmbedBaseURL is an OpenAI-compatible /embeddings endpoint, which you
+	// deploy: text-embeddings-inference, llama.cpp, vLLM, OpenAI itself, or
+	// anything else speaking that shape. Leaving it empty is supported and
+	// degrades recall to keyword-only search, which works but retrieves
+	// noticeably worse.
 	EmbedBaseURL string `env:"MEMINI_EMBED_BASE_URL"`
-	EmbedAPIKey  string `env:"MEMINI_EMBED_API_KEY"`
-	EmbedModel   string `env:"MEMINI_EMBED_MODEL" envDefault:"text-embedding-3-small"`
-	EmbedDims    int    `env:"MEMINI_EMBED_DIMS" envDefault:"1536"`
+	// EmbedAPIKey is the bearer token for the embeddings endpoint, when it wants
+	// one. Optional.
+	EmbedAPIKey string `env:"MEMINI_EMBED_API_KEY"`
+	// EmbedModel is the model name sent with each embeddings request. memini
+	// records which model produced a store's vectors and refuses to start when
+	// this later disagrees, because vectors from different models are not
+	// comparable and a silent swap degrades recall with no error. Use the
+	// `memini reembed` command to migrate a store, or ReembedOnModelChange to do
+	// it automatically at startup.
+	EmbedModel string `env:"MEMINI_EMBED_MODEL" envDefault:"text-embedding-3-small"`
+	// EmbedDims is the dimensionality of the embedding model, and it must match
+	// the model EmbedBaseURL actually serves. This is the most common setup
+	// mistake: the default suits text-embedding-3-small, so pointing at a 768 or
+	// 1024 dimension model without changing this corrupts the store rather than
+	// failing cleanly. Unlike the model name, dimensionality cannot be migrated
+	// in place; changing it needs a fresh store (export, then import).
+	EmbedDims int `env:"MEMINI_EMBED_DIMS" envDefault:"1536"`
 	// EmbedQueryPrefix is prepended to recall queries before embedding, for
 	// instruction-tuned asymmetric embedders (e.g. Qwen3-Embedding, bge).
 	// Documents are always embedded without it. Empty disables.
@@ -161,9 +200,20 @@ type Config struct {
 	Cascade bool `env:"MEMINI_CASCADE" envDefault:"true"`
 
 	// LLM (opt-in; empty BaseURL disables the consolidation pipeline).
+
+	// LLMBaseURL is the master switch for everything that needs a chat model.
+	// Empty (the default) is a fully supported way to run: marker heuristics
+	// still do write-time extraction, tier classification, promotion,
+	// corroboration and contradiction handling, so durable knowledge still
+	// accumulates. Setting it adds background consolidation, POST /v1/answer,
+	// the memory_answer MCP tool, and Rerank="llm".
 	LLMBaseURL string `env:"MEMINI_LLM_BASE_URL"`
-	LLMAPIKey  string `env:"MEMINI_LLM_API_KEY"`
-	LLMModel   string `env:"MEMINI_LLM_MODEL" envDefault:"gpt-4o-mini"`
+	// LLMAPIKey is the bearer token for the LLM endpoint, when it wants one.
+	// Optional.
+	LLMAPIKey string `env:"MEMINI_LLM_API_KEY"`
+	// LLMModel is the chat model used for consolidation, distillation, answering
+	// and LLM reranking.
+	LLMModel string `env:"MEMINI_LLM_MODEL" envDefault:"gpt-4o-mini"`
 	// LLMAPI selects the chat backend: "openai" (default) or "anthropic".
 	LLMAPI string `env:"MEMINI_LLM_API" envDefault:"openai"`
 
@@ -172,8 +222,11 @@ type Config struct {
 	// Reranking reorders the top k composite-ranked candidates; it adds one
 	// reranker call per recall.
 	Rerank string `env:"MEMINI_RERANK" envDefault:"off"`
-	// RerankModel / RerankAPIKey configure the cross-encoder when Rerank is a URL.
-	RerankModel  string `env:"MEMINI_RERANK_MODEL"`
+	// RerankModel names the cross-encoder to use when Rerank is a URL. The
+	// server warns at boot if a URL is set without one.
+	RerankModel string `env:"MEMINI_RERANK_MODEL"`
+	// RerankAPIKey is the bearer token for the cross-encoder endpoint, when it
+	// wants one. Optional.
 	RerankAPIKey string `env:"MEMINI_RERANK_API_KEY"`
 	// RerankPool is how many composite-ranked candidates are handed to the
 	// reranker before the result is truncated to the recall limit. 0 (the
@@ -318,8 +371,12 @@ type Config struct {
 	// POST /v1/dedup and run as a periodic store-wide background job every
 	// DedupInterval (daily by default, so a store stays clean with no manual
 	// intervention). Set MEMINI_DEDUP_INTERVAL=0 to disable the periodic pass.
-	DedupInterval   time.Duration `env:"MEMINI_DEDUP_INTERVAL" envDefault:"24h"`
-	DedupSimilarity float64       `env:"MEMINI_DEDUP_SIMILARITY" envDefault:"0.85"`
+	DedupInterval time.Duration `env:"MEMINI_DEDUP_INTERVAL" envDefault:"24h"`
+	// DedupSimilarity is the embedding-similarity threshold for two memories to
+	// count as members of the same near-duplicate cluster. Higher is stricter,
+	// so raise it if the pass is collapsing memories that were only superficially
+	// alike, and lower it if obvious restatements survive.
+	DedupSimilarity float64 `env:"MEMINI_DEDUP_SIMILARITY" envDefault:"0.85"`
 	// DedupTiers is an optional comma-separated list restricting the periodic
 	// pass to specific tiers (working,episodic,semantic,procedural). Empty
 	// means all tiers.
@@ -335,7 +392,19 @@ type Config struct {
 	// MEMINI_UI_ENABLED=false to run a headless API/MCP-only service.
 	UIEnabled bool `env:"MEMINI_UI_ENABLED" envDefault:"true"`
 
-	// Auth (optional). When APIKey is set, requests must present it as a bearer token.
+	// Auth (optional).
+
+	// APIKey is the admin, or bootstrap, credential. When set, every request
+	// must present it as a bearer token, it also gates /metrics, and it is the
+	// only credential allowed to manage other keys through /v1/keys. Named keys
+	// (see APIKeysFile and `memini key`) are the per-person credentials; this is
+	// the one that creates them.
+	//
+	// Note that when this is set and the admin UI is enabled, the server embeds
+	// the key in the UI shell so the same-origin UI can authenticate without the
+	// operator pasting it. Anyone who can load / can therefore read the key.
+	// Expose the UI only where reaching it already implies trust, move it to its
+	// own listener with UIAddr, or turn it off with UIEnabled.
 	APIKey string `env:"MEMINI_API_KEY"`
 
 	// APIKeysFile (optional; K2b), when set, names a YAML file of
