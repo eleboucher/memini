@@ -380,7 +380,10 @@ class ResolveTenantTest(unittest.TestCase):
     def test_tenant_separator_preserved_in_namespace(self):
         # work/proj, not work-proj: a flattened separator splits memory from
         # the other integrations, which all send the "/" form.
-        parent = tempfile.mkdtemp(prefix="memini-tenant-")
+        # realpath: macOS tempdirs live under /var -> /private/var, but the plugin
+        # reads os.getcwd() (symlink-resolved) while _match_tenant compares
+        # lexically; an unresolved root would never match.
+        parent = os.path.realpath(tempfile.mkdtemp(prefix="memini-tenant-"))
         proj = os.path.join(parent, "proj")
         os.makedirs(proj)
         self._write_config({"tenantRoots": [{"path": parent, "tenant": "work"}]})
@@ -400,7 +403,7 @@ class ResolveTenantTest(unittest.TestCase):
         self.assertIsNone(memini._resolve_tenant(os.getcwd()))
 
     def test_non_dict_entry_skipped_without_aborting_later_roots(self):
-        parent = tempfile.mkdtemp(prefix="memini-tenant-")
+        parent = os.path.realpath(tempfile.mkdtemp(prefix="memini-tenant-"))
         self._write_config(
             {"tenantRoots": ["junk", {"tenant": "nopath"}, {"path": parent, "tenant": "work"}]}
         )
@@ -426,7 +429,7 @@ class ResolveTenantTest(unittest.TestCase):
         # out under a different folder name still lands in work/<repo>.
         import subprocess
 
-        parent = tempfile.mkdtemp(prefix="memini-tenant-")
+        parent = os.path.realpath(tempfile.mkdtemp(prefix="memini-tenant-"))
         proj = os.path.join(parent, "memini-fork")
         os.makedirs(proj)
         subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
@@ -448,7 +451,7 @@ class ResolveTenantTest(unittest.TestCase):
         self.assertEqual(p._namespace, "work/memini")
 
     def test_non_default_template_reshapes_namespace(self):
-        parent = tempfile.mkdtemp(prefix="memini-tenant-")
+        parent = os.path.realpath(tempfile.mkdtemp(prefix="memini-tenant-"))
         proj = os.path.join(parent, "proj")
         os.makedirs(proj)
         self._write_config(

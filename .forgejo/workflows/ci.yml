@@ -142,6 +142,15 @@ jobs:
       - name: Test Hermes plugin
         run: cd integrations/hermes/plugin && python3 -m unittest -v
 
+      # Open WebUI filter + tools. The suite self-skips (exit 0, 19 skips)
+      # when pydantic/aiohttp are missing, so a bare unittest run can go green
+      # while testing nothing — install the deps and import-check them first
+      # so a broken install fails the step instead of skipping the suite.
+      - name: Test Open WebUI plugin
+        run: |
+          python3 -m pip install pydantic aiohttp
+          cd integrations/openwebui && python3 -c "import pydantic, aiohttp" && python3 -m unittest -v
+
   lint:
     runs-on: docker
     steps:
