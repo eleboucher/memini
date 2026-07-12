@@ -90,7 +90,10 @@ run = "go run ./cmd/bench"
 
 [tasks.docs]
 description = "Regenerate the docs reference from the code"
-run = "go generate ./internal/config"
+run = '''
+go generate ./internal/config
+go run -tags gendocs ./cmd/memini gen-docs --out docs/reference/cli.md
+'''
 
 [tasks.docs-check]
 description = "Fail if the generated docs reference is stale (CI gate)"

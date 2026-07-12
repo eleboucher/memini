@@ -6,6 +6,7 @@ charts/memini/values.schema.json
 # drift gate (`mise run docs-check`) on an otherwise clean tree.
 docs/reference/configuration.md
 docs/reference/mcp-tools.md
+docs/reference/cli.md
 
 # Go toolchain artifacts.
 bin/

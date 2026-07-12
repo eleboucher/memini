@@ -52,6 +52,7 @@ jobs:
       - name: Check generated docs are current
         run: |
           go generate ./internal/config
+          go run -tags gendocs ./cmd/memini gen-docs --out docs/reference/cli.md
           git diff --exit-code docs/reference/
 
       - name: Run tests
