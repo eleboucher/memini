@@ -52,7 +52,7 @@ jobs:
       - name: Check generated docs are current
         run: |
           go generate ./internal/config
-          git diff --exit-code docs/reference/configuration.md
+          git diff --exit-code docs/reference/
 
       - name: Run tests
         run: CGO_ENABLED=1 go test -race -count=1 -timeout 300s ./...

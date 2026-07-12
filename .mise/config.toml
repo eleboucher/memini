@@ -96,7 +96,7 @@ run = "go generate ./internal/config"
 description = "Fail if the generated docs reference is stale (CI gate)"
 run = '''
 mise run docs
-git diff --exit-code docs/reference/configuration.md
+git diff --exit-code docs/reference/
 '''
 
 [tasks.helm-lint]

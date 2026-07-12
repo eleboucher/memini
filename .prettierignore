@@ -5,6 +5,7 @@ charts/memini/values.schema.json
 # Generated docs. oxfmt reformats these on commit, which would then fail the CI
 # drift gate (`mise run docs-check`) on an otherwise clean tree.
 docs/reference/configuration.md
+docs/reference/mcp-tools.md
 
 # Go toolchain artifacts.
 bin/

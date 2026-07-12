@@ -278,14 +278,21 @@ type field struct {
 }
 
 func main() {
-	var src, out string
+	var src, out, mcpOut string
 	flag.StringVar(&src, "src", "internal/config/config.go", "path to config.go")
-	flag.StringVar(&out, "out", "docs/reference/configuration.md", "output markdown path")
+	flag.StringVar(&out, "out", "docs/reference/configuration.md", "configuration reference output")
+	flag.StringVar(&mcpOut, "mcp-out", "", "MCP tool reference output; empty skips it")
 	flag.Parse()
 
 	if err := run(src, out); err != nil {
 		fmt.Fprintln(os.Stderr, "gendocs:", err)
 		os.Exit(1)
+	}
+	if mcpOut != "" {
+		if err := genMCP(mcpOut); err != nil {
+			fmt.Fprintln(os.Stderr, "gendocs:", err)
+			os.Exit(1)
+		}
 	}
 }
 
