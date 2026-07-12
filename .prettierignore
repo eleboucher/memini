@@ -7,6 +7,7 @@ charts/memini/values.schema.json
 docs/reference/configuration.md
 docs/reference/mcp-tools.md
 docs/reference/cli.md
+docs/reference/rest-api.md
 
 # Go toolchain artifacts.
 bin/

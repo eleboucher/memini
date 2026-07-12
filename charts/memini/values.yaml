@@ -107,8 +107,13 @@ controllers:
           MEMINI_SQLITE_PATH: "/data/memini.db"
           # -- Serve the embedded admin SPA at /. Set "false" for headless API/MCP.
           MEMINI_UI_ENABLED: "true"
-          # --- Optional decay / hygiene knobs (uncomment to enable) ---
-          # MEMINI_DEMOTE_AFTER: "1440h"          # demote stale durable memories to episodic
+          # --- Decay / hygiene knobs ---
+          # Demotion is ON by default (168h), not opt-in: a durable memory that
+          # was never recalled, is unimportant and is uncorroborated drops back
+          # to episodic after a week. Uncomment to lengthen it, or set "0" to
+          # turn it off. See docs/reference/configuration.md#memini_demote_after.
+          # MEMINI_DEMOTE_AFTER: "1440h"
+          # The rest are off unless you uncomment them.
           # MEMINI_TOMBSTONE_TTL: "720h"          # hard-delete superseded memories after TTL
           # MEMINI_WRITE_DEDUP_SCORE: "0.625"     # similarity to treat a write as a near-dup ("0" disables)
           # MEMINI_WRITE_DEDUP_ACTION: "hint"     # hint (default) | coalesce | supersede | off

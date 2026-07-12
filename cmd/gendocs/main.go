@@ -52,9 +52,9 @@ var groups = []group{
 	{
 		Key:   "server",
 		Title: "HTTP server",
-		Intro: "Listeners and request lifetime. `MEMINI_METRICS_ADDR` and `MEMINI_UI_ADDR` move `/metrics` and the admin UI" +
-			"onto their own ports, which is how you expose the UI to a trusted network without exposing the API, or " +
-			"scrape metrics without a bearer token.",
+		Intro: "Listeners and request lifetime. `MEMINI_METRICS_ADDR` and `MEMINI_UI_ADDR` move `/metrics` and the " +
+			"admin UI onto their own ports, which is how you expose the UI to a trusted network without exposing the " +
+			"API, or scrape metrics without a bearer token.",
 		Vars: []string{
 			"MEMINI_HTTP_ADDR",
 			"MEMINI_SHUTDOWN_TIMEOUT",
@@ -72,17 +72,17 @@ var groups = []group{
 	{
 		Key:   "storage",
 		Title: "Storage",
-		Intro: "memini runs on an embedded SQLite file by default and needs no configuration to start. Point it at Postgres" +
-			"when you outgrow one machine.",
+		Intro: "memini runs on an embedded SQLite file by default and needs no configuration to start. Point it at " +
+			"Postgres when you outgrow one machine.",
 		Vars: []string{"MEMINI_BACKEND", "MEMINI_SQLITE_PATH", "MEMINI_POSTGRES_DSN"},
 	},
 	{
 		Key:   "embeddings",
 		Title: "Embeddings",
-		Intro: "An OpenAI-compatible `/embeddings` endpoint, which you deploy. This is the one thing memini needs from you:" +
-			"without it, recall falls back to keyword-only search.\n\n`MEMINI_EMBED_DIMS` must match the model you point" +
-			"at. A mismatch is the single most common setup failure, and it corrupts the store rather than erroring " +
-			"cleanly.",
+		Intro: "An OpenAI-compatible `/embeddings` endpoint, which you deploy. This is the one thing memini needs from " +
+			"you: without it, recall falls back to keyword-only search.\n\n`MEMINI_EMBED_DIMS` must match the model " +
+			"you point at. A mismatch is the single most common setup failure, and it corrupts the store rather than " +
+			"erroring cleanly.",
 		Vars: []string{
 			"MEMINI_EMBED_BASE_URL",
 			"MEMINI_EMBED_API_KEY",
@@ -99,20 +99,20 @@ var groups = []group{
 		Key:   "llm",
 		Title: "LLM (optional)",
 		Intro: "Entirely opt-in. With no LLM configured memini still runs the full memory lifecycle using marker " +
-			"heuristics: write-time extraction, tier classification, promotion, corroboration and contradiction handling" +
-			"all work. Configuring one adds background consolidation, `POST /v1/answer`, the `memory_answer` MCP tool, " +
-			"and `MEMINI_RERANK=llm`.\n\nNote that `memory_answer` is only registered as an MCP tool when an LLM is " +
-			"configured. Without one, agents will not see the tool at all.",
+			"heuristics: write-time extraction, tier classification, promotion, corroboration and contradiction " +
+			"handling all work. Configuring one adds background consolidation, `POST /v1/answer`, the `memory_answer` " +
+			"MCP tool, and `MEMINI_RERANK=llm`.\n\nNote that `memory_answer` is only registered as an MCP tool when " +
+			"an LLM is configured. Without one, agents will not see the tool at all.",
 		Vars: []string{"MEMINI_LLM_BASE_URL", "MEMINI_LLM_API_KEY", "MEMINI_LLM_MODEL", "MEMINI_LLM_API"},
 	},
 	{
 		Key:   "rerank",
 		Title: "Reranking",
-		Intro: "An optional read-side rerank over the hybrid candidates. It only helps where base recall has headroom: on " +
-			"session-level benchmarks hybrid is already near ceiling and reranking is a no-op, while on turn-level " +
-			"retrieval it is worth double-digit gains. See [the benchmarks](../../bench/README.md).\n\nA cross-encoder " +
-			"is the better default when you need one. It gets most of the LLM's lift at a fraction of the latency and " +
-			"needs no chat model.",
+		Intro: "An optional read-side rerank over the hybrid candidates. It only helps where base recall has headroom: " +
+			"on session-level benchmarks hybrid is already near ceiling and reranking is a no-op, while on " +
+			"turn-level retrieval it is worth double-digit gains. See [the benchmarks](../../bench/README.md).\n\nA " +
+			"cross-encoder is the better default when you need one. It gets most of the LLM's lift at a fraction of " +
+			"the latency and needs no chat model.",
 		Vars: []string{
 			"MEMINI_RERANK",
 			"MEMINI_RERANK_MODEL",
@@ -126,11 +126,11 @@ var groups = []group{
 	{
 		Key:   "activity",
 		Title: "Activity log",
-		Intro: "An append-only record of what memory was served and why: every read and write, one row per operation and " +
-			"memory, carrying the recall query, the rank and the composite score. It backs `GET /v1/activity` and the " +
-			"Activity view in the admin UI.\n\nIt is off by default because it writes a row per served memory, which is " +
-			"real volume on a busy store. Turn it on when you want to answer \"why did recall return that?\" rather than" +
-			"guessing.",
+		Intro: "An append-only record of what memory was served and why: every read and write, one row per operation " +
+			"and memory, carrying the recall query, the rank and the composite score. It backs `GET /v1/activity` " +
+			"and the Activity view in the admin UI, and it is how you answer \"why did recall return that?\" rather " +
+			"than guessing.\n\nIt is on by default. Writes are best-effort and happen off the request path, so the " +
+			"cost is storage rather than latency, and the retention settings below are what bound it.",
 		Vars: []string{"MEMINI_ACTIVITY_LOG", "MEMINI_ACTIVITY_RETENTION", "MEMINI_ACTIVITY_MAX_ROWS"},
 	},
 	{
@@ -204,9 +204,9 @@ var groups = []group{
 		Key:   "namespace",
 		Title: "Namespaces",
 		Intro: "Which namespace a request reads and writes. See [namespace scoping](../scopes.md) for the " +
-			"model.\n\n`MEMINI_NAMESPACE`, `MEMINI_DEFAULT_NAMESPACE` and `MEMINI_AGENT` are resolved outside the config" +
-			"struct (in `internal/config/namespace.go`), which is why they carry a source note rather than a Go field " +
-			"name.",
+			"model.\n\n`MEMINI_NAMESPACE`, `MEMINI_DEFAULT_NAMESPACE` and `MEMINI_AGENT` are resolved outside the " +
+			"configstruct (in `internal/config/namespace.go`), which is why they carry a source note rather than a " +
+			"Go field name.",
 		Vars: []string{"MEMINI_DEFAULT_NAMESPACE", "MEMINI_NAMESPACE", "MEMINI_AGENT", "MEMINI_HOME"},
 	},
 }
@@ -255,7 +255,11 @@ var extraVars = []extraVar{
 		Doc: "Nests the resolved namespace under a per-agent segment, so several agents " +
 			"sharing one project get their own partitions (`acme/phoenix` becomes " +
 			"`acme/phoenix/reviewer`). Reads still see the parent through the ancestor " +
-			"cascade, so shared project knowledge is not duplicated. See " +
+			"cascade, so shared project knowledge is not duplicated.\n\n" +
+			"**Applied by the agent-side plugin, not by the server.** The server's own " +
+			"header-less fallback ignores it, so under a bare `memini mcp` with no plugin " +
+			"this has no effect and you want `MEMINI_NAMESPACE` set to the full path " +
+			"instead. `memini doctor` resolves it both ways and flags the divergence. See " +
 			"[multi-agent namespaces](../guides/multi-agent-namespaces.md).",
 	},
 }
@@ -278,10 +282,12 @@ type field struct {
 }
 
 func main() {
-	var src, out, mcpOut string
+	var src, out, mcpOut, specPath, restOut string
 	flag.StringVar(&src, "src", "internal/config/config.go", "path to config.go")
 	flag.StringVar(&out, "out", "docs/reference/configuration.md", "configuration reference output")
 	flag.StringVar(&mcpOut, "mcp-out", "", "MCP tool reference output; empty skips it")
+	flag.StringVar(&specPath, "spec", "api/openapi.yaml", "path to the OpenAPI spec")
+	flag.StringVar(&restOut, "rest-out", "", "REST reference output; empty skips it")
 	flag.Parse()
 
 	if err := run(src, out); err != nil {
@@ -290,6 +296,12 @@ func main() {
 	}
 	if mcpOut != "" {
 		if err := genMCP(mcpOut); err != nil {
+			fmt.Fprintln(os.Stderr, "gendocs:", err)
+			os.Exit(1)
+		}
+	}
+	if restOut != "" {
+		if err := genREST(specPath, restOut); err != nil {
 			fmt.Fprintln(os.Stderr, "gendocs:", err)
 			os.Exit(1)
 		}
@@ -755,8 +767,13 @@ func multiHump(s string) bool {
 // to sibling fields are rewritten to the env var the reader actually sets.
 func renderDoc(doc, goName, env string, goToEnv map[string]string) string {
 	// "FieldName is the ..." reads wrong under a heading of MEMINI_FIELD_NAME.
-	if strings.HasPrefix(doc, goName+" ") {
-		doc = "`" + env + "`" + doc[len(goName):]
+	// The name is followed by punctuation often enough to matter ("UIAddr, when
+	// set ...", "RerankModel / RerankAPIKey ...").
+	for _, sep := range []string{" ", ",", "/"} {
+		if strings.HasPrefix(doc, goName+sep) {
+			doc = "`" + env + "`" + doc[len(goName):]
+			break
+		}
 	}
 
 	var p comment.Parser

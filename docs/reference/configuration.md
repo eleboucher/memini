@@ -99,7 +99,7 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 
 ## HTTP server
 
-Listeners and request lifetime. `MEMINI_METRICS_ADDR` and `MEMINI_UI_ADDR` move `/metrics` and the admin UIonto their own ports, which is how you expose the UI to a trusted network without exposing the API, or scrape metrics without a bearer token.
+Listeners and request lifetime. `MEMINI_METRICS_ADDR` and `MEMINI_UI_ADDR` move `/metrics` and the admin UI onto their own ports, which is how you expose the UI to a trusted network without exposing the API, or scrape metrics without a bearer token.
 
 ### `MEMINI_HTTP_ADDR`
 
@@ -129,7 +129,7 @@ string, default none. Set by `Config.MetricsAddr`.
 
 string, default none. Set by `Config.UIAddr`.
 
-UIAddr, when set (e.g. ":8081") and distinct from `MEMINI_HTTP_ADDR`, serves the admin UI on its own listener instead of the main HTTP port. The shell embeds MEMINI_API_KEY, so isolating it to a dedicated port lets operators expose that port only on a trusted (LAN) gateway while the main port carries the token-free API. The UI listener also serves the API so the same-origin SPA can call /v1. Empty (the default) keeps the UI on the main port when MEMINI_UI_ENABLED is true.
+`MEMINI_UI_ADDR`, when set (e.g. ":8081") and distinct from `MEMINI_HTTP_ADDR`, serves the admin UI on its own listener instead of the main HTTP port. The shell embeds MEMINI_API_KEY, so isolating it to a dedicated port lets operators expose that port only on a trusted (LAN) gateway while the main port carries the token-free API. The UI listener also serves the API so the same-origin SPA can call /v1. Empty (the default) keeps the UI on the main port when MEMINI_UI_ENABLED is true.
 
 ### `MEMINI_UI_ENABLED`
 
@@ -153,7 +153,7 @@ string, default `json`. Set by `Config.LogFormat`.
 
 ## Storage
 
-memini runs on an embedded SQLite file by default and needs no configuration to start. Point it at Postgreswhen you outgrow one machine.
+memini runs on an embedded SQLite file by default and needs no configuration to start. Point it at Postgres when you outgrow one machine.
 
 ### `MEMINI_BACKEND`
 
@@ -175,9 +175,9 @@ string, default none. Set by `Config.PostgresDSN`.
 
 ## Embeddings
 
-An OpenAI-compatible `/embeddings` endpoint, which you deploy. This is the one thing memini needs from you:without it, recall falls back to keyword-only search.
+An OpenAI-compatible `/embeddings` endpoint, which you deploy. This is the one thing memini needs from you: without it, recall falls back to keyword-only search.
 
-`MEMINI_EMBED_DIMS` must match the model you pointat. A mismatch is the single most common setup failure, and it corrupts the store rather than erroring cleanly.
+`MEMINI_EMBED_DIMS` must match the model you point at. A mismatch is the single most common setup failure, and it corrupts the store rather than erroring cleanly.
 
 ### `MEMINI_EMBED_BASE_URL`
 
@@ -235,7 +235,7 @@ bool, default `false`. Set by `Config.ReembedOnModelChange`.
 
 ## LLM (optional)
 
-Entirely opt-in. With no LLM configured memini still runs the full memory lifecycle using marker heuristics: write-time extraction, tier classification, promotion, corroboration and contradiction handlingall work. Configuring one adds background consolidation, `POST /v1/answer`, the `memory_answer` MCP tool, and `MEMINI_RERANK=llm`.
+Entirely opt-in. With no LLM configured memini still runs the full memory lifecycle using marker heuristics: write-time extraction, tier classification, promotion, corroboration and contradiction handling all work. Configuring one adds background consolidation, `POST /v1/answer`, the `memory_answer` MCP tool, and `MEMINI_RERANK=llm`.
 
 Note that `memory_answer` is only registered as an MCP tool when an LLM is configured. Without one, agents will not see the tool at all.
 
@@ -313,9 +313,9 @@ int, default `0`. Set by `Config.RerankMaxConcurrency`.
 
 ## Activity log
 
-An append-only record of what memory was served and why: every read and write, one row per operation and memory, carrying the recall query, the rank and the composite score. It backs `GET /v1/activity` and the Activity view in the admin UI.
+An append-only record of what memory was served and why: every read and write, one row per operation and memory, carrying the recall query, the rank and the composite score. It backs `GET /v1/activity` and the Activity view in the admin UI, and it is how you answer "why did recall return that?" rather than guessing.
 
-It is off by default because it writes a row per served memory, which is real volume on a busy store. Turn it on when you want to answer "why did recall return that?" rather thanguessing.
+It is on by default. Writes are best-effort and happen off the request path, so the cost is storage rather than latency, and the retention settings below are what bound it.
 
 ### `MEMINI_ACTIVITY_LOG`
 
@@ -587,7 +587,9 @@ A value containing `/` is preserved as written (`acme/phoenix` stays `acme/phoen
 
 string, default none. Resolved in `internal/config/namespace.go`.
 
-Nests the resolved namespace under a per-agent segment, so several agents sharing one project get their own partitions (`acme/phoenix` becomes `acme/phoenix/reviewer`). Reads still see the parent through the ancestor cascade, so shared project knowledge is not duplicated. See [multi-agent namespaces](../guides/multi-agent-namespaces.md).
+Nests the resolved namespace under a per-agent segment, so several agents sharing one project get their own partitions (`acme/phoenix` becomes `acme/phoenix/reviewer`). Reads still see the parent through the ancestor cascade, so shared project knowledge is not duplicated.
+
+**Applied by the agent-side plugin, not by the server.** The server's own header-less fallback ignores it, so under a bare `memini mcp` with no plugin this has no effect and you want `MEMINI_NAMESPACE` set to the full path instead. `memini doctor` resolves it both ways and flags the divergence. See [multi-agent namespaces](../guides/multi-agent-namespaces.md).
 
 ### `MEMINI_HOME`
 

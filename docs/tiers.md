@@ -57,10 +57,10 @@ working ──▶ episodic ──(distilled at write / recalled repeatedly)─�
   durable facts stay with the LLM consolidator or the merge-hint +
   `memory_update` flow.
 - **Demotion** — durable memories that were never recalled, are low-importance,
-  and are older than `MEMINI_DEMOTE_AFTER` get pushed back down to `episodic`,
-  so unused "durable" debris (e.g. a low-quality bulk import) ages out on its
-  own. Disabled by default (`0`); anything recalled even once is reinforced and
-  kept.
+  and are uncorroborated get pushed back down to `episodic` once they are older
+  than `MEMINI_DEMOTE_AFTER`, so unused "durable" debris (e.g. a low-quality bulk
+  import) ages out on its own. **On by default** at `168h` (7d); set `0` to
+  disable. Anything recalled even once is reinforced and kept.
 - **Eviction** — the short-term tiers are capped per namespace at
   `MEMINI_SHORT_TERM_CAP` (default `1000`); over the cap, the sweeper evicts the
   lowest-retention `working`/`episodic` rows.
