@@ -346,6 +346,12 @@ type APIKeyStore interface {
 // both logged; the kinds are the wire-level values the REST filter accepts.
 type EventKind string
 
+// EventPin/EventUnpin/EventSettings are part of the config-handshake wire
+// contract (api/openapi.yaml's EventKind enum) landed ahead of the
+// project_map/settings write paths that will actually emit them — see
+// internal/api/rest/config_stubs.go. Recognizing them here now means the
+// GET /v1/activity ?kind= filter never 400s on a value the spec itself
+// advertises as valid.
 const (
 	EventRecall    EventKind = "recall"
 	EventGet       EventKind = "get"
@@ -354,13 +360,17 @@ const (
 	EventUpdate    EventKind = "update"
 	EventForget    EventKind = "forget"
 	EventSupersede EventKind = "supersede"
+	EventPin       EventKind = "pin"
+	EventUnpin     EventKind = "unpin"
+	EventSettings  EventKind = "settings"
 )
 
 // ValidEventKind reports whether k is one of the recorded kinds, so the REST
 // layer can reject an unknown filter value before it reaches SQL.
 func ValidEventKind(k EventKind) bool {
 	switch k {
-	case EventRecall, EventGet, EventBriefing, EventRemember, EventUpdate, EventForget, EventSupersede:
+	case EventRecall, EventGet, EventBriefing, EventRemember, EventUpdate, EventForget, EventSupersede,
+		EventPin, EventUnpin, EventSettings:
 		return true
 	}
 	return false

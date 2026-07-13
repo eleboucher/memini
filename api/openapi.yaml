@@ -824,6 +824,175 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "501": { $ref: "#/components/responses/Error" }
+  /v1/handshake:
+    post:
+      operationId: handshake
+      tags: [memory]
+      summary: Resolve namespace, identity, and behavioral settings from client-supplied project facts
+      description: >
+        The client→server handshake: the client sends what it knows about the
+        project (git remote/toplevel/cwd, an optional agent suffix, and any
+        namespace it already has an opinion about) plus its own name/version;
+        the server resolves the effective namespace (an explicit pin beats
+        MEMINI_NAMESPACE beats a declared value beats derivation from the
+        project facts beats the caller's key-level default beats the server
+        default), the caller's identity, the fully-merged ClientSettings
+        (built-in defaults, overridden by the server's global defaults,
+        overridden by any per-key settings), and the read-set the resolved
+        namespace draws from. This is the single source of truth for
+        namespace resolution — clients no longer derive or cache it locally.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HandshakeRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HandshakeResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/self:
+    get:
+      operationId: getSelf
+      tags: [memory]
+      summary: The caller's identity and fully-merged behavioral settings
+      description: >
+        A lighter-weight refresh than /v1/handshake for a client that already
+        has a resolved namespace and only wants current identity/settings —
+        no project facts to resend, and no read_set/pin/server info.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SelfResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/self/settings:
+    patch:
+      operationId: updateSelfSettings
+      tags: [memory]
+      summary: Update the caller's own per-key behavioral settings
+      description: >
+        Sets or clears fields on the settings bound to the API key the
+        request authenticated with. An explicit null on a
+        ClientSettingsPatch field clears it back to inheriting the server's
+        global default; an omitted field is left unchanged. 501 against a
+        storage backend that cannot persist per-key settings.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientSettingsPatch" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SelfResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "501": { $ref: "#/components/responses/Error" }
+  /v1/settings/defaults:
+    get:
+      operationId: getSettingsDefaults
+      tags: [memory]
+      summary: The server's global default ClientSettings
+      description: >
+        The defaults every key inherits from absent a per-key override.
+        Already visible indirectly via any handshake's merged settings, so
+        this is not admin-gated.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientSettings" }
+        "401": { $ref: "#/components/responses/Error" }
+        "501": { $ref: "#/components/responses/Error" }
+    put:
+      operationId: putSettingsDefaults
+      tags: [memory]
+      summary: Replace the server's global default ClientSettings
+      description: >
+        Admin-gated like /v1/keys (see listApiKeys): this changes what every
+        key on the server inherits absent its own override. May be rejected
+        when the server locks this layer read-only via its own configuration
+        — a later phase's concern, not this contract's.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientSettings" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientSettings" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "501": { $ref: "#/components/responses/Error" }
+  /v1/project-map:
+    get:
+      operationId: listProjectMap
+      tags: [memory]
+      summary: List explicit project→namespace pins
+      description: >
+        Admin-gated like /v1/keys (see listApiKeys): the project map is a
+        machine-wide table, not scoped to one namespace.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectMapListResponse" }
+        "403": { $ref: "#/components/responses/Error" }
+        "501": { $ref: "#/components/responses/Error" }
+    put:
+      operationId: putProjectMapPin
+      tags: [memory]
+      summary: Create or replace an explicit project→namespace pin
+      description: >
+        Admin-gated like /v1/keys (see listApiKeys). Pins are keyed by
+        remote_url (canonicalized) and/or toplevel_path — at least one must
+        be given, 400 otherwise. A pin beats every other namespace_source,
+        including MEMINI_NAMESPACE, at handshake time.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectMapPutRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectMapEntry" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "501": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteProjectMapPin
+      tags: [memory]
+      summary: Delete an explicit project→namespace pin
+      description: >
+        Admin-gated like /v1/keys (see listApiKeys). remote_url and/or
+        toplevel_path identify the pin to remove — at least one must be
+        given, 400 otherwise.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectMapDeleteRequest" }
+      responses:
+        "204": { description: Deleted }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "501": { $ref: "#/components/responses/Error" }
 components:
   securitySchemes:
     bearerAuth:
@@ -1108,8 +1277,8 @@ components:
       type: string
       description: >
         The operation an activity event records. Reads: recall, get, briefing.
-        Writes: remember, update, forget, supersede.
-      enum: [recall, get, briefing, remember, update, forget, supersede]
+        Writes: remember, update, forget, supersede, pin, unpin, settings.
+      enum: [recall, get, briefing, remember, update, forget, supersede, pin, unpin, settings]
     ActivityMemory:
       type: object
       description: >
@@ -1520,6 +1689,12 @@ components:
             database row) — always present for source=db.
         disabled: { type: boolean }
         source: { $ref: "#/components/schemas/ApiKeySource" }
+        settings:
+          allOf:
+            - $ref: "#/components/schemas/ClientSettings"
+          description: >
+            Per-key behavioral settings override; fields left unset inherit
+            the server's global defaults.
     ApiKeysResponse:
       type: object
       required: [keys]
@@ -1565,3 +1740,358 @@ components:
         disabled:
           type: boolean
           description: Omit to leave the current disabled state unchanged.
+        settings:
+          allOf:
+            - $ref: "#/components/schemas/ClientSettings"
+          description: >
+            Omit to leave the key's settings override unchanged; present
+            fields replace the corresponding stored value (fields left unset
+            within it continue to inherit the server's global defaults).
+    CallerIdentity:
+      type: object
+      required: [authenticated]
+      description: Who the request authenticated as, independent of any resolved namespace.
+      properties:
+        authenticated: { type: boolean }
+        key_name:
+          type: string
+          description: >
+            Name of the API key that authenticated the request; absent for
+            the admin key or dev mode (no named principal — see
+            requireAdminOrDev's doc for the same distinction on /v1/keys).
+        home:
+          type: string
+          description: The key's bound home namespace, if any.
+        default_namespace:
+          type: string
+          description: The key's bound default namespace, if any.
+    ClientSettings:
+      type: object
+      description: >
+        Behavioral/injection settings, resolved by merging built-in defaults
+        with any server global defaults and any per-key override. Every
+        field is optional in the schema — absent means "inherit from the
+        next layer down" — but a fully resolved ClientSettings (as returned
+        by /v1/handshake, /v1/self, and GET /v1/settings/defaults) always
+        carries every field.
+      properties:
+        capture_turns:
+          type: boolean
+          default: true
+          description: Capture each user→assistant turn as episodic memory.
+        session_digest:
+          type: boolean
+          default: true
+          description: Record a session-end/stop/pre-compact digest memory.
+        inline_extract:
+          type: boolean
+          default: true
+          description: >
+            Inject the directive asking the agent to save durable facts via
+            memory_remember.
+        auto_save:
+          type: boolean
+          default: true
+          description: Periodically nudge the agent to persist durable memories.
+        auto_save_interval:
+          type: integer
+          minimum: 1
+          default: 10
+          description: User-message interval between auto-save nudges.
+        inject_briefing_pinned:
+          type: integer
+          minimum: 0
+          default: 5
+          description: Max pinned memories in the session-start briefing.
+        inject_briefing_facts:
+          type: integer
+          minimum: 0
+          default: 5
+          description: Max durable semantic facts in the session-start briefing.
+        inject_briefing_procedures:
+          type: integer
+          minimum: 0
+          default: 5
+          description: Max procedural how-tos in the session-start briefing.
+        inject_briefing_recent:
+          type: integer
+          minimum: 0
+          default: 3
+          description: Max recent episodic entries in the session-start briefing.
+        inject_briefing_max_tok:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Hard ceiling on briefing injection tokens; 0 is uncapped.
+        inject_pretool_items:
+          type: integer
+          minimum: 0
+          default: 3
+          description: Max recalled items injected per file on PreToolUse.
+        inject_pretool_max_tok:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Hard ceiling on per-tool injection tokens; 0 is uncapped.
+        inject_pretool_min_score:
+          type: number
+          minimum: 0
+          default: 0
+          description: Floor on the fused score (>=) for a PreToolUse injection.
+        inject_pretool_tools:
+          type: array
+          items: { type: string }
+          default: [Read, Write, Edit, Glob, Grep]
+          description: Tool-name allowlist that triggers a PreToolUse injection.
+        inject_labels:
+          type: array
+          default: []
+          items:
+            type: string
+            enum: [tier, confidence, age, reason]
+          description: Which annotation labels to render alongside an injected memory.
+        recall:
+          type: boolean
+          default: true
+          description: Enable recall-driven injection at all.
+        capture:
+          type: boolean
+          default: true
+          description: Enable capture (turns/digests) at all.
+        recall_limit:
+          type: integer
+          minimum: 0
+          default: 3
+          description: Max memories per recall call.
+        inject_recall_max_tok:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Hard ceiling on recall injection tokens; 0 is uncapped.
+        inject_recall_min_score:
+          type: number
+          minimum: 0
+          default: 0
+          description: Floor on the fused score (>=) for a recall injection.
+        min_capture_chars:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Minimum content length worth bothering to capture a turn.
+        namespace_scope:
+          type: string
+          enum: [repo, owner-repo]
+          default: repo
+          description: >
+            "repo" derives the namespace from the bare repo name; "owner-repo"
+            disambiguates same-named repos across owners with an
+            owner-repo slug.
+        namespace_prefix:
+          type: string
+          default: ""
+          description: Namespace path prepended ahead of the derived/declared namespace.
+    ClientSettingsPatch:
+      type: object
+      description: >
+        Same fields as ClientSettings, but every field is nullable: omit a
+        field to leave it unchanged, send it as null to clear it back to
+        inheriting, or send a value to set it explicitly.
+      properties:
+        capture_turns: { type: boolean, nullable: true }
+        session_digest: { type: boolean, nullable: true }
+        inline_extract: { type: boolean, nullable: true }
+        auto_save: { type: boolean, nullable: true }
+        auto_save_interval: { type: integer, minimum: 1, nullable: true }
+        inject_briefing_pinned: { type: integer, minimum: 0, nullable: true }
+        inject_briefing_facts: { type: integer, minimum: 0, nullable: true }
+        inject_briefing_procedures: { type: integer, minimum: 0, nullable: true }
+        inject_briefing_recent: { type: integer, minimum: 0, nullable: true }
+        inject_briefing_max_tok: { type: integer, minimum: 0, nullable: true }
+        inject_pretool_items: { type: integer, minimum: 0, nullable: true }
+        inject_pretool_max_tok: { type: integer, minimum: 0, nullable: true }
+        inject_pretool_min_score: { type: number, minimum: 0, nullable: true }
+        inject_pretool_tools:
+          type: array
+          items: { type: string }
+          nullable: true
+        inject_labels:
+          type: array
+          items: { type: string, enum: [tier, confidence, age, reason] }
+          nullable: true
+        recall: { type: boolean, nullable: true }
+        capture: { type: boolean, nullable: true }
+        recall_limit: { type: integer, minimum: 0, nullable: true }
+        inject_recall_max_tok: { type: integer, minimum: 0, nullable: true }
+        inject_recall_min_score: { type: number, minimum: 0, nullable: true }
+        min_capture_chars: { type: integer, minimum: 0, nullable: true }
+        namespace_scope:
+          type: string
+          enum: [repo, owner-repo]
+          nullable: true
+        namespace_prefix: { type: string, nullable: true }
+    SelfResponse:
+      type: object
+      required: [identity, settings, settings_sources]
+      properties:
+        identity: { $ref: "#/components/schemas/CallerIdentity" }
+        settings:
+          allOf:
+            - $ref: "#/components/schemas/ClientSettings"
+          description: Fully resolved — every field present.
+        settings_sources:
+          type: object
+          description: Per-field provenance for `settings`, keyed by the same field names.
+          additionalProperties:
+            type: string
+            enum: [default, global, key]
+    HandshakeRequest:
+      type: object
+      required: [project]
+      description: >
+        Client→server handshake input: what the client currently knows about
+        the project and about itself. project.cwd_basename is the only field
+        every caller can always supply (even a bare directory with no git
+        repo); everything else sharpens the resolution.
+      properties:
+        project:
+          type: object
+          required: [cwd_basename]
+          properties:
+            remote_url:
+              type: string
+              description: >
+                Raw git remote URL, exactly as `git remote get-url origin`
+                reports it — unnormalized.
+            toplevel_path:
+              type: string
+              description: >
+                Absolute git toplevel directory — the machine-local pin key
+                (path:<toplevel_path>).
+            toplevel_basename:
+              type: string
+              description: Basename of toplevel_path, for the toplevel fallback derivation.
+            cwd_basename:
+              type: string
+              description: >
+                Basename of the working directory — the last-resort
+                derivation fallback, always present.
+            agent:
+              type: string
+              description: >
+                Per-agent suffix (e.g. "reviewer"), sanitized and appended as
+                a nested namespace segment.
+            env_namespace:
+              type: string
+              description: >
+                The client's MEMINI_NAMESPACE, when set. Sent so a pin can
+                still beat it server-side — the client cannot make that call
+                itself without knowing whether a pin exists.
+            declared_namespace:
+              type: string
+              description: >
+                For gateway/integration callers with no meaningful cwd (a
+                webhook relay, a CI job) to declare their namespace directly.
+                Wins over derivation but not over a pin or env_namespace.
+        client:
+          type: object
+          description: Caller identification, for logging/diagnostics only.
+          properties:
+            name: { type: string }
+            version: { type: string }
+    HandshakeResponse:
+      type: object
+      required:
+        [namespace, namespace_source, identity, settings, settings_sources, read_set, server]
+      properties:
+        namespace:
+          type: string
+          description: The resolved namespace this caller should use for every subsequent request.
+        namespace_source:
+          type: string
+          description: Which rule resolved `namespace`, highest precedence first.
+          enum: [pin, env, declared, remote, toplevel, cwd, key-default, server-default]
+        pin:
+          type: object
+          description: Present only when namespace_source is "pin".
+          required: [key, created_by, updated_at]
+          properties:
+            key:
+              type: string
+              description: >
+                The project_map key that matched
+                (remote:<canonical-remote> or path:<toplevel_path>).
+            note: { type: string }
+            created_by: { type: string }
+            updated_at: { type: string, format: date-time }
+        identity: { $ref: "#/components/schemas/CallerIdentity" }
+        settings:
+          allOf:
+            - $ref: "#/components/schemas/ClientSettings"
+          description: Fully resolved — every field present.
+        settings_sources:
+          type: object
+          description: Per-field provenance for `settings`, keyed by the same field names.
+          additionalProperties:
+            type: string
+            enum: [default, global, key]
+        read_set:
+          type: array
+          description: >
+            The read-set `namespace` resolves to (same shape as GET
+            /v1/namespaces/read-set).
+          items: { $ref: "#/components/schemas/ReadSetEntryItem" }
+        server:
+          type: object
+          required: [version, default_namespace]
+          properties:
+            version: { type: string }
+            default_namespace: { type: string }
+    ProjectMapEntry:
+      type: object
+      required: [key, namespace, created_at, updated_at]
+      description: >
+        One explicit project→namespace pin, keyed by remote_url
+        (canonicalized) or toplevel_path.
+      properties:
+        key:
+          type: string
+          description: 'The project_map key: "remote:<canonical-remote>" or "path:<abs-toplevel>".'
+        namespace: { type: string }
+        note: { type: string }
+        created_by:
+          type: string
+          description: Name of the API key that created the pin, when known.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ProjectMapListResponse:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/ProjectMapEntry" }
+    ProjectMapPutRequest:
+      type: object
+      required: [namespace]
+      description: >
+        At least one of remote_url/toplevel_path is required (400 if
+        neither is given) — that is the key fact the pin is stored under.
+      properties:
+        namespace: { type: string }
+        remote_url:
+          type: string
+          description: >
+            Raw git remote URL; canonicalized server-side into the
+            remote:<canonical> key.
+        toplevel_path:
+          type: string
+          description: Absolute git toplevel path; stored as the path:<toplevel_path> key.
+        note: { type: string }
+    ProjectMapDeleteRequest:
+      type: object
+      description: >
+        At least one of remote_url/toplevel_path is required (400 if
+        neither is given) to identify the pin to delete.
+      properties:
+        remote_url: { type: string }
+        toplevel_path: { type: string }

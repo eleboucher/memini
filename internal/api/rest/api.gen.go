@@ -63,14 +63,101 @@ func (e ApiKeySource) Valid() bool {
 	}
 }
 
+// Defines values for ClientSettingsInjectLabels.
+const (
+	ClientSettingsInjectLabelsAge        ClientSettingsInjectLabels = "age"
+	ClientSettingsInjectLabelsConfidence ClientSettingsInjectLabels = "confidence"
+	ClientSettingsInjectLabelsReason     ClientSettingsInjectLabels = "reason"
+	ClientSettingsInjectLabelsTier       ClientSettingsInjectLabels = "tier"
+)
+
+// Valid indicates whether the value is a known member of the ClientSettingsInjectLabels enum.
+func (e ClientSettingsInjectLabels) Valid() bool {
+	switch e {
+	case ClientSettingsInjectLabelsAge:
+		return true
+	case ClientSettingsInjectLabelsConfidence:
+		return true
+	case ClientSettingsInjectLabelsReason:
+		return true
+	case ClientSettingsInjectLabelsTier:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClientSettingsNamespaceScope.
+const (
+	ClientSettingsNamespaceScopeOwnerRepo ClientSettingsNamespaceScope = "owner-repo"
+	ClientSettingsNamespaceScopeRepo      ClientSettingsNamespaceScope = "repo"
+)
+
+// Valid indicates whether the value is a known member of the ClientSettingsNamespaceScope enum.
+func (e ClientSettingsNamespaceScope) Valid() bool {
+	switch e {
+	case ClientSettingsNamespaceScopeOwnerRepo:
+		return true
+	case ClientSettingsNamespaceScopeRepo:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClientSettingsPatchInjectLabels.
+const (
+	ClientSettingsPatchInjectLabelsAge        ClientSettingsPatchInjectLabels = "age"
+	ClientSettingsPatchInjectLabelsConfidence ClientSettingsPatchInjectLabels = "confidence"
+	ClientSettingsPatchInjectLabelsReason     ClientSettingsPatchInjectLabels = "reason"
+	ClientSettingsPatchInjectLabelsTier       ClientSettingsPatchInjectLabels = "tier"
+)
+
+// Valid indicates whether the value is a known member of the ClientSettingsPatchInjectLabels enum.
+func (e ClientSettingsPatchInjectLabels) Valid() bool {
+	switch e {
+	case ClientSettingsPatchInjectLabelsAge:
+		return true
+	case ClientSettingsPatchInjectLabelsConfidence:
+		return true
+	case ClientSettingsPatchInjectLabelsReason:
+		return true
+	case ClientSettingsPatchInjectLabelsTier:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClientSettingsPatchNamespaceScope.
+const (
+	ClientSettingsPatchNamespaceScopeOwnerRepo ClientSettingsPatchNamespaceScope = "owner-repo"
+	ClientSettingsPatchNamespaceScopeRepo      ClientSettingsPatchNamespaceScope = "repo"
+)
+
+// Valid indicates whether the value is a known member of the ClientSettingsPatchNamespaceScope enum.
+func (e ClientSettingsPatchNamespaceScope) Valid() bool {
+	switch e {
+	case ClientSettingsPatchNamespaceScopeOwnerRepo:
+		return true
+	case ClientSettingsPatchNamespaceScopeRepo:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for EventKind.
 const (
 	EventKindBriefing  EventKind = "briefing"
 	EventKindForget    EventKind = "forget"
 	EventKindGet       EventKind = "get"
+	EventKindPin       EventKind = "pin"
 	EventKindRecall    EventKind = "recall"
 	EventKindRemember  EventKind = "remember"
+	EventKindSettings  EventKind = "settings"
 	EventKindSupersede EventKind = "supersede"
+	EventKindUnpin     EventKind = "unpin"
 	EventKindUpdate    EventKind = "update"
 )
 
@@ -83,13 +170,76 @@ func (e EventKind) Valid() bool {
 		return true
 	case EventKindGet:
 		return true
+	case EventKindPin:
+		return true
 	case EventKindRecall:
 		return true
 	case EventKindRemember:
 		return true
+	case EventKindSettings:
+		return true
 	case EventKindSupersede:
 		return true
+	case EventKindUnpin:
+		return true
 	case EventKindUpdate:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for HandshakeResponseNamespaceSource.
+const (
+	HandshakeResponseNamespaceSourceCwd           HandshakeResponseNamespaceSource = "cwd"
+	HandshakeResponseNamespaceSourceDeclared      HandshakeResponseNamespaceSource = "declared"
+	HandshakeResponseNamespaceSourceEnv           HandshakeResponseNamespaceSource = "env"
+	HandshakeResponseNamespaceSourceKeyDefault    HandshakeResponseNamespaceSource = "key-default"
+	HandshakeResponseNamespaceSourcePin           HandshakeResponseNamespaceSource = "pin"
+	HandshakeResponseNamespaceSourceRemote        HandshakeResponseNamespaceSource = "remote"
+	HandshakeResponseNamespaceSourceServerDefault HandshakeResponseNamespaceSource = "server-default"
+	HandshakeResponseNamespaceSourceToplevel      HandshakeResponseNamespaceSource = "toplevel"
+)
+
+// Valid indicates whether the value is a known member of the HandshakeResponseNamespaceSource enum.
+func (e HandshakeResponseNamespaceSource) Valid() bool {
+	switch e {
+	case HandshakeResponseNamespaceSourceCwd:
+		return true
+	case HandshakeResponseNamespaceSourceDeclared:
+		return true
+	case HandshakeResponseNamespaceSourceEnv:
+		return true
+	case HandshakeResponseNamespaceSourceKeyDefault:
+		return true
+	case HandshakeResponseNamespaceSourcePin:
+		return true
+	case HandshakeResponseNamespaceSourceRemote:
+		return true
+	case HandshakeResponseNamespaceSourceServerDefault:
+		return true
+	case HandshakeResponseNamespaceSourceToplevel:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for HandshakeResponseSettingsSources.
+const (
+	HandshakeResponseSettingsSourcesDefault HandshakeResponseSettingsSources = "default"
+	HandshakeResponseSettingsSourcesGlobal  HandshakeResponseSettingsSources = "global"
+	HandshakeResponseSettingsSourcesKey     HandshakeResponseSettingsSources = "key"
+)
+
+// Valid indicates whether the value is a known member of the HandshakeResponseSettingsSources enum.
+func (e HandshakeResponseSettingsSources) Valid() bool {
+	switch e {
+	case HandshakeResponseSettingsSourcesDefault:
+		return true
+	case HandshakeResponseSettingsSourcesGlobal:
+		return true
+	case HandshakeResponseSettingsSourcesKey:
 		return true
 	default:
 		return false
@@ -162,6 +312,27 @@ func (e SearchRequestScope) Valid() bool {
 	case SearchRequestScopeProject:
 		return true
 	case SearchRequestScopeSubtree:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SelfResponseSettingsSources.
+const (
+	SelfResponseSettingsSourcesDefault SelfResponseSettingsSources = "default"
+	SelfResponseSettingsSourcesGlobal  SelfResponseSettingsSources = "global"
+	SelfResponseSettingsSourcesKey     SelfResponseSettingsSources = "key"
+)
+
+// Valid indicates whether the value is a known member of the SelfResponseSettingsSources enum.
+func (e SelfResponseSettingsSources) Valid() bool {
+	switch e {
+	case SelfResponseSettingsSourcesDefault:
+		return true
+	case SelfResponseSettingsSourcesGlobal:
+		return true
+	case SelfResponseSettingsSourcesKey:
 		return true
 	default:
 		return false
@@ -269,7 +440,7 @@ type ActivityEvent struct {
 	// Detail Kind-specific context — a recall's degraded mode, a supersession's replacement id.
 	Detail *map[string]interface{} `json:"detail,omitempty"`
 
-	// Kind The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede.
+	// Kind The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede, pin, unpin, settings.
 	Kind EventKind `json:"kind"`
 
 	// Memories Empty for a recall that matched nothing.
@@ -353,6 +524,9 @@ type ApiKey struct {
 	Home *string `json:"home,omitempty"`
 	Name string  `json:"name"`
 
+	// Settings Per-key behavioral settings override; fields left unset inherit the server's global defaults.
+	Settings *ClientSettings `json:"settings,omitempty"`
+
 	// Source Where the key is stored: "db" is a row in the api_keys table (mutable via this API); "file" comes from MEMINI_API_KEYS_FILE, loaded once at boot and immutable through this API — update/rotate/ delete all reject a "file" key with 409.
 	Source ApiKeySource `json:"source"`
 }
@@ -375,6 +549,9 @@ type ApiKeyWithSecret struct {
 
 	// Secret The plaintext credential, shown exactly once, here — it is never stored (only its SHA-256 hash is) and cannot be recovered or displayed again.
 	Secret string `json:"secret"`
+
+	// Settings Per-key behavioral settings override; fields left unset inherit the server's global defaults.
+	Settings *ClientSettings `json:"settings,omitempty"`
 
 	// Source Where the key is stored: "db" is a row in the api_keys table (mutable via this API); "file" comes from MEMINI_API_KEYS_FILE, loaded once at boot and immutable through this API — update/rotate/ delete all reject a "file" key with 409.
 	Source ApiKeySource `json:"source"`
@@ -423,6 +600,131 @@ type BriefingItem struct {
 	From   *string `json:"from,omitempty"`
 	Memory Memory  `json:"memory"`
 }
+
+// CallerIdentity Who the request authenticated as, independent of any resolved namespace.
+type CallerIdentity struct {
+	Authenticated bool `json:"authenticated"`
+
+	// DefaultNamespace The key's bound default namespace, if any.
+	DefaultNamespace *string `json:"default_namespace,omitempty"`
+
+	// Home The key's bound home namespace, if any.
+	Home *string `json:"home,omitempty"`
+
+	// KeyName Name of the API key that authenticated the request; absent for the admin key or dev mode (no named principal — see requireAdminOrDev's doc for the same distinction on /v1/keys).
+	KeyName *string `json:"key_name,omitempty"`
+}
+
+// ClientSettings Behavioral/injection settings, resolved by merging built-in defaults with any server global defaults and any per-key override. Every field is optional in the schema — absent means "inherit from the next layer down" — but a fully resolved ClientSettings (as returned by /v1/handshake, /v1/self, and GET /v1/settings/defaults) always carries every field.
+type ClientSettings struct {
+	// AutoSave Periodically nudge the agent to persist durable memories.
+	AutoSave *bool `json:"auto_save,omitempty"`
+
+	// AutoSaveInterval User-message interval between auto-save nudges.
+	AutoSaveInterval *int `json:"auto_save_interval,omitempty"`
+
+	// Capture Enable capture (turns/digests) at all.
+	Capture *bool `json:"capture,omitempty"`
+
+	// CaptureTurns Capture each user→assistant turn as episodic memory.
+	CaptureTurns *bool `json:"capture_turns,omitempty"`
+
+	// InjectBriefingFacts Max durable semantic facts in the session-start briefing.
+	InjectBriefingFacts *int `json:"inject_briefing_facts,omitempty"`
+
+	// InjectBriefingMaxTok Hard ceiling on briefing injection tokens; 0 is uncapped.
+	InjectBriefingMaxTok *int `json:"inject_briefing_max_tok,omitempty"`
+
+	// InjectBriefingPinned Max pinned memories in the session-start briefing.
+	InjectBriefingPinned *int `json:"inject_briefing_pinned,omitempty"`
+
+	// InjectBriefingProcedures Max procedural how-tos in the session-start briefing.
+	InjectBriefingProcedures *int `json:"inject_briefing_procedures,omitempty"`
+
+	// InjectBriefingRecent Max recent episodic entries in the session-start briefing.
+	InjectBriefingRecent *int `json:"inject_briefing_recent,omitempty"`
+
+	// InjectLabels Which annotation labels to render alongside an injected memory.
+	InjectLabels *[]ClientSettingsInjectLabels `json:"inject_labels,omitempty"`
+
+	// InjectPretoolItems Max recalled items injected per file on PreToolUse.
+	InjectPretoolItems *int `json:"inject_pretool_items,omitempty"`
+
+	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped.
+	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
+
+	// InjectPretoolMinScore Floor on the fused score (>=) for a PreToolUse injection.
+	InjectPretoolMinScore *float32 `json:"inject_pretool_min_score,omitempty"`
+
+	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection.
+	InjectPretoolTools *[]string `json:"inject_pretool_tools,omitempty"`
+
+	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped.
+	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
+
+	// InjectRecallMinScore Floor on the fused score (>=) for a recall injection.
+	InjectRecallMinScore *float32 `json:"inject_recall_min_score,omitempty"`
+
+	// InlineExtract Inject the directive asking the agent to save durable facts via memory_remember.
+	InlineExtract *bool `json:"inline_extract,omitempty"`
+
+	// MinCaptureChars Minimum content length worth bothering to capture a turn.
+	MinCaptureChars *int `json:"min_capture_chars,omitempty"`
+
+	// NamespacePrefix Namespace path prepended ahead of the derived/declared namespace.
+	NamespacePrefix *string `json:"namespace_prefix,omitempty"`
+
+	// NamespaceScope "repo" derives the namespace from the bare repo name; "owner-repo" disambiguates same-named repos across owners with an owner-repo slug.
+	NamespaceScope *ClientSettingsNamespaceScope `json:"namespace_scope,omitempty"`
+
+	// Recall Enable recall-driven injection at all.
+	Recall *bool `json:"recall,omitempty"`
+
+	// RecallLimit Max memories per recall call.
+	RecallLimit *int `json:"recall_limit,omitempty"`
+
+	// SessionDigest Record a session-end/stop/pre-compact digest memory.
+	SessionDigest *bool `json:"session_digest,omitempty"`
+}
+
+// ClientSettingsInjectLabels defines model for ClientSettings.InjectLabels.
+type ClientSettingsInjectLabels string
+
+// ClientSettingsNamespaceScope "repo" derives the namespace from the bare repo name; "owner-repo" disambiguates same-named repos across owners with an owner-repo slug.
+type ClientSettingsNamespaceScope string
+
+// ClientSettingsPatch Same fields as ClientSettings, but every field is nullable: omit a field to leave it unchanged, send it as null to clear it back to inheriting, or send a value to set it explicitly.
+type ClientSettingsPatch struct {
+	AutoSave                 *bool                              `json:"auto_save,omitempty"`
+	AutoSaveInterval         *int                               `json:"auto_save_interval,omitempty"`
+	Capture                  *bool                              `json:"capture,omitempty"`
+	CaptureTurns             *bool                              `json:"capture_turns,omitempty"`
+	InjectBriefingFacts      *int                               `json:"inject_briefing_facts,omitempty"`
+	InjectBriefingMaxTok     *int                               `json:"inject_briefing_max_tok,omitempty"`
+	InjectBriefingPinned     *int                               `json:"inject_briefing_pinned,omitempty"`
+	InjectBriefingProcedures *int                               `json:"inject_briefing_procedures,omitempty"`
+	InjectBriefingRecent     *int                               `json:"inject_briefing_recent,omitempty"`
+	InjectLabels             *[]ClientSettingsPatchInjectLabels `json:"inject_labels,omitempty"`
+	InjectPretoolItems       *int                               `json:"inject_pretool_items,omitempty"`
+	InjectPretoolMaxTok      *int                               `json:"inject_pretool_max_tok,omitempty"`
+	InjectPretoolMinScore    *float32                           `json:"inject_pretool_min_score,omitempty"`
+	InjectPretoolTools       *[]string                          `json:"inject_pretool_tools,omitempty"`
+	InjectRecallMaxTok       *int                               `json:"inject_recall_max_tok,omitempty"`
+	InjectRecallMinScore     *float32                           `json:"inject_recall_min_score,omitempty"`
+	InlineExtract            *bool                              `json:"inline_extract,omitempty"`
+	MinCaptureChars          *int                               `json:"min_capture_chars,omitempty"`
+	NamespacePrefix          *string                            `json:"namespace_prefix,omitempty"`
+	NamespaceScope           *ClientSettingsPatchNamespaceScope `json:"namespace_scope,omitempty"`
+	Recall                   *bool                              `json:"recall,omitempty"`
+	RecallLimit              *int                               `json:"recall_limit,omitempty"`
+	SessionDigest            *bool                              `json:"session_digest,omitempty"`
+}
+
+// ClientSettingsPatchInjectLabels defines model for ClientSettingsPatch.InjectLabels.
+type ClientSettingsPatchInjectLabels string
+
+// ClientSettingsPatchNamespaceScope defines model for ClientSettingsPatch.NamespaceScope.
+type ClientSettingsPatchNamespaceScope string
 
 // ClusterAction defines model for ClusterAction.
 type ClusterAction struct {
@@ -492,7 +794,7 @@ type DeleteNamespaceResponse struct {
 	Deleted int `json:"deleted"`
 }
 
-// EventKind The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede.
+// EventKind The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede, pin, unpin, settings.
 type EventKind string
 
 // FsckReport defines model for FsckReport.
@@ -502,6 +804,78 @@ type FsckReport struct {
 	Namespaces       int         `json:"namespaces"`
 	ShortTermEvicted int         `json:"short_term_evicted"`
 }
+
+// HandshakeRequest Client→server handshake input: what the client currently knows about the project and about itself. project.cwd_basename is the only field every caller can always supply (even a bare directory with no git repo); everything else sharpens the resolution.
+type HandshakeRequest struct {
+	// Client Caller identification, for logging/diagnostics only.
+	Client *struct {
+		Name    *string `json:"name,omitempty"`
+		Version *string `json:"version,omitempty"`
+	} `json:"client,omitempty"`
+	Project struct {
+		// Agent Per-agent suffix (e.g. "reviewer"), sanitized and appended as a nested namespace segment.
+		Agent *string `json:"agent,omitempty"`
+
+		// CwdBasename Basename of the working directory — the last-resort derivation fallback, always present.
+		CwdBasename string `json:"cwd_basename"`
+
+		// DeclaredNamespace For gateway/integration callers with no meaningful cwd (a webhook relay, a CI job) to declare their namespace directly. Wins over derivation but not over a pin or env_namespace.
+		DeclaredNamespace *string `json:"declared_namespace,omitempty"`
+
+		// EnvNamespace The client's MEMINI_NAMESPACE, when set. Sent so a pin can still beat it server-side — the client cannot make that call itself without knowing whether a pin exists.
+		EnvNamespace *string `json:"env_namespace,omitempty"`
+
+		// RemoteUrl Raw git remote URL, exactly as `git remote get-url origin` reports it — unnormalized.
+		RemoteUrl *string `json:"remote_url,omitempty"`
+
+		// ToplevelBasename Basename of toplevel_path, for the toplevel fallback derivation.
+		ToplevelBasename *string `json:"toplevel_basename,omitempty"`
+
+		// ToplevelPath Absolute git toplevel directory — the machine-local pin key (path:<toplevel_path>).
+		ToplevelPath *string `json:"toplevel_path,omitempty"`
+	} `json:"project"`
+}
+
+// HandshakeResponse defines model for HandshakeResponse.
+type HandshakeResponse struct {
+	// Identity Who the request authenticated as, independent of any resolved namespace.
+	Identity CallerIdentity `json:"identity"`
+
+	// Namespace The resolved namespace this caller should use for every subsequent request.
+	Namespace string `json:"namespace"`
+
+	// NamespaceSource Which rule resolved `namespace`, highest precedence first.
+	NamespaceSource HandshakeResponseNamespaceSource `json:"namespace_source"`
+
+	// Pin Present only when namespace_source is "pin".
+	Pin *struct {
+		CreatedBy string `json:"created_by"`
+
+		// Key The project_map key that matched (remote:<canonical-remote> or path:<toplevel_path>).
+		Key       string    `json:"key"`
+		Note      *string   `json:"note,omitempty"`
+		UpdatedAt time.Time `json:"updated_at"`
+	} `json:"pin,omitempty"`
+
+	// ReadSet The read-set `namespace` resolves to (same shape as GET /v1/namespaces/read-set).
+	ReadSet []ReadSetEntryItem `json:"read_set"`
+	Server  struct {
+		DefaultNamespace string `json:"default_namespace"`
+		Version          string `json:"version"`
+	} `json:"server"`
+
+	// Settings Fully resolved — every field present.
+	Settings ClientSettings `json:"settings"`
+
+	// SettingsSources Per-field provenance for `settings`, keyed by the same field names.
+	SettingsSources map[string]HandshakeResponseSettingsSources `json:"settings_sources"`
+}
+
+// HandshakeResponseNamespaceSource Which rule resolved `namespace`, highest precedence first.
+type HandshakeResponseNamespaceSource string
+
+// HandshakeResponseSettingsSources defines model for HandshakeResponse.SettingsSources.
+type HandshakeResponseSettingsSources string
 
 // Level defines model for Level.
 type Level string
@@ -582,6 +956,43 @@ type NamespaceLinksResponse struct {
 // NamespacesResponse defines model for NamespacesResponse.
 type NamespacesResponse struct {
 	Namespaces []string `json:"namespaces"`
+}
+
+// ProjectMapDeleteRequest At least one of remote_url/toplevel_path is required (400 if neither is given) to identify the pin to delete.
+type ProjectMapDeleteRequest struct {
+	RemoteUrl    *string `json:"remote_url,omitempty"`
+	ToplevelPath *string `json:"toplevel_path,omitempty"`
+}
+
+// ProjectMapEntry One explicit project→namespace pin, keyed by remote_url (canonicalized) or toplevel_path.
+type ProjectMapEntry struct {
+	CreatedAt time.Time `json:"created_at"`
+
+	// CreatedBy Name of the API key that created the pin, when known.
+	CreatedBy *string `json:"created_by,omitempty"`
+
+	// Key The project_map key: "remote:<canonical-remote>" or "path:<abs-toplevel>".
+	Key       string    `json:"key"`
+	Namespace string    `json:"namespace"`
+	Note      *string   `json:"note,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ProjectMapListResponse defines model for ProjectMapListResponse.
+type ProjectMapListResponse struct {
+	Entries []ProjectMapEntry `json:"entries"`
+}
+
+// ProjectMapPutRequest At least one of remote_url/toplevel_path is required (400 if neither is given) — that is the key fact the pin is stored under.
+type ProjectMapPutRequest struct {
+	Namespace string  `json:"namespace"`
+	Note      *string `json:"note,omitempty"`
+
+	// RemoteUrl Raw git remote URL; canonicalized server-side into the remote:<canonical> key.
+	RemoteUrl *string `json:"remote_url,omitempty"`
+
+	// ToplevelPath Absolute git toplevel path; stored as the path:<toplevel_path> key.
+	ToplevelPath *string `json:"toplevel_path,omitempty"`
 }
 
 // ReadSetEntryItem defines model for ReadSetEntryItem.
@@ -707,6 +1118,21 @@ type SearchResponse struct {
 	Results []ScoredMemory `json:"results"`
 }
 
+// SelfResponse defines model for SelfResponse.
+type SelfResponse struct {
+	// Identity Who the request authenticated as, independent of any resolved namespace.
+	Identity CallerIdentity `json:"identity"`
+
+	// Settings Fully resolved — every field present.
+	Settings ClientSettings `json:"settings"`
+
+	// SettingsSources Per-field provenance for `settings`, keyed by the same field names.
+	SettingsSources map[string]SelfResponseSettingsSources `json:"settings_sources"`
+}
+
+// SelfResponseSettingsSources defines model for SelfResponse.SettingsSources.
+type SelfResponseSettingsSources string
+
 // Stats defines model for Stats.
 type Stats struct {
 	AvgImportance float64 `json:"avg_importance"`
@@ -746,6 +1172,9 @@ type UpdateApiKeyRequest struct {
 
 	// Home Omit to leave the current binding unchanged; an explicit empty string clears it.
 	Home *string `json:"home,omitempty"`
+
+	// Settings Omit to leave the key's settings override unchanged; present fields replace the corresponding stored value (fields left unset within it continue to inherit the server's global defaults).
+	Settings *ClientSettings `json:"settings,omitempty"`
 }
 
 // Namespace defines model for Namespace.
@@ -1037,6 +1466,9 @@ type AnswerQuestionJSONRequestBody = AnswerRequest
 // RunDedupJSONRequestBody defines body for RunDedup for application/json ContentType.
 type RunDedupJSONRequestBody = DedupRequest
 
+// HandshakeJSONRequestBody defines body for Handshake for application/json ContentType.
+type HandshakeJSONRequestBody = HandshakeRequest
+
 // CreateApiKeyJSONRequestBody defines body for CreateApiKey for application/json ContentType.
 type CreateApiKeyJSONRequestBody = CreateApiKeyRequest
 
@@ -1064,8 +1496,20 @@ type MoveNamespaceJSONRequestBody MoveNamespaceJSONBody
 // SplitNamespaceJSONRequestBody defines body for SplitNamespace for application/json ContentType.
 type SplitNamespaceJSONRequestBody SplitNamespaceJSONBody
 
+// DeleteProjectMapPinJSONRequestBody defines body for DeleteProjectMapPin for application/json ContentType.
+type DeleteProjectMapPinJSONRequestBody = ProjectMapDeleteRequest
+
+// PutProjectMapPinJSONRequestBody defines body for PutProjectMapPin for application/json ContentType.
+type PutProjectMapPinJSONRequestBody = ProjectMapPutRequest
+
 // SearchMemoriesJSONRequestBody defines body for SearchMemories for application/json ContentType.
 type SearchMemoriesJSONRequestBody = SearchRequest
+
+// UpdateSelfSettingsJSONRequestBody defines body for UpdateSelfSettings for application/json ContentType.
+type UpdateSelfSettingsJSONRequestBody = ClientSettingsPatch
+
+// PutSettingsDefaultsJSONRequestBody defines body for PutSettingsDefaults for application/json ContentType.
+type PutSettingsDefaultsJSONRequestBody = ClientSettings
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -1081,6 +1525,9 @@ type ServerInterface interface {
 	// Run a consistency sweep (purge expired, enforce short-term cap, audit duplicates)
 	// (POST /v1/fsck)
 	RunFsck(w http.ResponseWriter, r *http.Request, params RunFsckParams)
+	// Resolve namespace, identity, and behavioral settings from client-supplied project facts
+	// (POST /v1/handshake)
+	Handshake(w http.ResponseWriter, r *http.Request)
 	// List API keys (name/home/default namespace/created/disabled/source — never a secret or hash)
 	// (GET /v1/keys)
 	ListApiKeys(w http.ResponseWriter, r *http.Request)
@@ -1147,9 +1594,30 @@ type ServerInterface interface {
 	// Split the request namespace by metadata keys
 	// (POST /v1/namespaces/split)
 	SplitNamespace(w http.ResponseWriter, r *http.Request, params SplitNamespaceParams)
+	// Delete an explicit project→namespace pin
+	// (DELETE /v1/project-map)
+	DeleteProjectMapPin(w http.ResponseWriter, r *http.Request)
+	// List explicit project→namespace pins
+	// (GET /v1/project-map)
+	ListProjectMap(w http.ResponseWriter, r *http.Request)
+	// Create or replace an explicit project→namespace pin
+	// (PUT /v1/project-map)
+	PutProjectMapPin(w http.ResponseWriter, r *http.Request)
 	// Recall memories via hybrid (vector + keyword) search
 	// (POST /v1/search)
 	SearchMemories(w http.ResponseWriter, r *http.Request, params SearchMemoriesParams)
+	// The caller's identity and fully-merged behavioral settings
+	// (GET /v1/self)
+	GetSelf(w http.ResponseWriter, r *http.Request)
+	// Update the caller's own per-key behavioral settings
+	// (PATCH /v1/self/settings)
+	UpdateSelfSettings(w http.ResponseWriter, r *http.Request)
+	// The server's global default ClientSettings
+	// (GET /v1/settings/defaults)
+	GetSettingsDefaults(w http.ResponseWriter, r *http.Request)
+	// Replace the server's global default ClientSettings
+	// (PUT /v1/settings/defaults)
+	PutSettingsDefaults(w http.ResponseWriter, r *http.Request)
 	// Per-namespace overview (counts by tier, accesses, importance)
 	// (GET /v1/stats)
 	GetStats(w http.ResponseWriter, r *http.Request, params GetStatsParams)
@@ -1180,6 +1648,12 @@ func (_ Unimplemented) RunDedup(w http.ResponseWriter, r *http.Request, params R
 // Run a consistency sweep (purge expired, enforce short-term cap, audit duplicates)
 // (POST /v1/fsck)
 func (_ Unimplemented) RunFsck(w http.ResponseWriter, r *http.Request, params RunFsckParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Resolve namespace, identity, and behavioral settings from client-supplied project facts
+// (POST /v1/handshake)
+func (_ Unimplemented) Handshake(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1315,9 +1789,51 @@ func (_ Unimplemented) SplitNamespace(w http.ResponseWriter, r *http.Request, pa
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Delete an explicit project→namespace pin
+// (DELETE /v1/project-map)
+func (_ Unimplemented) DeleteProjectMapPin(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List explicit project→namespace pins
+// (GET /v1/project-map)
+func (_ Unimplemented) ListProjectMap(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Create or replace an explicit project→namespace pin
+// (PUT /v1/project-map)
+func (_ Unimplemented) PutProjectMapPin(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // Recall memories via hybrid (vector + keyword) search
 // (POST /v1/search)
 func (_ Unimplemented) SearchMemories(w http.ResponseWriter, r *http.Request, params SearchMemoriesParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// The caller's identity and fully-merged behavioral settings
+// (GET /v1/self)
+func (_ Unimplemented) GetSelf(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Update the caller's own per-key behavioral settings
+// (PATCH /v1/self/settings)
+func (_ Unimplemented) UpdateSelfSettings(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// The server's global default ClientSettings
+// (GET /v1/settings/defaults)
+func (_ Unimplemented) GetSettingsDefaults(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Replace the server's global default ClientSettings
+// (PUT /v1/settings/defaults)
+func (_ Unimplemented) PutSettingsDefaults(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1619,6 +2135,26 @@ func (siw *ServerInterfaceWrapper) RunFsck(w http.ResponseWriter, r *http.Reques
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.RunFsck(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// Handshake operation middleware
+func (siw *ServerInterfaceWrapper) Handshake(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.Handshake(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2880,6 +3416,66 @@ func (siw *ServerInterfaceWrapper) SplitNamespace(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// DeleteProjectMapPin operation middleware
+func (siw *ServerInterfaceWrapper) DeleteProjectMapPin(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteProjectMapPin(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListProjectMap operation middleware
+func (siw *ServerInterfaceWrapper) ListProjectMap(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListProjectMap(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutProjectMapPin operation middleware
+func (siw *ServerInterfaceWrapper) PutProjectMapPin(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutProjectMapPin(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // SearchMemories operation middleware
 func (siw *ServerInterfaceWrapper) SearchMemories(w http.ResponseWriter, r *http.Request) {
 
@@ -2918,6 +3514,86 @@ func (siw *ServerInterfaceWrapper) SearchMemories(w http.ResponseWriter, r *http
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SearchMemories(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetSelf operation middleware
+func (siw *ServerInterfaceWrapper) GetSelf(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSelf(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateSelfSettings operation middleware
+func (siw *ServerInterfaceWrapper) UpdateSelfSettings(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateSelfSettings(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetSettingsDefaults operation middleware
+func (siw *ServerInterfaceWrapper) GetSettingsDefaults(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSettingsDefaults(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutSettingsDefaults operation middleware
+func (siw *ServerInterfaceWrapper) PutSettingsDefaults(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutSettingsDefaults(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3113,6 +3789,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/v1/fsck", wrapper.RunFsck)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/handshake", wrapper.Handshake)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/keys", wrapper.ListApiKeys)
 	})
 	r.Group(func(r chi.Router) {
@@ -3179,7 +3858,28 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/v1/namespaces/split", wrapper.SplitNamespace)
 	})
 	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/project-map", wrapper.DeleteProjectMapPin)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/project-map", wrapper.ListProjectMap)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/v1/project-map", wrapper.PutProjectMapPin)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/search", wrapper.SearchMemories)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/self", wrapper.GetSelf)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/v1/self/settings", wrapper.UpdateSelfSettings)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/settings/defaults", wrapper.GetSettingsDefaults)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/v1/settings/defaults", wrapper.PutSettingsDefaults)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/stats", wrapper.GetStats)
