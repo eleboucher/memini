@@ -7,14 +7,14 @@ import { fileURLToPath } from "node:url";
 import { deriveLocalNamespace, repoNameFromRemote, repoSlugFromRemote, type LocalSource } from "../src/resolve.js";
 import type { ProjectFacts } from "../src/facts.js";
 
-// This fixture is the shared contract other phases build the actual
-// derivation logic against (Go internal/nsresolve, this package, Python
+// This fixture is the shared contract the actual derivation logic is built
+// against across clients (Go internal/nsresolve, this package, Python
 // integration tests) — see packages/memini-client/test/fixtures/derivation-vectors.json.
-// There is no consumer yet (Phase 1 lands the contract only), so this test's
-// only job is to guard the fixture's own shape until one exists: every
-// derivation case must carry facts+expect, every expected source must be a
-// real namespace_source value, and every canonical_remote expectation must
-// already be in its normalized form.
+// The consumer tests below now exercise deriveLocalNamespace against it; this
+// block additionally guards the fixture's own shape: every derivation case
+// must carry facts+expect, every expected source must be a real
+// namespace_source value, and every canonical_remote expectation must already
+// be in its normalized form.
 
 // __dirname isn't available under ESM; recover it from import.meta.url. The
 // fixture lives under the SOURCE test/ tree (test/fixtures/...), not dist/ —

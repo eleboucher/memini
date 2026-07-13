@@ -235,8 +235,9 @@ async function fetchExistingPinKeys() {
 }
 
 // Reads ~/.config/memini/config.json (or null on any error/absence) — the
-// older client-side tenancy config (`tenantRoots`/`template`) some
-// integrations still read. Never written here.
+// retired client-side tenancy config (`tenantRoots`/`template`), kept only as
+// legacy data to migrate FROM. Never written here: this command must not
+// recreate the file it exists to help retire.
 function readClientConfig() {
   const dir = path.dirname(defaultOverridesPath(process.env));
   try {
@@ -314,9 +315,9 @@ async function migrate() {
     }
   }
 
-  // config.json's tenantRoots/template is a separate, older client-side
-  // mechanism (a handful of integrations still read it) that this cannot
-  // auto-translate: it encodes a tenancy decision only a human can make.
+  // config.json's tenantRoots/template is a separate, retired client-side
+  // mechanism that this cannot auto-translate: it encodes a tenancy decision
+  // only a human can make, so we surface it (read-only) rather than migrate it.
   const cfg = readClientConfig();
   if (cfg && (cfg.tenantRoots || cfg.template)) {
     out.push("");
