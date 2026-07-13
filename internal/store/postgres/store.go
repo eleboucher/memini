@@ -148,6 +148,9 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		)`,
 		// Backfill default_ns on databases whose api_keys table predates it.
 		`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS default_ns text NOT NULL DEFAULT ''`,
+		// api_keys.settings holds the per-key store.ClientSettings override
+		// (config-handshake redesign) as jsonb; '{}' means no override.
+		`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS settings jsonb NOT NULL DEFAULT '{}'`,
 		// memory_events is the activity log (see store.EventLogStore): one row
 		// per (operation, memory), rows of one operation sharing op_id. The
 		// memory_* columns are a snapshot, not a join — they keep the feed a
@@ -173,6 +176,18 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_ns_time ON memory_events(namespace, created_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_time ON memory_events(created_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_memory ON memory_events(memory_id)`,
+		// project_map records project→namespace pins (see store.ProjectMapStore,
+		// the config-handshake redesign): key is "remote:<canonical-remote>" or
+		// "path:<absolute-toplevel>".
+		`CREATE TABLE IF NOT EXISTS project_map (
+			key        text PRIMARY KEY,
+			namespace  text NOT NULL,
+			note       text NOT NULL DEFAULT '',
+			created_by text NOT NULL DEFAULT '',
+			created_at timestamptz NOT NULL,
+			updated_at timestamptz NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_project_map_ns ON project_map(namespace)`,
 	}
 	for _, q := range stmts {
 		if _, err := conn.Exec(ctx, q); err != nil {
@@ -684,6 +699,48 @@ func (s *Store) SetEmbedModel(ctx context.Context, model string) error {
 	return nil
 }
 
+var _ store.ClientSettingsStore = (*Store)(nil)
+
+const metaClientSettingsDefaults = "client_settings_defaults"
+
+// GlobalClientSettings returns the stored global default ClientSettings, or
+// the zero value (every field nil) if none has been set yet.
+func (s *Store) GlobalClientSettings(ctx context.Context) (store.ClientSettings, error) {
+	var v string
+	err := s.pool.QueryRow(ctx, `SELECT value FROM meta WHERE key=$1`, metaClientSettingsDefaults).Scan(&v)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.ClientSettings{}, nil
+	}
+	if err != nil {
+		return store.ClientSettings{}, fmt.Errorf("postgres: read global client settings: %w", err)
+	}
+	var cs store.ClientSettings
+	// Tolerant decode: an unknown field from a newer writer is ignored
+	// (json.Unmarshal's default behavior) — strict validation is the REST
+	// boundary's job, not the store's.
+	if err := json.Unmarshal([]byte(v), &cs); err != nil {
+		return store.ClientSettings{}, fmt.Errorf("postgres: unmarshal global client settings: %w", err)
+	}
+	return cs, nil
+}
+
+// SetGlobalClientSettings replaces the stored global default ClientSettings
+// wholesale (not a merge): only fields set on s are persisted, since nil
+// pointer fields with `omitempty` marshal to nothing.
+func (s *Store) SetGlobalClientSettings(ctx context.Context, cs store.ClientSettings) error {
+	b, err := json.Marshal(cs)
+	if err != nil {
+		return fmt.Errorf("postgres: marshal global client settings: %w", err)
+	}
+	_, err = s.pool.Exec(ctx,
+		`INSERT INTO meta(key, value) VALUES($1, $2)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, metaClientSettingsDefaults, string(b))
+	if err != nil {
+		return fmt.Errorf("postgres: set global client settings: %w", err)
+	}
+	return nil
+}
+
 var _ store.LinkStore = (*Store)(nil)
 
 // PutLink inserts or replaces the link keyed by (l.Src, l.Dst).
@@ -844,12 +901,17 @@ func (s *Store) PutAPIKey(ctx context.Context, k store.APIKey) error {
 			return fmt.Errorf("postgres: lookup api key: %w", err)
 		}
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO api_keys (name, key_hash, home_ns, default_ns, created_at, disabled)
-		VALUES ($1,$2,$3,$4,$5,$6)
+	settingsJSON, err := json.Marshal(k.Settings)
+	if err != nil {
+		return fmt.Errorf("postgres: marshal api key settings: %w", err)
+	}
+	_, err = tx.Exec(ctx,
+		`INSERT INTO api_keys (name, key_hash, home_ns, default_ns, created_at, disabled, settings)
+		VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
 		ON CONFLICT (name) DO UPDATE SET
 			key_hash=EXCLUDED.key_hash, home_ns=EXCLUDED.home_ns, default_ns=EXCLUDED.default_ns,
-			created_at=EXCLUDED.created_at, disabled=EXCLUDED.disabled`,
-		k.Name, k.Hash, k.HomeNS, k.DefaultNS, created, k.Disabled)
+			created_at=EXCLUDED.created_at, disabled=EXCLUDED.disabled, settings=EXCLUDED.settings`,
+		k.Name, k.Hash, k.HomeNS, k.DefaultNS, created, k.Disabled, string(settingsJSON))
 	if err != nil {
 		return fmt.Errorf("postgres: put api key: %w", err)
 	}
@@ -869,7 +931,7 @@ func (s *Store) DeleteAPIKey(ctx context.Context, name string) (bool, error) {
 // ListAPIKeys returns every key ordered by name.
 func (s *Store) ListAPIKeys(ctx context.Context) ([]store.APIKey, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled FROM api_keys ORDER BY name`)
+		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled, settings FROM api_keys ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: list api keys: %w", err)
 	}
@@ -880,7 +942,7 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]store.APIKey, error) {
 // does.
 func (s *Store) GetAPIKeyByHash(ctx context.Context, hash string) (*store.APIKey, error) {
 	row := s.pool.QueryRow(ctx,
-		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled FROM api_keys WHERE key_hash=$1`, hash)
+		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled, settings FROM api_keys WHERE key_hash=$1`, hash)
 	k, err := scanAPIKey(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

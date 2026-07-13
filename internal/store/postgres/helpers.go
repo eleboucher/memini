@@ -233,13 +233,22 @@ func scanAPIKeys(rs rows) ([]store.APIKey, error) {
 }
 
 // scanAPIKey scans a single (name, key_hash, home_ns, default_ns,
-// created_at, disabled) row.
+// created_at, disabled, settings) row.
 func scanAPIKey(s rowScanner) (store.APIKey, error) {
 	var k store.APIKey
-	if err := s.Scan(&k.Name, &k.Hash, &k.HomeNS, &k.DefaultNS, &k.CreatedAt, &k.Disabled); err != nil {
+	var settingsBytes []byte
+	if err := s.Scan(&k.Name, &k.Hash, &k.HomeNS, &k.DefaultNS, &k.CreatedAt, &k.Disabled, &settingsBytes); err != nil {
 		return k, err
 	}
 	k.CreatedAt = k.CreatedAt.UTC()
+	if len(settingsBytes) > 0 {
+		// Tolerant decode: unknown fields in an older/newer writer's blob are
+		// ignored (json.Unmarshal's default behavior) — strict validation is
+		// the REST boundary's job, not the store's.
+		if err := json.Unmarshal(settingsBytes, &k.Settings); err != nil {
+			return k, fmt.Errorf("postgres: unmarshal api key settings: %w", err)
+		}
+	}
 	return k, nil
 }
 
