@@ -659,6 +659,8 @@ type recallArgs struct {
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
 	ExcludeMetadata map[string]string `json:"exclude_metadata,omitempty" jsonschema:"inverse of metadata; drops matching memories (e.g. {\"source\": \"turn_capture\"} hides auto-captured conversation turns)"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
+	ExcludeIDs []string `json:"exclude_ids,omitempty" jsonschema:"drop memories with these ids, before ranking and limit (an excluded hit never consumes a result slot); for skipping memories already seen this session"`
+	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
 	IncludeFreshTurns bool `json:"include_fresh_turns,omitempty" jsonschema:"also return this session's just-captured conversation turns (hidden by default — they are still in your live context); only for 'what did I just say' queries"`
 	QueryRewrite      bool `json:"query_rewrite,omitempty" jsonschema:"rewrite query into 2-3 variants and fuse via RRF"`
 	Limit             int  `json:"limit,omitempty" jsonschema:"max results (default 10)"`
@@ -770,6 +772,7 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 		Tags:              in.Tags,
 		Metadata:          in.Metadata,
 		ExcludeMetadata:   in.ExcludeMetadata,
+		ExcludeIDs:        in.ExcludeIDs,
 		IncludeFreshTurns: in.IncludeFreshTurns,
 		QueryRewrite:      in.QueryRewrite,
 		Limit:             in.Limit,

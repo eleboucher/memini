@@ -1174,6 +1174,16 @@ components:
             pairs (the inverse of metadata). Lets a caller keep its own
             just-written memories out of recall — e.g. excluding the current
             session's captured turns so they are not echoed back as memory.
+        exclude_ids:
+          type: array
+          maxItems: 512
+          items: { type: string }
+          description: >
+            Drop memories with these ids, applied before ranking and the limit
+            so an excluded hit never consumes a result slot. Lets a long-lived
+            client keep memories it has already injected out of recall and
+            still receive the next-best fresh hits, instead of filtering
+            client-side after the top-limit slots are spent.
         include_fresh_turns:
           type: boolean
           default: false

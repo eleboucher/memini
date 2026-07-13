@@ -1107,6 +1107,9 @@ type SearchRequest struct {
 	// AsOf Time-travel recall: return facts whose validity window contained this instant (including ones since superseded), for "what was true then" queries.
 	AsOf *time.Time `json:"as_of,omitempty"`
 
+	// ExcludeIds Drop memories with these ids, applied before ranking and the limit so an excluded hit never consumes a result slot. Lets a long-lived client keep memories it has already injected out of recall and still receive the next-best fresh hits, instead of filtering client-side after the top-limit slots are spent.
+	ExcludeIds *[]string `json:"exclude_ids,omitempty"`
+
 	// ExcludeMetadata Drop memories whose top-level metadata carries any of these key=value pairs (the inverse of metadata). Lets a caller keep its own just-written memories out of recall — e.g. excluding the current session's captured turns so they are not echoed back as memory.
 	ExcludeMetadata *map[string]string `json:"exclude_metadata,omitempty"`
 	IncludeExpired  *bool              `json:"include_expired,omitempty"`

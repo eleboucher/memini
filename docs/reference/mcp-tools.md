@@ -75,6 +75,7 @@ Search prior context via hybrid (semantic + keyword) retrieval, ranked by releva
 | --- | --- | --- | --- |
 | `query` | string | yes | natural-language search text; short and descriptive works best (e.g. 'JWT auth setup') |
 | `as_of` | string |  | RFC3339 time for time-travel recall (facts true then) |
+| `exclude_ids` | string[] |  | drop memories with these ids, before ranking and limit (an excluded hit never consumes a result slot); for skipping memories already seen this session |
 | `exclude_metadata` | object |  | inverse of metadata; drops matching memories (e.g. {"source": "turn_capture"} hides auto-captured conversation turns) |
 | `include_fresh_turns` | boolean |  | also return this session's just-captured conversation turns (hidden by default — they are still in your live context); only for 'what did I just say' queries |
 | `levels` | string[] |  | restrict to levels (explicit/deduced); empty means all. One of `explicit`, `deduced`. |

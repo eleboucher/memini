@@ -32,6 +32,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("Filters", func(t *testing.T) { testFilters(t, st, dims) })
 	t.Run("TagMetadataFilter", func(t *testing.T) { testTagMetadataFilter(t, st, dims) })
 	t.Run("ExcludeMetadataFilter", func(t *testing.T) { testExcludeMetadataFilter(t, st, dims) })
+	t.Run("ExcludeIDsFilter", func(t *testing.T) { testExcludeIDsFilter(t, st, dims) })
 	t.Run("SetSuperseded", func(t *testing.T) { testSetSuperseded(t, st, dims) })
 	t.Run("PredecessorIDs", func(t *testing.T) { testPredecessorIDs(t, st, dims) })
 	t.Run("Restore", func(t *testing.T) { testRestore(t, st, dims) })
@@ -1749,6 +1750,49 @@ func testExcludeMetadataFilter(t *testing.T, st store.Store, dims int) {
 	}
 	if ids := idsOf(kres); slices.Contains(ids, id(ns, "mine")) || len(ids) != 2 {
 		t.Fatalf("filtered keyword search should drop the s1 capture, got %v", ids)
+	}
+}
+
+// testExcludeIDsFilter verifies Filter.ExcludeIDs drops the listed ids across
+// List, VectorSearch and KeywordSearch — and that the exclusion happens before
+// the limit, so an excluded hit frees its result slot for the next-best match
+// (the property a client-side post-filter cannot have).
+func testExcludeIDsFilter(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+
+	mustUpsert(t, st, mem(ns, "a", "the cat sat on the mat", vec(dims, 1)))
+	mustUpsert(t, st, mem(ns, "b", "dogs are loyal animals", vec(dims, 0, 1)))
+	mustUpsert(t, st, mem(ns, "c", "felines love naps", vec(dims, 0.9, 0.1)))
+
+	exclude := store.Filter{ExcludeIDs: []string{id(ns, "a"), id(ns, "b")}}
+	got := memIDs(mustList(t, st, ns, exclude))
+	if len(got) != 1 || got[0] != id(ns, "c") {
+		t.Fatalf("exclude a+b should yield only c, got %v", got)
+	}
+
+	// "a" is the top-ranked hit for this query; excluding it must surface the
+	// next-best ("c") within the same k=1 budget rather than returning nothing.
+	vres, err := st.VectorSearch(ctx, ns, vec(dims, 1), store.Filter{ExcludeIDs: []string{id(ns, "a")}}, 1)
+	if err != nil {
+		t.Fatalf("vector search: %v", err)
+	}
+	if ids := idsOf(vres); len(ids) != 1 || ids[0] != id(ns, "c") {
+		t.Fatalf("excluding the top hit should free its slot for c, got %v", ids)
+	}
+
+	kres, err := st.KeywordSearch(ctx, ns, "cat", store.Filter{ExcludeIDs: []string{id(ns, "a")}}, 10)
+	if err != nil {
+		t.Fatalf("keyword search: %v", err)
+	}
+	if ids := idsOf(kres); slices.Contains(ids, id(ns, "a")) {
+		t.Fatalf("filtered keyword search should drop a, got %v", ids)
+	}
+
+	// An empty list is a no-op, not an exclude-everything.
+	all := memIDs(mustList(t, st, ns, store.Filter{ExcludeIDs: []string{}}))
+	if len(all) != 3 {
+		t.Fatalf("empty ExcludeIDs should match all 3 memories, got %v", all)
 	}
 }
 

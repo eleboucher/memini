@@ -131,6 +131,19 @@ func filterClause(f store.Filter) (string, []any) {
 		b.WriteString(" AND NOT EXISTS (SELECT 1 FROM json_each(" + alias + ".metadata) WHERE key = ? AND value = ?)")
 		args = append(args, k, v)
 	}
+	// ExcludeIDs: drop the listed ids before ranking and the caller's limit, so
+	// an excluded hit never consumes a result slot.
+	if len(f.ExcludeIDs) > 0 {
+		b.WriteString(" AND " + alias + ".id NOT IN (")
+		for i, id := range f.ExcludeIDs {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			b.WriteString("?")
+			args = append(args, id)
+		}
+		b.WriteString(")")
+	}
 	// MemoryTypes: metadata.memory_type matching ANY listed value (OR), unlike
 	// Metadata's AND-with-one-value-per-key.
 	if len(f.MemoryTypes) > 0 {

@@ -676,6 +676,8 @@ export interface components {
             exclude_metadata?: {
                 [key: string]: string;
             };
+            /** @description Drop memories with these ids, applied before ranking and the limit so an excluded hit never consumes a result slot. Lets a long-lived client keep memories it has already injected out of recall and still receive the next-best fresh hits, instead of filtering client-side after the top-limit slots are spent. */
+            exclude_ids?: string[];
             /**
              * @description When true, disable the server-side temporal echo guard for this call: just-captured episodic turn captures (metadata.format="turn" younger than the server's window, default 5m) are NOT dropped. Default (false) drops them — a just-captured turn is live context, not long-term memory, and echoing it back makes the agent parrot itself. Opt in only when you genuinely need fresh turns.
              * @default false
