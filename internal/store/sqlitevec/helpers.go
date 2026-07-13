@@ -284,12 +284,12 @@ func scanAPIKeys(rows *sql.Rows) ([]store.APIKey, error) {
 }
 
 // scanAPIKey scans a single (name, key_hash, home_ns, default_ns,
-// created_at, disabled) row.
+// created_at, disabled, settings) row.
 func scanAPIKey(s scanner) (store.APIKey, error) {
 	var k store.APIKey
-	var created string
+	var created, settingsJSON string
 	var disabled int
-	if err := s.Scan(&k.Name, &k.Hash, &k.HomeNS, &k.DefaultNS, &created, &disabled); err != nil {
+	if err := s.Scan(&k.Name, &k.Hash, &k.HomeNS, &k.DefaultNS, &created, &disabled, &settingsJSON); err != nil {
 		return k, err
 	}
 	t, err := time.Parse(time.RFC3339Nano, created)
@@ -298,6 +298,12 @@ func scanAPIKey(s scanner) (store.APIKey, error) {
 	}
 	k.CreatedAt = t.UTC()
 	k.Disabled = disabled != 0
+	// Tolerant decode: unknown fields in an older/newer writer's blob are
+	// ignored (json.Unmarshal's default behavior) — strict validation is the
+	// REST boundary's job, not the store's.
+	if err := json.Unmarshal([]byte(settingsJSON), &k.Settings); err != nil {
+		return k, fmt.Errorf("sqlitevec: unmarshal api key settings: %w", err)
+	}
 	return k, nil
 }
 

@@ -167,6 +167,19 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_ns_time ON memory_events(namespace, created_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_time ON memory_events(created_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_memory ON memory_events(memory_id)`,
+		// project_map records project→namespace pins (see store.ProjectMapStore,
+		// the config-handshake redesign): key is "remote:<canonical-remote>" or
+		// "path:<absolute-toplevel>"; created_at/updated_at are RFC3339 strings,
+		// as with api_keys/namespace_links above.
+		`CREATE TABLE IF NOT EXISTS project_map (
+			key        TEXT PRIMARY KEY,
+			namespace  TEXT NOT NULL,
+			note       TEXT NOT NULL DEFAULT '',
+			created_by TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_project_map_ns ON project_map(namespace)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -184,6 +197,11 @@ func (s *Store) migrate(ctx context.Context) error {
 	// api_keys.default_ns was added after the table first shipped; ALTER-add
 	// it so databases created before it migrate in place.
 	if err := s.addColumnIfMissing(ctx, "api_keys", "default_ns", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	// api_keys.settings holds the per-key store.ClientSettings override
+	// (config-handshake redesign) as a JSON object; '{}' means no override.
+	if err := s.addColumnIfMissing(ctx, "api_keys", "settings", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
 		return err
 	}
 	// After the backfill: on an old DB the fingerprint column exists only now.
@@ -902,6 +920,48 @@ func (s *Store) SetEmbedModel(ctx context.Context, model string) error {
 	return nil
 }
 
+var _ store.ClientSettingsStore = (*Store)(nil)
+
+const metaClientSettingsDefaults = "client_settings_defaults"
+
+// GlobalClientSettings returns the stored global default ClientSettings, or
+// the zero value (every field nil) if none has been set yet.
+func (s *Store) GlobalClientSettings(ctx context.Context) (store.ClientSettings, error) {
+	var v string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key=?`, metaClientSettingsDefaults).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.ClientSettings{}, nil
+	}
+	if err != nil {
+		return store.ClientSettings{}, fmt.Errorf("sqlitevec: read global client settings: %w", err)
+	}
+	var cs store.ClientSettings
+	// Tolerant decode: an unknown field from a newer writer is ignored
+	// (json.Unmarshal's default behavior) — strict validation is the REST
+	// boundary's job, not the store's.
+	if err := json.Unmarshal([]byte(v), &cs); err != nil {
+		return store.ClientSettings{}, fmt.Errorf("sqlitevec: unmarshal global client settings: %w", err)
+	}
+	return cs, nil
+}
+
+// SetGlobalClientSettings replaces the stored global default ClientSettings
+// wholesale (not a merge): only fields set on s are persisted, since nil
+// pointer fields with `omitempty` marshal to nothing.
+func (s *Store) SetGlobalClientSettings(ctx context.Context, cs store.ClientSettings) error {
+	b, err := json.Marshal(cs)
+	if err != nil {
+		return fmt.Errorf("sqlitevec: marshal global client settings: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO meta(key, value) VALUES(?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, metaClientSettingsDefaults, string(b))
+	if err != nil {
+		return fmt.Errorf("sqlitevec: set global client settings: %w", err)
+	}
+	return nil
+}
+
 var _ store.LinkStore = (*Store)(nil)
 
 // PutLink inserts or replaces the link keyed by (l.Src, l.Dst).
@@ -1068,12 +1128,17 @@ func (s *Store) PutAPIKey(ctx context.Context, k store.APIKey) error {
 			}
 		}
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO api_keys (name, key_hash, home_ns, default_ns, created_at, disabled)
-		VALUES (?,?,?,?,?,?)
+	settingsJSON, err := json.Marshal(k.Settings)
+	if err != nil {
+		return fmt.Errorf("sqlitevec: marshal api key settings: %w", err)
+	}
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO api_keys (name, key_hash, home_ns, default_ns, created_at, disabled, settings)
+		VALUES (?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET
 			key_hash=excluded.key_hash, home_ns=excluded.home_ns, default_ns=excluded.default_ns,
-			created_at=excluded.created_at, disabled=excluded.disabled`,
-		k.Name, k.Hash, k.HomeNS, k.DefaultNS, created.Format(time.RFC3339Nano), boolToInt(k.Disabled))
+			created_at=excluded.created_at, disabled=excluded.disabled, settings=excluded.settings`,
+		k.Name, k.Hash, k.HomeNS, k.DefaultNS, created.Format(time.RFC3339Nano), boolToInt(k.Disabled), string(settingsJSON))
 	if err != nil {
 		return fmt.Errorf("sqlitevec: put api key: %w", err)
 	}
@@ -1097,7 +1162,7 @@ func (s *Store) DeleteAPIKey(ctx context.Context, name string) (bool, error) {
 // ListAPIKeys returns every key ordered by name.
 func (s *Store) ListAPIKeys(ctx context.Context) ([]store.APIKey, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled FROM api_keys ORDER BY name`)
+		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled, settings FROM api_keys ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlitevec: list api keys: %w", err)
 	}
@@ -1108,7 +1173,7 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]store.APIKey, error) {
 // does.
 func (s *Store) GetAPIKeyByHash(ctx context.Context, hash string) (*store.APIKey, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled FROM api_keys WHERE key_hash=?`, hash)
+		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled, settings FROM api_keys WHERE key_hash=?`, hash)
 	k, err := scanAPIKey(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
