@@ -1607,7 +1607,7 @@ type ServerInterface interface {
 	// Delete an API key
 	// (DELETE /v1/keys/{name})
 	DeleteApiKey(w http.ResponseWriter, r *http.Request, name string)
-	// Update an API key's home namespace, default namespace, and/or disabled state
+	// Update an API key's home namespace, default namespace, disabled state, and/or per-key settings
 	// (PATCH /v1/keys/{name})
 	UpdateApiKey(w http.ResponseWriter, r *http.Request, name string)
 	// Rotate an API key's secret, returning the new secret exactly once
@@ -1745,7 +1745,7 @@ func (_ Unimplemented) DeleteApiKey(w http.ResponseWriter, r *http.Request, name
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Update an API key's home namespace, default namespace, and/or disabled state
+// Update an API key's home namespace, default namespace, disabled state, and/or per-key settings
 // (PATCH /v1/keys/{name})
 func (_ Unimplemented) UpdateApiKey(w http.ResponseWriter, r *http.Request, name string) {
 	w.WriteHeader(http.StatusNotImplemented)

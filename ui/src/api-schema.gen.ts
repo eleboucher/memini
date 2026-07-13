@@ -441,8 +441,8 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * Update an API key's home namespace, default namespace, and/or disabled state
-         * @description Admin-gated, see listApiKeys. Preserve-unspecified semantics matching `memini key add`'s rotation contract: an omitted field leaves the stored value unchanged; an explicitly passed field — including an explicit empty home/default_namespace, or disabled=false — overrides it. 404 if no such key exists; 409 for a MEMINI_API_KEYS_FILE-sourced key (managed declaratively via that file, not this API).
+         * Update an API key's home namespace, default namespace, disabled state, and/or per-key settings
+         * @description Admin-gated, see listApiKeys. Preserve-unspecified semantics matching `memini key add`'s rotation contract: an omitted field leaves the stored value unchanged; an explicitly passed field — including an explicit empty home/default_namespace, or disabled=false — overrides it. A `settings` object replaces the key's per-key behavioral settings override: its present fields replace the corresponding stored values, while fields left unset within it continue to inherit the server's global defaults. 404 if no such key exists; 409 for a MEMINI_API_KEYS_FILE-sourced key (managed declaratively via that file, not this API).
          */
         patch: operations["updateApiKey"];
         trace?: never;

@@ -81,7 +81,7 @@ Requires the admin key (`MEMINI_API_KEY`). See [API keys](../api-keys.md).
 | `GET /v1/keys` | List API keys (name/home/default namespace/created/disabled/source — never a secret or hash) |
 | `POST /v1/keys` | Create a new API key, returning its secret exactly once |
 | `DELETE /v1/keys/{name}` | Delete an API key |
-| `PATCH /v1/keys/{name}` | Update an API key's home namespace, default namespace, and/or disabled state |
+| `PATCH /v1/keys/{name}` | Update an API key's home namespace, default namespace, disabled state, and/or per-key settings |
 | `POST /v1/keys/{name}/rotate` | Rotate an API key's secret, returning the new secret exactly once |
 
 ## Operational
