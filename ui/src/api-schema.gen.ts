@@ -543,7 +543,7 @@ export interface paths {
         head?: never;
         /**
          * Update the caller's own per-key behavioral settings
-         * @description Sets or clears fields on the settings bound to the API key the request authenticated with. An explicit null on a ClientSettingsPatch field clears it back to inheriting the server's global default; an omitted field is left unchanged. 501 against a storage backend that cannot persist per-key settings.
+         * @description Sets or clears fields on the settings bound to the API key the request authenticated with. An explicit null on a ClientSettingsPatch field clears it back to inheriting the server's global default; an omitted field is left unchanged. Requires a NAMED key: the admin env key and dev mode authenticate with no principal, so there is no "self" to patch — 403, use PUT /v1/settings/defaults for the global layer instead. 409 for a MEMINI_API_KEYS_FILE-sourced key (its settings come from that file, immutable at runtime — same convention as PATCH /v1/keys/{name}). 501 against a storage backend that cannot persist per-key settings.
          */
         patch: operations["updateSelfSettings"];
         trace?: never;
@@ -557,7 +557,7 @@ export interface paths {
         };
         /**
          * The server's global default ClientSettings
-         * @description The defaults every key inherits from absent a per-key override. Already visible indirectly via any handshake's merged settings, so this is not admin-gated.
+         * @description The defaults every key inherits from absent a per-key override. Admin-gated like /v1/keys (see listApiKeys): allowed for the admin env key, or when auth is disabled entirely (dev/bootstrap mode); a named table or file key gets 403 — a named caller sees its own merged result via /v1/handshake or /v1/self instead.
          */
         get: operations["getSettingsDefaults"];
         /**
@@ -581,18 +581,18 @@ export interface paths {
         };
         /**
          * List explicit project→namespace pins
-         * @description Admin-gated like /v1/keys (see listApiKeys): the project map is a machine-wide table, not scoped to one namespace.
+         * @description Open to every credential class: the project map is machine-wide derivation state, not scoped to one namespace, and any caller's handshake already reveals whichever pin matches its project facts.
          */
         get: operations["listProjectMap"];
         /**
          * Create or replace an explicit project→namespace pin
-         * @description Admin-gated like /v1/keys (see listApiKeys). Pins are keyed by remote_url (canonicalized) and/or toplevel_path — at least one must be given, 400 otherwise. A pin beats every other namespace_source, including MEMINI_NAMESPACE, at handshake time.
+         * @description Any caller may pin — admin key, dev mode, or a named table/file key. Writes are activity-logged with their author (event kind "pin"); that audit trail is the control, not an authorization gate. Pins are keyed by remote_url (canonicalized) and/or toplevel_path — at least one must be given, 400 otherwise. A pin beats every other namespace_source, including MEMINI_NAMESPACE, at handshake time.
          */
         put: operations["putProjectMapPin"];
         post?: never;
         /**
          * Delete an explicit project→namespace pin
-         * @description Admin-gated like /v1/keys (see listApiKeys). remote_url and/or toplevel_path identify the pin to remove — at least one must be given, 400 otherwise.
+         * @description Any caller may unpin — same authorization as putProjectMapPin, with the delete activity-logged the same way (event kind "unpin"). remote_url and/or toplevel_path identify the pin to remove — at least one must be given, 400 otherwise.
          */
         delete: operations["deleteProjectMapPin"];
         options?: never;
@@ -1244,7 +1244,8 @@ export interface components {
                 /** @description The project_map key that matched (remote:<canonical-remote> or path:<toplevel_path>). */
                 key: string;
                 note?: string;
-                created_by: string;
+                /** @description Name of the API key that created the pin, when known — same semantics as ProjectMapEntry.created_by (absent for a pin created by the admin key or in dev mode, which carry no named principal). */
+                created_by?: string;
                 /** Format: date-time */
                 updated_at: string;
             };
@@ -2281,6 +2282,8 @@ export interface operations {
             };
             400: components["responses"]["Error"];
             401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            409: components["responses"]["Error"];
             501: components["responses"]["Error"];
         };
     };
@@ -2303,6 +2306,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
             501: components["responses"]["Error"];
         };
     };
@@ -2351,7 +2355,6 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectMapListResponse"];
                 };
             };
-            403: components["responses"]["Error"];
             501: components["responses"]["Error"];
         };
     };
@@ -2378,7 +2381,6 @@ export interface operations {
                 };
             };
             400: components["responses"]["Error"];
-            403: components["responses"]["Error"];
             501: components["responses"]["Error"];
         };
     };
@@ -2403,7 +2405,6 @@ export interface operations {
                 content?: never;
             };
             400: components["responses"]["Error"];
-            403: components["responses"]["Error"];
             404: components["responses"]["Error"];
             501: components["responses"]["Error"];
         };

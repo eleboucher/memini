@@ -849,7 +849,8 @@ type HandshakeResponse struct {
 
 	// Pin Present only when namespace_source is "pin".
 	Pin *struct {
-		CreatedBy string `json:"created_by"`
+		// CreatedBy Name of the API key that created the pin, when known — same semantics as ProjectMapEntry.created_by (absent for a pin created by the admin key or in dev mode, which carry no named principal).
+		CreatedBy *string `json:"created_by,omitempty"`
 
 		// Key The project_map key that matched (remote:<canonical-remote> or path:<toplevel_path>).
 		Key       string    `json:"key"`

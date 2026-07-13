@@ -879,8 +879,13 @@ paths:
         Sets or clears fields on the settings bound to the API key the
         request authenticated with. An explicit null on a
         ClientSettingsPatch field clears it back to inheriting the server's
-        global default; an omitted field is left unchanged. 501 against a
-        storage backend that cannot persist per-key settings.
+        global default; an omitted field is left unchanged. Requires a
+        NAMED key: the admin env key and dev mode authenticate with no
+        principal, so there is no "self" to patch — 403, use
+        PUT /v1/settings/defaults for the global layer instead. 409 for a
+        MEMINI_API_KEYS_FILE-sourced key (its settings come from that file,
+        immutable at runtime — same convention as PATCH /v1/keys/{name}).
+        501 against a storage backend that cannot persist per-key settings.
       requestBody:
         required: true
         content:
@@ -894,6 +899,8 @@ paths:
               schema: { $ref: "#/components/schemas/SelfResponse" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
         "501": { $ref: "#/components/responses/Error" }
   /v1/settings/defaults:
     get:
@@ -902,8 +909,10 @@ paths:
       summary: The server's global default ClientSettings
       description: >
         The defaults every key inherits from absent a per-key override.
-        Already visible indirectly via any handshake's merged settings, so
-        this is not admin-gated.
+        Admin-gated like /v1/keys (see listApiKeys): allowed for the admin
+        env key, or when auth is disabled entirely (dev/bootstrap mode); a
+        named table or file key gets 403 — a named caller sees its own
+        merged result via /v1/handshake or /v1/self instead.
       responses:
         "200":
           description: OK
@@ -911,6 +920,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ClientSettings" }
         "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "501": { $ref: "#/components/responses/Error" }
     put:
       operationId: putSettingsDefaults
@@ -941,25 +951,27 @@ paths:
       tags: [memory]
       summary: List explicit project→namespace pins
       description: >
-        Admin-gated like /v1/keys (see listApiKeys): the project map is a
-        machine-wide table, not scoped to one namespace.
+        Open to every credential class: the project map is machine-wide
+        derivation state, not scoped to one namespace, and any caller's
+        handshake already reveals whichever pin matches its project facts.
       responses:
         "200":
           description: OK
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ProjectMapListResponse" }
-        "403": { $ref: "#/components/responses/Error" }
         "501": { $ref: "#/components/responses/Error" }
     put:
       operationId: putProjectMapPin
       tags: [memory]
       summary: Create or replace an explicit project→namespace pin
       description: >
-        Admin-gated like /v1/keys (see listApiKeys). Pins are keyed by
-        remote_url (canonicalized) and/or toplevel_path — at least one must
-        be given, 400 otherwise. A pin beats every other namespace_source,
-        including MEMINI_NAMESPACE, at handshake time.
+        Any caller may pin — admin key, dev mode, or a named table/file key.
+        Writes are activity-logged with their author (event kind "pin");
+        that audit trail is the control, not an authorization gate. Pins
+        are keyed by remote_url (canonicalized) and/or toplevel_path — at
+        least one must be given, 400 otherwise. A pin beats every other
+        namespace_source, including MEMINI_NAMESPACE, at handshake time.
       requestBody:
         required: true
         content:
@@ -972,16 +984,16 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ProjectMapEntry" }
         "400": { $ref: "#/components/responses/Error" }
-        "403": { $ref: "#/components/responses/Error" }
         "501": { $ref: "#/components/responses/Error" }
     delete:
       operationId: deleteProjectMapPin
       tags: [memory]
       summary: Delete an explicit project→namespace pin
       description: >
-        Admin-gated like /v1/keys (see listApiKeys). remote_url and/or
-        toplevel_path identify the pin to remove — at least one must be
-        given, 400 otherwise.
+        Any caller may unpin — same authorization as putProjectMapPin, with
+        the delete activity-logged the same way (event kind "unpin").
+        remote_url and/or toplevel_path identify the pin to remove — at
+        least one must be given, 400 otherwise.
       requestBody:
         required: true
         content:
@@ -990,7 +1002,6 @@ paths:
       responses:
         "204": { description: Deleted }
         "400": { $ref: "#/components/responses/Error" }
-        "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "501": { $ref: "#/components/responses/Error" }
 components:
@@ -2013,7 +2024,7 @@ components:
         pin:
           type: object
           description: Present only when namespace_source is "pin".
-          required: [key, created_by, updated_at]
+          required: [key, updated_at]
           properties:
             key:
               type: string
@@ -2021,7 +2032,13 @@ components:
                 The project_map key that matched
                 (remote:<canonical-remote> or path:<toplevel_path>).
             note: { type: string }
-            created_by: { type: string }
+            created_by:
+              type: string
+              description: >
+                Name of the API key that created the pin, when known —
+                same semantics as ProjectMapEntry.created_by (absent for
+                a pin created by the admin key or in dev mode, which
+                carry no named principal).
             updated_at: { type: string, format: date-time }
         identity: { $ref: "#/components/schemas/CallerIdentity" }
         settings:
