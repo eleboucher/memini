@@ -1732,6 +1732,7 @@ const plugin: {
     // the count slip through). The count cap is only a memory bound.
     const recentlyCaptured = new Map<string, Map<string, number>>();
     const CAPTURED_ECHO_WINDOW_MS = 5 * 60_000;
+    const MAX_CAPTURED_PER_NS = 50;
     const MAX_CAPTURED_NAMESPACES = 200;
     const rememberCaptured = (ns: string, id: string) => {
       let seen = recentlyCaptured.get(ns);
@@ -1745,7 +1746,13 @@ const plugin: {
         }
       }
       seen.set(id, Date.now());
+      while (seen.size > MAX_CAPTURED_PER_NS) {
+        const oldest = seen.keys().next().value;
+        if (oldest === undefined) break;
+        seen.delete(oldest);
+      }
     };
+    // Fresh captured ids for a namespace, pruning aged-out entries as it reads.
     const freshCaptured = (ns: string): Set<string> => {
       const fresh = new Set<string>();
       const seen = recentlyCaptured.get(ns);
@@ -1800,9 +1807,10 @@ const plugin: {
       // and the session-id exclusion (misses when session id is absent/rolled).
       // Already-shown and just-captured ids go along as exclude_ids so a
       // suppressed hit doesn't waste a recall_limit slot.
+      const captured = freshCaptured(ns);
       const excludeIds = [
         ...(session ? (injectedBySession.get(session) ?? []) : []),
-        ...(recentlyCaptured.get(ns) ?? []),
+        ...captured,
       ];
       const result = await searchExcluding(ns, body, excludeIds);
       let results = Array.isArray(result?.results) ? result.results : [];
