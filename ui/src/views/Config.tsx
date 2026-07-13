@@ -41,7 +41,9 @@ export function Config() {
             key={t.id}
             type="button"
             role="tab"
+            id={`config-tab-${t.id}`}
             aria-selected={tab === t.id}
+            aria-controls={`config-panel-${t.id}`}
             class={`tab ${tab === t.id ? 'active' : ''}`}
             onClick={() => setTab(t.id)}
           >
@@ -49,10 +51,15 @@ export function Config() {
           </button>
         ))}
       </div>
-      {tab === 'settings' && <SettingsTab />}
-      {tab === 'defaults' && <DefaultsTab />}
-      {tab === 'pins' && <PinsTab />}
-      {tab === 'preview' && <PreviewTab />}
+      {/* Only the active panel is ever mounted, so a single tabpanel region
+          suffices: its id/labelledby track the active tab, completing the
+          pairing each tab's aria-controls points at. */}
+      <div role="tabpanel" id={`config-panel-${tab}`} aria-labelledby={`config-tab-${tab}`}>
+        {tab === 'settings' && <SettingsTab />}
+        {tab === 'defaults' && <DefaultsTab />}
+        {tab === 'pins' && <PinsTab />}
+        {tab === 'preview' && <PreviewTab />}
+      </div>
     </div>
   )
 }

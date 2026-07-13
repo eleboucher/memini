@@ -75,9 +75,8 @@ export type ApiKeySource = Schemas['ApiKeySource']
 export type ApiKeyWithSecret = Schemas['ApiKeyWithSecret']
 export type ApiKeysResponse = Schemas['ApiKeysResponse']
 export type CreateApiKeyRequest = Schemas['CreateApiKeyRequest']
-export type UpdateApiKeyRequest = Schemas['UpdateApiKeyRequest']
 
-// UpdateApiKeyBody mirrors UpdateApiKeyRequest but loosens `settings` to a
+// UpdateApiKeyBody mirrors the spec's UpdateApiKeyRequest but loosens `settings` to a
 // partial ClientSettings. The generated ClientSettings type marks every
 // field required — openapi-typescript treats a schema `default` as making a
 // field always-present in a fully-resolved read, which is right for

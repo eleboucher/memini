@@ -1,3 +1,4 @@
+import { useId } from 'preact/hooks'
 import { SETTINGS_CATALOG, type SettingsCatalogEntry } from '../settings-catalog.gen'
 import { IconRefresh } from '../icons'
 
@@ -55,14 +56,37 @@ function SettingsFieldRow({
   onReset: () => void
   readOnly?: boolean
 }) {
+  // Accessible naming: the visible field-key text IS the control's label.
+  // The row layout (label block left, control right) makes the app's usual
+  // wrap-in-<label class="field"> pattern (Settings.tsx) awkward, so wire
+  // them by id instead. Ids are useId-derived because several editors can be
+  // mounted at once (multiple expanded key rows in Keys.tsx), so a bare
+  // field.key would collide. Every field kind except array+enum renders one
+  // labelable control (for/id); array+enum renders a checkbox GROUP — each
+  // box is already named by its own wrapping option label, and the row label
+  // names the group as a whole via role="group" + aria-labelledby.
+  const uid = useId()
+  const isGroup = field.type === 'array' && !!field.enum
+  const controlId = `setf-${uid}`
+  const labelId = `setf-${uid}-label`
   return (
     <div class="setf-row">
       <div class="setf-label">
-        <div class="val mono">{field.key}</div>
+        <label class="val mono" id={labelId} for={isGroup ? undefined : controlId} style={{ display: 'block' }}>
+          {field.key}
+        </label>
         <div class="hint">{field.description}</div>
       </div>
       <div class="setf-control">
-        <FieldControl field={field} value={isSet ? value : placeholder} placeholder={placeholder} onChange={onSet} readOnly={readOnly} />
+        <FieldControl
+          field={field}
+          value={isSet ? value : placeholder}
+          placeholder={placeholder}
+          onChange={onSet}
+          readOnly={readOnly}
+          controlId={controlId}
+          labelId={labelId}
+        />
         {!readOnly &&
           (isSet ? (
             <button type="button" class="icon-btn" title="Reset to built-in" aria-label={`Reset ${field.key} to built-in`} onClick={onReset}>
@@ -84,16 +108,21 @@ function FieldControl({
   placeholder,
   onChange,
   readOnly,
+  controlId,
+  labelId,
 }: {
   field: SettingsCatalogEntry
   value: unknown
   placeholder: unknown
   onChange: (v: unknown) => void
   readOnly?: boolean
+  controlId: string
+  labelId: string
 }) {
   if (field.type === 'boolean') {
     return (
       <input
+        id={controlId}
         type="checkbox"
         checked={!!value}
         disabled={readOnly}
@@ -105,6 +134,7 @@ function FieldControl({
   if (field.type === 'integer' || field.type === 'number') {
     return (
       <input
+        id={controlId}
         class="input mono"
         type="number"
         min={field.min}
@@ -123,6 +153,7 @@ function FieldControl({
   if (field.type === 'string' && field.enum) {
     return (
       <select
+        id={controlId}
         class="select"
         style={{ width: 'auto' }}
         value={value as string}
@@ -141,6 +172,7 @@ function FieldControl({
   if (field.type === 'string') {
     return (
       <input
+        id={controlId}
         class="input"
         value={(value as string) ?? ''}
         placeholder={placeholder ? String(placeholder) : '(empty)'}
@@ -153,7 +185,7 @@ function FieldControl({
   if (field.type === 'array' && field.enum) {
     const arr = Array.isArray(value) ? (value as string[]) : []
     return (
-      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+      <div role="group" aria-labelledby={labelId} style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
         {field.enum.map((opt) => (
           <label key={opt} class="hint" style={{ display: 'flex', gap: '4px', alignItems: 'center', cursor: readOnly ? 'default' : 'pointer' }}>
             <input
@@ -174,6 +206,7 @@ function FieldControl({
   const arr = Array.isArray(value) ? (value as string[]) : []
   return (
     <input
+      id={controlId}
       class="input mono"
       value={arr.join(', ')}
       placeholder={Array.isArray(placeholder) ? (placeholder as string[]).join(', ') : ''}

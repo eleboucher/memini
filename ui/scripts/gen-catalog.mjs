@@ -5,14 +5,12 @@
 // so every server-known field is visible even before the UI has bespoke
 // copy for it, and help text can't drift from the spec.
 //
-// Parses YAML with js-yaml rather than adding a direct dependency: it is
-// already pulled in transitively by openapi-typescript's own dependency
-// tree (@redocly/openapi-core -> js-yaml) and npm hoists it to top-level
-// node_modules, so it's resolvable here without a package.json change. If
-// that ever stops being true (a dep-tree change drops js-yaml), this
-// import fails loudly at `npm run gen-api` time rather than silently
-// emitting a stale/wrong catalog — acceptable for a devDependency-only
-// build step. Re-vendor a minimal extractor here if that ever happens.
+// Parses YAML with js-yaml, declared as an explicit devDependency in
+// package.json — pinned to the exact version openapi-typescript's own
+// dependency tree (@redocly/openapi-core -> js-yaml) already resolves, so
+// the declaration costs nothing extra in node_modules while keeping this
+// import working even if a future openapi-typescript bump drops js-yaml
+// from its transitive tree.
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
