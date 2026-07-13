@@ -1,9 +1,10 @@
 // Shared utilities for the memini plugin's hook scripts.
 //
-// Mirrors the layout of agentmemory's plugin/scripts/_shared.mjs:
-//   - resolveProject:   env > git remote origin > git toplevel basename > cwd basename
+//   - getSessionContext: the single per-invocation entry point — resolves the
+//     namespace + behavioral settings via the server handshake (or a cached
+//     one, or local derivation when the server is unreachable).
 //   - readStdin:        drain stdin to a UTF-8 string
-//   - jsonRequest:      POST JSON with bearer-token + namespace headers
+//   - postJSON/getJSON: REST helpers with bearer-token + namespace headers
 //   - postSearch:       POST /v1/search and return result.memory[] of {content,score}
 //   - postRemember:     POST /v1/memories
 //   - postSupersede:    POST /v1/memories/{id}/supersede (tombstone)
@@ -11,302 +12,115 @@
 //
 // Hooks are .mjs (not .ts) so they run in plain `node` without a build step.
 
-import { execSync } from "node:child_process";
-import { basename, join, resolve } from "node:path";
+import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import fs from "node:fs";
 
 // The shared client core (packages/memini-client), bundled to a committed,
 // dependency-free ESM file so these hooks keep running under a bare `node` with
 // no install step. Regenerate with `mise run build-client`.
-import { readOverride, writeSessionCwd, deleteSessionCwd } from "./_client.gen.mjs";
+import {
+  readBootstrap,
+  assertBearerTransportSafe,
+  gatherFacts,
+  resolveNamespace,
+  performHandshake,
+  readCachedHandshake,
+  writeCachedHandshake,
+  deleteCachedHandshake,
+  invalidateAllHandshakes,
+  BEHAVIOR_KNOBS,
+  effectiveSetting,
+  writeSessionCwd,
+  deleteSessionCwd,
+} from "./_client.gen.mjs";
 
-export { readOverride, writeSessionCwd, deleteSessionCwd };
+export {
+  writeSessionCwd,
+  deleteSessionCwd,
+  deleteCachedHandshake,
+  invalidateAllHandshakes,
+};
 
 export const DEBUG = process.env["MEMINI_DEBUG"] === "1";
 
-/**
- * Split a git remote URL into its path segments (owner, repo, ...).
- * Handles ssh://, https://, and scp-style URLs; strips a trailing .git.
- * Returns [] on any parse error.
- */
-function remotePathSegments(url) {
-  if (typeof url !== "string" || !url) return [];
-  const cleaned = url.trim().replace(/\/+$/, "").replace(/\.git$/i, "");
-  if (!cleaned) return [];
-  const scpMatch = cleaned.match(/^[^/:]+:[^/]/);
-  const path = scpMatch ? cleaned.slice(scpMatch[0].indexOf(":") + 1) : cleaned;
-  return path.split("/").filter(Boolean);
-}
+// Client identification sent with every handshake (logging/diagnostics only).
+const CLIENT_NAME = "memini-claude-plugin";
 
 /**
- * Extract the repo name (last path segment) from a git remote URL.
- * Returns the basename, or null on any parse error.
- */
-export function repoNameFromRemote(url) {
-  const segs = remotePathSegments(url);
-  return segs.length ? segs[segs.length - 1] : null;
-}
-
-/**
- * Extract an "owner-repo" slug (last two path segments joined with "-") from a
- * git remote URL, so same-named repos under different owners don't collide
- * (alice/app vs bob/app -> "alice-app" vs "bob-app"). Falls back to the bare
- * repo name when only one segment is present. Returns null on parse error.
- * Used only when MEMINI_NAMESPACE_SCOPE=owner-repo (see resolveProjectBase).
- */
-export function repoSlugFromRemote(url) {
-  const segs = remotePathSegments(url);
-  if (!segs.length) return null;
-  if (segs.length === 1) return segs[0];
-  const owner = segs[segs.length - 2].replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-  const repo = segs[segs.length - 1];
-  return owner ? `${owner}-${repo}` : repo;
-}
-
-/**
- * Resolve the project namespace for a hook invocation, with provenance.
+ * Resolve everything a hook needs — namespace, provenance, and behavioral
+ * settings — once per hook invocation, via the server handshake.
  *
- * Order: per-project override > MEMINI_NAMESPACE env > git remote origin >
- * git toplevel basename > cwd basename. The remote wins over the toplevel so
- * worktrees and /tmp clones get a stable, canonical name.
+ *   allowNetwork:
+ *     "always"  — always POST a live handshake; write the cache on success.
+ *                 (SessionStart: the one hook that does the network round-trip.)
+ *     "on-miss" — use a valid cached handshake; otherwise POST a live one and
+ *                 write the cache on success. (Stop / PreCompact / SessionEnd.)
+ *     "never"   — use a valid cached handshake ONLY; never touch the network.
+ *                 (Pre/PostToolUse — the hot path, kept network-free so a live
+ *                 handshake can never race or add latency to a tool call.)
  *
- * The override sits ABOVE the env var on purpose. A globally exported
- * MEMINI_NAMESPACE (a shell rc, or a fish universal variable) pins every repo on
- * the machine to one namespace; if the env beat the override, then `/memini:namespace`
- * would silently do nothing on exactly the machines that most need it.
+ * Cache policy: on a live handshake SUCCESS we ALWAYS writeCachedHandshake; on
+ * ANY failure we write nothing — the ABSENCE of a cache entry is itself the
+ * degraded signal a later hook reads (see `never`, above).
  *
- * The MEMINI_AGENT suffix is applied unconditionally (as it always has been),
- * so config-less installs that rely on it keep today's exact namespaces. Only
- * the {tenant} prefix is the new, config-gated behavior — removing the config
- * file restores the pre-tenant namespace exactly. No config file = no prefix,
- * zero migration.
- *
- * `env` is injectable, and `opts.ignoreOverride` skips the override, so callers
- * can ask counterfactuals — "what would this resolve to without the env pin?",
- * "…without the override?" — which is what turns a settings dump into a
- * diagnosis. Note the override cannot be stripped by doctoring `env`: it lives
- * in a file, hence the explicit flag. Returns { namespace, source }.
+ * The returned `setting(wireKey)` resolves a behavioral knob with provenance:
+ * a local MEMINI_* env override beats the server-merged value beats the
+ * built-in default (exactly effectiveSetting's precedence). Returns
+ * { namespace, source, degraded, facts, handshake, boot, setting }.
  */
-export function resolveProjectDetailed(cwd, env = process.env, opts = {}) {
-  const dir = cwd && cwd.trim() ? cwd : process.cwd();
+export async function getSessionContext({ cwd, ppid, allowNetwork = "on-miss", timeoutMs, env = process.env } = {}) {
+  const boot = readBootstrap(env);
+  const facts = gatherFacts(cwd, env);
 
-  if (!opts.ignoreOverride) {
-    const override = readOverride(dir, { env });
-    if (override) return { namespace: override.namespace, source: "override" };
-  }
-
-  const nsEnv = env["MEMINI_NAMESPACE"];
-  if (nsEnv && nsEnv.trim()) return { namespace: nsEnv.trim(), source: "env" };
-
-  const { base, source } = resolveProjectBase(dir, env, opts);
-  const config = readTenantConfig(env);
-  // No config file -> zero migration: today's exact namespace, with the
-  // MEMINI_AGENT suffix applied unconditionally as it always has been.
-  if (!config) return { namespace: withAgent(base, env), source };
-  // Config present -> render config.template (default "{tenant}/{project}/{agent}")
-  // over the resolved segments, dropping the unresolvable ones. The default
-  // template reproduces the pre-template output exactly:
-  // tenant ? `${tenant}/${base}` : base, then the agent suffix.
-  const tenant = resolveTenant(dir, config);
-  const agent = (env["MEMINI_AGENT"] || "")
-    .trim()
-    .replace(/[^A-Za-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  const template =
-    typeof config.template === "string" && config.template
-      ? config.template
-      : "{tenant}/{project}/{agent}";
-  const namespace = applyTemplate(template, { tenant, project: base, agent }) || base;
-  return { namespace, source: tenant ? "config" : source };
-}
-
-/**
- * The namespace only. Kept as the primary entry point — every hook calls this,
- * and it has always returned a bare string.
- */
-export function resolveProject(cwd, env = process.env, opts = {}) {
-  return resolveProjectDetailed(cwd, env, opts).namespace;
-}
-
-/**
- * applyTemplate substitutes {tenant}/{project}/{agent} placeholders with the
- * resolved segments, drops the unresolvable ones (empty string), collapses the
- * orphaned slashes, and trims leading/trailing slashes. Mirrors the shared
- * resolver's applyTemplate (minus {namespace}, which the hooks don't use).
- */
-function applyTemplate(template, segments) {
-  const out = template.replace(
-    /\{(tenant|project|agent)\}/g,
-    (_, key) => segments[key] || "",
-  );
-  return out.replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "");
-}
-
-// withAgent nests the project namespace under a per-agent segment when
-// MEMINI_AGENT is set ("myproject" -> "myproject/reviewer"), so several agents
-// sharing a repo keep private memory. Recall with scope=everywhere on the
-// project reads across all of them (the project namespace's own subtree).
-// Applied unconditionally — MEMINI_AGENT predates the tenant feature, so
-// gating it behind config would drop the segment for config-less installs
-// that already use it.
-function withAgent(ns, env = process.env) {
-  const agent = (env["MEMINI_AGENT"] || "").trim();
-  if (!agent) return ns;
-  const seg = agent.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-  return seg ? `${ns}/${seg}` : ns;
-}
-
-// gitOut runs a git command in dir and returns its trimmed stdout, or "" on
-// any error (not a repo, git missing, timeout). Best-effort — never throws.
-function gitOut(args, dir) {
-  try {
-    return execSync(`git ${args}`, {
-      cwd: dir,
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 500,
-    })
-      .toString()
-      .trim();
-  } catch {
-    return "";
-  }
-}
-
-/**
- * readTenantConfig reads $XDG_CONFIG_HOME/memini/config.json (falling back to
- * ~/.config/memini/config.json). Returns the parsed object, or null when the
- * file is missing or malformed — null means "feature off, today's behavior".
- */
-function readTenantConfig(env = process.env) {
-  try {
-    const configPath = tenantConfigPath(env);
-    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    return config && typeof config === "object" ? config : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Path of the tenant/template config file, for reporting in `status`. */
-export function tenantConfigPath(env = process.env) {
-  const xdg = env["XDG_CONFIG_HOME"] || join(homedir() || tmpdir(), ".config");
-  return join(xdg, "memini", "config.json");
-}
-
-/**
- * resolveTenant returns the tenant name from a parsed config if cwd is under a
- * configured tenant root. Returns null when no match or any error — so the
- * existing resolution chain remains the fallback.
- */
-function resolveTenant(cwd, config) {
-  try {
-    if (!Array.isArray(config.tenantRoots)) return null;
-    const resolved = resolve(cwd || process.cwd());
-    const sep = process.platform === "win32" ? "\\" : "/";
-    for (const root of config.tenantRoots) {
-      if (!root || typeof root !== "object") continue;
-      let rootPath = root.path;
-      // An empty/missing path would startsWith-match every cwd; skip it.
-      if (typeof rootPath !== "string" || !rootPath) continue;
-      if (rootPath === "~") rootPath = homedir() || "";
-      else if (rootPath.startsWith("~/")) rootPath = join(homedir() || tmpdir(), rootPath.slice(2));
-      if (!rootPath) continue;
-      // Normalize so a configured trailing slash or relative path still matches.
-      rootPath = resolve(rootPath);
-      if (resolved === rootPath || resolved.startsWith(rootPath + sep)) {
-        const tenant = String(root.tenant || "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-        if (tenant) return tenant;
-      }
+  const live = async () => {
+    // performHandshake runs the plaintext-bearer guard OUTSIDE its own
+    // try/catch, so a guard throw (MEMINI_REQUIRE_HTTPS + plaintext + a
+    // secret) surfaces here rather than as a silent undefined. A hook must
+    // never crash, and refusing to send the bearer is exactly the degraded
+    // outcome the guard asks for — so treat the throw as a handshake failure
+    // and fall through to local derivation.
+    try {
+      return await performHandshake(boot, facts, {
+        timeoutMs: timeoutMs ?? 2500,
+        clientName: CLIENT_NAME,
+      });
+    } catch {
+      return undefined;
     }
-    return null;
-  } catch {
-    return null;
-  }
-}
+  };
 
-// `opts.noPersist` skips the self-healing project-map write. Introspection
-// (`/memini:status`) must not mutate state it is only reporting on: it resolves
-// several counterfactuals per run, and a command that advertises itself as
-// read-only should be exactly that.
-function resolveProjectBase(cwd, env = process.env, opts = {}) {
-  const dir = cwd && cwd.trim() ? cwd : process.cwd();
-
-  const remote = gitOut("remote get-url origin", dir);
-  const toplevel = gitOut("rev-parse --show-toplevel", dir);
-
-  // Self-heal: a repo's identity is its remote URL (stable across folder moves
-  // and clones) and its toplevel path (stable when the remote is later removed
-  // or renamed). If either key has a remembered namespace, reuse it so a move
-  // or a dropped remote never silently orphans a project's memory. The path key
-  // is intentionally sticky: deleting a repo and cloning a *different* one into
-  // the exact same directory inherits the old namespace until the map is cleared
-  // (a rare case; set MEMINI_NAMESPACE to override).
-  const ownerRepo = (env["MEMINI_NAMESPACE_SCOPE"] || "").trim() === "owner-repo";
-  const remoteKey = remote ? "remote:" + normalizeRemote(remote) : null;
-  const pathKey = toplevel ? "path:" + toplevel : null;
-  const map = readProjectMap();
-  const cached = (remoteKey && map[remoteKey]) || (pathKey && map[pathKey]);
-  if (cached) return { base: cached, source: "project-map" };
-
-  // Derive a fresh namespace. owner-repo disambiguates same-named repos across
-  // owners; the default keeps the bare repo name for backward compatibility.
-  let ns = "";
-  let source = "cwd";
-  if (remote) {
-    ns = (ownerRepo ? repoSlugFromRemote(remote) : repoNameFromRemote(remote)) || "";
-    if (ns) source = "git-remote";
-  }
-  if (!ns && toplevel) {
-    ns = basename(toplevel);
-    source = "git-toplevel";
-  }
-  if (!ns) {
-    ns = basename(dir);
-    source = "cwd";
+  let hs;
+  if (allowNetwork === "never") {
+    hs = readCachedHandshake(ppid, cwd, facts, env);
+  } else if (allowNetwork === "always") {
+    hs = await live();
+    if (hs) writeCachedHandshake(ppid, cwd, facts, hs, env);
+  } else {
+    // "on-miss"
+    hs = readCachedHandshake(ppid, cwd, facts, env);
+    if (!hs) {
+      hs = await live();
+      if (hs) writeCachedHandshake(ppid, cwd, facts, hs, env);
+    }
   }
 
-  // Remember the derivation under every stable key we have, so a later move or
-  // remote change resolves back to this same namespace.
-  if (!opts.noPersist) {
-    const entries = {};
-    if (remoteKey) entries[remoteKey] = ns;
-    if (pathKey) entries[pathKey] = ns;
-    if (remoteKey || pathKey) writeProjectMap({ ...map, ...entries });
-  }
-  return { base: ns, source };
-}
+  const resolved = resolveNamespace(boot, facts, hs);
+  const serverSettings = hs?.settings;
 
-/** Normalize a remote URL into a stable map key: trim, drop trailing slashes
- * and a .git suffix, lowercase. Same checkout uses one consistent remote, so
- * light normalization is enough to survive trivial formatting differences. */
-function normalizeRemote(url) {
-  return String(url).trim().replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase();
-}
-
-/** Path of the self-healing project→namespace map. */
-function projectMapPath() {
-  return join(meminiCacheDir(), "project-map.json");
-}
-
-/** Read the project map ({} on any error — the map is a best-effort cache). */
-export function readProjectMap() {
-  try {
-    const obj = parseJSON(fs.readFileSync(projectMapPath(), "utf8"));
-    return obj && typeof obj === "object" ? obj : {};
-  } catch {
-    return {};
-  }
-}
-
-/** Persist the project map (best-effort; failures are swallowed). */
-function writeProjectMap(map) {
-  try {
-    fs.mkdirSync(meminiCacheDir(), { recursive: true });
-    fs.writeFileSync(projectMapPath(), JSON.stringify(map));
-  } catch (e) {
-    if (DEBUG) console.error("[memini] writeProjectMap failed:", e?.message || e);
-  }
+  return {
+    namespace: resolved.namespace,
+    source: resolved.source,
+    degraded: resolved.degraded,
+    facts,
+    handshake: hs,
+    boot,
+    setting(wireKey) {
+      const knob = BEHAVIOR_KNOBS.find((k) => k.wireKey === wireKey);
+      if (!knob) throw new Error(`getSessionContext: unknown behavior knob "${wireKey}"`);
+      return effectiveSetting(knob, serverSettings, env);
+    },
+  };
 }
 
 /** Drain stdin to a UTF-8 string. */
@@ -328,68 +142,17 @@ export function parseJSON(s) {
   }
 }
 
-const REST_URL = process.env["MEMINI_BASE_URL"] || process.env["MEMINI_URL"] || "http://localhost:8080";
-const SECRET = process.env["MEMINI_API_KEY"] || process.env["MEMINI_TOKEN"] || "";
-
-/**
- * resolveHome reads MEMINI_HOME (env-only, mirroring how MEMINI_NAMESPACE is
- * read above): the caller's personal namespace, sent as X-Memini-Home so
- * server-side visibility="personal" writes and the read-set's home leg have
- * somewhere to land. "" (unset) means no home leg — the header is omitted
- * entirely rather than sent empty.
- */
-export function resolveHome() {
-  const home = process.env["MEMINI_HOME"];
-  return home && home.trim() ? home.trim() : "";
-}
-
-const HOME = resolveHome();
-
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
-
-function normalizedHostname(hostname) {
-  return hostname.replace(/^\[|\]$/g, "").toLowerCase();
-}
-
-// usesPlaintextBearerAuth is true when a bearer token would be sent over
-// plaintext HTTP to a non-loopback host — i.e. the token (and memory payloads)
-// would be observable on the network.
-function usesPlaintextBearerAuth(baseUrl, secret) {
-  if (!secret) return false;
-  try {
-    const parsed = new URL(baseUrl);
-    return parsed.protocol === "http:" && !LOOPBACK_HOSTS.has(normalizedHostname(parsed.hostname));
-  } catch {
-    return false;
-  }
-}
-
-/**
- * createPlaintextBearerAuthGuard mirrors the OpenClaw/OpenCode plugins: it
- * refuses (when MEMINI_REQUIRE_HTTPS=1) or warns once when a bearer token would
- * travel over plaintext HTTP to a non-loopback host. Exported for testing.
- */
-export function createPlaintextBearerAuthGuard(warn, env) {
-  let warned = false;
-  return function guardPlaintextBearerAuth(baseUrl, secret) {
-    if (!usesPlaintextBearerAuth(baseUrl, secret)) return;
-    const message =
-      `memini: a bearer token is configured for plaintext HTTP to ${baseUrl}. ` +
-      `The token and memory payloads can be observed on the network; use HTTPS or an SSH tunnel.`;
-    if ((env || process.env).MEMINI_REQUIRE_HTTPS === "1") throw new Error(message);
-    if (!warned) {
-      warned = true;
-      warn(message);
-    }
-  };
-}
-
-const guardPlaintextBearerAuth = createPlaintextBearerAuthGuard((m) => console.error(`[memini] ${m}`));
+// The REST client's transport is read once, here, from the same bootstrap the
+// handshake uses: MEMINI_BASE_URL (no MEMINI_URL alias), MEMINI_API_KEY (no
+// MEMINI_TOKEN alias), MEMINI_HOME. The plaintext-bearer guard is the bundle's
+// assertBearerTransportSafe — one shared implementation, with the broadened
+// accept-1/true/yes/on parsing of MEMINI_REQUIRE_HTTPS.
+const boot = readBootstrap();
 
 function authHeaders(extra) {
   const h = { "Content-Type": "application/json", ...(extra || {}) };
-  if (SECRET) h["Authorization"] = `Bearer ${SECRET}`;
-  if (HOME) h["X-Memini-Home"] = HOME;
+  if (boot.apiKey) h["Authorization"] = `Bearer ${boot.apiKey}`;
+  if (boot.homeEnv) h["X-Memini-Home"] = boot.homeEnv;
   return h;
 }
 
@@ -400,8 +163,8 @@ function authHeaders(extra) {
  */
 export async function postJSON(path, body, namespace, timeoutMs = 5000) {
   try {
-    guardPlaintextBearerAuth(REST_URL, SECRET);
-    const res = await fetch(`${REST_URL}${path}`, {
+    assertBearerTransportSafe(boot.baseUrl, boot.apiKey);
+    const res = await fetch(`${boot.baseUrl}${path}`, {
       method: "POST",
       headers: authHeaders({ "X-Memini-Namespace": namespace }),
       body: JSON.stringify(body),
@@ -461,8 +224,8 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude, 
  */
 export async function getJSON(path, namespace, timeoutMs = 5000, opts = {}) {
   try {
-    guardPlaintextBearerAuth(REST_URL, SECRET);
-    const res = await fetch(`${REST_URL}${path}`, {
+    assertBearerTransportSafe(boot.baseUrl, boot.apiKey);
+    const res = await fetch(`${boot.baseUrl}${path}`, {
       method: "GET",
       headers: authHeaders({ "X-Memini-Namespace": namespace }),
       signal: AbortSignal.timeout(timeoutMs),
@@ -552,28 +315,6 @@ export function envEnabled(name, defaultOn, env = process.env) {
   const raw = env[name];
   if (raw == null || raw === "") return defaultOn;
   return !/^(0|false|no|off)$/i.test(String(raw).trim());
-}
-
-/**
- * sessionDigestEnabled reports whether the lifecycle hooks should record session
- * digests at all: the SessionEnd episodic digest ("edited X and Y, ran Z"), the
- * Stop working-tier checkpoint, and the PreCompact emergency checkpoint. All
- * three are the same distilled buffer, so one switch governs them.
- *
- * On by default. Set MEMINI_SESSION_DIGEST=0 to turn them off.
- *
- * These are activity records, not knowledge. They are genuinely useful for "what
- * was I doing in this repo last week", and genuinely noise for anyone who only
- * wants memini to hold durable facts — for them every session adds a memory that
- * will never answer a question, and dilutes recall. That is a preference, not a
- * bug, so it gets a knob rather than a default change.
- *
- * Distinct from MEMINI_CAPTURE_TURNS (per-turn user→assistant capture) and
- * MEMINI_INLINE_EXTRACT (the directive asking the agent to save durable facts);
- * turning digests off leaves both of those alone.
- */
-export function sessionDigestEnabled(env = process.env) {
-  return envEnabled("MEMINI_SESSION_DIGEST", true, env);
 }
 
 /**
@@ -749,38 +490,6 @@ export function writePluginRoot() {
     fs.writeFileSync(pluginRootFile(), root);
   } catch (e) {
     if (DEBUG) console.error("[memini] writePluginRoot failed:", e?.message || e);
-  }
-}
-
-/**
- * Path of the file recording the active project's resolved namespace. Per the
- * Claude Code docs, the MCP headersHelper runs with cwd = the plugin's
- * (version-named) install dir and is NOT given ${CLAUDE_PROJECT_DIR}, so it
- * cannot resolve the project namespace itself — process.cwd() would yield the
- * plugin version (e.g. "0.6.3"). The hooks (which DO get the real project cwd)
- * write the resolved namespace here, and the headersHelper reads it.
- */
-export function namespaceCacheFile() {
-  return join(meminiCacheDir(), "namespace");
-}
-
-/** Record the resolved project namespace for the MCP headersHelper to read. */
-export function writeNamespace(ns) {
-  if (!ns || !ns.trim()) return;
-  try {
-    fs.mkdirSync(meminiCacheDir(), { recursive: true });
-    fs.writeFileSync(namespaceCacheFile(), ns.trim());
-  } catch (e) {
-    if (DEBUG) console.error("[memini] writeNamespace failed:", e?.message || e);
-  }
-}
-
-/** Read the namespace cached by the hooks; "" when absent/unreadable. */
-export function readCachedNamespace() {
-  try {
-    return fs.readFileSync(namespaceCacheFile(), "utf8").trim();
-  } catch {
-    return "";
   }
 }
 
