@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, basename } from "node:path";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
@@ -1657,6 +1657,312 @@ test("namespace.mjs: server unreachable → error pointing at MEMINI_NAMESPACE",
   const { code, stderr } = await runCommand("namespace.mjs", ["team/x"], { MEMINI_BASE_URL: DEAD_URL, XDG_CACHE_HOME: freshCache() }, repo);
   assert.equal(code, 1);
   assert.match(stderr, /MEMINI_NAMESPACE/, "offline help must point at the env override");
+});
+
+// ─── migration: overrides.json → pins (session-start auto-migrate) ────────
+//
+// The config-handshake redesign retires ~/.config/memini/overrides.json in
+// favor of server-side pins. session-start.mjs auto-migrates a matching
+// entry the moment it can prove no pin exists yet (a successful handshake
+// reporting a non-"pin" namespace_source) — the pin check itself is what
+// makes this idempotent, so there is no separate "already migrated" marker.
+
+// A fresh, isolated XDG_CONFIG_HOME so a test's overrides.json can't leak
+// into another test (the global XDG_CONFIG_HOME set at the top of this file
+// is shared across the whole run and must stay empty).
+function freshConfigHome() {
+  return mkdtempSync(join(tmpdir(), "memini-xdgconfig-"));
+}
+
+async function writeOverrideEntry(repo, namespace, configHome) {
+  const mod = await import("./_client.gen.mjs");
+  mod.writeOverride(repo, namespace, { env: { XDG_CONFIG_HOME: configHome } });
+}
+
+function overridesJsonPath(configHome) {
+  return join(configHome, "memini", "overrides.json");
+}
+
+test("session-start.mjs auto-migrate: override present, no pin → PUTs /v1/pins and prints one stderr line", async () => {
+  const repo = gitRepo("automigrate-happy", "https://github.com/acme/legacy.git");
+  const configHome = freshConfigHome();
+  await writeOverrideEntry(repo, "team/legacy-ns", configHome);
+  const before = readFileSync(overridesJsonPath(configHome), "utf8");
+
+  const puts = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    if (req.method === "POST" && req.url === "/v1/handshake") {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(mkHS({ namespace: "server/derived", namespace_source: "remote" })));
+      return;
+    }
+    if (req.method === "PUT" && req.url === "/v1/pins") {
+      puts.push(JSON.parse(body));
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ key: "path:" + repo, namespace: JSON.parse(body).namespace, created_at: "t", updated_at: "t" }));
+      return;
+    }
+    if (req.url.startsWith("/v1/namespaces/") && req.url.includes("/briefing")) {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ namespace: "server/derived", pinned: [], facts: [], procedures: [], recent: [] }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+  try {
+    const { stderr } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "am1", cwd: repo }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache(), XDG_CONFIG_HOME: configHome },
+    );
+    assert.equal(puts.length, 1, "must PUT /v1/pins exactly once");
+    assert.equal(puts[0].namespace, "team/legacy-ns", "must migrate the override's namespace value");
+    assert.ok(puts[0].toplevel_path, "must carry the project's toplevel_path fact");
+    assert.equal(puts[0].remote_url, "https://github.com/acme/legacy.git");
+    assert.equal(puts[0].note, "migrated from overrides.json");
+    assert.match(
+      stderr,
+      /\[memini\] migrated your local namespace override for this project to a server pin/,
+    );
+    const after = readFileSync(overridesJsonPath(configHome), "utf8");
+    assert.equal(after, before, "overrides.json must never be written by the auto-migrate path");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs auto-migrate: a pin already present → no PUT (idempotent)", async () => {
+  const repo = gitRepo("automigrate-idempotent", "https://github.com/acme/legacy.git");
+  const configHome = freshConfigHome();
+  await writeOverrideEntry(repo, "team/legacy-ns", configHome);
+
+  const puts = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    if (req.method === "POST" && req.url === "/v1/handshake") {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify(
+          mkHS({
+            namespace: "team/legacy-ns",
+            namespace_source: "pin",
+            pin: { key: "path:" + repo, updated_at: "2026-07-01T00:00:00Z" },
+          }),
+        ),
+      );
+      return;
+    }
+    if (req.method === "PUT" && req.url === "/v1/pins") {
+      puts.push(JSON.parse(body));
+      res.statusCode = 200;
+      res.end(JSON.stringify({ key: "path:" + repo, namespace: "team/legacy-ns", created_at: "t", updated_at: "t" }));
+      return;
+    }
+    if (req.url.startsWith("/v1/namespaces/") && req.url.includes("/briefing")) {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ namespace: "team/legacy-ns", pinned: [], facts: [], procedures: [], recent: [] }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+  try {
+    const { stderr } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "am2", cwd: repo }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache(), XDG_CONFIG_HOME: configHome },
+    );
+    assert.equal(puts.length, 0, "a pin already resolved by the handshake must not be re-migrated");
+    assert.doesNotMatch(stderr, /migrated your local namespace override/);
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs auto-migrate: PUT failure is fail-soft — session continues, overrides.json untouched", async () => {
+  const repo = gitRepo("automigrate-failsoft", "https://github.com/acme/legacy.git");
+  const configHome = freshConfigHome();
+  await writeOverrideEntry(repo, "team/legacy-ns", configHome);
+  const before = readFileSync(overridesJsonPath(configHome), "utf8");
+
+  const { url, close } = await startMockServer((req, res) => {
+    if (req.method === "POST" && req.url === "/v1/handshake") {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(mkHS({ namespace: "server/derived", namespace_source: "remote" })));
+      return;
+    }
+    if (req.method === "PUT" && req.url === "/v1/pins") {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: "boom" }));
+      return;
+    }
+    if (req.url.startsWith("/v1/namespaces/") && req.url.includes("/briefing")) {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ namespace: "server/derived", pinned: [], facts: [{ content: "still works" }], procedures: [], recent: [] }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+  try {
+    const { stdout, stderr } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "am3", cwd: repo }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache(), XDG_CONFIG_HOME: configHome },
+    );
+    assert.match(stdout, /still works/, "the session must continue normally despite the failed migration");
+    assert.doesNotMatch(stderr, /UnhandledPromise|Rejection/, "a failed PUT must not crash the hook");
+    const after = readFileSync(overridesJsonPath(configHome), "utf8");
+    assert.equal(after, before, "overrides.json must never be written, even on migration failure");
+  } finally {
+    await close();
+  }
+});
+
+// ─── removed-var warnings (session-start only) ────────────────────────────
+
+test("session-start.mjs: removed env vars are warned once, combined, and otherwise ignored", async () => {
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ namespace: "memini", pinned: [], facts: [], procedures: [], recent: [] }));
+    }),
+  );
+  try {
+    const { stderr } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "rv1", cwd: __dirname }),
+      {
+        MEMINI_BASE_URL: url,
+        XDG_CACHE_HOME: freshCache(),
+        MEMINI_URL: "http://old.example",
+        MEMINI_NAMESPACE_SCOPE: "owner_repo",
+      },
+    );
+    assert.match(
+      stderr,
+      /\[memini\] ignored removed env vars: MEMINI_URL, MEMINI_NAMESPACE_SCOPE \(see docs\/reference\/env-vars\.md\)/,
+    );
+    const lines = stderr.split("\n").filter((l) => l.includes("ignored removed env vars"));
+    assert.equal(lines.length, 1, "must print exactly one combined line, not one per var");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: no removed vars set → no warning at all", async () => {
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ namespace: "memini", pinned: [], facts: [], procedures: [], recent: [] }));
+    }),
+  );
+  try {
+    const { stderr } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "rv2", cwd: __dirname }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() },
+    );
+    assert.doesNotMatch(stderr, /ignored removed env vars/);
+  } finally {
+    await close();
+  }
+});
+
+// ─── namespace.mjs --migrate (bulk) ────────────────────────────────────────
+
+test("namespace.mjs --migrate: migrates every entry, prints a table, renames the file on full success", async () => {
+  const repoA = gitRepo("bulk-a");
+  const repoB = gitRepo("bulk-b");
+  const configHome = freshConfigHome();
+  await writeOverrideEntry(repoA, "team/a-ns", configHome);
+  await writeOverrideEntry(repoB, "team/b-ns", configHome);
+
+  const puts = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    if (req.method === "GET" && req.url === "/v1/pins") {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ entries: [] }));
+      return;
+    }
+    if (req.method === "PUT" && req.url === "/v1/pins") {
+      const parsed = JSON.parse(body);
+      puts.push(parsed);
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ key: "path:" + parsed.toplevel_path, namespace: parsed.namespace, created_at: "t", updated_at: "t" }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+  try {
+    const { code, stdout } = await runCommand("namespace.mjs", ["--migrate"], { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache(), XDG_CONFIG_HOME: configHome }, repoA);
+    assert.equal(code, 0);
+    assert.equal(puts.length, 2, "must PUT one pin per overrides.json entry");
+    assert.ok(puts.every((p) => p.toplevel_path && !p.remote_url), "bulk migration keys purely off the stored path, not a re-derived git remote");
+    assert.match(stdout, new RegExp(`${repoA.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.*team/a-ns.*migrated`));
+    assert.match(stdout, new RegExp(`${repoB.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.*team/b-ns.*migrated`));
+    assert.match(stdout, /renamed overrides\.json/i);
+    assert.equal(existsSync(overridesJsonPath(configHome)), false, "the original file must be renamed away");
+    assert.equal(existsSync(overridesJsonPath(configHome) + ".migrated"), true);
+  } finally {
+    await close();
+  }
+});
+
+test("namespace.mjs --migrate: an already-pinned entry is skipped; a failed entry keeps the file in place", async () => {
+  const repoA = gitRepo("bulk-pinned");
+  const repoB = gitRepo("bulk-failed");
+  const configHome = freshConfigHome();
+  await writeOverrideEntry(repoA, "team/a-ns", configHome);
+  await writeOverrideEntry(repoB, "team/b-ns", configHome);
+
+  const puts = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    if (req.method === "GET" && req.url === "/v1/pins") {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ entries: [{ key: "path:" + repoA, namespace: "team/a-ns", created_at: "t", updated_at: "t" }] }));
+      return;
+    }
+    if (req.method === "PUT" && req.url === "/v1/pins") {
+      puts.push(JSON.parse(body));
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: "db unavailable" }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+  try {
+    const { stdout } = await runCommand("namespace.mjs", ["--migrate"], { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache(), XDG_CONFIG_HOME: configHome }, repoA);
+    assert.equal(puts.length, 1, "an already-pinned entry must not be re-PUT");
+    assert.match(stdout, /already-pinned/);
+    assert.match(stdout, /failed/);
+    assert.equal(existsSync(overridesJsonPath(configHome)), true, "a partial failure must leave overrides.json in place for a retry");
+    assert.equal(existsSync(overridesJsonPath(configHome) + ".migrated"), false);
+  } finally {
+    await close();
+  }
+});
+
+test("namespace.mjs --migrate: surfaces config.json tenantRoots/template with manual-recreation instructions", async () => {
+  const configHome = freshConfigHome();
+  mkdirSync(join(configHome, "memini"), { recursive: true });
+  const configPath = join(configHome, "memini", "config.json");
+  const configBody = {
+    tenantRoots: [{ path: "~/dev/work", tenant: "work" }],
+    template: "{tenant}/{project}/{agent}",
+  };
+  writeFileSync(configPath, JSON.stringify(configBody));
+
+  const { code, stdout } = await runCommand("namespace.mjs", ["--migrate"], { XDG_CACHE_HOME: freshCache(), XDG_CONFIG_HOME: configHome }, __dirname);
+  assert.equal(code, 0, "config.json inspection needs no server round trip when overrides.json is empty");
+  assert.match(stdout, /tenantRoots/);
+  assert.match(stdout, /template/);
+  assert.match(stdout, /namespace_prefix/i);
+  assert.match(stdout, /cannot/i);
+  // Read-only: config.json itself is never rewritten.
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).template, configBody.template);
 });
 
 // ─── status.mjs ───────────────────────────────────────────────────────────

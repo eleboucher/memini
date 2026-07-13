@@ -26,7 +26,11 @@ import {
   invalidateAllHandshakes,
   normalizeNamespace,
   validateNamespace,
+  readOverrides,
+  defaultOverridesPath,
 } from "./_client.gen.mjs";
+import fs from "node:fs";
+import path from "node:path";
 
 const args = process.argv.slice(2).filter((a) => a !== "--");
 const cwd = process.cwd();
@@ -209,12 +213,134 @@ async function clear() {
   ].join("\n");
 }
 
+// --- --migrate: bulk overrides.json -> server pins -------------------------
+//
+// Every overrides.json entry is keyed by an absolute directory path — the
+// git toplevel at the time it was written, or the resolved cwd for a non-git
+// directory (see the bundle's overrideKey). That key IS the toplevel_path
+// fact: there is no stored git remote to re-derive, and the directory may not
+// even exist anymore (a moved or deleted checkout), so this migrates purely
+// off the stored path rather than re-running git. An entry whose directory
+// is long gone still migrates fine as a path-keyed pin.
+
+// GET /v1/pins and return the Set of existing pin keys ("remote:..."/
+// "path:..."), so a bulk migration can skip a project that already has an
+// explicit pin (set via /memini:namespace since these overrides were written)
+// rather than clobber it.
+async function fetchExistingPinKeys() {
+  const res = await pinsRequest("GET");
+  if (!res.ok) throw new Error(res.body?.error || res.body?.message || `HTTP ${res.status}`);
+  const entries = Array.isArray(res.body?.entries) ? res.body.entries : [];
+  return new Set(entries.map((e) => e.key));
+}
+
+// Reads ~/.config/memini/config.json (or null on any error/absence) — the
+// older client-side tenancy config (`tenantRoots`/`template`) some
+// integrations still read. Never written here.
+function readClientConfig() {
+  const dir = path.dirname(defaultOverridesPath(process.env));
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(dir, "config.json"), "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function migrate() {
+  const file = readOverrides({ env: process.env });
+  const keys = Object.keys(file.overrides || {}).sort();
+  const out = [];
+
+  if (keys.length === 0) {
+    out.push("No overrides.json entries to migrate.");
+  } else {
+    let existing;
+    try {
+      existing = await fetchExistingPinKeys();
+    } catch (e) {
+      console.error(`memini: ${e?.message || e}\n\n${OFFLINE_HELP}`);
+      process.exitCode = 1;
+      return null;
+    }
+
+    const rows = [];
+    let migratedCount = 0;
+    let failedCount = 0;
+    for (const key of keys) {
+      const entry = file.overrides[key];
+      const namespace = entry && typeof entry.namespace === "string" ? entry.namespace : "";
+      if (!namespace) {
+        rows.push({ key, namespace: "(invalid entry)", status: "failed: no namespace stored" });
+        failedCount++;
+        continue;
+      }
+      if (existing.has(`path:${key}`)) {
+        rows.push({ key, namespace, status: "already-pinned" });
+        continue;
+      }
+      try {
+        const res = await pinsRequest("PUT", { namespace, toplevel_path: key, note: "migrated from overrides.json" });
+        if (res.ok) {
+          rows.push({ key, namespace, status: "migrated" });
+          migratedCount++;
+        } else {
+          const msg = res.body?.error || res.body?.message || `HTTP ${res.status}`;
+          rows.push({ key, namespace, status: `failed: ${msg}` });
+          failedCount++;
+        }
+      } catch (e) {
+        rows.push({ key, namespace, status: `failed: ${e?.message || e}` });
+        failedCount++;
+      }
+    }
+
+    out.push(`KEY -> NAMESPACE -> STATUS`);
+    for (const r of rows) out.push(`${r.key} -> ${r.namespace} -> ${r.status}`);
+    out.push("");
+
+    if (migratedCount > 0) invalidateAllHandshakes();
+
+    const overridesPath = defaultOverridesPath(process.env);
+    if (failedCount === 0) {
+      try {
+        fs.renameSync(overridesPath, `${overridesPath}.migrated`);
+        out.push(`All entries migrated or already pinned — renamed overrides.json to overrides.json.migrated.`);
+      } catch (e) {
+        out.push(`Migration succeeded, but could not rename overrides.json: ${e?.message || e}`);
+      }
+    } else {
+      out.push(`${failedCount} entr${failedCount === 1 ? "y" : "ies"} failed — overrides.json left in place; re-run --migrate to retry.`);
+    }
+  }
+
+  // config.json's tenantRoots/template is a separate, older client-side
+  // mechanism (a handful of integrations still read it) that this cannot
+  // auto-translate: it encodes a tenancy decision only a human can make.
+  const cfg = readClientConfig();
+  if (cfg && (cfg.tenantRoots || cfg.template)) {
+    out.push("");
+    out.push(`Also found ~/.config/memini/config.json with tenantRoots/template. This cannot`);
+    out.push(`be auto-translated:`);
+    if (cfg.tenantRoots) out.push(`  tenantRoots: ${JSON.stringify(cfg.tenantRoots)}`);
+    if (cfg.template) out.push(`  template:    ${cfg.template}`);
+    out.push(``);
+    out.push(`Recreate it by hand, either as:`);
+    out.push(`  - a namespace_prefix on each API key (per-credential tenancy), or`);
+    out.push(`  - a per-project pin (/memini:namespace <ns>, one per project).`);
+  }
+
+  return out.join("\n");
+}
+
 async function main() {
   let result;
   if (args.length === 0) {
     result = await show();
   } else if (args[0] === "--clear" || args[0] === "clear") {
     result = await clear();
+  } else if (args[0] === "--migrate" || args[0] === "migrate") {
+    result = await migrate();
   } else {
     result = await set(args.join(" "));
   }

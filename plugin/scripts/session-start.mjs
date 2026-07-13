@@ -27,10 +27,76 @@ import {
   MEMORY_INSTRUCTION,
   DEBUG,
 } from "./_shared.mjs";
+import { readOverride, assertBearerTransportSafe } from "./_client.gen.mjs";
 import crypto from "node:crypto";
 
 // Buffers older than this are abandoned (crashed/killed sessions) and removed.
 const STALE_BUFFER_MS = 7 * 24 * 60 * 60 * 1000;
+
+// migrateOverrideToPin auto-migrates a stale ~/.config/memini/overrides.json
+// entry for THIS project to a server-side pin, replacing the old per-machine
+// file with the server-side mechanism that follows a user across machines.
+// Only ever READS the file — overrides.json is retired, but three other
+// clients (opencode, hermes, openwebui) still ship a reader for it during the
+// rollout, so nothing here may write or clear it.
+//
+// Runs once per handshake round-trip, and is naturally idempotent with no
+// extra state to track: it only fires after a handshake SUCCEEDS and reports
+// a namespace_source other than "pin". A successful PUT here creates exactly
+// that pin, so the very next handshake reports namespace_source:"pin" and
+// this function becomes a no-op for the project from then on. A failed
+// handshake (degraded) or an already-present pin both mean "do nothing".
+async function migrateOverrideToPin(ctx, cwd) {
+  const override = readOverride(cwd, { env: process.env });
+  if (!override) return;
+
+  const facts = ctx.facts;
+  const body = { namespace: override.namespace, note: "migrated from overrides.json" };
+  if (facts.remote_url) body.remote_url = facts.remote_url;
+  if (facts.toplevel_path) body.toplevel_path = facts.toplevel_path;
+  // Neither fact available (not a git repo): nothing to key a pin on.
+  if (!body.remote_url && !body.toplevel_path) return;
+
+  try {
+    assertBearerTransportSafe(ctx.boot.baseUrl, ctx.boot.apiKey); // throws under MEMINI_REQUIRE_HTTPS
+    const headers = { "Content-Type": "application/json" };
+    if (ctx.boot.apiKey) headers["Authorization"] = `Bearer ${ctx.boot.apiKey}`;
+    if (ctx.boot.homeEnv) headers["X-Memini-Home"] = ctx.boot.homeEnv;
+    const res = await fetch(`${ctx.boot.baseUrl}/v1/pins`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.ok) {
+      console.error(`[memini] migrated your local namespace override for this project to a server pin`);
+    } else {
+      // Fail-soft: the PUT not landing is not this session's problem to solve.
+      // overrides.json is untouched, so the exact same migration is attempted
+      // again next session — no state to reconcile, nothing lost.
+      console.error(`[memini] could not migrate your namespace override to a server pin (HTTP ${res.status}); will retry next session`);
+    }
+  } catch (e) {
+    console.error(`[memini] could not migrate your namespace override to a server pin (${e?.message || e}); will retry next session`);
+  }
+}
+
+// The four env vars retired by the config-handshake redesign (see
+// docs/reference/env-vars.md): MEMINI_URL/MEMINI_TOKEN were back-compat
+// aliases for MEMINI_BASE_URL/MEMINI_API_KEY, MEMINI_MCP_URL never grew a
+// real use once the MCP endpoint became a fixed derivation, and
+// MEMINI_NAMESPACE_SCOPE moved server-side as the `namespace_scope` behavior
+// setting. All four are silently ignored everywhere now; a leftover export in
+// a shell rc looks like it should still do something, so SessionStart — the
+// one hook whose stderr a developer actually reads — says so once, here only
+// (not on every hot-path hook invocation).
+const REMOVED_VARS = ["MEMINI_URL", "MEMINI_TOKEN", "MEMINI_MCP_URL", "MEMINI_NAMESPACE_SCOPE"];
+
+function warnRemovedVars(env) {
+  const set = REMOVED_VARS.filter((k) => env[k] != null && env[k] !== "");
+  if (set.length === 0) return;
+  console.error(`[memini] ignored removed env vars: ${set.join(", ")} (see docs/reference/env-vars.md)`);
+}
 
 // formatMemory renders a single briefing entry to a one-line, prefixed bullet.
 // `reason` is a short tag the agent can read at a glance ("pinned", "durable
@@ -78,6 +144,9 @@ async function main() {
   // ${CLAUDE_PLUGIN_ROOT}) can locate mcp-headers.mjs. Cheap and idempotent.
   writePluginRoot();
 
+  // One-time hygiene notices, ahead of anything network-bound.
+  warnRemovedVars(process.env);
+
   const payload = parseJSON(await readStdin()) || {};
   const sessionId = payload.session_id || payload.sessionId;
   const cwd = payload.cwd || process.cwd();
@@ -101,6 +170,14 @@ async function main() {
 
   // Hygiene: drop session buffers left behind by sessions that never ended.
   cleanStaleBuffers(STALE_BUFFER_MS);
+
+  // Auto-migrate: a successful handshake reporting no pin is the one signal
+  // that both proves the server is reachable AND that this project hasn't
+  // been migrated yet (see migrateOverrideToPin's doc comment for why that
+  // makes this idempotent with no extra state).
+  if (ctx.handshake && ctx.handshake.namespace_source !== "pin") {
+    await migrateOverrideToPin(ctx, cwd);
+  }
 
   // Degraded: the server was unreachable, so `project` is a local-derived
   // guess, not the server's authority. Say so once — a wrong namespace here is
