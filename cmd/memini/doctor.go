@@ -95,6 +95,7 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	}
 	warnings += warnGlobalNamespacePin(out, cwd, envNS)
 	warnings += warnHomeUnset(out, cfg.Home)
+	warnings += warnRemovedEnvVars(out)
 	warnings += warnLingeringDeadFiles(out)
 	fmt.Fprintln(out) //nolint:errcheck
 
@@ -567,13 +568,17 @@ type remoteReadSetResponse struct {
 	Entries []remoteReadSetEntry `json:"entries"`
 }
 
-// serverBaseURL and serverAPIKey mirror the plugin hooks' env vars
-// (plugin/scripts/_shared.mjs REST_URL/SECRET): MEMINI_BASE_URL (alias
-// MEMINI_URL) and MEMINI_API_KEY (alias MEMINI_TOKEN). Doctor is a
-// store-only CLI otherwise; these are opt-in so `doctor` can prefer a
-// running server's own read-set resolution over reconstructing it locally.
-func serverBaseURL() string { return firstNonEmptyEnv("MEMINI_BASE_URL", "MEMINI_URL") }
-func serverAPIKey() string  { return firstNonEmptyEnv("MEMINI_API_KEY", "MEMINI_TOKEN") }
+// serverBaseURL and serverAPIKey mirror the plugin hooks' transport env vars
+// (plugin/scripts/_shared.mjs): MEMINI_BASE_URL and MEMINI_API_KEY. The old
+// MEMINI_URL/MEMINI_TOKEN aliases were retired by the config-handshake
+// redesign and are deliberately NOT honored here — a leftover legacy export
+// letting doctor's probe succeed would make it report healthy on exactly the
+// misconfiguration it exists to catch (warnRemovedEnvVars flags them instead).
+// Doctor is a store-only CLI otherwise; these are opt-in so `doctor` can
+// prefer a running server's own read-set resolution over reconstructing it
+// locally.
+func serverBaseURL() string { return firstNonEmptyEnv("MEMINI_BASE_URL") }
+func serverAPIKey() string  { return firstNonEmptyEnv("MEMINI_API_KEY") }
 
 // tiersLabelFromStrings renders a wire-format tier list the same way
 // doctorReadEntry.tiers does locally: an empty/omitted list is the request's
@@ -847,7 +852,41 @@ func warnLingeringDeadFiles(out io.Writer) int {
 		n += warnIfFileExists(out, filepath.Join(dir, "project-map.json"), "legacy cache; safe to delete")
 		n += warnIfFileExists(out, filepath.Join(dir, "namespace"), "legacy cache; safe to delete")
 	}
+	n += warnLingeringConfigJSON(out)
 	return n
+}
+
+// warnLingeringConfigJSON flags a leftover ~/.config/memini/config.json that
+// still carries the retired client-side tenancy fields (tenantRoots/template).
+// Unlike the existence-only checks above, config.json's mere presence is not
+// the signal — only those fields are — so this one reads and parses it. The
+// remediation mirrors namespace.mjs --migrate: this tenancy decision can only
+// be recreated by hand, as a per-key namespace_prefix or a per-project pin.
+func warnLingeringConfigJSON(out io.Writer) int {
+	dir := configDirFor()
+	if dir == "" {
+		return 0
+	}
+	path := filepath.Join(dir, "config.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	var cfg struct {
+		TenantRoots []json.RawMessage `json:"tenantRoots"`
+		Template    string            `json:"template"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return 0
+	}
+	if len(cfg.TenantRoots) == 0 && cfg.Template == "" {
+		return 0
+	}
+	warnf(out, "%s: contains tenantRoots/template (retired client-side tenancy; no longer read).", path)
+	note(out, "This tenancy decision cannot be auto-translated. Recreate it by hand, either as a")
+	note(out, "namespace_prefix on each API key (per-credential tenancy), or a per-project pin")
+	note(out, "(/memini:namespace <ns>, one per project).")
+	return 1
 }
 
 // warnIfFileExists is an os.Stat existence check, not a content read: a
@@ -858,6 +897,35 @@ func warnIfFileExists(out io.Writer, path, reason string) int {
 		return 0
 	}
 	warnf(out, "%s: %s", path, reason)
+	return 1
+}
+
+// removedEnvVars mirrors session-start's REMOVED_VARS
+// (plugin/scripts/session-start.mjs): the env vars the config-handshake
+// redesign retired. MEMINI_URL/MEMINI_TOKEN were the MEMINI_BASE_URL/
+// MEMINI_API_KEY back-compat aliases (dropped from serverBaseURL/serverAPIKey
+// above), MEMINI_MCP_URL lost its use once the MCP endpoint became a fixed
+// derivation, and MEMINI_NAMESPACE_SCOPE moved server-side. All are silently
+// ignored now — see docs/reference/env-vars.md.
+var removedEnvVars = []string{"MEMINI_URL", "MEMINI_TOKEN", "MEMINI_MCP_URL", "MEMINI_NAMESPACE_SCOPE"}
+
+// warnRemovedEnvVars flags any retired env var still exported. A leftover in a
+// shell rc does nothing but looks live; session-start says so on its stderr,
+// and doctor — the tool run precisely to catch such leftovers — surfaces it in
+// one combined WARN. It is a hygiene advisory, never a hard failure: the vars
+// are ignored regardless.
+func warnRemovedEnvVars(out io.Writer) int {
+	var set []string
+	for _, k := range removedEnvVars {
+		if strings.TrimSpace(os.Getenv(k)) != "" {
+			set = append(set, k)
+		}
+	}
+	if len(set) == 0 {
+		return 0
+	}
+	warnf(out, "ignored removed env vars: %s (retired by the config-handshake redesign).", strings.Join(set, ", "))
+	note(out, "These are silently ignored now; remove the leftover exports. See docs/reference/env-vars.md.")
 	return 1
 }
 

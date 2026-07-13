@@ -526,7 +526,6 @@ func TestResolveReadSetFallsBackWhenServerUnreachable(t *testing.T) {
 
 func TestResolveReadSetLocalWhenBaseURLUnset(t *testing.T) {
 	t.Setenv("MEMINI_BASE_URL", "")
-	t.Setenv("MEMINI_URL", "")
 	st := openTestStore(t)
 
 	entries, source, err := resolveReadSet(context.Background(), st, "acme", "")
@@ -822,6 +821,88 @@ func TestWarnLingeringDeadFiles(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWarnRemovedEnvVars(t *testing.T) {
+	// Start from a clean slate so a developer's real shell can't leak a set var
+	// into the "none set" case.
+	for _, k := range removedEnvVars {
+		t.Setenv(k, "")
+	}
+
+	t.Run("none set produces no warning", func(t *testing.T) {
+		var out bytes.Buffer
+		if n := warnRemovedEnvVars(&out); n != 0 {
+			t.Fatalf("warnings = %d, want 0, output:\n%s", n, out.String())
+		}
+	})
+
+	t.Run("set vars are named in one combined warning", func(t *testing.T) {
+		t.Setenv("MEMINI_URL", "http://old.example")
+		t.Setenv("MEMINI_NAMESPACE_SCOPE", "owner_repo")
+		var out bytes.Buffer
+		n := warnRemovedEnvVars(&out)
+		if n != 1 {
+			t.Fatalf("warnings = %d, want 1, output:\n%s", n, out.String())
+		}
+		got := out.String()
+		for _, want := range []string{"MEMINI_URL", "MEMINI_NAMESPACE_SCOPE", "env-vars.md"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q in:\n%s", want, got)
+			}
+		}
+		// Unset vars must not be named.
+		if strings.Contains(got, "MEMINI_TOKEN") || strings.Contains(got, "MEMINI_MCP_URL") {
+			t.Errorf("unset vars must not be named:\n%s", got)
+		}
+	})
+}
+
+func TestWarnLingeringConfigJSON(t *testing.T) {
+	write := func(t *testing.T, dir, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(dir, "memini"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "memini", "config.json"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("no config.json produces no warning", func(t *testing.T) {
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+		var out bytes.Buffer
+		if n := warnLingeringConfigJSON(&out); n != 0 {
+			t.Fatalf("warnings = %d, want 0, output:\n%s", n, out.String())
+		}
+	})
+
+	t.Run("config.json without tenantRoots/template produces no warning", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		write(t, dir, `{"somethingElse": true}`)
+		var out bytes.Buffer
+		if n := warnLingeringConfigJSON(&out); n != 0 {
+			t.Fatalf("warnings = %d, want 0, output:\n%s", n, out.String())
+		}
+	})
+
+	t.Run("tenantRoots/template is flagged with migration instructions", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		write(t, dir, `{"tenantRoots":[{"path":"~/dev","tenant":"work"}],"template":"{tenant}/{project}"}`)
+		var out bytes.Buffer
+		n := warnLingeringConfigJSON(&out)
+		if n != 1 {
+			t.Fatalf("warnings = %d, want 1, output:\n%s", n, out.String())
+		}
+		got := out.String()
+		for _, want := range []string{"config.json", "namespace_prefix"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q in:\n%s", want, got)
+			}
+		}
+	})
 }
 
 // --- handshake probe ---
