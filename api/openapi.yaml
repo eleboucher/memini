@@ -1478,6 +1478,18 @@ components:
             MEMINI_WRITE_DEDUP_SCORE with MEMINI_WRITE_DEDUP_ACTION="supersede"
             and the old memory was tombstoned in the background. The caller
             still receives the new memory.
+        reinforced:
+          type: boolean
+          description: >
+            Optional. Present only on POST /v1/memories responses when the fact
+            was already known and NO new memory was created: the existing memory
+            was strengthened (reinforced and corroborated) and is what this
+            response returns. Two paths reach it — the exact-restatement
+            fingerprint fast path, and MEMINI_WRITE_DEDUP_ACTION="coalesce" when
+            the incoming phrasing is not richer than the stored one. Without this
+            flag a 201 would read as "created", which is exactly what did not
+            happen, and the id would appear to belong to a memory the caller
+            wrote when it does not.
     ApiKeySource:
       type: string
       enum: [db, file]

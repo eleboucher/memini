@@ -845,6 +845,20 @@ type RememberInput struct {
 	// background supersede. The caller passes the address of a local bool.
 	// nil disables reporting.
 	AutoSuperseded *bool
+	// Reinforced (output-only) is set to true when the write did NOT create a new
+	// memory: the fact was already known, so the existing memory was strengthened
+	// (reinforced/corroborated) and returned instead.
+	//
+	// This matters because Remember returns a non-nil Memory on those paths, so a
+	// caller cannot otherwise tell "I stored a new fact" from "that was already
+	// known". Two paths reach it: the exact-restatement fingerprint fast path, and
+	// the write-dedup coalesce action when the incoming phrasing is not richer
+	// than the stored one. An agent told `stored: true` in either case believes it
+	// created something it did not, and the id it gets back belongs to a memory it
+	// did not write — which is exactly the memory it would then go and clobber.
+	//
+	// The caller passes the address of a local bool; nil disables reporting.
+	Reinforced *bool
 	// Author names the NAMED API key that authenticated this write (set by
 	// the REST/MCP handlers from the request principal — see
 	// internal/api/rest's principalFromContext / internal/apiauth.Principal).
@@ -1042,8 +1056,12 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	// Exact-restatement fast path: a fresh write whose normalized content already
 	// exists live in this tier reinforces that memory instead of duplicating it,
 	// before embedding so an exact repeat costs no embedder call.
+	//
+	// Report it. The memory returned here is one the caller did not write, and an
+	// agent told only "stored" would believe it created a new fact.
 	if existing, ok := s.fingerprintHit(ctx, in, tier); ok {
 		s.metrics.RememberResult("ok", string(tier))
+		markReinforced(in.Reinforced)
 		return existing, nil
 	}
 
@@ -1177,6 +1195,16 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	return m, nil
 }
 
+// markReinforced records that a write folded into an existing memory rather than
+// creating one. A free function, not an inline nil-check, so the branch does not
+// count against Remember's cyclomatic budget — it is already at the limit, and a
+// honesty flag is not worth an exemption.
+func markReinforced(flag *bool) {
+	if flag != nil {
+		*flag = true
+	}
+}
+
 // runSplitDedup runs the write-time dedup gate. Returns handled=true and the
 // existing memory when action=coalesce drops the write into it. Returns
 // handled=false when the write should proceed; supersedeID then names a
@@ -1205,6 +1233,11 @@ func (s *Service) runSplitDedup(
 	}
 	hit, hint, supersedeID := s.dedupCheck(ctx, m)
 	if hit != nil {
+		// action=coalesce folded the write into an existing memory: nothing new was
+		// stored, and `hit` is a memory the caller never wrote. Say so, or an agent
+		// reading `stored: true` believes it created a fact it did not, and holds an
+		// id belonging to a memory it might then overwrite.
+		markReinforced(in.Reinforced)
 		return true, hit, ""
 	}
 	if in.MergeHint != nil && hint != nil {

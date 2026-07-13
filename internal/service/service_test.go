@@ -316,6 +316,92 @@ func TestRecallQueryPrefix(t *testing.T) {
 	}
 }
 
+// TestRememberReportsReinforcedWhenNothingWasWritten pins the honesty contract on
+// the two paths where Remember returns a memory the caller did NOT write.
+//
+// Both return a non-nil Memory, so callers previously reported stored:true with an
+// id belonging to a pre-existing memory. An agent then believes it saved a new
+// fact, tells the user so, and holds an id it might go on to update or forget —
+// clobbering a memory it never created. The flag is the only way to tell the two
+// cases apart.
+func TestRememberReportsReinforcedWhenNothingWasWritten(t *testing.T) {
+	ctx := context.Background()
+
+	newSvc := func(t *testing.T, action service.WriteDedupAction) *service.Service {
+		t.Helper()
+		st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "svc.db"), dims)
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		return service.New(st, embedtest.New(dims),
+			service.WithSyncReinforce(), service.WithWriteDedup(0.95, action))
+	}
+
+	remember := func(t *testing.T, svc *service.Service, content string) (*memory.Memory, bool) {
+		t.Helper()
+		var reinforced bool
+		m, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: "alice", Content: content, Tier: memory.TierSemantic,
+			Reinforced: &reinforced,
+		})
+		if err != nil {
+			t.Fatalf("remember %q: %v", content, err)
+		}
+		return m, reinforced
+	}
+
+	t.Run("exact restatement (fingerprint fast path)", func(t *testing.T) {
+		svc := newSvc(t, service.WriteDedupOff) // off, so only the fingerprint path can fire
+
+		first, reinforced := remember(t, svc, "the user likes coffee")
+		if reinforced {
+			t.Fatal("a genuinely new memory must not report reinforced")
+		}
+
+		again, reinforced := remember(t, svc, "the user likes coffee")
+		if !reinforced {
+			t.Fatal("an exact restatement created no memory, so it must report reinforced")
+		}
+		if again.ID != first.ID {
+			t.Fatalf("restatement got id %q, want the existing %q", again.ID, first.ID)
+		}
+	})
+
+	t.Run("coalesce action", func(t *testing.T) {
+		svc := newSvc(t, service.WriteDedupCoalesce)
+
+		first, reinforced := remember(t, svc, "the user likes coffee")
+		if reinforced {
+			t.Fatal("a genuinely new memory must not report reinforced")
+		}
+
+		// Near-identical, and no richer, so coalesce folds it into the existing row.
+		dup, reinforced := remember(t, svc, "the user likes coffee")
+		if !reinforced {
+			t.Fatal("coalesce folded the write into an existing memory, so it must report reinforced")
+		}
+		if dup.ID != first.ID {
+			t.Fatalf("coalesced write got id %q, want the existing %q", dup.ID, first.ID)
+		}
+	})
+
+	t.Run("a distinct fact is not reinforced", func(t *testing.T) {
+		svc := newSvc(t, service.WriteDedupCoalesce)
+
+		if _, reinforced := remember(t, svc, "the user likes coffee"); reinforced {
+			t.Fatal("first write must not report reinforced")
+		}
+		second, reinforced := remember(t, svc, "deployments run on Tuesdays via the release script")
+		if reinforced {
+			t.Fatal("an unrelated fact was genuinely stored; reinforced must be false")
+		}
+		if second.ID == "" {
+			t.Fatal("expected a new memory")
+		}
+	})
+}
+
 func TestWriteDedupCoalescesNearIdentical(t *testing.T) {
 	ctx := context.Background()
 	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "svc.db"), dims)
