@@ -135,6 +135,11 @@ export function deriveLocalNamespace(
  * succeeded — and only then does the local derivation chain run. Every
  * non-handshake path is `degraded: true`: it is this client's best guess,
  * not a server-confirmed resolution.
+ *
+ * The local derivation chain always uses the default "repo" scope: whether an
+ * operator wants "owner_repo" is a ClientSettings.namespace_scope value this
+ * client only ever learns FROM a handshake, so a degraded fallback with no
+ * handshake to consult has no scope opinion to apply.
  */
 export function resolveNamespace(
   boot: Bootstrap,
