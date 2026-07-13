@@ -303,6 +303,9 @@ async fn remember(
             if outcome.auto_superseded {
                 value["auto_superseded"] = Value::Bool(true);
             }
+            if outcome.reinforced {
+                value["reinforced"] = Value::Bool(true);
+            }
             (StatusCode::CREATED, Json(value))
         }
         None => (
@@ -1640,6 +1643,20 @@ mod tests {
         let body = json(response).await;
         assert_eq!(body["tier"], "semantic");
         assert_eq!(body["namespace"], "default");
+        let repeated = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/memories")
+                    .header("authorization", "Bearer secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"content":"The project uses Postgres and by default the service runs migrations.","tier":"semantic"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(json(repeated).await["reinforced"], true);
         let activity = app
             .oneshot(
                 Request::get("/v1/activity")
@@ -1859,6 +1876,19 @@ mod tests {
         let remembered = json(remembered).await;
         assert_eq!(remembered["result"]["structuredContent"]["stored"], true);
         assert_eq!(remembered["result"]["structuredContent"]["id"], "mcp-shape");
+        let repeated = app
+            .clone()
+            .oneshot(call(
+                5,
+                "memory_remember",
+                json!({"content":"The release database is PostgreSQL.","tier":"semantic"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            json(repeated).await["result"]["structuredContent"]["reinforced"],
+            true
+        );
 
         let recalled = app
             .clone()

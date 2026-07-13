@@ -3,12 +3,13 @@
   "kind": "memory",
   "name": "memini",
   "description": "Persistent cross-session memory for OpenClaw via memini.",
-  "version": "0.6.8",
+  "version": "0.6.9",
   "contracts": {
-    "tools": ["memory_recall", "memory_list", "memory_remember", "memory_forget"]
+    "tools": ["memory_recall", "memory_briefing", "memory_list", "memory_remember", "memory_forget"]
   },
   "toolMetadata": {
     "memory_recall": { "optional": true },
+    "memory_briefing": { "optional": true },
     "memory_list": { "optional": true },
     "memory_remember": { "optional": true },
     "memory_forget": { "optional": true }
@@ -28,9 +29,11 @@
       "fallback_on_error": { "type": "boolean" },
       "timeout_ms": { "type": "number" },
       "expose_tools": { "type": "boolean" },
-    "recall_limit": { "type": "number" },
-    "recall_max_tokens": { "type": "number" },
-    "namespace_prefix": { "type": "string" }
+      "recall_limit": { "type": "number" },
+      "recall_max_tokens": { "type": "number" },
+      "min_capture_chars": { "type": "number" },
+      "namespace_prefix": { "type": "string" },
+      "home": { "type": "string" }
     }
   },
   "activation": {

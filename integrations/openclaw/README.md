@@ -38,7 +38,7 @@ cd integrations/openclaw/plugin
 npm install
 npm run build
 mkdir -p ~/.openclaw/extensions/memini
-cp -r dist openclaw.plugin.json package.json plugin.yaml pnpm-workspace.yaml ~/.openclaw/extensions/memini/
+cp -r dist openclaw.plugin.json package.json plugin.yaml ~/.openclaw/extensions/memini/
 ```
 
 Claim the memory slot in `~/.openclaw/openclaw.json`:
@@ -69,7 +69,7 @@ Claim the memory slot in `~/.openclaw/openclaw.json`:
 }
 ```
 
-The `tools.allow` allowlist is required for the three explicit tools to be sent
+The `tools.allow` allowlist is required for the four explicit tools to be sent
 to the model — they're declared `optional: true` in the manifest so OpenClaw
 won't auto-expose them.
 
@@ -86,6 +86,37 @@ Set `home` (or the `MEMINI_HOME` env var, `config` wins) to the caller's
 personal namespace — every request then carries `X-Memini-Home`, which server-side
 `visibility: "personal"` writes and the read-set's home leg land in. Unset
 means no home leg; there is no derivation, just this explicit config/env pair.
+
+### Namespace resolution
+
+```
+1. project override      ~/.config/memini/overrides.json
+2. MEMINI_NAMESPACE
+3. the `namespace` config value
+4. "openclaw"            the default
+```
+
+Then `namespace_prefix`, `namespace_template` and per-agent nesting apply on top,
+exactly as before.
+
+Note what is _not_ in that list: OpenClaw does **no git or cwd derivation**, and
+that is deliberate. It is a gateway harness, where the working directory is often
+meaningless or absent, so the default is the literal `openclaw` rather than a
+guess at a project. Set `namespace` (or an override) when you want per-project
+isolation.
+
+The override is shared with every other memini client, so one set in Claude Code
+applies here too, and `memini doctor` reports the same value. It beats
+`MEMINI_NAMESPACE` on purpose: a globally exported `MEMINI_NAMESPACE` is exactly
+the problem an override exists to solve. See
+[env-vars](../../docs/reference/env-vars.md#the-overrides-file) for the format.
+
+### Commands
+
+| Command            | What it does                                                         |
+| ------------------ | -------------------------------------------------------------------- |
+| `memini:status`    | Effective settings, resolved namespace **with provenance**, warnings |
+| `memini:namespace` | Show, set, or clear the namespace override for this project          |
 
 Recall shaping (both optional, matching the opencode/Claude Code plugins):
 `recall_limit` (max memories per turn, default **3**) and `recall_max_tokens`
@@ -150,22 +181,44 @@ to separate already-pooled agents, see `memini namespace split` below.
 
 ### Explicit tools (`expose_tools`)
 
-By default the plugin only fills the memory slot — recall and capture are
-automatic, with no tool calls. Set `"expose_tools": true` in the plugin config to
-_also_ register explicit tools the agent can call on demand, alongside the slot:
+**On by default as of 0.6.9** (it was opt-in before). The plugin fills the memory
+slot — recall and capture are automatic — and _also_ registers explicit tools the
+agent can call on demand. Set `"expose_tools": false` to restore the slot-only
+surface.
 
-- **`memory_recall`** — search, with optional `tags` / `metadata` filters. A
-  `degraded: "keyword_only"` field in the result means semantic search was
-  unavailable and results came from keyword matching alone.
+The default flipped because the slot cannot express what the tools carry: `scope`
+(how wide to read), `visibility` (who should know a fact), and the session
+briefing with its ancestor `Scope:` line. With the tools off, an agent on this
+harness simply does not have those capabilities — its only fallback is the
+curl-based [memory skill](../skills/memory/SKILL.md), which sends the _base_
+namespace and so cannot see per-agent memory at all.
+
+- **`memory_briefing`** — query-less session-start orientation: pinned context,
+  durable facts, how-to procedures, recent activity, plus a `scope_header`
+  (`Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2)`) naming
+  the ancestor chain this namespace inherits from. Those ancestor names are what
+  `visibility` accepts — the agent reads them, never guesses them.
+- **`memory_recall`** — search, with optional `tags` / `metadata` filters and
+  `scope`: `project` (this project only), `full` (default — plus ancestors, the
+  user's personal namespace, and links), or `everywhere` (plus nested
+  sub-projects). Results carry `from` provenance; an absent `from` means the
+  memory is this project's own. A `degraded: "keyword_only"` field means semantic
+  search was unavailable and results came from keyword matching alone.
 - **`memory_list`** — query-less browse by tier / tags / metadata category
-  (e.g. "all procedural memories" or "everything categorized `bug_fixes`"; see
-  `docs/categories.md`).
-- **`memory_remember`** — store a fact, with optional `tags` and a `category`.
+  (e.g. "all procedural memories" or "everything categorized `bug_fixes`").
+- **`memory_remember`** — store a fact, with optional `tags`, a `category`, and
+  `visibility`: `project` (default), `personal` (follows the user everywhere), or
+  an ancestor name read off the briefing's Scope line. An unrecognized name is
+  rejected with an error listing the valid chain. Episodic/working writes always
+  stay in the project regardless. To correct an existing memory, pass its `id`
+  (from recall/list) — the write updates it in place (`POST /v1/memories` upserts
+  by id). A `reinforced: true` result means the fact was already known and no new
+  memory was created.
 - **`memory_forget`** — permanently delete a memory by `id` (from recall/list)
   when it's wrong, outdated, or poisoned. There is no `memory_update` here —
   this plugin talks to memini over REST, which has no partial-update
-  endpoint; forget the stale memory and remember the corrected version
-  instead.
+  endpoint; re-remember with the memory's `id` to correct it, and reserve
+  forget for memories that shouldn't exist at all.
 
 Each tool resolves the same per-agent namespace as the hooks, and is registered
 `optional`. Parameter schemas use [typebox](https://github.com/sinclairzx81/typebox),

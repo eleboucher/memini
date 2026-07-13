@@ -55,7 +55,7 @@ Pass options inline via the `[name, options]` form:
 | `recall_min_score`  | `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                     | fused-score floor (>=) sent as `min_score` to `/v1/search`                                                                             |
 | `timeout_ms`        | `MEMINI_TIMEOUT_MS`              | `30000`                 | per-request timeout                                                                                                                    |
 | `fallback_on_error` | `MEMINI_FALLBACK`                | on                      | `false` surfaces errors instead of degrading silently                                                                                  |
-| —                   | `MEMINI_INJECT_LABELS`           | —                       | comma-separated label toggles for each bullet: `tier`, `confidence`, `age`                                                             |
+| —                   | `MEMINI_INJECT_LABELS`           | —                       | comma-separated label toggles for each bullet: `tier`, `confidence`, `age`, `reason`                                                   |
 | —                   | `MEMINI_API_KEY`                 | —                       | bearer token, if memini needs auth (env only — secret; alias: `MEMINI_TOKEN`)                                                          |
 | —                   | `MEMINI_REQUIRE_HTTPS`           | —                       | `1` refuses to send the token over plaintext HTTP                                                                                      |
 
@@ -70,6 +70,44 @@ worktree basename and sends it as the `X-Memini-Namespace` header, so scoping
 stays correct even against a remote memini (the HTTP MCP wire below can't — a
 remote server has no access to your cwd). Set it to share one memory pool with
 your other agents.
+
+If `$XDG_CONFIG_HOME/memini/config.json` (default `~/.config/memini/config.json`)
+exists, the unset namespace is instead rendered from its `template` (default
+`{tenant}/{project}/{agent}`): `{tenant}` from the `tenantRoots` entry whose
+`path` contains the cwd, `{project}` from the git repo, `{agent}` from
+`MEMINI_AGENT`; unresolved segments are dropped. The Hermes and Pi integrations
+share this resolver, so one config file scopes them all identically.
+
+### Namespace resolution
+
+In full, in order: a **per-project override** in
+`$XDG_CONFIG_HOME/memini/overrides.json` > the `namespace` option /
+`MEMINI_NAMESPACE` > the config template above > the git worktree basename.
+
+The override wins over both deliberately. A globally exported `MEMINI_NAMESPACE`
+— a shell rc, or a fish universal variable — pins every repo on the machine to
+one namespace (as does a `namespace` option in a global
+`~/.config/opencode/opencode.json`), and if either won, setting an override would
+silently do nothing on exactly the machines that need one. The file is keyed by
+git toplevel, so an override set at the top of a repo applies from any
+subdirectory; it is the same file the Claude Code plugin writes and `memini
+doctor` reads; and a malformed one degrades to automatic resolution rather than
+breaking a turn.
+
+### The `memini_status` tool
+
+The plugin registers one tool, `memini_status`: read-only, no arguments. It
+reports the namespace in force and where it came from, what it would be _without_
+the override and without the env pin, the connection settings (the API key
+fingerprinted, never printed), and warnings — a global `MEMINI_NAMESPACE` pin, a
+bearer token crossing plaintext HTTP, an override you forgot you set.
+
+There is no `/memini:status` slash command: opencode's plugin contract registers
+tools, not commands, and this plugin does not invent an API it does not have.
+Setting or clearing an override is likewise not exposed here — declaring a tool
+argument requires a zod schema, and this plugin ships dependency-free — so use
+`/memini:namespace` from the Claude Code plugin, or edit `overrides.json`
+directly; all harnesses read the same file.
 
 ### Tests
 

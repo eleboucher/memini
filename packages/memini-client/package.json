@@ -1,0 +1,25 @@
+{
+  "name": "@memini/client",
+  "version": "0.1.0",
+  "description": "Shared client core for memini integrations — namespace override, effective-settings introspection with provenance, redaction, and harness project-dir recovery.",
+  "license": "MIT",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "bundle": "node scripts/bundle.mjs",
+    "test": "pnpm exec tsc -p tsconfig.test.json && node --test dist/test/*.test.js",
+    "typecheck": "tsc -p tsconfig.test.json"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^7.0.0"
+  }
+}

@@ -819,9 +819,15 @@ async fn shutdown() {
 async fn doctor(config: &Config, stack: &Stack, fix: bool, scrub: bool, yes: bool) -> Result<()> {
     stack.store.ping().await?;
     let cwd = std::env::current_dir().unwrap_or_default();
+    let project_override = memini_config::namespace::namespace_override(Some(&cwd));
     let (plugin_namespace, plugin_source) =
         memini_config::namespace::resolve_plugin_namespace(Some(&cwd));
     println!("Namespace resolution (cwd: {})", cwd.display());
+    if let Some(namespace) = &project_override {
+        let path = memini_config::namespace::overrides_path()
+            .map_or_else(|| "<unknown>".into(), |path| path.display().to_string());
+        println!("  project override: {namespace:?} ({path})");
+    }
     println!(
         "  server default:  {:?} ({:?})",
         config.default_namespace, config.namespace_source

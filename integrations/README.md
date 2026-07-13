@@ -127,7 +127,9 @@ headers.
 The native plugins (opencode, Pi, Hermes, OpenClaw, Open WebUI, and the
 Claude Code plugin) share the same recall defaults: **recall and capture
 on, `recall_limit=3`, recall token budget uncapped**, plain bullet
-formatting (set `MEMINI_INJECT_LABELS=tier` to add a tier prefix). Each
+formatting (set `MEMINI_INJECT_LABELS=tier` to add a tier prefix — supported
+by opencode, Pi, Hermes, and OpenClaw; the Open WebUI filter always emits
+plain bullets). Each
 auto-captures the completed user→assistant turn as episodic memory and
 excludes its **own** session's captures from recall so it never echoes
 the live conversation back.
@@ -136,8 +138,8 @@ Where a host exposes explicit memory tools, the set is the same:
 `memory_recall`, `memory_list`, `memory_remember`, and **`memory_forget`**
 (permanently delete a wrong/outdated/poisoned memory by its id). Hermes
 and Open WebUI (Tools module) always expose them; Pi registers them natively via
-`pi.registerTool`; OpenClaw exposes them behind `expose_tools: true`; Claude
-Code / Codex get them from the MCP server. **opencode**
+`pi.registerTool`; OpenClaw registers them by default (set `expose_tools: false`
+to opt out); Claude Code / Codex get them from the MCP server. **opencode**
 is the exception: its native plugin is deliberately tool-free (automatic recall +
 capture only), so to give it `memory_forget` (or any tool) wire the memini MCP
 server alongside the plugin.
@@ -155,7 +157,7 @@ REST upsert replaces the record with what you send).
 Two host-specific differences remain by design:
 
 - **Relevance floor (`MEMINI_INJECT_RECALL_MIN_SCORE`)** is honored by
-  opencode and Hermes but not OpenClaw/Open WebUI. It defaults to `0`
+  opencode, Pi, and Hermes but not OpenClaw/Open WebUI. It defaults to `0`
   (off) everywhere, so default behavior is identical; benchmarking found
   no score floor reliably separates signal from noise with the default
   embedder (use `recall_limit` to bound volume instead), which is why

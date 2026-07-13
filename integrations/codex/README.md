@@ -11,6 +11,11 @@ codex mcp add memini -- memini mcp
 
 **Remote (Streamable HTTP)** — recent Codex; see [`config.remote.toml`](config.remote.toml).
 
+**As a plugin** — memini's [`plugin/`](../../plugin/) directory carries a
+`.codex-plugin/` manifest, so you can mount it as a Codex plugin instead of
+registering the MCP server by hand; that also brings the hooks + skills layer
+(see the [integrations overview](../README.md)).
+
 Verify:
 
 ```sh
@@ -33,7 +38,10 @@ server registration above:
   (default 20) newest-first; page past it with `offset`.
 - **`memory_get`** — fetch one memory with full metadata, tags, and
   timestamps by ID.
-- **`memory_remember`** — store a fact, with optional `tags` and a `category`.
+- **`memory_history`** — trace a memory's supersession lineage by ID: the
+  fact plus what it superseded and what replaced it, oldest-first, including
+  tombstoned rows.
+- **`memory_remember`** — store a fact, with optional `tags` and `metadata`.
   Set `metadata.category` on writes to browse by subject later.
 - **`memory_update`** — partial update of an existing memory by ID (only
   provided fields change); MCP-only, so this is the one tool in the set that

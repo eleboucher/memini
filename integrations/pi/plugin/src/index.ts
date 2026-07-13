@@ -18,14 +18,30 @@
  * MEMINI_API_KEY stay in the environment. See ../README.md for the table.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { resolveNamespace } from "@memini/namespace-resolver";
+import {
+  clearOverride,
+  defaultOverridesPath,
+  describeSettings,
+  normalizeNamespace,
+  overrideKey,
+  readOverride,
+  redactValue,
+  validateNamespace,
+  writeOverride,
+  type NamespaceSource,
+  type ResolveOpts,
+} from "@memini/client";
 
 const DEFAULT_BASE_URL = "http://localhost:8080";
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_RECALL_LIMIT = 3;
 const DEFAULT_NAMESPACE = "pi";
+// The status probes are diagnostics, not the hot path: fail fast rather than
+// hang a slash command behind the 30s request timeout.
+const STATUS_TIMEOUT_MS = 4000;
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 function envBool(value: string | undefined, fallback: boolean): boolean {
@@ -112,30 +128,74 @@ export interface ResolvedConfig {
   fallback_on_error: boolean;
 }
 
-// resolveConfig builds the config from env vars (Claude Code plugin style),
-// deriving the namespace from cwd when MEMINI_NAMESPACE is unset. Exported for
-// testing.
-export function resolveConfig(env: NodeJS.ProcessEnv, cwd?: string): ResolvedConfig {
-  const e = env || {};
+export interface NamespaceResolution {
+  namespace: string;
+  source: NamespaceSource;
+}
+
+// The shared resolver reports "git"; the client's provenance vocabulary
+// distinguishes the remote from the toplevel, and the resolver prefers the
+// remote. Every other value is already common to both.
+function resolverSource(source: string): NamespaceSource {
+  return source === "git" ? "git-remote" : (source as NamespaceSource);
+}
+
+/**
+ * resolveProjectNamespace resolves the namespace the way *this* harness does,
+ * with provenance: override > MEMINI_NAMESPACE > config/git/cwd (the shared
+ * resolver) > the "pi" default.
+ *
+ * The override sits ABOVE the env var on purpose. A globally exported
+ * MEMINI_NAMESPACE (a shell rc, or a fish universal variable) pins every repo on
+ * the machine to one namespace; if the env beat the override, /memini:namespace
+ * would silently do nothing on exactly the machines that most need it.
+ *
+ * `opts.ignoreOverride` is what lets describeSettings ask the counterfactuals
+ * ("what would this be without the override?"). The override lives in a file, so
+ * no amount of env-doctoring would strip it — hence the explicit flag. Exported
+ * for testing.
+ */
+export function resolveProjectNamespace(
+  env: NodeJS.ProcessEnv,
+  cwd?: string,
+  opts: ResolveOpts = {},
+): NamespaceResolution {
+  const e = (env || {}) as Record<string, string | undefined>;
+
+  if (!opts.ignoreOverride && cwd) {
+    const override = readOverride(cwd, { env: e });
+    if (override) return { namespace: override.namespace, source: "override" };
+  }
+
   const nsEnv = (e.MEMINI_NAMESPACE || "").trim();
-  let namespace: string;
   if (nsEnv) {
-    // MEMINI_NAMESPACE wins and is used raw-trimmed (the server validates the
-    // header). Routing it through sanitizeNamespacePath would alter an explicit
-    // value — the canonical resolver returns it untouched.
-    namespace = nsEnv;
-  } else if (cwd) {
-    const { namespace: resolvedNs } = resolveNamespace({
+    // MEMINI_NAMESPACE is used raw-trimmed (the server validates the header).
+    // Routing it through sanitizeNamespacePath would alter an explicit value —
+    // the canonical resolver returns it untouched.
+    return { namespace: nsEnv, source: "env" };
+  }
+
+  if (cwd) {
+    const { namespace: resolvedNs, source } = resolveNamespace({
       cwd,
       env: e as Record<string, string>,
       integration: "pi",
     });
     // Per-segment sanitize: resolver output may be a tenant path (work/memini).
-    namespace = sanitizeNamespacePath(resolvedNs) || DEFAULT_NAMESPACE;
-  } else {
-    // No explicit namespace and no cwd to resolve against.
-    namespace = DEFAULT_NAMESPACE;
+    const sanitized = sanitizeNamespacePath(resolvedNs);
+    if (sanitized) return { namespace: sanitized, source: resolverSource(source) };
   }
+
+  // No override, no explicit namespace, and no cwd to resolve against.
+  return { namespace: DEFAULT_NAMESPACE, source: "default" };
+}
+
+// resolveConfig builds the config from env vars (Claude Code plugin style),
+// deriving the namespace from the override / env / cwd chain above. Exported for
+// testing.
+export function resolveConfig(env: NodeJS.ProcessEnv, cwd?: string): ResolvedConfig {
+  const e = env || {};
+  const { namespace } = resolveProjectNamespace(e, cwd);
   const recall_limit = (() => {
     const n = Number(e.MEMINI_RECALL_LIMIT);
     return Number.isFinite(n) && n >= 0 ? n : DEFAULT_RECALL_LIMIT;
@@ -146,7 +206,7 @@ export function resolveConfig(env: NodeJS.ProcessEnv, cwd?: string): ResolvedCon
   const homeEnv = (e.MEMINI_HOME || "").trim();
   return {
     base_url: e.MEMINI_BASE_URL || e.MEMINI_URL || DEFAULT_BASE_URL,
-    // namespace is already resolved above (raw-trimmed on the env path,
+    // namespace is already resolved above (verbatim on the override/env paths,
     // per-segment sanitized on the resolver path); re-sanitizing here would
     // flatten tenant separators.
     namespace: namespace || DEFAULT_NAMESPACE,
@@ -273,6 +333,13 @@ interface MeminiClient {
   postJson: (path: string, payload: any) => Promise<any>;
   getJson: (path: string) => Promise<any>;
   deleteJson: (path: string) => Promise<any>;
+  // postJsonResult is postJson without the degrade-to-null: it hands back the
+  // server's own error text. The explicit write tool uses it, because a rejected
+  // write is information the model can act on — a `visibility` naming an unknown
+  // ancestor errors listing the valid chain, which is how the model learns the
+  // topology. Swallowing that into `success: false` leaves it nothing to correct
+  // against. It still never throws.
+  postJsonResult: (path: string, payload: any) => Promise<{ ok: boolean; data?: any; error?: string }>;
 }
 
 function createClient(cfg: ResolvedConfig, warn: (m: string) => void): MeminiClient {
@@ -316,10 +383,39 @@ function createClient(cfg: ResolvedConfig, warn: (m: string) => void): MeminiCli
     }
   }
 
+  // See MeminiClient.postJsonResult. Never throws — a failure is reported as
+  // {ok:false, error} regardless of fallback_on_error, so a tool call degrades
+  // into an answer rather than an exception in the host.
+  async function requestResult(
+    method: string,
+    path: string,
+    body?: any,
+  ): Promise<{ ok: boolean; data?: any; error?: string }> {
+    try {
+      guard(baseUrl, secret);
+      const res = await fetch(`${baseUrl}${path}`, {
+        method,
+        headers: headers(body ? { "Content-Type": "application/json" } : undefined),
+        body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(cfg.timeout_ms),
+      });
+      if (!res.ok) {
+        const detail = (await res.text().catch(() => "")).trim();
+        warn(`memini ${method} ${path} failed: ${res.status} ${detail}`);
+        return { ok: false, error: detail || `HTTP ${res.status}` };
+      }
+      return { ok: true, data: await res.json().catch(() => ({})) };
+    } catch (error) {
+      warn(`memini: ${String(error)}`);
+      return { ok: false, error: String(error) };
+    }
+  }
+
   return {
     postJson: (path, payload) => request("POST", path, payload),
     getJson: (path) => request("GET", path),
     deleteJson: (path) => request("DELETE", path),
+    postJsonResult: (path, payload) => requestResult("POST", path, payload),
   };
 }
 
@@ -377,8 +473,313 @@ export function buildTurnContent(userText: string, assistantText: string): strin
   return `${String(userText).slice(0, 1000)}\n\n${String(assistantText).slice(0, 3000)}`;
 }
 
-const TOOL_NAMES = ["memory_recall", "memory_list", "memory_remember", "memory_forget"];
+// --- /memini:status + /memini:namespace --------------------------------------
+
+// statusGet is the diagnostics-only GET: it never degrades into the client's
+// warn-and-null path, because status must distinguish "the server said no" from
+// "the request never happened". `quiet` is for probes whose failure is a
+// legitimate answer rather than a fault — /healthz behind an ingress that routes
+// only /v1 and /mcp 404s, which means "not exposed", not "server down".
+async function statusGet(
+  cfg: ResolvedConfig,
+  namespace: string,
+  path: string,
+  warn: (m: string) => void,
+  quiet = false,
+): Promise<any> {
+  const baseUrl = String(cfg.base_url).replace(/\/+$/, "");
+  const secret = process.env.MEMINI_API_KEY || process.env.MEMINI_TOKEN;
+  const headers: Record<string, string> = { "X-Memini-Namespace": namespace };
+  if (secret) headers.Authorization = `Bearer ${secret}`;
+  if (cfg.home) headers["X-Memini-Home"] = cfg.home;
+  try {
+    const res = await fetch(`${baseUrl}${path}`, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      if (!quiet) warn(`GET ${path} -> ${res.status}`);
+      return null;
+    }
+    return await res.json();
+  } catch (error) {
+    if (!quiet) warn(`GET ${path} failed: ${String(error)}`);
+    return null;
+  }
+}
+
+interface ServerReport {
+  reachable: boolean;
+  latencyMs: number;
+  readSet?: any;
+  version?: string;
+  status?: string;
+  deps?: any;
+  healthExposed?: boolean;
+}
+
+// fetchServer probes the server the way the plugin actually uses it.
+//
+// Reachability is decided by /v1/namespaces/read-set, not /healthz: a remote
+// memini typically sits behind an ingress that routes only /v1 and /mcp, so
+// /healthz 404s while the server is perfectly healthy. The read set doubles as
+// the probe — it is the server's own introspection of which namespaces a plain
+// recall draws from, so it cannot drift from what recall really does, and status
+// needs it anyway.
+async function fetchServer(cfg: ResolvedConfig, namespace: string, warn: (m: string) => void): Promise<ServerReport> {
+  const started = Date.now();
+  const readSet = await statusGet(cfg, namespace, "/v1/namespaces/read-set", warn);
+  const out: ServerReport = {
+    reachable: readSet != null,
+    latencyMs: Date.now() - started,
+    readSet,
+  };
+  // Dependency detail, when the deployment exposes it. Quiet: a 404 here means
+  // "not routed", not "broken".
+  const health = await statusGet(cfg, namespace, "/healthz?verbose=1", warn, true);
+  if (health) {
+    out.version = health.version;
+    out.status = health.status;
+    out.deps = health.deps;
+  } else {
+    out.healthExposed = false;
+  }
+  return out;
+}
+
+const pad = (s: unknown, n: number) => String(s).padEnd(n);
+
+// renderStatus formats the report. Exported for testing — the assertion that
+// matters (a token is never printed in full) is on this string.
+export function renderStatus(settings: any, cfg: ResolvedConfig, server: ServerReport): string {
+  const ns = settings.namespace;
+  const L: string[] = [];
+
+  L.push(`memini — effective settings (pi)`);
+  L.push(`cwd: ${settings.cwd}`);
+  L.push("");
+
+  // Namespace first: it is what people actually come here to find out.
+  L.push(`NAMESPACE`);
+  L.push(`  ${pad("effective", 28)} ${pad(ns.effective, 34)} <- ${ns.source}`);
+  if (ns.override) {
+    L.push(
+      `  ${pad("without the override", 28)} ${pad(ns.withoutOverride.namespace, 34)} <- ${ns.withoutOverride.source}`,
+    );
+  }
+  if (ns.derived.namespace !== ns.effective) {
+    L.push(`  ${pad("git/cwd would give", 28)} ${pad(ns.derived.namespace, 34)} <- ${ns.derived.source}`);
+  }
+  L.push(`  ${pad("home (personal)", 28)} ${ns.home || "(unset)"}`);
+  L.push("");
+
+  // Connection + namespace inputs, from the shared knob table (already redacted).
+  // The capture/injection knobs the table also carries are the Claude Code hooks'
+  // — listing them here would imply this extension honors them, and it does not.
+  const groups: [string, string[]][] = [
+    ["CONNECTION", ["MEMINI_BASE_URL", "MEMINI_API_KEY", "MEMINI_REQUIRE_HTTPS"]],
+    ["NAMESPACE INPUTS", ["MEMINI_NAMESPACE", "MEMINI_NAMESPACE_SCOPE", "MEMINI_AGENT", "MEMINI_HOME"]],
+  ];
+  for (const [group, names] of groups) {
+    const rows = (settings.settings || []).filter((s: any) => names.includes(s.name));
+    if (!rows.length) continue;
+    L.push(group);
+    for (const r of rows) {
+      const origin = r.source === "env" ? `<- env` : `(default)`;
+      L.push(`  ${pad(r.name.replace(/^MEMINI_/, "").toLowerCase(), 28)} ${pad(r.value, 34)} ${origin}`);
+    }
+    L.push("");
+  }
+
+  // This extension's own knobs: they are not in the shared table (the hooks do
+  // not have them), and "recall is off" is exactly the kind of finding a status
+  // command exists to surface. The bearer is the one the requests actually
+  // carry — redacted, since a settings dump is the likeliest place a token gets
+  // pasted into an issue.
+  const secret = process.env.MEMINI_API_KEY || process.env.MEMINI_TOKEN || "";
+  L.push(`EXTENSION`);
+  L.push(`  ${pad("recall", 28)} ${cfg.recall ? "on" : "off"}`);
+  L.push(`  ${pad("capture", 28)} ${cfg.capture ? "on" : "off"}`);
+  L.push(`  ${pad("recall_limit", 28)} ${cfg.recall_limit}`);
+  L.push(`  ${pad("timeout_ms", 28)} ${cfg.timeout_ms}`);
+  L.push(`  ${pad("bearer", 28)} ${secret ? redactValue(secret) : "(none)"}`);
+  L.push("");
+
+  L.push(`SERVER`);
+  if (!server.reachable) {
+    L.push(`  ${pad("reachable", 28)} NO — could not reach ${cfg.base_url}`);
+  } else {
+    const ver = server.version ? `, ${server.version}` : "";
+    L.push(`  ${pad("reachable", 28)} yes (${server.latencyMs}ms${ver})`);
+    const d = server.deps || {};
+    if (d.store) L.push(`  ${pad("store", 28)} ${d.store.ok ? "ok" : `FAILING — ${d.store.last_error || "?"}`}`);
+    if (d.embedder) {
+      L.push(`  ${pad("embedder", 28)} ${d.embedder.ok ? "ok" : `FAILING — ${d.embedder.last_error || "?"}`}`);
+    }
+    if (server.healthExposed === false) {
+      L.push(`  ${pad("dependency detail", 28)} unavailable (/healthz not routed — normal behind an ingress)`);
+    }
+  }
+  L.push("");
+
+  if (server.readSet?.entries?.length) {
+    L.push(`READ SET for "${ns.effective}" — where a plain recall looks`);
+    L.push(`  ${pad("NAMESPACE", 34)} ${pad("ORIGIN", 12)} TIERS`);
+    for (const e of server.readSet.entries) {
+      const tiers = Array.isArray(e.tiers) && e.tiers.length ? e.tiers.join(",") : "all";
+      L.push(`  ${pad(e.namespace, 34)} ${pad(e.origin, 12)} ${tiers}`);
+    }
+    L.push("");
+  }
+
+  L.push(`PATHS`);
+  L.push(`  ${pad("overrides", 28)} ${settings.paths.overrides}`);
+  L.push("");
+
+  if (settings.warnings.length) {
+    L.push(`WARNINGS`);
+    for (const w of settings.warnings) {
+      L.push(`  [${w.level === "warn" ? "!" : "i"}] ${w.code}: ${w.message}`);
+      if (w.fix) L.push(`      fix: ${w.fix}`);
+    }
+  } else {
+    L.push(`No problems detected.`);
+  }
+
+  return L.join("\n");
+}
+
+/**
+ * registerMeminiCommands wires /memini:status and /memini:namespace.
+ *
+ * `cfg` is mutated in place on a namespace change rather than re-created: the
+ * REST client reads cfg.namespace on every request, so an override applies to
+ * the very next recall/capture instead of waiting for a pi restart. A command
+ * that appears to succeed and then does nothing until you restart is worse than
+ * no command at all.
+ *
+ * Exported for testing.
+ */
+export function registerMeminiCommands(pi: ExtensionAPI, cfg: ResolvedConfig, warn: (m: string) => void): void {
+  const show = (content: string) => {
+    // Same channel the recall injection uses: a custom message, displayed, no
+    // turn triggered.
+    pi.sendMessage({ customType: "memini-status", content, display: true });
+  };
+
+  pi.registerCommand("memini:status", {
+    description: "Show memini's effective settings: namespace + provenance, connection, server read set",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      try {
+        const cwd = ctx.cwd || process.cwd();
+        const settings = describeSettings({
+          cwd,
+          env: process.env as Record<string, string | undefined>,
+          // Hand describeSettings THIS harness's resolver, so what it reports is
+          // what the extension actually does. The opts pass-through carries
+          // ignoreOverride, which is how the counterfactual lines see past an
+          // override (it lives in a file, so no env-doctoring would remove it).
+          resolve: (env, o) => resolveProjectNamespace(env as NodeJS.ProcessEnv, cwd, o),
+        });
+        const server = await fetchServer(cfg, settings.namespace.effective, warn);
+        show(renderStatus(settings, cfg, server));
+      } catch (error) {
+        // A command must never throw into the host.
+        ctx.ui.notify(`memini: status failed: ${String(error)}`, "error");
+      }
+    },
+  });
+
+  pi.registerCommand("memini:namespace", {
+    description: "Show, set, or --clear the memini namespace override for this project",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      try {
+        const cwd = ctx.cwd || process.cwd();
+        const arg = String(args || "").trim();
+        const before = resolveProjectNamespace(process.env, cwd);
+
+        if (!arg) {
+          const current = readOverride(cwd, { env: process.env });
+          const out = [
+            `namespace: ${before.namespace}  (source: ${before.source})`,
+            `project:   ${overrideKey(cwd)}`,
+            ``,
+          ];
+          if (current) {
+            out.push(`An override is active (set ${current.setAt}).`);
+            out.push(`Clear it with:  /memini:namespace --clear`);
+          } else {
+            out.push(`No override — resolving automatically.`);
+            out.push(`Set one with:  /memini:namespace <namespace>`);
+          }
+          out.push(`Overrides file: ${defaultOverridesPath(process.env)}`);
+          show(out.join("\n"));
+          return;
+        }
+
+        if (arg === "--clear" || arg === "clear") {
+          const removed = clearOverride(cwd, { env: process.env });
+          if (!removed) {
+            show(`No override was set for ${overrideKey(cwd)} — nothing to clear.`);
+            return;
+          }
+          const after = resolveProjectNamespace(process.env, cwd);
+          cfg.namespace = after.namespace;
+          show(
+            [
+              `namespace override cleared: ${before.namespace} -> ${after.namespace}  (source: ${after.source})`,
+              ``,
+              `Recall and capture use the new namespace from the next turn.`,
+            ].join("\n"),
+          );
+          return;
+        }
+
+        const ns = normalizeNamespace(arg);
+        const bad = validateNamespace(ns);
+        if (bad) {
+          // Fail loudly rather than silently normalize into something the user
+          // did not ask for — and CR/LF would split the X-Memini-Namespace
+          // header outright.
+          ctx.ui.notify(`memini: invalid namespace ${JSON.stringify(arg)}: ${bad}`, "error");
+          return;
+        }
+        writeOverride(cwd, ns, { env: process.env });
+        const after = resolveProjectNamespace(process.env, cwd);
+        cfg.namespace = after.namespace;
+        show(
+          [
+            `namespace override set: ${before.namespace} -> ${after.namespace}`,
+            `project: ${overrideKey(cwd)}`,
+            ``,
+            `The override wins over MEMINI_NAMESPACE. Recall and capture use it from the next turn.`,
+          ].join("\n"),
+        );
+      } catch (error) {
+        ctx.ui.notify(`memini: namespace failed: ${String(error)}`, "error");
+      }
+    },
+  });
+}
+
+const TOOL_NAMES = ["memory_recall", "memory_briefing", "memory_list", "memory_remember", "memory_forget"];
 const VALID_TIERS = ["working", "episodic", "semantic", "procedural"];
+// The LLM-facing semantic scope vocabulary, identical to the MCP server's
+// (internal/api/mcp: scopeEnum). The deprecated REST aliases "exact"/"subtree"
+// are deliberately NOT offered: the model makes a semantic choice, it does not
+// speak the back-compat dialect.
+const VALID_SCOPES = ["project", "full", "everywhere"];
+
+// briefingPath builds the GET /v1/namespaces/briefing query string. The endpoint
+// is header-scoped (X-Memini-Namespace), so there is no namespace in the path —
+// the model never names one. Exported for testing.
+export function briefingPath(args: any): string {
+  const scope = String(args?.scope || "").trim();
+  return VALID_SCOPES.includes(scope)
+    ? `/v1/namespaces/briefing?scope=${encodeURIComponent(scope)}`
+    : "/v1/namespaces/briefing";
+}
 
 // sessionIdOf resolves Pi's session id from the read-only session manager on the
 // extension context, so echo-exclusion and capture-dedup are keyed consistently.
@@ -413,6 +814,15 @@ export default function meminiExtension(pi: ExtensionAPI): void {
 
   const cfg = resolveConfig(process.env, process.cwd());
   const client = createClient(cfg, warn);
+
+  // Best-effort: a host without registerCommand (or a throw inside it) must not
+  // cost the extension its recall and capture hooks.
+  try {
+    if (typeof pi.registerCommand === "function") registerMeminiCommands(pi, cfg, warn);
+  } catch (error) {
+    warn(`command registration skipped: ${String(error)}`);
+  }
+
   // Latest user prompt per session, set in before_agent_start and consumed in
   // agent_end to assemble the full turn.
   const pendingUser = new Map<string, string>();
@@ -536,38 +946,104 @@ export default function meminiExtension(pi: ExtensionAPI): void {
         'Match memories whose top-level metadata contains each key=value pair, e.g. {"category":"bug_fixes"}.',
     }),
   );
+  // scope / visibility are the two semantic levers the model gets over
+  // namespaces — it never constructs a raw namespace path. Wording tracks the
+  // MCP server's tool schemas (internal/api/mcp) so the story is the same on
+  // every harness.
+  const Scope = Type.Optional(
+    Type.String({
+      enum: VALID_SCOPES,
+      description:
+        "How wide to read: 'project' = just this project's own memories; 'full' (default) = project plus " +
+        "inherited context (ancestors, your personal namespace, links); 'everywhere' = full plus nested " +
+        "sub-projects.",
+    }),
+  );
 
   pi.registerTool({
     name: "memory_recall",
     label: "Recall memory",
     description:
-      "Recall relevant memories from long-term memory (memini) via hybrid (semantic + keyword) search. " +
-      "Call before starting work that may have history: editing an unfamiliar file, debugging a recurring " +
-      "issue, or when asked what's known about something. Empty results mean nothing is known — proceed " +
-      "from first principles, never invent a remembered fact. A degraded:\"keyword_only\" field in the " +
-      "result means semantic search was unavailable and results came from keyword matching alone — treat " +
-      "as incomplete, not exhaustive.",
+      "Search prior context in long-term memory (memini) via hybrid (semantic + keyword) retrieval, ranked " +
+      "by relevance, recency, and corroboration. Call BEFORE starting work that may have history: editing " +
+      "an unfamiliar file, debugging a recurring issue, making a non-obvious decision, or when asked what's " +
+      "known about something. Prefer a short descriptive query ('JWT auth setup'). scope picks how wide to " +
+      "read: 'project' (just this project), 'full' (default: project plus inherited ancestor/personal/link " +
+      "context), or 'everywhere' (full plus nested sub-projects). Each result's namespace/from fields are " +
+      "provenance, not a choice — an absent 'from' means this project's own memory, otherwise it names the " +
+      "ancestor or personal namespace the memory came from; read them to learn where knowledge lives, never " +
+      "construct a namespace path. Empty results mean nothing is known — proceed from first principles, " +
+      "never invent a remembered fact. A degraded:\"keyword_only\" field in the result means semantic " +
+      "search was unavailable and results came from keyword matching alone — treat as incomplete, not " +
+      "exhaustive.",
     parameters: Type.Object({
       query: Type.String({ description: "What to search for" }),
       limit: Type.Optional(Type.Number({ description: "Max results (default 3)" })),
       tags: Tags,
       metadata: Metadata,
+      scope: Scope,
     }),
     async execute(_toolCallId: string, params: any) {
       const body: any = { query: params.query, limit: params.limit || DEFAULT_RECALL_LIMIT };
       if (params.tags?.length) body.tags = params.tags;
       if (params.metadata && Object.keys(params.metadata).length) body.metadata = params.metadata;
+      // An unrecognized scope is dropped rather than forwarded: /v1/search 400s
+      // on one, and a hallucinated value must not turn a recall into an error.
+      if (VALID_SCOPES.includes(params.scope)) body.scope = params.scope;
       const res = await client.postJson("/v1/search", body);
-      const results = (res?.results || []).map((r: any) => ({
-        id: r?.memory?.id || "",
-        content: r?.memory?.content || "",
-        summary: r?.memory?.summary || "",
-        tier: r?.memory?.tier || "",
-        score: typeof r?.score === "number" ? r.score : 0,
-      }));
+      const results = (res?.results || []).map((r: any) => {
+        const mem = r?.memory || {};
+        const out: any = {
+          id: mem.id || "",
+          content: mem.content || "",
+          summary: mem.summary || "",
+          tier: mem.tier || "",
+          score: typeof r?.score === "number" ? r.score : 0,
+        };
+        // Read provenance: which namespace the hit lives in, and (for a hit off
+        // an ancestor/home/link leg) which leg it came from. Omitted when empty
+        // so a project-only recall carries no "from" noise at all.
+        if (mem.namespace) out.namespace = mem.namespace;
+        if (r?.from) out.from = r.from;
+        return out;
+      });
       // /v1/search already carries `degraded`/`note` on `res`; pass them through
       // rather than dropping them silently.
       return text(res?.degraded ? { results, degraded: res.degraded, note: res.note } : { results });
+    },
+  });
+
+  pi.registerTool({
+    name: "memory_briefing",
+    label: "Session briefing",
+    description:
+      "Layered session-start briefing for this project from long-term memory (memini) — pinned context, " +
+      "durable facts, how-to procedures, and recent activity — in one query-less call. Call it when a " +
+      "session opens to orient yourself; prefer it over broad recall queries at session start. The " +
+      "scope_header line ('Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2)') spells out " +
+      "the ancestor chain you inherit from — read it instead of guessing namespace paths, and name one of " +
+      "those ancestors as memory_remember's visibility to share a fact up that chain. scope='everywhere' " +
+      "also briefs nested sub-projects.",
+    parameters: Type.Object({ scope: Scope }),
+    async execute(_toolCallId: string, params: any) {
+      const res = await client.getJson(briefingPath(params));
+      if (!res) return text({ briefing: null, error: "memini unavailable" });
+      const section = (items: any[]) =>
+        (items || []).map((b: any) => {
+          const mem = b?.memory || {};
+          const out: any = { id: mem.id || "", content: mem.content || "", tier: mem.tier || "" };
+          if (mem.namespace) out.namespace = mem.namespace;
+          if (b?.from) out.from = b.from;
+          return out;
+        });
+      return text({
+        namespace: res.namespace || "",
+        scope_header: res.scope_header || "",
+        pinned: section(res.pinned),
+        facts: section(res.facts),
+        procedures: section(res.procedures),
+        recent: section(res.recent),
+      });
     },
   });
 
@@ -608,7 +1084,12 @@ export default function meminiExtension(pi: ExtensionAPI): void {
       "the user says 'remember this', after an architectural decision (capture the why), or after " +
       "discovering a non-obvious bug or convention. Keep memories atomic — one self-contained fact per " +
       "call. Don't store what's already in project docs or trivially recoverable from code. To correct " +
-      "an existing memory, pass its id — the write updates it in place.",
+      "an existing memory, pass its id — the write updates it in place. visibility decides who should " +
+      "know: 'project' (default) keeps it here; 'personal' follows the user everywhere; or name an " +
+      "ancestor from the memory_briefing Scope line to share it up that chain. reinforced=true in the " +
+      "result means the fact was ALREADY KNOWN: no new memory was created, the existing one was " +
+      "strengthened, and `id` names that pre-existing memory rather than anything you just wrote — do " +
+      "not report it to the user as a new save.",
     parameters: Type.Object({
       content: Type.String({ description: "The fact to remember — atomic and self-contained." }),
       id: Type.Optional(
@@ -634,6 +1115,15 @@ export default function meminiExtension(pi: ExtensionAPI): void {
             "Optional topic bucket stored as metadata.category (e.g. bug_fixes, architecture_decisions) for browsing by subject later.",
         }),
       ),
+      visibility: Type.Optional(
+        Type.String({
+          description:
+            "Who should remember this: 'project' (default, this project only), 'personal' (about the user, " +
+            "follows them everywhere), or an ancestor namespace name read off the memory_briefing Scope line " +
+            "(e.g. the team or org level) to share it up that chain. On a durable write an unrecognized name " +
+            "errors listing the valid options. Episodic/working writes always stay in the project regardless.",
+        }),
+      ),
     }),
     async execute(_toolCallId: string, params: any) {
       // No client-side tier default: an omitted (or invalid) tier lets the
@@ -643,8 +1133,21 @@ export default function meminiExtension(pi: ExtensionAPI): void {
       if (params.tier && VALID_TIERS.includes(params.tier)) body.tier = params.tier;
       if (params.tags?.length) body.tags = params.tags;
       if (params.category) body.metadata = { category: params.category };
-      const res = await client.postJson("/v1/memories", body);
-      return text({ id: res?.id || null, success: res != null });
+      // visibility is NOT validated client-side beyond trimming: 'project' and
+      // 'personal' are fixed, but any other value names an ancestor of THIS
+      // namespace, which only the server can resolve — and its error enumerates
+      // the valid chain, which is how the model learns the topology. Swallowing
+      // an unknown name here would silently write to the wrong place instead.
+      const visibility = String(params.visibility || "").trim();
+      if (visibility) body.visibility = visibility;
+      const res = await client.postJsonResult("/v1/memories", body);
+      if (!res.ok) return text({ id: null, success: false, error: res.error });
+      const out: any = { id: res.data?.id || null, success: true };
+      // reinforced: the fact was already known, nothing new was written, and id
+      // names the pre-existing memory. Dropping the flag here would let the model
+      // report a no-op as a fresh save.
+      if (res.data?.reinforced) out.reinforced = true;
+      return text(out);
     },
   });
 

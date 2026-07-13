@@ -3,8 +3,8 @@
 # `mise tasks` lists them. CI uses the same tasks so local == CI.
 [tools]
 rust = "1.96.0"
-lefthook = "2.1.9"
-helm = "4.2.2"
+lefthook = "2.1.10"
+helm = "4.2.3"
 helm-docs = "1.14.2"
 "aqua:dadav/helm-schema" = "0.23.4"
 kind = "0.32.0"
@@ -86,6 +86,26 @@ run = "cargo run -p memini-cli --"
 [tasks.bench]
 description = "Run the retrieval benchmark (offline sample by default)"
 run = "cargo run -p memini-bench --bin memini-bench --"
+
+[tasks.build-client]
+description = "Regenerate plugin/scripts/_client.gen.mjs from packages/memini-client"
+# The plugin ships as raw files (no install-time build), so the shared client
+# core is bundled to a committed .mjs the hooks can import under a bare `node`.
+run = '''
+pnpm install --frozen-lockfile --filter @memini/client...
+pnpm --filter @memini/client run bundle
+'''
+
+[tasks.client-check]
+description = "Fail if the generated plugin client bundle is stale (CI gate)"
+run = '''
+mise run build-client
+git diff --exit-code plugin/scripts/_client.gen.mjs
+'''
+
+[tasks.test-client]
+description = "Run the shared client core tests (packages/memini-client)"
+run = "pnpm --filter @memini/client test"
 
 [tasks.docs]
 description = "Regenerate the docs reference from the code"

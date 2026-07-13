@@ -76,6 +76,7 @@ pub struct RememberOutcome {
     pub memory: Option<Memory>,
     pub merge_hint: Option<MergeHint>,
     pub auto_superseded: bool,
+    pub reinforced: bool,
 }
 #[derive(Clone, Debug, Default)]
 pub struct RecallInput {
@@ -491,6 +492,7 @@ impl Service {
                 memory: None,
                 merge_hint: None,
                 auto_superseded: false,
+                reinforced: false,
             });
         }
         let now = (self.now)();
@@ -521,6 +523,7 @@ impl Service {
                 memory: Some(existing),
                 merge_hint: None,
                 auto_superseded: false,
+                reinforced: true,
             });
         }
         let mut existing = None;
@@ -699,6 +702,7 @@ impl Service {
                                     memory: Some(updated),
                                     merge_hint: None,
                                     auto_superseded: false,
+                                    reinforced: false,
                                 });
                             }
                         }
@@ -733,6 +737,7 @@ impl Service {
                             ),
                             merge_hint: None,
                             auto_superseded: false,
+                            reinforced: true,
                         });
                     }
                     "coalesce" | "supersede" => fuzzy_supersede = Some(nearest.memory.id),
@@ -825,6 +830,7 @@ impl Service {
                                 memory: Some(updated),
                                 merge_hint,
                                 auto_superseded: false,
+                                reinforced: false,
                             });
                         }
                     }
@@ -846,6 +852,7 @@ impl Service {
                             memory: Some(memory),
                             merge_hint,
                             auto_superseded: true,
+                            reinforced: false,
                         });
                     }
                 }
@@ -915,6 +922,7 @@ impl Service {
             memory: Some(memory),
             merge_hint,
             auto_superseded,
+            reinforced: false,
         })
     }
 
@@ -2829,7 +2837,7 @@ mod tests {
             .unwrap();
         assert_eq!(first.tier, Tier::Semantic);
         let repeated = service
-            .remember(RememberInput {
+            .remember_with_outcome(RememberInput {
                 namespace: "acme/app".into(),
                 content: "  we decided to use postgres instead of sqlite for concurrent writes. "
                     .into(),
@@ -2837,9 +2845,9 @@ mod tests {
                 ..RememberInput::default()
             })
             .await
-            .unwrap()
             .unwrap();
-        assert_eq!(first.id, repeated.id);
+        assert!(repeated.reinforced);
+        assert_eq!(first.id, repeated.memory.unwrap().id);
         let listed = service
             .list(ListInput {
                 namespace: "acme/app".into(),
@@ -2963,15 +2971,16 @@ mod tests {
             .unwrap()
             .unwrap();
         let same = coalesce
-            .remember(RememberInput {
+            .remember_with_outcome(RememberInput {
                 namespace: "n".into(),
                 content: "TTL ten minutes".into(),
                 tier: Some(Tier::Semantic),
                 ..RememberInput::default()
             })
             .await
-            .unwrap()
             .unwrap();
+        assert!(same.reinforced);
+        let same = same.memory.unwrap();
         assert_eq!(same.id, old.id);
         assert_eq!(same.access_count, 1);
 

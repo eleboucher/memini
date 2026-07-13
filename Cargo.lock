@@ -1163,7 +1163,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "memini-api"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "async-trait",
  "axum",
@@ -1189,7 +1189,7 @@ dependencies = [
 
 [[package]]
 name = "memini-auth"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "getrandom 0.4.3",
  "memini-store",
@@ -1203,7 +1203,7 @@ dependencies = [
 
 [[package]]
 name = "memini-bench"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1226,7 +1226,7 @@ dependencies = [
 
 [[package]]
 name = "memini-cli"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "anyhow",
  "axum",
@@ -1260,16 +1260,19 @@ dependencies = [
 
 [[package]]
 name = "memini-config"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "humantime",
  "memini-core",
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror",
 ]
 
 [[package]]
 name = "memini-core"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "chrono",
  "regex",
@@ -1281,7 +1284,7 @@ dependencies = [
 
 [[package]]
 name = "memini-embed"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "async-trait",
  "axum",
@@ -1299,7 +1302,7 @@ dependencies = [
 
 [[package]]
 name = "memini-import"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "chrono",
  "memini-core",
@@ -1314,7 +1317,7 @@ dependencies = [
 
 [[package]]
 name = "memini-intelligence"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "memini-core",
  "regex",
@@ -1323,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "memini-llm"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "async-trait",
  "axum",
@@ -1337,7 +1340,7 @@ dependencies = [
 
 [[package]]
 name = "memini-maintenance"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "chrono",
  "memini-core",
@@ -1353,14 +1356,14 @@ dependencies = [
 
 [[package]]
 name = "memini-observability"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "chrono",
 ]
 
 [[package]]
 name = "memini-postgres"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1374,7 +1377,7 @@ dependencies = [
 
 [[package]]
 name = "memini-rerank"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "async-trait",
  "axum",
@@ -1388,7 +1391,7 @@ dependencies = [
 
 [[package]]
 name = "memini-service"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "async-recursion",
  "async-trait",
@@ -1413,7 +1416,7 @@ dependencies = [
 
 [[package]]
 name = "memini-sqlite"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1428,7 +1431,7 @@ dependencies = [
 
 [[package]]
 name = "memini-store"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1439,7 +1442,7 @@ dependencies = [
 
 [[package]]
 name = "memini-store-conformance"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "chrono",
  "memini-core",

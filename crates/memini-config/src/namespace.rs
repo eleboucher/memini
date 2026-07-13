@@ -1,13 +1,17 @@
 use std::{
-    env,
+    collections::HashMap,
+    env, fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
+
+use serde::Deserialize;
 
 pub const DEFAULT_NAMESPACE: &str = "default";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NamespaceSource {
+    Override,
     Environment,
     GitRemote,
     Git,
@@ -38,9 +42,25 @@ pub fn resolve_default_namespace() -> (String, NamespaceSource) {
 }
 
 pub fn resolve_plugin_namespace(dir: Option<&Path>) -> (String, NamespaceSource) {
-    let (namespace, source) = if let Some(value) =
-        first_non_empty_env(&["MEMINI_NAMESPACE", "MEMINI_DEFAULT_NAMESPACE"])
-    {
+    let override_value = namespace_override(dir);
+    let environment = first_non_empty_env(&["MEMINI_NAMESPACE", "MEMINI_DEFAULT_NAMESPACE"]);
+    resolve_plugin_namespace_with(
+        dir,
+        override_value,
+        environment,
+        env::var("MEMINI_AGENT").ok(),
+    )
+}
+
+fn resolve_plugin_namespace_with(
+    dir: Option<&Path>,
+    override_value: Option<String>,
+    environment: Option<String>,
+    agent: Option<String>,
+) -> (String, NamespaceSource) {
+    let (namespace, source) = if let Some(value) = override_value {
+        (sanitize_namespace_path(&value), NamespaceSource::Override)
+    } else if let Some(value) = environment {
         (
             sanitize_namespace_path(&value),
             NamespaceSource::Environment,
@@ -54,10 +74,63 @@ pub fn resolve_plugin_namespace(dir: Option<&Path>) -> (String, NamespaceSource)
             |value| resolve_dir_namespace(&value),
         )
     };
-    (
-        with_agent_segment(&namespace, env::var("MEMINI_AGENT").ok().as_deref()),
-        source,
-    )
+    (with_agent_segment(&namespace, agent.as_deref()), source)
+}
+
+#[derive(Deserialize)]
+struct OverridesFile {
+    #[serde(default)]
+    overrides: HashMap<String, NamespaceOverride>,
+}
+
+#[derive(Deserialize)]
+struct NamespaceOverride {
+    namespace: String,
+}
+
+pub fn overrides_path() -> Option<PathBuf> {
+    let base = env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            env::var("HOME")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(|home| PathBuf::from(home).join(".config"))
+        })?;
+    Some(base.join("memini").join("overrides.json"))
+}
+
+pub fn namespace_override(dir: Option<&Path>) -> Option<String> {
+    namespace_override_from_path(dir, &overrides_path()?)
+}
+
+fn namespace_override_from_path(dir: Option<&Path>, path: &Path) -> Option<String> {
+    let raw = fs::read(path).ok()?;
+    let file: OverridesFile = serde_json::from_slice(&raw).ok()?;
+    if file.overrides.is_empty() {
+        return None;
+    }
+    let key = override_key_for(dir)?;
+    file.overrides
+        .get(&key.to_string_lossy().into_owned())
+        .and_then(|entry| {
+            let namespace = entry.namespace.trim();
+            (!namespace.is_empty()).then(|| sanitize_namespace_path(namespace))
+        })
+}
+
+fn override_key_for(dir: Option<&Path>) -> Option<PathBuf> {
+    let dir = dir
+        .map(Path::to_path_buf)
+        .or_else(|| env::current_dir().ok())?;
+    let key = git(&dir, &["rev-parse", "--show-toplevel"]).unwrap_or(dir);
+    if key.is_absolute() {
+        Some(key)
+    } else {
+        env::current_dir().ok().map(|cwd| cwd.join(key))
+    }
 }
 
 pub fn resolve_dir_namespace(dir: &Path) -> (String, NamespaceSource) {
@@ -226,5 +299,45 @@ mod tests {
             "project/code-review"
         );
         assert_eq!(with_agent_segment("project", Some("///")), "project");
+    }
+
+    #[test]
+    fn project_override_beats_environment_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("overrides.json");
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let key = override_key_for(Some(&project)).unwrap();
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "version": 1,
+                "overrides": {
+                    key.to_string_lossy().into_owned(): {
+                        "namespace": "acme/api",
+                        "setAt": "2026-07-12T20:30:00Z"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let override_value = namespace_override_from_path(Some(&project), &path);
+        let resolved = resolve_plugin_namespace_with(
+            Some(&project),
+            override_value,
+            Some("pinned-everywhere".into()),
+            None,
+        );
+        assert_eq!(resolved, ("acme/api".into(), NamespaceSource::Override));
+        assert_eq!(namespace_override_from_path(Some(dir.path()), &path), None);
+    }
+
+    #[test]
+    fn malformed_override_file_degrades_to_automatic_resolution() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("overrides.json");
+        std::fs::write(&path, "{ not json").unwrap();
+        assert_eq!(namespace_override_from_path(Some(dir.path()), &path), None);
     }
 }

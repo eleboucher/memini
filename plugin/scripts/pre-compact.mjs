@@ -10,6 +10,7 @@ import {
   parseJSON,
   resolveProject,
   postRemember,
+  sessionDigestEnabled,
   readSessionEvents,
   buildSessionDigest,
   DEBUG,
@@ -22,6 +23,10 @@ async function main() {
 
   const digest = buildSessionDigest(readSessionEvents(sessionId), project);
   if (!digest) return; // nothing buffered → no checkpoint, no noise
+  // MEMINI_SESSION_DIGEST=0 → no activity records at all. This checkpoint exists
+  // to rescue the digest from a compaction, so with digests off there is nothing
+  // to rescue.
+  if (!sessionDigestEnabled()) return;
   // A checkpoint tagged session_id:"unknown" shares one exclusion bucket with
   // every other unknown-id session (exact-match exclusion), so skip it.
   if (sessionId === "unknown") return;

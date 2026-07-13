@@ -22,10 +22,11 @@ What it wires:
   memini as durable (semantic) facts.
 - **tools** — `memory_recall` (with optional `tags` / `metadata` filters),
   `memory_list` (query-less browse by tier / tags / metadata category),
-  `memory_remember` (with optional `tags` and a `category`), and `memory_forget`
-  (delete a wrong/outdated memory by `id` from recall/list) for when the agent
-  wants to read, browse, write, or prune memory explicitly. See `docs/categories.md`
-  for the category convention.
+  `memory_remember` (with optional `tags` and a `category`), `memory_forget`
+  (delete a wrong/outdated memory by `id` from recall/list), and `memory_status`
+  (read-only: which namespace is in force and why) for when the agent wants to
+  read, browse, write, prune, or explain memory explicitly. See
+  `docs/categories.md` for the category convention.
 
 ### Install
 
@@ -60,7 +61,8 @@ Point it at your memini (environment, or the Hermes onboarding prompts):
 | Variable                         | Default                        | Purpose                                                                          |
 | -------------------------------- | ------------------------------ | -------------------------------------------------------------------------------- |
 | `MEMINI_BASE_URL`                | `http://localhost:8080`        | memini service endpoint (alias: `MEMINI_URL`)                                    |
-| `MEMINI_NAMESPACE`               | basename of cwd, else `hermes` | project the memory is scoped to                                                  |
+| `MEMINI_NAMESPACE`               | basename of cwd, else `hermes` | project the memory is scoped to (see the config-file note below)                 |
+| `MEMINI_AGENT`                   | (none)                         | `{agent}` segment for the config-file namespace template (see below)             |
 | `MEMINI_HOME`                    | (none)                         | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg        |
 | `MEMINI_API_KEY`                 | (none)                         | bearer token, if memini requires auth (alias: `MEMINI_TOKEN`)                    |
 | `MEMINI_REQUIRE_HTTPS`           | (off)                          | set `1` to refuse sending a token over plaintext HTTP                            |
@@ -68,6 +70,33 @@ Point it at your memini (environment, or the Hermes onboarding prompts):
 | `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                            | fused-score floor (>=) for auto-recall, sent as `min_score`                      |
 | `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                            | hard token ceiling on the recall block (`0` = unbounded; tail dropped w/ footer) |
 | `MEMINI_INJECT_LABELS`           | (none)                         | per-bullet tag prefix toggles: `tier`, `confidence`, `age`                       |
+
+### Namespace resolution
+
+In order: a **per-project override** in `$XDG_CONFIG_HOME/memini/overrides.json`
+(default `~/.config/memini/overrides.json`) > `MEMINI_NAMESPACE` > the config
+template below > the cwd basename.
+
+The override wins over `MEMINI_NAMESPACE` deliberately. A globally exported
+`MEMINI_NAMESPACE` — a shell rc, or a fish universal variable — pins every repo
+on the machine to one namespace, and if the environment won, setting an override
+would silently do nothing on exactly the machines that need one. The file is
+keyed by git toplevel (so an override set at the top of a repo applies from any
+subdirectory), it is the same file the Claude Code plugin writes and `memini
+doctor` reads, and a malformed one degrades to automatic resolution rather than
+failing a turn. `memory_status` reports which of these is in force, what the
+namespace would be without each layer, and any misconfiguration worth flagging —
+with secrets redacted.
+
+When `MEMINI_NAMESPACE` is unset and `$XDG_CONFIG_HOME/memini/config.json`
+(default `~/.config/memini/config.json`) exists, the namespace is rendered from
+its `template` (default `{tenant}/{project}/{agent}`): `{tenant}` comes from
+the first `tenantRoots` entry whose `path` contains the cwd, `{project}` is
+git-derived (remote repo name > toplevel basename > cwd basename), and
+`{agent}` from `MEMINI_AGENT`; unresolved segments are dropped. This mirrors
+the shared resolver the JS integrations use, so the same repo lands in the
+same namespace everywhere. Without the file, the namespace is just the cwd
+basename.
 
 Restart Hermes. On the next turn, recalled memories appear in context and new
 exchanges are written back. Use the **same `MEMINI_NAMESPACE`** as your other

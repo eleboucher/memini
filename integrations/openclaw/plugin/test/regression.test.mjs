@@ -2,17 +2,26 @@
 // a regression contract against the legacy plugin.legacy/plugin.mjs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import plugin, {
   detectSystemKind,
   effectiveNamespace,
   meminiListPath,
   registerMeminiTools,
+  resolveBaseNamespace,
   resolveConfig,
   sessionIdentity,
   shouldSkipSystemTurn,
   stripRuntimePreambles,
 } from "../dist/index.js";
+
+// The namespace chain now honors MEMINI_NAMESPACE and a per-project override
+// (keyed by the gateway's cwd — this repo, when the tests run). A developer who
+// exports either would otherwise fail every default-namespace assertion below.
+delete process.env.MEMINI_NAMESPACE;
+process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "openclaw-memini-regression-"));
 
 // fakeClient records the last memini call and returns canned responses, so the
 // tool handlers can be exercised without a running server.
@@ -28,8 +37,25 @@ function fakeClient() {
         ? { results: [{ memory: { id: "m1", content: "hit", summary: "", tier: "semantic" }, score: 0.9 }] }
         : { id: "m1" };
     },
+    // The write tools use postJsonResult so a rejected write reaches the model
+    // with the server's own error text (see MeminiClient.postJsonResult).
+    async postJsonResult(path, body, ns) {
+      calls.push({ method: "POST", path, body, ns });
+      if (body?.visibility === "widgets") {
+        return { ok: false, error: 'remember: visibility "widgets" not in scope; valid: project, personal, acme' };
+      }
+      return { ok: true, data: { id: "m1" } };
+    },
     async getJson(path, ns) {
       calls.push({ method: "GET", path, ns });
+      if (path.includes("briefing")) {
+        return {
+          namespace: "ns",
+          scope_header: "Scope: ns ← acme(4) ← personal(2)",
+          pinned: [{ memory: { id: "p1", content: "pinned", tier: "semantic" } }],
+          facts: [{ memory: { id: "f1", content: "org", tier: "semantic", namespace: "acme" }, from: "acme" }],
+        };
+      }
       return { memories: [{ id: "m1", content: "c", tier: "procedural", tags: ["auth"], metadata: { category: "bug_fixes" } }] };
     },
     async deleteJson(path, ns) {
@@ -65,6 +91,50 @@ test("per-agent isolation is on by default", () => {
   // A session with no agent identity falls back to the shared base namespace
   // (so unattributable sessions still get memory rather than silently dropping).
   assert.equal(effectiveNamespace(cfg, {}), "openclaw");
+});
+
+// The namespace chain, from the shipped bundle. The default must not move: this
+// is a gateway harness, and deriving a namespace from its cwd (or letting the
+// default drift) would silently relocate every existing install's memory.
+test("the base namespace chain is override > MEMINI_NAMESPACE > config > openclaw", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "openclaw-memini-proj-"));
+  const env = () => ({ XDG_CONFIG_HOME: mkdtempSync(join(tmpdir(), "openclaw-memini-xdg-")) });
+
+  assert.deepEqual(resolveBaseNamespace(undefined, env(), cwd), { namespace: "openclaw", source: "default" });
+  assert.deepEqual(resolveBaseNamespace({ namespace: "cfg" }, env(), cwd), { namespace: "cfg", source: "config" });
+  assert.deepEqual(resolveBaseNamespace({ namespace: "cfg" }, { ...env(), MEMINI_NAMESPACE: "pin" }, cwd), {
+    namespace: "pin",
+    source: "env",
+  });
+});
+
+test("register wires memini:status and memini:namespace when the host supports commands", () => {
+  const names = [];
+  plugin.register({
+    pluginConfig: { enabled: true },
+    registerMemoryCapability() {}, registerHook() {},
+    on() {},
+    logger: { warn() {} },
+    registerTool() {},
+    registerCommand(def) {
+      names.push(def.name);
+    },
+  });
+  assert.deepEqual(names.sort(), ["memini:namespace", "memini:status"]);
+});
+
+test("register survives a host with no registerCommand at all", () => {
+  const hooks = {};
+  plugin.register({
+    pluginConfig: { enabled: true },
+    registerMemoryCapability() {}, registerHook() {},
+    on(name, handler) { hooks[name] = handler; },
+    logger: { warn() {} },
+    registerTool() {},
+  });
+  // No commands is survivable; losing the memory slot is not.
+  assert.equal(typeof hooks.before_prompt_build, "function");
+  assert.equal(typeof hooks.agent_end, "function");
 });
 
 test("namespace_per_agent can be explicitly disabled", () => {
@@ -187,9 +257,14 @@ test("shouldSkipSystemTurn honors a custom system_kinds set", () => {
 
 // --- explicit tools (expose_tools) -----------------------------------------
 
-test("expose_tools is off by default", () => {
-  assert.equal(resolveConfig(undefined).expose_tools, false);
+// On by default as of 0.6.9. The slot's automatic recall/capture cannot express
+// scope, visibility, or the briefing's ancestor Scope line — without the tools an
+// agent here does not have those capabilities at all. Opting out stays possible.
+test("expose_tools is on by default and can still be turned off explicitly", () => {
+  assert.equal(resolveConfig(undefined).expose_tools, true);
+  assert.equal(resolveConfig({}).expose_tools, true);
   assert.equal(resolveConfig({ expose_tools: true }).expose_tools, true);
+  assert.equal(resolveConfig({ expose_tools: false }).expose_tools, false);
 });
 
 // OpenClaw rejects a register() that returns a thenable ("plugin register must be
@@ -214,13 +289,13 @@ test("register is synchronous even with expose_tools on (OpenClaw contract)", ()
     "register must not be an async function",
   );
   // Tools are wired before register returns — not deferred (the guarded api would drop them).
-  assert.deepEqual(names.sort(), ["memory_forget", "memory_list", "memory_recall", "memory_remember"]);
+  assert.deepEqual(names.sort(), ["memory_briefing", "memory_forget", "memory_list", "memory_recall", "memory_remember"]);
 });
 
-test("register does not touch registerTool when expose_tools is off", async () => {
+test("register does not touch registerTool when expose_tools is explicitly off", async () => {
   let registered = 0;
   await plugin.register({
-    pluginConfig: { enabled: true },
+    pluginConfig: { enabled: true, expose_tools: false },
     registerMemoryCapability() {}, registerHook() {},
     on() {},
     logger: {},
@@ -231,10 +306,12 @@ test("register does not touch registerTool when expose_tools is off", async () =
   assert.equal(registered, 0, "no tools should register when expose_tools is off");
 });
 
-test("register wires the memory tools when expose_tools is on", async () => {
+// The default path: a config that never mentions expose_tools still gets the
+// tools, because scope/visibility/briefing exist nowhere else on this harness.
+test("register wires the memory tools with no expose_tools in the config at all", async () => {
   const names = [];
   await plugin.register({
-    pluginConfig: { enabled: true, expose_tools: true },
+    pluginConfig: { enabled: true },
     registerMemoryCapability() {}, registerHook() {},
     on() {},
     logger: { warn() {} },
@@ -242,7 +319,7 @@ test("register wires the memory tools when expose_tools is on", async () => {
       names.push(...(opts?.names ?? []));
     },
   });
-  assert.deepEqual(names.sort(), ["memory_forget", "memory_list", "memory_recall", "memory_remember"]);
+  assert.deepEqual(names.sort(), ["memory_briefing", "memory_forget", "memory_list", "memory_recall", "memory_remember"]);
 });
 
 // Production OpenClaw's api.registerHook(name, handler) rejects the positional
@@ -674,7 +751,7 @@ test("tools register as a single optional factory naming all tools", async () =>
   assert.equal(opts.optional, true, "factory must register optional");
   assert.deepEqual(
     [...opts.names].sort(),
-    ["memory_forget", "memory_list", "memory_recall", "memory_remember"],
+    ["memory_briefing", "memory_forget", "memory_list", "memory_recall", "memory_remember"],
     "opts.names must list every tool so the host can match the factory by name",
   );
 });
@@ -918,4 +995,118 @@ test("an HTTP error is logged even when fallback_on_error degrades it", async ()
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+// --- scope / visibility / briefing (the cascade vocabulary, PR #36) ----------
+//
+// These tools are this harness's whole model-facing surface — it does not proxy
+// MCP — so a capability missing from the schema here is a capability the model
+// simply does not have.
+
+test("memory_recall exposes scope and forwards only the model-facing vocabulary", async () => {
+  const client = fakeClient();
+  const { byName } = await collectTools(client, { namespace: "ns", namespace_per_agent: false });
+  assert.deepEqual(byName.memory_recall.parameters.properties.scope.enum, ["project", "full", "everywhere"]);
+
+  await byName.memory_recall.execute("id", { query: "q", scope: "project" });
+  assert.equal(client.calls.at(-1).body.scope, "project");
+
+  // Omitted: nothing on the wire, so the server's "full" default applies.
+  await byName.memory_recall.execute("id", { query: "q" });
+  assert.equal("scope" in client.calls.at(-1).body, false);
+
+  // "exact"/"subtree" are deprecated REST aliases, not part of the model's
+  // vocabulary — forwarding one would be a 400.
+  await byName.memory_recall.execute("id", { query: "q", scope: "exact" });
+  assert.equal("scope" in client.calls.at(-1).body, false);
+});
+
+test("memory_recall passes read provenance through so the model can learn the topology", async () => {
+  const client = fakeClient();
+  client.postJson = async (path, body, ns) => {
+    client.calls.push({ method: "POST", path, body, ns });
+    return {
+      results: [
+        { memory: { id: "m1", content: "own", tier: "semantic", namespace: "ns" }, score: 0.9 },
+        { memory: { id: "m2", content: "inherited", tier: "semantic", namespace: "acme" }, score: 0.5, from: "acme" },
+      ],
+    };
+  };
+  const { byName } = await collectTools(client, { namespace: "ns", namespace_per_agent: false });
+  const out = await byName.memory_recall.execute("id", { query: "q" });
+  const { results } = JSON.parse(out.content[0].text);
+  // A primary-namespace hit carries no "from" at all — its absence is what tells
+  // the model "this project's own memory".
+  assert.equal("from" in results[0], false);
+  assert.equal(results[0].namespace, "ns");
+  assert.equal(results[1].from, "acme");
+});
+
+test("memory_remember forwards visibility verbatim; the server owns the ancestor vocabulary", async () => {
+  const client = fakeClient();
+  const { byName } = await collectTools(client, { namespace: "ns", namespace_per_agent: false });
+  await byName.memory_remember.execute("id", { content: "fact", visibility: "personal" });
+  assert.deepEqual(client.calls.at(-1).body, { content: "fact", visibility: "personal" });
+
+  // An ancestor name is in no client-side enum: only the server can resolve this
+  // namespace's chain, so the name goes through untouched.
+  await byName.memory_remember.execute("id", { content: "fact", visibility: "acme" });
+  assert.equal(client.calls.at(-1).body.visibility, "acme");
+
+  await byName.memory_remember.execute("id", { content: "fact" });
+  assert.equal("visibility" in client.calls.at(-1).body, false);
+});
+
+test("a rejected visibility reaches the model with the valid chain, not a bare failure", async () => {
+  const client = fakeClient();
+  const { byName } = await collectTools(client, { namespace: "ns", namespace_per_agent: false });
+  const out = await byName.memory_remember.execute("id", { content: "fact", visibility: "widgets" });
+  const res = JSON.parse(out.content[0].text);
+  assert.equal(res.success, false);
+  // Without the server's error text the model has nothing to correct against —
+  // it would just retry the same bad name.
+  assert.match(res.error, /valid: project, personal, acme/);
+});
+
+test("memory_briefing GETs the header-scoped briefing and keeps the Scope line", async () => {
+  const client = fakeClient();
+  const { byName } = await collectTools(client, { namespace: "ns", namespace_per_agent: false });
+  const out = await byName.memory_briefing.execute("id", { scope: "everywhere" });
+  const call = client.calls.at(-1);
+  assert.equal(call.method, "GET");
+  // Header-scoped: the namespace is never in the path — the model never names one.
+  assert.equal(call.path, "/v1/namespaces/briefing?scope=everywhere");
+  assert.equal(call.ns, "ns");
+  const res = JSON.parse(out.content[0].text);
+  assert.equal(res.scope_header, "Scope: ns ← acme(4) ← personal(2)");
+  assert.equal(res.pinned[0].id, "p1");
+  assert.equal(res.facts[0].from, "acme");
+});
+
+test("memory_briefing answers rather than throwing when memini is unreachable", async () => {
+  const client = fakeClient();
+  client.getJson = async () => null; // the client's degrade path
+  const { byName } = await collectTools(client, { namespace: "ns", namespace_per_agent: false });
+  const out = await byName.memory_briefing.execute("id", {});
+  assert.equal(JSON.parse(out.content[0].text).briefing, null);
+});
+
+test("memory_remember surfaces reinforced so a no-op write is not reported as a new save", async () => {
+  const client = fakeClient();
+  // The fact was already known: the server strengthened the existing memory and
+  // returned its id. Dropping the flag would let the model claim a fresh save.
+  client.postJsonResult = async (path, body, ns) => {
+    client.calls.push({ method: "POST", path, body, ns });
+    return { ok: true, data: { id: "existing-1", reinforced: true } };
+  };
+  const { byName } = await collectTools(client, { namespace: "ns", namespace_per_agent: false });
+  const out = await byName.memory_remember.execute("id", { content: "known fact" });
+  assert.deepEqual(JSON.parse(out.content[0].text), { id: "existing-1", success: true, reinforced: true });
+});
+
+test("a genuinely new write carries no reinforced flag", async () => {
+  const client = fakeClient();
+  const { byName } = await collectTools(client, { namespace: "ns", namespace_per_agent: false });
+  const out = await byName.memory_remember.execute("id", { content: "novel fact" });
+  assert.equal("reinforced" in JSON.parse(out.content[0].text), false);
 });
