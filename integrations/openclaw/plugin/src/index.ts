@@ -37,6 +37,12 @@ import {
 const DEFAULT_BASE_URL = "http://localhost:8080";
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_NAMESPACE = "openclaw";
+const VALID_TIERS = ["working", "episodic", "semantic", "procedural"];
+// The LLM-facing semantic scope vocabulary, identical to the MCP server's
+// (internal/api/mcp: scopeEnum). The deprecated REST aliases "exact"/"subtree"
+// are deliberately NOT offered: the model makes a semantic choice, it does not
+// speak the back-compat dialect.
+const VALID_SCOPES = ["project", "full", "everywhere"];
 // The status probes are diagnostics: fail fast rather than hang a slash command.
 const STATUS_TIMEOUT_MS = 4000;
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
@@ -502,6 +508,13 @@ interface MeminiClient {
   postJson: (path: string, payload: any, ns?: string) => Promise<any>;
   getJson: (path: string, ns?: string) => Promise<any>;
   deleteJson: (path: string, ns?: string) => Promise<any>;
+  // postJsonResult is postJson without the degrade-to-null: it hands back the
+  // server's own error text. The explicit write tool uses it, because a rejected
+  // write is information the model can act on — a `visibility` naming an unknown
+  // ancestor errors listing the valid chain, which is how the model learns the
+  // topology. Swallowing that into `success: false` leaves it nothing to correct
+  // against. It still never throws.
+  postJsonResult: (path: string, payload: any, ns?: string) => Promise<{ ok: boolean; data?: any; error?: string }>;
   baseUrl: string;
   namespace: string;
 }
@@ -601,7 +614,53 @@ function createClient(cfg: ResolvedConfig, api: any): MeminiClient {
     }
   }
 
-  return { postJson, getJson, deleteJson, baseUrl, namespace };
+  // See MeminiClient.postJsonResult. Never throws — a failure is reported as
+  // {ok:false, error} regardless of fallback_on_error, so a tool call degrades
+  // into an answer rather than an exception in the host.
+  async function postJsonResult(
+    path: string,
+    payload: any,
+    ns?: string,
+  ): Promise<{ ok: boolean; data?: any; error?: string }> {
+    try {
+      guardPlaintextBearerAuth(baseUrl, secret);
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        "X-Memini-Namespace": ns || namespace,
+      };
+      if (secret) headers.Authorization = `Bearer ${secret}`;
+      if (home) headers["X-Memini-Home"] = home;
+      const res = await fetch(`${baseUrl}${path}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) {
+        const detail = (await res.text().catch(() => "")).trim();
+        api.logger.warn?.(`memini POST ${path} failed: ${res.status} ${detail}`);
+        return { ok: false, error: detail || `HTTP ${res.status}` };
+      }
+      return { ok: true, data: await res.json().catch(() => ({})) };
+    } catch (error) {
+      api.logger.warn?.(`memini: ${String(error)}`);
+      return { ok: false, error: String(error) };
+    }
+  }
+
+  return { postJson, getJson, deleteJson, postJsonResult, baseUrl, namespace };
+}
+
+// meminiBriefingPath builds the GET /v1/namespaces/briefing query string for the
+// memory_briefing tool. The endpoint is header-scoped (X-Memini-Namespace), so
+// there is no namespace in the path — the model never names one. An unrecognized
+// scope is dropped rather than forwarded: the server 400s on one, and a bad guess
+// must not turn orientation into an error.
+export function meminiBriefingPath(args: any) {
+  const scope = String(args?.scope || "").trim();
+  return VALID_SCOPES.includes(scope)
+    ? `/v1/namespaces/briefing?scope=${encodeURIComponent(scope)}`
+    : "/v1/namespaces/briefing";
 }
 
 // meminiListPath builds the GET /v1/memories query string for the memory_list
@@ -902,7 +961,7 @@ export function registerMeminiCommands(api: any, cfg: ResolvedConfig, pluginConf
   });
 }
 
-const TOOL_NAMES = ["memory_recall", "memory_list", "memory_remember", "memory_forget"];
+const TOOL_NAMES = ["memory_recall", "memory_briefing", "memory_list", "memory_remember", "memory_forget"];
 
 // registerMeminiTools registers memory_recall / memory_list / memory_remember.
 //
@@ -922,6 +981,30 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
       description: 'Match memories whose top-level metadata contains each key=value pair, e.g. {"category":"bug_fixes"}.',
     }),
   );
+  // scope / visibility are the two semantic levers the model gets over
+  // namespaces — it never constructs a raw namespace path. Wording tracks the
+  // MCP server's tool schemas (internal/api/mcp) so the story is the same on
+  // every harness.
+  const Scope = Type.Optional(
+    Type.String({
+      enum: VALID_SCOPES,
+      description:
+        "How wide to read: 'project' = just this project's own memories; 'full' (default) = project plus " +
+        "inherited context (ancestors, your personal namespace, links); 'everywhere' = full plus nested " +
+        "sub-projects.",
+    }),
+  );
+
+  // provenance renders a hit's read-set origin: which namespace it lives in and,
+  // for a hit off an ancestor/home/link leg, which leg it came from. Both are
+  // omitted when empty, so a project-only recall carries no "from" noise at all
+  // and the model reads an absent "from" as "this project's own memory".
+  const provenance = (mem: any, from: any) => {
+    const out: any = {};
+    if (mem?.namespace) out.namespace = mem.namespace;
+    if (from) out.from = from;
+    return out;
+  };
 
   // effectiveNamespace yields null only under skip_without_agent; tools have no
   // skip, so fall back to base. Landing on the base under per-agent mode means no
@@ -944,22 +1027,32 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
     {
       name: "memory_recall",
       description:
-        "Search long-term memory (memini) for relevant past facts and context. Call before starting work " +
-        "that may have history: editing an unfamiliar file, debugging a recurring issue, or when asked " +
-        "what's known about something. Empty results mean nothing is known — proceed from first " +
-        "principles, never invent a remembered fact. A degraded:\"keyword_only\" field in the result means " +
-        "semantic search was unavailable and results came from keyword matching alone — treat as " +
-        "incomplete, not exhaustive.",
+        "Search prior context in long-term memory (memini) via hybrid (semantic + keyword) retrieval, " +
+        "ranked by relevance, recency, and corroboration. Call BEFORE starting work that may have history: " +
+        "editing an unfamiliar file, debugging a recurring issue, making a non-obvious decision, or when " +
+        "asked what's known about something. scope picks how wide to read: 'project' (just this project), " +
+        "'full' (default: project plus inherited ancestor/personal/link context), or 'everywhere' (full " +
+        "plus nested sub-projects). Each result's namespace/from fields are provenance, not a choice — an " +
+        "absent 'from' means this project's own memory, otherwise it names the ancestor or personal " +
+        "namespace the memory came from; read them to learn where knowledge lives, never construct a " +
+        "namespace path. Empty results mean nothing is known — proceed from first principles, never invent " +
+        "a remembered fact. A degraded:\"keyword_only\" field in the result means semantic search was " +
+        "unavailable and results came from keyword matching alone — treat as incomplete, not exhaustive.",
       parameters: Type.Object({
         query: Type.String({ description: "What to search for" }),
         limit: Type.Optional(Type.Number({ description: "Max results (default 3)" })),
         tags: Tags,
         metadata: Metadata,
+        scope: Scope,
       }),
       async execute(_id: any, params: any) {
         const body: any = { query: params.query, limit: params.limit || 3 };
         if (params.tags?.length) body.tags = params.tags;
         if (params.metadata && Object.keys(params.metadata).length) body.metadata = params.metadata;
+        // An unrecognized scope is dropped rather than forwarded: /v1/search
+        // 400s on one, and a hallucinated value must not turn a recall into an
+        // error.
+        if (VALID_SCOPES.includes(params.scope)) body.scope = params.scope;
         const res = await client.postJson("/v1/search", body, ns);
         const results = (res?.results || []).map((r: any) => ({
           id: r?.memory?.id || "",
@@ -967,10 +1060,42 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
           summary: r?.memory?.summary || "",
           tier: r?.memory?.tier || "",
           score: typeof r?.score === "number" ? r.score : 0,
+          ...provenance(r?.memory, r?.from),
         }));
         // /v1/search already carries degraded/note on `res`; pass them through
         // rather than dropping them silently.
         return text(res?.degraded ? { results, degraded: res.degraded, note: res.note } : { results });
+      },
+    },
+    {
+      name: "memory_briefing",
+      description:
+        "Layered session-start briefing for this project from long-term memory (memini) — pinned context, " +
+        "durable facts, how-to procedures, and recent activity — in one query-less call. Call it when a " +
+        "session opens to orient yourself; prefer it over broad recall queries at session start. The " +
+        "scope_header line ('Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2)') spells " +
+        "out the ancestor chain you inherit from — read it instead of guessing namespace paths, and name " +
+        "one of those ancestors as memory_remember's visibility to share a fact up that chain. " +
+        "scope='everywhere' also briefs nested sub-projects.",
+      parameters: Type.Object({ scope: Scope }),
+      async execute(_id: any, params: any) {
+        const res = await client.getJson(meminiBriefingPath(params), ns);
+        if (!res) return text({ briefing: null, error: "memini unavailable" });
+        const section = (items: any[]) =>
+          (items || []).map((b: any) => ({
+            id: b?.memory?.id || "",
+            content: b?.memory?.content || "",
+            tier: b?.memory?.tier || "",
+            ...provenance(b?.memory, b?.from),
+          }));
+        return text({
+          namespace: res.namespace || "",
+          scope_header: res.scope_header || "",
+          pinned: section(res.pinned),
+          facts: section(res.facts),
+          procedures: section(res.procedures),
+          recent: section(res.recent),
+        });
       },
     },
     {
@@ -1007,7 +1132,12 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
         "the user says 'remember this', after an architectural decision (capture the why), or after " +
         "discovering a non-obvious bug or convention. Keep memories atomic — one self-contained fact per " +
         "call. Don't store what's already in project docs or trivially recoverable from code. To correct " +
-        "an existing memory, pass its id — the write updates it in place.",
+        "an existing memory, pass its id — the write updates it in place. visibility decides who should " +
+        "know: 'project' (default) keeps it here; 'personal' follows the user everywhere; or name an " +
+        "ancestor from the memory_briefing Scope line to share it up that chain. reinforced=true in the " +
+        "result means the fact was ALREADY KNOWN: no new memory was created, the existing one was " +
+        "strengthened, and `id` names that pre-existing memory rather than anything you just wrote — do " +
+        "not report it to the user as a new save.",
       parameters: Type.Object({
         content: Type.String({ description: "The fact to remember — atomic and self-contained." }),
         id: Type.Optional(
@@ -1033,18 +1163,40 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
               "Optional topic bucket stored as metadata.category (e.g. bug_fixes, architecture_decisions) for browsing by subject later.",
           }),
         ),
+        visibility: Type.Optional(
+          Type.String({
+            description:
+              "Who should remember this: 'project' (default, this project only), 'personal' (about the user, " +
+              "follows them everywhere), or an ancestor namespace name read off the memory_briefing Scope " +
+              "line (e.g. the team or org level) to share it up that chain. On a durable write an " +
+              "unrecognized name errors listing the valid options. Episodic/working writes always stay in " +
+              "the project regardless.",
+          }),
+        ),
       }),
       async execute(_id: any, params: any) {
         // No client-side tier default: an omitted (or invalid) tier lets the
         // server classify the content and apply its own default.
         const body: any = { content: params.content };
         if (params.id) body.id = params.id; // POST /v1/memories upserts by id
-        const VALID_TIERS = ["working", "episodic", "semantic", "procedural"];
         if (params.tier && VALID_TIERS.includes(params.tier)) body.tier = params.tier;
         if (params.tags?.length) body.tags = params.tags;
         if (params.category) body.metadata = { category: params.category };
-        const res = await client.postJson("/v1/memories", body, ns);
-        return text({ id: res?.id || null, success: res != null });
+        // visibility is NOT validated client-side beyond trimming: 'project' and
+        // 'personal' are fixed, but any other value names an ancestor of THIS
+        // namespace, which only the server can resolve — and its error enumerates
+        // the valid chain, which is how the model learns the topology. Swallowing
+        // an unknown name here would silently write to the wrong place instead.
+        const visibility = String(params.visibility || "").trim();
+        if (visibility) body.visibility = visibility;
+        const res = await client.postJsonResult("/v1/memories", body, ns);
+        if (!res.ok) return text({ id: null, success: false, error: res.error });
+        const out: any = { id: res.data?.id || null, success: true };
+        // reinforced: the fact was already known, nothing new was written, and id
+        // names the pre-existing memory. Dropping the flag here would let the
+        // model report a no-op as a fresh save.
+        if (res.data?.reinforced) out.reinforced = true;
+        return text(out);
       },
     },
     {

@@ -23,13 +23,21 @@ for _v in ("MEMINI_BASE_URL", "MEMINI_URL", "MEMINI_API_KEY", "MEMINI_TOKEN", "M
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="memini-test-config-")
 
 
-def make_provider(call_stub):
-    """A provider initialized against a dummy URL with its network _call stubbed."""
+def make_provider(call_stub, result_stub=None):
+    """A provider initialized against a dummy URL with its network _call stubbed.
+
+    _call_result (the non-degrading write path the remember tool uses) defaults to
+    the same stub with an empty error, so a test that only cares about the request
+    body does not have to stub twice. Pass result_stub to exercise a server error.
+    """
     os.environ["MEMINI_URL"] = "http://localhost:8080"
     os.environ.pop("MEMINI_NAMESPACE", None)
     p = memini.MeminiMemoryProvider()
     p.initialize("sess-1")
     p._call = call_stub
+    p._call_result = result_stub or (
+        lambda path, body, method="POST": (call_stub(path, body, method), "")
+    )
     return p
 
 
@@ -122,8 +130,156 @@ class ToolSchemasTest(unittest.TestCase):
         names = [t["name"] for t in memini.MeminiMemoryProvider().get_tool_schemas()]
         self.assertEqual(
             sorted(names),
-            ["memory_forget", "memory_list", "memory_recall", "memory_remember", "memory_status"],
+            [
+                "memory_briefing",
+                "memory_forget",
+                "memory_list",
+                "memory_recall",
+                "memory_remember",
+                "memory_status",
+            ],
         )
+
+    def test_recall_and_briefing_offer_the_semantic_scope_vocabulary(self):
+        # These schemas are this harness's whole model-facing surface (it does
+        # not proxy MCP), so a lever missing here is a lever the model does not
+        # have. The deprecated REST aliases exact/subtree stay off the list.
+        schemas = {t["name"]: t for t in memini.MeminiMemoryProvider().get_tool_schemas()}
+        for name in ("memory_recall", "memory_briefing"):
+            scope = schemas[name]["parameters"]["properties"]["scope"]
+            self.assertEqual(scope["enum"], ["project", "full", "everywhere"])
+            self.assertEqual(scope["default"], "full")
+            self.assertNotIn("scope", schemas[name]["parameters"].get("required", []))
+
+    def test_remember_offers_visibility_without_a_client_side_enum(self):
+        schemas = {t["name"]: t for t in memini.MeminiMemoryProvider().get_tool_schemas()}
+        vis = schemas["memory_remember"]["parameters"]["properties"]["visibility"]
+        # No enum on purpose: 'project'/'personal' are fixed, but any other value
+        # names an ancestor of THIS namespace, which only the server can resolve.
+        self.assertNotIn("enum", vis)
+        self.assertIn("personal", vis["description"])
+
+
+class BriefingPathTest(unittest.TestCase):
+    def test_forwards_only_a_known_scope(self):
+        self.assertEqual(memini._briefing_path({}), "/v1/namespaces/briefing")
+        self.assertEqual(
+            memini._briefing_path({"scope": "everywhere"}),
+            "/v1/namespaces/briefing?scope=everywhere",
+        )
+        # The server 400s on an unknown scope; a bad guess must not turn
+        # orientation into an error.
+        self.assertEqual(memini._briefing_path({"scope": "subtree"}), "/v1/namespaces/briefing")
+        self.assertEqual(memini._briefing_path({"scope": "acme"}), "/v1/namespaces/briefing")
+
+
+class ScopeAndVisibilityToolTest(unittest.TestCase):
+    def test_recall_forwards_a_known_scope_and_drops_the_rest(self):
+        captured = {}
+
+        def stub(path, body, method="POST"):
+            captured["body"] = body
+            return {"results": []}
+
+        p = make_provider(stub)
+        p.handle_tool_call("memory_recall", {"query": "q", "scope": "everywhere"})
+        self.assertEqual(captured["body"]["scope"], "everywhere")
+
+        # Omitted: nothing on the wire, so the server's "full" default applies.
+        p.handle_tool_call("memory_recall", {"query": "q"})
+        self.assertNotIn("scope", captured["body"])
+
+        p.handle_tool_call("memory_recall", {"query": "q", "scope": "exact"})
+        self.assertNotIn("scope", captured["body"])
+
+    def test_recall_passes_read_provenance_through(self):
+        def stub(path, body, method="POST"):
+            return {
+                "results": [
+                    {"memory": {"id": "m1", "content": "own", "namespace": "ns"}, "score": 0.9},
+                    {
+                        "memory": {"id": "m2", "content": "inherited", "namespace": "acme"},
+                        "score": 0.5,
+                        "from": "acme",
+                    },
+                ]
+            }
+
+        out = json.loads(make_provider(stub).handle_tool_call("memory_recall", {"query": "q"}))
+        # A primary-namespace hit carries no "from" at all — its absence is what
+        # tells the model "this project's own memory".
+        self.assertNotIn("from", out["results"][0])
+        self.assertEqual(out["results"][0]["namespace"], "ns")
+        self.assertEqual(out["results"][1]["from"], "acme")
+
+    def test_remember_forwards_visibility_verbatim(self):
+        captured = {}
+
+        def stub(path, body, method="POST"):
+            captured["body"] = body
+            return {"id": "m1"}
+
+        p = make_provider(stub)
+        p.handle_tool_call("memory_remember", {"content": "f", "visibility": "personal"})
+        self.assertEqual(captured["body"]["visibility"], "personal")
+
+        # An ancestor name is in no client-side enum: only the server knows this
+        # namespace's chain, so the name goes through untouched.
+        p.handle_tool_call("memory_remember", {"content": "f", "visibility": "acme"})
+        self.assertEqual(captured["body"]["visibility"], "acme")
+
+        p.handle_tool_call("memory_remember", {"content": "f"})
+        self.assertNotIn("visibility", captured["body"])
+
+    def test_rejected_visibility_returns_the_servers_valid_chain(self):
+        error = 'remember: visibility "widgets" not in scope; valid: project, personal, acme'
+        p = make_provider(
+            lambda *a, **k: {},
+            result_stub=lambda path, body, method="POST": (None, error),
+        )
+        out = json.loads(
+            p.handle_tool_call("memory_remember", {"content": "f", "visibility": "widgets"})
+        )
+        self.assertFalse(out["success"])
+        # Without the server's error text the model has nothing to correct
+        # against — it would just retry the same bad name.
+        self.assertIn("valid: project, personal, acme", out["error"])
+
+
+class BriefingToolTest(unittest.TestCase):
+    def test_briefing_gets_the_header_scoped_endpoint_and_keeps_the_scope_line(self):
+        captured = {}
+
+        def stub(path, body, method="POST"):
+            captured["path"], captured["method"] = path, method
+            return {
+                "namespace": "ns",
+                "scope_header": "Scope: ns ← acme(4) ← personal(2)",
+                "pinned": [{"memory": {"id": "p1", "content": "pinned", "tier": "semantic"}}],
+                "facts": [
+                    {
+                        "memory": {"id": "f1", "content": "org", "namespace": "acme"},
+                        "from": "acme",
+                    }
+                ],
+            }
+
+        out = json.loads(
+            make_provider(stub).handle_tool_call("memory_briefing", {"scope": "full"})
+        )
+        self.assertEqual(captured["method"], "GET")
+        # Header-scoped: the namespace is never in the path — the model never
+        # names one.
+        self.assertEqual(captured["path"], "/v1/namespaces/briefing?scope=full")
+        self.assertEqual(out["scope_header"], "Scope: ns ← acme(4) ← personal(2)")
+        self.assertEqual(out["pinned"][0]["id"], "p1")
+        self.assertEqual(out["facts"][0]["from"], "acme")
+
+    def test_briefing_answers_rather_than_raising_when_memini_is_unreachable(self):
+        out = json.loads(
+            make_provider(lambda *a, **k: None).handle_tool_call("memory_briefing", {})
+        )
+        self.assertIsNone(out["briefing"])
 
 
 class MemoryForgetToolTest(unittest.TestCase):
@@ -673,3 +829,24 @@ class SaveConfigTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReinforcedFlagTest(unittest.TestCase):
+    def test_reinforced_is_surfaced_so_a_no_op_write_is_not_a_new_save(self):
+        # The fact was already known: the server strengthened the existing memory
+        # and returned its id. Dropping the flag would let the model claim a
+        # fresh save.
+        p = make_provider(
+            lambda *a, **k: {},
+            result_stub=lambda path, body, method="POST": (
+                {"id": "existing-1", "reinforced": True},
+                "",
+            ),
+        )
+        out = json.loads(p.handle_tool_call("memory_remember", {"content": "known fact"}))
+        self.assertEqual(out, {"id": "existing-1", "success": True, "reinforced": True})
+
+    def test_a_genuinely_new_write_carries_no_flag(self):
+        p = make_provider(lambda *a, **k: {"id": "new-1"})
+        out = json.loads(p.handle_tool_call("memory_remember", {"content": "novel fact"}))
+        self.assertNotIn("reinforced", out)

@@ -11,6 +11,7 @@ import {
   fitByTokens,
   approxTokens,
   meminiListPath,
+  briefingPath,
   extractMessageText,
   extractLastAssistantText,
   buildTurnContent,
@@ -461,4 +462,207 @@ test("tenant path from a config file keeps its separator", () => {
   );
   const cfg = resolveConfig({}, "/x/proj");
   assert.equal(cfg.namespace, "work/proj");
+});
+
+// --- explicit tools: scope / visibility --------------------------------------
+
+// collectTools loads the extension against a fake pi and returns the registered
+// tools by name, plus the fetch calls each one makes. The tools are what a model
+// on this harness actually sees, so the schema assertions belong here.
+async function collectTools(): Promise<{
+  byName: Record<string, any>;
+  calls: { url: string; method: string; body: any }[];
+  reply: (body: any, ok?: boolean) => void;
+}> {
+  const { default: meminiExtension } = await import("../src/index.ts?cb=tools-" + Math.random());
+  const calls: { url: string; method: string; body: any }[] = [];
+  let next: { body: any; ok: boolean } = { body: {}, ok: true };
+  globalThis.fetch = (async (url: any, init: any) => {
+    calls.push({
+      url: String(url),
+      method: init?.method || "GET",
+      body: init?.body ? JSON.parse(init.body) : undefined,
+    });
+    return {
+      ok: next.ok,
+      status: next.ok ? 200 : 400,
+      async json() {
+        return next.body;
+      },
+      async text() {
+        return typeof next.body === "string" ? next.body : JSON.stringify(next.body);
+      },
+    };
+  }) as any;
+  const tools: any[] = [];
+  meminiExtension({
+    on() {},
+    registerTool(t: any) {
+      tools.push(t);
+    },
+  } as any);
+  return {
+    byName: Object.fromEntries(tools.map((t) => [t.name, t])),
+    calls,
+    reply: (body: any, ok = true) => {
+      next = { body, ok };
+    },
+  };
+}
+
+test("briefingPath only forwards a known scope; a hallucinated one is dropped", () => {
+  assert.equal(briefingPath({}), "/v1/namespaces/briefing");
+  assert.equal(briefingPath({ scope: "everywhere" }), "/v1/namespaces/briefing?scope=everywhere");
+  // The server 400s on an unknown scope; a bad guess must not turn orientation
+  // into an error.
+  assert.equal(briefingPath({ scope: "acme/phoenix" }), "/v1/namespaces/briefing");
+  // The deprecated REST aliases are not part of the model-facing vocabulary.
+  assert.equal(briefingPath({ scope: "subtree" }), "/v1/namespaces/briefing");
+});
+
+test("memory_recall exposes scope and passes it to /v1/search", async () => {
+  const realFetch = globalThis.fetch;
+  try {
+    const { byName, calls, reply } = await collectTools();
+    const schema: any = byName.memory_recall.parameters;
+    assert.deepEqual(schema.properties.scope.enum, ["project", "full", "everywhere"]);
+    assert.ok(!schema.required?.includes("scope"), "scope is optional (the server defaults to full)");
+
+    reply({ results: [] });
+    await byName.memory_recall.execute("id", { query: "auth", scope: "everywhere" });
+    assert.equal(calls.at(-1)!.body.scope, "everywhere");
+
+    // Omitted: no scope on the wire, so the server's "full" default applies.
+    await byName.memory_recall.execute("id", { query: "auth" });
+    assert.equal("scope" in calls.at(-1)!.body, false);
+
+    // A value outside the vocabulary is dropped rather than forwarded into a 400.
+    await byName.memory_recall.execute("id", { query: "auth", scope: "subtree" });
+    assert.equal("scope" in calls.at(-1)!.body, false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("memory_recall surfaces read provenance (namespace + from) on each hit", async () => {
+  const realFetch = globalThis.fetch;
+  try {
+    const { byName, reply } = await collectTools();
+    reply({
+      results: [
+        { memory: { id: "m1", content: "own", tier: "semantic", namespace: "acme/api" }, score: 0.9 },
+        { memory: { id: "m2", content: "inherited", tier: "semantic", namespace: "acme" }, score: 0.5, from: "acme" },
+      ],
+    });
+    const out = await byName.memory_recall.execute("id", { query: "q" });
+    const { results } = JSON.parse(out.content[0].text);
+    // A primary-namespace hit carries no "from" at all — the model reads its
+    // absence as "this project's own memory".
+    assert.equal("from" in results[0], false);
+    assert.equal(results[0].namespace, "acme/api");
+    assert.equal(results[1].from, "acme");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("memory_remember forwards visibility verbatim — the server owns the ancestor vocabulary", async () => {
+  const realFetch = globalThis.fetch;
+  try {
+    const { byName, calls, reply } = await collectTools();
+    reply({ id: "m1" });
+    await byName.memory_remember.execute("id", { content: "fact", visibility: "personal" });
+    assert.equal(calls.at(-1)!.body.visibility, "personal");
+
+    // An ancestor name is not in any client-side enum: only the server knows
+    // this namespace's chain, so the name goes through untouched.
+    await byName.memory_remember.execute("id", { content: "fact", visibility: "acme" });
+    assert.equal(calls.at(-1)!.body.visibility, "acme");
+
+    await byName.memory_remember.execute("id", { content: "fact" });
+    assert.equal("visibility" in calls.at(-1)!.body, false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a rejected visibility returns the server's error (it enumerates the valid chain)", async () => {
+  const realFetch = globalThis.fetch;
+  const realError = console.error;
+  console.error = () => {};
+  try {
+    const { byName, reply } = await collectTools();
+    reply('{"error":"remember: visibility \\"widgets\\" not in scope; valid: project, personal, acme"}', false);
+    const out = await byName.memory_remember.execute("id", { content: "fact", visibility: "widgets" });
+    const res = JSON.parse(out.content[0].text);
+    assert.equal(res.success, false);
+    // Without the error text the model has nothing to correct against — it would
+    // just retry the same bad name.
+    assert.match(res.error, /valid: project, personal, acme/);
+  } finally {
+    globalThis.fetch = realFetch;
+    console.error = realError;
+  }
+});
+
+test("memory_briefing orients from the Scope line without naming a namespace", async () => {
+  const realFetch = globalThis.fetch;
+  try {
+    const { byName, calls, reply } = await collectTools();
+    reply({
+      namespace: "acme/api",
+      scope_header: "Scope: acme/api ← acme(4) ← personal(2)",
+      pinned: [{ memory: { id: "p1", content: "pinned", tier: "semantic" } }],
+      facts: [{ memory: { id: "f1", content: "org fact", tier: "semantic", namespace: "acme" }, from: "acme" }],
+    });
+    const out = await byName.memory_briefing.execute("id", { scope: "full" });
+    // Header-scoped endpoint: the namespace is never in the path.
+    assert.match(calls.at(-1)!.url, /\/v1\/namespaces\/briefing\?scope=full$/);
+    const res = JSON.parse(out.content[0].text);
+    assert.equal(res.scope_header, "Scope: acme/api ← acme(4) ← personal(2)");
+    assert.equal(res.pinned[0].id, "p1");
+    assert.equal(res.facts[0].from, "acme");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a briefing against an unreachable server answers instead of throwing into the host", async () => {
+  const realFetch = globalThis.fetch;
+  const realError = console.error;
+  console.error = () => {};
+  try {
+    const { byName } = await collectTools();
+    globalThis.fetch = (async () => {
+      throw new Error("ECONNREFUSED");
+    }) as any;
+    const out = await byName.memory_briefing.execute("id", {});
+    assert.equal(JSON.parse(out.content[0].text).briefing, null);
+  } finally {
+    globalThis.fetch = realFetch;
+    console.error = realError;
+  }
+});
+
+test("memory_remember surfaces reinforced so a no-op write is not reported as a new save", async () => {
+  const realFetch = globalThis.fetch;
+  try {
+    const { byName, reply } = await collectTools();
+    // The fact was already known: the server strengthened the existing memory and
+    // returned its id. Dropping the flag would let the model claim a fresh save.
+    reply({ id: "existing-1", reinforced: true });
+    let out = await byName.memory_remember.execute("id", { content: "known fact" });
+    assert.deepEqual(JSON.parse(out.content[0].text), {
+      id: "existing-1",
+      success: true,
+      reinforced: true,
+    });
+
+    // A genuinely new write carries no flag at all.
+    reply({ id: "new-1" });
+    out = await byName.memory_remember.execute("id", { content: "novel fact" });
+    assert.equal("reinforced" in JSON.parse(out.content[0].text), false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

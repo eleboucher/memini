@@ -19,19 +19,29 @@ memini is a memory service. To search for prior context, call the
   `episodic`, `working`)
 - `tags` (optional) — restrict to memories carrying every listed tag (AND)
 - `metadata` (optional) — restrict to memories whose metadata contains each
-  key=value pair, e.g. `{"category":"bug_fixes"}` (see `docs/categories.md`)
+  key=value pair, e.g. `{"category":"bug_fixes"}` (canonical categories below)
 - `scope` (optional) — how wide to read: `project` (just this project's own
   memories), `full` (default: project plus inherited context — ancestors, your
   personal namespace, links), or `everywhere` (full plus nested sub-projects).
   There is no per-call namespace override — namespaces are managed for you;
   read the `from` field on each result (and the briefing's Scope line) to see
   where a memory actually lives, never construct a namespace path yourself.
+- `query_rewrite` (optional) — `true` expands the query into 2-3 variants and
+  fuses the results via RRF. Slower, but better recall: reach for it when a
+  first attempt comes back thin or empty and you believe something is there.
 - `as_of` (optional) — an RFC3339 time for "what was true then" queries; returns
   facts valid at that instant, including ones since superseded.
 - `response_format` (optional) — `concise` returns each result's summary (or the
   first ~240 characters of content, truncated) instead of full content; use it
   for a token-efficient first pass over many results, then call `memory_get` on
   the ones worth reading in full. Default `detailed` returns full content.
+
+Canonical `metadata.category` values (any string is accepted, but stick to these
+so filtering works): `architecture_decisions`, `anti_patterns`,
+`task_learnings`, `tooling_setup`, `bug_fixes`, `coding_conventions`,
+`user_preferences`, `dependency_decisions`, `performance_findings`,
+`security_constraints`, `testing_patterns`, `data_model`, `api_contracts`,
+`deployment_runbook`, `team_norms`, `domain_glossary`, `experiment_results`.
 
 To browse without a query — "show me everything tagged X" or "all procedural
 memories in the `deployment_runbook` category" — call `memory_list` instead. It
@@ -49,6 +59,15 @@ short descriptive query ("JWT auth setup").
 To orient at the start of a session without a query, call `memory_briefing`
 instead: it returns pinned context, durable facts, how-to procedures, and recent
 activity in one call.
+
+To trace one memory's lineage rather than search across many, call
+`memory_history` with its `id` (from a recall or list result). It returns the
+bi-temporal supersession chain — the fact itself plus every fact it superseded
+and every fact that superseded it, oldest-first, tombstoned rows included. Each
+entry's `valid_from`/`valid_to` bound when it was true and `superseded_by` names
+what replaced it. Reach for it to answer "what did we believe before, and what
+changed it" — `as_of` tells you what was true at one instant, `memory_history`
+tells you the whole story of how a fact got to be what it is now.
 
 ## When to call
 

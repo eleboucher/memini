@@ -6,7 +6,8 @@ Native MemoryProvider: Hermes drives it directly, no MCP server.
     sync_turn        capture each exchange (episodic)
     on_pre_compress  re-inject recalled context before compaction
     on_memory_write  mirror MEMORY.md/USER.md edits into memini (semantic)
-    tools            memory_recall / memory_remember / memory_status
+    tools            memory_recall / memory_briefing / memory_list /
+                     memory_remember / memory_forget / memory_status
 
 Install: copy this directory to ~/.hermes/plugins/memini and set
 `memory.provider: memini` in ~/.hermes/config.yaml. Memory providers are
@@ -42,7 +43,7 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
@@ -89,6 +90,11 @@ DEFAULT_TEMPLATE = "{tenant}/{project}/{agent}"
 TIMEOUT = 5
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 VALID_TIERS = ("working", "episodic", "semantic", "procedural")
+# The LLM-facing semantic scope vocabulary, identical to the MCP server's
+# (internal/api/mcp: scopeEnum). The deprecated REST aliases "exact"/"subtree"
+# are deliberately NOT offered: the model makes a semantic choice, it does not
+# speak the back-compat dialect.
+VALID_SCOPES = ("project", "full", "everywhere")
 _plaintext_bearer_warned = False
 
 
@@ -403,6 +409,79 @@ def _api(
         # failure looks like "memory isn't working" with nothing to debug.
         print(f"[memini] {method} {path} failed: {e}", file=sys.stderr)
         return None
+
+
+def _api_result(
+    base: str,
+    path: str,
+    body: dict | None,
+    namespace: str,
+    secret: str,
+    method: str = "POST",
+) -> tuple[dict | None, str]:
+    """_api without the degrade-to-None: returns (data, error_text).
+
+    The explicit write tool uses it, because a rejected write is information the
+    model can act on — a `visibility` naming an unknown ancestor errors listing
+    the valid chain, which is how the model learns the topology. Swallowing that
+    into a bare "success": false leaves it nothing to correct against. Never
+    raises: a tool call must degrade into an answer, not an exception in Hermes.
+    """
+    if not _valid_url(base):
+        return None, f"invalid memini base URL: {base!r}"
+    try:
+        # MEMINI_REQUIRE_HTTPS=1 makes this raise; catch it here rather than
+        # letting a config error surface as a Hermes traceback.
+        _check_plaintext_bearer_guard(base, secret)
+        headers = {"Content-Type": "application/json", "X-Memini-Namespace": namespace}
+        if secret:
+            headers["Authorization"] = f"Bearer {secret}"
+        home = _home()
+        if home:
+            headers["X-Memini-Home"] = home
+        data = json.dumps(body).encode() if body is not None else None
+        req = Request(f"{base}{path}", data=data, headers=headers, method=method)
+        with urlopen(req, timeout=TIMEOUT) as resp:
+            raw = resp.read()
+            return (json.loads(raw) if raw else {}), ""
+    except HTTPError as e:
+        # The 4xx body is the message worth having (it enumerates the valid
+        # visibility chain); HTTPError is readable exactly once.
+        try:
+            detail = e.read().decode("utf-8", "replace").strip()
+        except Exception:  # noqa: BLE001 - a body we cannot read is not fatal
+            detail = ""
+        message = detail or f"HTTP {e.code}"
+        print(f"[memini] {method} {path} failed: {message}", file=sys.stderr)
+        return None, message
+    except (URLError, TimeoutError, ValueError, RuntimeError) as e:
+        print(f"[memini] {method} {path} failed: {e}", file=sys.stderr)
+        return None, str(e)
+
+
+def _provenance(mem: dict, from_: Any) -> dict:
+    """Render a hit's read-set origin: which namespace it lives in and, for a hit
+    off an ancestor/home/link leg, which leg it came from. Both are omitted when
+    empty, so a project-only recall carries no "from" noise at all and the model
+    reads an absent "from" as "this project's own memory"."""
+    out: dict = {}
+    if mem.get("namespace"):
+        out["namespace"] = mem["namespace"]
+    if from_:
+        out["from"] = from_
+    return out
+
+
+def _briefing_path(args: dict) -> str:
+    """Build the GET /v1/namespaces/briefing query string for memory_briefing.
+    The endpoint is header-scoped (X-Memini-Namespace), so there is no namespace
+    in the path — the model never names one. An unrecognized scope is dropped
+    rather than forwarded: the server 400s on one, and a bad guess must not turn
+    orientation into an error."""
+    scope = str(args.get("scope") or "").strip()
+    if scope not in VALID_SCOPES:
+        return "/v1/namespaces/briefing"
+    return f"/v1/namespaces/briefing?{urlencode({'scope': scope})}"
 
 
 def _list_path(args: dict) -> str:
@@ -748,6 +827,14 @@ class MeminiMemoryProvider(MemoryProvider):
     def _call(self, path: str, body: dict | None, method: str = "POST") -> dict | None:
         return _api(self._base, path, body, self._namespace, self._secret, method)
 
+    def _call_result(
+        self, path: str, body: dict | None, method: str = "POST"
+    ) -> tuple[dict | None, str]:
+        """_call without the degrade-to-None — see _api_result. Used by the
+        explicit write tool so a rejected write reaches the model with the
+        server's own error text."""
+        return _api_result(self._base, path, body, self._namespace, self._secret, method)
+
     def _call_bg(self, path: str, body: dict) -> None:
         threading.Thread(target=self._call, args=(path, body), daemon=True).start()
 
@@ -914,13 +1001,21 @@ class MeminiMemoryProvider(MemoryProvider):
         return [
             {
                 "name": "memory_recall",
-                "description": "Search long-term memory (memini) for relevant past facts and context. Call "
-                "before starting work that may have history: editing an unfamiliar file, "
-                "debugging a recurring issue, or when asked what's known about something. "
-                "Empty results mean nothing is known — proceed from first principles, never "
-                'invent a remembered fact. A degraded:"keyword_only" field in the result '
-                "means semantic search was unavailable and results came from keyword "
-                "matching alone — treat as incomplete, not exhaustive.",
+                "description": "Search prior context in long-term memory (memini) via hybrid (semantic + "
+                "keyword) retrieval, ranked by relevance, recency, and corroboration. Call "
+                "BEFORE starting work that may have history: editing an unfamiliar file, "
+                "debugging a recurring issue, making a non-obvious decision, or when asked "
+                "what's known about something. scope picks how wide to read: 'project' (just "
+                "this project), 'full' (default: project plus inherited ancestor/personal/link "
+                "context), or 'everywhere' (full plus nested sub-projects). Each result's "
+                "namespace/from fields are provenance, not a choice — an absent 'from' means "
+                "this project's own memory, otherwise it names the ancestor or personal "
+                "namespace the memory came from; read them to learn where knowledge lives, "
+                "never construct a namespace path. Empty results mean nothing is known — "
+                "proceed from first principles, never invent a remembered fact. A "
+                'degraded:"keyword_only" field in the result means semantic search was '
+                "unavailable and results came from keyword matching alone — treat as "
+                "incomplete, not exhaustive.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -944,8 +1039,43 @@ class MeminiMemoryProvider(MemoryProvider):
                             "description": "Restrict to memories whose metadata contains each "
                             'key=value pair, e.g. {"category": "bug_fixes"}.',
                         },
+                        "scope": {
+                            "type": "string",
+                            "enum": list(VALID_SCOPES),
+                            "default": "full",
+                            "description": "How wide to read: 'project' = just this project's own "
+                            "memories; 'full' (default) = project plus inherited context "
+                            "(ancestors, your personal namespace, links); 'everywhere' = full "
+                            "plus nested sub-projects.",
+                        },
                     },
                     "required": ["query"],
+                },
+            },
+            {
+                "name": "memory_briefing",
+                "description": "Layered session-start briefing for this project from long-term memory "
+                "(memini) — pinned context, durable facts, how-to procedures, and recent "
+                "activity — in one query-less call. Call it when a session opens to orient "
+                "yourself; prefer it over broad recall queries at session start. The "
+                "scope_header line ('Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← "
+                "personal(2)') spells out the ancestor chain you inherit from — read it "
+                "instead of guessing namespace paths, and name one of those ancestors as "
+                "memory_remember's visibility to share a fact up that chain. "
+                "scope='everywhere' also briefs nested sub-projects.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "scope": {
+                            "type": "string",
+                            "enum": list(VALID_SCOPES),
+                            "default": "full",
+                            "description": "How wide to brief: 'project' = just this project's own "
+                            "memories; 'full' (default) = project plus inherited context "
+                            "(ancestors, your personal namespace, links); 'everywhere' = full "
+                            "plus nested sub-projects.",
+                        },
+                    },
                 },
             },
             {
@@ -986,7 +1116,13 @@ class MeminiMemoryProvider(MemoryProvider):
                 "decision (capture the why), or after discovering a non-obvious bug or "
                 "convention. Keep memories atomic — one self-contained fact per call. Don't "
                 "store what's already in project docs or trivially recoverable from code. To "
-                "correct an existing memory, pass its id — the write updates it in place.",
+                "correct an existing memory, pass its id — the write updates it in place. "
+                "visibility decides who should know: 'project' (default) keeps it here; "
+                "'personal' follows the user everywhere; or name an ancestor from the "
+                "memory_briefing Scope line to share it up that chain. reinforced=true in the "
+                "result means the fact was ALREADY KNOWN: no new memory was created, the "
+                "existing one was strengthened, and `id` names that pre-existing memory rather "
+                "than anything you just wrote — do not report it to the user as a new save.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1017,6 +1153,15 @@ class MeminiMemoryProvider(MemoryProvider):
                             "description": "Optional topic bucket stored as metadata.category "
                             "(e.g. bug_fixes, architecture_decisions, coding_conventions) "
                             "so the memory can be browsed by subject later.",
+                        },
+                        "visibility": {
+                            "type": "string",
+                            "description": "Who should remember this: 'project' (default, this project "
+                            "only), 'personal' (about the user, follows them everywhere), or an "
+                            "ancestor namespace name read off the memory_briefing Scope line "
+                            "(e.g. the team or org level) to share it up that chain. On a durable "
+                            "write an unrecognized name errors listing the valid options. "
+                            "Episodic/working writes always stay in the project regardless.",
                         },
                     },
                     "required": ["content"],
@@ -1072,19 +1217,24 @@ class MeminiMemoryProvider(MemoryProvider):
                 body["tags"] = args["tags"]
             if args.get("metadata"):
                 body["metadata"] = args["metadata"]
+            # An unrecognized scope is dropped rather than forwarded: /v1/search
+            # 400s on one, and a hallucinated value must not turn a recall into
+            # an error.
+            if args.get("scope") in VALID_SCOPES:
+                body["scope"] = args["scope"]
             result = self._call("/v1/search", body)
             items = []
             for r in (result or {}).get("results", []):
                 mem = r.get("memory") or {}
-                items.append(
-                    {
-                        "id": mem.get("id", ""),
-                        "content": mem.get("content", ""),
-                        "summary": mem.get("summary", ""),
-                        "tier": mem.get("tier", ""),
-                        "score": r.get("score", 0),
-                    }
-                )
+                item = {
+                    "id": mem.get("id", ""),
+                    "content": mem.get("content", ""),
+                    "summary": mem.get("summary", ""),
+                    "tier": mem.get("tier", ""),
+                    "score": r.get("score", 0),
+                }
+                item.update(_provenance(mem, r.get("from")))
+                items.append(item)
             # /v1/search already carries degraded/note on `result`; pass them
             # through rather than dropping them silently.
             out = {"results": items}
@@ -1093,6 +1243,35 @@ class MeminiMemoryProvider(MemoryProvider):
                 if result.get("note"):
                     out["note"] = result["note"]
             return json.dumps(out)
+
+        if name == "memory_briefing":
+            result = self._call(_briefing_path(args), None, method="GET")
+            if result is None:
+                return json.dumps({"briefing": None, "error": "memini unavailable"})
+
+            def section(items: list | None) -> list:
+                out = []
+                for b in items or []:
+                    mem = b.get("memory") or {}
+                    item = {
+                        "id": mem.get("id", ""),
+                        "content": mem.get("content", ""),
+                        "tier": mem.get("tier", ""),
+                    }
+                    item.update(_provenance(mem, b.get("from")))
+                    out.append(item)
+                return out
+
+            return json.dumps(
+                {
+                    "namespace": result.get("namespace", ""),
+                    "scope_header": result.get("scope_header", ""),
+                    "pinned": section(result.get("pinned")),
+                    "facts": section(result.get("facts")),
+                    "procedures": section(result.get("procedures")),
+                    "recent": section(result.get("recent")),
+                }
+            )
 
         if name == "memory_list":
             result = self._call(_list_path(args), None, method="GET")
@@ -1123,10 +1302,25 @@ class MeminiMemoryProvider(MemoryProvider):
                 body["tags"] = args["tags"]
             if args.get("category"):
                 body["metadata"] = {"category": args["category"]}
-            result = self._call("/v1/memories", body)
-            return json.dumps(
-                {"id": (result or {}).get("id"), "success": result is not None}
-            )
+            # visibility is NOT validated client-side beyond trimming: 'project'
+            # and 'personal' are fixed, but any other value names an ancestor of
+            # THIS namespace, which only the server can resolve — and its error
+            # enumerates the valid chain, which is how the model learns the
+            # topology. Swallowing an unknown name here would silently write to
+            # the wrong place instead.
+            visibility = str(args.get("visibility") or "").strip()
+            if visibility:
+                body["visibility"] = visibility
+            result, error = self._call_result("/v1/memories", body)
+            if error:
+                return json.dumps({"id": None, "success": False, "error": error})
+            out = {"id": (result or {}).get("id"), "success": True}
+            # reinforced: the fact was already known, nothing new was written, and
+            # id names the pre-existing memory. Dropping the flag here would let
+            # the model report a no-op as a fresh save.
+            if (result or {}).get("reinforced"):
+                out["reinforced"] = True
+            return json.dumps(out)
 
         if name == "memory_forget":
             mem_id = args.get("id")

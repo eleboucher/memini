@@ -53,8 +53,20 @@ function fakeClient(): MeminiClient & { calls: RecordedCall[] } {
         ? { results: [{ memory: { content: "hit", summary: "", tier: "semantic" }, score: 0.9 }] }
         : { id: "m1" };
     },
+    async postJsonResult(path: string, body: unknown, ns?: string) {
+      calls.push({ method: "POST", path, body, ns });
+      return { ok: true, data: { id: "m1" } };
+    },
     async getJson(path: string, ns?: string) {
       calls.push({ method: "GET", path, ns });
+      if (path.includes("briefing")) {
+        return {
+          namespace: "ns",
+          scope_header: "Scope: ns ← acme(4)",
+          pinned: [{ memory: { id: "p1", content: "pinned", tier: "semantic" } }],
+          facts: [{ memory: { id: "f1", content: "org", tier: "semantic", namespace: "acme" }, from: "acme" }],
+        };
+      }
       return { memories: [{ id: "m1", content: "c", tier: "procedural", tags: ["auth"], metadata: { category: "bug_fixes" } }] };
     },
     async deleteJson(path: string, ns?: string) {
@@ -427,7 +439,10 @@ function collectTools(cfg: ResolvedConfig = baseCfg(), ctx: Record<string, unkno
 test("registerMeminiTools: registers one optional factory naming all tools", () => {
   const { opts } = collectTools();
   assert.equal(opts?.optional, true);
-  assert.deepEqual([...(opts?.names ?? [])].sort(), ["memory_forget", "memory_list", "memory_recall", "memory_remember"]);
+  assert.deepEqual(
+    [...(opts?.names ?? [])].sort(),
+    ["memory_briefing", "memory_forget", "memory_list", "memory_recall", "memory_remember"],
+  );
 });
 
 test("registerMeminiTools: memory_recall shapes the request body from typed params", async () => {
@@ -443,6 +458,52 @@ test("registerMeminiTools: memory_recall shapes the request body from typed para
     tags: ["auth"],
     metadata: { category: "bug_fixes" },
   });
+});
+
+test("registerMeminiTools: memory_recall exposes scope and forwards only the known vocabulary", async () => {
+  const { byName, client } = collectTools();
+  const schema: any = byName.memory_recall.parameters;
+  assert.deepEqual(schema.properties.scope.enum, ["project", "full", "everywhere"]);
+
+  await byName.memory_recall.execute("id", { query: "q", scope: "everywhere" });
+  assert.equal((client.calls.at(-1)?.body as any).scope, "everywhere");
+
+  // Omitted: nothing on the wire, so the server's "full" default applies.
+  await byName.memory_recall.execute("id", { query: "q" });
+  assert.equal("scope" in (client.calls.at(-1)?.body as any), false);
+
+  // The deprecated REST alias is not model-facing; forwarding it would 400.
+  await byName.memory_recall.execute("id", { query: "q", scope: "subtree" });
+  assert.equal("scope" in (client.calls.at(-1)?.body as any), false);
+});
+
+test("registerMeminiTools: memory_remember forwards visibility verbatim — the server owns the chain", async () => {
+  const { byName, client } = collectTools();
+  await byName.memory_remember.execute("id", { content: "fact", visibility: "personal" });
+  assert.equal((client.calls.at(-1)?.body as any).visibility, "personal");
+
+  // An ancestor name is in no client-side enum: only the server knows this
+  // namespace's chain, so the name goes through untouched.
+  await byName.memory_remember.execute("id", { content: "fact", visibility: "acme" });
+  assert.equal((client.calls.at(-1)?.body as any).visibility, "acme");
+
+  await byName.memory_remember.execute("id", { content: "fact" });
+  assert.equal("visibility" in (client.calls.at(-1)?.body as any), false);
+});
+
+test("registerMeminiTools: memory_briefing GETs the header-scoped briefing and keeps the Scope line", async () => {
+  const { byName, client } = collectTools();
+  const out = await byName.memory_briefing.execute("id", { scope: "full" });
+  const call = client.calls.at(-1);
+  // Header-scoped endpoint: the namespace is never in the path.
+  assert.equal(call?.path, "/v1/namespaces/briefing?scope=full");
+  const res = JSON.parse(out.content[0].text);
+  assert.equal(res.scope_header, "Scope: ns ← acme(4)");
+  assert.equal(res.pinned[0].id, "p1");
+  // Provenance survives: an inherited fact says which ancestor it came from, and
+  // a primary-namespace one carries no "from" at all.
+  assert.equal(res.facts[0].from, "acme");
+  assert.equal("from" in res.pinned[0], false);
 });
 
 test("registerMeminiTools: memory_remember drops invalid/omitted tier so the server classifies", async () => {

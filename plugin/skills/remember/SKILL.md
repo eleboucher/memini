@@ -20,9 +20,14 @@ tool with:
   always-relevant fact (the user's identity, a hard constraint) `pinned` so it
   surfaces in every session briefing
 - `metadata.category` (optional) — a topic bucket so the memory can be browsed
-  and filtered by subject later (e.g. `bug_fixes`, `architecture_decisions`,
-  `coding_conventions`). Use a canonical value from `docs/categories.md`. This is
-  orthogonal to `tier`: tier is the memory's _kind_, category is its _topic_.
+  and filtered by subject later. This is orthogonal to `tier`: tier is the
+  memory's _kind_, category is its _topic_. Any string is accepted, but pick one
+  of the canonical values so filtering keeps working: `architecture_decisions`,
+  `anti_patterns`, `task_learnings`, `tooling_setup`, `bug_fixes`,
+  `coding_conventions`, `user_preferences`, `dependency_decisions`,
+  `performance_findings`, `security_constraints`, `testing_patterns`,
+  `data_model`, `api_contracts`, `deployment_runbook`, `team_norms`,
+  `domain_glossary`, `experiment_results`.
 - `visibility` (optional) — who should know this: `project` (default, this
   project only), `personal` (about the user, follows them everywhere), or an
   ancestor namespace name read off the `memory_briefing` Scope line (e.g. the
@@ -42,6 +47,10 @@ tool with:
 - `stored: false` — the write was dropped by the episodic value gate (low-signal
   content, e.g. too short); not an error, just not saved. Rephrase with more
   substance if it's actually worth keeping.
+- `reinforced: true` — the fact was already known: no new memory was created, the
+  existing one was strengthened, and `id` names that pre-existing memory rather
+  than anything you just wrote. Don't report it to the user as a new save, and be
+  careful updating or forgetting that id.
 - `merge_hint` — present when the content nearly duplicates an existing memory
   (`merge_hint.similar_id`, `.similar_content`, `.score`). The new content was
   still stored as its own memory; call the `memory_update` MCP tool with

@@ -37,8 +37,25 @@ function fakeClient() {
         ? { results: [{ memory: { id: "m1", content: "hit", summary: "", tier: "semantic" }, score: 0.9 }] }
         : { id: "m1" };
     },
+    // The write tools use postJsonResult so a rejected write reaches the model
+    // with the server's own error text (see MeminiClient.postJsonResult).
+    async postJsonResult(path, body, ns) {
+      calls.push({ method: "POST", path, body, ns });
+      if (body?.visibility === "widgets") {
+        return { ok: false, error: 'remember: visibility "widgets" not in scope; valid: project, personal, acme' };
+      }
+      return { ok: true, data: { id: "m1" } };
+    },
     async getJson(path, ns) {
       calls.push({ method: "GET", path, ns });
+      if (path.includes("briefing")) {
+        return {
+          namespace: "ns",
+          scope_header: "Scope: ns ← acme(4) ← personal(2)",
+          pinned: [{ memory: { id: "p1", content: "pinned", tier: "semantic" } }],
+          facts: [{ memory: { id: "f1", content: "org", tier: "semantic", namespace: "acme" }, from: "acme" }],
+        };
+      }
       return { memories: [{ id: "m1", content: "c", tier: "procedural", tags: ["auth"], metadata: { category: "bug_fixes" } }] };
     },
     async deleteJson(path, ns) {
@@ -267,7 +284,7 @@ test("register is synchronous even with expose_tools on (OpenClaw contract)", ()
     "register must not be an async function",
   );
   // Tools are wired before register returns — not deferred (the guarded api would drop them).
-  assert.deepEqual(names.sort(), ["memory_forget", "memory_list", "memory_recall", "memory_remember"]);
+  assert.deepEqual(names.sort(), ["memory_briefing", "memory_forget", "memory_list", "memory_recall", "memory_remember"]);
 });
 
 test("register does not touch registerTool when expose_tools is off", async () => {
@@ -295,7 +312,7 @@ test("register wires the memory tools when expose_tools is on", async () => {
       names.push(...(opts?.names ?? []));
     },
   });
-  assert.deepEqual(names.sort(), ["memory_forget", "memory_list", "memory_recall", "memory_remember"]);
+  assert.deepEqual(names.sort(), ["memory_briefing", "memory_forget", "memory_list", "memory_recall", "memory_remember"]);
 });
 
 // Production OpenClaw's api.registerHook(name, handler) rejects the positional
@@ -727,7 +744,7 @@ test("tools register as a single optional factory naming all tools", async () =>
   assert.equal(opts.optional, true, "factory must register optional");
   assert.deepEqual(
     [...opts.names].sort(),
-    ["memory_forget", "memory_list", "memory_recall", "memory_remember"],
+    ["memory_briefing", "memory_forget", "memory_list", "memory_recall", "memory_remember"],
     "opts.names must list every tool so the host can match the factory by name",
   );
 });
@@ -971,4 +988,118 @@ test("an HTTP error is logged even when fallback_on_error degrades it", async ()
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+// --- scope / visibility / briefing (the cascade vocabulary, PR #36) ----------
+//
+// These tools are this harness's whole model-facing surface — it does not proxy
+// MCP — so a capability missing from the schema here is a capability the model
+// simply does not have.
+
+test("memory_recall exposes scope and forwards only the model-facing vocabulary", async () => {
+  const client = fakeClient();
+  const { byName } = await collectTools(client, { namespace: "ns", namespace_per_agent: false });
+  assert.deepEqual(byName.memory_recall.parameters.properties.scope.enum, ["project", "full", "everywhere"]);
+
+  await byName.memory_recall.execute("id", { query: "q", scope: "project" });
+  assert.equal(client.calls.at(-1).body.scope, "project");
+
+  // Omitted: nothing on the wire, so the server's "full" default applies.
+  await byName.memory_recall.execute("id", { query: "q" });
+  assert.equal("scope" in client.calls.at(-1).body, false);
+
+  // "exact"/"subtree" are deprecated REST aliases, not part of the model's
+  // vocabulary — forwarding one would be a 400.
+  await byName.memory_recall.execute("id", { query: "q", scope: "exact" });
+  assert.equal("scope" in client.calls.at(-1).body, false);
+});
+
+test("memory_recall passes read provenance through so the model can learn the topology", async () => {
+  const client = fakeClient();
+  client.postJson = async (path, body, ns) => {
+    client.calls.push({ method: "POST", path, body, ns });
+    return {
+      results: [
+        { memory: { id: "m1", content: "own", tier: "semantic", namespace: "ns" }, score: 0.9 },
+        { memory: { id: "m2", content: "inherited", tier: "semantic", namespace: "acme" }, score: 0.5, from: "acme" },
+      ],
+    };
+  };
+  const { byName } = await collectTools(client, { namespace: "ns", namespace_per_agent: false });
+  const out = await byName.memory_recall.execute("id", { query: "q" });
+  const { results } = JSON.parse(out.content[0].text);
+  // A primary-namespace hit carries no "from" at all — its absence is what tells
+  // the model "this project's own memory".
+  assert.equal("from" in results[0], false);
+  assert.equal(results[0].namespace, "ns");
+  assert.equal(results[1].from, "acme");
+});
+
+test("memory_remember forwards visibility verbatim; the server owns the ancestor vocabulary", async () => {
+  const client = fakeClient();
+  const { byName } = await collectTools(client, { namespace: "ns", namespace_per_agent: false });
+  await byName.memory_remember.execute("id", { content: "fact", visibility: "personal" });
+  assert.deepEqual(client.calls.at(-1).body, { content: "fact", visibility: "personal" });
+
+  // An ancestor name is in no client-side enum: only the server can resolve this
+  // namespace's chain, so the name goes through untouched.
+  await byName.memory_remember.execute("id", { content: "fact", visibility: "acme" });
+  assert.equal(client.calls.at(-1).body.visibility, "acme");
+
+  await byName.memory_remember.execute("id", { content: "fact" });
+  assert.equal("visibility" in client.calls.at(-1).body, false);
+});
+
+test("a rejected visibility reaches the model with the valid chain, not a bare failure", async () => {
+  const client = fakeClient();
+  const { byName } = await collectTools(client, { namespace: "ns", namespace_per_agent: false });
+  const out = await byName.memory_remember.execute("id", { content: "fact", visibility: "widgets" });
+  const res = JSON.parse(out.content[0].text);
+  assert.equal(res.success, false);
+  // Without the server's error text the model has nothing to correct against —
+  // it would just retry the same bad name.
+  assert.match(res.error, /valid: project, personal, acme/);
+});
+
+test("memory_briefing GETs the header-scoped briefing and keeps the Scope line", async () => {
+  const client = fakeClient();
+  const { byName } = await collectTools(client, { namespace: "ns", namespace_per_agent: false });
+  const out = await byName.memory_briefing.execute("id", { scope: "everywhere" });
+  const call = client.calls.at(-1);
+  assert.equal(call.method, "GET");
+  // Header-scoped: the namespace is never in the path — the model never names one.
+  assert.equal(call.path, "/v1/namespaces/briefing?scope=everywhere");
+  assert.equal(call.ns, "ns");
+  const res = JSON.parse(out.content[0].text);
+  assert.equal(res.scope_header, "Scope: ns ← acme(4) ← personal(2)");
+  assert.equal(res.pinned[0].id, "p1");
+  assert.equal(res.facts[0].from, "acme");
+});
+
+test("memory_briefing answers rather than throwing when memini is unreachable", async () => {
+  const client = fakeClient();
+  client.getJson = async () => null; // the client's degrade path
+  const { byName } = await collectTools(client, { namespace: "ns", namespace_per_agent: false });
+  const out = await byName.memory_briefing.execute("id", {});
+  assert.equal(JSON.parse(out.content[0].text).briefing, null);
+});
+
+test("memory_remember surfaces reinforced so a no-op write is not reported as a new save", async () => {
+  const client = fakeClient();
+  // The fact was already known: the server strengthened the existing memory and
+  // returned its id. Dropping the flag would let the model claim a fresh save.
+  client.postJsonResult = async (path, body, ns) => {
+    client.calls.push({ method: "POST", path, body, ns });
+    return { ok: true, data: { id: "existing-1", reinforced: true } };
+  };
+  const { byName } = await collectTools(client, { namespace: "ns", namespace_per_agent: false });
+  const out = await byName.memory_remember.execute("id", { content: "known fact" });
+  assert.deepEqual(JSON.parse(out.content[0].text), { id: "existing-1", success: true, reinforced: true });
+});
+
+test("a genuinely new write carries no reinforced flag", async () => {
+  const client = fakeClient();
+  const { byName } = await collectTools(client, { namespace: "ns", namespace_per_agent: false });
+  const out = await byName.memory_remember.execute("id", { content: "novel fact" });
+  assert.equal("reinforced" in JSON.parse(out.content[0].text), false);
 });
