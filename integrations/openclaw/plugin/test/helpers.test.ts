@@ -8,7 +8,9 @@ import {
   effectiveNamespace,
   fitByTokens,
   meminiListPath,
+  registerMeminiCommands,
   registerMeminiTools,
+  resolveBaseNamespace,
   resolveConfig,
   sessionIdentity,
   shouldSkipSystemTurn,
@@ -16,11 +18,24 @@ import {
   stripRuntimePreambles,
   type ResolvedConfig,
 } from "../src/index.ts";
+import { readOverride, writeOverride } from "@memini/client";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // A developer shell may export the real memini config; clear it so resolveConfig
 // tests see the documented defaults (the plugin now reads MEMINI_BASE_URL /
-// MEMINI_URL as a fallback under the plugin config).
-for (const k of ["MEMINI_BASE_URL", "MEMINI_URL", "MEMINI_API_KEY", "MEMINI_TOKEN", "MEMINI_HOME"]) delete process.env[k];
+// MEMINI_URL as a fallback under the plugin config). MEMINI_NAMESPACE is in the
+// list because the namespace chain now honors it — an exported one (the fish
+// universal variable this feature exists for) would otherwise fail every
+// default-namespace assertion below.
+for (const k of ["MEMINI_BASE_URL", "MEMINI_URL", "MEMINI_API_KEY", "MEMINI_TOKEN", "MEMINI_HOME", "MEMINI_NAMESPACE"]) {
+  delete process.env[k];
+}
+// The override file lives under $XDG_CONFIG_HOME/memini; point it at a temp dir
+// so the developer's real overrides.json (keyed by THIS repo, which is the
+// gateway's cwd when the tests run) cannot reach the defaults below.
+process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "openclaw-memini-test-"));
 
 type MeminiClient = Parameters<typeof registerMeminiTools>[1];
 
@@ -469,6 +484,176 @@ test("resolveConfig: recall_max_tokens — config wins, else MEMINI_INJECT_RECAL
   } finally {
     if (prev === undefined) delete process.env.MEMINI_INJECT_RECALL_MAX_TOK;
     else process.env.MEMINI_INJECT_RECALL_MAX_TOK = prev;
+  }
+});
+
+// --- namespace chain: override > MEMINI_NAMESPACE > config > "openclaw" ------
+
+function tmpEnv(extra: Record<string, string> = {}): Record<string, string | undefined> {
+  return { XDG_CONFIG_HOME: mkdtempSync(join(tmpdir(), "openclaw-memini-xdg-")), ...extra };
+}
+
+function tmpProject(): string {
+  return mkdtempSync(join(tmpdir(), "openclaw-memini-proj-"));
+}
+
+test("resolveBaseNamespace: the default is still the literal openclaw, with no cwd derivation", () => {
+  // Load-bearing: this is a gateway harness where the cwd is usually meaningless.
+  // Deriving from it would silently relocate every existing install's memory.
+  const cwd = tmpProject();
+  assert.deepEqual(resolveBaseNamespace(undefined, tmpEnv(), cwd), { namespace: "openclaw", source: "default" });
+  assert.deepEqual(resolveBaseNamespace({}, tmpEnv(), undefined), { namespace: "openclaw", source: "default" });
+});
+
+test("resolveBaseNamespace: MEMINI_NAMESPACE is honored, and an explicit config value beats the default", () => {
+  const cwd = tmpProject();
+  // The bug: the plugin used to ignore MEMINI_NAMESPACE entirely.
+  assert.deepEqual(resolveBaseNamespace({}, tmpEnv({ MEMINI_NAMESPACE: "team/eu" }), cwd), {
+    namespace: "team/eu",
+    source: "env",
+  });
+  // Config loses to the env pin, wins over the default.
+  assert.equal(resolveBaseNamespace({ namespace: "cfg" }, tmpEnv({ MEMINI_NAMESPACE: "pinned" }), cwd).namespace, "pinned");
+  assert.deepEqual(resolveBaseNamespace({ namespace: "cfg" }, tmpEnv(), cwd), { namespace: "cfg", source: "config" });
+});
+
+test("resolveBaseNamespace: the override beats MEMINI_NAMESPACE and the config value", () => {
+  const env = tmpEnv({ MEMINI_NAMESPACE: "global-pin" });
+  const cwd = tmpProject();
+  writeOverride(cwd, "acme/api", { env });
+
+  assert.deepEqual(resolveBaseNamespace({ namespace: "cfg" }, env, cwd), { namespace: "acme/api", source: "override" });
+  // Without it, the env pin is what a caller would have been stuck with — the
+  // counterfactual line describeSettings prints, and the only way to see past a
+  // file-backed override.
+  assert.deepEqual(resolveBaseNamespace({ namespace: "cfg" }, env, cwd, { ignoreOverride: true }), {
+    namespace: "global-pin",
+    source: "env",
+  });
+  // …and resolveConfig, which is what the plugin actually runs on.
+  assert.equal(resolveConfig({ namespace: "cfg" }, env, cwd).namespace, "acme/api");
+});
+
+test("prefix / per-agent template still apply on top of a resolved namespace", () => {
+  const env = tmpEnv({ MEMINI_NAMESPACE: "team" });
+  const cwd = tmpProject();
+  const cfg = resolveConfig({ namespace_prefix: "work", namespace_template: "{namespace}-{agent}" }, env, cwd);
+  assert.equal(cfg.namespace, "team");
+  assert.equal(effectiveNamespace(cfg, { agentId: "miso" }), "work/team-miso");
+});
+
+// A minimal OpenClaw host: enough of the plugin api for the commands to register.
+function fakeApi() {
+  const commands: Record<string, (ctx: any) => Promise<{ text: string }>> = {};
+  const api = {
+    logger: { warn() {} },
+    registerCommand(def: any) {
+      commands[def.name] = def.handler;
+    },
+  };
+  return { api, commands };
+}
+
+test("registerMeminiCommands: registers memini:status and memini:namespace", () => {
+  const { api, commands } = fakeApi();
+  registerMeminiCommands(api, resolveConfig({}), {});
+  assert.deepEqual(Object.keys(commands).sort(), ["memini:namespace", "memini:status"]);
+});
+
+test("memini:namespace sets and clears the override; hooks and tools follow it live", async () => {
+  const cwd = tmpProject();
+  const prevXdg = process.env.XDG_CONFIG_HOME;
+  const prevPwd = process.cwd();
+  process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "openclaw-memini-xdg-"));
+  process.chdir(cwd); // the commands key the override off the gateway's cwd
+  try {
+    const { api, commands } = fakeApi();
+    const cfg = resolveConfig({ namespace_per_agent: false });
+    registerMeminiCommands(api, cfg, {});
+
+    assert.match((await commands["memini:namespace"]({ args: "" })).text, /No override/);
+
+    const set = await commands["memini:namespace"]({ args: "acme/api" });
+    assert.match(set.text, /namespace override set: openclaw -> acme\/api/);
+    assert.equal(readOverride(cwd, { env: process.env })?.namespace, "acme/api");
+    // Every hook and tool re-reads cfg.namespace per call, so the next turn already
+    // targets the override — no gateway restart, no split brain.
+    assert.equal(cfg.namespace, "acme/api");
+    assert.equal(effectiveNamespace(cfg, {}), "acme/api");
+
+    const cleared = await commands["memini:namespace"]({ args: "--clear" });
+    assert.match(cleared.text, /namespace override cleared: acme\/api -> openclaw/);
+    assert.equal(cfg.namespace, "openclaw");
+    assert.match((await commands["memini:namespace"]({ args: "--clear" })).text, /nothing to clear/);
+
+    // The namespace rides on the X-Memini-Namespace header: CR/LF would split it.
+    const bad = await commands["memini:namespace"]({ args: "evil\r\nX-Evil: 1" });
+    assert.match(bad.text, /invalid namespace/);
+    assert.equal(readOverride(cwd, { env: process.env }), undefined);
+    assert.equal(cfg.namespace, "openclaw", "a rejected namespace must not be applied");
+  } finally {
+    process.chdir(prevPwd);
+    if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prevXdg;
+  }
+});
+
+test("memini:status reports the read set, redacts the bearer, and reads a 404 /healthz as not-exposed", async () => {
+  const realFetch = globalThis.fetch;
+  const prevKey = process.env.MEMINI_API_KEY;
+  const requests: { url: string; headers: any }[] = [];
+  globalThis.fetch = (async (url: any, init: any) => {
+    requests.push({ url: String(url), headers: init?.headers });
+    if (String(url).includes("/v1/namespaces/read-set")) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { entries: [{ namespace: "openclaw-miso", origin: "self", tiers: [] }] };
+        },
+      };
+    }
+    // A remote memini behind an ingress routes only /v1 and /mcp: /healthz 404s
+    // while the server is perfectly healthy. That is "not exposed", not "down".
+    return { ok: false, status: 404, async json() { return {}; } };
+  }) as any;
+  try {
+    process.env.MEMINI_API_KEY = "sk-abcdefghijklmnop4f2a";
+    const { api, commands } = fakeApi();
+    registerMeminiCommands(api, resolveConfig({}), {});
+    const { text } = await commands["memini:status"]({ agentId: "miso" });
+
+    assert.match(text, /reachable\s+yes/);
+    assert.match(text, /\/healthz not routed/);
+    assert.match(text, /READ SET/);
+    // The per-agent template is applied to what this surface actually sends.
+    assert.match(text, /this surface sends\s+openclaw-miso/);
+    assert.match(text, /base\s+openclaw\s+<- default/);
+    // A settings dump is the likeliest place a token gets pasted into an issue.
+    assert.doesNotMatch(text, /sk-abcdefghijklmnop4f2a/);
+    assert.match(text, /sk-…4f2a/);
+    const readSet = requests.find((r) => r.url.includes("read-set"))!;
+    assert.equal(readSet.headers["X-Memini-Namespace"], "openclaw-miso");
+    assert.equal(readSet.headers.Authorization, "Bearer sk-abcdefghijklmnop4f2a");
+  } finally {
+    globalThis.fetch = realFetch;
+    if (prevKey === undefined) delete process.env.MEMINI_API_KEY;
+    else process.env.MEMINI_API_KEY = prevKey;
+  }
+});
+
+test("memini:status reports an unreachable server rather than throwing into the host", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("ECONNREFUSED");
+  }) as any;
+  try {
+    const { api, commands } = fakeApi();
+    registerMeminiCommands(api, resolveConfig({}), {});
+    const { text } = await commands["memini:status"]({});
+    assert.match(text, /reachable\s+NO/);
+  } finally {
+    globalThis.fetch = realFetch;
   }
 });
 

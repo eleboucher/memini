@@ -11,7 +11,8 @@
     "skipLibCheck": true,
     "baseUrl": ".",
     "paths": {
-      "@memini/namespace-resolver": ["../../../packages/namespace-resolver/src/index.ts"]
+      "@memini/namespace-resolver": ["../../../packages/namespace-resolver/src/index.ts"],
+      "@memini/client": ["../../../packages/memini-client/src/index.ts"]
     }
   },
   "include": ["src/**/*.ts"],

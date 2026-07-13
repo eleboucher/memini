@@ -120,7 +120,10 @@ class ListPathTest(unittest.TestCase):
 class ToolSchemasTest(unittest.TestCase):
     def test_tools(self):
         names = [t["name"] for t in memini.MeminiMemoryProvider().get_tool_schemas()]
-        self.assertEqual(sorted(names), ["memory_forget", "memory_list", "memory_recall", "memory_remember"])
+        self.assertEqual(
+            sorted(names),
+            ["memory_forget", "memory_list", "memory_recall", "memory_remember", "memory_status"],
+        )
 
 
 class MemoryForgetToolTest(unittest.TestCase):
@@ -466,6 +469,159 @@ class ResolveTenantTest(unittest.TestCase):
         p.initialize("sess-tmpl")
         # proj is not a git repo, so {project} falls back to the cwd basename.
         self.assertEqual(p._namespace, "work-proj")
+
+
+class NamespaceOverrideTest(unittest.TestCase):
+    """The per-project override in $XDG_CONFIG_HOME/memini/overrides.json — the
+    file the client plugins write and `memini doctor` reads."""
+
+    def _write_overrides(self, overrides, raw=None):
+        xdg = tempfile.mkdtemp(prefix="memini-test-config-")
+        os.makedirs(os.path.join(xdg, "memini"))
+        with open(os.path.join(xdg, "memini", "overrides.json"), "w") as f:
+            f.write(raw if raw is not None else json.dumps({"version": 1, "overrides": overrides}))
+        prev = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = xdg
+        self.addCleanup(lambda: os.environ.__setitem__("XDG_CONFIG_HOME", prev))
+
+    def _in(self, cwd):
+        prev_cwd = os.getcwd()
+        os.chdir(cwd)
+        self.addCleanup(lambda: os.chdir(prev_cwd))
+        os.environ["MEMINI_URL"] = "http://localhost:8080"
+        p = memini.MeminiMemoryProvider()
+        p.initialize("sess-override")
+        return p
+
+    def test_override_beats_the_env_pin(self):
+        # The whole point of the ordering: a globally exported MEMINI_NAMESPACE
+        # pins every repo on the machine, and if it won here, setting an override
+        # would silently do nothing on exactly the machines that need one.
+        proj = os.path.realpath(tempfile.mkdtemp(prefix="memini-override-"))
+        self._write_overrides({proj: {"namespace": "acme/api", "setAt": "2026-07-12T20:30:00Z"}})
+        os.environ["MEMINI_NAMESPACE"] = "pinned"
+        self.addCleanup(lambda: os.environ.pop("MEMINI_NAMESPACE", None))
+        p = self._in(proj)
+        self.assertEqual(p._namespace, "acme/api")
+        self.assertEqual(p._namespace_source, "override")
+
+    def test_override_is_keyed_on_the_git_toplevel(self):
+        # An override set at the top of a repo must still apply when hermes runs
+        # three directories down.
+        import subprocess
+
+        repo = os.path.realpath(tempfile.mkdtemp(prefix="memini-override-repo-"))
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        nested = os.path.join(repo, "services", "api")
+        os.makedirs(nested)
+        self._write_overrides({repo: {"namespace": "acme/api", "setAt": ""}})
+        os.environ.pop("MEMINI_NAMESPACE", None)
+        self.assertEqual(memini._override_key(nested), repo)
+        self.assertEqual(self._in(nested)._namespace, "acme/api")
+
+    def test_malformed_or_absent_file_degrades_to_automatic_resolution(self):
+        proj = os.path.realpath(tempfile.mkdtemp(prefix="memini-override-"))
+        os.environ.pop("MEMINI_NAMESPACE", None)
+        # Absent: the module-level XDG temp dir holds no overrides.json.
+        self.assertIsNone(memini._read_override(proj))
+        # Hand-edited into invalid JSON: degrade, never raise into hermes.
+        self._write_overrides(None, raw="{ not json")
+        self.assertIsNone(memini._read_override(proj))
+        self.assertEqual(self._in(proj)._namespace, os.path.basename(proj))
+
+    def test_wrong_shape_and_blank_namespace_are_not_overrides(self):
+        proj = os.path.realpath(tempfile.mkdtemp(prefix="memini-override-"))
+        self._write_overrides(None, raw=json.dumps({"version": 1, "overrides": []}))
+        self.assertIsNone(memini._read_override(proj))
+        self._write_overrides({proj: {"namespace": "   "}})
+        self.assertIsNone(memini._read_override(proj))
+
+    def test_empty_xdg_falls_back_to_home_overrides(self):
+        prev = os.environ.get("XDG_CONFIG_HOME")
+        self.addCleanup(lambda: os.environ.__setitem__("XDG_CONFIG_HOME", prev))
+        os.environ["XDG_CONFIG_HOME"] = ""
+        self.assertEqual(
+            str(memini._overrides_path()),
+            os.path.join(os.path.expanduser("~"), ".config", "memini", "overrides.json"),
+        )
+
+
+class StatusToolTest(unittest.TestCase):
+    ENV = (
+        "MEMINI_NAMESPACE",
+        "MEMINI_BASE_URL",
+        "MEMINI_URL",
+        "MEMINI_API_KEY",
+        "MEMINI_TOKEN",
+        "MEMINI_HOME",
+    )
+
+    def setUp(self):
+        for k in self.ENV:
+            os.environ.pop(k, None)
+        self.addCleanup(lambda: [os.environ.pop(k, None) for k in self.ENV])
+        self.proj = os.path.realpath(tempfile.mkdtemp(prefix="memini-status-"))
+        prev_cwd = os.getcwd()
+        os.chdir(self.proj)
+        self.addCleanup(lambda: os.chdir(prev_cwd))
+
+    def _status(self):
+        p = memini.MeminiMemoryProvider()
+        p.initialize("sess-status")
+        return p.handle_tool_call("memory_status", {})
+
+    def test_redact_fingerprints_a_token_and_elides_a_short_one(self):
+        self.assertEqual(memini._redact("sk-0123456789abcd4f2a"), "sk-…4f2a")
+        self.assertEqual(memini._redact("short"), "***")
+        self.assertEqual(memini._redact(""), "")
+        self.assertTrue(memini._is_sensitive("MEMINI_API_KEY"))
+        self.assertTrue(memini._is_sensitive("MEMINI_TOKEN"))
+        self.assertFalse(memini._is_sensitive("MEMINI_BASE_URL"))
+
+    def test_status_exposes_a_global_env_pin_and_redacts_the_token(self):
+        os.environ["MEMINI_BASE_URL"] = "http://memini.example.com"
+        os.environ["MEMINI_NAMESPACE"] = "pinned"
+        os.environ["MEMINI_API_KEY"] = "sk-0123456789abcd4f2a"
+        out = self._status()
+        # Provenance, not just the value: "pinned <- env", and what the project
+        # would otherwise resolve to.
+        self.assertIn("<- env", out)
+        self.assertIn(os.path.basename(self.proj), out)
+        self.assertIn("global-namespace-pin", out)
+        self.assertIn("plaintext-bearer", out)
+        # The secret is fingerprinted, never printed.
+        self.assertNotIn("0123456789", out)
+        self.assertIn("sk-…4f2a", out)
+
+    def test_status_shows_what_an_active_override_is_masking(self):
+        xdg = tempfile.mkdtemp(prefix="memini-test-config-")
+        os.makedirs(os.path.join(xdg, "memini"))
+        with open(os.path.join(xdg, "memini", "overrides.json"), "w") as f:
+            json.dump(
+                {"version": 1, "overrides": {self.proj: {"namespace": "acme/api", "setAt": "2026-07-12T20:30:00Z"}}},
+                f,
+            )
+        prev = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = xdg
+        self.addCleanup(lambda: os.environ.__setitem__("XDG_CONFIG_HOME", prev))
+        os.environ["MEMINI_NAMESPACE"] = "pinned"
+        out = self._status()
+        self.assertIn("acme/api", out)
+        self.assertIn("without the override", out)
+        self.assertIn("override-active", out)
+        # An override IS the fix for a global pin; it must not also nag about one.
+        self.assertNotIn("global-namespace-pin", out)
+
+    def test_status_flags_a_namespace_resolved_before_the_override_was_set(self):
+        # The namespace is resolved once, in initialize; an override set
+        # mid-session only reaches the wire after a restart. Say so rather than
+        # reporting a namespace this session is not actually using.
+        p = memini.MeminiMemoryProvider()
+        p.initialize("sess-restart")
+        report = memini._describe_settings(self.proj, in_use="stale-namespace")
+        codes = [w["code"] for w in report["warnings"]]
+        self.assertIn("restart-required", codes)
+        self.assertIn("resolved at startup", memini._render_settings(report))
 
 
 class IsAvailableTest(unittest.TestCase):

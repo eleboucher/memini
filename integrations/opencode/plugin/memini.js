@@ -17,7 +17,7 @@
  */
 
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 
@@ -136,25 +136,112 @@ function resolveConfigNamespace(cwd) {
   return ns || null;
 }
 
+// --- Namespace override ---------------------------------------------------
+//
+// $XDG_CONFIG_HOME/memini/overrides.json (else ~/.config/memini/overrides.json)
+// holds the per-project namespace a user set deliberately. It is a shared
+// contract: the Claude Code plugin writes it, `memini doctor` reads it, and
+// every harness must agree about which namespace is in force — an override that
+// only some of them honor is worse than none at all.
+//
+// This plugin ships standalone and dependency-free from npm, so it cannot
+// import @memini/client; the reader below is the whole contract (a JSON file
+// plus a `git rev-parse`) and stays a copy, the same trade already made for
+// createPlaintextBearerAuthGuard and the injection-budget helpers. Keep the
+// contract identical when both sides change.
+
+// overridesPath resolves the overrides file. Exported for testing / status.
+export function overridesPath(env = process.env) {
+  const xdg = env.XDG_CONFIG_HOME;
+  const base = xdg && String(xdg).trim() ? String(xdg) : join(homedir(), ".config");
+  return join(base, "memini", "overrides.json");
+}
+
+// overrideKey is the key an override is stored under: the git toplevel when
+// there is one, else the resolved directory. Keying on the repo root rather
+// than the raw cwd means an override set at the top of a repo still applies
+// when the agent is working three directories down.
+export function overrideKey(cwd) {
+  const dir = cwd && String(cwd).trim() ? String(cwd) : process.cwd();
+  try {
+    const top = execSync("git rev-parse --show-toplevel", {
+      cwd: dir,
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 500,
+    })
+      .toString()
+      .trim();
+    if (top) return resolve(top);
+  } catch {
+    // not a repo, or no git — fall through to the plain path
+  }
+  return resolve(dir);
+}
+
+// readOverride returns the override in effect for `cwd`, or null.
+//
+// The file is read BEFORE the key is computed, because the key costs a `git
+// rev-parse` and this runs on every chat.message: nobody should pay for a git
+// call to discover they have no overrides at all, which is the common case.
+// Any error — missing file, hand-edited JSON, wrong shape — degrades to "no
+// override" rather than throwing into opencode. Exported for testing.
+export function readOverride(cwd, path) {
+  let file;
+  try {
+    file = JSON.parse(readFileSync(path || overridesPath(), "utf8"));
+  } catch {
+    return null;
+  }
+  const overrides = file && typeof file === "object" ? file.overrides : null;
+  if (!overrides || typeof overrides !== "object" || Object.keys(overrides).length === 0) return null;
+  const entry = overrides[overrideKey(cwd)];
+  if (!entry || typeof entry !== "object") return null;
+  const ns = typeof entry.namespace === "string" ? entry.namespace.trim() : "";
+  if (!ns) return null;
+  return { namespace: ns, setAt: typeof entry.setAt === "string" ? entry.setAt : "" };
+}
+
 // resolveConfig merges env vars with the options object (options win), filling
 // in defaults. Exported for testing.
-export function resolveConfig(env, options, worktree) {
+//
+// Namespace precedence: project override > namespace option / MEMINI_NAMESPACE >
+// config template > git worktree > default. The override sits ABOVE the env var
+// (and above the inline option) on purpose: a globally exported MEMINI_NAMESPACE
+// — a shell rc, or a fish universal variable — pins every repo on the machine to
+// one namespace, and if the env won, setting an override would silently do
+// nothing on exactly the machines that need one. The same argument applies to a
+// `namespace` option in ~/.config/opencode/opencode.json, which pins every
+// project the same way; and `memini doctor` reports the override as in force
+// regardless, so anything else would make the two disagree.
+//
+// opts.ignoreOverride skips the override so the status tool can ask what the
+// namespace would be without it — it lives in a file, so no amount of doctoring
+// `env` would strip it. opts.overridesPath is for tests.
+export function resolveConfig(env, options, worktree, opts = {}) {
   const e = env || {};
   const o = options || {};
-  // An explicit namespace (option or MEMINI_NAMESPACE env) wins and is used
-  // raw-trimmed: the server validates the header, and flattening "/" here would
-  // split a tenant path like work/memini from the other integrations.
+  const dir = worktree || process.cwd();
+  const override = opts.ignoreOverride ? null : readOverride(dir, opts.overridesPath);
+  // An explicit namespace (option or MEMINI_NAMESPACE env) is used raw-trimmed:
+  // the server validates the header, and flattening "/" here would split a
+  // tenant path like work/memini from the other integrations. The override is
+  // written through @memini/client, which validates it, so it is used as-is too.
   const explicit = o.namespace || e.MEMINI_NAMESPACE;
   let namespace;
-  if (explicit && String(explicit).trim()) {
+  let namespace_source;
+  if (override) {
+    namespace = override.namespace;
+    namespace_source = "override";
+  } else if (explicit && String(explicit).trim()) {
     namespace = String(explicit).trim();
+    namespace_source = o.namespace ? "option" : "env";
   } else {
     // Config present -> render the config template (tenant segments already
     // sanitized, "/" preserved); otherwise fall back to the legacy cwd chain.
-    namespace =
-      resolveConfigNamespace(worktree || process.cwd()) ||
-      deriveNamespace(worktree) ||
-      DEFAULT_NAMESPACE;
+    const fromConfig = resolveConfigNamespace(dir);
+    const fromWorktree = deriveNamespace(worktree);
+    namespace = fromConfig || fromWorktree || DEFAULT_NAMESPACE;
+    namespace_source = fromConfig ? "config" : fromWorktree ? "worktree" : "default";
   }
   // Number.isFinite guard: malformed env / option falls through to the next
   // source instead of NaN flowing into the request body.
@@ -177,6 +264,11 @@ export function resolveConfig(env, options, worktree) {
     // per-segment-sanitized config/derived value); re-sanitizing here would
     // flatten tenant "/" separators.
     namespace: namespace || DEFAULT_NAMESPACE,
+    // Where the namespace came from, and the override itself when one is in
+    // force. Carried on the config so the status tool reports what the plugin
+    // actually does rather than a second, idealized resolution of its own.
+    namespace_source,
+    override,
     home,
     recall: o.recall !== undefined ? o.recall !== false : envBool(e.MEMINI_RECALL, true),
     capture: o.capture !== undefined ? o.capture !== false : envBool(e.MEMINI_CAPTURE, true),
@@ -384,6 +476,188 @@ export function truncate(value, max) {
   return value;
 }
 
+// --- Status --------------------------------------------------------------
+//
+// "What is this plugin actually doing right now?" A list of values would not
+// answer that. The case worth catching is MEMINI_NAMESPACE exported globally (a
+// shell rc, or a fish universal variable), set once and forgotten, quietly
+// collapsing every repo on the machine into one namespace: the value looks
+// fine, only its provenance gives it away. So the namespace is resolved three
+// times against progressively stripped inputs — as-is, without the override,
+// and without the override AND the env/option pin — and all three are reported.
+
+/**
+ * Render a secret as a recognizable-but-useless fingerprint: enough to tell two
+ * tokens apart, not enough to use. Short values are elided entirely rather than
+ * half-revealed. Mirrors packages/memini-client's redactValue. Exported for
+ * testing.
+ */
+export function redactSecret(value) {
+  if (!value) return "";
+  return value.length <= 12 ? "***" : `${value.slice(0, 3)}…${value.slice(-4)}`;
+}
+
+/**
+ * Build the effective-settings report: the three namespace resolutions, the
+ * knobs with their provenance (secrets redacted), the paths, and the warnings.
+ * Exported for testing.
+ */
+export function describeSettings(env, options, worktree) {
+  const e = env || {};
+  const o = options || {};
+  const dir = worktree || process.cwd();
+
+  const cfg = resolveConfig(e, o, worktree);
+  // Both counterfactuals must ignore the override explicitly: it lives in a
+  // file, so a resolution handed a stripped env would hand it straight back —
+  // and these are the two lines that exist to see past it.
+  const withoutOverride = resolveConfig(e, o, worktree, { ignoreOverride: true });
+  const envSansPin = { ...e };
+  delete envSansPin.MEMINI_NAMESPACE;
+  const derived = resolveConfig(
+    envSansPin,
+    { ...o, namespace: undefined },
+    worktree,
+    { ignoreOverride: true },
+  );
+
+  const secret = e.MEMINI_API_KEY || e.MEMINI_TOKEN || "";
+  const warnings = [];
+
+  if (cfg.override) {
+    warnings.push({
+      level: "note",
+      code: "override-active",
+      message:
+        `namespace is overridden to "${cfg.override.namespace}" for this project` +
+        (cfg.override.setAt ? ` (set ${cfg.override.setAt})` : "") +
+        `; without it this project would use "${withoutOverride.namespace}".`,
+      fix: `Remove the entry for ${overrideKey(dir)} from ${overridesPath(e)} to return to automatic resolution.`,
+    });
+  }
+
+  // The finding this whole report exists for.
+  const pin = String(e.MEMINI_NAMESPACE || "").trim();
+  if (pin && !cfg.override && derived.namespace && derived.namespace !== pin) {
+    warnings.push({
+      level: "warn",
+      code: "global-namespace-pin",
+      message:
+        `MEMINI_NAMESPACE is set to "${pin}", which pins EVERY project on this machine to one ` +
+        `namespace. This project would otherwise resolve to "${derived.namespace}". If it is ` +
+        `exported from a shell rc (or a fish universal variable), every repo you work in is ` +
+        `sharing one memory pool.`,
+      fix: "Unset MEMINI_NAMESPACE and let each repo resolve on its own, or set a per-project override instead.",
+    });
+  }
+
+  if (usesPlaintextBearerAuth(cfg.base_url, secret)) {
+    warnings.push({
+      level: "warn",
+      code: "plaintext-bearer",
+      message: plaintextBearerAuthMessage(cfg.base_url),
+      fix: "Use HTTPS, or tunnel over SSH. Set MEMINI_REQUIRE_HTTPS=1 to make this an error.",
+    });
+  }
+
+  if (!cfg.home) {
+    warnings.push({
+      level: "note",
+      code: "home-unset",
+      message: "MEMINI_HOME is unset: no personal leg merges into recall.",
+      fix: "Export MEMINI_HOME=personal/<you>.",
+    });
+  }
+
+  return {
+    project: overrideKey(dir),
+    worktree: dir,
+    namespace: {
+      effective: cfg.namespace,
+      source: cfg.namespace_source,
+      override: cfg.override,
+      withoutOverride,
+      derived,
+      home: cfg.home,
+    },
+    connection: {
+      base_url: cfg.base_url,
+      api_key: secret ? redactSecret(secret) : "",
+      require_https: e.MEMINI_REQUIRE_HTTPS === "1",
+      timeout_ms: cfg.timeout_ms,
+    },
+    memory: {
+      recall: cfg.recall,
+      capture: cfg.capture,
+      recall_limit: cfg.recall_limit,
+      recall_max_tokens: cfg.recall_max_tokens,
+      recall_min_score: cfg.recall_min_score,
+      labels: [...labelsEnv()],
+    },
+    paths: { overrides: overridesPath(e) },
+    warnings,
+  };
+}
+
+const padTo = (s, n) => String(s).padEnd(n);
+
+/** Render describeSettings() as the text block the tool hands back. */
+export function renderStatus(report) {
+  const { namespace: ns, connection, memory, paths } = report;
+  const L = [];
+
+  L.push("memini — effective settings (opencode)");
+  L.push(`project: ${report.project}`);
+  L.push("");
+
+  L.push("NAMESPACE");
+  L.push(`  ${padTo("effective", 26)} ${padTo(ns.effective, 30)} <- ${ns.source}`);
+  if (ns.override) {
+    L.push(
+      `  ${padTo("without the override", 26)} ${padTo(ns.withoutOverride.namespace, 30)} <- ${ns.withoutOverride.source}`,
+    );
+  }
+  if (ns.derived.namespace !== ns.effective) {
+    L.push(
+      `  ${padTo("git/cwd would give", 26)} ${padTo(ns.derived.namespace, 30)} <- ${ns.derived.source}`,
+    );
+  }
+  L.push(`  ${padTo("home (personal)", 26)} ${ns.home || "(unset)"}`);
+  L.push("");
+
+  L.push("CONNECTION");
+  L.push(`  ${padTo("base_url", 26)} ${connection.base_url}`);
+  L.push(`  ${padTo("api_key", 26)} ${connection.api_key || "(unset)"}`);
+  L.push(`  ${padTo("require_https", 26)} ${connection.require_https ? "1" : "0"}`);
+  L.push(`  ${padTo("timeout_ms", 26)} ${connection.timeout_ms}`);
+  L.push("");
+
+  L.push("MEMORY");
+  L.push(`  ${padTo("recall", 26)} ${memory.recall ? "on" : "off"}`);
+  L.push(`  ${padTo("capture", 26)} ${memory.capture ? "on" : "off"}`);
+  L.push(`  ${padTo("recall_limit", 26)} ${memory.recall_limit}`);
+  L.push(`  ${padTo("recall_max_tokens", 26)} ${memory.recall_max_tokens || "uncapped"}`);
+  L.push(`  ${padTo("recall_min_score", 26)} ${memory.recall_min_score}`);
+  L.push(`  ${padTo("labels", 26)} ${memory.labels.length ? memory.labels.join(",") : "(none)"}`);
+  L.push("");
+
+  L.push("PATHS");
+  L.push(`  ${padTo("overrides", 26)} ${paths.overrides}${existsSync(paths.overrides) ? "" : " (absent)"}`);
+  L.push("");
+
+  if (report.warnings.length) {
+    L.push("WARNINGS");
+    for (const w of report.warnings) {
+      L.push(`  [${w.level === "warn" ? "!" : "i"}] ${w.code}: ${w.message}`);
+      if (w.fix) L.push(`      fix: ${w.fix}`);
+    }
+  } else {
+    L.push("No problems detected.");
+  }
+
+  return L.join("\n");
+}
+
 function createClient(cfg, log) {
   const baseUrl = String(cfg.base_url).replace(/\/+$/, "");
   const secret = process.env.MEMINI_API_KEY || process.env.MEMINI_TOKEN;
@@ -511,6 +785,46 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
   };
 
   return {
+    // A tool, not a slash command, and deliberately so. opencode's plugin
+    // contract (Hooks in @opencode-ai/plugin) registers tools — `tool: { [id]:
+    // { description, args, execute } }` — but exposes no hook for registering a
+    // user-invocable command, so there is no `/memini:status` this plugin could
+    // offer without inventing one. `args` is empty: declaring a parameter means
+    // handing opencode a zod schema, and this plugin has no dependencies (a
+    // raw-JSON-Schema arg rides a compatibility path that older hosts feed
+    // straight to z.object() and throw on). A zero-arg tool is the shape every
+    // version accepts, and a read-only report needs no arguments anyway.
+    //
+    // Settings are recomputed per call rather than read off `cfg`, so an
+    // override set mid-session is visible here without restarting opencode —
+    // even though the hooks below still use the namespace they resolved at load.
+    tool: {
+      memini_status: {
+        description:
+          "Show the memini memory settings in force for this project: which namespace memories " +
+          "are written to and recalled from, where that namespace came from (a per-project " +
+          "override, MEMINI_NAMESPACE, the config file, or the git worktree), what it would be " +
+          "without each of those, and any misconfiguration worth flagging. Read-only; secrets " +
+          "are redacted. Call it when the user asks what memini is doing, why a memory cannot " +
+          "be recalled, or which namespace is in use.",
+        args: {},
+        execute: async () => {
+          try {
+            const report = describeSettings(process.env, options, worktree || directory);
+            return {
+              title: `memini: ${report.namespace.effective}`,
+              output: renderStatus(report),
+              metadata: { namespace: report.namespace.effective, source: report.namespace.source },
+            };
+          } catch (error) {
+            // A diagnostic that crashes the turn it was meant to diagnose is
+            // worse than no diagnostic.
+            return `memini status failed: ${String(error)}`;
+          }
+        },
+      },
+    },
+
     "chat.message": guard("chat.message", async (input, output) => {
       if (!cfg.recall) return;
       const query = extractPartsText(output && output.parts);

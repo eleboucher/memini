@@ -22,10 +22,11 @@ What it wires:
   memini as durable (semantic) facts.
 - **tools** — `memory_recall` (with optional `tags` / `metadata` filters),
   `memory_list` (query-less browse by tier / tags / metadata category),
-  `memory_remember` (with optional `tags` and a `category`), and `memory_forget`
-  (delete a wrong/outdated memory by `id` from recall/list) for when the agent
-  wants to read, browse, write, or prune memory explicitly. See `docs/categories.md`
-  for the category convention.
+  `memory_remember` (with optional `tags` and a `category`), `memory_forget`
+  (delete a wrong/outdated memory by `id` from recall/list), and `memory_status`
+  (read-only: which namespace is in force and why) for when the agent wants to
+  read, browse, write, prune, or explain memory explicitly. See
+  `docs/categories.md` for the category convention.
 
 ### Install
 
@@ -69,6 +70,23 @@ Point it at your memini (environment, or the Hermes onboarding prompts):
 | `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                            | fused-score floor (>=) for auto-recall, sent as `min_score`                      |
 | `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                            | hard token ceiling on the recall block (`0` = unbounded; tail dropped w/ footer) |
 | `MEMINI_INJECT_LABELS`           | (none)                         | per-bullet tag prefix toggles: `tier`, `confidence`, `age`                       |
+
+### Namespace resolution
+
+In order: a **per-project override** in `$XDG_CONFIG_HOME/memini/overrides.json`
+(default `~/.config/memini/overrides.json`) > `MEMINI_NAMESPACE` > the config
+template below > the cwd basename.
+
+The override wins over `MEMINI_NAMESPACE` deliberately. A globally exported
+`MEMINI_NAMESPACE` — a shell rc, or a fish universal variable — pins every repo
+on the machine to one namespace, and if the environment won, setting an override
+would silently do nothing on exactly the machines that need one. The file is
+keyed by git toplevel (so an override set at the top of a repo applies from any
+subdirectory), it is the same file the Claude Code plugin writes and `memini
+doctor` reads, and a malformed one degrades to automatic resolution rather than
+failing a turn. `memory_status` reports which of these is in force, what the
+namespace would be without each layer, and any misconfiguration worth flagging —
+with secrets redacted.
 
 When `MEMINI_NAMESPACE` is unset and `$XDG_CONFIG_HOME/memini/config.json`
 (default `~/.config/memini/config.json`) exists, the namespace is rendered from

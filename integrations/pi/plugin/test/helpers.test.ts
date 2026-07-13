@@ -5,6 +5,8 @@ import {
   deriveNamespace,
   sanitizeNamespace,
   resolveConfig,
+  resolveProjectNamespace,
+  registerMeminiCommands,
   formatResults,
   fitByTokens,
   approxTokens,
@@ -13,14 +15,20 @@ import {
   extractLastAssistantText,
   buildTurnContent,
 } from "../src/index.ts";
+import { readOverride, writeOverride } from "@memini/client";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Hermetic: the resolver reads $XDG_CONFIG_HOME/memini/config.json, so point
-// it at a temp dir instead of the developer's real config.
+// Hermetic: the resolver reads $XDG_CONFIG_HOME/memini/config.json and the
+// override lives in $XDG_CONFIG_HOME/memini/overrides.json, so point both at a
+// temp dir instead of the developer's real config.
 const xdgDir = mkdtempSync(join(tmpdir(), "pi-memini-test-"));
 process.env["XDG_CONFIG_HOME"] = xdgDir;
+// …and a developer who exports MEMINI_NAMESPACE (the fish-universal-variable
+// case this whole feature exists for) would otherwise see every default-namespace
+// assertion below fail.
+delete process.env["MEMINI_NAMESPACE"];
 
 test("deriveNamespace takes the cwd basename and sanitizes it", () => {
   assert.equal(deriveNamespace("/home/me/dev/My Repo"), "My-Repo");
@@ -264,6 +272,181 @@ test("requests carry X-Memini-Home when MEMINI_HOME is set, omit it otherwise", 
   } finally {
     if (prevHome === undefined) delete process.env.MEMINI_HOME;
     else process.env.MEMINI_HOME = prevHome;
+    globalThis.fetch = realFetch;
+  }
+});
+
+// --- namespace override + commands -------------------------------------------
+
+// A fresh XDG home per test: the override file lives under it, so this keeps the
+// developer's real ~/.config/memini/overrides.json out of the assertions.
+function tmpEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  return { XDG_CONFIG_HOME: mkdtempSync(join(tmpdir(), "pi-memini-xdg-")), ...extra };
+}
+
+function tmpProject(): string {
+  return mkdtempSync(join(tmpdir(), "pi-memini-proj-"));
+}
+
+test("the override beats MEMINI_NAMESPACE — the whole point of having one", () => {
+  const env = tmpEnv({ MEMINI_NAMESPACE: "global-pin" });
+  const cwd = tmpProject();
+  assert.equal(resolveProjectNamespace(env, cwd).source, "env");
+
+  writeOverride(cwd, "acme/api", { env: env as Record<string, string | undefined> });
+
+  // A globally exported MEMINI_NAMESPACE pins every repo on the machine; if the
+  // env beat the override, /memini:namespace would silently no-op on exactly the
+  // machines that need it.
+  const eff = resolveProjectNamespace(env, cwd);
+  assert.equal(eff.namespace, "acme/api");
+  assert.equal(eff.source, "override");
+  // …and what the extension actually sends must agree with what it reports.
+  assert.equal(resolveConfig(env, cwd).namespace, "acme/api");
+
+  // The counterfactual: the override is a file, so only ignoreOverride can see
+  // past it — which is what makes describeSettings' "without the override" line real.
+  const without = resolveProjectNamespace(env, cwd, { ignoreOverride: true });
+  assert.equal(without.namespace, "global-pin");
+  assert.equal(without.source, "env");
+});
+
+test("with no override, the chain is env > cwd, and cwd carries its provenance", () => {
+  const env = tmpEnv();
+  const cwd = tmpProject();
+  const derived = resolveProjectNamespace(env, cwd);
+  assert.equal(derived.namespace, sanitizeNamespace(cwd.split("/").pop()!));
+  assert.equal(derived.source, "cwd");
+  assert.equal(resolveProjectNamespace(tmpEnv({ MEMINI_NAMESPACE: "pinned" }), cwd).source, "env");
+  // No cwd at all: the "pi" default, honestly labelled.
+  assert.deepEqual(resolveProjectNamespace(env, undefined), { namespace: "pi", source: "default" });
+});
+
+// A minimal pi host: enough of ExtensionAPI for the commands to register and to
+// capture what they would have shown the user.
+function fakePi() {
+  const commands: Record<string, (args: string, ctx: any) => Promise<void>> = {};
+  const shown: string[] = [];
+  const notified: string[] = [];
+  const pi = {
+    registerCommand(name: string, options: any) {
+      commands[name] = options.handler;
+    },
+    sendMessage(message: any) {
+      shown.push(String(message.content));
+    },
+  };
+  const ctx = (cwd: string) => ({ cwd, ui: { notify: (m: string) => notified.push(m) } });
+  return { pi, commands, shown, notified, ctx };
+}
+
+test("memini:namespace shows, sets, and clears the override, and the plugin follows it live", async () => {
+  const cwd = tmpProject();
+  const prevXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "pi-memini-xdg-"));
+  try {
+    const { pi, commands, shown, ctx } = fakePi();
+    const cfg = resolveConfig(process.env, cwd);
+    registerMeminiCommands(pi as any, cfg, () => {});
+    assert.deepEqual(Object.keys(commands).sort(), ["memini:namespace", "memini:status"]);
+
+    await commands["memini:namespace"]("", ctx(cwd));
+    assert.match(shown.at(-1)!, /No override — resolving automatically/);
+
+    await commands["memini:namespace"]("acme/api", ctx(cwd));
+    assert.match(shown.at(-1)!, /namespace override set: .* -> acme\/api/);
+    assert.equal(readOverride(cwd, { env: process.env })?.namespace, "acme/api");
+    // The client reads cfg.namespace on every request, so the next recall/capture
+    // already targets the override — no restart, no split brain.
+    assert.equal(cfg.namespace, "acme/api");
+
+    await commands["memini:namespace"]("--clear", ctx(cwd));
+    assert.match(shown.at(-1)!, /namespace override cleared: acme\/api -> /);
+    assert.equal(readOverride(cwd, { env: process.env }), undefined);
+    assert.equal(cfg.namespace, resolveConfig(process.env, cwd).namespace);
+
+    // Nothing to clear is stated, not silently succeeded.
+    await commands["memini:namespace"]("--clear", ctx(cwd));
+    assert.match(shown.at(-1)!, /nothing to clear/);
+  } finally {
+    if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prevXdg;
+  }
+});
+
+test("memini:namespace refuses a header-injecting namespace instead of normalizing it", async () => {
+  const cwd = tmpProject();
+  const { pi, commands, notified, shown, ctx } = fakePi();
+  registerMeminiCommands(pi as any, resolveConfig(process.env, cwd), () => {});
+  // The namespace rides on the X-Memini-Namespace header: CR/LF would split it.
+  await commands["memini:namespace"]("evil\r\nX-Evil: 1", ctx(cwd));
+  assert.match(notified.at(-1)!, /invalid namespace/);
+  assert.equal(shown.length, 0, "an invalid namespace must not be written or reported as set");
+  assert.equal(readOverride(cwd, { env: process.env }), undefined);
+});
+
+test("memini:status reports the read set, redacts the bearer, and reads a 404 /healthz as not-exposed", async () => {
+  const cwd = tmpProject();
+  const realFetch = globalThis.fetch;
+  const prev = { url: process.env.MEMINI_BASE_URL, key: process.env.MEMINI_API_KEY };
+  const requests: { url: string; headers: any }[] = [];
+  globalThis.fetch = (async (url: any, init: any) => {
+    requests.push({ url: String(url), headers: init?.headers });
+    if (String(url).includes("/v1/namespaces/read-set")) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { entries: [{ namespace: "acme/api", origin: "self", tiers: [] }] };
+        },
+      };
+    }
+    // A remote memini behind an ingress routes only /v1 and /mcp: /healthz 404s
+    // while the server is perfectly healthy.
+    return { ok: false, status: 404, async json() { return {}; }, async text() { return ""; } };
+  }) as any;
+  try {
+    process.env.MEMINI_BASE_URL = "http://localhost:8080";
+    process.env.MEMINI_API_KEY = "sk-abcdefghijklmnop4f2a";
+    const { pi, commands, shown, ctx } = fakePi();
+    registerMeminiCommands(pi as any, resolveConfig(process.env, cwd), () => {});
+    await commands["memini:status"]("", ctx(cwd));
+
+    const out = shown.at(-1)!;
+    // Reachability comes from the read set, never from /healthz.
+    assert.match(out, /reachable\s+yes/);
+    assert.match(out, /\/healthz not routed/);
+    assert.match(out, /READ SET/);
+    assert.match(out, /acme\/api\s+self/);
+    // A settings dump is the likeliest place a token gets pasted into an issue.
+    assert.doesNotMatch(out, /sk-abcdefghijklmnop4f2a/);
+    assert.match(out, /sk-…4f2a/);
+    // The probes carry the namespace and the bearer.
+    const readSet = requests.find((r) => r.url.includes("read-set"))!;
+    assert.equal(readSet.headers["X-Memini-Namespace"], resolveConfig(process.env, cwd).namespace);
+    assert.equal(readSet.headers.Authorization, "Bearer sk-abcdefghijklmnop4f2a");
+  } finally {
+    globalThis.fetch = realFetch;
+    if (prev.url === undefined) delete process.env.MEMINI_BASE_URL;
+    else process.env.MEMINI_BASE_URL = prev.url;
+    if (prev.key === undefined) delete process.env.MEMINI_API_KEY;
+    else process.env.MEMINI_API_KEY = prev.key;
+  }
+});
+
+test("memini:status reports an unreachable server rather than throwing into the host", async () => {
+  const cwd = tmpProject();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("ECONNREFUSED");
+  }) as any;
+  try {
+    const { pi, commands, shown, notified, ctx } = fakePi();
+    registerMeminiCommands(pi as any, resolveConfig(process.env, cwd), () => {});
+    await commands["memini:status"]("", ctx(cwd));
+    assert.match(shown.at(-1)!, /reachable\s+NO/);
+    assert.deepEqual(notified, [], "an unreachable server is a finding, not a command failure");
+  } finally {
     globalThis.fetch = realFetch;
   }
 });

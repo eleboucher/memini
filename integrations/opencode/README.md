@@ -78,6 +78,37 @@ exists, the unset namespace is instead rendered from its `template` (default
 `MEMINI_AGENT`; unresolved segments are dropped. The Hermes and Pi integrations
 share this resolver, so one config file scopes them all identically.
 
+### Namespace resolution
+
+In full, in order: a **per-project override** in
+`$XDG_CONFIG_HOME/memini/overrides.json` > the `namespace` option /
+`MEMINI_NAMESPACE` > the config template above > the git worktree basename.
+
+The override wins over both deliberately. A globally exported `MEMINI_NAMESPACE`
+— a shell rc, or a fish universal variable — pins every repo on the machine to
+one namespace (as does a `namespace` option in a global
+`~/.config/opencode/opencode.json`), and if either won, setting an override would
+silently do nothing on exactly the machines that need one. The file is keyed by
+git toplevel, so an override set at the top of a repo applies from any
+subdirectory; it is the same file the Claude Code plugin writes and `memini
+doctor` reads; and a malformed one degrades to automatic resolution rather than
+breaking a turn.
+
+### The `memini_status` tool
+
+The plugin registers one tool, `memini_status`: read-only, no arguments. It
+reports the namespace in force and where it came from, what it would be _without_
+the override and without the env pin, the connection settings (the API key
+fingerprinted, never printed), and warnings — a global `MEMINI_NAMESPACE` pin, a
+bearer token crossing plaintext HTTP, an override you forgot you set.
+
+There is no `/memini:status` slash command: opencode's plugin contract registers
+tools, not commands, and this plugin does not invent an API it does not have.
+Setting or clearing an override is likewise not exposed here — declaring a tool
+argument requires a zod schema, and this plugin ships dependency-free — so use
+`/memini:namespace` from the Claude Code plugin, or edit `overrides.json`
+directly; all harnesses read the same file.
+
 ### Tests
 
 ```bash

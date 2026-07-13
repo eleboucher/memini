@@ -9,7 +9,9 @@ the filter-flow tests if they are not importable.
 
 import asyncio
 import importlib.util
+import json
 import os
+import tempfile
 import unittest
 
 
@@ -21,6 +23,11 @@ def _load(name, path):
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# Point XDG_CONFIG_HOME at an empty temp dir so a developer's real
+# ~/.config/memini/overrides.json can't decide the namespace under test (both
+# modules read it at call time). The override tests write their own.
+os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="memini-test-config-")
 
 try:
     flt = _load("memini_memory", os.path.join(HERE, "filter", "memini_memory.py"))
@@ -225,6 +232,126 @@ class ToolsHeaders(unittest.TestCase):
         t.valves.home = ""
         headers = t._headers("")
         self.assertNotIn("X-Memini-Home", headers)
+
+
+class OverrideMixin:
+    """Writes $XDG_CONFIG_HOME/memini/overrides.json and runs from a temp
+    project dir — the override is keyed on the git toplevel (or, outside a repo,
+    the cwd), which is the directory Open WebUI was launched in."""
+
+    def _project(self):
+        proj = os.path.realpath(tempfile.mkdtemp(prefix="memini-override-"))
+        prev_cwd = os.getcwd()
+        os.chdir(proj)
+        self.addCleanup(lambda: os.chdir(prev_cwd))
+        return proj
+
+    def _write_overrides(self, overrides, raw=None):
+        xdg = tempfile.mkdtemp(prefix="memini-test-config-")
+        os.makedirs(os.path.join(xdg, "memini"))
+        with open(os.path.join(xdg, "memini", "overrides.json"), "w") as f:
+            f.write(raw if raw is not None else json.dumps({"version": 1, "overrides": overrides}))
+        prev = os.environ["XDG_CONFIG_HOME"]
+        os.environ["XDG_CONFIG_HOME"] = xdg
+        self.addCleanup(lambda: os.environ.__setitem__("XDG_CONFIG_HOME", prev))
+
+
+@unittest.skipUnless(_HAVE_DEPS, "pydantic/aiohttp not installed")
+class FilterOverride(OverrideMixin, unittest.TestCase):
+    def test_override_beats_the_namespace_valve(self):
+        proj = self._project()
+        self._write_overrides({proj: {"namespace": "acme/api", "setAt": "2026-07-12T20:30:00Z"}})
+        f = flt.Filter()
+        f.valves.namespace = "openwebui"
+        self.assertEqual(f._resolve_namespace(), ("acme/api", "override"))
+        # A hierarchical override keeps its "/" — flattened to acme-api it would
+        # write to a namespace no other integration reads.
+        self.assertEqual(f._namespace(None), "acme/api")
+
+    def test_scope_by_user_still_isolates_under_an_override(self):
+        # The per-user suffix isolates *who*, not *what*: an override must not
+        # collapse every user of a shared server into one namespace.
+        proj = self._project()
+        self._write_overrides({proj: {"namespace": "acme/api", "setAt": ""}})
+        f = flt.Filter()
+        f.valves.scope_by_user = True
+        self.assertEqual(f._namespace({"id": "alice"}), "acme/api-alice")
+
+    def test_malformed_or_absent_file_degrades_to_the_valve(self):
+        self._project()
+        f = flt.Filter()
+        f.valves.namespace = "team"
+        # Absent (the module-level XDG temp dir holds no overrides.json).
+        self.assertEqual(f._namespace(None), "team")
+        # Hand-edited into invalid JSON: degrade, never raise into Open WebUI.
+        self._write_overrides(None, raw="{ not json")
+        self.assertIsNone(flt.read_override(os.getcwd()))
+        self.assertEqual(f._namespace(None), "team")
+
+    def test_wrong_shape_and_blank_namespace_are_not_overrides(self):
+        proj = self._project()
+        self._write_overrides(None, raw=json.dumps({"version": 1, "overrides": []}))
+        self.assertIsNone(flt.read_override(proj))
+        self._write_overrides({proj: {"namespace": "  "}})
+        self.assertIsNone(flt.read_override(proj))
+
+    def test_override_key_uses_the_git_toplevel(self):
+        # An override set at the top of a repo applies from a subdirectory too.
+        import subprocess
+
+        repo = os.path.realpath(tempfile.mkdtemp(prefix="memini-override-repo-"))
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        nested = os.path.join(repo, "services", "api")
+        os.makedirs(nested)
+        self.assertEqual(flt.override_key(nested), repo)
+
+    def test_header_safe_drops_control_characters_but_keeps_slashes(self):
+        # A CR/LF in the value would split the X-Memini-Namespace header.
+        self.assertEqual(flt.header_safe("  acme/api  "), "acme/api")
+        self.assertEqual(flt.header_safe("acme\r\nX-Evil: 1"), "acmeX-Evil: 1")
+
+
+@unittest.skipUnless(_HAVE_DEPS, "pydantic/aiohttp not installed")
+class ToolsOverrideAndStatus(OverrideMixin, unittest.TestCase):
+    def test_headers_carry_the_override_namespace(self):
+        proj = self._project()
+        self._write_overrides({proj: {"namespace": "acme/api", "setAt": ""}})
+        t = tls.Tools()
+        t.valves.namespace = "openwebui"
+        self.assertEqual(t._headers("")["X-Memini-Namespace"], "acme/api")
+
+    def test_redact_secret_fingerprints_and_elides(self):
+        self.assertEqual(tls.redact_secret("sk-0123456789abcd4f2a"), "sk-…4f2a")
+        self.assertEqual(tls.redact_secret("short"), "***")
+        self.assertEqual(tls.redact_secret(""), "")
+
+    def test_status_reports_provenance_and_redacts_the_token(self):
+        proj = self._project()
+        self._write_overrides({proj: {"namespace": "acme/api", "setAt": "2026-07-12T20:30:00Z"}})
+        os.environ["MEMINI_API_KEY"] = "sk-0123456789abcd4f2a"
+        self.addCleanup(lambda: os.environ.pop("MEMINI_API_KEY", None))
+        t = tls.Tools()
+        t.valves.namespace = "openwebui"
+        t.valves.base_url = "http://memini.example.com"
+        out = asyncio.run(t.memini_status())
+        self.assertIn("acme/api", out)
+        self.assertIn("<- override", out)
+        # What the override is masking, which a bare value dump would not show.
+        self.assertIn("without the override", out)
+        self.assertIn("openwebui", out)
+        self.assertIn("override-active", out)
+        self.assertIn("plaintext-bearer", out)
+        # The secret is fingerprinted, never printed.
+        self.assertNotIn("0123456789", out)
+        self.assertIn("sk-…4f2a", out)
+
+    def test_status_without_an_override_reports_the_valve(self):
+        self._project()
+        t = tls.Tools()
+        t.valves.namespace = "team"
+        out = asyncio.run(t.memini_status())
+        self.assertIn("<- valve", out)
+        self.assertNotIn("override-active", out)
 
 
 if __name__ == "__main__":

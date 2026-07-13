@@ -2,17 +2,26 @@
 // a regression contract against the legacy plugin.legacy/plugin.mjs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import plugin, {
   detectSystemKind,
   effectiveNamespace,
   meminiListPath,
   registerMeminiTools,
+  resolveBaseNamespace,
   resolveConfig,
   sessionIdentity,
   shouldSkipSystemTurn,
   stripRuntimePreambles,
 } from "../dist/index.js";
+
+// The namespace chain now honors MEMINI_NAMESPACE and a per-project override
+// (keyed by the gateway's cwd — this repo, when the tests run). A developer who
+// exports either would otherwise fail every default-namespace assertion below.
+delete process.env.MEMINI_NAMESPACE;
+process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "openclaw-memini-regression-"));
 
 // fakeClient records the last memini call and returns canned responses, so the
 // tool handlers can be exercised without a running server.
@@ -65,6 +74,50 @@ test("per-agent isolation is on by default", () => {
   // A session with no agent identity falls back to the shared base namespace
   // (so unattributable sessions still get memory rather than silently dropping).
   assert.equal(effectiveNamespace(cfg, {}), "openclaw");
+});
+
+// The namespace chain, from the shipped bundle. The default must not move: this
+// is a gateway harness, and deriving a namespace from its cwd (or letting the
+// default drift) would silently relocate every existing install's memory.
+test("the base namespace chain is override > MEMINI_NAMESPACE > config > openclaw", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "openclaw-memini-proj-"));
+  const env = () => ({ XDG_CONFIG_HOME: mkdtempSync(join(tmpdir(), "openclaw-memini-xdg-")) });
+
+  assert.deepEqual(resolveBaseNamespace(undefined, env(), cwd), { namespace: "openclaw", source: "default" });
+  assert.deepEqual(resolveBaseNamespace({ namespace: "cfg" }, env(), cwd), { namespace: "cfg", source: "config" });
+  assert.deepEqual(resolveBaseNamespace({ namespace: "cfg" }, { ...env(), MEMINI_NAMESPACE: "pin" }, cwd), {
+    namespace: "pin",
+    source: "env",
+  });
+});
+
+test("register wires memini:status and memini:namespace when the host supports commands", () => {
+  const names = [];
+  plugin.register({
+    pluginConfig: { enabled: true },
+    registerMemoryCapability() {}, registerHook() {},
+    on() {},
+    logger: { warn() {} },
+    registerTool() {},
+    registerCommand(def) {
+      names.push(def.name);
+    },
+  });
+  assert.deepEqual(names.sort(), ["memini:namespace", "memini:status"]);
+});
+
+test("register survives a host with no registerCommand at all", () => {
+  const hooks = {};
+  plugin.register({
+    pluginConfig: { enabled: true },
+    registerMemoryCapability() {}, registerHook() {},
+    on(name, handler) { hooks[name] = handler; },
+    logger: { warn() {} },
+    registerTool() {},
+  });
+  // No commands is survivable; losing the memory slot is not.
+  assert.equal(typeof hooks.before_prompt_build, "function");
+  assert.equal(typeof hooks.agent_end, "function");
 });
 
 test("namespace_per_agent can be explicitly disabled", () => {
