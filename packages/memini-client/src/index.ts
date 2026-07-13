@@ -53,9 +53,11 @@ export {
   sessionCwdPath,
   writeSessionCwd,
   readSessionCwd,
+  deleteSessionCwd,
   processCwd,
   looksLikePluginRoot,
   resolveHarnessCwd,
+  SESSION_CWD_TTL_MS,
   type CwdSource,
   type HarnessCwd,
 } from "./session.js";

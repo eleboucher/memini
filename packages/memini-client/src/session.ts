@@ -62,32 +62,101 @@ export function sessionCwdPath(
   return path.join(cacheDir(env), "sessions", `pid-${ppid}.cwd`);
 }
 
-/** Record this session's project dir. Best-effort; never throws. */
+/**
+ * How long a recorded project dir stays trustworthy.
+ *
+ * A pid is not a durable identity: operating systems recycle them, Windows
+ * especially aggressively. If a session crashes (a clean exit deletes its record
+ * — see deleteSessionCwd) and the OS later hands the same pid to an unrelated
+ * Claude Code session in a different repo, a record with no freshness check would
+ * hand that new session the OLD repo's directory. Its MCP calls would then target
+ * one namespace while its hooks wrote to another: the exact split this module
+ * exists to prevent, reintroduced.
+ *
+ * The hooks refresh the record while a session is alive (SessionStart, and every
+ * Stop, i.e. once per assistant turn), and the helper only ever reads it at
+ * connect — which happens right around SessionStart. So a short window is
+ * generous for any live session, while bounding how long a crashed session's pid
+ * can impersonate a live one.
+ *
+ * `fs.existsSync` on the recorded path is NOT a freshness check: the old repo
+ * still exists on disk. It is just the wrong repo.
+ */
+export const SESSION_CWD_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+
+interface SessionCwdRecord {
+  cwd: string;
+  /** Epoch ms. Compared against SESSION_CWD_TTL_MS on read. */
+  writtenAt: number;
+}
+
+/**
+ * Record this session's project dir. Best-effort; never throws.
+ *
+ * `now` is injectable so tests can age a record without sleeping.
+ */
 export function writeSessionCwd(
   ppid: number,
   cwd: string,
   env: Record<string, string | undefined> = process.env,
+  now: number = Date.now(),
 ): void {
   if (!ppid || !cwd || !cwd.trim()) return;
   try {
     const p = sessionCwdPath(ppid, env);
     fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, path.resolve(cwd));
+    const rec: SessionCwdRecord = { cwd: path.resolve(cwd), writtenAt: now };
+    fs.writeFileSync(p, JSON.stringify(rec));
   } catch {
     // best-effort: a hook must never fail the agent
   }
 }
 
-/** Read a session's recorded project dir, or undefined. */
+/**
+ * Read a session's recorded project dir, or undefined.
+ *
+ * Returns undefined for a record older than SESSION_CWD_TTL_MS rather than
+ * trusting it, because a stale record is worse than no record: falling back to
+ * the legacy global file is merely racy, whereas a recycled pid's record is
+ * confidently wrong.
+ */
 export function readSessionCwd(
   ppid: number,
   env: Record<string, string | undefined> = process.env,
+  now: number = Date.now(),
 ): string | undefined {
   try {
-    const v = fs.readFileSync(sessionCwdPath(ppid, env), "utf8").trim();
-    return v && fs.existsSync(v) ? v : undefined;
+    const raw = fs.readFileSync(sessionCwdPath(ppid, env), "utf8").trim();
+    if (!raw) return undefined;
+
+    const rec = JSON.parse(raw) as SessionCwdRecord;
+    if (!rec || typeof rec.cwd !== "string" || !rec.cwd) return undefined;
+    if (typeof rec.writtenAt !== "number" || !Number.isFinite(rec.writtenAt)) return undefined;
+
+    const age = now - rec.writtenAt;
+    // A clock skew into the future is as untrustworthy as an expired record.
+    if (age < 0 || age > SESSION_CWD_TTL_MS) return undefined;
+
+    return fs.existsSync(rec.cwd) ? rec.cwd : undefined;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Drop a session's record. Called on SessionEnd, which closes the pid-reuse
+ * window entirely for every session that exits cleanly — leaving only crashes to
+ * be covered by the TTL above.
+ */
+export function deleteSessionCwd(
+  ppid: number,
+  env: Record<string, string | undefined> = process.env,
+): void {
+  if (!ppid) return;
+  try {
+    fs.rmSync(sessionCwdPath(ppid, env), { force: true });
+  } catch {
+    // best-effort
   }
 }
 

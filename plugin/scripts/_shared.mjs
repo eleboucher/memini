@@ -19,9 +19,9 @@ import fs from "node:fs";
 // The shared client core (packages/memini-client), bundled to a committed,
 // dependency-free ESM file so these hooks keep running under a bare `node` with
 // no install step. Regenerate with `mise run build-client`.
-import { readOverride, writeSessionCwd } from "./_client.gen.mjs";
+import { readOverride, writeSessionCwd, deleteSessionCwd } from "./_client.gen.mjs";
 
-export { readOverride, writeSessionCwd };
+export { readOverride, writeSessionCwd, deleteSessionCwd };
 
 export const DEBUG = process.env["MEMINI_DEBUG"] === "1";
 
@@ -99,7 +99,7 @@ export function resolveProjectDetailed(cwd, env = process.env, opts = {}) {
   const nsEnv = env["MEMINI_NAMESPACE"];
   if (nsEnv && nsEnv.trim()) return { namespace: nsEnv.trim(), source: "env" };
 
-  const { base, source } = resolveProjectBase(dir, env);
+  const { base, source } = resolveProjectBase(dir, env, opts);
   const config = readTenantConfig(env);
   // No config file -> zero migration: today's exact namespace, with the
   // MEMINI_AGENT suffix applied unconditionally as it always has been.
@@ -225,7 +225,11 @@ function resolveTenant(cwd, config) {
   }
 }
 
-function resolveProjectBase(cwd, env = process.env) {
+// `opts.noPersist` skips the self-healing project-map write. Introspection
+// (`/memini:status`) must not mutate state it is only reporting on: it resolves
+// several counterfactuals per run, and a command that advertises itself as
+// read-only should be exactly that.
+function resolveProjectBase(cwd, env = process.env, opts = {}) {
   const dir = cwd && cwd.trim() ? cwd : process.cwd();
 
   const remote = gitOut("remote get-url origin", dir);
@@ -264,10 +268,12 @@ function resolveProjectBase(cwd, env = process.env) {
 
   // Remember the derivation under every stable key we have, so a later move or
   // remote change resolves back to this same namespace.
-  const entries = {};
-  if (remoteKey) entries[remoteKey] = ns;
-  if (pathKey) entries[pathKey] = ns;
-  if (remoteKey || pathKey) writeProjectMap({ ...map, ...entries });
+  if (!opts.noPersist) {
+    const entries = {};
+    if (remoteKey) entries[remoteKey] = ns;
+    if (pathKey) entries[pathKey] = ns;
+    if (remoteKey || pathKey) writeProjectMap({ ...map, ...entries });
+  }
   return { base: ns, source };
 }
 

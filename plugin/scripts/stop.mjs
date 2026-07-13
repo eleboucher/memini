@@ -16,6 +16,7 @@ import {
   parseJSON,
   resolveProject,
   writeNamespace,
+  writeSessionCwd,
   postRemember,
   readSessionEvents,
   buildSessionDigest,
@@ -135,6 +136,13 @@ async function main() {
   const hasSessionIdentity = sessionId !== "unknown";
   const cwd = payload.cwd || process.cwd();
   const project = resolveProject(cwd);
+
+  // Refresh this session's recorded project dir. Stop fires once per assistant
+  // turn, so any session actually in use stays comfortably inside
+  // SESSION_CWD_TTL_MS — which is what lets the TTL be short enough to bound
+  // pid reuse without ever expiring under a live session.
+  writeSessionCwd(process.ppid, cwd);
+
   // Keep the MCP headersHelper's namespace cache aligned with this project.
   writeNamespace(project);
 

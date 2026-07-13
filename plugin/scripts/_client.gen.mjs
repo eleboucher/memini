@@ -131,21 +131,36 @@ function cacheDir(env = process.env) {
 function sessionCwdPath(ppid, env = process.env) {
   return path2.join(cacheDir(env), "sessions", `pid-${ppid}.cwd`);
 }
-function writeSessionCwd(ppid, cwd, env = process.env) {
+var SESSION_CWD_TTL_MS = 6 * 60 * 60 * 1e3;
+function writeSessionCwd(ppid, cwd, env = process.env, now = Date.now()) {
   if (!ppid || !cwd || !cwd.trim()) return;
   try {
     const p = sessionCwdPath(ppid, env);
     fs2.mkdirSync(path2.dirname(p), { recursive: true });
-    fs2.writeFileSync(p, path2.resolve(cwd));
+    const rec = { cwd: path2.resolve(cwd), writtenAt: now };
+    fs2.writeFileSync(p, JSON.stringify(rec));
   } catch {
   }
 }
-function readSessionCwd(ppid, env = process.env) {
+function readSessionCwd(ppid, env = process.env, now = Date.now()) {
   try {
-    const v = fs2.readFileSync(sessionCwdPath(ppid, env), "utf8").trim();
-    return v && fs2.existsSync(v) ? v : void 0;
+    const raw = fs2.readFileSync(sessionCwdPath(ppid, env), "utf8").trim();
+    if (!raw) return void 0;
+    const rec = JSON.parse(raw);
+    if (!rec || typeof rec.cwd !== "string" || !rec.cwd) return void 0;
+    if (typeof rec.writtenAt !== "number" || !Number.isFinite(rec.writtenAt)) return void 0;
+    const age = now - rec.writtenAt;
+    if (age < 0 || age > SESSION_CWD_TTL_MS) return void 0;
+    return fs2.existsSync(rec.cwd) ? rec.cwd : void 0;
   } catch {
     return void 0;
+  }
+}
+function deleteSessionCwd(ppid, env = process.env) {
+  if (!ppid) return;
+  try {
+    fs2.rmSync(sessionCwdPath(ppid, env), { force: true });
+  } catch {
   }
 }
 function processCwd(pid) {
@@ -318,9 +333,11 @@ export {
   CLIENT_KNOBS,
   MAX_NAMESPACE_BYTES,
   OVERRIDES_VERSION,
+  SESSION_CWD_TTL_MS,
   cacheDir,
   clearOverride,
   defaultOverridesPath,
+  deleteSessionCwd,
   describeSettings,
   isSensitive,
   looksLikePluginRoot,

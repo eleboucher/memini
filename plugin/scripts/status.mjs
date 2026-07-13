@@ -245,11 +245,14 @@ async function main() {
     env: process.env,
     // Hand describeSettings THIS harness's resolver, so what it reports is what
     // the hooks actually do — project map, tenant template, agent segment and
-    // all — rather than an idealized chain that only resembles it. The opts
-    // pass-through carries ignoreOverride, which is how the counterfactual lines
-    // see past an override (it lives in a file, so no amount of env-doctoring
-    // would remove it).
-    resolve: (env, o) => resolveProjectDetailed(cwd, env, o),
+    // all — rather than an idealized chain that only resembles it.
+    //
+    // `o` carries ignoreOverride, which is how the counterfactual lines see past
+    // an override (it lives in a file, so no amount of env-doctoring removes it).
+    // noPersist keeps this command honestly read-only: the resolver would
+    // otherwise write the self-healing project map, and a diagnostic should not
+    // mutate the state it is reporting on.
+    resolve: (env, o) => resolveProjectDetailed(cwd, env, { ...o, noPersist: true }),
     cacheDir: cacheDir(process.env),
   });
 

@@ -7,7 +7,14 @@ import path from "node:path";
 import { isSensitive, redactValue } from "../src/redact.js";
 import { normalizeNamespace, validateNamespace } from "../src/namespace-validate.js";
 import { clearOverride, readOverride, writeOverride, overrideKey } from "../src/override.js";
-import { looksLikePluginRoot, resolveHarnessCwd, writeSessionCwd, readSessionCwd } from "../src/session.js";
+import {
+  looksLikePluginRoot,
+  resolveHarnessCwd,
+  writeSessionCwd,
+  readSessionCwd,
+  deleteSessionCwd,
+  SESSION_CWD_TTL_MS,
+} from "../src/session.js";
 import { describeSettings, type ResolvedNamespace } from "../src/settings.js";
 
 function tmp(): string {
@@ -125,6 +132,72 @@ test("resolveHarnessCwd prefers CLAUDE_PROJECT_DIR, then falls back to the sessi
   // An explicit CLAUDE_PROJECT_DIR outranks it.
   const viaEnv = resolveHarnessCwd({ ...env, CLAUDE_PROJECT_DIR: proj }, DEAD_PID);
   assert.equal(viaEnv?.source, "CLAUDE_PROJECT_DIR");
+});
+
+test("an expired session record is refused, because a recycled pid is worse than none", () => {
+  // A pid is not a durable identity. On Windows there is no /proc and no lsof, so
+  // this record is the ONLY mechanism — and Windows recycles pids quickly. If a
+  // session crashes (a clean exit deletes its record) and the OS later hands the
+  // same pid to an unrelated session in a different repo, an unchecked record
+  // would confidently hand that session the OLD repo's directory. Its MCP calls
+  // would target one namespace while its hooks wrote to another: exactly the
+  // split this module exists to prevent.
+  //
+  // Note fs.existsSync is NOT a freshness check — the old repo still exists on
+  // disk. It is just the wrong repo.
+  const env = { XDG_CACHE_HOME: tmp() };
+  const oldRepo = fs.mkdtempSync(path.join(os.tmpdir(), "repo-a-"));
+  const DEAD_PID = 2147483645;
+
+  const t0 = 1_000_000_000_000;
+  writeSessionCwd(DEAD_PID, oldRepo, env, t0);
+
+  // Fresh: honored.
+  assert.equal(readSessionCwd(DEAD_PID, env, t0 + 1000), path.resolve(oldRepo));
+  // Just inside the window: still honored, so a live session never expires.
+  assert.equal(readSessionCwd(DEAD_PID, env, t0 + SESSION_CWD_TTL_MS - 1), path.resolve(oldRepo));
+  // Past it: refused, even though the directory still exists.
+  assert.equal(readSessionCwd(DEAD_PID, env, t0 + SESSION_CWD_TTL_MS + 1), undefined);
+  // And resolveHarnessCwd therefore declines to guess rather than answering wrong.
+  assert.equal(resolveHarnessCwd(env, DEAD_PID), undefined);
+});
+
+test("a clock skewed into the future is treated as untrustworthy, not as fresh", () => {
+  const env = { XDG_CACHE_HOME: tmp() };
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "repo-"));
+  const DEAD_PID = 2147483644;
+  const t0 = 1_000_000_000_000;
+
+  writeSessionCwd(DEAD_PID, repo, env, t0);
+  // Reading at a time BEFORE the record was written means the clock moved. A
+  // negative age would otherwise sail through an `age > TTL` check.
+  assert.equal(readSessionCwd(DEAD_PID, env, t0 - 1000), undefined);
+});
+
+test("deleteSessionCwd closes the pid-reuse window on a clean exit", () => {
+  const env = { XDG_CACHE_HOME: tmp() };
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "repo-"));
+  const DEAD_PID = 2147483643;
+
+  writeSessionCwd(DEAD_PID, repo, env);
+  assert.equal(readSessionCwd(DEAD_PID, env), path.resolve(repo));
+
+  deleteSessionCwd(DEAD_PID, env);
+  assert.equal(readSessionCwd(DEAD_PID, env), undefined);
+  // Deleting again is a no-op, not a throw: SessionEnd must never fail the agent.
+  deleteSessionCwd(DEAD_PID, env);
+});
+
+test("a corrupt session record degrades to no record rather than throwing", () => {
+  const env = { XDG_CACHE_HOME: tmp() };
+  const DEAD_PID = 2147483642;
+  const p = path.join(env.XDG_CACHE_HOME, "memini", "sessions", `pid-${DEAD_PID}.cwd`);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+
+  for (const junk of ["{ not json", "", '{"cwd":"/nope"}', '{"writtenAt":123}']) {
+    fs.writeFileSync(p, junk);
+    assert.equal(readSessionCwd(DEAD_PID, env), undefined, `junk: ${JSON.stringify(junk)}`);
+  }
 });
 
 test("a live parent process outranks a stale session file", () => {

@@ -14,6 +14,7 @@ import {
   readSessionEvents,
   buildSessionDigest,
   deleteSessionBuffer,
+  deleteSessionCwd,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -57,6 +58,14 @@ async function main() {
   }
 
   deleteSessionBuffer(sessionId); // always, even when no digest was written
+
+  // Drop this session's recorded project dir. A pid is not a durable identity —
+  // the OS recycles them, Windows especially fast — so leaving the record behind
+  // means a later, unrelated session that happens to inherit the same pid could
+  // read it and target the WRONG repo's namespace. Deleting on a clean exit
+  // closes that window entirely; only a crash leaves a record behind, and those
+  // are bounded by SESSION_CWD_TTL_MS.
+  deleteSessionCwd(process.ppid);
 }
 
 main().catch((e) => {
