@@ -2,9 +2,11 @@
 
 Run: cd integrations/openwebui && python -m unittest
 
-Covers the pure helpers and the filter's recall/capture flow with a stubbed
-HTTP call. Requires pydantic and aiohttp (both bundled with Open WebUI); skips
-the filter-flow tests if they are not importable.
+Covers the pure helpers, the filter's recall/capture flow with a stubbed HTTP
+call, and the POST /v1/handshake wire contract (namespace precedence,
+fail-soft, memoization) with a stubbed aiohttp session. Requires pydantic and
+aiohttp (both bundled with Open WebUI); skips the flow/handshake tests if they
+are not importable.
 """
 
 import asyncio
@@ -24,9 +26,8 @@ def _load(name, path):
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# Point XDG_CONFIG_HOME at an empty temp dir so a developer's real
-# ~/.config/memini/overrides.json can't decide the namespace under test (both
-# modules read it at call time). The override tests write their own.
+# Point XDG_CONFIG_HOME at an empty temp dir -- harmless now that no file lives
+# there, kept for parity with the other integrations' test setup.
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="memini-test-config-")
 
 try:
@@ -45,6 +46,12 @@ class Helpers(unittest.TestCase):
         self.assertEqual(flt.sanitize_namespace("My Project!"), "My-Project")
         self.assertEqual(flt.sanitize_namespace("a__b.c-d"), "a__b.c-d")
         self.assertEqual(flt.sanitize_namespace("  --x--  "), "x")
+
+    def test_header_safe_drops_control_characters_but_keeps_slashes(self):
+        # A CR/LF in the value would split the X-Memini-Namespace header (or
+        # inject a bogus field into the handshake's JSON body).
+        self.assertEqual(flt.header_safe("  acme/api  "), "acme/api")
+        self.assertEqual(flt.header_safe("acme\r\nX-Evil: 1"), "acmeX-Evil: 1")
 
     def test_last_assistant_failed(self):
         self.assertTrue(
@@ -105,10 +112,23 @@ class Helpers(unittest.TestCase):
         self.assertTrue(flt.uses_plaintext_bearer("http://memini.example", "k"))
 
 
+async def _no_handshake():
+    """A _handshake stub that always fail-softs to None, matching what a
+    real handshake does against an unreachable server -- used so tests that
+    only care about the recall/capture flow (not namespace resolution) never
+    make a real network call."""
+    return None
+
+
 @unittest.skipUnless(_HAVE_DEPS, "pydantic/aiohttp not installed")
 class FilterFlow(unittest.TestCase):
     def _filter(self, captured_calls):
         f = flt.Filter()
+        # Hermetic: _namespace()/_resolve_namespace() still runs for real (it's
+        # not stubbed), but its handshake leg is -- these tests care about the
+        # recall/capture flow, not namespace resolution, and must never touch
+        # the network.
+        f._handshake = _no_handshake
 
         async def fake_post(path, payload, namespace):
             captured_calls.append((path, payload, namespace))
@@ -134,6 +154,8 @@ class FilterFlow(unittest.TestCase):
         self.assertEqual(calls[0][0], "/v1/search")
         # The default recall_limit (3) must reach the search request body.
         self.assertEqual(calls[0][1]["limit"], 3)
+        # No handshake configured -> the namespace valve default.
+        self.assertEqual(calls[0][2], "openwebui")
 
     def test_inlet_excludes_own_chat(self):
         # On inlet the chat id arrives via injected __chat_id__/__metadata__, not
@@ -201,10 +223,11 @@ class FilterFlow(unittest.TestCase):
 
     def test_scope_by_user(self):
         f = flt.Filter()
+        f._handshake = _no_handshake
         f.valves.scope_by_user = True
         f.valves.namespace = "team"
-        self.assertEqual(f._namespace({"id": "alice"}), "team-alice")
-        self.assertEqual(f._namespace(None), "team")
+        self.assertEqual(asyncio.run(f._namespace({"id": "alice"})), "team-alice")
+        self.assertEqual(asyncio.run(f._namespace(None)), "team")
 
     def test_headers_carry_x_memini_home_when_configured(self):
         f = flt.Filter()
@@ -223,135 +246,257 @@ class FilterFlow(unittest.TestCase):
 class ToolsHeaders(unittest.TestCase):
     def test_headers_carry_x_memini_home_when_configured(self):
         t = tls.Tools()
+        t._handshake = _no_handshake
         t.valves.home = "personal/acme"
-        headers = t._headers("")
+        headers = asyncio.run(t._headers(""))
         self.assertEqual(headers["X-Memini-Home"], "personal/acme")
 
     def test_headers_omit_x_memini_home_when_unset(self):
         t = tls.Tools()
+        t._handshake = _no_handshake
         t.valves.home = ""
-        headers = t._headers("")
+        headers = asyncio.run(t._headers(""))
         self.assertNotIn("X-Memini-Home", headers)
 
 
-class OverrideMixin:
-    """Writes $XDG_CONFIG_HOME/memini/overrides.json and runs from a temp
-    project dir — the override is keyed on the git toplevel (or, outside a repo,
-    the cwd), which is the directory Open WebUI was launched in."""
+# --- Handshake (POST /v1/handshake wire contract) -------------------------
+#
+# flt and tls each `import aiohttp` themselves, but both resolve to the SAME
+# cached module in sys.modules -- patching flt.aiohttp.ClientSession affects
+# both. _AiohttpSessionPatchMixin always patches through flt for that reason,
+# and every test restores the real ClientSession via addCleanup.
 
-    def _project(self):
-        proj = os.path.realpath(tempfile.mkdtemp(prefix="memini-override-"))
-        prev_cwd = os.getcwd()
-        os.chdir(proj)
-        self.addCleanup(lambda: os.chdir(prev_cwd))
-        return proj
 
-    def _write_overrides(self, overrides, raw=None):
-        xdg = tempfile.mkdtemp(prefix="memini-test-config-")
-        os.makedirs(os.path.join(xdg, "memini"))
-        with open(os.path.join(xdg, "memini", "overrides.json"), "w") as f:
-            f.write(raw if raw is not None else json.dumps({"version": 1, "overrides": overrides}))
-        prev = os.environ["XDG_CONFIG_HOME"]
-        os.environ["XDG_CONFIG_HOME"] = xdg
-        self.addCleanup(lambda: os.environ.__setitem__("XDG_CONFIG_HOME", prev))
+class _FakeResponse:
+    def __init__(self, status, payload):
+        self.status = status
+        self._payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def json(self):
+        return self._payload
+
+    async def text(self):
+        return json.dumps(self._payload)
+
+
+class _FakeSession:
+    def __init__(self, responder):
+        self._responder = responder
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def post(self, url, json=None, headers=None):  # noqa: A002 - matches aiohttp's own signature
+        return self._responder(url, json, headers)
+
+    def delete(self, url, headers=None):
+        return self._responder(url, None, headers)
+
+
+def _session_factory(responder):
+    def _make_session(*_a, **_k):
+        return _FakeSession(responder)
+
+    return _make_session
+
+
+def _session_returning(status, payload):
+    return _session_factory(lambda url, body, headers: _FakeResponse(status, payload))
+
+
+def _session_raising(exc):
+    def _make_session(*_a, **_k):
+        raise exc
+
+    return _make_session
 
 
 @unittest.skipUnless(_HAVE_DEPS, "pydantic/aiohttp not installed")
-class FilterOverride(OverrideMixin, unittest.TestCase):
-    def test_override_beats_the_namespace_valve(self):
-        proj = self._project()
-        self._write_overrides({proj: {"namespace": "acme/api", "setAt": "2026-07-12T20:30:00Z"}})
+class _AiohttpSessionPatchMixin:
+    def _patch_session(self, factory):
+        real = flt.aiohttp.ClientSession
+        flt.aiohttp.ClientSession = factory
+        self.addCleanup(lambda: setattr(flt.aiohttp, "ClientSession", real))
+
+
+@unittest.skipUnless(_HAVE_DEPS, "pydantic/aiohttp not installed")
+class FilterHandshakeTest(_AiohttpSessionPatchMixin, unittest.TestCase):
+    def test_facts_carries_the_valve_as_declared_namespace(self):
+        f = flt.Filter()
+        f.valves.namespace = "acme/api"
+        facts = f._facts()
+        self.assertEqual(facts["declared_namespace"], "acme/api")
+        self.assertTrue(facts["cwd_basename"])
+
+    def test_facts_omits_declared_namespace_when_the_valve_is_blank(self):
+        f = flt.Filter()
+        f.valves.namespace = "   "
+        facts = f._facts()
+        self.assertNotIn("declared_namespace", facts)
+
+    def test_resolve_namespace_uses_the_handshakes_namespace_when_present(self):
+        self._patch_session(
+            _session_returning(200, {"namespace": "acme/widget", "namespace_source": "declared"})
+        )
         f = flt.Filter()
         f.valves.namespace = "openwebui"
-        self.assertEqual(f._resolve_namespace(), ("acme/api", "override"))
-        # A hierarchical override keeps its "/" — flattened to acme-api it would
-        # write to a namespace no other integration reads.
-        self.assertEqual(f._namespace(None), "acme/api")
+        ns, source = asyncio.run(f._resolve_namespace())
+        self.assertEqual(ns, "acme/widget")
+        self.assertEqual(source, "server:declared")
 
-    def test_scope_by_user_still_isolates_under_an_override(self):
-        # The per-user suffix isolates *who*, not *what*: an override must not
-        # collapse every user of a shared server into one namespace.
-        proj = self._project()
-        self._write_overrides({proj: {"namespace": "acme/api", "setAt": ""}})
-        f = flt.Filter()
-        f.valves.scope_by_user = True
-        self.assertEqual(f._namespace({"id": "alice"}), "acme/api-alice")
-
-    def test_malformed_or_absent_file_degrades_to_the_valve(self):
-        self._project()
+    def test_resolve_namespace_falls_back_to_the_valve_on_any_handshake_failure(self):
+        self._patch_session(_session_raising(RuntimeError("boom")))
         f = flt.Filter()
         f.valves.namespace = "team"
-        # Absent (the module-level XDG temp dir holds no overrides.json).
-        self.assertEqual(f._namespace(None), "team")
-        # Hand-edited into invalid JSON: degrade, never raise into Open WebUI.
-        self._write_overrides(None, raw="{ not json")
-        self.assertIsNone(flt.read_override(os.getcwd()))
-        self.assertEqual(f._namespace(None), "team")
+        ns, source = asyncio.run(f._resolve_namespace())
+        self.assertEqual(ns, "team")
+        self.assertEqual(source, "valve")
 
-    def test_wrong_shape_and_blank_namespace_are_not_overrides(self):
-        proj = self._project()
-        self._write_overrides(None, raw=json.dumps({"version": 1, "overrides": []}))
-        self.assertIsNone(flt.read_override(proj))
-        self._write_overrides({proj: {"namespace": "  "}})
-        self.assertIsNone(flt.read_override(proj))
+    def test_resolve_namespace_falls_back_to_the_valve_on_a_non_2xx(self):
+        self._patch_session(_session_returning(500, {}))
+        f = flt.Filter()
+        f.valves.namespace = "team"
+        ns, source = asyncio.run(f._resolve_namespace())
+        self.assertEqual(ns, "team")
+        self.assertEqual(source, "valve")
 
-    def test_override_key_uses_the_git_toplevel(self):
-        # An override set at the top of a repo applies from a subdirectory too.
-        import subprocess
+    def test_per_user_suffix_applies_after_the_handshakes_namespace(self):
+        # The per-user suffix isolates *who*, not *what*: it must not be
+        # skipped just because the server resolved a namespace.
+        self._patch_session(
+            _session_returning(200, {"namespace": "acme/widget", "namespace_source": "declared"})
+        )
+        f = flt.Filter()
+        f.valves.scope_by_user = True
+        ns = asyncio.run(f._namespace({"id": "alice"}))
+        self.assertEqual(ns, "acme/widget-alice")
 
-        repo = os.path.realpath(tempfile.mkdtemp(prefix="memini-override-repo-"))
-        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        nested = os.path.join(repo, "services", "api")
-        os.makedirs(nested)
-        self.assertEqual(flt.override_key(nested), repo)
+    def test_handshake_is_memoized_within_the_ttl(self):
+        calls = []
 
-    def test_header_safe_drops_control_characters_but_keeps_slashes(self):
-        # A CR/LF in the value would split the X-Memini-Namespace header.
-        self.assertEqual(flt.header_safe("  acme/api  "), "acme/api")
-        self.assertEqual(flt.header_safe("acme\r\nX-Evil: 1"), "acmeX-Evil: 1")
+        def responder(url, body, headers):
+            calls.append(url)
+            return _FakeResponse(200, {"namespace": "ns", "namespace_source": "declared"})
+
+        self._patch_session(_session_factory(responder))
+        f = flt.Filter()
+        asyncio.run(f._resolve_namespace())
+        asyncio.run(f._resolve_namespace())
+        self.assertEqual(len(calls), 1, "the second call must reuse the memoized handshake")
+
+    def test_handshake_refetches_after_the_ttl_expires(self):
+        calls = []
+
+        def responder(url, body, headers):
+            calls.append(url)
+            return _FakeResponse(200, {"namespace": "ns", "namespace_source": "declared"})
+
+        self._patch_session(_session_factory(responder))
+        f = flt.Filter()
+        real_monotonic = flt.time.monotonic
+        clock = {"t": 0.0}
+        flt.time.monotonic = lambda: clock["t"]
+        self.addCleanup(lambda: setattr(flt.time, "monotonic", real_monotonic))
+
+        asyncio.run(f._resolve_namespace())
+        self.assertEqual(len(calls), 1)
+        clock["t"] = flt.HANDSHAKE_TTL_S + 1
+        asyncio.run(f._resolve_namespace())
+        self.assertEqual(len(calls), 2, "must refetch once the TTL has expired")
+
+    def test_handshake_carries_the_home_header_and_client_identification(self):
+        captured = []
+
+        def responder(url, body, headers):
+            captured.append((url, body, headers))
+            return _FakeResponse(200, {})
+
+        self._patch_session(_session_factory(responder))
+        f = flt.Filter()
+        f.valves.home = "personal/acme"
+        asyncio.run(f._handshake())
+        url, body, headers = captured[0]
+        self.assertTrue(url.endswith("/v1/handshake"))
+        self.assertEqual(headers["X-Memini-Home"], "personal/acme")
+        self.assertEqual(body["client"]["name"], "openwebui-memini-filter")
+        self.assertIn("version", body["client"])
 
 
 @unittest.skipUnless(_HAVE_DEPS, "pydantic/aiohttp not installed")
-class ToolsOverrideAndStatus(OverrideMixin, unittest.TestCase):
-    def test_headers_carry_the_override_namespace(self):
-        proj = self._project()
-        self._write_overrides({proj: {"namespace": "acme/api", "setAt": ""}})
+class ToolsHandshakeTest(_AiohttpSessionPatchMixin, unittest.TestCase):
+    def test_facts_carries_the_valve_as_declared_namespace(self):
+        t = tls.Tools()
+        t.valves.namespace = "acme/api"
+        facts = t._facts()
+        self.assertEqual(facts["declared_namespace"], "acme/api")
+
+    def test_resolve_namespace_uses_the_handshakes_namespace_when_present(self):
+        self._patch_session(
+            _session_returning(200, {"namespace": "acme/widget", "namespace_source": "declared"})
+        )
         t = tls.Tools()
         t.valves.namespace = "openwebui"
-        self.assertEqual(t._headers("")["X-Memini-Namespace"], "acme/api")
+        ns, source = asyncio.run(t._resolve_namespace())
+        self.assertEqual(ns, "acme/widget")
+        self.assertEqual(source, "server:declared")
+
+    def test_resolve_namespace_falls_back_to_the_valve_on_any_handshake_failure(self):
+        self._patch_session(_session_raising(RuntimeError("boom")))
+        t = tls.Tools()
+        t.valves.namespace = "team"
+        ns, source = asyncio.run(t._resolve_namespace())
+        self.assertEqual(ns, "team")
+        self.assertEqual(source, "valve")
+
+    def test_headers_use_the_handshakes_namespace(self):
+        self._patch_session(
+            _session_returning(200, {"namespace": "acme/widget", "namespace_source": "declared"})
+        )
+        t = tls.Tools()
+        headers = asyncio.run(t._headers(""))
+        self.assertEqual(headers["X-Memini-Namespace"], "acme/widget")
 
     def test_redact_secret_fingerprints_and_elides(self):
         self.assertEqual(tls.redact_secret("sk-0123456789abcd4f2a"), "sk-…4f2a")
         self.assertEqual(tls.redact_secret("short"), "***")
         self.assertEqual(tls.redact_secret(""), "")
 
-    def test_status_reports_provenance_and_redacts_the_token(self):
-        proj = self._project()
-        self._write_overrides({proj: {"namespace": "acme/api", "setAt": "2026-07-12T20:30:00Z"}})
+    def test_status_reports_the_server_resolved_namespace_and_redacts_the_token(self):
+        self._patch_session(
+            _session_returning(200, {"namespace": "acme/widget", "namespace_source": "declared"})
+        )
         os.environ["MEMINI_API_KEY"] = "sk-0123456789abcd4f2a"
         self.addCleanup(lambda: os.environ.pop("MEMINI_API_KEY", None))
         t = tls.Tools()
         t.valves.namespace = "openwebui"
         t.valves.base_url = "http://memini.example.com"
         out = asyncio.run(t.memini_status())
-        self.assertIn("acme/api", out)
-        self.assertIn("<- override", out)
-        # What the override is masking, which a bare value dump would not show.
-        self.assertIn("without the override", out)
-        self.assertIn("openwebui", out)
-        self.assertIn("override-active", out)
+        self.assertIn("acme/widget", out)
+        self.assertIn("<- server:declared", out)
+        # What the server resolved, versus what the valve alone says --
+        # analogous to the other integrations' "without the pin" line.
+        self.assertIn("the namespace valve says", out)
         self.assertIn("plaintext-bearer", out)
         # The secret is fingerprinted, never printed.
         self.assertNotIn("0123456789", out)
         self.assertIn("sk-…4f2a", out)
 
-    def test_status_without_an_override_reports_the_valve(self):
-        self._project()
+    def test_status_falls_back_to_the_valve_when_the_handshake_fails(self):
+        self._patch_session(_session_raising(RuntimeError("boom")))
         t = tls.Tools()
         t.valves.namespace = "team"
         out = asyncio.run(t.memini_status())
         self.assertIn("<- valve", out)
-        self.assertNotIn("override-active", out)
+        self.assertNotIn("the namespace valve says", out)
 
 
 if __name__ == "__main__":

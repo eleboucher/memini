@@ -46,8 +46,7 @@ library or paste the code in directly:
      **Filters**.
 
 The API key (if memini needs auth) goes in the environment that launches Open
-WebUI — `MEMINI_API_KEY=…` (alias: `MEMINI_TOKEN`) — not in a Valve, so it stays
-out of the DB.
+WebUI — `MEMINI_API_KEY=…` — not in a Valve, so it stays out of the DB.
 
 ### Configure (Valves)
 
@@ -55,19 +54,19 @@ Everything else is a [Valve](https://docs.openwebui.com/features/plugin/valves/)
 you set in the function's settings (the gear on the function), no code edit
 needed:
 
-| Valve               | Default                 | Purpose                                                                      |
-| ------------------- | ----------------------- | ---------------------------------------------------------------------------- |
-| `base_url`          | `http://localhost:8080` | memini REST base URL (default seeds from `MEMINI_BASE_URL`/`MEMINI_URL` env) |
-| `namespace`         | `openwebui`             | project the memory is scoped to (`X-Memini-Namespace`)                       |
-| `home`              | unset (`MEMINI_HOME`)   | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg    |
-| `recall`            | on                      | recall memories before each turn                                             |
-| `capture`           | on                      | capture the completed turn after each response                               |
-| `recall_limit`      | `3`                     | max memories injected per turn                                               |
-| `timeout_ms`        | `5000`                  | per-request timeout                                                          |
-| `fallback_on_error` | on                      | degrade silently on memini errors instead of surfacing them                  |
-| `require_https`     | off                     | refuse to send the API key over plaintext HTTP to a remote                   |
-| `scope_by_user`     | off                     | isolate memory per Open WebUI user (suffix namespace with id)                |
-| `priority`          | `0`                     | filter execution order                                                       |
+| Valve               | Default                 | Purpose                                                                                        |
+| ------------------- | ----------------------- | ---------------------------------------------------------------------------------------------- |
+| `base_url`          | `http://localhost:8080` | memini REST base URL (default seeds from `MEMINI_BASE_URL` env)                                |
+| `namespace`         | `openwebui`             | project the memory is scoped to (`X-Memini-Namespace`; see Namespace resolution below)         |
+| `home`              | unset (`MEMINI_HOME`)   | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg                      |
+| `recall`            | on                      | recall memories before each turn                                                               |
+| `capture`           | on                      | capture the completed turn after each response                                                 |
+| `recall_limit`      | `3`                     | max memories injected per turn                                                                 |
+| `timeout_ms`        | `5000`                  | per-request timeout (for `/v1/search`/`/v1/memories`; the handshake has its own ~2.5s timeout) |
+| `fallback_on_error` | on                      | degrade silently on memini errors instead of surfacing them                                    |
+| `require_https`     | off                     | refuse to send the API key over plaintext HTTP to a remote                                     |
+| `scope_by_user`     | off                     | isolate memory per Open WebUI user (suffix namespace with id)                                  |
+| `priority`          | `0`                     | filter execution order                                                                         |
 
 Open WebUI is multi-user, unlike a local agent. Set the same `namespace` to pool
 one shared memory across your agents, or flip `scope_by_user` on to give each
@@ -75,18 +74,25 @@ Open WebUI account its own private memory.
 
 ### Namespace resolution
 
-A **per-project override** in `$XDG_CONFIG_HOME/memini/overrides.json` (default
-`~/.config/memini/overrides.json`) wins over the `namespace` valve — the same
-precedence every other memini integration applies, so an override set once is
-honored everywhere rather than by some harnesses and not others. The key is the
-git toplevel of the directory Open WebUI runs in, else that directory; a
-malformed file degrades to the valve rather than raising. `scope_by_user` still
-appends the user suffix on top of an override: it isolates _who_, not _what_, and
-dropping it would collapse every account on a shared server into one namespace.
+Open WebUI is a server, not a local agent — there is no meaningful per-request
+working directory the way there is for opencode or Hermes, so a cwd-keyed
+override was never meaningful here and that mechanism is gone. The `namespace`
+valve is instead the **declared namespace**: on each recall/capture (and each
+`memini_status` call), the Filter or Tools instance calls the server's
+`POST /v1/handshake` (api/openapi.yaml) with `project.declared_namespace` set
+to the valve's value, and the server echoes it back verbatim unless an
+explicit pin overrides it. The call is fail-soft — any error or a ~2.5s
+timeout falls back to the valve value alone, so an unreachable or older
+memini never breaks a turn — and memoized per Filter/Tools instance for 10
+minutes.
 
-Both files also read the API key from `MEMINI_API_KEY` / `MEMINI_TOKEN` in the
-server's environment, never from a valve, so the secret stays out of the Open
-WebUI database.
+`scope_by_user` still appends the per-user suffix (`<namespace>-<id>`) on top
+of whatever namespace was resolved (valve or server): it isolates _who_, not
+_what_, and dropping it would collapse every account on a shared server into
+one namespace.
+
+Both files read the API key from `MEMINI_API_KEY` in the server's environment,
+never from a valve, so the secret stays out of the Open WebUI database.
 
 ## Alternative: the memory tools (on demand)
 
@@ -126,14 +132,15 @@ servers you actually use.
 
 ## Tests
 
-The pure helpers and the filter's recall/capture flow are unit-tested:
+The pure helpers, the filter's recall/capture flow, and the `POST /v1/handshake`
+wire contract (namespace precedence, fail-soft, memoization) are unit-tested:
 
 ```bash
 cd integrations/openwebui && python -m unittest
 ```
 
-(Requires `pydantic` and `aiohttp`, both bundled with Open WebUI. The filter-flow
-tests skip automatically if they aren't installed.)
+(Requires `pydantic` and `aiohttp`, both bundled with Open WebUI. The flow and
+handshake tests skip automatically if they aren't installed.)
 
 ## Publishing
 
