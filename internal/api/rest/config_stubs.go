@@ -33,8 +33,8 @@ func (h *Server) GetSelf(w http.ResponseWriter, r *http.Request) {
 	httputil.Error(w, http.StatusNotImplemented, configHandshakeNotImplemented)
 }
 
-// UpdateSelfSettings implements PATCH /v1/self/settings.
-func (h *Server) UpdateSelfSettings(w http.ResponseWriter, r *http.Request) {
+// PutSelfSettings implements PUT /v1/self/settings.
+func (h *Server) PutSelfSettings(w http.ResponseWriter, r *http.Request) {
 	httputil.Error(w, http.StatusNotImplemented, configHandshakeNotImplemented)
 }
 

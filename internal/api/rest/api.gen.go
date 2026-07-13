@@ -65,22 +65,22 @@ func (e ApiKeySource) Valid() bool {
 
 // Defines values for ClientSettingsInjectLabels.
 const (
-	ClientSettingsInjectLabelsAge        ClientSettingsInjectLabels = "age"
-	ClientSettingsInjectLabelsConfidence ClientSettingsInjectLabels = "confidence"
-	ClientSettingsInjectLabelsReason     ClientSettingsInjectLabels = "reason"
-	ClientSettingsInjectLabelsTier       ClientSettingsInjectLabels = "tier"
+	InjectLabelAge        ClientSettingsInjectLabels = "age"
+	InjectLabelConfidence ClientSettingsInjectLabels = "confidence"
+	InjectLabelReason     ClientSettingsInjectLabels = "reason"
+	InjectLabelTier       ClientSettingsInjectLabels = "tier"
 )
 
 // Valid indicates whether the value is a known member of the ClientSettingsInjectLabels enum.
 func (e ClientSettingsInjectLabels) Valid() bool {
 	switch e {
-	case ClientSettingsInjectLabelsAge:
+	case InjectLabelAge:
 		return true
-	case ClientSettingsInjectLabelsConfidence:
+	case InjectLabelConfidence:
 		return true
-	case ClientSettingsInjectLabelsReason:
+	case InjectLabelReason:
 		return true
-	case ClientSettingsInjectLabelsTier:
+	case InjectLabelTier:
 		return true
 	default:
 		return false
@@ -89,58 +89,16 @@ func (e ClientSettingsInjectLabels) Valid() bool {
 
 // Defines values for ClientSettingsNamespaceScope.
 const (
-	ClientSettingsNamespaceScopeOwnerRepo ClientSettingsNamespaceScope = "owner-repo"
-	ClientSettingsNamespaceScopeRepo      ClientSettingsNamespaceScope = "repo"
+	OwnerRepo ClientSettingsNamespaceScope = "owner-repo"
+	Repo      ClientSettingsNamespaceScope = "repo"
 )
 
 // Valid indicates whether the value is a known member of the ClientSettingsNamespaceScope enum.
 func (e ClientSettingsNamespaceScope) Valid() bool {
 	switch e {
-	case ClientSettingsNamespaceScopeOwnerRepo:
+	case OwnerRepo:
 		return true
-	case ClientSettingsNamespaceScopeRepo:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ClientSettingsPatchInjectLabels.
-const (
-	ClientSettingsPatchInjectLabelsAge        ClientSettingsPatchInjectLabels = "age"
-	ClientSettingsPatchInjectLabelsConfidence ClientSettingsPatchInjectLabels = "confidence"
-	ClientSettingsPatchInjectLabelsReason     ClientSettingsPatchInjectLabels = "reason"
-	ClientSettingsPatchInjectLabelsTier       ClientSettingsPatchInjectLabels = "tier"
-)
-
-// Valid indicates whether the value is a known member of the ClientSettingsPatchInjectLabels enum.
-func (e ClientSettingsPatchInjectLabels) Valid() bool {
-	switch e {
-	case ClientSettingsPatchInjectLabelsAge:
-		return true
-	case ClientSettingsPatchInjectLabelsConfidence:
-		return true
-	case ClientSettingsPatchInjectLabelsReason:
-		return true
-	case ClientSettingsPatchInjectLabelsTier:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ClientSettingsPatchNamespaceScope.
-const (
-	ClientSettingsPatchNamespaceScopeOwnerRepo ClientSettingsPatchNamespaceScope = "owner-repo"
-	ClientSettingsPatchNamespaceScopeRepo      ClientSettingsPatchNamespaceScope = "repo"
-)
-
-// Valid indicates whether the value is a known member of the ClientSettingsPatchNamespaceScope enum.
-func (e ClientSettingsPatchNamespaceScope) Valid() bool {
-	switch e {
-	case ClientSettingsPatchNamespaceScopeOwnerRepo:
-		return true
-	case ClientSettingsPatchNamespaceScopeRepo:
+	case Repo:
 		return true
 	default:
 		return false
@@ -692,39 +650,6 @@ type ClientSettingsInjectLabels string
 
 // ClientSettingsNamespaceScope "repo" derives the namespace from the bare repo name; "owner-repo" disambiguates same-named repos across owners with an owner-repo slug.
 type ClientSettingsNamespaceScope string
-
-// ClientSettingsPatch Same fields as ClientSettings, but every field is nullable: omit a field to leave it unchanged, send it as null to clear it back to inheriting, or send a value to set it explicitly.
-type ClientSettingsPatch struct {
-	AutoSave                 *bool                              `json:"auto_save,omitempty"`
-	AutoSaveInterval         *int                               `json:"auto_save_interval,omitempty"`
-	Capture                  *bool                              `json:"capture,omitempty"`
-	CaptureTurns             *bool                              `json:"capture_turns,omitempty"`
-	InjectBriefingFacts      *int                               `json:"inject_briefing_facts,omitempty"`
-	InjectBriefingMaxTok     *int                               `json:"inject_briefing_max_tok,omitempty"`
-	InjectBriefingPinned     *int                               `json:"inject_briefing_pinned,omitempty"`
-	InjectBriefingProcedures *int                               `json:"inject_briefing_procedures,omitempty"`
-	InjectBriefingRecent     *int                               `json:"inject_briefing_recent,omitempty"`
-	InjectLabels             *[]ClientSettingsPatchInjectLabels `json:"inject_labels,omitempty"`
-	InjectPretoolItems       *int                               `json:"inject_pretool_items,omitempty"`
-	InjectPretoolMaxTok      *int                               `json:"inject_pretool_max_tok,omitempty"`
-	InjectPretoolMinScore    *float32                           `json:"inject_pretool_min_score,omitempty"`
-	InjectPretoolTools       *[]string                          `json:"inject_pretool_tools,omitempty"`
-	InjectRecallMaxTok       *int                               `json:"inject_recall_max_tok,omitempty"`
-	InjectRecallMinScore     *float32                           `json:"inject_recall_min_score,omitempty"`
-	InlineExtract            *bool                              `json:"inline_extract,omitempty"`
-	MinCaptureChars          *int                               `json:"min_capture_chars,omitempty"`
-	NamespacePrefix          *string                            `json:"namespace_prefix,omitempty"`
-	NamespaceScope           *ClientSettingsPatchNamespaceScope `json:"namespace_scope,omitempty"`
-	Recall                   *bool                              `json:"recall,omitempty"`
-	RecallLimit              *int                               `json:"recall_limit,omitempty"`
-	SessionDigest            *bool                              `json:"session_digest,omitempty"`
-}
-
-// ClientSettingsPatchInjectLabels defines model for ClientSettingsPatch.InjectLabels.
-type ClientSettingsPatchInjectLabels string
-
-// ClientSettingsPatchNamespaceScope defines model for ClientSettingsPatch.NamespaceScope.
-type ClientSettingsPatchNamespaceScope string
 
 // ClusterAction defines model for ClusterAction.
 type ClusterAction struct {
@@ -1506,8 +1431,8 @@ type PutProjectMapPinJSONRequestBody = ProjectMapPutRequest
 // SearchMemoriesJSONRequestBody defines body for SearchMemories for application/json ContentType.
 type SearchMemoriesJSONRequestBody = SearchRequest
 
-// UpdateSelfSettingsJSONRequestBody defines body for UpdateSelfSettings for application/json ContentType.
-type UpdateSelfSettingsJSONRequestBody = ClientSettingsPatch
+// PutSelfSettingsJSONRequestBody defines body for PutSelfSettings for application/json ContentType.
+type PutSelfSettingsJSONRequestBody = ClientSettings
 
 // PutSettingsDefaultsJSONRequestBody defines body for PutSettingsDefaults for application/json ContentType.
 type PutSettingsDefaultsJSONRequestBody = ClientSettings
@@ -1610,9 +1535,9 @@ type ServerInterface interface {
 	// The caller's identity and fully-merged behavioral settings
 	// (GET /v1/self)
 	GetSelf(w http.ResponseWriter, r *http.Request)
-	// Update the caller's own per-key behavioral settings
-	// (PATCH /v1/self/settings)
-	UpdateSelfSettings(w http.ResponseWriter, r *http.Request)
+	// Replace the caller's own per-key behavioral settings
+	// (PUT /v1/self/settings)
+	PutSelfSettings(w http.ResponseWriter, r *http.Request)
 	// The server's global default ClientSettings
 	// (GET /v1/settings/defaults)
 	GetSettingsDefaults(w http.ResponseWriter, r *http.Request)
@@ -1820,9 +1745,9 @@ func (_ Unimplemented) GetSelf(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Update the caller's own per-key behavioral settings
-// (PATCH /v1/self/settings)
-func (_ Unimplemented) UpdateSelfSettings(w http.ResponseWriter, r *http.Request) {
+// Replace the caller's own per-key behavioral settings
+// (PUT /v1/self/settings)
+func (_ Unimplemented) PutSelfSettings(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -3544,8 +3469,8 @@ func (siw *ServerInterfaceWrapper) GetSelf(w http.ResponseWriter, r *http.Reques
 	handler.ServeHTTP(w, r)
 }
 
-// UpdateSelfSettings operation middleware
-func (siw *ServerInterfaceWrapper) UpdateSelfSettings(w http.ResponseWriter, r *http.Request) {
+// PutSelfSettings operation middleware
+func (siw *ServerInterfaceWrapper) PutSelfSettings(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
@@ -3554,7 +3479,7 @@ func (siw *ServerInterfaceWrapper) UpdateSelfSettings(w http.ResponseWriter, r *
 	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.UpdateSelfSettings(w, r)
+		siw.Handler.PutSelfSettings(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3874,7 +3799,7 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/v1/self", wrapper.GetSelf)
 	})
 	r.Group(func(r chi.Router) {
-		r.Patch(options.BaseURL+"/v1/self/settings", wrapper.UpdateSelfSettings)
+		r.Put(options.BaseURL+"/v1/self/settings", wrapper.PutSelfSettings)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/settings/defaults", wrapper.GetSettingsDefaults)

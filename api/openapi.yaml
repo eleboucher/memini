@@ -871,17 +871,19 @@ paths:
               schema: { $ref: "#/components/schemas/SelfResponse" }
         "401": { $ref: "#/components/responses/Error" }
   /v1/self/settings:
-    patch:
-      operationId: updateSelfSettings
+    put:
+      operationId: putSelfSettings
       tags: [memory]
-      summary: Update the caller's own per-key behavioral settings
+      summary: Replace the caller's own per-key behavioral settings
       description: >
-        Sets or clears fields on the settings bound to the API key the
-        request authenticated with. An explicit null on a
-        ClientSettingsPatch field clears it back to inheriting the server's
-        global default; an omitted field is left unchanged. Requires a
+        Full-replace semantics: the body REPLACES the settings stored on
+        the API key the request authenticated with. Only the fields
+        explicitly set in the body are stored; a field omitted from the
+        body returns to inheriting (the server's global defaults, then
+        the built-ins). Clients are expected to GET /v1/self, edit, and
+        PUT the result back — there is no merge/patch variant. Requires a
         NAMED key: the admin env key and dev mode authenticate with no
-        principal, so there is no "self" to patch — 403, use
+        principal, so there is no "self" to update — 403, use
         PUT /v1/settings/defaults for the global layer instead. 409 for a
         MEMINI_API_KEYS_FILE-sourced key (its settings come from that file,
         immutable at runtime — same convention as PATCH /v1/keys/{name}).
@@ -890,7 +892,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/ClientSettingsPatch" }
+            schema: { $ref: "#/components/schemas/ClientSettings" }
       responses:
         "200":
           description: OK
@@ -1860,6 +1862,11 @@ components:
           items:
             type: string
             enum: [tier, confidence, age, reason]
+            # Codegen metadata only (no wire effect): without explicit names,
+            # oapi-codegen would mint a bare `Tier` constant for the "tier"
+            # value, colliding with the Tier schema's generated Go type.
+            x-enum-varnames:
+              [InjectLabelTier, InjectLabelConfidence, InjectLabelAge, InjectLabelReason]
           description: Which annotation labels to render alongside an injected memory.
         recall:
           type: boolean
@@ -1901,45 +1908,6 @@ components:
           type: string
           default: ""
           description: Namespace path prepended ahead of the derived/declared namespace.
-    ClientSettingsPatch:
-      type: object
-      description: >
-        Same fields as ClientSettings, but every field is nullable: omit a
-        field to leave it unchanged, send it as null to clear it back to
-        inheriting, or send a value to set it explicitly.
-      properties:
-        capture_turns: { type: boolean, nullable: true }
-        session_digest: { type: boolean, nullable: true }
-        inline_extract: { type: boolean, nullable: true }
-        auto_save: { type: boolean, nullable: true }
-        auto_save_interval: { type: integer, minimum: 1, nullable: true }
-        inject_briefing_pinned: { type: integer, minimum: 0, nullable: true }
-        inject_briefing_facts: { type: integer, minimum: 0, nullable: true }
-        inject_briefing_procedures: { type: integer, minimum: 0, nullable: true }
-        inject_briefing_recent: { type: integer, minimum: 0, nullable: true }
-        inject_briefing_max_tok: { type: integer, minimum: 0, nullable: true }
-        inject_pretool_items: { type: integer, minimum: 0, nullable: true }
-        inject_pretool_max_tok: { type: integer, minimum: 0, nullable: true }
-        inject_pretool_min_score: { type: number, minimum: 0, nullable: true }
-        inject_pretool_tools:
-          type: array
-          items: { type: string }
-          nullable: true
-        inject_labels:
-          type: array
-          items: { type: string, enum: [tier, confidence, age, reason] }
-          nullable: true
-        recall: { type: boolean, nullable: true }
-        capture: { type: boolean, nullable: true }
-        recall_limit: { type: integer, minimum: 0, nullable: true }
-        inject_recall_max_tok: { type: integer, minimum: 0, nullable: true }
-        inject_recall_min_score: { type: number, minimum: 0, nullable: true }
-        min_capture_chars: { type: integer, minimum: 0, nullable: true }
-        namespace_scope:
-          type: string
-          enum: [repo, owner-repo]
-          nullable: true
-        namespace_prefix: { type: string, nullable: true }
     SelfResponse:
       type: object
       required: [identity, settings, settings_sources]

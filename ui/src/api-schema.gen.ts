@@ -536,16 +536,16 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        put?: never;
+        /**
+         * Replace the caller's own per-key behavioral settings
+         * @description Full-replace semantics: the body REPLACES the settings stored on the API key the request authenticated with. Only the fields explicitly set in the body are stored; a field omitted from the body returns to inheriting (the server's global defaults, then the built-ins). Clients are expected to GET /v1/self, edit, and PUT the result back — there is no merge/patch variant. Requires a NAMED key: the admin env key and dev mode authenticate with no principal, so there is no "self" to update — 403, use PUT /v1/settings/defaults for the global layer instead. 409 for a MEMINI_API_KEYS_FILE-sourced key (its settings come from that file, immutable at runtime — same convention as PATCH /v1/keys/{name}). 501 against a storage backend that cannot persist per-key settings.
+         */
+        put: operations["putSelfSettings"];
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        /**
-         * Update the caller's own per-key behavioral settings
-         * @description Sets or clears fields on the settings bound to the API key the request authenticated with. An explicit null on a ClientSettingsPatch field clears it back to inheriting the server's global default; an omitted field is left unchanged. Requires a NAMED key: the admin env key and dev mode authenticate with no principal, so there is no "self" to patch — 403, use PUT /v1/settings/defaults for the global layer instead. 409 for a MEMINI_API_KEYS_FILE-sourced key (its settings come from that file, immutable at runtime — same convention as PATCH /v1/keys/{name}). 501 against a storage backend that cannot persist per-key settings.
-         */
-        patch: operations["updateSelfSettings"];
+        patch?: never;
         trace?: never;
     };
     "/v1/settings/defaults": {
@@ -1170,33 +1170,6 @@ export interface components {
              * @default
              */
             namespace_prefix: string;
-        };
-        /** @description Same fields as ClientSettings, but every field is nullable: omit a field to leave it unchanged, send it as null to clear it back to inheriting, or send a value to set it explicitly. */
-        ClientSettingsPatch: {
-            capture_turns?: boolean | null;
-            session_digest?: boolean | null;
-            inline_extract?: boolean | null;
-            auto_save?: boolean | null;
-            auto_save_interval?: number | null;
-            inject_briefing_pinned?: number | null;
-            inject_briefing_facts?: number | null;
-            inject_briefing_procedures?: number | null;
-            inject_briefing_recent?: number | null;
-            inject_briefing_max_tok?: number | null;
-            inject_pretool_items?: number | null;
-            inject_pretool_max_tok?: number | null;
-            inject_pretool_min_score?: number | null;
-            inject_pretool_tools?: string[] | null;
-            inject_labels?: ("tier" | "confidence" | "age" | "reason")[] | null;
-            recall?: boolean | null;
-            capture?: boolean | null;
-            recall_limit?: number | null;
-            inject_recall_max_tok?: number | null;
-            inject_recall_min_score?: number | null;
-            min_capture_chars?: number | null;
-            /** @enum {string|null} */
-            namespace_scope?: "repo" | "owner-repo" | null;
-            namespace_prefix?: string | null;
         };
         SelfResponse: {
             identity: components["schemas"]["CallerIdentity"];
@@ -2258,7 +2231,7 @@ export interface operations {
             401: components["responses"]["Error"];
         };
     };
-    updateSelfSettings: {
+    putSelfSettings: {
         parameters: {
             query?: never;
             header?: never;
@@ -2267,7 +2240,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ClientSettingsPatch"];
+                "application/json": components["schemas"]["ClientSettings"];
             };
         };
         responses: {
