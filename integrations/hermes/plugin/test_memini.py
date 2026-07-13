@@ -6,21 +6,35 @@
 # copies memini/. into eleboucher/memini-hermes) does not ship it.
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
+from urllib.error import URLError
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import memini  # noqa: E402
 
 # A developer shell may export the real memini config; clear it so each test's
-# explicit env is authoritative (canonical MEMINI_BASE_URL would otherwise win
-# over a test that sets only MEMINI_URL).
-for _v in ("MEMINI_BASE_URL", "MEMINI_URL", "MEMINI_API_KEY", "MEMINI_TOKEN", "MEMINI_HOME"):
+# explicit env is authoritative.
+for _v in ("MEMINI_BASE_URL", "MEMINI_API_KEY", "MEMINI_HOME"):
     os.environ.pop(_v, None)
-# Point XDG_CONFIG_HOME at an empty temp dir so a developer's real
-# ~/.config/memini/config.json can't leak tenant prefixes into these tests.
+# Point XDG_CONFIG_HOME at an empty temp dir -- harmless now that no file lives
+# there, kept for parity with the other integrations' test setup.
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="memini-test-config-")
+
+# Hermetic: no test may make a real network call. initialize() now calls
+# _cached_handshake (POST /v1/handshake) on every provider construction; stub
+# urlopen at the module level so it fails fast and deterministically
+# (fail-soft -> local derivation) instead of depending on there being no real
+# memini listening on localhost:8080. Tests that need a specific handshake
+# response swap memini.urlopen for their own duration (see HomeHeaderTest /
+# HandshakeTest) and must restore it (addCleanup or try/finally).
+def _no_network_urlopen(req, timeout=None):
+    raise URLError("no network in tests")
+
+
+memini.urlopen = _no_network_urlopen
 
 
 def make_provider(call_stub, result_stub=None):
@@ -30,7 +44,7 @@ def make_provider(call_stub, result_stub=None):
     the same stub with an empty error, so a test that only cares about the request
     body does not have to stub twice. Pass result_stub to exercise a server error.
     """
-    os.environ["MEMINI_URL"] = "http://localhost:8080"
+    os.environ["MEMINI_BASE_URL"] = "http://localhost:8080"
     os.environ.pop("MEMINI_NAMESPACE", None)
     p = memini.MeminiMemoryProvider()
     p.initialize("sess-1")
@@ -51,12 +65,13 @@ class SanitizeNamespaceTest(unittest.TestCase):
         # MEMINI_NAMESPACE wins and is used raw-trimmed (the server validates the
         # header); a hierarchical value keeps its "/" instead of flattening, so
         # it matches the other integrations.
-        os.environ["MEMINI_URL"] = "http://localhost:8080"
+        os.environ["MEMINI_BASE_URL"] = "http://localhost:8080"
         os.environ["MEMINI_NAMESPACE"] = "  team space/eu  "
         try:
             p = memini.MeminiMemoryProvider()
             p.initialize("sess-1")
             self.assertEqual(p._namespace, "team space/eu")
+            self.assertEqual(p._namespace_source, "env")
         finally:
             os.environ.pop("MEMINI_NAMESPACE", None)
 
@@ -109,6 +124,34 @@ class HomeHeaderTest(unittest.TestCase):
         self.assertEqual(len(captured), 2)
         self.assertEqual(captured[0].get_header("X-memini-home"), "personal/acme")
         self.assertIsNone(captured[1].get_header("X-memini-home"))
+
+    def test_namespace_header_omitted_when_empty(self):
+        # /v1/handshake has no namespace yet to send; _api must skip the
+        # header entirely rather than send it empty.
+        captured = []
+
+        class FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b"{}"
+
+        def fake_urlopen(req, timeout=None):
+            captured.append(req)
+            return FakeResp()
+
+        real_urlopen = memini.urlopen
+        memini.urlopen = fake_urlopen
+        try:
+            memini._api("http://localhost:8080", "/v1/handshake", {}, "", "")
+        finally:
+            memini.urlopen = real_urlopen
+
+        self.assertIsNone(captured[0].get_header("X-memini-namespace"))
 
 
 class ListPathTest(unittest.TestCase):
@@ -526,189 +569,251 @@ class RecallShapingTest(unittest.TestCase):
         self.assertIn("truncated by token budget", out)
 
 
-class ResolveTenantTest(unittest.TestCase):
-    def _write_config(self, config):
-        xdg = tempfile.mkdtemp(prefix="memini-test-config-")
-        os.makedirs(os.path.join(xdg, "memini"))
-        with open(os.path.join(xdg, "memini", "config.json"), "w") as f:
-            json.dump(config, f)
-        prev = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = xdg
-        self.addCleanup(lambda: os.environ.__setitem__("XDG_CONFIG_HOME", prev))
+# --- Handshake (POST /v1/handshake wire contract) -------------------------
 
-    def test_tenant_separator_preserved_in_namespace(self):
-        # work/proj, not work-proj: a flattened separator splits memory from
-        # the other integrations, which all send the "/" form.
-        # realpath: macOS tempdirs live under /var -> /private/var, but the plugin
-        # reads os.getcwd() (symlink-resolved) while _match_tenant compares
-        # lexically; an unresolved root would never match.
-        parent = os.path.realpath(tempfile.mkdtemp(prefix="memini-tenant-"))
-        proj = os.path.join(parent, "proj")
-        os.makedirs(proj)
-        self._write_config({"tenantRoots": [{"path": parent, "tenant": "work"}]})
-        os.environ["MEMINI_URL"] = "http://localhost:8080"
-        os.environ.pop("MEMINI_NAMESPACE", None)
-        prev_cwd = os.getcwd()
-        os.chdir(proj)
-        self.addCleanup(lambda: os.chdir(prev_cwd))
-        p = memini.MeminiMemoryProvider()
-        p.initialize("sess-tenant")
-        self.assertEqual(p._namespace, "work/proj")
 
-    def test_empty_path_entry_is_ignored(self):
-        # Path("").resolve() used to equal the cwd, turning an empty path into
-        # a spurious exact match for whatever directory hermes runs in.
-        self._write_config({"tenantRoots": [{"path": "", "tenant": "evil"}]})
-        self.assertIsNone(memini._resolve_tenant(os.getcwd()))
+class _FakeResp:
+    def __init__(self, body: bytes):
+        self._body = body
 
-    def test_non_dict_entry_skipped_without_aborting_later_roots(self):
-        parent = os.path.realpath(tempfile.mkdtemp(prefix="memini-tenant-"))
-        self._write_config(
-            {"tenantRoots": ["junk", {"tenant": "nopath"}, {"path": parent, "tenant": "work"}]}
-        )
-        self.assertEqual(memini._resolve_tenant(os.path.join(parent, "proj")), "work")
+    def __enter__(self):
+        return self
 
-    def test_empty_xdg_falls_back_to_home_config(self):
-        # An empty XDG_CONFIG_HOME must behave like unset (fall back to
-        # ~/.config), not build a relative, never-found config path.
-        prev = os.environ.get("XDG_CONFIG_HOME")
-        self.addCleanup(
-            lambda: os.environ.__setitem__("XDG_CONFIG_HOME", prev)
-            if prev is not None
-            else os.environ.pop("XDG_CONFIG_HOME", None)
-        )
-        os.environ["XDG_CONFIG_HOME"] = ""
-        expected = os.path.join(
-            os.path.expanduser("~"), ".config", "memini", "config.json"
-        )
-        self.assertEqual(str(memini._config_path()), expected)
+    def __exit__(self, *a):
+        return False
 
-    def test_config_present_derives_project_from_git(self):
-        # Config present -> {project} is the git remote name, so a fork checked
-        # out under a different folder name still lands in work/<repo>.
-        import subprocess
+    def read(self):
+        return self._body
 
-        parent = os.path.realpath(tempfile.mkdtemp(prefix="memini-tenant-"))
-        proj = os.path.join(parent, "memini-fork")
+
+def _urlopen_returning(payload):
+    def _urlopen(req, timeout=None):
+        return _FakeResp(json.dumps(payload).encode())
+
+    return _urlopen
+
+
+def _urlopen_raising(exc):
+    def _urlopen(req, timeout=None):
+        raise exc
+
+    return _urlopen
+
+
+class HandshakeTest(unittest.TestCase):
+    """precedence, fail-soft, TTL memo, and the settings fallback chain for
+    POST /v1/handshake (api/openapi.yaml)."""
+
+    def setUp(self):
+        self._real_urlopen = memini.urlopen
+        memini._handshake_cache.clear()
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        memini.urlopen = self._real_urlopen
+        memini._handshake_cache.clear()
+
+    def test_facts_sends_cwd_basename_git_remote_toplevel_and_env_namespace(self):
+        parent = os.path.realpath(tempfile.mkdtemp(prefix="memini-facts-"))
+        proj = os.path.join(parent, "widget")
         os.makedirs(proj)
         subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
         subprocess.run(
-            ["git", "remote", "add", "origin", "https://github.com/eleboucher/memini.git"],
+            ["git", "remote", "add", "origin", "https://github.com/eleboucher/widget.git"],
             cwd=proj,
             check=True,
         )
-        self._write_config({"tenantRoots": [{"path": parent, "tenant": "work"}]})
-        os.environ["MEMINI_URL"] = "http://localhost:8080"
-        os.environ.pop("MEMINI_NAMESPACE", None)
-        os.environ.pop("MEMINI_AGENT", None)
-        self.addCleanup(lambda: os.environ.pop("MEMINI_AGENT", None))
-        prev_cwd = os.getcwd()
-        os.chdir(proj)
-        self.addCleanup(lambda: os.chdir(prev_cwd))
-        p = memini.MeminiMemoryProvider()
-        p.initialize("sess-git")
-        self.assertEqual(p._namespace, "work/memini")
+        os.environ["MEMINI_NAMESPACE"] = "team/eu"
+        self.addCleanup(lambda: os.environ.pop("MEMINI_NAMESPACE", None))
+        facts = memini._facts(proj)
+        self.assertEqual(facts["cwd_basename"], "widget")
+        self.assertEqual(facts["remote_url"], "https://github.com/eleboucher/widget.git")
+        self.assertTrue(facts["toplevel_path"])
+        self.assertEqual(facts["toplevel_basename"], os.path.basename(facts["toplevel_path"]))
+        self.assertEqual(facts["env_namespace"], "team/eu")
 
-    def test_non_default_template_reshapes_namespace(self):
-        parent = os.path.realpath(tempfile.mkdtemp(prefix="memini-tenant-"))
-        proj = os.path.join(parent, "proj")
+    def test_facts_omits_remote_toplevel_and_env_namespace_when_absent(self):
+        proj = os.path.realpath(tempfile.mkdtemp(prefix="memini-facts-nogit-"))
+        os.environ.pop("MEMINI_NAMESPACE", None)
+        facts = memini._facts(proj)
+        self.assertEqual(facts["cwd_basename"], os.path.basename(proj))
+        self.assertNotIn("remote_url", facts)
+        self.assertNotIn("toplevel_path", facts)
+        self.assertNotIn("env_namespace", facts)
+
+    def test_derive_local_namespace_prefers_remote_over_toplevel_over_cwd(self):
+        parent = os.path.realpath(tempfile.mkdtemp(prefix="memini-derive-"))
+        proj = os.path.join(parent, "checkout-dir")
         os.makedirs(proj)
-        self._write_config(
-            {"tenantRoots": [{"path": parent, "tenant": "work"}], "template": "{tenant}-{project}"}
+        subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "https://github.com/eleboucher/widget.git"],
+            cwd=proj,
+            check=True,
         )
-        os.environ["MEMINI_URL"] = "http://localhost:8080"
-        os.environ.pop("MEMINI_NAMESPACE", None)
-        prev_cwd = os.getcwd()
-        os.chdir(proj)
-        self.addCleanup(lambda: os.chdir(prev_cwd))
-        p = memini.MeminiMemoryProvider()
-        p.initialize("sess-tmpl")
-        # proj is not a git repo, so {project} falls back to the cwd basename.
-        self.assertEqual(p._namespace, "work-proj")
+        # The git remote name wins over the cwd basename (checkout-dir).
+        self.assertEqual(memini._derive_local_namespace(proj), ("widget", "remote"))
 
+        no_remote = os.path.realpath(tempfile.mkdtemp(prefix="memini-derive-noremote-"))
+        subprocess.run(["git", "init", "-q"], cwd=no_remote, check=True)
+        self.assertEqual(
+            memini._derive_local_namespace(no_remote),
+            (os.path.basename(no_remote), "toplevel"),
+        )
 
-class NamespaceOverrideTest(unittest.TestCase):
-    """The per-project override in $XDG_CONFIG_HOME/memini/overrides.json — the
-    file the client plugins write and `memini doctor` reads."""
+        no_git = os.path.realpath(tempfile.mkdtemp(prefix="memini-derive-nogit-"))
+        self.assertEqual(memini._derive_local_namespace(no_git), (os.path.basename(no_git), "cwd"))
 
-    def _write_overrides(self, overrides, raw=None):
-        xdg = tempfile.mkdtemp(prefix="memini-test-config-")
-        os.makedirs(os.path.join(xdg, "memini"))
-        with open(os.path.join(xdg, "memini", "overrides.json"), "w") as f:
-            f.write(raw if raw is not None else json.dumps({"version": 1, "overrides": overrides}))
-        prev = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = xdg
-        self.addCleanup(lambda: os.environ.__setitem__("XDG_CONFIG_HOME", prev))
+    def test_resolve_namespace_precedence_env_beats_handshake_beats_local(self):
+        proj = os.path.realpath(tempfile.mkdtemp(prefix="memini-precedence-"))
+        hs = {"namespace": "acme/widget", "namespace_source": "remote", "settings": {}}
 
-    def _in(self, cwd):
-        prev_cwd = os.getcwd()
-        os.chdir(cwd)
-        self.addCleanup(lambda: os.chdir(prev_cwd))
-        os.environ["MEMINI_URL"] = "http://localhost:8080"
-        p = memini.MeminiMemoryProvider()
-        p.initialize("sess-override")
-        return p
-
-    def test_override_beats_the_env_pin(self):
-        # The whole point of the ordering: a globally exported MEMINI_NAMESPACE
-        # pins every repo on the machine, and if it won here, setting an override
-        # would silently do nothing on exactly the machines that need one.
-        proj = os.path.realpath(tempfile.mkdtemp(prefix="memini-override-"))
-        self._write_overrides({proj: {"namespace": "acme/api", "setAt": "2026-07-12T20:30:00Z"}})
         os.environ["MEMINI_NAMESPACE"] = "pinned"
         self.addCleanup(lambda: os.environ.pop("MEMINI_NAMESPACE", None))
-        p = self._in(proj)
-        self.assertEqual(p._namespace, "acme/api")
-        self.assertEqual(p._namespace_source, "override")
+        self.assertEqual(memini._resolve_namespace(proj, hs), ("pinned", "env"))
 
-    def test_override_is_keyed_on_the_git_toplevel(self):
-        # An override set at the top of a repo must still apply when hermes runs
-        # three directories down.
-        import subprocess
-
-        repo = os.path.realpath(tempfile.mkdtemp(prefix="memini-override-repo-"))
-        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        nested = os.path.join(repo, "services", "api")
-        os.makedirs(nested)
-        self._write_overrides({repo: {"namespace": "acme/api", "setAt": ""}})
         os.environ.pop("MEMINI_NAMESPACE", None)
-        self.assertEqual(memini._override_key(nested), repo)
-        self.assertEqual(self._in(nested)._namespace, "acme/api")
+        self.assertEqual(memini._resolve_namespace(proj, hs), ("acme/widget", "server:remote"))
 
-    def test_malformed_or_absent_file_degrades_to_automatic_resolution(self):
-        proj = os.path.realpath(tempfile.mkdtemp(prefix="memini-override-"))
-        os.environ.pop("MEMINI_NAMESPACE", None)
-        # Absent: the module-level XDG temp dir holds no overrides.json.
-        self.assertIsNone(memini._read_override(proj))
-        # Hand-edited into invalid JSON: degrade, never raise into hermes.
-        self._write_overrides(None, raw="{ not json")
-        self.assertIsNone(memini._read_override(proj))
-        self.assertEqual(self._in(proj)._namespace, os.path.basename(proj))
-
-    def test_wrong_shape_and_blank_namespace_are_not_overrides(self):
-        proj = os.path.realpath(tempfile.mkdtemp(prefix="memini-override-"))
-        self._write_overrides(None, raw=json.dumps({"version": 1, "overrides": []}))
-        self.assertIsNone(memini._read_override(proj))
-        self._write_overrides({proj: {"namespace": "   "}})
-        self.assertIsNone(memini._read_override(proj))
-
-    def test_empty_xdg_falls_back_to_home_overrides(self):
-        prev = os.environ.get("XDG_CONFIG_HOME")
-        self.addCleanup(lambda: os.environ.__setitem__("XDG_CONFIG_HOME", prev))
-        os.environ["XDG_CONFIG_HOME"] = ""
+        # No handshake (fail-soft) -> local derivation, "local-*" labeled.
         self.assertEqual(
-            str(memini._overrides_path()),
-            os.path.join(os.path.expanduser("~"), ".config", "memini", "overrides.json"),
+            memini._resolve_namespace(proj, None),
+            (os.path.basename(proj), "local-cwd"),
         )
+
+    def test_handshake_is_fail_soft_on_any_urlopen_error(self):
+        memini.urlopen = _urlopen_raising(URLError("boom"))
+        result = memini._handshake("http://localhost:8080", "", {"cwd_basename": "x"})
+        self.assertIsNone(result)
+
+    def test_cached_handshake_memoizes_until_the_ttl_expires(self):
+        calls = []
+
+        def urlopen(req, timeout=None):
+            calls.append(1)
+            return _FakeResp(
+                json.dumps({"namespace": "ns", "namespace_source": "cwd", "settings": {}}).encode()
+            )
+
+        memini.urlopen = urlopen
+        time_box = {"t": 0.0}
+
+        first = memini._cached_handshake(
+            "http://localhost:8080", "", {"cwd_basename": "x"}, now=lambda: time_box["t"]
+        )
+        self.assertEqual(first["namespace"], "ns")
+        self.assertEqual(len(calls), 1)
+
+        memini._cached_handshake(
+            "http://localhost:8080", "", {"cwd_basename": "x"}, now=lambda: time_box["t"]
+        )
+        self.assertEqual(len(calls), 1, "must reuse the memoized result within the TTL")
+
+        time_box["t"] = memini._HANDSHAKE_TTL + 1
+        memini._cached_handshake(
+            "http://localhost:8080", "", {"cwd_basename": "x"}, now=lambda: time_box["t"]
+        )
+        self.assertEqual(len(calls), 2, "must refetch after the TTL expires")
+
+    def test_initialize_uses_the_handshakes_namespace_absent_env(self):
+        os.environ.pop("MEMINI_NAMESPACE", None)
+        os.environ["MEMINI_BASE_URL"] = "http://localhost:8080"
+        self.addCleanup(lambda: os.environ.pop("MEMINI_BASE_URL", None))
+        memini.urlopen = _urlopen_returning(
+            {"namespace": "acme/widget", "namespace_source": "remote", "settings": {}}
+        )
+        p = memini.MeminiMemoryProvider()
+        p.initialize("sess-hs")
+        self.assertEqual(p._namespace, "acme/widget")
+        self.assertEqual(p._namespace_source, "server:remote")
+
+    def test_initialize_falls_back_to_local_derivation_when_handshake_fails(self):
+        os.environ.pop("MEMINI_NAMESPACE", None)
+        os.environ["MEMINI_BASE_URL"] = "http://localhost:8080"
+        self.addCleanup(lambda: os.environ.pop("MEMINI_BASE_URL", None))
+        memini.urlopen = _urlopen_raising(URLError("connection refused"))
+        proj = os.path.realpath(tempfile.mkdtemp(prefix="memini-fallback-"))
+        prev_cwd = os.getcwd()
+        os.chdir(proj)
+        self.addCleanup(lambda: os.chdir(prev_cwd))
+        p = memini.MeminiMemoryProvider()
+        p.initialize("sess-fallback")
+        self.assertEqual(p._namespace, os.path.basename(proj))
+        self.assertEqual(p._namespace_source, "local-cwd")
+
+    def test_initialize_settings_fallback_chain_env_beats_server_beats_default(self):
+        os.environ.pop("MEMINI_NAMESPACE", None)
+        os.environ["MEMINI_BASE_URL"] = "http://localhost:8080"
+        self.addCleanup(lambda: os.environ.pop("MEMINI_BASE_URL", None))
+        memini.urlopen = _urlopen_returning(
+            {
+                "namespace": "ns",
+                "namespace_source": "cwd",
+                "settings": {
+                    "recall": False,
+                    "capture": False,
+                    "recall_limit": 7,
+                    "inject_recall_max_tok": 500,
+                    "inject_recall_min_score": 0.3,
+                },
+            }
+        )
+        p = memini.MeminiMemoryProvider()
+        p.initialize("sess-settings")
+        self.assertFalse(p._recall_enabled)
+        self.assertFalse(p._capture_enabled)
+        self.assertEqual(p._recall_limit, 7)
+        self.assertEqual(p._recall_max_tokens, 500)
+        self.assertEqual(p._recall_min_score, 0.3)
+
+        # An explicit env value still beats the server's settings.
+        memini._handshake_cache.clear()
+        os.environ["MEMINI_RECALL_LIMIT"] = "9"
+        self.addCleanup(lambda: os.environ.pop("MEMINI_RECALL_LIMIT", None))
+        p2 = memini.MeminiMemoryProvider()
+        p2.initialize("sess-settings-2")
+        self.assertEqual(p2._recall_limit, 9)
+
+    def test_prefetch_and_sync_turn_are_gated_by_the_servers_recall_capture_settings(self):
+        os.environ.pop("MEMINI_NAMESPACE", None)
+        os.environ["MEMINI_BASE_URL"] = "http://localhost:8080"
+        self.addCleanup(lambda: os.environ.pop("MEMINI_BASE_URL", None))
+        memini.urlopen = _urlopen_returning(
+            {"namespace": "ns", "namespace_source": "cwd", "settings": {"recall": False, "capture": False}}
+        )
+        p = memini.MeminiMemoryProvider()
+        p.initialize("sess-gate")
+        calls = []
+        p._call = lambda *a, **k: calls.append(a) or {"results": []}
+        p._call_bg = lambda *a, **k: calls.append(a)
+        self.assertEqual(p.prefetch("q"), "")
+        p.sync_turn("q", "a", session_id="s1")
+        self.assertEqual(calls, [], "recall/capture disabled server-side must not call out")
+
+    def test_handshake_carries_the_home_header_and_client_identification(self):
+        captured = []
+
+        def urlopen(req, timeout=None):
+            captured.append(req)
+            return _FakeResp(json.dumps({}).encode())
+
+        memini.urlopen = urlopen
+        os.environ["MEMINI_HOME"] = "personal/acme"
+        self.addCleanup(lambda: os.environ.pop("MEMINI_HOME", None))
+        memini._handshake("http://localhost:8080", "", {"cwd_basename": "x"})
+        req = captured[0]
+        self.assertEqual(req.get_full_url(), "http://localhost:8080/v1/handshake")
+        self.assertEqual(req.get_header("X-memini-home"), "personal/acme")
+        body = json.loads(req.data.decode())
+        self.assertEqual(body["client"]["name"], "hermes-memini")
+        self.assertIn("version", body["client"])
 
 
 class StatusToolTest(unittest.TestCase):
     ENV = (
         "MEMINI_NAMESPACE",
         "MEMINI_BASE_URL",
-        "MEMINI_URL",
         "MEMINI_API_KEY",
-        "MEMINI_TOKEN",
         "MEMINI_HOME",
     )
 
@@ -749,29 +854,11 @@ class StatusToolTest(unittest.TestCase):
         self.assertNotIn("0123456789", out)
         self.assertIn("sk-…4f2a", out)
 
-    def test_status_shows_what_an_active_override_is_masking(self):
-        xdg = tempfile.mkdtemp(prefix="memini-test-config-")
-        os.makedirs(os.path.join(xdg, "memini"))
-        with open(os.path.join(xdg, "memini", "overrides.json"), "w") as f:
-            json.dump(
-                {"version": 1, "overrides": {self.proj: {"namespace": "acme/api", "setAt": "2026-07-12T20:30:00Z"}}},
-                f,
-            )
-        prev = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = xdg
-        self.addCleanup(lambda: os.environ.__setitem__("XDG_CONFIG_HOME", prev))
-        os.environ["MEMINI_NAMESPACE"] = "pinned"
-        out = self._status()
-        self.assertIn("acme/api", out)
-        self.assertIn("without the override", out)
-        self.assertIn("override-active", out)
-        # An override IS the fix for a global pin; it must not also nag about one.
-        self.assertNotIn("global-namespace-pin", out)
-
-    def test_status_flags_a_namespace_resolved_before_the_override_was_set(self):
-        # The namespace is resolved once, in initialize; an override set
-        # mid-session only reaches the wire after a restart. Say so rather than
-        # reporting a namespace this session is not actually using.
+    def test_status_flags_a_namespace_resolved_before_a_later_change_took_effect(self):
+        # The namespace is resolved once, in initialize; a namespace that would
+        # now resolve differently (a new pin, a settings change, a handshake
+        # that only now succeeds) only reaches the wire after a restart. Say so
+        # rather than reporting a namespace this session is not actually using.
         p = memini.MeminiMemoryProvider()
         p.initialize("sess-restart")
         report = memini._describe_settings(self.proj, in_use="stale-namespace")
@@ -782,53 +869,28 @@ class StatusToolTest(unittest.TestCase):
 
 class IsAvailableTest(unittest.TestCase):
     def test_valid_url_is_available(self):
-        os.environ["MEMINI_URL"] = "http://localhost:8080"
-        self.addCleanup(lambda: os.environ.pop("MEMINI_URL", None))
+        os.environ["MEMINI_BASE_URL"] = "http://localhost:8080"
+        self.addCleanup(lambda: os.environ.pop("MEMINI_BASE_URL", None))
         self.assertTrue(memini.MeminiMemoryProvider().is_available())
 
     def test_invalid_url_is_unavailable(self):
-        os.environ["MEMINI_URL"] = "not-a-url"
-        self.addCleanup(lambda: os.environ.pop("MEMINI_URL", None))
-        self.assertFalse(memini.MeminiMemoryProvider().is_available())
-
-    def test_base_url_canonical_takes_precedence_over_url_alias(self):
-        os.environ["MEMINI_BASE_URL"] = "http://localhost:8080"
-        os.environ["MEMINI_URL"] = "not-a-url"
+        os.environ["MEMINI_BASE_URL"] = "not-a-url"
         self.addCleanup(lambda: os.environ.pop("MEMINI_BASE_URL", None))
-        self.addCleanup(lambda: os.environ.pop("MEMINI_URL", None))
-        p = memini.MeminiMemoryProvider()
-        p.initialize("sess-base-url")
-        self.assertEqual(p._base, "http://localhost:8080")
-
-    def test_token_reads_api_key_then_token_alias(self):
-        os.environ["MEMINI_TOKEN"] = "tok-alias"
-        self.addCleanup(lambda: os.environ.pop("MEMINI_TOKEN", None))
-        self.addCleanup(lambda: os.environ.pop("MEMINI_API_KEY", None))
-        p = memini.MeminiMemoryProvider()
-        p.initialize("sess-token-alias")
-        self.assertEqual(p._secret, "tok-alias")
-        os.environ["MEMINI_API_KEY"] = "key-canonical"
-        p2 = memini.MeminiMemoryProvider()
-        p2.initialize("sess-token-canonical")
-        self.assertEqual(p2._secret, "key-canonical")
+        self.assertFalse(memini.MeminiMemoryProvider().is_available())
 
 
 class SaveConfigTest(unittest.TestCase):
     def test_does_not_persist_secret_to_disk(self):
-        import tempfile
+        import tempfile as _tempfile
 
         p = memini.MeminiMemoryProvider()
-        with tempfile.TemporaryDirectory() as home:
+        with _tempfile.TemporaryDirectory() as home:
             p.save_config({"url": "http://localhost:8080", "namespace": "x", "secret": "tok-123"}, home)
             with open(os.path.join(home, "memini.json")) as f:
                 saved = json.load(f)
         self.assertEqual(saved.get("url"), "http://localhost:8080")
         self.assertEqual(saved.get("namespace"), "x")
         self.assertNotIn("secret", saved, "bearer token must not be written to disk")
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class ReinforcedFlagTest(unittest.TestCase):
@@ -850,3 +912,7 @@ class ReinforcedFlagTest(unittest.TestCase):
         p = make_provider(lambda *a, **k: {"id": "new-1"})
         out = json.loads(p.handle_tool_call("memory_remember", {"content": "novel fact"}))
         self.assertNotIn("reinforced", out)
+
+
+if __name__ == "__main__":
+    unittest.main()
