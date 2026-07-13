@@ -1,5 +1,5 @@
 {
   "name": "@memini/workspace",
   "private": true,
-  "description": "pnpm workspace root: the namespace-resolver package and the plugins that consume it (OpenClaw, Pi). Go code and standalone integrations (opencode, Hermes) are not part of the workspace."
+  "description": "pnpm workspace root: the shared client core (@memini/client) and the plugins that consume it (OpenClaw, Pi). Go code and standalone integrations (opencode, Hermes) are not part of the workspace."
 }

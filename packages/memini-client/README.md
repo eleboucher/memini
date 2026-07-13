@@ -1,62 +1,51 @@
 # @memini/client
 
-The shared client-side core for memini integrations. Everything here is about
-what the _client_ does — what namespace it will use, what settings are actually
-in force, and how it finds the project it is working in.
+The shared client-side core for the config-handshake redesign: project facts,
+the handshake wire client, what a caller should do with a handshake result,
+behavioral-settings resolution with provenance, secret redaction, and how it
+finds the project it is working in.
 
-It is a sibling of [`@memini/namespace-resolver`](../namespace-resolver), not a
-replacement. That package is a namespace resolution chain; this one is override,
-introspection, and harness plumbing. They are deliberately not merged: each
-harness already has its own resolver, and `describeSettings` takes that resolver
-as a callback rather than imposing one.
+`@memini/namespace-resolver`, formerly a sibling package (a separate namespace
+resolution chain for pi/openclaw's config-file/tenant-root feature), has been
+deleted: both of its consumers moved onto this package's
+gatherFacts/performHandshake/resolveNamespace instead, and its one
+still-in-use helper (a small `{namespace}`/`{agent}` template substitution)
+was inlined into openclaw, its last consumer.
 
 ## What it provides
 
-| Module               | Purpose                                                           |
-| -------------------- | ----------------------------------------------------------------- |
-| `override`           | Per-project namespace override — read, write, clear               |
-| `settings`           | `describeSettings()`: every client knob with its **provenance**   |
-| `redact`             | Secret redaction, always on                                       |
-| `namespace-validate` | Normalization, plus the header-safety rules                       |
-| `session`            | Recover the project directory in processes the harness gives none |
+| Module               | Purpose                                                                   |
+| -------------------- | ------------------------------------------------------------------------- |
+| `facts`              | `gatherFacts()`: the project facts sent as `POST /v1/handshake`'s body    |
+| `handshake`          | `performHandshake()` plus the per-session handshake cache                 |
+| `resolve`            | `resolveNamespace()`: what to do with a handshake result (or its absence) |
+| `settings`           | `effectiveSetting()`/`BEHAVIOR_KNOBS`: behavioral knobs with provenance   |
+| `override`           | Per-project namespace override — **read-only**; see below                 |
+| `redact`             | Secret redaction, always on                                               |
+| `namespace-validate` | Normalization, plus the header-safety rules                               |
+| `session`            | Recover the project directory in processes the harness gives none         |
 
 ## Provenance is the feature
 
-A settings dump that only prints values is nearly useless. The case this package
-was written for: `MEMINI_NAMESPACE` exported as a **fish universal variable**,
-set once and forgotten, silently collapsing every repo on the machine into one
-shared namespace. Nothing surfaced it, and memories from a dozen projects piled
-into one pool.
+A settings dump that only prints values is nearly useless. The case this
+matters for: `MEMINI_NAMESPACE` exported as a **fish universal variable**, set
+once and forgotten, silently collapsing every repo on the machine into one
+shared namespace. A list of values would show `namespace: default` and look
+fine; only the provenance — _where_ that value came from — catches it.
 
-A list of values would have shown `namespace: default` and looked fine. What
-catches it is the provenance:
+`resolveNamespace(boot, facts, hs)` is what every caller composes its own
+provenance report around: a successful handshake (`hs`) wins outright and is
+never `degraded`; absent one, `boot.namespaceEnv` (`MEMINI_NAMESPACE`) is the
+next fallback, then local git/cwd derivation — every non-handshake path comes
+back `degraded: true`, because it is a guess the server hasn't confirmed. Each
+integration's own `/memini:status` (or equivalent) renders this with the
+knobs from `effectiveSetting`, so the report always reflects what that
+specific harness actually does, not a shape this package imposes on all of
+them.
 
-```
-namespace   default        <- env:MEMINI_NAMESPACE
-                              (git would give: memini)
-```
-
-So `describeSettings()` resolves the namespace three times, against progressively
-stripped environments, and reports all three:
-
-- **effective** — what the harness will actually use
-- **withoutOverride** — what it would be with the override removed
-- **derived** — what it would be with the override _and_ `MEMINI_NAMESPACE`
-  removed, i.e. pure git/cwd derivation
-
-## The override beats the environment
-
-Ordering is deliberate:
-
-```
-1. project override      <- wins outright
-2. MEMINI_NAMESPACE
-3. config file / git / cwd
-```
-
-If the environment won, then on a machine with a globally exported
-`MEMINI_NAMESPACE` — exactly the machine that needs an override most — setting one
-would silently do nothing.
+This package's own namespace _override_ (below) predates the handshake and no
+longer participates in this precedence at all — pins (server-side, via
+`POST`/`DELETE /v1/pins`) replaced it as the thing a user sets deliberately.
 
 ## Namespace validation is stricter than the server's
 
@@ -103,22 +92,25 @@ where a cached namespace would go stale the moment one was set.
 - **pi and openclaw** import the TypeScript, inlined at build time by esbuild
   (`--alias:@memini/client=...`). They cannot take it as a normal dependency: both
   are `npm install`-ed by their hosts, and an unpublished workspace package would
-  make them uninstallable — their own bundle tests enforce that.
+  make them uninstallable — their own bundle tests enforce that. Both compose
+  `gatherFacts`/`performHandshake`/`resolveNamespace`/`effectiveSetting`
+  directly rather than reimplementing any of it.
 - **The Claude Code + Codex hooks** import `plugin/scripts/_client.gen.mjs`, a
   committed, dependency-free bundle of this package. The plugin ships as raw files
   and runs under a bare `node` with no install step — the same constraint that made
   those hooks `.mjs` rather than `.ts`. Regenerate with `mise run build-client`; CI
   fails on drift via `mise run client-check`.
-- **The Go CLI** reads the same `overrides.json`, so `memini doctor` and the plugin
-  can never disagree about which namespace is in force.
-- **opencode does not consume it, on purpose.** It ships from npm as a single
-  dependency-free file that opencode installs with Bun at startup. Pulling in a
-  bundler to save ~50 lines of `JSON.parse` and `git rev-parse` would trade away the
-  one property that makes it easy to install. It reimplements the override _reader_
-  — but reads the same file, with the same precedence.
-- **hermes and openwebui** are Python; the TS core is simply unreachable. They too
-  reimplement the reader against the same file format.
+- **opencode, hermes, and openwebui do not consume it, on purpose.** Each ships
+  standalone (opencode from npm via Bun, hermes/openwebui as Python) with no
+  install-time build step of its own, so pulling in this package (or a bundler,
+  for opencode) isn't an option. Each carries its own wire-shape-compatible copy
+  of `gatherFacts`/`performHandshake` instead, POSTing the same
+  `HandshakeRequest`/reading the same `HandshakeResponse` — the wire contract
+  (`api/openapi.yaml`) is the real cross-language contract, not this package.
+- **The Go CLI** talks to the server directly (`memini doctor`, `memini
+namespace`); it does not read this package's override file.
 
-The file format is therefore the real contract, not the package. It is deliberately
-boring for that reason: JSON, one `git rev-parse` for the key, and every error path
-degrades to "no override" rather than raising.
+The namespace override (`override.ts`) is now **read-only**: every TypeScript
+integration's namespace command writes a server-side pin instead of a local
+file. `readOverride` survives only so a future migration can detect and
+carry forward an override left behind by an older install.

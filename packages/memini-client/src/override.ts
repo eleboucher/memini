@@ -1,23 +1,23 @@
 /**
- * Per-project namespace override.
+ * Per-project namespace override — READ path only.
  *
- * The override is the one namespace input a *user* sets deliberately, so it
- * wins over everything else — including MEMINI_NAMESPACE. That ordering is not
- * an accident: a globally exported MEMINI_NAMESPACE (a shell rc, or worse a
- * fish universal variable) pins every repo on the machine to one namespace, and
- * if the env beat the override then `memini namespace <ns>` would silently do
- * nothing on exactly the machines that need it most.
+ * Pre-config-handshake, this was the one namespace input a *user* set
+ * deliberately (winning over everything else, including MEMINI_NAMESPACE) via
+ * a per-machine overrides.json under $XDG_CONFIG_HOME. Every TypeScript
+ * integration has since moved its namespace command onto server-side pins
+ * (POST/DELETE /v1/pins) instead, so the WRITE path (writeOverride/
+ * clearOverride) was deleted once pi/openclaw — its last callers — stopped
+ * using it.
  *
- * Stored under $XDG_CONFIG_HOME rather than $XDG_CACHE_HOME: it is user intent,
- * not derived state, and clearing a cache must never silently discard it.
+ * The READ path stays: Phase 9's migration still needs readOverride to detect
+ * a pre-existing override left behind by an older install and migrate it
+ * (e.g. into an equivalent server-side pin) rather than silently orphaning it.
  */
 
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import fs from "node:fs";
 import path from "node:path";
-
-import { normalizeNamespace, validateNamespace } from "./namespace-validate.js";
 
 export interface NamespaceOverride {
   namespace: string;
@@ -105,47 +105,7 @@ export function readOverride(cwd: string, opts: OverrideOptions = {}): Namespace
   return entry;
 }
 
-/**
- * Set the override for `cwd`. Throws on an invalid namespace — this is a direct
- * user action, so a bad value should fail loudly here rather than be silently
- * normalized into something they did not ask for, or worse, be accepted and
- * then rejected by the server on every later call.
- */
-export function writeOverride(
-  cwd: string,
-  namespace: string,
-  opts: OverrideOptions & { now?: () => Date } = {},
-): NamespaceOverride {
-  const ns = normalizeNamespace(namespace);
-  const bad = validateNamespace(ns);
-  if (bad) throw new Error(`invalid namespace ${JSON.stringify(namespace)}: ${bad}`);
-
-  const p = opts.overridesPath || defaultOverridesPath(opts.env);
-  const file = readOverrides(opts);
-  const entry: NamespaceOverride = {
-    namespace: ns,
-    setAt: (opts.now ? opts.now() : new Date()).toISOString(),
-  };
-  file.version = OVERRIDES_VERSION;
-  file.overrides[overrideKey(cwd)] = entry;
-
-  fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(file, null, 2) + "\n");
-  return entry;
-}
-
-/** Remove the override for `cwd`. Returns true when one was actually removed. */
-export function clearOverride(cwd: string, opts: OverrideOptions = {}): boolean {
-  const p = opts.overridesPath || defaultOverridesPath(opts.env);
-  const file = readOverrides(opts);
-  const key = overrideKey(cwd);
-  if (!(key in file.overrides)) return false;
-  delete file.overrides[key];
-  try {
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(file, null, 2) + "\n");
-  } catch {
-    return false;
-  }
-  return true;
-}
+// writeOverride/clearOverride (the WRITE path) were removed once pi/openclaw
+// — their last callers — moved their namespace commands onto server-side
+// pins (POST/DELETE /v1/pins). The READ path above stays: Phase 9's migration
+// still needs readOverride to detect and migrate a pre-existing override.
