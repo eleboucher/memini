@@ -2,7 +2,11 @@
 [mcp_servers.memini]
 command = "memini"
 args = ["mcp"]
-# Replace 'my-project' with your real namespace, or remove MEMINI_DEFAULT_NAMESPACE
-# to let memini auto-resolve the namespace from the git repo basename of its own
-# working directory (see README).
+# MEMINI_DEFAULT_NAMESPACE remains a server-side var — unchanged by the
+# config-handshake redesign (that redesign is about how a client's own
+# namespace is resolved via POST /v1/handshake + server-side pins; this spawns
+# the memini SERVER process itself, in-process, with no handshake involved).
+# Replace 'my-project' with your real namespace, or remove
+# MEMINI_DEFAULT_NAMESPACE to let the server fall back to the git repo
+# basename of its own working directory (see README).
 env = { MEMINI_EMBED_BASE_URL = "http://localhost:8081/v1", MEMINI_EMBED_MODEL = "bge-m3", MEMINI_EMBED_DIMS = "1024", MEMINI_SQLITE_PATH = "/home/you/.memini/memini.db", MEMINI_DEFAULT_NAMESPACE = "my-project" }

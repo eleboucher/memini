@@ -88,36 +88,6 @@ function readOverride(cwd, opts = {}) {
   if (!entry || typeof entry.namespace !== "string" || !entry.namespace.trim()) return void 0;
   return entry;
 }
-function writeOverride(cwd, namespace, opts = {}) {
-  const ns = normalizeNamespace(namespace);
-  const bad = validateNamespace(ns);
-  if (bad) throw new Error(`invalid namespace ${JSON.stringify(namespace)}: ${bad}`);
-  const p = opts.overridesPath || defaultOverridesPath(opts.env);
-  const file = readOverrides(opts);
-  const entry = {
-    namespace: ns,
-    setAt: (opts.now ? opts.now() : /* @__PURE__ */ new Date()).toISOString()
-  };
-  file.version = OVERRIDES_VERSION;
-  file.overrides[overrideKey(cwd)] = entry;
-  fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(file, null, 2) + "\n");
-  return entry;
-}
-function clearOverride(cwd, opts = {}) {
-  const p = opts.overridesPath || defaultOverridesPath(opts.env);
-  const file = readOverrides(opts);
-  const key = overrideKey(cwd);
-  if (!(key in file.overrides)) return false;
-  delete file.overrides[key];
-  try {
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(file, null, 2) + "\n");
-  } catch {
-    return false;
-  }
-  return true;
-}
 
 // src/session.ts
 import { execFileSync } from "node:child_process";
@@ -210,151 +180,7 @@ function resolveHarnessCwd(env = process.env, ppid = process.ppid) {
   return void 0;
 }
 
-// src/bootstrap.ts
-var LOOPBACK_HOSTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "::1"]);
-function envEnabled(raw, defaultOn) {
-  if (raw == null || raw === "") return defaultOn;
-  return !/^(0|false|no|off)$/i.test(raw.trim());
-}
-function readBootstrap(env = process.env) {
-  return {
-    baseUrl: env["MEMINI_BASE_URL"] || "http://localhost:8080",
-    apiKey: env["MEMINI_API_KEY"] || "",
-    requireHttps: envEnabled(env["MEMINI_REQUIRE_HTTPS"], false),
-    debug: envEnabled(env["MEMINI_DEBUG"], false),
-    agent: env["MEMINI_AGENT"] || "",
-    namespaceEnv: (env["MEMINI_NAMESPACE"] || "").trim(),
-    homeEnv: (env["MEMINI_HOME"] || "").trim()
-  };
-}
-function isPlaintextBearerUnsafe(baseUrl, secret) {
-  if (!secret) return false;
-  try {
-    const u = new URL(baseUrl);
-    return u.protocol === "http:" && !LOOPBACK_HOSTS.has(u.hostname.replace(/^\[|\]$/g, "").toLowerCase());
-  } catch {
-    return false;
-  }
-}
-function assertBearerTransportSafe(baseUrl, secret, env = process.env) {
-  if (!isPlaintextBearerUnsafe(baseUrl, secret)) return;
-  if (!envEnabled(env["MEMINI_REQUIRE_HTTPS"], false)) return;
-  throw new Error(
-    `memini: a bearer token is configured for plaintext HTTP to ${baseUrl}. The token and memory payloads can be observed on the network; use HTTPS or an SSH tunnel.`
-  );
-}
-
 // src/settings.ts
-var CLIENT_KNOBS = [
-  // Connection
-  { name: "MEMINI_BASE_URL", kind: "string", default: "http://localhost:8080", usedBy: "hooks + MCP", description: "memini base URL (alias: MEMINI_URL)" },
-  { name: "MEMINI_MCP_URL", kind: "string", default: "${MEMINI_BASE_URL}/mcp", usedBy: "MCP", description: "MCP endpoint; derived from the base URL unless set" },
-  { name: "MEMINI_API_KEY", kind: "string", default: "", usedBy: "hooks + MCP", description: "bearer token sent to the server (alias: MEMINI_TOKEN)" },
-  { name: "MEMINI_REQUIRE_HTTPS", kind: "bool", default: "0", usedBy: "hooks + MCP", description: "refuse to send a bearer token over plaintext HTTP" },
-  // Namespace
-  { name: "MEMINI_NAMESPACE", kind: "string", default: "(auto: git/cwd)", usedBy: "hooks + MCP", description: "pin the namespace; overrides git and directory detection" },
-  { name: "MEMINI_NAMESPACE_SCOPE", kind: "string", default: "repo", usedBy: "hooks", description: "owner-repo derives owner-repo slugs from the git remote" },
-  { name: "MEMINI_AGENT", kind: "string", default: "", usedBy: "hooks + MCP", description: "nest the namespace under a per-agent segment" },
-  { name: "MEMINI_HOME", kind: "string", default: "", usedBy: "hooks + MCP", description: 'personal namespace; required for visibility:"personal" writes' },
-  // Capture
-  { name: "MEMINI_CAPTURE_TURNS", kind: "bool", default: "on", usedBy: "hooks", description: "capture each user\u2192assistant turn as episodic memory" },
-  { name: "MEMINI_SESSION_DIGEST", kind: "bool", default: "on", usedBy: "hooks", description: "record session digests (files edited, commands run); 0 to keep memory to durable facts only" },
-  { name: "MEMINI_INLINE_EXTRACT", kind: "bool", default: "on", usedBy: "hooks", description: "inject the memory-save directive at SessionStart" },
-  { name: "MEMINI_AUTO_SAVE", kind: "bool", default: "on", usedBy: "hooks", description: "periodic auto-save nudge on Stop" },
-  { name: "MEMINI_AUTO_SAVE_INTERVAL", kind: "int", default: "10", usedBy: "hooks", description: "user messages between auto-save nudges" },
-  // Injection budgets
-  { name: "MEMINI_INJECT_BRIEFING_PINNED", kind: "int", default: "5", usedBy: "hooks", description: "max pinned memories at SessionStart (0 disables)" },
-  { name: "MEMINI_INJECT_BRIEFING_FACTS", kind: "int", default: "5", usedBy: "hooks", description: "max durable facts at SessionStart (0 disables)" },
-  { name: "MEMINI_INJECT_BRIEFING_PROCEDURES", kind: "int", default: "5", usedBy: "hooks", description: "max procedural how-tos at SessionStart (0 disables)" },
-  { name: "MEMINI_INJECT_BRIEFING_RECENT", kind: "int", default: "3", usedBy: "hooks", description: "max recent episodic entries at SessionStart (0 disables)" },
-  { name: "MEMINI_INJECT_BRIEFING_MAX_TOK", kind: "int", default: "uncapped", usedBy: "hooks", description: "token ceiling on the SessionStart briefing" },
-  { name: "MEMINI_INJECT_PRETOOL_ITEMS", kind: "int", default: "3", usedBy: "hooks", description: "max hits surfaced per file on PreToolUse" },
-  { name: "MEMINI_INJECT_PRETOOL_MAX_TOK", kind: "int", default: "uncapped", usedBy: "hooks", description: "token ceiling per file on PreToolUse" },
-  { name: "MEMINI_INJECT_PRETOOL_MIN_SCORE", kind: "float", default: "0", usedBy: "hooks", description: "relevance floor for PreToolUse hits" },
-  { name: "MEMINI_INJECT_PRETOOL_TOOLS", kind: "list", default: "Read|Write|Edit|Glob|Grep", usedBy: "hooks", description: "tool allowlist for PreToolUse recall" },
-  { name: "MEMINI_INJECT_LABELS", kind: "list", default: "", usedBy: "hooks", description: "annotate injected bullets: tier, confidence, age, reason" },
-  // Diagnostics
-  { name: "MEMINI_DEBUG", kind: "bool", default: "0", usedBy: "hooks + MCP", description: "verbose hook logging to stderr" }
-];
-function describeKnob(spec, env) {
-  const raw = env[spec.name];
-  const set = raw != null && raw !== "";
-  const sensitive = isSensitive(spec.name);
-  let value;
-  if (set) {
-    value = sensitive ? redactValue(raw) : raw;
-  } else {
-    value = spec.default === "" ? "(unset)" : spec.default;
-  }
-  return {
-    name: spec.name,
-    value,
-    source: set ? "env" : "default",
-    isDefault: !set,
-    sensitive,
-    usedBy: spec.usedBy,
-    description: spec.description
-  };
-}
-function describeSettings(opts) {
-  const env = opts.env || process.env;
-  const cwd = opts.cwd;
-  const override = readOverride(cwd, { env, overridesPath: opts.overridesPath });
-  const withoutOverride = opts.resolve(env, { ignoreOverride: true });
-  const envSansPin = { ...env };
-  delete envSansPin["MEMINI_NAMESPACE"];
-  const derived = opts.resolve(envSansPin, { ignoreOverride: true });
-  const effective = override ? override.namespace : withoutOverride.namespace;
-  const source = override ? "override" : withoutOverride.source;
-  const home = (env["MEMINI_HOME"] || "").trim() || void 0;
-  const settings = CLIENT_KNOBS.map((k) => describeKnob(k, env));
-  const warnings = [];
-  if (override) {
-    warnings.push({
-      level: "note",
-      code: "override-active",
-      message: `namespace is overridden to "${override.namespace}" for this project (set ${override.setAt}); without it this project would use "${withoutOverride.namespace}".`,
-      fix: "Run the namespace command with --clear to return to automatic resolution."
-    });
-  }
-  const pin = (env["MEMINI_NAMESPACE"] || "").trim();
-  if (pin && !override && derived.namespace && derived.namespace !== pin) {
-    warnings.push({
-      level: "warn",
-      code: "global-namespace-pin",
-      message: `MEMINI_NAMESPACE is set to "${pin}", which pins EVERY project on this machine to one namespace. This project would otherwise resolve to "${derived.namespace}". If this variable is exported from a shell rc (or a fish universal variable), every repo you work in is sharing one memory pool.`,
-      fix: `Unset MEMINI_NAMESPACE and let each repo resolve on its own, or set a per-project override instead.`
-    });
-  }
-  if (!home) {
-    warnings.push({
-      level: "warn",
-      code: "home-unset",
-      message: 'MEMINI_HOME is unset: there is no personal namespace, so visibility:"personal" writes will error and no personal leg merges into recall.',
-      fix: "Export MEMINI_HOME=personal/<you>."
-    });
-  }
-  const baseUrl = env["MEMINI_BASE_URL"] || env["MEMINI_URL"] || "http://localhost:8080";
-  const token = env["MEMINI_API_KEY"] || env["MEMINI_TOKEN"] || "";
-  if (isPlaintextBearerUnsafe(baseUrl, token)) {
-    warnings.push({
-      level: "warn",
-      code: "plaintext-bearer",
-      message: `a bearer token is configured for plaintext HTTP to ${baseUrl}; the token and your memory payloads can be observed on the network.`,
-      fix: "Use HTTPS, or tunnel over SSH. Set MEMINI_REQUIRE_HTTPS=1 to make this an error."
-    });
-  }
-  return {
-    cwd,
-    namespace: { effective, source, override, withoutOverride, derived, home },
-    settings,
-    paths: {
-      overrides: opts.overridesPath || defaultOverridesPath(env),
-      cache: opts.cacheDir
-    },
-    warnings
-  };
-}
 var BEHAVIOR_KNOBS = [
   { envName: "MEMINI_CAPTURE_TURNS", wireKey: "capture_turns", kind: "bool", default: true },
   { envName: "MEMINI_SESSION_DIGEST", wireKey: "session_digest", kind: "bool", default: true },
@@ -418,6 +244,40 @@ function effectiveSetting(knob, server, env = process.env) {
     return { value: server[knob.wireKey], source: "server" };
   }
   return { value: knob.default, source: "default" };
+}
+
+// src/bootstrap.ts
+var LOOPBACK_HOSTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "::1"]);
+function envEnabled(raw, defaultOn) {
+  if (raw == null || raw === "") return defaultOn;
+  return !/^(0|false|no|off)$/i.test(raw.trim());
+}
+function readBootstrap(env = process.env) {
+  return {
+    baseUrl: env["MEMINI_BASE_URL"] || "http://localhost:8080",
+    apiKey: env["MEMINI_API_KEY"] || "",
+    requireHttps: envEnabled(env["MEMINI_REQUIRE_HTTPS"], false),
+    debug: envEnabled(env["MEMINI_DEBUG"], false),
+    agent: env["MEMINI_AGENT"] || "",
+    namespaceEnv: (env["MEMINI_NAMESPACE"] || "").trim(),
+    homeEnv: (env["MEMINI_HOME"] || "").trim()
+  };
+}
+function isPlaintextBearerUnsafe(baseUrl, secret) {
+  if (!secret) return false;
+  try {
+    const u = new URL(baseUrl);
+    return u.protocol === "http:" && !LOOPBACK_HOSTS.has(u.hostname.replace(/^\[|\]$/g, "").toLowerCase());
+  } catch {
+    return false;
+  }
+}
+function assertBearerTransportSafe(baseUrl, secret, env = process.env) {
+  if (!isPlaintextBearerUnsafe(baseUrl, secret)) return;
+  if (!envEnabled(env["MEMINI_REQUIRE_HTTPS"], false)) return;
+  throw new Error(
+    `memini: a bearer token is configured for plaintext HTTP to ${baseUrl}. The token and memory payloads can be observed on the network; use HTTPS or an SSH tunnel.`
+  );
 }
 
 // src/facts.ts
@@ -614,19 +474,16 @@ function invalidateAllHandshakes(env = process.env) {
 }
 export {
   BEHAVIOR_KNOBS,
-  CLIENT_KNOBS,
   HANDSHAKE_TTL_MS,
   MAX_NAMESPACE_BYTES,
   OVERRIDES_VERSION,
   SESSION_CWD_TTL_MS,
   assertBearerTransportSafe,
   cacheDir,
-  clearOverride,
   defaultOverridesPath,
   deleteCachedHandshake,
   deleteSessionCwd,
   deriveLocalNamespace,
-  describeSettings,
   effectiveSetting,
   envEnabled,
   factsFingerprint,
@@ -654,6 +511,5 @@ export {
   sessionCwdPath,
   validateNamespace,
   writeCachedHandshake,
-  writeOverride,
   writeSessionCwd
 };

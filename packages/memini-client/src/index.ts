@@ -1,26 +1,24 @@
 /**
  * @memini/client
  *
- * The shared client-side core for memini integrations: namespace override,
- * effective-settings introspection with provenance, secret redaction, and
- * recovery of the project directory in harness processes that are not given one.
- *
- * Deliberately does NOT depend on @memini/namespace-resolver. The two are
- * siblings: that package is a namespace *resolution* chain, this one is
- * override + reporting. Keeping them apart matters because each harness already
- * has its own resolver (the Claude hooks consult a self-healing project map the
- * shared resolver knows nothing about), and `describeSettings` takes the
- * harness's resolver as a callback rather than imposing one. Bundling a second,
- * subtly-different resolver into a plugin that already has one is precisely the
- * drift this package exists to end.
+ * The shared client-side core for the config-handshake redesign: project
+ * facts (facts.ts), the handshake wire client (handshake.ts), what a caller
+ * should do with a handshake result (resolve.ts), behavioral-settings
+ * resolution with provenance (settings.ts), secret redaction, and recovery of
+ * the project directory in harness processes that are not given one. The
+ * namespace *override* file (override.ts) is now read-only here — every
+ * TypeScript integration's namespace command writes a server-side pin
+ * (POST/DELETE /v1/pins) instead; the read path survives only for Phase 9's
+ * migration of any pre-existing override left by an older install.
  *
  * Consumed three ways:
- *   - pi / openclaw / opencode import the TypeScript directly
+ *   - pi / openclaw import the TypeScript directly
  *   - the Claude Code + Codex hooks import plugin/scripts/_client.gen.mjs, a
  *     committed, dependency-free bundle of this package (the plugin ships as raw
  *     files with no install-time build step, which is why its hooks are .mjs)
- *   - the Go CLI reads the same overrides.json, so `memini doctor` and the
- *     plugin can never disagree about which namespace is in force
+ *   - opencode/hermes/openwebui ship standalone (no install-time build step of
+ *     their own either) and carry their own wire-shape-compatible copies of
+ *     gatherFacts/performHandshake rather than importing this package
  */
 
 export {
@@ -41,8 +39,6 @@ export {
   overrideKey,
   readOverrides,
   readOverride,
-  writeOverride,
-  clearOverride,
   type NamespaceOverride,
   type OverridesFile,
   type OverrideOptions,
@@ -63,22 +59,8 @@ export {
 } from "./session.js";
 
 export {
-  CLIENT_KNOBS,
-  describeSettings,
   BEHAVIOR_KNOBS,
   effectiveSetting,
-  type ClientSettings,
-  type DescribeOptions,
-  type HarnessResolver,
-  type KnobKind,
-  type KnobSpec,
-  type NamespaceReport,
-  type NamespaceSource,
-  type ResolvedNamespace,
-  type ResolveOpts,
-  type SettingValue,
-  type Warning,
-  type WarningLevel,
   type BehaviorKnob,
   type SettingSource,
 } from "./settings.js";

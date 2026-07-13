@@ -55,6 +55,16 @@ server registration above:
 
 Use the same namespace as your other agents (the `MEMINI_DEFAULT_NAMESPACE` env
 for stdio, or the `X-Memini-Namespace` header for remote) to share memory.
-The `my-project` placeholder can be replaced with your real project name,
-or removed entirely — memini auto-resolves the namespace from the git repo
-basename of its own working directory when unset.
+The `my-project` placeholder can be replaced with your real project name, or
+removed entirely to fall back to the server's own default namespace (the git
+repo basename of its own working directory, unless a `default_namespace` is
+configured — see [`docs/api-keys.md`](../../docs/api-keys.md) for remote,
+or `MEMINI_DEFAULT_NAMESPACE`/server config for stdio).
+
+Note that Codex is a plain MCP client: unlike the other integrations in this
+repo (pi, openclaw, opencode, hermes, Open WebUI), it does not perform the
+config-handshake (`POST /v1/handshake`) that resolves a namespace from project
+facts and picks up server-side pins (`memini namespace <ns>` /
+`POST /v1/pins`). A pin set for a project Codex works in has no effect here —
+use the key's bound `default_namespace` or a static `X-Memini-Namespace`
+header (see [`config.remote.toml`](config.remote.toml)) instead.

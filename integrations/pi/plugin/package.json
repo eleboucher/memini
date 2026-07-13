@@ -7,7 +7,7 @@
   ],
   "type": "module",
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --external:typebox --external:@earendil-works/pi-coding-agent --alias:@memini/namespace-resolver=../../../packages/namespace-resolver/src/index.ts --alias:@memini/client=../../../packages/memini-client/src/index.ts --outfile=dist/index.js",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --external:typebox --external:@earendil-works/pi-coding-agent --alias:@memini/client=../../../packages/memini-client/src/index.ts --outfile=dist/index.js",
     "test": "node --test test/bundle.test.mjs && npx tsx --test test/helpers.test.ts",
     "typecheck": "tsc -p tsconfig.test.json"
   },
