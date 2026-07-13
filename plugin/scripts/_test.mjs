@@ -1835,6 +1835,108 @@ test("session-start.mjs auto-migrate: PUT failure is fail-soft — session conti
   }
 });
 
+test("session-start.mjs auto-migrate: the migrating session runs on the pin's namespace, not the derived one", async () => {
+  // The bug this guards: the live handshake + per-session cache are written
+  // BEFORE migrateOverrideToPin creates the pin, so a naive flow briefs and
+  // captures under the DERIVED namespace while the freshly-migrated pin names
+  // another — "writes land where recall doesn't look," for exactly one session,
+  // at the moment users upgrade. After a successful migration the hook must
+  // re-handshake so the WHOLE session (the briefing here, and any capture that
+  // reads the per-session cache) runs on the pin's namespace.
+  const repo = gitRepo("automigrate-same-session", "https://github.com/acme/legacy.git");
+  const configHome = freshConfigHome();
+  const cache = freshCache();
+  await writeOverrideEntry(repo, "team/legacy-ns", configHome);
+
+  let pinned = null; // set once the /v1/pins PUT lands; the handshake then resolves to it
+  const briefingNs = [];
+  const memoryNs = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    if (req.method === "POST" && req.url === "/v1/handshake") {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify(
+          pinned
+            ? mkHS({ namespace: pinned, namespace_source: "pin", pin: { key: "path:" + repo } })
+            : mkHS({ namespace: "server/derived", namespace_source: "remote" }),
+        ),
+      );
+      return;
+    }
+    if (req.method === "PUT" && req.url === "/v1/pins") {
+      pinned = JSON.parse(body).namespace;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ key: "path:" + repo, namespace: pinned, created_at: "t", updated_at: "t" }));
+      return;
+    }
+    if (req.url.startsWith("/v1/namespaces/") && req.url.includes("/briefing")) {
+      briefingNs.push(req.headers["x-memini-namespace"]);
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          namespace: req.headers["x-memini-namespace"],
+          pinned: [],
+          facts: [{ content: "hello" }],
+          procedures: [],
+          recent: [],
+        }),
+      );
+      return;
+    }
+    if (req.method === "POST" && req.url === "/v1/memories") {
+      memoryNs.push(req.headers["x-memini-namespace"]);
+      res.statusCode = 201;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ id: "m1" }));
+      return;
+    }
+    if (req.url.includes("/supersede")) {
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ id: "ok" }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+  try {
+    // Buffer a tool event so session-end has a digest to write this session.
+    await runHook(
+      "post-tool-use.mjs",
+      JSON.stringify({ session_id: "am-same", cwd: repo, tool_name: "Edit", tool_input: { file_path: "auth.go" } }),
+      { MEMINI_BASE_URL: DEAD_URL, XDG_CACHE_HOME: cache },
+    );
+
+    // SessionStart migrates the override, re-handshakes, and briefs on the pin.
+    await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "am-same", cwd: repo }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, XDG_CONFIG_HOME: configHome },
+    );
+    assert.deepEqual(
+      briefingNs,
+      ["team/legacy-ns"],
+      `briefing must target the pin's namespace, got ${JSON.stringify(briefingNs)}`,
+    );
+
+    // A capture in the SAME session reads the per-session cache SessionStart
+    // rewrote after migrating; it too must land on the pin's namespace.
+    await runHook(
+      "session-end.mjs",
+      JSON.stringify({ session_id: "am-same", cwd: repo, reason: "user_exit" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, XDG_CONFIG_HOME: configHome },
+    );
+    assert.ok(memoryNs.length >= 1, "session-end must write a digest");
+    assert.equal(
+      memoryNs[0],
+      "team/legacy-ns",
+      `the digest must target the pin's namespace, got ${memoryNs[0]}`,
+    );
+  } finally {
+    await close();
+  }
+});
+
 // ─── removed-var warnings (session-start only) ────────────────────────────
 
 test("session-start.mjs: removed env vars are warned once, combined, and otherwise ignored", async () => {

@@ -36,9 +36,9 @@ const STALE_BUFFER_MS = 7 * 24 * 60 * 60 * 1000;
 // migrateOverrideToPin auto-migrates a stale ~/.config/memini/overrides.json
 // entry for THIS project to a server-side pin, replacing the old per-machine
 // file with the server-side mechanism that follows a user across machines.
-// Only ever READS the file — overrides.json is retired, but three other
-// clients (opencode, hermes, openwebui) still ship a reader for it during the
-// rollout, so nothing here may write or clear it.
+// Only ever READS the file: overrides.json is retired, kept only as legacy
+// data to migrate FROM, so this code must never write or clear what it exists
+// to migrate away — a stray write would recreate the very file it retires.
 //
 // Runs once per handshake round-trip, and is naturally idempotent with no
 // extra state to track: it only fires after a handshake SUCCEEDS and reports
@@ -46,16 +46,19 @@ const STALE_BUFFER_MS = 7 * 24 * 60 * 60 * 1000;
 // that pin, so the very next handshake reports namespace_source:"pin" and
 // this function becomes a no-op for the project from then on. A failed
 // handshake (degraded) or an already-present pin both mean "do nothing".
+// Returns true only when a pin was successfully PUT (so the caller re-runs the
+// handshake and reruns THIS session on the new pin's namespace); false for
+// "nothing to migrate", a missing key, or any fail-soft error.
 async function migrateOverrideToPin(ctx, cwd) {
   const override = readOverride(cwd, { env: process.env });
-  if (!override) return;
+  if (!override) return false;
 
   const facts = ctx.facts;
   const body = { namespace: override.namespace, note: "migrated from overrides.json" };
   if (facts.remote_url) body.remote_url = facts.remote_url;
   if (facts.toplevel_path) body.toplevel_path = facts.toplevel_path;
   // Neither fact available (not a git repo): nothing to key a pin on.
-  if (!body.remote_url && !body.toplevel_path) return;
+  if (!body.remote_url && !body.toplevel_path) return false;
 
   try {
     assertBearerTransportSafe(ctx.boot.baseUrl, ctx.boot.apiKey); // throws under MEMINI_REQUIRE_HTTPS
@@ -70,14 +73,16 @@ async function migrateOverrideToPin(ctx, cwd) {
     });
     if (res.ok) {
       console.error(`[memini] migrated your local namespace override for this project to a server pin`);
-    } else {
-      // Fail-soft: the PUT not landing is not this session's problem to solve.
-      // overrides.json is untouched, so the exact same migration is attempted
-      // again next session — no state to reconcile, nothing lost.
-      console.error(`[memini] could not migrate your namespace override to a server pin (HTTP ${res.status}); will retry next session`);
+      return true;
     }
+    // Fail-soft: the PUT not landing is not this session's problem to solve.
+    // overrides.json is untouched, so the exact same migration is attempted
+    // again next session — no state to reconcile, nothing lost.
+    console.error(`[memini] could not migrate your namespace override to a server pin (HTTP ${res.status}); will retry next session`);
+    return false;
   } catch (e) {
     console.error(`[memini] could not migrate your namespace override to a server pin (${e?.message || e}); will retry next session`);
+    return false;
   }
 }
 
@@ -156,8 +161,8 @@ async function main() {
   // writing the per-session cache every other hook reads. On failure this
   // degrades to local derivation and writes no cache — the ABSENCE of a cache
   // entry is the degraded signal Pre/PostToolUse depend on.
-  const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "always", timeoutMs: 3000 });
-  const project = ctx.namespace;
+  let ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "always", timeoutMs: 3000 });
+  let project = ctx.namespace;
 
   // Record this session's PROJECT DIRECTORY under the harness pid that both this
   // hook and the MCP headersHelper see as their parent (Claude Code runs hooks
@@ -176,7 +181,16 @@ async function main() {
   // been migrated yet (see migrateOverrideToPin's doc comment for why that
   // makes this idempotent with no extra state).
   if (ctx.handshake && ctx.handshake.namespace_source !== "pin") {
-    await migrateOverrideToPin(ctx, cwd);
+    const migrated = await migrateOverrideToPin(ctx, cwd);
+    if (migrated) {
+      // The pin we just created outranks the namespace this session derived a
+      // moment ago. Re-run the handshake so the briefing, captures, and the MCP
+      // headersHelper (all of which read the per-session cache this rewrites)
+      // run on the pin's namespace THIS session — not next session, after a
+      // silent one-session gap where writes land where recall doesn't look.
+      ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "always", timeoutMs: 3000 });
+      project = ctx.namespace;
+    }
   }
 
   // Degraded: the server was unreachable, so `project` is a local-derived
