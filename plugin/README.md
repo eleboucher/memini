@@ -7,14 +7,14 @@ the agent _when_ to use the memory tools.
 
 ## What it does
 
-| Hook event     | What memini does                                                                                                                                                              |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SessionStart` | Searches prior context, writes a short block to the agent's input                                                                                                             |
-| `PreToolUse`   | Before Edit/Write/Read/Glob/Grep, surfaces related memories                                                                                                                   |
-| `PostToolUse`  | Buffers state-changing tool calls locally (no network, no per-call memory)                                                                                                    |
+| Hook event     | What memini does                                                                                                                                                                                   |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SessionStart` | Searches prior context, writes a short block to the agent's input                                                                                                                                  |
+| `PreToolUse`   | Before Edit/Write/Read/Glob/Grep, surfaces related memories                                                                                                                                        |
+| `PostToolUse`  | Buffers state-changing tool calls locally (no network, no per-call memory)                                                                                                                         |
 | `Stop`         | Distills the buffer into a working-tier checkpoint, captures the last turn as episodic memory, scrapes legacy inline `<memory>` blocks (back-compat), and periodically nudges an auto-save (below) |
-| `PreCompact`   | Before context compaction, distills the buffer into an episodic emergency checkpoint (Claude Code only)                                                                       |
-| `SessionEnd`   | Distills the buffer into one durable episodic **session digest**                                                                                                              |
+| `PreCompact`   | Before context compaction, distills the buffer into an episodic emergency checkpoint (Claude Code only)                                                                                            |
+| `SessionEnd`   | Distills the buffer into one durable episodic **session digest**                                                                                                                                   |
 
 ### Auto-save (Stop)
 
@@ -58,6 +58,66 @@ real memories out of the box — not just session digests:
   both.
 
 Plus 3 skills (`remember`, `recall`, `recap`) the agent invokes directly.
+
+## Slash commands
+
+| Command             | What it does                                                                        |
+| ------------------- | ----------------------------------------------------------------------------------- |
+| `/memini:status`    | Effective settings, resolved namespace **with provenance**, read set, server health |
+| `/memini:namespace` | Show, set, or clear the namespace override for this project                         |
+| `/memini:remember`  | Save a fact (drives `memory_remember`)                                              |
+| `/memini:recall`    | Search memory (drives `memory_recall`)                                              |
+| `/memini:pin`       | Pin a memory so it surfaces in every briefing                                       |
+| `/memini:forget`    | Delete a memory (confirms first)                                                    |
+| `/memini:doctor`    | Store-level diagnostics — **needs the `memini` binary**                             |
+| `/memini:backfill`  | Import past sessions — **needs the `memini` binary**                                |
+
+`status` and `namespace` are implemented in the plugin itself, so they work for
+plugin-only installs pointed at a remote server — which do not have the `memini`
+binary at all.
+
+### `/memini:status`
+
+Answers "what is this plugin actually doing right now?", and more usefully _why_.
+Every setting carries its provenance (`<- env` vs `(default)`), because a list of
+values alone is nearly useless: it would show `namespace: default` and look fine.
+What catches a real problem is the line underneath saying git would have given
+`memini` — which is how a forgotten `MEMINI_NAMESPACE` export (a shell rc, or a
+fish _universal_ variable) gets found after quietly collapsing every repo on the
+machine into one shared memory pool.
+
+It cross-checks the three things that must agree — the namespace the **hooks**
+write to, the namespace the **MCP tools** write to, and the **read set** the
+server assembles — and warns when they diverge. Secrets are always redacted, so
+the output is safe to paste into an issue.
+
+### `/memini:namespace`
+
+```
+/memini:namespace                # show the namespace and where it came from
+/memini:namespace acme/api       # override it for this project
+/memini:namespace --clear        # back to automatic resolution
+```
+
+The override **beats `MEMINI_NAMESPACE`**. That ordering is deliberate: a globally
+exported `MEMINI_NAMESPACE` pins every repo on the machine to one namespace, and
+if the environment won, this command would silently do nothing on exactly the
+machines that most need it.
+
+Two caveats, both stated by the command itself:
+
+- **The hooks pick it up immediately**; the MCP tools need **`/reload-plugins`**.
+  Claude Code runs the MCP `headersHelper` only when the server _connects_, so
+  `memory_remember` / `memory_recall` keep targeting the old namespace until the
+  plugin reconnects.
+- **Scope is the project** (keyed by the git repository root), not the session.
+  Two sessions in the same repo share the override. The `headersHelper` is given
+  no session id, so it cannot tell them apart — per-project is the honest
+  granularity here.
+
+Overrides live in `~/.config/memini/overrides.json` and persist until cleared.
+The Go CLI reads the same file, so `memini doctor` and `/memini:status` can never
+disagree about which namespace is in force.
 
 ## Install
 
@@ -125,11 +185,52 @@ The plugin is the **authoritative** namespace resolver. Each hook script
 runs `resolveProject(data.cwd)` and sends the result as the
 `X-Memini-Namespace` header. Resolution order:
 
-1. `MEMINI_NAMESPACE` env var, if set.
-2. `git remote get-url origin` in `data.cwd`, then take the repo basename
+1. The **project override** (`~/.config/memini/overrides.json`), if set — see
+   `/memini:namespace` above. It wins outright, including over the env var.
+2. `MEMINI_NAMESPACE` env var, if set.
+3. `git remote get-url origin` in `data.cwd`, then take the repo basename
    (or the `owner-repo` slug when `MEMINI_NAMESPACE_SCOPE=owner-repo`).
-3. `git rev-parse --show-toplevel` in `data.cwd`, then take the basename.
-4. `basename(data.cwd)`.
+4. `git rev-parse --show-toplevel` in `data.cwd`, then take the basename.
+5. `basename(data.cwd)`.
+
+### How the MCP tools find the same namespace
+
+The hooks are handed `data.cwd` on stdin, so they always know their project. The
+MCP `headersHelper` — the only thing that sets `X-Memini-Namespace` for
+`memory_remember` / `memory_recall` — is not. Measured against a live session:
+
+```
+cwd                : <plugin install root>
+PWD                : <plugin install root>   <- rewritten; NOT the project
+CLAUDE_PROJECT_DIR : unset
+CLAUDE_PLUGIN_ROOT : <plugin install root>
+process.ppid       : the session's `claude` process, cwd = the project dir
+```
+
+So `process.cwd()` and `PWD` are both traps: resolving from either would derive
+the namespace from the plugin's own version-named directory and scatter memories
+into namespaces like `0.6.7`.
+
+It used to fall back to a single global cache file that `SessionStart` wrote. That
+file is shared by **every concurrent session**, so with two sessions open in two
+repos it is last-writer-wins: both sessions' MCP calls target one namespace while
+their hooks write to another — the exact "writes land where recall doesn't look"
+split `memini doctor` exists to diagnose.
+
+The helper now walks the process tree instead. Its parent _is_ the session, and
+the parent's cwd _is_ the project:
+
+1. `CLAUDE_PROJECT_DIR`, if Claude Code ever provides it.
+2. The **parent process's cwd** (Linux `/proc`, macOS `lsof`) — always fresh, and
+   works on the first connect before any hook has run.
+3. `$XDG_CACHE_HOME/memini/sessions/pid-<ppid>.cwd`, written by the hooks under
+   the same ppid both sides observe. Portable (Windows), but only exists once a
+   hook has fired.
+4. The legacy global cache file — last resort, and still racy.
+
+Each step yields a **directory**, never a namespace: the helper re-resolves on
+every connect, which is what lets a namespace override take effect on
+`/reload-plugins` where a cached namespace would go stale.
 
 The first resolution is cached in a self-healing project map
 (`$XDG_CACHE_HOME/memini/project-map.json`) keyed by both the remote URL and
@@ -151,18 +252,18 @@ server is detached from the agent's cwd.
 
 ## Environment
 
-| Env var                     | Default                  | Used by               | Description                                                                                     |
-| --------------------------- | ------------------------ | --------------------- | ----------------------------------------------------------------------------------------------- |
-| `MEMINI_BASE_URL`           | `http://localhost:8080`  | hooks (REST)          | memini base URL for the lifecycle hooks (alias: `MEMINI_URL`)                                   |
-| `MEMINI_MCP_URL`            | `${MEMINI_BASE_URL}/mcp` | MCP tools             | memini `/mcp` URL for the model-invoked memory tools; derived from `MEMINI_BASE_URL` unless set |
-| `MEMINI_API_KEY`            | —                        | hooks + MCP           | bearer token; required when the server sets `MEMINI_API_KEY` (alias: `MEMINI_TOKEN`)            |
-| `MEMINI_NAMESPACE`          | auto (cwd/git basename)  | hooks + MCP           | explicit namespace override; otherwise auto-resolved                                            |
-| `MEMINI_NAMESPACE_SCOPE`    | `repo`                   | hooks                 | `owner-repo` derives `owner-repo` slugs from the git remote                                     |
-| `MEMINI_AUTO_SAVE`          | on                       | `Stop` hook           | set to `0` to disable the periodic auto-save nudge                                              |
-| `MEMINI_AUTO_SAVE_INTERVAL` | `10`                     | `Stop` hook           | user messages between auto-save nudges                                                          |
-| `MEMINI_CAPTURE_TURNS`      | on                       | `Stop` hook           | auto-capture each user→assistant turn as episodic memory; set to `0` to disable                 |
+| Env var                     | Default                  | Used by               | Description                                                                                              |
+| --------------------------- | ------------------------ | --------------------- | -------------------------------------------------------------------------------------------------------- |
+| `MEMINI_BASE_URL`           | `http://localhost:8080`  | hooks (REST)          | memini base URL for the lifecycle hooks (alias: `MEMINI_URL`)                                            |
+| `MEMINI_MCP_URL`            | `${MEMINI_BASE_URL}/mcp` | MCP tools             | memini `/mcp` URL for the model-invoked memory tools; derived from `MEMINI_BASE_URL` unless set          |
+| `MEMINI_API_KEY`            | —                        | hooks + MCP           | bearer token; required when the server sets `MEMINI_API_KEY` (alias: `MEMINI_TOKEN`)                     |
+| `MEMINI_NAMESPACE`          | auto (cwd/git basename)  | hooks + MCP           | explicit namespace override; otherwise auto-resolved                                                     |
+| `MEMINI_NAMESPACE_SCOPE`    | `repo`                   | hooks                 | `owner-repo` derives `owner-repo` slugs from the git remote                                              |
+| `MEMINI_AUTO_SAVE`          | on                       | `Stop` hook           | set to `0` to disable the periodic auto-save nudge                                                       |
+| `MEMINI_AUTO_SAVE_INTERVAL` | `10`                     | `Stop` hook           | user messages between auto-save nudges                                                                   |
+| `MEMINI_CAPTURE_TURNS`      | on                       | `Stop` hook           | auto-capture each user→assistant turn as episodic memory; set to `0` to disable                          |
 | `MEMINI_INLINE_EXTRACT`     | on                       | SessionStart + `Stop` | inject the memory-save directive (`memory_remember`) and scrape legacy `<memory>` blocks; `0` to disable |
-| `MEMINI_DEBUG`              | —                        | hooks                 | set to `1` for verbose hook logging                                                             |
+| `MEMINI_DEBUG`              | —                        | hooks                 | set to `1` for verbose hook logging                                                                      |
 
 ### Tuning injection budgets
 
@@ -232,8 +333,12 @@ export MEMINI_API_KEY=<the server's MEMINI_API_KEY>
 
 Both the hooks (REST) and the MCP tools then send `Authorization: Bearer
 $MEMINI_API_KEY`. The **namespace stays per-project** even against one shared
-remote: the hooks resolve it from `data.cwd`, and the MCP server's
-`headersHelper` (`scripts/mcp-headers.mjs`) resolves the _same_ value from
-`CLAUDE_PROJECT_DIR` per connection — so capture and recall always target the
-same namespace. Run the server with `MEMINI_API_KEY` set so `/mcp` (and `/v1`)
-require the token.
+remote: the hooks resolve it from `data.cwd`, and the MCP `headersHelper`
+(`scripts/mcp-headers.mjs`) resolves the _same_ value per connection by walking
+the process tree (see [above](#how-the-mcp-tools-find-the-same-namespace)) — so
+capture and recall always target the same namespace, even with several sessions
+open in different repos. Run the server with `MEMINI_API_KEY` set so `/mcp` (and
+`/v1`) require the token.
+
+`/memini:status` verifies all of this against the live server and is the fastest
+way to confirm a remote setup is actually wired the way you think it is.

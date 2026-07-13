@@ -41,6 +41,42 @@ machine means "send this token". Setting the same value in both places is how
 you end up sharing one credential across a team instead of issuing
 [named keys](../api-keys.md).
 
+## The namespace override outranks the environment
+
+There is one input that beats `MEMINI_NAMESPACE`: the **per-project override**,
+stored in `~/.config/memini/overrides.json` and set with `/memini:namespace` (or
+the equivalent command in your harness).
+
+```
+1. project override      <- ~/.config/memini/overrides.json
+2. MEMINI_NAMESPACE
+3. config file / git remote / git toplevel / cwd
+```
+
+That ordering is deliberate. `MEMINI_NAMESPACE` is a _global_ variable: exported
+from a shell profile — or worse, set once as a fish **universal** variable — it
+pins every repository on the machine to a single namespace, forever, and nothing
+about the symptom points at the cause. Every project's memories pile into one
+pool, recall gets noisier, and the agent appears to "remember" things from
+unrelated work.
+
+If the environment beat the override, then the command for fixing this would
+silently do nothing on precisely the machines that have the problem. So it does
+not.
+
+`memini doctor` and `/memini:status` both read the same file and both report the
+override when one is in force — they cannot disagree about which namespace is
+actually being used, which is the entire point of having a diagnostic.
+
+To see what an override is masking, `/memini:status` prints the counterfactuals:
+
+```
+NAMESPACE
+  effective              acme/api        <- override
+  without the override   default         <- env      (the global pin)
+  git/cwd would give     memini          <- git-remote
+```
+
 ## Which side am I configuring?
 
 Ask where the process runs.
