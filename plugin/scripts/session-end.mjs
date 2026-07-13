@@ -8,14 +8,14 @@
 import {
   readStdin,
   parseJSON,
-  resolveProject,
+  getSessionContext,
   postRemember,
   postSupersede,
   readSessionEvents,
   buildSessionDigest,
   deleteSessionBuffer,
   deleteSessionCwd,
-  sessionDigestEnabled,
+  deleteCachedHandshake,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -24,7 +24,8 @@ async function main() {
   const sessionId = payload.session_id || payload.sessionId || "unknown";
   const cwd = payload.cwd || process.cwd();
   const reason = payload.reason || "unknown";
-  const project = resolveProject(cwd);
+  const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "on-miss", timeoutMs: 2000 });
+  const project = ctx.namespace;
 
   const digest = buildSessionDigest(readSessionEvents(sessionId), project);
 
@@ -37,8 +38,8 @@ async function main() {
   // No session identity → no write either: a digest tagged session_id:"unknown"
   // shares one exclusion bucket with every other unknown-id session, so
   // cross-session rows would echo into each other.
-  // MEMINI_SESSION_DIGEST=0 → the operator does not want activity records at all.
-  if (digest && sessionId !== "unknown" && sessionDigestEnabled()) {
+  // session_digest off → the operator does not want activity records at all.
+  if (digest && sessionId !== "unknown" && ctx.setting("session_digest").value) {
     await postRemember(digest.content, project, {
       tier: "episodic",
       tags: ["session-marker", project],
@@ -61,13 +62,15 @@ async function main() {
 
   deleteSessionBuffer(sessionId); // always, even when no digest was written
 
-  // Drop this session's recorded project dir. A pid is not a durable identity —
-  // the OS recycles them, Windows especially fast — so leaving the record behind
-  // means a later, unrelated session that happens to inherit the same pid could
-  // read it and target the WRONG repo's namespace. Deleting on a clean exit
-  // closes that window entirely; only a crash leaves a record behind, and those
-  // are bounded by SESSION_CWD_TTL_MS.
+  // Drop this session's recorded project dir AND its cached handshake. A pid is
+  // not a durable identity — the OS recycles them, Windows especially fast — so
+  // leaving either record behind means a later, unrelated session that inherits
+  // the same pid could read it and target the WRONG repo's namespace/settings.
+  // Deleting on a clean exit closes that window entirely; only a crash leaves a
+  // record behind, and those are bounded by their TTLs (SESSION_CWD_TTL_MS /
+  // HANDSHAKE_TTL_MS).
   deleteSessionCwd(process.ppid);
+  deleteCachedHandshake(process.ppid);
 }
 
 main().catch((e) => {

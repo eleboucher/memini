@@ -8,9 +8,8 @@
 import {
   readStdin,
   parseJSON,
-  resolveProject,
+  getSessionContext,
   postRemember,
-  sessionDigestEnabled,
   readSessionEvents,
   buildSessionDigest,
   DEBUG,
@@ -19,14 +18,16 @@ import {
 async function main() {
   const payload = parseJSON(await readStdin()) || {};
   const sessionId = payload.session_id || payload.sessionId || "unknown";
-  const project = resolveProject(payload.cwd || process.cwd());
+  const cwd = payload.cwd || process.cwd();
+  const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "on-miss", timeoutMs: 2000 });
+  const project = ctx.namespace;
 
   const digest = buildSessionDigest(readSessionEvents(sessionId), project);
   if (!digest) return; // nothing buffered → no checkpoint, no noise
-  // MEMINI_SESSION_DIGEST=0 → no activity records at all. This checkpoint exists
-  // to rescue the digest from a compaction, so with digests off there is nothing
+  // session_digest off → no activity records at all. This checkpoint exists to
+  // rescue the digest from a compaction, so with digests off there is nothing
   // to rescue.
-  if (!sessionDigestEnabled()) return;
+  if (!ctx.setting("session_digest").value) return;
   // A checkpoint tagged session_id:"unknown" shares one exclusion bucket with
   // every other unknown-id session (exact-match exclusion), so skip it.
   if (sessionId === "unknown") return;

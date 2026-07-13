@@ -13,7 +13,7 @@ import {
   parseJSON,
   readToolCall,
   appendSessionEvent,
-  sessionDigestEnabled,
+  getSessionContext,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -57,7 +57,7 @@ function filesFromApplyPatch(input) {
 
 async function main() {
   const payload = parseJSON(await readStdin()) || {};
-  const { toolName, toolInput, sessionId } = readToolCall(payload);
+  const { toolName, toolInput, sessionId, cwd } = readToolCall(payload);
   const toolKey = String(toolName || "").toLowerCase();
   if (!toolName || !RECORDED.has(toolKey)) return;
 
@@ -79,10 +79,17 @@ async function main() {
   // failed→fixed command sequences for the distiller to mine.
   if (payload.tool_response?.is_error || payload.is_error) event.failed = true;
 
-  // The buffer exists only to be distilled into a session digest. With
-  // MEMINI_SESSION_DIGEST=0 nothing will ever read it, so don't pay the write
-  // on this hot path (PostToolUse fires on every state-changing tool call).
-  if (!sessionDigestEnabled()) return;
+  // The buffer exists only to be distilled into a session digest. When
+  // session_digest is off nothing will ever read it, so don't pay the write on
+  // this hot path (PostToolUse fires on every state-changing tool call).
+  //
+  // Cache-only (allowNetwork "never"): this hook must make ZERO network calls.
+  // If the per-session handshake hasn't cached a setting yet, session_digest
+  // falls back to its env-override-or-default (on), so we buffer-when-unsure —
+  // harmless, because the digest is re-gated at Stop/PreCompact/SessionEnd,
+  // which won't write it if session_digest is actually off.
+  const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "never" });
+  if (!ctx.setting("session_digest").value) return;
 
   appendSessionEvent(sessionId, event);
 }

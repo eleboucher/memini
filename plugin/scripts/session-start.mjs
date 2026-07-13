@@ -15,15 +15,11 @@
 import {
   readStdin,
   parseJSON,
-  resolveProject,
+  getSessionContext,
   getBriefing,
   cleanStaleBuffers,
   writePluginRoot,
-  writeNamespace,
   writeSessionCwd,
-  intEnv,
-  envEnabled,
-  labelsEnv,
   fitByTokens,
   approxTokens,
   briefingUnchanged,
@@ -64,15 +60,16 @@ function formatMemory(m, section, labels) {
   return `[${tagParts.join(" · ")}] ${parts[0]}`;
 }
 
-// briefingOpts reads MEMINI_INJECT_BRIEFING_* env vars into the shape
-// getBriefing expects. Defaults mirror the historical "5 per section" so
-// existing installs get identical output until they opt in.
-function readBriefingOpts() {
+// readBriefingOpts pulls the per-section caps out of the resolved session
+// context (env override > server-merged setting > built-in default). Defaults
+// mirror the historical "5/5/5/3 per section" so a config-less install gets
+// identical output until it opts in — locally or server-side.
+function readBriefingOpts(ctx) {
   return {
-    pinned: intEnv("MEMINI_INJECT_BRIEFING_PINNED", 5),
-    facts: intEnv("MEMINI_INJECT_BRIEFING_FACTS", 5),
-    procedures: intEnv("MEMINI_INJECT_BRIEFING_PROCEDURES", 5),
-    recent: intEnv("MEMINI_INJECT_BRIEFING_RECENT", 3),
+    pinned: ctx.setting("inject_briefing_pinned").value,
+    facts: ctx.setting("inject_briefing_facts").value,
+    procedures: ctx.setting("inject_briefing_procedures").value,
+    recent: ctx.setting("inject_briefing_recent").value,
   };
 }
 
@@ -84,36 +81,41 @@ async function main() {
   const payload = parseJSON(await readStdin()) || {};
   const sessionId = payload.session_id || payload.sessionId;
   const cwd = payload.cwd || process.cwd();
-  const project = resolveProject(cwd);
+
+  // The one hook that does the live network round-trip: resolve the namespace
+  // and behavioral settings via a fresh handshake (allowNetwork "always"),
+  // writing the per-session cache every other hook reads. On failure this
+  // degrades to local derivation and writes no cache — the ABSENCE of a cache
+  // entry is the degraded signal Pre/PostToolUse depend on.
+  const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "always", timeoutMs: 3000 });
+  const project = ctx.namespace;
 
   // Record this session's PROJECT DIRECTORY under the harness pid that both this
   // hook and the MCP headersHelper see as their parent (Claude Code runs hooks
   // via `sh -c '…run.sh script'`, and run.sh execs node, which preserves the
   // parent). The helper gets neither the project cwd nor CLAUDE_PROJECT_DIR, so
   // this is how it finds its way home on platforms where it cannot read the
-  // parent's cwd directly.
-  //
-  // The directory, not the namespace: the helper re-resolves on every connect,
-  // so a namespace override always takes effect, where a cached namespace would
-  // go stale the moment one was set.
+  // parent's cwd directly. The directory, not the namespace: the helper
+  // re-resolves (from the same per-session handshake cache) on every connect.
   writeSessionCwd(process.ppid, cwd);
-
-  // Legacy global cache file. Still written for back-compat (an older installed
-  // headersHelper may be what actually runs during an upgrade), but it is now
-  // the helper's LAST resort — it is shared by every concurrent session, so it
-  // is last-writer-wins across repos.
-  writeNamespace(project);
 
   // Hygiene: drop session buffers left behind by sessions that never ended.
   cleanStaleBuffers(STALE_BUFFER_MS);
 
-  if (DEBUG) console.error(`[memini] SessionStart project=${project} session=${sessionId}`);
+  // Degraded: the server was unreachable, so `project` is a local-derived
+  // guess, not the server's authority. Say so once — a wrong namespace here is
+  // exactly the "writes land where recall doesn't look" failure to surface.
+  if (ctx.degraded) {
+    console.error(`[memini] server unreachable — using local namespace "${project}" (${ctx.source})`);
+  }
 
-  const opts = readBriefingOpts();
-  const maxTokens = intEnv("MEMINI_INJECT_BRIEFING_MAX_TOK", 0);
-  const labels = labelsEnv();
+  if (DEBUG) console.error(`[memini] SessionStart project=${project} source=${ctx.source} session=${sessionId}`);
 
-  const inlineExtract = envEnabled("MEMINI_INLINE_EXTRACT", true);
+  const opts = readBriefingOpts(ctx);
+  const maxTokens = ctx.setting("inject_briefing_max_tok").value;
+  const labels = new Set(ctx.setting("inject_labels").value.map((s) => String(s).toLowerCase()));
+
+  const inlineExtract = ctx.setting("inline_extract").value;
 
   // A single query-less briefing call returns a layered view: pinned identity,
   // durable facts/procedures, and recent activity — server-side ranked, so the

@@ -14,10 +14,8 @@ import crypto from "node:crypto";
 import {
   readStdin,
   parseJSON,
-  resolveProject,
-  writeNamespace,
+  getSessionContext,
   writeSessionCwd,
-  sessionDigestEnabled,
   postRemember,
   readSessionEvents,
   buildSessionDigest,
@@ -28,11 +26,8 @@ import {
   extractLastTurn,
   isRealUserMessage,
   readTranscript,
-  envEnabled,
   DEBUG,
 } from "./_shared.mjs";
-
-const DEFAULT_INTERVAL = 10;
 
 const autoSaveReason = (n) =>
   `[memini auto-save] ${n} user messages since the last save. Before stopping, ` +
@@ -54,17 +49,15 @@ function countUserMessages(raw) {
   return n;
 }
 
-function autoSaveInterval() {
-  const v = parseInt(process.env.MEMINI_AUTO_SAVE_INTERVAL ?? "", 10);
-  return Number.isFinite(v) && v >= 1 ? v : DEFAULT_INTERVAL;
-}
-
 /**
  * Decide whether to block the agent with an auto-save nudge. Returns a reason
- * string to block with, or null to pass through. Never throws.
+ * string to block with, or null to pass through. Never throws. The auto_save
+ * on/off switch and the interval come from the resolved session context (env
+ * override > server setting > default), so an operator can tune both without
+ * touching the machine.
  */
-function autoSaveReasonFor(payload, sessionId) {
-  if (process.env.MEMINI_AUTO_SAVE === "0") return null; // opt-out
+function autoSaveReasonFor(payload, sessionId, ctx) {
+  if (!ctx.setting("auto_save").value) return null; // opt-out
   if (payload.stop_hook_active) return null; // loop guard: already in a save cycle
   const tp = payload.transcript_path;
   if (!tp) return null;
@@ -82,7 +75,8 @@ function autoSaveReasonFor(payload, sessionId) {
     writeSaveState(sessionId, { ...(state || {}), lastSavedCount: count, updatedAt: new Date().toISOString() });
     return null;
   }
-  if (count - last < autoSaveInterval()) return null;
+  const interval = Math.max(1, ctx.setting("auto_save_interval").value || 10);
+  if (count - last < interval) return null;
   // Update at block time, not after the agent saves — so even if it saves
   // nothing we wait another full interval before nudging again. Spread the
   // existing state so we don't clobber captureTurn's lastCapturedTurn (written
@@ -98,8 +92,8 @@ function autoSaveReasonFor(payload, sessionId) {
  * Deduped on the assistant message id stored in the save-state, so the repeated
  * Stop firings of one turn write at most once. Never throws.
  */
-async function captureTurn(payload, sessionId, project) {
-  if (!envEnabled("MEMINI_CAPTURE_TURNS", true)) return;
+async function captureTurn(payload, sessionId, project, ctx) {
+  if (!ctx.setting("capture_turns").value) return;
   // A save cycle (the agent re-run after an auto-save block) isn't a real user
   // turn — skip it so we don't capture the nudge handling as conversation.
   if (payload.stop_hook_active) return;
@@ -136,7 +130,14 @@ async function main() {
   // identity → no server writes; local buffer bookkeeping is unaffected.
   const hasSessionIdentity = sessionId !== "unknown";
   const cwd = payload.cwd || process.cwd();
-  const project = resolveProject(cwd);
+
+  // Cache-first namespace + settings: a valid per-session handshake is reused;
+  // only a miss (a session started while the server was down, or a 10-min TTL
+  // lapse) pays a live handshake. Stop fires once per assistant turn, so this
+  // is also what keeps the shared cache fresh for the network-free hot-path
+  // hooks (Pre/PostToolUse) through a long session.
+  const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "on-miss", timeoutMs: 2000 });
+  const project = ctx.namespace;
 
   // Refresh this session's recorded project dir. Stop fires once per assistant
   // turn, so any session actually in use stays comfortably inside
@@ -144,18 +145,15 @@ async function main() {
   // pid reuse without ever expiring under a live session.
   writeSessionCwd(process.ppid, cwd);
 
-  // Keep the MCP headersHelper's namespace cache aligned with this project.
-  writeNamespace(project);
-
   const digest = buildSessionDigest(readSessionEvents(sessionId), project);
 
   if (DEBUG)
     console.error(`[memini] Stop project=${project} session=${sessionId} events=${digest?.count || 0}`);
 
   // No buffered events → nothing to checkpoint; a bare marker is just noise.
-  // MEMINI_SESSION_DIGEST=0 → no activity records at all (this checkpoint is the
+  // session_digest off → no activity records at all (this checkpoint is the
   // crash-safety copy of the SessionEnd digest, so it goes with it).
-  if (digest && hasSessionIdentity && sessionDigestEnabled())
+  if (digest && hasSessionIdentity && ctx.setting("session_digest").value)
     await postRemember(digest.content, project, {
       tier: "working",
       tags: ["stop-checkpoint", project],
@@ -169,7 +167,7 @@ async function main() {
   // for <memory> blocks in the reply text. New sessions save via the memory_remember
   // MCP tool directly; any block that still shows up here is persisted as a durable
   // semantic fact so nothing is lost.
-  if (envEnabled("MEMINI_INLINE_EXTRACT", true) && hasSessionIdentity && payload.transcript_path) {
+  if (ctx.setting("inline_extract").value && hasSessionIdentity && payload.transcript_path) {
     const transcript = readTranscript(payload.transcript_path);
     const assistantTexts = extractAssistantText(transcript);
     const allBlocks = [];
@@ -189,9 +187,9 @@ async function main() {
     }
   }
 
-  await captureTurn(payload, sessionId, project);
+  await captureTurn(payload, sessionId, project, ctx);
 
-  const reason = autoSaveReasonFor(payload, sessionId);
+  const reason = autoSaveReasonFor(payload, sessionId, ctx);
   if (reason) process.stdout.write(JSON.stringify({ decision: "block", reason }));
 }
 

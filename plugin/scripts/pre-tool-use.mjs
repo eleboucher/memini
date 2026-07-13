@@ -18,25 +18,15 @@
 import {
   readStdin,
   parseJSON,
-  resolveProject,
-  writeNamespace,
+  getSessionContext,
   postSearch,
   readToolCall,
-  intEnv,
-  floatEnv,
-  listEnv,
-  labelsEnv,
   fitByTokens,
   truncate,
   DEBUG,
 } from "./_shared.mjs";
 
 const FILE_KEYS = ["filePath", "file_path", "path", "file", "pattern"];
-
-// Default tool allowlist mirrors the matcher in hooks.json. Operators can
-// override via MEMINI_INJECT_PRETOOL_TOOLS ("Read|Write|Edit") to add or
-// remove tools without editing the manifest.
-const DEFAULT_PRETOOL_TOOLS = ["read", "write", "edit", "glob", "grep"];
 
 // How fresh a turn capture must be to count as "still part of this
 // conversation's live context" and be dropped from injection even when the
@@ -81,25 +71,35 @@ async function main() {
   if (!toolName) return;
 
   const args = payload.tool_input ?? payload.toolArgs ?? {};
-  const project = resolveProject(cwd);
-  // Keep the MCP headersHelper's namespace cache fresh for the active project.
-  writeNamespace(project);
+
+  // Hot path: resolve the namespace + settings from the per-session handshake
+  // cache ONLY — allowNetwork "never" means this hook makes ZERO network calls
+  // to resolve. A live handshake here would add latency to every tool call and
+  // reintroduce the PR-#111 cross-session race the cache exists to prevent.
+  const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "never" });
+  const project = ctx.namespace;
 
   if (DEBUG)
-    console.error(`[memini] PreToolUse tool=${toolName} project=${project} session=${sessionId}`);
+    console.error(`[memini] PreToolUse tool=${toolName} project=${project} source=${ctx.source} session=${sessionId}`);
 
-  // Tool allowlist override (defaults to the manifest's matcher set).
-  const allow = listEnv("MEMINI_INJECT_PRETOOL_TOOLS");
-  const effectiveAllow = allow.length ? allow : DEFAULT_PRETOOL_TOOLS;
-  if (!toolAllowed(toolName, effectiveAllow)) return;
+  // Degraded: SessionStart never got a server handshake (server down at start,
+  // or the 10-min cache TTL lapsed). `project` is a local guess, not the
+  // server's authority — recalling against a possibly-wrong namespace is the
+  // "recall looks where writes don't land" hazard, so skip recall entirely and
+  // stay network-free. Stop refreshes the cache each turn, so this self-heals.
+  if (ctx.degraded) return;
+
+  // Tool allowlist (env override > server setting > the built-in 5-tool set).
+  const allow = ctx.setting("inject_pretool_tools").value.map((s) => String(s).toLowerCase());
+  if (!toolAllowed(toolName, allow)) return;
 
   const files = extractFiles(args);
   if (files.length === 0) return;
 
-  const itemsPerFile = intEnv("MEMINI_INJECT_PRETOOL_ITEMS", 3);
-  const maxTokens = intEnv("MEMINI_INJECT_PRETOOL_MAX_TOK", 0);
-  const minScore = floatEnv("MEMINI_INJECT_PRETOOL_MIN_SCORE", 0);
-  const labels = labelsEnv();
+  const itemsPerFile = ctx.setting("inject_pretool_items").value;
+  const maxTokens = ctx.setting("inject_pretool_max_tok").value;
+  const minScore = ctx.setting("inject_pretool_min_score").value;
+  const labels = new Set(ctx.setting("inject_labels").value.map((s) => String(s).toLowerCase()));
 
   // One short query per file is the sweet spot. memini's hybrid retrieval
   // makes per-file queries cheap; bundling them would dilute the score.
