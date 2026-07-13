@@ -37,8 +37,12 @@ qa_*.jsonl
 
 # Deepwork session state (local planning, not committed).
 .slim/deepwork/
-packages/namespace-resolver/dist/
-packages/namespace-resolver/node_modules/
+# Build output for every workspace package. Note this does NOT cover
+# plugin/scripts/_client.gen.mjs, which is generated from packages/memini-client
+# but is deliberately COMMITTED — the plugin ships as raw files with no
+# install-time build step, and `mise run client-check` gates it against drift.
+packages/*/dist/
+packages/*/node_modules/
 .superpowers/
 
 # Stray build output from `go build ./cmd/gendocs`.
