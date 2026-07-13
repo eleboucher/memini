@@ -1,0 +1,196 @@
+{
+  "description": "Shared derivation test vectors. Consumed by Go (internal/nsresolve), TS (@memini/client), and Python integration tests. Derivation = the no-pin, no-env fallback chain: declared > remote > toplevel > cwd, plus agent suffix and owner-repo scope.",
+  "derivation": [
+    {
+      "name": "https remote with .git suffix, repo scope",
+      "facts": { "remote_url": "https://github.com/acme/phoenix.git" },
+      "scope": "repo",
+      "expect": { "namespace": "phoenix", "source": "remote" },
+      "source": "plugin/scripts/_shared.mjs:33-40 remotePathSegments (strips .git, splits path) + :46-49 repoNameFromRemote (last segment)"
+    },
+    {
+      "name": "https remote without .git suffix",
+      "facts": { "remote_url": "https://github.com/acme/phoenix" },
+      "scope": "repo",
+      "expect": { "namespace": "phoenix", "source": "remote" },
+      "source": "plugin/scripts/_shared.mjs:33-40, 46-49"
+    },
+    {
+      "name": "scp-style remote (git@host:owner/repo.git)",
+      "facts": { "remote_url": "git@github.com:acme/phoenix.git" },
+      "scope": "repo",
+      "expect": { "namespace": "phoenix", "source": "remote" },
+      "source": "plugin/scripts/_shared.mjs:33-40 remotePathSegments's scp-style branch (colon-then-non-slash detection at line 37)"
+    },
+    {
+      "name": "ssh:// remote with explicit user and port",
+      "facts": { "remote_url": "ssh://user@host:2222/x/repo.git" },
+      "scope": "repo",
+      "expect": { "namespace": "repo", "source": "remote" },
+      "source": "plugin/scripts/_shared.mjs:33-40 — user@host:port ends up embedded in a discarded leading segment; only the last path segment matters"
+    },
+    {
+      "name": "git:// remote",
+      "facts": { "remote_url": "git://host/x/repo" },
+      "scope": "repo",
+      "expect": { "namespace": "repo", "source": "remote" },
+      "source": "plugin/scripts/_shared.mjs:33-40, 46-49"
+    },
+    {
+      "name": "uppercase host/path in remote is preserved verbatim (no lowercasing in derivation)",
+      "facts": { "remote_url": "git@github.com:Acme/Phoenix.git" },
+      "scope": "repo",
+      "expect": { "namespace": "Phoenix", "source": "remote" },
+      "source": "plugin/scripts/_shared.mjs:46-49 repoNameFromRemote does no case folding — contrast with canonical_remote below, which does lowercase"
+    },
+    {
+      "name": "trailing slash on remote is stripped before segmenting",
+      "facts": { "remote_url": "https://github.com/acme/phoenix/" },
+      "scope": "repo",
+      "expect": { "namespace": "phoenix", "source": "remote" },
+      "source": "plugin/scripts/_shared.mjs:35 (trailing-slash strip) + 46-49"
+    },
+    {
+      "name": "owner-repo scope slugs the last two path segments (https remote)",
+      "facts": { "remote_url": "https://github.com/acme/phoenix.git" },
+      "scope": "owner-repo",
+      "expect": { "namespace": "acme-phoenix", "source": "remote" },
+      "source": "plugin/scripts/_shared.mjs:58-65 repoSlugFromRemote"
+    },
+    {
+      "name": "owner-repo scope from scp-style remote",
+      "facts": { "remote_url": "git@github.com:acme/phoenix.git" },
+      "scope": "owner-repo",
+      "expect": { "namespace": "acme-phoenix", "source": "remote" },
+      "source": "plugin/scripts/_shared.mjs:58-65"
+    },
+    {
+      "name": "owner-repo scope from ssh:// remote with port (port/user never enter the slug)",
+      "facts": { "remote_url": "ssh://user@host:2222/x/repo.git" },
+      "scope": "owner-repo",
+      "expect": { "namespace": "x-repo", "source": "remote" },
+      "source": "plugin/scripts/_shared.mjs:58-65"
+    },
+    {
+      "name": "owner-repo scope preserves case in both segments (only special characters are sanitized)",
+      "facts": { "remote_url": "git@github.com:Acme/Phoenix.git" },
+      "scope": "owner-repo",
+      "expect": { "namespace": "Acme-Phoenix", "source": "remote" },
+      "source": "plugin/scripts/_shared.mjs:62 sanitizes only the owner segment's special characters ([^A-Za-z0-9._-]+ -> '-'); it does not lowercase either segment"
+    },
+    {
+      "name": "no remote falls back to toplevel_basename",
+      "facts": { "toplevel_basename": "phoenix-worktree", "cwd_basename": "ignored-cwd" },
+      "scope": "repo",
+      "expect": { "namespace": "phoenix-worktree", "source": "toplevel" },
+      "source": "plugin/scripts/_shared.mjs:260-263 resolveProjectBase's toplevel fallback"
+    },
+    {
+      "name": "no remote and no toplevel falls back to cwd_basename",
+      "facts": { "cwd_basename": "adhoc-dir" },
+      "scope": "repo",
+      "expect": { "namespace": "adhoc-dir", "source": "cwd" },
+      "source": "plugin/scripts/_shared.mjs:264-267 resolveProjectBase's cwd fallback"
+    },
+    {
+      "name": "declared_namespace wins verbatim over remote, with no agent suffix",
+      "facts": {
+        "declared_namespace": "gateway/acme-webhook",
+        "remote_url": "https://github.com/acme/phoenix.git",
+        "agent": "reviewer"
+      },
+      "scope": "repo",
+      "expect": { "namespace": "gateway/acme-webhook", "source": "declared" },
+      "source": "phase1-brief.md: declared_namespace present -> returned verbatim, source declared, NO agent suffix (a new server-side rule; no plugin precedent since declared_namespace doesn't exist client-side today)"
+    },
+    {
+      "name": "agent suffix nests under a remote-derived namespace",
+      "facts": { "remote_url": "https://github.com/acme/phoenix.git", "agent": "reviewer" },
+      "scope": "repo",
+      "expect": { "namespace": "phoenix/reviewer", "source": "remote" },
+      "source": "plugin/scripts/_shared.mjs:153-158 withAgent"
+    },
+    {
+      "name": "agent suffix nests under a toplevel-derived namespace",
+      "facts": { "toplevel_basename": "phoenix-worktree", "agent": "reviewer" },
+      "scope": "repo",
+      "expect": { "namespace": "phoenix-worktree/reviewer", "source": "toplevel" },
+      "source": "plugin/scripts/_shared.mjs:153-158"
+    },
+    {
+      "name": "agent suffix nests under a cwd-derived namespace",
+      "facts": { "cwd_basename": "adhoc-dir", "agent": "reviewer" },
+      "scope": "repo",
+      "expect": { "namespace": "adhoc-dir/reviewer", "source": "cwd" },
+      "source": "plugin/scripts/_shared.mjs:153-158"
+    },
+    {
+      "name": "agent value is sanitized: spaces and punctuation collapse to single hyphens, then trimmed",
+      "facts": { "remote_url": "https://github.com/acme/phoenix.git", "agent": "code review!" },
+      "scope": "repo",
+      "expect": { "namespace": "phoenix/code-review", "source": "remote" },
+      "source": "plugin/scripts/_shared.mjs:156 seg = agent.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, ''); verified by running withAgent('phoenix','code review!') -> 'phoenix/code-review' (the trailing '-' produced by the '!' is stripped by the second replace, NOT 'phoenix/code-review-')"
+    },
+    {
+      "name": "agent that sanitizes to nothing adds no suffix at all",
+      "facts": { "remote_url": "https://github.com/acme/phoenix.git", "agent": "!!!" },
+      "scope": "repo",
+      "expect": { "namespace": "phoenix", "source": "remote" },
+      "source": "plugin/scripts/_shared.mjs:157 withAgent returns ns unchanged (no trailing slash) when the sanitized seg is empty"
+    },
+    {
+      "name": "blank/whitespace-only agent adds no suffix",
+      "facts": { "remote_url": "https://github.com/acme/phoenix.git", "agent": "   " },
+      "scope": "repo",
+      "expect": { "namespace": "phoenix", "source": "remote" },
+      "source": "plugin/scripts/_shared.mjs:154 agent is trimmed before the emptiness check"
+    }
+  ],
+  "canonical_remote": [
+    {
+      "input": "https://github.com/acme/phoenix.git",
+      "expect": "github.com/acme/phoenix",
+      "note": "scheme and .git suffix stripped"
+    },
+    {
+      "input": "https://github.com/acme/phoenix",
+      "expect": "github.com/acme/phoenix",
+      "note": "no .git suffix to strip; identical result to the .git form"
+    },
+    {
+      "input": "git@github.com:acme/phoenix.git",
+      "expect": "github.com/acme/phoenix",
+      "note": "scp-style: user@ and the host:path colon both stripped"
+    },
+    {
+      "input": "git@github.com:Acme/Phoenix.git",
+      "expect": "github.com/acme/phoenix",
+      "note": "brief's own worked example; case-folded unlike the derivation namespace, which preserves case"
+    },
+    {
+      "input": "ssh://git@github.com/acme/phoenix.git",
+      "expect": "github.com/acme/phoenix",
+      "note": "ssh:// scheme and user@ both stripped; same canonical form as the https/scp equivalents above"
+    },
+    {
+      "input": "ssh://user@host:2222/x/repo.git",
+      "expect": "host/x/repo",
+      "note": "user@ and :2222 port both stripped"
+    },
+    {
+      "input": "git://host/x/repo",
+      "expect": "host/x/repo",
+      "note": "git:// scheme stripped; no user/port/.git present"
+    },
+    {
+      "input": "https://github.com/acme/phoenix/",
+      "expect": "github.com/acme/phoenix",
+      "note": "trailing slash stripped"
+    },
+    {
+      "input": "HTTPS://GitHub.com/ACME/Phoenix.GIT",
+      "expect": "github.com/acme/phoenix",
+      "note": "scheme match and .git suffix strip are both case-insensitive; final result is lowercased regardless of input case"
+    }
+  ]
+}
