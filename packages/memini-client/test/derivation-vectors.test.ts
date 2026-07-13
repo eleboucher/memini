@@ -4,6 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { deriveLocalNamespace, repoNameFromRemote, repoSlugFromRemote, type LocalSource } from "../src/resolve.js";
+import type { ProjectFacts } from "../src/facts.js";
+
 // This fixture is the shared contract other phases build the actual
 // derivation logic against (Go internal/nsresolve, this package, Python
 // integration tests) — see packages/memini-client/test/fixtures/derivation-vectors.json.
@@ -86,5 +89,50 @@ test("every canonical_remote expectation is already lowercase and scheme-free", 
     assert.ok(!c.expect.includes("@"), `${c.input}: expect must not carry user-info`);
     assert.ok(!c.expect.endsWith("/"), `${c.input}: expect must not carry a trailing slash`);
     assert.ok(!c.expect.toLowerCase().endsWith(".git"), `${c.input}: expect must not carry a .git suffix`);
+  }
+});
+
+// ─── the actual cross-language parity gate ─────────────────────────
+//
+// Everything above only guards the fixture's own shape. These tests are the
+// real consumer: every derivation case run through THIS package's
+// deriveLocalNamespace must land on the exact namespace+source the fixture
+// says, since Go's internal/nsresolve.TestDerivationVectors runs the SAME
+// cases through its own Resolve — the two languages can never quietly drift
+// apart without one of these failing.
+
+test("deriveLocalNamespace matches every derivation case in the fixture", () => {
+  const data = loadFixture();
+  for (const c of data.derivation) {
+    const rawFacts = c.facts as Record<string, string | undefined>;
+    const facts: ProjectFacts = {
+      cwd_basename: rawFacts.cwd_basename ?? "",
+      remote_url: rawFacts.remote_url,
+      toplevel_path: rawFacts.toplevel_path,
+      toplevel_basename: rawFacts.toplevel_basename,
+      agent: rawFacts.agent,
+      env_namespace: rawFacts.env_namespace,
+      declared_namespace: rawFacts.declared_namespace,
+    };
+    const scope = c.scope === "owner_repo" ? "owner_repo" : "repo";
+
+    const got = deriveLocalNamespace(facts, scope);
+    assert.equal(got.namespace, c.expect.namespace, `${c.name}: namespace`);
+    assert.equal(got.source, c.expect.source as LocalSource, `${c.name}: source`);
+  }
+});
+
+test("repoNameFromRemote/repoSlugFromRemote match the remote-sourced fixture cases directly", () => {
+  const data = loadFixture();
+  for (const c of data.derivation) {
+    if (c.expect.source !== "remote") continue;
+    const remote = (c.facts as { remote_url?: string }).remote_url;
+    const scope = c.scope === "owner_repo" ? "owner_repo" : "repo";
+    const got = scope === "owner_repo" ? repoSlugFromRemote(remote) : repoNameFromRemote(remote);
+    // The fixture's expected namespace may carry an agent suffix
+    // ("phoenix/reviewer"); the bare remote-derived name is always its
+    // first path segment.
+    const base = c.expect.namespace.split("/")[0];
+    assert.equal(got, base, `${c.name}: remote-derived base name`);
   }
 });

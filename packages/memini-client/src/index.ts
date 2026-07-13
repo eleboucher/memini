@@ -65,6 +65,8 @@ export {
 export {
   CLIENT_KNOBS,
   describeSettings,
+  BEHAVIOR_KNOBS,
+  effectiveSetting,
   type ClientSettings,
   type DescribeOptions,
   type HarnessResolver,
@@ -77,4 +79,39 @@ export {
   type SettingValue,
   type Warning,
   type WarningLevel,
+  type BehaviorKnob,
+  type SettingSource,
 } from "./settings.js";
+
+export {
+  readBootstrap,
+  assertBearerTransportSafe,
+  isPlaintextBearerUnsafe,
+  envEnabled,
+  type Bootstrap,
+} from "./bootstrap.js";
+
+export {
+  gatherFacts,
+  factsFingerprint,
+  type ProjectFacts,
+} from "./facts.js";
+
+export {
+  deriveLocalNamespace,
+  resolveNamespace,
+  repoNameFromRemote,
+  repoSlugFromRemote,
+  type LocalSource,
+} from "./resolve.js";
+
+export {
+  performHandshake,
+  handshakeCachePath,
+  readCachedHandshake,
+  writeCachedHandshake,
+  deleteCachedHandshake,
+  invalidateAllHandshakes,
+  HANDSHAKE_TTL_MS,
+  type HandshakeResult,
+} from "./handshake.js";

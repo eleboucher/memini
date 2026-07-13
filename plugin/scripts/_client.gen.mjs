@@ -210,6 +210,40 @@ function resolveHarnessCwd(env = process.env, ppid = process.ppid) {
   return void 0;
 }
 
+// src/bootstrap.ts
+var LOOPBACK_HOSTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "::1"]);
+function envEnabled(raw, defaultOn) {
+  if (raw == null || raw === "") return defaultOn;
+  return !/^(0|false|no|off)$/i.test(raw.trim());
+}
+function readBootstrap(env = process.env) {
+  return {
+    baseUrl: env["MEMINI_BASE_URL"] || "http://localhost:8080",
+    apiKey: env["MEMINI_API_KEY"] || "",
+    requireHttps: envEnabled(env["MEMINI_REQUIRE_HTTPS"], false),
+    debug: envEnabled(env["MEMINI_DEBUG"], false),
+    agent: env["MEMINI_AGENT"] || "",
+    namespaceEnv: (env["MEMINI_NAMESPACE"] || "").trim(),
+    homeEnv: (env["MEMINI_HOME"] || "").trim()
+  };
+}
+function isPlaintextBearerUnsafe(baseUrl, secret) {
+  if (!secret) return false;
+  try {
+    const u = new URL(baseUrl);
+    return u.protocol === "http:" && !LOOPBACK_HOSTS.has(u.hostname.replace(/^\[|\]$/g, "").toLowerCase());
+  } catch {
+    return false;
+  }
+}
+function assertBearerTransportSafe(baseUrl, secret, env = process.env) {
+  if (!isPlaintextBearerUnsafe(baseUrl, secret)) return;
+  if (!envEnabled(env["MEMINI_REQUIRE_HTTPS"], false)) return;
+  throw new Error(
+    `memini: a bearer token is configured for plaintext HTTP to ${baseUrl}. The token and memory payloads can be observed on the network; use HTTPS or an SSH tunnel.`
+  );
+}
+
 // src/settings.ts
 var CLIENT_KNOBS = [
   // Connection
@@ -262,15 +296,6 @@ function describeKnob(spec, env) {
     description: spec.description
   };
 }
-var LOOPBACK = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "::1"]);
-function isPlaintextToNonLoopback(baseUrl) {
-  try {
-    const u = new URL(baseUrl);
-    return u.protocol === "http:" && !LOOPBACK.has(u.hostname.replace(/^\[|\]$/g, "").toLowerCase());
-  } catch {
-    return false;
-  }
-}
 function describeSettings(opts) {
   const env = opts.env || process.env;
   const cwd = opts.cwd;
@@ -311,7 +336,7 @@ function describeSettings(opts) {
   }
   const baseUrl = env["MEMINI_BASE_URL"] || env["MEMINI_URL"] || "http://localhost:8080";
   const token = env["MEMINI_API_KEY"] || env["MEMINI_TOKEN"] || "";
-  if (token && isPlaintextToNonLoopback(baseUrl)) {
+  if (isPlaintextBearerUnsafe(baseUrl, token)) {
     warnings.push({
       level: "warn",
       code: "plaintext-bearer",
@@ -330,29 +355,305 @@ function describeSettings(opts) {
     warnings
   };
 }
+var BEHAVIOR_KNOBS = [
+  { envName: "MEMINI_CAPTURE_TURNS", wireKey: "capture_turns", kind: "bool", default: true },
+  { envName: "MEMINI_SESSION_DIGEST", wireKey: "session_digest", kind: "bool", default: true },
+  { envName: "MEMINI_INLINE_EXTRACT", wireKey: "inline_extract", kind: "bool", default: true },
+  { envName: "MEMINI_AUTO_SAVE", wireKey: "auto_save", kind: "bool", default: true },
+  { envName: "MEMINI_AUTO_SAVE_INTERVAL", wireKey: "auto_save_interval", kind: "int", default: 10 },
+  { envName: "MEMINI_INJECT_BRIEFING_PINNED", wireKey: "inject_briefing_pinned", kind: "int", default: 5 },
+  { envName: "MEMINI_INJECT_BRIEFING_FACTS", wireKey: "inject_briefing_facts", kind: "int", default: 5 },
+  { envName: "MEMINI_INJECT_BRIEFING_PROCEDURES", wireKey: "inject_briefing_procedures", kind: "int", default: 5 },
+  { envName: "MEMINI_INJECT_BRIEFING_RECENT", wireKey: "inject_briefing_recent", kind: "int", default: 3 },
+  { envName: "MEMINI_INJECT_BRIEFING_MAX_TOK", wireKey: "inject_briefing_max_tok", kind: "int", default: 0 },
+  { envName: "MEMINI_INJECT_PRETOOL_ITEMS", wireKey: "inject_pretool_items", kind: "int", default: 3 },
+  { envName: "MEMINI_INJECT_PRETOOL_MAX_TOK", wireKey: "inject_pretool_max_tok", kind: "int", default: 0 },
+  { envName: "MEMINI_INJECT_PRETOOL_MIN_SCORE", wireKey: "inject_pretool_min_score", kind: "float", default: 0 },
+  {
+    envName: "MEMINI_INJECT_PRETOOL_TOOLS",
+    wireKey: "inject_pretool_tools",
+    kind: "list",
+    default: ["Read", "Write", "Edit", "Glob", "Grep"]
+  },
+  { envName: "MEMINI_INJECT_LABELS", wireKey: "inject_labels", kind: "list", default: [] },
+  { envName: "MEMINI_RECALL", wireKey: "recall", kind: "bool", default: true },
+  { envName: "MEMINI_CAPTURE", wireKey: "capture", kind: "bool", default: true },
+  { envName: "MEMINI_RECALL_LIMIT", wireKey: "recall_limit", kind: "int", default: 3 },
+  { envName: "MEMINI_INJECT_RECALL_MAX_TOK", wireKey: "inject_recall_max_tok", kind: "int", default: 0 },
+  { envName: "MEMINI_INJECT_RECALL_MIN_SCORE", wireKey: "inject_recall_min_score", kind: "float", default: 0 },
+  { envName: "MEMINI_MIN_CAPTURE_CHARS", wireKey: "min_capture_chars", kind: "int", default: 0 }
+];
+function parseIntKnob(raw, fallback) {
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+function parseFloatKnob(raw, fallback) {
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+function parseListKnob(raw) {
+  return raw.split(/[|,]/).map((s) => s.trim().toLowerCase()).filter(Boolean);
+}
+function effectiveSetting(knob, server, env = process.env) {
+  const raw = env[knob.envName];
+  if (raw != null && raw !== "") {
+    let value;
+    switch (knob.kind) {
+      case "bool":
+        value = !/^(0|false|no|off)$/i.test(raw.trim());
+        break;
+      case "int":
+        value = parseIntKnob(raw, knob.default);
+        break;
+      case "float":
+        value = parseFloatKnob(raw, knob.default);
+        break;
+      case "list":
+        value = parseListKnob(raw);
+        break;
+    }
+    return { value, source: "env-override" };
+  }
+  if (server && Object.prototype.hasOwnProperty.call(server, knob.wireKey)) {
+    return { value: server[knob.wireKey], source: "server" };
+  }
+  return { value: knob.default, source: "default" };
+}
+
+// src/facts.ts
+import { execFileSync as execFileSync2 } from "node:child_process";
+import path3 from "node:path";
+import crypto from "node:crypto";
+function gitOut(args, dir) {
+  try {
+    const out = execFileSync2("git", args, {
+      cwd: dir,
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 500
+    }).toString().trim();
+    return out || void 0;
+  } catch {
+    return void 0;
+  }
+}
+function gatherFacts(cwd, env = process.env) {
+  const dir = cwd && cwd.trim() ? cwd : process.cwd();
+  const facts = {
+    cwd_basename: path3.basename(dir)
+  };
+  const remote = gitOut(["remote", "get-url", "origin"], dir);
+  if (remote) facts.remote_url = remote;
+  const toplevel = gitOut(["rev-parse", "--show-toplevel"], dir);
+  if (toplevel) {
+    facts.toplevel_path = toplevel;
+    facts.toplevel_basename = path3.basename(toplevel);
+  }
+  const agent = env["MEMINI_AGENT"];
+  if (agent) facts.agent = agent;
+  const ns = (env["MEMINI_NAMESPACE"] || "").trim();
+  if (ns) facts.env_namespace = ns;
+  return facts;
+}
+function factsFingerprint(f) {
+  const keys = Object.keys(f).sort();
+  const rec = f;
+  const parts = keys.map((k) => `${k}=${rec[k]}`);
+  return crypto.createHash("sha256").update(parts.join("\n"), "utf8").digest("hex").slice(0, 16);
+}
+
+// src/resolve.ts
+function remotePathSegments(url) {
+  if (typeof url !== "string" || !url) return [];
+  const cleaned = url.trim().replace(/\/+$/, "").replace(/\.git$/i, "");
+  if (!cleaned) return [];
+  const scpMatch = cleaned.match(/^[^/:]+:[^/]/);
+  const p = scpMatch ? cleaned.slice(scpMatch[0].indexOf(":") + 1) : cleaned;
+  return p.split("/").filter(Boolean);
+}
+function repoNameFromRemote(url) {
+  const segs = remotePathSegments(url);
+  return segs.length ? segs[segs.length - 1] : void 0;
+}
+function repoSlugFromRemote(url) {
+  const segs = remotePathSegments(url);
+  if (!segs.length) return void 0;
+  if (segs.length === 1) return segs[0];
+  const owner = segs[segs.length - 2].replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  const repo = segs[segs.length - 1];
+  return owner ? `${owner}-${repo}` : repo;
+}
+function withAgent(ns, agent) {
+  const trimmed = (agent || "").trim();
+  if (!trimmed) return ns;
+  const seg = trimmed.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return seg ? `${ns}/${seg}` : ns;
+}
+function deriveLocalNamespace(f, scope = "repo") {
+  if (f.declared_namespace) {
+    return { namespace: f.declared_namespace, source: "declared" };
+  }
+  let base;
+  let source = "default";
+  if (f.remote_url) {
+    const name = scope === "owner_repo" ? repoSlugFromRemote(f.remote_url) : repoNameFromRemote(f.remote_url);
+    if (name) {
+      base = name;
+      source = "remote";
+    }
+  }
+  if (!base && f.toplevel_basename) {
+    base = f.toplevel_basename;
+    source = "toplevel";
+  }
+  if (!base && f.cwd_basename) {
+    base = f.cwd_basename;
+    source = "cwd";
+  }
+  if (!base) {
+    return { namespace: "default", source: "default" };
+  }
+  return { namespace: withAgent(base, f.agent), source };
+}
+function resolveNamespace(boot, facts, hs) {
+  if (hs) {
+    return { namespace: hs.namespace, source: `server:${hs.namespace_source}`, degraded: false };
+  }
+  if (boot.namespaceEnv) {
+    return { namespace: boot.namespaceEnv, source: "env", degraded: true };
+  }
+  const { namespace, source } = deriveLocalNamespace(facts);
+  return { namespace, source: `local-${source}`, degraded: true };
+}
+
+// src/handshake.ts
+import fs3 from "node:fs";
+import path4 from "node:path";
+var HANDSHAKE_TTL_MS = 10 * 60 * 1e3;
+async function performHandshake(boot, facts, opts = {}) {
+  assertBearerTransportSafe(boot.baseUrl, boot.apiKey, {
+    MEMINI_REQUIRE_HTTPS: boot.requireHttps ? "1" : "0"
+  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 2500);
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (boot.apiKey) headers["Authorization"] = `Bearer ${boot.apiKey}`;
+    if (boot.homeEnv) headers["X-Memini-Home"] = boot.homeEnv;
+    const body = JSON.stringify({
+      project: facts,
+      client: { name: opts.clientName, version: opts.clientVersion }
+    });
+    const res = await fetch(`${boot.baseUrl}/v1/handshake`, {
+      method: "POST",
+      headers,
+      body,
+      signal: controller.signal
+    });
+    if (!res.ok) return void 0;
+    return await res.json();
+  } catch {
+    return void 0;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function handshakeCachePath(ppid, env = process.env) {
+  return path4.join(cacheDir(env), "sessions", `pid-${ppid}.handshake.json`);
+}
+function readCachedHandshake(ppid, cwd, facts, env = process.env, now = Date.now()) {
+  try {
+    const raw = fs3.readFileSync(handshakeCachePath(ppid, env), "utf8");
+    const rec = JSON.parse(raw);
+    if (!rec || typeof rec !== "object") return void 0;
+    if (typeof rec.writtenAt !== "number" || !Number.isFinite(rec.writtenAt)) return void 0;
+    const age = now - rec.writtenAt;
+    if (age < 0 || age > HANDSHAKE_TTL_MS) return void 0;
+    if (typeof rec.cwd !== "string" || path4.resolve(rec.cwd) !== path4.resolve(cwd)) return void 0;
+    if (typeof rec.factsHash !== "string" || rec.factsHash !== factsFingerprint(facts)) return void 0;
+    if (!rec.result || typeof rec.result !== "object") return void 0;
+    return rec.result;
+  } catch {
+    return void 0;
+  }
+}
+function writeCachedHandshake(ppid, cwd, facts, result, env = process.env, now = Date.now()) {
+  try {
+    const p = handshakeCachePath(ppid, env);
+    fs3.mkdirSync(path4.dirname(p), { recursive: true });
+    const rec = {
+      result,
+      cwd: path4.resolve(cwd),
+      factsHash: factsFingerprint(facts),
+      writtenAt: now
+    };
+    fs3.writeFileSync(p, JSON.stringify(rec));
+  } catch {
+  }
+}
+function deleteCachedHandshake(ppid, env = process.env) {
+  try {
+    fs3.rmSync(handshakeCachePath(ppid, env), { force: true });
+  } catch {
+  }
+}
+function invalidateAllHandshakes(env = process.env) {
+  const dir = path4.join(cacheDir(env), "sessions");
+  let names;
+  try {
+    names = fs3.readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.endsWith(".handshake.json")) continue;
+    try {
+      fs3.rmSync(path4.join(dir, name), { force: true });
+    } catch {
+    }
+  }
+}
 export {
+  BEHAVIOR_KNOBS,
   CLIENT_KNOBS,
+  HANDSHAKE_TTL_MS,
   MAX_NAMESPACE_BYTES,
   OVERRIDES_VERSION,
   SESSION_CWD_TTL_MS,
+  assertBearerTransportSafe,
   cacheDir,
   clearOverride,
   defaultOverridesPath,
+  deleteCachedHandshake,
   deleteSessionCwd,
+  deriveLocalNamespace,
   describeSettings,
+  effectiveSetting,
+  envEnabled,
+  factsFingerprint,
+  gatherFacts,
+  handshakeCachePath,
+  invalidateAllHandshakes,
+  isPlaintextBearerUnsafe,
   isSensitive,
   looksLikePluginRoot,
   normalizeNamespace,
   overrideKey,
+  performHandshake,
   processCwd,
+  readBootstrap,
+  readCachedHandshake,
   readOverride,
   readOverrides,
   readSessionCwd,
   redactByName,
   redactValue,
+  repoNameFromRemote,
+  repoSlugFromRemote,
   resolveHarnessCwd,
+  resolveNamespace,
   sessionCwdPath,
   validateNamespace,
+  writeCachedHandshake,
   writeOverride,
   writeSessionCwd
 };

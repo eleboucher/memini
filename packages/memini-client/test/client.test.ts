@@ -15,7 +15,13 @@ import {
   deleteSessionCwd,
   SESSION_CWD_TTL_MS,
 } from "../src/session.js";
-import { describeSettings, type ResolvedNamespace } from "../src/settings.js";
+import {
+  describeSettings,
+  BEHAVIOR_KNOBS,
+  effectiveSetting,
+  type ResolvedNamespace,
+  type BehaviorKnob,
+} from "../src/settings.js";
 
 function tmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "memini-client-"));
@@ -353,4 +359,80 @@ test("a bearer token over plaintext HTTP to a remote host is a warning", () => {
     env: { MEMINI_API_KEY: "sk-abcdefghijklmnop", MEMINI_BASE_URL: "http://localhost:8080" },
   });
   assert.equal(local.warnings.some((w) => w.code === "plaintext-bearer"), false);
+});
+
+// ─── behavior knobs / effectiveSetting ──────────────────────────────
+
+test("BEHAVIOR_KNOBS covers exactly the 21 behavioral ClientSettings fields, excluding namespace_scope/namespace_prefix", () => {
+  assert.equal(BEHAVIOR_KNOBS.length, 21);
+  const wireKeys = BEHAVIOR_KNOBS.map((k) => k.wireKey);
+  assert.equal(new Set(wireKeys).size, wireKeys.length, "wireKey must be unique per knob");
+  assert.equal(wireKeys.includes("namespace_scope"), false);
+  assert.equal(wireKeys.includes("namespace_prefix"), false);
+  const envNames = BEHAVIOR_KNOBS.map((k) => k.envName);
+  assert.equal(new Set(envNames).size, envNames.length, "envName must be unique per knob");
+});
+
+function knob(wireKey: string): BehaviorKnob {
+  const k = BEHAVIOR_KNOBS.find((k) => k.wireKey === wireKey);
+  assert.ok(k, `no BEHAVIOR_KNOBS entry for ${wireKey}`);
+  return k!;
+}
+
+test("effectiveSetting: bool — env overrides server overrides default, with envEnabled-style falsy forms", () => {
+  const k = knob("capture_turns");
+  assert.deepEqual(effectiveSetting(k, undefined, {}), { value: true, source: "default" });
+  assert.deepEqual(effectiveSetting(k, { capture_turns: false }, {}), { value: false, source: "server" });
+  assert.deepEqual(effectiveSetting(k, { capture_turns: false }, { MEMINI_CAPTURE_TURNS: "1" }), {
+    value: true,
+    source: "env-override",
+  });
+  for (const v of ["0", "false", "no", "off", "OFF"]) {
+    assert.deepEqual(effectiveSetting(k, undefined, { MEMINI_CAPTURE_TURNS: v }), {
+      value: false,
+      source: "env-override",
+    });
+  }
+});
+
+test("effectiveSetting: int — env parses, server value used absent an env override, else default", () => {
+  const k = knob("auto_save_interval");
+  assert.deepEqual(effectiveSetting(k, undefined, {}), { value: 10, source: "default" });
+  assert.deepEqual(effectiveSetting(k, { auto_save_interval: 25 }, {}), { value: 25, source: "server" });
+  assert.deepEqual(effectiveSetting(k, { auto_save_interval: 25 }, { MEMINI_AUTO_SAVE_INTERVAL: "5" }), {
+    value: 5,
+    source: "env-override",
+  });
+});
+
+test("effectiveSetting: float — parses like floatEnv (>=0, else fallback)", () => {
+  const k = knob("inject_pretool_min_score");
+  assert.deepEqual(effectiveSetting(k, undefined, { MEMINI_INJECT_PRETOOL_MIN_SCORE: "0.65" }), {
+    value: 0.65,
+    source: "env-override",
+  });
+  assert.deepEqual(effectiveSetting(k, { inject_pretool_min_score: 0.2 }, {}), {
+    value: 0.2,
+    source: "server",
+  });
+});
+
+test("effectiveSetting: list — pipe/comma separated, trimmed and lowercased, like listEnv", () => {
+  const k = knob("inject_pretool_tools");
+  assert.deepEqual(effectiveSetting(k, undefined, { MEMINI_INJECT_PRETOOL_TOOLS: "Read|Write, Edit" }), {
+    value: ["read", "write", "edit"],
+    source: "env-override",
+  });
+  assert.deepEqual(effectiveSetting(k, undefined, {}), {
+    value: ["Read", "Write", "Edit", "Glob", "Grep"],
+    source: "default",
+  });
+});
+
+test("effectiveSetting: an empty-string env var does not count as an override", () => {
+  const k = knob("recall_limit");
+  assert.deepEqual(effectiveSetting(k, { recall_limit: 8 }, { MEMINI_RECALL_LIMIT: "" }), {
+    value: 8,
+    source: "server",
+  });
 });
