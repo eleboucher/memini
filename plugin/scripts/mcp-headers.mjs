@@ -17,74 +17,102 @@
 // from the plugin's own version-named directory and scatter memories into
 // namespaces like "0.6.7".
 //
-// This used to fall back to a single global cache file that the SessionStart
-// hook wrote. That file is shared by every concurrent session, so with two
-// sessions open in two repos it is last-writer-wins: both sessions' MCP calls
-// target one namespace while their hooks write to another — the exact "writes
-// land where recall doesn't look" split that `memini doctor` exists to diagnose.
-//
-// resolveHarnessCwd walks the process tree instead. The parent IS the session,
-// and its cwd IS the project. The global file remains only as a last resort.
+// resolveHarnessCwd walks the process tree instead: the parent IS the session,
+// and its cwd IS the project. From that cwd we run the SAME handshake flow the
+// hooks use — reuse a valid per-session cached handshake, else POST a live one
+// (and cache it), else fall back to env/local derivation. There is deliberately
+// NO global-namespace-file last resort: that file was shared by every concurrent
+// session, so two sessions in two repos made it last-writer-wins — the exact
+// PR-#111 race the per-session handshake cache exists to end. With no project
+// signal at all we emit AUTH-ONLY headers and let the SERVER apply the key's
+// default namespace, rather than guess.
 
 import {
-  resolveProject,
-  readCachedNamespace,
-  createPlaintextBearerAuthGuard,
-  resolveHome,
-  DEBUG,
-} from "./_shared.mjs";
-import { resolveHarnessCwd } from "./_client.gen.mjs";
+  readBootstrap,
+  gatherFacts,
+  readCachedHandshake,
+  writeCachedHandshake,
+  performHandshake,
+  resolveNamespace,
+  resolveHarnessCwd,
+  assertBearerTransportSafe,
+} from "./_client.gen.mjs";
+import { DEBUG } from "./_shared.mjs";
 
-// Resolve a DIRECTORY first, then derive the namespace from it. Never cache the
-// namespace itself here: re-resolving on every connect is what lets a namespace
-// override take effect on reconnect, where a cached value would go stale.
-const harness = resolveHarnessCwd(process.env, process.ppid);
+async function resolveNamespaceForHeader(boot, ppid) {
+  // No project signal (Windows before any hook has run, an unusual launch path):
+  // emit no namespace header. The server then applies the key's default
+  // namespace — a defined outcome, unlike a namespace guessed from the plugin's
+  // own install dir.
+  const harness = resolveHarnessCwd(process.env, ppid);
+  if (!harness) return { namespace: "", source: "auth-only" };
 
-let ns = "";
-let nsSource = "none";
-if (harness) {
-  ns = resolveProject(harness.cwd);
-  nsSource = harness.source;
-} else {
-  // No project signal at all (Windows before any hook has run, an unusual launch
-  // path). Fall back to the namespace the hooks last cached. Racy across
-  // concurrent sessions, which is why it is last — but better than no header,
-  // which would silently drop every MCP call into the server's default namespace.
-  ns = readCachedNamespace();
-  if (ns) nsSource = "cache-file";
-}
+  const facts = gatherFacts(harness.cwd, process.env);
 
-const headers = {};
-if (ns) headers["X-Memini-Namespace"] = ns;
+  // A valid per-session cached handshake wins — SessionStart populated it and it
+  // is authoritative for this session's namespace + settings.
+  const cached = readCachedHandshake(ppid, harness.cwd, facts, process.env);
+  if (cached) return { namespace: cached.namespace, source: `cache:${cached.namespace_source}`, cwd: harness.cwd };
 
-// X-Memini-Home: the caller's personal namespace (MEMINI_HOME), same env-only
-// resolution as the hooks' REST client. Absent when unset — no home leg,
-// matching the server's "no header = no home" contract.
-const home = resolveHome();
-if (home) headers["X-Memini-Home"] = home;
-
-// Same plaintext-bearer guard as the hooks' REST client. The MCP endpoint is
-// ${MEMINI_BASE_URL}/mcp (see .mcp.json), so check the base URL: warn when the
-// token would travel over plaintext HTTP to a non-loopback host, and under
-// MEMINI_REQUIRE_HTTPS=1 omit the header entirely (the guard's throw must not
-// crash the headersHelper — no auth means the server refuses, which is the
-// refusal REQUIRE_HTTPS asks for).
-const mcpBase = process.env.MEMINI_BASE_URL || "http://localhost:8080";
-const token = process.env.MEMINI_API_KEY || process.env.MEMINI_TOKEN;
-if (token) {
+  // Miss (no hook has run yet, or the TTL lapsed): do one bounded live handshake
+  // and cache it. performHandshake runs the plaintext-bearer guard outside its
+  // own try/catch, so wrap it — a guard throw must degrade, never crash the
+  // helper (which would break the MCP connection JSON).
+  let hs;
   try {
-    createPlaintextBearerAuthGuard((m) => console.error(`[memini] ${m}`))(mcpBase, token);
-    headers.Authorization = `Bearer ${token}`;
-  } catch (e) {
-    console.error(`[memini] ${e?.message || e}`);
+    hs = await performHandshake(boot, facts, { timeoutMs: 2500, clientName: "memini-claude-plugin" });
+  } catch {
+    hs = undefined;
   }
+  if (hs) {
+    writeCachedHandshake(ppid, harness.cwd, facts, hs, process.env);
+    return { namespace: hs.namespace, source: `server:${hs.namespace_source}`, cwd: harness.cwd };
+  }
+
+  // Server unreachable: env override or local derivation — never the network.
+  const r = resolveNamespace(boot, facts, undefined);
+  return { namespace: r.namespace, source: r.source, cwd: harness.cwd };
 }
 
-if (DEBUG) {
-  console.error(
-    `[memini] headersHelper: namespace=${ns || "(none)"} via ${nsSource}` +
-      `${harness ? ` cwd=${harness.cwd}` : ""} ppid=${process.ppid}`,
-  );
+async function main() {
+  const boot = readBootstrap(process.env);
+  const ppid = process.ppid;
+
+  const { namespace, source, cwd } = await resolveNamespaceForHeader(boot, ppid);
+
+  const headers = {};
+  if (namespace) headers["X-Memini-Namespace"] = namespace;
+
+  // X-Memini-Home: the caller's personal namespace (MEMINI_HOME). Absent when
+  // unset — no home leg, matching the server's "no header = no home" contract.
+  if (boot.homeEnv) headers["X-Memini-Home"] = boot.homeEnv;
+
+  // Same plaintext-bearer guard as the hooks' REST client (the shared bundle
+  // export). The MCP endpoint is ${MEMINI_BASE_URL}/mcp, so check the base URL:
+  // under MEMINI_REQUIRE_HTTPS a bearer bound for plaintext HTTP is omitted
+  // rather than sent (the guard's throw must not crash the helper — no auth
+  // means the server refuses, which is the refusal REQUIRE_HTTPS asks for).
+  if (boot.apiKey) {
+    try {
+      assertBearerTransportSafe(boot.baseUrl, boot.apiKey);
+      headers.Authorization = `Bearer ${boot.apiKey}`;
+    } catch (e) {
+      console.error(`[memini] ${e?.message || e}`);
+    }
+  }
+
+  if (DEBUG) {
+    console.error(
+      `[memini] headersHelper: namespace=${namespace || "(none)"} via ${source}` +
+        `${cwd ? ` cwd=${cwd}` : ""} ppid=${ppid}`,
+    );
+  }
+
+  process.stdout.write(JSON.stringify(headers));
 }
 
-process.stdout.write(JSON.stringify(headers));
+main().catch((e) => {
+  if (DEBUG) console.error("[memini] headersHelper error:", e);
+  // Never emit malformed output: an empty object is a valid "no extra headers".
+  process.stdout.write("{}");
+});
