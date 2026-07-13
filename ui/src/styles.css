@@ -1601,3 +1601,121 @@ pre.json {
   background: color-mix(in oklab, var(--tier-semantic) 12%, transparent);
   color: color-mix(in oklab, var(--tier-semantic) 82%, var(--text));
 }
+
+/* ============================================================================
+   Config view (Phase 8) — tabs, provenance badges, settings rows/fields
+   ============================================================================ */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 18px;
+}
+.tab {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 10px 14px;
+  margin-bottom: -1px;
+  cursor: pointer;
+  transition:
+    color 0.15s var(--ease),
+    border-color 0.15s var(--ease);
+}
+.tab:hover {
+  color: var(--text);
+}
+.tab.active {
+  color: var(--text);
+  border-color: var(--ember);
+}
+
+/* Provenance pill — same shape as .tier/.evkind (a colored dot + label), so
+   "where did this value come from" reads with the same visual language as
+   tier/event-kind badges elsewhere in the app. */
+.prov {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 9px 3px 7px;
+  border-radius: 100px;
+  border: 1px solid color-mix(in oklab, var(--pc) 45%, transparent);
+  color: color-mix(in oklab, var(--pc) 75%, var(--text));
+  background: color-mix(in oklab, var(--pc) 14%, transparent);
+  white-space: nowrap;
+}
+.prov::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--pc);
+}
+.prov.default {
+  --pc: var(--muted);
+}
+.prov.global {
+  --pc: var(--tier-episodic);
+}
+.prov.key {
+  --pc: var(--tier-semantic);
+}
+.prov.defaults {
+  --pc: var(--tier-working);
+}
+
+/* Settings visibility table row (Config's Settings/Preview tabs): label +
+   description on the left, effective value, provenance badge on the right. */
+.setrow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.setrow-main {
+  flex: 1 1 320px;
+  min-width: 200px;
+}
+.setrow-value {
+  flex: 0 1 auto;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+/* Settings editor (Config's Defaults tab, Keys' per-key panel): one row per
+   catalog field — label/description left, control + reset/inherited badge
+   right. */
+.settings-editor {
+  display: flex;
+  flex-direction: column;
+}
+.setf-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.setf-row:last-child {
+  border-bottom: none;
+}
+.setf-label {
+  flex: 1 1 320px;
+  min-width: 200px;
+}
+.setf-control {
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}

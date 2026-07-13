@@ -46,6 +46,14 @@ export const IconSettings = base([
   <circle cx="8" cy="12" r="2" />,
   <circle cx="13" cy="18" r="2" />,
 ])
+// Stacked layers — the config view's centerpiece is exactly this: built-in
+// defaults, overridden by the server's global layer, overridden by any
+// per-key layer, stacked in precedence order.
+export const IconConfig = base([
+  <path d="m12 3 9 4.5-9 4.5-9-4.5L12 3Z" />,
+  <path d="m3 12 9 4.5 9-4.5" opacity="0.7" />,
+  <path d="m3 16.5 9 4.5 9-4.5" opacity="0.45" />,
+])
 export const IconProjects = base([
   <rect x="3" y="3" width="7" height="7" rx="1.5" />,
   <rect x="14" y="3" width="7" height="7" rx="1.5" />,

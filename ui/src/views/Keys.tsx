@@ -3,7 +3,8 @@ import { api } from '../api'
 import { useAsync } from '../hooks'
 import type { ApiKey } from '../types'
 import { Loading, ErrorBanner, Empty } from '../components/States'
-import { IconKey, IconTrash, IconRefresh, IconCopy, IconCheck } from '../icons'
+import { SettingsEditor } from '../components/SettingsEditor'
+import { IconKey, IconTrash, IconRefresh, IconCopy, IconCheck, IconChevron } from '../icons'
 import { fmtDate } from '../util'
 
 // Keys manages the REST API-key surface (K3b): a list of every key — both
@@ -19,6 +20,15 @@ export function Keys() {
   const [secret, setSecret] = useState<{ name: string; secret: string; verb: 'created' | 'rotated' } | null>(null)
   const { data, error, loading } = useAsync(() => api.listKeys(), [nonce])
   const keys = data ?? []
+  // Fetched once for the whole list (not per-row): the per-key settings
+  // editor shows the resolved global defaults as its placeholder for an
+  // unset field (what that field would actually inherit), rather than just
+  // the catalog's built-in — this view is already admin-gated the same way
+  // GET /v1/settings/defaults is, so it's expected to succeed whenever this
+  // page renders at all. Best-effort: a failure here just falls back to the
+  // catalog's built-in placeholder (SettingsEditor's default when none is
+  // supplied), not a page-level error.
+  const globalDefaults = useAsync(() => api.getSettingsDefaults(), [nonce])
 
   const reload = () => {
     setMutErr(null)
@@ -58,6 +68,7 @@ export function Keys() {
               <KeyRow
                 key={k.name}
                 k={k}
+                globalDefaults={globalDefaults.data as unknown as Record<string, unknown> | undefined}
                 onChanged={reload}
                 onError={setMutErr}
                 onSecret={(s) => setSecret({ name: k.name, secret: s, verb: 'rotated' })}
@@ -82,14 +93,16 @@ export function Keys() {
 
 interface RowProps {
   k: ApiKey
+  globalDefaults?: Record<string, unknown>
   onChanged: () => void
   onError: (e: string | null) => void
   onSecret: (secret: string) => void
 }
 
-function KeyRow({ k, onChanged, onError, onSecret }: RowProps) {
+function KeyRow({ k, globalDefaults, onChanged, onError, onSecret }: RowProps) {
   const [armed, setArmed] = useState(false) // delete confirmation (two-click, MemoryDrawer's pattern)
   const [busy, setBusy] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   const isFile = k.source === 'file'
 
   const del = async () => {
@@ -137,51 +150,152 @@ function KeyRow({ k, onChanged, onError, onSecret }: RowProps) {
   }
 
   return (
-    <div class="panel panel-pad" style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-      <span class="val mono" style={{ flex: '1 1 140px', overflowWrap: 'anywhere' }}>
-        {k.name}
-      </span>
-      <span class="hint mono" style={{ flex: '1 1 120px' }}>
-        {k.home || '—'}
-      </span>
-      <span class="hint mono" style={{ flex: '1 1 120px' }}>
-        {k.default_namespace || '—'}
-      </span>
-      <span class="hint" style={{ flex: '1 1 140px' }}>
-        {fmtDate(k.created_at)}
-      </span>
-      <span class="chip" style={k.disabled ? { borderColor: '#ff8a6a', color: '#ff8a6a' } : undefined}>
-        {k.disabled ? 'disabled' : 'enabled'}
-      </span>
-      {isFile ? (
-        <span class="chip" title="Managed via MEMINI_API_KEYS_FILE — edit the file to change this key">
-          declarative
+    <>
+      <div class="panel panel-pad" style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+        <span class="val mono" style={{ flex: '1 1 140px', overflowWrap: 'anywhere' }}>
+          {k.name}
         </span>
-      ) : (
-        <>
-          <button
-            class="icon-btn"
-            aria-label={k.disabled ? `Enable ${k.name}` : `Disable ${k.name}`}
-            title={k.disabled ? 'Enable' : 'Disable'}
-            onClick={toggleDisabled}
-            disabled={busy}
-          >
-            <IconCheck />
-          </button>
-          <button class="icon-btn" aria-label={`Rotate secret for ${k.name}`} title="Rotate secret" onClick={rotate} disabled={busy}>
-            <IconRefresh />
-          </button>
-          <button
-            class={`icon-btn ${armed ? 'danger-on' : ''}`}
-            aria-label={armed ? `Confirm delete ${k.name}` : `Delete ${k.name}`}
-            title={armed ? 'Click again to confirm' : 'Delete'}
-            onClick={del}
-            disabled={busy}
-          >
-            <IconTrash />
-          </button>
-        </>
+        <span class="hint mono" style={{ flex: '1 1 120px' }}>
+          {k.home || '—'}
+        </span>
+        <span class="hint mono" style={{ flex: '1 1 120px' }}>
+          {k.default_namespace || '—'}
+        </span>
+        <span class="hint" style={{ flex: '1 1 140px' }}>
+          {fmtDate(k.created_at)}
+        </span>
+        <span class="chip" style={k.disabled ? { borderColor: '#ff8a6a', color: '#ff8a6a' } : undefined}>
+          {k.disabled ? 'disabled' : 'enabled'}
+        </span>
+        <button
+          class="icon-btn"
+          aria-label={expanded ? `Collapse settings for ${k.name}` : `Edit settings for ${k.name}`}
+          title="Per-key settings override"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          <IconChevron style={{ transform: expanded ? 'rotate(180deg)' : undefined, transition: 'transform 0.15s var(--ease)' }} />
+        </button>
+        {isFile ? (
+          <span class="chip" title="Managed via MEMINI_API_KEYS_FILE — edit the file to change this key">
+            declarative
+          </span>
+        ) : (
+          <>
+            <button
+              class="icon-btn"
+              aria-label={k.disabled ? `Enable ${k.name}` : `Disable ${k.name}`}
+              title={k.disabled ? 'Enable' : 'Disable'}
+              onClick={toggleDisabled}
+              disabled={busy}
+            >
+              <IconCheck />
+            </button>
+            <button class="icon-btn" aria-label={`Rotate secret for ${k.name}`} title="Rotate secret" onClick={rotate} disabled={busy}>
+              <IconRefresh />
+            </button>
+            <button
+              class={`icon-btn ${armed ? 'danger-on' : ''}`}
+              aria-label={armed ? `Confirm delete ${k.name}` : `Delete ${k.name}`}
+              title={armed ? 'Click again to confirm' : 'Delete'}
+              onClick={del}
+              disabled={busy}
+            >
+              <IconTrash />
+            </button>
+          </>
+        )}
+      </div>
+      {expanded && <KeySettingsPanel apiKey={k} globalDefaults={globalDefaults} onChanged={onChanged} onError={onError} />}
+    </>
+  )
+}
+
+// KeySettingsPanel is the per-key settings editor (catalog-driven, via
+// SettingsEditor): `apiKey.settings` is already the explicit override blob
+// (fields present here are exactly the fields this key overrides — nothing
+// to infer, unlike Config's Defaults tab), edited via PATCH /v1/keys/{name}.
+// A source=file key gets a read-only render: the API 409s any write to it,
+// so there's no form to offer, only its current declared blob.
+function KeySettingsPanel({
+  apiKey,
+  globalDefaults,
+  onChanged,
+  onError,
+}: {
+  apiKey: ApiKey
+  globalDefaults?: Record<string, unknown>
+  onChanged: () => void
+  onError: (e: string | null) => void
+}) {
+  const isFile = apiKey.source === 'file'
+  const [explicit, setExplicit] = useState<Record<string, unknown>>({ ...(apiKey.settings ?? {}) })
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const setField = (key: string, value: unknown) => {
+    setExplicit((prev) => ({ ...prev, [key]: value }))
+    setSaved(false)
+  }
+  const resetField = (key: string) => {
+    setExplicit((prev) => {
+      const next = { ...prev }
+      delete next[key]
+      return next
+    })
+    setSaved(false)
+  }
+
+  const save = async (e: Event) => {
+    e.preventDefault()
+    setSaving(true)
+    setErr(null)
+    try {
+      await api.updateKey(apiKey.name, { settings: explicit })
+      setSaved(true)
+      onChanged()
+    } catch (e2) {
+      const msg = e2 instanceof Error ? e2.message : String(e2)
+      setErr(msg)
+      onError(msg)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div class="panel panel-pad" style={{ marginTop: '-6px' }}>
+      <div class="section-h">
+        <h2 style={{ fontSize: '14px' }}>Settings override — {apiKey.name}</h2>
+        <span class="hint">
+          {isFile
+            ? 'managed by the api-keys file — read-only here'
+            : 'only explicitly-set fields are stored; everything else inherits the server defaults'}
+        </span>
+      </div>
+      {isFile && (
+        <div class="hint" style={{ marginBottom: '12px' }}>
+          This key is declared in <code>MEMINI_API_KEYS_FILE</code>. Edit the file to change its settings —
+          the API rejects writes to a file-sourced key with 409.
+        </div>
       )}
+      {err && <ErrorBanner message={err} />}
+      <form onSubmit={save}>
+        <SettingsEditor values={explicit} placeholders={globalDefaults} onSet={setField} onReset={resetField} readOnly={isFile} />
+        {!isFile && (
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginTop: '16px' }}>
+            <button class="btn primary" type="submit" disabled={saving}>
+              {saving && <span class="spinner" style={{ width: '14px', height: '14px' }} />}
+              Save settings
+            </button>
+            {saved && (
+              <span class="hint" style={{ color: 'var(--ok)' }}>
+                Saved.
+              </span>
+            )}
+          </div>
+        )}
+      </form>
     </div>
   )
 }

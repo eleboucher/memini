@@ -75,4 +75,34 @@ export type ApiKeySource = Schemas['ApiKeySource']
 export type ApiKeyWithSecret = Schemas['ApiKeyWithSecret']
 export type ApiKeysResponse = Schemas['ApiKeysResponse']
 export type CreateApiKeyRequest = Schemas['CreateApiKeyRequest']
-export type UpdateApiKeyRequest = Schemas['UpdateApiKeyRequest']
+
+// UpdateApiKeyBody mirrors the spec's UpdateApiKeyRequest but loosens `settings` to a
+// partial ClientSettings. The generated ClientSettings type marks every
+// field required — openapi-typescript treats a schema `default` as making a
+// field always-present in a fully-resolved read, which is right for
+// SelfResponse/HandshakeResponse/SettingsDefaultsResponse but overly strict
+// here: a per-key settings override is explicitly partial on the wire
+// (ApiKey.settings' own description: "fields left unset inherit the
+// server's global defaults"). Only the fields present in `settings` should
+// ever be serialized — see Keys.tsx's per-key editor.
+export interface UpdateApiKeyBody {
+  home?: string
+  default_namespace?: string
+  disabled?: boolean
+  settings?: Partial<ClientSettings>
+}
+
+// ---- Config view (Phase 8): settings layers, pins, handshake ----------
+
+export type ClientSettings = Schemas['ClientSettings']
+export type SettingsSource = 'default' | 'global' | 'key'
+export type SettingsDefaultsResponse = Schemas['SettingsDefaultsResponse']
+export type CallerIdentity = Schemas['CallerIdentity']
+export type SelfResponse = Schemas['SelfResponse']
+export type HandshakeRequest = Schemas['HandshakeRequest']
+export type HandshakeResponse = Schemas['HandshakeResponse']
+export type NamespaceSource = HandshakeResponse['namespace_source']
+export type ProjectMapEntry = Schemas['ProjectMapEntry']
+export type ProjectMapListResponse = Schemas['ProjectMapListResponse']
+export type ProjectMapPutRequest = Schemas['ProjectMapPutRequest']
+export type ProjectMapDeleteRequest = Schemas['ProjectMapDeleteRequest']

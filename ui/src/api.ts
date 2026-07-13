@@ -3,14 +3,23 @@ import type {
   ActivityResponse,
   ApiKeysResponse,
   ApiKeyWithSecret,
+  ClientSettings,
   CreateApiKeyRequest,
   DedupReport,
   DedupRequest,
   EventKind,
   FsckReport,
+  HandshakeRequest,
+  HandshakeResponse,
   Level,
   ListResponse,
   Memory,
+  ProjectMapDeleteRequest,
+  ProjectMapEntry,
+  ProjectMapListResponse,
+  ProjectMapPutRequest,
+  SelfResponse,
+  SettingsDefaultsResponse,
   SortKey,
   SortOrder,
   NamespaceLink,
@@ -22,7 +31,7 @@ import type {
   SearchResponse,
   Stats,
   Tier,
-  UpdateApiKeyRequest,
+  UpdateApiKeyBody,
 } from './types'
 
 export class ApiError extends Error {
@@ -303,7 +312,7 @@ export const api = {
   // request namespace — header-scoped, like scopedStats. `ns` overrides the
   // active selection (used by the Graph namespace mode to probe every
   // namespace in turn, not just the active one).
-  readSet: (ns?: string) => req<ReadSetResponse>('GET', '/v1/namespaces/read-set', undefined, ns),
+  readSet: (ns?: string) => req<ReadSetResponse>('GET', '/v1/namespaces/readset', undefined, ns),
 
   // links lists outgoing namespace links (durable-tier read edges) from the
   // request namespace.
@@ -343,10 +352,44 @@ export const api = {
 
   createKey: (body: CreateApiKeyRequest) => req<ApiKeyWithSecret>('POST', '/v1/keys', body),
 
-  updateKey: (name: string, body: UpdateApiKeyRequest) =>
+  updateKey: (name: string, body: UpdateApiKeyBody) =>
     req<ApiKeysResponse['keys'][number]>('PATCH', `/v1/keys/${encodeURIComponent(name)}`, body),
 
   deleteKey: (name: string) => req<void>('DELETE', `/v1/keys/${encodeURIComponent(name)}`),
 
   rotateKey: (name: string) => req<ApiKeyWithSecret>('POST', `/v1/keys/${encodeURIComponent(name)}/rotate`),
+
+  // --- Config view (Phase 8): identity/settings/pins/handshake ------------
+
+  // self is a lighter-weight refresh than handshake for a client that
+  // already has a resolved namespace: identity + fully-merged settings +
+  // per-field provenance for the request's own credential, no project
+  // facts to resend. The Settings tab's default (no key picked) view.
+  self: () => req<SelfResponse>('GET', '/v1/self'),
+
+  // handshake resolves namespace/identity/settings from client-supplied
+  // project facts — the same call every real client makes on startup. The
+  // Preview tab uses it as a "why did I get this namespace?" debugger.
+  handshake: (body: HandshakeRequest) => req<HandshakeResponse>('POST', '/v1/handshake', body),
+
+  // getSettingsDefaults reads the server's global default layer (fully
+  // resolved, plus managed_by so the UI can render an env-managed layer
+  // read-only). Admin-gated — a named key gets 403.
+  getSettingsDefaults: () => req<SettingsDefaultsResponse>('GET', '/v1/settings/defaults'),
+
+  // putSettingsDefaults replaces the global layer wholesale: fields present
+  // become the new global override, fields omitted stop being overridden
+  // (revert to the built-in default) — not a merge with whatever was
+  // previously stored. Only explicitly-touched fields should be included.
+  putSettingsDefaults: (body: Partial<ClientSettings>) =>
+    req<ClientSettings>('PUT', '/v1/settings/defaults', body),
+
+  listPins: () => req<ProjectMapListResponse>('GET', '/v1/pins').then((r) => r.entries ?? []),
+
+  putPin: (body: ProjectMapPutRequest) => req<ProjectMapEntry>('PUT', '/v1/pins', body),
+
+  // deletePin identifies the pin to remove by remote_url/toplevel_path in
+  // the body (there's no synthetic ID) — parsePinKey (util.ts) recovers
+  // those facts from a listed entry's combined `key` string.
+  deletePin: (body: ProjectMapDeleteRequest) => req<void>('DELETE', '/v1/pins', body),
 }
