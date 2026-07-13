@@ -354,6 +354,16 @@ no change.
 | `MEMINI_INJECT_PRETOOL_MIN_SCORE` | `0`                             | Floor on the fused score; hits below are dropped server-side. |
 | `MEMINI_INJECT_PRETOOL_TOOLS`     | `Read\|Write\|Edit\|Glob\|Grep` | Pipe- or comma-separated tool allowlist override.             |
 
+Repeated tool calls on the same file (e.g. several `Edit`s in a row, or a
+`Read` followed by an `Edit`) still make the recall call every time — results
+can change between calls — but the hook only re-injects a file's block when
+the served memories actually changed since the last time that file was
+injected THIS session. The fingerprint is keyed by file path and is
+tool-agnostic (a `Read` then an `Edit` on the same file with identical results
+counts as a duplicate), so an unbroken sequence of edits doesn't repeat the
+identical memory block into context on every call. This is always on (no env
+knob) and self-clears on `SessionStart`, `PreCompact`, and `SessionEnd`.
+
 **Output labels** (both hooks):
 
 | Env var                | Default | Description                                                     |

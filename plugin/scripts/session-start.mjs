@@ -24,6 +24,7 @@ import {
   approxTokens,
   briefingUnchanged,
   cacheBriefingHash,
+  deleteLastRecallState,
   MEMORY_INSTRUCTION,
   DEBUG,
 } from "./_shared.mjs";
@@ -175,6 +176,13 @@ async function main() {
 
   // Hygiene: drop session buffers left behind by sessions that never ended.
   cleanStaleBuffers(STALE_BUFFER_MS);
+
+  // A new session's context is empty — nothing has been injected into it yet
+  // — so any last-recall fingerprints from a prior session reusing this
+  // session_id (or left behind by a crash) are stale and would wrongly
+  // suppress the very first injection. Clear them at startup so PreToolUse
+  // starts fresh.
+  if (sessionId) deleteLastRecallState(sessionId);
 
   // Auto-migrate: a successful handshake reporting no pin is the one signal
   // that both proves the server is reachable AND that this project hasn't

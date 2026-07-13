@@ -1347,6 +1347,279 @@ test("pre-tool-use.mjs: MEMINI_INJECT_PRETOOL_MAX_TOK truncates per-file block",
   }
 });
 
+// ─── PreToolUse: duplicate-injection suppression ──────────────────────────
+
+test("writeLastRecallState/readLastRecallState: bounds to 32 most-recent entries, evicting oldest by `at`", async () => {
+  const { readLastRecallState, writeLastRecallState } = await import("./_shared.mjs");
+  const cache = freshCache();
+  const prevXdg = process.env.XDG_CACHE_HOME;
+  process.env.XDG_CACHE_HOME = cache;
+  try {
+    const state = {};
+    for (let i = 0; i < 40; i++) {
+      state[`file-${i}`] = { hash: `hash-${i}`, at: i }; // ascending `at` — file-0 is oldest
+    }
+    writeLastRecallState("bound-test", state);
+    const after = readLastRecallState("bound-test");
+    const keys = Object.keys(after);
+    assert.equal(keys.length, 32, "state must be bounded to 32 entries");
+    assert.ok(!("file-0" in after), "the oldest entry (lowest `at`) must be evicted");
+    assert.ok("file-39" in after, "the most recent entry must be kept");
+  } finally {
+    if (prevXdg === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = prevXdg;
+  }
+});
+
+test("pre-tool-use.mjs: identical recall for the same file is suppressed on the second call", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  let calls = 0;
+  const { url, close } = await startMockServer((req, res) => {
+    calls++;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ results: [{ memory: { id: "m1", content: "auth decision" }, score: 0.95 }] }));
+  });
+  try {
+    const payload = JSON.stringify({
+      session_id: "dedupe1",
+      cwd: __dirname,
+      tool_name: "Read",
+      tool_input: { file_path: "internal/auth.go" },
+    });
+    const first = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    assert.match(first.stdout, /<memini-pretool[^>]*>/, "first call must inject");
+    assert.match(first.stdout, /auth decision/);
+
+    const second = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    assert.equal(second.stdout, "", "second identical call must produce NO injection");
+    assert.equal(calls, 2, "the recall call itself must still happen both times");
+
+    const statePath = join(cache, "memini", "sessions", "dedupe1.lastrecall.json");
+    assert.equal(existsSync(statePath), true);
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    assert.ok(state["internal/auth.go"]?.hash, "the state file must record the file's fingerprint");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: changed recall results re-inject even for the same file", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  let calls = 0;
+  const { url, close } = await startMockServer((req, res) => {
+    calls++;
+    res.setHeader("Content-Type", "application/json");
+    const content = calls === 1 ? "first version of the fact" : "second, updated version of the fact";
+    res.end(JSON.stringify({ results: [{ memory: { id: "m1", content }, score: 0.9 }] }));
+  });
+  try {
+    const payload = JSON.stringify({
+      session_id: "dedupe2",
+      cwd: __dirname,
+      tool_name: "Read",
+      tool_input: { file_path: "internal/auth.go" },
+    });
+    const first = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    assert.match(first.stdout, /first version of the fact/);
+
+    const second = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    assert.notEqual(second.stdout, "", "changed results must re-inject");
+    assert.match(second.stdout, /second, updated version of the fact/);
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: different files with identical result sets both inject (per-file map)", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ results: [{ memory: { id: "m1", content: "shared fact" }, score: 0.9 }] }));
+  });
+  try {
+    const mk = (file) =>
+      JSON.stringify({ session_id: "dedupe3", cwd: __dirname, tool_name: "Read", tool_input: { file_path: file } });
+
+    const a = await runHook("pre-tool-use.mjs", mk("a.go"), { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    assert.match(a.stdout, /shared fact/, "file a must inject");
+
+    const b = await runHook("pre-tool-use.mjs", mk("b.go"), { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    assert.match(b.stdout, /shared fact/, "a different file with the identical result set must ALSO inject");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: Read then Edit on the same file with identical results — the second is suppressed (tool-agnostic fingerprint)", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ results: [{ memory: { id: "m1", content: "pipeline behavior" }, score: 0.92 }] }));
+  });
+  try {
+    const readCall = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "dedupe4", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "pipeline.py" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.match(readCall.stdout, /pipeline behavior/, "Read must inject");
+
+    const editCall = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "dedupe4", cwd: __dirname, tool_name: "Edit", tool_input: { file_path: "pipeline.py" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.equal(
+      editCall.stdout,
+      "",
+      "Edit on the same file with the identical served memories must be suppressed, even though the tool differs",
+    );
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: two different session_ids do not share last-recall state", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ results: [{ memory: { id: "m1", content: "cross-session fact" }, score: 0.9 }] }));
+  });
+  try {
+    const mk = (sid) =>
+      JSON.stringify({ session_id: sid, cwd: __dirname, tool_name: "Read", tool_input: { file_path: "shared.go" } });
+
+    const a1 = await runHook("pre-tool-use.mjs", mk("sess-a"), { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    assert.match(a1.stdout, /cross-session fact/);
+    const a2 = await runHook("pre-tool-use.mjs", mk("sess-a"), { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    assert.equal(a2.stdout, "", "second call in session A must be suppressed");
+
+    const b1 = await runHook("pre-tool-use.mjs", mk("sess-b"), { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    assert.match(b1.stdout, /cross-session fact/, "a fresh session_id must NOT inherit session A's suppression state");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-compact.mjs: clears the last-recall state so an identical recall re-injects afterward", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ results: [{ memory: { id: "m1", content: "compaction-surviving fact" }, score: 0.9 }] }));
+  });
+  try {
+    const payload = JSON.stringify({
+      session_id: "pcdedupe1",
+      cwd: __dirname,
+      tool_name: "Read",
+      tool_input: { file_path: "auth.go" },
+    });
+    const first = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    assert.match(first.stdout, /compaction-surviving fact/, "first call must inject");
+
+    const second = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    assert.equal(second.stdout, "", "sanity check: repeat call is suppressed before compaction");
+
+    await runHook(
+      "pre-compact.mjs",
+      JSON.stringify({ session_id: "pcdedupe1", cwd: __dirname, trigger: "auto" }),
+      { MEMINI_BASE_URL: DEAD_URL, XDG_CACHE_HOME: cache },
+    );
+
+    const third = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    assert.match(third.stdout, /compaction-surviving fact/, "after pre-compact clears state, the identical recall must re-inject");
+  } finally {
+    await close();
+  }
+});
+
+test("session-end.mjs: deletes the last-recall state alongside the other session files", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.statusCode = 201;
+    res.end(JSON.stringify({ results: [{ memory: { id: "m1", content: "session-end fact" }, score: 0.9 }], id: "m1" }));
+  });
+  try {
+    await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "sedelete1", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "a.go" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    const statePath = join(cache, "memini", "sessions", "sedelete1.lastrecall.json");
+    assert.equal(existsSync(statePath), true, "precondition: state recorded");
+
+    await runHook(
+      "session-end.mjs",
+      JSON.stringify({ session_id: "sedelete1", cwd: __dirname, reason: "user_exit" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.equal(existsSync(statePath), false, "session-end must delete the last-recall state file");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: deletes the last-recall state for its session at startup", async () => {
+  const cache = freshCache();
+  const statePath = join(cache, "memini", "sessions", "ssdelete1.lastrecall.json");
+  mkdirSync(join(cache, "memini", "sessions"), { recursive: true });
+  writeFileSync(statePath, JSON.stringify({ "a.go": { hash: "stale-hash", at: 1 } }));
+  assert.equal(existsSync(statePath), true, "precondition: stale state present");
+
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ namespace: "memini", pinned: [], facts: [], procedures: [], recent: [] }));
+    }),
+  );
+  try {
+    await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "ssdelete1", cwd: __dirname }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.equal(existsSync(statePath), false, "SessionStart must clear stale last-recall state for a new/resumed session");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: last-recall state is bounded, evicting the oldest entry (33 distinct files)", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ results: [{ memory: { id: "shared", content: "shared memory" }, score: 0.9 }] }));
+  });
+  try {
+    const N = 33;
+    for (let i = 0; i < N; i++) {
+      await runHook(
+        "pre-tool-use.mjs",
+        JSON.stringify({ session_id: "evict1", cwd: __dirname, tool_name: "Read", tool_input: { file_path: `/tmp/file-${i}` } }),
+        { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+      );
+    }
+    const statePath = join(cache, "memini", "sessions", "evict1.lastrecall.json");
+    assert.equal(existsSync(statePath), true);
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const keys = Object.keys(state);
+    assert.ok(keys.length <= 32, `expected state to stay bounded, got ${keys.length} entries`);
+    assert.ok(!("/tmp/file-0" in state), "the oldest entry should have been evicted");
+    assert.ok("/tmp/file-32" in state, "the most recent entry should be present");
+  } finally {
+    await close();
+  }
+});
+
 // ─── mcp-headers (the MCP headersHelper) ──────────────────────────────────
 
 // Spawn `script` from an intermediate node process whose cwd is `parentCwd`, so
