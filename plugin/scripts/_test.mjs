@@ -337,7 +337,9 @@ test("session-start.mjs: fetches the briefing under the HANDSHAKE-resolved names
     withHandshake(mkHS({ namespace: "team/app" }), (req, res, body) => {
       hits.push({ method: req.method, url: req.url, ns: req.headers["x-memini-namespace"], body });
       res.setHeader("Content-Type", "application/json");
-      if (req.url.startsWith("/v1/namespaces/") && req.url.includes("/briefing")) {
+      // Strict path match: the header-scoped route only, so a regression back
+      // to a path-param URL fails this test instead of being echoed JSON.
+      if (new URL(req.url, "http://x").pathname === "/v1/namespaces/briefing") {
         res.end(
           JSON.stringify({
             namespace: "team/app",
@@ -368,7 +370,62 @@ test("session-start.mjs: fetches the briefing under the HANDSHAKE-resolved names
     assert.equal(hits.length, 1, `expected 1 briefing call, got ${hits.length}`);
     assert.equal(hits[0].method, "GET");
     assert.equal(hits[0].ns, "team/app", `expected namespace=team/app, got ${hits[0].ns}`);
-    assert.match(hits[0].url, /^\/v1\/namespaces\/team%2Fapp\/briefing\b|^\/v1\/namespaces\/team\/app\/briefing\b/);
+    // Header-scoped route: NO namespace path segment — the namespace travels
+    // in X-Memini-Namespace (asserted above), matching api/openapi.yaml.
+    assert.match(hits[0].url, /^\/v1\/namespaces\/briefing\?/);
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: briefing survives an SPA catch-all serving HTML on every wrong path", async () => {
+  // Regression for the route bug where getBriefing requested
+  // /v1/namespaces/<ns>/briefing (path param). That route does not exist; a
+  // real deployment's admin-UI SPA catch-all answered it 200-with-HTML, and
+  // getBriefing silently nulled — SessionStart injected only the memory
+  // directive, never actual briefing content. This mock reproduces the real
+  // server's shape EXACTLY: JSON only on the exact header-scoped path
+  // (/v1/namespaces/briefing, no path segment) WITH X-Memini-Namespace set;
+  // every other GET — including the old path-param form — 200s with HTML like
+  // the SPA does. A mock that echoed JSON for whatever path the code requested
+  // would recreate the blind spot that let the bug through.
+  const seen = [];
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
+      const pathname = new URL(req.url, "http://x").pathname;
+      seen.push({ pathname, ns: req.headers["x-memini-namespace"] });
+      if (pathname === "/v1/namespaces/briefing" && req.headers["x-memini-namespace"]) {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            namespace: "team/app",
+            pinned: [],
+            facts: [{ content: "briefing served by the real route" }],
+            procedures: [],
+            recent: [],
+          }),
+        );
+        return;
+      }
+      // The SPA catch-all: 200 + HTML for anything else, old path included.
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.end("<!doctype html><html><head><title>memini admin</title></head><body><div id=\"app\"></div></body></html>");
+    }),
+  );
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "spa1", cwd: __dirname }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() },
+    );
+    assert.match(stdout, /<memini-context[^>]*>/, "SessionStart must inject a real context block");
+    assert.match(stdout, /briefing served by the real route/, "the briefing content must come from the header-scoped route");
+    const briefingCalls = seen.filter((s) => s.pathname.includes("briefing"));
+    assert.ok(
+      briefingCalls.every((s) => s.pathname === "/v1/namespaces/briefing"),
+      `every briefing request must use the header-scoped path, got ${JSON.stringify(briefingCalls)}`,
+    );
   } finally {
     await close();
   }

@@ -246,15 +246,24 @@ export async function getJSON(path, namespace, timeoutMs = 5000, opts = {}) {
 }
 
 /**
- * GET /v1/namespaces/{ns}/briefing — a layered session-start summary
+ * GET /v1/namespaces/briefing — a layered session-start summary
  * {namespace, facts, procedures, recent, pinned}. Returns null on failure.
+ *
+ * The route is header-scoped: there is NO namespace path segment — the
+ * namespace rides in X-Memini-Namespace (getJSON sends it, along with the
+ * bearer and X-Memini-Home, exactly like every other REST helper here). This
+ * matches api/openapi.yaml and how integrations/pi and integrations/openclaw
+ * call it. The old path-param form (/v1/namespaces/<ns>/briefing) does not
+ * exist server-side; against a real deployment it fell through to the admin
+ * UI's SPA catch-all, which 200s with HTML and made this helper silently
+ * return null — SessionStart then injected only the memory directive, never
+ * real briefing context.
  *
  * `opts` controls per-section caps. Each field is an int; omit (or 0) to use
  * the server default (5). Pass an explicit 0 to disable that section (REST
  * only — MCP can't distinguish omitted from zero).
  */
 export async function getBriefing(namespace, opts = {}) {
-  const enc = encodeURIComponent(namespace);
   const params = new URLSearchParams();
   // A "per_section_default" opt acts as the catch-all; per-section fields
   // win when set. This matches the REST contract exactly.
@@ -274,7 +283,7 @@ export async function getBriefing(namespace, opts = {}) {
   setIf("per_section_facts", opts.per_section_facts ?? opts.facts);
   setIf("per_section_procedures", opts.per_section_procedures ?? opts.procedures);
   setIf("per_section_recent", opts.per_section_recent ?? opts.recent);
-  return getJSON(`/v1/namespaces/${enc}/briefing?${params.toString()}`, namespace);
+  return getJSON(`/v1/namespaces/briefing?${params.toString()}`, namespace);
 }
 
 // --- Injection budget ----------------------------------------------------
