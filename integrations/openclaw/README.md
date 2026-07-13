@@ -90,33 +90,45 @@ means no home leg; there is no derivation, just this explicit config/env pair.
 ### Namespace resolution
 
 ```
-1. project override      ~/.config/memini/overrides.json
-2. MEMINI_NAMESPACE
-3. the `namespace` config value
-4. "openclaw"            the default
+1. MEMINI_NAMESPACE       local env override, wins outright
+2. server-side pin        set with memini:namespace, stored on the memini server
+3. the `namespace` config sent to the server as the declared namespace
+4. "openclaw"             the default
 ```
 
 Then `namespace_prefix`, `namespace_template` and per-agent nesting apply on top,
 exactly as before.
 
-Note what is _not_ in that list: OpenClaw does **no git or cwd derivation**, and
-that is deliberate. It is a gateway harness, where the working directory is often
-meaningless or absent, so the default is the literal `openclaw` rather than a
-guess at a project. Set `namespace` (or an override) when you want per-project
-isolation.
+The plugin resolves its namespace through the config handshake
+(`POST /v1/handshake`): each session it sends the server a small set of gateway
+facts — the daemon's working directory path and the declared namespace (the
+`namespace` config value, else `openclaw`) — and uses whatever the server
+resolves. A **pin** recorded for this install's working directory beats the
+declared value (that is the point of pinning); otherwise the declared value
+stands. When the server is unreachable, the plugin falls back to the declared
+value, so behavior degrades to exactly what the config says. The handshake is
+memoized in memory for ten minutes; setting or clearing a pin drops the memo,
+so a change applies on the very next turn.
 
-The override is shared with every other memini client, so one set in Claude Code
-applies here too, and `memini doctor` reports the same value. It beats
-`MEMINI_NAMESPACE` on purpose: a globally exported `MEMINI_NAMESPACE` is exactly
-the problem an override exists to solve. See
-[env-vars](../../docs/reference/env-vars.md#the-overrides-file) for the format.
+Note what is _not_ in that list: OpenClaw does **no git derivation**, and that
+is deliberate. It is a gateway harness, where the working directory is the
+daemon's, not a project's, so the default is the literal `openclaw` rather
+than a guess at a repo. The pin's identity is that same daemon working
+directory (`path:<cwd>` on the server) — stable per install, and never
+confused with a git checkout the daemon happens to sit inside.
+
+`MEMINI_NAMESPACE` overrides everything **including a pin** for this plugin. A
+gateway is a long-lived, per-machine install, and an operator's explicit local
+env pin should never be silently shadowed by server state. Prefer a pin (or
+the `namespace` config) for a durable choice; keep `MEMINI_NAMESPACE` as the
+temporary big hammer.
 
 ### Commands
 
 | Command            | What it does                                                         |
 | ------------------ | -------------------------------------------------------------------- |
 | `memini:status`    | Effective settings, resolved namespace **with provenance**, warnings |
-| `memini:namespace` | Show, set, or clear the namespace override for this project          |
+| `memini:namespace` | Show, set, or clear the server-side namespace pin for this install   |
 
 Recall shaping (both optional, matching the opencode/Claude Code plugins):
 `recall_limit` (max memories per turn, default **3**) and `recall_max_tokens`

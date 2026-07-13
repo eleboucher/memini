@@ -53,60 +53,68 @@ pi -e ./integrations/pi/plugin/dist/index.js
 All config is via environment variables in the shell that launches Pi (secrets
 stay out of any file):
 
-| Env var                          | Default                          | Purpose                                                                                       |
-| -------------------------------- | -------------------------------- | --------------------------------------------------------------------------------------------- |
-| `MEMINI_BASE_URL`                | `http://localhost:8080`          | memini REST base URL (alias: `MEMINI_URL`)                                                    |
-| `MEMINI_NAMESPACE`               | git repo name, else cwd basename | project the memory is scoped to (`X-Memini-Namespace`)                                        |
-| `MEMINI_HOME`                    | unset                            | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg                     |
-| `MEMINI_RECALL`                  | on                               | `0`/`false` disables recall-before-turn                                                       |
-| `MEMINI_CAPTURE`                 | on                               | `0`/`false` disables capture-after-turn                                                       |
-| `MEMINI_RECALL_LIMIT`            | `3`                              | max memories injected per turn                                                                |
-| `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                              | hard ceiling on recall-block tokens (`0` = unbounded); the tail is dropped with a footer      |
-| `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                              | fused-score floor (>=) sent as `min_score` to `/v1/search`                                    |
-| `MEMINI_INJECT_LABELS`           | —                                | comma-separated bullet labels: `tier`, `confidence`, `age`                                    |
-| `MEMINI_TIMEOUT_MS`              | `30000`                          | per-request timeout                                                                           |
-| `MEMINI_FALLBACK`                | on                               | `0`/`false` surfaces errors instead of degrading silently                                     |
-| `MEMINI_API_KEY`                 | —                                | bearer token, if memini needs auth (sent as `Authorization: Bearer …`; alias: `MEMINI_TOKEN`) |
-| `MEMINI_REQUIRE_HTTPS`           | —                                | `1` refuses to send the token over plaintext HTTP                                             |
+| Env var                          | Default                          | Purpose                                                                                   |
+| -------------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------- |
+| `MEMINI_BASE_URL`                | `http://localhost:8080`          | memini REST base URL                                                                      |
+| `MEMINI_NAMESPACE`               | unset (server handshake decides) | machine-local namespace override; the offline escape hatch when the server is unreachable |
+| `MEMINI_HOME`                    | unset                            | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg                 |
+| `MEMINI_RECALL`                  | on                               | `0`/`false` disables recall-before-turn                                                   |
+| `MEMINI_CAPTURE`                 | on                               | `0`/`false` disables capture-after-turn                                                   |
+| `MEMINI_RECALL_LIMIT`            | `3`                              | max memories injected per turn                                                            |
+| `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                              | hard ceiling on recall-block tokens (`0` = unbounded); the tail is dropped with a footer  |
+| `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                              | fused-score floor (>=) sent as `min_score` to `/v1/search`                                |
+| `MEMINI_INJECT_LABELS`           | —                                | comma-separated bullet labels: `tier`, `confidence`, `age`                                |
+| `MEMINI_TIMEOUT_MS`              | `30000`                          | per-request timeout                                                                       |
+| `MEMINI_FALLBACK`                | on                               | `0`/`false` surfaces errors instead of degrading silently                                 |
+| `MEMINI_API_KEY`                 | —                                | bearer token, if memini needs auth (sent as `Authorization: Bearer …`)                    |
+| `MEMINI_REQUIRE_HTTPS`           | —                                | `1` refuses to send the token over plaintext HTTP                                         |
 
-Unset, the namespace is derived from the git repo (remote name, then toplevel
-basename), falling back to the working-directory basename, and sent as the
-`X-Memini-Namespace` header — set it to share one memory pool with your
-other agents (Claude Code, opencode, …).
+The namespace itself is resolved by the memini **server**, not this extension:
+at the first turn the extension performs the config handshake
+(`POST /v1/handshake`), sending the project's facts (git remote, toplevel,
+cwd basename) and using whatever the server resolves — a pin recorded for this
+project, `MEMINI_NAMESPACE` if exported, or derivation from the facts (repo
+name, then toplevel basename, then cwd basename). The result is memoized in
+memory for ten minutes. When the server is unreachable, the extension degrades
+to the same chain locally: `MEMINI_NAMESPACE`, else git/cwd derivation — which
+is why the env var is best thought of as the offline escape hatch, not the
+primary lever.
 
 ### Commands
 
 | Command            | What it does                                                                    |
 | ------------------ | ------------------------------------------------------------------------------- |
 | `memini:status`    | Effective settings, the resolved namespace **and where it came from**, warnings |
-| `memini:namespace` | Show, set, or clear the namespace override for this project                     |
+| `memini:namespace` | Show, set, or clear the server-side namespace pin for this project              |
 
 `memini:status` exists because a list of values is not enough to debug a namespace
-problem. It shows provenance (`<- env` vs `(default)`), so a `MEMINI_NAMESPACE`
-exported once from a shell profile — which pins _every_ repo on the machine to one
-namespace — shows up as a warning rather than as a mystery. Secrets are redacted.
+problem. It shows provenance (`<- env` vs `<- server` vs `(default)`), so a
+`MEMINI_NAMESPACE` exported once from a shell profile — which pins _every_ repo on
+the machine to one namespace — shows up as a warning rather than as a mystery.
+Secrets are redacted.
 
-### The namespace override
+### The namespace pin
 
 ```
 memini:namespace              # show the namespace and where it came from
-memini:namespace acme/api     # override it for this project
+memini:namespace acme/api     # pin this project to acme/api
 memini:namespace --clear      # back to automatic resolution
 ```
 
-Precedence is **override > `MEMINI_NAMESPACE` > config file > git > cwd**. The
-override deliberately beats the environment: a globally exported
-`MEMINI_NAMESPACE` is exactly the problem an override exists to solve, so if the
-environment won, the command would silently do nothing on the machines that need
-it.
+The pin lives on the **memini server** (`PUT`/`DELETE /v1/pins`), keyed by the
+project's git remote and/or toplevel path — so it follows you across machines,
+and every client that handshakes for this project (Claude Code, this extension,
+`memini doctor`) resolves the same value.
 
-The override is stored in `~/.config/memini/overrides.json` and shared with every
-other memini client, so one set in Claude Code applies here too, and `memini
-doctor` reports the same value. See
-[env-vars](../../docs/reference/env-vars.md#the-overrides-file) for the format.
+A pin beats `MEMINI_NAMESPACE` at handshake time, deliberately: a globally
+exported `MEMINI_NAMESPACE` is exactly the problem a pin exists to solve, so if
+the environment won, the command would silently do nothing on the machines that
+need it. Setting or clearing a pin takes effect on the next turn — the write
+drops the extension's in-memory handshake memo, so there is no restart or
+ten-minute wait.
 
-Unlike the Claude Code plugin, setting an override here takes effect immediately —
-the namespace is re-read per request, so there is no reconnect to wait for.
+Because pins are server-side, setting one needs the server reachable. For an
+offline, machine-local override, export `MEMINI_NAMESPACE` instead.
 
 ### Build & test
 
