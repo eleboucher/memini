@@ -512,7 +512,7 @@ type AnswerRequest struct {
 	Metadata *map[string]string `json:"metadata,omitempty"`
 	Query    string             `json:"query"`
 
-	// Scope Selects the grounding read-set shape, same vocabulary as the recall `scope`: "full" (default) grounds on the request namespace plus its ancestor/home/link cascade; "project" grounds on the request namespace only (no cascade); "everywhere" is "full" plus the request namespace's subtree. "exact" and "subtree" are deprecated aliases ("exact" → "project", "subtree" → "everywhere"). Any other value is rejected with 400. Reaches parity with the MCP `memory_answer` tool's `scope` argument.
+	// Scope Selects the grounding read set shape, same vocabulary as the recall `scope`: "full" (default) grounds on the request namespace plus its ancestor/home/link cascade; "project" grounds on the request namespace only (no cascade); "everywhere" is "full" plus the request namespace's subtree. "exact" and "subtree" are deprecated aliases ("exact" → "project", "subtree" → "everywhere"). Any other value is rejected with 400. Reaches parity with the MCP `memory_answer` tool's `scope` argument.
 	Scope *AnswerRequestScope `json:"scope,omitempty"`
 
 	// Tags Ground only on memories carrying every listed tag (AND).
@@ -520,7 +520,7 @@ type AnswerRequest struct {
 	Tiers *[]Tier   `json:"tiers,omitempty"`
 }
 
-// AnswerRequestScope Selects the grounding read-set shape, same vocabulary as the recall `scope`: "full" (default) grounds on the request namespace plus its ancestor/home/link cascade; "project" grounds on the request namespace only (no cascade); "everywhere" is "full" plus the request namespace's subtree. "exact" and "subtree" are deprecated aliases ("exact" → "project", "subtree" → "everywhere"). Any other value is rejected with 400. Reaches parity with the MCP `memory_answer` tool's `scope` argument.
+// AnswerRequestScope Selects the grounding read set shape, same vocabulary as the recall `scope`: "full" (default) grounds on the request namespace plus its ancestor/home/link cascade; "project" grounds on the request namespace only (no cascade); "everywhere" is "full" plus the request namespace's subtree. "exact" and "subtree" are deprecated aliases ("exact" → "project", "subtree" → "everywhere"). Any other value is rejected with 400. Reaches parity with the MCP `memory_answer` tool's `scope` argument.
 type AnswerRequestScope string
 
 // AnswerResponse defines model for AnswerResponse.
@@ -598,7 +598,7 @@ type Briefing struct {
 	// Recent Recent episodic activity, newest first.
 	Recent *[]BriefingItem `json:"recent,omitempty"`
 
-	// ScopeHeader A human-readable one-line summary of which namespaces this briefing drew from (its resolved read-set scope), e.g. "Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2), +1 link" — primary first, then each cascade leg that contributed durable memories (nearest ancestor first, home last, counts per leg), then a "+K link(s)" suffix for contributing links.
+	// ScopeHeader A human-readable one-line summary of which namespaces this briefing drew from (its resolved read set scope), e.g. "Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2), +1 link" — primary first, then each cascade leg that contributed durable memories (nearest ancestor first, home last, counts per leg), then a "+K link(s)" suffix for contributing links.
 	ScopeHeader *string `json:"scope_header,omitempty"`
 }
 
@@ -843,7 +843,7 @@ type HandshakeResponse struct {
 		UpdatedAt time.Time `json:"updated_at"`
 	} `json:"pin,omitempty"`
 
-	// ReadSet The read-set `namespace` resolves to (same shape as GET /v1/namespaces/readset).
+	// ReadSet The read set `namespace` resolves to (same shape as GET /v1/namespaces/readset).
 	ReadSet []ReadSetEntryItem `json:"read_set"`
 	Server  struct {
 		DefaultNamespace string `json:"default_namespace"`
@@ -985,14 +985,14 @@ type ProjectMapPutRequest struct {
 type ReadSetEntryItem struct {
 	Namespace string `json:"namespace"`
 
-	// Origin Why a namespace is in the read-set: "primary" is the request namespace (and its subtree, when expanded), "ancestor" is a path-prefix cascade leg, "home" is the caller's personal namespace, "link" is a stored namespace link, and "call" is an explicit per-call namespace.
+	// Origin Why a namespace is in the read set: "primary" is the request namespace (and its subtree, when expanded), "ancestor" is a path-prefix cascade leg, "home" is the caller's personal namespace, "link" is a stored namespace link, and "call" is an explicit per-call namespace.
 	Origin ReadSetOrigin `json:"origin"`
 
 	// Tiers Tier restriction applied to this namespace; omitted means the request's own tier filter, unrestricted beyond that.
 	Tiers *[]Tier `json:"tiers,omitempty"`
 }
 
-// ReadSetOrigin Why a namespace is in the read-set: "primary" is the request namespace (and its subtree, when expanded), "ancestor" is a path-prefix cascade leg, "home" is the caller's personal namespace, "link" is a stored namespace link, and "call" is an explicit per-call namespace.
+// ReadSetOrigin Why a namespace is in the read set: "primary" is the request namespace (and its subtree, when expanded), "ancestor" is a path-prefix cascade leg, "home" is the caller's personal namespace, "link" is a stored namespace link, and "call" is an explicit per-call namespace.
 type ReadSetOrigin string
 
 // ReadSetResponse defines model for ReadSetResponse.
@@ -1049,7 +1049,7 @@ type RenamespaceReport struct {
 
 // ScoredMemory defines model for ScoredMemory.
 type ScoredMemory struct {
-	// From Read-set provenance beyond memory.namespace: omitted for a hit from the request (primary) namespace — the common case, no annotation needed — the ancestor/home namespace name itself for those two origins ("acme", "personal/kit"), and a prefixed form for a stored link or an explicit per-call namespace ("link:shared/golang", "call:acme/other"). Only populated when the read drew from a resolved read-set (recall/answer); omitted otherwise.
+	// From Read-set provenance beyond memory.namespace: omitted for a hit from the request (primary) namespace — the common case, no annotation needed — the ancestor/home namespace name itself for those two origins ("acme", "personal/kit"), and a prefixed form for a stored link or an explicit per-call namespace ("link:shared/golang", "call:acme/other"). Only populated when the read drew from a resolved read set (recall/answer); omitted otherwise.
 	From   *string `json:"from,omitempty"`
 	Memory Memory  `json:"memory"`
 	Score  float64 `json:"score"`
@@ -1658,7 +1658,7 @@ type ServerInterface interface {
 	// Relocate every memory in the request namespace to another namespace
 	// (POST /v1/namespaces/move)
 	MoveNamespace(w http.ResponseWriter, r *http.Request, params MoveNamespaceParams)
-	// Resolve the structural read-set for the request namespace
+	// Resolve the structural read set for the request namespace
 	// (GET /v1/namespaces/readset)
 	GetReadSet(w http.ResponseWriter, r *http.Request, params GetReadSetParams)
 	// Split the request namespace by metadata keys
@@ -1847,7 +1847,7 @@ func (_ Unimplemented) MoveNamespace(w http.ResponseWriter, r *http.Request, par
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Resolve the structural read-set for the request namespace
+// Resolve the structural read set for the request namespace
 // (GET /v1/namespaces/readset)
 func (_ Unimplemented) GetReadSet(w http.ResponseWriter, r *http.Request, params GetReadSetParams) {
 	w.WriteHeader(http.StatusNotImplemented)

@@ -193,7 +193,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Resolve the structural read-set for the request namespace
+         * Resolve the structural read set for the request namespace
          * @description Introspection endpoint: which namespaces a recall/briefing on the request namespace would draw from by default, and why (origin) — independent of any one request's tier filter. Header-scoped like `/v1/namespaces/briefing` (no path param): the namespace comes from X-Memini-Namespace, and X-Memini-Home, when set, contributes the home leg.
          */
         get: operations["getReadSet"];
@@ -499,7 +499,7 @@ export interface paths {
         put?: never;
         /**
          * Resolve namespace, identity, and behavioral settings from client-supplied project facts
-         * @description The client→server handshake: the client sends what it knows about the project (git remote/toplevel/cwd, an optional agent suffix, and any namespace it already has an opinion about) plus its own name/version; the server resolves the effective namespace (an explicit pin beats MEMINI_NAMESPACE beats a declared value beats derivation from the project facts beats the caller's key-level default beats the server default), the caller's identity, the fully-merged ClientSettings (built-in defaults, overridden by the server's global defaults, overridden by any per-key settings), and the read-set the resolved namespace draws from. This is the single source of truth for namespace resolution — clients no longer derive or cache it locally.
+         * @description The client→server handshake: the client sends what it knows about the project (git remote/toplevel/cwd, an optional agent suffix, and any namespace it already has an opinion about) plus its own name/version; the server resolves the effective namespace (an explicit pin beats MEMINI_NAMESPACE beats a declared value beats derivation from the project facts beats the caller's key-level default beats the server default), the caller's identity, the fully-merged ClientSettings (built-in defaults, overridden by the server's global defaults, overridden by any per-key settings), and the read set the resolved namespace draws from. This is the single source of truth for namespace resolution — clients no longer derive or cache it locally.
          */
         post: operations["handshake"];
         delete?: never;
@@ -713,7 +713,7 @@ export interface components {
             memory: components["schemas"]["Memory"];
             /** Format: double */
             score: number;
-            /** @description Read-set provenance beyond memory.namespace: omitted for a hit from the request (primary) namespace — the common case, no annotation needed — the ancestor/home namespace name itself for those two origins ("acme", "personal/kit"), and a prefixed form for a stored link or an explicit per-call namespace ("link:shared/golang", "call:acme/other"). Only populated when the read drew from a resolved read-set (recall/answer); omitted otherwise. */
+            /** @description Read-set provenance beyond memory.namespace: omitted for a hit from the request (primary) namespace — the common case, no annotation needed — the ancestor/home namespace name itself for those two origins ("acme", "personal/kit"), and a prefixed form for a stored link or an explicit per-call namespace ("link:shared/golang", "call:acme/other"). Only populated when the read drew from a resolved read set (recall/answer); omitted otherwise. */
             from?: string;
         };
         SearchResponse: {
@@ -734,7 +734,7 @@ export interface components {
                 [key: string]: string;
             };
             /**
-             * @description Selects the grounding read-set shape, same vocabulary as the recall `scope`: "full" (default) grounds on the request namespace plus its ancestor/home/link cascade; "project" grounds on the request namespace only (no cascade); "everywhere" is "full" plus the request namespace's subtree. "exact" and "subtree" are deprecated aliases ("exact" → "project", "subtree" → "everywhere"). Any other value is rejected with 400. Reaches parity with the MCP `memory_answer` tool's `scope` argument.
+             * @description Selects the grounding read set shape, same vocabulary as the recall `scope`: "full" (default) grounds on the request namespace plus its ancestor/home/link cascade; "project" grounds on the request namespace only (no cascade); "everywhere" is "full" plus the request namespace's subtree. "exact" and "subtree" are deprecated aliases ("exact" → "project", "subtree" → "everywhere"). Any other value is rejected with 400. Reaches parity with the MCP `memory_answer` tool's `scope` argument.
              * @default full
              * @enum {string}
              */
@@ -799,7 +799,7 @@ export interface components {
         };
         Briefing: {
             namespace: string;
-            /** @description A human-readable one-line summary of which namespaces this briefing drew from (its resolved read-set scope), e.g. "Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2), +1 link" — primary first, then each cascade leg that contributed durable memories (nearest ancestor first, home last, counts per leg), then a "+K link(s)" suffix for contributing links. */
+            /** @description A human-readable one-line summary of which namespaces this briefing drew from (its resolved read set scope), e.g. "Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2), +1 link" — primary first, then each cascade leg that contributed durable memories (nearest ancestor first, home last, counts per leg), then a "+K link(s)" suffix for contributing links. */
             scope_header?: string | null;
             /** @description Durable semantic facts, highest-retention first. */
             facts?: components["schemas"]["BriefingItem"][];
@@ -869,7 +869,7 @@ export interface components {
             links: components["schemas"]["NamespaceLink"][];
         };
         /**
-         * @description Why a namespace is in the read-set: "primary" is the request namespace (and its subtree, when expanded), "ancestor" is a path-prefix cascade leg, "home" is the caller's personal namespace, "link" is a stored namespace link, and "call" is an explicit per-call namespace.
+         * @description Why a namespace is in the read set: "primary" is the request namespace (and its subtree, when expanded), "ancestor" is a path-prefix cascade leg, "home" is the caller's personal namespace, "link" is a stored namespace link, and "call" is an explicit per-call namespace.
          * @enum {string}
          */
         ReadSetOrigin: "primary" | "ancestor" | "home" | "link" | "call";
@@ -1237,7 +1237,7 @@ export interface components {
             settings_sources: {
                 [key: string]: "default" | "global" | "key";
             };
-            /** @description The read-set `namespace` resolves to (same shape as GET /v1/namespaces/readset). */
+            /** @description The read set `namespace` resolves to (same shape as GET /v1/namespaces/readset). */
             read_set: components["schemas"]["ReadSetEntryItem"][];
             server: {
                 version: string;

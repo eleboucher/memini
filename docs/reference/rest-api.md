@@ -43,7 +43,7 @@ Inspect and repair how memories are partitioned. See [scopes](../scopes.md) for 
 | `GET /v1/namespaces` | List the distinct namespaces holding memories |
 | `GET /v1/namespaces/briefing` | Layered session-start briefing for the request namespace |
 | `POST /v1/namespaces/move` | Relocate every memory in the request namespace to another namespace |
-| `GET /v1/namespaces/readset` | Resolve the structural read-set for the request namespace |
+| `GET /v1/namespaces/readset` | Resolve the structural read set for the request namespace |
 | `POST /v1/namespaces/split` | Split the request namespace by metadata keys |
 
 ## Configuration handshake
