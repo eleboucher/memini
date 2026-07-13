@@ -138,8 +138,8 @@ Where a host exposes explicit memory tools, the set is the same:
 `memory_recall`, `memory_list`, `memory_remember`, and **`memory_forget`**
 (permanently delete a wrong/outdated/poisoned memory by its id). Hermes
 and Open WebUI (Tools module) always expose them; Pi registers them natively via
-`pi.registerTool`; OpenClaw exposes them behind `expose_tools: true`; Claude
-Code / Codex get them from the MCP server. **opencode**
+`pi.registerTool`; OpenClaw registers them by default (set `expose_tools: false`
+to opt out); Claude Code / Codex get them from the MCP server. **opencode**
 is the exception: its native plugin is deliberately tool-free (automatic recall +
 capture only), so to give it `memory_forget` (or any tool) wire the memini MCP
 server alongside the plugin.

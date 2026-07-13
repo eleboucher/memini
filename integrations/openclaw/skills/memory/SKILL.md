@@ -22,9 +22,10 @@ tool to call.
 Do not mix the two. The plugin namespaces memory per agent by default
 (`{namespace}-{agent}`), and the curl calls below cannot see that — they send the
 base `$MEMINI_NAMESPACE`, so a fact written by curl lands somewhere the plugin's
-own recall will never look. If the plugin is installed but its tools are not
-exposed, ask the operator to set `expose_tools: true` rather than reaching for
-curl.
+own recall will never look. The plugin registers its tools by default, so if it
+is installed you should have them; if it is installed and you do not (the
+operator set `expose_tools: false`), say so rather than silently curling into the
+wrong namespace.
 
 The rest of this file assumes the no-plugin install.
 

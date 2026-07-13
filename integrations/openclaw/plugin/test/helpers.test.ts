@@ -93,7 +93,7 @@ test("resolveConfig: defaults match the documented contract", () => {
   assert.deepEqual(cfg.system_kinds, ["heartbeat", "cron"]);
   assert.equal(cfg.fallback_on_error, true);
   assert.equal(cfg.timeout_ms, 5000);
-  assert.equal(cfg.expose_tools, false);
+  assert.equal(cfg.expose_tools, true);
   assert.equal(cfg.recall_limit, 3);
 });
 

@@ -178,9 +178,14 @@ export function resolveConfig(
         : DEFAULT_SYSTEM_KINDS,
     fallback_on_error: c.fallback_on_error !== false,
     timeout_ms: c.timeout_ms || DEFAULT_TIMEOUT_MS,
-    // Off by default: the slot already recalls/captures automatically; tools are
-    // opt-in for agents that want to read/browse/write on demand.
-    expose_tools: c.expose_tools === true,
+    // On by default. The memory slot's automatic recall/capture cannot express
+    // the levers the tools carry — scope (how wide to read), visibility (who
+    // should know a fact), and the session briefing with its ancestor Scope
+    // line. Without the tools an agent here simply does not have those
+    // capabilities, and the curl-based memory skill is the only fallback — which
+    // sends the BASE namespace and so silently misses per-agent memory. Set
+    // expose_tools:false to restore the pre-0.6.9 slot-only surface.
+    expose_tools: c.expose_tools !== false,
     // Per-call recall knobs. 0 / unset falls back to the defaults below.
     //
     // recall_limit defaults to 3 (was 5): the count cap is the lever that bounds

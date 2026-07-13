@@ -257,9 +257,14 @@ test("shouldSkipSystemTurn honors a custom system_kinds set", () => {
 
 // --- explicit tools (expose_tools) -----------------------------------------
 
-test("expose_tools is off by default", () => {
-  assert.equal(resolveConfig(undefined).expose_tools, false);
+// On by default as of 0.6.9. The slot's automatic recall/capture cannot express
+// scope, visibility, or the briefing's ancestor Scope line — without the tools an
+// agent here does not have those capabilities at all. Opting out stays possible.
+test("expose_tools is on by default and can still be turned off explicitly", () => {
+  assert.equal(resolveConfig(undefined).expose_tools, true);
+  assert.equal(resolveConfig({}).expose_tools, true);
   assert.equal(resolveConfig({ expose_tools: true }).expose_tools, true);
+  assert.equal(resolveConfig({ expose_tools: false }).expose_tools, false);
 });
 
 // OpenClaw rejects a register() that returns a thenable ("plugin register must be
@@ -287,10 +292,10 @@ test("register is synchronous even with expose_tools on (OpenClaw contract)", ()
   assert.deepEqual(names.sort(), ["memory_briefing", "memory_forget", "memory_list", "memory_recall", "memory_remember"]);
 });
 
-test("register does not touch registerTool when expose_tools is off", async () => {
+test("register does not touch registerTool when expose_tools is explicitly off", async () => {
   let registered = 0;
   await plugin.register({
-    pluginConfig: { enabled: true },
+    pluginConfig: { enabled: true, expose_tools: false },
     registerMemoryCapability() {}, registerHook() {},
     on() {},
     logger: {},
@@ -301,10 +306,12 @@ test("register does not touch registerTool when expose_tools is off", async () =
   assert.equal(registered, 0, "no tools should register when expose_tools is off");
 });
 
-test("register wires the memory tools when expose_tools is on", async () => {
+// The default path: a config that never mentions expose_tools still gets the
+// tools, because scope/visibility/briefing exist nowhere else on this harness.
+test("register wires the memory tools with no expose_tools in the config at all", async () => {
   const names = [];
   await plugin.register({
-    pluginConfig: { enabled: true, expose_tools: true },
+    pluginConfig: { enabled: true },
     registerMemoryCapability() {}, registerHook() {},
     on() {},
     logger: { warn() {} },
