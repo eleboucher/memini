@@ -162,6 +162,7 @@ function render(report) {
   ]);
   renderKnobs(L, settings.settings, "CAPTURE", [
     "MEMINI_CAPTURE_TURNS",
+    "MEMINI_SESSION_DIGEST",
     "MEMINI_INLINE_EXTRACT",
     "MEMINI_AUTO_SAVE",
     "MEMINI_AUTO_SAVE_INTERVAL",

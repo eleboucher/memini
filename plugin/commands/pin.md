@@ -3,8 +3,17 @@ description: Pin a memini memory so it surfaces in every session briefing
 argument-hint: "<memory id, or a description of the memory>"
 ---
 
-Pin a memory so it is injected into **every** future session briefing, is exempt
-from confidence decay, and is never dropped by the injection token budget.
+Pin a memory so it is always surfaced in the session briefing and is exempt from
+**retro-tiering demotion** (a pinned durable fact is never demoted back down a
+tier when it goes unused).
+
+Two things pinning does _not_ do, so don't promise them:
+
+- It does not stop **confidence decay**. An unused pinned fact still loses
+  confidence; pinning only spares it the demotion that would otherwise follow.
+- It is not immune to the **injection token budget**. Pinned is dropped _last_,
+  not never: if the pinned block alone exceeds `MEMINI_INJECT_BRIEFING_MAX_TOK`,
+  its tail entries are still trimmed.
 
 Target: $ARGUMENTS
 
@@ -25,8 +34,8 @@ Steps:
 
 To **unpin**, do the same but pass the existing tags _minus_ `"pinned"`.
 
-Then tell the user what is now pinned and warn them if the pinned set is getting
+Then tell the user what is now pinned, and warn them if the pinned set is getting
 large: the briefing's pinned budget defaults to 5 (`MEMINI_INJECT_BRIEFING_PINNED`),
-so pinning more than that means some pins stop surfacing — and which ones drop is
+so pinning more than that means some pins stop surfacing, and which ones drop is
 not something the user chose. Pins are for durable identity and preferences, not
 for anything merely important.

@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, basename } from "node:path";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
@@ -474,6 +474,83 @@ test("resolveProject: a non-default config.template reshapes the namespace", asy
   );
 });
 
+test("session-start.mjs: an empty namespace still gets the memory directive", async () => {
+  // The bug this pins: the hook used to return early when the briefing came back
+  // empty, BEFORE emitting MEMORY_INSTRUCTION. So a brand-new project — one with
+  // no memories at all — was the one place the agent was never told to save any.
+  // The directive was present in every session except the ones where it mattered
+  // most, and nothing surfaced that.
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ namespace: "memini", pinned: [], facts: [], procedures: [], recent: [] }));
+  });
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "empty1", cwd: __dirname }),
+      { MEMINI_URL: url, XDG_CACHE_HOME: freshCache() },
+    );
+    assert.doesNotMatch(stdout, /<memini-context/, "nothing to inject, so no context block");
+    assert.match(stdout, /memini-memory-directive/, "but the save directive must still be emitted");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: an unreachable server still gets the memory directive", async () => {
+  // Same reasoning: a server that is down should degrade to "no context", not to
+  // "and also stop saving".
+  const { stdout } = await runHook(
+    "session-start.mjs",
+    JSON.stringify({ session_id: "down1", cwd: __dirname }),
+    { MEMINI_URL: "http://127.0.0.1:1", XDG_CACHE_HOME: freshCache() }, // nothing listening
+  );
+  assert.match(stdout, /memini-memory-directive/);
+});
+
+test("session-start.mjs: emits the briefing Scope line the MCP tools tell the model to read", async () => {
+  // serverInstructions and memory_remember's schema both tell the model to name
+  // an ancestor for `visibility` by reading it "off the briefing Scope line".
+  // The hook used to drop scope_header, so the model was directed to read a line
+  // it was never shown, making visibility:"<ancestor>" unreachable in practice.
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify({
+        namespace: "memini",
+        scope_header: "Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4)",
+        pinned: [],
+        facts: [{ content: "convention: use tabs" }],
+        procedures: [],
+        recent: [],
+      }),
+    );
+  });
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "scope1", cwd: __dirname }),
+      // A fresh cache per run. Without it the briefing-hash written by an earlier
+      // run of this suite makes SessionStart take its "unchanged, skip
+      // re-injection" path, and the test passes or fails depending on whether you
+      // ran it before.
+      { MEMINI_URL: url, XDG_CACHE_HOME: freshCache() },
+    );
+    assert.match(stdout, /Scope: acme\/phoenix\/api ← acme\/phoenix\(3\) ← acme\(4\)/);
+  } finally {
+    await close();
+  }
+});
+
+test("MEMORY_INSTRUCTION tells the agent about visibility, not just tier", async () => {
+  // It is the only memini text injected into EVERY session. Without a visibility
+  // line the model defaults to "project", so a user preference ("I prefer tabs")
+  // is stranded in this repo instead of following the user to the next one.
+  const { MEMORY_INSTRUCTION } = await import("./_shared.mjs");
+  assert.match(MEMORY_INSTRUCTION, /visibility/);
+  assert.match(MEMORY_INSTRUCTION, /personal/);
+});
+
 test("session-start.mjs: fetches the briefing with right namespace, writes context to stdout", async () => {
   const hits = [];
   const { url, close } = await startMockServer((req, res, body) => {
@@ -627,6 +704,62 @@ test("post-tool-use.mjs: buffers state-changing tools, never POSTs", async () =>
   } finally {
     await close();
   }
+});
+
+test("MEMINI_SESSION_DIGEST=0 stops every session-digest write", async () => {
+  // Session digests are activity records ("edited X, ran Y"), not knowledge.
+  // Useful for "what was I doing here last week"; pure noise for anyone who wants
+  // memini to hold only durable facts, since every session adds a memory that
+  // will never answer a question and dilutes recall. So: a knob, not a default
+  // change. This pins that the knob reaches ALL of the write sites, not just the
+  // obvious one — the Stop checkpoint and the PreCompact rescue are the same
+  // digest and must go with it.
+  const cache = freshCache();
+  const off = { XDG_CACHE_HOME: cache, MEMINI_SESSION_DIGEST: "0" };
+
+  // PostToolUse must not even buffer: nothing will ever read it.
+  await runHook(
+    "post-tool-use.mjs",
+    JSON.stringify({ session_id: "d0", cwd: __dirname, tool_name: "Edit", tool_input: { file_path: "a.go" } }),
+    off,
+  );
+  assert.equal(
+    existsSync(join(cache, "memini", "sessions", "d0.jsonl")),
+    false,
+    "must not write the session buffer when nothing will consume it",
+  );
+
+  const hits = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    hits.push({ url: req.url, body });
+    res.setHeader("Content-Type", "application/json");
+    res.statusCode = 201;
+    res.end(JSON.stringify({ id: "m1" }));
+  });
+
+  try {
+    const env = { ...off, MEMINI_URL: url, MEMINI_CAPTURE_TURNS: "0", MEMINI_AUTO_SAVE: "0" };
+    const payload = JSON.stringify({ session_id: "d0", cwd: __dirname, reason: "user_exit" });
+
+    await runHook("session-end.mjs", payload, env);
+    await runHook("stop.mjs", payload, env);
+    await runHook("pre-compact.mjs", payload, env);
+
+    assert.deepEqual(hits, [], "no digest, no checkpoint, no pre-compact rescue");
+  } finally {
+    await close();
+  }
+});
+
+test("session digests are still on by default", async () => {
+  // The knob is opt-out. Guard against it silently becoming opt-in.
+  const cache = freshCache();
+  await runHook(
+    "post-tool-use.mjs",
+    JSON.stringify({ session_id: "d1", cwd: __dirname, tool_name: "Edit", tool_input: { file_path: "a.go" } }),
+    { XDG_CACHE_HOME: cache },
+  );
+  assert.equal(existsSync(join(cache, "memini", "sessions", "d1.jsonl")), true);
 });
 
 test("session-end.mjs: distills buffered events into one digest", async () => {

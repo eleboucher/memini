@@ -548,10 +548,32 @@ export function intEnv(name, defaultValue) {
  * false; anything else is true. Lets a feature ship default-on while staying
  * opt-out via MEMINI_FOO=0.
  */
-export function envEnabled(name, defaultOn) {
-  const raw = process.env[name];
+export function envEnabled(name, defaultOn, env = process.env) {
+  const raw = env[name];
   if (raw == null || raw === "") return defaultOn;
   return !/^(0|false|no|off)$/i.test(String(raw).trim());
+}
+
+/**
+ * sessionDigestEnabled reports whether the lifecycle hooks should record session
+ * digests at all: the SessionEnd episodic digest ("edited X and Y, ran Z"), the
+ * Stop working-tier checkpoint, and the PreCompact emergency checkpoint. All
+ * three are the same distilled buffer, so one switch governs them.
+ *
+ * On by default. Set MEMINI_SESSION_DIGEST=0 to turn them off.
+ *
+ * These are activity records, not knowledge. They are genuinely useful for "what
+ * was I doing in this repo last week", and genuinely noise for anyone who only
+ * wants memini to hold durable facts — for them every session adds a memory that
+ * will never answer a question, and dilutes recall. That is a preference, not a
+ * bug, so it gets a knob rather than a default change.
+ *
+ * Distinct from MEMINI_CAPTURE_TURNS (per-turn user→assistant capture) and
+ * MEMINI_INLINE_EXTRACT (the directive asking the agent to save durable facts);
+ * turning digests off leaves both of those alone.
+ */
+export function sessionDigestEnabled(env = process.env) {
+  return envEnabled("MEMINI_SESSION_DIGEST", true, env);
 }
 
 /**
@@ -972,6 +994,11 @@ Rules:
 - tier: "semantic" for facts, decisions, and preferences; "procedural"
   for how-tos and commands. Tag a critical, always-relevant fact "pinned"
   so it surfaces in every session briefing.
+- visibility: "personal" for anything true of the USER wherever they go
+  (their preferences, their habits, how they like to work); "project"
+  (the default) for anything specific to this codebase. Getting this
+  wrong is the common failure: a preference saved as "project" is stranded
+  here and will not follow them to their next repo.
 - Save nothing when nothing is worth keeping. This is reference memory,
   not scratch space: prefer quality over quantity, and skip anything
   already in CLAUDE.md or project docs.

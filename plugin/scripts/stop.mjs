@@ -17,6 +17,7 @@ import {
   resolveProject,
   writeNamespace,
   writeSessionCwd,
+  sessionDigestEnabled,
   postRemember,
   readSessionEvents,
   buildSessionDigest,
@@ -152,7 +153,9 @@ async function main() {
     console.error(`[memini] Stop project=${project} session=${sessionId} events=${digest?.count || 0}`);
 
   // No buffered events → nothing to checkpoint; a bare marker is just noise.
-  if (digest && hasSessionIdentity)
+  // MEMINI_SESSION_DIGEST=0 → no activity records at all (this checkpoint is the
+  // crash-safety copy of the SessionEnd digest, so it goes with it).
+  if (digest && hasSessionIdentity && sessionDigestEnabled())
     await postRemember(digest.content, project, {
       tier: "working",
       tags: ["stop-checkpoint", project],

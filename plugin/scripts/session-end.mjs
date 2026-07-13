@@ -15,6 +15,7 @@ import {
   buildSessionDigest,
   deleteSessionBuffer,
   deleteSessionCwd,
+  sessionDigestEnabled,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -36,7 +37,8 @@ async function main() {
   // No session identity → no write either: a digest tagged session_id:"unknown"
   // shares one exclusion bucket with every other unknown-id session, so
   // cross-session rows would echo into each other.
-  if (digest && sessionId !== "unknown") {
+  // MEMINI_SESSION_DIGEST=0 → the operator does not want activity records at all.
+  if (digest && sessionId !== "unknown" && sessionDigestEnabled()) {
     await postRemember(digest.content, project, {
       tier: "episodic",
       tags: ["session-marker", project],

@@ -224,6 +224,7 @@ var CLIENT_KNOBS = [
   { name: "MEMINI_HOME", kind: "string", default: "", usedBy: "hooks + MCP", description: 'personal namespace; required for visibility:"personal" writes' },
   // Capture
   { name: "MEMINI_CAPTURE_TURNS", kind: "bool", default: "on", usedBy: "hooks", description: "capture each user\u2192assistant turn as episodic memory" },
+  { name: "MEMINI_SESSION_DIGEST", kind: "bool", default: "on", usedBy: "hooks", description: "record session digests (files edited, commands run); 0 to keep memory to durable facts only" },
   { name: "MEMINI_INLINE_EXTRACT", kind: "bool", default: "on", usedBy: "hooks", description: "inject the memory-save directive at SessionStart" },
   { name: "MEMINI_AUTO_SAVE", kind: "bool", default: "on", usedBy: "hooks", description: "periodic auto-save nudge on Stop" },
   { name: "MEMINI_AUTO_SAVE_INTERVAL", kind: "int", default: "10", usedBy: "hooks", description: "user messages between auto-save nudges" },

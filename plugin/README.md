@@ -59,6 +59,36 @@ real memories out of the box — not just session digests:
 
 Plus 3 skills (`remember`, `recall`, `recap`) the agent invokes directly.
 
+### Turning session digests off (`MEMINI_SESSION_DIGEST=0`)
+
+Session digests are **activity records**, not knowledge: "edited `auth.go` (3), ran
+`go test ./...`". They answer "what was I doing in this repo last week", which is
+genuinely useful to some people and pure noise to others. If you want memini to
+hold only durable facts, every session otherwise adds a memory that will never
+answer a question and quietly dilutes recall.
+
+```sh
+export MEMINI_SESSION_DIGEST=0
+```
+
+That switches off all four write sites at once, since they are the same distilled
+buffer: the `SessionEnd` episodic digest, the `Stop` working-tier checkpoint, the
+`PreCompact` rescue copy, and the `PostToolUse` buffering that feeds them (with
+digests off, nothing would ever read the buffer, so the hot-path write is skipped
+too).
+
+It is deliberately separate from the two knobs it is easy to confuse it with:
+
+| Knob                    | What it controls                                            |
+| ----------------------- | ----------------------------------------------------------- |
+| `MEMINI_SESSION_DIGEST` | Activity records: what you edited and ran                   |
+| `MEMINI_CAPTURE_TURNS`  | Each user→assistant turn, stored as episodic memory         |
+| `MEMINI_INLINE_EXTRACT` | The directive asking the agent to save durable facts itself |
+
+Turning digests off leaves the other two alone, so the agent keeps saving decisions
+and conventions through `memory_remember`. `/memini:status` shows all three with
+their current values.
+
 ## Slash commands
 
 | Command             | What it does                                                                        |
@@ -262,6 +292,7 @@ server is detached from the agent's cwd.
 | `MEMINI_AUTO_SAVE`          | on                       | `Stop` hook           | set to `0` to disable the periodic auto-save nudge                                                       |
 | `MEMINI_AUTO_SAVE_INTERVAL` | `10`                     | `Stop` hook           | user messages between auto-save nudges                                                                   |
 | `MEMINI_CAPTURE_TURNS`      | on                       | `Stop` hook           | auto-capture each user→assistant turn as episodic memory; set to `0` to disable                          |
+| `MEMINI_SESSION_DIGEST`     | on                       | capture hooks         | record session digests (files edited, commands run); set to `0` to keep memory to durable facts only     |
 | `MEMINI_INLINE_EXTRACT`     | on                       | SessionStart + `Stop` | inject the memory-save directive (`memory_remember`) and scrape legacy `<memory>` blocks; `0` to disable |
 | `MEMINI_DEBUG`              | —                        | hooks                 | set to `1` for verbose hook logging                                                                      |
 

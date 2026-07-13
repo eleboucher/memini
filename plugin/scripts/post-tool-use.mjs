@@ -8,7 +8,14 @@
 // are surfaced live by PreToolUse and carry no recall value here. The matcher in
 // hooks.json already narrows the events; this is a defensive second filter.
 
-import { readStdin, parseJSON, readToolCall, appendSessionEvent, DEBUG } from "./_shared.mjs";
+import {
+  readStdin,
+  parseJSON,
+  readToolCall,
+  appendSessionEvent,
+  sessionDigestEnabled,
+  DEBUG,
+} from "./_shared.mjs";
 
 const FILE_KEYS = ["filePath", "file_path", "path", "file", "pattern"];
 const RECORDED = new Set(["edit", "multiedit", "write", "bash", "notebookedit", "agent", "task", "apply_patch"]);
@@ -71,6 +78,11 @@ async function main() {
   // Mark failures (the harness's error flag) so the session digest can surface
   // failed→fixed command sequences for the distiller to mine.
   if (payload.tool_response?.is_error || payload.is_error) event.failed = true;
+
+  // The buffer exists only to be distilled into a session digest. With
+  // MEMINI_SESSION_DIGEST=0 nothing will ever read it, so don't pay the write
+  // on this hot path (PostToolUse fires on every state-changing tool call).
+  if (!sessionDigestEnabled()) return;
 
   appendSessionEvent(sessionId, event);
 }
