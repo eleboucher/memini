@@ -1489,6 +1489,42 @@ test("pre-tool-use.mjs: changed recall results re-inject even for the same file"
   }
 });
 
+test("pre-tool-use.mjs: content changed only past the 240-char render cap still re-injects (untruncated fingerprint)", async () => {
+  // Regression: the fingerprint once hashed truncate(content, 240) — the
+  // render budget leaking into identity — so an in-place memory_update that
+  // changed only the tail hashed identically and the changed injection was
+  // wrongly suppressed. The hash must cover FULL content.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const head = "x".repeat(240); // identical first 240 chars both times
+  let calls = 0;
+  const { url, close } = await startMockServer((req, res) => {
+    calls++;
+    res.setHeader("Content-Type", "application/json");
+    const content = head + (calls === 1 ? " tail-before-update" : " tail-after-update");
+    res.end(JSON.stringify({ results: [{ memory: { id: "m1", content }, score: 0.9 }] }));
+  });
+  try {
+    const payload = JSON.stringify({
+      session_id: "tail1",
+      cwd: __dirname,
+      tool_name: "Read",
+      tool_input: { file_path: "internal/auth.go" },
+    });
+    const first = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    assert.match(first.stdout, /<memini-pretool[^>]*>/, "first call must inject");
+
+    const second = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    assert.match(
+      second.stdout,
+      /<memini-pretool[^>]*>/,
+      "same id with content changed only past char 240 is a REAL change and must re-inject",
+    );
+  } finally {
+    await close();
+  }
+});
+
 test("pre-tool-use.mjs: different files with identical result sets both inject (per-file map)", async () => {
   const cache = freshCache();
   await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));

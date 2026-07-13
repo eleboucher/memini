@@ -157,9 +157,13 @@ async function main() {
     // rendered bullet text or the outer <memini-pretool tool="..."> wrapper —
     // so it can't drift when the tool name or the display template changes.
     if (dedupe) {
+      // Full, UNTRUNCATED content: in-place updates (memory_update) can change
+      // a memory's tail past any render cap, so a truncated hash would
+      // suppress a genuinely-changed injection. Truncation is a display
+      // budget, not identity.
       const fingerprintInput = JSON.stringify({
         file: f,
-        items: hits.map((h) => ({ id: h.memory?.id || null, content: truncate(h.content || h.summary || "", 240) })),
+        items: hits.map((h) => ({ id: h.memory?.id || null, content: h.content || h.summary || "" })),
       });
       const hash = crypto.createHash("sha256").update(fingerprintInput).digest("hex");
       if (lastRecall[f]?.hash === hash) {
