@@ -1305,14 +1305,18 @@ const plugin: {
     // Echo guard: track IDs this namespace just captured so the next recall can
     // drop them. Keyed by namespace (agent identity) not session, because the
     // session id can be absent/rolled at recall while the namespace is stable.
-    // Bounded: oldest captures age out and become recallable again.
-    const recentlyCaptured = new Map<string, Set<string>>();
-    const MAX_CAPTURED_PER_NS = 5;
+    // Time-based, mirroring the server's fresh-turn window: a capture ages back
+    // into recall once it stops being live context, regardless of how many
+    // captures followed it (a count-aged guard lets a fresh burst wider than
+    // the count slip through). The count cap is only a memory bound.
+    const recentlyCaptured = new Map<string, Map<string, number>>();
+    const CAPTURED_ECHO_WINDOW_MS = 5 * 60_000;
+    const MAX_CAPTURED_PER_NS = 50;
     const MAX_CAPTURED_NAMESPACES = 200;
     const rememberCaptured = (ns: string, id: string) => {
       let seen = recentlyCaptured.get(ns);
       if (!seen) {
-        seen = new Set<string>();
+        seen = new Map<string, number>();
         recentlyCaptured.set(ns, seen);
         while (recentlyCaptured.size > MAX_CAPTURED_NAMESPACES) {
           const oldest = recentlyCaptured.keys().next().value;
@@ -1320,12 +1324,24 @@ const plugin: {
           recentlyCaptured.delete(oldest);
         }
       }
-      seen.add(id);
+      seen.set(id, Date.now());
       while (seen.size > MAX_CAPTURED_PER_NS) {
-        const oldest = seen.values().next().value;
+        const oldest = seen.keys().next().value;
         if (oldest === undefined) break;
         seen.delete(oldest);
       }
+    };
+    // Fresh captured ids for a namespace, pruning aged-out entries as it reads.
+    const freshCaptured = (ns: string): Set<string> => {
+      const fresh = new Set<string>();
+      const seen = recentlyCaptured.get(ns);
+      if (!seen) return fresh;
+      const cutoff = Date.now() - CAPTURED_ECHO_WINDOW_MS;
+      for (const [id, at] of seen) {
+        if (at < cutoff) seen.delete(id);
+        else fresh.add(id);
+      }
+      return fresh;
     };
 
     // /v1/search drops exclude_ids before ranking and the limit, so an
@@ -1369,16 +1385,16 @@ const plugin: {
       // and the session-id exclusion (misses when session id is absent/rolled).
       // Already-shown and just-captured ids go along as exclude_ids so a
       // suppressed hit doesn't waste a recall_limit slot.
+      const captured = freshCaptured(ns);
       const excludeIds = [
         ...(session ? (injectedBySession.get(session) ?? []) : []),
-        ...(recentlyCaptured.get(ns) ?? []),
+        ...captured,
       ];
       const result = await searchExcluding(ns, body, excludeIds);
       let results = Array.isArray(result?.results) ? result.results : [];
       // Drop just-captured turns: they're live context, not long-term memory.
       // Survives session-id asymmetry (keyed by stable namespace).
-      const captured = recentlyCaptured.get(ns);
-      if (captured?.size) results = results.filter((r: any) => !captured.has(r?.memory?.id));
+      if (captured.size) results = results.filter((r: any) => !captured.has(r?.memory?.id));
       // Suppress memories this session has already been shown so a multi-step
       // turn doesn't re-inject the same block on every tool call (#21).
       if (session) {

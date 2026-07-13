@@ -596,6 +596,55 @@ test("recall sends exclude_ids and falls back when the server rejects them", asy
   }
 });
 
+// The capture echo guard is time-based: a fresh burst wider than any count cap
+// is fully suppressed, and captures age back into recall by time.
+test("capture echo guard suppresses a fresh burst and ages out by time", async () => {
+  const hooks = {};
+  const realFetch = globalThis.fetch;
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow.call(Date) + skew;
+  let writes = 0;
+  globalThis.fetch = async (url) => {
+    const body = String(url).endsWith("/v1/search")
+      ? {
+          results: Array.from({ length: 10 }, (_, k) => ({
+            memory: { id: `cap-${k}`, summary: `turn ${k}`, tier: "episodic", metadata: { format: "turn" } },
+            score: 0.9,
+          })),
+        }
+      : { id: `cap-${writes++}` };
+    return { ok: true, async json() { return body; }, async text() { return ""; } };
+  };
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    // A burst of 10 captures across sessions of the same agent.
+    for (let k = 0; k < 10; k++) {
+      await hooks.agent_end(
+        { success: true, messages: [{ role: "user", content: `q${k}` }, { role: "assistant", content: `a${k}` }] },
+        { sessionId: `sess-${k}` },
+      );
+    }
+    // All 10 are fresh: none may echo, even beyond a small count cap.
+    const during = await hooks.before_prompt_build({ prompt: "q" }, {});
+    assert.equal(during, undefined, "a fresh capture burst must not echo");
+    // Past the window they are long-term memory again.
+    skew = 6 * 60_000;
+    const after = await hooks.before_prompt_build({ prompt: "q" }, {});
+    assert.ok(after, "aged-out captures must be recallable again");
+    assert.match(after.prependContext, /turn 0/);
+  } finally {
+    globalThis.fetch = realFetch;
+    Date.now = realNow;
+  }
+});
+
 test("recall uses before_prompt_build, not the deprecated before_agent_start", async () => {
   const hooks = {};
   await plugin.register({
