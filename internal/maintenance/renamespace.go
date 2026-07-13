@@ -86,6 +86,18 @@ func Move(ctx context.Context, st store.Store, fromNS, toNS string, dryRun bool)
 			return rep, err
 		}
 	}
+	// Project-map pins bind a project's identity (remote/toplevel) to a
+	// namespace, keyed by that project — not by memory ID — so Reassign never
+	// touches them either: rewrite any pin whose namespace is fromNS to toNS,
+	// on stores that support the capability. Same not-atomic-with-Reassign,
+	// partial-progress-reporting convention as the link and API-key renames
+	// above (rep.Moved is already recorded), so a handshake for a moved project
+	// keeps resolving to the memories rather than being orphaned at the old name.
+	if pms, ok := st.(store.ProjectMapStore); ok {
+		if err := pms.RenameProjectMapNamespaces(ctx, fromNS, toNS); err != nil {
+			return rep, err
+		}
+	}
 	return rep, nil
 }
 
