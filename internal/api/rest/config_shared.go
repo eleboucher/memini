@@ -25,6 +25,12 @@ const (
 	settingsSourceKey     = "key"
 )
 
+// eventDetailLayer is the LogConfigEvent detail key naming which settings
+// layer changed (settingsSourceGlobal or settingsSourceKey), shared by
+// settingsdefaults.go, selfsettings.go and apikeys.go's settings-editing
+// handlers so the three don't each repeat the literal "layer".
+const eventDetailLayer = "layer"
+
 // projectMapStore type-asserts the backing store to store.ProjectMapStore, the
 // optional capability the project-map pins need (keyStore/linkStore's
 // precedent). Returns false — a 501 to the caller — for a driver that predates

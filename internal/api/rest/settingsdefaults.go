@@ -72,7 +72,7 @@ func (h *Server) PutSettingsDefaults(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, statusFor(err), err)
 		return
 	}
-	h.svc.LogConfigEvent(r.Context(), store.EventSettings, "", map[string]any{"layer": "global"})
+	h.svc.LogConfigEvent(r.Context(), store.EventSettings, "", map[string]any{eventDetailLayer: settingsSourceGlobal})
 	// Echo the stored globals merged over the built-ins so the response is a
 	// fully resolved ClientSettings (every field present), matching GET minus
 	// managed_by (the PUT response schema is a plain ClientSettings).

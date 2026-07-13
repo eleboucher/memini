@@ -59,6 +59,10 @@ func apiKeyModel(k store.APIKey, source ApiKeySource) ApiKey {
 	if k.DefaultNS != "" {
 		out.DefaultNamespace = &k.DefaultNS
 	}
+	if k.Settings != (store.ClientSettings{}) {
+		s := clientSettingsToAPI(k.Settings)
+		out.Settings = &s
+	}
 	return out
 }
 
@@ -79,6 +83,10 @@ func apiKeyWithSecretModel(k store.APIKey, source ApiKeySource, secret string) A
 	}
 	if k.DefaultNS != "" {
 		out.DefaultNamespace = &k.DefaultNS
+	}
+	if k.Settings != (store.ClientSettings{}) {
+		s := clientSettingsToAPI(k.Settings)
+		out.Settings = &s
 	}
 	return out
 }
@@ -292,6 +300,21 @@ func (h *Server) UpdateApiKey(w http.ResponseWriter, r *http.Request, name strin
 	if req.Disabled != nil {
 		updated.Disabled = *req.Disabled
 	}
+	// Settings: absent (nil) preserves the existing blob untouched (the same
+	// preserve-unspecified convention as home/default_namespace/disabled
+	// above); present REPLACES it wholesale -- full-replace, not a merge, so
+	// a field left out of the new blob re-inherits the global/default layers
+	// rather than surviving from the old blob -- matching PUT
+	// /v1/self/settings's full-replace semantics (selfsettings.go).
+	settingsChanged := req.Settings != nil
+	if settingsChanged {
+		settings := clientSettingsFromAPI(*req.Settings)
+		if err := settings.Validate(); err != nil {
+			httputil.Error(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		updated.Settings = settings
+	}
 	if err := ks.PutAPIKey(r.Context(), updated); err != nil {
 		writeError(w, r, statusFor(err), err)
 		return
@@ -302,6 +325,14 @@ func (h *Server) UpdateApiKey(w http.ResponseWriter, r *http.Request, name strin
 	// even though the emptiness reading itself is unaffected by an update
 	// that neither adds nor removes a row.
 	h.auth.keyAuth.Invalidate()
+	if settingsChanged {
+		// Same detail shape and namespace attribution ("" -- a per-key
+		// settings edit isn't scoped to a namespace) as PUT
+		// /v1/self/settings's own LogConfigEvent call; the "key_name" here is
+		// the admin-supplied target rather than the caller's own name, since
+		// the two endpoints edit different keys' settings.
+		h.svc.LogConfigEvent(r.Context(), store.EventSettings, "", map[string]any{"key_name": name, eventDetailLayer: settingsSourceKey})
+	}
 	httputil.JSON(w, http.StatusOK, apiKeyModel(updated, Db))
 }
 

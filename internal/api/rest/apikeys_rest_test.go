@@ -50,12 +50,13 @@ func newKeysTestServer(t *testing.T, adminKey, fileYAML string) (http.Handler, s
 }
 
 type apiKeyDTO struct {
-	Name             string     `json:"name"`
-	Home             string     `json:"home"`
-	DefaultNamespace string     `json:"default_namespace"`
-	CreatedAt        *time.Time `json:"created_at"`
-	Disabled         bool       `json:"disabled"`
-	Source           string     `json:"source"`
+	Name             string         `json:"name"`
+	Home             string         `json:"home"`
+	DefaultNamespace string         `json:"default_namespace"`
+	CreatedAt        *time.Time     `json:"created_at"`
+	Disabled         bool           `json:"disabled"`
+	Source           string         `json:"source"`
+	Settings         map[string]any `json:"settings"`
 }
 
 type apiKeyWithSecretDTO struct {
@@ -561,5 +562,234 @@ func TestDeleteApiKeyInvalidatesCacheImmediately(t *testing.T) {
 		t.Fatalf("ListAPIKeys: %v", err)
 	} else if len(keys) != 0 {
 		t.Fatalf("key should be gone, got %+v", keys)
+	}
+}
+
+// --- Per-key settings (escaped defect: apiKeyModel/UpdateApiKey ignored
+// store.APIKey.Settings even though the spec's ApiKey/UpdateApiKeyRequest
+// schemas both carry the field) ---------------------------------------------
+
+// TestListApiKeysIncludesSettings pins that GET /v1/keys surfaces a key's
+// per-key settings override -- including a non-integral min-score value,
+// which crosses the store's float64 <-> the wire's float32 boundary (see
+// config_shared.go's float64PtrToFloat32) -- and that a key with no override
+// at all omits the field entirely, exactly like home/default_namespace.
+func TestListApiKeysIncludesSettings(t *testing.T) {
+	h, _ := newConfigServer(t, "admin-secret", "", nil)
+	rec := do(t, h, http.MethodPost, "/v1/keys", "", "admin-secret", map[string]any{"name": "withsettings"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("seed create: want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+	rec = do(t, h, http.MethodPatch, "/v1/keys/withsettings", "", "admin-secret", map[string]any{
+		"settings": map[string]any{"capture_turns": false, "inject_pretool_min_score": 0.3},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch settings: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	rec = do(t, h, http.MethodPost, "/v1/keys", "", "admin-secret", map[string]any{"name": "nosettings"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("seed create (no settings): want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	rec = do(t, h, http.MethodGet, "/v1/keys", "", "admin-secret", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var out struct {
+		Keys []apiKeyDTO `json:"keys"`
+	}
+	mustJSON(t, rec, &out)
+	byName := map[string]apiKeyDTO{}
+	for _, k := range out.Keys {
+		byName[k.Name] = k
+	}
+
+	got := byName["withsettings"]
+	if got.Settings == nil {
+		t.Fatal("GET /v1/keys must surface the key's settings override")
+	}
+	if v, _ := got.Settings["capture_turns"].(bool); v {
+		t.Errorf("capture_turns = %v, want false", got.Settings["capture_turns"])
+	}
+	if v, _ := got.Settings["inject_pretool_min_score"].(float64); v != 0.3 {
+		t.Errorf("inject_pretool_min_score = %v, want 0.3 (non-integral round trip)", got.Settings["inject_pretool_min_score"])
+	}
+	if byName["nosettings"].Settings != nil {
+		t.Errorf("key with no settings override should omit settings, got %+v", byName["nosettings"].Settings)
+	}
+}
+
+// TestUpdateApiKeySettingsReplaceFullyAndPreserveWhenOmitted pins the PATCH
+// settings contract end to end: a present settings object REPLACES the whole
+// stored blob (a field left out of the new blob is gone, not carried over --
+// it re-inherits the global/default layers), an absent settings field
+// preserves the existing blob untouched, an invalid blob is rejected 400
+// before any write, and each successful settings edit is activity-logged
+// (kind=settings), matching PUT /v1/self/settings.
+func TestUpdateApiKeySettingsReplaceFullyAndPreserveWhenOmitted(t *testing.T) {
+	h, _ := newConfigServer(t, "admin-secret", "", nil)
+	rec := do(t, h, http.MethodPost, "/v1/keys", "", "admin-secret", map[string]any{"name": "settingsbot"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("seed create: want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	// First PATCH: sets two fields.
+	rec = do(t, h, http.MethodPatch, "/v1/keys/settingsbot", "", "admin-secret", map[string]any{
+		"settings": map[string]any{"capture_turns": false, "recall_limit": 5},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first patch: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var out apiKeyDTO
+	mustJSON(t, rec, &out)
+	if v, _ := out.Settings["capture_turns"].(bool); v {
+		t.Errorf("capture_turns = %v, want false", out.Settings["capture_turns"])
+	}
+	if v, _ := out.Settings["recall_limit"].(float64); v != 5 {
+		t.Errorf("recall_limit = %v, want 5", out.Settings["recall_limit"])
+	}
+
+	// Second PATCH: a new blob that omits recall_limit -- full replace means
+	// it must be GONE (re-inherits), not carried over from the first PATCH.
+	// (A fresh DTO per decode: json.Unmarshal into an already-populated map
+	// MERGES keys rather than replacing them, which would mask exactly the
+	// bug this assertion exists to catch.)
+	rec = do(t, h, http.MethodPatch, "/v1/keys/settingsbot", "", "admin-secret", map[string]any{
+		"settings": map[string]any{"capture_turns": true},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second patch: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	out = apiKeyDTO{}
+	mustJSON(t, rec, &out)
+	if v, _ := out.Settings["capture_turns"].(bool); !v {
+		t.Errorf("capture_turns = %v, want true", out.Settings["capture_turns"])
+	}
+	if _, present := out.Settings["recall_limit"]; present {
+		t.Errorf("recall_limit should be gone after full-replace, got %v", out.Settings["recall_limit"])
+	}
+
+	// Third PATCH: no settings field at all (only disabled) -- the blob must
+	// survive completely unchanged.
+	rec = do(t, h, http.MethodPatch, "/v1/keys/settingsbot", "", "admin-secret", map[string]any{"disabled": true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("third patch: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	out = apiKeyDTO{}
+	mustJSON(t, rec, &out)
+	if v, _ := out.Settings["capture_turns"].(bool); !v {
+		t.Errorf("settings must be preserved when the PATCH omits them, capture_turns = %v, want true", out.Settings["capture_turns"])
+	}
+	if _, present := out.Settings["recall_limit"]; present {
+		t.Errorf("recall_limit should still be gone, got %v", out.Settings["recall_limit"])
+	}
+
+	// Invalid settings (auto_save_interval must be >= 1) -> 400, no write.
+	rec = do(t, h, http.MethodPatch, "/v1/keys/settingsbot", "", "admin-secret", map[string]any{
+		"settings": map[string]any{"auto_save_interval": 0},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid settings: want 400, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	// The two successful settings edits above are activity-logged (kind=settings).
+	rec = do(t, h, http.MethodGet, "/v1/activity?kind=settings&all_namespaces=true", "", "admin-secret", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("activity: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var act activityResponse
+	mustJSON(t, rec, &act)
+	if len(act.Events) != 2 {
+		t.Fatalf("settings activity events = %d, want 2 (one per successful settings PATCH), got %+v", len(act.Events), act.Events)
+	}
+	for _, ev := range act.Events {
+		if name, _ := ev.Detail["key_name"].(string); name != "settingsbot" {
+			t.Errorf("event detail.key_name = %q, want settingsbot", name)
+		}
+	}
+}
+
+// TestUpdateApiKeyFileKeySettingsRejected409 confirms the file-key PATCH
+// guard covers a settings-only edit too -- settings must flow through the
+// same 409 guard as every other field, no new bypass.
+func TestUpdateApiKeyFileKeySettingsRejected409(t *testing.T) {
+	h, _ := newKeysTestServer(t, "admin-secret", `
+keys:
+  - name: filebot
+    secret: "tok-filebot-settings"
+`)
+	rec := do(t, h, http.MethodPatch, "/v1/keys/filebot", "", "admin-secret", map[string]any{
+		"settings": map[string]any{"capture_turns": false},
+	})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("patch file key settings: want 409, got %d (%s)", rec.Code, rec.Body)
+	}
+}
+
+// TestSelfReflectsAdminPatchedSettings proves the whole loop: an admin PATCH
+// to a key's settings is what GET /v1/self (authenticated as that key) then
+// reports, with provenance "key" -- not merely what the PATCH response itself
+// echoes back.
+func TestSelfReflectsAdminPatchedSettings(t *testing.T) {
+	h, _ := newConfigServer(t, "admin-secret", "", nil)
+	rec := do(t, h, http.MethodPost, "/v1/keys", "", "admin-secret", map[string]any{"name": "selfbot"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("seed create: want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+	var created apiKeyWithSecretDTO
+	mustJSON(t, rec, &created)
+
+	rec = do(t, h, http.MethodPatch, "/v1/keys/selfbot", "", "admin-secret", map[string]any{
+		"settings": map[string]any{"capture_turns": false, "inject_pretool_min_score": 0.3},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch settings: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	rec = do(t, h, http.MethodGet, "/v1/self", "", created.Secret, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/self: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var self selfRespDTO
+	mustJSON(t, rec, &self)
+	if v, _ := self.Settings["capture_turns"].(bool); v {
+		t.Errorf("self capture_turns = %v, want false", self.Settings["capture_turns"])
+	}
+	if v, _ := self.Settings["inject_pretool_min_score"].(float64); v != 0.3 {
+		t.Errorf("self inject_pretool_min_score = %v, want 0.3", self.Settings["inject_pretool_min_score"])
+	}
+	if self.SettingsSources["capture_turns"] != "key" {
+		t.Errorf("capture_turns provenance = %q, want key", self.SettingsSources["capture_turns"])
+	}
+}
+
+// TestRotateApiKeyPreservesAndExposesSettings pins that ApiKeyWithSecret (the
+// create/rotate response shape) surfaces settings just like ApiKey does --
+// same schema via allOf in the spec, same underlying store.APIKey.Settings
+// field -- so rotate (which preserves a key's existing settings across the
+// secret swap) must not silently drop them from the response.
+func TestRotateApiKeyPreservesAndExposesSettings(t *testing.T) {
+	h, _ := newKeysTestServer(t, "admin-secret", "")
+	rec := do(t, h, http.MethodPost, "/v1/keys", "", "admin-secret", map[string]any{"name": "rotatebot"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("seed create: want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+	rec = do(t, h, http.MethodPatch, "/v1/keys/rotatebot", "", "admin-secret", map[string]any{
+		"settings": map[string]any{"capture_turns": false},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch settings: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	rec = do(t, h, http.MethodPost, "/v1/keys/rotatebot/rotate", "", "admin-secret", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rotate: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var rotated apiKeyWithSecretDTO
+	mustJSON(t, rec, &rotated)
+	if rotated.Settings == nil {
+		t.Fatal("rotate response must surface the preserved settings override")
+	}
+	if v, _ := rotated.Settings["capture_turns"].(bool); v {
+		t.Errorf("rotated capture_turns = %v, want false", rotated.Settings["capture_turns"])
 	}
 }
