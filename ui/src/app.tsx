@@ -10,6 +10,7 @@ import { Graph } from './views/Graph'
 import { Health } from './views/Health'
 import { Scopes } from './views/Scopes'
 import { Keys } from './views/Keys'
+import { Config } from './views/Config'
 import { Settings } from './views/Settings'
 import {
   IconProjects,
@@ -21,6 +22,7 @@ import {
   IconHealth,
   IconScopes,
   IconKey,
+  IconConfig,
   IconSettings,
   IconMoon,
   IconSun,
@@ -53,8 +55,9 @@ const NAV: {
   { path: '/graph', label: 'Graph', title: 'Relationship graph', Icon: IconGraph, component: Graph },
   { path: '/scopes', label: 'Scopes', title: 'Namespace scopes & links', Icon: IconScopes, component: Scopes },
   { path: '/keys', label: 'Keys', title: 'API keys', Icon: IconKey, component: Keys },
+  { path: '/config', label: 'Config', title: 'Server config', Icon: IconConfig, component: Config },
   { path: '/health', label: 'Health', title: 'Health & fsck', Icon: IconHealth, component: Health },
-  { path: '/settings', label: 'Settings', title: 'Settings', Icon: IconSettings, component: Settings },
+  { path: '/settings', label: 'UI settings', title: 'UI settings', Icon: IconSettings, component: Settings },
 ]
 
 export function App() {

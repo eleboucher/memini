@@ -9,7 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc",
-    "gen-api": "openapi-typescript ../api/openapi.yaml -o src/api-schema.gen.ts"
+    "gen-api": "node scripts/gen-catalog.mjs && openapi-typescript ../api/openapi.yaml -o src/api-schema.gen.ts"
   },
   "dependencies": {
     "@preact/signals": "^2.0.4",
