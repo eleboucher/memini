@@ -53,6 +53,8 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("NamespaceLinks", func(t *testing.T) { testNamespaceLinks(t, st, dims) })
 	t.Run("NamespaceActivity", func(t *testing.T) { testNamespaceActivity(t, st, dims) })
 	t.Run("APIKeys", func(t *testing.T) { testAPIKeys(t, st, dims) })
+	t.Run("ProjectMap", func(t *testing.T) { testProjectMap(t, st, dims) })
+	t.Run("ClientSettings", func(t *testing.T) { testClientSettings(t, st, dims) })
 	t.Run("ListSort", func(t *testing.T) { testListSort(t, st, dims) })
 	t.Run("MemoryTypeFilter", func(t *testing.T) { testMemoryTypeFilter(t, st, dims) })
 	t.Run("ListRecencyWindow", func(t *testing.T) { testListRecencyWindow(t, st, dims) })
@@ -2407,4 +2409,490 @@ func testAPIKeyDuplicateHash(t *testing.T, ks store.APIKeyStore, ns string) {
 func apiKeyHash(seed string) string {
 	sum := sha256.Sum256([]byte(seed))
 	return hex.EncodeToString(sum[:])
+}
+
+// testProjectMap covers store.ProjectMapStore, the config-handshake
+// redesign's project→namespace pin table. It is an optional capability
+// interface (the APIKeyStore precedent), so a driver that predates it skips
+// cleanly.
+func testProjectMap(t *testing.T, st store.Store, dims int) {
+	_ = dims // pins carry no embedding; kept for signature parity with the other subtests
+	pm, ok := st.(store.ProjectMapStore)
+	if !ok {
+		t.Skip("store does not implement store.ProjectMapStore")
+	}
+	ns := t.Name()
+	t.Run("UpsertRoundTripBothKeyKinds", func(t *testing.T) { testProjectMapRoundTrip(t, pm, ns) })
+	t.Run("UpdatePreservesCreatedAtAndCreatedBy", func(t *testing.T) { testProjectMapUpdatePreservesCreated(t, pm, ns) })
+	t.Run("DeleteReturnsAccurateCount", func(t *testing.T) { testProjectMapDelete(t, pm, ns) })
+	t.Run("ListStableOrder", func(t *testing.T) { testProjectMapListOrder(t, pm, ns) })
+	t.Run("RenameExactMatchOnly", func(t *testing.T) { testProjectMapRename(t, pm, ns) })
+	t.Run("MultiEntryPutIsAtomic", func(t *testing.T) { testProjectMapAtomicPut(t, pm, ns) })
+}
+
+// testProjectMapRoundTrip covers PutProjectMapEntries/GetProjectMapEntries
+// round-tripping both key shapes ("remote:<canonical>" and
+// "path:<absolute-toplevel>") in a single call.
+func testProjectMapRoundTrip(t *testing.T, pm store.ProjectMapStore, ns string) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	remoteKey := "remote:" + ns + "-rt-github.com-acme-widgets"
+	pathKey := "path:/srv/" + ns + "-rt-bare-repo"
+	entries := []store.ProjectMapEntry{
+		{Key: remoteKey, Namespace: ns + "/widgets", Note: "pinned by ops", CreatedBy: "ci-bot", CreatedAt: now, UpdatedAt: now},
+		{Key: pathKey, Namespace: ns + "/bare", Note: "", CreatedBy: "", CreatedAt: now, UpdatedAt: now},
+	}
+	if err := pm.PutProjectMapEntries(ctx, entries); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	got, err := pm.GetProjectMapEntries(ctx, []string{remoteKey, pathKey})
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("get = %d entries, want 2", len(got))
+	}
+	byKey := make(map[string]store.ProjectMapEntry, len(got))
+	for _, e := range got {
+		byKey[e.Key] = e
+	}
+	for _, want := range entries {
+		g, ok := byKey[want.Key]
+		if !ok {
+			t.Fatalf("missing entry %q", want.Key)
+		}
+		if g.Namespace != want.Namespace || g.Note != want.Note || g.CreatedBy != want.CreatedBy {
+			t.Fatalf("round-trip mismatch for %q: got %+v, want %+v", want.Key, g, want)
+		}
+		if !g.CreatedAt.Equal(want.CreatedAt) {
+			t.Fatalf("created_at for %q = %v, want %v", want.Key, g.CreatedAt, want.CreatedAt)
+		}
+		if !g.UpdatedAt.Equal(want.UpdatedAt) {
+			t.Fatalf("updated_at for %q = %v, want %v", want.Key, g.UpdatedAt, want.UpdatedAt)
+		}
+	}
+}
+
+// testProjectMapUpdatePreservesCreated pins the deliberate semantic choice
+// documented on store.ProjectMapStore.PutProjectMapEntries: a second Put for
+// the same Key updates Namespace/Note/UpdatedAt but preserves the row's
+// original CreatedAt/CreatedBy even when the second call passes different
+// values for them — a pin's provenance is fixed at creation.
+func testProjectMapUpdatePreservesCreated(t *testing.T, pm store.ProjectMapStore, ns string) {
+	ctx := context.Background()
+	key := "remote:" + ns + "-upd-github.com-acme-widgets"
+	created := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Millisecond)
+	firstUpdate := created.Add(time.Hour)
+	if err := pm.PutProjectMapEntries(ctx, []store.ProjectMapEntry{
+		{Key: key, Namespace: ns + "/orig", Note: "first", CreatedBy: "alice", CreatedAt: created, UpdatedAt: firstUpdate},
+	}); err != nil {
+		t.Fatalf("put (insert): %v", err)
+	}
+
+	secondUpdate := firstUpdate.Add(time.Hour)
+	// Deliberately different CreatedAt/CreatedBy on the update, to prove the
+	// store ignores them once the row exists.
+	if err := pm.PutProjectMapEntries(ctx, []store.ProjectMapEntry{
+		{
+			Key: key, Namespace: ns + "/updated", Note: "second", CreatedBy: "mallory",
+			CreatedAt: time.Now().UTC(), UpdatedAt: secondUpdate,
+		},
+	}); err != nil {
+		t.Fatalf("put (update): %v", err)
+	}
+
+	got, err := pm.GetProjectMapEntries(ctx, []string{key})
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("get after update = %d entries, want 1", len(got))
+	}
+	e := got[0]
+	if e.Namespace != ns+"/updated" || e.Note != "second" {
+		t.Fatalf("namespace/note not updated: %+v", e)
+	}
+	if !e.UpdatedAt.Equal(secondUpdate) {
+		t.Fatalf("updated_at = %v, want %v", e.UpdatedAt, secondUpdate)
+	}
+	if !e.CreatedAt.Equal(created) {
+		t.Fatalf("created_at mutated by update: got %v, want preserved %v", e.CreatedAt, created)
+	}
+	if e.CreatedBy != "alice" {
+		t.Fatalf("created_by mutated by update: got %q, want preserved %q", e.CreatedBy, "alice")
+	}
+}
+
+// testProjectMapDelete covers DeleteProjectMapEntries' accurate-count return,
+// including 0 for a batch of entirely-missing keys.
+func testProjectMapDelete(t *testing.T, pm store.ProjectMapStore, ns string) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	k1 := "path:/srv/" + ns + "-del-1"
+	k2 := "path:/srv/" + ns + "-del-2"
+	missing := "path:/srv/" + ns + "-del-missing"
+	if err := pm.PutProjectMapEntries(ctx, []store.ProjectMapEntry{
+		{Key: k1, Namespace: ns + "/d1", CreatedAt: now, UpdatedAt: now},
+		{Key: k2, Namespace: ns + "/d2", CreatedAt: now, UpdatedAt: now},
+	}); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	n, err := pm.DeleteProjectMapEntries(ctx, []string{k1, missing})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("delete count = %d, want 1 (one real key, one already-missing)", n)
+	}
+
+	n, err = pm.DeleteProjectMapEntries(ctx, []string{missing})
+	if err != nil {
+		t.Fatalf("delete (all missing): %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("delete count (all missing) = %d, want 0", n)
+	}
+
+	got, err := pm.GetProjectMapEntries(ctx, []string{k1, k2})
+	if err != nil {
+		t.Fatalf("get after delete: %v", err)
+	}
+	if len(got) != 1 || got[0].Key != k2 {
+		t.Fatalf("get after delete = %+v, want only %q", got, k2)
+	}
+}
+
+// testProjectMapListOrder covers ListProjectMapEntries returning a stable
+// order (by Key) across both key shapes.
+func testProjectMapListOrder(t *testing.T, pm store.ProjectMapStore, ns string) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	keys := []string{
+		"remote:" + ns + "-list-c",
+		"remote:" + ns + "-list-a",
+		"path:/srv/" + ns + "-list-b",
+	}
+	entries := make([]store.ProjectMapEntry, 0, len(keys))
+	for _, k := range keys {
+		entries = append(entries, store.ProjectMapEntry{Key: k, Namespace: ns + "/x", CreatedAt: now, UpdatedAt: now})
+	}
+	if err := pm.PutProjectMapEntries(ctx, entries); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	all, err := pm.ListProjectMapEntries(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	// The store is shared across subtests, so restrict the assertion to this
+	// subtest's own rows (mirroring testAPIKeyListOrdered's prefix filter).
+	prefix := ns + "-list-"
+	var got []string
+	for _, e := range all {
+		_, rest, found := strings.Cut(e.Key, ":")
+		if found && strings.Contains(rest, prefix) {
+			got = append(got, e.Key)
+		}
+	}
+	want := []string{
+		"path:/srv/" + ns + "-list-b",
+		"remote:" + ns + "-list-a",
+		"remote:" + ns + "-list-c",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("list order = %v, want %v (lexicographic by key)", got, want)
+	}
+}
+
+// testProjectMapRename covers RenameProjectMapNamespaces' exact-match
+// semantics: a namespace that merely looks alike (e.g. "memini2" against
+// from="memini") must not be touched.
+func testProjectMapRename(t *testing.T, pm store.ProjectMapStore, ns string) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	from := ns + "-ren-memini"
+	similar := ns + "-ren-memini2" // must NOT match an exact-match rename of `from`
+	to := ns + "-ren-memini-new"
+
+	k1 := "remote:" + ns + "-ren-a"
+	k2 := "path:/srv/" + ns + "-ren-b"
+	if err := pm.PutProjectMapEntries(ctx, []store.ProjectMapEntry{
+		{Key: k1, Namespace: from, CreatedAt: now, UpdatedAt: now},
+		{Key: k2, Namespace: similar, CreatedAt: now, UpdatedAt: now},
+	}); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	if err := pm.RenameProjectMapNamespaces(ctx, from, to); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	got, err := pm.GetProjectMapEntries(ctx, []string{k1, k2})
+	if err != nil {
+		t.Fatalf("get after rename: %v", err)
+	}
+	byKey := make(map[string]store.ProjectMapEntry, len(got))
+	for _, e := range got {
+		byKey[e.Key] = e
+	}
+	if byKey[k1].Namespace != to {
+		t.Fatalf("exact-match namespace not renamed: %+v, want %q", byKey[k1], to)
+	}
+	if byKey[k2].Namespace != similar {
+		t.Fatalf("look-alike namespace %q wrongly renamed: %+v", similar, byKey[k2])
+	}
+}
+
+// testProjectMapAtomicPut covers PutProjectMapEntries writing a multi-entry
+// batch in a single transaction: both rows must land together.
+func testProjectMapAtomicPut(t *testing.T, pm store.ProjectMapStore, ns string) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	k1 := "remote:" + ns + "-atomic-1"
+	k2 := "path:/srv/" + ns + "-atomic-2"
+	if err := pm.PutProjectMapEntries(ctx, []store.ProjectMapEntry{
+		{Key: k1, Namespace: ns + "/a1", CreatedAt: now, UpdatedAt: now},
+		{Key: k2, Namespace: ns + "/a2", CreatedAt: now, UpdatedAt: now},
+	}); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	got, err := pm.GetProjectMapEntries(ctx, []string{k1, k2})
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("get = %d entries, want 2 (both rows from the single Put must land)", len(got))
+	}
+}
+
+// testClientSettings covers store.ClientSettingsStore (the global-defaults
+// blob) and the per-key ClientSettings override riding along on
+// store.APIKeyStore. Both are optional capability interfaces (the
+// EmbedModelStore/APIKeyStore precedent), so a driver that predates either
+// skips cleanly.
+//
+// GlobalRoundTripAndZeroWhenUnset runs first and deliberately: it is the only
+// subtest allowed to observe the global-settings key before anything has
+// written to it, since SetGlobalClientSettings is a full replace (not a
+// merge) of one store-wide row — every later subtest that calls it would
+// otherwise clobber the "unset" precondition.
+func testClientSettings(t *testing.T, st store.Store, dims int) {
+	_ = dims
+	cs, ok := st.(store.ClientSettingsStore)
+	if !ok {
+		t.Skip("store does not implement store.ClientSettingsStore")
+	}
+	ns := t.Name()
+	t.Run("GlobalRoundTripAndZeroWhenUnset", func(t *testing.T) { testClientSettingsGlobalRoundTrip(t, cs) })
+	t.Run("OnlySetFieldsPersisted", func(t *testing.T) { testClientSettingsOnlySetPersisted(t, cs) })
+
+	ks, ok := st.(store.APIKeyStore)
+	if !ok {
+		t.Skip("store does not implement store.APIKeyStore (per-key settings subtests)")
+	}
+	t.Run("PerKeySettingsSurviveAPIKeyOps", func(t *testing.T) { testAPIKeySettingsRoundTrip(t, ks, ns) })
+	t.Run("PerKeySettingsSurviveRename", func(t *testing.T) { testAPIKeySettingsSurviveRename(t, ks, ns) })
+}
+
+// testClientSettingsGlobalRoundTrip covers GlobalClientSettings returning the
+// zero value before anything has been set, SetGlobalClientSettings/
+// GlobalClientSettings round-tripping a partial settings value (only the set
+// fields non-nil), and a second Set replacing wholesale rather than merging.
+func testClientSettingsGlobalRoundTrip(t *testing.T, cs store.ClientSettingsStore) {
+	ctx := context.Background()
+
+	got, err := cs.GlobalClientSettings(ctx)
+	if err != nil {
+		t.Fatalf("global client settings (unset): %v", err)
+	}
+	if got != (store.ClientSettings{}) {
+		t.Fatalf("global client settings before any Set = %+v, want the zero value", got)
+	}
+
+	pinned := 7
+	recall := false
+	if err := cs.SetGlobalClientSettings(ctx, store.ClientSettings{
+		InjectBriefingPinned: &pinned,
+		Recall:               &recall,
+	}); err != nil {
+		t.Fatalf("set global client settings: %v", err)
+	}
+	got, err = cs.GlobalClientSettings(ctx)
+	if err != nil {
+		t.Fatalf("get global client settings: %v", err)
+	}
+	if got.InjectBriefingPinned == nil || *got.InjectBriefingPinned != pinned {
+		t.Fatalf("inject_briefing_pinned round-trip = %v, want %d", got.InjectBriefingPinned, pinned)
+	}
+	if got.Recall == nil || *got.Recall != recall {
+		t.Fatalf("recall round-trip = %v, want %v", got.Recall, recall)
+	}
+	if got.CaptureTurns != nil {
+		t.Fatalf("capture_turns = %v, want nil (never set)", *got.CaptureTurns)
+	}
+
+	// A second Set replaces wholesale: the first Set's fields must not survive.
+	interval := 42
+	if err := cs.SetGlobalClientSettings(ctx, store.ClientSettings{AutoSaveInterval: &interval}); err != nil {
+		t.Fatalf("set global client settings (replace): %v", err)
+	}
+	got, err = cs.GlobalClientSettings(ctx)
+	if err != nil {
+		t.Fatalf("get global client settings (after replace): %v", err)
+	}
+	if got.AutoSaveInterval == nil || *got.AutoSaveInterval != interval {
+		t.Fatalf("auto_save_interval after replace = %v, want %d", got.AutoSaveInterval, interval)
+	}
+	if got.InjectBriefingPinned != nil {
+		t.Fatalf("inject_briefing_pinned survived a full replace: %v, want nil", *got.InjectBriefingPinned)
+	}
+}
+
+// testClientSettingsOnlySetPersisted covers the "only explicitly-set fields
+// are persisted" rule: storing a settings value with a single field set must
+// read back with every other field nil, never coalesced to a default or a
+// zero value.
+func testClientSettingsOnlySetPersisted(t *testing.T, cs store.ClientSettingsStore) {
+	ctx := context.Background()
+	autoSave := false
+	if err := cs.SetGlobalClientSettings(ctx, store.ClientSettings{AutoSave: &autoSave}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	got, err := cs.GlobalClientSettings(ctx)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.AutoSave == nil || *got.AutoSave {
+		t.Fatalf("auto_save = %v, want false", got.AutoSave)
+	}
+	if got.CaptureTurns != nil || got.SessionDigest != nil || got.InlineExtract != nil ||
+		got.AutoSaveInterval != nil || got.InjectBriefingPinned != nil || got.InjectBriefingFacts != nil ||
+		got.InjectBriefingProcedures != nil || got.InjectBriefingRecent != nil || got.InjectBriefingMaxTok != nil ||
+		got.InjectPretoolItems != nil || got.InjectPretoolMaxTok != nil || got.InjectPretoolMinScore != nil ||
+		got.InjectPretoolTools != nil || got.InjectLabels != nil || got.Recall != nil || got.Capture != nil ||
+		got.RecallLimit != nil || got.InjectRecallMaxTok != nil || got.InjectRecallMinScore != nil ||
+		got.MinCaptureChars != nil || got.NamespaceScope != nil || got.NamespacePrefix != nil {
+		t.Fatalf("only-set-field: unexpected non-nil field(s) in %+v", got)
+	}
+}
+
+// testAPIKeySettingsRoundTrip covers APIKey.Settings surviving
+// PutAPIKey/GetAPIKeyByHash/ListAPIKeys, including a slice-typed field, and a
+// key with no override persisting as the zero ClientSettings rather than an
+// error or a coalesced default.
+func testAPIKeySettingsRoundTrip(t *testing.T, ks store.APIKeyStore, ns string) {
+	ctx := context.Background()
+	name := ns + "-settings"
+	pinned := 2
+	autoSave := false
+	tools := []string{"Read", "Grep"}
+	k := store.APIKey{
+		Name:      name,
+		Hash:      apiKeyHash(name),
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+		Settings: store.ClientSettings{
+			InjectBriefingPinned: &pinned,
+			AutoSave:             &autoSave,
+			InjectPretoolTools:   &tools,
+		},
+	}
+	if err := ks.PutAPIKey(ctx, k); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	byHash, err := ks.GetAPIKeyByHash(ctx, k.Hash)
+	if err != nil {
+		t.Fatalf("get by hash: %v", err)
+	}
+	if byHash == nil {
+		t.Fatalf("get by hash: got nil")
+	}
+	checkAPIKeySettings(t, "get by hash", byHash.Settings, pinned, autoSave, tools)
+
+	all, err := ks.ListAPIKeys(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	found := false
+	for _, l := range all {
+		if l.Name == name {
+			found = true
+			checkAPIKeySettings(t, "list", l.Settings, pinned, autoSave, tools)
+		}
+	}
+	if !found {
+		t.Fatalf("key %q missing from list", name)
+	}
+
+	// A key with no override at all persists as the zero ClientSettings.
+	plainName := ns + "-settings-none"
+	if err := ks.PutAPIKey(ctx, store.APIKey{
+		Name: plainName, Hash: apiKeyHash(plainName), CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}); err != nil {
+		t.Fatalf("put (no settings): %v", err)
+	}
+	got, err := ks.GetAPIKeyByHash(ctx, apiKeyHash(plainName))
+	if err != nil {
+		t.Fatalf("get by hash (no settings): %v", err)
+	}
+	if got == nil {
+		t.Fatalf("get by hash (no settings): got nil")
+	}
+	if got.Settings != (store.ClientSettings{}) {
+		t.Fatalf("settings for a key with no override = %+v, want the zero value", got.Settings)
+	}
+}
+
+// checkAPIKeySettings asserts the three fields testAPIKeySettingsRoundTrip
+// sets, and that every other field stayed nil (no coalescing to a default).
+func checkAPIKeySettings(t *testing.T, label string, got store.ClientSettings, wantPinned int, wantAutoSave bool, wantTools []string) {
+	t.Helper()
+	if got.InjectBriefingPinned == nil || *got.InjectBriefingPinned != wantPinned {
+		t.Fatalf("%s: inject_briefing_pinned = %v, want %d", label, got.InjectBriefingPinned, wantPinned)
+	}
+	if got.AutoSave == nil || *got.AutoSave != wantAutoSave {
+		t.Fatalf("%s: auto_save = %v, want %v", label, got.AutoSave, wantAutoSave)
+	}
+	if got.InjectPretoolTools == nil || !slices.Equal(*got.InjectPretoolTools, wantTools) {
+		t.Fatalf("%s: inject_pretool_tools = %v, want %v", label, got.InjectPretoolTools, wantTools)
+	}
+	if got.Recall != nil {
+		t.Fatalf("%s: recall = %v, want nil (never set)", label, *got.Recall)
+	}
+}
+
+// testAPIKeySettingsSurviveRename covers APIKey.Settings surviving
+// RenameAPIKeyNamespaces (which only touches HomeNS/DefaultNS).
+func testAPIKeySettingsSurviveRename(t *testing.T, ks store.APIKeyStore, ns string) {
+	ctx := context.Background()
+	name := ns + "-settings-rename"
+	from := ns + "-settings-rename-old"
+	to := ns + "-settings-rename-new"
+	pinned := 9
+	k := store.APIKey{
+		Name:      name,
+		Hash:      apiKeyHash(name),
+		HomeNS:    from,
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+		Settings:  store.ClientSettings{InjectBriefingPinned: &pinned},
+	}
+	if err := ks.PutAPIKey(ctx, k); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if err := ks.RenameAPIKeyNamespaces(ctx, from, to); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	got, err := ks.GetAPIKeyByHash(ctx, k.Hash)
+	if err != nil {
+		t.Fatalf("get by hash after rename: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("key vanished after rename")
+	}
+	if got.HomeNS != to {
+		t.Fatalf("home_ns after rename = %q, want %q", got.HomeNS, to)
+	}
+	if got.Settings.InjectBriefingPinned == nil || *got.Settings.InjectBriefingPinned != pinned {
+		t.Fatalf("settings did not survive rename: %+v, want inject_briefing_pinned=%d", got.Settings, pinned)
+	}
 }

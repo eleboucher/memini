@@ -6,8 +6,10 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
+	"github.com/eleboucher/memini/internal/httputil"
 	"github.com/eleboucher/memini/internal/memory"
 )
 
@@ -288,6 +290,304 @@ type ActivityStore interface {
 	NamespaceActivity(ctx context.Context, now time.Time) ([]NamespaceActivity, error)
 }
 
+// ClientSettings is the behavioral/injection configuration surface a caller's
+// effective settings resolve to: a layered merge of the built-in defaults
+// (DefaultClientSettings), the server's global defaults (ClientSettingsStore),
+// and a per-API-key override (APIKey.Settings, below). Every field is a
+// pointer; nil means "unset — inherit from the next layer down". Only
+// MergeClientSettings' result is guaranteed to have every field non-nil.
+//
+// The field set, JSON tags (the wire-level snake_case keys), and defaults are
+// exactly the ClientSettings schema in api/openapi.yaml (config-handshake
+// redesign) — keep the two in sync; the schema wins on any disagreement.
+type ClientSettings struct {
+	// CaptureTurns enables capturing each user→assistant turn as episodic memory.
+	CaptureTurns *bool `json:"capture_turns,omitempty"`
+	// SessionDigest enables recording a session-end/stop/pre-compact digest memory.
+	SessionDigest *bool `json:"session_digest,omitempty"`
+	// InlineExtract enables injecting the directive asking the agent to save
+	// durable facts via memory_remember.
+	InlineExtract *bool `json:"inline_extract,omitempty"`
+	// AutoSave enables periodically nudging the agent to persist durable memories.
+	AutoSave *bool `json:"auto_save,omitempty"`
+	// AutoSaveInterval is the user-message interval between auto-save nudges;
+	// must be >= 1.
+	AutoSaveInterval *int `json:"auto_save_interval,omitempty"`
+
+	// InjectBriefingPinned caps pinned memories in the session-start briefing.
+	InjectBriefingPinned *int `json:"inject_briefing_pinned,omitempty"`
+	// InjectBriefingFacts caps durable semantic facts in the session-start briefing.
+	InjectBriefingFacts *int `json:"inject_briefing_facts,omitempty"`
+	// InjectBriefingProcedures caps procedural how-tos in the session-start briefing.
+	InjectBriefingProcedures *int `json:"inject_briefing_procedures,omitempty"`
+	// InjectBriefingRecent caps recent episodic entries in the session-start briefing.
+	InjectBriefingRecent *int `json:"inject_briefing_recent,omitempty"`
+	// InjectBriefingMaxTok is a hard ceiling on briefing injection tokens; 0 is uncapped.
+	InjectBriefingMaxTok *int `json:"inject_briefing_max_tok,omitempty"`
+
+	// InjectPretoolItems caps recalled items injected per file on PreToolUse.
+	InjectPretoolItems *int `json:"inject_pretool_items,omitempty"`
+	// InjectPretoolMaxTok is a hard ceiling on per-tool injection tokens; 0 is uncapped.
+	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
+	// InjectPretoolMinScore floors the fused score (>=) for a PreToolUse injection.
+	InjectPretoolMinScore *float64 `json:"inject_pretool_min_score,omitempty"`
+	// InjectPretoolTools is the tool-name allowlist that triggers a PreToolUse injection.
+	InjectPretoolTools *[]string `json:"inject_pretool_tools,omitempty"`
+
+	// InjectLabels selects which annotation labels to render alongside an
+	// injected memory; each must be one of tier, confidence, age, reason.
+	InjectLabels *[]string `json:"inject_labels,omitempty"`
+
+	// Recall enables recall-driven injection at all.
+	Recall *bool `json:"recall,omitempty"`
+	// Capture enables capture (turns/digests) at all.
+	Capture *bool `json:"capture,omitempty"`
+	// RecallLimit caps memories per recall call.
+	RecallLimit *int `json:"recall_limit,omitempty"`
+
+	// InjectRecallMaxTok is a hard ceiling on recall injection tokens; 0 is uncapped.
+	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
+	// InjectRecallMinScore floors the fused score (>=) for a recall injection.
+	InjectRecallMinScore *float64 `json:"inject_recall_min_score,omitempty"`
+
+	// MinCaptureChars is the minimum content length worth bothering to capture a turn.
+	MinCaptureChars *int `json:"min_capture_chars,omitempty"`
+	// NamespaceScope is "repo" or "owner-repo": "repo" derives the namespace
+	// from the bare repo name; "owner-repo" disambiguates same-named repos
+	// across owners with an owner-repo slug.
+	NamespaceScope *string `json:"namespace_scope,omitempty"`
+	// NamespacePrefix is a namespace path prepended ahead of the
+	// derived/declared namespace; "" means no prefix.
+	NamespacePrefix *string `json:"namespace_prefix,omitempty"`
+}
+
+// Validate returns a non-nil error when a set (non-nil) field violates the
+// range/enum constraints the ClientSettings schema in api/openapi.yaml
+// declares. Unset (nil) fields are never checked — validation is purely
+// per-field, so a partial layer (e.g. one key's override) validates
+// independently of any other layer.
+//
+// namespace_prefix's check calls httputil.ValidateNamespace directly rather
+// than accepting an injected validator func: internal/httputil has no
+// dependency on internal/store (it only imports the standard library), so
+// importing it here does not create an import cycle — confirmed by reading
+// internal/httputil/httputil.go before wiring this up.
+func (s ClientSettings) Validate() error {
+	if s.AutoSaveInterval != nil && *s.AutoSaveInterval < 1 {
+		return fmt.Errorf("client settings: auto_save_interval must be >= 1, got %d", *s.AutoSaveInterval)
+	}
+	nonNegativeInts := []struct {
+		key string
+		v   *int
+	}{
+		{"inject_briefing_pinned", s.InjectBriefingPinned},
+		{"inject_briefing_facts", s.InjectBriefingFacts},
+		{"inject_briefing_procedures", s.InjectBriefingProcedures},
+		{"inject_briefing_recent", s.InjectBriefingRecent},
+		{"inject_briefing_max_tok", s.InjectBriefingMaxTok},
+		{"inject_pretool_items", s.InjectPretoolItems},
+		{"inject_pretool_max_tok", s.InjectPretoolMaxTok},
+		{"recall_limit", s.RecallLimit},
+		{"inject_recall_max_tok", s.InjectRecallMaxTok},
+		{"min_capture_chars", s.MinCaptureChars},
+	}
+	for _, f := range nonNegativeInts {
+		if f.v != nil && *f.v < 0 {
+			return fmt.Errorf("client settings: %s must be >= 0, got %d", f.key, *f.v)
+		}
+	}
+	nonNegativeFloats := []struct {
+		key string
+		v   *float64
+	}{
+		{"inject_pretool_min_score", s.InjectPretoolMinScore},
+		{"inject_recall_min_score", s.InjectRecallMinScore},
+	}
+	for _, f := range nonNegativeFloats {
+		if f.v != nil && *f.v < 0 {
+			return fmt.Errorf("client settings: %s must be >= 0, got %g", f.key, *f.v)
+		}
+	}
+	if s.NamespaceScope != nil {
+		switch *s.NamespaceScope {
+		case "repo", "owner-repo":
+		default:
+			return fmt.Errorf("client settings: namespace_scope must be %q or %q, got %q",
+				"repo", "owner-repo", *s.NamespaceScope)
+		}
+	}
+	if s.InjectLabels != nil {
+		for _, label := range *s.InjectLabels {
+			switch label {
+			case "tier", "confidence", "age", "reason":
+			default:
+				return fmt.Errorf("client settings: inject_labels value must be one of "+
+					"tier, confidence, age, reason, got %q", label)
+			}
+		}
+	}
+	if s.NamespacePrefix != nil && *s.NamespacePrefix != "" {
+		if err := httputil.ValidateNamespace(*s.NamespacePrefix); err != nil {
+			return fmt.Errorf("client settings: namespace_prefix: %w", err)
+		}
+	}
+	return nil
+}
+
+// DefaultClientSettings returns the built-in default ClientSettings, every
+// field set from the ClientSettings schema's `default:` in api/openapi.yaml.
+// It is the bottom layer of MergeClientSettings — passing it first guarantees
+// the merge result has every field non-nil even when every other layer is
+// empty.
+func DefaultClientSettings() ClientSettings {
+	return ClientSettings{
+		CaptureTurns:  boolPtr(true),
+		SessionDigest: boolPtr(true),
+		InlineExtract: boolPtr(true),
+		AutoSave:      boolPtr(true),
+
+		AutoSaveInterval: intPtr(10),
+
+		InjectBriefingPinned:     intPtr(5),
+		InjectBriefingFacts:      intPtr(5),
+		InjectBriefingProcedures: intPtr(5),
+		InjectBriefingRecent:     intPtr(3),
+		InjectBriefingMaxTok:     intPtr(0),
+
+		InjectPretoolItems:    intPtr(3),
+		InjectPretoolMaxTok:   intPtr(0),
+		InjectPretoolMinScore: float64Ptr(0),
+		InjectPretoolTools:    &[]string{"Read", "Write", "Edit", "Glob", "Grep"},
+
+		InjectLabels: &[]string{},
+
+		Recall:      boolPtr(true),
+		Capture:     boolPtr(true),
+		RecallLimit: intPtr(3),
+
+		InjectRecallMaxTok:   intPtr(0),
+		InjectRecallMinScore: float64Ptr(0),
+
+		MinCaptureChars: intPtr(0),
+		NamespaceScope:  stringPtr("repo"),
+		NamespacePrefix: stringPtr(""),
+	}
+}
+
+// SettingsLayer is one input to MergeClientSettings: a (possibly partial)
+// ClientSettings plus a human-readable label for where it came from (e.g.
+// "default", "global", "key:ci-bot"). Source is echoed back in
+// MergeClientSettings' provenance map for whichever fields this layer wins.
+type SettingsLayer struct {
+	Source string
+	S      ClientSettings
+}
+
+// MergeClientSettings flattens layers into one ClientSettings: later layers
+// win field-by-field — a nil field never overrides, only an explicitly-set
+// field in a later layer replaces an earlier one. Passing
+// SettingsLayer{Source: "default", S: DefaultClientSettings()} first
+// guarantees every field of the result is non-nil regardless of what (if
+// anything) later layers set.
+//
+// The second return maps each wire-key (the JSON tag) to the Source label of
+// whichever layer's value it took, for the /v1/self settings_sources
+// provenance the REST layer (a later phase) surfaces to callers.
+func MergeClientSettings(layers ...SettingsLayer) (ClientSettings, map[string]string) {
+	var out ClientSettings
+	sources := make(map[string]string, 23)
+
+	for _, l := range layers {
+		s := l.S
+		if applyPtr(&out.CaptureTurns, s.CaptureTurns) {
+			sources["capture_turns"] = l.Source
+		}
+		if applyPtr(&out.SessionDigest, s.SessionDigest) {
+			sources["session_digest"] = l.Source
+		}
+		if applyPtr(&out.InlineExtract, s.InlineExtract) {
+			sources["inline_extract"] = l.Source
+		}
+		if applyPtr(&out.AutoSave, s.AutoSave) {
+			sources["auto_save"] = l.Source
+		}
+		if applyPtr(&out.AutoSaveInterval, s.AutoSaveInterval) {
+			sources["auto_save_interval"] = l.Source
+		}
+		if applyPtr(&out.InjectBriefingPinned, s.InjectBriefingPinned) {
+			sources["inject_briefing_pinned"] = l.Source
+		}
+		if applyPtr(&out.InjectBriefingFacts, s.InjectBriefingFacts) {
+			sources["inject_briefing_facts"] = l.Source
+		}
+		if applyPtr(&out.InjectBriefingProcedures, s.InjectBriefingProcedures) {
+			sources["inject_briefing_procedures"] = l.Source
+		}
+		if applyPtr(&out.InjectBriefingRecent, s.InjectBriefingRecent) {
+			sources["inject_briefing_recent"] = l.Source
+		}
+		if applyPtr(&out.InjectBriefingMaxTok, s.InjectBriefingMaxTok) {
+			sources["inject_briefing_max_tok"] = l.Source
+		}
+		if applyPtr(&out.InjectPretoolItems, s.InjectPretoolItems) {
+			sources["inject_pretool_items"] = l.Source
+		}
+		if applyPtr(&out.InjectPretoolMaxTok, s.InjectPretoolMaxTok) {
+			sources["inject_pretool_max_tok"] = l.Source
+		}
+		if applyPtr(&out.InjectPretoolMinScore, s.InjectPretoolMinScore) {
+			sources["inject_pretool_min_score"] = l.Source
+		}
+		if applyPtr(&out.InjectPretoolTools, s.InjectPretoolTools) {
+			sources["inject_pretool_tools"] = l.Source
+		}
+		if applyPtr(&out.InjectLabels, s.InjectLabels) {
+			sources["inject_labels"] = l.Source
+		}
+		if applyPtr(&out.Recall, s.Recall) {
+			sources["recall"] = l.Source
+		}
+		if applyPtr(&out.Capture, s.Capture) {
+			sources["capture"] = l.Source
+		}
+		if applyPtr(&out.RecallLimit, s.RecallLimit) {
+			sources["recall_limit"] = l.Source
+		}
+		if applyPtr(&out.InjectRecallMaxTok, s.InjectRecallMaxTok) {
+			sources["inject_recall_max_tok"] = l.Source
+		}
+		if applyPtr(&out.InjectRecallMinScore, s.InjectRecallMinScore) {
+			sources["inject_recall_min_score"] = l.Source
+		}
+		if applyPtr(&out.MinCaptureChars, s.MinCaptureChars) {
+			sources["min_capture_chars"] = l.Source
+		}
+		if applyPtr(&out.NamespaceScope, s.NamespaceScope) {
+			sources["namespace_scope"] = l.Source
+		}
+		if applyPtr(&out.NamespacePrefix, s.NamespacePrefix) {
+			sources["namespace_prefix"] = l.Source
+		}
+	}
+	return out, sources
+}
+
+// applyPtr copies src into *dst when src is non-nil ("explicitly set"),
+// reporting whether it did. Shared by MergeClientSettings for every
+// ClientSettings field regardless of pointee type.
+func applyPtr[T any](dst **T, src *T) bool {
+	if src == nil {
+		return false
+	}
+	*dst = src
+	return true
+}
+
+func boolPtr(b bool) *bool          { return &b }
+func intPtr(n int) *int             { return &n }
+func float64Ptr(f float64) *float64 { return &f }
+func stringPtr(s string) *string    { return &s }
+
 // APIKey is a persisted API credential: a unique human label, the hex
 // SHA-256 hash of the secret (the secret itself is never stored), an
 // optional home namespace it is bound to, when it was created, and whether
@@ -302,6 +602,11 @@ type APIKey struct {
 	DefaultNS string
 	CreatedAt time.Time
 	Disabled  bool
+	// Settings is this key's per-key ClientSettings override, merged over the
+	// server's global defaults (ClientSettingsStore) and the built-in
+	// defaults (DefaultClientSettings) by MergeClientSettings. The zero value
+	// (every field nil) means no override at all.
+	Settings ClientSettings
 }
 
 // APIKeyStore is implemented by drivers that persist api_keys, the
@@ -340,6 +645,65 @@ type APIKeyStore interface {
 	// column of a partially-matching key, are untouched; CreatedAt is never
 	// modified. A no-op when from == to.
 	RenameAPIKeyNamespaces(ctx context.Context, from, to string) error
+}
+
+// ProjectMapEntry is a persisted project→namespace pin: an operator-created
+// binding from a project's identity to the namespace every handshake for
+// that project resolves to, overriding derivation. Key is the lookup key:
+// "remote:<canonical-remote>" for a git-remote pin (canonical = normalized,
+// credential-stripped) or "path:<absolute-toplevel>" for a path pin (used for
+// remoteless repos and bare directories).
+type ProjectMapEntry struct {
+	Key       string
+	Namespace string
+	Note      string
+	// CreatedBy is the API key name that created the pin; "" for the admin
+	// key or dev mode, which carry no named principal.
+	CreatedBy string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// ProjectMapStore is implemented by drivers that persist project_map, the
+// config-handshake redesign's project→namespace pin table. It is an optional
+// capability interface — the EmbedModelStore/LinkStore/APIKeyStore precedent
+// above — so callers type-assert and degrade gracefully against a driver
+// that predates it.
+type ProjectMapStore interface {
+	// PutProjectMapEntries upserts entries in a single transaction, keyed by
+	// each entry's Key. An update preserves the existing row's CreatedAt and
+	// CreatedBy — a pin's provenance is fixed at creation, unlike APIKey's
+	// CreatedAt (which import restore can still overwrite by design) — while
+	// Namespace, Note, and UpdatedAt take the incoming values.
+	PutProjectMapEntries(ctx context.Context, entries []ProjectMapEntry) error
+	// GetProjectMapEntries returns the entries matching the given keys, in no
+	// particular order; a key with no matching row is simply absent from the
+	// result (not an error).
+	GetProjectMapEntries(ctx context.Context, keys []string) ([]ProjectMapEntry, error)
+	// DeleteProjectMapEntries removes the entries with the given keys and
+	// returns the number of rows actually deleted; a key with no matching row
+	// does not count and is not an error.
+	DeleteProjectMapEntries(ctx context.Context, keys []string) (int64, error)
+	// ListProjectMapEntries returns every entry ordered by Key, for the CLI/UI.
+	ListProjectMapEntries(ctx context.Context) ([]ProjectMapEntry, error)
+	// RenameProjectMapNamespaces rewrites every entry whose Namespace exactly
+	// equals from to to instead (maintenance.Move, alongside
+	// RenameLinkEndpoints/RenameAPIKeyNamespaces); a namespace that merely
+	// starts with from (e.g. "memini2" against from="memini") is untouched.
+	RenameProjectMapNamespaces(ctx context.Context, from, to string) error
+}
+
+// ClientSettingsStore is implemented by drivers that persist the server's
+// global default ClientSettings — the layer between the built-in defaults
+// (DefaultClientSettings) and any per-API-key override (APIKey.Settings). It
+// is an optional capability interface — the EmbedModelStore precedent, which
+// stores its single value the same way, over the same meta key/value table.
+type ClientSettingsStore interface {
+	// GlobalClientSettings returns the stored global defaults, or the zero
+	// ClientSettings (every field nil) when none has been set yet.
+	GlobalClientSettings(ctx context.Context) (ClientSettings, error)
+	// SetGlobalClientSettings replaces the stored global defaults wholesale.
+	SetGlobalClientSettings(ctx context.Context, s ClientSettings) error
 }
 
 // EventKind names an operation the activity log records. Reads and writes are
