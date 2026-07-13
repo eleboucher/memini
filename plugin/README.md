@@ -347,12 +347,25 @@ no change.
 
 **PreToolUse** (one search per file in `Edit|Write|Read|Glob|Grep`):
 
-| Env var                           | Default                         | Description                                                   |
-| --------------------------------- | ------------------------------- | ------------------------------------------------------------- |
-| `MEMINI_INJECT_PRETOOL_ITEMS`     | `3`                             | Max hits surfaced per file.                                   |
-| `MEMINI_INJECT_PRETOOL_MAX_TOK`   | uncapped                        | Hard ceiling on rendered tokens (per file).                   |
-| `MEMINI_INJECT_PRETOOL_MIN_SCORE` | `0`                             | Floor on the fused score; hits below are dropped server-side. |
-| `MEMINI_INJECT_PRETOOL_TOOLS`     | `Read\|Write\|Edit\|Glob\|Grep` | Pipe- or comma-separated tool allowlist override.             |
+| Env var                           | Default                         | Description                                                                                 |
+| --------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------- |
+| `MEMINI_INJECT_PRETOOL_ITEMS`     | `3`                             | Max hits surfaced per file.                                                                 |
+| `MEMINI_INJECT_PRETOOL_MAX_TOK`   | uncapped                        | Hard ceiling on rendered tokens (per file).                                                 |
+| `MEMINI_INJECT_PRETOOL_MIN_SCORE` | `0`                             | Floor on the fused score; hits below are dropped server-side.                               |
+| `MEMINI_INJECT_PRETOOL_TOOLS`     | `Read\|Write\|Edit\|Glob\|Grep` | Pipe- or comma-separated tool allowlist override.                                           |
+| `MEMINI_INJECT_DEDUPE`            | on                              | Skip re-injecting an unchanged recall block for the same file (the recall call still runs). |
+
+Repeated tool calls on the same file (e.g. several `Edit`s in a row, or a
+`Read` followed by an `Edit`) still make the recall call every time — results
+can change between calls — but the hook only re-injects a file's block when
+the served memories actually changed since the last time that file was
+injected THIS session. The fingerprint is keyed by file path and is
+tool-agnostic (a `Read` then an `Edit` on the same file with identical results
+counts as a duplicate), so an unbroken sequence of edits doesn't repeat the
+identical memory block into context on every call. Governed by the
+`inject_dedupe` behavior setting (on by default; `MEMINI_INJECT_DEDUPE=0` is
+the local debug override, like every knob above), and the suppression state
+self-clears on `SessionStart`, `PreCompact`, and `SessionEnd`.
 
 **Output labels** (both hooks):
 

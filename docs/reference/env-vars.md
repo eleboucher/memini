@@ -216,16 +216,17 @@ One switch covers all four write sites, because they are the same distilled
 buffer: the `SessionEnd` digest, the `Stop` checkpoint, the `PreCompact`
 rescue copy, and the `PostToolUse` buffering that feeds them.
 
-It is easy to confuse with the two knobs next to it, so:
+It is easy to confuse with the knobs next to it, so:
 
-| Knob                    | What it turns off                                           |
-| ----------------------- | ----------------------------------------------------------- |
-| `MEMINI_SESSION_DIGEST` | Activity records: what you edited and ran                   |
-| `MEMINI_CAPTURE_TURNS`  | Each user/assistant turn, stored as episodic memory         |
-| `MEMINI_INLINE_EXTRACT` | The directive asking the agent to save durable facts itself |
+| Knob                    | What it turns off                                                                                                          |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `MEMINI_SESSION_DIGEST` | Activity records: what you edited and ran                                                                                  |
+| `MEMINI_CAPTURE_TURNS`  | Each user/assistant turn, stored as episodic memory                                                                        |
+| `MEMINI_INLINE_EXTRACT` | The directive asking the agent to save durable facts itself                                                                |
+| `MEMINI_INJECT_DEDUPE`  | Suppression of duplicate per-file recall injections on `PreToolUse` (off means every tool call re-injects, even unchanged) |
 
 They are independent. Turning digests off leaves the agent saving decisions
-and conventions through `memory_remember` exactly as before. All three, like
+and conventions through `memory_remember` exactly as before. All four, like
 every other behavior knob, can instead be set globally
 (`PUT /v1/settings/defaults` / `MEMINI_CLIENT_DEFAULTS`) or per-key
 (`PUT /v1/self/settings`) — the env var only ever overrides for the one

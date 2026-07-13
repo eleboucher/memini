@@ -201,6 +201,7 @@ var BEHAVIOR_KNOBS = [
     kind: "list",
     default: ["Read", "Write", "Edit", "Glob", "Grep"]
   },
+  { envName: "MEMINI_INJECT_DEDUPE", wireKey: "inject_dedupe", kind: "bool", default: true },
   { envName: "MEMINI_INJECT_LABELS", wireKey: "inject_labels", kind: "list", default: [] },
   { envName: "MEMINI_RECALL", wireKey: "recall", kind: "bool", default: true },
   { envName: "MEMINI_CAPTURE", wireKey: "capture", kind: "bool", default: true },

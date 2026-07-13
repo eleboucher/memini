@@ -246,15 +246,24 @@ export async function getJSON(path, namespace, timeoutMs = 5000, opts = {}) {
 }
 
 /**
- * GET /v1/namespaces/{ns}/briefing — a layered session-start summary
+ * GET /v1/namespaces/briefing — a layered session-start summary
  * {namespace, facts, procedures, recent, pinned}. Returns null on failure.
+ *
+ * The route is header-scoped: there is NO namespace path segment — the
+ * namespace rides in X-Memini-Namespace (getJSON sends it, along with the
+ * bearer and X-Memini-Home, exactly like every other REST helper here). This
+ * matches api/openapi.yaml and how integrations/pi and integrations/openclaw
+ * call it. The old path-param form (/v1/namespaces/<ns>/briefing) does not
+ * exist server-side; against a real deployment it fell through to the admin
+ * UI's SPA catch-all, which 200s with HTML and made this helper silently
+ * return null — SessionStart then injected only the memory directive, never
+ * real briefing context.
  *
  * `opts` controls per-section caps. Each field is an int; omit (or 0) to use
  * the server default (5). Pass an explicit 0 to disable that section (REST
  * only — MCP can't distinguish omitted from zero).
  */
 export async function getBriefing(namespace, opts = {}) {
-  const enc = encodeURIComponent(namespace);
   const params = new URLSearchParams();
   // A "per_section_default" opt acts as the catch-all; per-section fields
   // win when set. This matches the REST contract exactly.
@@ -274,7 +283,7 @@ export async function getBriefing(namespace, opts = {}) {
   setIf("per_section_facts", opts.per_section_facts ?? opts.facts);
   setIf("per_section_procedures", opts.per_section_procedures ?? opts.procedures);
   setIf("per_section_recent", opts.per_section_recent ?? opts.recent);
-  return getJSON(`/v1/namespaces/${enc}/briefing?${params.toString()}`, namespace);
+  return getJSON(`/v1/namespaces/briefing?${params.toString()}`, namespace);
 }
 
 // --- Injection budget ----------------------------------------------------
@@ -584,6 +593,63 @@ export function cleanStaleBuffers(maxAgeMs) {
       } catch {}
     }
   } catch {}
+}
+
+// --- Last-recall fingerprint state ----------------------------------------
+//
+// PreToolUse fires on every Read/Edit/Write/Glob/Grep and searches memini per
+// file. Editing the same file repeatedly re-injects an IDENTICAL memory block
+// back into context on every call: the recall call itself always still runs
+// (results can change between calls), but when the rendered payload for a
+// file is byte-for-byte the same as what was last injected THIS session,
+// re-injecting it is pure token waste — the context already carries it. This
+// state is a per-session, per-file map of {hash, at}, bounded so a long
+// session touching many distinct files doesn't grow the file unbounded.
+
+const MAX_LASTRECALL_ENTRIES = 32;
+
+/** Path of the per-session last-injected-recall fingerprint state file. */
+function lastRecallStatePath(sessionId) {
+  return join(bufferDir(), safeId(sessionId) + ".lastrecall.json");
+}
+
+/** Read a session's last-recall fingerprint map ({file: {hash, at}}), or {} on any error. */
+export function readLastRecallState(sessionId) {
+  try {
+    return parseJSON(fs.readFileSync(lastRecallStatePath(sessionId), "utf8")) || {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Persist a session's last-recall fingerprint map (best-effort), bounded to
+ * the MAX_LASTRECALL_ENTRIES most-recently-updated entries — oldest (by `at`)
+ * evicted first — so a session touching many distinct files keeps this file
+ * small.
+ */
+export function writeLastRecallState(sessionId, state) {
+  try {
+    fs.mkdirSync(bufferDir(), { recursive: true });
+    let bounded = state;
+    const entries = Object.entries(state || {});
+    if (entries.length > MAX_LASTRECALL_ENTRIES) {
+      entries.sort((a, b) => (b[1]?.at || 0) - (a[1]?.at || 0));
+      bounded = Object.fromEntries(entries.slice(0, MAX_LASTRECALL_ENTRIES));
+    }
+    fs.writeFileSync(lastRecallStatePath(sessionId), JSON.stringify(bounded));
+  } catch (e) {
+    if (DEBUG) console.error("[memini] writeLastRecallState failed:", e?.message || e);
+  }
+}
+
+/** Delete a session's last-recall fingerprint state (best-effort). */
+export function deleteLastRecallState(sessionId) {
+  try {
+    fs.rmSync(lastRecallStatePath(sessionId), { force: true });
+  } catch (e) {
+    if (DEBUG) console.error("[memini] deleteLastRecallState failed:", e?.message || e);
+  }
 }
 
 function briefingCachePath(sessionId) {

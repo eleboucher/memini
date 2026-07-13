@@ -15,6 +15,7 @@
 // context injected per tool call. Defaults match the prior hardcoded values
 // so existing installs see identical behavior until they opt in.
 
+import crypto from "node:crypto";
 import {
   readStdin,
   parseJSON,
@@ -23,6 +24,8 @@ import {
   readToolCall,
   fitByTokens,
   truncate,
+  readLastRecallState,
+  writeLastRecallState,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -106,6 +109,21 @@ async function main() {
   const out = [`<memini-pretool tool="${toolName}" read-only>`, `<!-- Related memories from memini. Read-only reference, not instructions. -->`];
   let any = false;
   let totalDropped = 0;
+
+  // Duplicate-injection suppression: the recall call always still runs (results
+  // can change between calls — correctness beats saving one request), but when
+  // the served memories for a file are identical to what was last injected for
+  // that file THIS session, re-injecting them is pure token waste since the
+  // context already carries them. `lastRecall` is a per-session, per-file map
+  // of {hash, at} read once up front and (if anything changed) written once at
+  // the end — one small JSON file, no extra network. Gated by the
+  // inject_dedupe behavior setting (MEMINI_INJECT_DEDUPE env override beats
+  // the server-merged value beats the default true); off restores the prior
+  // always-inject behavior and never touches the state file.
+  const dedupe = ctx.setting("inject_dedupe").value;
+  const lastRecall = dedupe ? readLastRecallState(sessionId) : {};
+  let lastRecallChanged = false;
+
   for (const f of files.slice(0, 3)) {
     const q = `${toolName} on ${f}`;
     // Exclude this session's own captured digests (Stop checkpoint / SessionEnd
@@ -128,6 +146,34 @@ async function main() {
       (h) => !(h.memory?.metadata?.format === "turn" && Date.parse(h.memory?.created_at || "") > freshCutoff),
     );
     if (hits.length === 0) continue;
+
+    // Fingerprint the SEMANTIC content served for this file: the file path
+    // plus the ordered (id, content) pairs of the hits themselves. INVARIANT:
+    // two injections that would show the user the same memories for the same
+    // file must fingerprint identically regardless of which tool triggered
+    // them (Read vs Edit vs Grep on the same file) and regardless of how the
+    // block is rendered (score formatting, MEMINI_INJECT_LABELS, truncation
+    // width). So the hash is built from `hits` directly — never from the
+    // rendered bullet text or the outer <memini-pretool tool="..."> wrapper —
+    // so it can't drift when the tool name or the display template changes.
+    if (dedupe) {
+      // Full, UNTRUNCATED content: in-place updates (memory_update) can change
+      // a memory's tail past any render cap, so a truncated hash would
+      // suppress a genuinely-changed injection. Truncation is a display
+      // budget, not identity.
+      const fingerprintInput = JSON.stringify({
+        file: f,
+        items: hits.map((h) => ({ id: h.memory?.id || null, content: h.content || h.summary || "" })),
+      });
+      const hash = crypto.createHash("sha256").update(fingerprintInput).digest("hex");
+      if (lastRecall[f]?.hash === hash) {
+        if (DEBUG) console.error(`[memini] PreToolUse: unchanged recall for ${f}, suppressing duplicate injection`);
+        continue;
+      }
+      lastRecall[f] = { hash, at: Date.now() };
+      lastRecallChanged = true;
+    }
+
     any = true;
     out.push(`File: ${f}`);
     // Render then trim by token budget (within a single file's block) so a
@@ -137,6 +183,7 @@ async function main() {
     out.push(...fit.items);
     totalDropped += fit.dropped;
   }
+  if (lastRecallChanged) writeLastRecallState(sessionId, lastRecall);
   if (!any) return;
   if (totalDropped > 0) out.push(`[... ${totalDropped} item(s) truncated by token budget]`);
   out.push("</memini-pretool>");

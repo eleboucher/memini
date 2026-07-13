@@ -2769,7 +2769,7 @@ func testClientSettingsOnlySetPersisted(t *testing.T, cs store.ClientSettingsSto
 		got.AutoSaveInterval != nil || got.InjectBriefingPinned != nil || got.InjectBriefingFacts != nil ||
 		got.InjectBriefingProcedures != nil || got.InjectBriefingRecent != nil || got.InjectBriefingMaxTok != nil ||
 		got.InjectPretoolItems != nil || got.InjectPretoolMaxTok != nil || got.InjectPretoolMinScore != nil ||
-		got.InjectPretoolTools != nil || got.InjectLabels != nil || got.Recall != nil || got.Capture != nil ||
+		got.InjectPretoolTools != nil || got.InjectDedupe != nil || got.InjectLabels != nil || got.Recall != nil || got.Capture != nil ||
 		got.RecallLimit != nil || got.InjectRecallMaxTok != nil || got.InjectRecallMinScore != nil ||
 		got.MinCaptureChars != nil || got.NamespaceScope != nil || got.NamespacePrefix != nil {
 		t.Fatalf("only-set-field: unexpected non-nil field(s) in %+v", got)

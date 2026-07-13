@@ -1125,6 +1125,11 @@ export interface components {
              */
             inject_pretool_tools: string[];
             /**
+             * @description Suppress re-injecting an unchanged PreToolUse recall block for a file already injected this session. The recall call still runs; only the duplicate injection is skipped.
+             * @default true
+             */
+            inject_dedupe: boolean;
+            /**
              * @description Which annotation labels to render alongside an injected memory.
              * @default []
              */
