@@ -578,9 +578,11 @@ test("requests carry X-Memini-Home when configured, omit it otherwise", async ()
       { parts: [{ type: "text", text: "hello again", sessionID: "s2", messageID: "m2" }] },
     );
 
-    assert.equal(requests.length, 2);
-    assert.equal(requests[0].headers["X-Memini-Home"], "personal/acme");
-    assert.equal(requests[1].headers["X-Memini-Home"], undefined);
+    // Filter out the warmup /healthz pings plugin init fires.
+    const searches = requests.filter((r) => r.url.endsWith("/v1/search"));
+    assert.equal(searches.length, 2);
+    assert.equal(searches[0].headers["X-Memini-Home"], "personal/acme");
+    assert.equal(searches[1].headers["X-Memini-Home"], undefined);
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -711,6 +713,185 @@ test("the memini_status tool is registered zero-arg and never throws", async () 
     assert.equal(out.metadata.source, "worktree");
   } finally {
     if (prev !== undefined) process.env.MEMINI_NAMESPACE = prev;
+  }
+});
+
+// --- Recall budget race + carryover ----------------------------------------
+
+const okJson = (payload) => ({ ok: true, async json() { return payload; }, async text() { return ""; } });
+
+test("resolveConfig parses recall_budget_ms: default, option > env, malformed falls back, 0 accepted", () => {
+  assert.equal(resolveConfig({}, undefined, "/r").recall_budget_ms, 2000);
+  assert.equal(resolveConfig({ MEMINI_RECALL_BUDGET_MS: "500" }, undefined, "/r").recall_budget_ms, 500);
+  assert.equal(
+    resolveConfig({ MEMINI_RECALL_BUDGET_MS: "500" }, { recall_budget_ms: 100 }, "/r").recall_budget_ms,
+    100,
+  );
+  assert.equal(resolveConfig({ MEMINI_RECALL_BUDGET_MS: "junk" }, undefined, "/r").recall_budget_ms, 2000);
+  // Number("") === 0, which would silently disable the race; an empty env var
+  // must fall through to the default instead.
+  assert.equal(resolveConfig({ MEMINI_RECALL_BUDGET_MS: "" }, undefined, "/r").recall_budget_ms, 2000);
+  assert.equal(resolveConfig({}, { recall_budget_ms: 0 }, "/r").recall_budget_ms, 0);
+});
+
+test("a recall slower than the budget skips this turn and carries over to the next", async () => {
+  const realFetch = globalThis.fetch;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let searchCalls = 0;
+  globalThis.fetch = async (url) => {
+    if (!String(url).endsWith("/v1/search")) return okJson({});
+    searchCalls++;
+    if (searchCalls === 1) {
+      await gate;
+      return okJson({ results: [{ score: 0.9, memory: { id: "m1", tier: "semantic", summary: "late hit" } }] });
+    }
+    return okJson({ results: [] });
+  };
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080", recall_budget_ms: 10 },
+    );
+    const first = { parts: [{ type: "text", text: "q1", sessionID: "s1", messageID: "m1" }] };
+    await hooks["chat.message"]({ sessionID: "s1" }, first);
+    assert.equal(first.parts.length, 1, "a budget miss must not inject this turn");
+    release();
+    await new Promise((r) => setTimeout(r, 20)); // let the late fetch settle into the stash
+    // The second turn's own search returns nothing, so an injection can only
+    // come from the carryover.
+    const second = { parts: [{ type: "text", text: "q2", sessionID: "s1", messageID: "m2" }] };
+    await hooks["chat.message"]({ sessionID: "s1" }, second);
+    assert.equal(second.parts.length, 2, "late results should inject on the next turn");
+    assert.match(second.parts[0].text, /late hit/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("recall_budget_ms: 0 restores blocking same-turn injection", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (!String(url).endsWith("/v1/search")) return okJson({});
+    await new Promise((r) => setTimeout(r, 30));
+    return okJson({ results: [{ score: 0.9, memory: { id: "m1", tier: "semantic", summary: "slow hit" } }] });
+  };
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080", recall_budget_ms: 0 },
+    );
+    const output = { parts: [{ type: "text", text: "q", sessionID: "s1", messageID: "m1" }] };
+    await hooks["chat.message"]({ sessionID: "s1" }, output);
+    assert.equal(output.parts.length, 2, "budget 0 must wait for the slow recall");
+    assert.match(output.parts[0].text, /slow hit/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("carried-over hits still respect the seen-dedup and the score floor", async () => {
+  const realFetch = globalThis.fetch;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let searchCalls = 0;
+  const seenHit = { score: 0.9, memory: { id: "m1", tier: "semantic", summary: "already shown" } };
+  globalThis.fetch = async (url) => {
+    if (!String(url).endsWith("/v1/search")) return okJson({});
+    searchCalls++;
+    if (searchCalls === 1) return okJson({ results: [seenHit] });
+    if (searchCalls === 2) {
+      await gate;
+      return okJson({
+        results: [
+          seenHit,
+          { score: 0.1, memory: { id: "m2", tier: "episodic", summary: "below the floor" } },
+          { score: 0.8, memory: { id: "m3", tier: "semantic", summary: "fresh carryover" } },
+        ],
+      });
+    }
+    return okJson({ results: [] });
+  };
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080", recall_budget_ms: 10, recall_min_score: 0.4 },
+    );
+    const t1 = { parts: [{ type: "text", text: "q1", sessionID: "s1", messageID: "m1" }] };
+    await hooks["chat.message"]({ sessionID: "s1" }, t1);
+    assert.equal(t1.parts.length, 2, "turn 1 injects the fast hit");
+    const t2 = { parts: [{ type: "text", text: "q2", sessionID: "s1", messageID: "m2" }] };
+    await hooks["chat.message"]({ sessionID: "s1" }, t2);
+    assert.equal(t2.parts.length, 1, "turn 2 misses the budget");
+    release();
+    await new Promise((r) => setTimeout(r, 20));
+    const t3 = { parts: [{ type: "text", text: "q3", sessionID: "s1", messageID: "m3" }] };
+    await hooks["chat.message"]({ sessionID: "s1" }, t3);
+    assert.equal(t3.parts.length, 2, "turn 3 injects the carried-over hit");
+    assert.match(t3.parts[0].text, /fresh carryover/);
+    assert.ok(!t3.parts[0].text.includes("already shown"), "seen memory must not re-inject");
+    assert.ok(!t3.parts[0].text.includes("below the floor"), "floored memory must not inject");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a late recall rejection is logged, never an unhandled rejection", async () => {
+  const realFetch = globalThis.fetch;
+  const realError = console.error;
+  const logged = [];
+  console.error = (m) => logged.push(String(m));
+  const unhandled = [];
+  const onUnhandled = (e) => unhandled.push(e);
+  process.on("unhandledRejection", onUnhandled);
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  globalThis.fetch = async (url) => {
+    if (!String(url).endsWith("/v1/search")) return okJson({});
+    await gate;
+    throw new Error("late boom");
+  };
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      // fallback_on_error:false makes postJson rethrow after the budget has
+      // expired, when nothing awaits the promise anymore.
+      { base_url: "http://localhost:8080", recall_budget_ms: 10, fallback_on_error: false },
+    );
+    const output = { parts: [{ type: "text", text: "q", sessionID: "s1", messageID: "m1" }] };
+    await hooks["chat.message"]({ sessionID: "s1" }, output);
+    assert.equal(output.parts.length, 1);
+    release();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.ok(
+      logged.some((m) => m.includes("late boom")),
+      `expected the late error to be logged, got: ${JSON.stringify(logged)}`,
+    );
+    assert.equal(unhandled.length, 0, "a late rejection must be caught");
+  } finally {
+    globalThis.fetch = realFetch;
+    console.error = realError;
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
+});
+
+test("plugin init fires a warmup /healthz ping and survives its failure", async () => {
+  const realFetch = globalThis.fetch;
+  const urls = [];
+  globalThis.fetch = async (url) => {
+    urls.push(String(url));
+    throw new Error("down");
+  };
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080" },
+    );
+    assert.ok(urls.some((u) => u.endsWith("/healthz")), `expected a warmup ping, got: ${urls}`);
+    assert.ok(hooks["chat.message"], "init must survive a failed warmup");
+    await new Promise((r) => setTimeout(r, 5)); // let the rejected warmup settle
+  } finally {
+    globalThis.fetch = realFetch;
   }
 });
 

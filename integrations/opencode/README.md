@@ -53,11 +53,22 @@ Pass options inline via the `[name, options]` form:
 | `recall_limit`      | `MEMINI_RECALL_LIMIT`            | `3`                     | max memories injected per turn                                                                                                         |
 | `recall_max_tokens` | `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                     | hard ceiling on the recall-block tokens (`0` = unbounded); the tail is dropped with a `[… N item(s) truncated by token budget]` footer |
 | `recall_min_score`  | `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                     | fused-score floor (>=) sent as `min_score` to `/v1/search`                                                                             |
-| `timeout_ms`        | `MEMINI_TIMEOUT_MS`              | `30000`                 | per-request timeout                                                                                                                    |
+| `recall_budget_ms`  | `MEMINI_RECALL_BUDGET_MS`        | `2000`                  | how long a turn waits for recall before proceeding without it (`0` = wait for the full `timeout_ms`)                                   |
+| `timeout_ms`        | `MEMINI_TIMEOUT_MS`              | `30000`                 | per-request timeout (recall past its budget keeps running in the background under this bound)                                          |
 | `fallback_on_error` | `MEMINI_FALLBACK`                | on                      | `false` surfaces errors instead of degrading silently                                                                                  |
 | —                   | `MEMINI_INJECT_LABELS`           | —                       | comma-separated label toggles for each bullet: `tier`, `confidence`, `age`, `reason`                                                   |
 | —                   | `MEMINI_API_KEY`                 | —                       | bearer token, if memini needs auth (env only — secret; alias: `MEMINI_TOKEN`)                                                          |
 | —                   | `MEMINI_REQUIRE_HTTPS`           | —                       | `1` refuses to send the token over plaintext HTTP                                                                                      |
+
+opencode awaits `chat.message` before the model sees the message, so a slow or
+unreachable memini would otherwise freeze the turn for the full `timeout_ms`.
+Instead, recall races `recall_budget_ms`: if the search hasn't answered in time,
+the turn proceeds without memories and the search keeps running in the
+background — results that arrive late are injected on the session's next
+message instead of being dropped. The plugin also pings `/healthz` once at
+startup to warm the connection, so the first recall doesn't pay the
+DNS/TLS cold-start. Set `recall_budget_ms: 0` to restore fully blocking
+same-turn injection.
 
 Inline options win over the env vars. Secrets stay in the environment: set
 `MEMINI_API_KEY` (sent as `Authorization: Bearer …`), and optionally
