@@ -19,7 +19,7 @@ import {
   type ResolvedConfig,
 } from "../src/index.ts";
 import { readOverride, writeOverride } from "@memini/client";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -555,7 +555,9 @@ function tmpEnv(extra: Record<string, string> = {}): Record<string, string | und
 }
 
 function tmpProject(): string {
-  return mkdtempSync(join(tmpdir(), "openclaw-memini-proj-"));
+  // macOS exposes /var through the /private/var symlink; process.cwd() returns
+  // the real path, so keep the override key identical to the command runtime.
+  return realpathSync(mkdtempSync(join(tmpdir(), "openclaw-memini-proj-")));
 }
 
 test("resolveBaseNamespace: the default is still the literal openclaw, with no cwd derivation", () => {

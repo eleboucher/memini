@@ -135,11 +135,11 @@ set it (e.g. `30`) if a gateway still emits short residual-noise turns.
 
 **There is no relevance-score floor knob — by design.** Bounding per-turn volume
 is `recall_limit`'s job, not a score gate, because benchmarking
-(`cmd/bench -vec-gate`) showed neither score can decide "inject nothing when
+(`memini-bench --vec-gate`) showed neither score can decide "inject nothing when
 nothing is relevant" with the default MiniLM embedder:
 
 - The **fused score** is min-max-normalised within the candidate pool
-  (`internal/search/fusion.go`), so the pool's best always lands near ~1.0
+  (`memini-core::search`), so the pool's best always lands near ~1.0
   regardless of absolute relevance — a nonsense query produces the same
   high-scoring shape as a perfect match.
 - The **raw vector score** doesn't separate either: across 240 LongMemEval

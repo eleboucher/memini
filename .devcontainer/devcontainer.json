@@ -8,7 +8,7 @@
   "postCreateCommand": "mise trust && mise install",
   "customizations": {
     "vscode": {
-      "extensions": ["golang.go", "tamasfe.even-better-toml", "redhat.vscode-yaml"]
+      "extensions": ["rust-lang.rust-analyzer", "tamasfe.even-better-toml", "redhat.vscode-yaml"]
     }
   },
   "remoteUser": "vscode"

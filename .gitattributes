@@ -1,7 +1,6 @@
 * text=auto eol=lf
 
-*.go    text diff=golang
-go.sum  text -diff
+Cargo.lock text -diff
 *.png   binary
 *.jpg   binary
 *.gz    binary

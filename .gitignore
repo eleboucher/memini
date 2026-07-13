@@ -1,5 +1,6 @@
 /bin/
 /dist/
+/target/
 # UI artifacts. The Vite bundle is generated, not committed; .gitkeep stays so
 # //go:embed all:dist compiles.
 /ui/node_modules/
@@ -10,8 +11,8 @@ node_modules/
 __pycache__/
 # Playwright MCP debug artifacts (snapshots, screenshots, console logs).
 /.playwright-mcp/
-/internal/api/ui/dist/*
-!/internal/api/ui/dist/.gitkeep
+/ui/dist/*
+!/ui/dist/.gitkeep
 *.db
 *.db-shm
 *.db-wal
@@ -44,6 +45,3 @@ qa_*.jsonl
 packages/*/dist/
 packages/*/node_modules/
 .superpowers/
-
-# Stray build output from `go build ./cmd/gendocs`.
-/gendocs

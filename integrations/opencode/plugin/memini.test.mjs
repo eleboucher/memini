@@ -589,8 +589,8 @@ test("requests carry X-Memini-Home when configured, omit it otherwise", async ()
 // --- Namespace override --------------------------------------------------
 
 test("the project override beats MEMINI_NAMESPACE and the inline option", () => {
-  const dir = mkdtempSync(join(tmpdir(), "memini-override-"));
-  const xdg = freshOverrides({ [realpathSync(dir)]: { namespace: "acme/api", setAt: "2026-07-12T20:30:00Z" } });
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "memini-override-")));
+  const xdg = freshOverrides({ [dir]: { namespace: "acme/api", setAt: "2026-07-12T20:30:00Z" } });
   withXdg(xdg, () => {
     // The env pin is exactly the case the override exists to beat: a globally
     // exported MEMINI_NAMESPACE would otherwise pin every repo on the machine.
@@ -674,8 +674,8 @@ test("describeSettings reports the provenance that exposes a global env pin", ()
 });
 
 test("describeSettings shows what an active override is masking", () => {
-  const dir = mkdtempSync(join(tmpdir(), "memini-override-"));
-  const xdg = freshOverrides({ [realpathSync(dir)]: { namespace: "acme/api", setAt: "2026-07-12T20:30:00Z" } });
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "memini-override-")));
+  const xdg = freshOverrides({ [dir]: { namespace: "acme/api", setAt: "2026-07-12T20:30:00Z" } });
   withXdg(xdg, () => {
     const report = describeSettings({ MEMINI_NAMESPACE: "pinned" }, undefined, dir);
     assert.equal(report.namespace.effective, "acme/api");

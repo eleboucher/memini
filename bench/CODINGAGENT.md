@@ -74,8 +74,8 @@ version only:
 
 ## 3. Schema
 
-Extends the normalized bench schema (`bench/dataset.go`), loaded by
-`bench.LoadCodingAgent` (`bench/codingagent.go`):
+Extends the normalized benchmark schema, loaded by
+`Dataset::load_coding_agent` in `crates/memini-bench`:
 
 - **items**: `id, content, group, time` (RFC3339, required), `session`
   (dev-session key, passed as `session_id` metadata on write ingest), `source`
@@ -173,15 +173,11 @@ export MEMINI_LLM_API=openai MEMINI_LLM_BASE_URL=https://litellm.erwanleboucher.
 # scaled corpus (166 q); omit to use the 45-q pilot
 export MEMINI_CODINGAGENT_DATA=data/codingagent_v1.json
 
-# 1. gold audit (offline, instant — run after every dataset edit)
-go test -tags bench ./bench -run TestCodingAgentGoldAudit -v
-# 2. headroom (embedder only)
-go test -tags bench ./bench -run TestCodingAgentHeadroom -v -timeout 20m
-# 3. discrimination 3-way (embedder + LLM; checkpointed/resumable)
-go test -tags bench ./bench -run TestCodingAgentDiscrimination -v -timeout 6h
-# ad-hoc single-arm rerun
-go run ./cmd/qa -suite codingagent -data bench/data/codingagent_v1.json \
-  -ingest write -reasoning [""|expand|medium] -k 10
+# Offline loader and retrieval acceptance
+cargo test -p memini-bench
+# Checkpointed/resumable answer-quality arm
+cargo run -p memini-bench --bin memini-qa -- --suite codingagent --data bench/data/codingagent_v1.json \
+  --ingest write --reasoning medium --k 10
 ```
 
 ## 7. Results
@@ -287,7 +283,7 @@ Follow-up to §8.4: since the synthesis headroom is a retrieval/consolidation ga
 not an answering one, could precomputing the combined fact at **write time** —
 one retrievable durable memory — beat doing it at answer time (which §7 showed
 does not pay)? This is honcho's "dreamer" inductive half, minus the tool loop
-(`bench/synthesize.go`, `TestCodingAgentSynthesis`). It clusters the corpus by
+The experiment clustered the corpus by
 nearest-neighbour proximity and, per cluster, makes one LLM call that emits facts
 entailed by ≥2 members, stored as new `Level=deduced` semantic memories. It is
 **question-blind** (sees only the store) — the validity crux.

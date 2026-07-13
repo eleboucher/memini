@@ -1,0 +1,17 @@
+[package]
+name="memini-import"
+version.workspace=true
+edition.workspace=true
+license.workspace=true
+repository.workspace=true
+
+[dependencies]
+chrono.workspace=true
+memini-core={path="../memini-core"}
+memini-embed={path="../memini-embed"}
+memini-intelligence={path="../memini-intelligence"}
+memini-store={path="../memini-store"}
+serde.workspace=true
+serde_json.workspace=true
+thiserror.workspace=true
+uuid={version="1",features=["v5"]}

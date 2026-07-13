@@ -180,12 +180,12 @@ def _read_config() -> dict | None:
 
 def _match_tenant(cwd: str, config: dict) -> str | None:
     """Return the tenant name if cwd is under a configured tenant root, else None.
-    Lexical path handling (expanduser + abspath, no symlink resolution) so
-    configured roots match the way the node integrations compare them."""
+    Resolve filesystem aliases on both sides (notably macOS /var ->
+    /private/var) so configured roots and the process cwd compare consistently."""
     roots = config.get("tenantRoots")
     if not isinstance(roots, list):
         return None
-    cwd_abs = os.path.abspath(cwd)
+    cwd_abs = os.path.realpath(os.path.abspath(cwd))
     for root in roots:
         if not isinstance(root, dict):
             continue
@@ -193,7 +193,7 @@ def _match_tenant(cwd: str, config: dict) -> str | None:
         # An empty/missing path would abspath to the cwd and match it; skip.
         if not isinstance(root_path, str) or not root_path:
             continue
-        root_abs = os.path.abspath(os.path.expanduser(root_path))
+        root_abs = os.path.realpath(os.path.abspath(os.path.expanduser(root_path)))
         if cwd_abs == root_abs or cwd_abs.startswith(root_abs + os.sep):
             tenant = re.sub(r"[^A-Za-z0-9._-]+", "-", str(root.get("tenant", ""))).strip("-")
             if tenant:

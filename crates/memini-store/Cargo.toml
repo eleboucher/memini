@@ -1,0 +1,13 @@
+[package]
+name = "memini-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+memini-core = { path = "../memini-core" }
+serde_json.workspace = true
+thiserror = "2"

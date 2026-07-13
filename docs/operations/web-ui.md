@@ -76,7 +76,7 @@ the agent's job.
 Sources live in [`ui/`](../../ui).
 
 ```sh
-mise run ui       # build the embedded bundle into internal/api/ui/dist
+mise run ui       # build the embedded bundle into ui/dist
 mise run ui-dev   # dev server with HMR, proxies /v1 to a local memini on :8080
 ```
 
@@ -85,8 +85,8 @@ mise run ui-dev   # dev server with HMR, proxies /v1 to a local memini on :8080
 file stays committed, because the Docker build only copies `ui/` and cannot
 regenerate it.
 
-The built bundle under `internal/api/ui/dist/` is a gitignored build artifact.
-The Docker image builds it; a plain `go build` without it still works and serves
+The built bundle under `ui/dist/` is a gitignored build artifact.
+The Docker image builds it; a plain `cargo build` without it still works and serves
 a placeholder page.
 
 ## Configuration

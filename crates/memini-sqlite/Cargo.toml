@@ -1,0 +1,19 @@
+[package]
+name = "memini-sqlite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+memini-core = { path = "../memini-core" }
+memini-store = { path = "../memini-store" }
+rusqlite.workspace = true
+serde_json.workspace = true
+sqlite-vec = "=0.1.7"
+
+[dev-dependencies]
+pollster = "0.4"
+tempfile = "3"

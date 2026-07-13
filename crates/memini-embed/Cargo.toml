@@ -1,0 +1,22 @@
+[package]
+name = "memini-embed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bincode = { version = "2", features = ["serde"] }
+lru = "0.16"
+reqwest.workspace = true
+serde.workspace = true
+sha2.workspace = true
+memini-observability = { path = "../memini-observability" }
+thiserror = "2"
+tokio.workspace = true
+
+[dev-dependencies]
+axum = "0.8"
+serde_json.workspace = true
+tempfile = "3"

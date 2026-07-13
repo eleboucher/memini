@@ -1,0 +1,24 @@
+[workspace]
+members = ["crates/memini-api", "crates/memini-auth", "crates/memini-bench", "crates/memini-cli", "crates/memini-config", "crates/memini-core", "crates/memini-embed", "crates/memini-import", "crates/memini-intelligence", "crates/memini-llm", "crates/memini-maintenance", "crates/memini-observability", "crates/memini-postgres", "crates/memini-rerank", "crates/memini-service", "crates/memini-sqlite", "crates/memini-store", "crates/memini-store-conformance"]
+resolver = "2"
+
+[workspace.package]
+version = "0.6.9"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/eleboucher/memini"
+
+[workspace.dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+humantime = "2"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+unicode-script = "0.5"
+rusqlite = { version = "0.40", features = ["bundled"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time"] }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+regex = "1"
+thiserror = "2"

@@ -114,11 +114,10 @@ unset MEMINI_GLOBAL_NAMESPACE MEMINI_TENANT_SHARED
 ### There is no deadlock
 
 Worth saying explicitly, because it looks like there should be one: the fatal
-check is **not** in `config.Load()`. It lives in the two server-boot paths,
-`runServer` and `runMCP` (`cmd/memini/root.go`, `cmd/memini/mcp.go`), which call
-`config.FatalDeprecatedVars()` before loading config.
+check is **not** in ordinary configuration parsing. The Rust CLI checks
+`fatal_deprecated_vars()` before starting either the HTTP or stdio MCP server.
 
-`memini migrate scopes` also calls `config.Load()`, and it separately reads
+`memini migrate scopes` separately reads
 `MEMINI_GLOBAL_NAMESPACE` so it can print the adoption instructions in step 4.
 If the refusal lived in `Load()`, the one command that fixes the problem could
 never run while the variable that triggers it was set.

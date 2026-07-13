@@ -29,55 +29,31 @@ jobs:
       - name: Checkout
         uses: https://data.forgejo.org/actions/checkout@v7
 
-      - name: Setup Go
-        uses: https://data.forgejo.org/actions/setup-go@v6
+      - name: Setup Rust
+        uses: https://github.com/dtolnay/rust-toolchain@stable
         with:
-          go-version-file: go.mod
+          components: clippy,rustfmt
 
-      - name: Check go.mod tidiness
-        run: |
-          go mod tidy
-          git diff --exit-code go.mod go.sum
+      - name: Check formatting
+        run: cargo fmt --all --check
 
-      # The REST server is generated from api/openapi.yaml (oapi-codegen);
-      # fail if the committed code drifted from the spec.
-      - name: Check generated REST code is current
-        run: |
-          go generate ./internal/api/rest
-          git diff --exit-code internal/api/rest/api.gen.go
-
-      # The configuration reference is generated from the env tags and doc
-      # comments on config.Config; fail if the committed page drifted from the
-      # code. This is what stops a new setting from shipping undocumented.
-      - name: Check generated docs are current
-        run: |
-          go generate ./internal/config
-          go run -tags gendocs ./cmd/memini gen-docs --out docs/reference/cli.md
-          git diff --exit-code docs/reference/
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Run tests
-        run: CGO_ENABLED=1 go test -race -count=1 -timeout 300s ./...
+        run: cargo test --workspace --locked
+
+      - name: Check generated docs
+        run: |
+          cargo run -p memini-cli --features gendocs -- gen-docs --out docs/reference/cli.md
+          git diff --exit-code docs/reference/
 
       # The shared store conformance suite against a real Postgres+VectorChord;
       # without this the postgres backend never runs in CI.
       - name: Run Postgres conformance tests
         env:
           MEMINI_TEST_POSTGRES_DSN: postgres://postgres:memini@postgres:5432/memini?sslmode=disable
-        run: CGO_ENABLED=1 go test -race -count=1 -timeout 300s -tags integration ./internal/store/postgres/
-
-      # End-to-end tests that boot the full server stack (store + embedder +
-      # workers + REST/MCP) and drive it over HTTP. The DSN also exercises the
-      # Postgres backend; SQLite always runs.
-      - name: Run end-to-end integration tests
-        env:
-          MEMINI_TEST_POSTGRES_DSN: postgres://postgres:memini@postgres:5432/memini?sslmode=disable
-        run: CGO_ENABLED=1 go test -race -count=1 -timeout 300s -tags integration ./cmd/memini/
-
-      # The bench eval harnesses live behind the `bench` tag so they stay out of
-      # the default `go test ./...` (they need a live embedder and take minutes).
-      # Compile them here and let them skip without an embedder, so they can't rot.
-      - name: Compile-check bench harnesses
-        run: CGO_ENABLED=1 go test -race -count=1 -timeout 120s -run=^$ -tags bench ./bench/
+        run: cargo test -p memini-postgres -p memini-store-conformance --locked -- --ignored
 
   plugins:
     runs-on: docker
@@ -171,15 +147,13 @@ jobs:
       - name: Checkout
         uses: https://data.forgejo.org/actions/checkout@v7
 
-      - name: Setup Go
-        uses: https://data.forgejo.org/actions/setup-go@v6
+      - name: Setup Rust
+        uses: https://github.com/dtolnay/rust-toolchain@stable
         with:
-          go-version-file: go.mod
+          components: clippy
 
       - name: Run linter
-        uses: https://data.forgejo.org/golangci/golangci-lint-action@v9
-        with:
-          version: v2.12.2
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   helm:
     runs-on: docker
@@ -193,11 +167,6 @@ jobs:
     steps:
       - name: Checkout
         uses: https://data.forgejo.org/actions/checkout@v7
-
-      - name: Setup Go
-        uses: https://data.forgejo.org/actions/setup-go@v6
-        with:
-          go-version-file: go.mod
 
       - name: Install helm
         run: |

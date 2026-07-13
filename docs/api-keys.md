@@ -33,7 +33,7 @@ memini instances/stores), not something an API key's bindings enforce.
 A request authenticates against these in order: admin key first (constant-time
 compare), then the file keys (by hash), then the table (by hash). A key found
 in the file or table but disabled is rejected outright — it never falls
-through to a lower-precedence check. See `internal/apiauth.Config.Authenticate`
+through to a lower-precedence check. See `memini-auth`
 for the exact precedence and edge cases (e.g. what happens with no token
 presented at all).
 

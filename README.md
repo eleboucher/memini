@@ -4,7 +4,7 @@
 
 `memini` gives any [MCP](https://modelcontextprotocol.io)-capable agent (Claude Code,
 opencode, Codex, Hermes, OpenClaw, Open WebUI) one place to `remember` and `recall`,
-with retrieval quality that compounds over time. It runs as a single Go binary, boots
+with retrieval quality that compounds over time. It runs as a single Rust binary, boots
 with zero configuration, and scales from an embedded SQLite file on a laptop to Postgres
 in Kubernetes.
 
@@ -49,7 +49,7 @@ knowledge still accumulates in an embedder-only deployment.
 
 | Concern    | Choice                                                                                     |
 | ---------- | ------------------------------------------------------------------------------------------ |
-| Language   | Go: single static binary, tiny image, low memory                                           |
+| Language   | Rust: single native binary, tiny image, low memory                                         |
 | Storage    | Pluggable: **sqlite-vec** (embedded, default) or **Postgres + VectorChord** (scale)        |
 | Embeddings | External OpenAI-compatible endpoint (you deploy the model)                                 |
 | LLM        | **Opt-in**: runs headless without one                                                      |

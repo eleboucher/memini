@@ -232,7 +232,7 @@ same-tier memory. It is one threshold plus one action:
   (default `0.625`) is the fused similarity at or above which the write counts as
   a near-duplicate. `0` disables write-time dedup entirely. The right value is
   embedder-dependent: around 0.9 collapses near-identical restatements only, while
-  the 0.625 default was calibrated for merge hints in `bench/dedup_test.go`.
+  the 0.625 default was calibrated for merge hints in the benchmark harness.
 - [`MEMINI_WRITE_DEDUP_ACTION`](../reference/configuration.md#memini_write_dedup_action)
   decides what happens at or above it. `hint` (default) stores the write and
   returns a merge hint the agent can act on with `memory_update`; it is

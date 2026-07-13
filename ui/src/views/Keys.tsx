@@ -26,7 +26,7 @@ export function Keys() {
   }
 
   // The server's 403 body is a fixed, distinctive message (see
-  // internal/api/rest/apikeys.go's requireAdminOrDev) — matching on it lets
+  // the API's admin guard — matching on it lets
   // this view show a purpose-built empty state instead of a raw error banner.
   if (error?.includes('admin key required')) {
     return (
