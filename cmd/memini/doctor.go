@@ -79,8 +79,14 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	serverNS := cfg.DefaultNamespace
 	pluginNS, pluginSrc := config.ResolvePluginNamespace(cwd)
 	envNS := firstNonEmptyEnv("MEMINI_DEFAULT_NAMESPACE", "MEMINI_NAMESPACE")
+	overrideNS, hasOverride := config.NamespaceOverride(cwd)
 
-	fmt.Fprintf(out, "Namespace resolution (cwd: %s)\n", cwd)                    //nolint:errcheck
+	fmt.Fprintf(out, "Namespace resolution (cwd: %s)\n", cwd) //nolint:errcheck
+	if hasOverride {
+		// Printed above the env line because it outranks it — the order of these
+		// lines is the precedence, and a reader should be able to see that.
+		fmt.Fprintf(out, "  project override: %q (%s)\n", overrideNS, config.OverridesPath()) //nolint:errcheck
+	}
 	fmt.Fprintf(out, "  env override:    %s\n", orUnset(envNS))                  //nolint:errcheck
 	fmt.Fprintf(out, "  server default:  %q (%s)\n", serverNS, cfg.NamespaceSrc) //nolint:errcheck
 	fmt.Fprintf(out, "  plugin resolves: %q (%s)\n", pluginNS, pluginSrc)        //nolint:errcheck
@@ -91,7 +97,11 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 		note(out, "Plugins send an explicit namespace header, but bare MCP clients use the server")
 		note(out, fmt.Sprintf("default, so they disagree. Pin one with MEMINI_DEFAULT_NAMESPACE=%q.", pluginNS))
 	}
-	warnings += warnGlobalNamespacePin(out, cwd, envNS)
+	// An override masking the pin IS the fix, so nagging about the pin under one
+	// would be noise. Matches the client's suppression in describeSettings.
+	if !hasOverride {
+		warnings += warnGlobalNamespacePin(out, cwd, envNS)
+	}
 	warnings += warnHomeUnset(out, cfg.Home)
 	fmt.Fprintln(out) //nolint:errcheck
 

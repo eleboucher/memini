@@ -14,24 +14,33 @@ const NamespaceFromGitRemote NamespaceSource = "git-remote"
 // ResolvePluginNamespace resolves a namespace the way the Claude Code / OpenClaw
 // plugins do (plugin/scripts/_shared.mjs resolveProject):
 //
-//  1. MEMINI_NAMESPACE (or MEMINI_DEFAULT_NAMESPACE) env, if non-empty
-//  2. repo name from `git remote get-url origin` (stable across worktrees/clones)
-//  3. basename of `git rev-parse --show-toplevel`
-//  4. basename of dir
+//  1. the per-project override (~/.config/memini/overrides.json), if set
+//  2. MEMINI_NAMESPACE (or MEMINI_DEFAULT_NAMESPACE) env, if non-empty
+//  3. repo name from `git remote get-url origin` (stable across worktrees/clones)
+//  4. basename of `git rev-parse --show-toplevel`
+//  5. basename of dir
 //
-// then nested under a per-agent segment when MEMINI_AGENT is set (step 5,
+// then nested under a per-agent segment when MEMINI_AGENT is set (step 6,
 // mirroring _shared.mjs withAgent). It differs from resolveDefaultNamespace (the
-// server's header-less fallback) in step 2 (the server skips the git-remote
-// step) and step 5; `memini doctor` uses both to flag the divergence that lands
+// server's header-less fallback) in step 3 (the server skips the git-remote
+// step) and step 6; `memini doctor` uses both to flag the divergence that lands
 // writes where recall doesn't look. The server's resolution is intentionally
 // left unchanged so existing stores keyed by the worktree basename are not
 // silently relocated.
+//
+// The override outranks the env var, matching the client exactly. Getting this
+// backwards would be worse than not reading the file at all: doctor would report
+// a namespace the plugin does not actually use, on precisely the machines where
+// a globally exported MEMINI_NAMESPACE is the problem being diagnosed.
 func ResolvePluginNamespace(dir string) (string, NamespaceSource) {
 	ns, src := resolvePluginBase(dir)
 	return withAgentSegment(ns), src
 }
 
 func resolvePluginBase(dir string) (string, NamespaceSource) {
+	if ns, ok := NamespaceOverride(dir); ok {
+		return ns, NamespaceFromOverride
+	}
 	if v := firstNonEmpty(
 		os.Getenv("MEMINI_NAMESPACE"),
 		os.Getenv("MEMINI_DEFAULT_NAMESPACE"),
