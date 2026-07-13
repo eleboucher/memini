@@ -9,7 +9,26 @@ description: >-
 
 # memory (memini)
 
-memini is a memory service reachable at `${MEMINI_BASE_URL:-${MEMINI_URL:-http://localhost:8080}}`.
+memini is a memory service.
+
+**If the `memory_briefing` / `memory_recall` / `memory_remember` / `memory_list` /
+`memory_forget` tools are in your tool list, use them and ignore the rest of this
+file.** They take the same `scope` and `visibility` arguments described below,
+and they resolve the namespace for you. The curl recipes here are the fallback
+for installs that run memini as a skill _without_ the plugin — see
+[the README's Alternatives](../../README.md#alternatives) — where there is no
+tool to call.
+
+Do not mix the two. The plugin namespaces memory per agent by default
+(`{namespace}-{agent}`), and the curl calls below cannot see that — they send the
+base `$MEMINI_NAMESPACE`, so a fact written by curl lands somewhere the plugin's
+own recall will never look. If the plugin is installed but its tools are not
+exposed, ask the operator to set `expose_tools: true` rather than reaching for
+curl.
+
+The rest of this file assumes the no-plugin install.
+
+The service is reachable at `${MEMINI_BASE_URL:-${MEMINI_URL:-http://localhost:8080}}`.
 If a bearer token is configured, send `Authorization: Bearer $MEMINI_API_KEY`.
 
 **Namespaces are managed for you.** Every request carries the
