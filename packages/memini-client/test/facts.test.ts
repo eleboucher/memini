@@ -87,3 +87,29 @@ test("factsFingerprint: identical facts always hash identically", () => {
   const f: ProjectFacts = { cwd_basename: "adhoc-dir" };
   assert.equal(factsFingerprint(f), factsFingerprint({ cwd_basename: "adhoc-dir" }));
 });
+
+test("factsFingerprint: a sparse object and a dense object with explicit undefined fields hash identically", () => {
+  // gatherFacts only ever produces the sparse shape (an omitted key when a
+  // fact wasn't found), but nothing in the ProjectFacts type stops some other
+  // producer from assigning a key to undefined explicitly. Object.keys sees
+  // both forms, so without filtering, the dense form would carry extra
+  // "key=undefined" segments the sparse form never contributes and the two
+  // would fingerprint differently despite representing the same facts.
+  const sparse: ProjectFacts = { cwd_basename: "x" };
+  const dense: ProjectFacts = {
+    cwd_basename: "x",
+    remote_url: undefined,
+    toplevel_path: undefined,
+    toplevel_basename: undefined,
+    agent: undefined,
+    env_namespace: undefined,
+    declared_namespace: undefined,
+  };
+  assert.equal(factsFingerprint(sparse), factsFingerprint(dense));
+});
+
+test("factsFingerprint: a changed value still changes the fingerprint alongside explicit undefined fields", () => {
+  const base: ProjectFacts = { cwd_basename: "x", remote_url: undefined };
+  const changed: ProjectFacts = { cwd_basename: "y", remote_url: undefined };
+  assert.notEqual(factsFingerprint(base), factsFingerprint(changed));
+});

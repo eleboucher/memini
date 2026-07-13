@@ -315,8 +315,8 @@ function gatherFacts(cwd, env = process.env) {
   return facts;
 }
 function factsFingerprint(f) {
-  const keys = Object.keys(f).sort();
   const rec = f;
+  const keys = Object.keys(f).filter((k) => rec[k] !== void 0).sort();
   const parts = keys.map((k) => `${k}=${rec[k]}`);
   return crypto.createHash("sha256").update(parts.join("\n"), "utf8").digest("hex").slice(0, 16);
 }

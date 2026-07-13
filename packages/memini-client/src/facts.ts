@@ -82,10 +82,20 @@ export function gatherFacts(
  * fingerprint independent of insertion order; hashing (rather than comparing
  * the JSON string) keeps the cache record small and avoids leaking raw facts
  * into a diff-friendly form.
+ *
+ * Keys whose value is undefined are dropped before hashing: Object.keys
+ * returns a key that was explicitly assigned undefined just as readily as one
+ * that was never set, so without this filter a sparse ProjectFacts (what
+ * gatherFacts always produces — a fact is simply omitted when it's not found)
+ * and an otherwise-identical dense one that spells out its absent facts as
+ * `field: undefined` would fingerprint differently despite representing the
+ * same facts.
  */
 export function factsFingerprint(f: ProjectFacts): string {
-  const keys = Object.keys(f).sort();
   const rec = f as unknown as Record<string, unknown>;
+  const keys = Object.keys(f)
+    .filter((k) => rec[k] !== undefined)
+    .sort();
   const parts = keys.map((k) => `${k}=${rec[k]}`);
   return crypto.createHash("sha256").update(parts.join("\n"), "utf8").digest("hex").slice(0, 16);
 }
