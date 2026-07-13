@@ -6,7 +6,7 @@
  * that is what keeps them unit-testable with an injected env and keeps the
  * "what env var reads what" knowledge in exactly one place.
  *
- * Deliberately narrower than settings.ts's CLIENT_KNOBS: this is only the
+ * Deliberately narrower than settings.ts's BEHAVIOR_KNOBS: this is only the
  * handful of vars that gate *transport* (where to connect, whether to send a
  * bearer token, whether to require HTTPS) plus per-session identity
  * (MEMINI_AGENT, MEMINI_NAMESPACE, MEMINI_HOME). No aliases: MEMINI_URL and
