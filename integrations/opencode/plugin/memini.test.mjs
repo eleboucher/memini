@@ -1,7 +1,7 @@
 // Run: node --test (from this directory). Not shipped by install.sh.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import {
@@ -18,6 +18,12 @@ import {
   approxTokens,
   fitByTokens,
   truncate,
+  readOverride,
+  overrideKey,
+  overridesPath,
+  describeSettings,
+  renderStatus,
+  redactSecret,
 } from "./memini.js";
 
 // Point XDG_CONFIG_HOME at an empty temp dir so a developer's real
@@ -31,6 +37,30 @@ function freshConfig(config) {
   mkdirSync(join(dir, "memini"), { recursive: true });
   writeFileSync(join(dir, "memini", "config.json"), JSON.stringify(config));
   return dir;
+}
+
+// A temp XDG_CONFIG_HOME holding memini/overrides.json. `raw` writes the file
+// verbatim, so a malformed one can be exercised.
+function freshOverrides(overrides, raw) {
+  const dir = mkdtempSync(join(tmpdir(), "memini-test-config-"));
+  mkdirSync(join(dir, "memini"), { recursive: true });
+  writeFileSync(
+    join(dir, "memini", "overrides.json"),
+    raw !== undefined ? raw : JSON.stringify({ version: 1, overrides }),
+  );
+  return dir;
+}
+
+// Swap XDG_CONFIG_HOME for the duration of `fn` (resolveConfig reads it at call
+// time, like the config-file tests above).
+function withXdg(dir, fn) {
+  const prev = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = dir;
+  try {
+    return fn();
+  } finally {
+    process.env.XDG_CONFIG_HOME = prev;
+  }
 }
 
 test("namespace derives from the git worktree basename", () => {
@@ -553,6 +583,134 @@ test("requests carry X-Memini-Home when configured, omit it otherwise", async ()
     assert.equal(requests[1].headers["X-Memini-Home"], undefined);
   } finally {
     globalThis.fetch = realFetch;
+  }
+});
+
+// --- Namespace override --------------------------------------------------
+
+test("the project override beats MEMINI_NAMESPACE and the inline option", () => {
+  const dir = mkdtempSync(join(tmpdir(), "memini-override-"));
+  const xdg = freshOverrides({ [realpathSync(dir)]: { namespace: "acme/api", setAt: "2026-07-12T20:30:00Z" } });
+  withXdg(xdg, () => {
+    // The env pin is exactly the case the override exists to beat: a globally
+    // exported MEMINI_NAMESPACE would otherwise pin every repo on the machine.
+    const cfg = resolveConfig({ MEMINI_NAMESPACE: "pinned" }, { namespace: "from-option" }, dir);
+    assert.equal(cfg.namespace, "acme/api");
+    assert.equal(cfg.namespace_source, "override");
+    assert.equal(cfg.override.setAt, "2026-07-12T20:30:00Z");
+  });
+});
+
+test("the override is keyed on the git toplevel, so it applies from a subdirectory", async () => {
+  const { execSync } = await import("node:child_process");
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "memini-override-repo-")));
+  execSync("git init -q", { cwd: repo });
+  const nested = join(repo, "services", "api");
+  mkdirSync(nested, { recursive: true });
+  const xdg = freshOverrides({ [repo]: { namespace: "acme/api", setAt: "2026-07-12T20:30:00Z" } });
+  withXdg(xdg, () => {
+    assert.equal(overrideKey(nested), repo);
+    assert.equal(resolveConfig({}, undefined, nested).namespace, "acme/api");
+  });
+});
+
+test("a malformed or absent overrides file degrades to automatic resolution", () => {
+  const dir = mkdtempSync(join(tmpdir(), "memini-override-"));
+  // Absent: the module-level XDG temp holds no overrides.json.
+  assert.equal(readOverride(dir), null);
+  assert.equal(resolveConfig({}, undefined, dir).namespace, basename(dir));
+  // Hand-edited into invalid JSON: never throw into opencode, just resolve.
+  withXdg(freshOverrides(null, "{ not json"), () => {
+    assert.equal(readOverride(dir), null);
+    assert.equal(resolveConfig({}, undefined, dir).namespace, basename(dir));
+  });
+  // Right JSON, wrong shape.
+  withXdg(freshOverrides(null, JSON.stringify({ version: 1, overrides: [] })), () => {
+    assert.equal(readOverride(dir), null);
+  });
+  // Present, but with an empty namespace: not an override.
+  withXdg(freshOverrides({ [realpathSync(dir)]: { namespace: "   " } }), () => {
+    assert.equal(readOverride(dir), null);
+    assert.equal(resolveConfig({}, undefined, dir).namespace, basename(dir));
+  });
+});
+
+test("overridesPath honours XDG_CONFIG_HOME and falls back to ~/.config", () => {
+  assert.equal(overridesPath({ XDG_CONFIG_HOME: "/x" }), join("/x", "memini", "overrides.json"));
+  assert.ok(overridesPath({}).endsWith(join(".config", "memini", "overrides.json")));
+});
+
+// --- Status ---------------------------------------------------------------
+
+test("redactSecret fingerprints a token and elides a short one", () => {
+  assert.equal(redactSecret("sk-0123456789abcd4f2a"), "sk-…4f2a");
+  assert.equal(redactSecret("short"), "***");
+  assert.equal(redactSecret(""), "");
+});
+
+test("describeSettings reports the provenance that exposes a global env pin", () => {
+  const report = describeSettings(
+    {
+      MEMINI_NAMESPACE: "pinned",
+      MEMINI_API_KEY: "sk-0123456789abcd4f2a",
+      MEMINI_BASE_URL: "http://memini.example.com",
+    },
+    undefined,
+    "/tmp/proj-x",
+  );
+  assert.equal(report.namespace.effective, "pinned");
+  assert.equal(report.namespace.source, "env");
+  // The line that turns "your namespace is pinned" into a diagnosis.
+  assert.equal(report.namespace.derived.namespace, "proj-x");
+
+  const codes = report.warnings.map((w) => w.code);
+  assert.ok(codes.includes("global-namespace-pin"), `got: ${codes}`);
+  assert.ok(codes.includes("plaintext-bearer"), `got: ${codes}`);
+
+  const text = renderStatus(report);
+  assert.ok(!text.includes("0123456789"), "the token must never be printed in full");
+  assert.match(text, /sk-…4f2a/);
+  assert.match(text, /git\/cwd would give\s+proj-x/);
+});
+
+test("describeSettings shows what an active override is masking", () => {
+  const dir = mkdtempSync(join(tmpdir(), "memini-override-"));
+  const xdg = freshOverrides({ [realpathSync(dir)]: { namespace: "acme/api", setAt: "2026-07-12T20:30:00Z" } });
+  withXdg(xdg, () => {
+    const report = describeSettings({ MEMINI_NAMESPACE: "pinned" }, undefined, dir);
+    assert.equal(report.namespace.effective, "acme/api");
+    assert.equal(report.namespace.source, "override");
+    assert.equal(report.namespace.withoutOverride.namespace, "pinned");
+    const codes = report.warnings.map((w) => w.code);
+    assert.ok(codes.includes("override-active"));
+    // An override IS the fix for a global pin, so it must not also nag about one.
+    assert.ok(!codes.includes("global-namespace-pin"));
+    assert.match(renderStatus(report), /without the override\s+pinned/);
+  });
+});
+
+test("the memini_status tool is registered zero-arg and never throws", async () => {
+  const hooks = await MeminiPlugin(
+    { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+    { base_url: "http://localhost:8080" },
+  );
+  const status = hooks.tool.memini_status;
+  // Zero-arg on purpose: a declared parameter would need a zod schema, and this
+  // plugin ships dependency-free (see the comment on the tool).
+  assert.deepEqual(status.args, {});
+  // The tool reads process.env at call time (so an override set mid-session is
+  // visible); a developer's exported MEMINI_NAMESPACE must not decide the
+  // assertion — which is, fittingly, the very pin the report exists to expose.
+  const prev = process.env.MEMINI_NAMESPACE;
+  delete process.env.MEMINI_NAMESPACE;
+  try {
+    const out = await status.execute({}, {});
+    assert.match(out.output, /memini — effective settings/);
+    assert.match(out.output, /NAMESPACE/);
+    assert.equal(out.metadata.namespace, "proj");
+    assert.equal(out.metadata.source, "worktree");
+  } finally {
+    if (prev !== undefined) process.env.MEMINI_NAMESPACE = prev;
   }
 });
 

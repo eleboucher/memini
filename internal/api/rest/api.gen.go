@@ -531,14 +531,17 @@ type Memory struct {
 	Level *Level `json:"level,omitempty"`
 
 	// MergeHint Optional. Returned on POST /v1/memories when the write's nearest same-tier candidate scored at/above MEMINI_WRITE_DEDUP_SCORE and MEMINI_WRITE_DEDUP_ACTION is "hint". The caller can decide whether to merge into the near-duplicate via memory_update.
-	MergeHint    *MergeHint              `json:"merge_hint,omitempty"`
-	Metadata     *map[string]interface{} `json:"metadata,omitempty"`
-	Namespace    string                  `json:"namespace"`
-	Summary      *string                 `json:"summary,omitempty"`
-	SupersededBy *string                 `json:"superseded_by,omitempty"`
-	Tags         *[]string               `json:"tags,omitempty"`
-	Tier         Tier                    `json:"tier"`
-	UpdatedAt    time.Time               `json:"updated_at"`
+	MergeHint *MergeHint              `json:"merge_hint,omitempty"`
+	Metadata  *map[string]interface{} `json:"metadata,omitempty"`
+	Namespace string                  `json:"namespace"`
+
+	// Reinforced Optional. Present only on POST /v1/memories responses when the fact was already known and NO new memory was created: the existing memory was strengthened (reinforced and corroborated) and is what this response returns. Two paths reach it — the exact-restatement fingerprint fast path, and MEMINI_WRITE_DEDUP_ACTION="coalesce" when the incoming phrasing is not richer than the stored one. Without this flag a 201 would read as "created", which is exactly what did not happen, and the id would appear to belong to a memory the caller wrote when it does not.
+	Reinforced   *bool     `json:"reinforced,omitempty"`
+	Summary      *string   `json:"summary,omitempty"`
+	SupersededBy *string   `json:"superseded_by,omitempty"`
+	Tags         *[]string `json:"tags,omitempty"`
+	Tier         Tier      `json:"tier"`
+	UpdatedAt    time.Time `json:"updated_at"`
 
 	// ValidFrom Start of the wall-clock interval the fact was true; null means open ("always, until valid_to"). Used by time-travel (as_of) recall.
 	ValidFrom *time.Time `json:"valid_from,omitempty"`

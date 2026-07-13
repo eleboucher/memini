@@ -82,6 +82,12 @@ project, sends it on every call, and registers the MCP server for you.
 /plugin install memini
 ```
 
+Once it is installed, `/memini:status` tells you what the plugin is actually
+doing — the namespace it resolved and _where that came from_, the server it is
+talking to, and the read set a recall would draw on. Run it whenever memory is
+behaving in a way you did not expect; it is read-only and it redacts secrets, so
+the output is safe to paste into an issue.
+
 Then, in the environment your agent runs in:
 
 ```sh

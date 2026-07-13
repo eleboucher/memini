@@ -223,8 +223,10 @@ func (h *Server) RememberMemory(w http.ResponseWriter, r *http.Request, _ Rememb
 
 	var hint service.MergeHint
 	var superseded bool
+	var reinforced bool
 	in.MergeHint = &hint
 	in.AutoSuperseded = &superseded
+	in.Reinforced = &reinforced
 	m, err := h.svc.Remember(r.Context(), in)
 	if err != nil {
 		writeError(w, r, statusFor(err), err)
@@ -260,6 +262,12 @@ func (h *Server) RememberMemory(w http.ResponseWriter, r *http.Request, _ Rememb
 	}
 	if superseded {
 		resp["auto_superseded"] = true
+	}
+	// The fact was already known: nothing new was written, and the memory in this
+	// response is the pre-existing one that got strengthened. A 201 with no flag
+	// would read as "created", which is precisely what did not happen.
+	if reinforced {
+		resp["reinforced"] = true
 	}
 	httputil.JSON(w, http.StatusCreated, resp)
 }

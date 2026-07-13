@@ -111,6 +111,20 @@ jobs:
       - name: Build namespace resolver
         run: pnpm --filter @memini/namespace-resolver build
 
+      # Shared client core: namespace override, settings introspection, and the
+      # project-dir recovery the MCP headersHelper depends on.
+      - name: Test shared client core
+        run: pnpm --filter @memini/client test
+
+      # plugin/scripts/_client.gen.mjs is generated from packages/memini-client
+      # and committed, because the plugin ships as raw files with no
+      # install-time build step. Fail the build if it drifts from its source —
+      # same gate as docs-check.
+      - name: Check generated plugin client bundle is current
+        run: |
+          pnpm --filter @memini/client run bundle
+          git diff --exit-code plugin/scripts/_client.gen.mjs
+
       # Claude Code / Codex hook scripts (pure node, no deps).
       - name: Test Claude Code + Codex plugin scripts
         run: node --test plugin/scripts/_test.mjs

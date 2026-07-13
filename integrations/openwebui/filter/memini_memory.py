@@ -13,7 +13,9 @@ description: Automatic cross-session memory via memini — recall relevant memor
 # X-Memini-Namespace header. The API key comes from MEMINI_API_KEY so the secret
 # stays out of the Open WebUI database.
 
+import json
 import os
+import subprocess
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -36,6 +38,75 @@ def sanitize_namespace(value: str) -> str:
     while "--" in collapsed:
         collapsed = collapsed.replace("--", "-")
     return collapsed.strip("-")
+
+
+def header_safe(value: str) -> str:
+    """Trim and drop control characters — a CR or LF in the value would split the
+    X-Memini-Namespace header. Deliberately not sanitize_namespace: "/" survives,
+    so a hierarchical override like acme/api reaches the server the way every
+    other integration sends it. Flattened to acme-api it would write to a
+    namespace nothing else reads, which is the exact failure the override exists
+    to prevent."""
+    return "".join(ch for ch in str(value).strip() if ch >= " " and ch != "\x7f")
+
+
+# --- Namespace override ---------------------------------------------------
+#
+# $XDG_CONFIG_HOME/memini/overrides.json holds the per-project namespace a user
+# set deliberately. It is a shared contract — the client plugins write it,
+# `memini doctor` reads it — so every harness must honor it or they disagree
+# about which namespace is in force. Reimplemented here (it is a JSON file plus
+# a `git rev-parse`) because a Filter is a single file uploaded into Open WebUI:
+# it can import nothing of memini's.
+
+
+def overrides_path() -> str:
+    """$XDG_CONFIG_HOME/memini/overrides.json, else ~/.config/memini/overrides.json."""
+    xdg = os.environ.get("XDG_CONFIG_HOME", "")
+    base = xdg if xdg.strip() else os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "memini", "overrides.json")
+
+
+def override_key(cwd: str) -> str:
+    """The key an override is stored under: the git toplevel when there is one,
+    else the resolved directory."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=0.5,
+        )
+        toplevel = out.stdout.strip() if out.returncode == 0 else ""
+    except Exception:  # noqa: BLE001 — not a repo, no git, timeout: all the same
+        toplevel = ""
+    return os.path.abspath(toplevel or cwd)
+
+
+def read_override(cwd: str) -> Optional[dict]:
+    """The override in effect for cwd, as {"namespace", "setAt"}, or None.
+
+    The file is read before the key is computed: the key costs a `git rev-parse`,
+    and nobody should pay for one to discover they have no overrides at all. Any
+    error — missing file, hand-edited JSON, wrong shape — yields None, because a
+    broken overrides file must degrade to the configured namespace, never raise
+    into Open WebUI."""
+    try:
+        with open(overrides_path(), encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:  # noqa: BLE001 — degrade gracefully by design
+        return None
+    overrides = data.get("overrides") if isinstance(data, dict) else None
+    if not isinstance(overrides, dict) or not overrides:
+        return None
+    entry = overrides.get(override_key(cwd))
+    if not isinstance(entry, dict):
+        return None
+    namespace = header_safe(str(entry.get("namespace") or ""))
+    if not namespace:
+        return None
+    return {"namespace": namespace, "setAt": str(entry.get("setAt") or "")}
 
 
 def extract_last_user(messages: list) -> str:
@@ -142,7 +213,7 @@ class Filter:
         )
         namespace: str = Field(
             default=DEFAULT_NAMESPACE,
-            description="Project the memory is scoped to (X-Memini-Namespace). Share it across agents to pool memory.",
+            description="Project the memory is scoped to (X-Memini-Namespace). Share it across agents to pool memory. A per-project override in $XDG_CONFIG_HOME/memini/overrides.json wins over this.",
         )
         home: str = Field(
             default_factory=lambda: os.environ.get("MEMINI_HOME", ""),
@@ -177,13 +248,32 @@ class Filter:
         # Bounds repeated outlet calls for the same response from writing dupes.
         self._captured = set()
 
+    def _resolve_namespace(self) -> tuple:
+        """(namespace, source). Order: per-project override > the namespace valve.
+
+        The override wins over the valve for the same reason it wins over
+        MEMINI_NAMESPACE everywhere else: it is the one namespace input a user
+        sets deliberately, and an override some harnesses honored and others
+        ignored would be worse than none. Open WebUI is a server, so "the
+        project" is the directory it was launched in — which only means something
+        for a local install, exactly where someone would set an override."""
+        override = read_override(os.getcwd())
+        if override:
+            return override["namespace"], "override"
+        valve = sanitize_namespace(self.valves.namespace or DEFAULT_NAMESPACE)
+        return valve or DEFAULT_NAMESPACE, "valve"
+
     def _namespace(self, __user__: Optional[dict]) -> str:
-        ns = self.valves.namespace or DEFAULT_NAMESPACE
+        ns, _ = self._resolve_namespace()
         if self.valves.scope_by_user and __user__:
             uid = __user__.get("id") or __user__.get("email") or ""
             if uid:
-                ns = f"{ns}-{uid}"
-        return sanitize_namespace(ns) or DEFAULT_NAMESPACE
+                # The per-user suffix still applies on top of an override: it
+                # isolates *who*, not *what*. Dropping it because an override is
+                # set would silently collapse every user of a shared server into
+                # one namespace.
+                ns = f"{ns}-{sanitize_namespace(uid)}"
+        return ns or DEFAULT_NAMESPACE
 
     def _headers(self, namespace: str, secret: str) -> dict:
         """Build request headers — the single choke point every REST call goes

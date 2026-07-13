@@ -16,6 +16,13 @@ import { basename, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import fs from "node:fs";
 
+// The shared client core (packages/memini-client), bundled to a committed,
+// dependency-free ESM file so these hooks keep running under a bare `node` with
+// no install step. Regenerate with `mise run build-client`.
+import { readOverride, writeSessionCwd, deleteSessionCwd } from "./_client.gen.mjs";
+
+export { readOverride, writeSessionCwd, deleteSessionCwd };
+
 export const DEBUG = process.env["MEMINI_DEBUG"] === "1";
 
 /**
@@ -58,32 +65,51 @@ export function repoSlugFromRemote(url) {
 }
 
 /**
- * Resolve the project namespace for a hook invocation.
- * Order: MEMINI_NAMESPACE env > git remote origin > git toplevel basename > cwd basename.
- * The remote wins over the toplevel so worktrees and /tmp clones get a
- * stable, canonical name.
+ * Resolve the project namespace for a hook invocation, with provenance.
+ *
+ * Order: per-project override > MEMINI_NAMESPACE env > git remote origin >
+ * git toplevel basename > cwd basename. The remote wins over the toplevel so
+ * worktrees and /tmp clones get a stable, canonical name.
+ *
+ * The override sits ABOVE the env var on purpose. A globally exported
+ * MEMINI_NAMESPACE (a shell rc, or a fish universal variable) pins every repo on
+ * the machine to one namespace; if the env beat the override, then `/memini:namespace`
+ * would silently do nothing on exactly the machines that most need it.
  *
  * The MEMINI_AGENT suffix is applied unconditionally (as it always has been),
  * so config-less installs that rely on it keep today's exact namespaces. Only
  * the {tenant} prefix is the new, config-gated behavior — removing the config
  * file restores the pre-tenant namespace exactly. No config file = no prefix,
  * zero migration.
+ *
+ * `env` is injectable, and `opts.ignoreOverride` skips the override, so callers
+ * can ask counterfactuals — "what would this resolve to without the env pin?",
+ * "…without the override?" — which is what turns a settings dump into a
+ * diagnosis. Note the override cannot be stripped by doctoring `env`: it lives
+ * in a file, hence the explicit flag. Returns { namespace, source }.
  */
-export function resolveProject(cwd) {
-  const nsEnv = process.env["MEMINI_NAMESPACE"];
-  if (nsEnv && nsEnv.trim()) return nsEnv.trim();
+export function resolveProjectDetailed(cwd, env = process.env, opts = {}) {
   const dir = cwd && cwd.trim() ? cwd : process.cwd();
-  const base = resolveProjectBase(dir);
-  const config = readTenantConfig();
+
+  if (!opts.ignoreOverride) {
+    const override = readOverride(dir, { env });
+    if (override) return { namespace: override.namespace, source: "override" };
+  }
+
+  const nsEnv = env["MEMINI_NAMESPACE"];
+  if (nsEnv && nsEnv.trim()) return { namespace: nsEnv.trim(), source: "env" };
+
+  const { base, source } = resolveProjectBase(dir, env, opts);
+  const config = readTenantConfig(env);
   // No config file -> zero migration: today's exact namespace, with the
   // MEMINI_AGENT suffix applied unconditionally as it always has been.
-  if (!config) return withAgent(base);
+  if (!config) return { namespace: withAgent(base, env), source };
   // Config present -> render config.template (default "{tenant}/{project}/{agent}")
   // over the resolved segments, dropping the unresolvable ones. The default
   // template reproduces the pre-template output exactly:
   // tenant ? `${tenant}/${base}` : base, then the agent suffix.
   const tenant = resolveTenant(dir, config);
-  const agent = (process.env["MEMINI_AGENT"] || "")
+  const agent = (env["MEMINI_AGENT"] || "")
     .trim()
     .replace(/[^A-Za-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "");
@@ -91,7 +117,16 @@ export function resolveProject(cwd) {
     typeof config.template === "string" && config.template
       ? config.template
       : "{tenant}/{project}/{agent}";
-  return applyTemplate(template, { tenant, project: base, agent }) || base;
+  const namespace = applyTemplate(template, { tenant, project: base, agent }) || base;
+  return { namespace, source: tenant ? "config" : source };
+}
+
+/**
+ * The namespace only. Kept as the primary entry point — every hook calls this,
+ * and it has always returned a bare string.
+ */
+export function resolveProject(cwd, env = process.env, opts = {}) {
+  return resolveProjectDetailed(cwd, env, opts).namespace;
 }
 
 /**
@@ -115,8 +150,8 @@ function applyTemplate(template, segments) {
 // Applied unconditionally — MEMINI_AGENT predates the tenant feature, so
 // gating it behind config would drop the segment for config-less installs
 // that already use it.
-function withAgent(ns) {
-  const agent = (process.env["MEMINI_AGENT"] || "").trim();
+function withAgent(ns, env = process.env) {
+  const agent = (env["MEMINI_AGENT"] || "").trim();
   if (!agent) return ns;
   const seg = agent.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
   return seg ? `${ns}/${seg}` : ns;
@@ -143,15 +178,20 @@ function gitOut(args, dir) {
  * ~/.config/memini/config.json). Returns the parsed object, or null when the
  * file is missing or malformed — null means "feature off, today's behavior".
  */
-function readTenantConfig() {
+function readTenantConfig(env = process.env) {
   try {
-    const xdg = process.env["XDG_CONFIG_HOME"] || join(homedir() || tmpdir(), ".config");
-    const configPath = join(xdg, "memini", "config.json");
+    const configPath = tenantConfigPath(env);
     const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
     return config && typeof config === "object" ? config : null;
   } catch {
     return null;
   }
+}
+
+/** Path of the tenant/template config file, for reporting in `status`. */
+export function tenantConfigPath(env = process.env) {
+  const xdg = env["XDG_CONFIG_HOME"] || join(homedir() || tmpdir(), ".config");
+  return join(xdg, "memini", "config.json");
 }
 
 /**
@@ -185,7 +225,11 @@ function resolveTenant(cwd, config) {
   }
 }
 
-function resolveProjectBase(cwd) {
+// `opts.noPersist` skips the self-healing project-map write. Introspection
+// (`/memini:status`) must not mutate state it is only reporting on: it resolves
+// several counterfactuals per run, and a command that advertises itself as
+// read-only should be exactly that.
+function resolveProjectBase(cwd, env = process.env, opts = {}) {
   const dir = cwd && cwd.trim() ? cwd : process.cwd();
 
   const remote = gitOut("remote get-url origin", dir);
@@ -198,27 +242,39 @@ function resolveProjectBase(cwd) {
   // is intentionally sticky: deleting a repo and cloning a *different* one into
   // the exact same directory inherits the old namespace until the map is cleared
   // (a rare case; set MEMINI_NAMESPACE to override).
-  const ownerRepo = (process.env["MEMINI_NAMESPACE_SCOPE"] || "").trim() === "owner-repo";
+  const ownerRepo = (env["MEMINI_NAMESPACE_SCOPE"] || "").trim() === "owner-repo";
   const remoteKey = remote ? "remote:" + normalizeRemote(remote) : null;
   const pathKey = toplevel ? "path:" + toplevel : null;
   const map = readProjectMap();
   const cached = (remoteKey && map[remoteKey]) || (pathKey && map[pathKey]);
-  if (cached) return cached;
+  if (cached) return { base: cached, source: "project-map" };
 
   // Derive a fresh namespace. owner-repo disambiguates same-named repos across
   // owners; the default keeps the bare repo name for backward compatibility.
   let ns = "";
-  if (remote) ns = (ownerRepo ? repoSlugFromRemote(remote) : repoNameFromRemote(remote)) || "";
-  if (!ns && toplevel) ns = basename(toplevel);
-  if (!ns) ns = basename(dir);
+  let source = "cwd";
+  if (remote) {
+    ns = (ownerRepo ? repoSlugFromRemote(remote) : repoNameFromRemote(remote)) || "";
+    if (ns) source = "git-remote";
+  }
+  if (!ns && toplevel) {
+    ns = basename(toplevel);
+    source = "git-toplevel";
+  }
+  if (!ns) {
+    ns = basename(dir);
+    source = "cwd";
+  }
 
   // Remember the derivation under every stable key we have, so a later move or
   // remote change resolves back to this same namespace.
-  const entries = {};
-  if (remoteKey) entries[remoteKey] = ns;
-  if (pathKey) entries[pathKey] = ns;
-  if (remoteKey || pathKey) writeProjectMap({ ...map, ...entries });
-  return ns;
+  if (!opts.noPersist) {
+    const entries = {};
+    if (remoteKey) entries[remoteKey] = ns;
+    if (pathKey) entries[pathKey] = ns;
+    if (remoteKey || pathKey) writeProjectMap({ ...map, ...entries });
+  }
+  return { base: ns, source };
 }
 
 /** Normalize a remote URL into a stable map key: trim, drop trailing slashes
@@ -403,7 +459,7 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude, 
  * GET JSON from memini. `namespace` is sent as X-Memini-Namespace. Returns
  * parsed JSON on 2xx, null otherwise. Never throws.
  */
-export async function getJSON(path, namespace, timeoutMs = 5000) {
+export async function getJSON(path, namespace, timeoutMs = 5000, opts = {}) {
   try {
     guardPlaintextBearerAuth(REST_URL, SECRET);
     const res = await fetch(`${REST_URL}${path}`, {
@@ -412,12 +468,16 @@ export async function getJSON(path, namespace, timeoutMs = 5000) {
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) {
-      console.error(`[memini] GET ${path} -> ${res.status}`);
+      // `quiet` is for probes whose failure is a legitimate answer rather than a
+      // fault — e.g. /healthz behind an ingress that only routes /v1 and /mcp,
+      // where a 404 means "not exposed", not "server down". Callers that probe
+      // must not print an alarming line for an expected miss.
+      if (!opts.quiet) console.error(`[memini] GET ${path} -> ${res.status}`);
       return null;
     }
     return await res.json();
   } catch (e) {
-    console.error(`[memini] GET ${path} failed:`, e?.message || e);
+    if (!opts.quiet) console.error(`[memini] GET ${path} failed:`, e?.message || e);
     return null;
   }
 }
@@ -488,10 +548,32 @@ export function intEnv(name, defaultValue) {
  * false; anything else is true. Lets a feature ship default-on while staying
  * opt-out via MEMINI_FOO=0.
  */
-export function envEnabled(name, defaultOn) {
-  const raw = process.env[name];
+export function envEnabled(name, defaultOn, env = process.env) {
+  const raw = env[name];
   if (raw == null || raw === "") return defaultOn;
   return !/^(0|false|no|off)$/i.test(String(raw).trim());
+}
+
+/**
+ * sessionDigestEnabled reports whether the lifecycle hooks should record session
+ * digests at all: the SessionEnd episodic digest ("edited X and Y, ran Z"), the
+ * Stop working-tier checkpoint, and the PreCompact emergency checkpoint. All
+ * three are the same distilled buffer, so one switch governs them.
+ *
+ * On by default. Set MEMINI_SESSION_DIGEST=0 to turn them off.
+ *
+ * These are activity records, not knowledge. They are genuinely useful for "what
+ * was I doing in this repo last week", and genuinely noise for anyone who only
+ * wants memini to hold durable facts — for them every session adds a memory that
+ * will never answer a question, and dilutes recall. That is a preference, not a
+ * bug, so it gets a knob rather than a default change.
+ *
+ * Distinct from MEMINI_CAPTURE_TURNS (per-turn user→assistant capture) and
+ * MEMINI_INLINE_EXTRACT (the directive asking the agent to save durable facts);
+ * turning digests off leaves both of those alone.
+ */
+export function sessionDigestEnabled(env = process.env) {
+  return envEnabled("MEMINI_SESSION_DIGEST", true, env);
 }
 
 /**
@@ -912,6 +994,11 @@ Rules:
 - tier: "semantic" for facts, decisions, and preferences; "procedural"
   for how-tos and commands. Tag a critical, always-relevant fact "pinned"
   so it surfaces in every session briefing.
+- visibility: "personal" for anything true of the USER wherever they go
+  (their preferences, their habits, how they like to work); "project"
+  (the default) for anything specific to this codebase. Getting this
+  wrong is the common failure: a preference saved as "project" is stranded
+  here and will not follow them to their next repo.
 - Save nothing when nothing is worth keeping. This is reference memory,
   not scratch space: prefer quality over quantity, and skip anything
   already in CLAUDE.md or project docs.

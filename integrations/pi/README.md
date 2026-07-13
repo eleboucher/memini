@@ -74,6 +74,40 @@ basename), falling back to the working-directory basename, and sent as the
 `X-Memini-Namespace` header — set it to share one memory pool with your
 other agents (Claude Code, opencode, …).
 
+### Commands
+
+| Command            | What it does                                                                    |
+| ------------------ | ------------------------------------------------------------------------------- |
+| `memini:status`    | Effective settings, the resolved namespace **and where it came from**, warnings |
+| `memini:namespace` | Show, set, or clear the namespace override for this project                     |
+
+`memini:status` exists because a list of values is not enough to debug a namespace
+problem. It shows provenance (`<- env` vs `(default)`), so a `MEMINI_NAMESPACE`
+exported once from a shell profile — which pins _every_ repo on the machine to one
+namespace — shows up as a warning rather than as a mystery. Secrets are redacted.
+
+### The namespace override
+
+```
+memini:namespace              # show the namespace and where it came from
+memini:namespace acme/api     # override it for this project
+memini:namespace --clear      # back to automatic resolution
+```
+
+Precedence is **override > `MEMINI_NAMESPACE` > config file > git > cwd**. The
+override deliberately beats the environment: a globally exported
+`MEMINI_NAMESPACE` is exactly the problem an override exists to solve, so if the
+environment won, the command would silently do nothing on the machines that need
+it.
+
+The override is stored in `~/.config/memini/overrides.json` and shared with every
+other memini client, so one set in Claude Code applies here too, and `memini
+doctor` reports the same value. See
+[env-vars](../../docs/reference/env-vars.md#the-overrides-file) for the format.
+
+Unlike the Claude Code plugin, setting an override here takes effect immediately —
+the namespace is re-read per request, so there is no reconnect to wait for.
+
 ### Build & test
 
 ```sh

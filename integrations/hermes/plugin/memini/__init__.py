@@ -6,11 +6,17 @@ Native MemoryProvider: Hermes drives it directly, no MCP server.
     sync_turn        capture each exchange (episodic)
     on_pre_compress  re-inject recalled context before compaction
     on_memory_write  mirror MEMORY.md/USER.md edits into memini (semantic)
-    tools            memory_recall / memory_remember
+    tools            memory_recall / memory_briefing / memory_list /
+                     memory_remember / memory_forget / memory_status
 
 Install: copy this directory to ~/.hermes/plugins/memini and set
 `memory.provider: memini` in ~/.hermes/config.yaml. Memory providers are
 single-select; `plugins.enabled` does not activate them.
+
+Namespace resolution, in order: a per-project override in
+$XDG_CONFIG_HOME/memini/overrides.json > MEMINI_NAMESPACE > the config template >
+the cwd basename. The override wins over the environment on purpose — see
+_read_override below.
 
 Environment:
     MEMINI_BASE_URL                 base URL (default http://localhost:8080; alias: MEMINI_URL)
@@ -37,7 +43,7 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
@@ -84,6 +90,11 @@ DEFAULT_TEMPLATE = "{tenant}/{project}/{agent}"
 TIMEOUT = 5
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 VALID_TIERS = ("working", "episodic", "semantic", "procedural")
+# The LLM-facing semantic scope vocabulary, identical to the MCP server's
+# (internal/api/mcp: scopeEnum). The deprecated REST aliases "exact"/"subtree"
+# are deliberately NOT offered: the model makes a semantic choice, it does not
+# speak the back-compat dialect.
+VALID_SCOPES = ("project", "full", "everywhere")
 _plaintext_bearer_warned = False
 
 
@@ -243,6 +254,111 @@ def _git_project(cwd: str) -> str:
     return _sanitize_namespace(os.path.basename(cwd.rstrip("/")))
 
 
+# --- Namespace override ---------------------------------------------------
+#
+# $XDG_CONFIG_HOME/memini/overrides.json is the per-project namespace a user set
+# deliberately. It is a shared contract — the client plugins write it, `memini
+# doctor` reads it — so every harness must agree about which namespace is in
+# force; one that quietly ignored the file would be worse than none at all. The
+# TS core (packages/memini-client) is unreachable from Python, so the reader is
+# reimplemented here: it is a JSON file plus a `git rev-parse`.
+
+
+def _overrides_path() -> Path:
+    """$XDG_CONFIG_HOME/memini/overrides.json, falling back to
+    ~/.config/memini/overrides.json. Sits beside config.json, under CONFIG
+    rather than CACHE: it is user intent, not derived state."""
+    xdg = os.environ.get("XDG_CONFIG_HOME", "")
+    base = xdg if xdg.strip() else os.path.join(os.path.expanduser("~"), ".config")
+    return Path(base) / "memini" / "overrides.json"
+
+
+def _override_key(cwd: str) -> str:
+    """The key an override is stored under: the git toplevel when there is one,
+    else the resolved directory. Keying on the repo root rather than the raw cwd
+    means an override set at the top of a repo still applies when hermes is run
+    three directories down."""
+    toplevel = _git_out(["rev-parse", "--show-toplevel"], cwd)
+    return os.path.abspath(toplevel or cwd)
+
+
+def _read_override(cwd: str) -> dict | None:
+    """The override in effect for cwd, as {"namespace", "setAt"}, or None.
+
+    The file is read BEFORE the key is computed, because the key costs a `git
+    rev-parse` and nobody should pay for one to discover they have no overrides
+    at all — the common case. Any error (missing file, hand-edited JSON, wrong
+    shape) yields None: a broken overrides file must degrade to automatic
+    resolution, never raise into hermes."""
+    try:
+        data = json.loads(_overrides_path().read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    overrides = data.get("overrides") if isinstance(data, dict) else None
+    if not isinstance(overrides, dict) or not overrides:
+        return None
+    entry = overrides.get(_override_key(cwd))
+    if not isinstance(entry, dict):
+        return None
+    namespace = str(entry.get("namespace") or "").strip()
+    if not namespace:
+        return None
+    return {"namespace": namespace, "setAt": str(entry.get("setAt") or "")}
+
+
+def _resolve_namespace(
+    cwd: str, ignore_override: bool = False, ignore_env: bool = False
+) -> tuple[str, str]:
+    """Resolve the namespace for cwd, with provenance: (namespace, source).
+
+    Order: project override > MEMINI_NAMESPACE > config template > cwd basename.
+
+    The override sits ABOVE the env var on purpose. A globally exported
+    MEMINI_NAMESPACE (a shell rc, or worse a fish universal variable) pins every
+    repo on the machine to one namespace, and if the env beat the override then
+    setting one would silently do nothing on exactly the machines that need it.
+
+    ignore_override / ignore_env produce the counterfactuals memory_status
+    reports — "what would this be without the override? without the env pin?".
+    The override cannot be stripped by doctoring os.environ (it lives in a file),
+    hence the explicit flag."""
+    if not ignore_override:
+        override = _read_override(cwd)
+        if override:
+            return override["namespace"], "override"
+
+    if not ignore_env and _env("MEMINI_NAMESPACE"):
+        # MEMINI_NAMESPACE is used raw-trimmed (the server validates the header):
+        # flattening "/" here would split a tenant path like work/memini from the
+        # other integrations.
+        return _env("MEMINI_NAMESPACE"), "env"
+
+    config = _read_config()
+    if config is not None:
+        # Config present -> render config.template (default
+        # "{tenant}/{project}/{agent}") over the resolved segments, dropping the
+        # unresolvable ones. {project} is git-derived (repo name > toplevel > cwd
+        # basename) so the same repo lands in the same namespace as the other
+        # integrations.
+        template = config.get("template")
+        if not isinstance(template, str) or not template:
+            template = DEFAULT_TEMPLATE
+        return (
+            _apply_template(
+                template,
+                {
+                    "tenant": _match_tenant(cwd, config),
+                    "project": _git_project(cwd),
+                    "agent": _sanitize_namespace(_env("MEMINI_AGENT")),
+                },
+            ),
+            "config",
+        )
+
+    # No config file -> zero migration: today's exact behavior, the cwd basename.
+    return _sanitize_namespace(os.path.basename(cwd.rstrip("/"))), "cwd"
+
+
 def _apply_template(template: str, segments: dict) -> str:
     """Substitute {tenant}/{project}/{agent} placeholders, drop the unresolvable
     ones, collapse the orphaned slashes, and trim leading/trailing slashes.
@@ -293,6 +409,79 @@ def _api(
         # failure looks like "memory isn't working" with nothing to debug.
         print(f"[memini] {method} {path} failed: {e}", file=sys.stderr)
         return None
+
+
+def _api_result(
+    base: str,
+    path: str,
+    body: dict | None,
+    namespace: str,
+    secret: str,
+    method: str = "POST",
+) -> tuple[dict | None, str]:
+    """_api without the degrade-to-None: returns (data, error_text).
+
+    The explicit write tool uses it, because a rejected write is information the
+    model can act on — a `visibility` naming an unknown ancestor errors listing
+    the valid chain, which is how the model learns the topology. Swallowing that
+    into a bare "success": false leaves it nothing to correct against. Never
+    raises: a tool call must degrade into an answer, not an exception in Hermes.
+    """
+    if not _valid_url(base):
+        return None, f"invalid memini base URL: {base!r}"
+    try:
+        # MEMINI_REQUIRE_HTTPS=1 makes this raise; catch it here rather than
+        # letting a config error surface as a Hermes traceback.
+        _check_plaintext_bearer_guard(base, secret)
+        headers = {"Content-Type": "application/json", "X-Memini-Namespace": namespace}
+        if secret:
+            headers["Authorization"] = f"Bearer {secret}"
+        home = _home()
+        if home:
+            headers["X-Memini-Home"] = home
+        data = json.dumps(body).encode() if body is not None else None
+        req = Request(f"{base}{path}", data=data, headers=headers, method=method)
+        with urlopen(req, timeout=TIMEOUT) as resp:
+            raw = resp.read()
+            return (json.loads(raw) if raw else {}), ""
+    except HTTPError as e:
+        # The 4xx body is the message worth having (it enumerates the valid
+        # visibility chain); HTTPError is readable exactly once.
+        try:
+            detail = e.read().decode("utf-8", "replace").strip()
+        except Exception:  # noqa: BLE001 - a body we cannot read is not fatal
+            detail = ""
+        message = detail or f"HTTP {e.code}"
+        print(f"[memini] {method} {path} failed: {message}", file=sys.stderr)
+        return None, message
+    except (URLError, TimeoutError, ValueError, RuntimeError) as e:
+        print(f"[memini] {method} {path} failed: {e}", file=sys.stderr)
+        return None, str(e)
+
+
+def _provenance(mem: dict, from_: Any) -> dict:
+    """Render a hit's read-set origin: which namespace it lives in and, for a hit
+    off an ancestor/home/link leg, which leg it came from. Both are omitted when
+    empty, so a project-only recall carries no "from" noise at all and the model
+    reads an absent "from" as "this project's own memory"."""
+    out: dict = {}
+    if mem.get("namespace"):
+        out["namespace"] = mem["namespace"]
+    if from_:
+        out["from"] = from_
+    return out
+
+
+def _briefing_path(args: dict) -> str:
+    """Build the GET /v1/namespaces/briefing query string for memory_briefing.
+    The endpoint is header-scoped (X-Memini-Namespace), so there is no namespace
+    in the path — the model never names one. An unrecognized scope is dropped
+    rather than forwarded: the server 400s on one, and a bad guess must not turn
+    orientation into an error."""
+    scope = str(args.get("scope") or "").strip()
+    if scope not in VALID_SCOPES:
+        return "/v1/namespaces/briefing"
+    return f"/v1/namespaces/briefing?{urlencode({'scope': scope})}"
 
 
 def _list_path(args: dict) -> str:
@@ -393,6 +582,216 @@ def _fit_by_tokens(items: list[str], max_tokens: int) -> tuple[list[str], int]:
     return out, dropped
 
 
+# --- Effective settings ---------------------------------------------------
+#
+# "What is this provider actually doing right now?" A list of values would not
+# answer that; the provenance is the feature. The case worth catching is a
+# MEMINI_NAMESPACE exported globally (a shell rc, or a fish universal variable),
+# set once and forgotten, quietly collapsing every repo on the machine into one
+# namespace: the value looks fine, only where it came from gives it away. So the
+# namespace is resolved three times — as-is, without the override, and without
+# the override AND the env pin — and all three are reported.
+
+# Names whose values must never be printed in full. Matches the whole name, not
+# a suffix, so MEMINI_API_KEYS_FILE (a path) would not be caught while
+# MEMINI_API_KEY and MEMINI_TOKEN are. Mirrors internal/redact and the TS core:
+# redaction is always on, never opt-in — a settings dump is the likeliest place
+# for a token to be pasted into an issue.
+_SENSITIVE = re.compile(
+    r"(^|_)(KEY|TOKEN|SECRET|PASSWORD|PASS|BEARER|DSN|CREDENTIALS?)$", re.IGNORECASE
+)
+
+# Every env var this provider reads, with the value it falls back to when unset.
+# Explicit rather than scraped from os.environ: "MEMINI_HOME is unset" is itself
+# a finding, so a knob nobody set must still show up, with its default.
+CLIENT_KNOBS: tuple[tuple[str, str], ...] = (
+    ("MEMINI_BASE_URL", DEFAULT_BASE_URL),
+    ("MEMINI_URL", "(alias of MEMINI_BASE_URL)"),
+    ("MEMINI_API_KEY", ""),
+    ("MEMINI_TOKEN", "(alias of MEMINI_API_KEY)"),
+    ("MEMINI_REQUIRE_HTTPS", "0"),
+    ("MEMINI_NAMESPACE", "(auto: override/config/cwd)"),
+    ("MEMINI_AGENT", ""),
+    ("MEMINI_HOME", ""),
+    ("MEMINI_RECALL_LIMIT", "3"),
+    ("MEMINI_INJECT_RECALL_MIN_SCORE", "0"),
+    ("MEMINI_INJECT_RECALL_MAX_TOK", "uncapped"),
+    ("MEMINI_INJECT_LABELS", ""),
+)
+
+
+def _is_sensitive(name: str) -> bool:
+    return bool(_SENSITIVE.search(name))
+
+
+def _redact(value: str) -> str:
+    """A recognizable-but-useless fingerprint: enough to tell two tokens apart
+    and confirm the one you set is the one in use, not enough to use. Short
+    values are elided entirely — a 6-char secret showing 3 leading and 4
+    trailing characters would be no secret at all."""
+    if not value:
+        return ""
+    return "***" if len(value) <= 12 else f"{value[:3]}…{value[-4:]}"
+
+
+def _describe_settings(cwd: str, in_use: str = "") -> dict:
+    """Effective settings with provenance: the three namespace resolutions, each
+    knob and where it came from (secrets redacted), and the warnings."""
+    effective, source = _resolve_namespace(cwd)
+    without_override = _resolve_namespace(cwd, ignore_override=True)
+    derived = _resolve_namespace(cwd, ignore_override=True, ignore_env=True)
+    override = _read_override(cwd)
+
+    settings = []
+    for name, default in CLIENT_KNOBS:
+        raw = _env(name)
+        if raw:
+            value = _redact(raw) if _is_sensitive(name) else raw
+        else:
+            value = default or "(unset)"
+        settings.append({"name": name, "value": value, "source": "env" if raw else "default"})
+
+    warnings: list[dict] = []
+    if override:
+        warnings.append(
+            {
+                "level": "note",
+                "code": "override-active",
+                "message": (
+                    f'namespace is overridden to "{override["namespace"]}" for this project'
+                    + (f' (set {override["setAt"]})' if override["setAt"] else "")
+                    + f'; without it this project would use "{without_override[0]}".'
+                ),
+                "fix": f"Remove the entry for {_override_key(cwd)} from {_overrides_path()} to "
+                "return to automatic resolution.",
+            }
+        )
+
+    # The finding this whole report exists for.
+    pin = _env("MEMINI_NAMESPACE")
+    if pin and not override and derived[0] and derived[0] != pin:
+        warnings.append(
+            {
+                "level": "warn",
+                "code": "global-namespace-pin",
+                "message": (
+                    f'MEMINI_NAMESPACE is set to "{pin}", which pins EVERY project on this machine '
+                    f'to one namespace. This project would otherwise resolve to "{derived[0]}". If '
+                    "it is exported from a shell rc (or a fish universal variable), every repo you "
+                    "work in is sharing one memory pool."
+                ),
+                "fix": "Unset MEMINI_NAMESPACE and let each project resolve on its own, or set a "
+                "per-project override instead.",
+            }
+        )
+
+    # The override (or anything else) only reaches the wire on the next session:
+    # the namespace is resolved once, in initialize.
+    if in_use and in_use != effective:
+        warnings.append(
+            {
+                "level": "warn",
+                "code": "restart-required",
+                "message": (
+                    f'this session is writing to and recalling from "{in_use}", but the settings '
+                    f'now resolve to "{effective}" — the namespace was resolved when the session '
+                    "started."
+                ),
+                "fix": "Restart hermes to pick it up.",
+            }
+        )
+
+    base = _base_url()
+    if _uses_plaintext_bearer_auth(base, _secret()):
+        warnings.append(
+            {
+                "level": "warn",
+                "code": "plaintext-bearer",
+                "message": (
+                    f"a bearer token is configured for plaintext HTTP to {base}; the token and "
+                    "your memory payloads can be observed on the network."
+                ),
+                "fix": "Use HTTPS, or tunnel over SSH. Set MEMINI_REQUIRE_HTTPS=1 to make this an "
+                "error.",
+            }
+        )
+
+    if not _home():
+        warnings.append(
+            {
+                "level": "note",
+                "code": "home-unset",
+                "message": "MEMINI_HOME is unset: no personal leg merges into recall.",
+                "fix": "Export MEMINI_HOME=personal/<you>.",
+            }
+        )
+
+    return {
+        "cwd": cwd,
+        "project": _override_key(cwd),
+        "namespace": {
+            "effective": effective,
+            "source": source,
+            "in_use": in_use or effective,
+            "override": override,
+            "without_override": {"namespace": without_override[0], "source": without_override[1]},
+            "derived": {"namespace": derived[0], "source": derived[1]},
+            "home": _home(),
+        },
+        "settings": settings,
+        "paths": {"overrides": str(_overrides_path()), "config": str(_config_path())},
+        "warnings": warnings,
+    }
+
+
+def _render_settings(report: dict) -> str:
+    """Render the report as text. Plain text, not the JSON the other tools
+    return: this one exists to be read by a human, and a JSON blob would only be
+    re-rendered by the model — badly, and with the redaction re-litigated."""
+    ns = report["namespace"]
+    lines = [
+        "memini — effective settings (hermes)",
+        f"project: {report['project']}",
+        "",
+        "NAMESPACE",
+        f"  {'effective':<26} {ns['effective']:<30} <- {ns['source']}",
+    ]
+    if ns["override"]:
+        wo = ns["without_override"]
+        lines.append(f"  {'without the override':<26} {wo['namespace']:<30} <- {wo['source']}")
+    if ns["derived"]["namespace"] != ns["effective"]:
+        d = ns["derived"]
+        lines.append(f"  {'config/cwd would give':<26} {d['namespace']:<30} <- {d['source']}")
+    if ns["in_use"] != ns["effective"]:
+        lines.append(f"  {'this session is using':<26} {ns['in_use']:<30} (resolved at startup)")
+    lines.append(f"  {'home (personal)':<26} {ns['home'] or '(unset)'}")
+    lines.append("")
+
+    lines.append("SETTINGS")
+    for s in report["settings"]:
+        origin = "<- env" if s["source"] == "env" else "(default)"
+        name = s["name"].removeprefix("MEMINI_").lower()
+        lines.append(f"  {name:<26} {s['value']:<30} {origin}")
+    lines.append("")
+
+    lines.append("PATHS")
+    for key in ("overrides", "config"):
+        path = report["paths"][key]
+        absent = "" if os.path.exists(path) else " (absent)"
+        lines.append(f"  {key:<26} {path}{absent}")
+    lines.append("")
+
+    if report["warnings"]:
+        lines.append("WARNINGS")
+        for w in report["warnings"]:
+            lines.append(f"  [{'!' if w['level'] == 'warn' else 'i'}] {w['code']}: {w['message']}")
+            if w.get("fix"):
+                lines.append(f"      fix: {w['fix']}")
+    else:
+        lines.append("No problems detected.")
+    return "\n".join(lines)
+
+
 class MeminiMemoryProvider(MemoryProvider):
     """Cross-session memory backed by a memini service."""
 
@@ -409,37 +808,12 @@ class MeminiMemoryProvider(MemoryProvider):
         self._session_id = session_id
         # Hermes' initialize kwargs carry no project path (agent_workspace is a
         # label, not a dir), so the working directory is the only signal for the
-        # default namespace; set MEMINI_NAMESPACE to scope explicitly.
-        if _env("MEMINI_NAMESPACE"):
-            # MEMINI_NAMESPACE wins and is used raw-trimmed (the server validates
-            # the header): flattening "/" here would split a tenant path like
-            # work/memini from the other integrations.
-            ns = _env("MEMINI_NAMESPACE")
-        else:
-            cwd = os.getcwd()
-            config = _read_config()
-            if config is not None:
-                # Config present -> render config.template (default
-                # "{tenant}/{project}/{agent}") over the resolved segments,
-                # dropping the unresolvable ones. {project} is git-derived (repo
-                # name > toplevel > cwd basename) so the same repo lands in the
-                # same namespace as the other integrations.
-                template = config.get("template")
-                if not isinstance(template, str) or not template:
-                    template = DEFAULT_TEMPLATE
-                ns = _apply_template(
-                    template,
-                    {
-                        "tenant": _match_tenant(cwd, config),
-                        "project": _git_project(cwd),
-                        "agent": _sanitize_namespace(_env("MEMINI_AGENT")),
-                    },
-                )
-            else:
-                # No config file -> zero migration: today's exact behavior, the
-                # cwd basename.
-                ns = _sanitize_namespace(os.path.basename(cwd.rstrip("/")))
+        # default namespace; set a project override or MEMINI_NAMESPACE to scope
+        # explicitly. Order: override > MEMINI_NAMESPACE > config > cwd.
+        self._cwd = os.getcwd()
+        ns, source = _resolve_namespace(self._cwd)
         self._namespace = ns or "hermes"
+        self._namespace_source = source if ns else "default"
         # Recall-shaping knobs, read once. Defaults match the other integrations
         # (limit 3, no floor, unbounded, plain bullets).
         limit = _int_env("MEMINI_RECALL_LIMIT", 3)
@@ -452,6 +826,14 @@ class MeminiMemoryProvider(MemoryProvider):
 
     def _call(self, path: str, body: dict | None, method: str = "POST") -> dict | None:
         return _api(self._base, path, body, self._namespace, self._secret, method)
+
+    def _call_result(
+        self, path: str, body: dict | None, method: str = "POST"
+    ) -> tuple[dict | None, str]:
+        """_call without the degrade-to-None — see _api_result. Used by the
+        explicit write tool so a rejected write reaches the model with the
+        server's own error text."""
+        return _api_result(self._base, path, body, self._namespace, self._secret, method)
 
     def _call_bg(self, path: str, body: dict) -> None:
         threading.Thread(target=self._call, args=(path, body), daemon=True).start()
@@ -619,13 +1001,21 @@ class MeminiMemoryProvider(MemoryProvider):
         return [
             {
                 "name": "memory_recall",
-                "description": "Search long-term memory (memini) for relevant past facts and context. Call "
-                "before starting work that may have history: editing an unfamiliar file, "
-                "debugging a recurring issue, or when asked what's known about something. "
-                "Empty results mean nothing is known — proceed from first principles, never "
-                'invent a remembered fact. A degraded:"keyword_only" field in the result '
-                "means semantic search was unavailable and results came from keyword "
-                "matching alone — treat as incomplete, not exhaustive.",
+                "description": "Search prior context in long-term memory (memini) via hybrid (semantic + "
+                "keyword) retrieval, ranked by relevance, recency, and corroboration. Call "
+                "BEFORE starting work that may have history: editing an unfamiliar file, "
+                "debugging a recurring issue, making a non-obvious decision, or when asked "
+                "what's known about something. scope picks how wide to read: 'project' (just "
+                "this project), 'full' (default: project plus inherited ancestor/personal/link "
+                "context), or 'everywhere' (full plus nested sub-projects). Each result's "
+                "namespace/from fields are provenance, not a choice — an absent 'from' means "
+                "this project's own memory, otherwise it names the ancestor or personal "
+                "namespace the memory came from; read them to learn where knowledge lives, "
+                "never construct a namespace path. Empty results mean nothing is known — "
+                "proceed from first principles, never invent a remembered fact. A "
+                'degraded:"keyword_only" field in the result means semantic search was '
+                "unavailable and results came from keyword matching alone — treat as "
+                "incomplete, not exhaustive.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -649,8 +1039,43 @@ class MeminiMemoryProvider(MemoryProvider):
                             "description": "Restrict to memories whose metadata contains each "
                             'key=value pair, e.g. {"category": "bug_fixes"}.',
                         },
+                        "scope": {
+                            "type": "string",
+                            "enum": list(VALID_SCOPES),
+                            "default": "full",
+                            "description": "How wide to read: 'project' = just this project's own "
+                            "memories; 'full' (default) = project plus inherited context "
+                            "(ancestors, your personal namespace, links); 'everywhere' = full "
+                            "plus nested sub-projects.",
+                        },
                     },
                     "required": ["query"],
+                },
+            },
+            {
+                "name": "memory_briefing",
+                "description": "Layered session-start briefing for this project from long-term memory "
+                "(memini) — pinned context, durable facts, how-to procedures, and recent "
+                "activity — in one query-less call. Call it when a session opens to orient "
+                "yourself; prefer it over broad recall queries at session start. The "
+                "scope_header line ('Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← "
+                "personal(2)') spells out the ancestor chain you inherit from — read it "
+                "instead of guessing namespace paths, and name one of those ancestors as "
+                "memory_remember's visibility to share a fact up that chain. "
+                "scope='everywhere' also briefs nested sub-projects.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "scope": {
+                            "type": "string",
+                            "enum": list(VALID_SCOPES),
+                            "default": "full",
+                            "description": "How wide to brief: 'project' = just this project's own "
+                            "memories; 'full' (default) = project plus inherited context "
+                            "(ancestors, your personal namespace, links); 'everywhere' = full "
+                            "plus nested sub-projects.",
+                        },
+                    },
                 },
             },
             {
@@ -691,7 +1116,13 @@ class MeminiMemoryProvider(MemoryProvider):
                 "decision (capture the why), or after discovering a non-obvious bug or "
                 "convention. Keep memories atomic — one self-contained fact per call. Don't "
                 "store what's already in project docs or trivially recoverable from code. To "
-                "correct an existing memory, pass its id — the write updates it in place.",
+                "correct an existing memory, pass its id — the write updates it in place. "
+                "visibility decides who should know: 'project' (default) keeps it here; "
+                "'personal' follows the user everywhere; or name an ancestor from the "
+                "memory_briefing Scope line to share it up that chain. reinforced=true in the "
+                "result means the fact was ALREADY KNOWN: no new memory was created, the "
+                "existing one was strengthened, and `id` names that pre-existing memory rather "
+                "than anything you just wrote — do not report it to the user as a new save.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -723,9 +1154,29 @@ class MeminiMemoryProvider(MemoryProvider):
                             "(e.g. bug_fixes, architecture_decisions, coding_conventions) "
                             "so the memory can be browsed by subject later.",
                         },
+                        "visibility": {
+                            "type": "string",
+                            "description": "Who should remember this: 'project' (default, this project "
+                            "only), 'personal' (about the user, follows them everywhere), or an "
+                            "ancestor namespace name read off the memory_briefing Scope line "
+                            "(e.g. the team or org level) to share it up that chain. On a durable "
+                            "write an unrecognized name errors listing the valid options. "
+                            "Episodic/working writes always stay in the project regardless.",
+                        },
                     },
                     "required": ["content"],
                 },
+            },
+            {
+                "name": "memory_status",
+                "description": "Show the memini settings in force for this session: which namespace memories "
+                "are written to and recalled from, where that namespace came from (a per-project "
+                "override, MEMINI_NAMESPACE, the config file, or the working directory), what it "
+                "would be without each of those, and any misconfiguration worth flagging. "
+                "Read-only, and secrets are redacted. Call it when the user asks what memini is "
+                "doing, which namespace is in use, or why something saved earlier cannot be "
+                "recalled — a namespace mismatch is the usual cause.",
+                "parameters": {"type": "object", "properties": {}},
             },
             {
                 "name": "memory_forget",
@@ -748,25 +1199,42 @@ class MeminiMemoryProvider(MemoryProvider):
         ]
 
     def handle_tool_call(self, name: str, args: dict, **kwargs: Any) -> str:
+        if name == "memory_status":
+            # Re-resolved live rather than read off self._namespace, so an
+            # override set mid-session shows up — and the gap between what this
+            # session is using and what now resolves is reported as a warning
+            # instead of being papered over.
+            return _render_settings(
+                _describe_settings(
+                    getattr(self, "_cwd", None) or os.getcwd(),
+                    in_use=getattr(self, "_namespace", ""),
+                )
+            )
+
         if name == "memory_recall":
             body = {"query": args["query"], "limit": args.get("limit", 3)}
             if args.get("tags"):
                 body["tags"] = args["tags"]
             if args.get("metadata"):
                 body["metadata"] = args["metadata"]
+            # An unrecognized scope is dropped rather than forwarded: /v1/search
+            # 400s on one, and a hallucinated value must not turn a recall into
+            # an error.
+            if args.get("scope") in VALID_SCOPES:
+                body["scope"] = args["scope"]
             result = self._call("/v1/search", body)
             items = []
             for r in (result or {}).get("results", []):
                 mem = r.get("memory") or {}
-                items.append(
-                    {
-                        "id": mem.get("id", ""),
-                        "content": mem.get("content", ""),
-                        "summary": mem.get("summary", ""),
-                        "tier": mem.get("tier", ""),
-                        "score": r.get("score", 0),
-                    }
-                )
+                item = {
+                    "id": mem.get("id", ""),
+                    "content": mem.get("content", ""),
+                    "summary": mem.get("summary", ""),
+                    "tier": mem.get("tier", ""),
+                    "score": r.get("score", 0),
+                }
+                item.update(_provenance(mem, r.get("from")))
+                items.append(item)
             # /v1/search already carries degraded/note on `result`; pass them
             # through rather than dropping them silently.
             out = {"results": items}
@@ -775,6 +1243,35 @@ class MeminiMemoryProvider(MemoryProvider):
                 if result.get("note"):
                     out["note"] = result["note"]
             return json.dumps(out)
+
+        if name == "memory_briefing":
+            result = self._call(_briefing_path(args), None, method="GET")
+            if result is None:
+                return json.dumps({"briefing": None, "error": "memini unavailable"})
+
+            def section(items: list | None) -> list:
+                out = []
+                for b in items or []:
+                    mem = b.get("memory") or {}
+                    item = {
+                        "id": mem.get("id", ""),
+                        "content": mem.get("content", ""),
+                        "tier": mem.get("tier", ""),
+                    }
+                    item.update(_provenance(mem, b.get("from")))
+                    out.append(item)
+                return out
+
+            return json.dumps(
+                {
+                    "namespace": result.get("namespace", ""),
+                    "scope_header": result.get("scope_header", ""),
+                    "pinned": section(result.get("pinned")),
+                    "facts": section(result.get("facts")),
+                    "procedures": section(result.get("procedures")),
+                    "recent": section(result.get("recent")),
+                }
+            )
 
         if name == "memory_list":
             result = self._call(_list_path(args), None, method="GET")
@@ -805,10 +1302,25 @@ class MeminiMemoryProvider(MemoryProvider):
                 body["tags"] = args["tags"]
             if args.get("category"):
                 body["metadata"] = {"category": args["category"]}
-            result = self._call("/v1/memories", body)
-            return json.dumps(
-                {"id": (result or {}).get("id"), "success": result is not None}
-            )
+            # visibility is NOT validated client-side beyond trimming: 'project'
+            # and 'personal' are fixed, but any other value names an ancestor of
+            # THIS namespace, which only the server can resolve — and its error
+            # enumerates the valid chain, which is how the model learns the
+            # topology. Swallowing an unknown name here would silently write to
+            # the wrong place instead.
+            visibility = str(args.get("visibility") or "").strip()
+            if visibility:
+                body["visibility"] = visibility
+            result, error = self._call_result("/v1/memories", body)
+            if error:
+                return json.dumps({"id": None, "success": False, "error": error})
+            out = {"id": (result or {}).get("id"), "success": True}
+            # reinforced: the fact was already known, nothing new was written, and
+            # id names the pre-existing memory. Dropping the flag here would let
+            # the model report a no-op as a fresh save.
+            if (result or {}).get("reinforced"):
+                out["reinforced"] = True
+            return json.dumps(out)
 
         if name == "memory_forget":
             mem_id = args.get("id")

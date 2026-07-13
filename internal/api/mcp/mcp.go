@@ -175,8 +175,13 @@ func NewServer(svc *service.Service, defaultNS, home, author string) *mcpsdk.Ser
 			"chain — episodic/working writes always stay in project regardless. If the result " +
 			"carries merge_hint, the content nearly duplicates an " +
 			"existing memory — either call memory_update with id=merge_hint.similar_id to fold " +
-			"them together, or ignore it to keep both. Returns {id, tier, stored}; stored=false " +
-			"means a low-signal write was dropped by the value gate (not an error).",
+			"them together, or ignore it to keep both. Returns {id, tier, stored} plus optional " +
+			"flags. stored=false means a low-signal write was dropped by the value gate (not an " +
+			"error). reinforced=true means the fact was ALREADY KNOWN: no new memory was created, " +
+			"the existing one was strengthened, and `id` names that pre-existing memory rather " +
+			"than anything you just wrote — do not report it to the user as a new save, and be " +
+			"careful updating or forgetting it. auto_superseded=true means this write replaced a " +
+			"near-duplicate, which was tombstoned in the background.",
 		InputSchema: rememberSchema,
 		Annotations: additive,
 	}, h.remember)
@@ -532,6 +537,11 @@ type rememberResult struct {
 	// AutoSuperseded is true when the write's near-duplicate crossed the
 	// auto-supersede gate and the older memory was tombstoned in the background.
 	AutoSuperseded bool `json:"auto_superseded,omitempty"`
+	// Reinforced is true when the fact was already known: no new memory was
+	// created, the existing one was strengthened, and ID names THAT memory rather
+	// than anything this call wrote. Without it, `stored: true` on those paths
+	// tells the agent it created something it did not.
+	Reinforced bool `json:"reinforced,omitempty"`
 	// MergeHint points at a near-duplicate the caller may want to merge into
 	// (via memory_update) when the write landed in the merge-hint band. nil
 	// otherwise.
@@ -582,8 +592,10 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 	}
 	var hint service.MergeHint
 	var superseded bool
+	var reinforced bool
 	input.MergeHint = &hint
 	input.AutoSuperseded = &superseded
+	input.Reinforced = &reinforced
 	m, err := t.svc.Remember(ctx, input)
 	if err != nil {
 		return nil, rememberResult{}, err
@@ -591,7 +603,13 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 	if m == nil { // episodic value gate dropped the write
 		return nil, rememberResult{Tier: string(input.Tier), Stored: false}, nil
 	}
-	res := rememberResult{ID: m.ID, Tier: string(m.Tier), Stored: true, AutoSuperseded: superseded}
+	res := rememberResult{
+		ID:             m.ID,
+		Tier:           string(m.Tier),
+		Stored:         true,
+		AutoSuperseded: superseded,
+		Reinforced:     reinforced,
+	}
 	if hint.SimilarID != "" {
 		res.MergeHint = &mergeHintResult{
 			SimilarID:      hint.SimilarID,

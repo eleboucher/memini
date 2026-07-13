@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, basename } from "node:path";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
@@ -179,6 +179,67 @@ test("resolveProject respects MEMINI_NAMESPACE override", async () => {
     if (prev === undefined) delete process.env.MEMINI_NAMESPACE;
     else process.env.MEMINI_NAMESPACE = prev;
   }
+});
+
+test("a project override beats a globally-pinned MEMINI_NAMESPACE", async () => {
+  // The ordering that makes /memini:namespace worth having. A MEMINI_NAMESPACE
+  // exported from a shell rc (or a fish universal variable) pins every repo on
+  // the machine to one namespace; if the env won here, the override command
+  // would silently no-op on exactly the machines that need it.
+  const proj = mkdtempSync(join(tmpdir(), "memini-ovr-"));
+  const configHome = mkdtempSync(join(tmpdir(), "memini-config-"));
+
+  const { resolveProjectDetailed } = await import("./_shared.mjs");
+  const { writeOverride, clearOverride } = await import("./_client.gen.mjs");
+
+  await withEnv({ XDG_CONFIG_HOME: configHome, MEMINI_NAMESPACE: "pinned-everywhere" }, async () => {
+    assert.deepEqual(resolveProjectDetailed(proj), {
+      namespace: "pinned-everywhere",
+      source: "env",
+    });
+
+    writeOverride(proj, "the-real-one", { env: process.env });
+    assert.deepEqual(resolveProjectDetailed(proj), {
+      namespace: "the-real-one",
+      source: "override",
+    });
+
+    clearOverride(proj, { env: process.env });
+    assert.equal(resolveProjectDetailed(proj).source, "env");
+  });
+});
+
+test("resolveProjectDetailed reports where the namespace came from", async () => {
+  // Provenance is the point of /memini:status: a bare value would not reveal
+  // that an env var is masking the git-derived namespace.
+  const proj = mkdtempSync(join(tmpdir(), "memini-src-"));
+  const configHome = mkdtempSync(join(tmpdir(), "memini-config-"));
+  const { resolveProjectDetailed } = await import("./_shared.mjs");
+
+  await withEnv({ XDG_CONFIG_HOME: configHome, MEMINI_NAMESPACE: undefined }, async () => {
+    // A git-less temp dir falls all the way through to the cwd basename.
+    const got = resolveProjectDetailed(proj);
+    assert.equal(got.namespace, basename(proj));
+    assert.equal(got.source, "cwd");
+  });
+});
+
+test("resolveProject accepts an injected env, so status can ask counterfactuals", async () => {
+  // describeSettings answers "what would this be WITHOUT the env pin?" by
+  // re-resolving against a stripped environment. That only works if the resolver
+  // reads the env it is handed rather than process.env.
+  const proj = mkdtempSync(join(tmpdir(), "memini-cf-"));
+  const configHome = mkdtempSync(join(tmpdir(), "memini-config-"));
+  const { resolveProjectDetailed } = await import("./_shared.mjs");
+
+  await withEnv({ XDG_CONFIG_HOME: configHome }, async () => {
+    const pinned = { ...process.env, MEMINI_NAMESPACE: "pinned" };
+    const stripped = { ...process.env };
+    delete stripped.MEMINI_NAMESPACE;
+
+    assert.equal(resolveProjectDetailed(proj, pinned).namespace, "pinned");
+    assert.equal(resolveProjectDetailed(proj, stripped).namespace, basename(proj));
+  });
 });
 
 test("repoNameFromRemote parses common git URL shapes", async () => {
@@ -413,6 +474,83 @@ test("resolveProject: a non-default config.template reshapes the namespace", asy
   );
 });
 
+test("session-start.mjs: an empty namespace still gets the memory directive", async () => {
+  // The bug this pins: the hook used to return early when the briefing came back
+  // empty, BEFORE emitting MEMORY_INSTRUCTION. So a brand-new project — one with
+  // no memories at all — was the one place the agent was never told to save any.
+  // The directive was present in every session except the ones where it mattered
+  // most, and nothing surfaced that.
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ namespace: "memini", pinned: [], facts: [], procedures: [], recent: [] }));
+  });
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "empty1", cwd: __dirname }),
+      { MEMINI_URL: url, XDG_CACHE_HOME: freshCache() },
+    );
+    assert.doesNotMatch(stdout, /<memini-context/, "nothing to inject, so no context block");
+    assert.match(stdout, /memini-memory-directive/, "but the save directive must still be emitted");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: an unreachable server still gets the memory directive", async () => {
+  // Same reasoning: a server that is down should degrade to "no context", not to
+  // "and also stop saving".
+  const { stdout } = await runHook(
+    "session-start.mjs",
+    JSON.stringify({ session_id: "down1", cwd: __dirname }),
+    { MEMINI_URL: "http://127.0.0.1:1", XDG_CACHE_HOME: freshCache() }, // nothing listening
+  );
+  assert.match(stdout, /memini-memory-directive/);
+});
+
+test("session-start.mjs: emits the briefing Scope line the MCP tools tell the model to read", async () => {
+  // serverInstructions and memory_remember's schema both tell the model to name
+  // an ancestor for `visibility` by reading it "off the briefing Scope line".
+  // The hook used to drop scope_header, so the model was directed to read a line
+  // it was never shown, making visibility:"<ancestor>" unreachable in practice.
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify({
+        namespace: "memini",
+        scope_header: "Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4)",
+        pinned: [],
+        facts: [{ content: "convention: use tabs" }],
+        procedures: [],
+        recent: [],
+      }),
+    );
+  });
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "scope1", cwd: __dirname }),
+      // A fresh cache per run. Without it the briefing-hash written by an earlier
+      // run of this suite makes SessionStart take its "unchanged, skip
+      // re-injection" path, and the test passes or fails depending on whether you
+      // ran it before.
+      { MEMINI_URL: url, XDG_CACHE_HOME: freshCache() },
+    );
+    assert.match(stdout, /Scope: acme\/phoenix\/api ← acme\/phoenix\(3\) ← acme\(4\)/);
+  } finally {
+    await close();
+  }
+});
+
+test("MEMORY_INSTRUCTION tells the agent about visibility, not just tier", async () => {
+  // It is the only memini text injected into EVERY session. Without a visibility
+  // line the model defaults to "project", so a user preference ("I prefer tabs")
+  // is stranded in this repo instead of following the user to the next one.
+  const { MEMORY_INSTRUCTION } = await import("./_shared.mjs");
+  assert.match(MEMORY_INSTRUCTION, /visibility/);
+  assert.match(MEMORY_INSTRUCTION, /personal/);
+});
+
 test("session-start.mjs: fetches the briefing with right namespace, writes context to stdout", async () => {
   const hits = [];
   const { url, close } = await startMockServer((req, res, body) => {
@@ -566,6 +704,62 @@ test("post-tool-use.mjs: buffers state-changing tools, never POSTs", async () =>
   } finally {
     await close();
   }
+});
+
+test("MEMINI_SESSION_DIGEST=0 stops every session-digest write", async () => {
+  // Session digests are activity records ("edited X, ran Y"), not knowledge.
+  // Useful for "what was I doing here last week"; pure noise for anyone who wants
+  // memini to hold only durable facts, since every session adds a memory that
+  // will never answer a question and dilutes recall. So: a knob, not a default
+  // change. This pins that the knob reaches ALL of the write sites, not just the
+  // obvious one — the Stop checkpoint and the PreCompact rescue are the same
+  // digest and must go with it.
+  const cache = freshCache();
+  const off = { XDG_CACHE_HOME: cache, MEMINI_SESSION_DIGEST: "0" };
+
+  // PostToolUse must not even buffer: nothing will ever read it.
+  await runHook(
+    "post-tool-use.mjs",
+    JSON.stringify({ session_id: "d0", cwd: __dirname, tool_name: "Edit", tool_input: { file_path: "a.go" } }),
+    off,
+  );
+  assert.equal(
+    existsSync(join(cache, "memini", "sessions", "d0.jsonl")),
+    false,
+    "must not write the session buffer when nothing will consume it",
+  );
+
+  const hits = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    hits.push({ url: req.url, body });
+    res.setHeader("Content-Type", "application/json");
+    res.statusCode = 201;
+    res.end(JSON.stringify({ id: "m1" }));
+  });
+
+  try {
+    const env = { ...off, MEMINI_URL: url, MEMINI_CAPTURE_TURNS: "0", MEMINI_AUTO_SAVE: "0" };
+    const payload = JSON.stringify({ session_id: "d0", cwd: __dirname, reason: "user_exit" });
+
+    await runHook("session-end.mjs", payload, env);
+    await runHook("stop.mjs", payload, env);
+    await runHook("pre-compact.mjs", payload, env);
+
+    assert.deepEqual(hits, [], "no digest, no checkpoint, no pre-compact rescue");
+  } finally {
+    await close();
+  }
+});
+
+test("session digests are still on by default", async () => {
+  // The knob is opt-out. Guard against it silently becoming opt-in.
+  const cache = freshCache();
+  await runHook(
+    "post-tool-use.mjs",
+    JSON.stringify({ session_id: "d1", cwd: __dirname, tool_name: "Edit", tool_input: { file_path: "a.go" } }),
+    { XDG_CACHE_HOME: cache },
+  );
+  assert.equal(existsSync(join(cache, "memini", "sessions", "d1.jsonl")), true);
 });
 
 test("session-end.mjs: distills buffered events into one digest", async () => {
@@ -1024,34 +1218,193 @@ test("mcp-headers.mjs: warns (but still sends) for plaintext non-loopback by def
   assert.match(stderr, /plaintext HTTP/);
 });
 
-// The headersHelper runs with cwd = the plugin's version-named install dir and
-// no CLAUDE_PROJECT_DIR. Resolving from cwd there scattered memories into
-// version namespaces (e.g. "0.6.3"). These pin that it never happens: with no
-// project cwd it uses the hooks' cached namespace, or omits the header.
-test("mcp-headers.mjs: no CLAUDE_PROJECT_DIR + no cache → omits namespace (never cwd)", async () => {
-  const cache = freshCache();
-  const { stdout } = await runHook("mcp-headers.mjs", "", {
+// ─── headersHelper namespace resolution ──────────────────────────────
+//
+// The helper is handed almost nothing: its cwd is the plugin's version-named
+// install dir, PWD is rewritten to match, and CLAUDE_PROJECT_DIR is unset
+// (measured against a live session). Resolving from cwd there scattered memories
+// into version namespaces like "0.6.3".
+//
+// It used to fall back to a single global cache file the SessionStart hook wrote
+// — which every concurrent session shares, so two sessions in two repos made it
+// last-writer-wins, silently pointing MCP calls at one namespace while the hooks
+// wrote to another.
+//
+// It now walks the process tree instead: its parent IS the session, and the
+// parent's cwd IS the project. These tests pin both halves — that it uses the
+// parent, and that it still never derives a namespace from a plugin install dir.
+
+// Spawn `script` from an intermediate node process whose cwd is `parentCwd`, so
+// the script's process.ppid resolves to a parent sitting in that directory.
+// This reproduces the headersHelper's real situation, where its parent is the
+// harness process and its own cwd is meaningless.
+function runHookWithParentCwd(script, parentCwd, env = {}) {
+  const base = { ...process.env };
+  for (const k of ["MEMINI_BASE_URL", "MEMINI_URL", "MEMINI_API_KEY", "MEMINI_TOKEN"]) delete base[k];
+  const target = JSON.stringify(resolve(SCRIPTS, script));
+  const runner = `
+    const { spawn } = require("node:child_process");
+    const c = spawn(process.execPath, [${target}], { stdio: ["ignore", "inherit", "inherit"] });
+    c.on("close", (code) => process.exit(code ?? 0));
+  `;
+  return new Promise((resolveProm, reject) => {
+    const child = spawn("node", ["-e", runner], {
+      cwd: parentCwd,
+      env: { ...base, ...env, MEMINI_DEBUG: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (c) => (stdout += c));
+    child.stderr.on("data", (c) => (stderr += c));
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`${script} exited ${code}\nstderr: ${stderr}`));
+        return;
+      }
+      resolveProm({ stdout, stderr });
+    });
+    child.on("error", reject);
+  });
+}
+
+test("mcp-headers.mjs: resolves the namespace from the parent process's cwd", async () => {
+  // A git-less directory, so resolution lands on the cwd basename and the
+  // assertion is about WHICH directory was used, not about git.
+  const proj = mkdtempSync(join(tmpdir(), "memini-proj-"));
+  const { stdout } = await runHookWithParentCwd("mcp-headers.mjs", proj, {
     CLAUDE_PROJECT_DIR: "",
-    XDG_CACHE_HOME: cache,
+    XDG_CACHE_HOME: freshCache(),
     MEMINI_TOKEN: "",
     MEMINI_API_KEY: "",
   });
   const h = JSON.parse(stdout);
-  assert.equal(h["X-Memini-Namespace"], undefined, "must not emit a cwd/version-derived namespace");
+  assert.equal(h["X-Memini-Namespace"], basename(proj), "namespace must come from the parent's cwd");
 });
 
-test("mcp-headers.mjs: no CLAUDE_PROJECT_DIR → uses the hooks' cached namespace", async () => {
+test("mcp-headers.mjs: two parents in two repos get two namespaces (the race fix)", async () => {
+  // The regression that motivated this: concurrent sessions sharing one global
+  // cache file. Each helper must answer for ITS OWN session.
+  const a = mkdtempSync(join(tmpdir(), "memini-repo-a-"));
+  const b = mkdtempSync(join(tmpdir(), "memini-repo-b-"));
+  const cache = freshCache(); // deliberately SHARED between the two, as in real life
+  const env = { CLAUDE_PROJECT_DIR: "", XDG_CACHE_HOME: cache, MEMINI_TOKEN: "", MEMINI_API_KEY: "" };
+
+  const [ra, rb] = await Promise.all([
+    runHookWithParentCwd("mcp-headers.mjs", a, env),
+    runHookWithParentCwd("mcp-headers.mjs", b, env),
+  ]);
+
+  assert.equal(JSON.parse(ra.stdout)["X-Memini-Namespace"], basename(a));
+  assert.equal(JSON.parse(rb.stdout)["X-Memini-Namespace"], basename(b));
+});
+
+test("mcp-headers.mjs: never derives a namespace from a plugin install dir", async () => {
+  // The original bug this guards: a plugin-cache path must never become a
+  // namespace (e.g. "0.6.3"). With the parent sitting inside a plugin cache and
+  // nothing cached, the helper must emit NO namespace rather than a wrong one.
+  const pluginRoot = join(freshCache(), "plugins", "cache", "memini", "memini", "0.6.9");
+  mkdirSync(pluginRoot, { recursive: true });
+  const { stdout } = await runHookWithParentCwd("mcp-headers.mjs", pluginRoot, {
+    CLAUDE_PROJECT_DIR: "",
+    CLAUDE_PLUGIN_ROOT: pluginRoot,
+    XDG_CACHE_HOME: freshCache(),
+    MEMINI_TOKEN: "",
+    MEMINI_API_KEY: "",
+  });
+  const h = JSON.parse(stdout);
+  assert.equal(h["X-Memini-Namespace"], undefined, "must not emit a version-derived namespace");
+});
+
+test("mcp-headers.mjs: falls back to the hooks' cached namespace when there is no project signal", async () => {
+  // Last resort — Windows, or an unusual launch path where the parent's cwd is
+  // unreadable. Still racy across sessions, which is why it is last.
   const cache = freshCache();
+  const pluginRoot = join(freshCache(), "plugins", "cache", "memini", "memini", "0.6.9");
+  mkdirSync(pluginRoot, { recursive: true });
   const { writeNamespace } = await import("./_shared.mjs");
   await withEnv({ XDG_CACHE_HOME: cache }, () => writeNamespace("personal/memini"));
-  const { stdout } = await runHook("mcp-headers.mjs", "", {
+
+  const { stdout } = await runHookWithParentCwd("mcp-headers.mjs", pluginRoot, {
     CLAUDE_PROJECT_DIR: "",
+    CLAUDE_PLUGIN_ROOT: pluginRoot,
     XDG_CACHE_HOME: cache,
     MEMINI_TOKEN: "",
     MEMINI_API_KEY: "",
   });
   const h = JSON.parse(stdout);
   assert.equal(h["X-Memini-Namespace"], "personal/memini", "namespace from the hooks' cache");
+});
+
+test("mcp-headers.mjs: the run.sh exec chain preserves the parent (load-bearing)", async () => {
+  // .mcp.json invokes the helper as `exec "$R/scripts/run.sh" "$R/scripts/mcp-headers.mjs"`,
+  // and run.sh ends in `exec node "$@"`. Both `exec`s are load-bearing: they
+  // replace the process image, keeping the pid AND the parent. Drop either one
+  // and the chain becomes claude -> sh -> node, so node's parent is the shell
+  // (whose cwd is the plugin root, not the project) — which silently disables
+  // the per-session namespace resolution and quietly restores the race.
+  //
+  // Nothing else in the test suite would notice, so pin it here.
+  const proj = mkdtempSync(join(tmpdir(), "memini-exec-"));
+  const runSh = resolve(SCRIPTS, "run.sh");
+  const target = resolve(SCRIPTS, "mcp-headers.mjs");
+
+  const base = { ...process.env };
+  for (const k of ["MEMINI_BASE_URL", "MEMINI_URL", "MEMINI_API_KEY", "MEMINI_TOKEN"]) delete base[k];
+
+  // Stand in for `claude`: a LIVING parent sitting in the project dir, which
+  // spawns the headersHelper shell command as a child. The intermediate sh then
+  // execs run.sh, which execs node — so the surviving node's parent is this
+  // stand-in, exactly as the real helper's parent is the claude process.
+  //
+  // (The helper's own cwd is the plugin root and is deliberately ignored; only
+  // the parent's cwd matters.)
+  const claudeStandIn = `
+    const { spawn } = require("node:child_process");
+    const c = spawn("sh", ["-c", 'exec "${runSh}" "${target}"'], {
+      cwd: ${JSON.stringify(SCRIPTS)},
+      stdio: ["ignore", "inherit", "inherit"],
+    });
+    c.on("close", (code) => process.exit(code ?? 0));
+  `;
+
+  const stdout = await new Promise((res, rej) => {
+    const child = spawn("node", ["-e", claudeStandIn], {
+      cwd: proj,
+      env: {
+        ...base,
+        CLAUDE_PROJECT_DIR: "",
+        XDG_CACHE_HOME: freshCache(),
+        MEMINI_TOKEN: "",
+        MEMINI_API_KEY: "",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    child.stdout.on("data", (c) => (out += c));
+    child.on("close", (code) => (code === 0 ? res(out) : rej(new Error(`exited ${code}`))));
+    child.on("error", rej);
+  });
+
+  const h = JSON.parse(stdout);
+  assert.equal(
+    h["X-Memini-Namespace"],
+    basename(proj),
+    "the exec chain must keep `claude` as the parent, so the project resolves from its cwd",
+  );
+});
+
+test("mcp-headers.mjs: CLAUDE_PROJECT_DIR outranks the process tree", async () => {
+  const proj = mkdtempSync(join(tmpdir(), "memini-explicit-"));
+  const other = mkdtempSync(join(tmpdir(), "memini-parent-"));
+  const { stdout } = await runHookWithParentCwd("mcp-headers.mjs", other, {
+    CLAUDE_PROJECT_DIR: proj,
+    XDG_CACHE_HOME: freshCache(),
+    MEMINI_TOKEN: "",
+    MEMINI_API_KEY: "",
+  });
+  const h = JSON.parse(stdout);
+  assert.equal(h["X-Memini-Namespace"], basename(proj));
 });
 
 test("plaintext bearer guard warns once for http to a non-loopback host", async () => {

@@ -88,6 +88,26 @@ run = "go run ./cmd/memini"
 description = "Run the retrieval benchmark (offline sample by default)"
 run = "go run ./cmd/bench"
 
+[tasks.build-client]
+description = "Regenerate plugin/scripts/_client.gen.mjs from packages/memini-client"
+# The plugin ships as raw files (no install-time build), so the shared client
+# core is bundled to a committed .mjs the hooks can import under a bare `node`.
+run = '''
+pnpm install --frozen-lockfile --filter @memini/client...
+pnpm --filter @memini/client run bundle
+'''
+
+[tasks.client-check]
+description = "Fail if the generated plugin client bundle is stale (CI gate)"
+run = '''
+mise run build-client
+git diff --exit-code plugin/scripts/_client.gen.mjs
+'''
+
+[tasks.test-client]
+description = "Run the shared client core tests (packages/memini-client)"
+run = "pnpm --filter @memini/client test"
+
 [tasks.docs]
 description = "Regenerate the docs reference from the code"
 run = '''

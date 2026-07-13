@@ -16,6 +16,8 @@ import {
   parseJSON,
   resolveProject,
   writeNamespace,
+  writeSessionCwd,
+  sessionDigestEnabled,
   postRemember,
   readSessionEvents,
   buildSessionDigest,
@@ -135,6 +137,13 @@ async function main() {
   const hasSessionIdentity = sessionId !== "unknown";
   const cwd = payload.cwd || process.cwd();
   const project = resolveProject(cwd);
+
+  // Refresh this session's recorded project dir. Stop fires once per assistant
+  // turn, so any session actually in use stays comfortably inside
+  // SESSION_CWD_TTL_MS — which is what lets the TTL be short enough to bound
+  // pid reuse without ever expiring under a live session.
+  writeSessionCwd(process.ppid, cwd);
+
   // Keep the MCP headersHelper's namespace cache aligned with this project.
   writeNamespace(project);
 
@@ -144,7 +153,9 @@ async function main() {
     console.error(`[memini] Stop project=${project} session=${sessionId} events=${digest?.count || 0}`);
 
   // No buffered events → nothing to checkpoint; a bare marker is just noise.
-  if (digest && hasSessionIdentity)
+  // MEMINI_SESSION_DIGEST=0 → no activity records at all (this checkpoint is the
+  // crash-safety copy of the SessionEnd digest, so it goes with it).
+  if (digest && hasSessionIdentity && sessionDigestEnabled())
     await postRemember(digest.content, project, {
       tier: "working",
       tags: ["stop-checkpoint", project],

@@ -73,10 +73,26 @@ Open WebUI is multi-user, unlike a local agent. Set the same `namespace` to pool
 one shared memory across your agents, or flip `scope_by_user` on to give each
 Open WebUI account its own private memory.
 
+### Namespace resolution
+
+A **per-project override** in `$XDG_CONFIG_HOME/memini/overrides.json` (default
+`~/.config/memini/overrides.json`) wins over the `namespace` valve — the same
+precedence every other memini integration applies, so an override set once is
+honored everywhere rather than by some harnesses and not others. The key is the
+git toplevel of the directory Open WebUI runs in, else that directory; a
+malformed file degrades to the valve rather than raising. `scope_by_user` still
+appends the user suffix on top of an override: it isolates _who_, not _what_, and
+dropping it would collapse every account on a shared server into one namespace.
+
+Both files also read the API key from `MEMINI_API_KEY` / `MEMINI_TOKEN` in the
+server's environment, never from a valve, so the secret stays out of the Open
+WebUI database.
+
 ## Alternative: the memory tools (on demand)
 
-Instead of (or alongside) the filter, expose memini's `recall_memory` and
-`remember_memory` as tools the model calls itself.
+Instead of (or alongside) the filter, expose memini's `recall_memory`,
+`remember_memory`, `forget_memory` and `memini_status` (read-only: which
+namespace is in force and why, secrets redacted) as tools the model calls itself.
 
 1. **Workspace → Tools → `+`**, paste
    [`tools/memini_tools.py`](tools/memini_tools.py), **Save**.
