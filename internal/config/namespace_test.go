@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/eleboucher/memini/internal/nsresolve"
 )
 
 func TestResolveDefaultNamespace_EnvWins(t *testing.T) {
@@ -135,6 +137,12 @@ func gitRemoteThenToplevel(remoteURL, toplevel string) fakeRunner {
 	}
 }
 
+// TestResolvePluginNamespace_GitRemoteWins asserts ResolvePluginNamespace
+// still prefers the git remote over the worktree basename (nsresolve's own
+// derive order), but now reports nsresolve's source label ("remote") rather
+// than this package's old git-remote-specific one — see the doc comment on
+// ResolvePluginNamespace for why the two resolvers' labels are allowed to
+// diverge from each other.
 func TestResolvePluginNamespace_GitRemoteWins(t *testing.T) {
 	t.Setenv("MEMINI_NAMESPACE", "")
 	t.Setenv("MEMINI_DEFAULT_NAMESPACE", "")
@@ -142,8 +150,8 @@ func TestResolvePluginNamespace_GitRemoteWins(t *testing.T) {
 	stubRunGit(t, gitRemoteThenToplevel("git@github.com:org/canonical.git", "/tmp/renamed"))
 
 	ns, src := ResolvePluginNamespace("/tmp/renamed")
-	if ns != "canonical" || src != NamespaceFromGitRemote {
-		t.Fatalf("plugin resolution = (%q,%q), want (canonical, git-remote)", ns, src)
+	if ns != "canonical" || src != NamespaceSource(nsresolve.SourceRemote) {
+		t.Fatalf("plugin resolution = (%q,%q), want (canonical, %q)", ns, src, nsresolve.SourceRemote)
 	}
 	// The server's resolution ignores the remote and uses the worktree basename,
 	// so doctor can flag the divergence.
@@ -153,6 +161,99 @@ func TestResolvePluginNamespace_GitRemoteWins(t *testing.T) {
 	}
 	if !strings.HasPrefix(server, "renamed") {
 		t.Fatalf("server namespace = %q, want renamed", server)
+	}
+}
+
+// TestResolvePluginNamespace_EnvWins covers the behavior override.go used to
+// share this file with (before the override mechanism was retired): the env
+// var still outranks derivation, reported with nsresolve's own "env" label.
+func TestResolvePluginNamespace_EnvWins(t *testing.T) {
+	t.Setenv("MEMINI_NAMESPACE", "pinned-everywhere")
+	t.Setenv("MEMINI_DEFAULT_NAMESPACE", "")
+	t.Setenv("MEMINI_AGENT", "")
+
+	ns, src := ResolvePluginNamespace(t.TempDir())
+	if ns != "pinned-everywhere" || src != NamespaceFromEnv {
+		t.Fatalf("ResolvePluginNamespace = (%q, %q), want (\"pinned-everywhere\", %q)", ns, src, NamespaceFromEnv)
+	}
+}
+
+// TestResolvePluginNamespace_AgentSuffixOnDerive: the derive leg nests the
+// result under MEMINI_AGENT, matching nsresolve.Resolve's own derive-branch
+// behavior (and the plugin's withAgent).
+func TestResolvePluginNamespace_AgentSuffixOnDerive(t *testing.T) {
+	t.Setenv("MEMINI_NAMESPACE", "")
+	t.Setenv("MEMINI_DEFAULT_NAMESPACE", "")
+	t.Setenv("MEMINI_AGENT", "reviewer")
+	stubRunGit(t, gitRemoteThenToplevel("git@github.com:org/canonical.git", "/tmp/renamed"))
+
+	ns, src := ResolvePluginNamespace("/tmp/renamed")
+	if ns != "canonical/reviewer" || src != NamespaceSource(nsresolve.SourceRemote) {
+		t.Fatalf("ResolvePluginNamespace = (%q,%q), want (canonical/reviewer, %q)", ns, src, nsresolve.SourceRemote)
+	}
+}
+
+// TestResolvePluginNamespace_AgentSuffixNotAppliedToEnv: nsresolve.Resolve
+// returns the env leg verbatim, with no agent suffix — a deliberate
+// divergence from the (still-unmigrated) JS plugin, which applies MEMINI_AGENT
+// unconditionally. Mirroring nsresolve exactly means mirroring this too.
+func TestResolvePluginNamespace_AgentSuffixNotAppliedToEnv(t *testing.T) {
+	t.Setenv("MEMINI_NAMESPACE", "pinned-everywhere")
+	t.Setenv("MEMINI_DEFAULT_NAMESPACE", "")
+	t.Setenv("MEMINI_AGENT", "reviewer")
+
+	ns, src := ResolvePluginNamespace(t.TempDir())
+	if ns != "pinned-everywhere" || src != NamespaceFromEnv {
+		t.Fatalf("ResolvePluginNamespace = (%q, %q), want (\"pinned-everywhere\", %q) with no agent suffix", ns, src, NamespaceFromEnv)
+	}
+}
+
+// TestPluginFacts_GathersGitAndEnv covers the facts builder both
+// ResolvePluginNamespace and doctor's handshake probe share.
+func TestPluginFacts_GathersGitAndEnv(t *testing.T) {
+	t.Setenv("MEMINI_NAMESPACE", "")
+	t.Setenv("MEMINI_DEFAULT_NAMESPACE", "team/proj")
+	t.Setenv("MEMINI_AGENT", "reviewer")
+	stubRunGit(t, gitRemoteThenToplevel("git@github.com:org/canonical.git", "/tmp/renamed"))
+
+	facts := PluginFacts("/tmp/renamed")
+	if facts.RemoteURL != "git@github.com:org/canonical.git" {
+		t.Errorf("RemoteURL = %q", facts.RemoteURL)
+	}
+	if facts.ToplevelPath != "/tmp/renamed" {
+		t.Errorf("ToplevelPath = %q", facts.ToplevelPath)
+	}
+	if facts.ToplevelBasename != "renamed" {
+		t.Errorf("ToplevelBasename = %q", facts.ToplevelBasename)
+	}
+	if facts.CwdBasename != "renamed" {
+		t.Errorf("CwdBasename = %q", facts.CwdBasename)
+	}
+	if facts.Agent != "reviewer" {
+		t.Errorf("Agent = %q", facts.Agent)
+	}
+	if facts.EnvNamespace != "team/proj" {
+		t.Errorf("EnvNamespace = %q", facts.EnvNamespace)
+	}
+	if facts.DeclaredNamespace != "" {
+		t.Errorf("DeclaredNamespace = %q, want empty (offline CLI resolution never declares)", facts.DeclaredNamespace)
+	}
+}
+
+// TestPluginFacts_NoGitDegradesToCwdBasenameOnly ensures a directory outside
+// any git repo still yields a usable CwdBasename with empty remote/toplevel
+// facts, rather than a bogus "." basename.
+func TestPluginFacts_NoGitDegradesToCwdBasenameOnly(t *testing.T) {
+	t.Setenv("MEMINI_AGENT", "")
+	stubRunGit(t, gitMissing())
+	dir := t.TempDir()
+
+	facts := PluginFacts(dir)
+	if facts.RemoteURL != "" || facts.ToplevelPath != "" || facts.ToplevelBasename != "" {
+		t.Errorf("expected no remote/toplevel facts outside a git repo, got %+v", facts)
+	}
+	if facts.CwdBasename != filepath.Base(dir) {
+		t.Errorf("CwdBasename = %q, want %q", facts.CwdBasename, filepath.Base(dir))
 	}
 }
 

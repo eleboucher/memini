@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"github.com/eleboucher/memini/internal/logging"
 	"github.com/eleboucher/memini/internal/maintenance"
 	"github.com/eleboucher/memini/internal/memory"
+	"github.com/eleboucher/memini/internal/nsresolve"
 	"github.com/eleboucher/memini/internal/store"
 )
 
@@ -79,14 +81,8 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	serverNS := cfg.DefaultNamespace
 	pluginNS, pluginSrc := config.ResolvePluginNamespace(cwd)
 	envNS := firstNonEmptyEnv("MEMINI_DEFAULT_NAMESPACE", "MEMINI_NAMESPACE")
-	overrideNS, hasOverride := config.NamespaceOverride(cwd)
 
-	fmt.Fprintf(out, "Namespace resolution (cwd: %s)\n", cwd) //nolint:errcheck
-	if hasOverride {
-		// Printed above the env line because it outranks it — the order of these
-		// lines is the precedence, and a reader should be able to see that.
-		fmt.Fprintf(out, "  project override: %q (%s)\n", overrideNS, config.OverridesPath()) //nolint:errcheck
-	}
+	fmt.Fprintf(out, "Namespace resolution (cwd: %s)\n", cwd)                    //nolint:errcheck
 	fmt.Fprintf(out, "  env override:    %s\n", orUnset(envNS))                  //nolint:errcheck
 	fmt.Fprintf(out, "  server default:  %q (%s)\n", serverNS, cfg.NamespaceSrc) //nolint:errcheck
 	fmt.Fprintf(out, "  plugin resolves: %q (%s)\n", pluginNS, pluginSrc)        //nolint:errcheck
@@ -97,13 +93,15 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 		note(out, "Plugins send an explicit namespace header, but bare MCP clients use the server")
 		note(out, fmt.Sprintf("default, so they disagree. Pin one with MEMINI_DEFAULT_NAMESPACE=%q.", pluginNS))
 	}
-	// An override masking the pin IS the fix, so nagging about the pin under one
-	// would be noise. Matches the client's suppression in describeSettings.
-	if !hasOverride {
-		warnings += warnGlobalNamespacePin(out, cwd, envNS)
-	}
+	warnings += warnGlobalNamespacePin(out, cwd, envNS)
 	warnings += warnHomeUnset(out, cfg.Home)
+	warnings += warnLingeringDeadFiles(out)
 	fmt.Fprintln(out) //nolint:errcheck
+
+	if baseURL := serverBaseURL(); baseURL != "" {
+		warnings += runHandshakeProbe(cmd.Context(), out, baseURL, serverAPIKey(), cwd, pluginNS, pluginSrc)
+		fmt.Fprintln(out) //nolint:errcheck
+	}
 
 	// Store section: read the configured store directly (no server required).
 	st, err := buildStore(cmd.Context(), cfg)
@@ -447,7 +445,7 @@ const localStoreLabel = "local store"
 // Origin* constants (OriginPrimary/OriginAncestor/OriginHome/OriginLink) —
 // duplicated as literal strings rather than importing internal/service for
 // them: they're also exactly the "origin" values the REST read-set endpoint
-// (GET /v1/namespaces/read-set) puts on the wire, so a local literal here
+// (GET /v1/namespaces/readset) puts on the wire, so a local literal here
 // doubles as the JSON vocabulary fetchServerReadSet parses.
 const (
 	originPrimary  = "primary"
@@ -557,7 +555,7 @@ const doctorReadSetTimeout = 3 * time.Second
 
 // remoteReadSetEntry/remoteReadSetResponse mirror the REST API's
 // ReadSetEntryItem/ReadSetResponse (api/openapi.yaml, GET
-// /v1/namespaces/read-set): Tiers omitted means the request's own tier
+// /v1/namespaces/readset): Tiers omitted means the request's own tier
 // filter, unrestricted beyond that.
 type remoteReadSetEntry struct {
 	Namespace string   `json:"namespace"`
@@ -587,7 +585,7 @@ func tiersLabelFromStrings(tiers []string) string {
 	return strings.Join(tiers, ",")
 }
 
-// fetchServerReadSet calls GET /v1/namespaces/read-set on baseURL,
+// fetchServerReadSet calls GET /v1/namespaces/readset on baseURL,
 // header-scoped to primary (X-Memini-Namespace) and home (X-Memini-Home,
 // when set) — config.DefaultNamespaceHeader/DefaultHomeHeader. Returns an
 // error on any failure (unreachable, non-2xx, malformed body) so the caller
@@ -597,7 +595,7 @@ func fetchServerReadSet(ctx context.Context, baseURL, apiKey, primary, home stri
 	ctx, cancel := context.WithTimeout(ctx, doctorReadSetTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		strings.TrimRight(baseURL, "/")+"/v1/namespaces/read-set", nil)
+		strings.TrimRight(baseURL, "/")+"/v1/namespaces/readset", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -807,6 +805,236 @@ func warnHomeUnset(out io.Writer, home string) int {
 // surfacing, distinct from warnf's WARN-prefixed, tallied lines.
 func notef(out io.Writer, format string, args ...any) {
 	fmt.Fprintf(out, "  note: "+format+"\n", args...) //nolint:errcheck
+}
+
+// --- lingering dead files: the retired client-side config/cache the Go side
+// never reads (the handshake redesign moved that intent server-side) ---
+
+// configDirFor/cacheDirFor return $XDG_CONFIG_HOME/memini and
+// $XDG_CACHE_HOME/memini (or the ~/.config, ~/.cache fallback), mirroring
+// packages/memini-client's own default paths for the files it used to write:
+// overrides.json under CONFIG, project-map.json and namespace under CACHE.
+// "" when even $HOME can't be resolved, in which case the check for that
+// base is skipped rather than guessed at.
+func configDirFor() string { return xdgDir("XDG_CONFIG_HOME", ".config") }
+func cacheDirFor() string  { return xdgDir("XDG_CACHE_HOME", ".cache") }
+
+func xdgDir(envVar, fallbackLeaf string) string {
+	base := strings.TrimSpace(os.Getenv(envVar))
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		base = filepath.Join(home, fallbackLeaf)
+	}
+	return filepath.Join(base, "memini")
+}
+
+// warnLingeringDeadFiles flags on-disk files the config-handshake redesign
+// retired: the Go CLI no longer reads any of them (this is the only doctor
+// check that even looks at their path), but a file left over from before the
+// redesign is easy to mistake for live config. Each present file gets its
+// own WARN naming exactly what to do about it; a missing/unreadable XDG base
+// degrades to silence, same as every other doctor check that touches the
+// filesystem.
+func warnLingeringDeadFiles(out io.Writer) int {
+	var n int
+	if dir := configDirFor(); dir != "" {
+		n += warnIfFileExists(out, filepath.Join(dir, "overrides.json"), "no longer read; migrate to server pins")
+	}
+	if dir := cacheDirFor(); dir != "" {
+		n += warnIfFileExists(out, filepath.Join(dir, "project-map.json"), "legacy cache; safe to delete")
+		n += warnIfFileExists(out, filepath.Join(dir, "namespace"), "legacy cache; safe to delete")
+	}
+	return n
+}
+
+// warnIfFileExists is an os.Stat existence check, not a content read: a
+// retired file's presence is the whole signal, and doctor has no reason to
+// parse a format it no longer honors.
+func warnIfFileExists(out io.Writer, path, reason string) int {
+	if _, err := os.Stat(path); err != nil {
+		return 0
+	}
+	warnf(out, "%s: %s", path, reason)
+	return 1
+}
+
+// --- handshake probe: doctor's own client of POST /v1/handshake ---
+
+// doctorHandshakeTimeout bounds the handshake probe the same way
+// doctorReadSetTimeout bounds the read-set fetch: an unreachable server must
+// not hang doctor.
+const doctorHandshakeTimeout = 3 * time.Second
+
+// handshakeClientName identifies doctor's own handshake probe in server-side
+// logging/diagnostics (HandshakeRequest.client.name, api/openapi.yaml) — a
+// live agent's handshake always sends its own name instead, so this value
+// showing up in server logs unambiguously means "someone ran doctor here."
+const handshakeClientName = "memini-doctor"
+
+// handshakeProbeRequest/handshakeProbeProject/handshakeProbeClient mirror the
+// REST API's HandshakeRequest (api/openapi.yaml, POST /v1/handshake) —
+// doctor sends exactly the facts config.PluginFacts gathers for
+// ResolvePluginNamespace, so the probe and the local derivation start from
+// identical inputs and any difference in the answer is a genuine server-side
+// rule (a pin, a key default), never a facts mismatch. Local mirror types
+// rather than internal/api/rest's generated ones, matching
+// remoteReadSetEntry/remoteReadSetResponse's precedent above: doctor only
+// ever needs a handful of response fields, and a hand-rolled shape makes that
+// explicit instead of decoding into (and mostly discarding) the full
+// generated response.
+type handshakeProbeRequest struct {
+	Project handshakeProbeProject `json:"project"`
+	Client  handshakeProbeClient  `json:"client"`
+}
+
+type handshakeProbeProject struct {
+	RemoteURL        string `json:"remote_url,omitempty"`
+	ToplevelPath     string `json:"toplevel_path,omitempty"`
+	ToplevelBasename string `json:"toplevel_basename,omitempty"`
+	CwdBasename      string `json:"cwd_basename"`
+	Agent            string `json:"agent,omitempty"`
+	EnvNamespace     string `json:"env_namespace,omitempty"`
+}
+
+type handshakeProbeClient struct {
+	Name string `json:"name,omitempty"`
+}
+
+// handshakeProbeResponse mirrors only the HandshakeResponse fields
+// (api/openapi.yaml) doctor reports on; settings/settings_sources/read_set
+// are decoded and discarded (doctor already has its own read-set view via
+// fetchServerReadSet, above).
+type handshakeProbeResponse struct {
+	Namespace       string                 `json:"namespace"`
+	NamespaceSource string                 `json:"namespace_source"`
+	Identity        handshakeProbeIdentity `json:"identity"`
+}
+
+type handshakeProbeIdentity struct {
+	Authenticated    bool   `json:"authenticated"`
+	KeyName          string `json:"key_name,omitempty"`
+	Home             string `json:"home,omitempty"`
+	DefaultNamespace string `json:"default_namespace,omitempty"`
+}
+
+// probeHandshake calls POST /v1/handshake on baseURL with facts, identifying
+// itself as client.name handshakeClientName. Returns an error on any failure
+// (unreachable, non-2xx, malformed body) — unlike fetchServerReadSet there is
+// no local mirror to fall back to, so the caller reports the failure itself
+// as the diagnostic.
+func probeHandshake(ctx context.Context, baseURL, apiKey string, facts nsresolve.Facts) (handshakeProbeResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, doctorHandshakeTimeout)
+	defer cancel()
+
+	body, err := json.Marshal(handshakeProbeRequest{
+		Project: handshakeProbeProject{
+			RemoteURL:        facts.RemoteURL,
+			ToplevelPath:     facts.ToplevelPath,
+			ToplevelBasename: facts.ToplevelBasename,
+			CwdBasename:      facts.CwdBasename,
+			Agent:            facts.Agent,
+			EnvNamespace:     facts.EnvNamespace,
+		},
+		Client: handshakeProbeClient{Name: handshakeClientName},
+	})
+	if err != nil {
+		return handshakeProbeResponse{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(baseURL, "/")+"/v1/handshake", bytes.NewReader(body))
+	if err != nil {
+		return handshakeProbeResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return handshakeProbeResponse{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return handshakeProbeResponse{}, fmt.Errorf("server returned %s", resp.Status)
+	}
+	var parsed handshakeProbeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return handshakeProbeResponse{}, err
+	}
+	return parsed, nil
+}
+
+// runHandshakeProbe performs doctor's optional handshake probe (only reached
+// when MEMINI_BASE_URL is configured, see runDoctor): POST /v1/handshake with
+// the same facts config.PluginFacts gathers for ResolvePluginNamespace, then
+// reports the server's answer against the local one (localNS/localSrc).
+// Unlike resolveReadSet's silent fallback, a failed probe has no local mirror
+// to fall back to — MEMINI_BASE_URL being configured but unreachable is
+// itself worth a WARN, since there is nothing else to show for it.
+func runHandshakeProbe(ctx context.Context, out io.Writer, baseURL, apiKey, cwd, localNS string, localSrc config.NamespaceSource) int {
+	resp, err := probeHandshake(ctx, baseURL, apiKey, config.PluginFacts(cwd))
+	if err != nil {
+		warnf(out, "handshake probe to %s failed: %v", baseURL, err)
+		return 1
+	}
+	reportHandshakeProbe(out, resp, localNS, localSrc)
+	return 0
+}
+
+// reportHandshakeProbe prints the handshake probe's resolved namespace,
+// identity, and how it relates to ResolvePluginNamespace's own answer
+// (localNS/localSrc): they can legitimately differ — a server-side pin or a
+// key's own default namespace applies only there — so a difference is
+// explained via the probe's own namespace_source (handshakeMismatchReason)
+// rather than just flagged. This never adds to doctor's warning tally: an
+// explained divergence is not a problem, and an unexplained one still reads
+// as "worth investigating" rather than an alarm.
+func reportHandshakeProbe(out io.Writer, resp handshakeProbeResponse, localNS string, localSrc config.NamespaceSource) {
+	fmt.Fprintf(out, "Handshake probe: namespace %q (%s)\n", resp.Namespace, resp.NamespaceSource) //nolint:errcheck
+	id := resp.Identity
+	fmt.Fprintf(out, "  identity: authenticated=%v", id.Authenticated) //nolint:errcheck
+	if id.KeyName != "" {
+		fmt.Fprintf(out, ", key=%q", id.KeyName) //nolint:errcheck
+	}
+	if id.Home != "" {
+		fmt.Fprintf(out, ", home=%q", id.Home) //nolint:errcheck
+	}
+	if id.DefaultNamespace != "" {
+		fmt.Fprintf(out, ", default_namespace=%q", id.DefaultNamespace) //nolint:errcheck
+	}
+	fmt.Fprintln(out) //nolint:errcheck
+
+	if resp.Namespace == localNS {
+		fmt.Fprintf(out, "  matches the local derivation (%s)\n", localSrc) //nolint:errcheck
+		return
+	}
+	fmt.Fprintf(out, "  differs from the local derivation %q (%s):\n", localNS, localSrc) //nolint:errcheck
+	if reason, ok := handshakeMismatchReason(resp.NamespaceSource); ok {
+		note(out, reason)
+		return
+	}
+	note(out, fmt.Sprintf("server resolved via %q; no known legitimate-divergence rule matches — worth investigating.", resp.NamespaceSource))
+}
+
+// handshakeMismatchReason names WHY the handshake probe's namespace can
+// legitimately outrank the local derivation, keyed by the probe's own
+// namespace_source (nsresolve's vocabulary, api/openapi.yaml
+// HandshakeResponse.namespace_source): a pin or a key's own default are
+// expected divergences server-side derivation alone can't see, not bugs — so
+// doctor explains them by name instead of just alarming. ok is false for any
+// other source, which reportHandshakeProbe treats as unexplained.
+func handshakeMismatchReason(source string) (reason string, ok bool) {
+	switch source {
+	case nsresolve.SourcePin:
+		return "the server has an operator-created pin for this project, which outranks local derivation.", true
+	case nsresolve.SourceKeyDefault:
+		return "this API key carries its own default namespace, used because nothing else resolved server-side.", true
+	default:
+		return "", false
+	}
 }
 
 func doctorResult(out io.Writer, warnings int) {

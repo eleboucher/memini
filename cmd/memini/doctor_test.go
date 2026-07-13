@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/eleboucher/memini/internal/config"
 	"github.com/eleboucher/memini/internal/memory"
+	"github.com/eleboucher/memini/internal/nsresolve"
 	"github.com/eleboucher/memini/internal/store"
 	"github.com/eleboucher/memini/internal/store/sqlitevec"
 )
@@ -405,11 +408,12 @@ func TestLocalReadSetDegradesWithoutLinkStore(t *testing.T) {
 // --- read-set: server preference + fallback ---
 
 func TestFetchServerReadSetSendsHeaders(t *testing.T) {
-	var gotNS, gotHome, gotAuth string
+	var gotNS, gotHome, gotAuth, gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotNS = r.Header.Get("X-Memini-Namespace")
 		gotHome = r.Header.Get("X-Memini-Home")
 		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"entries":[]}`))
 	}))
@@ -417,6 +421,9 @@ func TestFetchServerReadSetSendsHeaders(t *testing.T) {
 
 	if _, err := fetchServerReadSet(context.Background(), srv.URL, "secret-token", "acme/phoenix", "personal/kit"); err != nil {
 		t.Fatalf("fetchServerReadSet: %v", err)
+	}
+	if gotPath != "/v1/namespaces/readset" {
+		t.Errorf("path = %q, want /v1/namespaces/readset (no dash)", gotPath)
 	}
 	if gotNS != "acme/phoenix" {
 		t.Errorf("X-Memini-Namespace = %q, want acme/phoenix", gotNS)
@@ -756,5 +763,257 @@ func TestWarnHomeSet(t *testing.T) {
 	n := warnHomeUnset(&out, "personal/kit")
 	if n != 0 {
 		t.Fatalf("warnings = %d, want 0 when MEMINI_HOME is set, output:\n%s", n, out.String())
+	}
+}
+
+// --- lingering dead files: overrides.json / project-map.json / namespace cache ---
+
+func writeDeadFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWarnLingeringDeadFiles(t *testing.T) {
+	tests := []struct {
+		name                                       string
+		writeOverrides, writeProjectMap, writeNSNS bool
+		wantWarnings                               int
+	}{
+		{name: "none present", wantWarnings: 0},
+		{name: "overrides only", writeOverrides: true, wantWarnings: 1},
+		{name: "legacy caches only", writeProjectMap: true, writeNSNS: true, wantWarnings: 2},
+		{name: "all present", writeOverrides: true, writeProjectMap: true, writeNSNS: true, wantWarnings: 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configDir := t.TempDir()
+			cacheDir := t.TempDir()
+			t.Setenv("XDG_CONFIG_HOME", configDir)
+			t.Setenv("XDG_CACHE_HOME", cacheDir)
+			if tt.writeOverrides {
+				writeDeadFile(t, filepath.Join(configDir, "memini", "overrides.json"))
+			}
+			if tt.writeProjectMap {
+				writeDeadFile(t, filepath.Join(cacheDir, "memini", "project-map.json"))
+			}
+			if tt.writeNSNS {
+				writeDeadFile(t, filepath.Join(cacheDir, "memini", "namespace"))
+			}
+
+			var out bytes.Buffer
+			n := warnLingeringDeadFiles(&out)
+			if n != tt.wantWarnings {
+				t.Fatalf("warnings = %d, want %d, output:\n%s", n, tt.wantWarnings, out.String())
+			}
+			got := out.String()
+			if tt.writeOverrides && (!strings.Contains(got, "overrides.json") || !strings.Contains(got, "migrate to server pins")) {
+				t.Errorf("expected the overrides.json advisory, got:\n%s", got)
+			}
+			if tt.writeProjectMap && (!strings.Contains(got, "project-map.json") || !strings.Contains(got, "safe to delete")) {
+				t.Errorf("expected the project-map.json advisory, got:\n%s", got)
+			}
+			if tt.writeNSNS && !strings.Contains(got, "namespace") {
+				t.Errorf("expected the namespace cache advisory, got:\n%s", got)
+			}
+		})
+	}
+}
+
+// --- handshake probe ---
+
+func TestProbeHandshakeSendsFactsAndIdentifiesAsDoctor(t *testing.T) {
+	var gotPath, gotMethod, gotAuth, gotContentType string
+	var gotBody handshakeProbeRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		gotAuth = r.Header.Get("Authorization")
+		gotContentType = r.Header.Get("Content-Type")
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"namespace":"acme","namespace_source":"remote","identity":{"authenticated":true,"key_name":"ci"}}`))
+	}))
+	defer srv.Close()
+
+	facts := nsresolve.Facts{
+		RemoteURL: "git@github.com:acme/app.git", ToplevelPath: "/home/kit/app",
+		ToplevelBasename: "app", CwdBasename: "app", Agent: "reviewer", EnvNamespace: "pinned",
+	}
+	resp, err := probeHandshake(context.Background(), srv.URL, "secret", facts)
+	if err != nil {
+		t.Fatalf("probeHandshake: %v", err)
+	}
+
+	if gotMethod != http.MethodPost || gotPath != "/v1/handshake" {
+		t.Errorf("request = %s %s, want POST /v1/handshake", gotMethod, gotPath)
+	}
+	if gotAuth != "Bearer secret" {
+		t.Errorf("Authorization = %q, want Bearer secret", gotAuth)
+	}
+	if gotContentType != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", gotContentType)
+	}
+	if gotBody.Client.Name != "memini-doctor" {
+		t.Errorf("client.name = %q, want memini-doctor", gotBody.Client.Name)
+	}
+	wantProject := handshakeProbeProject{
+		RemoteURL: facts.RemoteURL, ToplevelPath: facts.ToplevelPath, ToplevelBasename: facts.ToplevelBasename,
+		CwdBasename: facts.CwdBasename, Agent: facts.Agent, EnvNamespace: facts.EnvNamespace,
+	}
+	if gotBody.Project != wantProject {
+		t.Errorf("project facts = %+v, want %+v (sent verbatim)", gotBody.Project, wantProject)
+	}
+
+	if resp.Namespace != "acme" || resp.NamespaceSource != "remote" {
+		t.Errorf("resp = %+v, want namespace=acme source=remote", resp)
+	}
+	if !resp.Identity.Authenticated || resp.Identity.KeyName != "ci" {
+		t.Errorf("identity = %+v, want authenticated key_name=ci", resp.Identity)
+	}
+}
+
+func TestProbeHandshakeNoAuthHeaderWhenAPIKeyEmpty(t *testing.T) {
+	var gotAuth string
+	sawAuth := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth, sawAuth = r.Header.Get("Authorization"), r.Header.Get("Authorization") != ""
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"namespace":"acme","namespace_source":"cwd","identity":{"authenticated":false}}`))
+	}))
+	defer srv.Close()
+
+	if _, err := probeHandshake(context.Background(), srv.URL, "", nsresolve.Facts{CwdBasename: "acme"}); err != nil {
+		t.Fatalf("probeHandshake: %v", err)
+	}
+	if sawAuth {
+		t.Errorf("Authorization = %q, want no header when apiKey is empty", gotAuth)
+	}
+}
+
+func TestProbeHandshakeNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	if _, err := probeHandshake(context.Background(), srv.URL, "", nsresolve.Facts{CwdBasename: "x"}); err == nil {
+		t.Fatal("expected an error for a non-200 response")
+	}
+}
+
+func TestRunHandshakeProbeUnreachableWarns(t *testing.T) {
+	var out bytes.Buffer
+	n := runHandshakeProbe(context.Background(), &out, "http://127.0.0.1:1", "", t.TempDir(), "acme", config.NamespaceFromCWD)
+	if n != 1 {
+		t.Fatalf("warnings = %d, want 1, output:\n%s", n, out.String())
+	}
+	if !strings.Contains(out.String(), "WARN") {
+		t.Errorf("expected a WARN line for an unreachable probe target, got:\n%s", out.String())
+	}
+}
+
+func TestRunHandshakeProbeHappyPathAddsNoWarning(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"namespace":"acme","namespace_source":"cwd","identity":{"authenticated":true}}`))
+	}))
+	defer srv.Close()
+
+	var out bytes.Buffer
+	n := runHandshakeProbe(context.Background(), &out, srv.URL, "", t.TempDir(), "acme", config.NamespaceFromCWD)
+	if n != 0 {
+		t.Fatalf("warnings = %d, want 0, output:\n%s", n, out.String())
+	}
+	if !strings.Contains(out.String(), "Handshake probe") {
+		t.Errorf("expected the probe header line, got:\n%s", out.String())
+	}
+}
+
+// --- handshake probe: reporting local-vs-server agreement ---
+
+func TestReportHandshakeProbeMatchIsNotAWarning(t *testing.T) {
+	var out bytes.Buffer
+	resp := handshakeProbeResponse{Namespace: "acme", NamespaceSource: "remote", Identity: handshakeProbeIdentity{Authenticated: true}}
+	reportHandshakeProbe(&out, resp, "acme", config.NamespaceSource("remote"))
+	got := out.String()
+	if !strings.Contains(got, "matches the local derivation") {
+		t.Errorf("expected a match line, got:\n%s", got)
+	}
+	if strings.Contains(got, "WARN") {
+		t.Errorf("a match must never warn, got:\n%s", got)
+	}
+}
+
+// TestReportHandshakeProbePinDisagreesExplainedNotAlarmed: a pin is the
+// textbook legitimate divergence — the server's pin outranks local
+// derivation by design, so doctor must explain it, not raise a WARN.
+func TestReportHandshakeProbePinDisagreesExplainedNotAlarmed(t *testing.T) {
+	var out bytes.Buffer
+	resp := handshakeProbeResponse{
+		Namespace: "acme/pinned", NamespaceSource: nsresolve.SourcePin,
+		Identity: handshakeProbeIdentity{Authenticated: true, KeyName: "ci"},
+	}
+	reportHandshakeProbe(&out, resp, "acme", config.NamespaceSource("remote"))
+	got := out.String()
+	if !strings.Contains(got, "differs from the local derivation") {
+		t.Errorf("expected a differs line, got:\n%s", got)
+	}
+	if !strings.Contains(got, "pin") {
+		t.Errorf("expected the pin explanation, got:\n%s", got)
+	}
+	if strings.Contains(got, "WARN") {
+		t.Errorf("a legitimate pin divergence must be explained, not alarmed (no WARN), got:\n%s", got)
+	}
+}
+
+func TestReportHandshakeProbeKeyDefaultDisagreesExplained(t *testing.T) {
+	var out bytes.Buffer
+	resp := handshakeProbeResponse{
+		Namespace: "keys-own-default", NamespaceSource: nsresolve.SourceKeyDefault,
+		Identity: handshakeProbeIdentity{Authenticated: true},
+	}
+	reportHandshakeProbe(&out, resp, "acme", config.NamespaceSource("remote"))
+	got := out.String()
+	if !strings.Contains(got, "default namespace") {
+		t.Errorf("expected the key-default explanation, got:\n%s", got)
+	}
+	if strings.Contains(got, "WARN") {
+		t.Errorf("a legitimate key-default divergence must be explained, not alarmed (no WARN), got:\n%s", got)
+	}
+}
+
+func TestReportHandshakeProbeUnknownDivergenceIsNotAlarmedEither(t *testing.T) {
+	var out bytes.Buffer
+	resp := handshakeProbeResponse{Namespace: "weird", NamespaceSource: "cwd", Identity: handshakeProbeIdentity{Authenticated: true}}
+	reportHandshakeProbe(&out, resp, "acme", config.NamespaceSource("remote"))
+	got := out.String()
+	if !strings.Contains(got, "worth investigating") {
+		t.Errorf("expected the fallback explanation for an unexplained divergence, got:\n%s", got)
+	}
+	if strings.Contains(got, "WARN") {
+		t.Errorf("even an unexplained divergence is a note, not a WARN, got:\n%s", got)
+	}
+}
+
+func TestHandshakeMismatchReasonKnownSources(t *testing.T) {
+	for _, src := range []string{nsresolve.SourcePin, nsresolve.SourceKeyDefault} {
+		if _, ok := handshakeMismatchReason(src); !ok {
+			t.Errorf("handshakeMismatchReason(%q) ok = false, want true", src)
+		}
+	}
+}
+
+func TestHandshakeMismatchReasonUnknownSource(t *testing.T) {
+	for _, src := range []string{nsresolve.SourceEnv, nsresolve.SourceRemote, nsresolve.SourceToplevel, nsresolve.SourceCwd, nsresolve.SourceServerDefault, nsresolve.SourceDeclared} {
+		if _, ok := handshakeMismatchReason(src); ok {
+			t.Errorf("handshakeMismatchReason(%q) ok = true, want false (only pin/key_default are legitimate divergences)", src)
+		}
 	}
 }
