@@ -128,6 +128,7 @@ class Tools:
         here — see _get_handshake."""
         base_url = str(self.valves.base_url).rstrip("/")
         secret = os.environ.get("MEMINI_API_KEY") or ""
+        # Deliberate exception to "Fail-soft ALWAYS" above: this raise escapes the try/except below, matching @memini/client's assertBearerTransportSafe.
         if uses_plaintext_bearer(base_url, secret):
             message = (
                 f"memini: MEMINI_API_KEY would cross plaintext HTTP to {base_url}; "
@@ -198,6 +199,7 @@ class Tools:
     async def _post_json(self, path: str, payload: dict) -> Optional[dict]:
         base_url = str(self.valves.base_url).rstrip("/")
         secret = os.environ.get("MEMINI_API_KEY") or ""
+        # Deliberate exception: this raise is meant to reach the calling tool method, matching @memini/client's assertBearerTransportSafe.
         if uses_plaintext_bearer(base_url, secret):
             message = (
                 f"memini: MEMINI_API_KEY would cross plaintext HTTP to {base_url}; "
@@ -220,6 +222,7 @@ class Tools:
     async def _delete(self, path: str) -> bool:
         base_url = str(self.valves.base_url).rstrip("/")
         secret = os.environ.get("MEMINI_API_KEY") or ""
+        # Deliberate exception: this raise is meant to reach the calling tool method, matching @memini/client's assertBearerTransportSafe.
         if uses_plaintext_bearer(base_url, secret):
             message = (
                 f"memini: MEMINI_API_KEY would cross plaintext HTTP to {base_url}; "

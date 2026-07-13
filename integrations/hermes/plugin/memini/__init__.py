@@ -353,6 +353,7 @@ def _api(
     # none.
     if namespace:
         headers["X-Memini-Namespace"] = namespace
+    # Deliberate exception to this function's degrade-to-None below: a plaintext-bearer misconfiguration must raise, matching @memini/client's assertBearerTransportSafe.
     _check_plaintext_bearer_guard(base, secret)
     if secret:
         headers["Authorization"] = f"Bearer {secret}"
@@ -393,6 +394,7 @@ def _api_result(
     try:
         # MEMINI_REQUIRE_HTTPS=1 makes this raise; catch it here rather than
         # letting a config error surface as a Hermes traceback.
+        # Deliberate: the ONE failure here allowed to be loud instead of degrading to (None, message), matching @memini/client's assertBearerTransportSafe.
         _check_plaintext_bearer_guard(base, secret)
         headers = {"Content-Type": "application/json"}
         if namespace:

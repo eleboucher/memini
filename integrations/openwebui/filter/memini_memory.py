@@ -227,6 +227,7 @@ class Filter:
         here — see _get_handshake."""
         base_url = str(self.valves.base_url).rstrip("/")
         secret = os.environ.get("MEMINI_API_KEY") or ""
+        # Deliberate exception to "Fail-soft ALWAYS" above: this raise escapes the try/except below, matching @memini/client's assertBearerTransportSafe.
         if uses_plaintext_bearer(base_url, secret):
             message = (
                 f"memini: MEMINI_API_KEY would cross plaintext HTTP to {base_url}; "
@@ -310,6 +311,7 @@ class Filter:
     ) -> Optional[dict]:
         base_url = str(self.valves.base_url).rstrip("/")
         secret = os.environ.get("MEMINI_API_KEY") or ""
+        # Deliberate exception to the "degrade gracefully by design" except below: this raise escapes it, matching @memini/client's assertBearerTransportSafe.
         if uses_plaintext_bearer(base_url, secret):
             message = (
                 f"memini: MEMINI_API_KEY would cross plaintext HTTP to {base_url}; "

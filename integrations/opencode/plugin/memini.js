@@ -623,6 +623,7 @@ function createClient(cfg, log) {
   if (process.env.MEMINI_REQUIRE_HTTPS === "1") guardPlaintextBearerAuth(baseUrl, secret);
 
   async function postJson(path, payload, namespace) {
+    // Deliberate exception to the fail-soft try/catch below: a plaintext-bearer misconfiguration must raise, matching @memini/client's assertBearerTransportSafe.
     guardPlaintextBearerAuth(baseUrl, secret);
     const headers = { "Content-Type": "application/json", "X-Memini-Namespace": namespace };
     if (secret) headers.Authorization = `Bearer ${secret}`;
@@ -660,6 +661,7 @@ function createClient(cfg, log) {
   // here — the caller (MeminiPlugin) memoizes per plugin instance with a
   // 10-minute TTL via memoizeAsync.
   async function handshake(facts) {
+    // Same deliberate exception as postJson: fail-soft ALWAYS above, except this one raise, matching @memini/client's assertBearerTransportSafe.
     guardPlaintextBearerAuth(baseUrl, secret);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), HANDSHAKE_TIMEOUT_MS);
