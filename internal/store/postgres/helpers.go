@@ -59,6 +59,11 @@ func filterClause(b *args, f store.Filter) string {
 		}
 		clause += ex.String()
 	}
+	// ExcludeIDs: drop the listed ids before ranking and the caller's limit, so
+	// an excluded hit never consumes a result slot.
+	if len(f.ExcludeIDs) > 0 {
+		clause += " AND NOT (id = ANY(" + b.add(f.ExcludeIDs) + "))"
+	}
 	// MemoryTypes: metadata.memory_type matching ANY listed value (OR), unlike
 	// Metadata's AND-with-one-value-per-key.
 	if len(f.MemoryTypes) > 0 {

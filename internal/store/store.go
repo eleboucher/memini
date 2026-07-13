@@ -48,6 +48,11 @@ type Filter struct {
 	// that session on the pre-turn auto-recall, so a turn already in the live
 	// transcript is not echoed back as "long-term memory".
 	ExcludeMetadata map[string]string
+	// ExcludeIDs drops memories with the listed ids. Applied in SQL, before
+	// ranking and the caller's limit, so an excluded hit never consumes a
+	// result slot — a client that filters already-injected ids after the fact
+	// would instead lose those slots. Empty means no exclusion.
+	ExcludeIDs []string
 	// IncludeExpired includes memories past their TTL (default excludes them).
 	IncludeExpired bool
 	// IncludeSuperseded includes contradiction-tombstoned memories.

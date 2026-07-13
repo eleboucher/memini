@@ -62,6 +62,11 @@ const (
 	// way to amplify load.
 	maxRecallLimit = 100
 
+	// maxRecallExcludeIDs caps ExcludeIDs (mirrors the spec's maxItems): each id
+	// becomes a SQL parameter on every search leg, so an unbounded list is a
+	// cheap way to bloat every query in the fan-out.
+	maxRecallExcludeIDs = 512
+
 	// recallSearchConcurrency caps how many search legs run at once across all
 	// namespaces. A subtree recall fans out two legs per namespace; this bound
 	// keeps a deep subtree from exhausting the store's connection pool.
@@ -1685,6 +1690,11 @@ type RecallInput struct {
 	// listed key=value pair (AND), applied after Metadata. Lets a caller exclude
 	// its own session's just-captured turns from auto-recall.
 	ExcludeMetadata map[string]string
+	// ExcludeIDs drops memories with the listed ids, before ranking and Limit,
+	// so an excluded hit never consumes a result slot. Lets a long-lived client
+	// keep memories it has already injected out of recall and still receive the
+	// next-best fresh hits. Capped at maxRecallExcludeIDs entries.
+	ExcludeIDs []string
 	// IncludeFreshTurns, when true, disables the server-side temporal echo
 	// guard for this call: just-captured episodic turns (metadata.format="turn"
 	// younger than the server's turnEchoWindow) are NOT dropped. Default
@@ -1799,6 +1809,18 @@ func (s *Service) reportRecallDegraded(ctx context.Context, embedErr error, degr
 	}
 }
 
+// clampRecallLimit resolves a caller's limit to [1, maxRecallLimit], with the
+// default of 10 for the zero value.
+func clampRecallLimit(limit int) int {
+	if limit <= 0 {
+		return 10
+	}
+	if limit > maxRecallLimit {
+		return maxRecallLimit
+	}
+	return limit
+}
+
 // Recall runs hybrid (vector + keyword) retrieval fused with RRF.
 func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, error) {
 	start := time.Now()
@@ -1819,12 +1841,11 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		s.metrics.RecallResult("error", tf, "0")
 		return nil, err
 	}
-	k := in.Limit
-	if k <= 0 {
-		k = 10
-	}
-	if k > maxRecallLimit {
-		k = maxRecallLimit
+	k := clampRecallLimit(in.Limit)
+	if len(in.ExcludeIDs) > maxRecallExcludeIDs {
+		s.metrics.RecallResult("error", tf, "0")
+		return nil, invalidInputf("recall: %d exclude_ids exceeds the %d entry cap",
+			len(in.ExcludeIDs), maxRecallExcludeIDs)
 	}
 	filter := store.Filter{
 		Tiers:             in.Tiers,
@@ -1832,6 +1853,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		Tags:              in.Tags,
 		Metadata:          in.Metadata,
 		ExcludeMetadata:   in.ExcludeMetadata,
+		ExcludeIDs:        in.ExcludeIDs,
 		IncludeExpired:    in.IncludeExpired,
 		IncludeSuperseded: in.IncludeSuperseded,
 		Now:               s.now(),

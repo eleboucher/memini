@@ -406,6 +406,7 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 	in.Tags = deref(req.Tags)
 	in.Metadata = deref(req.Metadata)
 	in.ExcludeMetadata = deref(req.ExcludeMetadata)
+	in.ExcludeIDs = deref(req.ExcludeIds)
 	if req.IncludeFreshTurns != nil {
 		in.IncludeFreshTurns = *req.IncludeFreshTurns
 	}

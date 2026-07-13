@@ -562,6 +562,8 @@ export interface components {
             exclude_metadata?: {
                 [key: string]: string;
             };
+            /** @description Drop memories with these ids, applied before ranking and the limit so an excluded hit never consumes a result slot. Lets a long-lived client keep memories it has already injected out of recall and still receive the next-best fresh hits, instead of filtering client-side after the top-limit slots are spent. */
+            exclude_ids?: string[];
             /**
              * @description When true, disable the server-side temporal echo guard for this call: just-captured episodic turn captures (metadata.format="turn" younger than the server's window, default 5m) are NOT dropped. Default (false) drops them — a just-captured turn is live context, not long-term memory, and echoing it back makes the agent parrot itself. Opt in only when you genuinely need fresh turns.
              * @default false
@@ -871,6 +873,8 @@ export interface components {
             merge_hint?: components["schemas"]["MergeHint"];
             /** @description Optional. Present only on POST /v1/memories responses when the write's nearest same-tier candidate scored at/above MEMINI_WRITE_DEDUP_SCORE with MEMINI_WRITE_DEDUP_ACTION="supersede" and the old memory was tombstoned in the background. The caller still receives the new memory. */
             auto_superseded?: boolean;
+            /** @description Optional. Present only on POST /v1/memories responses when the fact was already known and NO new memory was created: the existing memory was strengthened (reinforced and corroborated) and is what this response returns. Two paths reach it — the exact-restatement fingerprint fast path, and MEMINI_WRITE_DEDUP_ACTION="coalesce" when the incoming phrasing is not richer than the stored one. Without this flag a 201 would read as "created", which is exactly what did not happen, and the id would appear to belong to a memory the caller wrote when it does not. */
+            reinforced?: boolean;
         };
         /**
          * @description Where the key is stored: "db" is a row in the api_keys table (mutable via this API); "file" comes from MEMINI_API_KEYS_FILE, loaded once at boot and immutable through this API — update/rotate/ delete all reject a "file" key with 409.
@@ -1798,6 +1802,14 @@ export interface operations {
             query?: {
                 /** @description Repeatable and/or comma-separated event-kind filter; omitted means all kinds. */
                 kind?: components["schemas"]["EventKind"][];
+                /** @description Repeatable and/or comma-separated tier filter. Selects whole operations that touched a memory of a listed tier — a matching event is returned with every memory it served, so its counts stay truthful. */
+                tier?: components["schemas"]["Tier"][];
+                /** @description Free-text filter, case-insensitive. Selects whole operations whose recall query or any served memory's summary contains it. */
+                q?: string;
+                /** @description Only events recorded at or after this instant. */
+                since?: string;
+                /** @description With all_namespaces=true, restrict the feed to these namespaces (repeatable, exact match); ignored otherwise. */
+                namespace?: string[];
                 /** @description Caps the returned events (operations, not rows). Default 50, max 200. */
                 limit?: number;
                 /** @description Opaque cursor from a previous response's next_cursor; returns the page of events strictly older than it. */
