@@ -117,6 +117,11 @@ controllers:
           # MEMINI_TOMBSTONE_TTL: "720h"          # hard-delete superseded memories after TTL
           # MEMINI_WRITE_DEDUP_SCORE: "0.625"     # similarity to treat a write as a near-dup ("0" disables)
           # MEMINI_WRITE_DEDUP_ACTION: "hint"     # hint (default) | coalesce | supersede | off
+          # GitOps-managed global client behavior defaults (config-handshake redesign):
+          # a JSON-encoded ClientSettings object that becomes every key's default
+          # settings layer and locks it read-only (PUT /v1/settings/defaults 409s
+          # while this is set). See docs/reference/configuration.md#memini_client_defaults.
+          # MEMINI_CLIENT_DEFAULTS: '{"capture_turns":false,"recall_limit":5}'
   # --- Optional embeddings tuning ---
   # MEMINI_EMBED_MAX_BATCH: "20"          # max items per /embeddings request
   # MEMINI_EMBED_MAX_BATCH_CHARS: "24000" # max total chars per request (0 disables)

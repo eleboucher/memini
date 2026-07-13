@@ -155,4 +155,4 @@ MEMINI_AGENT=reviewer memini doctor
 namespace with its origin and the tiers it contributes. If an agent is not seeing
 project knowledge, that table tells you whether the ancestor leg is present, and
 therefore whether the problem is the tree or the ranking. `GET
-/v1/namespaces/read-set` answers the same question against a running server.
+/v1/namespaces/readset` answers the same question against a running server.

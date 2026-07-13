@@ -116,6 +116,30 @@ fence), and a key's bound `home` **beats** the `X-Memini-Home` header while its
 `default_namespace` **loses** to the `X-Memini-Namespace` header. Home is who you
 are; namespace is where you are working.
 
+## Team-wide behavior defaults
+
+Identity (keys, home namespaces) is one axis; **behavior** — whether turns get
+captured, how much a briefing injects, and so on — is a separate one, and it is
+now server data everyone's client resolves fresh instead of local config each
+person sets up themselves. For a homelab managed the same way as everything
+else here (GitOps, values checked into a repo), set it once as a **server** env
+var and it applies to the whole team without anyone touching a client:
+
+```sh
+# server (the memini process)
+export MEMINI_CLIENT_DEFAULTS='{"capture_turns":false,"recall_limit":5}'
+```
+
+This locks the global-defaults layer read-only — `PUT /v1/settings/defaults`
+is refused with 409 while it is set, so a stray API call can't drift the
+team's defaults out from under the values file. It is a complete no-op if
+left unset (the KV-backed defaults apply as before), and a per-key
+`settings` override (in `api-keys.yaml` above, or `PUT /v1/self/settings`)
+still wins over it for anyone who needs to differ from the team default. The
+Helm chart has a commented example in `values.yaml`; see
+[`MEMINI_CLIENT_DEFAULTS`](../reference/configuration.md#memini_client_defaults)
+for the full validation rules.
+
 ## The UI embeds your API key
 
 This is the security point to internalize before you expose anything.

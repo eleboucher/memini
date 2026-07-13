@@ -144,7 +144,7 @@ job:
 | Layer                            | Owns                                                                                                                                                                                      |
 | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Client** (plugin/hook script)  | Resolving `MEMINI_NAMESPACE` and `MEMINI_HOME` from env/config, and sending them on every call as `X-Memini-Namespace` / `X-Memini-Home`                                                  |
-| **Server** (`internal/service`)  | Cascade resolution (ancestors, home, links), `visibility` resolution and the tier clamp, `scope` parsing, read-set fusion                                                                 |
+| **Server** (`internal/service`)  | Cascade resolution (ancestors, home, links), `visibility` resolution and the tier clamp, `scope` parsing, read set fusion                                                                 |
 | **Store** (sqlitevec / postgres) | Partitioning memory rows by namespace string only — no tree logic, no cascade awareness; `namespace_links` is just a table of `(src, dst, tiers, note)` rows the service layer interprets |
 
 The store never knows a namespace has a parent, a home, or a link — it just
@@ -224,7 +224,7 @@ REST: `POST /v1/links` (create/replace, keyed on `dst` — idempotent),
 - **Raw `namespace`** stays on the REST API (for scripts and the admin UI)
   and is dropped from the MCP tool schema — the LLM never sees or
   constructs a raw namespace path, only `scope` and `visibility`.
-- **`GET /v1/namespaces/read-set`** — header-scoped like briefing, returns
+- **`GET /v1/namespaces/readset`** — header-scoped like briefing, returns
   the resolved structural read set (namespace + origin + tier restriction)
   for the request namespace, independent of any one query's tier filter.
   Useful for debugging what a given `MEMINI_NAMESPACE` / `MEMINI_HOME` pair

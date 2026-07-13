@@ -39,7 +39,7 @@ Ten views, in nav order.
 | **Projects** | `/projects` | The landing page. Every namespace as a nested box tree of "pods" (memory count, tier bar, last write). Click one to make it the active namespace. Per-pod: delete, or a drawer for namespace **move** and **split** (dry-run first).                                                                                  |
 | **Overview** | `/`         | Read-only stats for the active namespace, or aggregated across all: totals, recalls, average importance, last write, expired/superseded/low-confidence counts, and the tier strata bar.                                                                                                                               |
 | **Browse**   | `/browse`   | Filterable list of up to 500 memories. Filters run server-side: tier, memory type, level, tags, metadata, created-after, accessed-after, sort, include-expired, include-superseded. The detail drawer is where **delete** and **reassign** live.                                                                      |
-| **Search**   | `/search`   | Hybrid recall against `/v1/search` with tier/tag/metadata filters, showing relevance scores and read-set provenance ("in scope via ..."). It does not call `/v1/answer`.                                                                                                                                              |
+| **Search**   | `/search`   | Hybrid recall against `/v1/search` with tier/tag/metadata filters, showing relevance scores and read set provenance ("in scope via ..."). It does not call `/v1/answer`.                                                                                                                                              |
 | **Activity** | `/activity` | Paged event feed: recall, briefing, get, remember, update, forget, supersede. Each row shows the query, the memories served with rank and score, and a "degraded" chip when a recall fell back to keyword-only. This is the view for "why did the agent not see that memory".                                         |
 | **Graph**    | `/graph`    | Force-directed view, two modes. _Memories_: nodes are memories, edges are supersession (directed) and shared-tag affinity. _Namespaces_: nodes are namespaces, edges are the parent/child ancestor cascade plus stored links.                                                                                         |
 | **Scopes**   | `/scopes`   | The effective **read set** for the active namespace: every namespace a recall draws from, each tagged with why (primary, ancestor, home, link, call) and which tiers that leg contributes. Below it, the outgoing **links**, with add and delete. This is the view that answers "what can this project actually see". |
@@ -57,7 +57,7 @@ surface, including writes:
 
 - `GET /v1/stats`, `GET /v1/namespaces`, `DELETE /v1/namespaces`
 - `POST /v1/namespaces/move`, `POST /v1/namespaces/split` (both take `dry_run`)
-- `GET /v1/namespaces/read-set`
+- `GET /v1/namespaces/readset`
 - `GET /v1/memories`, `GET /v1/memories/{id}`, `DELETE /v1/memories/{id}`,
   `POST /v1/memories/{id}/reassign`
 - `POST /v1/search`

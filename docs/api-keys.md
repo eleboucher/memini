@@ -81,11 +81,42 @@ namespace resolves to the key's `default_namespace`, `acme`.
   is never silently re-enabled by a later rotation — `--disabled=false` (or
   `disabled: false` in the PATCH body) must be explicit.
   `PATCH /v1/keys/{name}` follows the same preserve-unspecified contract for
-  updating `home`/`default_namespace`/`disabled` without rotating the secret.
+  updating `home`/`default_namespace`/`disabled`/`settings` without rotating
+  the secret — see [Per-key behavior settings](#per-key-behavior-settings)
+  below for what `settings` does.
 - **File keys are immutable via the API.** A key sourced from
   `MEMINI_API_KEYS_FILE` can't be rotated, disabled, or deleted through the CLI
   or REST/UI — those calls 409. The file is the source of truth; edit it and
   restart the server.
+
+## Per-key behavior settings
+
+A key's identity (`home`/`default_namespace`) is one axis; its **behavior**
+(whether it captures turns, how much a briefing injects, and so on) is a
+separate one, layered as built-in defaults ← the server's global defaults
+← this key's own override. Three endpoints touch that per-key layer:
+
+| Endpoint                | Who can call it                                            | What it does                                                                                                                                         |
+| ----------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PATCH /v1/keys/{name}` | Admin only (see [Three kinds of key](#three-kinds-of-key)) | Sets or clears `settings` on any table-sourced key by name, alongside `home`/`default_namespace`/`disabled`.                                         |
+| `PUT /v1/self/settings` | The key itself (a **named** key only)                      | Full-replace of the caller's own `settings`. No merge/patch variant: `GET /v1/self`, edit the result, `PUT` it back.                                 |
+| `GET /v1/self`          | Any authenticated caller                                   | This key's identity plus its fully-resolved `settings` (every field present) and `settings_sources` (per-field `default`/`global`/`key` provenance). |
+
+`PUT /v1/self/settings` is how a named key manages its own behavior without
+needing the admin key at all — the natural fit for "I want my own recall limit
+lower" without touching anyone else's. It 403s for the admin key and for dev
+mode (auth disabled): neither authenticates as a **named** principal, so
+there is no "self" to update — use `PUT /v1/settings/defaults` for the global
+layer instead (see [scopes.md](scopes.md) and
+[env-vars.md](reference/env-vars.md#4-behavior-settings-layered-server-data)
+for how the layers stack). It 409s for a `MEMINI_API_KEYS_FILE`-sourced key,
+matching every other file-key mutation: that key's `settings` comes from the
+file and is immutable at runtime.
+
+A field a key never set (in the file, via `PATCH`, or via `PUT /v1/self/settings`)
+keeps inheriting the server's global defaults — setting `settings: {}` (or
+omitting a field on a `PUT`) is how you go back to inheriting rather than
+pinning a value forever.
 
 ## Declarative file: `MEMINI_API_KEYS_FILE`
 
@@ -103,6 +134,13 @@ keys:
     hash: "b9f195c5cc7ef6afadbfbc42892ad47d3b24c6bc94bb510c4564a90a14e8b799" # sha256 of the secret
     home: personal/kit
     default_namespace: acme
+    # Optional per-key behavior override (config-handshake redesign) — the
+    # same ClientSettings a named key can also set for itself via
+    # PUT /v1/self/settings (see below). Unset fields keep inheriting the
+    # server's global defaults.
+    settings:
+      session_digest: false
+      recall_limit: 5
 
   # A key identified by a plaintext secret. Allowed because the file itself
   # is the secret store — e.g. SOPS-encrypted at rest in a GitOps repo, only
@@ -120,11 +158,15 @@ keys:
 ```
 
 Each entry needs a unique `name` and **exactly one** of `hash` or `secret`;
-`home`/`default_namespace`/`disabled` are optional. Validation is **fail-loud**
-at boot: malformed YAML, a missing name, both or neither of `hash`/`secret`, a
-hash that isn't 32 bytes of hex, a duplicate name, two entries sharing a
-secret, or an invalid `home`/`default_namespace` all refuse to start the
-server, naming the offending entry (never echoing the hash or secret itself).
+`home`/`default_namespace`/`disabled`/`settings` are optional. Validation is
+**fail-loud** at boot: malformed YAML, a missing name, both or neither of
+`hash`/`secret`, a hash that isn't 32 bytes of hex, a duplicate name, two
+entries sharing a secret, an invalid `home`/`default_namespace`, or a
+`settings` block carrying an unknown field or a value failing
+`ClientSettings.Validate` all refuse to start the server, naming the
+offending entry (never echoing the hash or secret itself). A file key's
+`settings` is immutable at runtime through the API, same as every other field
+on a file key — edit the file and restart to change it.
 
 If a file entry shares a name with an existing `api_keys` table row, the file
 entry wins at auth time (file is checked before the table) — the server logs

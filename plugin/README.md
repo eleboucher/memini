@@ -277,26 +277,63 @@ is in force.
 
 ## Environment
 
-| Env var                     | Default                  | Used by               | Description                                                                                              |
-| --------------------------- | ------------------------ | --------------------- | -------------------------------------------------------------------------------------------------------- |
-| `MEMINI_BASE_URL`           | `http://localhost:8080`  | hooks (REST)          | memini base URL for the lifecycle hooks (alias: `MEMINI_URL`)                                            |
-| `MEMINI_MCP_URL`            | `${MEMINI_BASE_URL}/mcp` | MCP tools             | memini `/mcp` URL for the model-invoked memory tools; derived from `MEMINI_BASE_URL` unless set          |
-| `MEMINI_API_KEY`            | —                        | hooks + MCP           | bearer token; required when the server sets `MEMINI_API_KEY` (alias: `MEMINI_TOKEN`)                     |
-| `MEMINI_NAMESPACE`          | auto (cwd/git basename)  | hooks + MCP           | explicit namespace override; otherwise auto-resolved                                                     |
-| `MEMINI_NAMESPACE_SCOPE`    | `repo`                   | hooks                 | `owner-repo` derives `owner-repo` slugs from the git remote                                              |
-| `MEMINI_AUTO_SAVE`          | on                       | `Stop` hook           | set to `0` to disable the periodic auto-save nudge                                                       |
-| `MEMINI_AUTO_SAVE_INTERVAL` | `10`                     | `Stop` hook           | user messages between auto-save nudges                                                                   |
-| `MEMINI_CAPTURE_TURNS`      | on                       | `Stop` hook           | auto-capture each user→assistant turn as episodic memory; set to `0` to disable                          |
-| `MEMINI_SESSION_DIGEST`     | on                       | capture hooks         | record session digests (files edited, commands run); set to `0` to keep memory to durable facts only     |
-| `MEMINI_INLINE_EXTRACT`     | on                       | SessionStart + `Stop` | inject the memory-save directive (`memory_remember`) and scrape legacy `<memory>` blocks; `0` to disable |
-| `MEMINI_DEBUG`              | —                        | hooks                 | set to `1` for verbose hook logging                                                                      |
+Past this bootstrap layer, everything else — identity, namespace resolution,
+and every behavioral knob below — is resolved by the server on every
+handshake, not derived locally. See
+[docs/reference/env-vars.md](../docs/reference/env-vars.md) for the full
+four-layer model this table is one piece of.
+
+| Env var                | Default                 | Used by     | Description                                                                                                                                       |
+| ---------------------- | ----------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEMINI_BASE_URL`      | `http://localhost:8080` | hooks + MCP | memini base URL. No `MEMINI_URL` alias anymore (removed — see below).                                                                             |
+| `MEMINI_API_KEY`       | —                       | hooks + MCP | bearer token this client sends. No `MEMINI_TOKEN` alias anymore (removed — see below).                                                            |
+| `MEMINI_NAMESPACE`     | auto (server-resolved)  | hooks + MCP | sent as a fact so the server can weigh it against a pin — a pin still wins over it; also the offline escape hatch when the server is unreachable. |
+| `MEMINI_HOME`          | —                       | hooks + MCP | this caller's personal namespace, sent as `X-Memini-Home`; overridden by a bound key's `home` if the API key has one.                             |
+| `MEMINI_AGENT`         | —                       | hooks + MCP | per-agent namespace suffix, sent as a fact for the server to nest under the resolved namespace.                                                   |
+| `MEMINI_REQUIRE_HTTPS` | `0`                     | hooks + MCP | refuse to send `MEMINI_API_KEY` over plaintext HTTP to a non-loopback host (throws).                                                              |
+| `MEMINI_DEBUG`         | —                       | hooks       | set to `1` for verbose hook logging.                                                                                                              |
+
+### Behavior settings (client env = a debug override, not the source of truth)
+
+These knobs are now server data — resolved fresh on every handshake from
+built-in defaults, overridden by the server's global defaults
+(`PUT /v1/settings/defaults` or the `MEMINI_CLIENT_DEFAULTS` server env), then
+by any per-key setting (`PUT /v1/self/settings`). Setting the matching env var
+below still works, but only as a **local debug override for this one
+client** — it wins over whatever the server resolved, without touching the
+server's stored value for anyone else. `/memini:status` shows each knob's
+actual source (`env-override` / `server (key|global|default)`).
+
+| Env var                     | Default | Description                                                                                    |
+| --------------------------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `MEMINI_AUTO_SAVE`          | on      | periodic auto-save nudge on `Stop`.                                                            |
+| `MEMINI_AUTO_SAVE_INTERVAL` | `10`    | user messages between auto-save nudges.                                                        |
+| `MEMINI_CAPTURE_TURNS`      | on      | auto-capture each user→assistant turn as episodic memory.                                      |
+| `MEMINI_SESSION_DIGEST`     | on      | record session digests (files edited, commands run); `0` to keep memory to durable facts only. |
+| `MEMINI_INLINE_EXTRACT`     | on      | inject the memory-save directive (`memory_remember`) and scrape legacy `<memory>` blocks.      |
+
+### Removed variables
+
+Four client-side variables from before this redesign are retired. Each is
+silently ignored everywhere except `SessionStart`, which prints one combined
+stderr line if any is set (`[memini] ignored removed env vars: ...`) — see
+[docs/reference/env-vars.md#removed-variables-warn-and-ignore](../docs/reference/env-vars.md#removed-variables-warn-and-ignore).
+
+| Removed                  | Replacement                                                              |
+| ------------------------ | ------------------------------------------------------------------------ |
+| `MEMINI_URL`             | `MEMINI_BASE_URL` (no longer an alias — set the real name).              |
+| `MEMINI_TOKEN`           | `MEMINI_API_KEY` (no longer an alias — set the real name).               |
+| `MEMINI_MCP_URL`         | None — the MCP endpoint is always `${MEMINI_BASE_URL}/mcp`.              |
+| `MEMINI_NAMESPACE_SCOPE` | The server-side `namespace_scope` behavior setting — no client override. |
 
 ### Tuning injection budgets
 
 The SessionStart and PreToolUse hooks inject context into the agent's
 prompt. The volume is configurable per-knob — shrink it for small / fast
-models, grow it where more recall helps. All knobs are env-only; defaults
-match the prior hardcoded behavior, so existing installs see no change.
+models, grow it where more recall helps. Every knob below is a behavior
+setting like the ones above (env is a debug override, not the source of
+truth); defaults match the prior hardcoded behavior, so existing installs see
+no change.
 
 **SessionStart** (one briefing call → pinned / facts / procedures / recent):
 

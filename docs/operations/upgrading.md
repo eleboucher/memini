@@ -229,3 +229,134 @@ that changed. A never-recalled fact written 8 days ago is now episodic and on a
 
 Set `MEMINI_DEMOTE_AFTER=0` to restore the old behaviour, or raise it (for
 example `1440h`, 60 days) if you want the sweep but on a longer horizon.
+
+## Client-side: the config-handshake redesign
+
+Everything above is the server. This section is the client — the Claude Code
+plugin, opencode, hermes, Open WebUI — which inverted from deriving its own
+configuration to asking the server for it on every connect. See
+[docs/reference/env-vars.md](../reference/env-vars.md) for the full model;
+this is what changes for an existing install.
+
+### Removed client variables
+
+Four client-side variables are retired. None are fatal — each is silently
+ignored everywhere, except `SessionStart`, which prints one combined stderr
+line if any is set:
+
+```
+[memini] ignored removed env vars: MEMINI_URL, MEMINI_NAMESPACE_SCOPE (see docs/reference/env-vars.md)
+```
+
+| Removed                  | Now                                                                                                  |
+| ------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `MEMINI_URL`             | Removed alias. Set `MEMINI_BASE_URL`.                                                                |
+| `MEMINI_TOKEN`           | Removed alias. Set `MEMINI_API_KEY`.                                                                 |
+| `MEMINI_MCP_URL`         | Removed. The MCP endpoint is always `${MEMINI_BASE_URL}/mcp`.                                        |
+| `MEMINI_NAMESPACE_SCOPE` | Moved server-side, as the `namespace_scope` behavior setting — no client env override exists for it. |
+
+Grep your shell profile, your MCP client config, and any wrapper scripts for
+these four. Nothing crashes if you don't — the warning is the only signal,
+same shape as the server's own removed-variable warnings above.
+
+### Every remaining client env var is now a debug override, not the source of truth
+
+Before this redesign, a client-side `MEMINI_*` variable like
+`MEMINI_SESSION_DIGEST` or `MEMINI_INJECT_BRIEFING_FACTS` was read once,
+locally, and that was the whole story. Now every one of those knobs is
+**server data**, resolved fresh on each handshake (built-in default ← global
+defaults ← per-key settings). The env var still works exactly as before — it
+still wins if set — but it is now explicitly a **local debug override**: it
+overrides what the server resolved for this one client, and does not change
+what any other client sees or what is stored on the server. If you want a
+setting to apply for everyone, set it once server-side
+(`PUT /v1/settings/defaults`, `MEMINI_CLIENT_DEFAULTS`, or per-key via
+`PUT /v1/self/settings`) instead of exporting it on every machine.
+
+### Pins replace overrides.json
+
+`~/.config/memini/overrides.json` — the per-machine namespace override file —
+is retired in favor of server-side **pins** (`/v1/pins`,
+`/memini:namespace <ns>`). A pin is the same idea (pin one project to one
+namespace) but lives on the server, so it follows you across machines instead
+of being stuck on whichever one you set it on.
+
+Migration is automatic and needs nothing from you in the common case: the
+first time a project's handshake succeeds and reports no pin, `SessionStart`
+reads a matching `overrides.json` entry (read-only — it is never written or
+cleared) and `PUT`s it to `/v1/pins`, printing one line on success:
+
+```
+[memini] migrated your local namespace override for this project to a server pin
+```
+
+The pin that creates is exactly what makes this idempotent: the next
+handshake reports `namespace_source: "pin"`, so the migration never fires
+twice for the same project. A failed `PUT` (server hiccup) is fail-soft — no
+crash, no error surfaced beyond a stderr note — and is retried the same way
+next session.
+
+To migrate every project on a machine at once (e.g. right after upgrading,
+before you have opened each one), run:
+
+```
+/memini:namespace --migrate
+```
+
+It prints a `key -> namespace -> status` table (`migrated` / `already-pinned`
+/ `failed`) and, only on full success, renames the file to
+`overrides.json.migrated`. A partial failure leaves the file in place so a
+re-run retries just what did not land. It also checks
+`~/.config/memini/config.json` for the older `tenantRoots`/`template` tenancy
+config a couple of integrations still read — that one cannot be
+auto-translated, so it is printed with instructions to recreate it by hand as
+a `namespace_prefix` on the relevant API keys, or as per-project pins.
+
+### The one capability regression: no offline pinning
+
+Setting or clearing a pin needs the server reachable, because the pin itself
+is server-side state. The old `overrides.json` was a local file, so it worked
+offline. If you need to pin a namespace with no server available, the escape
+hatch is the same variable that has always worked degraded:
+
+```sh
+export MEMINI_NAMESPACE=<namespace>
+```
+
+Degraded resolution honors it exactly as before. It just does not follow you
+to another machine the way a real pin does — set the pin for real
+(`/memini:namespace <ns>`) once the server is back.
+
+### Windows: no `/proc`
+
+The MCP `headersHelper` recovers the project directory by walking the process
+tree (`/proc` on Linux, `lsof` on macOS) so it can resolve a namespace before
+any hook has run. Windows has neither. On the **very first** MCP connect,
+before any hook has populated the per-session cache the helper reads on every
+connect after that, this means the helper emits **auth-only headers** — the
+bearer token, no `X-Memini-Namespace` — and the server applies the
+authenticating key's `default_namespace` (or the server default) for that one
+connection. Once a hook has fired once (which happens on ordinary use, well
+before most agents make their first tool call), the cache exists and every
+later connect resolves the real per-project namespace normally. This is a
+first-connect gap on Windows specifically, not a persistent behavior
+difference.
+
+### `MEMINI_CLIENT_DEFAULTS` for GitOps / Helm
+
+If you manage global behavior defaults declaratively rather than through the
+admin UI or `PUT /v1/settings/defaults`, set `MEMINI_CLIENT_DEFAULTS` as a
+**server** env var — one JSON-encoded `ClientSettings` object. It becomes the
+global-defaults layer and locks it read-only (`PUT /v1/settings/defaults`
+returns 409 while it is set, so nobody can drift it back out from under your
+GitOps repo). In `charts/memini/values.yaml`:
+
+```yaml
+env:
+  MEMINI_CLIENT_DEFAULTS: '{"capture_turns":false,"recall_limit":5}'
+```
+
+See [`MEMINI_CLIENT_DEFAULTS`](../reference/configuration.md#memini_client_defaults)
+for the full validation rules (fail-loud at boot, same as
+`MEMINI_API_KEYS_FILE`) and the [homelab guide](../guides/homelab-team.md) for
+more on managing a fleet this way.

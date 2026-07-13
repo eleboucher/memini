@@ -145,6 +145,13 @@ the cause is almost always a namespace mismatch (writes landing somewhere recall
 does not look), which `doctor` calls out explicitly. Start at
 [tuning recall](tuning-recall.md) before touching any ranking setting.
 
+Upgrading from an older install and `doctor` flags a leftover
+`~/.config/memini/overrides.json`? Nothing reads it anymore — it retired in
+favor of server-side pins. `/memini:namespace` picks up a matching entry for
+the current project automatically on its next `SessionStart`; running
+`/memini:namespace --migrate` once handles every project on the machine at
+once. See [env-vars.md](../reference/env-vars.md#retired-local-state-overridesjson-and-configjsons-tenantroots).
+
 ## Changing the embedding model later
 
 memini records which model produced a store's vectors and refuses to start when

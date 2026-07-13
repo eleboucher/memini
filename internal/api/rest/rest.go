@@ -596,7 +596,7 @@ func invalidScopeMsg(scope string) string {
 // identifier — see restScopeAlias.
 const scopeProject = "project"
 
-// GetReadSet implements GET /v1/namespaces/read-set. Header-scoped like
+// GetReadSet implements GET /v1/namespaces/readset. Header-scoped like
 // GetBriefing: the namespace comes from X-Memini-Namespace, and
 // X-Memini-Home, when set, contributes the home leg.
 func (h *Server) GetReadSet(w http.ResponseWriter, r *http.Request, _ GetReadSetParams) {
