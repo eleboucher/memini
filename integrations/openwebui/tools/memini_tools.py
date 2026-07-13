@@ -11,10 +11,17 @@ description: On-demand memini memory — gives the model recall_memory / remembe
 
 # Talks to memini over REST, scoped by the X-Memini-Namespace header; the API
 # key comes from MEMINI_API_KEY so the secret stays out of the Open WebUI DB.
+#
+# Namespace resolution: the admin Valve is the DECLARED namespace (Open WebUI is
+# a server with no meaningful per-request cwd — a cwd-keyed override was never
+# meaningful here). It is sent to POST /v1/handshake (api/openapi.yaml) as
+# project.declared_namespace on every call; the server echoes it back verbatim
+# unless an explicit pin overrides it. The handshake is fail-soft (any error, or
+# a ~2.5s timeout, falls back to the valve value alone) and memoized on this
+# Tools instance with a 10-minute TTL.
 
-import json
 import os
-import subprocess
+import time
 from typing import Optional
 from urllib.parse import quote, urlparse
 
@@ -24,6 +31,12 @@ from pydantic import BaseModel, Field
 DEFAULT_BASE_URL = "http://localhost:8080"
 DEFAULT_NAMESPACE = "openwebui"
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+# Mirrors packages/memini-client's HANDSHAKE_TTL_MS / default timeout; this
+# integration ships as a single-file Open WebUI upload so it stays a copy.
+HANDSHAKE_TTL_S = 600.0
+HANDSHAKE_TIMEOUT_S = 2.5
+CLIENT_NAME = "openwebui-memini-tools"
+CLIENT_VERSION = "0.1.0"  # keep in sync with this file's `version:` frontmatter
 
 
 def sanitize_namespace(value: str) -> str:
@@ -37,10 +50,11 @@ def sanitize_namespace(value: str) -> str:
 
 
 def header_safe(value: str) -> str:
-    """Trim and drop control characters (a CR/LF would split the header). Not
-    sanitize_namespace: "/" survives, so a hierarchical override like acme/api
-    reaches the server the way the other integrations send it rather than being
-    flattened into a namespace nothing else reads."""
+    """Trim and drop control characters (a CR/LF would split the header, or
+    inject a bogus field into the handshake's JSON body). Not
+    sanitize_namespace: "/" survives, so a hierarchical namespace valve like
+    acme/api reaches the server the way the other integrations send it rather
+    than being flattened into a namespace nothing else reads."""
     return "".join(ch for ch in str(value).strip() if ch >= " " and ch != "\x7f")
 
 
@@ -51,58 +65,6 @@ def redact_secret(value: str) -> str:
     if not value:
         return ""
     return "***" if len(value) <= 12 else f"{value[:3]}…{value[-4:]}"
-
-
-# --- Namespace override ---------------------------------------------------
-#
-# $XDG_CONFIG_HOME/memini/overrides.json holds the per-project namespace a user
-# set deliberately — the same file the client plugins write and `memini doctor`
-# reads. Every harness must honor it, or they disagree about which namespace is
-# in force. Reimplemented here (a JSON file plus a `git rev-parse`) because a
-# Tools file is a single upload into Open WebUI and can import nothing of memini's.
-
-
-def overrides_path() -> str:
-    xdg = os.environ.get("XDG_CONFIG_HOME", "")
-    base = xdg if xdg.strip() else os.path.join(os.path.expanduser("~"), ".config")
-    return os.path.join(base, "memini", "overrides.json")
-
-
-def override_key(cwd: str) -> str:
-    """The git toplevel when there is one, else the resolved directory."""
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=0.5,
-        )
-        toplevel = out.stdout.strip() if out.returncode == 0 else ""
-    except Exception:  # noqa: BLE001 — not a repo, no git, timeout: all the same
-        toplevel = ""
-    return os.path.abspath(toplevel or cwd)
-
-
-def read_override(cwd: str) -> Optional[dict]:
-    """The override in effect for cwd, or None. The file is read before the key
-    is computed (the key costs a `git rev-parse`), and any error degrades to "no
-    override" — a broken overrides file must never raise into Open WebUI."""
-    try:
-        with open(overrides_path(), encoding="utf-8") as handle:
-            data = json.load(handle)
-    except Exception:  # noqa: BLE001 — degrade gracefully by design
-        return None
-    overrides = data.get("overrides") if isinstance(data, dict) else None
-    if not isinstance(overrides, dict) or not overrides:
-        return None
-    entry = overrides.get(override_key(cwd))
-    if not isinstance(entry, dict):
-        return None
-    namespace = header_safe(str(entry.get("namespace") or ""))
-    if not namespace:
-        return None
-    return {"namespace": namespace, "setAt": str(entry.get("setAt") or "")}
 
 
 def uses_plaintext_bearer(base_url: str, secret: str) -> bool:
@@ -119,14 +81,16 @@ def uses_plaintext_bearer(base_url: str, secret: str) -> bool:
 class Tools:
     class Valves(BaseModel):
         base_url: str = Field(
-            default_factory=lambda: os.environ.get("MEMINI_BASE_URL")
-            or os.environ.get("MEMINI_URL")
-            or DEFAULT_BASE_URL,
-            description="memini REST base URL (defaults from MEMINI_BASE_URL / MEMINI_URL env)",
+            default_factory=lambda: os.environ.get("MEMINI_BASE_URL") or DEFAULT_BASE_URL,
+            description="memini REST base URL (defaults from MEMINI_BASE_URL env)",
         )
         namespace: str = Field(
             default=DEFAULT_NAMESPACE,
-            description="Project the memory is scoped to (X-Memini-Namespace). A per-project override in $XDG_CONFIG_HOME/memini/overrides.json wins over this.",
+            description=(
+                "Project the memory is scoped to (X-Memini-Namespace). Sent to the server as "
+                "the declared namespace via POST /v1/handshake on each call — the server echoes "
+                "it back verbatim unless an explicit pin overrides it."
+            ),
         )
         home: str = Field(
             default_factory=lambda: os.environ.get("MEMINI_HOME", ""),
@@ -141,26 +105,87 @@ class Tools:
 
     def __init__(self):
         self.valves = self.Valves()
+        # Memoized POST /v1/handshake result: {"result": dict | None, "expires_at": float}.
+        # Per-instance, TTL 10 minutes — see _get_handshake.
+        self._handshake_cache = None
 
-    def _resolve_namespace(self) -> tuple:
-        """(namespace, source). Order: per-project override > the namespace valve.
+    def _facts(self) -> dict:
+        """Assemble HandshakeRequest.project (api/openapi.yaml). Open WebUI is a
+        server with no meaningful per-request cwd, so cwd_basename (required by
+        the wire contract) is low-signal filler; the real signal is
+        declared_namespace, carrying the admin's namespace valve."""
+        cwd = os.getcwd()
+        facts = {"cwd_basename": os.path.basename(cwd.rstrip("/")) or DEFAULT_NAMESPACE}
+        declared = header_safe(str(self.valves.namespace or ""))
+        if declared:
+            facts["declared_namespace"] = declared
+        return facts
 
-        The override wins for the same reason it wins over MEMINI_NAMESPACE in
-        every other integration: it is the one namespace input a user sets
-        deliberately, and one that some harnesses honored and others ignored
-        would be worse than none at all."""
-        override = read_override(os.getcwd())
-        if override:
-            return override["namespace"], "override"
-        valve = sanitize_namespace(self.valves.namespace)
-        return valve or DEFAULT_NAMESPACE, "valve"
+    async def _handshake(self) -> Optional[dict]:
+        """POST /v1/handshake (api/openapi.yaml). Fail-soft ALWAYS: any network
+        error, non-2xx, or a ~2.5s timeout degrades to None, and
+        _resolve_namespace falls back to the valve value alone. Not memoized
+        here — see _get_handshake."""
+        base_url = str(self.valves.base_url).rstrip("/")
+        secret = os.environ.get("MEMINI_API_KEY") or ""
+        if uses_plaintext_bearer(base_url, secret):
+            message = (
+                f"memini: MEMINI_API_KEY would cross plaintext HTTP to {base_url}; "
+                "use HTTPS or an SSH tunnel."
+            )
+            if self.valves.require_https:
+                raise RuntimeError(message)
+            print(f"[memini] {message}")
 
-    def _headers(self, secret: str, extra: Optional[dict] = None) -> dict:
+        headers = {"Content-Type": "application/json"}
+        if secret:
+            headers["Authorization"] = f"Bearer {secret}"
+        home = str(self.valves.home or "").strip()
+        if home:
+            headers["X-Memini-Home"] = home
+        body = {"project": self._facts(), "client": {"name": CLIENT_NAME, "version": CLIENT_VERSION}}
+        timeout = aiohttp.ClientTimeout(total=HANDSHAKE_TIMEOUT_S)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    f"{base_url}/v1/handshake", json=body, headers=headers
+                ) as res:
+                    if res.status >= 400:
+                        print(f"[memini] handshake failed: {res.status}")
+                        return None
+                    return await res.json()
+        except Exception as error:  # noqa: BLE001 — fail-soft ALWAYS, unconditionally
+            print(f"[memini] handshake failed: {error}")
+            return None
+
+    async def _get_handshake(self) -> Optional[dict]:
+        """_handshake, memoized on this Tools instance with a 10-minute TTL."""
+        now = time.monotonic()
+        cached = self._handshake_cache
+        if cached and now < cached["expires_at"]:
+            return cached["result"]
+        result = await self._handshake()
+        self._handshake_cache = {"result": result, "expires_at": now + HANDSHAKE_TTL_S}
+        return result
+
+    async def _resolve_namespace(self) -> tuple:
+        """(namespace, source). The admin Valve is the DECLARED namespace, sent
+        to POST /v1/handshake as project.declared_namespace; the server echoes
+        it back verbatim unless an explicit pin overrides it. Fail-soft: any
+        handshake error/timeout falls back to the valve value alone."""
+        valve = sanitize_namespace(self.valves.namespace) or DEFAULT_NAMESPACE
+        hs = await self._get_handshake()
+        if hs and hs.get("namespace"):
+            return str(hs["namespace"]), f"server:{hs.get('namespace_source', '')}"
+        return valve, "valve"
+
+    async def _headers(self, secret: str, extra: Optional[dict] = None) -> dict:
         """Build request headers — the single choke point every REST call goes
         through, so X-Memini-Home (and any future header) only needs wiring
         once."""
+        namespace, _ = await self._resolve_namespace()
         headers = {
-            "X-Memini-Namespace": self._resolve_namespace()[0],
+            "X-Memini-Namespace": namespace,
             **(extra or {}),
         }
         if secret:
@@ -172,7 +197,7 @@ class Tools:
 
     async def _post_json(self, path: str, payload: dict) -> Optional[dict]:
         base_url = str(self.valves.base_url).rstrip("/")
-        secret = os.environ.get("MEMINI_API_KEY") or os.environ.get("MEMINI_TOKEN") or ""
+        secret = os.environ.get("MEMINI_API_KEY") or ""
         if uses_plaintext_bearer(base_url, secret):
             message = (
                 f"memini: MEMINI_API_KEY would cross plaintext HTTP to {base_url}; "
@@ -181,7 +206,7 @@ class Tools:
             if self.valves.require_https:
                 raise RuntimeError(message)
             print(f"[memini] {message}")
-        headers = self._headers(secret, {"Content-Type": "application/json"})
+        headers = await self._headers(secret, {"Content-Type": "application/json"})
         timeout = aiohttp.ClientTimeout(total=self.valves.timeout_ms / 1000)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
@@ -194,7 +219,7 @@ class Tools:
 
     async def _delete(self, path: str) -> bool:
         base_url = str(self.valves.base_url).rstrip("/")
-        secret = os.environ.get("MEMINI_API_KEY") or os.environ.get("MEMINI_TOKEN") or ""
+        secret = os.environ.get("MEMINI_API_KEY") or ""
         if uses_plaintext_bearer(base_url, secret):
             message = (
                 f"memini: MEMINI_API_KEY would cross plaintext HTTP to {base_url}; "
@@ -203,7 +228,7 @@ class Tools:
             if self.valves.require_https:
                 raise RuntimeError(message)
             print(f"[memini] {message}")
-        headers = self._headers(secret)
+        headers = await self._headers(secret)
         timeout = aiohttp.ClientTimeout(total=self.valves.timeout_ms / 1000)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.delete(f"{base_url}{path}", headers=headers) as res:
@@ -215,33 +240,31 @@ class Tools:
     async def memini_status(self, __event_emitter__=None) -> str:
         """
         Show the memini settings in force: which namespace memories are written
-        to and recalled from, where that namespace came from (a per-project
-        override, or the configured valve), and any misconfiguration worth
+        to and recalled from, where that namespace came from (the configured
+        valve, or a server-resolved handshake), and any misconfiguration worth
         flagging. Call this when the user asks what memini is doing, which
         namespace is in use, or why something saved earlier cannot be recalled —
         a namespace mismatch is the usual cause. Read-only; secrets are redacted.
 
         :return: The effective settings, with the provenance of each.
         """
-        namespace, source = self._resolve_namespace()
-        override = read_override(os.getcwd())
+        namespace, source = await self._resolve_namespace()
         base_url = str(self.valves.base_url).rstrip("/")
-        secret = os.environ.get("MEMINI_API_KEY") or os.environ.get("MEMINI_TOKEN") or ""
+        secret = os.environ.get("MEMINI_API_KEY") or ""
         home = str(self.valves.home or "").strip()
         valve = sanitize_namespace(self.valves.namespace) or DEFAULT_NAMESPACE
 
         lines = [
             "memini — effective settings (Open WebUI tools)",
-            f"project: {override_key(os.getcwd())}",
+            f"project: {os.getcwd()}",
             "",
             "NAMESPACE",
             f"  {'effective':<24} {namespace:<30} <- {source}",
         ]
-        # The provenance is the point: a value alone would not show that an
-        # override is masking the configured valve.
-        if override:
-            setat = f" (set {override['setAt']})" if override["setAt"] else ""
-            lines.append(f"  {'without the override':<24} {valve:<30} <- valve{setat}")
+        # The provenance is the point: a value alone would not show that the
+        # server resolved something other than the configured valve.
+        if source != "valve" and namespace != valve:
+            lines.append(f"  {'the namespace valve says':<24} {valve:<30} <- valve")
         lines += [
             f"  {'home (personal)':<24} {home or '(unset)'}",
             "",
@@ -252,19 +275,9 @@ class Tools:
             f"  {'recall_limit':<24} {self.valves.recall_limit}",
             f"  {'timeout_ms':<24} {self.valves.timeout_ms}",
             "",
-            "PATHS",
-            f"  {'overrides':<24} {overrides_path()}"
-            + ("" if os.path.exists(overrides_path()) else " (absent)"),
-            "",
         ]
 
         warnings = []
-        if override:
-            warnings.append(
-                f"  [i] override-active: the namespace valve says \"{valve}\", but a per-project "
-                f"override pins this project to \"{override['namespace']}\". Remove its entry from "
-                f"{overrides_path()} to go back to the valve."
-            )
         if uses_plaintext_bearer(base_url, secret):
             warnings.append(
                 f"  [!] plaintext-bearer: the API key is configured for plaintext HTTP to "

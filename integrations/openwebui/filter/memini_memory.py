@@ -12,10 +12,18 @@ description: Automatic cross-session memory via memini — recall relevant memor
 # Talks to memini over REST (POST /v1/search, POST /v1/memories), scoped by the
 # X-Memini-Namespace header. The API key comes from MEMINI_API_KEY so the secret
 # stays out of the Open WebUI database.
+#
+# Namespace resolution: the admin Valve is the DECLARED namespace (Open WebUI is
+# a server with no meaningful per-request cwd, unlike a local agent — a
+# cwd-keyed override was never meaningful here). It is sent to POST
+# /v1/handshake (api/openapi.yaml) as project.declared_namespace on every
+# session; the server echoes it back verbatim unless an explicit pin overrides
+# it. The handshake is fail-soft (any error, or a ~2.5s timeout, falls back to
+# the valve value alone — see _handshake/_get_handshake) and memoized on this
+# Filter instance with a 10-minute TTL.
 
-import json
 import os
-import subprocess
+import time
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -25,6 +33,12 @@ from pydantic import BaseModel, Field
 DEFAULT_BASE_URL = "http://localhost:8080"
 DEFAULT_NAMESPACE = "openwebui"
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+# Mirrors packages/memini-client's HANDSHAKE_TTL_MS / default timeout; this
+# integration ships as a single-file Open WebUI upload so it stays a copy.
+HANDSHAKE_TTL_S = 600.0
+HANDSHAKE_TIMEOUT_S = 2.5
+CLIENT_NAME = "openwebui-memini-filter"
+CLIENT_VERSION = "0.1.0"  # keep in sync with this file's `version:` frontmatter
 
 
 def sanitize_namespace(value: str) -> str:
@@ -42,71 +56,12 @@ def sanitize_namespace(value: str) -> str:
 
 def header_safe(value: str) -> str:
     """Trim and drop control characters — a CR or LF in the value would split the
-    X-Memini-Namespace header. Deliberately not sanitize_namespace: "/" survives,
-    so a hierarchical override like acme/api reaches the server the way every
-    other integration sends it. Flattened to acme-api it would write to a
-    namespace nothing else reads, which is the exact failure the override exists
-    to prevent."""
+    X-Memini-Namespace header (or inject a bogus field into the handshake's JSON
+    body). Deliberately not sanitize_namespace: "/" survives, so a hierarchical
+    namespace valve like acme/api reaches the server the way every other
+    integration sends it. Flattened to acme-api it would write to a namespace
+    nothing else reads."""
     return "".join(ch for ch in str(value).strip() if ch >= " " and ch != "\x7f")
-
-
-# --- Namespace override ---------------------------------------------------
-#
-# $XDG_CONFIG_HOME/memini/overrides.json holds the per-project namespace a user
-# set deliberately. It is a shared contract — the client plugins write it,
-# `memini doctor` reads it — so every harness must honor it or they disagree
-# about which namespace is in force. Reimplemented here (it is a JSON file plus
-# a `git rev-parse`) because a Filter is a single file uploaded into Open WebUI:
-# it can import nothing of memini's.
-
-
-def overrides_path() -> str:
-    """$XDG_CONFIG_HOME/memini/overrides.json, else ~/.config/memini/overrides.json."""
-    xdg = os.environ.get("XDG_CONFIG_HOME", "")
-    base = xdg if xdg.strip() else os.path.join(os.path.expanduser("~"), ".config")
-    return os.path.join(base, "memini", "overrides.json")
-
-
-def override_key(cwd: str) -> str:
-    """The key an override is stored under: the git toplevel when there is one,
-    else the resolved directory."""
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=0.5,
-        )
-        toplevel = out.stdout.strip() if out.returncode == 0 else ""
-    except Exception:  # noqa: BLE001 — not a repo, no git, timeout: all the same
-        toplevel = ""
-    return os.path.abspath(toplevel or cwd)
-
-
-def read_override(cwd: str) -> Optional[dict]:
-    """The override in effect for cwd, as {"namespace", "setAt"}, or None.
-
-    The file is read before the key is computed: the key costs a `git rev-parse`,
-    and nobody should pay for one to discover they have no overrides at all. Any
-    error — missing file, hand-edited JSON, wrong shape — yields None, because a
-    broken overrides file must degrade to the configured namespace, never raise
-    into Open WebUI."""
-    try:
-        with open(overrides_path(), encoding="utf-8") as handle:
-            data = json.load(handle)
-    except Exception:  # noqa: BLE001 — degrade gracefully by design
-        return None
-    overrides = data.get("overrides") if isinstance(data, dict) else None
-    if not isinstance(overrides, dict) or not overrides:
-        return None
-    entry = overrides.get(override_key(cwd))
-    if not isinstance(entry, dict):
-        return None
-    namespace = header_safe(str(entry.get("namespace") or ""))
-    if not namespace:
-        return None
-    return {"namespace": namespace, "setAt": str(entry.get("setAt") or "")}
 
 
 def extract_last_user(messages: list) -> str:
@@ -204,16 +159,17 @@ def uses_plaintext_bearer(base_url: str, secret: str) -> bool:
 class Filter:
     class Valves(BaseModel):
         base_url: str = Field(
-            default_factory=lambda: (
-                os.environ.get("MEMINI_BASE_URL")
-                or os.environ.get("MEMINI_URL")
-                or DEFAULT_BASE_URL
-            ),
-            description="memini REST base URL (defaults from MEMINI_BASE_URL / MEMINI_URL env)",
+            default_factory=lambda: os.environ.get("MEMINI_BASE_URL") or DEFAULT_BASE_URL,
+            description="memini REST base URL (defaults from MEMINI_BASE_URL env)",
         )
         namespace: str = Field(
             default=DEFAULT_NAMESPACE,
-            description="Project the memory is scoped to (X-Memini-Namespace). Share it across agents to pool memory. A per-project override in $XDG_CONFIG_HOME/memini/overrides.json wins over this.",
+            description=(
+                "Project the memory is scoped to (X-Memini-Namespace). Share it across "
+                "agents to pool memory. Sent to the server as the declared namespace via "
+                "POST /v1/handshake on each session — the server echoes it back verbatim "
+                "unless an explicit pin overrides it."
+            ),
         )
         home: str = Field(
             default_factory=lambda: os.environ.get("MEMINI_HOME", ""),
@@ -247,31 +203,93 @@ class Filter:
         self.valves = self.Valves()
         # Bounds repeated outlet calls for the same response from writing dupes.
         self._captured = set()
+        # Memoized POST /v1/handshake result: {"result": dict | None, "expires_at": float}.
+        # Per-instance (Open WebUI holds one Filter instance for a good while), TTL
+        # 10 minutes — see _get_handshake.
+        self._handshake_cache = None
 
-    def _resolve_namespace(self) -> tuple:
-        """(namespace, source). Order: per-project override > the namespace valve.
+    def _facts(self) -> dict:
+        """Assemble HandshakeRequest.project (api/openapi.yaml). Open WebUI is a
+        server with no meaningful per-request cwd, so cwd_basename (required by
+        the wire contract) is low-signal filler; the real signal is
+        declared_namespace, carrying the admin's namespace valve."""
+        cwd = os.getcwd()
+        facts = {"cwd_basename": os.path.basename(cwd.rstrip("/")) or DEFAULT_NAMESPACE}
+        declared = header_safe(str(self.valves.namespace or ""))
+        if declared:
+            facts["declared_namespace"] = declared
+        return facts
 
-        The override wins over the valve for the same reason it wins over
-        MEMINI_NAMESPACE everywhere else: it is the one namespace input a user
-        sets deliberately, and an override some harnesses honored and others
-        ignored would be worse than none. Open WebUI is a server, so "the
-        project" is the directory it was launched in — which only means something
-        for a local install, exactly where someone would set an override."""
-        override = read_override(os.getcwd())
-        if override:
-            return override["namespace"], "override"
-        valve = sanitize_namespace(self.valves.namespace or DEFAULT_NAMESPACE)
-        return valve or DEFAULT_NAMESPACE, "valve"
+    async def _handshake(self) -> Optional[dict]:
+        """POST /v1/handshake (api/openapi.yaml). Fail-soft ALWAYS: any network
+        error, non-2xx, or a ~2.5s timeout degrades to None, and
+        _resolve_namespace falls back to the valve value alone. Not memoized
+        here — see _get_handshake."""
+        base_url = str(self.valves.base_url).rstrip("/")
+        secret = os.environ.get("MEMINI_API_KEY") or ""
+        if uses_plaintext_bearer(base_url, secret):
+            message = (
+                f"memini: MEMINI_API_KEY would cross plaintext HTTP to {base_url}; "
+                "use HTTPS or an SSH tunnel."
+            )
+            if self.valves.require_https:
+                raise RuntimeError(message)
+            print(f"[memini] {message}")
 
-    def _namespace(self, __user__: Optional[dict]) -> str:
-        ns, _ = self._resolve_namespace()
+        headers = {"Content-Type": "application/json"}
+        if secret:
+            headers["Authorization"] = f"Bearer {secret}"
+        home = str(self.valves.home or "").strip()
+        if home:
+            headers["X-Memini-Home"] = home
+        body = {"project": self._facts(), "client": {"name": CLIENT_NAME, "version": CLIENT_VERSION}}
+        timeout = aiohttp.ClientTimeout(total=HANDSHAKE_TIMEOUT_S)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    f"{base_url}/v1/handshake", json=body, headers=headers
+                ) as res:
+                    if res.status >= 400:
+                        print(f"[memini] handshake failed: {res.status}")
+                        return None
+                    return await res.json()
+        except Exception as error:  # noqa: BLE001 — fail-soft ALWAYS, unconditionally
+            print(f"[memini] handshake failed: {error}")
+            return None
+
+    async def _get_handshake(self) -> Optional[dict]:
+        """_handshake, memoized on this Filter instance with a 10-minute TTL."""
+        now = time.monotonic()
+        cached = self._handshake_cache
+        if cached and now < cached["expires_at"]:
+            return cached["result"]
+        result = await self._handshake()
+        self._handshake_cache = {"result": result, "expires_at": now + HANDSHAKE_TTL_S}
+        return result
+
+    async def _resolve_namespace(self) -> tuple:
+        """(namespace, source). The admin Valve is the DECLARED namespace (Open
+        WebUI is a server, so "the project" only ever meant the launch
+        directory — never as meaningful as a real project override, which is
+        why that mechanism is gone). It is sent to POST /v1/handshake as
+        project.declared_namespace; the server echoes it back verbatim unless
+        an explicit pin overrides it. Fail-soft: any handshake error/timeout
+        falls back to the valve value alone."""
+        valve = sanitize_namespace(self.valves.namespace or DEFAULT_NAMESPACE) or DEFAULT_NAMESPACE
+        hs = await self._get_handshake()
+        if hs and hs.get("namespace"):
+            return str(hs["namespace"]), f"server:{hs.get('namespace_source', '')}"
+        return valve, "valve"
+
+    async def _namespace(self, __user__: Optional[dict]) -> str:
+        ns, _ = await self._resolve_namespace()
         if self.valves.scope_by_user and __user__:
             uid = __user__.get("id") or __user__.get("email") or ""
             if uid:
-                # The per-user suffix still applies on top of an override: it
-                # isolates *who*, not *what*. Dropping it because an override is
-                # set would silently collapse every user of a shared server into
-                # one namespace.
+                # The per-user suffix applies AFTER namespace resolution: it
+                # isolates *who*, not *what*, and must not be skipped just
+                # because the server resolved a namespace — a shared server
+                # must still keep each account's memory apart.
                 ns = f"{ns}-{sanitize_namespace(uid)}"
         return ns or DEFAULT_NAMESPACE
 
@@ -291,9 +309,7 @@ class Filter:
         self, path: str, payload: dict, namespace: str
     ) -> Optional[dict]:
         base_url = str(self.valves.base_url).rstrip("/")
-        secret = (
-            os.environ.get("MEMINI_API_KEY") or os.environ.get("MEMINI_TOKEN") or ""
-        )
+        secret = os.environ.get("MEMINI_API_KEY") or ""
         if uses_plaintext_bearer(base_url, secret):
             message = (
                 f"memini: MEMINI_API_KEY would cross plaintext HTTP to {base_url}; "
@@ -351,7 +367,7 @@ class Filter:
         result = await self._post_json(
             "/v1/search",
             payload,
-            self._namespace(__user__),
+            await self._namespace(__user__),
         )
         block = format_results((result or {}).get("results"), self.valves.recall_limit)
         if not block:
@@ -413,7 +429,7 @@ class Filter:
                 "tags": ["openwebui"],
                 "metadata": metadata,
             },
-            self._namespace(__user__),
+            await self._namespace(__user__),
         )
         if stored is not None:
             # Keep the dedup set bounded.

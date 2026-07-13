@@ -58,47 +58,50 @@ memory:
 
 Point it at your memini (environment, or the Hermes onboarding prompts):
 
-| Variable                         | Default                        | Purpose                                                                          |
-| -------------------------------- | ------------------------------ | -------------------------------------------------------------------------------- |
-| `MEMINI_BASE_URL`                | `http://localhost:8080`        | memini service endpoint (alias: `MEMINI_URL`)                                    |
-| `MEMINI_NAMESPACE`               | basename of cwd, else `hermes` | project the memory is scoped to (see the config-file note below)                 |
-| `MEMINI_AGENT`                   | (none)                         | `{agent}` segment for the config-file namespace template (see below)             |
-| `MEMINI_HOME`                    | (none)                         | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg        |
-| `MEMINI_API_KEY`                 | (none)                         | bearer token, if memini requires auth (alias: `MEMINI_TOKEN`)                    |
-| `MEMINI_REQUIRE_HTTPS`           | (off)                          | set `1` to refuse sending a token over plaintext HTTP                            |
-| `MEMINI_RECALL_LIMIT`            | `3`                            | max memories recalled per turn                                                   |
-| `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                            | fused-score floor (>=) for auto-recall, sent as `min_score`                      |
-| `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                            | hard token ceiling on the recall block (`0` = unbounded; tail dropped w/ footer) |
-| `MEMINI_INJECT_LABELS`           | (none)                         | per-bullet tag prefix toggles: `tier`, `confidence`, `age`                       |
+| Variable                         | Default                 | Purpose                                                                                                        |
+| -------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `MEMINI_BASE_URL`                | `http://localhost:8080` | memini service endpoint                                                                                        |
+| `MEMINI_NAMESPACE`               | server handshake        | project the memory is scoped to (see Namespace resolution below)                                               |
+| `MEMINI_HOME`                    | (none)                  | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg                                      |
+| `MEMINI_API_KEY`                 | (none)                  | bearer token, if memini requires auth                                                                          |
+| `MEMINI_REQUIRE_HTTPS`           | (off)                   | set `1` to refuse sending a token over plaintext HTTP                                                          |
+| `MEMINI_RECALL_LIMIT`            | `3`                     | max memories recalled per turn (beneath the server's `recall_limit` setting)                                   |
+| `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                     | fused-score floor (>=) for auto-recall, sent as `min_score` (beneath the server's setting)                     |
+| `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                     | hard token ceiling on the recall block (`0` = unbounded; tail dropped w/ footer; beneath the server's setting) |
+| `MEMINI_INJECT_LABELS`           | (none)                  | per-bullet tag prefix toggles: `tier`, `confidence`, `age`                                                     |
 
 ### Namespace resolution
 
-In order: a **per-project override** in `$XDG_CONFIG_HOME/memini/overrides.json`
-(default `~/.config/memini/overrides.json`) > `MEMINI_NAMESPACE` > the config
-template below > the cwd basename.
+In order: `MEMINI_NAMESPACE` (raw-trimmed) > the namespace a `POST /v1/handshake`
+resolves server-side (api/openapi.yaml) > the local git remote/toplevel/cwd
+derivation chain.
 
-The override wins over `MEMINI_NAMESPACE` deliberately. A globally exported
-`MEMINI_NAMESPACE` — a shell rc, or a fish universal variable — pins every repo
-on the machine to one namespace, and if the environment won, setting an override
-would silently do nothing on exactly the machines that need one. The file is
-keyed by git toplevel (so an override set at the top of a repo applies from any
-subdirectory), it is the same file the Claude Code plugin writes and `memini
-doctor` reads, and a malformed one degrades to automatic resolution rather than
-failing a turn. `memory_status` reports which of these is in force, what the
-namespace would be without each layer, and any misconfiguration worth flagging —
-with secrets redacted.
+On `initialize`, the plugin calls the memini server's handshake endpoint with
+what it cheaply knows about the project (the git remote/toplevel, when the
+working directory is a repo, plus the cwd basename) and lets the server
+resolve the namespace and behavioral settings (`recall`, `capture`,
+`recall_limit`, the recall-injection budget) the same way every other memini
+client does. The call is fail-soft: any error or a ~2.5s timeout falls back to
+the local git remote/toplevel/cwd derivation chain, so an unreachable or older
+memini never breaks a turn. It is memoized for 10 minutes, so a long-lived
+Hermes process re-handshakes at most once per ~10 minutes rather than on every
+call.
 
-When `MEMINI_NAMESPACE` is unset and `$XDG_CONFIG_HOME/memini/config.json`
-(default `~/.config/memini/config.json`) exists, the namespace is rendered from
-its `template` (default `{tenant}/{project}/{agent}`): `{tenant}` comes from
-the first `tenantRoots` entry whose `path` contains the cwd, `{project}` is
-git-derived (remote repo name > toplevel basename > cwd basename), and
-`{agent}` from `MEMINI_AGENT`; unresolved segments are dropped. This mirrors
-the shared resolver the JS integrations use, so the same repo lands in the
-same namespace everywhere. Without the file, the namespace is just the cwd
-basename.
+`MEMINI_NAMESPACE` wins over the handshake outright and deliberately: it is
+this integration's own explicit pin, honored as such rather than
+second-guessed by the server (the server still sees it, sent as
+`project.env_namespace`, so a pin can still beat it server-side for other
+clients that check in without setting the env var locally). Each recall
+setting above follows the same shape: the env var beats the server's
+resolved setting beats the built-in default. `recall`/`capture` (on by
+default) have no local env toggle here — only the server's settings can turn
+them off. `memory_status` reports which layer is in force, what the
+namespace would be without the env pin, and any misconfiguration worth
+flagging — with secrets redacted.
 
-Restart Hermes. On the next turn, recalled memories appear in context and new
+Restart Hermes to pick up a `MEMINI_NAMESPACE` change (a server-side change —
+a new pin, edited settings — is picked up on the next handshake, at most 10
+minutes later). On the next turn, recalled memories appear in context and new
 exchanges are written back. Use the **same `MEMINI_NAMESPACE`** as your other
 agents to share one memory across all of them.
 

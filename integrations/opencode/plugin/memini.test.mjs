@@ -1,12 +1,15 @@
 // Run: node --test (from this directory). Not shipped by install.sh.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import {
   MeminiPlugin,
   resolveConfig,
+  effectiveConfig,
+  memoizeAsync,
+  buildFacts,
   deriveNamespace,
   extractPartsText,
   formatResults,
@@ -18,50 +21,10 @@ import {
   approxTokens,
   fitByTokens,
   truncate,
-  readOverride,
-  overrideKey,
-  overridesPath,
   describeSettings,
   renderStatus,
   redactSecret,
 } from "./memini.js";
-
-// Point XDG_CONFIG_HOME at an empty temp dir so a developer's real
-// ~/.config/memini/config.json can't leak tenant prefixes into these tests
-// (resolveConfig reads it at call time). Tenant tests write their own.
-process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "memini-test-config-"));
-
-// A temp XDG_CONFIG_HOME with the given memini/config.json contents.
-function freshConfig(config) {
-  const dir = mkdtempSync(join(tmpdir(), "memini-test-config-"));
-  mkdirSync(join(dir, "memini"), { recursive: true });
-  writeFileSync(join(dir, "memini", "config.json"), JSON.stringify(config));
-  return dir;
-}
-
-// A temp XDG_CONFIG_HOME holding memini/overrides.json. `raw` writes the file
-// verbatim, so a malformed one can be exercised.
-function freshOverrides(overrides, raw) {
-  const dir = mkdtempSync(join(tmpdir(), "memini-test-config-"));
-  mkdirSync(join(dir, "memini"), { recursive: true });
-  writeFileSync(
-    join(dir, "memini", "overrides.json"),
-    raw !== undefined ? raw : JSON.stringify({ version: 1, overrides }),
-  );
-  return dir;
-}
-
-// Swap XDG_CONFIG_HOME for the duration of `fn` (resolveConfig reads it at call
-// time, like the config-file tests above).
-function withXdg(dir, fn) {
-  const prev = process.env.XDG_CONFIG_HOME;
-  process.env.XDG_CONFIG_HOME = dir;
-  try {
-    return fn();
-  } finally {
-    process.env.XDG_CONFIG_HOME = prev;
-  }
-}
 
 test("namespace derives from the git worktree basename", () => {
   assert.equal(deriveNamespace("/home/me/dev/memini"), "memini");
@@ -73,6 +36,7 @@ test("config defaults: recall and capture on, project-scoped namespace", () => {
   const cfg = resolveConfig({}, undefined, "/home/me/dev/my-project");
   assert.equal(cfg.base_url, "http://localhost:8080");
   assert.equal(cfg.namespace, "my-project");
+  assert.equal(cfg.namespace_source, "local-worktree");
   assert.equal(cfg.recall, true);
   assert.equal(cfg.capture, true);
   assert.equal(cfg.recall_limit, 3);
@@ -86,21 +50,19 @@ test("env overrides defaults; options override env", () => {
   const fromEnv = resolveConfig(env, undefined, "/repo/ignored");
   assert.equal(fromEnv.base_url, "http://memini:9000");
   assert.equal(fromEnv.namespace, "team");
+  assert.equal(fromEnv.namespace_source, "env");
   assert.equal(fromEnv.recall, false);
 
   const fromOpts = resolveConfig(env, { namespace: "explicit", base_url: "http://x" }, "/repo");
   assert.equal(fromOpts.namespace, "explicit");
+  assert.equal(fromOpts.namespace_source, "option");
   assert.equal(fromOpts.base_url, "http://x");
 });
 
-test("base_url falls back to the MEMINI_URL alias; MEMINI_BASE_URL canonical wins", () => {
-  assert.equal(resolveConfig({ MEMINI_URL: "http://alias:8080" }, undefined, "/r").base_url, "http://alias:8080");
-  const both = { MEMINI_BASE_URL: "http://canonical:8080", MEMINI_URL: "http://alias:8080" };
-  assert.equal(resolveConfig(both, undefined, "/r").base_url, "http://canonical:8080");
-});
-
 test("namespace falls back to the default when nothing resolves", () => {
-  assert.equal(resolveConfig({}, undefined, "").namespace, "opencode");
+  const cfg = resolveConfig({}, undefined, "");
+  assert.equal(cfg.namespace, "opencode");
+  assert.equal(cfg.namespace_source, "local-default");
 });
 
 test("home resolves from MEMINI_HOME env; option wins over env; unset -> undefined", () => {
@@ -112,75 +74,24 @@ test("home resolves from MEMINI_HOME env; option wins over env; unset -> undefin
   );
 });
 
-test("tenant config prefixes the namespace and derives {project} from git", async () => {
-  const { execSync } = await import("node:child_process");
-  const parent = mkdtempSync(join(tmpdir(), "memini-tenant-"));
-  const dir = join(parent, "memini-fork");
-  mkdirSync(dir);
-  execSync("git init -q", { cwd: dir });
-  execSync("git remote add origin https://github.com/eleboucher/memini.git", { cwd: dir });
-  const prev = process.env.XDG_CONFIG_HOME;
-  process.env.XDG_CONFIG_HOME = freshConfig({ tenantRoots: [{ path: parent, tenant: "work" }] });
-  try {
-    // The git remote name wins over the cwd basename, so the same repo lands
-    // in the same namespace as the other integrations (work/memini, not
-    // work/memini-fork), with the "/" separator preserved.
-    assert.equal(resolveConfig({}, undefined, dir).namespace, "work/memini");
-  } finally {
-    process.env.XDG_CONFIG_HOME = prev;
-  }
-});
-
-test("config present but no tenant match still uses the git project name", async () => {
-  const { execSync } = await import("node:child_process");
-  const parent = mkdtempSync(join(tmpdir(), "memini-notenant-"));
-  const dir = join(parent, "checkout-dir");
-  mkdirSync(dir);
-  execSync("git init -q", { cwd: dir });
-  execSync("git remote add origin https://github.com/eleboucher/widget.git", { cwd: dir });
-  const prev = process.env.XDG_CONFIG_HOME;
-  // A tenant root that does NOT contain `dir`, so no tenant matches.
-  process.env.XDG_CONFIG_HOME = freshConfig({ tenantRoots: [{ path: "/nowhere", tenant: "work" }] });
-  try {
-    // Config present -> {project} is the git remote name (widget), not the cwd
-    // basename (checkout-dir); tenant drops out of the default template.
-    assert.equal(resolveConfig({}, undefined, dir).namespace, "widget");
-  } finally {
-    process.env.XDG_CONFIG_HOME = prev;
-  }
-});
-
 test("MEMINI_NAMESPACE is used raw-trimmed, not flattened", () => {
   // The server validates the header; a hierarchical value keeps its "/" so it
   // matches the other integrations instead of collapsing to team-eu.
   assert.equal(resolveConfig({ MEMINI_NAMESPACE: "  team/eu  " }, undefined, "/repo").namespace, "team/eu");
 });
 
-test("without a config file the namespace stays the legacy cwd basename, even in a git repo", async () => {
+test("the local namespace fallback is the worktree basename only, never the git remote", async () => {
+  // No config-file/tenant mechanism exists anymore: the LOCAL fallback
+  // (absent option/env) is always the plain worktree basename, even inside a
+  // git repo whose remote points at a differently-named project. Distinct
+  // repo naming is now the server's job (via the handshake's facts.remote_url).
   const { execSync } = await import("node:child_process");
   const dir = mkdtempSync(join(tmpdir(), "memini-legacy-"));
   execSync("git init -q", { cwd: dir });
   execSync("git remote add origin https://github.com/eleboucher/other-name.git", { cwd: dir });
-  assert.equal(resolveConfig({}, undefined, dir).namespace, basename(dir));
-});
-
-test("tenant roots with an empty/missing path or a non-object entry are skipped", () => {
-  const parent = mkdtempSync(join(tmpdir(), "memini-tenant-"));
-  const dir = join(parent, "proj");
-  mkdirSync(dir);
-  const outside = mkdtempSync(join(tmpdir(), "memini-outside-"));
-  const prev = process.env.XDG_CONFIG_HOME;
-  process.env.XDG_CONFIG_HOME = freshConfig({
-    tenantRoots: [{ path: "", tenant: "evil" }, "junk", { tenant: "nopath" }, { path: parent, tenant: "work" }],
-  });
-  try {
-    // The empty-path entry must not startsWith-match every cwd...
-    assert.equal(resolveConfig({}, undefined, outside).namespace, basename(outside));
-    // ...and bad entries must not abort the scan before the valid root.
-    assert.equal(resolveConfig({}, undefined, dir).namespace, "work/proj");
-  } finally {
-    process.env.XDG_CONFIG_HOME = prev;
-  }
+  const cfg = resolveConfig({}, undefined, dir);
+  assert.equal(cfg.namespace, basename(dir));
+  assert.equal(cfg.namespace_source, "local-worktree");
 });
 
 test("capture can be disabled via env", () => {
@@ -222,6 +133,149 @@ test("resolveConfig rejects malformed recall_limit (NaN / negative) gracefully",
     resolveConfig({}, { recall_limit: "garbage" }, "/r").recall_limit,
     3,
   );
+});
+
+// --- Facts (handshake request body) ---------------------------------------
+
+test("buildFacts sends the worktree basename, git remote/toplevel, and env_namespace", async () => {
+  const { execSync } = await import("node:child_process");
+  const dir = mkdtempSync(join(tmpdir(), "memini-facts-"));
+  execSync("git init -q", { cwd: dir });
+  execSync("git remote add origin https://github.com/eleboucher/widget.git", { cwd: dir });
+  const facts = buildFacts(dir, { MEMINI_NAMESPACE: "team/eu" });
+  assert.equal(facts.cwd_basename, basename(dir));
+  assert.equal(facts.remote_url, "https://github.com/eleboucher/widget.git");
+  assert.equal(typeof facts.toplevel_path, "string");
+  assert.ok(facts.toplevel_path.length > 0);
+  assert.equal(facts.env_namespace, "team/eu");
+});
+
+test("buildFacts omits remote/toplevel outside a git repo, and env_namespace when unset", () => {
+  const dir = mkdtempSync(join(tmpdir(), "memini-facts-nogit-"));
+  const facts = buildFacts(dir, {});
+  assert.equal(facts.cwd_basename, basename(dir));
+  assert.equal(facts.remote_url, undefined);
+  assert.equal(facts.toplevel_path, undefined);
+  assert.equal(facts.env_namespace, undefined);
+});
+
+// --- effectiveConfig: handshake precedence and settings fallback chain ----
+
+test("effectiveConfig: an explicit option/env namespace beats a successful handshake", () => {
+  const optionCfg = resolveConfig({}, { namespace: "explicit" }, "/repo");
+  const withHandshake = effectiveConfig(optionCfg, {
+    namespace: "server/pinned",
+    namespace_source: "pin",
+    settings: {},
+  });
+  assert.equal(withHandshake.namespace, "explicit");
+  assert.equal(withHandshake.namespace_source, "option");
+
+  const envCfg = resolveConfig({ MEMINI_NAMESPACE: "team" }, undefined, "/repo");
+  const envWithHandshake = effectiveConfig(envCfg, {
+    namespace: "server/pinned",
+    namespace_source: "pin",
+    settings: {},
+  });
+  assert.equal(envWithHandshake.namespace, "team");
+  assert.equal(envWithHandshake.namespace_source, "env");
+});
+
+test("effectiveConfig: a successful handshake beats the local worktree/default fallback", () => {
+  const localCfg = resolveConfig({}, undefined, "/home/me/dev/my-project");
+  assert.equal(localCfg.namespace_source, "local-worktree");
+  const merged = effectiveConfig(localCfg, {
+    namespace: "acme/widget",
+    namespace_source: "remote",
+    settings: {},
+  });
+  assert.equal(merged.namespace, "acme/widget");
+  assert.equal(merged.namespace_source, "server:remote");
+});
+
+test("effectiveConfig: a null/failed handshake falls back to the local resolution", () => {
+  const localCfg = resolveConfig({}, undefined, "/home/me/dev/my-project");
+  const merged = effectiveConfig(localCfg, null);
+  assert.equal(merged.namespace, "my-project");
+  assert.equal(merged.namespace_source, "local-worktree");
+});
+
+test("effectiveConfig settings fallback chain: option > env > server > built-in default", () => {
+  // Built-in default only: no option, no env, server has no opinion either.
+  const bare = resolveConfig({}, undefined, "/r");
+  const withNothing = effectiveConfig(bare, { namespace: "r", namespace_source: "cwd", settings: {} });
+  assert.equal(withNothing.recall, true); // built-in default
+  assert.equal(withNothing.recall_limit, 3); // built-in default
+
+  // Server fills in beneath the built-in default when nothing local is explicit.
+  const withServer = effectiveConfig(bare, {
+    namespace: "r",
+    namespace_source: "cwd",
+    settings: { recall: false, capture: false, recall_limit: 7, inject_recall_max_tok: 500, inject_recall_min_score: 0.3 },
+  });
+  assert.equal(withServer.recall, false);
+  assert.equal(withServer.capture, false);
+  assert.equal(withServer.recall_limit, 7);
+  assert.equal(withServer.recall_max_tokens, 500);
+  assert.equal(withServer.recall_min_score, 0.3);
+
+  // An explicit env value beats the server's settings.
+  const envExplicit = resolveConfig({ MEMINI_RECALL: "false" }, undefined, "/r");
+  const envVsServer = effectiveConfig(envExplicit, {
+    namespace: "r",
+    namespace_source: "cwd",
+    settings: { recall: true },
+  });
+  assert.equal(envVsServer.recall, false);
+
+  // An explicit option value beats the server's settings.
+  const optExplicit = resolveConfig({}, { recall_limit: 9 }, "/r");
+  const optVsServer = effectiveConfig(optExplicit, {
+    namespace: "r",
+    namespace_source: "cwd",
+    settings: { recall_limit: 2 },
+  });
+  assert.equal(optVsServer.recall_limit, 9);
+});
+
+test("effectiveConfig tolerates a handshake response with no settings/namespace fields", () => {
+  const cfg = resolveConfig({}, undefined, "/r");
+  const merged = effectiveConfig(cfg, {});
+  assert.equal(merged.namespace, cfg.namespace);
+  assert.equal(merged.recall, cfg.recall);
+  assert.equal(merged.recall_limit, cfg.recall_limit);
+});
+
+// --- memoizeAsync: TTL memo -------------------------------------------------
+
+test("memoizeAsync caches the result until the TTL expires, using an injectable clock", async () => {
+  let calls = 0;
+  let time = 0;
+  const memo = memoizeAsync(async () => {
+    calls++;
+    return calls;
+  }, 100, () => time);
+
+  assert.equal(await memo(), 1);
+  assert.equal(await memo(), 1, "still within the TTL window");
+  assert.equal(calls, 1);
+
+  time = 50;
+  assert.equal(await memo(), 1, "still cached");
+  assert.equal(calls, 1);
+
+  time = 150; // past the 100ms TTL
+  assert.equal(await memo(), 2, "refreshed after expiry");
+  assert.equal(calls, 2);
+});
+
+test("memoizeAsync calls the underlying fn again immediately after first use expires the cache at t=ttl", async () => {
+  let calls = 0;
+  let time = 0;
+  const memo = memoizeAsync(async () => ++calls, 10, () => time);
+  await memo();
+  time = 10; // exactly at expiry: "now >= expiresAt" must refresh, not off-by-one
+  assert.equal(await memo(), 2);
 });
 
 test("extractPartsText skips synthetic and ignored parts", () => {
@@ -372,6 +426,119 @@ test("plaintext bearer guard throws when MEMINI_REQUIRE_HTTPS=1", () => {
   assert.throws(() => guard("http://memini.example.com", "secret"), /plaintext HTTP/);
 });
 
+// --- MeminiPlugin: wiring, fail-soft, handshake namespace/settings --------
+
+// A HandshakeResponse-shaped fetch mock, discriminated by URL so a single
+// mock can stand in for both POST /v1/handshake and POST /v1/search|/v1/memories.
+function mockFetchWithHandshake({ handshake, search, memories } = {}) {
+  return async (url, init) => {
+    const u = String(url);
+    if (u.endsWith("/v1/handshake")) {
+      return {
+        ok: true,
+        async json() {
+          return handshake || { namespace: "server/ns", namespace_source: "remote", settings: {} };
+        },
+        async text() { return ""; },
+      };
+    }
+    if (u.endsWith("/v1/search")) {
+      return {
+        ok: true,
+        async json() { return search || { results: [] }; },
+        async text() { return ""; },
+      };
+    }
+    if (u.endsWith("/v1/memories")) {
+      return {
+        ok: true,
+        async json() { return memories || {}; },
+        async text() { return ""; },
+      };
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  };
+}
+
+test("chat.message uses the server-resolved namespace from a successful handshake", async () => {
+  const requests = [];
+  const realFetch = globalThis.fetch;
+  const base = mockFetchWithHandshake({
+    handshake: { namespace: "acme/widget", namespace_source: "remote", settings: {} },
+  });
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    return base(url, init);
+  };
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080" },
+    );
+    await hooks["chat.message"](
+      { sessionID: "s1" },
+      { parts: [{ type: "text", text: "hello", sessionID: "s1", messageID: "m1" }] },
+    );
+    const search = requests.find((r) => r.url.endsWith("/v1/search"));
+    assert.ok(search, "should POST /v1/search");
+    assert.equal(search.init.headers["X-Memini-Namespace"], "acme/widget");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("chat.message falls back to the local namespace when the handshake fails (fail-soft)", async () => {
+  const requests = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    if (String(url).endsWith("/v1/handshake")) throw new Error("connection refused");
+    return { ok: true, async json() { return { results: [] }; }, async text() { return ""; } };
+  };
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080" },
+    );
+    await hooks["chat.message"](
+      { sessionID: "s1" },
+      { parts: [{ type: "text", text: "hello", sessionID: "s1", messageID: "m1" }] },
+    );
+    const search = requests.find((r) => r.url.endsWith("/v1/search"));
+    assert.ok(search, "recall must still work when the handshake fails");
+    assert.equal(search.init.headers["X-Memini-Namespace"], "proj");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("the handshake is memoized across calls within the same plugin instance", async () => {
+  let handshakeCalls = 0;
+  const realFetch = globalThis.fetch;
+  const base = mockFetchWithHandshake();
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith("/v1/handshake")) handshakeCalls++;
+    return base(url, init);
+  };
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080" },
+    );
+    await hooks["chat.message"](
+      { sessionID: "s1" },
+      { parts: [{ type: "text", text: "one", sessionID: "s1", messageID: "m1" }] },
+    );
+    await hooks["chat.message"](
+      { sessionID: "s1" },
+      { parts: [{ type: "text", text: "two", sessionID: "s1", messageID: "m2" }] },
+    );
+    assert.equal(handshakeCalls, 1, "the second call must reuse the memoized handshake");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("chat.message recall excludes this session's own captures via exclude_metadata", async () => {
   const requests = [];
   const realFetch = globalThis.fetch;
@@ -398,13 +565,18 @@ test("chat.message recall excludes this session's own captures via exclude_metad
 
 test("chat.message does not re-inject memories already shown in the same session", async () => {
   const realFetch = globalThis.fetch;
-  globalThis.fetch = async () => ({
-    ok: true,
-    async json() {
-      return { results: [{ score: 0.9, memory: { id: "m1", tier: "semantic", summary: "prior note" } }] };
-    },
-    async text() { return ""; },
-  });
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith("/v1/handshake")) {
+      return { ok: true, async json() { return {}; }, async text() { return ""; } };
+    }
+    return {
+      ok: true,
+      async json() {
+        return { results: [{ score: 0.9, memory: { id: "m1", tier: "semantic", summary: "prior note" } }] };
+      },
+      async text() { return ""; },
+    };
+  };
   try {
     const hooks = await MeminiPlugin(
       { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
@@ -464,18 +636,23 @@ test("chat.message caps the recall block by MEMINI_INJECT_RECALL_MAX_TOK", async
   // bullet fits, the tail is dropped with the truncation footer. Budget is
   // passed as a plugin option to avoid process.env mutation.
   const realFetch = globalThis.fetch;
-  globalThis.fetch = async () => ({
-    ok: true,
-    async json() {
-      return {
-        results: Array.from({ length: 4 }, (_, i) => ({
-          score: 1 - i * 0.05,
-          memory: { tier: "semantic", summary: "bullet number " + i + " is here" },
-        })),
-      };
-    },
-    async text() { return ""; },
-  });
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith("/v1/handshake")) {
+      return { ok: true, async json() { return {}; }, async text() { return ""; } };
+    }
+    return {
+      ok: true,
+      async json() {
+        return {
+          results: Array.from({ length: 4 }, (_, i) => ({
+            score: 1 - i * 0.05,
+            memory: { tier: "semantic", summary: "bullet number " + i + " is here" },
+          })),
+        };
+      },
+      async text() { return ""; },
+    };
+  };
   try {
     const hooks = await MeminiPlugin(
       { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
@@ -498,19 +675,24 @@ test("chat.message caps the recall block by MEMINI_INJECT_RECALL_MAX_TOK", async
 
 test("chat.message drops hits below MEMINI_INJECT_RECALL_MIN_SCORE", async () => {
   const realFetch = globalThis.fetch;
-  globalThis.fetch = async () => ({
-    ok: true,
-    async json() {
-      return {
-        results: [
-          { score: 0.9, memory: { tier: "semantic", summary: "high" } },
-          { score: 0.1, memory: { tier: "episodic", summary: "low — should be filtered" } },
-          { score: 0.5, memory: { tier: "procedural", summary: "mid" } },
-        ],
-      };
-    },
-    async text() { return ""; },
-  });
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith("/v1/handshake")) {
+      return { ok: true, async json() { return {}; }, async text() { return ""; } };
+    }
+    return {
+      ok: true,
+      async json() {
+        return {
+          results: [
+            { score: 0.9, memory: { tier: "semantic", summary: "high" } },
+            { score: 0.1, memory: { tier: "episodic", summary: "low — should be filtered" } },
+            { score: 0.5, memory: { tier: "procedural", summary: "mid" } },
+          ],
+        };
+      },
+      async text() { return ""; },
+    };
+  };
   try {
     const hooks = await MeminiPlugin(
       { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
@@ -578,66 +760,13 @@ test("requests carry X-Memini-Home when configured, omit it otherwise", async ()
       { parts: [{ type: "text", text: "hello again", sessionID: "s2", messageID: "m2" }] },
     );
 
-    assert.equal(requests.length, 2);
-    assert.equal(requests[0].headers["X-Memini-Home"], "personal/acme");
-    assert.equal(requests[1].headers["X-Memini-Home"], undefined);
+    const search = requests.filter((r) => r.url.endsWith("/v1/search"));
+    assert.equal(search.length, 2);
+    assert.equal(search[0].headers["X-Memini-Home"], "personal/acme");
+    assert.equal(search[1].headers["X-Memini-Home"], undefined);
   } finally {
     globalThis.fetch = realFetch;
   }
-});
-
-// --- Namespace override --------------------------------------------------
-
-test("the project override beats MEMINI_NAMESPACE and the inline option", () => {
-  const dir = mkdtempSync(join(tmpdir(), "memini-override-"));
-  const xdg = freshOverrides({ [realpathSync(dir)]: { namespace: "acme/api", setAt: "2026-07-12T20:30:00Z" } });
-  withXdg(xdg, () => {
-    // The env pin is exactly the case the override exists to beat: a globally
-    // exported MEMINI_NAMESPACE would otherwise pin every repo on the machine.
-    const cfg = resolveConfig({ MEMINI_NAMESPACE: "pinned" }, { namespace: "from-option" }, dir);
-    assert.equal(cfg.namespace, "acme/api");
-    assert.equal(cfg.namespace_source, "override");
-    assert.equal(cfg.override.setAt, "2026-07-12T20:30:00Z");
-  });
-});
-
-test("the override is keyed on the git toplevel, so it applies from a subdirectory", async () => {
-  const { execSync } = await import("node:child_process");
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "memini-override-repo-")));
-  execSync("git init -q", { cwd: repo });
-  const nested = join(repo, "services", "api");
-  mkdirSync(nested, { recursive: true });
-  const xdg = freshOverrides({ [repo]: { namespace: "acme/api", setAt: "2026-07-12T20:30:00Z" } });
-  withXdg(xdg, () => {
-    assert.equal(overrideKey(nested), repo);
-    assert.equal(resolveConfig({}, undefined, nested).namespace, "acme/api");
-  });
-});
-
-test("a malformed or absent overrides file degrades to automatic resolution", () => {
-  const dir = mkdtempSync(join(tmpdir(), "memini-override-"));
-  // Absent: the module-level XDG temp holds no overrides.json.
-  assert.equal(readOverride(dir), null);
-  assert.equal(resolveConfig({}, undefined, dir).namespace, basename(dir));
-  // Hand-edited into invalid JSON: never throw into opencode, just resolve.
-  withXdg(freshOverrides(null, "{ not json"), () => {
-    assert.equal(readOverride(dir), null);
-    assert.equal(resolveConfig({}, undefined, dir).namespace, basename(dir));
-  });
-  // Right JSON, wrong shape.
-  withXdg(freshOverrides(null, JSON.stringify({ version: 1, overrides: [] })), () => {
-    assert.equal(readOverride(dir), null);
-  });
-  // Present, but with an empty namespace: not an override.
-  withXdg(freshOverrides({ [realpathSync(dir)]: { namespace: "   " } }), () => {
-    assert.equal(readOverride(dir), null);
-    assert.equal(resolveConfig({}, undefined, dir).namespace, basename(dir));
-  });
-});
-
-test("overridesPath honours XDG_CONFIG_HOME and falls back to ~/.config", () => {
-  assert.equal(overridesPath({ XDG_CONFIG_HOME: "/x" }), join("/x", "memini", "overrides.json"));
-  assert.ok(overridesPath({}).endsWith(join(".config", "memini", "overrides.json")));
 });
 
 // --- Status ---------------------------------------------------------------
@@ -673,23 +802,13 @@ test("describeSettings reports the provenance that exposes a global env pin", ()
   assert.match(text, /git\/cwd would give\s+proj-x/);
 });
 
-test("describeSettings shows what an active override is masking", () => {
-  const dir = mkdtempSync(join(tmpdir(), "memini-override-"));
-  const xdg = freshOverrides({ [realpathSync(dir)]: { namespace: "acme/api", setAt: "2026-07-12T20:30:00Z" } });
-  withXdg(xdg, () => {
-    const report = describeSettings({ MEMINI_NAMESPACE: "pinned" }, undefined, dir);
-    assert.equal(report.namespace.effective, "acme/api");
-    assert.equal(report.namespace.source, "override");
-    assert.equal(report.namespace.withoutOverride.namespace, "pinned");
-    const codes = report.warnings.map((w) => w.code);
-    assert.ok(codes.includes("override-active"));
-    // An override IS the fix for a global pin, so it must not also nag about one.
-    assert.ok(!codes.includes("global-namespace-pin"));
-    assert.match(renderStatus(report), /without the override\s+pinned/);
-  });
-});
-
 test("the memini_status tool is registered zero-arg and never throws", async () => {
+  const realFetch = globalThis.fetch;
+  // Hermetic: the handshake attempt must fail-soft, not actually hit the
+  // network from a unit test.
+  globalThis.fetch = async () => {
+    throw new Error("no server in this test");
+  };
   const hooks = await MeminiPlugin(
     { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
     { base_url: "http://localhost:8080" },
@@ -708,13 +827,18 @@ test("the memini_status tool is registered zero-arg and never throws", async () 
     assert.match(out.output, /memini — effective settings/);
     assert.match(out.output, /NAMESPACE/);
     assert.equal(out.metadata.namespace, "proj");
-    assert.equal(out.metadata.source, "worktree");
+    assert.equal(out.metadata.source, "local-worktree");
   } finally {
     if (prev !== undefined) process.env.MEMINI_NAMESPACE = prev;
+    globalThis.fetch = realFetch;
   }
 });
 
 test("event never rejects, even when client.session.messages throws", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("no server in this test");
+  };
   const client = {
     session: {
       messages: async () => {
@@ -722,11 +846,15 @@ test("event never rejects, even when client.session.messages throws", async () =
       },
     },
   };
-  const hooks = await MeminiPlugin(
-    { client, worktree: "/tmp/proj", directory: "/tmp/proj" },
-    { base_url: "http://localhost:8080" },
-  );
-  await assert.doesNotReject(
-    hooks.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } }),
-  );
+  try {
+    const hooks = await MeminiPlugin(
+      { client, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080" },
+    );
+    await assert.doesNotReject(
+      hooks.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } }),
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

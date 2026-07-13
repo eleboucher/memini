@@ -13,21 +13,30 @@ Install: copy this directory to ~/.hermes/plugins/memini and set
 `memory.provider: memini` in ~/.hermes/config.yaml. Memory providers are
 single-select; `plugins.enabled` does not activate them.
 
-Namespace resolution, in order: a per-project override in
-$XDG_CONFIG_HOME/memini/overrides.json > MEMINI_NAMESPACE > the config template >
-the cwd basename. The override wins over the environment on purpose — see
-_read_override below.
+Namespace resolution, in order: MEMINI_NAMESPACE (raw-trimmed) > the namespace
+a POST /v1/handshake resolves server-side (api/openapi.yaml) > the local git
+remote/toplevel/cwd derivation chain. The handshake is fail-soft: any error or
+a ~2.5s timeout falls back to local derivation, never breaks a turn. It is
+memoized module-wide with a 10-minute TTL, so a long-lived Hermes process
+re-handshakes at most once per ~10 minutes rather than on every call — see
+_cached_handshake below.
 
 Environment:
-    MEMINI_BASE_URL                 base URL (default http://localhost:8080; alias: MEMINI_URL)
-    MEMINI_NAMESPACE                project to scope memory to (default: cwd basename, else "hermes")
+    MEMINI_BASE_URL                 base URL (default http://localhost:8080)
+    MEMINI_NAMESPACE                project to scope memory to (default: server handshake, else git/cwd, else "hermes")
     MEMINI_HOME                     caller's personal namespace, sent as X-Memini-Home (unset = no home leg)
-    MEMINI_API_KEY                  bearer token, if memini requires auth (alias: MEMINI_TOKEN)
+    MEMINI_API_KEY                  bearer token, if memini requires auth
     MEMINI_REQUIRE_HTTPS            =1 to refuse sending a token over plaintext HTTP
-    MEMINI_RECALL_LIMIT             max memories recalled per turn (default 3)
-    MEMINI_INJECT_RECALL_MIN_SCORE  fused-score floor (>=) for auto-recall (default 0)
-    MEMINI_INJECT_RECALL_MAX_TOK    hard token ceiling on the recall block (0 = unbounded)
+    MEMINI_RECALL_LIMIT             max memories recalled per turn (default 3; beneath the server's setting)
+    MEMINI_INJECT_RECALL_MIN_SCORE  fused-score floor (>=) for auto-recall (default 0; beneath the server's setting)
+    MEMINI_INJECT_RECALL_MAX_TOK    hard token ceiling on the recall block (0 = unbounded; beneath the server's setting)
     MEMINI_INJECT_LABELS            comma/pipe bullet labels: tier, confidence, age
+
+Each env var above beats the server's handshake-resolved settings, which beat
+the built-in default (recall_limit=3, no score floor, unbounded tokens).
+recall/capture (on by default) have no local env toggle here — only the
+server's settings can turn them off — so as not to invent a knob this
+provider has never exposed.
 
 The recall knobs mirror the opencode/Claude Code plugins so memory shaping is
 consistent across integrations. Network errors are swallowed.
@@ -41,6 +50,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
@@ -86,8 +96,18 @@ except ImportError:  # allow import/testing outside a Hermes install
 
 
 DEFAULT_BASE_URL = "http://localhost:8080"
-DEFAULT_TEMPLATE = "{tenant}/{project}/{agent}"
 TIMEOUT = 5
+# The client identifies itself to /v1/handshake for logging/diagnostics only
+# (api/openapi.yaml's HandshakeRequest.client) -- a plain literal, mirroring
+# plugin.yaml's manually-maintained version rather than parsing YAML with no
+# dependency to do it with.
+_PLUGIN_VERSION = "0.6.9"
+# How long a memoized handshake stays trustworthy, and how long a single
+# handshake call may block before falling back. Mirrors
+# packages/memini-client's HANDSHAKE_TTL_MS / default timeout; this plugin
+# ships stdlib-only so it stays a copy, not an import.
+_HANDSHAKE_TTL = 600.0  # seconds
+_HANDSHAKE_TIMEOUT = 2.5  # seconds
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 VALID_TIERS = ("working", "episodic", "semantic", "procedural")
 # The LLM-facing semantic scope vocabulary, identical to the MCP server's
@@ -102,15 +122,12 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
-# Canonical env names with back-compat aliases, so one env setup works across
-# all memini integrations: MEMINI_BASE_URL (alias MEMINI_URL) for the server,
-# MEMINI_API_KEY (alias MEMINI_TOKEN) for the token.
 def _base_url() -> str:
-    return _env("MEMINI_BASE_URL") or _env("MEMINI_URL") or DEFAULT_BASE_URL
+    return _env("MEMINI_BASE_URL") or DEFAULT_BASE_URL
 
 
 def _secret() -> str:
-    return _env("MEMINI_API_KEY") or _env("MEMINI_TOKEN")
+    return _env("MEMINI_API_KEY")
 
 
 def _home() -> str:
@@ -159,58 +176,6 @@ def _sanitize_namespace(value: str) -> str:
     return collapsed.strip("-")
 
 
-def _config_path() -> Path:
-    """$XDG_CONFIG_HOME/memini/config.json, falling back to
-    ~/.config/memini/config.json when XDG_CONFIG_HOME is unset OR empty/blank
-    (an empty value used to yield a relative, never-found path)."""
-    xdg = os.environ.get("XDG_CONFIG_HOME", "")
-    base = xdg if xdg.strip() else os.path.join(os.path.expanduser("~"), ".config")
-    return Path(base) / "memini" / "config.json"
-
-
-def _read_config() -> dict | None:
-    """Read the namespace config file. Returns the parsed dict, or None when the
-    file is missing or malformed — None means today's config-less behavior."""
-    try:
-        config = json.loads(_config_path().read_text(encoding="utf-8"))
-        return config if isinstance(config, dict) else None
-    except Exception:
-        return None
-
-
-def _match_tenant(cwd: str, config: dict) -> str | None:
-    """Return the tenant name if cwd is under a configured tenant root, else None.
-    Lexical path handling (expanduser + abspath, no symlink resolution) so
-    configured roots match the way the node integrations compare them."""
-    roots = config.get("tenantRoots")
-    if not isinstance(roots, list):
-        return None
-    cwd_abs = os.path.abspath(cwd)
-    for root in roots:
-        if not isinstance(root, dict):
-            continue
-        root_path = root.get("path")
-        # An empty/missing path would abspath to the cwd and match it; skip.
-        if not isinstance(root_path, str) or not root_path:
-            continue
-        root_abs = os.path.abspath(os.path.expanduser(root_path))
-        if cwd_abs == root_abs or cwd_abs.startswith(root_abs + os.sep):
-            tenant = re.sub(r"[^A-Za-z0-9._-]+", "-", str(root.get("tenant", ""))).strip("-")
-            if tenant:
-                return tenant
-    return None
-
-
-def _resolve_tenant(cwd: str) -> str | None:
-    """Read the config file and return the tenant name if cwd is under a
-    configured tenant root. Returns None when no config file, no match, or any
-    error — so the existing namespace resolution is the fallback."""
-    config = _read_config()
-    if config is None:
-        return None
-    return _match_tenant(cwd, config)
-
-
 def _git_out(args: list[str], cwd: str) -> str:
     """Run a git command in cwd, returning trimmed stdout or "" on any error
     (not a repo, git missing, timeout). Best-effort — never raises."""
@@ -240,136 +205,126 @@ def _repo_name_from_remote(url: str) -> str:
     return segs[-1] if segs else ""
 
 
-def _git_project(cwd: str) -> str:
-    """Derive {project} the way the node integrations do: git remote repo name >
-    git toplevel basename > cwd basename."""
-    remote = _git_out(["remote", "get-url", "origin"], cwd)
+def _git_remote(cwd: str) -> str:
+    """Best-effort `git remote get-url origin`, raw (unnormalized) -- sent as
+    the handshake's project.remote_url fact, and used by
+    _derive_local_namespace below as the degraded fallback. "" when not a
+    repo, no origin, or git is unavailable/slow (see _git_out)."""
+    return _git_out(["remote", "get-url", "origin"], cwd)
+
+
+def _git_toplevel(cwd: str) -> str:
+    """Best-effort `git rev-parse --show-toplevel`, raw absolute path -- sent
+    as project.toplevel_path/toplevel_basename, and used by
+    _derive_local_namespace below. "" outside a git repo."""
+    return _git_out(["rev-parse", "--show-toplevel"], cwd)
+
+
+def _derive_local_namespace(cwd: str) -> tuple[str, str]:
+    """The LOCAL fallback chain, with provenance: git remote repo name > git
+    toplevel basename > cwd basename (possibly ""). Used only when
+    MEMINI_NAMESPACE is unset and the handshake is unavailable -- see
+    _resolve_namespace. Mirrors the node integrations' local derivation so the
+    same repo lands in the same namespace everywhere the handshake cannot be
+    reached."""
+    remote = _git_remote(cwd)
     if remote:
         name = _sanitize_namespace(_repo_name_from_remote(remote))
         if name:
-            return name
-    toplevel = _git_out(["rev-parse", "--show-toplevel"], cwd)
+            return name, "remote"
+    toplevel = _git_toplevel(cwd)
     if toplevel:
-        return _sanitize_namespace(os.path.basename(toplevel))
-    return _sanitize_namespace(os.path.basename(cwd.rstrip("/")))
-
-
-# --- Namespace override ---------------------------------------------------
-#
-# $XDG_CONFIG_HOME/memini/overrides.json is the per-project namespace a user set
-# deliberately. It is a shared contract — the client plugins write it, `memini
-# doctor` reads it — so every harness must agree about which namespace is in
-# force; one that quietly ignored the file would be worse than none at all. The
-# TS core (packages/memini-client) is unreachable from Python, so the reader is
-# reimplemented here: it is a JSON file plus a `git rev-parse`.
-
-
-def _overrides_path() -> Path:
-    """$XDG_CONFIG_HOME/memini/overrides.json, falling back to
-    ~/.config/memini/overrides.json. Sits beside config.json, under CONFIG
-    rather than CACHE: it is user intent, not derived state."""
-    xdg = os.environ.get("XDG_CONFIG_HOME", "")
-    base = xdg if xdg.strip() else os.path.join(os.path.expanduser("~"), ".config")
-    return Path(base) / "memini" / "overrides.json"
-
-
-def _override_key(cwd: str) -> str:
-    """The key an override is stored under: the git toplevel when there is one,
-    else the resolved directory. Keying on the repo root rather than the raw cwd
-    means an override set at the top of a repo still applies when hermes is run
-    three directories down."""
-    toplevel = _git_out(["rev-parse", "--show-toplevel"], cwd)
-    return os.path.abspath(toplevel or cwd)
-
-
-def _read_override(cwd: str) -> dict | None:
-    """The override in effect for cwd, as {"namespace", "setAt"}, or None.
-
-    The file is read BEFORE the key is computed, because the key costs a `git
-    rev-parse` and nobody should pay for one to discover they have no overrides
-    at all — the common case. Any error (missing file, hand-edited JSON, wrong
-    shape) yields None: a broken overrides file must degrade to automatic
-    resolution, never raise into hermes."""
-    try:
-        data = json.loads(_overrides_path().read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    overrides = data.get("overrides") if isinstance(data, dict) else None
-    if not isinstance(overrides, dict) or not overrides:
-        return None
-    entry = overrides.get(_override_key(cwd))
-    if not isinstance(entry, dict):
-        return None
-    namespace = str(entry.get("namespace") or "").strip()
-    if not namespace:
-        return None
-    return {"namespace": namespace, "setAt": str(entry.get("setAt") or "")}
-
-
-def _resolve_namespace(
-    cwd: str, ignore_override: bool = False, ignore_env: bool = False
-) -> tuple[str, str]:
-    """Resolve the namespace for cwd, with provenance: (namespace, source).
-
-    Order: project override > MEMINI_NAMESPACE > config template > cwd basename.
-
-    The override sits ABOVE the env var on purpose. A globally exported
-    MEMINI_NAMESPACE (a shell rc, or worse a fish universal variable) pins every
-    repo on the machine to one namespace, and if the env beat the override then
-    setting one would silently do nothing on exactly the machines that need it.
-
-    ignore_override / ignore_env produce the counterfactuals memory_status
-    reports — "what would this be without the override? without the env pin?".
-    The override cannot be stripped by doctoring os.environ (it lives in a file),
-    hence the explicit flag."""
-    if not ignore_override:
-        override = _read_override(cwd)
-        if override:
-            return override["namespace"], "override"
-
-    if not ignore_env and _env("MEMINI_NAMESPACE"):
-        # MEMINI_NAMESPACE is used raw-trimmed (the server validates the header):
-        # flattening "/" here would split a tenant path like work/memini from the
-        # other integrations.
-        return _env("MEMINI_NAMESPACE"), "env"
-
-    config = _read_config()
-    if config is not None:
-        # Config present -> render config.template (default
-        # "{tenant}/{project}/{agent}") over the resolved segments, dropping the
-        # unresolvable ones. {project} is git-derived (repo name > toplevel > cwd
-        # basename) so the same repo lands in the same namespace as the other
-        # integrations.
-        template = config.get("template")
-        if not isinstance(template, str) or not template:
-            template = DEFAULT_TEMPLATE
-        return (
-            _apply_template(
-                template,
-                {
-                    "tenant": _match_tenant(cwd, config),
-                    "project": _git_project(cwd),
-                    "agent": _sanitize_namespace(_env("MEMINI_AGENT")),
-                },
-            ),
-            "config",
-        )
-
-    # No config file -> zero migration: today's exact behavior, the cwd basename.
+        name = _sanitize_namespace(os.path.basename(toplevel))
+        if name:
+            return name, "toplevel"
     return _sanitize_namespace(os.path.basename(cwd.rstrip("/"))), "cwd"
 
 
-def _apply_template(template: str, segments: dict) -> str:
-    """Substitute {tenant}/{project}/{agent} placeholders, drop the unresolvable
-    ones, collapse the orphaned slashes, and trim leading/trailing slashes.
-    Mirrors the shared resolver's applyTemplate (minus {namespace})."""
-    out = re.sub(
-        r"\{(tenant|project|agent)\}",
-        lambda m: segments.get(m.group(1)) or "",
-        template,
+def _facts(cwd: str) -> dict:
+    """Assemble HandshakeRequest.project (api/openapi.yaml): the cwd basename
+    (always present, raw/unsanitized -- the server does its own sanitizing),
+    git remote/toplevel (best-effort, also _derive_local_namespace's raw
+    material), and MEMINI_NAMESPACE as env_namespace -- sent so a server-side
+    pin can still beat it (this client cannot make that call itself without
+    knowing whether a pin exists)."""
+    facts: dict[str, str] = {"cwd_basename": os.path.basename(cwd.rstrip("/"))}
+    remote = _git_remote(cwd)
+    if remote:
+        facts["remote_url"] = remote
+    toplevel = _git_toplevel(cwd)
+    if toplevel:
+        facts["toplevel_path"] = toplevel
+        facts["toplevel_basename"] = os.path.basename(toplevel)
+    ns = _env("MEMINI_NAMESPACE")
+    if ns:
+        facts["env_namespace"] = ns
+    return facts
+
+
+def _handshake(base: str, secret: str, facts: dict) -> dict | None:
+    """POST /v1/handshake (api/openapi.yaml) via _api. Fail-soft ALWAYS: any
+    network error, non-2xx, or a ~2.5s timeout degrades to None -- _api
+    already logs why to stderr, and the caller (_resolve_namespace) falls back
+    to _derive_local_namespace / the built-in defaults. No namespace is known
+    yet, so the X-Memini-Namespace header is omitted (_api skips it for a
+    falsy namespace). Not memoized here -- see _cached_handshake."""
+    return _api(
+        base,
+        "/v1/handshake",
+        {"project": facts, "client": {"name": "hermes-memini", "version": _PLUGIN_VERSION}},
+        "",
+        secret,
+        timeout=_HANDSHAKE_TIMEOUT,
     )
-    out = re.sub(r"/{2,}", "/", out)
-    return out.strip("/")
+
+
+# Module-level handshake memo: {"result": dict | None, "expires_at": float}.
+# Module-level (not per-instance) because a Hermes process typically hosts one
+# MeminiMemoryProvider for one project's lifetime, so this amounts to
+# "handshake at most once per ~10 minutes of uptime" -- see _cached_handshake.
+_handshake_cache: dict[str, Any] = {}
+
+
+def _cached_handshake(
+    base: str, secret: str, facts: dict, now: Callable[[], float] = time.monotonic
+) -> dict | None:
+    """Memoized _handshake with a 10-minute TTL (_HANDSHAKE_TTL). `now` is
+    injectable so tests can drive expiry without a real 10-minute sleep."""
+    t = now()
+    cached = _handshake_cache.get("entry")
+    if cached and t < cached["expires_at"]:
+        return cached["result"]
+    result = _handshake(base, secret, facts)
+    _handshake_cache["entry"] = {"result": result, "expires_at": t + _HANDSHAKE_TTL}
+    return result
+
+
+def _resolve_namespace(cwd: str, hs: dict | None) -> tuple[str, str]:
+    """Resolve the namespace for cwd, with provenance: (namespace, source).
+
+    Order: MEMINI_NAMESPACE (raw-trimmed) > a successful handshake's resolved
+    namespace > the local git remote/toplevel/cwd derivation chain.
+
+    MEMINI_NAMESPACE sits above the handshake result on purpose, mirroring
+    this provider's pre-handshake precedence: it is this integration's own
+    explicit pin, honored as such rather than second-guessed by the server
+    (the server still sees it, as project.env_namespace in _facts, so a pin
+    can beat it server-side for callers that check in via handshake without
+    setting the env var locally). `hs` is the (possibly None -- handshake is
+    fail-soft) HandshakeResponse-shaped dict from _cached_handshake, passed in
+    rather than fetched here so callers that already resolved it don't
+    refetch."""
+    if _env("MEMINI_NAMESPACE"):
+        # Used raw-trimmed (the server validates the header): flattening "/"
+        # here would split a tenant path like work/memini from the other
+        # integrations.
+        return _env("MEMINI_NAMESPACE"), "env"
+
+    if hs and hs.get("namespace"):
+        return str(hs["namespace"]), f"server:{hs.get('namespace_source', '')}"
+
+    ns, source = _derive_local_namespace(cwd)
+    return ns, f"local-{source}"
 
 
 def _valid_url(base: str) -> bool:
@@ -388,10 +343,16 @@ def _api(
     namespace: str,
     secret: str,
     method: str = "POST",
+    timeout: float = TIMEOUT,
 ) -> dict | None:
     if not _valid_url(base):
         return None
-    headers = {"Content-Type": "application/json", "X-Memini-Namespace": namespace}
+    headers = {"Content-Type": "application/json"}
+    # namespace is "" for /v1/handshake (see _handshake): there is no
+    # namespace yet to send, and an empty header value would be worse than
+    # none.
+    if namespace:
+        headers["X-Memini-Namespace"] = namespace
     _check_plaintext_bearer_guard(base, secret)
     if secret:
         headers["Authorization"] = f"Bearer {secret}"
@@ -401,7 +362,7 @@ def _api(
     data = json.dumps(body).encode() if body is not None else None
     req = Request(f"{base}{path}", data=data, headers=headers, method=method)
     try:
-        with urlopen(req, timeout=TIMEOUT) as resp:
+        with urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
             return json.loads(raw) if raw else {}
     except (URLError, TimeoutError, ValueError) as e:
@@ -433,7 +394,9 @@ def _api_result(
         # MEMINI_REQUIRE_HTTPS=1 makes this raise; catch it here rather than
         # letting a config error surface as a Hermes traceback.
         _check_plaintext_bearer_guard(base, secret)
-        headers = {"Content-Type": "application/json", "X-Memini-Namespace": namespace}
+        headers = {"Content-Type": "application/json"}
+        if namespace:
+            headers["X-Memini-Namespace"] = namespace
         if secret:
             headers["Authorization"] = f"Bearer {secret}"
         home = _home()
@@ -509,7 +472,11 @@ def _list_path(args: dict) -> str:
 # score floor, a token ceiling, and label toggles.
 
 
-def _int_env(name: str, default: int) -> int:
+def _int_env(name: str, default: int | None) -> int | None:
+    """Parse a non-negative int env var, or return `default` when unset,
+    malformed, or negative. `default=None` (used when a server-resolved
+    handshake setting should fill the gap instead) means "unset" is
+    distinguishable from "explicitly 0"."""
     raw = os.environ.get(name, "").strip()
     if not raw:
         return default
@@ -520,7 +487,7 @@ def _int_env(name: str, default: int) -> int:
     return n if n >= 0 else default
 
 
-def _float_env(name: str, default: float) -> float:
+def _float_env(name: str, default: float | None) -> float | None:
     raw = os.environ.get(name, "").strip()
     if not raw:
         return default
@@ -589,14 +556,14 @@ def _fit_by_tokens(items: list[str], max_tokens: int) -> tuple[list[str], int]:
 # MEMINI_NAMESPACE exported globally (a shell rc, or a fish universal variable),
 # set once and forgotten, quietly collapsing every repo on the machine into one
 # namespace: the value looks fine, only where it came from gives it away. So the
-# namespace is resolved three times — as-is, without the override, and without
-# the override AND the env pin — and all three are reported.
+# namespace is resolved both as-is and without the env pin (the local git/cwd
+# derivation), and both are reported.
 
 # Names whose values must never be printed in full. Matches the whole name, not
 # a suffix, so MEMINI_API_KEYS_FILE (a path) would not be caught while
-# MEMINI_API_KEY and MEMINI_TOKEN are. Mirrors internal/redact and the TS core:
-# redaction is always on, never opt-in — a settings dump is the likeliest place
-# for a token to be pasted into an issue.
+# MEMINI_API_KEY is. Mirrors internal/redact and the TS core: redaction is
+# always on, never opt-in — a settings dump is the likeliest place for a token
+# to be pasted into an issue.
 _SENSITIVE = re.compile(
     r"(^|_)(KEY|TOKEN|SECRET|PASSWORD|PASS|BEARER|DSN|CREDENTIALS?)$", re.IGNORECASE
 )
@@ -606,12 +573,9 @@ _SENSITIVE = re.compile(
 # a finding, so a knob nobody set must still show up, with its default.
 CLIENT_KNOBS: tuple[tuple[str, str], ...] = (
     ("MEMINI_BASE_URL", DEFAULT_BASE_URL),
-    ("MEMINI_URL", "(alias of MEMINI_BASE_URL)"),
     ("MEMINI_API_KEY", ""),
-    ("MEMINI_TOKEN", "(alias of MEMINI_API_KEY)"),
     ("MEMINI_REQUIRE_HTTPS", "0"),
-    ("MEMINI_NAMESPACE", "(auto: override/config/cwd)"),
-    ("MEMINI_AGENT", ""),
+    ("MEMINI_NAMESPACE", "(auto: handshake/git/cwd)"),
     ("MEMINI_HOME", ""),
     ("MEMINI_RECALL_LIMIT", "3"),
     ("MEMINI_INJECT_RECALL_MIN_SCORE", "0"),
@@ -635,12 +599,14 @@ def _redact(value: str) -> str:
 
 
 def _describe_settings(cwd: str, in_use: str = "") -> dict:
-    """Effective settings with provenance: the three namespace resolutions, each
+    """Effective settings with provenance: the namespace resolution (env, a
+    live -- possibly memoized -- handshake, or local git/cwd derivation), each
     knob and where it came from (secrets redacted), and the warnings."""
-    effective, source = _resolve_namespace(cwd)
-    without_override = _resolve_namespace(cwd, ignore_override=True)
-    derived = _resolve_namespace(cwd, ignore_override=True, ignore_env=True)
-    override = _read_override(cwd)
+    base = _base_url()
+    secret = _secret()
+    hs = _cached_handshake(base, secret, _facts(cwd))
+    effective, source = _resolve_namespace(cwd, hs)
+    derived_ns, derived_source = _derive_local_namespace(cwd)
 
     settings = []
     for name, default in CLIENT_KNOBS:
@@ -652,41 +618,26 @@ def _describe_settings(cwd: str, in_use: str = "") -> dict:
         settings.append({"name": name, "value": value, "source": "env" if raw else "default"})
 
     warnings: list[dict] = []
-    if override:
-        warnings.append(
-            {
-                "level": "note",
-                "code": "override-active",
-                "message": (
-                    f'namespace is overridden to "{override["namespace"]}" for this project'
-                    + (f' (set {override["setAt"]})' if override["setAt"] else "")
-                    + f'; without it this project would use "{without_override[0]}".'
-                ),
-                "fix": f"Remove the entry for {_override_key(cwd)} from {_overrides_path()} to "
-                "return to automatic resolution.",
-            }
-        )
 
     # The finding this whole report exists for.
     pin = _env("MEMINI_NAMESPACE")
-    if pin and not override and derived[0] and derived[0] != pin:
+    if pin and derived_ns and derived_ns != pin:
         warnings.append(
             {
                 "level": "warn",
                 "code": "global-namespace-pin",
                 "message": (
                     f'MEMINI_NAMESPACE is set to "{pin}", which pins EVERY project on this machine '
-                    f'to one namespace. This project would otherwise resolve to "{derived[0]}". If '
-                    "it is exported from a shell rc (or a fish universal variable), every repo you "
-                    "work in is sharing one memory pool."
+                    f'to one namespace. This project would otherwise resolve to "{derived_ns}" (via '
+                    "git/cwd, absent the pin). If it is exported from a shell rc (or a fish universal "
+                    "variable), every repo you work in is sharing one memory pool."
                 ),
-                "fix": "Unset MEMINI_NAMESPACE and let each project resolve on its own, or set a "
-                "per-project override instead.",
+                "fix": "Unset MEMINI_NAMESPACE and let each project resolve on its own.",
             }
         )
 
-    # The override (or anything else) only reaches the wire on the next session:
-    # the namespace is resolved once, in initialize.
+    # A handshake result (or anything else) only reaches the wire on the next
+    # session: the namespace is resolved once, in initialize.
     if in_use and in_use != effective:
         warnings.append(
             {
@@ -701,8 +652,7 @@ def _describe_settings(cwd: str, in_use: str = "") -> dict:
             }
         )
 
-    base = _base_url()
-    if _uses_plaintext_bearer_auth(base, _secret()):
+    if _uses_plaintext_bearer_auth(base, secret):
         warnings.append(
             {
                 "level": "warn",
@@ -728,18 +678,15 @@ def _describe_settings(cwd: str, in_use: str = "") -> dict:
 
     return {
         "cwd": cwd,
-        "project": _override_key(cwd),
+        "project": cwd,
         "namespace": {
             "effective": effective,
             "source": source,
             "in_use": in_use or effective,
-            "override": override,
-            "without_override": {"namespace": without_override[0], "source": without_override[1]},
-            "derived": {"namespace": derived[0], "source": derived[1]},
+            "derived": {"namespace": derived_ns, "source": f"local-{derived_source}"},
             "home": _home(),
         },
         "settings": settings,
-        "paths": {"overrides": str(_overrides_path()), "config": str(_config_path())},
         "warnings": warnings,
     }
 
@@ -756,12 +703,9 @@ def _render_settings(report: dict) -> str:
         "NAMESPACE",
         f"  {'effective':<26} {ns['effective']:<30} <- {ns['source']}",
     ]
-    if ns["override"]:
-        wo = ns["without_override"]
-        lines.append(f"  {'without the override':<26} {wo['namespace']:<30} <- {wo['source']}")
     if ns["derived"]["namespace"] != ns["effective"]:
         d = ns["derived"]
-        lines.append(f"  {'config/cwd would give':<26} {d['namespace']:<30} <- {d['source']}")
+        lines.append(f"  {'git/cwd would give':<26} {d['namespace']:<30} <- {d['source']}")
     if ns["in_use"] != ns["effective"]:
         lines.append(f"  {'this session is using':<26} {ns['in_use']:<30} (resolved at startup)")
     lines.append(f"  {'home (personal)':<26} {ns['home'] or '(unset)'}")
@@ -772,13 +716,6 @@ def _render_settings(report: dict) -> str:
         origin = "<- env" if s["source"] == "env" else "(default)"
         name = s["name"].removeprefix("MEMINI_").lower()
         lines.append(f"  {name:<26} {s['value']:<30} {origin}")
-    lines.append("")
-
-    lines.append("PATHS")
-    for key in ("overrides", "config"):
-        path = report["paths"][key]
-        absent = "" if os.path.exists(path) else " (absent)"
-        lines.append(f"  {key:<26} {path}{absent}")
     lines.append("")
 
     if report["warnings"]:
@@ -808,21 +745,59 @@ class MeminiMemoryProvider(MemoryProvider):
         self._session_id = session_id
         # Hermes' initialize kwargs carry no project path (agent_workspace is a
         # label, not a dir), so the working directory is the only signal for the
-        # default namespace; set a project override or MEMINI_NAMESPACE to scope
-        # explicitly. Order: override > MEMINI_NAMESPACE > config > cwd.
+        # default namespace; set MEMINI_NAMESPACE to scope explicitly. Order:
+        # MEMINI_NAMESPACE > a handshake resolved by the server > local git/cwd
+        # derivation. The handshake call (memoized, 10-min TTL, fail-soft) also
+        # runs the plaintext-bearer guard via _api, so a MEMINI_REQUIRE_HTTPS=1
+        # misconfiguration still surfaces at startup without a separate check.
         self._cwd = os.getcwd()
-        ns, source = _resolve_namespace(self._cwd)
+        hs = _cached_handshake(self._base, self._secret, _facts(self._cwd))
+        self._handshake = hs
+        ns, source = _resolve_namespace(self._cwd, hs)
         self._namespace = ns or "hermes"
-        self._namespace_source = source if ns else "default"
-        # Recall-shaping knobs, read once. Defaults match the other integrations
-        # (limit 3, no floor, unbounded, plain bullets).
-        limit = _int_env("MEMINI_RECALL_LIMIT", 3)
-        self._recall_limit = limit if limit > 0 else 3
-        self._recall_min_score = _float_env("MEMINI_INJECT_RECALL_MIN_SCORE", 0.0)
-        self._recall_max_tokens = _int_env("MEMINI_INJECT_RECALL_MAX_TOK", 0)
+        self._namespace_source = source if ns else "local-default"
+
+        # Recall-shaping knobs: MEMINI_* env beats the handshake's resolved
+        # ClientSettings beats the built-in default (limit 3, no floor,
+        # unbounded, both recall/capture on). There is no local "option" tier
+        # here, unlike opencode/openwebui -- hermes has no config object.
+        settings = (hs or {}).get("settings") or {}
+
+        env_limit = _int_env("MEMINI_RECALL_LIMIT", None)
+        if env_limit is not None:
+            self._recall_limit = env_limit if env_limit > 0 else 3
+        else:
+            server_limit = settings.get("recall_limit")
+            self._recall_limit = (
+                server_limit if isinstance(server_limit, int) and server_limit > 0 else 3
+            )
+
+        env_min_score = _float_env("MEMINI_INJECT_RECALL_MIN_SCORE", None)
+        if env_min_score is not None:
+            self._recall_min_score = env_min_score
+        else:
+            server_min_score = settings.get("inject_recall_min_score")
+            self._recall_min_score = (
+                server_min_score if isinstance(server_min_score, (int, float)) else 0.0
+            )
+
+        env_max_tok = _int_env("MEMINI_INJECT_RECALL_MAX_TOK", None)
+        if env_max_tok is not None:
+            self._recall_max_tokens = env_max_tok
+        else:
+            server_max_tok = settings.get("inject_recall_max_tok")
+            self._recall_max_tokens = server_max_tok if isinstance(server_max_tok, int) else 0
+
+        # recall/capture: no local env toggle (see the module docstring) --
+        # only the server's handshake settings can turn these off, else on.
+        self._recall_enabled = (
+            settings["recall"] if isinstance(settings.get("recall"), bool) else True
+        )
+        self._capture_enabled = (
+            settings["capture"] if isinstance(settings.get("capture"), bool) else True
+        )
+
         self._labels = _labels_env()
-        if _env("MEMINI_REQUIRE_HTTPS") == "1":
-            _check_plaintext_bearer_guard(self._base, self._secret)
 
     def _call(self, path: str, body: dict | None, method: str = "POST") -> dict | None:
         return _api(self._base, path, body, self._namespace, self._secret, method)
@@ -937,7 +912,9 @@ class MeminiMemoryProvider(MemoryProvider):
         return body
 
     def prefetch(self, query: str, **kwargs: Any) -> str:
-        if not query.strip():
+        # recall is on by default; only a server-resolved handshake setting
+        # can turn it off (see initialize) -- there is no local env toggle.
+        if not self._recall_enabled or not query.strip():
             return ""
         return self._recall_block(
             self._call("/v1/search", self._recall_body(query)),
@@ -946,6 +923,8 @@ class MeminiMemoryProvider(MemoryProvider):
 
     def on_pre_compress(self, messages: list, **kwargs: Any) -> str:
         """Re-inject recalled context before history compaction."""
+        if not self._recall_enabled:
+            return ""
         query = ""
         for m in reversed(messages):
             role = m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
@@ -965,6 +944,10 @@ class MeminiMemoryProvider(MemoryProvider):
         )
 
     def sync_turn(self, user: str, assistant: str, **kwargs: Any) -> None:
+        # capture is on by default; only a server-resolved handshake setting
+        # can turn it off -- there is no local env toggle.
+        if not self._capture_enabled:
+            return
         user, assistant = (user or "").strip(), (assistant or "").strip()
         if not user and not assistant:
             return
@@ -994,6 +977,8 @@ class MeminiMemoryProvider(MemoryProvider):
         # content. Tier is omitted so the server classifies it (a decision or
         # preference lands durable, chatter stays episodic) rather than forcing
         # everything to semantic.
+        if not self._capture_enabled:
+            return
         if action in ("add", "replace") and content.strip():
             self._call_bg("/v1/memories", {"content": content.strip()[:4000]})
 
@@ -1170,12 +1155,12 @@ class MeminiMemoryProvider(MemoryProvider):
             {
                 "name": "memory_status",
                 "description": "Show the memini settings in force for this session: which namespace memories "
-                "are written to and recalled from, where that namespace came from (a per-project "
-                "override, MEMINI_NAMESPACE, the config file, or the working directory), what it "
-                "would be without each of those, and any misconfiguration worth flagging. "
-                "Read-only, and secrets are redacted. Call it when the user asks what memini is "
-                "doing, which namespace is in use, or why something saved earlier cannot be "
-                "recalled — a namespace mismatch is the usual cause.",
+                "are written to and recalled from, where that namespace came from (MEMINI_NAMESPACE, "
+                "a server-resolved handshake, or the working directory), what it would be without "
+                "the env pin, and any misconfiguration worth flagging. Read-only, and secrets are "
+                "redacted. Call it when the user asks what memini is doing, which namespace is in "
+                "use, or why something saved earlier cannot be recalled — a namespace mismatch is "
+                "the usual cause.",
                 "parameters": {"type": "object", "properties": {}},
             },
             {
@@ -1200,10 +1185,10 @@ class MeminiMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, name: str, args: dict, **kwargs: Any) -> str:
         if name == "memory_status":
-            # Re-resolved live rather than read off self._namespace, so an
-            # override set mid-session shows up — and the gap between what this
-            # session is using and what now resolves is reported as a warning
-            # instead of being papered over.
+            # Re-resolved live rather than read off self._namespace, so a
+            # handshake result that changed mid-session shows up — and the gap
+            # between what this session is using and what now resolves is
+            # reported as a warning instead of being papered over.
             return _render_settings(
                 _describe_settings(
                     getattr(self, "_cwd", None) or os.getcwd(),
