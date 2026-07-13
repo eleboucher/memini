@@ -73,14 +73,12 @@ The `tools.allow` allowlist is required for the four explicit tools to be sent
 to the model — they're declared `optional: true` in the manifest so OpenClaw
 won't auto-expose them.
 
-If memini requires auth, set `MEMINI_API_KEY` (alias: `MEMINI_TOKEN`) in the
-gateway environment (the plugin sends it as `Authorization: Bearer …`; set
-`MEMINI_REQUIRE_HTTPS=1` to refuse sending it over plaintext HTTP). Restart
-OpenClaw.
+If memini requires auth, set `MEMINI_API_KEY` in the gateway environment (the
+plugin sends it as `Authorization: Bearer …`; set `MEMINI_REQUIRE_HTTPS=1` to
+refuse sending it over plaintext HTTP). Restart OpenClaw.
 
 `base_url` can also be omitted from `config` and supplied via the
-`MEMINI_BASE_URL` env var (alias: `MEMINI_URL`); the `config` value wins when
-both are present.
+`MEMINI_BASE_URL` env var; the `config` value wins when both are present.
 
 Set `home` (or the `MEMINI_HOME` env var, `config` wins) to the caller's
 personal namespace — every request then carries `X-Memini-Home`, which server-side

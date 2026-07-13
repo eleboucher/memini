@@ -258,9 +258,12 @@ export function resolveConfig(
 
   return {
     enabled: c.enabled !== false,
-    // Config wins; otherwise the canonical MEMINI_BASE_URL (alias MEMINI_URL),
-    // matching the other integrations so one env setup works everywhere.
-    base_url: c.base_url || strEnv(env, "MEMINI_BASE_URL") || strEnv(env, "MEMINI_URL") || DEFAULT_BASE_URL,
+    // Config wins; otherwise the canonical MEMINI_BASE_URL. No MEMINI_URL
+    // alias: the aliases are retired everywhere, and readBootstrap (the
+    // handshake/pins/status transport) never honored them either, so honoring
+    // one here would split the data plane and the control plane across two
+    // different servers.
+    base_url: c.base_url || strEnv(env, "MEMINI_BASE_URL") || DEFAULT_BASE_URL,
     // env > config > "openclaw" (see resolveBaseNamespace). `degraded: true`
     // here always — this view never consults the handshake.
     namespace: base.namespace,
@@ -654,7 +657,10 @@ function createClient(cfg: ResolvedConfig, api: any): MeminiClient {
   const baseUrl = String(cfg.base_url || DEFAULT_BASE_URL).replace(/\/+$/, "");
   const timeoutMs = Number(cfg.timeout_ms || DEFAULT_TIMEOUT_MS);
   const fallbackOnError = cfg.fallback_on_error !== false;
-  const secret = process.env.MEMINI_API_KEY || process.env.MEMINI_TOKEN;
+  // MEMINI_API_KEY only, no MEMINI_TOKEN alias: same canonical-names-only
+  // policy as readBootstrap, so the data plane and the handshake/pins/status
+  // transport can never authenticate differently.
+  const secret = process.env.MEMINI_API_KEY;
   const home = cfg.home;
   const guardPlaintextBearerAuth = createPlaintextBearerAuthGuard((m: any) => api.logger.warn?.(m));
 

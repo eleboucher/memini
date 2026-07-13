@@ -550,6 +550,42 @@ test("requests carry X-Memini-Home when configured, omit it otherwise", async ()
   }
 });
 
+// The MEMINI_URL/MEMINI_TOKEN aliases are retired everywhere: readBootstrap
+// (the handshake/pins/status transport) never honored them, so the data plane
+// ignoring them too is what keeps both paths pointed at one server with one
+// credential.
+test("retired MEMINI_TOKEN alias is IGNORED: no Authorization without MEMINI_API_KEY", async () => {
+  const hooks = {};
+  const requests = [];
+  const realFetch = globalThis.fetch;
+  const prevToken = process.env.MEMINI_TOKEN;
+  const prevKey = process.env.MEMINI_API_KEY;
+  globalThis.fetch = withHandshakeFailure(async (url, init) => {
+    requests.push({ url: String(url), init });
+    return { ok: true, async json() { return { results: [] }; }, async text() { return ""; } };
+  });
+  try {
+    delete process.env.MEMINI_API_KEY;
+    process.env.MEMINI_TOKEN = "sk-legacy-alias-token";
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    await hooks.before_prompt_build({ prompt: "q" }, {});
+    const search = requests.find((r) => r.url.endsWith("/v1/search"));
+    assert.equal(search.init.headers.Authorization, undefined, "MEMINI_TOKEN must not become a bearer");
+  } finally {
+    globalThis.fetch = realFetch;
+    if (prevToken === undefined) delete process.env.MEMINI_TOKEN;
+    else process.env.MEMINI_TOKEN = prevToken;
+    if (prevKey === undefined) delete process.env.MEMINI_API_KEY;
+    else process.env.MEMINI_API_KEY = prevKey;
+  }
+});
+
 // before_prompt_build fires on every step of a turn; an unchanged query returns
 // the same memories, so without dedup the same block is re-injected on every
 // tool call (eleboucher/memini#21). The same session must only be shown a given

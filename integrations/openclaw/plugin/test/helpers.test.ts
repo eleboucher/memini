@@ -123,10 +123,13 @@ test("resolveConfig: defaults match the documented contract", () => {
   assert.equal(cfg.recall_limit, 3);
 });
 
-test("resolveConfig: base_url falls back to MEMINI_BASE_URL then MEMINI_URL env, config wins", () => {
+test("resolveConfig: base_url falls back to MEMINI_BASE_URL, config wins, retired aliases are IGNORED", () => {
   try {
+    // The MEMINI_URL alias is retired everywhere: readBootstrap (the
+    // handshake/pins/status transport) never honored it, and a data plane
+    // that did would split the two across different servers.
     process.env.MEMINI_URL = "http://alias:8080";
-    assert.equal(resolveConfig(undefined).base_url, "http://alias:8080");
+    assert.equal(resolveConfig(undefined).base_url, "http://localhost:8080");
     process.env.MEMINI_BASE_URL = "http://canonical:8080";
     assert.equal(resolveConfig(undefined).base_url, "http://canonical:8080");
     assert.equal(resolveConfig({ base_url: "http://cfg:9000" }).base_url, "http://cfg:9000");
