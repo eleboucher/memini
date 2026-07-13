@@ -1,9 +1,11 @@
 package apiauth
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -30,6 +32,12 @@ type fileKeyEntry struct {
 	Home             string `yaml:"home"`
 	DefaultNamespace string `yaml:"default_namespace"`
 	Disabled         bool   `yaml:"disabled"`
+	// Settings is an optional per-key ClientSettings override (config-handshake
+	// redesign), decoded as a generic map here and bridged to the JSON-tagged
+	// store.ClientSettings in validateFileKeyEntry — see clientSettingsFromYAML
+	// for why the round-trip through JSON is what makes the schema's snake_case
+	// keys parse.
+	Settings map[string]any `yaml:"settings"`
 }
 
 // FileKeySet is the immutable, in-memory result of loading MEMINI_API_KEYS_FILE
@@ -64,6 +72,8 @@ type FileKeySet struct {
 //     names both entries by name, never echoing the hash or secret
 //   - home / default_namespace, when given, are normalized
 //     (httputil.NormalizeNamespace) and must pass httputil.ValidateNamespace
+//   - settings, when given, is a per-key ClientSettings override that must
+//     carry only known keys (strict decode) and pass ClientSettings.Validate
 func LoadFileKeys(path string) (*FileKeySet, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -146,13 +156,47 @@ func validateFileKeyEntry(idx int, e fileKeyEntry) (store.APIKey, error) {
 		}
 	}
 
+	settings, serr := clientSettingsFromYAML(e.Settings)
+	if serr != nil {
+		return store.APIKey{}, fmt.Errorf("%s: invalid settings: %w", label, serr)
+	}
+
 	return store.APIKey{
 		Name:      name,
 		Hash:      hash,
 		HomeNS:    home,
 		DefaultNS: defNS,
 		Disabled:  e.Disabled,
+		Settings:  settings,
 	}, nil
+}
+
+// clientSettingsFromYAML converts an optional per-key settings block (decoded
+// from YAML as a generic map) into a validated store.ClientSettings. The schema's
+// snake_case wire keys live only on ClientSettings' json tags, not on yaml tags,
+// so a direct YAML decode would silently drop every field; re-encoding the map
+// through JSON is what makes them parse. The decode is strict — an unknown key is
+// a fatal boot error, the same fail-loud treatment MEMINI_CLIENT_DEFAULTS gives a
+// typo, rather than a setting quietly ignored. A nil/empty block yields the zero
+// ClientSettings (no override at all).
+func clientSettingsFromYAML(m map[string]any) (store.ClientSettings, error) {
+	if len(m) == 0 {
+		return store.ClientSettings{}, nil
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return store.ClientSettings{}, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var s store.ClientSettings
+	if err := dec.Decode(&s); err != nil {
+		return store.ClientSettings{}, err
+	}
+	if err := s.Validate(); err != nil {
+		return store.ClientSettings{}, err
+	}
+	return s, nil
 }
 
 // lookup returns the file key whose Hash matches, or ok=false. A nil receiver

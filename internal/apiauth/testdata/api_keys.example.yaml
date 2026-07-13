@@ -12,6 +12,15 @@ keys:
     hash: "b9f195c5cc7ef6afadbfbc42892ad47d3b24c6bc94bb510c4564a90a14e8b799"
     home: personal/alex
     default_namespace: acme
+    # An optional per-key behavioral-settings override (config-handshake
+    # redesign): only the fields you set are applied; the rest keep inheriting
+    # the server's global defaults, then the built-ins. The keys are exactly
+    # the ClientSettings wire keys (see api/openapi.yaml). An unknown key here
+    # is a fatal boot error, not a silently ignored one. Uncomment to use:
+    # settings:
+    #   capture_turns: false
+    #   recall_limit: 5
+    #   namespace_scope: owner_repo
 
   # A key identified by a plaintext secret. Allowed because the file itself
   # is the secret store — e.g. SOPS-encrypted at rest in a GitOps repo, only
