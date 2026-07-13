@@ -502,6 +502,100 @@ test("recall does not re-inject memories already shown in the same session (#21)
   }
 });
 
+// The per-session dedupe window is capped: oldest ids age out (and may
+// re-inject); recent ids stay suppressed.
+test("per-session injected-id window is bounded (oldest ids age out)", async () => {
+  const hooks = {};
+  const realFetch = globalThis.fetch;
+  let nextResults = [];
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() { return { results: nextResults }; },
+    async text() { return ""; },
+  });
+  const hit = (id) => ({ memory: { id, summary: `memory ${id}`, tier: "semantic" }, score: 0.9 });
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    const ctx = { sessionId: "s1" };
+    // Push 56 distinct ids through the window (cap is 50): m0..m55.
+    for (let i = 0; i < 56; i++) {
+      nextResults = [hit(`m${i}`)];
+      const res = await hooks.before_prompt_build({ prompt: `q${i}` }, ctx);
+      // Each id is new to the session, so each call injects.
+      assert.match(res.prependContext, new RegExp(`m${i}\\b`));
+    }
+    // m0 was evicted from the 50-id window -> allowed to re-inject.
+    nextResults = [hit("m0")];
+    const oldAgain = await hooks.before_prompt_build({ prompt: "old" }, ctx);
+    assert.ok(oldAgain, "an id evicted from the window must be allowed to re-inject");
+    assert.match(oldAgain.prependContext, /m0/);
+    // m55 is still inside the window -> suppressed.
+    nextResults = [hit("m55")];
+    const recentAgain = await hooks.before_prompt_build({ prompt: "recent" }, ctx);
+    assert.equal(recentAgain, undefined, "a recent id must stay suppressed");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// Already-shown ids ride to the server as exclude_ids; an older server that
+// 400s on the unknown field gets one retry without it, then it stops.
+test("recall sends exclude_ids and falls back when the server rejects them", async () => {
+  const hooks = {};
+  const requests = [];
+  const realFetch = globalThis.fetch;
+  let rejectExcludeIds = false;
+  globalThis.fetch = async (url, init) => {
+    const body = init && init.body ? JSON.parse(init.body) : {};
+    requests.push({ url: String(url), body });
+    if (rejectExcludeIds && body.exclude_ids) {
+      return { ok: false, status: 400, async json() { return {}; }, async text() { return 'unknown field "exclude_ids"'; } };
+    }
+    return {
+      ok: true,
+      async json() {
+        return { results: [{ memory: { id: "m1", summary: "alpha", tier: "semantic" }, score: 0.9 }] };
+      },
+      async text() { return ""; },
+    };
+  };
+  const searches = () => requests.filter((r) => r.url.endsWith("/v1/search"));
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    const ctx = { sessionId: "s1" };
+    // First recall: nothing shown yet, so no exclude_ids on the wire.
+    await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.equal(searches()[0].body.exclude_ids, undefined);
+    // Second recall: m1 was shown, so it must ride along as exclude_ids.
+    await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.deepEqual(searches()[1].body.exclude_ids, ["m1"]);
+
+    // Old server: 400 on exclude_ids -> one retry without it, then never again.
+    rejectExcludeIds = true;
+    await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    const [, , withField, retry] = searches();
+    assert.deepEqual(withField.body.exclude_ids, ["m1"], "first attempt still carries exclude_ids");
+    assert.equal(retry.body.exclude_ids, undefined, "the retry must drop exclude_ids");
+    await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.equal(searches().length, 5, "after the fallback each recall is a single request");
+    assert.equal(searches()[4].body.exclude_ids, undefined, "exclude_ids is never sent again");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("recall uses before_prompt_build, not the deprecated before_agent_start", async () => {
   const hooks = {};
   await plugin.register({

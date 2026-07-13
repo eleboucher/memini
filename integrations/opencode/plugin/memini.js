@@ -779,8 +779,18 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
     }
   }
   // Assistant message ids already captured, so repeated session.idle events for
-  // the same turn don't write duplicates.
+  // the same turn don't write duplicates. Repeats only concern recent turns,
+  // so cap the window instead of growing one entry per turn forever.
   const captured = new Set();
+  const MAX_CAPTURED = 200;
+  const rememberCaptured = (id) => {
+    captured.add(id);
+    while (captured.size > MAX_CAPTURED) {
+      const oldest = captured.values().next().value;
+      if (oldest === undefined) break;
+      captured.delete(oldest);
+    }
+  };
   // boundedPut inserts key -> value and evicts the oldest entries, so a
   // long-lived host can't grow a per-session map without limit.
   const MAX_TRACKED_SESSIONS = 200;
@@ -795,7 +805,10 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
   // Memory ids each session has already been shown (mirrors the pi plugin):
   // the injected synthetic part is persisted into the session, so re-injecting
   // an unchanged match every turn stacks identical blocks in the context.
+  // The inner cap keeps a stable session — which never ages out of the outer
+  // map — from growing its Set for the process lifetime.
   const injectedBySession = new Map();
+  const MAX_INJECTED_PER_SESSION = 200;
   const rememberInjected = (session, ids) => {
     let seen = injectedBySession.get(session);
     if (!seen) {
@@ -803,11 +816,38 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       boundedPut(injectedBySession, session, seen);
     }
     for (const id of ids) if (id) seen.add(id);
+    while (seen.size > MAX_INJECTED_PER_SESSION) {
+      const oldest = seen.values().next().value;
+      if (oldest === undefined) break;
+      seen.delete(oldest);
+    }
   };
   // Recall results that arrived after the injection budget expired, keyed by
   // session and injected on that session's next chat.message. Latest-replace:
   // a second late recall for the same session supersedes the first.
   const pendingBySession = new Map();
+  // /v1/search drops exclude_ids before ranking and the limit, so an
+  // already-shown hit frees its slot for the next-best match. Older servers
+  // 400 on the unknown field: when a request carrying it fails and the retry
+  // without it succeeds, stop sending it. The client-side filter stays.
+  let serverExcludeIds = true;
+  const searchExcluding = async (body, excludeIds) => {
+    if (!serverExcludeIds || excludeIds.length === 0) {
+      return rest.postJson("/v1/search", body);
+    }
+    try {
+      const result = await rest.postJson("/v1/search", { ...body, exclude_ids: excludeIds });
+      if (result !== null) return result;
+    } catch {
+      // With fallback_on_error=false the 400 arrives as a throw, not null.
+    }
+    const retry = await rest.postJson("/v1/search", body);
+    if (retry !== null) {
+      serverExcludeIds = false;
+      log.warn("memini: server does not accept exclude_ids; using client-side dedupe only");
+    }
+    return retry;
+  };
 
   // opencode runs chat.message via an unguarded Effect.promise (a throw aborts the
   // turn) and dispatches event hooks fire-and-forget, so a hook must never reject:
@@ -880,12 +920,15 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       // the Claude Code plugin's pre-tool-use hook uses; client-side re-filter
       // is a belt-and-braces guard against score-normalization edge cases.
       if (cfg.recall_min_score > 0) body.min_score = cfg.recall_min_score;
+      // Already-shown ids go along as exclude_ids so a suppressed hit doesn't
+      // waste a recall_limit slot.
+      const excludeIds = sessionID ? [...(injectedBySession.get(sessionID) ?? [])] : [];
       // opencode awaits this hook before the model sees the message, so the
       // turn only waits recall_budget_ms for the search; the fetch itself keeps
       // cfg.timeout_ms as its bound and runs on in the background. A slow or
       // unreachable memini degrades to "no memories this turn" instead of a
       // frozen turn, and late results carry over to the session's next message.
-      const fetchPromise = rest.postJson("/v1/search", body);
+      const fetchPromise = searchExcluding(body, excludeIds);
       // Once the budget expires nothing awaits this promise, and with
       // fallback_on_error off postJson rethrows — catch here or a late
       // rejection surfaces as an unhandled rejection in the host.
@@ -999,7 +1042,7 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
         tags: ["opencode"],
         metadata,
       });
-      if (stored !== null && assistantID) captured.add(assistantID);
+      if (stored !== null && assistantID) rememberCaptured(assistantID);
     }),
   };
 };

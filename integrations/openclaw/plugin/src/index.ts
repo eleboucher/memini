@@ -1280,6 +1280,9 @@ const plugin: {
     // so the map can't grow without limit across long-lived gateways.
     const injectedBySession = new Map<string, Set<string>>();
     const MAX_TRACKED_SESSIONS = 200;
+    // The window only needs to span one multi-step turn; a stable gateway
+    // session never ages out of the outer map, so cap the inner Set too.
+    const MAX_INJECTED_PER_SESSION = 50;
     const rememberInjected = (session: string, ids: string[]) => {
       let seen = injectedBySession.get(session);
       if (!seen) {
@@ -1292,6 +1295,11 @@ const plugin: {
         }
       }
       for (const id of ids) if (id) seen.add(id);
+      while (seen.size > MAX_INJECTED_PER_SESSION) {
+        const oldest = seen.values().next().value;
+        if (oldest === undefined) break;
+        seen.delete(oldest);
+      }
     };
 
     // Echo guard: track IDs this namespace just captured so the next recall can
@@ -1320,6 +1328,29 @@ const plugin: {
       }
     };
 
+    // /v1/search drops exclude_ids before ranking and the limit, so an
+    // already-shown hit frees its slot for the next-best match. Older servers
+    // 400 on the unknown field: when a request carrying it fails and the retry
+    // without it succeeds, stop sending it. The client-side filters stay.
+    let serverExcludeIds = true;
+    const searchExcluding = async (ns: string, body: any, excludeIds: string[]) => {
+      if (!serverExcludeIds || excludeIds.length === 0) {
+        return client.postJson("/v1/search", body, ns);
+      }
+      try {
+        const result = await client.postJson("/v1/search", { ...body, exclude_ids: excludeIds }, ns);
+        if (result !== null) return result;
+      } catch {
+        // With fallback_on_error=false the 400 arrives as a throw, not null.
+      }
+      const retry = await client.postJson("/v1/search", body, ns);
+      if (retry !== null) {
+        serverExcludeIds = false;
+        api.logger.warn?.("memini: server does not accept exclude_ids; using client-side dedupe only");
+      }
+      return retry;
+    };
+
     const recallHandler = async (event: any, ctx: any) => {
       if (!cfg.enabled) return;
       const prompt = typeof event?.prompt === "string" ? event.prompt.trim() : "";
@@ -1336,7 +1367,13 @@ const plugin: {
       // The server-side temporal echo guard is on by default (5 min window),
       // backstopping the client-side message-ID guard (lost on gateway restart)
       // and the session-id exclusion (misses when session id is absent/rolled).
-      const result = await client.postJson("/v1/search", body, ns);
+      // Already-shown and just-captured ids go along as exclude_ids so a
+      // suppressed hit doesn't waste a recall_limit slot.
+      const excludeIds = [
+        ...(session ? (injectedBySession.get(session) ?? []) : []),
+        ...(recentlyCaptured.get(ns) ?? []),
+      ];
+      const result = await searchExcluding(ns, body, excludeIds);
       let results = Array.isArray(result?.results) ? result.results : [];
       // Drop just-captured turns: they're live context, not long-term memory.
       // Survives session-id asymmetry (keyed by stable namespace).
