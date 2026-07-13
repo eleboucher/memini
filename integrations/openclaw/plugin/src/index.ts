@@ -11,32 +11,61 @@
  * X-Memini-Namespace header — it's an external service, not a local corpus.
  * Default endpoint http://localhost:8080.
  *
+ * Namespace and behavioral settings come from the config-handshake redesign
+ * (POST /v1/handshake, api/openapi.yaml): openclaw imports @memini/client
+ * directly and composes gatherFacts/performHandshake/effectiveSetting the same
+ * way the Claude Code plugin's hooks do, with two deliberate departures from
+ * the shared resolveNamespace precedence (see resolveBaseNamespace/
+ * effectiveConfig below):
+ *
+ *   - The facts sent are gateway facts only — {cwd_basename, declared_namespace}
+ *     — no git derivation. OpenClaw's cwd is the daemon's process directory,
+ *     not a project's; deriving from it (or reporting it as a project's
+ *     remote/toplevel) would risk colliding with an unrelated pin someone set
+ *     for whatever repo the daemon happens to be checked out inside.
+ *   - MEMINI_NAMESPACE beats the handshake outright (not just when the
+ *     handshake is unreachable, as resolveNamespace does for a per-repo
+ *     client): this is a long-lived, per-machine gateway install, and an
+ *     operator's local env pin should never be silently shadowed by whatever
+ *     the server resolves.
+ *
+ * The handshake is memoized in-memory per plugin instance (OpenClaw creates
+ * one per session) for HANDSHAKE_TTL_MS, mirroring pi's design — no file
+ * cache, since a gateway install has no second process that would need one.
+ *
  * NOTE: agent_end is a raw-conversation hook. Non-bundled plugins only receive
  * event.messages on it when the operator sets
  * `plugins.entries.memini.hooks.allowConversationAccess: true` in openclaw.json
  * — without it, capture silently no-ops. See README "Install".
  */
 
+import { basename } from "node:path";
+import { readFileSync } from "node:fs";
 import { Type } from "typebox";
 import { buildJsonPluginConfigSchema, definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { applyTemplate, DEFAULT_TEMPLATE as RESOLVER_DEFAULT_TEMPLATE } from "@memini/namespace-resolver";
 import {
-  clearOverride,
-  defaultOverridesPath,
-  describeSettings,
+  readBootstrap,
+  gatherFacts,
+  performHandshake,
+  effectiveSetting,
+  BEHAVIOR_KNOBS,
+  HANDSHAKE_TTL_MS,
   normalizeNamespace,
-  overrideKey,
-  readOverride,
-  redactValue,
   validateNamespace,
-  writeOverride,
-  type NamespaceSource,
-  type ResolveOpts,
+  redactValue,
+  assertBearerTransportSafe,
+  isPlaintextBearerUnsafe,
+  type Bootstrap,
+  type ProjectFacts,
+  type HandshakeResult,
 } from "@memini/client";
 
 const DEFAULT_BASE_URL = "http://localhost:8080";
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_NAMESPACE = "openclaw";
+// performHandshake's own default (2500ms) is used when this isn't overridden;
+// named here only so callers reading this file see the actual value in force.
+const HANDSHAKE_TIMEOUT_MS = 2500;
 const VALID_TIERS = ["working", "episodic", "semantic", "procedural"];
 // The LLM-facing semantic scope vocabulary, identical to the MCP server's
 // (internal/api/mcp: scopeEnum). The deprecated REST aliases "exact"/"subtree"
@@ -45,7 +74,20 @@ const VALID_TIERS = ["working", "episodic", "semantic", "procedural"];
 const VALID_SCOPES = ["project", "full", "everywhere"];
 // The status probes are diagnostics: fail fast rather than hang a slash command.
 const STATUS_TIMEOUT_MS = 4000;
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+
+// The client identifies itself to /v1/handshake for logging/diagnostics only
+// (api/openapi.yaml's HandshakeRequest.client). Version is read from this
+// plugin's own package.json so it never has to be kept in sync by hand.
+const CLIENT_NAME = "openclaw-memini";
+function readPluginVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    return typeof pkg.version === "string" && pkg.version ? pkg.version : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+const CLIENT_VERSION = readPluginVersion();
 
 // Type.Object returns a TObject<TProperties>, not a plain JsonSchemaObject;
 // `as any` bridges the gap (same trick the SDK's defineToolPlugin examples use).
@@ -87,11 +129,12 @@ const DEFAULT_NAMESPACE_TEMPLATE = "{namespace}-{agent}";
 // case-insensitively; override the set via the system_kinds config.
 const DEFAULT_SYSTEM_KINDS = ["heartbeat", "cron"];
 
-// harnessCwd is the directory a namespace override is keyed to. OpenClaw is a
-// gateway: its cwd is the daemon's, not a project's, so this is best-effort. When
-// the gateway happens to run inside a repo, `memini:namespace` can pin that repo;
-// when it does not, no override key ever matches and the chain simply falls
-// through to the env/config/default legs below.
+// harnessCwd is the directory a pin is best-effort keyed to (via gatherFacts'
+// git derivation) when an operator writes one through /memini:namespace.
+// OpenClaw is a gateway: its cwd is the daemon's, not a project's, so this is
+// best-effort. When the gateway happens to run inside a repo, that repo's
+// identity keys the pin; when it does not, the pin command reports that there
+// is nothing to key it by.
 function harnessCwd(): string | undefined {
   try {
     return process.cwd();
@@ -100,41 +143,66 @@ function harnessCwd(): string | undefined {
   }
 }
 
+// --- inlined template engine (formerly @memini/namespace-resolver) ----------
+//
+// applyTemplate substitutes {tenant}/{project}/{agent}/{namespace} placeholders
+// and collapses slashes left dangling by a dropped segment. Ported verbatim
+// from the now-deleted @memini/namespace-resolver package: openclaw is its
+// last consumer (tenant/project only ever mattered to that package's own
+// config.json tenant-root feature, which openclaw never populated — it always
+// called this with just {agent, namespace}), so carrying the whole shared
+// template engine forward as a separate published package would keep three
+// dead-for-everyone-else placeholders alive along with it. Inlining (rather
+// than moving it into @memini/client) keeps it out of a package every other
+// integration imports for something only this one uses.
+export function applyTemplate(
+  template: string,
+  segments: { tenant?: string; project?: string; agent?: string; namespace?: string },
+): string {
+  const all: Record<string, string | undefined> = {
+    tenant: segments.tenant,
+    project: segments.project,
+    agent: segments.agent,
+    namespace: segments.namespace,
+  };
+  let result = template.replace(/\{(tenant|project|agent|namespace)\}/g, (_, key: string) => all[key] ?? "");
+  result = result.replace(/\/{2,}/g, "/");
+  result = result.replace(/^\/+|\/+$/g, "");
+  return result;
+}
+
+// --- namespace resolution -----------------------------------------------------
+
+function knob(wireKey: string) {
+  const k = BEHAVIOR_KNOBS.find((b) => b.wireKey === wireKey);
+  if (!k) throw new Error(`openclaw-memini: unknown behavior knob "${wireKey}"`);
+  return k;
+}
+
+export type NamespaceSource = "env" | "config" | "default" | `server:${string}`;
+
 /**
- * resolveBaseNamespace resolves the plugin's BASE namespace, with provenance:
+ * resolveBaseNamespace resolves the plugin's BASE namespace synchronously,
+ * with NO handshake involved — this is the config+env-only baseline
+ * (namespace_source is always "env"/"config"/"default" here; effectiveConfig
+ * below is what layers a live handshake on top):
  *
- *   1. per-project override (when a cwd is available)
- *   2. MEMINI_NAMESPACE
- *   3. the explicit `namespace` config value
- *   4. the "openclaw" default
+ *   1. MEMINI_NAMESPACE
+ *   2. the explicit `namespace` config value
+ *   3. the "openclaw" default
  *
- * The override beats the env var deliberately: a globally exported
- * MEMINI_NAMESPACE (a shell rc, or a fish universal variable) pins every project
- * on the machine to one namespace, and if the env won, `memini:namespace` would
- * silently do nothing on exactly the machines that most need it.
- *
- * There is deliberately still NO git/cwd derivation here, and the default stays
- * the literal "openclaw": a gateway's cwd is usually meaningless, and deriving a
- * namespace from it would silently relocate every existing install's memory.
- * namespace_prefix / namespace_template / per-agent nesting all apply on top of
- * whatever this returns, exactly as before.
- *
- * `opts.ignoreOverride` lets describeSettings ask the counterfactuals ("what
- * would this be without the override?") — the override lives in a file, so no
- * amount of env-doctoring would strip it. Exported for testing.
+ * There is deliberately still NO git/cwd derivation here, and the default
+ * stays the literal "openclaw": a gateway's cwd is usually meaningless, and
+ * deriving a namespace from it would silently relocate every existing
+ * install's memory. namespace_prefix / namespace_template / per-agent nesting
+ * all apply on top of whatever this returns, exactly as before. Exported for
+ * testing.
  */
 export function resolveBaseNamespace(
   pluginConfig: any,
   env: Record<string, string | undefined> = process.env,
-  cwd: string | undefined = harnessCwd(),
-  opts: ResolveOpts = {},
 ): { namespace: string; source: NamespaceSource } {
   const c = pluginConfig || {};
-
-  if (!opts.ignoreOverride && cwd) {
-    const override = readOverride(cwd, { env });
-    if (override) return { namespace: override.namespace, source: "override" };
-  }
 
   const nsEnv = (env["MEMINI_NAMESPACE"] || "").trim();
   // Raw-trimmed: the server validates the header, and an explicit hierarchical
@@ -147,22 +215,52 @@ export function resolveBaseNamespace(
   return { namespace: DEFAULT_NAMESPACE, source: "default" };
 }
 
+// strEnv returns a trimmed string env var, or "" when unset/blank.
+function strEnv(env: Record<string, string | undefined>, name: string) {
+  const raw = env[name];
+  return raw == null ? "" : raw.trim();
+}
+
+// intEnv parses a non-negative integer env var, falling back to `def` when
+// unset or malformed (env values are operator input and must never throw).
+function intEnv(env: Record<string, string | undefined>, name: string, def: number) {
+  const raw = env[name];
+  if (raw == null || raw === "") return def;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : def;
+}
+
 // resolveConfig normalizes raw plugin config into the defaults the plugin runs
-// with. `env`/`cwd` are injectable for tests; everything but the namespace chain
-// reads process.env directly, as it always has.
+// with. This is the SYNCHRONOUS, no-handshake baseline: `namespace`/
+// `namespace_source` are resolveBaseNamespace's config+env-only view (always
+// `degraded: true` — a live handshake has not been consulted yet), and
+// recall_limit/recall_max_tokens/min_capture_chars fall back through
+// effectiveSetting with no server settings (env-override > built-in default)
+// when config doesn't set them explicitly. effectiveConfig (below) overlays a
+// live handshake on top of this once one is available. `env`/`cwd` are
+// injectable for tests.
 export function resolveConfig(
   pluginConfig: any,
   env: Record<string, string | undefined> = process.env,
   cwd: string | undefined = harnessCwd(),
 ) {
   const c = pluginConfig || {};
+  const base = resolveBaseNamespace(c, env);
+
+  const recallLimitExplicit = Number.isFinite(c.recall_limit) && c.recall_limit > 0;
+  const recallMaxTokensExplicit = Number.isFinite(c.recall_max_tokens) && c.recall_max_tokens > 0;
+  const minCaptureCharsExplicit = Number.isFinite(c.min_capture_chars) && c.min_capture_chars > 0;
+
   return {
     enabled: c.enabled !== false,
     // Config wins; otherwise the canonical MEMINI_BASE_URL (alias MEMINI_URL),
     // matching the other integrations so one env setup works everywhere.
-    base_url: c.base_url || strEnv("MEMINI_BASE_URL") || strEnv("MEMINI_URL") || DEFAULT_BASE_URL,
-    // override > MEMINI_NAMESPACE > config > "openclaw" (see resolveBaseNamespace).
-    namespace: resolveBaseNamespace(c, env, cwd).namespace,
+    base_url: c.base_url || strEnv(env, "MEMINI_BASE_URL") || strEnv(env, "MEMINI_URL") || DEFAULT_BASE_URL,
+    // env > config > "openclaw" (see resolveBaseNamespace). `degraded: true`
+    // here always — this view never consults the handshake.
+    namespace: base.namespace,
+    namespace_source: base.source as NamespaceSource,
+    degraded: true,
     namespace_per_agent: c.namespace_per_agent !== false,
     namespace_template: c.namespace_template || DEFAULT_NAMESPACE_TEMPLATE,
     skip_without_agent: c.skip_without_agent === true,
@@ -186,60 +284,95 @@ export function resolveConfig(
     // sends the BASE namespace and so silently misses per-agent memory. Set
     // expose_tools:false to restore the pre-0.6.9 slot-only surface.
     expose_tools: c.expose_tools !== false,
-    // Per-call recall knobs. 0 / unset falls back to the defaults below.
-    //
-    // recall_limit defaults to 3 (was 5): the count cap is the lever that bounds
-    // per-turn injection. There is deliberately NO relevance-score floor knob —
-    // benchmarking (bench -vec-gate) showed neither a fused-score nor a raw
-    // vector-score threshold can decide "inject nothing when nothing is relevant"
-    // with the default MiniLM embedder: the fused score is min-max-normalised
-    // within the pool (its best always ~1.0), and MiniLM's absolute scores for
-    // relevant vs irrelevant queries overlap, so any floor that suppresses noise
-    // also guts real recall. Bound volume with the count cap (and the optional
-    // token cap below) instead.
-    recall_limit: Number.isFinite(c.recall_limit) && c.recall_limit > 0 ? c.recall_limit : 3,
-    // Hard ceiling on the rendered recall-block tokens. Defaults to 0 (uncapped)
-    // to match the other integrations and the Claude Code plugin: with
-    // recall_limit=3 the count is the bound, so a token cap is an optional extra.
-    // Config wins; otherwise MEMINI_INJECT_RECALL_MAX_TOK (same knob name the
-    // opencode and Claude Code plugins use). Set it > 0 to cap a raised limit.
-    recall_max_tokens:
-      Number.isFinite(c.recall_max_tokens) && c.recall_max_tokens > 0
-        ? c.recall_max_tokens
-        : intEnv("MEMINI_INJECT_RECALL_MAX_TOK", 0),
-    // Minimum length (chars) of the stripped user turn required to capture it.
-    // Off (0) by default — capture is additive and dropping turns is lossy, so
-    // it stays opt-in (see the defaults policy). Set it (e.g. 30) when a gateway
-    // still emits short residual-noise turns after preamble stripping. Config
-    // wins; otherwise MEMINI_MIN_CAPTURE_CHARS.
-    min_capture_chars:
-      Number.isFinite(c.min_capture_chars) && c.min_capture_chars > 0
-        ? c.min_capture_chars
-        : intEnv("MEMINI_MIN_CAPTURE_CHARS", 0),
+    // recall_limit/recall_max_tokens/min_capture_chars: config wins outright
+    // when explicitly set (it is the most-local, most-deliberate layer); else
+    // effectiveSetting resolves env-override > (a later live handshake's
+    // server settings, once one exists) > built-in default. No server settings
+    // are available yet here, so this is env-or-default only; effectiveConfig
+    // recomputes these three once a handshake is in hand.
+    recall_limit: recallLimitExplicit ? c.recall_limit : effectiveSetting<number>(knob("recall_limit"), undefined, env).value,
+    recall_max_tokens: recallMaxTokensExplicit
+      ? c.recall_max_tokens
+      : effectiveSetting<number>(knob("inject_recall_max_tok"), undefined, env).value,
+    min_capture_chars: minCaptureCharsExplicit
+      ? c.min_capture_chars
+      : effectiveSetting<number>(knob("min_capture_chars"), undefined, env).value,
     namespace_prefix: c.namespace_prefix || "",
     // home: the caller's personal namespace, sent as X-Memini-Home. Config
     // wins over MEMINI_HOME env (same precedence style as base_url); no
     // git/cwd derivation — unset means "no home leg", not a guess.
-    home: c.home || strEnv("MEMINI_HOME") || undefined,
+    home: c.home || strEnv(env, "MEMINI_HOME") || undefined,
+    // Recorded so effectiveConfig() can tell "config set this explicitly" apart
+    // from "resolved from env/default" — only the latter may be filled in from
+    // a live handshake's server settings.
+    explicit: {
+      recall_limit: recallLimitExplicit,
+      recall_max_tokens: recallMaxTokensExplicit,
+      min_capture_chars: minCaptureCharsExplicit,
+    },
+    cwd,
   };
 }
 
-// strEnv returns a trimmed string env var, or "" when unset/blank.
-function strEnv(name: string) {
-  const raw = process.env[name];
-  return raw == null ? "" : raw.trim();
-}
-
-// intEnv parses a non-negative integer env var, falling back to `def` when
-// unset or malformed (env values are operator input and must never throw).
-function intEnv(name: string, def: number) {
-  const raw = process.env[name];
-  if (raw == null || raw === "") return def;
-  const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n >= 0 ? n : def;
-}
-
 export type ResolvedConfig = ReturnType<typeof resolveConfig>;
+
+/**
+ * effectiveConfig overlays a live handshake result on top of the synchronous
+ * `cfg` from resolveConfig():
+ *
+ *   namespace: MEMINI_NAMESPACE (cfg.namespace_source === "env") wins OUTRIGHT
+ *     — even over a successful handshake. This is the deliberate departure
+ *     from @memini/client's resolveNamespace precedence: a long-lived gateway
+ *     install's local env pin should never be silently shadowed by whatever
+ *     the server resolves. Otherwise a successful handshake wins (namespace_source
+ *     becomes "server:<hs.namespace_source>", degraded false); with no env pin
+ *     and no handshake, cfg's own config/default view stands (fail-soft to the
+ *     declared/config value).
+ *   recall_limit / recall_max_tokens / min_capture_chars: cfg.explicit (config
+ *     set it outright) wins; otherwise effectiveSetting recomputes with the
+ *     handshake's `settings` now available (env-override > server > default).
+ *
+ * `hs` may be undefined (network error, non-2xx, timeout, or a guard throw
+ * swallowed per MEMINI_FALLBACK — see attemptHandshake). Exported for testing.
+ */
+export function effectiveConfig(
+  cfg: ResolvedConfig,
+  hs: HandshakeResult | undefined,
+  env: Record<string, string | undefined> = process.env,
+): ResolvedConfig {
+  let namespace = cfg.namespace;
+  let namespace_source = cfg.namespace_source;
+  let degraded = true;
+
+  if (cfg.namespace_source === "env") {
+    // MEMINI_NAMESPACE always wins for namespace purposes; `degraded` still
+    // reflects whether the handshake itself succeeded (behavior settings below
+    // still benefit from a reachable server even though its namespace opinion
+    // is overridden).
+    degraded = !hs;
+  } else if (hs) {
+    namespace = hs.namespace;
+    namespace_source = `server:${hs.namespace_source}`;
+    degraded = false;
+  }
+
+  const server = hs?.settings;
+  const explicit = cfg.explicit;
+
+  return {
+    ...cfg,
+    namespace,
+    namespace_source,
+    degraded,
+    recall_limit: explicit.recall_limit ? cfg.recall_limit : effectiveSetting<number>(knob("recall_limit"), server, env).value,
+    recall_max_tokens: explicit.recall_max_tokens
+      ? cfg.recall_max_tokens
+      : effectiveSetting<number>(knob("inject_recall_max_tok"), server, env).value,
+    min_capture_chars: explicit.min_capture_chars
+      ? cfg.min_capture_chars
+      : effectiveSetting<number>(knob("min_capture_chars"), server, env).value,
+  };
+}
 
 // sanitizeNsSegment keeps a namespace segment header-safe (the server sanitizes
 // too, but the X-Memini-Namespace value should be clean): alnum, dot, dash,
@@ -478,20 +611,6 @@ export function fitByTokens(items: string[], maxTokens: number) {
   return { items: out, dropped };
 }
 
-function normalizedHostname(hostname: any) {
-  return hostname.replace(/^\[|\]$/g, "").toLowerCase();
-}
-
-function usesPlaintextBearerAuth(baseUrl: any, secret: any) {
-  if (!secret) return false;
-  try {
-    const parsed = new URL(baseUrl);
-    return parsed.protocol === "http:" && !LOOPBACK_HOSTS.has(normalizedHostname(parsed.hostname));
-  } catch {
-    return false;
-  }
-}
-
 function plaintextBearerAuthMessage(baseUrl: any) {
   return `memini: MEMINI_API_KEY is configured for plaintext HTTP to ${baseUrl}. Bearer tokens and memory payloads can be observed on the network; use HTTPS or an SSH tunnel.`;
 }
@@ -499,7 +618,7 @@ function plaintextBearerAuthMessage(baseUrl: any) {
 export function createPlaintextBearerAuthGuard(warn: any, env?: any) {
   let warned = false;
   return function guardPlaintextBearerAuth(baseUrl: any, secret: any) {
-    if (!usesPlaintextBearerAuth(baseUrl, secret)) return;
+    if (!isPlaintextBearerUnsafe(baseUrl, secret || "")) return;
     const message = plaintextBearerAuthMessage(baseUrl);
     if ((env || process.env).MEMINI_REQUIRE_HTTPS === "1") throw new Error(message);
     if (!warned) {
@@ -521,12 +640,10 @@ interface MeminiClient {
   // against. It still never throws.
   postJsonResult: (path: string, payload: any, ns?: string) => Promise<{ ok: boolean; data?: any; error?: string }>;
   baseUrl: string;
-  namespace: string;
 }
 
 function createClient(cfg: ResolvedConfig, api: any): MeminiClient {
   const baseUrl = String(cfg.base_url || DEFAULT_BASE_URL).replace(/\/+$/, "");
-  const namespace = String(cfg.namespace || DEFAULT_NAMESPACE);
   const timeoutMs = Number(cfg.timeout_ms || DEFAULT_TIMEOUT_MS);
   const fallbackOnError = cfg.fallback_on_error !== false;
   const secret = process.env.MEMINI_API_KEY || process.env.MEMINI_TOKEN;
@@ -536,7 +653,7 @@ function createClient(cfg: ResolvedConfig, api: any): MeminiClient {
   async function postJson(path: string, payload: any, ns?: string) {
     if (process.env.MEMINI_REQUIRE_HTTPS === "1") guardPlaintextBearerAuth(baseUrl, secret);
     guardPlaintextBearerAuth(baseUrl, secret);
-    const headers: Record<string, string> = { "Content-Type": "application/json", "X-Memini-Namespace": ns || namespace };
+    const headers: Record<string, string> = { "Content-Type": "application/json", "X-Memini-Namespace": ns || cfg.namespace };
     if (secret) headers.Authorization = `Bearer ${secret}`;
     if (home) headers["X-Memini-Home"] = home;
     try {
@@ -566,7 +683,7 @@ function createClient(cfg: ResolvedConfig, api: any): MeminiClient {
 
   async function getJson(path: string, ns?: string) {
     guardPlaintextBearerAuth(baseUrl, secret);
-    const headers: Record<string, string> = { "X-Memini-Namespace": ns || namespace };
+    const headers: Record<string, string> = { "X-Memini-Namespace": ns || cfg.namespace };
     if (secret) headers.Authorization = `Bearer ${secret}`;
     if (home) headers["X-Memini-Home"] = home;
     try {
@@ -593,7 +710,7 @@ function createClient(cfg: ResolvedConfig, api: any): MeminiClient {
 
   async function deleteJson(path: string, ns?: string) {
     guardPlaintextBearerAuth(baseUrl, secret);
-    const headers: Record<string, string> = { "X-Memini-Namespace": ns || namespace };
+    const headers: Record<string, string> = { "X-Memini-Namespace": ns || cfg.namespace };
     if (secret) headers.Authorization = `Bearer ${secret}`;
     if (home) headers["X-Memini-Home"] = home;
     try {
@@ -631,7 +748,7 @@ function createClient(cfg: ResolvedConfig, api: any): MeminiClient {
       guardPlaintextBearerAuth(baseUrl, secret);
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
-        "X-Memini-Namespace": ns || namespace,
+        "X-Memini-Namespace": ns || cfg.namespace,
       };
       if (secret) headers.Authorization = `Bearer ${secret}`;
       if (home) headers["X-Memini-Home"] = home;
@@ -653,7 +770,7 @@ function createClient(cfg: ResolvedConfig, api: any): MeminiClient {
     }
   }
 
-  return { postJson, getJson, deleteJson, postJsonResult, baseUrl, namespace };
+  return { postJson, getJson, deleteJson, postJsonResult, baseUrl };
 }
 
 // meminiBriefingPath builds the GET /v1/namespaces/briefing query string for the
@@ -682,18 +799,189 @@ export function meminiListPath(args: any) {
   return parts.length ? `/v1/memories?${parts.join("&")}` : "/v1/memories";
 }
 
+// --- in-memory memoization (no file cache; one instance per session) --------
+
+interface Memo<T> {
+  get(): Promise<T>;
+  invalidate(): void;
+}
+
+/**
+ * Wrap a zero-arg async fn so it's called at most once per `ttlMs`, returning
+ * the cached value in between. `now` is injectable so tests can drive expiry
+ * without a real wait. Exported for testing.
+ */
+export function memoizeAsync<T>(fn: () => Promise<T>, ttlMs: number, now: () => number = Date.now): Memo<T> {
+  let cached: { value: T; expiresAt: number } | null = null;
+  return {
+    async get() {
+      const t = now();
+      if (!cached || t >= cached.expiresAt) {
+        const value = await fn();
+        cached = { value, expiresAt: t + ttlMs };
+      }
+      return cached.value;
+    },
+    invalidate() {
+      cached = null;
+    },
+  };
+}
+
+/**
+ * gatewayFacts builds the handshake's project facts: cwd_basename (best-effort,
+ * for logging only) plus declared_namespace — the operator's configured
+ * `namespace` (or the literal "openclaw" default), NEVER whatever
+ * MEMINI_NAMESPACE happens to be set to locally (that is a separate,
+ * higher-precedence local override — see effectiveConfig). Deliberately no
+ * remote_url/toplevel_path: this is a gateway, not a per-repo client, and its
+ * cwd is the daemon's process directory, not a project's — sending git facts
+ * derived from it could collide with an unrelated pin set for whatever repo
+ * the daemon happens to be checked out inside. Exported for testing.
+ */
+export function gatewayFacts(pluginConfig: any, cwd: string | undefined): ProjectFacts {
+  const c = pluginConfig || {};
+  const configured = typeof c.namespace === "string" ? c.namespace.trim() : "";
+  return {
+    cwd_basename: basename(cwd || process.cwd() || "."),
+    declared_namespace: configured || DEFAULT_NAMESPACE,
+  };
+}
+
+/**
+ * The subset of ProjectFacts that can key a server-side pin (PUT/DELETE
+ * /v1/pins): remote_url and/or toplevel_path, best-effort derived from the
+ * gateway's own cwd via @memini/client's gatherFacts. A pin set this way is
+ * NOT picked up by this gateway's own handshake (gatewayFacts above sends no
+ * git facts on purpose) — it exists for operator record-keeping and for other
+ * tooling inspecting the same checkout (memini doctor, another client sharing
+ * that directory), not as this plugin's own resolution lever. Exported for
+ * testing.
+ */
+export function pinKeyFacts(
+  cwd: string | undefined,
+  env: Record<string, string | undefined> = process.env,
+): { remote_url?: string; toplevel_path?: string } {
+  const facts = gatherFacts(cwd || process.cwd(), env);
+  const out: { remote_url?: string; toplevel_path?: string } = {};
+  if (facts.remote_url) out.remote_url = facts.remote_url;
+  if (facts.toplevel_path) out.toplevel_path = facts.toplevel_path;
+  return out;
+}
+
+/**
+ * Attempt a live handshake. performHandshake is already fail-soft for network
+ * errors, non-2xx, malformed JSON, and timeouts (returns undefined) — the one
+ * exception is the plaintext-bearer guard, which throws on purpose. Whether
+ * THAT throw is swallowed here is what `fallbackOnError` (fallback_on_error,
+ * itself sourced from MEMINI_FALLBACK / config) decides.
+ */
+async function attemptHandshake(
+  boot: Bootstrap,
+  facts: ProjectFacts,
+  fallbackOnError: boolean,
+): Promise<HandshakeResult | undefined> {
+  try {
+    return await performHandshake(boot, facts, {
+      timeoutMs: HANDSHAKE_TIMEOUT_MS,
+      clientName: CLIENT_NAME,
+      clientVersion: CLIENT_VERSION,
+    });
+  } catch (error) {
+    if (!fallbackOnError) throw error;
+    return undefined;
+  }
+}
+
+export interface SessionContext {
+  boot: Bootstrap;
+  cfg: ResolvedConfig;
+  facts: ProjectFacts;
+  memo: Memo<HandshakeResult | undefined>;
+}
+
+/**
+ * Build a plugin instance's fixed inputs (bootstrap + the synchronous cfg
+ * baseline + gateway facts) and its memoized handshake. `now` is injectable
+ * for TTL tests. Exported for testing.
+ */
+export function createSessionContext(
+  pluginConfig: any,
+  env: Record<string, string | undefined> = process.env,
+  cwd: string | undefined = harnessCwd(),
+  now: () => number = Date.now,
+): SessionContext {
+  const boot = readBootstrap(env);
+  const cfg = resolveConfig(pluginConfig, env, cwd);
+  const facts = gatewayFacts(pluginConfig, cwd);
+  const memo = memoizeAsync(() => attemptHandshake(boot, facts, cfg.fallback_on_error), HANDSHAKE_TTL_MS, now);
+  return { boot, cfg, facts, memo };
+}
+
+/** Resolve `ctx`'s current effective config, triggering (or reusing) the memoized handshake. */
+export async function sessionLive(
+  ctx: SessionContext,
+  env: Record<string, string | undefined> = process.env,
+): Promise<ResolvedConfig> {
+  const hs = await ctx.memo.get();
+  return effectiveConfig(ctx.cfg, hs, env);
+}
+
+// --- pins (/memini:namespace) -------------------------------------------------
+
+async function pinsRequest(
+  boot: Bootstrap,
+  method: "PUT" | "DELETE",
+  body: unknown,
+): Promise<{ ok: boolean; status: number; body: any }> {
+  assertBearerTransportSafe(boot.baseUrl, boot.apiKey); // throws under MEMINI_REQUIRE_HTTPS
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (boot.apiKey) headers.Authorization = `Bearer ${boot.apiKey}`;
+  if (boot.homeEnv) headers["X-Memini-Home"] = boot.homeEnv;
+  const res = await fetch(`${boot.baseUrl}/v1/pins`, {
+    method,
+    headers,
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(5000),
+  });
+  let parsed: any = null;
+  try {
+    parsed = await res.json();
+  } catch {
+    // 204 (delete) and empty bodies parse to null — fine.
+  }
+  return { ok: res.ok, status: res.status, body: parsed };
+}
+
+function pinErrorMessage(res: { body: any; status: number }): string {
+  return res.body?.error || res.body?.message || `HTTP ${res.status}`;
+}
+
+// offlineMessage points at the config `namespace` value — openclaw's own local
+// override lever — rather than MEMINI_NAMESPACE: pi/the Claude plugin point at
+// the env var because they have no config object of their own, but openclaw
+// already has one, and (per effectiveConfig) MEMINI_NAMESPACE would win over a
+// pin anyway, making it the wrong thing to suggest here.
+function offlineMessage(boot: Bootstrap, error: unknown): string {
+  const detail = String((error as any)?.message || error);
+  return (
+    `${detail}\n\nCould not reach the memini server at ${boot.baseUrl}. Pins live on the server, so ` +
+    `setting one needs it reachable. Set the config \`namespace\` value instead for a static, ` +
+    `machine-local choice.`
+  );
+}
+
 // --- /memini:status + /memini:namespace --------------------------------------
 
 // statusGet is the diagnostics-only GET. It bypasses the client's
 // warn-and-return-null degrade path: a failed probe here is data for the report,
 // not a fault to log. Silent on purpose — the caller decides what a miss means,
 // and for /healthz a miss means "not exposed", not "server down".
-async function statusGet(cfg: ResolvedConfig, namespace: string, path: string): Promise<any> {
-  const baseUrl = String(cfg.base_url || DEFAULT_BASE_URL).replace(/\/+$/, "");
-  const secret = process.env.MEMINI_API_KEY || process.env.MEMINI_TOKEN;
+async function statusGet(boot: Bootstrap, namespace: string, path: string): Promise<any> {
+  const baseUrl = String(boot.baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, "");
   const headers: Record<string, string> = { "X-Memini-Namespace": namespace };
-  if (secret) headers.Authorization = `Bearer ${secret}`;
-  if (cfg.home) headers["X-Memini-Home"] = cfg.home;
+  if (boot.apiKey) headers.Authorization = `Bearer ${boot.apiKey}`;
+  if (boot.homeEnv) headers["X-Memini-Home"] = boot.homeEnv;
   try {
     const res = await fetch(`${baseUrl}${path}`, {
       method: "GET",
@@ -718,19 +1006,19 @@ interface ServerReport {
 
 // fetchServer probes the server the way the plugin actually uses it.
 //
-// Reachability is decided by /v1/namespaces/read-set, not /healthz: a remote
+// Reachability is decided by /v1/namespaces/readset, not /healthz: a remote
 // memini typically sits behind an ingress that routes only /v1 and /mcp, so
 // /healthz 404s while the server is perfectly healthy, and calling that "server
 // down" would be a false alarm on the most common deployment. The read set
 // doubles as the probe — it is the server's own introspection of where a plain
 // recall looks, so it cannot drift from what recall really does.
-export async function fetchServer(cfg: ResolvedConfig, namespace: string): Promise<ServerReport> {
+export async function fetchServer(boot: Bootstrap, namespace: string): Promise<ServerReport> {
   const started = Date.now();
-  const readSet = await statusGet(cfg, namespace, "/v1/namespaces/read-set");
+  const readSet = await statusGet(boot, namespace, "/v1/namespaces/readset");
   const out: ServerReport = { reachable: readSet != null, latencyMs: Date.now() - started, readSet };
   // Dependency detail, when the deployment exposes it. A miss is "not routed",
   // not "broken" — so it never touches `reachable`.
-  const health = await statusGet(cfg, namespace, "/healthz?verbose=1");
+  const health = await statusGet(boot, namespace, "/healthz?verbose=1");
   if (health) {
     out.version = health.version;
     out.deps = health.deps;
@@ -742,13 +1030,68 @@ export async function fetchServer(cfg: ResolvedConfig, namespace: string): Promi
 
 const pad = (s: any, n: number) => String(s).padEnd(n);
 
+interface Warning {
+  level: "warn" | "note";
+  code: string;
+  message: string;
+  fix?: string;
+}
+
+/** Build the warnings section from bootstrap + live config + handshake. Exported for testing. */
+export function buildWarnings(boot: Bootstrap, live: ResolvedConfig, hs: HandshakeResult | undefined): Warning[] {
+  const warnings: Warning[] = [];
+
+  if (live.degraded) {
+    warnings.push({
+      level: "warn",
+      code: "degraded-mode",
+      message: `could not reach the memini server at ${boot.baseUrl}: recall_limit/recall_max_tokens/min_capture_chars fall back to config/env/built-in defaults, not the server's.`,
+      fix: "Check base_url/MEMINI_BASE_URL and that the server is running.",
+    });
+  }
+
+  if (live.namespace_source === "env") {
+    warnings.push({
+      level: "warn",
+      code: "global-namespace-pin",
+      message: `MEMINI_NAMESPACE is set to "${boot.namespaceEnv}", which ALWAYS overrides this gateway's namespace resolution — even a server-side pin cannot take effect while it is set. If it is exported from a shell rc, every repo (and every gateway) on this machine shares one memory pool.`,
+      fix: "Unset MEMINI_NAMESPACE and use the `namespace` config value instead for a static, per-install choice.",
+    });
+  }
+
+  if (!live.home) {
+    warnings.push({
+      level: "note",
+      code: "home-unset",
+      message: "no personal namespace is configured: no personal leg merges into recall.",
+      fix: "Set the `home` config value or export MEMINI_HOME=personal/<you>.",
+    });
+  }
+
+  if (isPlaintextBearerUnsafe(boot.baseUrl, boot.apiKey)) {
+    warnings.push({
+      level: "warn",
+      code: "plaintext-bearer",
+      message: `a bearer token is configured for plaintext HTTP to ${boot.baseUrl}; the token and your memory payloads can be observed on the network.`,
+      fix: "Use HTTPS, or tunnel over SSH. Set MEMINI_REQUIRE_HTTPS=1 to make this an error.",
+    });
+  }
+
+  return warnings;
+}
+
 // renderStatus formats the report. `effective` is the namespace this surface
 // would actually send (base + prefix + per-agent template); the NAMESPACE block
-// reports the BASE chain, because that is the only leg an override or the env
-// participates in. Exported for testing — the assertion that matters (a bearer
-// token is never printed in full) is on this string.
-export function renderStatus(settings: any, cfg: ResolvedConfig, effective: string, server: ServerReport): string {
-  const ns = settings.namespace;
+// reports the BASE chain, because that is the only leg env/config participate
+// in. Exported for testing — the assertion that matters (a bearer token is
+// never printed in full) is on this string.
+export function renderStatus(
+  boot: Bootstrap,
+  live: ResolvedConfig,
+  hs: HandshakeResult | undefined,
+  effective: string,
+  server: ServerReport,
+): string {
   const L: string[] = [];
 
   L.push(`memini — effective settings (openclaw)`);
@@ -756,54 +1099,39 @@ export function renderStatus(settings: any, cfg: ResolvedConfig, effective: stri
 
   L.push(`NAMESPACE`);
   L.push(`  ${pad("this surface sends", 28)} ${effective}`);
-  L.push(`  ${pad("base", 28)} ${pad(ns.effective, 34)} <- ${ns.source}`);
-  if (ns.override) {
-    L.push(
-      `  ${pad("without the override", 28)} ${pad(ns.withoutOverride.namespace, 34)} <- ${ns.withoutOverride.source}`,
-    );
+  L.push(`  ${pad("base", 28)} ${pad(live.namespace, 34)} <- ${live.namespace_source}`);
+  if (live.namespace_source === "server:pin" && hs?.pin) {
+    L.push(`  ${pad("pin", 28)} key ${hs.pin.key}${hs.pin.created_by ? `, set by ${hs.pin.created_by}` : ""}`);
   }
-  if (ns.derived.namespace !== ns.effective) {
-    L.push(`  ${pad("without the env pin", 28)} ${pad(ns.derived.namespace, 34)} <- ${ns.derived.source}`);
-  }
-  L.push(`  ${pad("per-agent", 28)} ${cfg.namespace_per_agent ? cfg.namespace_template : "off"}`);
-  if (cfg.namespace_prefix) L.push(`  ${pad("prefix", 28)} ${cfg.namespace_prefix}`);
-  L.push(`  ${pad("home (personal)", 28)} ${ns.home || "(unset)"}`);
+  L.push(`  ${pad("per-agent", 28)} ${live.namespace_per_agent ? live.namespace_template : "off"}`);
+  if (live.namespace_prefix) L.push(`  ${pad("prefix", 28)} ${live.namespace_prefix}`);
+  L.push(`  ${pad("home (personal)", 28)} ${live.home || "(unset)"}`);
   L.push("");
 
-  // Connection + namespace inputs from the shared knob table (already redacted).
-  // The capture/injection knobs it also carries belong to the Claude Code hooks;
-  // listing them here would imply this plugin honors them, and it does not.
-  const groups: [string, string[]][] = [
-    ["CONNECTION", ["MEMINI_BASE_URL", "MEMINI_API_KEY", "MEMINI_REQUIRE_HTTPS"]],
-    ["NAMESPACE INPUTS", ["MEMINI_NAMESPACE", "MEMINI_HOME"]],
-  ];
-  for (const [group, names] of groups) {
-    const rows = (settings.settings || []).filter((s: any) => names.includes(s.name));
-    if (!rows.length) continue;
-    L.push(group);
-    for (const r of rows) {
-      L.push(
-        `  ${pad(r.name.replace(/^MEMINI_/, "").toLowerCase(), 28)} ${pad(r.value, 34)} ${r.source === "env" ? "<- env" : "(default)"}`,
-      );
-    }
-    L.push("");
+  // Behavior knobs relevant to this plugin, with provenance.
+  L.push(`SETTINGS`);
+  for (const wireKey of ["recall_limit", "inject_recall_max_tok", "min_capture_chars"]) {
+    const k = knob(wireKey);
+    const { value, source } = effectiveSetting(k, hs?.settings, process.env as Record<string, string | undefined>);
+    const origin = source === "env-override" ? "<- env" : source === "server" ? "<- server" : "(default)";
+    L.push(`  ${pad(k.envName.replace(/^MEMINI_/, "").toLowerCase(), 28)} ${pad(String(value), 22)} ${origin}`);
   }
+  L.push("");
 
-  // The plugin's own config, which the shared table knows nothing about. The
+  // The plugin's own config, which the shared knob table knows nothing about. The
   // bearer is the one the requests actually carry — redacted, since a settings
   // dump is the likeliest place a token gets pasted into an issue.
-  const secret = process.env.MEMINI_API_KEY || process.env.MEMINI_TOKEN || "";
+  const secret = boot.apiKey;
   L.push(`PLUGIN`);
-  L.push(`  ${pad("base_url", 28)} ${cfg.base_url}`);
+  L.push(`  ${pad("base_url", 28)} ${boot.baseUrl}`);
   L.push(`  ${pad("bearer", 28)} ${secret ? redactValue(secret) : "(none)"}`);
-  L.push(`  ${pad("recall_limit", 28)} ${cfg.recall_limit}`);
-  L.push(`  ${pad("expose_tools", 28)} ${cfg.expose_tools ? "on" : "off"}`);
-  L.push(`  ${pad("skip_system_turns", 28)} ${cfg.skip_system_turns ? "on" : "off"}`);
+  L.push(`  ${pad("expose_tools", 28)} ${live.expose_tools ? "on" : "off"}`);
+  L.push(`  ${pad("skip_system_turns", 28)} ${live.skip_system_turns ? "on" : "off"}`);
   L.push("");
 
   L.push(`SERVER`);
   if (!server.reachable) {
-    L.push(`  ${pad("reachable", 28)} NO — could not reach ${cfg.base_url}`);
+    L.push(`  ${pad("reachable", 28)} NO — could not reach ${boot.baseUrl}`);
   } else {
     const ver = server.version ? `, ${server.version}` : "";
     L.push(`  ${pad("reachable", 28)} yes (${server.latencyMs}ms${ver})`);
@@ -828,13 +1156,10 @@ export function renderStatus(settings: any, cfg: ResolvedConfig, effective: stri
     L.push("");
   }
 
-  L.push(`PATHS`);
-  L.push(`  ${pad("overrides", 28)} ${settings.paths.overrides}`);
-  L.push("");
-
-  if (settings.warnings.length) {
+  const warnings = buildWarnings(boot, live, hs);
+  if (warnings.length) {
     L.push(`WARNINGS`);
-    for (const w of settings.warnings) {
+    for (const w of warnings) {
       L.push(`  [${w.level === "warn" ? "!" : "i"}] ${w.code}: ${w.message}`);
       if (w.fix) L.push(`      fix: ${w.fix}`);
     }
@@ -848,43 +1173,35 @@ export function renderStatus(settings: any, cfg: ResolvedConfig, effective: stri
 /**
  * registerMeminiCommands wires memini:status and memini:namespace.
  *
- * `cfg` is mutated in place on a namespace change rather than re-created: every
- * hook and tool resolves its namespace from cfg on each call, so an override
- * applies to the very next turn instead of waiting for a gateway restart. A
- * command that appears to succeed and then does nothing until you restart is
- * worse than no command at all.
+ * The namespace command no longer writes a local override file: `<namespace>`/
+ * `--clear` now PUT/DELETE a server-side pin (POST/DELETE /v1/pins) keyed by
+ * pinKeyFacts (best-effort git facts from the gateway's own cwd) and drop the
+ * in-memory handshake memo afterward, so the very next hook/tool call
+ * re-resolves. Note that MEMINI_NAMESPACE, when set, wins over any pin for
+ * THIS plugin's own resolution regardless (see effectiveConfig) — the command
+ * still lets an operator record a pin for other tooling to see.
  *
  * Exported for testing.
  */
-export function registerMeminiCommands(api: any, cfg: ResolvedConfig, pluginConfig: any) {
-  const cwd = harnessCwd();
-
-  // The base chain, as this plugin resolves it. describeSettings calls it with
-  // doctored environments (and ignoreOverride) to produce the counterfactual
-  // lines, which is what turns a dump into a diagnosis.
-  const resolve = (env: Record<string, string | undefined>, opts?: ResolveOpts) =>
-    resolveBaseNamespace(pluginConfig, env, cwd, opts || {});
-
-  const describe = () =>
-    describeSettings({
-      cwd: cwd || "",
-      env: process.env as Record<string, string | undefined>,
-      resolve,
-    });
+export function registerMeminiCommands(api: any, ctx: SessionContext) {
+  const describe = async () => {
+    const hs = await ctx.memo.get();
+    return { hs, live: effectiveConfig(ctx.cfg, hs, process.env as Record<string, string | undefined>) };
+  };
 
   api.registerCommand({
     name: "memini:status",
     description: "Show memini's effective settings: namespace + provenance, connection, server read set",
     acceptsArgs: false,
-    async handler(ctx: any) {
+    async handler(cmdCtx: any) {
       try {
-        const settings = describe();
+        const { hs, live } = await describe();
         // What THIS surface would send: the base, plus prefix and the per-agent
         // template. PluginCommandContext carries the sessionKey, so an
         // agent-keyed conversation resolves its own namespace here.
-        const effective = effectiveNamespace(cfg, ctx) ?? cfg.namespace;
-        const server = await fetchServer(cfg, effective);
-        return { text: renderStatus(settings, cfg, effective, server) };
+        const effective = effectiveNamespace(live, cmdCtx) ?? live.namespace;
+        const server = await fetchServer(ctx.boot, effective);
+        return { text: renderStatus(ctx.boot, live, hs, effective, server) };
       } catch (error) {
         // A command must never throw into the host.
         return { text: `memini: status failed: ${String(error)}` };
@@ -894,47 +1211,64 @@ export function registerMeminiCommands(api: any, cfg: ResolvedConfig, pluginConf
 
   api.registerCommand({
     name: "memini:namespace",
-    description: "Show, set, or --clear the memini namespace override for this project",
+    description: "Show, set, or --clear the memini namespace pin for this gateway's checkout (server-side)",
     acceptsArgs: true,
-    async handler(ctx: any) {
+    async handler(cmdCtx: any) {
       try {
-        if (!cwd) {
-          return {
-            text: "memini: no working directory is available, so a per-project override cannot be keyed. Set the `namespace` config value or MEMINI_NAMESPACE instead.",
-          };
-        }
-        const arg = String(ctx?.args || "").trim();
-        const before = resolveBaseNamespace(pluginConfig, process.env, cwd);
+        const arg = String(cmdCtx?.args || "").trim();
 
         if (!arg) {
-          const current = readOverride(cwd, { env: process.env });
-          const out = [
-            `namespace: ${before.namespace}  (source: ${before.source})`,
-            `project:   ${overrideKey(cwd)}`,
-            ``,
-          ];
-          if (current) {
-            out.push(`An override is active (set ${current.setAt}).`);
-            out.push(`Clear it with:  /memini:namespace --clear`);
-          } else {
-            out.push(`No override — using ${before.source === "default" ? "the default" : `the ${before.source} value`}.`);
-            out.push(`Set one with:  /memini:namespace <namespace>`);
+          const { hs, live } = await describe();
+          const out: string[] = [`namespace: ${live.namespace}  (source: ${live.namespace_source})`];
+          if (live.degraded) {
+            out.push("");
+            out.push(`Could not reach ${ctx.boot.baseUrl}, so this is a local guess (config/env), not the`);
+            out.push(`server's authority. A pin (if any) can only be read from the server.`);
+          } else if (live.namespace_source === "server:pin" && hs?.pin) {
+            out.push(`pin:       key ${hs.pin.key}${hs.pin.created_by ? `, set by ${hs.pin.created_by}` : ""}`);
+          } else if (live.namespace_source === "env") {
+            out.push("");
+            out.push(`MEMINI_NAMESPACE overrides this gateway's resolution — a server-side pin cannot`);
+            out.push(`take effect while it is set.`);
           }
-          out.push(`Overrides file: ${defaultOverridesPath(process.env)}`);
+          out.push("");
+          out.push(`Set a pin with:    /memini:namespace <namespace>`);
+          out.push(`Clear it with:     /memini:namespace --clear`);
           return { text: out.join("\n") };
         }
 
+        const cwd = ctx.cfg.cwd;
+        if (!cwd) {
+          return {
+            text: "memini: no working directory is available, so a pin cannot be keyed. Set the `namespace` config value or MEMINI_NAMESPACE instead.",
+          };
+        }
+
         if (arg === "--clear" || arg === "clear") {
-          if (!clearOverride(cwd, { env: process.env })) {
-            return { text: `No override was set for ${overrideKey(cwd)} — nothing to clear.` };
+          const keyFacts = pinKeyFacts(cwd);
+          if (!keyFacts.remote_url && !keyFacts.toplevel_path) {
+            return {
+              text: "memini: this gateway's working directory has no git remote or toplevel, so it cannot have a pin to clear.",
+            };
           }
-          const after = resolveBaseNamespace(pluginConfig, process.env, cwd);
-          cfg.namespace = after.namespace;
+          let res;
+          try {
+            res = await pinsRequest(ctx.boot, "DELETE", keyFacts);
+          } catch (error) {
+            return { text: `memini: ${offlineMessage(ctx.boot, error)}` };
+          }
+          if (res.status === 404) {
+            return { text: `No pin was set for this checkout — nothing to clear.` };
+          }
+          if (!res.ok) {
+            return { text: `memini: could not clear the pin: ${pinErrorMessage(res)}` };
+          }
+          ctx.memo.invalidate();
           return {
             text: [
-              `namespace override cleared: ${before.namespace} -> ${after.namespace}  (source: ${after.source})`,
+              `namespace pin cleared for this checkout.`,
               ``,
-              `Recall and capture use the new namespace from the next turn.`,
+              `Recall and capture use the new resolution from the next turn.`,
             ].join("\n"),
           };
         }
@@ -947,16 +1281,33 @@ export function registerMeminiCommands(api: any, cfg: ResolvedConfig, pluginConf
           // outright.
           return { text: `memini: invalid namespace ${JSON.stringify(arg)}: ${bad}` };
         }
-        writeOverride(cwd, ns, { env: process.env });
-        const after = resolveBaseNamespace(pluginConfig, process.env, cwd);
-        cfg.namespace = after.namespace;
+        const keyFacts = pinKeyFacts(cwd);
+        if (!keyFacts.remote_url && !keyFacts.toplevel_path) {
+          return {
+            text:
+              `memini: this gateway's working directory has no git remote or toplevel to pin a namespace ` +
+              `to. Set the \`namespace\` config value instead for a static, machine-local choice.`,
+          };
+        }
+        let res;
+        try {
+          res = await pinsRequest(ctx.boot, "PUT", { namespace: ns, ...keyFacts });
+        } catch (error) {
+          return { text: `memini: ${offlineMessage(ctx.boot, error)}` };
+        }
+        if (!res.ok) {
+          return { text: `memini: could not set the pin: ${pinErrorMessage(res)}` };
+        }
+        ctx.memo.invalidate();
+        const entry = res.body || {};
         return {
           text: [
-            `namespace override set: ${before.namespace} -> ${after.namespace}`,
-            `project: ${overrideKey(cwd)}`,
+            `namespace pinned: ${entry.namespace || ns}`,
+            `project key:      ${entry.key || keyFacts.remote_url || keyFacts.toplevel_path}`,
             ``,
-            `The override wins over MEMINI_NAMESPACE. Recall and capture use it from the next turn` +
-              (cfg.namespace_per_agent ? `, with the per-agent template "${cfg.namespace_template}" on top.` : `.`),
+            `This pin is not picked up by this gateway's own next handshake (it sends no git facts —`,
+            `see gatewayFacts); it is recorded for other tooling sharing this checkout. To change`,
+            `THIS gateway's own resolution, set the \`namespace\` config value instead.`,
           ].join("\n"),
         };
       } catch (error) {
@@ -976,7 +1327,11 @@ const TOOL_NAMES = ["memory_recall", "memory_briefing", "memory_list", "memory_r
 // host wraps a plain-object tool as `(_ctx) => tool`, discarding ctx, so it would
 // always hit the base namespace — empty under per-agent namespaces. The factory
 // resolves the namespace from its ctx and binds it into each execute closure.
-export function registerMeminiTools(api: any, client: MeminiClient, cfg: ResolvedConfig) {
+//
+// The factory itself still returns synchronously (OpenClaw's contract): the
+// live handshake is awaited INSIDE each tool's already-async execute(), not
+// before the factory returns the tool array.
+export function registerMeminiTools(api: any, client: MeminiClient, ctx: SessionContext) {
   const text = (obj: any) => ({ content: [{ type: "text", text: JSON.stringify(obj) }] });
   const Tags = Type.Optional(
     Type.Array(Type.String(), { description: "Match only memories carrying every listed tag (AND)." }),
@@ -1016,19 +1371,19 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
   // agent resolved — warn once so an empty result reads as "wrong namespace",
   // not "no memories".
   let warnedMissingAgent = false;
-  const nsForCtx = (ctx: any) => {
-    const ns = effectiveNamespace(cfg, ctx) ?? cfg.namespace;
-    if (cfg.namespace_per_agent && ns === cfg.namespace && !warnedMissingAgent) {
+  const nsForCtx = (live: ResolvedConfig, toolCtx: any) => {
+    const ns = effectiveNamespace(live, toolCtx) ?? live.namespace;
+    if (live.namespace_per_agent && ns === live.namespace && !warnedMissingAgent) {
       warnedMissingAgent = true;
       api.logger?.warn?.(
-        `memini: tool call could not resolve an agent; querying base namespace "${cfg.namespace}". ` +
-          `Per-agent memory lives under "${cfg.namespace_template}" and will not appear here.`,
+        `memini: tool call could not resolve an agent; querying base namespace "${live.namespace}". ` +
+          `Per-agent memory lives under "${live.namespace_template}" and will not appear here.`,
       );
     }
     return ns;
   };
 
-  const buildTools = (ns: string) => [
+  const buildTools = (toolCtx: any) => [
     {
       name: "memory_recall",
       description:
@@ -1051,7 +1406,9 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
         scope: Scope,
       }),
       async execute(_id: any, params: any) {
-        const body: any = { query: params.query, limit: params.limit || 3 };
+        const live = await sessionLive(ctx);
+        const ns = nsForCtx(live, toolCtx);
+        const body: any = { query: params.query, limit: params.limit || live.recall_limit || 3 };
         if (params.tags?.length) body.tags = params.tags;
         if (params.metadata && Object.keys(params.metadata).length) body.metadata = params.metadata;
         // An unrecognized scope is dropped rather than forwarded: /v1/search
@@ -1084,6 +1441,8 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
         "scope='everywhere' also briefs nested sub-projects.",
       parameters: Type.Object({ scope: Scope }),
       async execute(_id: any, params: any) {
+        const live = await sessionLive(ctx);
+        const ns = nsForCtx(live, toolCtx);
         const res = await client.getJson(meminiBriefingPath(params), ns);
         if (!res) return text({ briefing: null, error: "memini unavailable" });
         const section = (items: any[]) =>
@@ -1117,6 +1476,8 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
         limit: Type.Optional(Type.Number({ description: "Max results (0 = all, default 20)" })),
       }),
       async execute(_id: any, params: any) {
+        const live = await sessionLive(ctx);
+        const ns = nsForCtx(live, toolCtx);
         const args = { ...params, limit: params.limit ?? 20 };
         const res = await client.getJson(meminiListPath(args), ns);
         const memories = (res?.memories || []).map((m: any) => ({
@@ -1180,6 +1541,8 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
         ),
       }),
       async execute(_id: any, params: any) {
+        const live = await sessionLive(ctx);
+        const ns = nsForCtx(live, toolCtx);
         // No client-side tier default: an omitted (or invalid) tier lets the
         // server classify the content and apply its own default.
         const body: any = { content: params.content };
@@ -1215,6 +1578,8 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
         id: Type.String({ description: "The id of the memory to forget (from memory_recall / memory_list)." }),
       }),
       async execute(_id: any, params: any) {
+        const live = await sessionLive(ctx);
+        const ns = nsForCtx(live, toolCtx);
         if (!params.id) return text({ forgotten: false, error: "id is required" });
         const res = await client.deleteJson(`/v1/memories/${encodeURIComponent(params.id)}`, ns);
         return text({ forgotten: res != null });
@@ -1225,7 +1590,7 @@ export function registerMeminiTools(api: any, client: MeminiClient, cfg: Resolve
   // names is required for a factory: the host matches the factory's tools by the
   // declared names (candidates with names.length > 0), and re-invokes the factory
   // with the live per-agent ctx at execution time.
-  api.registerTool((ctx: any) => buildTools(nsForCtx(ctx)), { optional: true, names: TOOL_NAMES });
+  api.registerTool((toolCtx: any) => buildTools(toolCtx), { optional: true, names: TOOL_NAMES });
 }
 
 // Explicit return-type annotation on the default export — the SDK's chunked
@@ -1245,18 +1610,18 @@ const plugin: {
   kind: "memory",
   configSchema,
   register(api: any) {
-    const cfg = resolveConfig(api.pluginConfig);
-    const client = createClient(cfg, api);
+    const sessionCtx = createSessionContext(api.pluginConfig, process.env, harnessCwd());
+    const client = createClient(sessionCtx.cfg, api);
 
     // Per-agent isolation is the default as of memini 0.0.11 (it was off before).
     // Warn installs that never set it: their pre-0.0.11 memory lives in the shared
     // base namespace and will not be recalled under the new per-agent namespaces
     // until migrated (`memini namespace split --from <base>`), or isolation is
     // turned off again with namespace_per_agent:false.
-    if (api.pluginConfig?.namespace_per_agent === undefined && cfg.namespace_per_agent) {
+    if (api.pluginConfig?.namespace_per_agent === undefined && sessionCtx.cfg.namespace_per_agent) {
       console.error(
-        `[memini] per-agent namespaces are now on by default (template "${cfg.namespace_template}"); ` +
-          `existing memory under "${cfg.namespace}" needs \`memini namespace split --from ${cfg.namespace}\` ` +
+        `[memini] per-agent namespaces are now on by default (template "${sessionCtx.cfg.namespace_template}"); ` +
+          `existing memory under "${sessionCtx.cfg.namespace}" needs \`memini namespace split --from ${sessionCtx.cfg.namespace}\` ` +
           `to migrate, or set namespace_per_agent:false to keep the shared pool.`,
       );
     }
@@ -1264,9 +1629,9 @@ const plugin: {
     if (typeof api.registerMemoryCapability === "function") {
       api.registerMemoryCapability({
         promptBuilder: () => [
-          cfg.namespace_per_agent
-            ? `Long-term memory: memini at ${client.baseUrl}, per-agent namespace from "${cfg.namespace_template}".`
-            : `Long-term memory: memini at ${client.baseUrl}, namespace "${client.namespace}".`,
+          sessionCtx.cfg.namespace_per_agent
+            ? `Long-term memory: memini at ${client.baseUrl}, per-agent namespace from "${sessionCtx.cfg.namespace_template}".`
+            : `Long-term memory: memini at ${client.baseUrl}, namespace "${sessionCtx.cfg.namespace}".`,
           "Relevant memories are recalled before each turn and turns are captured after. Treat recalled context as background; prefer current workspace state and user instructions.",
         ],
       });
@@ -1320,18 +1685,19 @@ const plugin: {
       }
     };
 
-    const recallHandler = async (event: any, ctx: any) => {
-      if (!cfg.enabled) return;
+    const recallHandler = async (event: any, hookCtx: any) => {
+      const live = await sessionLive(sessionCtx);
+      if (!live.enabled) return;
       const prompt = typeof event?.prompt === "string" ? event.prompt.trim() : "";
       if (!prompt) return;
-      if (shouldSkipSystemTurn(cfg, ctx)) return;
-      const ns = effectiveNamespace(cfg, ctx);
+      if (shouldSkipSystemTurn(live, hookCtx)) return;
+      const ns = effectiveNamespace(live, hookCtx);
       if (ns == null) return;
-      const body: any = { query: prompt, limit: cfg.recall_limit };
+      const body: any = { query: prompt, limit: live.recall_limit };
       // Exclude this session's own just-captured turns: they're still in the
       // live transcript, so recalling them echoes the conversation back as
       // "long-term memory". agent_end tags each capture with session_id.
-      const session = sessionIdentity(ctx);
+      const session = sessionIdentity(hookCtx);
       if (session) body.exclude_metadata = { session_id: session };
       // The server-side temporal echo guard is on by default (5 min window),
       // backstopping the client-side message-ID guard (lost on gateway restart)
@@ -1353,7 +1719,7 @@ const plugin: {
       // Apply the token ceiling to the rendered bullets; recall_max_tokens <= 0
       // (the default) leaves the list unchanged, so existing installs are
       // unaffected. The tail (lowest-relevance) is dropped first.
-      const fit = fitByTokens(bullets, cfg.recall_max_tokens);
+      const fit = fitByTokens(bullets, live.recall_max_tokens);
       if (fit.items.length === 0) return;
       if (session) {
         rememberInjected(session, results.map((r: any) => r?.memory?.id).filter(Boolean));
@@ -1380,20 +1746,21 @@ const plugin: {
     };
     addHook("before_prompt_build", recallHandler);
 
-    const captureHandler = async (event: any, ctx: any) => {
-      if (!cfg.enabled || !Array.isArray(event.messages)) return;
+    const captureHandler = async (event: any, hookCtx: any) => {
+      const live = await sessionLive(sessionCtx);
+      if (!live.enabled || !Array.isArray(event.messages)) return;
       const userText = lastTextByRole(event.messages, "user");
       const assistantText = lastTextByRole(event.messages, "assistant");
       if (!userText || !assistantText) return;
-      if (shouldSkipSystemTurn(cfg, ctx)) return;
+      if (shouldSkipSystemTurn(live, hookCtx)) return;
       // Drop OpenClaw runtime plumbing from the captured turn: untrusted-metadata
       // preambles, and subagent task delegations (framing, not conversation).
       const captureUser = stripRuntimePreambles(userText);
       if (!captureUser || startsWithNoisePrefix(captureUser)) return;
-      if (captureUser.length < cfg.min_capture_chars) return;
-      const ns = effectiveNamespace(cfg, ctx);
+      if (captureUser.length < live.min_capture_chars) return;
+      const ns = effectiveNamespace(live, hookCtx);
       if (ns == null) return;
-      const session = sessionIdentity(ctx);
+      const session = sessionIdentity(hookCtx);
       // A capture without a session_id can never be excluded by the pre-turn
       // recall guard (the server's exclude_metadata is exact key=value), so it
       // would echo this session's own turns back as "long-term memory" forever.
@@ -1413,9 +1780,9 @@ const plugin: {
 
     // Opt-in explicit tools, registered after the memory slot above. Best-effort:
     // a failure (e.g. typebox unavailable) is logged and leaves the slot working.
-    if (cfg.expose_tools && typeof api.registerTool === "function") {
+    if (sessionCtx.cfg.expose_tools && typeof api.registerTool === "function") {
       try {
-        registerMeminiTools(api, client, cfg);
+        registerMeminiTools(api, client, sessionCtx);
       } catch (e) {
         api.logger?.warn?.(`memini: tool registration skipped: ${String(e)}`);
       }
@@ -1425,7 +1792,7 @@ const plugin: {
     // host build without registerCommand must not cost the plugin its memory slot.
     if (typeof api.registerCommand === "function") {
       try {
-        registerMeminiCommands(api, cfg, api.pluginConfig);
+        registerMeminiCommands(api, sessionCtx);
       } catch (e) {
         api.logger?.warn?.(`memini: command registration skipped: ${String(e)}`);
       }

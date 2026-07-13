@@ -1,41 +1,41 @@
-// Run: tsx --test test/helpers.test.ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  applyTemplate,
   approxTokens,
   createPlaintextBearerAuthGuard,
+  createSessionContext,
   detectSystemKind,
+  effectiveConfig,
   effectiveNamespace,
   fitByTokens,
+  gatewayFacts,
+  memoizeAsync,
   meminiListPath,
+  pinKeyFacts,
   registerMeminiCommands,
   registerMeminiTools,
   resolveBaseNamespace,
   resolveConfig,
   sessionIdentity,
+  sessionLive,
   shouldSkipSystemTurn,
   startsWithNoisePrefix,
   stripRuntimePreambles,
   type ResolvedConfig,
 } from "../src/index.ts";
-import { readOverride, writeOverride } from "@memini/client";
+import { execSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// A developer shell may export the real memini config; clear it so resolveConfig
-// tests see the documented defaults (the plugin now reads MEMINI_BASE_URL /
-// MEMINI_URL as a fallback under the plugin config). MEMINI_NAMESPACE is in the
-// list because the namespace chain now honors it — an exported one (the fish
-// universal variable this feature exists for) would otherwise fail every
-// default-namespace assertion below.
+// A developer shell may export the real memini config; clear it so
+// resolveConfig tests see the documented defaults (an exported MEMINI_NAMESPACE
+// — the fish-universal-variable case this feature exists for — would
+// otherwise fail every default-namespace assertion below).
 for (const k of ["MEMINI_BASE_URL", "MEMINI_URL", "MEMINI_API_KEY", "MEMINI_TOKEN", "MEMINI_HOME", "MEMINI_NAMESPACE"]) {
   delete process.env[k];
 }
-// The override file lives under $XDG_CONFIG_HOME/memini; point it at a temp dir
-// so the developer's real overrides.json (keyed by THIS repo, which is the
-// gateway's cwd when the tests run) cannot reach the defaults below.
-process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "openclaw-memini-test-"));
 
 type MeminiClient = Parameters<typeof registerMeminiTools>[1];
 
@@ -45,7 +45,6 @@ function fakeClient(): MeminiClient & { calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
   return {
     calls,
-    namespace: "ns",
     baseUrl: "http://localhost:8080",
     async postJson(path: string, body: unknown, ns?: string) {
       calls.push({ method: "POST", path, body, ns });
@@ -81,11 +80,38 @@ const baseCfg = (overrides: Partial<ResolvedConfig> = {}): ResolvedConfig => ({
   ...overrides,
 });
 
+function fakeHandshake(overrides: Record<string, any> = {}) {
+  return {
+    namespace: "acme/widget",
+    namespace_source: "declared",
+    identity: { authenticated: false },
+    settings: {},
+    settings_sources: {},
+    read_set: [],
+    server: { version: "test", default_namespace: "default" },
+    ...overrides,
+  };
+}
+
+// Build a SessionContext whose memo resolves instantly to `hs` without any
+// network call — for tests that only care about how a given handshake result
+// (or its absence) is merged, not about the handshake transport itself.
+function fixedSessionContext(pluginConfig: any, hs: any, env: Record<string, string | undefined> = process.env): ReturnType<typeof createSessionContext> {
+  const ctx = createSessionContext(pluginConfig, env, tmpdir());
+  return {
+    ...ctx,
+    memo: { get: async () => hs, invalidate() {} },
+  };
+}
+
+// --- resolveConfig: synchronous baseline (no handshake) -----------------------
+
 test("resolveConfig: defaults match the documented contract", () => {
   const cfg: ResolvedConfig = resolveConfig(undefined);
   assert.equal(cfg.enabled, true);
   assert.equal(cfg.base_url, "http://localhost:8080");
   assert.equal(cfg.namespace, "openclaw");
+  assert.equal(cfg.namespace_source, "default");
   assert.equal(cfg.namespace_per_agent, true);
   assert.equal(cfg.namespace_template, "{namespace}-{agent}");
   assert.equal(cfg.skip_without_agent, false);
@@ -139,6 +165,13 @@ test("effectiveNamespace: resolves ctx.agentId, else the sessionKey agent segmen
 test("effectiveNamespace: per-agent mode falls back to base when no id", () => {
   const cfg = baseCfg({ namespace_per_agent: true, namespace_template: "{agent}" });
   assert.equal(effectiveNamespace(cfg, {}), "openclaw");
+});
+
+test("applyTemplate: substitutes namespace/agent and collapses dropped-segment slashes", () => {
+  assert.equal(applyTemplate("{namespace}-{agent}", { namespace: "openclaw", agent: "alice" }), "openclaw-alice");
+  assert.equal(applyTemplate("{agent}", { agent: "alice" }), "alice");
+  assert.equal(applyTemplate("{tenant}/{project}/{agent}", { agent: "alice" }), "alice");
+  assert.equal(applyTemplate("{namespace}/{agent}", { namespace: "work/openclaw", agent: "miso" }), "work/openclaw/miso");
 });
 
 test("detectSystemKind: reads ctx.trigger, case-insensitive, exact match", () => {
@@ -419,8 +452,13 @@ type RegisterOpts = { optional?: boolean; names?: string[] };
 
 // collectTools materializes the registered factory with `ctx` — the per-agent
 // OpenClawPluginToolContext OpenClaw hands the factory (identity lives here, not
-// on the execute call).
-function collectTools(cfg: ResolvedConfig = baseCfg(), ctx: Record<string, unknown> = {}) {
+// on the execute call). `hs` is the (possibly undefined) handshake this test's
+// SessionContext's memo resolves to instantly.
+function collectTools(
+  hs: any = fakeHandshake(),
+  pluginConfig: any = { namespace_per_agent: false },
+  ctx: Record<string, unknown> = {},
+) {
   let factory: ToolFactory | undefined;
   let opts: RegisterOpts | undefined;
   const api = {
@@ -431,9 +469,10 @@ function collectTools(cfg: ResolvedConfig = baseCfg(), ctx: Record<string, unkno
     },
   };
   const client = fakeClient();
-  registerMeminiTools(api, client, cfg);
+  const sessionCtx = fixedSessionContext(pluginConfig, hs);
+  registerMeminiTools(api, client, sessionCtx);
   const tools = factory ? ([] as ToolDef[]).concat(factory(ctx)) : [];
-  return { byName: Object.fromEntries(tools.map((d) => [d.name, d])), opts, client };
+  return { byName: Object.fromEntries(tools.map((d) => [d.name, d])), opts, client, sessionCtx };
 }
 
 test("registerMeminiTools: registers one optional factory naming all tools", () => {
@@ -523,8 +562,11 @@ test("registerMeminiTools: memory_remember drops invalid/omitted tier so the ser
 });
 
 test("registerMeminiTools: tool namespace resolves per-agent from the factory ctx", async () => {
-  const cfg = baseCfg({ namespace: "team", namespace_per_agent: true, namespace_template: "{namespace}-{agent}" });
-  const { byName, client } = collectTools(cfg, { agentId: "miso" });
+  const { byName, client } = collectTools(
+    fakeHandshake({ namespace: "team" }),
+    { namespace_per_agent: true, namespace_template: "{namespace}-{agent}" },
+    { agentId: "miso" },
+  );
   await byName.memory_list.execute("id", {});
   assert.equal(client.calls.at(-1)?.ns, "team-miso");
 });
@@ -548,62 +590,166 @@ test("resolveConfig: recall_max_tokens — config wins, else MEMINI_INJECT_RECAL
   }
 });
 
-// --- namespace chain: override > MEMINI_NAMESPACE > config > "openclaw" ------
+// --- namespace resolution: env > handshake > config > "openclaw" -------------
 
-function tmpEnv(extra: Record<string, string> = {}): Record<string, string | undefined> {
-  return { XDG_CONFIG_HOME: mkdtempSync(join(tmpdir(), "openclaw-memini-xdg-")), ...extra };
-}
-
-function tmpProject(): string {
-  return mkdtempSync(join(tmpdir(), "openclaw-memini-proj-"));
+function tmpProject(withGit = true): string {
+  const dir = mkdtempSync(join(tmpdir(), "openclaw-memini-proj-"));
+  if (withGit) {
+    execSync("git init -q", { cwd: dir });
+    execSync("git remote add origin https://example.com/acme/widget.git", { cwd: dir });
+  }
+  return dir;
 }
 
 test("resolveBaseNamespace: the default is still the literal openclaw, with no cwd derivation", () => {
   // Load-bearing: this is a gateway harness where the cwd is usually meaningless.
   // Deriving from it would silently relocate every existing install's memory.
-  const cwd = tmpProject();
-  assert.deepEqual(resolveBaseNamespace(undefined, tmpEnv(), cwd), { namespace: "openclaw", source: "default" });
-  assert.deepEqual(resolveBaseNamespace({}, tmpEnv(), undefined), { namespace: "openclaw", source: "default" });
+  assert.deepEqual(resolveBaseNamespace(undefined, {}), { namespace: "openclaw", source: "default" });
+  assert.deepEqual(resolveBaseNamespace({}, {}), { namespace: "openclaw", source: "default" });
 });
 
 test("resolveBaseNamespace: MEMINI_NAMESPACE is honored, and an explicit config value beats the default", () => {
-  const cwd = tmpProject();
-  // The bug: the plugin used to ignore MEMINI_NAMESPACE entirely.
-  assert.deepEqual(resolveBaseNamespace({}, tmpEnv({ MEMINI_NAMESPACE: "team/eu" }), cwd), {
-    namespace: "team/eu",
-    source: "env",
-  });
+  assert.deepEqual(resolveBaseNamespace({}, { MEMINI_NAMESPACE: "team/eu" }), { namespace: "team/eu", source: "env" });
   // Config loses to the env pin, wins over the default.
-  assert.equal(resolveBaseNamespace({ namespace: "cfg" }, tmpEnv({ MEMINI_NAMESPACE: "pinned" }), cwd).namespace, "pinned");
-  assert.deepEqual(resolveBaseNamespace({ namespace: "cfg" }, tmpEnv(), cwd), { namespace: "cfg", source: "config" });
+  assert.equal(resolveBaseNamespace({ namespace: "cfg" }, { MEMINI_NAMESPACE: "pinned" }).namespace, "pinned");
+  assert.deepEqual(resolveBaseNamespace({ namespace: "cfg" }, {}), { namespace: "cfg", source: "config" });
 });
 
-test("resolveBaseNamespace: the override beats MEMINI_NAMESPACE and the config value", () => {
-  const env = tmpEnv({ MEMINI_NAMESPACE: "global-pin" });
-  const cwd = tmpProject();
-  writeOverride(cwd, "acme/api", { env });
+test("gatewayFacts: cwd_basename + declared_namespace only — no git derivation, no env pin", () => {
+  const facts = gatewayFacts({ namespace: "team" }, "/some/gateway/dir");
+  assert.deepEqual(facts, { cwd_basename: "dir", declared_namespace: "team" });
+  // declared_namespace comes from CONFIG, never from MEMINI_NAMESPACE.
+  const noConfig = gatewayFacts({}, "/x/y");
+  assert.deepEqual(noConfig, { cwd_basename: "y", declared_namespace: "openclaw" });
+});
 
-  assert.deepEqual(resolveBaseNamespace({ namespace: "cfg" }, env, cwd), { namespace: "acme/api", source: "override" });
-  // Without it, the env pin is what a caller would have been stuck with — the
-  // counterfactual line describeSettings prints, and the only way to see past a
-  // file-backed override.
-  assert.deepEqual(resolveBaseNamespace({ namespace: "cfg" }, env, cwd, { ignoreOverride: true }), {
-    namespace: "global-pin",
-    source: "env",
-  });
-  // …and resolveConfig, which is what the plugin actually runs on.
-  assert.equal(resolveConfig({ namespace: "cfg" }, env, cwd).namespace, "acme/api");
+test("pinKeyFacts: only remote_url/toplevel_path key a pin (best-effort git facts)", () => {
+  const git = tmpProject(true);
+  const noGit = tmpProject(false);
+  assert.equal(pinKeyFacts(git).remote_url, "https://example.com/acme/widget.git");
+  assert.deepEqual(pinKeyFacts(noGit), {});
+});
+
+test("effectiveConfig: MEMINI_NAMESPACE wins outright over a successful handshake", () => {
+  const cfg = resolveConfig({}, { MEMINI_NAMESPACE: "pinned" });
+  assert.equal(cfg.namespace_source, "env");
+  const hs = fakeHandshake({ namespace: "acme/widget", namespace_source: "pin" });
+  const live = effectiveConfig(cfg, hs, {});
+  assert.equal(live.namespace, "pinned");
+  assert.equal(live.namespace_source, "env");
+  assert.equal(live.degraded, false, "the handshake DID succeed, even though env wins the namespace");
+});
+
+test("effectiveConfig: with no env pin, a successful handshake wins over config/default", () => {
+  const cfg = resolveConfig({ namespace: "cfg" }, {});
+  const hs = fakeHandshake({ namespace: "acme/widget", namespace_source: "declared" });
+  const live = effectiveConfig(cfg, hs, {});
+  assert.equal(live.namespace, "acme/widget");
+  assert.equal(live.namespace_source, "server:declared");
+  assert.equal(live.degraded, false);
+});
+
+test("effectiveConfig: fail-soft — no handshake falls back to the config/default value", () => {
+  const cfg = resolveConfig({ namespace: "cfg" }, {});
+  const live = effectiveConfig(cfg, undefined, {});
+  assert.equal(live.namespace, "cfg");
+  assert.equal(live.namespace_source, "config");
+  assert.equal(live.degraded, true);
+
+  const noConfig = resolveConfig({}, {});
+  const liveDefault = effectiveConfig(noConfig, undefined, {});
+  assert.equal(liveDefault.namespace, "openclaw");
+  assert.equal(liveDefault.namespace_source, "default");
+});
+
+test("effectiveConfig: behavior knobs — config explicit wins, else env-override beats server beats default", () => {
+  const cfg = resolveConfig({}, {});
+  const hs = fakeHandshake({ settings: { recall_limit: 8, inject_recall_max_tok: 500, min_capture_chars: 40 } });
+  const server = effectiveConfig(cfg, hs, {});
+  assert.equal(server.recall_limit, 8);
+  assert.equal(server.recall_max_tokens, 500);
+  assert.equal(server.min_capture_chars, 40);
+
+  // A config-explicit value is never overridden by the server.
+  const cfgExplicit = resolveConfig({ recall_limit: 2 }, {});
+  const liveExplicit = effectiveConfig(cfgExplicit, hs, {});
+  assert.equal(liveExplicit.recall_limit, 2);
+
+  // A local env override still wins over the server.
+  const liveEnvOverride = effectiveConfig(cfg, hs, { MEMINI_RECALL_LIMIT: "1" });
+  assert.equal(liveEnvOverride.recall_limit, 1);
 });
 
 test("prefix / per-agent template still apply on top of a resolved namespace", () => {
-  const env = tmpEnv({ MEMINI_NAMESPACE: "team" });
-  const cwd = tmpProject();
-  const cfg = resolveConfig({ namespace_prefix: "work", namespace_template: "{namespace}-{agent}" }, env, cwd);
+  const env = { MEMINI_NAMESPACE: "team" };
+  const cfg = resolveConfig({ namespace_prefix: "work", namespace_template: "{namespace}-{agent}" }, env);
   assert.equal(cfg.namespace, "team");
   assert.equal(effectiveNamespace(cfg, { agentId: "miso" }), "work/team-miso");
 });
 
-// A minimal OpenClaw host: enough of the plugin api for the commands to register.
+// --- memoizeAsync: TTL + invalidate --------------------------------------------
+
+test("memoizeAsync: calls fn once within the TTL window, refreshes after expiry", async () => {
+  let calls = 0;
+  let t = 1000;
+  const memo = memoizeAsync(async () => { calls++; return calls; }, 1000, () => t);
+  assert.equal(await memo.get(), 1);
+  t += 500;
+  assert.equal(await memo.get(), 1);
+  t += 1000;
+  assert.equal(await memo.get(), 2);
+});
+
+test("memoizeAsync: invalidate() forces the very next get() to refresh", async () => {
+  let calls = 0;
+  const memo = memoizeAsync(async () => { calls++; return calls; }, 60_000);
+  assert.equal(await memo.get(), 1);
+  assert.equal(await memo.get(), 1);
+  memo.invalidate();
+  assert.equal(await memo.get(), 2);
+});
+
+// --- fail-soft: a guard throw honors fallback_on_error ------------------------
+
+test("sessionLive: MEMINI_REQUIRE_HTTPS guard throw degrades when fallback is on (default)", async () => {
+  const cwd = tmpProject();
+  const env = {
+    MEMINI_BASE_URL: "http://example.com",
+    MEMINI_API_KEY: "sk-test-token",
+    MEMINI_REQUIRE_HTTPS: "1",
+  };
+  const ctx = createSessionContext({}, env, cwd);
+  const live = await sessionLive(ctx, env);
+  assert.equal(live.degraded, true);
+});
+
+test("sessionLive: fallback_on_error:false lets the guard throw propagate", async () => {
+  const cwd = tmpProject();
+  const env = {
+    MEMINI_BASE_URL: "http://example.com",
+    MEMINI_API_KEY: "sk-test-token",
+    MEMINI_REQUIRE_HTTPS: "1",
+  };
+  const ctx = createSessionContext({ fallback_on_error: false }, env, cwd);
+  await assert.rejects(() => sessionLive(ctx, env), /plaintext HTTP/);
+});
+
+test("sessionLive: a network failure always degrades regardless of fallback_on_error", async () => {
+  const cwd = tmpProject();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => { throw new Error("ECONNREFUSED"); }) as any;
+  try {
+    const env = { MEMINI_BASE_URL: "http://localhost:19999" };
+    const ctx = createSessionContext({ fallback_on_error: false }, env, cwd);
+    const live = await sessionLive(ctx, env);
+    assert.equal(live.degraded, true);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// --- registerMeminiCommands: memini:status / memini:namespace -----------------
+
 function fakeApi() {
   const commands: Record<string, (ctx: any) => Promise<{ text: string }>> = {};
   const api = {
@@ -617,45 +763,132 @@ function fakeApi() {
 
 test("registerMeminiCommands: registers memini:status and memini:namespace", () => {
   const { api, commands } = fakeApi();
-  registerMeminiCommands(api, resolveConfig({}), {});
+  registerMeminiCommands(api, fixedSessionContext({}, undefined));
   assert.deepEqual(Object.keys(commands).sort(), ["memini:namespace", "memini:status"]);
 });
 
-test("memini:namespace sets and clears the override; hooks and tools follow it live", async () => {
+test("memini:namespace (no args): shows the live namespace + pin details", async () => {
+  const { api, commands } = fakeApi();
+  const hs = fakeHandshake({ namespace: "acme/widget", namespace_source: "pin", pin: { key: "remote:x", created_by: "kit" } });
+  registerMeminiCommands(api, fixedSessionContext({}, hs));
+  const { text } = await commands["memini:namespace"]({});
+  assert.match(text, /namespace: acme\/widget\s+\(source: server:pin\)/);
+  assert.match(text, /pin:\s+key remote:x, set by kit/);
+});
+
+test("memini:namespace <ns>: PUTs a pin keyed by git facts and invalidates the memo", async () => {
   const cwd = tmpProject();
-  const prevXdg = process.env.XDG_CONFIG_HOME;
-  const prevPwd = process.cwd();
-  process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "openclaw-memini-xdg-"));
-  process.chdir(cwd); // the commands key the override off the gateway's cwd
+  const realFetch = globalThis.fetch;
+  const calls: any[] = [];
+  globalThis.fetch = (async (url: any, init: any) => {
+    const u = String(url);
+    calls.push({ url: u, method: init?.method, body: init?.body ? JSON.parse(init.body) : undefined });
+    if (u.endsWith("/v1/pins")) {
+      return { ok: true, status: 200, async json() { return { namespace: "acme/api", key: `remote:${JSON.parse(init.body).remote_url}` }; } };
+    }
+    return { ok: false, status: 404, async json() { return {}; } };
+  }) as any;
+  try {
+    let invalidated = 0;
+    const ctx = createSessionContext({}, process.env, cwd);
+    const originalInvalidate = ctx.memo.invalidate.bind(ctx.memo);
+    ctx.memo.invalidate = () => { invalidated++; originalInvalidate(); };
+
+    const { api, commands } = fakeApi();
+    registerMeminiCommands(api, ctx);
+    const { text } = await commands["memini:namespace"]({ args: "acme/api" });
+    assert.match(text, /namespace pinned: acme\/api/);
+    const put = calls.find((c) => c.method === "PUT");
+    assert.ok(put, "expected a PUT /v1/pins call");
+    assert.equal(put.body.namespace, "acme/api");
+    assert.equal(put.body.remote_url, "https://example.com/acme/widget.git");
+    assert.equal(invalidated, 1, "pin write must invalidate the in-memory memo");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("memini:namespace <ns>: refuses when the checkout has no git remote or toplevel", async () => {
+  const cwd = tmpProject(false);
+  const realFetch = globalThis.fetch;
+  let putCalled = false;
+  globalThis.fetch = (async (url: any, init: any) => {
+    if (String(url).endsWith("/v1/pins") && init?.method === "PUT") putCalled = true;
+    return { ok: false, status: 404, async json() { return {}; } };
+  }) as any;
+  try {
+    const ctx = createSessionContext({}, process.env, cwd);
+    const { api, commands } = fakeApi();
+    registerMeminiCommands(api, ctx);
+    const { text } = await commands["memini:namespace"]({ args: "acme/api" });
+    assert.match(text, /no git remote or toplevel/);
+    assert.equal(putCalled, false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("memini:namespace <ns>: refuses a header-injecting namespace instead of normalizing it", async () => {
+  const cwd = tmpProject();
+  const realFetch = globalThis.fetch;
+  let putCalled = false;
+  globalThis.fetch = (async (url: any, init: any) => {
+    if (String(url).endsWith("/v1/pins") && init?.method === "PUT") putCalled = true;
+    return { ok: false, status: 404, async json() { return {}; } };
+  }) as any;
+  try {
+    const ctx = createSessionContext({}, process.env, cwd);
+    const { api, commands } = fakeApi();
+    registerMeminiCommands(api, ctx);
+    const { text } = await commands["memini:namespace"]({ args: "evil\r\nX-Evil: 1" });
+    assert.match(text, /invalid namespace/);
+    assert.equal(putCalled, false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("memini:namespace --clear: 404 reports nothing to clear; success invalidates the memo", async () => {
+  const cwd = tmpProject();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({ ok: false, status: 404, async json() { return {}; } })) as any;
+  try {
+    const ctx = createSessionContext({}, process.env, cwd);
+    const { api, commands } = fakeApi();
+    registerMeminiCommands(api, ctx);
+    const { text } = await commands["memini:namespace"]({ args: "--clear" });
+    assert.match(text, /nothing to clear/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("memini:namespace: an unreachable server on a pin write points at the config namespace value", async () => {
+  const cwd = tmpProject();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => { throw new Error("ECONNREFUSED"); }) as any;
+  try {
+    const ctx = createSessionContext({}, process.env, cwd);
+    const { api, commands } = fakeApi();
+    registerMeminiCommands(api, ctx);
+    const { text } = await commands["memini:namespace"]({ args: "acme/api" });
+    assert.match(text, /Could not reach the memini server/);
+    assert.match(text, /config `namespace`/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("memini:status reports an unreachable server rather than throwing into the host", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => { throw new Error("ECONNREFUSED"); }) as any;
   try {
     const { api, commands } = fakeApi();
-    const cfg = resolveConfig({ namespace_per_agent: false });
-    registerMeminiCommands(api, cfg, {});
-
-    assert.match((await commands["memini:namespace"]({ args: "" })).text, /No override/);
-
-    const set = await commands["memini:namespace"]({ args: "acme/api" });
-    assert.match(set.text, /namespace override set: openclaw -> acme\/api/);
-    assert.equal(readOverride(cwd, { env: process.env })?.namespace, "acme/api");
-    // Every hook and tool re-reads cfg.namespace per call, so the next turn already
-    // targets the override — no gateway restart, no split brain.
-    assert.equal(cfg.namespace, "acme/api");
-    assert.equal(effectiveNamespace(cfg, {}), "acme/api");
-
-    const cleared = await commands["memini:namespace"]({ args: "--clear" });
-    assert.match(cleared.text, /namespace override cleared: acme\/api -> openclaw/);
-    assert.equal(cfg.namespace, "openclaw");
-    assert.match((await commands["memini:namespace"]({ args: "--clear" })).text, /nothing to clear/);
-
-    // The namespace rides on the X-Memini-Namespace header: CR/LF would split it.
-    const bad = await commands["memini:namespace"]({ args: "evil\r\nX-Evil: 1" });
-    assert.match(bad.text, /invalid namespace/);
-    assert.equal(readOverride(cwd, { env: process.env }), undefined);
-    assert.equal(cfg.namespace, "openclaw", "a rejected namespace must not be applied");
+    registerMeminiCommands(api, fixedSessionContext({}, undefined));
+    const { text } = await commands["memini:status"]({});
+    assert.match(text, /reachable\s+NO/);
   } finally {
-    process.chdir(prevPwd);
-    if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
-    else process.env.XDG_CONFIG_HOME = prevXdg;
+    globalThis.fetch = realFetch;
   }
 });
 
@@ -665,7 +898,7 @@ test("memini:status reports the read set, redacts the bearer, and reads a 404 /h
   const requests: { url: string; headers: any }[] = [];
   globalThis.fetch = (async (url: any, init: any) => {
     requests.push({ url: String(url), headers: init?.headers });
-    if (String(url).includes("/v1/namespaces/read-set")) {
+    if (String(url).includes("/v1/namespaces/readset")) {
       return {
         ok: true,
         status: 200,
@@ -681,40 +914,21 @@ test("memini:status reports the read set, redacts the bearer, and reads a 404 /h
   try {
     process.env.MEMINI_API_KEY = "sk-abcdefghijklmnop4f2a";
     const { api, commands } = fakeApi();
-    registerMeminiCommands(api, resolveConfig({}), {});
+    registerMeminiCommands(api, fixedSessionContext({}, fakeHandshake()));
     const { text } = await commands["memini:status"]({ agentId: "miso" });
 
     assert.match(text, /reachable\s+yes/);
     assert.match(text, /\/healthz not routed/);
     assert.match(text, /READ SET/);
-    // The per-agent template is applied to what this surface actually sends.
-    assert.match(text, /this surface sends\s+openclaw-miso/);
-    assert.match(text, /base\s+openclaw\s+<- default/);
     // A settings dump is the likeliest place a token gets pasted into an issue.
     assert.doesNotMatch(text, /sk-abcdefghijklmnop4f2a/);
     assert.match(text, /sk-…4f2a/);
-    const readSet = requests.find((r) => r.url.includes("read-set"))!;
-    assert.equal(readSet.headers["X-Memini-Namespace"], "openclaw-miso");
+    const readSet = requests.find((r) => r.url.includes("readset"))!;
     assert.equal(readSet.headers.Authorization, "Bearer sk-abcdefghijklmnop4f2a");
   } finally {
     globalThis.fetch = realFetch;
     if (prevKey === undefined) delete process.env.MEMINI_API_KEY;
     else process.env.MEMINI_API_KEY = prevKey;
-  }
-});
-
-test("memini:status reports an unreachable server rather than throwing into the host", async () => {
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = (async () => {
-    throw new Error("ECONNREFUSED");
-  }) as any;
-  try {
-    const { api, commands } = fakeApi();
-    registerMeminiCommands(api, resolveConfig({}), {});
-    const { text } = await commands["memini:status"]({});
-    assert.match(text, /reachable\s+NO/);
-  } finally {
-    globalThis.fetch = realFetch;
   }
 });
 
