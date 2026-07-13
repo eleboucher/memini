@@ -594,6 +594,179 @@ test("recall does not re-inject memories already shown in the same session", asy
   }
 });
 
+// The per-session dedupe window is capped: oldest ids age out (and may
+// re-inject); recent ids stay suppressed.
+test("per-session injected-id window is bounded (oldest ids age out)", async () => {
+  const { default: meminiExtension } = await import("../src/index.ts");
+  const hooks: Record<string, any> = {};
+  const realFetch = globalThis.fetch;
+  let nextResults: any[] = [];
+  globalThis.fetch = (async (url: any) => {
+    const body = String(url).endsWith("/v1/search") ? { results: nextResults } : { id: "w1" };
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return body;
+      },
+      async text() {
+        return JSON.stringify(body);
+      },
+    };
+  }) as any;
+  const hit = (id: string) => ({ memory: { id, summary: `note ${id}`, tier: "semantic" }, score: 0.9 });
+  try {
+    meminiExtension({
+      on(name: string, h: any) {
+        hooks[name] = h;
+      },
+      registerTool() {},
+    } as any);
+    const ctx = { sessionManager: { getSessionId: () => "sess-w", getLeafId: () => "leaf-1" } };
+    // Push 206 distinct ids through the window (cap is 200): m0..m205.
+    for (let i = 0; i < 206; i++) {
+      nextResults = [hit(`m${i}`)];
+      const out = await hooks.before_agent_start({ prompt: `q${i}` }, ctx);
+      assert.match(out.message.content, new RegExp(`m${i}\\b`), `call ${i} should inject its fresh memory`);
+    }
+    // m0 was evicted from the 200-id window -> allowed to re-inject.
+    nextResults = [hit("m0")];
+    const old = await hooks.before_agent_start({ prompt: "old" }, ctx);
+    assert.ok(old, "an id evicted from the window must be allowed to re-inject");
+    assert.match(old.message.content, /m0\b/);
+    // m205 is still inside the window -> suppressed.
+    nextResults = [hit("m205")];
+    const recent = await hooks.before_agent_start({ prompt: "recent" }, ctx);
+    assert.equal(recent, undefined, "a recent id must stay suppressed");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// Already-shown ids ride to the server as exclude_ids; an older server that
+// 400s on the unknown field gets one retry without it, then it stops.
+test("recall sends exclude_ids and falls back when the server rejects them", async () => {
+  const { default: meminiExtension } = await import("../src/index.ts");
+  const hooks: Record<string, any> = {};
+  const realFetch = globalThis.fetch;
+  const requests: any[] = [];
+  let rejectExcludeIds = false;
+  globalThis.fetch = (async (url: any, init: any) => {
+    const body = init?.body ? JSON.parse(init.body) : {};
+    requests.push({ url: String(url), body });
+    if (rejectExcludeIds && body.exclude_ids) {
+      return {
+        ok: false,
+        status: 400,
+        async json() {
+          return {};
+        },
+        async text() {
+          return 'unknown field "exclude_ids"';
+        },
+      };
+    }
+    const res = String(url).endsWith("/v1/search")
+      ? { results: [{ memory: { id: "m1", summary: "prior note", tier: "semantic" }, score: 0.9 }] }
+      : { id: "w1" };
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return res;
+      },
+      async text() {
+        return JSON.stringify(res);
+      },
+    };
+  }) as any;
+  const searches = () => requests.filter((r) => r.url.endsWith("/v1/search"));
+  try {
+    meminiExtension({
+      on(name: string, h: any) {
+        hooks[name] = h;
+      },
+      registerTool() {},
+    } as any);
+    const ctx = { sessionManager: { getSessionId: () => "sess-x", getLeafId: () => "leaf-1" } };
+    // First recall: nothing shown yet, so no exclude_ids on the wire.
+    await hooks.before_agent_start({ prompt: "q1" }, ctx);
+    assert.equal(searches()[0].body.exclude_ids, undefined);
+    // Second recall: m1 was shown, so it must ride along as exclude_ids.
+    await hooks.before_agent_start({ prompt: "q2" }, ctx);
+    assert.deepEqual(searches()[1].body.exclude_ids, ["m1"]);
+
+    // Old server: 400 on exclude_ids -> one retry without it, then never again.
+    rejectExcludeIds = true;
+    await hooks.before_agent_start({ prompt: "q3" }, ctx);
+    const [, , withField, retry] = searches();
+    assert.deepEqual(withField.body.exclude_ids, ["m1"], "first attempt still carries exclude_ids");
+    assert.equal(retry.body.exclude_ids, undefined, "the retry must drop exclude_ids");
+    await hooks.before_agent_start({ prompt: "q4" }, ctx);
+    assert.equal(searches().length, 5, "after the fallback each recall is a single request");
+    assert.equal(searches()[4].body.exclude_ids, undefined, "exclude_ids is never sent again");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// Same bound for the captured dedup keys.
+test("captured dedup-key window is bounded (an aged-out turn can re-capture)", async () => {
+  const { default: meminiExtension } = await import("../src/index.ts");
+  const hooks: Record<string, any> = {};
+  const realFetch = globalThis.fetch;
+  const posts: any[] = [];
+  globalThis.fetch = (async (url: any, init: any) => {
+    if (String(url).endsWith("/v1/memories")) posts.push(JSON.parse(init.body));
+    const body = String(url).endsWith("/v1/search") ? { results: [] } : { id: "w1" };
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return body;
+      },
+      async text() {
+        return JSON.stringify(body);
+      },
+    };
+  }) as any;
+  try {
+    meminiExtension({
+      on(name: string, h: any) {
+        hooks[name] = h;
+      },
+      registerTool() {},
+    } as any);
+    let leaf = "leaf-0";
+    const ctx = { sessionManager: { getSessionId: () => "sess-c", getLeafId: () => leaf } };
+    const endEvent = { messages: [{ role: "assistant", content: "reply" }] };
+    // Each turn: before_agent_start buffers the prompt, agent_end captures it.
+    const runTurn = async () => {
+      await hooks.before_agent_start({ prompt: "hello" }, ctx);
+      await hooks.agent_end(endEvent, ctx);
+    };
+    await runTurn();
+    assert.equal(posts.length, 1, "first agent_end captures the turn");
+    // A re-fired agent_end for the same leaf is still deduped (pendingUser was
+    // consumed, so re-buffer the prompt to isolate the dedup-key check).
+    await hooks.before_agent_start({ prompt: "hello" }, ctx);
+    await hooks.agent_end(endEvent, ctx);
+    assert.equal(posts.length, 1, "same turn must not capture twice");
+    // Push 200 more distinct dedup keys through the window (cap is 200).
+    for (let i = 1; i <= 200; i++) {
+      leaf = `leaf-${i}`;
+      await runTurn();
+    }
+    assert.equal(posts.length, 201);
+    // leaf-0 has aged out of the window: a re-fired agent_end captures again.
+    leaf = "leaf-0";
+    await runTurn();
+    assert.equal(posts.length, 202, "a key evicted from the window is re-capturable");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("an HTTP error on recall is logged even when fallback_on_error degrades it", async () => {
   const cwd = tmpProject();
   const prevCwd = process.cwd();

@@ -600,6 +600,133 @@ test("chat.message does not re-inject memories already shown in the same session
   }
 });
 
+// The per-session dedupe window is capped: oldest ids age out (and may
+// re-inject); recent ids stay suppressed.
+test("per-session injected-id window is bounded (oldest ids age out)", async () => {
+  const realFetch = globalThis.fetch;
+  let nextResults = [];
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() { return { results: nextResults }; },
+    async text() { return ""; },
+  });
+  const hit = (id) => ({ score: 0.9, memory: { id, tier: "semantic", summary: `note ${id}` } });
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080" },
+    );
+    // Push 206 distinct ids through the window (cap is 200): m0..m205.
+    for (let i = 0; i < 206; i++) {
+      nextResults = [hit(`m${i}`)];
+      const output = { parts: [{ type: "text", text: `q${i}`, sessionID: "s1", messageID: `msg${i}` }] };
+      await hooks["chat.message"]({ sessionID: "s1" }, output);
+      assert.equal(output.parts.length, 2, `call ${i} should inject its fresh memory`);
+    }
+    // m0 was evicted from the 200-id window -> allowed to re-inject.
+    nextResults = [hit("m0")];
+    const old = { parts: [{ type: "text", text: "old", sessionID: "s1", messageID: "mo" }] };
+    await hooks["chat.message"]({ sessionID: "s1" }, old);
+    assert.equal(old.parts.length, 2, "an id evicted from the window must be allowed to re-inject");
+    // m205 is still inside the window -> suppressed.
+    nextResults = [hit("m205")];
+    const recent = { parts: [{ type: "text", text: "recent", sessionID: "s1", messageID: "mr" }] };
+    await hooks["chat.message"]({ sessionID: "s1" }, recent);
+    assert.equal(recent.parts.length, 1, "a recent id must stay suppressed");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// Already-shown ids ride to the server as exclude_ids; an older server that
+// 400s on the unknown field gets one retry without it, then it stops.
+test("recall sends exclude_ids and falls back when the server rejects them", async () => {
+  const realFetch = globalThis.fetch;
+  const requests = [];
+  let rejectExcludeIds = false;
+  globalThis.fetch = async (url, init) => {
+    const body = init && init.body ? JSON.parse(init.body) : {};
+    requests.push({ url: String(url), body });
+    if (rejectExcludeIds && body.exclude_ids) {
+      return { ok: false, status: 400, async json() { return {}; }, async text() { return 'unknown field "exclude_ids"'; } };
+    }
+    return {
+      ok: true,
+      async json() {
+        return { results: [{ score: 0.9, memory: { id: "m1", tier: "semantic", summary: "prior note" } }] };
+      },
+      async text() { return ""; },
+    };
+  };
+  const searches = () => requests.filter((r) => r.url.endsWith("/v1/search"));
+  const msg = (id) => ({ parts: [{ type: "text", text: "query", sessionID: "s1", messageID: id }] });
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080" },
+    );
+    // First recall: nothing shown yet, so no exclude_ids on the wire.
+    await hooks["chat.message"]({ sessionID: "s1" }, msg("m1"));
+    assert.equal(searches()[0].body.exclude_ids, undefined);
+    // Second recall: m1 was shown, so it must ride along as exclude_ids.
+    await hooks["chat.message"]({ sessionID: "s1" }, msg("m2"));
+    assert.deepEqual(searches()[1].body.exclude_ids, ["m1"]);
+
+    // Old server: 400 on exclude_ids -> one retry without it, then never again.
+    rejectExcludeIds = true;
+    await hooks["chat.message"]({ sessionID: "s1" }, msg("m3"));
+    const [, , withField, retry] = searches();
+    assert.deepEqual(withField.body.exclude_ids, ["m1"], "first attempt still carries exclude_ids");
+    assert.equal(retry.body.exclude_ids, undefined, "the retry must drop exclude_ids");
+    await hooks["chat.message"]({ sessionID: "s1" }, msg("m4"));
+    assert.equal(searches().length, 5, "after the fallback each recall is a single request");
+    assert.equal(searches()[4].body.exclude_ids, undefined, "exclude_ids is never sent again");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// Same bound for the captured assistant-id dedupe.
+test("captured assistant-id window is bounded (an aged-out turn can re-capture)", async () => {
+  const realFetch = globalThis.fetch;
+  const posts = [];
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith("/v1/memories")) posts.push(JSON.parse(init.body));
+    return { ok: true, async json() { return {}; }, async text() { return ""; } };
+  };
+  let turn = [];
+  const client = { session: { messages: async () => ({ data: turn }) } };
+  const mkTurn = (id) => [
+    { info: { role: "user" }, parts: [{ type: "text", text: `u-${id}` }] },
+    { info: { role: "assistant", id }, parts: [{ type: "text", text: `a-${id}` }] },
+  ];
+  const idle = { event: { type: "session.idle", properties: { sessionID: "s1" } } };
+  try {
+    const hooks = await MeminiPlugin(
+      { client, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080" },
+    );
+    turn = mkTurn("a0");
+    await hooks.event(idle);
+    assert.equal(posts.length, 1, "first idle captures the turn");
+    // A re-fired idle for the same turn is still deduped.
+    await hooks.event(idle);
+    assert.equal(posts.length, 1, "same turn must not capture twice");
+    // Push 200 more distinct assistant ids through the window (cap is 200).
+    for (let i = 1; i <= 200; i++) {
+      turn = mkTurn(`a${i}`);
+      await hooks.event(idle);
+    }
+    assert.equal(posts.length, 201);
+    // a0 has aged out of the window: a re-fired idle for it captures again.
+    turn = mkTurn("a0");
+    await hooks.event(idle);
+    assert.equal(posts.length, 202, "an id evicted from the window is re-capturable");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("an HTTP error is logged even when fallback_on_error degrades it", async () => {
   const realFetch = globalThis.fetch;
   const realError = console.error;

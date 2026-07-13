@@ -1009,18 +1009,39 @@ export default function meminiExtension(pi: ExtensionAPI): void {
     warn(`command registration skipped: ${String(error)}`);
   }
 
+  const MAX_TRACKED_SESSIONS = 200;
   // Latest user prompt per session, set in before_agent_start and consumed in
-  // agent_end to assemble the full turn.
+  // agent_end to assemble the full turn. Bounded: a session whose capture
+  // never lands would otherwise pin its entry forever.
   const pendingUser = new Map<string, string>();
+  const rememberPendingUser = (session: string, prompt: string) => {
+    pendingUser.set(session, prompt);
+    while (pendingUser.size > MAX_TRACKED_SESSIONS) {
+      const oldest = pendingUser.keys().next().value;
+      if (oldest === undefined) break;
+      pendingUser.delete(oldest);
+    }
+  };
   // Assistant message ids already captured, so a re-fired agent_end never writes
-  // a duplicate turn.
+  // a duplicate turn. Re-fires only concern recent turns, so cap the window
+  // instead of growing one entry per turn forever.
   const captured = new Set<string>();
+  const MAX_CAPTURED = 200;
+  const rememberCaptured = (id: string) => {
+    captured.add(id);
+    while (captured.size > MAX_CAPTURED) {
+      const oldest = captured.values().next().value;
+      if (oldest === undefined) break;
+      captured.delete(oldest);
+    }
+  };
   // Memory ids each session has already been shown (mirrors the openclaw
   // plugin): the recall injection is a persistent context message, so
   // re-injecting an unchanged match every turn stacks identical blocks in the
-  // prompt. Bounded so long-lived hosts can't grow the map without limit.
+  // prompt. The inner cap keeps a stable session — which never ages out of
+  // the outer map — from growing its Set for the process lifetime.
   const injectedBySession = new Map<string, Set<string>>();
-  const MAX_TRACKED_SESSIONS = 200;
+  const MAX_INJECTED_PER_SESSION = 200;
   const rememberInjected = (session: string, ids: string[]) => {
     let seen = injectedBySession.get(session);
     if (!seen) {
@@ -1033,6 +1054,33 @@ export default function meminiExtension(pi: ExtensionAPI): void {
       }
     }
     for (const id of ids) if (id) seen.add(id);
+    while (seen.size > MAX_INJECTED_PER_SESSION) {
+      const oldest = seen.values().next().value;
+      if (oldest === undefined) break;
+      seen.delete(oldest);
+    }
+  };
+  // /v1/search drops exclude_ids before ranking and the limit, so an
+  // already-shown hit frees its slot for the next-best match. Older servers
+  // 400 on the unknown field: when a request carrying it fails and the retry
+  // without it succeeds, stop sending it. The client-side filter stays.
+  let serverExcludeIds = true;
+  const searchExcluding = async (body: any, excludeIds: string[]) => {
+    if (!serverExcludeIds || excludeIds.length === 0) {
+      return client.postJson("/v1/search", body);
+    }
+    try {
+      const result = await client.postJson("/v1/search", { ...body, exclude_ids: excludeIds });
+      if (result !== null) return result;
+    } catch {
+      // With fallback_on_error=false the 400 arrives as a throw, not null.
+    }
+    const retry = await client.postJson("/v1/search", body);
+    if (retry !== null) {
+      serverExcludeIds = false;
+      warn("memini: server does not accept exclude_ids; using client-side dedupe only");
+    }
+    return retry;
   };
 
   // Recall before the turn: search for the user's prompt and inject the matches
@@ -1040,8 +1088,8 @@ export default function meminiExtension(pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (event, ctx) => {
     const sid = sessionIdOf(ctx);
     const query = String(event?.prompt || "").trim();
-    if (query && sid) pendingUser.set(sid, query);
-    if (!query) return;
+    if (query && sid) rememberPendingUser(sid, query);
+    if (!cfg.recall || !query) return;
 
     const live = await sessionLive(sessionCtx);
     if (!live.recall) return;
@@ -1052,8 +1100,11 @@ export default function meminiExtension(pi: ExtensionAPI): void {
     if (sid) body.exclude_metadata = { session_id: sid };
     if (live.recall_min_score > 0) body.min_score = live.recall_min_score;
 
-    const result = await client.postJson("/v1/search", body, live.namespace);
-    const floor = live.recall_min_score > 0 ? live.recall_min_score : 0;
+    // Already-shown ids go along as exclude_ids so a suppressed hit doesn't
+    // waste a recall_limit slot.
+    const excludeIds = sid ? [...(injectedBySession.get(sid) ?? [])] : [];
+    const result = await searchExcluding(body, excludeIds);
+    const floor = cfg.recall_min_score > 0 ? cfg.recall_min_score : 0;
     let rawHits = Array.isArray(result?.results) ? result.results : [];
     // Suppress memories this session has already been shown — the injected
     // message persists in context, so a repeat adds nothing but noise.
@@ -1124,7 +1175,7 @@ export default function meminiExtension(pi: ExtensionAPI): void {
       live.namespace,
     );
     if (stored !== null) {
-      if (dedupKey) captured.add(dedupKey);
+      if (dedupKey) rememberCaptured(dedupKey);
       if (sid) pendingUser.delete(sid);
     }
   });

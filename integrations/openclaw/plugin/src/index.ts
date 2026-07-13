@@ -1758,6 +1758,29 @@ const plugin: {
       return fresh;
     };
 
+    // /v1/search drops exclude_ids before ranking and the limit, so an
+    // already-shown hit frees its slot for the next-best match. Older servers
+    // 400 on the unknown field: when a request carrying it fails and the retry
+    // without it succeeds, stop sending it. The client-side filters stay.
+    let serverExcludeIds = true;
+    const searchExcluding = async (ns: string, body: any, excludeIds: string[]) => {
+      if (!serverExcludeIds || excludeIds.length === 0) {
+        return client.postJson("/v1/search", body, ns);
+      }
+      try {
+        const result = await client.postJson("/v1/search", { ...body, exclude_ids: excludeIds }, ns);
+        if (result !== null) return result;
+      } catch {
+        // With fallback_on_error=false the 400 arrives as a throw, not null.
+      }
+      const retry = await client.postJson("/v1/search", body, ns);
+      if (retry !== null) {
+        serverExcludeIds = false;
+        api.logger.warn?.("memini: server does not accept exclude_ids; using client-side dedupe only");
+      }
+      return retry;
+    };
+
     const recallHandler = async (event: any, hookCtx: any) => {
       const live = await sessionLive(sessionCtx);
       if (!live.enabled) return;
@@ -1775,7 +1798,13 @@ const plugin: {
       // The server-side temporal echo guard is on by default (5 min window),
       // backstopping the client-side message-ID guard (lost on gateway restart)
       // and the session-id exclusion (misses when session id is absent/rolled).
-      const result = await client.postJson("/v1/search", body, ns);
+      // Already-shown and just-captured ids go along as exclude_ids so a
+      // suppressed hit doesn't waste a recall_limit slot.
+      const excludeIds = [
+        ...(session ? (injectedBySession.get(session) ?? []) : []),
+        ...(recentlyCaptured.get(ns) ?? []),
+      ];
+      const result = await searchExcluding(ns, body, excludeIds);
       let results = Array.isArray(result?.results) ? result.results : [];
       // Drop just-captured turns: they're live context, not long-term memory.
       // Survives session-id asymmetry (keyed by stable namespace).
