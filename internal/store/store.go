@@ -334,6 +334,11 @@ type ClientSettings struct {
 	// InjectPretoolTools is the tool-name allowlist that triggers a PreToolUse injection.
 	InjectPretoolTools *[]string `json:"inject_pretool_tools,omitempty"`
 
+	// InjectDedupe suppresses re-injecting an unchanged PreToolUse recall
+	// block for a file already injected this session; the recall call still
+	// runs, only the duplicate injection is skipped.
+	InjectDedupe *bool `json:"inject_dedupe,omitempty"`
+
 	// InjectLabels selects which annotation labels to render alongside an
 	// injected memory; each must be one of tier, confidence, age, reason.
 	InjectLabels *[]string `json:"inject_labels,omitempty"`
@@ -458,6 +463,7 @@ func DefaultClientSettings() ClientSettings {
 		InjectPretoolMaxTok:   intPtr(0),
 		InjectPretoolMinScore: float64Ptr(0),
 		InjectPretoolTools:    &[]string{"Read", "Write", "Edit", "Glob", "Grep"},
+		InjectDedupe:          boolPtr(true),
 
 		InjectLabels: &[]string{},
 
@@ -495,7 +501,7 @@ type SettingsLayer struct {
 // provenance the REST layer (a later phase) surfaces to callers.
 func MergeClientSettings(layers ...SettingsLayer) (ClientSettings, map[string]string) {
 	var out ClientSettings
-	sources := make(map[string]string, 23)
+	sources := make(map[string]string, 24)
 
 	for _, l := range layers {
 		s := l.S
@@ -540,6 +546,9 @@ func MergeClientSettings(layers ...SettingsLayer) (ClientSettings, map[string]st
 		}
 		if applyPtr(&out.InjectPretoolTools, s.InjectPretoolTools) {
 			sources["inject_pretool_tools"] = l.Source
+		}
+		if applyPtr(&out.InjectDedupe, s.InjectDedupe) {
+			sources["inject_dedupe"] = l.Source
 		}
 		if applyPtr(&out.InjectLabels, s.InjectLabels) {
 			sources["inject_labels"] = l.Source

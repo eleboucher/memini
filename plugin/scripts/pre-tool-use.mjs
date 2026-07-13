@@ -116,8 +116,12 @@ async function main() {
   // that file THIS session, re-injecting them is pure token waste since the
   // context already carries them. `lastRecall` is a per-session, per-file map
   // of {hash, at} read once up front and (if anything changed) written once at
-  // the end — one small JSON file, no extra network.
-  const lastRecall = readLastRecallState(sessionId);
+  // the end — one small JSON file, no extra network. Gated by the
+  // inject_dedupe behavior setting (MEMINI_INJECT_DEDUPE env override beats
+  // the server-merged value beats the default true); off restores the prior
+  // always-inject behavior and never touches the state file.
+  const dedupe = ctx.setting("inject_dedupe").value;
+  const lastRecall = dedupe ? readLastRecallState(sessionId) : {};
   let lastRecallChanged = false;
 
   for (const f of files.slice(0, 3)) {
@@ -152,17 +156,19 @@ async function main() {
     // width). So the hash is built from `hits` directly — never from the
     // rendered bullet text or the outer <memini-pretool tool="..."> wrapper —
     // so it can't drift when the tool name or the display template changes.
-    const fingerprintInput = JSON.stringify({
-      file: f,
-      items: hits.map((h) => ({ id: h.memory?.id || null, content: truncate(h.content || h.summary || "", 240) })),
-    });
-    const hash = crypto.createHash("sha256").update(fingerprintInput).digest("hex");
-    if (lastRecall[f]?.hash === hash) {
-      if (DEBUG) console.error(`[memini] PreToolUse: unchanged recall for ${f}, suppressing duplicate injection`);
-      continue;
+    if (dedupe) {
+      const fingerprintInput = JSON.stringify({
+        file: f,
+        items: hits.map((h) => ({ id: h.memory?.id || null, content: truncate(h.content || h.summary || "", 240) })),
+      });
+      const hash = crypto.createHash("sha256").update(fingerprintInput).digest("hex");
+      if (lastRecall[f]?.hash === hash) {
+        if (DEBUG) console.error(`[memini] PreToolUse: unchanged recall for ${f}, suppressing duplicate injection`);
+        continue;
+      }
+      lastRecall[f] = { hash, at: Date.now() };
+      lastRecallChanged = true;
     }
-    lastRecall[f] = { hash, at: Date.now() };
-    lastRecallChanged = true;
 
     any = true;
     out.push(`File: ${f}`);

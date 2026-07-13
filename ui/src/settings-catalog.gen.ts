@@ -117,6 +117,12 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
     "description": "Tool-name allowlist that triggers a PreToolUse injection."
   },
   {
+    "key": "inject_dedupe",
+    "type": "boolean",
+    "default": true,
+    "description": "Suppress re-injecting an unchanged PreToolUse recall block for a file already injected this session. The recall call still runs; only the duplicate injection is skipped."
+  },
+  {
     "key": "inject_labels",
     "type": "array",
     "default": [],

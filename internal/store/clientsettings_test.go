@@ -22,6 +22,7 @@ func TestDefaultClientSettings(t *testing.T) {
 		"session_digest": d.SessionDigest,
 		"inline_extract": d.InlineExtract,
 		"auto_save":      d.AutoSave,
+		"inject_dedupe":  d.InjectDedupe,
 		"recall":         d.Recall,
 		"capture":        d.Capture,
 	}

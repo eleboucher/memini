@@ -1860,6 +1860,13 @@ components:
           items: { type: string }
           default: [Read, Write, Edit, Glob, Grep]
           description: Tool-name allowlist that triggers a PreToolUse injection.
+        inject_dedupe:
+          type: boolean
+          default: true
+          description: >
+            Suppress re-injecting an unchanged PreToolUse recall block for a
+            file already injected this session. The recall call still runs;
+            only the duplicate injection is skipped.
         inject_labels:
           type: array
           default: []

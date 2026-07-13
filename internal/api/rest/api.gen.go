@@ -662,6 +662,9 @@ type ClientSettings struct {
 	// InjectBriefingRecent Max recent episodic entries in the session-start briefing.
 	InjectBriefingRecent *int `json:"inject_briefing_recent,omitempty"`
 
+	// InjectDedupe Suppress re-injecting an unchanged PreToolUse recall block for a file already injected this session. The recall call still runs; only the duplicate injection is skipped.
+	InjectDedupe *bool `json:"inject_dedupe,omitempty"`
+
 	// InjectLabels Which annotation labels to render alongside an injected memory.
 	InjectLabels *[]ClientSettingsInjectLabels `json:"inject_labels,omitempty"`
 
@@ -1147,6 +1150,9 @@ type SettingsDefaultsResponse struct {
 
 	// InjectBriefingRecent Max recent episodic entries in the session-start briefing.
 	InjectBriefingRecent *int `json:"inject_briefing_recent,omitempty"`
+
+	// InjectDedupe Suppress re-injecting an unchanged PreToolUse recall block for a file already injected this session. The recall call still runs; only the duplicate injection is skipped.
+	InjectDedupe *bool `json:"inject_dedupe,omitempty"`
 
 	// InjectLabels Which annotation labels to render alongside an injected memory.
 	InjectLabels *[]SettingsDefaultsResponseInjectLabels `json:"inject_labels,omitempty"`

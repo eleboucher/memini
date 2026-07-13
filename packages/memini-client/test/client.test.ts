@@ -202,14 +202,27 @@ test("resolveHarnessCwd reads the real parent process cwd", () => {
 
 // ─── behavior knobs / effectiveSetting ──────────────────────────────
 
-test("BEHAVIOR_KNOBS covers exactly the 21 behavioral ClientSettings fields, excluding namespace_scope/namespace_prefix", () => {
-  assert.equal(BEHAVIOR_KNOBS.length, 21);
+test("BEHAVIOR_KNOBS covers exactly the 22 behavioral ClientSettings fields, excluding namespace_scope/namespace_prefix", () => {
+  assert.equal(BEHAVIOR_KNOBS.length, 22);
   const wireKeys = BEHAVIOR_KNOBS.map((k) => k.wireKey);
   assert.equal(new Set(wireKeys).size, wireKeys.length, "wireKey must be unique per knob");
   assert.equal(wireKeys.includes("namespace_scope"), false);
   assert.equal(wireKeys.includes("namespace_prefix"), false);
   const envNames = BEHAVIOR_KNOBS.map((k) => k.envName);
   assert.equal(new Set(envNames).size, envNames.length, "envName must be unique per knob");
+});
+
+test("inject_dedupe knob: bool, default true, MEMINI_INJECT_DEDUPE=0 overrides a server true", () => {
+  const k = BEHAVIOR_KNOBS.find((k) => k.wireKey === "inject_dedupe");
+  assert.ok(k, "inject_dedupe must be a behavior knob");
+  assert.equal(k!.envName, "MEMINI_INJECT_DEDUPE");
+  assert.equal(k!.kind, "bool");
+  assert.equal(k!.default, true);
+  assert.deepEqual(effectiveSetting(k!, undefined, {}), { value: true, source: "default" });
+  assert.deepEqual(effectiveSetting(k!, { inject_dedupe: true }, { MEMINI_INJECT_DEDUPE: "0" }), {
+    value: false,
+    source: "env-override",
+  });
 });
 
 function knob(wireKey: string): BehaviorKnob {

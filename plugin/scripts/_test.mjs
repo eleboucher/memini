@@ -1563,6 +1563,58 @@ test("pre-tool-use.mjs: two different session_ids do not share last-recall state
   }
 });
 
+test("pre-tool-use.mjs: server inject_dedupe=false disables suppression — duplicates inject again", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini", settings: { inject_dedupe: false } }));
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ results: [{ memory: { id: "m1", content: "always-inject fact" }, score: 0.9 }] }));
+  });
+  try {
+    const payload = JSON.stringify({
+      session_id: "dedupeoff1",
+      cwd: __dirname,
+      tool_name: "Read",
+      tool_input: { file_path: "a.go" },
+    });
+    const first = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    assert.match(first.stdout, /always-inject fact/);
+    const second = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    assert.match(second.stdout, /always-inject fact/, "with the server setting off, the identical block must inject again");
+    assert.equal(
+      existsSync(join(cache, "memini", "sessions", "dedupeoff1.lastrecall.json")),
+      false,
+      "dedupe off must not touch the state file",
+    );
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: MEMINI_INJECT_DEDUPE=0 overrides a server inject_dedupe=true", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini", settings: { inject_dedupe: true } }));
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ results: [{ memory: { id: "m1", content: "env-override fact" }, score: 0.9 }] }));
+  });
+  try {
+    const payload = JSON.stringify({
+      session_id: "dedupeenv1",
+      cwd: __dirname,
+      tool_name: "Read",
+      tool_input: { file_path: "a.go" },
+    });
+    const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_DEDUPE: "0" };
+    const first = await runHook("pre-tool-use.mjs", payload, env);
+    assert.match(first.stdout, /env-override fact/);
+    const second = await runHook("pre-tool-use.mjs", payload, env);
+    assert.match(second.stdout, /env-override fact/, "the env override must beat the server's true and re-inject");
+  } finally {
+    await close();
+  }
+});
+
 test("pre-compact.mjs: clears the last-recall state so an identical recall re-injects afterward", async () => {
   const cache = freshCache();
   await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
