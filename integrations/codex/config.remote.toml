@@ -1,9 +1,18 @@
 # ~/.codex/config.toml — memini over remote Streamable HTTP (recent Codex).
 [mcp_servers.memini]
 url = "http://localhost:8080/mcp"
-# Replace 'my-project' with your real namespace, or remove the header to let
-# memini auto-resolve the namespace from the git repo basename of its own
-# working directory (see README).
+# Codex is a plain MCP client: it has no project facts to send and does not
+# perform the config-handshake (POST /v1/handshake) the other integrations in
+# this repo use to auto-resolve a namespace and pick up server-side pins
+# (POST/DELETE /v1/pins) — those only take effect for a caller that hands the
+# server project facts to match against. For Codex, pick one:
+#   - Bind `default_namespace` on the API key server-side (see docs/api-keys),
+#     then omit this header entirely — every request from this key resolves
+#     to that namespace with no client-side config to keep in sync.
+#   - Or set a static header below, the closest equivalent to a handshake
+#     client's "declared" namespace: replace 'my-project' with your real one.
+# Remove the header to let the server's OWN default_namespace apply instead
+# (the key's, or the server's global default — see README).
 http_headers = { "X-Memini-Namespace" = "my-project" }
 # If memini requires auth, name the env var holding the bearer token:
 # bearer_token_env_var = "MEMINI_API_KEY"
