@@ -1674,9 +1674,25 @@ function freshConfigHome() {
   return mkdtempSync(join(tmpdir(), "memini-xdgconfig-"));
 }
 
+// Seed a legacy overrides.json entry the way the retired writeOverride once
+// did (the write path is deleted from the client core; only reads remain, for
+// exactly this migration). The key must match what readOverride computes, so
+// it comes from the surviving overrideKey export; the file shape is the frozen
+// legacy contract: { version: 1, overrides: { <key>: { namespace, setAt } } }.
 async function writeOverrideEntry(repo, namespace, configHome) {
   const mod = await import("./_client.gen.mjs");
-  mod.writeOverride(repo, namespace, { env: { XDG_CONFIG_HOME: configHome } });
+  const p = overridesJsonPath(configHome);
+  let file = { version: 1, overrides: {} };
+  try {
+    file = JSON.parse(readFileSync(p, "utf8"));
+  } catch {
+    mkdirSync(dirname(p), { recursive: true });
+  }
+  file.overrides[mod.overrideKey(repo)] = {
+    namespace,
+    setAt: new Date().toISOString(),
+  };
+  writeFileSync(p, JSON.stringify(file, null, 2) + "\n");
 }
 
 function overridesJsonPath(configHome) {
