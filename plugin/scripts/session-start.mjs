@@ -20,6 +20,7 @@ import {
   cleanStaleBuffers,
   writePluginRoot,
   writeNamespace,
+  writeSessionCwd,
   intEnv,
   envEnabled,
   labelsEnv,
@@ -84,9 +85,23 @@ async function main() {
   const sessionId = payload.session_id || payload.sessionId;
   const cwd = payload.cwd || process.cwd();
   const project = resolveProject(cwd);
-  // Cache the resolved namespace so the MCP headersHelper (which gets neither
-  // the project cwd nor CLAUDE_PROJECT_DIR) targets this project, not the
-  // plugin's version-named install dir.
+
+  // Record this session's PROJECT DIRECTORY under the harness pid that both this
+  // hook and the MCP headersHelper see as their parent (Claude Code runs hooks
+  // via `sh -c '…run.sh script'`, and run.sh execs node, which preserves the
+  // parent). The helper gets neither the project cwd nor CLAUDE_PROJECT_DIR, so
+  // this is how it finds its way home on platforms where it cannot read the
+  // parent's cwd directly.
+  //
+  // The directory, not the namespace: the helper re-resolves on every connect,
+  // so a namespace override always takes effect, where a cached namespace would
+  // go stale the moment one was set.
+  writeSessionCwd(process.ppid, cwd);
+
+  // Legacy global cache file. Still written for back-compat (an older installed
+  // headersHelper may be what actually runs during an upgrade), but it is now
+  // the helper's LAST resort — it is shared by every concurrent session, so it
+  // is last-writer-wins across repos.
   writeNamespace(project);
 
   // Hygiene: drop session buffers left behind by sessions that never ended.
