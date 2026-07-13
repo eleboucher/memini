@@ -65,22 +65,22 @@ func (e ApiKeySource) Valid() bool {
 
 // Defines values for ClientSettingsInjectLabels.
 const (
-	InjectLabelAge        ClientSettingsInjectLabels = "age"
-	InjectLabelConfidence ClientSettingsInjectLabels = "confidence"
-	InjectLabelReason     ClientSettingsInjectLabels = "reason"
-	InjectLabelTier       ClientSettingsInjectLabels = "tier"
+	ClientSettingsInjectLabelsInjectLabelAge        ClientSettingsInjectLabels = "age"
+	ClientSettingsInjectLabelsInjectLabelConfidence ClientSettingsInjectLabels = "confidence"
+	ClientSettingsInjectLabelsInjectLabelReason     ClientSettingsInjectLabels = "reason"
+	ClientSettingsInjectLabelsInjectLabelTier       ClientSettingsInjectLabels = "tier"
 )
 
 // Valid indicates whether the value is a known member of the ClientSettingsInjectLabels enum.
 func (e ClientSettingsInjectLabels) Valid() bool {
 	switch e {
-	case InjectLabelAge:
+	case ClientSettingsInjectLabelsInjectLabelAge:
 		return true
-	case InjectLabelConfidence:
+	case ClientSettingsInjectLabelsInjectLabelConfidence:
 		return true
-	case InjectLabelReason:
+	case ClientSettingsInjectLabelsInjectLabelReason:
 		return true
-	case InjectLabelTier:
+	case ClientSettingsInjectLabelsInjectLabelTier:
 		return true
 	default:
 		return false
@@ -89,16 +89,16 @@ func (e ClientSettingsInjectLabels) Valid() bool {
 
 // Defines values for ClientSettingsNamespaceScope.
 const (
-	OwnerRepo ClientSettingsNamespaceScope = "owner-repo"
-	Repo      ClientSettingsNamespaceScope = "repo"
+	ClientSettingsNamespaceScopeOwnerRepo ClientSettingsNamespaceScope = "owner_repo"
+	ClientSettingsNamespaceScopeRepo      ClientSettingsNamespaceScope = "repo"
 )
 
 // Valid indicates whether the value is a known member of the ClientSettingsNamespaceScope enum.
 func (e ClientSettingsNamespaceScope) Valid() bool {
 	switch e {
-	case OwnerRepo:
+	case ClientSettingsNamespaceScopeOwnerRepo:
 		return true
-	case Repo:
+	case ClientSettingsNamespaceScopeRepo:
 		return true
 	default:
 		return false
@@ -152,10 +152,10 @@ const (
 	HandshakeResponseNamespaceSourceCwd           HandshakeResponseNamespaceSource = "cwd"
 	HandshakeResponseNamespaceSourceDeclared      HandshakeResponseNamespaceSource = "declared"
 	HandshakeResponseNamespaceSourceEnv           HandshakeResponseNamespaceSource = "env"
-	HandshakeResponseNamespaceSourceKeyDefault    HandshakeResponseNamespaceSource = "key-default"
+	HandshakeResponseNamespaceSourceKeyDefault    HandshakeResponseNamespaceSource = "key_default"
 	HandshakeResponseNamespaceSourcePin           HandshakeResponseNamespaceSource = "pin"
 	HandshakeResponseNamespaceSourceRemote        HandshakeResponseNamespaceSource = "remote"
-	HandshakeResponseNamespaceSourceServerDefault HandshakeResponseNamespaceSource = "server-default"
+	HandshakeResponseNamespaceSourceServerDefault HandshakeResponseNamespaceSource = "server_default"
 	HandshakeResponseNamespaceSourceToplevel      HandshakeResponseNamespaceSource = "toplevel"
 )
 
@@ -291,6 +291,66 @@ func (e SelfResponseSettingsSources) Valid() bool {
 	case SelfResponseSettingsSourcesGlobal:
 		return true
 	case SelfResponseSettingsSourcesKey:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SettingsDefaultsResponseInjectLabels.
+const (
+	SettingsDefaultsResponseInjectLabelsInjectLabelAge        SettingsDefaultsResponseInjectLabels = "age"
+	SettingsDefaultsResponseInjectLabelsInjectLabelConfidence SettingsDefaultsResponseInjectLabels = "confidence"
+	SettingsDefaultsResponseInjectLabelsInjectLabelReason     SettingsDefaultsResponseInjectLabels = "reason"
+	SettingsDefaultsResponseInjectLabelsInjectLabelTier       SettingsDefaultsResponseInjectLabels = "tier"
+)
+
+// Valid indicates whether the value is a known member of the SettingsDefaultsResponseInjectLabels enum.
+func (e SettingsDefaultsResponseInjectLabels) Valid() bool {
+	switch e {
+	case SettingsDefaultsResponseInjectLabelsInjectLabelAge:
+		return true
+	case SettingsDefaultsResponseInjectLabelsInjectLabelConfidence:
+		return true
+	case SettingsDefaultsResponseInjectLabelsInjectLabelReason:
+		return true
+	case SettingsDefaultsResponseInjectLabelsInjectLabelTier:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SettingsDefaultsResponseManagedBy.
+const (
+	Api SettingsDefaultsResponseManagedBy = "api"
+	Env SettingsDefaultsResponseManagedBy = "env"
+)
+
+// Valid indicates whether the value is a known member of the SettingsDefaultsResponseManagedBy enum.
+func (e SettingsDefaultsResponseManagedBy) Valid() bool {
+	switch e {
+	case Api:
+		return true
+	case Env:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SettingsDefaultsResponseNamespaceScope.
+const (
+	SettingsDefaultsResponseNamespaceScopeOwnerRepo SettingsDefaultsResponseNamespaceScope = "owner_repo"
+	SettingsDefaultsResponseNamespaceScopeRepo      SettingsDefaultsResponseNamespaceScope = "repo"
+)
+
+// Valid indicates whether the value is a known member of the SettingsDefaultsResponseNamespaceScope enum.
+func (e SettingsDefaultsResponseNamespaceScope) Valid() bool {
+	switch e {
+	case SettingsDefaultsResponseNamespaceScopeOwnerRepo:
+		return true
+	case SettingsDefaultsResponseNamespaceScopeRepo:
 		return true
 	default:
 		return false
@@ -632,7 +692,7 @@ type ClientSettings struct {
 	// NamespacePrefix Namespace path prepended ahead of the derived/declared namespace.
 	NamespacePrefix *string `json:"namespace_prefix,omitempty"`
 
-	// NamespaceScope "repo" derives the namespace from the bare repo name; "owner-repo" disambiguates same-named repos across owners with an owner-repo slug.
+	// NamespaceScope "repo" derives the namespace from the bare repo name; "owner_repo" disambiguates same-named repos across owners with an owner-repo slug (owner + "-" + repo).
 	NamespaceScope *ClientSettingsNamespaceScope `json:"namespace_scope,omitempty"`
 
 	// Recall Enable recall-driven injection at all.
@@ -648,7 +708,7 @@ type ClientSettings struct {
 // ClientSettingsInjectLabels defines model for ClientSettings.InjectLabels.
 type ClientSettingsInjectLabels string
 
-// ClientSettingsNamespaceScope "repo" derives the namespace from the bare repo name; "owner-repo" disambiguates same-named repos across owners with an owner-repo slug.
+// ClientSettingsNamespaceScope "repo" derives the namespace from the bare repo name; "owner_repo" disambiguates same-named repos across owners with an owner-repo slug (owner + "-" + repo).
 type ClientSettingsNamespaceScope string
 
 // ClusterAction defines model for ClusterAction.
@@ -783,7 +843,7 @@ type HandshakeResponse struct {
 		UpdatedAt time.Time `json:"updated_at"`
 	} `json:"pin,omitempty"`
 
-	// ReadSet The read-set `namespace` resolves to (same shape as GET /v1/namespaces/read-set).
+	// ReadSet The read-set `namespace` resolves to (same shape as GET /v1/namespaces/readset).
 	ReadSet []ReadSetEntryItem `json:"read_set"`
 	Server  struct {
 		DefaultNamespace string `json:"default_namespace"`
@@ -1058,6 +1118,90 @@ type SelfResponse struct {
 
 // SelfResponseSettingsSources defines model for SelfResponse.SettingsSources.
 type SelfResponseSettingsSources string
+
+// SettingsDefaultsResponse defines model for SettingsDefaultsResponse.
+type SettingsDefaultsResponse struct {
+	// AutoSave Periodically nudge the agent to persist durable memories.
+	AutoSave *bool `json:"auto_save,omitempty"`
+
+	// AutoSaveInterval User-message interval between auto-save nudges.
+	AutoSaveInterval *int `json:"auto_save_interval,omitempty"`
+
+	// Capture Enable capture (turns/digests) at all.
+	Capture *bool `json:"capture,omitempty"`
+
+	// CaptureTurns Capture each user→assistant turn as episodic memory.
+	CaptureTurns *bool `json:"capture_turns,omitempty"`
+
+	// InjectBriefingFacts Max durable semantic facts in the session-start briefing.
+	InjectBriefingFacts *int `json:"inject_briefing_facts,omitempty"`
+
+	// InjectBriefingMaxTok Hard ceiling on briefing injection tokens; 0 is uncapped.
+	InjectBriefingMaxTok *int `json:"inject_briefing_max_tok,omitempty"`
+
+	// InjectBriefingPinned Max pinned memories in the session-start briefing.
+	InjectBriefingPinned *int `json:"inject_briefing_pinned,omitempty"`
+
+	// InjectBriefingProcedures Max procedural how-tos in the session-start briefing.
+	InjectBriefingProcedures *int `json:"inject_briefing_procedures,omitempty"`
+
+	// InjectBriefingRecent Max recent episodic entries in the session-start briefing.
+	InjectBriefingRecent *int `json:"inject_briefing_recent,omitempty"`
+
+	// InjectLabels Which annotation labels to render alongside an injected memory.
+	InjectLabels *[]SettingsDefaultsResponseInjectLabels `json:"inject_labels,omitempty"`
+
+	// InjectPretoolItems Max recalled items injected per file on PreToolUse.
+	InjectPretoolItems *int `json:"inject_pretool_items,omitempty"`
+
+	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped.
+	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
+
+	// InjectPretoolMinScore Floor on the fused score (>=) for a PreToolUse injection.
+	InjectPretoolMinScore *float32 `json:"inject_pretool_min_score,omitempty"`
+
+	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection.
+	InjectPretoolTools *[]string `json:"inject_pretool_tools,omitempty"`
+
+	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped.
+	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
+
+	// InjectRecallMinScore Floor on the fused score (>=) for a recall injection.
+	InjectRecallMinScore *float32 `json:"inject_recall_min_score,omitempty"`
+
+	// InlineExtract Inject the directive asking the agent to save durable facts via memory_remember.
+	InlineExtract *bool `json:"inline_extract,omitempty"`
+
+	// ManagedBy "api" means the layer is stored in the server's KV store and editable via PUT /v1/settings/defaults; "env" means it is pinned by the MEMINI_CLIENT_DEFAULTS environment variable, and PUT is refused with 409.
+	ManagedBy SettingsDefaultsResponseManagedBy `json:"managed_by"`
+
+	// MinCaptureChars Minimum content length worth bothering to capture a turn.
+	MinCaptureChars *int `json:"min_capture_chars,omitempty"`
+
+	// NamespacePrefix Namespace path prepended ahead of the derived/declared namespace.
+	NamespacePrefix *string `json:"namespace_prefix,omitempty"`
+
+	// NamespaceScope "repo" derives the namespace from the bare repo name; "owner_repo" disambiguates same-named repos across owners with an owner-repo slug (owner + "-" + repo).
+	NamespaceScope *SettingsDefaultsResponseNamespaceScope `json:"namespace_scope,omitempty"`
+
+	// Recall Enable recall-driven injection at all.
+	Recall *bool `json:"recall,omitempty"`
+
+	// RecallLimit Max memories per recall call.
+	RecallLimit *int `json:"recall_limit,omitempty"`
+
+	// SessionDigest Record a session-end/stop/pre-compact digest memory.
+	SessionDigest *bool `json:"session_digest,omitempty"`
+}
+
+// SettingsDefaultsResponseInjectLabels defines model for SettingsDefaultsResponse.InjectLabels.
+type SettingsDefaultsResponseInjectLabels string
+
+// SettingsDefaultsResponseManagedBy "api" means the layer is stored in the server's KV store and editable via PUT /v1/settings/defaults; "env" means it is pinned by the MEMINI_CLIENT_DEFAULTS environment variable, and PUT is refused with 409.
+type SettingsDefaultsResponseManagedBy string
+
+// SettingsDefaultsResponseNamespaceScope "repo" derives the namespace from the bare repo name; "owner_repo" disambiguates same-named repos across owners with an owner-repo slug (owner + "-" + repo).
+type SettingsDefaultsResponseNamespaceScope string
 
 // Stats defines model for Stats.
 type Stats struct {
@@ -1422,11 +1566,11 @@ type MoveNamespaceJSONRequestBody MoveNamespaceJSONBody
 // SplitNamespaceJSONRequestBody defines body for SplitNamespace for application/json ContentType.
 type SplitNamespaceJSONRequestBody SplitNamespaceJSONBody
 
-// DeleteProjectMapPinJSONRequestBody defines body for DeleteProjectMapPin for application/json ContentType.
-type DeleteProjectMapPinJSONRequestBody = ProjectMapDeleteRequest
+// DeletePinJSONRequestBody defines body for DeletePin for application/json ContentType.
+type DeletePinJSONRequestBody = ProjectMapDeleteRequest
 
-// PutProjectMapPinJSONRequestBody defines body for PutProjectMapPin for application/json ContentType.
-type PutProjectMapPinJSONRequestBody = ProjectMapPutRequest
+// PutPinJSONRequestBody defines body for PutPin for application/json ContentType.
+type PutPinJSONRequestBody = ProjectMapPutRequest
 
 // SearchMemoriesJSONRequestBody defines body for SearchMemories for application/json ContentType.
 type SearchMemoriesJSONRequestBody = SearchRequest
@@ -1515,20 +1659,20 @@ type ServerInterface interface {
 	// (POST /v1/namespaces/move)
 	MoveNamespace(w http.ResponseWriter, r *http.Request, params MoveNamespaceParams)
 	// Resolve the structural read-set for the request namespace
-	// (GET /v1/namespaces/read-set)
+	// (GET /v1/namespaces/readset)
 	GetReadSet(w http.ResponseWriter, r *http.Request, params GetReadSetParams)
 	// Split the request namespace by metadata keys
 	// (POST /v1/namespaces/split)
 	SplitNamespace(w http.ResponseWriter, r *http.Request, params SplitNamespaceParams)
 	// Delete an explicit project→namespace pin
-	// (DELETE /v1/project-map)
-	DeleteProjectMapPin(w http.ResponseWriter, r *http.Request)
+	// (DELETE /v1/pins)
+	DeletePin(w http.ResponseWriter, r *http.Request)
 	// List explicit project→namespace pins
-	// (GET /v1/project-map)
-	ListProjectMap(w http.ResponseWriter, r *http.Request)
+	// (GET /v1/pins)
+	ListPins(w http.ResponseWriter, r *http.Request)
 	// Create or replace an explicit project→namespace pin
-	// (PUT /v1/project-map)
-	PutProjectMapPin(w http.ResponseWriter, r *http.Request)
+	// (PUT /v1/pins)
+	PutPin(w http.ResponseWriter, r *http.Request)
 	// Recall memories via hybrid (vector + keyword) search
 	// (POST /v1/search)
 	SearchMemories(w http.ResponseWriter, r *http.Request, params SearchMemoriesParams)
@@ -1704,7 +1848,7 @@ func (_ Unimplemented) MoveNamespace(w http.ResponseWriter, r *http.Request, par
 }
 
 // Resolve the structural read-set for the request namespace
-// (GET /v1/namespaces/read-set)
+// (GET /v1/namespaces/readset)
 func (_ Unimplemented) GetReadSet(w http.ResponseWriter, r *http.Request, params GetReadSetParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
@@ -1716,20 +1860,20 @@ func (_ Unimplemented) SplitNamespace(w http.ResponseWriter, r *http.Request, pa
 }
 
 // Delete an explicit project→namespace pin
-// (DELETE /v1/project-map)
-func (_ Unimplemented) DeleteProjectMapPin(w http.ResponseWriter, r *http.Request) {
+// (DELETE /v1/pins)
+func (_ Unimplemented) DeletePin(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // List explicit project→namespace pins
-// (GET /v1/project-map)
-func (_ Unimplemented) ListProjectMap(w http.ResponseWriter, r *http.Request) {
+// (GET /v1/pins)
+func (_ Unimplemented) ListPins(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Create or replace an explicit project→namespace pin
-// (PUT /v1/project-map)
-func (_ Unimplemented) PutProjectMapPin(w http.ResponseWriter, r *http.Request) {
+// (PUT /v1/pins)
+func (_ Unimplemented) PutPin(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -3342,8 +3486,8 @@ func (siw *ServerInterfaceWrapper) SplitNamespace(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
-// DeleteProjectMapPin operation middleware
-func (siw *ServerInterfaceWrapper) DeleteProjectMapPin(w http.ResponseWriter, r *http.Request) {
+// DeletePin operation middleware
+func (siw *ServerInterfaceWrapper) DeletePin(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
@@ -3352,7 +3496,7 @@ func (siw *ServerInterfaceWrapper) DeleteProjectMapPin(w http.ResponseWriter, r 
 	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.DeleteProjectMapPin(w, r)
+		siw.Handler.DeletePin(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3362,8 +3506,8 @@ func (siw *ServerInterfaceWrapper) DeleteProjectMapPin(w http.ResponseWriter, r 
 	handler.ServeHTTP(w, r)
 }
 
-// ListProjectMap operation middleware
-func (siw *ServerInterfaceWrapper) ListProjectMap(w http.ResponseWriter, r *http.Request) {
+// ListPins operation middleware
+func (siw *ServerInterfaceWrapper) ListPins(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
@@ -3372,7 +3516,7 @@ func (siw *ServerInterfaceWrapper) ListProjectMap(w http.ResponseWriter, r *http
 	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ListProjectMap(w, r)
+		siw.Handler.ListPins(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3382,8 +3526,8 @@ func (siw *ServerInterfaceWrapper) ListProjectMap(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
-// PutProjectMapPin operation middleware
-func (siw *ServerInterfaceWrapper) PutProjectMapPin(w http.ResponseWriter, r *http.Request) {
+// PutPin operation middleware
+func (siw *ServerInterfaceWrapper) PutPin(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
@@ -3392,7 +3536,7 @@ func (siw *ServerInterfaceWrapper) PutProjectMapPin(w http.ResponseWriter, r *ht
 	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.PutProjectMapPin(w, r)
+		siw.Handler.PutPin(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3778,19 +3922,19 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/v1/namespaces/move", wrapper.MoveNamespace)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/v1/namespaces/read-set", wrapper.GetReadSet)
+		r.Get(options.BaseURL+"/v1/namespaces/readset", wrapper.GetReadSet)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/namespaces/split", wrapper.SplitNamespace)
 	})
 	r.Group(func(r chi.Router) {
-		r.Delete(options.BaseURL+"/v1/project-map", wrapper.DeleteProjectMapPin)
+		r.Delete(options.BaseURL+"/v1/pins", wrapper.DeletePin)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/v1/project-map", wrapper.ListProjectMap)
+		r.Get(options.BaseURL+"/v1/pins", wrapper.ListPins)
 	})
 	r.Group(func(r chi.Router) {
-		r.Put(options.BaseURL+"/v1/project-map", wrapper.PutProjectMapPin)
+		r.Put(options.BaseURL+"/v1/pins", wrapper.PutPin)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/search", wrapper.SearchMemories)

@@ -198,6 +198,7 @@ func newServer(
 		DefaultNamespace: cfg.DefaultNamespace,
 		HomeHeader:       config.DefaultHomeHeader,
 		RequestTimeout:   cfg.RequestTimeout,
+		ClientDefaults:   cfg.ClientDefaults,
 	}).Mount(srv.Router())
 
 	mcpHandler := mcpapi.HTTPHandlerWithAuth(svc, config.DefaultNamespaceHeader, cfg.DefaultNamespace,

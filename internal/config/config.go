@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"github.com/caarlos0/env/v11"
 
 	"github.com/eleboucher/memini/internal/memory"
+	"github.com/eleboucher/memini/internal/store"
 )
 
 // Backend selects the storage driver.
@@ -445,10 +447,35 @@ type Config struct {
 	// which table keys are shadowed this way.
 	APIKeysFile string `env:"MEMINI_API_KEYS_FILE"`
 
+	// ClientDefaultsRaw (MEMINI_CLIENT_DEFAULTS; optional; config-handshake
+	// redesign), when set, is a
+	// JSON-encoded ClientSettings object (e.g. `{"capture_turns":false}`) that
+	// becomes the server's GLOBAL default behavioral-settings layer — the layer
+	// between the built-in defaults and any per-key override, which
+	// POST /v1/handshake and GET /v1/self resolve through. Managing it here,
+	// via the environment, is the GitOps-friendly counterpart to editing it at
+	// runtime through PUT /v1/settings/defaults: when this is set, that endpoint
+	// is refused (409) and the KV store is not consulted for globals, so the
+	// env is the single source of truth and can't be silently overridden.
+	//
+	// Boot validation is fail-loud, matching MEMINI_API_KEYS_FILE: invalid JSON,
+	// an unknown field, or a value that fails ClientSettings' range/enum checks
+	// refuses the boot with a message naming this variable. Absent (the default)
+	// is a complete no-op: ClientDefaults stays nil and the KV-backed global
+	// defaults apply unchanged. Only the fields you set are stored; the rest
+	// keep inheriting the built-in defaults.
+	ClientDefaultsRaw string `env:"MEMINI_CLIENT_DEFAULTS"`
+
 	// Multi-tenancy. The fallback namespace when no header is sent; the header
 	// name itself is fixed (DefaultNamespaceHeader).
 	DefaultNamespace string
 	NamespaceSrc     NamespaceSource
+
+	// ClientDefaults is the parsed, validated MEMINI_CLIENT_DEFAULTS (see
+	// ClientDefaultsRaw), resolved separately in Load() like DefaultNamespace so
+	// it carries no env tag. nil means the variable was unset — the KV-backed
+	// global-defaults layer applies instead.
+	ClientDefaults *store.ClientSettings
 
 	// Home is the caller's personal namespace: merged read-only (durable
 	// tiers only) into the default read set on every recall/briefing/answer,
@@ -586,10 +613,37 @@ func Load() (*Config, error) {
 	ns, src := resolveDefaultNamespace()
 	c.DefaultNamespace = ns
 	c.NamespaceSrc = src
+	if err := c.resolveClientDefaults(); err != nil {
+		return nil, err
+	}
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
 	return c, nil
+}
+
+// resolveClientDefaults parses MEMINI_CLIENT_DEFAULTS (see ClientDefaultsRaw)
+// into c.ClientDefaults. Fail-loud at boot like MEMINI_API_KEYS_FILE: invalid
+// JSON, an unknown field (a typo the operator wants caught, not silently
+// dropped), or a value failing ClientSettings.Validate refuses the boot with a
+// message naming the variable. An unset/blank value is a no-op — ClientDefaults
+// stays nil and the KV-backed global-defaults layer applies unchanged.
+func (c *Config) resolveClientDefaults() error {
+	raw := strings.TrimSpace(c.ClientDefaultsRaw)
+	if raw == "" {
+		return nil
+	}
+	var s store.ClientSettings
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&s); err != nil {
+		return fmt.Errorf("MEMINI_CLIENT_DEFAULTS: invalid JSON: %w", err)
+	}
+	if err := s.Validate(); err != nil {
+		return fmt.Errorf("MEMINI_CLIENT_DEFAULTS: %w", err)
+	}
+	c.ClientDefaults = &s
+	return nil
 }
 
 // resolveDefaultNamespace picks the fallback namespace when no

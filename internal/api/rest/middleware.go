@@ -60,6 +60,16 @@ type AuthConfig struct {
 	// before (see chi's Timeout doc comment). 0 disables it.
 	RequestTimeout time.Duration
 
+	// ClientDefaults, when non-nil, is the env-managed global-defaults
+	// ClientSettings layer (config.Config.ClientDefaults, from
+	// MEMINI_CLIENT_DEFAULTS). When set it IS the server's global-defaults
+	// layer for the config-handshake surface: /v1/handshake and /v1/self
+	// resolve through it, GET /v1/settings/defaults reports managed_by=env, and
+	// PUT /v1/settings/defaults is refused with 409 — the KV-backed global
+	// layer is never consulted. nil (the default) leaves the KV store as the
+	// global-defaults layer, unchanged.
+	ClientDefaults *store.ClientSettings
+
 	// KeyAuth, when non-nil, is used verbatim as the auth policy instead of
 	// New building one from APIKey/APIKeyStore/FileKeys. Set this to share
 	// ONE apiauth.Config (and its cache pointer) with another surface mounted

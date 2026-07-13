@@ -347,6 +347,7 @@ var meminiEnvKeys = []string{
 	"MEMINI_RECALL_REWRITE_TIMEOUT", "MEMINI_REQUEST_TIMEOUT",
 	"MEMINI_GLOBAL_NAMESPACE", "MEMINI_TENANT_SHARED",
 	"MEMINI_HOME",
+	"MEMINI_CLIENT_DEFAULTS",
 }
 
 // TestFatalDeprecatedVarsUnset pins the clean-boot case: with neither deleted
@@ -442,5 +443,76 @@ func assertFatalMessageComplete(t *testing.T, msg, varName string) {
 		if !strings.Contains(msg, c.want) {
 			t.Errorf("message missing %s (want substring %q); got: %s", c.label, c.want, msg)
 		}
+	}
+}
+
+// TestLoadClientDefaultsUnset pins the feature-off no-op: with
+// MEMINI_CLIENT_DEFAULTS absent, ClientDefaults is nil and the KV-backed global
+// defaults apply unchanged — zero behavior change versus before this existed.
+func TestLoadClientDefaultsUnset(t *testing.T) {
+	clearMeminiEnv(t)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ClientDefaults != nil {
+		t.Errorf("ClientDefaults = %+v, want nil when MEMINI_CLIENT_DEFAULTS is unset", cfg.ClientDefaults)
+	}
+}
+
+// TestLoadClientDefaultsHappy pins the happy path: a valid JSON ClientSettings
+// object parses into ClientDefaults with exactly the fields it set (and only
+// those — omitted fields stay nil to keep inheriting the built-ins).
+func TestLoadClientDefaultsHappy(t *testing.T) {
+	clearMeminiEnv(t)
+	t.Setenv("MEMINI_CLIENT_DEFAULTS", `{"capture_turns":false,"recall_limit":7,"namespace_scope":"owner_repo"}`)
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ClientDefaults == nil {
+		t.Fatal("ClientDefaults is nil, want the parsed object")
+	}
+	cd := cfg.ClientDefaults
+	if cd.CaptureTurns == nil || *cd.CaptureTurns {
+		t.Errorf("CaptureTurns = %v, want a set false", cd.CaptureTurns)
+	}
+	if cd.RecallLimit == nil || *cd.RecallLimit != 7 {
+		t.Errorf("RecallLimit = %v, want 7", cd.RecallLimit)
+	}
+	if cd.NamespaceScope == nil || *cd.NamespaceScope != "owner_repo" {
+		t.Errorf("NamespaceScope = %v, want owner_repo", cd.NamespaceScope)
+	}
+	// An omitted field must stay nil (inherit), not be defaulted here.
+	if cd.SessionDigest != nil {
+		t.Errorf("SessionDigest = %v, want nil (omitted → inherit)", cd.SessionDigest)
+	}
+}
+
+// TestLoadClientDefaultsFatal pins the fail-loud boot: invalid JSON, an unknown
+// field, or a value failing ClientSettings.Validate all refuse the boot with a
+// message naming the variable — never a silent fallback to the built-ins.
+func TestLoadClientDefaultsFatal(t *testing.T) {
+	cases := []struct {
+		name, raw string
+	}{
+		{"invalid JSON", `{not json`},
+		{"unknown field", `{"bogus_field":true}`},
+		{"out-of-range value", `{"auto_save_interval":0}`},
+		{"bad enum value", `{"namespace_scope":"nonsense"}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			clearMeminiEnv(t)
+			t.Setenv("MEMINI_CLIENT_DEFAULTS", c.raw)
+			_, err := config.Load()
+			if err == nil {
+				t.Fatalf("Load should be fatal for %s, got nil error", c.name)
+			}
+			if !strings.Contains(err.Error(), "MEMINI_CLIENT_DEFAULTS") {
+				t.Errorf("error should name the variable, got: %v", err)
+			}
+		})
 	}
 }

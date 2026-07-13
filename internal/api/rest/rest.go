@@ -610,19 +610,7 @@ func (h *Server) GetReadSet(w http.ResponseWriter, r *http.Request, _ GetReadSet
 		writeError(w, r, statusFor(err), err)
 		return
 	}
-	out := ReadSetResponse{Entries: make([]ReadSetEntryItem, len(entries))}
-	for i, e := range entries {
-		item := ReadSetEntryItem{Namespace: e.NS, Origin: ReadSetOrigin(e.Origin)}
-		if len(e.Tiers) > 0 {
-			tiers := make([]Tier, len(e.Tiers))
-			for j, t := range e.Tiers {
-				tiers[j] = Tier(t)
-			}
-			item.Tiers = &tiers
-		}
-		out.Entries[i] = item
-	}
-	httputil.JSON(w, http.StatusOK, out)
+	httputil.JSON(w, http.StatusOK, ReadSetResponse{Entries: apiReadSet(entries)})
 }
 
 // linkStore type-asserts the backing store to store.LinkStore, the optional

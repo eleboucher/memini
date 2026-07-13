@@ -352,9 +352,9 @@ type ClientSettings struct {
 
 	// MinCaptureChars is the minimum content length worth bothering to capture a turn.
 	MinCaptureChars *int `json:"min_capture_chars,omitempty"`
-	// NamespaceScope is "repo" or "owner-repo": "repo" derives the namespace
-	// from the bare repo name; "owner-repo" disambiguates same-named repos
-	// across owners with an owner-repo slug.
+	// NamespaceScope is "repo" or "owner_repo": "repo" derives the namespace
+	// from the bare repo name; "owner_repo" disambiguates same-named repos
+	// across owners with an owner-repo slug (owner + "-" + repo).
 	NamespaceScope *string `json:"namespace_scope,omitempty"`
 	// NamespacePrefix is a namespace path prepended ahead of the
 	// derived/declared namespace; "" means no prefix.
@@ -410,10 +410,10 @@ func (s ClientSettings) Validate() error {
 	}
 	if s.NamespaceScope != nil {
 		switch *s.NamespaceScope {
-		case "repo", "owner-repo":
+		case "repo", "owner_repo":
 		default:
 			return fmt.Errorf("client settings: namespace_scope must be %q or %q, got %q",
-				"repo", "owner-repo", *s.NamespaceScope)
+				"repo", "owner_repo", *s.NamespaceScope)
 		}
 	}
 	if s.InjectLabels != nil {

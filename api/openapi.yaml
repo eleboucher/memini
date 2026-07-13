@@ -319,7 +319,7 @@ paths:
               schema: { $ref: "#/components/schemas/Briefing" }
         "400": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
-  /v1/namespaces/read-set:
+  /v1/namespaces/readset:
     get:
       operationId: getReadSet
       tags: [memory]
@@ -920,7 +920,7 @@ paths:
           description: OK
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/ClientSettings" }
+              schema: { $ref: "#/components/schemas/SettingsDefaultsResponse" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "501": { $ref: "#/components/responses/Error" }
@@ -947,9 +947,9 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "501": { $ref: "#/components/responses/Error" }
-  /v1/project-map:
+  /v1/pins:
     get:
-      operationId: listProjectMap
+      operationId: listPins
       tags: [memory]
       summary: List explicit project→namespace pins
       description: >
@@ -964,7 +964,7 @@ paths:
               schema: { $ref: "#/components/schemas/ProjectMapListResponse" }
         "501": { $ref: "#/components/responses/Error" }
     put:
-      operationId: putProjectMapPin
+      operationId: putPin
       tags: [memory]
       summary: Create or replace an explicit project→namespace pin
       description: >
@@ -988,11 +988,11 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "501": { $ref: "#/components/responses/Error" }
     delete:
-      operationId: deleteProjectMapPin
+      operationId: deletePin
       tags: [memory]
       summary: Delete an explicit project→namespace pin
       description: >
-        Any caller may unpin — same authorization as putProjectMapPin, with
+        Any caller may unpin — same authorization as putPin, with
         the delete activity-logged the same way (event kind "unpin").
         remote_url and/or toplevel_path identify the pin to remove — at
         least one must be given, 400 otherwise.
@@ -1898,16 +1898,34 @@ components:
           description: Minimum content length worth bothering to capture a turn.
         namespace_scope:
           type: string
-          enum: [repo, owner-repo]
+          enum: [repo, owner_repo]
           default: repo
           description: >
-            "repo" derives the namespace from the bare repo name; "owner-repo"
+            "repo" derives the namespace from the bare repo name; "owner_repo"
             disambiguates same-named repos across owners with an
-            owner-repo slug.
+            owner-repo slug (owner + "-" + repo).
         namespace_prefix:
           type: string
           default: ""
           description: Namespace path prepended ahead of the derived/declared namespace.
+    SettingsDefaultsResponse:
+      description: >
+        The server's global default ClientSettings (fully resolved — every
+        field present) plus who manages this layer, so the admin UI can render
+        an env-managed layer read-only.
+      allOf:
+        - $ref: "#/components/schemas/ClientSettings"
+        - type: object
+          required: [managed_by]
+          properties:
+            managed_by:
+              type: string
+              description: >
+                "api" means the layer is stored in the server's KV store and
+                editable via PUT /v1/settings/defaults; "env" means it is pinned
+                by the MEMINI_CLIENT_DEFAULTS environment variable, and PUT is
+                refused with 409.
+              enum: [api, env]
     SelfResponse:
       type: object
       required: [identity, settings, settings_sources]
@@ -1988,7 +2006,7 @@ components:
         namespace_source:
           type: string
           description: Which rule resolved `namespace`, highest precedence first.
-          enum: [pin, env, declared, remote, toplevel, cwd, key-default, server-default]
+          enum: [pin, env, declared, remote, toplevel, cwd, key_default, server_default]
         pin:
           type: object
           description: Present only when namespace_source is "pin".
@@ -2023,7 +2041,7 @@ components:
           type: array
           description: >
             The read-set `namespace` resolves to (same shape as GET
-            /v1/namespaces/read-set).
+            /v1/namespaces/readset).
           items: { $ref: "#/components/schemas/ReadSetEntryItem" }
         server:
           type: object

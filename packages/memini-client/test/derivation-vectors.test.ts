@@ -28,8 +28,8 @@ const NAMESPACE_SOURCES = new Set([
   "remote",
   "toplevel",
   "cwd",
-  "key-default",
-  "server-default",
+  "key_default",
+  "server_default",
 ]);
 
 function loadFixture(): {

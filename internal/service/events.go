@@ -184,6 +184,29 @@ func (s *Service) logMemoryEvent(ctx context.Context, kind store.EventKind, name
 	s.logEvents(ctx, []store.Event{e})
 }
 
+// LogConfigEvent records a config-surface write — a pin (EventPin), an unpin
+// (EventUnpin), or a behavioral-settings change (EventSettings) — to the
+// activity log. Unlike the memory events above these carry no memory snapshot:
+// the payload that matters lives in detail (a pin's keys/author/note, which
+// settings layer changed), so the event is a single memory-less row. namespace
+// is what the event is recorded against (the pinned namespace for a pin/unpin,
+// "" for a global-defaults change). Exposed so the REST handlers can log
+// through the service that owns logEvents rather than reaching into the store
+// themselves. Best-effort like every other log write: a failure is logged,
+// never returned, and it is a no-op against a backend with no activity log.
+func (s *Service) LogConfigEvent(ctx context.Context, kind store.EventKind, namespace string, detail map[string]any) {
+	if _, ok := s.eventLog(); !ok {
+		return
+	}
+	s.logEvents(ctx, []store.Event{{
+		OpID:      s.newID(),
+		Kind:      kind,
+		Namespace: namespace,
+		Detail:    detail,
+		CreatedAt: s.now(),
+	}})
+}
+
 // applyMemory stamps the memory snapshot onto an event row. The snapshot is
 // what keeps the feed a single query (no per-row fetch) and what keeps a forget
 // event readable once its memory no longer exists.

@@ -32,7 +32,7 @@ The core read and write surface. `POST /v1/search` is the REST equivalent of the
 
 ## Namespaces and scoping
 
-Inspect and repair how memories are partitioned. See [scopes](../scopes.md) for the model. `GET /v1/namespaces/read-set` answers "which namespaces would this call actually search?", which is the fastest way to debug recall that returns too much or too little.
+Inspect and repair how memories are partitioned. See [scopes](../scopes.md) for the model. `GET /v1/namespaces/readset` answers "which namespaces would this call actually search?", which is the fastest way to debug recall that returns too much or too little.
 
 | Endpoint | Does |
 | --- | --- |
@@ -43,8 +43,23 @@ Inspect and repair how memories are partitioned. See [scopes](../scopes.md) for 
 | `GET /v1/namespaces` | List the distinct namespaces holding memories |
 | `GET /v1/namespaces/briefing` | Layered session-start briefing for the request namespace |
 | `POST /v1/namespaces/move` | Relocate every memory in the request namespace to another namespace |
-| `GET /v1/namespaces/read-set` | Resolve the structural read-set for the request namespace |
+| `GET /v1/namespaces/readset` | Resolve the structural read-set for the request namespace |
 | `POST /v1/namespaces/split` | Split the request namespace by metadata keys |
+
+## Configuration handshake
+
+The client→server config handshake. `POST /v1/handshake` resolves the namespace, identity, and behavioral settings from client-supplied project facts; `/v1/self` and `/v1/settings/defaults` read and edit the settings layers; `/v1/pins` manages the explicit project→namespace pins that beat derivation.
+
+| Endpoint | Does |
+| --- | --- |
+| `POST /v1/handshake` | Resolve namespace, identity, and behavioral settings from client-supplied project facts |
+| `DELETE /v1/pins` | Delete an explicit project→namespace pin |
+| `GET /v1/pins` | List explicit project→namespace pins |
+| `PUT /v1/pins` | Create or replace an explicit project→namespace pin |
+| `GET /v1/self` | The caller's identity and fully-merged behavioral settings |
+| `PUT /v1/self/settings` | Replace the caller's own per-key behavioral settings |
+| `GET /v1/settings/defaults` | The server's global default ClientSettings |
+| `PUT /v1/settings/defaults` | Replace the server's global default ClientSettings |
 
 ## Maintenance
 

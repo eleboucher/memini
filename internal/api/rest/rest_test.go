@@ -1616,7 +1616,7 @@ func TestBriefingHomeHeaderMergesDurable(t *testing.T) {
 	}
 }
 
-// TestReadSetEndpoint pins GET /v1/namespaces/read-set's shape and ordering:
+// TestReadSetEndpoint pins GET /v1/namespaces/readset's shape and ordering:
 // for a three-level primary namespace, a home header, and one stored link,
 // it returns exactly 5 entries — primary, its two ancestors (nearest first),
 // home, then the link — each with the correct origin and tier restriction
@@ -1634,9 +1634,9 @@ func TestReadSetEndpoint(t *testing.T) {
 		t.Fatalf("put link: want 200, got %d (%s)", rec.Code, rec.Body)
 	}
 
-	rec = doHome(t, h, http.MethodGet, "/v1/namespaces/read-set", "acme/phoenix/api", "personal/kit", apiKey, nil)
+	rec = doHome(t, h, http.MethodGet, "/v1/namespaces/readset", "acme/phoenix/api", "personal/kit", apiKey, nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("read-set: want 200, got %d (%s)", rec.Code, rec.Body)
+		t.Fatalf("readset: want 200, got %d (%s)", rec.Code, rec.Body)
 	}
 	var got struct {
 		Entries []struct {

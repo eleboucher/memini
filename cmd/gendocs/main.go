@@ -207,7 +207,7 @@ var groups = []group{
 			"model.\n\n`MEMINI_NAMESPACE`, `MEMINI_DEFAULT_NAMESPACE` and `MEMINI_AGENT` are resolved outside the " +
 			"configstruct (in `internal/config/namespace.go`), which is why they carry a source note rather than a " +
 			"Go field name.",
-		Vars: []string{"MEMINI_DEFAULT_NAMESPACE", "MEMINI_NAMESPACE", "MEMINI_AGENT", "MEMINI_HOME"},
+		Vars: []string{"MEMINI_DEFAULT_NAMESPACE", "MEMINI_NAMESPACE", "MEMINI_AGENT", "MEMINI_HOME", "MEMINI_CLIENT_DEFAULTS"},
 	},
 }
 

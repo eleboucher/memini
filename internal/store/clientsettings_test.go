@@ -123,7 +123,7 @@ func TestClientSettingsValidate(t *testing.T) {
 		{"inject_pretool_min_score negative is invalid", store.ClientSettings{InjectPretoolMinScore: ptr(-0.1)}, true},
 		{"inject_recall_min_score negative is invalid", store.ClientSettings{InjectRecallMinScore: ptr(-0.1)}, true},
 		{"namespace_scope repo is valid", store.ClientSettings{NamespaceScope: ptr("repo")}, false},
-		{"namespace_scope owner-repo is valid", store.ClientSettings{NamespaceScope: ptr("owner-repo")}, false},
+		{"namespace_scope owner_repo is valid", store.ClientSettings{NamespaceScope: ptr("owner_repo")}, false},
 		{"namespace_scope bad value is invalid", store.ClientSettings{NamespaceScope: ptr("global")}, true},
 		{"inject_labels valid values", store.ClientSettings{InjectLabels: &[]string{"tier", "confidence", "age", "reason"}}, false},
 		{"inject_labels empty slice is valid", store.ClientSettings{InjectLabels: &[]string{}}, false},

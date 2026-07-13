@@ -96,6 +96,7 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_NAMESPACE`](#memini_namespace) | none | [Namespaces](#namespaces) |
 | [`MEMINI_AGENT`](#memini_agent) | none | [Namespaces](#namespaces) |
 | [`MEMINI_HOME`](#memini_home) | none | [Namespaces](#namespaces) |
+| [`MEMINI_CLIENT_DEFAULTS`](#memini_client_defaults) | none | [Namespaces](#namespaces) |
 
 ## HTTP server
 
@@ -596,6 +597,14 @@ Nests the resolved namespace under a per-agent segment, so several agents sharin
 string, default none. Set by `Config.Home`.
 
 `MEMINI_HOME` is the caller's personal namespace: merged read-only (durable tiers only) into the default read set on every recall/briefing/answer, on top of the request namespace and its ancestors. Client-side only — the server never derives it. On HTTP transports it is carried per-request by the X-Memini-Home header (DefaultHomeHeader); this env var is what the stdio MCP server (`memini mcp`) resolves instead, since stdio has no headers. Empty means no home leg (unset by default).
+
+### `MEMINI_CLIENT_DEFAULTS`
+
+string, default none. Set by `Config.ClientDefaultsRaw`.
+
+`MEMINI_CLIENT_DEFAULTS` (MEMINI_CLIENT_DEFAULTS; optional; config-handshake redesign), when set, is a JSON-encoded ClientSettings object (e.g. `{"capture_turns":false}`) that becomes the server's GLOBAL default behavioral-settings layer — the layer between the built-in defaults and any per-key override, which POST /v1/handshake and GET /v1/self resolve through. Managing it here, via the environment, is the GitOps-friendly counterpart to editing it at runtime through PUT /v1/settings/defaults: when this is set, that endpoint is refused (409) and the KV store is not consulted for globals, so the env is the single source of truth and can't be silently overridden.
+
+Boot validation is fail-loud, matching MEMINI_API_KEYS_FILE: invalid JSON, an unknown field, or a value that fails ClientSettings' range/enum checks refuses the boot with a message naming this variable. Absent (the default) is a complete no-op: ClientDefaults stays nil and the KV-backed global defaults apply unchanged. Only the fields you set are stored; the rest keep inheriting the built-in defaults.
 
 ## Removed settings
 

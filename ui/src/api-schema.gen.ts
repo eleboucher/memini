@@ -185,7 +185,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/namespaces/read-set": {
+    "/v1/namespaces/readset": {
         parameters: {
             query?: never;
             header?: never;
@@ -572,7 +572,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/project-map": {
+    "/v1/pins": {
         parameters: {
             query?: never;
             header?: never;
@@ -583,18 +583,18 @@ export interface paths {
          * List explicit project→namespace pins
          * @description Open to every credential class: the project map is machine-wide derivation state, not scoped to one namespace, and any caller's handshake already reveals whichever pin matches its project facts.
          */
-        get: operations["listProjectMap"];
+        get: operations["listPins"];
         /**
          * Create or replace an explicit project→namespace pin
          * @description Any caller may pin — admin key, dev mode, or a named table/file key. Writes are activity-logged with their author (event kind "pin"); that audit trail is the control, not an authorization gate. Pins are keyed by remote_url (canonicalized) and/or toplevel_path — at least one must be given, 400 otherwise. A pin beats every other namespace_source, including MEMINI_NAMESPACE, at handshake time.
          */
-        put: operations["putProjectMapPin"];
+        put: operations["putPin"];
         post?: never;
         /**
          * Delete an explicit project→namespace pin
-         * @description Any caller may unpin — same authorization as putProjectMapPin, with the delete activity-logged the same way (event kind "unpin"). remote_url and/or toplevel_path identify the pin to remove — at least one must be given, 400 otherwise.
+         * @description Any caller may unpin — same authorization as putPin, with the delete activity-logged the same way (event kind "unpin"). remote_url and/or toplevel_path identify the pin to remove — at least one must be given, 400 otherwise.
          */
-        delete: operations["deleteProjectMapPin"];
+        delete: operations["deletePin"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1160,16 +1160,24 @@ export interface components {
              */
             min_capture_chars: number;
             /**
-             * @description "repo" derives the namespace from the bare repo name; "owner-repo" disambiguates same-named repos across owners with an owner-repo slug.
+             * @description "repo" derives the namespace from the bare repo name; "owner_repo" disambiguates same-named repos across owners with an owner-repo slug (owner + "-" + repo).
              * @default repo
              * @enum {string}
              */
-            namespace_scope: "repo" | "owner-repo";
+            namespace_scope: "repo" | "owner_repo";
             /**
              * @description Namespace path prepended ahead of the derived/declared namespace.
              * @default
              */
             namespace_prefix: string;
+        };
+        /** @description The server's global default ClientSettings (fully resolved — every field present) plus who manages this layer, so the admin UI can render an env-managed layer read-only. */
+        SettingsDefaultsResponse: components["schemas"]["ClientSettings"] & {
+            /**
+             * @description "api" means the layer is stored in the server's KV store and editable via PUT /v1/settings/defaults; "env" means it is pinned by the MEMINI_CLIENT_DEFAULTS environment variable, and PUT is refused with 409.
+             * @enum {string}
+             */
+            managed_by: "api" | "env";
         };
         SelfResponse: {
             identity: components["schemas"]["CallerIdentity"];
@@ -1211,7 +1219,7 @@ export interface components {
              * @description Which rule resolved `namespace`, highest precedence first.
              * @enum {string}
              */
-            namespace_source: "pin" | "env" | "declared" | "remote" | "toplevel" | "cwd" | "key-default" | "server-default";
+            namespace_source: "pin" | "env" | "declared" | "remote" | "toplevel" | "cwd" | "key_default" | "server_default";
             /** @description Present only when namespace_source is "pin". */
             pin?: {
                 /** @description The project_map key that matched (remote:<canonical-remote> or path:<toplevel_path>). */
@@ -1229,7 +1237,7 @@ export interface components {
             settings_sources: {
                 [key: string]: "default" | "global" | "key";
             };
-            /** @description The read-set `namespace` resolves to (same shape as GET /v1/namespaces/read-set). */
+            /** @description The read-set `namespace` resolves to (same shape as GET /v1/namespaces/readset). */
             read_set: components["schemas"]["ReadSetEntryItem"][];
             server: {
                 version: string;
@@ -2275,7 +2283,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ClientSettings"];
+                    "application/json": components["schemas"]["SettingsDefaultsResponse"];
                 };
             };
             401: components["responses"]["Error"];
@@ -2310,7 +2318,7 @@ export interface operations {
             501: components["responses"]["Error"];
         };
     };
-    listProjectMap: {
+    listPins: {
         parameters: {
             query?: never;
             header?: never;
@@ -2331,7 +2339,7 @@ export interface operations {
             501: components["responses"]["Error"];
         };
     };
-    putProjectMapPin: {
+    putPin: {
         parameters: {
             query?: never;
             header?: never;
@@ -2357,7 +2365,7 @@ export interface operations {
             501: components["responses"]["Error"];
         };
     };
-    deleteProjectMapPin: {
+    deletePin: {
         parameters: {
             query?: never;
             header?: never;

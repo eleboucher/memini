@@ -56,9 +56,17 @@ var restGroups = []restGroup{
 	{
 		Title: "Namespaces and scoping",
 		Intro: "Inspect and repair how memories are partitioned. See [scopes](../scopes.md) for the model. " +
-			"`GET /v1/namespaces/read-set` answers \"which namespaces would this call actually search?\", " +
+			"`GET /v1/namespaces/readset` answers \"which namespaces would this call actually search?\", " +
 			"which is the fastest way to debug recall that returns too much or too little.",
 		Prefix: []string{"/v1/namespaces", "/v1/links"},
+	},
+	{
+		Title: "Configuration handshake",
+		Intro: "The client→server config handshake. `POST /v1/handshake` resolves the namespace, " +
+			"identity, and behavioral settings from client-supplied project facts; `/v1/self` and " +
+			"`/v1/settings/defaults` read and edit the settings layers; `/v1/pins` manages the " +
+			"explicit project→namespace pins that beat derivation.",
+		Prefix: []string{"/v1/handshake", "/v1/self", "/v1/settings", "/v1/pins"},
 	},
 	{
 		Title:  "Maintenance",
