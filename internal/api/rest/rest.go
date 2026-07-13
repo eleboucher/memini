@@ -975,7 +975,7 @@ func (h *Server) SplitNamespace(w http.ResponseWriter, r *http.Request, _ SplitN
 	}
 	// Undocumented ?by=a,b fallback kept for callers that predate the body.
 	if len(by) == 0 {
-		for _, p := range strings.Split(r.URL.Query().Get("by"), ",") {
+		for p := range strings.SplitSeq(r.URL.Query().Get("by"), ",") {
 			if p = strings.TrimSpace(p); p != "" {
 				by = append(by, p)
 			}

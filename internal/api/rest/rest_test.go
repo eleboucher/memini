@@ -1149,11 +1149,12 @@ func TestGetBriefingInvalidScope(t *testing.T) {
 // entries maps to 400 invalid input, not 500.
 func TestGetBriefingNamespacesCapRejected(t *testing.T) {
 	h := newServer(t)
-	q := "/v1/namespaces/briefing?"
+	var q strings.Builder
+	q.WriteString("/v1/namespaces/briefing?")
 	for i := range 17 {
-		q += fmt.Sprintf("namespaces=ns-%d&", i)
+		fmt.Fprintf(&q, "namespaces=ns-%d&", i)
 	}
-	rec := do(t, h, http.MethodGet, strings.TrimSuffix(q, "&"), "proj", apiKey, nil)
+	rec := do(t, h, http.MethodGet, strings.TrimSuffix(q.String(), "&"), "proj", apiKey, nil)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("17 namespaces: want 400, got %d (%s)", rec.Code, rec.Body)
 	}

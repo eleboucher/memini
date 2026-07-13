@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG GO_VERSION=1.26.4
+ARG GO_VERSION=1.26.5
 ARG NODE_VERSION=24
 
 FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-alpine AS ui
@@ -31,13 +31,13 @@ ARG REVISION=none
 ARG DATE=unknown
 
 RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build,id=gobuild-${TARGETARCH} \
-    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
-    -ldflags "-s -w \
-      -X github.com/eleboucher/memini/internal/version.Version=${VERSION} \
-      -X github.com/eleboucher/memini/internal/version.Commit=${REVISION} \
-      -X github.com/eleboucher/memini/internal/version.Date=${DATE}" \
-    -o /out/memini ./cmd/memini
+  --mount=type=cache,target=/root/.cache/go-build,id=gobuild-${TARGETARCH} \
+  CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
+  -ldflags "-s -w \
+  -X github.com/eleboucher/memini/internal/version.Version=${VERSION} \
+  -X github.com/eleboucher/memini/internal/version.Commit=${REVISION} \
+  -X github.com/eleboucher/memini/internal/version.Date=${DATE}" \
+  -o /out/memini ./cmd/memini
 
 # Bare binary for `--target artifact --output type=local`; the release
 # workflow extracts these instead of recompiling for the archives.

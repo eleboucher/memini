@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -196,8 +197,8 @@ func TestMigrateBackfillsEveryNewerColumn(t *testing.T) {
 	if _, err := st.db.ExecContext(ctx, "DROP INDEX idx_memories_fingerprint"); err != nil {
 		t.Fatalf("drop index: %v", err)
 	}
-	for i := len(backfillColumns) - 1; i >= 0; i-- {
-		col := backfillColumns[i].name
+	for _, v := range slices.Backward(backfillColumns) {
+		col := v.name
 		if _, err := st.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE memories DROP COLUMN %s", col)); err != nil {
 			t.Fatalf("drop column %s: %v", col, err)
 		}

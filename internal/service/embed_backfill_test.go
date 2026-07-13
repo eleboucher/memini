@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ func seedPendingEmbed(t *testing.T, st store.Store, n int, contents ...string) [
 	degraded := service.New(st, errEmbedder{dims: dims}, service.WithSyncReinforce(),
 		service.WithWriteEmbedTimeout(time.Second))
 	ids := make([]string, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		content := contents[i]
 		got, err := degraded.Remember(context.Background(), service.RememberInput{
 			Namespace: "alice", Content: content, Tier: memory.TierSemantic,
@@ -108,12 +109,7 @@ func TestBackfillEmbeddingsHealthyEmbedderClearsQueue(t *testing.T) {
 }
 
 func id0or1(ids []string, id string) bool {
-	for _, want := range ids {
-		if want == id {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ids, id)
 }
 
 // TestBackfillEmbeddingsEmbedderDownLeavesRowsPending confirms that when the

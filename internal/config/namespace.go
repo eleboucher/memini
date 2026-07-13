@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/eleboucher/memini/internal/nsresolve"
@@ -150,9 +151,9 @@ func repoNameFromRemote(url string) string {
 // lastSegment returns the last non-empty "/"-separated segment of p.
 func lastSegment(p string) string {
 	parts := strings.Split(p, "/")
-	for i := len(parts) - 1; i >= 0; i-- {
-		if parts[i] != "" {
-			return parts[i]
+	for _, v := range slices.Backward(parts) {
+		if v != "" {
+			return v
 		}
 	}
 	return ""

@@ -23,24 +23,20 @@ import (
 	"github.com/eleboucher/memini/internal/version"
 )
 
-// boolPtr returns a pointer to a bool value.
-func boolPtr(b bool) *bool { return &b }
-
-// Annotation sets for tool discovery and auto-approval by MCP clients.
 var (
 	readOnly = &mcpsdk.ToolAnnotations{
 		ReadOnlyHint:  true,
-		OpenWorldHint: boolPtr(false),
+		OpenWorldHint: new(false),
 	}
 	additive = &mcpsdk.ToolAnnotations{
-		DestructiveHint: boolPtr(false),
+		DestructiveHint: new(false),
 		IdempotentHint:  true,
-		OpenWorldHint:   boolPtr(false),
+		OpenWorldHint:   new(false),
 	}
 	destructive = &mcpsdk.ToolAnnotations{
-		DestructiveHint: boolPtr(true),
+		DestructiveHint: new(true),
 		IdempotentHint:  true,
-		OpenWorldHint:   boolPtr(false),
+		OpenWorldHint:   new(false),
 	}
 )
 
