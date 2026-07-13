@@ -289,6 +289,35 @@ func TestHandshakeMissingCwdBasename400(t *testing.T) {
 	}
 }
 
+// TestHandshakeUnknownFieldRejected pins the strict JSON decode (rest.go's
+// decode helper calls DisallowUnknownFields): a stray field anywhere in the
+// body is a 400, not silently ignored, whether it appears inside the nested
+// project object or at the request's top level.
+func TestHandshakeUnknownFieldRejected(t *testing.T) {
+	h, _ := newConfigServer(t, "", "", nil)
+	cases := []struct {
+		name string
+		body map[string]any
+	}{
+		{
+			"unknown field inside project",
+			handshakeBody(map[string]any{"cwd_basename": "proj", "bogus_field": "nope"}),
+		},
+		{
+			"unknown top-level field",
+			map[string]any{"project": map[string]any{"cwd_basename": "proj"}, "bogus": true},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rec := do(t, h, http.MethodPost, "/v1/handshake", "", "", c.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("handshake with %s: want 400, got %d (%s)", c.name, rec.Code, rec.Body)
+			}
+		})
+	}
+}
+
 // --- handshake: precedence (pin > env > declared > derive) -------------------
 
 func TestHandshakeNamespacePrecedence(t *testing.T) {
@@ -355,15 +384,18 @@ func TestHandshakeDeterministicAndSideEffectFree(t *testing.T) {
 	}
 
 	// Side-effect-free: after several handshakes the activity log is still empty
-	// (a handshake resolves; it never writes).
-	rec := do(t, h, http.MethodGet, "/v1/activity", "phoenix/reviewer", "", nil)
+	// GLOBALLY (a handshake resolves; it never writes). all_namespaces=true
+	// ignores the namespace header entirely (see ListActivity), so this catches
+	// a stray write into ANY namespace, not just the one the client happened to
+	// resolve to.
+	rec := do(t, h, http.MethodGet, "/v1/activity?all_namespaces=true", "", "", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("activity: want 200, got %d (%s)", rec.Code, rec.Body)
 	}
 	var act activityResponse
 	mustJSON(t, rec, &act)
 	if len(act.Events) != 0 {
-		t.Fatalf("handshake must write nothing, got %d activity events: %+v", len(act.Events), act.Events)
+		t.Fatalf("handshake must write nothing anywhere, got %d activity events globally: %+v", len(act.Events), act.Events)
 	}
 }
 
@@ -485,6 +517,34 @@ func TestPinsLifecycleAndAudit(t *testing.T) {
 	mustJSON(t, rec, &unpinAct)
 	if len(unpinAct.Events) != 1 {
 		t.Fatalf("unpin event = %+v, want exactly one", unpinAct.Events)
+	}
+}
+
+// TestListPinsEveryCredentialClass pins that GET /v1/pins answers for every
+// credential class (admin, dev mode, named table key, named file key): it is
+// ungated by design (see ListPins's doc comment) — the project map is
+// machine-wide derivation state, not scoped to one namespace or principal.
+func TestListPinsEveryCredentialClass(t *testing.T) {
+	fileYAML := `
+keys:
+  - name: filebot
+    secret: "tok-file"
+`
+	h, ks := newConfigServer(t, "admin-secret", fileYAML, nil)
+	if err := ks.PutAPIKey(context.Background(), store.APIKey{Name: "tablebot", Hash: hashOf("tok-table")}); err != nil {
+		t.Fatalf("PutAPIKey: %v", err)
+	}
+	for _, tok := range []string{"admin-secret", "tok-table", "tok-file"} {
+		rec := do(t, h, http.MethodGet, "/v1/pins", "", tok, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /v1/pins with %q: want 200, got %d (%s)", tok, rec.Code, rec.Body)
+		}
+	}
+	// Dev mode (separate server, no auth configured): unauthenticated, still 200.
+	dev, _ := newConfigServer(t, "", "", nil)
+	rec := do(t, dev, http.MethodGet, "/v1/pins", "", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dev-mode GET /v1/pins: want 200, got %d (%s)", rec.Code, rec.Body)
 	}
 }
 
