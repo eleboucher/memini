@@ -2,8 +2,7 @@
 # `mise install` provisions the toolchain; `mise run <task>` runs a task;
 # `mise tasks` lists them. CI uses the same tasks so local == CI.
 [tools]
-go = "1.26.4"
-golangci-lint = "2.12.2"
+rust = "1.96.0"
 lefthook = "2.1.9"
 helm = "4.2.2"
 helm-docs = "1.14.2"
@@ -25,33 +24,33 @@ experimental = true
 MEMINI_SQLITE_PATH = "{{ config_root }}/bin/memini.dev.db"
 
 [tasks.fmt]
-description = "Format Go code"
-run = "go fmt ./..."
+description = "Format Rust code"
+run = "cargo fmt --all"
 
 [tasks.vet]
-description = "Run go vet"
-run = "go vet ./..."
+description = "Type-check the Rust workspace"
+run = "cargo check --workspace --all-targets --locked"
 
 [tasks.lint]
-description = "Run golangci-lint"
-run = "golangci-lint run"
+description = "Run Clippy"
+run = "cargo clippy --workspace --all-targets --locked -- -D warnings"
 
 [tasks.lint-fix]
-description = "Run golangci-lint with --fix"
-run = "golangci-lint run --fix"
+description = "Apply Clippy suggestions"
+run = "cargo clippy --workspace --all-targets --locked --fix --allow-dirty --allow-staged -- -D warnings"
 
 [tasks.test]
-description = "Run unit tests with coverage"
-depends = ["fmt", "vet"]
-run = "go test ./... -coverprofile cover.out"
+description = "Run Rust workspace tests"
+depends = ["vet"]
+run = "cargo test --workspace --locked"
 
 [tasks.test-hooks]
 description = "Run Node hook script tests (plugin/scripts/_test.mjs)"
 run = "node --test plugin/scripts/_test.mjs"
 
 [tasks.test-integration]
-description = "Run integration tests (testcontainers; requires Docker)"
-run = "go test -tags=integration ./... -count=1"
+description = "Run Postgres store conformance tests"
+run = "cargo test -p memini-postgres -p memini-store-conformance --locked -- --ignored"
 
 [tasks.build]
 description = "Build the memini binary into ./bin"
@@ -61,14 +60,14 @@ run = '''
 version="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
 commit="$(git rev-parse --short HEAD 2>/dev/null || echo none)"
 date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-pkg="github.com/eleboucher/memini/internal/version"
-CGO_ENABLED=0 go build \
-  -ldflags "-s -w -X ${pkg}.Version=${version} -X ${pkg}.Commit=${commit} -X ${pkg}.Date=${date}" \
-  -o bin/memini ./cmd/memini
+MEMINI_BUILD_VERSION="$version" MEMINI_BUILD_REVISION="$commit" MEMINI_BUILD_DATE="$date" \
+  cargo build --locked --release -p memini-cli
+mkdir -p bin
+cp target/release/memini bin/memini
 '''
 
 [tasks.ui]
-description = "Build the embedded admin UI (Preact + Vite) into internal/api/ui/dist"
+description = "Build the embedded admin UI (Preact + Vite) into ui/dist"
 dir = "ui"
 # gen-api regenerates src/api-schema.gen.ts from api/openapi.yaml so the UI
 # types can't drift from the spec. The generated file stays committed: the
@@ -82,18 +81,15 @@ run = "npm install && npm run dev"
 
 [tasks.run]
 description = "Run the service from source"
-run = "go run ./cmd/memini"
+run = "cargo run -p memini-cli --"
 
 [tasks.bench]
 description = "Run the retrieval benchmark (offline sample by default)"
-run = "go run ./cmd/bench"
+run = "cargo run -p memini-bench --bin memini-bench --"
 
 [tasks.docs]
 description = "Regenerate the docs reference from the code"
-run = '''
-go generate ./internal/config
-go run -tags gendocs ./cmd/memini gen-docs --out docs/reference/cli.md
-'''
+run = "cargo run -p memini-cli --features gendocs -- gen-docs --out docs/reference/cli.md"
 
 [tasks.docs-check]
 description = "Fail if the generated docs reference is stale (CI gate)"

@@ -1,0 +1,33 @@
+[package]
+name = "memini-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = "1"
+async-trait.workspace = true
+chrono.workspace = true
+clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
+memini-core = { path = "../memini-core" }
+memini-embed = { path = "../memini-embed" }
+memini-llm = { path = "../memini-llm" }
+memini-rerank = { path = "../memini-rerank" }
+memini-service = { path = "../memini-service" }
+memini-sqlite = { path = "../memini-sqlite" }
+memini-store = { path = "../memini-store" }
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile = "3"
+tokio.workspace = true
+
+[[bin]]
+name = "memini-bench"
+path = "src/bin/bench.rs"
+
+[[bin]]
+name = "memini-qa"
+path = "src/bin/qa.rs"

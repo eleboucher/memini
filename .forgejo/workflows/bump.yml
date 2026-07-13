@@ -89,6 +89,9 @@ jobs:
             sed -i -E 's/^(version:[[:space:]]*).*/\1'"${NEXT}"'/' "$y"
             grep -q "^version: ${NEXT}\$" "$y" || { echo "failed to set version in $y" >&2; exit 1; }
           done
+          sed -i -E 's/^(version[[:space:]]*=[[:space:]]*")[^"]*(")/\1'"${NEXT}"'\2/' Cargo.toml
+          grep -q "^version = \"${NEXT}\"$" Cargo.toml || { echo "failed to set version in Cargo.toml" >&2; exit 1; }
+          cargo update --workspace
       - name: Commit and push tag
         env:
           TAG: ${{ steps.version.outputs.tag }}
@@ -96,7 +99,7 @@ jobs:
           set -euo pipefail
           git config user.name "forgejo-actions[bot]"
           git config user.email "actions@git.erwanleboucher.dev"
-          git add plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
+          git add Cargo.toml Cargo.lock plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
             integrations/openclaw/plugin/package.json \
             integrations/openclaw/plugin/openclaw.plugin.json \
             integrations/openclaw/plugin/plugin.yaml \

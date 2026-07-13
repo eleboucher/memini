@@ -1,0 +1,18 @@
+[package]
+name = "memini-rerank"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+memini-llm = { path = "../memini-llm" }
+reqwest.workspace = true
+serde.workspace = true
+thiserror = "2"
+tokio.workspace = true
+
+[dev-dependencies]
+axum = "0.8"
+serde_json.workspace = true

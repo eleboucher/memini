@@ -32,7 +32,7 @@ import type { AnyComponent, JSX } from 'preact'
 // load lands there (in "All projects" mode, ns === ''). LocationProvider
 // intercepts clicks on the <a> links for client-side navigation, so the back/
 // forward buttons, shareable deep links, and reloads all resolve to the right
-// view (the server serves index.html on unknown paths — see internal/api/ui).
+// view (the Rust API server serves index.html on unknown paths).
 //
 // Keep every path single-segment. Vite builds with `base: './'` (relative asset
 // URLs), which resolves correctly only when a deep-link reload is one level deep

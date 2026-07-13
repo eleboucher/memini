@@ -4,10 +4,10 @@ import { fileURLToPath, URL } from 'node:url'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-// The UI is served by the Go binary from internal/api/ui/dist via go:embed,
+// The UI is embedded by the Rust binary from ui/dist,
 // mounted at the server root. `base: './'` makes every asset reference relative
 // so the bundle works regardless of the mount path.
-const outDir = fileURLToPath(new URL('../internal/api/ui/dist', import.meta.url))
+const outDir = fileURLToPath(new URL('./dist', import.meta.url))
 
 // emptyOutDir wipes dist on every build, including the tracked .gitkeep that
 // keeps `//go:embed all:dist` compiling on a clean checkout. Re-create it after
@@ -26,6 +26,14 @@ export default defineConfig({
     outDir,
     emptyOutDir: true,
     chunkSizeWarningLimit: 900,
+    rollupOptions: {
+      output: {
+        entryFileNames: 'assets/index.js',
+        assetFileNames: (asset) => asset.names.some((name) => name.endsWith('.css'))
+          ? 'assets/index.css'
+          : 'assets/[name][extname]',
+      },
+    },
   },
   server: {
     // `mise run ui-dev` proxies API calls to a locally running memini.

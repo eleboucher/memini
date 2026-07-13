@@ -1,44 +1,42 @@
 # syntax=docker/dockerfile:1
-ARG GO_VERSION=1.26.4
+ARG RUST_VERSION=1.96
 ARG NODE_VERSION=24
 
-FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-alpine AS ui
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm-slim AS ui
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 COPY ui/ ./
 RUN npm run build
 
-FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS build
+FROM rust:${RUST_VERSION}-bookworm AS build
 WORKDIR /workspace
 
-COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY ui/dist ./ui/dist
 
-COPY . .
-COPY --from=ui /internal/api/ui/dist ./internal/api/ui/dist
+COPY --from=ui /ui/dist ./ui/dist
 
-ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
 ARG REVISION=none
 ARG DATE=unknown
 
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build,id=gobuild-${TARGETARCH} \
-    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
-    -ldflags "-s -w \
-      -X github.com/eleboucher/memini/internal/version.Version=${VERSION} \
-      -X github.com/eleboucher/memini/internal/version.Commit=${REVISION} \
-      -X github.com/eleboucher/memini/internal/version.Date=${DATE}" \
-    -o /out/memini ./cmd/memini
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/workspace/target,id=cargo-${TARGETARCH} \
+    mkdir -p /out && \
+    MEMINI_BUILD_VERSION=${VERSION} MEMINI_BUILD_REVISION=${REVISION} MEMINI_BUILD_DATE=${DATE} \
+    cargo build --locked --release -p memini-cli && \
+    cp target/release/memini /out/memini
 
 # Bare binary for `--target artifact --output type=local`; the release
 # workflow extracts these instead of recompiling for the archives.
 FROM scratch AS artifact
 COPY --from=build /out/memini /memini
 
-FROM gcr.io/distroless/static-debian13:debug-nonroot
+FROM gcr.io/distroless/cc-debian13:debug-nonroot
 LABEL org.opencontainers.image.source="https://git.erwanleboucher.dev/eleboucher/memini"
 LABEL org.opencontainers.image.url="https://git.erwanleboucher.dev/eleboucher/memini"
 LABEL org.opencontainers.image.documentation="https://git.erwanleboucher.dev/eleboucher/memini"

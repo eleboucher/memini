@@ -43,7 +43,7 @@ Worked example — a coding session running in `acme/phoenix/api`:
 | `memory_remember(content, visibility:"personal")`              | `semantic`               | `"personal"` | `personal/kit`               | requires `MEMINI_HOME=personal/kit` on the client; errors without it                       |
 | `memory_remember(content, visibility:"widgets")`               | `semantic`               | `"widgets"`  | error                        | `"widgets"` isn't `project`, `personal`, or an ancestor of `acme/phoenix/api`              |
 
-The last row's actual error text (from `internal/service/visibility.go`,
+The last row's actual error text (from `memini-service`,
 `resolveVisibility`) enumerates the valid chain so the caller — usually an
 LLM reading the error, not a human — can learn the topology instead of
 guessing:
@@ -144,7 +144,7 @@ job:
 | Layer                            | Owns                                                                                                                                                                                      |
 | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Client** (plugin/hook script)  | Resolving `MEMINI_NAMESPACE` and `MEMINI_HOME` from env/config, and sending them on every call as `X-Memini-Namespace` / `X-Memini-Home`                                                  |
-| **Server** (`internal/service`)  | Cascade resolution (ancestors, home, links), `visibility` resolution and the tier clamp, `scope` parsing, read-set fusion                                                                 |
+| **Server** (`memini-service`)    | Cascade resolution (ancestors, home, links), `visibility` resolution and the tier clamp, `scope` parsing, read-set fusion                                                                 |
 | **Store** (sqlitevec / postgres) | Partitioning memory rows by namespace string only — no tree logic, no cascade awareness; `namespace_links` is just a table of `(src, dst, tiers, note)` rows the service layer interprets |
 
 The store never knows a namespace has a parent, a home, or a link — it just

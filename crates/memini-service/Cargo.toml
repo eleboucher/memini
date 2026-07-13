@@ -1,0 +1,29 @@
+[package]
+name = "memini-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-recursion="1"
+chrono.workspace = true
+memini-core = { path = "../memini-core" }
+memini-embed = { path = "../memini-embed" }
+memini-intelligence = { path = "../memini-intelligence" }
+memini-llm = { path = "../memini-llm" }
+memini-maintenance = { path = "../memini-maintenance" }
+memini-observability = { path = "../memini-observability" }
+memini-rerank = { path = "../memini-rerank" }
+memini-store = { path = "../memini-store" }
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+async-trait.workspace = true
+memini-sqlite = { path = "../memini-sqlite" }
+tempfile = "3"

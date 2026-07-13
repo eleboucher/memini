@@ -1,11 +1,11 @@
-[pre-commit.commands.gofmt]
-glob = "*.go"
-run = "gofmt -w {staged_files}"
+[pre-commit.commands.rustfmt]
+glob = "*.rs"
+run = "cargo fmt --all"
 stage_fixed = true
 
-[pre-commit.commands.golangci-lint]
-glob = "*.go"
-run = "golangci-lint run"
+[pre-commit.commands.clippy]
+glob = "*.rs"
+run = "cargo clippy --workspace --all-targets --locked -- -D warnings"
 
 [pre-commit.commands.format]
 # oxfmt formats markdown/json/yaml; honours .prettierignore.
@@ -16,17 +16,14 @@ exclude = ["**/package-lock.json"]
 run = "oxfmt --write --no-error-on-unmatched-pattern {staged_files}"
 stage_fixed = true
 
-[pre-commit.commands.tidy]
-glob = "go.{mod,sum}"
-run = "go mod tidy"
+[pre-commit.commands.lockfile]
+glob = "{Cargo.toml,crates/**/Cargo.toml}"
+run = "cargo check --workspace --locked"
 stage_fixed = true
 
 [pre-push.commands.test]
-run = "go test ./..."
+run = "cargo test --workspace --locked"
 
-# Compile-check the bench eval harnesses (behind the `bench` tag, so excluded
-# from `go test ./...` above). `-run=^$` matches no test, so it builds the files
-# but runs none — catching compile errors without triggering the minutes-long,
-# live-embedder eval run.
+# Compile-check the benchmark binaries and library without running a live eval.
 [pre-push.commands.bench-compile]
-run = "go test -tags bench -run=^$ ./bench/"
+run = "cargo test -p memini-bench --no-run --locked"

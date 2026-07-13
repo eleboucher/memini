@@ -1,0 +1,18 @@
+[package]
+name = "memini-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+getrandom = "0.4"
+memini-store = { path = "../memini-store" }
+serde.workspace = true
+serde_yaml = "0.9"
+sha2.workspace = true
+subtle = "2"
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

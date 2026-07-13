@@ -1,0 +1,18 @@
+[package]
+name = "memini-store-conformance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+chrono.workspace = true
+memini-core = { path = "../memini-core" }
+memini-store = { path = "../memini-store" }
+serde_json.workspace = true
+
+[dev-dependencies]
+memini-postgres = { path = "../memini-postgres" }
+memini-sqlite = { path = "../memini-sqlite" }
+tempfile = "3"
+tokio.workspace = true

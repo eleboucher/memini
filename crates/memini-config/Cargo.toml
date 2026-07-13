@@ -1,0 +1,11 @@
+[package]
+name = "memini-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+humantime.workspace = true
+memini-core = { path = "../memini-core" }
+thiserror = "2"
