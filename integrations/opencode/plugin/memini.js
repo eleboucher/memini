@@ -25,9 +25,13 @@ import { resolve } from "node:path";
 
 const DEFAULT_BASE_URL = "http://localhost:8080";
 const DEFAULT_TIMEOUT_MS = 30000;
+const DEFAULT_RECALL_BUDGET_MS = 2000;
 const DEFAULT_RECALL_LIMIT = 3;
 const DEFAULT_NAMESPACE = "opencode";
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+// Race sentinel: distinguishes "the recall budget expired" from any value the
+// search itself could resolve to (including null on a degraded failure).
+const BUDGET_EXPIRED = Symbol("memini-recall-budget-expired");
 
 // The client identifies itself to /v1/handshake for logging/diagnostics only
 // (api/openapi.yaml's HandshakeRequest.client). Version is read from this
@@ -167,7 +171,17 @@ export function resolveConfig(env, options, worktree) {
     }
     return DEFAULT_RECALL_LIMIT;
   })();
-
+  // How long chat.message waits for recall before letting the turn proceed
+  // without it; 0 disables the race (fully blocking recall). The ""-skip
+  // matters: Number("") === 0, so an empty env var would silently go blocking.
+  const recall_budget_ms = (() => {
+    for (const v of [o.recall_budget_ms, e.MEMINI_RECALL_BUDGET_MS, DEFAULT_RECALL_BUDGET_MS]) {
+      if (v === undefined || v === null || v === "") continue;
+      const n = Number(v);
+      if (Number.isFinite(n) && n >= 0) return n;
+    }
+    return DEFAULT_RECALL_BUDGET_MS;
+  })();
   // home: the caller's personal namespace, sent as X-Memini-Home. Same
   // env-only resolution style as namespace's MEMINI_NAMESPACE (option wins
   // over env), but no derivation fallback — unset means "no home leg", not a
@@ -194,6 +208,7 @@ export function resolveConfig(env, options, worktree) {
       o.recall_min_score !== undefined
         ? Number(o.recall_min_score) || 0
         : floatEnv("MEMINI_INJECT_RECALL_MIN_SCORE", 0),
+    recall_budget_ms,
     timeout_ms: Number(o.timeout_ms || e.MEMINI_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
     fallback_on_error:
       o.fallback_on_error !== undefined
@@ -560,6 +575,7 @@ export function describeSettings(env, options, worktree) {
       recall_limit: cfg.recall_limit,
       recall_max_tokens: cfg.recall_max_tokens,
       recall_min_score: cfg.recall_min_score,
+      recall_budget_ms: cfg.recall_budget_ms,
       labels: [...labelsEnv()],
     },
     warnings,
@@ -600,6 +616,7 @@ export function renderStatus(report) {
   L.push(`  ${padTo("recall_limit", 26)} ${memory.recall_limit}`);
   L.push(`  ${padTo("recall_max_tokens", 26)} ${memory.recall_max_tokens || "uncapped"}`);
   L.push(`  ${padTo("recall_min_score", 26)} ${memory.recall_min_score}`);
+  L.push(`  ${padTo("recall_budget_ms", 26)} ${memory.recall_budget_ms === 0 ? "0 (blocking)" : memory.recall_budget_ms}`);
   L.push(`  ${padTo("labels", 26)} ${memory.labels.length ? memory.labels.join(",") : "(none)"}`);
   L.push("");
 
@@ -755,28 +772,46 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
   const getHandshake = memoizeAsync(() => rest.handshake(buildFacts(dir, process.env)), HANDSHAKE_TTL_MS);
   const currentConfig = async () => effectiveConfig(cfg, await getHandshake());
 
+  // Warm the connection (DNS/TCP/TLS) in opencode's embedded bun so a cold
+  // start doesn't eat the first recall budget. Silent: even a 404 warms the
+  // path, and an ingress that only routes /v1 legitimately has no /healthz.
+  if (cfg.recall || cfg.capture) {
+    try {
+      fetch(`${rest.baseUrl}/healthz`, { signal: AbortSignal.timeout(3000) }).catch(() => {});
+    } catch {
+      /* ignore */
+    }
+  }
   // Assistant message ids already captured, so repeated session.idle events for
   // the same turn don't write duplicates.
   const captured = new Set();
+  // boundedPut inserts key -> value and evicts the oldest entries, so a
+  // long-lived host can't grow a per-session map without limit.
+  const MAX_TRACKED_SESSIONS = 200;
+  const boundedPut = (map, key, value) => {
+    map.set(key, value);
+    while (map.size > MAX_TRACKED_SESSIONS) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      map.delete(oldest);
+    }
+  };
   // Memory ids each session has already been shown (mirrors the pi plugin):
   // the injected synthetic part is persisted into the session, so re-injecting
   // an unchanged match every turn stacks identical blocks in the context.
-  // Bounded so long-lived hosts can't grow the map without limit.
   const injectedBySession = new Map();
-  const MAX_TRACKED_SESSIONS = 200;
   const rememberInjected = (session, ids) => {
     let seen = injectedBySession.get(session);
     if (!seen) {
       seen = new Set();
-      injectedBySession.set(session, seen);
-      while (injectedBySession.size > MAX_TRACKED_SESSIONS) {
-        const oldest = injectedBySession.keys().next().value;
-        if (oldest === undefined) break;
-        injectedBySession.delete(oldest);
-      }
+      boundedPut(injectedBySession, session, seen);
     }
     for (const id of ids) if (id) seen.add(id);
   };
+  // Recall results that arrived after the injection budget expired, keyed by
+  // session and injected on that session's next chat.message. Latest-replace:
+  // a second late recall for the same session supersedes the first.
+  const pendingBySession = new Map();
 
   // opencode runs chat.message via an unguarded Effect.promise (a throw aborts the
   // turn) and dispatches event hooks fire-and-forget, so a hook must never reject:
@@ -857,13 +892,58 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       // the Claude Code plugin's pre-tool-use hook uses; client-side re-filter
       // is a belt-and-braces guard against score-normalization edge cases.
       if (live.recall_min_score > 0) body.min_score = live.recall_min_score;
-      const result = await rest.postJson("/v1/search", body, live.namespace);
+      // opencode awaits this hook before the model sees the message, so the
+      // turn only waits live.recall_budget_ms for the search; the fetch itself keeps
+      // cfg.timeout_ms as its bound and runs on in the background. A slow or
+      // unreachable memini degrades to "no memories this turn" instead of a
+      // frozen turn, and late results carry over to the session's next message.
+      const fetchPromise = rest.postJson("/v1/search", body, live.namespace);
+      // Once the budget expires nothing awaits this promise, and with
+      // fallback_on_error off postJson rethrows — catch here or a late
+      // rejection surfaces as an unhandled rejection in the host.
+      const settled = fetchPromise.catch((error) => {
+        log.warn(`memini: ${String(error)}`);
+        return null;
+      });
+      let result;
+      if (live.recall_budget_ms > 0) {
+        let timer;
+        const budget = new Promise((resolve) => {
+          timer = setTimeout(() => resolve(BUDGET_EXPIRED), live.recall_budget_ms);
+        });
+        result = await Promise.race([settled, budget]);
+        clearTimeout(timer);
+        if (result === BUDGET_EXPIRED) {
+          log.warn(
+            `recall exceeded its ${live.recall_budget_ms}ms budget; late results will inject next turn`,
+          );
+          if (sessionID) {
+            settled.then((late) => {
+              const hits = Array.isArray(late && late.results) ? late.results : [];
+              if (hits.length) boundedPut(pendingBySession, sessionID, hits);
+            });
+          }
+          result = null;
+        }
+      } else {
+        result = await settled;
+      }
       // Client-side score floor: filter the raw hit list before formatting so
       // the bullet array only contains hits the operator asked for. Without
       // this, the server's default floor could leak low-quality hits in
       // regardless of live.recall_min_score.
       const floor = live.recall_min_score > 0 ? live.recall_min_score : 0;
       let rawHits = Array.isArray(result && result.results) ? result.results : [];
+      // Merge in results that arrived late on a previous turn: fresh hits
+      // first (they answer the current query), deduped by memory id.
+      if (sessionID) {
+        const pending = pendingBySession.get(sessionID);
+        if (pending && pending.length) {
+          pendingBySession.delete(sessionID);
+          const fresh = new Set(rawHits.map((r) => r?.memory?.id).filter(Boolean));
+          rawHits = rawHits.concat(pending.filter((r) => !fresh.has(r?.memory?.id)));
+        }
+      }
       // Suppress memories this session has already been shown — the injected
       // part persists in the session, so a repeat adds nothing but noise.
       if (sessionID) {
@@ -882,7 +962,16 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       const fit = fitByTokens(hits, live.recall_max_tokens);
       if (fit.items.length === 0) return;
       if (sessionID) {
-        rememberInjected(sessionID, filtered.map((r) => r?.memory?.id).filter(Boolean));
+        // Mark only the slice formatResults actually renders: with carryover
+        // merged in, `filtered` can exceed recall_limit, and marking unshown
+        // hits as seen would suppress them forever.
+        rememberInjected(
+          sessionID,
+          filtered
+            .slice(0, cfg.recall_limit || DEFAULT_RECALL_LIMIT)
+            .map((r) => r?.memory?.id)
+            .filter(Boolean),
+        );
       }
       const lines = [
         `Relevant long-term memory from memini (background context — prefer ` +
