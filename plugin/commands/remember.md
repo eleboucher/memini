@@ -24,6 +24,20 @@ Rules:
 - Tag it `pinned` only if it should surface in _every_ future session briefing.
   That budget is small; reserve it for durable identity and preferences.
 
-Then tell the user what you saved, in which tier and namespace, in one line. If
-the write fails, say so plainly and report the error — a silently dropped memory
-is worse than no memory, because they will believe it is there.
+Then tell the user what you saved, in which tier and namespace, in one line.
+
+Read the result before you report it. Three flags change what actually happened:
+
+- **`reinforced: true`** — the fact was **already known**. No new memory was
+  created; the existing one was strengthened, and the returned `id` belongs to
+  _that_ memory, not to anything you just wrote. Say "already recorded, so I
+  reinforced it" rather than claiming a new save. Be careful with that id: a
+  follow-up update or forget would hit a memory you did not create.
+- **`stored: false`** — the value gate dropped a low-signal write. Nothing was
+  saved. This is not an error, but do not tell the user you saved something.
+- **`merge_hint`** — the content nearly duplicates an existing memory. Either fold
+  them together with `memory_update` using `merge_hint.similar_id`, or keep both
+  deliberately. Do not silently ignore it.
+
+If the write fails outright, say so plainly and report the error. A silently
+dropped memory is worse than no memory, because the user will believe it is there.

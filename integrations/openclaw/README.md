@@ -87,6 +87,37 @@ personal namespace — every request then carries `X-Memini-Home`, which server-
 `visibility: "personal"` writes and the read-set's home leg land in. Unset
 means no home leg; there is no derivation, just this explicit config/env pair.
 
+### Namespace resolution
+
+```
+1. project override      ~/.config/memini/overrides.json
+2. MEMINI_NAMESPACE
+3. the `namespace` config value
+4. "openclaw"            the default
+```
+
+Then `namespace_prefix`, `namespace_template` and per-agent nesting apply on top,
+exactly as before.
+
+Note what is _not_ in that list: OpenClaw does **no git or cwd derivation**, and
+that is deliberate. It is a gateway harness, where the working directory is often
+meaningless or absent, so the default is the literal `openclaw` rather than a
+guess at a project. Set `namespace` (or an override) when you want per-project
+isolation.
+
+The override is shared with every other memini client, so one set in Claude Code
+applies here too, and `memini doctor` reports the same value. It beats
+`MEMINI_NAMESPACE` on purpose: a globally exported `MEMINI_NAMESPACE` is exactly
+the problem an override exists to solve. See
+[env-vars](../../docs/reference/env-vars.md#the-overrides-file) for the format.
+
+### Commands
+
+| Command            | What it does                                                         |
+| ------------------ | -------------------------------------------------------------------- |
+| `memini:status`    | Effective settings, resolved namespace **with provenance**, warnings |
+| `memini:namespace` | Show, set, or clear the namespace override for this project          |
+
 Recall shaping (both optional, matching the opencode/Claude Code plugins):
 `recall_limit` (max memories per turn, default **3**) and `recall_max_tokens`
 (hard token ceiling on the recall block, default **0** = uncapped, matching the
