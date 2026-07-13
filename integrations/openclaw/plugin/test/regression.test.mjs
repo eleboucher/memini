@@ -12,11 +12,14 @@ import plugin, {
   createSessionContext,
   detectSystemKind,
   effectiveNamespace,
+  gatewayFacts,
   meminiListPath,
+  registerMeminiCommands,
   registerMeminiTools,
   resolveBaseNamespace,
   resolveConfig,
   sessionIdentity,
+  sessionLive,
   shouldSkipSystemTurn,
   stripRuntimePreambles,
 } from "../dist/index.js";
@@ -137,9 +140,10 @@ test("per-agent isolation is on by default", () => {
 // The namespace chain, from the shipped bundle. The default must not move: this
 // is a gateway harness, and deriving a namespace from its cwd (or letting the
 // default drift) would silently relocate every existing install's memory.
-// There is no more per-project override file — MEMINI_NAMESPACE > config >
-// "openclaw" is the whole synchronous chain (a live handshake, layered on top
-// by effectiveConfig, is covered in helpers.test.ts).
+// There is no more per-project override file: MEMINI_NAMESPACE > config >
+// "openclaw" is the whole synchronous chain. A live handshake, layered on top
+// by effectiveConfig, can insert a server-side pin between env and config
+// (full precedence: env > pin > declared/config > "openclaw").
 test("the base namespace chain is MEMINI_NAMESPACE > config > openclaw", () => {
   assert.deepEqual(resolveBaseNamespace(undefined, {}), { namespace: "openclaw", source: "default" });
   assert.deepEqual(resolveBaseNamespace({ namespace: "cfg" }, {}), { namespace: "cfg", source: "config" });
@@ -147,6 +151,52 @@ test("the base namespace chain is MEMINI_NAMESPACE > config > openclaw", () => {
     namespace: "pin",
     source: "env",
   });
+});
+
+// The pin loop, from the shipped bundle: memini:namespace PUTs a pin keyed by
+// the same daemon-cwd toplevel_path every handshake sends, the write drops the
+// memo, and the next handshake resolves server:pin over the declared value.
+test("a pin written via memini:namespace is resolved by the gateway's own next handshake", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "openclaw-memini-pin-"));
+  const realFetch = globalThis.fetch;
+  let pinned = false;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    if (u.endsWith("/v1/pins") && init?.method === "PUT") {
+      const body = JSON.parse(init.body);
+      assert.equal(body.toplevel_path, gatewayFacts({ namespace: "team" }, cwd).toplevel_path);
+      assert.equal("remote_url" in body, false, "pins never key on a git remote here");
+      pinned = true;
+      return { ok: true, status: 200, async json() { return { namespace: "acme/api", key: `path:${body.toplevel_path}` }; } };
+    }
+    if (u.endsWith("/v1/handshake")) {
+      const body = JSON.parse(init.body);
+      const hs = pinned
+        ? { namespace: "acme/api", namespace_source: "pin", pin: { key: `path:${body.project.toplevel_path}` }, identity: {}, settings: {}, settings_sources: {}, read_set: [], server: { version: "t", default_namespace: "default" } }
+        : { namespace: body.project.declared_namespace, namespace_source: "declared", identity: {}, settings: {}, settings_sources: {}, read_set: [], server: { version: "t", default_namespace: "default" } };
+      return { ok: true, status: 200, async json() { return hs; } };
+    }
+    return { ok: false, status: 404, async json() { return {}; } };
+  };
+  try {
+    const ctx = createSessionContext({ namespace: "team" }, {}, cwd);
+    const before = await sessionLive(ctx, {});
+    assert.equal(before.namespace, "team");
+    assert.equal(before.namespace_source, "server:declared");
+
+    const commands = {};
+    registerMeminiCommands({ logger: { warn() {} }, registerCommand(def) { commands[def.name] = def.handler; } }, ctx);
+    const { text } = await commands["memini:namespace"]({ args: "acme/api" });
+    assert.match(text, /namespace pinned: acme\/api/);
+
+    // No TTL wait: the write invalidated the memo, so the next resolution
+    // re-handshakes and lands on the pin.
+    const after = await sessionLive(ctx, {});
+    assert.equal(after.namespace, "acme/api");
+    assert.equal(after.namespace_source, "server:pin");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 test("register wires memini:status and memini:namespace when the host supports commands", () => {

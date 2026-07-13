@@ -13,21 +13,29 @@
  *
  * Namespace and behavioral settings come from the config-handshake redesign
  * (POST /v1/handshake, api/openapi.yaml): openclaw imports @memini/client
- * directly and composes gatherFacts/performHandshake/effectiveSetting the same
- * way the Claude Code plugin's hooks do, with two deliberate departures from
- * the shared resolveNamespace precedence (see resolveBaseNamespace/
+ * directly and composes performHandshake/effectiveSetting the same way the
+ * Claude Code plugin's hooks do, with two deliberate departures from the
+ * shared resolveNamespace precedence (see resolveBaseNamespace/
  * effectiveConfig below):
  *
- *   - The facts sent are gateway facts only — {cwd_basename, declared_namespace}
- *     — no git derivation. OpenClaw's cwd is the daemon's process directory,
- *     not a project's; deriving from it (or reporting it as a project's
- *     remote/toplevel) would risk colliding with an unrelated pin someone set
- *     for whatever repo the daemon happens to be checked out inside.
+ *   - The facts sent are gateway facts only — {cwd_basename, toplevel_path:
+ *     the daemon's resolved cwd, declared_namespace} — no GIT derivation.
+ *     OpenClaw's cwd is the daemon's process directory, not a project's;
+ *     deriving a remote from it would risk colliding with an unrelated pin
+ *     someone set for whatever repo the daemon happens to be checked out
+ *     inside. toplevel_path IS sent, but as the raw resolved cwd (never `git
+ *     rev-parse`): it is this install's stable pin identity, so a pin written
+ *     by memini:namespace (keyed path:<daemon-cwd>) is found by this same
+ *     gateway's next handshake. A pin beats the declared_namespace at the
+ *     server — that is the point of pinning.
  *   - MEMINI_NAMESPACE beats the handshake outright (not just when the
  *     handshake is unreachable, as resolveNamespace does for a per-repo
  *     client): this is a long-lived, per-machine gateway install, and an
  *     operator's local env pin should never be silently shadowed by whatever
  *     the server resolves.
+ *
+ * Full precedence: MEMINI_NAMESPACE > server pin > declared (config
+ * `namespace`) > "openclaw".
  *
  * The handshake is memoized in-memory per plugin instance (OpenClaw creates
  * one per session) for HANDSHAKE_TTL_MS, mirroring pi's design — no file
@@ -39,13 +47,12 @@
  * — without it, capture silently no-ops. See README "Install".
  */
 
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { Type } from "typebox";
 import { buildJsonPluginConfigSchema, definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import {
   readBootstrap,
-  gatherFacts,
   performHandshake,
   effectiveSetting,
   BEHAVIOR_KNOBS,
@@ -129,12 +136,10 @@ const DEFAULT_NAMESPACE_TEMPLATE = "{namespace}-{agent}";
 // case-insensitively; override the set via the system_kinds config.
 const DEFAULT_SYSTEM_KINDS = ["heartbeat", "cron"];
 
-// harnessCwd is the directory a pin is best-effort keyed to (via gatherFacts'
-// git derivation) when an operator writes one through /memini:namespace.
-// OpenClaw is a gateway: its cwd is the daemon's, not a project's, so this is
-// best-effort. When the gateway happens to run inside a repo, that repo's
-// identity keys the pin; when it does not, the pin command reports that there
-// is nothing to key it by.
+// harnessCwd is the daemon's working directory: this install's stable pin
+// identity. gatewayFacts resolves it into the toplevel_path fact that rides
+// every handshake, and memini:namespace keys pins on that same value, so a
+// pin written here is found by this gateway's own next handshake.
 function harnessCwd(): string | undefined {
   try {
     return process.cwd();
@@ -325,8 +330,11 @@ export type ResolvedConfig = ReturnType<typeof resolveConfig>;
  *     from @memini/client's resolveNamespace precedence: a long-lived gateway
  *     install's local env pin should never be silently shadowed by whatever
  *     the server resolves. Otherwise a successful handshake wins (namespace_source
- *     becomes "server:<hs.namespace_source>", degraded false); with no env pin
- *     and no handshake, cfg's own config/default view stands (fail-soft to the
+ *     becomes "server:<hs.namespace_source>", degraded false) — this is the
+ *     path a server-side pin arrives on: gatewayFacts sends the daemon-cwd
+ *     toplevel_path, so a pin written by memini:namespace resolves here as
+ *     "server:pin" and beats the declared/config value. With no env pin and
+ *     no handshake, cfg's own config/default view stands (fail-soft to the
  *     declared/config value).
  *   recall_limit / recall_max_tokens / min_capture_chars: cfg.explicit (config
  *     set it outright) wins; otherwise effectiveSetting recomputes with the
@@ -829,42 +837,57 @@ export function memoizeAsync<T>(fn: () => Promise<T>, ttlMs: number, now: () => 
 }
 
 /**
- * gatewayFacts builds the handshake's project facts: cwd_basename (best-effort,
- * for logging only) plus declared_namespace — the operator's configured
- * `namespace` (or the literal "openclaw" default), NEVER whatever
- * MEMINI_NAMESPACE happens to be set to locally (that is a separate,
- * higher-precedence local override — see effectiveConfig). Deliberately no
- * remote_url/toplevel_path: this is a gateway, not a per-repo client, and its
- * cwd is the daemon's process directory, not a project's — sending git facts
- * derived from it could collide with an unrelated pin set for whatever repo
- * the daemon happens to be checked out inside. Exported for testing.
+ * gatewayFacts builds the handshake's project facts:
+ *
+ *   - cwd_basename: best-effort, for logging only.
+ *   - toplevel_path: the daemon's RESOLVED cwd — this install's stable pin
+ *     identity, never a `git rev-parse` result. The server keys pins as
+ *     path:<toplevel_path> (internal/nsresolve.PinKeys), so a pin written by
+ *     memini:namespace below (which keys on this same value) is found by this
+ *     gateway's own next handshake — after the memo TTL, or immediately after
+ *     the pin write's memo invalidation. A pin beats declared_namespace at
+ *     the server; that is the point of pinning.
+ *   - declared_namespace: the operator's configured `namespace` (or the
+ *     literal "openclaw" default), NEVER whatever MEMINI_NAMESPACE happens to
+ *     be set to locally (that is a separate, higher-precedence local
+ *     override — see effectiveConfig).
+ *
+ * Deliberately no remote_url and no git derivation of the toplevel: this is a
+ * gateway, not a per-repo client, and its cwd is the daemon's process
+ * directory, not a project's — reporting a git remote derived from it could
+ * collide with an unrelated pin set for whatever repo the daemon happens to
+ * be checked out inside. The raw cwd path carries no such ambiguity: it names
+ * this install and nothing else. Exported for testing.
  */
 export function gatewayFacts(pluginConfig: any, cwd: string | undefined): ProjectFacts {
   const c = pluginConfig || {};
   const configured = typeof c.namespace === "string" ? c.namespace.trim() : "";
-  return {
-    cwd_basename: basename(cwd || process.cwd() || "."),
+  let dir = cwd;
+  if (!dir) {
+    try {
+      dir = process.cwd();
+    } catch {
+      dir = undefined;
+    }
+  }
+  const facts: ProjectFacts = {
+    cwd_basename: basename(dir || "."),
     declared_namespace: configured || DEFAULT_NAMESPACE,
   };
+  if (dir) facts.toplevel_path = resolve(dir);
+  return facts;
 }
 
 /**
- * The subset of ProjectFacts that can key a server-side pin (PUT/DELETE
- * /v1/pins): remote_url and/or toplevel_path, best-effort derived from the
- * gateway's own cwd via @memini/client's gatherFacts. A pin set this way is
- * NOT picked up by this gateway's own handshake (gatewayFacts above sends no
- * git facts on purpose) — it exists for operator record-keeping and for other
- * tooling inspecting the same checkout (memini doctor, another client sharing
- * that directory), not as this plugin's own resolution lever. Exported for
- * testing.
+ * The subset of the session facts that keys a server-side pin (PUT/DELETE
+ * /v1/pins): the toplevel_path gatewayFacts derived from the daemon's cwd.
+ * Taking it from the SAME facts object the handshake sends is what guarantees
+ * the pin's key (path:<daemon-cwd>) matches what the next handshake's PinKeys
+ * lookup computes — write and read can never disagree about the identity.
+ * Exported for testing.
  */
-export function pinKeyFacts(
-  cwd: string | undefined,
-  env: Record<string, string | undefined> = process.env,
-): { remote_url?: string; toplevel_path?: string } {
-  const facts = gatherFacts(cwd || process.cwd(), env);
-  const out: { remote_url?: string; toplevel_path?: string } = {};
-  if (facts.remote_url) out.remote_url = facts.remote_url;
+export function pinKeyFacts(facts: ProjectFacts): { toplevel_path?: string } {
+  const out: { toplevel_path?: string } = {};
   if (facts.toplevel_path) out.toplevel_path = facts.toplevel_path;
   return out;
 }
@@ -1175,11 +1198,12 @@ export function renderStatus(
  *
  * The namespace command no longer writes a local override file: `<namespace>`/
  * `--clear` now PUT/DELETE a server-side pin (POST/DELETE /v1/pins) keyed by
- * pinKeyFacts (best-effort git facts from the gateway's own cwd) and drop the
- * in-memory handshake memo afterward, so the very next hook/tool call
- * re-resolves. Note that MEMINI_NAMESPACE, when set, wins over any pin for
- * THIS plugin's own resolution regardless (see effectiveConfig) — the command
- * still lets an operator record a pin for other tooling to see.
+ * pinKeyFacts (the daemon-cwd toplevel_path the handshake itself sends) and
+ * drop the in-memory handshake memo afterward, so the very next hook/tool
+ * call re-handshakes and resolves the pin (namespace_source "server:pin"). A
+ * pin beats the declared/config namespace at the server — that is the point
+ * of pinning. MEMINI_NAMESPACE, when set, still wins over any pin for THIS
+ * plugin's own resolution (see effectiveConfig).
  *
  * Exported for testing.
  */
@@ -1211,7 +1235,7 @@ export function registerMeminiCommands(api: any, ctx: SessionContext) {
 
   api.registerCommand({
     name: "memini:namespace",
-    description: "Show, set, or --clear the memini namespace pin for this gateway's checkout (server-side)",
+    description: "Show, set, or --clear the server-side memini namespace pin for this gateway install",
     acceptsArgs: true,
     async handler(cmdCtx: any) {
       try {
@@ -1237,20 +1261,16 @@ export function registerMeminiCommands(api: any, ctx: SessionContext) {
           return { text: out.join("\n") };
         }
 
-        const cwd = ctx.cfg.cwd;
-        if (!cwd) {
+        // The pin is keyed by the SAME toplevel_path the handshake sends
+        // (gatewayFacts), so write and lookup can never disagree.
+        const keyFacts = pinKeyFacts(ctx.facts);
+        if (!keyFacts.toplevel_path) {
           return {
             text: "memini: no working directory is available, so a pin cannot be keyed. Set the `namespace` config value or MEMINI_NAMESPACE instead.",
           };
         }
 
         if (arg === "--clear" || arg === "clear") {
-          const keyFacts = pinKeyFacts(cwd);
-          if (!keyFacts.remote_url && !keyFacts.toplevel_path) {
-            return {
-              text: "memini: this gateway's working directory has no git remote or toplevel, so it cannot have a pin to clear.",
-            };
-          }
           let res;
           try {
             res = await pinsRequest(ctx.boot, "DELETE", keyFacts);
@@ -1258,7 +1278,7 @@ export function registerMeminiCommands(api: any, ctx: SessionContext) {
             return { text: `memini: ${offlineMessage(ctx.boot, error)}` };
           }
           if (res.status === 404) {
-            return { text: `No pin was set for this checkout — nothing to clear.` };
+            return { text: `No pin was set for this gateway — nothing to clear.` };
           }
           if (!res.ok) {
             return { text: `memini: could not clear the pin: ${pinErrorMessage(res)}` };
@@ -1266,7 +1286,7 @@ export function registerMeminiCommands(api: any, ctx: SessionContext) {
           ctx.memo.invalidate();
           return {
             text: [
-              `namespace pin cleared for this checkout.`,
+              `namespace pin cleared — this gateway resolves its declared/config namespace again.`,
               ``,
               `Recall and capture use the new resolution from the next turn.`,
             ].join("\n"),
@@ -1280,14 +1300,6 @@ export function registerMeminiCommands(api: any, ctx: SessionContext) {
           // did not ask for — and CR/LF would split the X-Memini-Namespace header
           // outright.
           return { text: `memini: invalid namespace ${JSON.stringify(arg)}: ${bad}` };
-        }
-        const keyFacts = pinKeyFacts(cwd);
-        if (!keyFacts.remote_url && !keyFacts.toplevel_path) {
-          return {
-            text:
-              `memini: this gateway's working directory has no git remote or toplevel to pin a namespace ` +
-              `to. Set the \`namespace\` config value instead for a static, machine-local choice.`,
-          };
         }
         let res;
         try {
@@ -1303,11 +1315,12 @@ export function registerMeminiCommands(api: any, ctx: SessionContext) {
         return {
           text: [
             `namespace pinned: ${entry.namespace || ns}`,
-            `project key:      ${entry.key || keyFacts.remote_url || keyFacts.toplevel_path}`,
+            `pin key:          ${entry.key || `path:${keyFacts.toplevel_path}`}`,
             ``,
-            `This pin is not picked up by this gateway's own next handshake (it sends no git facts —`,
-            `see gatewayFacts); it is recorded for other tooling sharing this checkout. To change`,
-            `THIS gateway's own resolution, set the \`namespace\` config value instead.`,
+            `Recall and capture use it from the next turn: the pin is keyed by this gateway's`,
+            `working directory, and it beats the declared/config namespace at the server. The pin`,
+            `lives on the memini server, so every client handshaking with these facts resolves the`,
+            `same namespace. MEMINI_NAMESPACE, if exported, still overrides it locally.`,
           ].join("\n"),
         };
       } catch (error) {

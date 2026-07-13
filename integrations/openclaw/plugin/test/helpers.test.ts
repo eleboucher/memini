@@ -615,19 +615,36 @@ test("resolveBaseNamespace: MEMINI_NAMESPACE is honored, and an explicit config 
   assert.deepEqual(resolveBaseNamespace({ namespace: "cfg" }, {}), { namespace: "cfg", source: "config" });
 });
 
-test("gatewayFacts: cwd_basename + declared_namespace only — no git derivation, no env pin", () => {
+test("gatewayFacts: cwd_basename + daemon-cwd toplevel_path + declared_namespace, no git derivation", () => {
   const facts = gatewayFacts({ namespace: "team" }, "/some/gateway/dir");
-  assert.deepEqual(facts, { cwd_basename: "dir", declared_namespace: "team" });
+  assert.deepEqual(facts, {
+    cwd_basename: "dir",
+    toplevel_path: "/some/gateway/dir",
+    declared_namespace: "team",
+  });
   // declared_namespace comes from CONFIG, never from MEMINI_NAMESPACE.
   const noConfig = gatewayFacts({}, "/x/y");
-  assert.deepEqual(noConfig, { cwd_basename: "y", declared_namespace: "openclaw" });
+  assert.deepEqual(noConfig, { cwd_basename: "y", toplevel_path: "/x/y", declared_namespace: "openclaw" });
 });
 
-test("pinKeyFacts: only remote_url/toplevel_path key a pin (best-effort git facts)", () => {
-  const git = tmpProject(true);
-  const noGit = tmpProject(false);
-  assert.equal(pinKeyFacts(git).remote_url, "https://example.com/acme/widget.git");
-  assert.deepEqual(pinKeyFacts(noGit), {});
+test("gatewayFacts: toplevel_path is the RESOLVED raw cwd, never a git toplevel", () => {
+  // A gateway running in a subdirectory of some repo must report ITS cwd, not
+  // the repo root: the pin identity is this install, not whatever checkout it
+  // happens to sit inside.
+  const repo = tmpProject(true);
+  const sub = join(repo, "some", "sub");
+  const facts = gatewayFacts({}, sub);
+  assert.equal(facts.toplevel_path, sub);
+  assert.equal("remote_url" in facts, false, "never send a git remote");
+});
+
+test("pinKeyFacts: keys on the SAME toplevel_path the handshake facts carry", () => {
+  // Write and lookup must agree on the identity: the pin key comes straight
+  // off the session's own facts object.
+  assert.deepEqual(pinKeyFacts({ cwd_basename: "d", toplevel_path: "/gw/dir", declared_namespace: "x" }), {
+    toplevel_path: "/gw/dir",
+  });
+  assert.deepEqual(pinKeyFacts({ cwd_basename: "d" }), {});
 });
 
 test("effectiveConfig: MEMINI_NAMESPACE wins outright over a successful handshake", () => {
@@ -776,15 +793,17 @@ test("memini:namespace (no args): shows the live namespace + pin details", async
   assert.match(text, /pin:\s+key remote:x, set by kit/);
 });
 
-test("memini:namespace <ns>: PUTs a pin keyed by git facts and invalidates the memo", async () => {
-  const cwd = tmpProject();
+test("memini:namespace <ns>: PUTs a pin keyed by the daemon-cwd toplevel_path and invalidates the memo", async () => {
+  // A plain non-git directory on purpose: the pin identity is the daemon's
+  // cwd path, so no git repo is needed to pin a gateway install.
+  const cwd = tmpProject(false);
   const realFetch = globalThis.fetch;
   const calls: any[] = [];
   globalThis.fetch = (async (url: any, init: any) => {
     const u = String(url);
     calls.push({ url: u, method: init?.method, body: init?.body ? JSON.parse(init.body) : undefined });
     if (u.endsWith("/v1/pins")) {
-      return { ok: true, status: 200, async json() { return { namespace: "acme/api", key: `remote:${JSON.parse(init.body).remote_url}` }; } };
+      return { ok: true, status: 200, async json() { return { namespace: "acme/api", key: `path:${JSON.parse(init.body).toplevel_path}` }; } };
     }
     return { ok: false, status: 404, async json() { return {}; } };
   }) as any;
@@ -801,28 +820,61 @@ test("memini:namespace <ns>: PUTs a pin keyed by git facts and invalidates the m
     const put = calls.find((c) => c.method === "PUT");
     assert.ok(put, "expected a PUT /v1/pins call");
     assert.equal(put.body.namespace, "acme/api");
-    assert.equal(put.body.remote_url, "https://example.com/acme/widget.git");
+    // The pin key IS the handshake identity: the same toplevel_path
+    // gatewayFacts sends on every handshake.
+    assert.equal(put.body.toplevel_path, ctx.facts.toplevel_path);
+    assert.equal("remote_url" in put.body, false, "pins never key on a git remote here");
     assert.equal(invalidated, 1, "pin write must invalidate the in-memory memo");
   } finally {
     globalThis.fetch = realFetch;
   }
 });
 
-test("memini:namespace <ns>: refuses when the checkout has no git remote or toplevel", async () => {
+test("a pin written via memini:namespace is resolved by this gateway's own next handshake", async () => {
+  // The end-to-end loop the pin exists for: PUT the pin, memo invalidated,
+  // and the very next handshake (same facts, matched by path:<daemon-cwd>)
+  // resolves it as server:pin, beating the declared/config namespace.
   const cwd = tmpProject(false);
   const realFetch = globalThis.fetch;
-  let putCalled = false;
+  let pinned = false;
+  const handshakeBodies: any[] = [];
   globalThis.fetch = (async (url: any, init: any) => {
-    if (String(url).endsWith("/v1/pins") && init?.method === "PUT") putCalled = true;
+    const u = String(url);
+    if (u.endsWith("/v1/pins") && init?.method === "PUT") {
+      pinned = true;
+      return { ok: true, status: 200, async json() { return { namespace: "acme/api", key: "path:x" }; } };
+    }
+    if (u.endsWith("/v1/handshake")) {
+      const body = JSON.parse(init.body);
+      handshakeBodies.push(body);
+      // The server's view: a pin (once written) matches the facts' toplevel_path
+      // and beats the declared_namespace.
+      const hs = pinned
+        ? fakeHandshake({ namespace: "acme/api", namespace_source: "pin", pin: { key: `path:${body.project.toplevel_path}` } })
+        : fakeHandshake({ namespace: body.project.declared_namespace, namespace_source: "declared" });
+      return { ok: true, status: 200, async json() { return hs; } };
+    }
     return { ok: false, status: 404, async json() { return {}; } };
   }) as any;
   try {
-    const ctx = createSessionContext({}, process.env, cwd);
+    const ctx = createSessionContext({ namespace: "team" }, {}, cwd);
+    // Before the pin: the declared/config namespace stands.
+    const before = await sessionLive(ctx, {});
+    assert.equal(before.namespace, "team");
+    assert.equal(before.namespace_source, "server:declared");
+
     const { api, commands } = fakeApi();
     registerMeminiCommands(api, ctx);
-    const { text } = await commands["memini:namespace"]({ args: "acme/api" });
-    assert.match(text, /no git remote or toplevel/);
-    assert.equal(putCalled, false);
+    await commands["memini:namespace"]({ args: "acme/api" });
+
+    // After the pin: no TTL wait needed (the write invalidated the memo), and
+    // the fresh handshake resolves the pin.
+    const after = await sessionLive(ctx, {});
+    assert.equal(after.namespace, "acme/api");
+    assert.equal(after.namespace_source, "server:pin");
+    assert.equal(after.degraded, false);
+    // Every handshake carried the pin identity the write keyed on.
+    assert.ok(handshakeBodies.every((b) => b.project.toplevel_path === ctx.facts.toplevel_path));
   } finally {
     globalThis.fetch = realFetch;
   }
