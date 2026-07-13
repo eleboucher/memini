@@ -53,49 +53,49 @@
     {
       "name": "owner-repo scope slugs the last two path segments (https remote)",
       "facts": { "remote_url": "https://github.com/acme/phoenix.git" },
-      "scope": "owner-repo",
+      "scope": "owner_repo",
       "expect": { "namespace": "acme-phoenix", "source": "remote" },
       "source": "plugin/scripts/_shared.mjs:58-65 repoSlugFromRemote"
     },
     {
       "name": "owner-repo scope from https remote without .git suffix",
       "facts": { "remote_url": "https://github.com/acme/phoenix" },
-      "scope": "owner-repo",
+      "scope": "owner_repo",
       "expect": { "namespace": "acme-phoenix", "source": "remote" },
       "source": "plugin/scripts/_shared.mjs:58-65; identical slug to the .git form"
     },
     {
       "name": "owner-repo scope from scp-style remote",
       "facts": { "remote_url": "git@github.com:acme/phoenix.git" },
-      "scope": "owner-repo",
+      "scope": "owner_repo",
       "expect": { "namespace": "acme-phoenix", "source": "remote" },
       "source": "plugin/scripts/_shared.mjs:58-65"
     },
     {
       "name": "owner-repo scope from git:// remote",
       "facts": { "remote_url": "git://host/x/repo" },
-      "scope": "owner-repo",
+      "scope": "owner_repo",
       "expect": { "namespace": "x-repo", "source": "remote" },
       "source": "plugin/scripts/_shared.mjs:58-65; the git://host prefix lands in discarded leading segments, only the last two path segments slug"
     },
     {
       "name": "owner-repo scope with trailing slash on the remote",
       "facts": { "remote_url": "https://github.com/acme/phoenix/" },
-      "scope": "owner-repo",
+      "scope": "owner_repo",
       "expect": { "namespace": "acme-phoenix", "source": "remote" },
       "source": "plugin/scripts/_shared.mjs:35 (trailing-slash strip) + 58-65"
     },
     {
       "name": "owner-repo scope from ssh:// remote with port (port/user never enter the slug)",
       "facts": { "remote_url": "ssh://user@host:2222/x/repo.git" },
-      "scope": "owner-repo",
+      "scope": "owner_repo",
       "expect": { "namespace": "x-repo", "source": "remote" },
       "source": "plugin/scripts/_shared.mjs:58-65"
     },
     {
       "name": "owner-repo scope preserves case in both segments (only special characters are sanitized)",
       "facts": { "remote_url": "git@github.com:Acme/Phoenix.git" },
-      "scope": "owner-repo",
+      "scope": "owner_repo",
       "expect": { "namespace": "Acme-Phoenix", "source": "remote" },
       "source": "plugin/scripts/_shared.mjs:62 sanitizes only the owner segment's special characters ([^A-Za-z0-9._-]+ -> '-'); it does not lowercase either segment"
     },
