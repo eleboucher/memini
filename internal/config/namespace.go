@@ -1,81 +1,98 @@
 package config
 
 import (
+	"context"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
+
+	"github.com/eleboucher/memini/internal/nsresolve"
+	"github.com/eleboucher/memini/internal/store"
 )
 
 // NamespaceFromGitRemote marks a namespace resolved from the `git remote
-// get-url origin` repo name — the order the plugins use.
+// get-url origin` repo name — the order ResolveDirNamespace uses.
 const NamespaceFromGitRemote NamespaceSource = "git-remote"
 
-// ResolvePluginNamespace resolves a namespace the way the Claude Code / OpenClaw
-// plugins do (plugin/scripts/_shared.mjs resolveProject):
+// ResolvePluginNamespace resolves a namespace the way an offline CLI caller —
+// `memini doctor`, or any other command with no live handshake to ask —
+// should: MEMINI_NAMESPACE (or MEMINI_DEFAULT_NAMESPACE) env, if non-empty,
+// else derivation via internal/nsresolve, the SAME package POST /v1/handshake
+// resolves with server-side (imported here, not duplicated). There is no pin
+// lookup and no per-key context: both require a round trip to a running
+// server, which is exactly what offline resolution doesn't have — see
+// PluginFacts for exactly what is gathered and sent through nsresolve.Resolve.
 //
-//  1. the per-project override (~/.config/memini/overrides.json), if set
-//  2. MEMINI_NAMESPACE (or MEMINI_DEFAULT_NAMESPACE) env, if non-empty
-//  3. repo name from `git remote get-url origin` (stable across worktrees/clones)
-//  4. basename of `git rev-parse --show-toplevel`
-//  5. basename of dir
+// The returned NamespaceSource is nsresolve's own vocabulary (env, remote,
+// toplevel, cwd, server_default — see nsresolve.Source*) rather than this
+// package's resolveDefaultNamespace one (env, git, cwd, fallback): mirroring
+// nsresolve's derivation means mirroring its labels too, so a source printed
+// by `memini doctor` means the same thing whether it came from this resolver
+// or from a live handshake response.
 //
-// then nested under a per-agent segment when MEMINI_AGENT is set (step 6,
-// mirroring _shared.mjs withAgent). It differs from resolveDefaultNamespace (the
-// server's header-less fallback) in step 3 (the server skips the git-remote
-// step) and step 6; `memini doctor` uses both to flag the divergence that lands
-// writes where recall doesn't look. The server's resolution is intentionally
-// left unchanged so existing stores keyed by the worktree basename are not
-// silently relocated.
-//
-// The override outranks the env var, matching the client exactly. Getting this
-// backwards would be worse than not reading the file at all: doctor would report
-// a namespace the plugin does not actually use, on precisely the machines where
-// a globally exported MEMINI_NAMESPACE is the problem being diagnosed.
+// It differs from resolveDefaultNamespace (the server's header-less
+// fallback) in exactly the two ways `memini doctor` exists to flag: this
+// resolver consults the git remote (the server's own default skips straight
+// to the toplevel basename) and nests the result under MEMINI_AGENT (the
+// server default never does, since a bare MCP client sends no agent). The
+// server's resolution is intentionally left unchanged so existing stores
+// keyed by the worktree basename are not silently relocated.
 func ResolvePluginNamespace(dir string) (string, NamespaceSource) {
-	ns, src := resolvePluginBase(dir)
-	return withAgentSegment(ns), src
+	facts := PluginFacts(dir)
+	res, err := nsresolve.Resolve(context.Background(), facts, nil, store.ClientSettings{}, "", defaultNamespace)
+	if err != nil {
+		// Facts derived from real git/cwd output should never fail
+		// httputil.ValidateNamespace, but this function's signature has no
+		// error to propagate — degrade to the same literal fallback
+		// resolveDefaultNamespace uses as its own last resort rather than
+		// panicking or returning a namespace nothing actually resolved to.
+		return defaultNamespace, NamespaceFromLiteral
+	}
+	return res.Namespace, NamespaceSource(res.Source)
 }
 
-func resolvePluginBase(dir string) (string, NamespaceSource) {
-	if ns, ok := NamespaceOverride(dir); ok {
-		return ns, NamespaceFromOverride
-	}
-	if v := firstNonEmpty(
-		os.Getenv("MEMINI_NAMESPACE"),
-		os.Getenv("MEMINI_DEFAULT_NAMESPACE"),
-	); v != "" {
-		return sanitizeNamespacePath(v), NamespaceFromEnv
-	}
+// PluginFacts gathers the project facts an offline CLI caller can supply for
+// nsresolve derivation, or for a POST /v1/handshake request body (`memini
+// doctor`'s handshake probe sends exactly what this returns): the git remote
+// URL, git toplevel path/basename, cwd basename, MEMINI_AGENT, and the
+// client's MEMINI_NAMESPACE/MEMINI_DEFAULT_NAMESPACE (sent as EnvNamespace so
+// a server-side pin can still beat it — see nsresolve.Facts.EnvNamespace).
+// DeclaredNamespace is deliberately left unset: that field is for gateway/CI
+// callers with no meaningful cwd, which neither ResolvePluginNamespace nor
+// doctor is. dir is the working directory to resolve from; "" uses
+// os.Getwd().
+func PluginFacts(dir string) nsresolve.Facts {
 	if dir == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return defaultNamespace, NamespaceFromLiteral
+		if cwd, err := os.Getwd(); err == nil {
+			dir = cwd
 		}
-		dir = cwd
 	}
-	return ResolveDirNamespace(dir)
+	top := gitToplevel(dir)
+	return nsresolve.Facts{
+		RemoteURL:        gitRemoteOrigin(dir),
+		ToplevelPath:     top,
+		ToplevelBasename: basenameOrEmpty(top),
+		CwdBasename:      basenameOrEmpty(dir),
+		Agent:            os.Getenv("MEMINI_AGENT"),
+		EnvNamespace: firstNonEmpty(
+			os.Getenv("MEMINI_NAMESPACE"),
+			os.Getenv("MEMINI_DEFAULT_NAMESPACE"),
+		),
+	}
 }
 
-var (
-	agentSegInvalid = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
-	agentSegTrim    = regexp.MustCompile(`^-+|-+$`)
-)
-
-// withAgentSegment mirrors the plugin's withAgent (_shared.mjs): when
-// MEMINI_AGENT is set, nest the namespace under a sanitized per-agent segment
-// ("project" -> "project/reviewer"), so doctor reports the namespace the plugin
-// actually writes to. Unset (the default) leaves the namespace untouched.
-func withAgentSegment(ns string) string {
-	agent := strings.TrimSpace(os.Getenv("MEMINI_AGENT"))
-	if agent == "" {
-		return ns
+// basenameOrEmpty is filepath.Base guarded against "" (Base("") == "." would
+// otherwise derive a bogus "." namespace) and a bare separator — the same
+// edge cases sanitizeNamespace strips for the server-default resolver.
+func basenameOrEmpty(dir string) string {
+	if dir == "" {
+		return ""
 	}
-	seg := agentSegTrim.ReplaceAllString(agentSegInvalid.ReplaceAllString(agent, "-"), "")
-	if seg == "" {
-		return ns
+	b := filepath.Base(dir)
+	if b == "." || b == string(filepath.Separator) {
+		return ""
 	}
-	return ns + "/" + seg
+	return b
 }
 
 // ResolveDirNamespace resolves a directory's namespace from git, ignoring any
