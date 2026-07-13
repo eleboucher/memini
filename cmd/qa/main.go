@@ -35,7 +35,7 @@ func qaHTTPWithHeaders() *http.Client {
 		return nil
 	}
 	headers := make(map[string]string)
-	for _, pair := range strings.Split(raw, ";") {
+	for pair := range strings.SplitSeq(raw, ";") {
 		kv := strings.SplitN(pair, ":", 2)
 		if len(kv) == 2 {
 			headers[strings.TrimSpace(kv[0])] = strings.TrimSpace(kv[1])
@@ -301,7 +301,7 @@ func loadSuite(suite, data, sessionDoc, holdout string) (*bench.Dataset, error) 
 func subsetQuestions(ds *bench.Dataset, limit int) {
 	step := float64(len(ds.Questions)) / float64(limit)
 	sampled := make([]bench.Question, 0, limit)
-	for i := 0; i < limit; i++ {
+	for i := range limit {
 		sampled = append(sampled, ds.Questions[int(float64(i)*step)])
 	}
 	ds.Questions = sampled

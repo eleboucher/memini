@@ -465,7 +465,7 @@ func TestResolveReadSetNonDurableTierFilterSkipsCascade(t *testing.T) {
 // front-orders it (right after primary) before the clamp fires.
 func TestResolveReadSetClampKeepsHomeViaPromotion(t *testing.T) {
 	svc, st := newReadsetSvc(t)
-	for i := 0; i < 70; i++ {
+	for i := range 70 {
 		seedNamespace(t, st, fmt.Sprintf("root/ns%02d", i))
 	}
 	got, err := svc.resolveReadSet(context.Background(), readScope{
@@ -492,7 +492,7 @@ func TestResolveReadSetClampKeepsHomeViaPromotion(t *testing.T) {
 // called with sc.home).
 func TestResolveReadSetClampKeepsNearAncestorsNaturally(t *testing.T) {
 	svc, st := newReadsetSvc(t)
-	for i := 0; i < 70; i++ {
+	for i := range 70 {
 		putLink(t, st, "acme/phoenix/api", fmt.Sprintf("shared/link%02d", i), nil)
 	}
 	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "acme/phoenix/api"})
@@ -507,7 +507,7 @@ func TestResolveReadSetClampKeepsNearAncestorsNaturally(t *testing.T) {
 
 func TestResolveReadSetClampKeepsPrimaryFirst(t *testing.T) {
 	svc, st := newReadsetSvc(t)
-	for i := 0; i < 70; i++ {
+	for i := range 70 {
 		seedNamespace(t, st, fmt.Sprintf("root/ns%02d", i))
 	}
 	got, err := svc.resolveReadSet(context.Background(), readScope{primary: "root", subtree: true})

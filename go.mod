@@ -1,6 +1,6 @@
 module github.com/eleboucher/memini
 
-go 1.26.4
+go 1.26.5
 
 require (
 	github.com/asg017/sqlite-vec-go-bindings v0.1.6
