@@ -94,7 +94,7 @@ their current values.
 | Command             | What it does                                                                        |
 | ------------------- | ----------------------------------------------------------------------------------- |
 | `/memini:status`    | Effective settings, resolved namespace **with provenance**, read set, server health |
-| `/memini:namespace` | Show, set, or clear the namespace override for this project                         |
+| `/memini:namespace` | Show, set, or clear the server-side namespace **pin** for this project              |
 | `/memini:remember`  | Save a fact (drives `memory_remember`)                                              |
 | `/memini:recall`    | Search memory (drives `memory_recall`)                                              |
 | `/memini:pin`       | Pin a memory so it surfaces in every briefing                                       |
@@ -125,29 +125,31 @@ the output is safe to paste into an issue.
 
 ```
 /memini:namespace                # show the namespace and where it came from
-/memini:namespace acme/api       # override it for this project
+/memini:namespace acme/api       # pin it for this project
 /memini:namespace --clear        # back to automatic resolution
 ```
 
-The override **beats `MEMINI_NAMESPACE`**. That ordering is deliberate: a globally
-exported `MEMINI_NAMESPACE` pins every repo on the machine to one namespace, and
-if the environment won, this command would silently do nothing on exactly the
-machines that most need it.
+A **pin** lives on the memini server (keyed by the project's git remote /
+toplevel), so it **follows you across machines** and every client — the hooks,
+the MCP tools, and the `memini` CLI — resolves the same namespace from it. A pin
+**beats `MEMINI_NAMESPACE`**: a globally exported `MEMINI_NAMESPACE` pins every
+repo on the machine to one namespace, and if the environment won, this command
+would silently do nothing on exactly the machines that most need it.
 
 Two caveats, both stated by the command itself:
 
-- **The hooks pick it up immediately**; the MCP tools need **`/reload-plugins`**.
-  Claude Code runs the MCP `headersHelper` only when the server _connects_, so
-  `memory_remember` / `memory_recall` keep targeting the old namespace until the
-  plugin reconnects.
-- **Scope is the project** (keyed by the git repository root), not the session.
-  Two sessions in the same repo share the override. The `headersHelper` is given
-  no session id, so it cannot tell them apart — per-project is the honest
+- **The hooks pick it up on their next invocation**; the MCP tools need
+  **`/reload-plugins`**. Claude Code runs the MCP `headersHelper` only when the
+  server _connects_, so `memory_remember` / `memory_recall` keep targeting the
+  old namespace until the plugin reconnects.
+- **Scope is the project** (its git remote / toplevel), not the session. Two
+  sessions in the same repo share the pin. The `headersHelper` is given no
+  session id, so it cannot tell them apart — per-project is the honest
   granularity here.
 
-Overrides live in `~/.config/memini/overrides.json` and persist until cleared.
-The Go CLI reads the same file, so `memini doctor` and `/memini:status` can never
-disagree about which namespace is in force.
+Because pins are server-side, setting or clearing one needs the server reachable.
+When it is not, the command says so and points you at `MEMINI_NAMESPACE=<ns>` as a
+machine-local offline override.
 
 ## Install
 
@@ -211,17 +213,28 @@ plugin/
 
 ## How the namespace gets resolved
 
-The plugin is the **authoritative** namespace resolver. Each hook script
-runs `resolveProject(data.cwd)` and sends the result as the
-`X-Memini-Namespace` header. Resolution order:
+The **server** is the authoritative namespace resolver. On `SessionStart` the
+plugin gathers what it knows about the project — the git remote URL, the git
+toplevel, the cwd basename, an optional `MEMINI_AGENT` suffix, and
+`MEMINI_NAMESPACE` if set — and POSTs those facts to `/v1/handshake`. The server
+resolves the effective namespace and returns it (plus the caller's identity and
+the fully-merged behavioral settings). Resolution order, server-side:
 
-1. The **project override** (`~/.config/memini/overrides.json`), if set — see
-   `/memini:namespace` above. It wins outright, including over the env var.
-2. `MEMINI_NAMESPACE` env var, if set.
-3. `git remote get-url origin` in `data.cwd`, then take the repo basename
-   (or the `owner-repo` slug when `MEMINI_NAMESPACE_SCOPE=owner-repo`).
-4. `git rev-parse --show-toplevel` in `data.cwd`, then take the basename.
-5. `basename(data.cwd)`.
+1. A **pin** (`/memini:namespace <ns>`), keyed by the project's git remote /
+   toplevel. It wins outright, including over `MEMINI_NAMESPACE`.
+2. `MEMINI_NAMESPACE`, sent as a fact so a pin can still beat it.
+3. A declared namespace (gateway/integration callers only).
+4. Derivation from the git remote, then the toplevel, then the cwd basename.
+5. The API key's bound default namespace, then the server default.
+
+The result is written to a **per-session handshake cache**
+(`$XDG_CACHE_HOME/memini/sessions/pid-<ppid>.handshake.json`, 10-minute TTL). Every
+other hook reads that cache: `Stop` / `PreCompact` / `SessionEnd` refresh it on a
+miss, while `PreToolUse` / `PostToolUse` are **network-free** — they use the cache
+only, so a live handshake can never race or add latency on the hot path. When the
+server is unreachable the plugin degrades to local derivation (the same order,
+minus the pin/key-default legs) and writes no cache; the absence of a cache entry
+is itself the signal the other hooks read.
 
 ### How the MCP tools find the same namespace
 
@@ -241,14 +254,7 @@ So `process.cwd()` and `PWD` are both traps: resolving from either would derive
 the namespace from the plugin's own version-named directory and scatter memories
 into namespaces like `0.6.7`.
 
-It used to fall back to a single global cache file that `SessionStart` wrote. That
-file is shared by **every concurrent session**, so with two sessions open in two
-repos it is last-writer-wins: both sessions' MCP calls target one namespace while
-their hooks write to another — the exact "writes land where recall doesn't look"
-split `memini doctor` exists to diagnose.
-
-The helper now walks the process tree instead. Its parent _is_ the session, and
-the parent's cwd _is_ the project:
+The helper walks the process tree to recover the **project directory**:
 
 1. `CLAUDE_PROJECT_DIR`, if Claude Code ever provides it.
 2. The **parent process's cwd** (Linux `/proc`, macOS `lsof`) — always fresh, and
@@ -256,29 +262,18 @@ the parent's cwd _is_ the project:
 3. `$XDG_CACHE_HOME/memini/sessions/pid-<ppid>.cwd`, written by the hooks under
    the same ppid both sides observe. Portable (Windows), but only exists once a
    hook has fired.
-4. The legacy global cache file — last resort, and still racy.
 
-Each step yields a **directory**, never a namespace: the helper re-resolves on
-every connect, which is what lets a namespace override take effect on
-`/reload-plugins` where a cached namespace would go stale.
+From that directory it runs the **same handshake flow** the hooks use — reusing
+the per-session cache `SessionStart` populated, else one bounded live handshake,
+else env/local derivation. There is deliberately **no global-namespace file**: the
+old shared file was last-writer-wins across concurrent sessions (two repos, one
+namespace — the "writes land where recall doesn't look" split), which the
+per-session cache exists to end. With no project signal at all the helper emits
+auth-only headers and lets the server apply the key's default namespace.
 
-The first resolution is cached in a self-healing project map
-(`$XDG_CACHE_HOME/memini/project-map.json`) keyed by both the remote URL and
-the repo's path. So if the folder moves (path changes, remote same) or the
-`origin` remote is later removed or renamed (path same, remote gone), the
-project still resolves to the **same** namespace instead of silently orphaning
-its memory. `MEMINI_NAMESPACE` always overrides the cache; delete the map to
-re-derive (e.g. after switching `MEMINI_NAMESPACE_SCOPE`).
-
-By default the bare repo name is used (backward compatible). Set
-`MEMINI_NAMESPACE_SCOPE=owner-repo` to disambiguate same-named repos under
-different owners (`alice/app` → `alice-app`, `bob/app` → `bob-app`); note this
-changes the namespace, so existing memory under the bare name needs
-`memini namespace move` to migrate.
-
-The server-side auto-resolve (when no namespace header is sent) is only a
-fallback for clients that don't send one — it's wrong in HTTP mode because the
-server is detached from the agent's cwd.
+A pin follows you across machines and every client resolves the same one, so the
+hooks, the MCP tools, and `memini doctor` can never disagree about which namespace
+is in force.
 
 ## Environment
 

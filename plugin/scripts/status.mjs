@@ -1,231 +1,135 @@
 #!/usr/bin/env node
-// `/memini:status` — what this plugin is actually doing right now.
+// `/memini:status` — what this plugin is actually doing right now, and why.
 //
-// Three things have to agree for memory to work, and nothing previously showed
-// you whether they did:
+// The whole point of the config-handshake redesign is that ONE source of truth —
+// the server handshake — decides the namespace and every behavioral setting.
+// This command runs a live handshake (a diagnostic must never trust a cache)
+// and shows, with provenance: which namespace the server resolved and how, the
+// caller's identity, every effective setting and where it came from
+// (env override > server key/global/default > built-in), and — when the server
+// is unreachable — that everything below is a local-derived degraded guess.
 //
-//   1. the namespace the HOOKS write to (session digests, turn capture)
-//   2. the namespace the MCP TOOLS write to (memory_remember / memory_recall)
-//   3. the namespace the SERVER reads from when it assembles a read set
-//
-// When (1) and (2) diverge, memory silently half-works: the agent saves things
-// it can never recall. That is the failure `memini doctor` was written to
-// diagnose, and this reports it from the client side — where it originates, and
-// without needing the `memini` binary at all, which matters because plugin-only
-// users pointing at a remote server do not have it.
-//
-// Everything here is read-only.
+// Everything here is read-only. Secrets are redacted, so the output is safe to
+// paste into an issue.
 
+import { getSessionContext, getJSON, DEBUG, pluginRootFile } from "./_shared.mjs";
 import {
-  resolveProjectDetailed,
-  resolveProject,
-  readCachedNamespace,
-  namespaceCacheFile,
-  pluginRootFile,
-  tenantConfigPath,
-  getJSON,
-} from "./_shared.mjs";
-import {
-  describeSettings,
+  BEHAVIOR_KNOBS,
+  deriveLocalNamespace,
+  factsFingerprint,
+  gatherFacts,
   resolveHarnessCwd,
+  isPlaintextBearerUnsafe,
+  redactValue,
   cacheDir,
-  defaultOverridesPath,
 } from "./_client.gen.mjs";
 import fs from "node:fs";
 import path from "node:path";
 
 const JSON_OUT = process.argv.includes("--json");
 
-// ─── what the MCP headersHelper will send ────────────────────────────
-//
-// Recomputed here with exactly the same logic mcp-headers.mjs uses, rather than
-// read from a cache. The point is to answer "what WILL happen on the next MCP
-// call", so a stale cache would defeat the check.
-function mcpHeaderNamespace(cwd) {
-  // The helper runs as a child of the session's `claude` process. From THIS
-  // process (a Bash tool call) the parent is a shell, not claude — so we cannot
-  // observe the helper's ppid. What we can do is verify the mechanism it relies
-  // on: resolve from the same project dir, and separately report the legacy
-  // cache file it would fall back to.
-  const viaProject = resolveProject(cwd);
-  const cached = readCachedNamespace();
-  const harness = resolveHarnessCwd(process.env, process.ppid);
-  return {
-    // What the fixed helper resolves for this project.
-    willSend: viaProject,
-    // What the legacy global file holds — shared by every concurrent session.
-    cacheFile: cached || "",
-    cacheFilePath: namespaceCacheFile(),
-    harnessCwd: harness?.cwd,
-    harnessSource: harness?.source,
-  };
-}
-
 function readInstalledPluginVersion() {
   try {
     const root = fs.readFileSync(pluginRootFile(), "utf8").trim();
     if (!root) return null;
-    const manifest = JSON.parse(
-      fs.readFileSync(path.join(root, ".claude-plugin", "plugin.json"), "utf8"),
-    );
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, ".claude-plugin", "plugin.json"), "utf8"));
     return { root, version: manifest.version || "?" };
   } catch {
     return null;
   }
 }
 
-async function fetchServer(ns) {
-  const out = { reachable: false };
-
-  // Reachability is decided by an endpoint the plugin ACTUALLY depends on.
-  // /healthz is tempting but wrong for this: a remote memini typically sits
-  // behind an ingress that routes only /v1 and /mcp, so /healthz 404s while the
-  // server is perfectly healthy. Reporting "server unreachable" there would be a
-  // false alarm on the most common remote deployment.
-  //
-  // The read set doubles as the probe: it is the server's own introspection of
-  // which namespaces a plain recall draws from, so it cannot drift from what
-  // recall really does, and we need it anyway.
-  const started = Date.now();
-  out.readSet = await getJSON("/v1/namespaces/read-set", ns, 4000);
-  out.latencyMs = Date.now() - started;
-  out.reachable = out.readSet != null;
-
-  // Dependency detail, when the deployment exposes it. Quiet: a 404 here means
-  // "not routed", not "broken".
-  const health = await getJSON("/healthz?verbose=1", ns, 4000, { quiet: true });
-  if (health) {
-    out.version = health.version;
-    out.status = health.status;
-    out.deps = health.deps;
-  } else {
-    out.healthExposed = false;
-  }
-  return out;
-}
-
 // ─── rendering ───────────────────────────────────────────────────────
 
 const pad = (s, n) => String(s).padEnd(n);
 
-function renderKnobs(lines, settings, group, names) {
-  const rows = settings.filter((s) => names.includes(s.name));
-  if (!rows.length) return;
-  lines.push(`${group}`);
-  for (const r of rows) {
-    const origin = r.source === "env" ? `<- env` : `(default)`;
-    lines.push(`  ${pad(r.name.replace(/^MEMINI_/, "").toLowerCase(), 28)} ${pad(r.value, 34)} ${origin}`);
-  }
-  lines.push("");
+function fmtValue(v) {
+  if (Array.isArray(v)) return v.length ? v.join("|") : "(none)";
+  if (typeof v === "boolean") return v ? "on" : "off";
+  if (v === "" || v == null) return "(unset)";
+  return String(v);
+}
+
+// The source column: env override beats server (key > global > default per the
+// handshake's settings_sources) beats the built-in default.
+function sourceLabel(row, reachable) {
+  if (row.source === "env-override") return reachable ? "<- env (overriding server)" : "<- env";
+  if (row.source === "server") return `<- server (${row.serverSource || "?"})`;
+  return "(default)";
 }
 
 function render(report) {
-  const { settings, ns, mcp, server, plugin } = report;
+  const { ns, identity, connection, settings, server, readSet, warnings, plugin } = report;
   const L = [];
 
-  L.push(`memini — effective settings`);
-  L.push(`cwd: ${settings.cwd}`);
+  L.push(`memini — status`);
+  L.push(`cwd: ${report.cwd}`);
   L.push("");
 
-  // Namespace first: it is what people actually come here to find out.
   L.push(`NAMESPACE`);
-  L.push(`  ${pad("effective", 28)} ${pad(ns.effective, 34)} <- ${ns.source}`);
-  if (ns.override) {
-    L.push(`  ${pad("without the override", 28)} ${pad(ns.withoutOverride.namespace, 34)} <- ${ns.withoutOverride.source}`);
-  }
-  if (ns.derived.namespace !== ns.effective) {
-    L.push(`  ${pad("git/cwd would give", 28)} ${pad(ns.derived.namespace, 34)} <- ${ns.derived.source}`);
-  }
-  L.push(`  ${pad("home (personal)", 28)} ${ns.home || "(unset)"}`);
-  L.push("");
-
-  L.push(`MCP TOOL CALLS`);
-  L.push(`  ${pad("header the helper sends", 28)} ${mcp.willSend || "(none)"}`);
-  if (mcp.cacheFile && mcp.cacheFile !== mcp.willSend) {
-    L.push(
-      `  ${pad("legacy global cache file", 28)} ${pad(mcp.cacheFile, 34)} (shared by all sessions)`,
-    );
+  L.push(`  ${pad("effective", 20)} ${pad(ns.effective, 34)} <- ${ns.sourceLabel}`);
+  L.push(`  ${pad("local fallback", 20)} ${pad(ns.localFallback, 34)} (facts-only derivation)`);
+  if (ns.pin) {
+    const who = ns.pin.created_by ? `set by ${ns.pin.created_by}` : "set by admin/dev";
+    L.push(`  ${pad("pin", 20)} ${pad(ns.effective, 34)} (key ${ns.pin.key}, ${who}${ns.pin.updated_at ? `, ${ns.pin.updated_at}` : ""})`);
+    if (ns.pin.note) L.push(`  ${pad("", 20)} note: ${ns.pin.note}`);
   }
   L.push("");
 
-  renderKnobs(L, settings.settings, "CONNECTION", [
-    "MEMINI_BASE_URL",
-    "MEMINI_MCP_URL",
-    "MEMINI_API_KEY",
-    "MEMINI_REQUIRE_HTTPS",
-  ]);
-  renderKnobs(L, settings.settings, "NAMESPACE INPUTS", [
-    "MEMINI_NAMESPACE",
-    "MEMINI_NAMESPACE_SCOPE",
-    "MEMINI_AGENT",
-    "MEMINI_HOME",
-  ]);
-  renderKnobs(L, settings.settings, "CAPTURE", [
-    "MEMINI_CAPTURE_TURNS",
-    "MEMINI_SESSION_DIGEST",
-    "MEMINI_INLINE_EXTRACT",
-    "MEMINI_AUTO_SAVE",
-    "MEMINI_AUTO_SAVE_INTERVAL",
-  ]);
-  renderKnobs(L, settings.settings, "INJECTION BUDGETS", [
-    "MEMINI_INJECT_BRIEFING_PINNED",
-    "MEMINI_INJECT_BRIEFING_FACTS",
-    "MEMINI_INJECT_BRIEFING_PROCEDURES",
-    "MEMINI_INJECT_BRIEFING_RECENT",
-    "MEMINI_INJECT_BRIEFING_MAX_TOK",
-    "MEMINI_INJECT_PRETOOL_ITEMS",
-    "MEMINI_INJECT_PRETOOL_MAX_TOK",
-    "MEMINI_INJECT_PRETOOL_MIN_SCORE",
-    "MEMINI_INJECT_PRETOOL_TOOLS",
-    "MEMINI_INJECT_LABELS",
-  ]);
+  L.push(`IDENTITY (from handshake)`);
+  if (!server.reachable) {
+    L.push(`  (unavailable — server unreachable)`);
+  } else {
+    L.push(`  ${pad("key", 20)} ${identity.key_name || "(unnamed: admin key or dev mode)"}`);
+    L.push(`  ${pad("home", 20)} ${pad(identity.home || "(unset)", 34)} <- ${identity.homeSource}`);
+    L.push(`  ${pad("default namespace", 20)} ${identity.default_namespace || "(none)"}`);
+  }
+  L.push("");
+
+  L.push(`CONNECTION`);
+  L.push(`  ${pad("base_url", 20)} ${connection.base_url}`);
+  L.push(`  ${pad("api_key", 20)} ${connection.api_key || "(unset)"}`);
+  L.push(`  ${pad("require_https", 20)} ${connection.require_https ? "on" : "off"}`);
+  L.push("");
+
+  L.push(`SETTINGS`);
+  for (const r of settings) {
+    L.push(`  ${pad(r.name.replace(/^MEMINI_/, "").toLowerCase(), 28)} ${pad(fmtValue(r.value), 22)} ${sourceLabel(r, server.reachable)}`);
+  }
+  L.push("");
 
   L.push(`SERVER`);
   if (!server.reachable) {
-    L.push(`  ${pad("reachable", 28)} NO — could not reach the server`);
+    L.push(`  ${pad("handshake", 20)} FAILED — degraded to local derivation + built-in defaults`);
+    L.push(`  ${pad("base_url", 20)} ${connection.base_url}`);
   } else {
+    L.push(`  ${pad("handshake", 20)} ok`);
     const ver = server.version ? `, ${server.version}` : "";
-    L.push(`  ${pad("reachable", 28)} yes (${server.latencyMs}ms${ver})`);
-    const d = server.deps || {};
-    if (d.store) L.push(`  ${pad("store", 28)} ${d.store.ok ? "ok" : `FAILING — ${d.store.last_error || "?"}`}`);
-    if (d.embedder) {
-      L.push(
-        `  ${pad("embedder", 28)} ${d.embedder.ok ? "ok" : `FAILING — ${d.embedder.last_error || "?"}`}`,
-      );
-    }
-    if (d.llm) {
-      L.push(
-        `  ${pad("llm", 28)} ${d.llm.configured ? (d.llm.ok ? "ok" : `FAILING — ${d.llm.last_error || "?"}`) : "not configured"}`,
-      );
-    }
-    if (server.healthExposed === false) {
-      L.push(
-        `  ${pad("dependency detail", 28)} unavailable (/healthz not routed — normal behind an ingress)`,
-      );
-    }
+    const lat = server.latencyMs != null ? ` (${server.latencyMs}ms${ver})` : ver ? ` (${server.version})` : "";
+    L.push(`  ${pad("reachable", 20)} yes${lat}`);
   }
   L.push("");
 
-  if (server.readSet?.entries?.length) {
+  if (readSet?.entries?.length) {
     L.push(`READ SET for "${ns.effective}" — where a plain recall looks`);
     L.push(`  ${pad("NAMESPACE", 34)} ${pad("ORIGIN", 12)} TIERS`);
-    for (const e of server.readSet.entries) {
+    for (const e of readSet.entries) {
       const tiers = Array.isArray(e.tiers) && e.tiers.length ? e.tiers.join(",") : "all";
       L.push(`  ${pad(e.namespace, 34)} ${pad(e.origin, 12)} ${tiers}`);
     }
     L.push("");
   }
 
-  L.push(`PATHS`);
-  L.push(`  ${pad("overrides", 28)} ${report.paths.overrides}${fs.existsSync(report.paths.overrides) ? "" : " (absent)"}`);
-  L.push(`  ${pad("tenant config", 28)} ${report.paths.config}${fs.existsSync(report.paths.config) ? "" : " (absent)"}`);
-  L.push(`  ${pad("cache", 28)} ${report.paths.cache}`);
-  if (plugin) L.push(`  ${pad("installed plugin", 28)} ${plugin.version}  ${plugin.root}`);
-  L.push("");
+  if (plugin) {
+    L.push(`PLUGIN`);
+    L.push(`  ${pad("installed", 20)} ${plugin.version}  ${plugin.root}`);
+    L.push(`  ${pad("cache", 20)} ${report.cacheDir}`);
+    L.push("");
+  }
 
-  if (report.warnings.length) {
+  if (warnings.length) {
     L.push(`WARNINGS`);
-    for (const w of report.warnings) {
+    for (const w of warnings) {
       L.push(`  [${w.level === "warn" ? "!" : "i"}] ${w.code}: ${w.message}`);
       if (w.fix) L.push(`      fix: ${w.fix}`);
     }
@@ -241,80 +145,149 @@ function render(report) {
 async function main() {
   const cwd = process.cwd();
 
-  const settings = describeSettings({
-    cwd,
-    env: process.env,
-    // Hand describeSettings THIS harness's resolver, so what it reports is what
-    // the hooks actually do — project map, tenant template, agent segment and
-    // all — rather than an idealized chain that only resembles it.
-    //
-    // `o` carries ignoreOverride, which is how the counterfactual lines see past
-    // an override (it lives in a file, so no amount of env-doctoring removes it).
-    // noPersist keeps this command honestly read-only: the resolver would
-    // otherwise write the self-healing project map, and a diagnostic should not
-    // mutate the state it is reporting on.
-    resolve: (env, o) => resolveProjectDetailed(cwd, env, { ...o, noPersist: true }),
-    cacheDir: cacheDir(process.env),
+  // A live handshake — status is a diagnostic, always fresh. allowNetwork
+  // "always" round-trips the server (or degrades to local derivation and
+  // built-in defaults when it can't reach it).
+  const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "always", timeoutMs: 4000 });
+  const hs = ctx.handshake;
+  const boot = ctx.boot;
+  const reachable = !ctx.degraded;
+
+  // effective namespace source, spelled out.
+  let sourceLabelText;
+  if (reachable) {
+    if (hs.namespace_source === "pin") sourceLabelText = `server:pin (key ${hs.pin?.key || "?"})`;
+    else if (hs.namespace_source === "env") sourceLabelText = `env (overriding — server would otherwise derive)`;
+    else sourceLabelText = `server:${hs.namespace_source}`;
+  } else {
+    sourceLabelText = `${ctx.source} (degraded — server unreachable)`;
+  }
+
+  const localFallback = deriveLocalNamespace(ctx.facts).namespace;
+
+  // Settings rows with per-field provenance (env-override > server key/global/
+  // default > built-in default).
+  const settings = BEHAVIOR_KNOBS.map((k) => {
+    const { value, source } = ctx.setting(k.wireKey);
+    const serverSource = source === "server" ? hs?.settings_sources?.[k.wireKey] || "?" : "";
+    return { name: k.envName, wireKey: k.wireKey, value, source, serverSource };
   });
 
-  const ns = settings.namespace;
-  const mcp = mcpHeaderNamespace(cwd);
+  // Identity + home provenance.
+  const identity = hs?.identity || {};
+  const homeSource = identity.home ? "key binding" : boot.homeEnv ? "MEMINI_HOME" : "unset";
+  const home = identity.home || boot.homeEnv || "";
+
+  // Read set: a fresh probe of the RENAMED endpoint (no dash) doubles as the
+  // reachability/latency measure, and shows where a plain recall actually looks.
+  let readSet = null;
+  let latencyMs = null;
+  if (reachable) {
+    const started = Date.now();
+    readSet = await getJSON("/v1/namespaces/readset", ctx.namespace, 4000);
+    latencyMs = Date.now() - started;
+    // The handshake already carried a read set; fall back to it if the probe
+    // failed for any reason so the section still renders.
+    if (!readSet && Array.isArray(hs?.read_set)) readSet = { entries: hs.read_set };
+  }
+
+  const warnings = [];
+
+  // Degraded: the server is unreachable, so everything below is a local guess.
+  if (!reachable) {
+    warnings.push({
+      level: "warn",
+      code: "degraded-mode",
+      message: `could not reach the memini server at ${boot.baseUrl}: the namespace is local-derived and every setting is a built-in default, not what the server would return.`,
+      fix: "Check MEMINI_BASE_URL and that the server is running; recall and capture are both failing until it is reachable.",
+    });
+  }
+
+  // MEMINI_NAMESPACE is a machine-wide pin: it beats server derivation for every
+  // repo on this machine (only a server-side pin overrides it).
+  if (boot.namespaceEnv) {
+    warnings.push({
+      level: "warn",
+      code: "global-namespace-pin",
+      message: `MEMINI_NAMESPACE is set to "${boot.namespaceEnv}", which overrides the server's namespace for EVERY repo on this machine (unless that repo is pinned server-side). If it is exported from a shell rc or a fish universal variable, every repo shares one memory pool.`,
+      fix: "Unset MEMINI_NAMESPACE and pin per-project instead: /memini:namespace <ns> (a pin beats the environment).",
+    });
+  }
+
+  // Home unset only when NEITHER the key binding NOR MEMINI_HOME provides one.
+  if (!identity.home && !boot.homeEnv) {
+    warnings.push({
+      level: "warn",
+      code: "home-unset",
+      message: 'no personal namespace: the key has no bound home and MEMINI_HOME is unset, so visibility:"personal" writes will error and no personal leg merges into recall.',
+      fix: "Export MEMINI_HOME=personal/<you>, or bind a home on the API key.",
+    });
+  }
+
+  // Plaintext bearer.
+  if (isPlaintextBearerUnsafe(boot.baseUrl, boot.apiKey)) {
+    warnings.push({
+      level: "warn",
+      code: "plaintext-bearer",
+      message: `a bearer token is configured for plaintext HTTP to ${boot.baseUrl}; the token and your memory payloads can be observed on the network.`,
+      fix: "Use HTTPS, or tunnel over SSH. Set MEMINI_REQUIRE_HTTPS=1 to make this a hard refusal.",
+    });
+  }
+
+  // Split-brain check: compare the command's cwd against the cwd the MCP
+  // headersHelper would resolve from the process tree. Server-determined
+  // namespaces make a namespace comparison redundant — but if the two cwds
+  // yield different project FACTS, the MCP tools and these hooks are describing
+  // different projects to the server.
+  const harness = resolveHarnessCwd(process.env, process.ppid);
+  if (harness && harness.cwd) {
+    const here = factsFingerprint(ctx.facts);
+    const there = factsFingerprint(gatherFacts(harness.cwd, process.env));
+    if (here !== there) {
+      warnings.unshift({
+        level: "warn",
+        code: "cwd-split",
+        message: `this command's project (${cwd}) and the MCP-resolved project (${harness.cwd}, via ${harness.source}) have different git facts, so MCP tool calls may target a different namespace than these hooks. `,
+        fix: "Run /memini:status from the project root, and check which directory the harness process is in.",
+      });
+    }
+  }
+
   const plugin = readInstalledPluginVersion();
-  const server = await fetchServer(ns.effective);
-
-  const warnings = [...settings.warnings];
-
-  // The split-brain check. The hooks and the MCP tools must target the same
-  // namespace or the agent saves what it cannot recall.
-  if (mcp.willSend && mcp.willSend !== ns.effective) {
-    warnings.unshift({
-      level: "warn",
-      code: "namespace-split",
-      message:
-        `the hooks write to "${ns.effective}" but MCP tool calls would target ` +
-        `"${mcp.willSend}". Memories saved via memory_remember will not be found ` +
-        `by recall in this project.`,
-      fix: "This should not happen — please report it.",
-    });
-  }
-
-  // The legacy global file is shared by every concurrent session. If it
-  // disagrees with this project, an older installed headersHelper (one without
-  // the process-tree fix) would send the wrong namespace.
-  if (mcp.cacheFile && mcp.cacheFile !== ns.effective) {
-    warnings.push({
-      level: "note",
-      code: "stale-global-namespace-cache",
-      message:
-        `the legacy global namespace file holds "${mcp.cacheFile}", not "${ns.effective}" — ` +
-        `it is written by whichever session started most recently. The current headersHelper ` +
-        `ignores it (it resolves per session from the process tree), but an older installed ` +
-        `plugin would send it.`,
-      fix: `Harmless once every session is on this plugin version. Path: ${mcp.cacheFilePath}`,
-    });
-  }
-
-  if (!server.reachable) {
-    warnings.push({
-      level: "warn",
-      code: "server-unreachable",
-      message: `could not reach the memini server; recall and capture are both failing.`,
-      fix: "Check MEMINI_BASE_URL and that the server is running.",
-    });
-  }
 
   const report = {
+    cwd,
+    cacheDir: cacheDir(process.env),
+    degraded: ctx.degraded,
+    ns: {
+      effective: ctx.namespace,
+      source: ctx.source,
+      sourceLabel: sourceLabelText,
+      localFallback,
+      pin: reachable && hs.namespace_source === "pin" ? hs.pin : null,
+    },
+    identity: {
+      authenticated: !!identity.authenticated,
+      key_name: identity.key_name || "",
+      home,
+      homeSource,
+      default_namespace: identity.default_namespace || "",
+    },
+    connection: {
+      base_url: boot.baseUrl,
+      api_key: boot.apiKey ? redactValue(boot.apiKey) : "",
+      require_https: boot.requireHttps,
+    },
     settings,
-    ns,
-    mcp,
-    server,
+    server: {
+      reachable,
+      latencyMs,
+      version: hs?.server?.version || "",
+      default_namespace: hs?.server?.default_namespace || "",
+    },
+    readSet,
     plugin,
     warnings,
-    paths: {
-      overrides: defaultOverridesPath(process.env),
-      config: tenantConfigPath(process.env),
-      cache: cacheDir(process.env),
-    },
   };
 
   if (JSON_OUT) {
@@ -326,5 +299,6 @@ async function main() {
 
 main().catch((e) => {
   console.error(`memini status failed: ${e?.message || e}`);
+  if (DEBUG) console.error(e);
   process.exitCode = 1;
 });
