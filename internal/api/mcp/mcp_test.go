@@ -1672,7 +1672,7 @@ func listTools(t *testing.T, opts ...service.Option) map[string]*mcpsdk.Tool {
 func TestToolDescriptions(t *testing.T) {
 	tools := listTools(t, service.WithAnswerer(&fakeAnswerer{resp: "n/a"}))
 	want := map[string][]string{
-		"memory_remember": {"atomic", "merge_hint", "proactively", "CLAUDE.md", "stored=false"},
+		"memory_remember": {"atomic", "merge_hint", "Do not wait to be asked", "CLAUDE.md", "stored=false"},
 		"memory_recall":   {"created_at", "Empty results", "degraded", "BEFORE starting work"},
 		"memory_briefing": {"session start"},
 		"memory_answer":   {"memory_recall"},

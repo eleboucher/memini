@@ -45,6 +45,7 @@ func TestDefaultClientSettings(t *testing.T) {
 		want int
 	}{
 		"auto_save_interval":         {d.AutoSaveInterval, 10},
+		"auto_save_min_events":       {d.AutoSaveMinEvents, 3},
 		"inject_briefing_pinned":     {d.InjectBriefingPinned, 5},
 		"inject_briefing_facts":      {d.InjectBriefingFacts, 5},
 		"inject_briefing_procedures": {d.InjectBriefingProcedures, 5},
@@ -117,6 +118,8 @@ func TestClientSettingsValidate(t *testing.T) {
 		{"auto_save_interval = 1 is valid (boundary)", store.ClientSettings{AutoSaveInterval: new(1)}, false},
 		{"auto_save_interval = 0 is invalid", store.ClientSettings{AutoSaveInterval: new(0)}, true},
 		{"auto_save_interval negative is invalid", store.ClientSettings{AutoSaveInterval: new(-1)}, true},
+		{"auto_save_min_events = 0 is valid (boundary)", store.ClientSettings{AutoSaveMinEvents: new(0)}, false},
+		{"auto_save_min_events negative is invalid", store.ClientSettings{AutoSaveMinEvents: new(-1)}, true},
 		{"inject_briefing_pinned = 0 is valid (boundary)", store.ClientSettings{InjectBriefingPinned: new(0)}, false},
 		{"inject_briefing_pinned negative is invalid", store.ClientSettings{InjectBriefingPinned: new(-1)}, true},
 		{"inject_briefing_facts negative is invalid", store.ClientSettings{InjectBriefingFacts: new(-1)}, true},
@@ -187,7 +190,8 @@ func TestMergeClientSettings(t *testing.T) {
 
 	t.Run("a later layer's explicit field wins over an earlier layer's", func(t *testing.T) {
 		global := store.SettingsLayer{Source: "global", S: store.ClientSettings{
-			AutoSaveInterval: new(20),
+			AutoSaveInterval:  new(20),
+			AutoSaveMinEvents: new(5), // untouched by key, must survive from global
 		}}
 		key := store.SettingsLayer{Source: "key:ci-bot", S: store.ClientSettings{
 			AutoSaveInterval: new(99), // overrides global's 20
@@ -200,6 +204,14 @@ func TestMergeClientSettings(t *testing.T) {
 		}
 		if sources["auto_save_interval"] != "key:ci-bot" {
 			t.Fatalf("sources[auto_save_interval] = %q, want %q", sources["auto_save_interval"], "key:ci-bot")
+		}
+		// auto_save_min_events was set only by global; the key layer left it nil,
+		// so global's value and provenance must win.
+		if got.AutoSaveMinEvents == nil || *got.AutoSaveMinEvents != 5 {
+			t.Fatalf("auto_save_min_events = %v, want 5 (global's value, untouched by key)", got.AutoSaveMinEvents)
+		}
+		if sources["auto_save_min_events"] != "global" {
+			t.Fatalf("sources[auto_save_min_events] = %q, want %q", sources["auto_save_min_events"], "global")
 		}
 		if got.Recall == nil || *got.Recall != false {
 			t.Fatalf("recall = %v, want false", got.Recall)

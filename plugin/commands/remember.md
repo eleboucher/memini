@@ -23,6 +23,8 @@ Rules:
   first if you are unsure.
 - Tag it `pinned` only if it should surface in _every_ future session briefing.
   That budget is small; reserve it for durable identity and preferences.
+- Never save secrets, credentials, API keys, or tokens, even when asked — say
+  why and point at a secret manager instead.
 
 Then tell the user what you saved, in which tier and namespace, in one line.
 

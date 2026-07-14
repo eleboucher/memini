@@ -1890,6 +1890,15 @@ components:
           minimum: 1
           default: 10
           description: User-message interval between auto-save nudges.
+        auto_save_min_events:
+          type: integer
+          minimum: 0
+          default: 3
+          description: >
+            Minimum buffered state-changing tool events since the last
+            auto-save baseline for the interval nudge to fire; below this the
+            nudge defers, then fires as a discussion-variant prompt at twice
+            the interval. 0 disables the activity gate (interval-only cadence).
         inject_briefing_pinned:
           type: integer
           minimum: 0
