@@ -1096,7 +1096,7 @@ export interface components {
              */
             auto_save_interval: number;
             /**
-             * @description Minimum buffered state-changing tool events since the last auto-save baseline for the interval nudge to fire; 0 disables the activity gate (interval-only cadence).
+             * @description Minimum buffered state-changing tool events since the last auto-save baseline for the interval nudge to fire; below this the nudge defers, then fires as a discussion-variant prompt at twice the interval. 0 disables the activity gate (interval-only cadence).
              * @default 3
              */
             auto_save_min_events: number;

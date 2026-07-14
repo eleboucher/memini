@@ -326,14 +326,14 @@ client** — it wins over whatever the server resolved, without touching the
 server's stored value for anyone else. `/memini:status` shows each knob's
 actual source (`env-override` / `server (key|global|default)`).
 
-| Env var                       | Default | Description                                                                                                       |
-| ----------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------- |
-| `MEMINI_AUTO_SAVE`            | on      | periodic auto-save nudge on `Stop`.                                                                               |
-| `MEMINI_AUTO_SAVE_INTERVAL`   | `10`    | user messages between auto-save nudges.                                                                           |
-| `MEMINI_AUTO_SAVE_MIN_EVENTS` | `3`     | min buffered tool events before an auto-save nudge fires; `0` disables the activity gate (interval-only cadence). |
-| `MEMINI_CAPTURE_TURNS`        | on      | auto-capture each user→assistant turn as episodic memory.                                                         |
-| `MEMINI_SESSION_DIGEST`       | on      | record session digests (files edited, commands run); `0` to keep memory to durable facts only.                    |
-| `MEMINI_INLINE_EXTRACT`       | on      | inject the memory-save directive (`memory_remember`) and scrape legacy `<memory>` blocks.                         |
+| Env var                       | Default | Description                                                                                                                                                                                        |
+| ----------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEMINI_AUTO_SAVE`            | on      | periodic auto-save nudge on `Stop`.                                                                                                                                                                |
+| `MEMINI_AUTO_SAVE_INTERVAL`   | `10`    | user messages between auto-save nudges.                                                                                                                                                            |
+| `MEMINI_AUTO_SAVE_MIN_EVENTS` | `3`     | min buffered tool events before an auto-save nudge fires; below this it defers and fires a discussion-variant nudge at twice the interval; `0` disables the activity gate (interval-only cadence). |
+| `MEMINI_CAPTURE_TURNS`        | on      | auto-capture each user→assistant turn as episodic memory.                                                                                                                                          |
+| `MEMINI_SESSION_DIGEST`       | on      | record session digests (files edited, commands run); `0` to keep memory to durable facts only.                                                                                                     |
+| `MEMINI_INLINE_EXTRACT`       | on      | inject the memory-save directive (`memory_remember`) and scrape legacy `<memory>` blocks.                                                                                                          |
 
 ### Removed variables
 

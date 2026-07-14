@@ -52,7 +52,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
     "key": "auto_save_min_events",
     "type": "integer",
     "default": 3,
-    "description": "Minimum buffered state-changing tool events since the last auto-save baseline for the interval nudge to fire; 0 disables the activity gate (interval-only cadence).",
+    "description": "Minimum buffered state-changing tool events since the last auto-save baseline for the interval nudge to fire; below this the nudge defers, then fires as a discussion-variant prompt at twice the interval. 0 disables the activity gate (interval-only cadence).",
     "min": 0
   },
   {

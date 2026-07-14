@@ -12,6 +12,9 @@
 //      events) until the interval doubles, and ANCHORS a real nudge in the
 //      session's actual files/commands. On by default; opt out with
 //      MEMINI_AUTO_SAVE=0.
+//
+// SubagentStop is deliberately left unwired: Stop fires only for the main
+// agent, so subagent sessions never trigger a nudge.
 
 import fs from "node:fs";
 import crypto from "node:crypto";

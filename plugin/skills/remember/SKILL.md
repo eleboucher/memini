@@ -19,7 +19,8 @@ tool with:
 
 - `content` (required) — the fact itself, atomic and self-contained
 - `tier` — `semantic` for durable knowledge, `procedural` for how-to,
-  `episodic` for events, `working` for transient notes
+  `episodic` for events, `working` for transient notes; omit to let the server
+  auto-classify
 - `tags` (optional) — array of keywords for later search; tag a critical,
   always-relevant fact (the user's identity, a hard constraint) `pinned` so it
   surfaces in every session briefing

@@ -229,13 +229,13 @@ rescue copy, and the `PostToolUse` buffering that feeds them.
 
 It is easy to confuse with the knobs next to it, so:
 
-| Knob                          | What it turns off                                                                                                           |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `MEMINI_SESSION_DIGEST`       | Activity records: what you edited and ran                                                                                   |
-| `MEMINI_CAPTURE_TURNS`        | Each user/assistant turn, stored as episodic memory                                                                         |
-| `MEMINI_INLINE_EXTRACT`       | The directive asking the agent to save durable facts itself                                                                 |
-| `MEMINI_INJECT_DEDUPE`        | Suppression of duplicate per-file recall injections on `PreToolUse` (off means every tool call re-injects, even unchanged)  |
-| `MEMINI_AUTO_SAVE_MIN_EVENTS` | The activity gate on the `Stop` auto-save nudge — `0` nudges on the message interval alone, regardless of buffered activity |
+| Knob                          | What it turns off                                                                                                                                                                                                         |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEMINI_SESSION_DIGEST`       | Activity records: what you edited and ran                                                                                                                                                                                 |
+| `MEMINI_CAPTURE_TURNS`        | Each user/assistant turn, stored as episodic memory                                                                                                                                                                       |
+| `MEMINI_INLINE_EXTRACT`       | The directive asking the agent to save durable facts itself                                                                                                                                                               |
+| `MEMINI_INJECT_DEDUPE`        | Suppression of duplicate per-file recall injections on `PreToolUse` (off means every tool call re-injects, even unchanged)                                                                                                |
+| `MEMINI_AUTO_SAVE_MIN_EVENTS` | The activity gate on the `Stop` auto-save nudge — below this the nudge defers, then fires as a discussion-variant prompt at twice the interval; `0` nudges on the message interval alone, regardless of buffered activity |
 
 They are independent. Turning digests off leaves the agent saving decisions
 and conventions through `memory_remember` exactly as before. All four, like

@@ -104,8 +104,9 @@ if a memory is ambiguous, say so instead of guessing.
 - **No results**: say memini has nothing on this and proceed from first
   principles — never invent a "remembered" fact to fill the gap.
 - **Conflicting results**: prefer the one with the later `created_at` (a
-  newer memory may supersede an older one), but surface the conflict and let
-  the user resolve it.
+  newer memory may supersede an older one) and surface the conflict; once it
+  is resolved, fix the stale memory with `memory_update` (or `memory_forget`
+  if it should not exist).
 - **Degraded (keyword-only) results**: a top-level `degraded: "keyword_only"`
   (with a `note`) means semantic search was unavailable and the results came
   from keyword matching alone — treat them as incomplete, not exhaustive; a
