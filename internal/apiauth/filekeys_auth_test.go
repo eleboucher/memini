@@ -66,6 +66,52 @@ keys:
 	}
 }
 
+// TestAuthenticateFileKeyAdminPropagates: a file entry with admin: true
+// yields a Principal with Admin=true, the same per-key capability a table
+// key gets — file-sourced keys are not second-class for this purpose.
+func TestAuthenticateFileKeyAdminPropagates(t *testing.T) {
+	path := writeKeysFile(t, `
+keys:
+  - name: root-alex
+    secret: "tok-root-alex"
+    admin: true
+`)
+	fk, err := apiauth.LoadFileKeys(path)
+	if err != nil {
+		t.Fatalf("LoadFileKeys: %v", err)
+	}
+	cfg := apiauth.New("", nil).WithFileKeys(fk)
+	p, ok, err := cfg.Authenticate(context.Background(), "tok-root-alex")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if !ok || p == nil || !p.Admin {
+		t.Fatalf("file key admin=true: want authenticated with Principal.Admin=true, got (%+v, %v, %v)", p, ok, err)
+	}
+}
+
+// TestAuthenticateFileKeyAdminDefaultsFalse: a file entry with no admin field
+// yields a Principal with Admin=false.
+func TestAuthenticateFileKeyAdminDefaultsFalse(t *testing.T) {
+	path := writeKeysFile(t, `
+keys:
+  - name: plain-alex
+    secret: "tok-plain-alex"
+`)
+	fk, err := apiauth.LoadFileKeys(path)
+	if err != nil {
+		t.Fatalf("LoadFileKeys: %v", err)
+	}
+	cfg := apiauth.New("", nil).WithFileKeys(fk)
+	p, ok, err := cfg.Authenticate(context.Background(), "tok-plain-alex")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if !ok || p == nil || p.Admin {
+		t.Fatalf("file key with no admin field: want authenticated with Principal.Admin=false, got (%+v, %v, %v)", p, ok, err)
+	}
+}
+
 func TestAuthenticateFileKeyHashVariantResolvesSameAsSecret(t *testing.T) {
 	path := writeKeysFile(t, `
 keys:

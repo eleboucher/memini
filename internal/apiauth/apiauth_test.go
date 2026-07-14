@@ -94,6 +94,78 @@ func TestAuthenticateTableKeyPrincipal(t *testing.T) {
 	}
 }
 
+// TestAuthenticateTableKeyAdminTruePropagates: a table key with Admin=true
+// yields a Principal with Admin=true — the per-key capability replacing the
+// old nil-principal-means-admin rule.
+func TestAuthenticateTableKeyAdminTruePropagates(t *testing.T) {
+	ks := openKeyStore(t)
+	ctx := context.Background()
+	if err := ks.PutAPIKey(ctx, store.APIKey{
+		Name: "root-bot", Hash: hashOf("tok-root"), CreatedAt: time.Now().UTC(), Admin: true,
+	}); err != nil {
+		t.Fatalf("PutAPIKey: %v", err)
+	}
+	cfg := apiauth.New("", ks)
+	p, ok, err := cfg.Authenticate(ctx, "tok-root")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if !ok {
+		t.Fatalf("table key: want authenticated")
+	}
+	if p == nil || !p.Admin {
+		t.Fatalf("table key admin=true: want Principal.Admin=true, got %+v", p)
+	}
+}
+
+// TestAuthenticateTableKeyAdminFalsePropagates: a table key with Admin=false
+// (the default) yields a Principal with Admin=false.
+func TestAuthenticateTableKeyAdminFalsePropagates(t *testing.T) {
+	ks := openKeyStore(t)
+	ctx := context.Background()
+	if err := ks.PutAPIKey(ctx, store.APIKey{
+		Name: "plain-bot", Hash: hashOf("tok-plain"), CreatedAt: time.Now().UTC(), Admin: false,
+	}); err != nil {
+		t.Fatalf("PutAPIKey: %v", err)
+	}
+	cfg := apiauth.New("", ks)
+	p, ok, err := cfg.Authenticate(ctx, "tok-plain")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if !ok {
+		t.Fatalf("table key: want authenticated")
+	}
+	if p == nil || p.Admin {
+		t.Fatalf("table key admin=false: want Principal.Admin=false, got %+v", p)
+	}
+}
+
+// TestAuthenticateAdminKeyStaysNilPrincipal: the env admin key still resolves
+// to a nil Principal (never a named admin principal) — adminness for the env
+// key is expressed entirely by principal-nil-ness, unchanged by this
+// per-key-Admin addition.
+func TestAuthenticateAdminKeyStaysNilPrincipal(t *testing.T) {
+	cfg := apiauth.New("s3cret", nil)
+	p, ok, err := cfg.Authenticate(context.Background(), "s3cret")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if !ok || p != nil {
+		t.Fatalf("env admin key: want (nil principal, true), got (%+v, %v)", p, ok)
+	}
+}
+
+// TestAuthenticateDevModeStaysNilPrincipal: dev mode (no admin key
+// configured, no store, no bearer) still resolves to a nil Principal.
+func TestAuthenticateDevModeStaysNilPrincipal(t *testing.T) {
+	cfg := apiauth.New("", nil)
+	p, ok, err := cfg.Authenticate(context.Background(), "")
+	if err != nil || !ok || p != nil {
+		t.Fatalf("dev mode: want (nil principal, true, nil), got (%+v, %v, %v)", p, ok, err)
+	}
+}
+
 func TestAuthenticateDisabledKeyRejected(t *testing.T) {
 	ks := openKeyStore(t)
 	ctx := context.Background()

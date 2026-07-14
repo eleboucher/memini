@@ -20,7 +20,7 @@ import (
 // fileKeysDoc is the on-disk shape of MEMINI_API_KEYS_FILE (see
 // config.Config.APIKeysFile's doc for the full format and an example under
 // internal/apiauth/testdata/api_keys.example.yaml). One of hash/secret is
-// required per entry; home/default_namespace/disabled are optional.
+// required per entry; home/default_namespace/disabled/admin are optional.
 type fileKeysDoc struct {
 	Keys []fileKeyEntry `yaml:"keys"`
 }
@@ -32,6 +32,9 @@ type fileKeyEntry struct {
 	Home             string `yaml:"home"`
 	DefaultNamespace string `yaml:"default_namespace"`
 	Disabled         bool   `yaml:"disabled"`
+	// Admin marks this key as an admin credential (store.APIKey.Admin's doc);
+	// defaults to false when omitted.
+	Admin bool `yaml:"admin"`
 	// Settings is an optional per-key ClientSettings override (config-handshake
 	// redesign), decoded as a generic map here and bridged to the JSON-tagged
 	// store.ClientSettings in validateFileKeyEntry — see clientSettingsFromYAML
@@ -167,6 +170,7 @@ func validateFileKeyEntry(idx int, e fileKeyEntry) (store.APIKey, error) {
 		HomeNS:    home,
 		DefaultNS: defNS,
 		Disabled:  e.Disabled,
+		Admin:     e.Admin,
 		Settings:  settings,
 	}, nil
 }

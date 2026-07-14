@@ -611,6 +611,13 @@ type APIKey struct {
 	DefaultNS string
 	CreatedAt time.Time
 	Disabled  bool
+	// Admin marks this key as an admin credential, the sibling bool to
+	// Disabled above. It will grant access to the /v1/keys and
+	// /v1/settings/defaults REST surfaces — the gating itself happens at the
+	// REST layer (a later change), not here; this field only carries the
+	// capability through storage and auth. Preserved by rotation, same as
+	// every other field CLI/REST rotation does not explicitly change.
+	Admin bool
 	// Settings is this key's per-key ClientSettings override, merged over the
 	// server's global defaults (ClientSettingsStore) and the built-in
 	// defaults (DefaultClientSettings) by MergeClientSettings. The zero value
