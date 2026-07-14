@@ -89,6 +89,7 @@ export interface UpdateApiKeyBody {
   home?: string
   default_namespace?: string
   disabled?: boolean
+  admin?: boolean
   settings?: Partial<ClientSettings>
 }
 

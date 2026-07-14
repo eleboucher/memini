@@ -1,4 +1,4 @@
-import { apiToken, baseUrl, namespace, namespaceHeader, serverWarning } from './store'
+import { apiToken, baseUrl, identity, namespace, namespaceHeader, serverWarning } from './store'
 import type {
   ActivityResponse,
   ApiKeysResponse,
@@ -81,9 +81,39 @@ async function req<T>(method: string, path: string, body?: unknown, ns?: string)
   const data = text ? safeParse(text) : undefined
   if (!res.ok) {
     const msg = (data as { error?: string } | undefined)?.error ?? res.statusText
+    // A 401 means the credential this session runs on stopped authenticating —
+    // rotated or revoked out from under us. Clearing identity bounces the app
+    // back to the Login gate (see app.tsx's AuthGate) instead of leaving every
+    // view stuck on an error banner. Do this before throwing so the throw's
+    // own handler still sees the message.
+    if (res.status === 401) identity.value = null
     throw new ApiError(res.status, msg)
   }
   return data as T
+}
+
+// verifyToken probes GET /v1/self with a *candidate* token, deliberately
+// bypassing the global apiToken/localStorage: a bad paste must never become the
+// stored credential. The Login gate calls this, then adopts the token into
+// apiToken only once this resolves. An empty token sends no Authorization
+// header — the dev-mode probe, where the server answers 200 with
+// identity.authenticated=false.
+export async function verifyToken(token: string): Promise<SelfResponse> {
+  const h: Record<string, string> = {}
+  if (token) h['Authorization'] = `Bearer ${token}`
+  let res: Response
+  try {
+    res = await fetch(baseUrl.value + '/v1/self', { method: 'GET', headers: h })
+  } catch (e) {
+    throw new ApiError(0, `network error: ${(e as Error).message}`)
+  }
+  const text = await res.text()
+  const data = text ? safeParse(text) : undefined
+  if (!res.ok) {
+    const msg = (data as { error?: string } | undefined)?.error ?? res.statusText
+    throw new ApiError(res.status, msg)
+  }
+  return data as SelfResponse
 }
 
 function safeParse(text: string): unknown {

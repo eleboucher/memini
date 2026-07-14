@@ -1,4 +1,5 @@
 import { signal, effect } from '@preact/signals'
+import type { CallerIdentity } from './types'
 
 export type Theme = 'ink' | 'ivory'
 
@@ -34,22 +35,21 @@ function load(): Persisted {
 
 const initial = load()
 
-// The server injects MEMINI_API_KEY into the shell as <meta name="memini-token">
-// (same-origin only). Read it so the UI authenticates without the operator
-// pasting a token. A persisted token (set in Settings, e.g. for a remote
-// baseUrl) takes precedence.
-function injectedToken(): string {
-  const m = document.querySelector('meta[name="memini-token"]')
-  return m?.getAttribute('content') ?? ''
-}
-
 export const baseUrl = signal(initial.baseUrl)
 export const namespace = signal(initial.namespace)
 export const namespaceHeader = signal(initial.namespaceHeader)
-// Bearer token sent as Authorization when non-empty. Required when the server
-// has MEMINI_API_KEY set (bearer-gates /v1, /mcp, /metrics).
-export const apiToken = signal(initial.apiToken || injectedToken())
+// Bearer token sent as Authorization when non-empty. The operator pastes it
+// once at the Login gate (verified against GET /v1/self before it is adopted)
+// and it persists here unconditionally. Required when the server has
+// MEMINI_API_KEY set (bearer-gates /v1, /mcp, /metrics).
+export const apiToken = signal(initial.apiToken)
 export const theme = signal<Theme>(initial.theme)
+
+// Who the current apiToken authenticates as, per GET /v1/self. null means
+// "unverified" — the AuthGate shows Login until it resolves (or after a
+// mid-session 401 in api.ts clears it). authenticated=false is dev mode (no
+// auth configured); admin drives the admin-gated views' locked states.
+export const identity = signal<CallerIdentity | null>(null)
 
 // A monotonically increasing nonce views watch to force a refetch.
 export const refreshNonce = signal(0)
@@ -70,9 +70,7 @@ effect(() => {
     baseUrl: baseUrl.value,
     namespace: namespace.value,
     namespaceHeader: namespaceHeader.value,
-    // Don't persist the server-injected token: leaving it blank lets a rotated
-    // MEMINI_API_KEY take effect on reload. Only a manual override is stored.
-    apiToken: apiToken.value === injectedToken() ? '' : apiToken.value,
+    apiToken: apiToken.value,
     theme: theme.value,
   }
   try {

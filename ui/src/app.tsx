@@ -1,5 +1,8 @@
+import { useEffect, useState } from 'preact/hooks'
 import { LocationProvider, Router, Route, useLocation } from 'preact-iso'
-import { serverWarning, theme } from './store'
+import { apiToken, identity, serverWarning, theme } from './store'
+import { verifyToken, ApiError } from './api'
+import { Login } from './views/Login'
 import { NamespaceSelect } from './components/NamespaceSelect'
 import { Projects } from './views/Projects'
 import { Dashboard } from './views/Dashboard'
@@ -63,8 +66,56 @@ const NAV: {
 export function App() {
   return (
     <LocationProvider>
-      <Shell />
+      <AuthGate />
     </LocationProvider>
+  )
+}
+
+// AuthGate stands in front of the Shell. On mount it verifies the persisted
+// token against GET /v1/self: a 200 sets identity and reveals the Shell, a 401
+// or network error drops to the Login gate (with the reason surfaced only when
+// there was actually a token to reject — a clean first visit shows a bare form,
+// not a scary "unauthorized"). Login is component state here, deliberately not
+// a route, so the single-segment route constraint (see the NAV comment) is
+// untouched. identity is a signal, so a mid-session 401 (api.ts clears it)
+// re-renders this and bounces back to Login without a remount dance.
+function AuthGate() {
+  const [checking, setChecking] = useState(true)
+  const [loginError, setLoginError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let live = true
+    const hadToken = apiToken.value !== ''
+    verifyToken(apiToken.value)
+      .then((res) => {
+        if (!live) return
+        identity.value = res.identity
+      })
+      .catch((e) => {
+        if (!live) return
+        identity.value = null
+        // Only explain the failure when a stored token was rejected; a first
+        // visit with no token is just "please sign in", not an error.
+        if (hadToken) setLoginError(e instanceof ApiError ? e.message : String(e))
+      })
+      .finally(() => live && setChecking(false))
+    return () => {
+      live = false
+    }
+  }, [])
+
+  if (checking) return <Splash />
+  if (identity.value === null) return <Login initialError={loginError} />
+  return <Shell />
+}
+
+function Splash() {
+  return (
+    <div class="login-screen">
+      <div class="loading" role="status" aria-live="polite">
+        <span class="spinner" aria-hidden="true" /> Connecting…
+      </div>
+    </div>
   )
 }
 
@@ -99,6 +150,17 @@ function Shell() {
         <header class="topbar">
           <h1 class="title">{title}</h1>
           <span class="grow" />
+          {/* Dev mode: the server has no auth configured, so every caller is an
+              unauthenticated admin. A subtle, persistent chip says so — the same
+              amber affordance as the serverWarning banner, but it never clears. */}
+          {identity.value && !identity.value.authenticated && (
+            <span
+              class="chip warn"
+              title="No auth configured on the server — anyone who can reach it has full access. Create an admin API key to lock it down."
+            >
+              no auth
+            </span>
+          )}
           <NamespaceSelect />
           <button
             class="icon-btn"
