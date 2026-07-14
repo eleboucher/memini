@@ -140,6 +140,13 @@ export async function setup(ctx) {
   const dir = process.cwd();
   const log = {
     warn: (message) => {
+      // ctx is essentially a server client; mirror v1's structured logger and
+      // fall back to stderr.
+      try {
+        ctx?.app?.log?.({ body: { service: "memini", level: "warn", message } });
+      } catch {
+        /* ignore logging failures */
+      }
       console.error(`[memini] ${message}`);
     },
   };
@@ -154,16 +161,6 @@ export async function setup(ctx) {
     HANDSHAKE_TTL_MS,
   );
   const currentConfig = async () => effectiveConfig(cfg, await getHandshake());
-
-  // Warm the connection (DNS/TCP/TLS) so a cold start doesn't eat the first
-  // recall budget. Silent: even a 404 warms the path.
-  if (cfg.recall || cfg.capture) {
-    try {
-      fetch(`${rest.baseUrl}/healthz`, { signal: AbortSignal.timeout(3000) }).catch(() => {});
-    } catch {
-      /* ignore */
-    }
-  }
 
   // Assistant ids already captured, so repeated idle events for one turn don't
   // write duplicates. Memory ids already injected per session, so an unchanged
