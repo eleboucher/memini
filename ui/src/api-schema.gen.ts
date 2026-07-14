@@ -1456,7 +1456,7 @@ export interface operations {
                 include_superseded?: boolean;
                 /** @description Caps the result count; 0 or absent returns all matches. */
                 limit?: number;
-                /** @description Aggregate across every namespace, ignoring the namespace header. The server merges all namespaces and applies limit as a single global cap under the requested sort, so the admin UI's "All projects" view fetches one response instead of one request per namespace. */
+                /** @description Aggregate across every namespace, ignoring the namespace header. The server merges all namespaces and applies limit as a single global cap under the requested sort, so the admin UI's "All namespaces" view fetches one response instead of one request per namespace. */
                 all_namespaces?: boolean;
                 /** @description With all_namespaces=true, restrict the aggregate to these namespaces (repeatable, exact match); ignored otherwise. Lets the browser narrow an "All projects" listing without changing the active namespace. */
                 namespace?: string[];
@@ -1552,7 +1552,7 @@ export interface operations {
     getStats: {
         parameters: {
             query?: {
-                /** @description Aggregate counts across every namespace, ignoring the namespace header. Returns a single merged overview (namespace reported as "") so the admin UI's "All projects" view fetches one response instead of one request per namespace. */
+                /** @description Aggregate counts across every namespace, ignoring the namespace header. Returns a single merged overview (namespace reported as "") so the admin UI's "All namespaces" view fetches one response instead of one request per namespace. */
                 all_namespaces?: boolean;
             };
             header?: {

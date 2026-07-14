@@ -109,7 +109,7 @@ export function num(n: number): string {
 // ---- Namespace hierarchy -----------------------------------------------
 // Namespaces are '/'-separated paths ("acme/phoenix/api"). These helpers turn
 // a flat list of namespace strings into the tree implied by those paths, so
-// every view that groups namespaces (Projects, the namespace selector, the
+// every view that groups namespaces (Namespaces, the namespace selector, the
 // Graph namespace mode) nests consistently at every depth instead of only
 // splitting on the first segment.
 

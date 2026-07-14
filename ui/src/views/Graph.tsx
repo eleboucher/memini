@@ -141,9 +141,9 @@ export function Graph() {
   const [open, setOpen] = useState<Memory | null>(null)
   const openRef = useRef(setOpen)
   openRef.current = setOpen
-  // '' = all tenants. Client-side filter over the loaded set (which spans
-  // tenants in "All projects" mode), so switching tenants is instant.
-  const [tenant, setTenant] = useState('')
+  // '' = all roots. Client-side filter over the loaded set (which spans
+  // roots in "All namespaces" mode), so switching roots is instant.
+  const [root, setRoot] = useState('')
 
   const { data, error, loading } = useAsync(
     () => api.list({ includeSuperseded: true, limit: 600 }),
@@ -152,8 +152,8 @@ export function Graph() {
   const memories = data ?? []
   // Distinct top-level roots present in the loaded memories, for the filter
   // dropdown (e.g. "acme" for both "acme" and "acme/phoenix/api").
-  const tenantList = [...new Set(memories.map((m) => rootOf(m.namespace)))].sort((a, b) => a.localeCompare(b))
-  const filtered = tenant ? memories.filter((m) => rootOf(m.namespace) === tenant) : memories
+  const rootList = [...new Set(memories.map((m) => rootOf(m.namespace)))].sort((a, b) => a.localeCompare(b))
+  const filtered = root ? memories.filter((m) => rootOf(m.namespace) === root) : memories
 
   // Namespace-mode data: every namespace (not scoped to the active one — this
   // is a store-wide topology view), its live total, and its outgoing links.
@@ -275,9 +275,9 @@ export function Graph() {
       graph._destructor()
       host.replaceChildren()
     }
-    // Rebuild on data / namespace / refresh / tenant filter; filtered & byId
-    // derive from data + tenant.
-  }, [mode, data, namespace.value, refreshNonce.value, tenant])
+    // Rebuild on data / namespace / refresh / root filter; filtered & byId
+    // derive from data + root.
+  }, [mode, data, namespace.value, refreshNonce.value, root])
 
   // ---- Namespace-mode graph ----
   useEffect(() => {
@@ -341,7 +341,7 @@ export function Graph() {
       .d3AlphaDecay(0.045)
       .d3AlphaMin(0.001)
       .cooldownTime(4000)
-      // Selecting a namespace node makes it the active project, so the rest
+      // Selecting a namespace node makes it the active namespace, so the rest
       // of the UI (and the memories-mode graph) can pick it up immediately.
       .onNodeClick((n) => {
         namespace.value = n.id
@@ -369,7 +369,7 @@ export function Graph() {
     }
   }, [mode, nsData])
 
-  const showTenantFilter = mode === 'memories' && tenantList.length > 1
+  const showRootFilter = mode === 'memories' && rootList.length > 1
   const isLoading = mode === 'memories' ? loading && !data : nsLoading && !nsData
   const activeError = mode === 'memories' ? error : nsError
   const empty = mode === 'memories' ? memories.length === 0 : (nsData?.names.length ?? 0) === 0
@@ -394,17 +394,17 @@ export function Graph() {
           <Empty title={mode === 'memories' ? 'No memories' : 'No namespaces'} />
         ) : (
           <div class="panel graph-wrap">
-            {showTenantFilter && (
+            {showRootFilter && (
               <div class="graph-controls">
                 <label class="hint">
-                  tenant{' '}
+                  root{' '}
                   <select
                     class="input"
-                    value={tenant}
-                    onChange={(e) => setTenant((e.target as HTMLSelectElement).value)}
+                    value={root}
+                    onChange={(e) => setRoot((e.target as HTMLSelectElement).value)}
                   >
                     <option value="">all</option>
-                    {tenantList.map((t) => (
+                    {rootList.map((t) => (
                       <option key={t} value={t}>
                         {t}
                       </option>
@@ -416,15 +416,15 @@ export function Graph() {
             <div class="graph-canvas" ref={hostRef} />
             {mode === 'memories' ? (
               filtered.length === 0 ? (
-                <div class="graph-hint">no memories in "{tenant}"</div>
+                <div class="graph-hint">no memories in "{root}"</div>
               ) : (
                 <div class="graph-hint">
-                  {filtered.length} nodes{tenant ? ` · ${tenant}` : ''} · scroll to zoom · drag to pin
+                  {filtered.length} nodes{root ? ` · ${root}` : ''} · scroll to zoom · drag to pin
                 </div>
               )
             ) : (
               <div class="graph-hint">
-                {nsData?.names.length ?? 0} namespaces · click a node to switch project · scroll to zoom
+                {nsData?.names.length ?? 0} namespaces · click a node to switch namespace · scroll to zoom
               </div>
             )}
             {mode === 'memories' ? (

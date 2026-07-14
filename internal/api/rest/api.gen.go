@@ -1435,7 +1435,7 @@ type ListMemoriesParams struct {
 	// Limit Caps the result count; 0 or absent returns all matches.
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 
-	// AllNamespaces Aggregate across every namespace, ignoring the namespace header. The server merges all namespaces and applies limit as a single global cap under the requested sort, so the admin UI's "All projects" view fetches one response instead of one request per namespace.
+	// AllNamespaces Aggregate across every namespace, ignoring the namespace header. The server merges all namespaces and applies limit as a single global cap under the requested sort, so the admin UI's "All namespaces" view fetches one response instead of one request per namespace.
 	AllNamespaces *bool `form:"all_namespaces,omitempty" json:"all_namespaces,omitempty"`
 
 	// Namespace With all_namespaces=true, restrict the aggregate to these namespaces (repeatable, exact match); ignored otherwise. Lets the browser narrow an "All projects" listing without changing the active namespace.
@@ -1585,7 +1585,7 @@ type SearchMemoriesParams struct {
 
 // GetStatsParams defines parameters for GetStats.
 type GetStatsParams struct {
-	// AllNamespaces Aggregate counts across every namespace, ignoring the namespace header. Returns a single merged overview (namespace reported as "") so the admin UI's "All projects" view fetches one response instead of one request per namespace.
+	// AllNamespaces Aggregate counts across every namespace, ignoring the namespace header. Returns a single merged overview (namespace reported as "") so the admin UI's "All namespaces" view fetches one response instead of one request per namespace.
 	AllNamespaces *bool `form:"all_namespaces,omitempty" json:"all_namespaces,omitempty"`
 
 	// XMeminiNamespace Namespace for this request; falls back to the server default.

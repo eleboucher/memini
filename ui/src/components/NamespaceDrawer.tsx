@@ -9,7 +9,7 @@ interface Props {
   name: string
   onClose: () => void
   // Pre-fills the Move target (set when the drawer is opened by dropping a pod
-  // onto a tenant box), so the drag lands on a dry-run-first confirmation
+  // onto a namespace box), so the drag lands on a dry-run-first confirmation
   // rather than a silent bulk move.
   initialMoveTo?: string
 }
@@ -70,7 +70,7 @@ function MoveSection({ name, onDone, initialTo }: { name: string; onDone: () => 
       setReport(r)
       if (!dryRun) {
         // The source namespace no longer exists; drop the active selection if it
-        // was pointed at it, then refresh the project list.
+        // was pointed at it, then refresh the namespace list.
         if (namespace.value === name) namespace.value = ''
         refresh()
         onDone()

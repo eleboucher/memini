@@ -88,8 +88,8 @@ export function MemoryDrawer({ memory: m, onClose, wide, from, fromNs }: Props) 
     setDeleting(true)
     setErr(null)
     try {
-      // Scope the delete to the memory's own namespace — in "All projects" mode
-      // the active namespace is empty and would otherwise hit the wrong tenant.
+      // Scope the delete to the memory's own namespace — in "All namespaces" mode
+      // the active namespace is empty and would otherwise hit the wrong namespace.
       await api.remove(m.id, m.namespace || undefined)
       refresh()
       onClose()
@@ -106,7 +106,7 @@ export function MemoryDrawer({ memory: m, onClose, wide, from, fromNs }: Props) 
     setReassigning(true)
     setErr(null)
     try {
-      // Scope to the memory's own namespace (the source) so "All projects" mode
+      // Scope to the memory's own namespace (the source) so "All namespaces" mode
       // targets the right record rather than the server default.
       await api.reassignMemory(m.id, to, m.namespace || undefined)
       refresh()

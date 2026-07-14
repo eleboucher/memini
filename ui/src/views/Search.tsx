@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
-import { api, isAllProjects } from '../api'
+import { api, isAllNamespaces } from '../api'
 import { namespace } from '../store'
 import type { Memory, Scored, Tier } from '../types'
 import { MemoryCard } from '../components/MemoryCard'
@@ -26,7 +26,7 @@ export function Search() {
   const [queriedNs, setQueriedNs] = useState('')
   const [took, setTook] = useState(0)
 
-  const showNs = isAllProjects()
+  const showNs = isAllNamespaces()
 
   // A namespace switch invalidates the on-screen results outright (they were
   // answered under a different scope) — clear them rather than letting a

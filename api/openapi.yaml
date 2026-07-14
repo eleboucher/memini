@@ -137,7 +137,7 @@ paths:
           description: >
             Aggregate across every namespace, ignoring the namespace header. The
             server merges all namespaces and applies limit as a single global cap
-            under the requested sort, so the admin UI's "All projects" view fetches
+            under the requested sort, so the admin UI's "All namespaces" view fetches
             one response instead of one request per namespace.
           schema: { type: boolean, default: false }
         - name: namespace
@@ -217,7 +217,7 @@ paths:
           description: >
             Aggregate counts across every namespace, ignoring the namespace
             header. Returns a single merged overview (namespace reported as "")
-            so the admin UI's "All projects" view fetches one response instead
+            so the admin UI's "All namespaces" view fetches one response instead
             of one request per namespace.
           schema: { type: boolean, default: false }
       responses:

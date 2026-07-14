@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'preact/hooks'
-import { api, ApiError, isAllProjects } from '../api'
+import { api, ApiError, isAllNamespaces } from '../api'
 import { identity, namespace, refreshNonce } from '../store'
 import { EVENT_KINDS, type ActivityEvent, type EventKind, type Memory, type Tier } from '../types'
 import { MemoryDrawer } from '../components/MemoryDrawer'
@@ -225,7 +225,7 @@ export function Activity() {
     }
   }
 
-  const showNs = isAllProjects()
+  const showNs = isAllNamespaces()
 
   return (
     <>

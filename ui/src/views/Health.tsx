@@ -106,8 +106,8 @@ export function Health() {
 }
 
 // Dedup collapses near-duplicate memories into one representative per cluster,
-// tombstoning the rest (reversibly). It scopes to the active project, or runs
-// store-wide in "All projects" mode. Dry-run previews clusters without writing.
+// tombstoning the rest (reversibly). It scopes to the active namespace, or runs
+// store-wide in "All namespaces" mode. Dry-run previews clusters without writing.
 function Dedup() {
   const [report, setReport] = useState<DedupReport | null>(null)
   const [similarity, setSimilarity] = useState(0.85)
@@ -115,7 +115,7 @@ function Dedup() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const scope = namespace.value ? `project "${namespace.value}"` : 'all projects'
+  const scope = namespace.value ? `namespace "${namespace.value}"` : 'all namespaces'
 
   const run = async () => {
     setLoading(true)

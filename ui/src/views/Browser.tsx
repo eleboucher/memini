@@ -1,5 +1,5 @@
 import { useState } from 'preact/hooks'
-import { api, isAllProjects } from '../api'
+import { api, isAllNamespaces } from '../api'
 import { namespace, refreshNonce } from '../store'
 import { useAsync } from '../hooks'
 import type { Level, Memory, SortKey, SortOrder, Tier } from '../types'
@@ -64,7 +64,7 @@ export function Browser() {
     ],
   )
   const memories = data ?? []
-  const showNs = isAllProjects()
+  const showNs = isAllNamespaces()
   // Cap the column for a lone result so it doesn't stretch full-width.
   const sparse = memories.length === 1
 
