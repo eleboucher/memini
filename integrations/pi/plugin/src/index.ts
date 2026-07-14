@@ -1089,10 +1089,9 @@ export default function meminiExtension(pi: ExtensionAPI): void {
     const sid = sessionIdOf(ctx);
     const query = String(event?.prompt || "").trim();
     if (query && sid) rememberPendingUser(sid, query);
-    if (!cfg.recall || !query) return;
 
     const live = await sessionLive(sessionCtx);
-    if (!live.recall) return;
+    if (!live.recall || !query) return;
 
     const body: any = { query, limit: live.recall_limit };
     // Exclude this session's own captured turns: they're still in live context,
@@ -1104,7 +1103,7 @@ export default function meminiExtension(pi: ExtensionAPI): void {
     // waste a recall_limit slot.
     const excludeIds = sid ? [...(injectedBySession.get(sid) ?? [])] : [];
     const result = await searchExcluding(body, excludeIds);
-    const floor = cfg.recall_min_score > 0 ? cfg.recall_min_score : 0;
+    const floor = live.recall_min_score > 0 ? live.recall_min_score : 0;
     let rawHits = Array.isArray(result?.results) ? result.results : [];
     // Suppress memories this session has already been shown — the injected
     // message persists in context, so a repeat adds nothing but noise.

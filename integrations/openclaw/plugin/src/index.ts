@@ -1816,7 +1816,6 @@ const plugin: {
       let results = Array.isArray(result?.results) ? result.results : [];
       // Drop just-captured turns: they're live context, not long-term memory.
       // Survives session-id asymmetry (keyed by stable namespace).
-      const captured = freshCaptured(ns);
       if (captured.size) results = results.filter((r: any) => !captured.has(r?.memory?.id));
       // Suppress memories this session has already been shown so a multi-step
       // turn doesn't re-inject the same block on every tool call (#21).

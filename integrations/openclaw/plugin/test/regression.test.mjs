@@ -635,11 +635,11 @@ test("per-session injected-id window is bounded (oldest ids age out)", async () 
   const hooks = {};
   const realFetch = globalThis.fetch;
   let nextResults = [];
-  globalThis.fetch = async () => ({
+  globalThis.fetch = withHandshakeFailure(async () => ({
     ok: true,
     async json() { return { results: nextResults }; },
     async text() { return ""; },
-  });
+  }));
   const hit = (id) => ({ memory: { id, summary: `memory ${id}`, tier: "semantic" }, score: 0.9 });
   try {
     await plugin.register({
@@ -650,20 +650,21 @@ test("per-session injected-id window is bounded (oldest ids age out)", async () 
       registerTool() {},
     });
     const ctx = { sessionId: "s1" };
-    // Push 56 distinct ids through the window (cap is 50): m0..m55.
-    for (let i = 0; i < 56; i++) {
+    // The cap scales with recall_limit: Math.max(200, recall_limit*10).
+    // At the default recall_limit=3, cap=200. Push 206 distinct ids: m0..m205.
+    for (let i = 0; i < 206; i++) {
       nextResults = [hit(`m${i}`)];
       const res = await hooks.before_prompt_build({ prompt: `q${i}` }, ctx);
       // Each id is new to the session, so each call injects.
       assert.match(res.prependContext, new RegExp(`m${i}\\b`));
     }
-    // m0 was evicted from the 50-id window -> allowed to re-inject.
+    // m0 was evicted from the 200-id window -> allowed to re-inject.
     nextResults = [hit("m0")];
     const oldAgain = await hooks.before_prompt_build({ prompt: "old" }, ctx);
     assert.ok(oldAgain, "an id evicted from the window must be allowed to re-inject");
     assert.match(oldAgain.prependContext, /m0/);
-    // m55 is still inside the window -> suppressed.
-    nextResults = [hit("m55")];
+    // m205 is still inside the window -> suppressed.
+    nextResults = [hit("m205")];
     const recentAgain = await hooks.before_prompt_build({ prompt: "recent" }, ctx);
     assert.equal(recentAgain, undefined, "a recent id must stay suppressed");
   } finally {
@@ -678,7 +679,7 @@ test("recall sends exclude_ids and falls back when the server rejects them", asy
   const requests = [];
   const realFetch = globalThis.fetch;
   let rejectExcludeIds = false;
-  globalThis.fetch = async (url, init) => {
+  globalThis.fetch = withHandshakeFailure(async (url, init) => {
     const body = init && init.body ? JSON.parse(init.body) : {};
     requests.push({ url: String(url), body });
     if (rejectExcludeIds && body.exclude_ids) {
@@ -691,7 +692,7 @@ test("recall sends exclude_ids and falls back when the server rejects them", asy
       },
       async text() { return ""; },
     };
-  };
+  });
   const searches = () => requests.filter((r) => r.url.endsWith("/v1/search"));
   try {
     await plugin.register({
@@ -732,7 +733,7 @@ test("capture echo guard suppresses a fresh burst and ages out by time", async (
   let skew = 0;
   Date.now = () => realNow.call(Date) + skew;
   let writes = 0;
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = withHandshakeFailure(async (url) => {
     const body = String(url).endsWith("/v1/search")
       ? {
           results: Array.from({ length: 10 }, (_, k) => ({
@@ -742,7 +743,7 @@ test("capture echo guard suppresses a fresh burst and ages out by time", async (
         }
       : { id: `cap-${writes++}` };
     return { ok: true, async json() { return body; }, async text() { return ""; } };
-  };
+  });
   try {
     await plugin.register({
       pluginConfig: { enabled: true, namespace_per_agent: false },
