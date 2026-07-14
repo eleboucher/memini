@@ -49,7 +49,7 @@ const eventDetailKeyName = "key_name"
 const eventDetailAdmin = "admin"
 
 // pinStore type-asserts the backing store to store.PinStore, the
-// optional capability the project-map pins need (keyStore/linkStore's
+// optional capability the pins surface needs (keyStore/linkStore's
 // precedent). Returns false — a 501 to the caller — for a driver that predates
 // it, so a handshake against such a backend resolves derived-only.
 func (h *Server) pinStore() (store.PinStore, bool) {

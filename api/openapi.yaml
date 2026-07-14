@@ -145,7 +145,7 @@ paths:
           description: >
             With all_namespaces=true, restrict the aggregate to these namespaces
             (repeatable, exact match); ignored otherwise. Lets the browser narrow
-            an "All projects" listing without changing the active namespace.
+            an "All namespaces" listing without changing the active namespace.
           schema: { type: array, items: { type: string } }
         - name: memory_type
           in: query

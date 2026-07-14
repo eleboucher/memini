@@ -510,7 +510,7 @@ func parseOptionalTime(s, field string) (*time.Time, error) {
 
 // ns resolves a tool call's namespace argument: empty falls back to the server
 // default, an invalid value is an error (never silently rerouted to the
-// default tenant, which would mix data across namespaces). Used only by the
+// default namespace, which would mix data across namespaces). Used only by the
 // addressing tools — memory_get/memory_update/memory_forget/memory_list —
 // where namespace identifies an existing memory the caller already knows
 // about (copied verbatim from a prior recall/list result), never a value the

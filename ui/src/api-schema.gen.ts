@@ -1458,7 +1458,7 @@ export interface operations {
                 limit?: number;
                 /** @description Aggregate across every namespace, ignoring the namespace header. The server merges all namespaces and applies limit as a single global cap under the requested sort, so the admin UI's "All namespaces" view fetches one response instead of one request per namespace. */
                 all_namespaces?: boolean;
-                /** @description With all_namespaces=true, restrict the aggregate to these namespaces (repeatable, exact match); ignored otherwise. Lets the browser narrow an "All projects" listing without changing the active namespace. */
+                /** @description With all_namespaces=true, restrict the aggregate to these namespaces (repeatable, exact match); ignored otherwise. Lets the browser narrow an "All namespaces" listing without changing the active namespace. */
                 namespace?: string[];
                 /** @description Repeatable and/or comma-separated metadata.memory_type filter; a memory matches if its type is ANY of the listed values (OR). Distinct from "meta", which ANDs one value per key. */
                 memory_type?: string[];

@@ -1438,7 +1438,7 @@ type ListMemoriesParams struct {
 	// AllNamespaces Aggregate across every namespace, ignoring the namespace header. The server merges all namespaces and applies limit as a single global cap under the requested sort, so the admin UI's "All namespaces" view fetches one response instead of one request per namespace.
 	AllNamespaces *bool `form:"all_namespaces,omitempty" json:"all_namespaces,omitempty"`
 
-	// Namespace With all_namespaces=true, restrict the aggregate to these namespaces (repeatable, exact match); ignored otherwise. Lets the browser narrow an "All projects" listing without changing the active namespace.
+	// Namespace With all_namespaces=true, restrict the aggregate to these namespaces (repeatable, exact match); ignored otherwise. Lets the browser narrow an "All namespaces" listing without changing the active namespace.
 	Namespace *[]string `form:"namespace,omitempty" json:"namespace,omitempty"`
 
 	// MemoryType Repeatable and/or comma-separated metadata.memory_type filter; a memory matches if its type is ANY of the listed values (OR). Distinct from "meta", which ANDs one value per key.
