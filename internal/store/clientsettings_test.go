@@ -8,8 +8,6 @@ import (
 	"github.com/eleboucher/memini/internal/store"
 )
 
-func ptr[T any](v T) *T { return &v }
-
 // sliceOfLen returns a *[]string of n copies of s, for exercising the
 // inject_pretool_tools element-count bound.
 func sliceOfLen(n int, s string) *[]string {
@@ -116,33 +114,33 @@ func TestClientSettingsValidate(t *testing.T) {
 	}{
 		{"zero value is valid (nothing set)", store.ClientSettings{}, false},
 		{"defaults are valid", store.DefaultClientSettings(), false},
-		{"auto_save_interval = 1 is valid (boundary)", store.ClientSettings{AutoSaveInterval: ptr(1)}, false},
-		{"auto_save_interval = 0 is invalid", store.ClientSettings{AutoSaveInterval: ptr(0)}, true},
-		{"auto_save_interval negative is invalid", store.ClientSettings{AutoSaveInterval: ptr(-1)}, true},
-		{"inject_briefing_pinned = 0 is valid (boundary)", store.ClientSettings{InjectBriefingPinned: ptr(0)}, false},
-		{"inject_briefing_pinned negative is invalid", store.ClientSettings{InjectBriefingPinned: ptr(-1)}, true},
-		{"inject_briefing_facts negative is invalid", store.ClientSettings{InjectBriefingFacts: ptr(-1)}, true},
-		{"inject_briefing_procedures negative is invalid", store.ClientSettings{InjectBriefingProcedures: ptr(-1)}, true},
-		{"inject_briefing_recent negative is invalid", store.ClientSettings{InjectBriefingRecent: ptr(-1)}, true},
-		{"inject_briefing_max_tok negative is invalid", store.ClientSettings{InjectBriefingMaxTok: ptr(-1)}, true},
-		{"inject_pretool_items negative is invalid", store.ClientSettings{InjectPretoolItems: ptr(-1)}, true},
-		{"inject_pretool_max_tok negative is invalid", store.ClientSettings{InjectPretoolMaxTok: ptr(-1)}, true},
-		{"recall_limit negative is invalid", store.ClientSettings{RecallLimit: ptr(-1)}, true},
-		{"inject_recall_max_tok negative is invalid", store.ClientSettings{InjectRecallMaxTok: ptr(-1)}, true},
-		{"min_capture_chars negative is invalid", store.ClientSettings{MinCaptureChars: ptr(-1)}, true},
-		{"inject_pretool_min_score = 0 is valid (boundary)", store.ClientSettings{InjectPretoolMinScore: ptr(0.0)}, false},
-		{"inject_pretool_min_score negative is invalid", store.ClientSettings{InjectPretoolMinScore: ptr(-0.1)}, true},
-		{"inject_recall_min_score negative is invalid", store.ClientSettings{InjectRecallMinScore: ptr(-0.1)}, true},
-		{"namespace_scope repo is valid", store.ClientSettings{NamespaceScope: ptr("repo")}, false},
-		{"namespace_scope owner_repo is valid", store.ClientSettings{NamespaceScope: ptr("owner_repo")}, false},
-		{"namespace_scope bad value is invalid", store.ClientSettings{NamespaceScope: ptr("global")}, true},
+		{"auto_save_interval = 1 is valid (boundary)", store.ClientSettings{AutoSaveInterval: new(1)}, false},
+		{"auto_save_interval = 0 is invalid", store.ClientSettings{AutoSaveInterval: new(0)}, true},
+		{"auto_save_interval negative is invalid", store.ClientSettings{AutoSaveInterval: new(-1)}, true},
+		{"inject_briefing_pinned = 0 is valid (boundary)", store.ClientSettings{InjectBriefingPinned: new(0)}, false},
+		{"inject_briefing_pinned negative is invalid", store.ClientSettings{InjectBriefingPinned: new(-1)}, true},
+		{"inject_briefing_facts negative is invalid", store.ClientSettings{InjectBriefingFacts: new(-1)}, true},
+		{"inject_briefing_procedures negative is invalid", store.ClientSettings{InjectBriefingProcedures: new(-1)}, true},
+		{"inject_briefing_recent negative is invalid", store.ClientSettings{InjectBriefingRecent: new(-1)}, true},
+		{"inject_briefing_max_tok negative is invalid", store.ClientSettings{InjectBriefingMaxTok: new(-1)}, true},
+		{"inject_pretool_items negative is invalid", store.ClientSettings{InjectPretoolItems: new(-1)}, true},
+		{"inject_pretool_max_tok negative is invalid", store.ClientSettings{InjectPretoolMaxTok: new(-1)}, true},
+		{"recall_limit negative is invalid", store.ClientSettings{RecallLimit: new(-1)}, true},
+		{"inject_recall_max_tok negative is invalid", store.ClientSettings{InjectRecallMaxTok: new(-1)}, true},
+		{"min_capture_chars negative is invalid", store.ClientSettings{MinCaptureChars: new(-1)}, true},
+		{"inject_pretool_min_score = 0 is valid (boundary)", store.ClientSettings{InjectPretoolMinScore: new(0.0)}, false},
+		{"inject_pretool_min_score negative is invalid", store.ClientSettings{InjectPretoolMinScore: new(-0.1)}, true},
+		{"inject_recall_min_score negative is invalid", store.ClientSettings{InjectRecallMinScore: new(-0.1)}, true},
+		{"namespace_scope repo is valid", store.ClientSettings{NamespaceScope: new("repo")}, false},
+		{"namespace_scope owner_repo is valid", store.ClientSettings{NamespaceScope: new("owner_repo")}, false},
+		{"namespace_scope bad value is invalid", store.ClientSettings{NamespaceScope: new("global")}, true},
 		{"inject_labels valid values", store.ClientSettings{InjectLabels: &[]string{"tier", "confidence", "age", "reason"}}, false},
 		{"inject_labels empty slice is valid", store.ClientSettings{InjectLabels: &[]string{}}, false},
 		{"inject_labels bad value is invalid", store.ClientSettings{InjectLabels: &[]string{"tier", "bogus"}}, true},
-		{"namespace_prefix empty is valid", store.ClientSettings{NamespacePrefix: ptr("")}, false},
-		{"namespace_prefix valid path", store.ClientSettings{NamespacePrefix: ptr("acme/team")}, false},
-		{"namespace_prefix with NUL byte is invalid", store.ClientSettings{NamespacePrefix: ptr("acme\x00team")}, true},
-		{"namespace_prefix over 256 bytes is invalid", store.ClientSettings{NamespacePrefix: ptr(strings.Repeat("a", 257))}, true},
+		{"namespace_prefix empty is valid", store.ClientSettings{NamespacePrefix: new("")}, false},
+		{"namespace_prefix valid path", store.ClientSettings{NamespacePrefix: new("acme/team")}, false},
+		{"namespace_prefix with NUL byte is invalid", store.ClientSettings{NamespacePrefix: new("acme\x00team")}, true},
+		{"namespace_prefix over 256 bytes is invalid", store.ClientSettings{NamespacePrefix: new(strings.Repeat("a", 257))}, true},
 		{"inject_pretool_tools within bounds is valid", store.ClientSettings{InjectPretoolTools: &[]string{"Read", "Write"}}, false},
 		{"inject_pretool_tools with 64 entries is valid (boundary)", store.ClientSettings{InjectPretoolTools: sliceOfLen(64, "t")}, false},
 		{"inject_pretool_tools over 64 entries is invalid", store.ClientSettings{InjectPretoolTools: sliceOfLen(65, "t")}, true},
@@ -189,11 +187,11 @@ func TestMergeClientSettings(t *testing.T) {
 
 	t.Run("a later layer's explicit field wins over an earlier layer's", func(t *testing.T) {
 		global := store.SettingsLayer{Source: "global", S: store.ClientSettings{
-			AutoSaveInterval: ptr(20),
+			AutoSaveInterval: new(20),
 		}}
 		key := store.SettingsLayer{Source: "key:ci-bot", S: store.ClientSettings{
-			AutoSaveInterval: ptr(99), // overrides global's 20
-			Recall:           ptr(false),
+			AutoSaveInterval: new(99), // overrides global's 20
+			Recall:           new(false),
 		}}
 		got, sources := store.MergeClientSettings(defaults, global, key)
 
@@ -224,7 +222,7 @@ func TestMergeClientSettings(t *testing.T) {
 	})
 
 	t.Run("an explicit nil never overrides an earlier explicit value", func(t *testing.T) {
-		first := store.SettingsLayer{Source: "global", S: store.ClientSettings{AutoSave: ptr(false)}}
+		first := store.SettingsLayer{Source: "global", S: store.ClientSettings{AutoSave: new(false)}}
 		second := store.SettingsLayer{Source: "key:bot", S: store.ClientSettings{}} // touches nothing
 		got, sources := store.MergeClientSettings(first, second)
 		if got.AutoSave == nil || *got.AutoSave != false {
@@ -264,8 +262,8 @@ func TestClientSettingsUnmarshalIgnoresUnknownFields(t *testing.T) {
 // since a non-nil pointer to 0 is a real explicit "0", not an omission).
 func TestClientSettingsMarshalOmitsNilFields(t *testing.T) {
 	s := store.ClientSettings{
-		AutoSave:             ptr(false), // explicit false must survive
-		InjectBriefingMaxTok: ptr(0),     // explicit 0 must survive, not be omitted
+		AutoSave:             new(false), // explicit false must survive
+		InjectBriefingMaxTok: new(0),     // explicit 0 must survive, not be omitted
 	}
 	b, err := json.Marshal(s)
 	if err != nil {

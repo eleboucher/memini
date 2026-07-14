@@ -127,7 +127,7 @@ func TestAddAPIKeyAdminFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("keyStoreOf: %v", err)
 	}
-	_, key, err := addAPIKey(context.Background(), ks, "root-frank", keyAddOpts{Admin: boolPtr(true)})
+	_, key, err := addAPIKey(context.Background(), ks, "root-frank", keyAddOpts{Admin: new(true)})
 	if err != nil {
 		t.Fatalf("addAPIKey: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestAddAPIKeyRotationPreservesAdmin(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	if _, _, err := addAPIKey(ctx, ks, "root-ivy", keyAddOpts{Admin: boolPtr(true)}); err != nil {
+	if _, _, err := addAPIKey(ctx, ks, "root-ivy", keyAddOpts{Admin: new(true)}); err != nil {
 		t.Fatalf("addAPIKey: %v", err)
 	}
 	_, rotated, err := addAPIKey(ctx, ks, "root-ivy", keyAddOpts{})
@@ -186,10 +186,10 @@ func TestAddAPIKeyRotationExplicitDemoteClearsAdmin(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	if _, _, err := addAPIKey(ctx, ks, "root-kim", keyAddOpts{Admin: boolPtr(true)}); err != nil {
+	if _, _, err := addAPIKey(ctx, ks, "root-kim", keyAddOpts{Admin: new(true)}); err != nil {
 		t.Fatalf("addAPIKey: %v", err)
 	}
-	_, rotated, err := addAPIKey(ctx, ks, "root-kim", keyAddOpts{Admin: boolPtr(false)})
+	_, rotated, err := addAPIKey(ctx, ks, "root-kim", keyAddOpts{Admin: new(false)})
 	if err != nil {
 		t.Fatalf("rotate with explicit --admin=false: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestAddAPIKeyRotationPreservesSettings(t *testing.T) {
 	if err != nil || seeded == nil {
 		t.Fatalf("lookup seeded key: %v", err)
 	}
-	seeded.Settings = store.ClientSettings{CaptureTurns: boolPtr(false)}
+	seeded.Settings = store.ClientSettings{CaptureTurns: new(false)}
 	if err := ks.PutAPIKey(ctx, *seeded); err != nil {
 		t.Fatalf("seed settings: %v", err)
 	}

@@ -56,9 +56,6 @@ func newConfigServer(t *testing.T, adminKey, fileYAML string, clientDefaults *st
 // paths. Only the base Store methods are promoted from the embedded interface.
 type storeNoAPIKeys struct{ store.Store }
 
-func bptr(b bool) *bool { return &b }
-func iptr(n int) *int   { return &n }
-
 func handshakeBody(project map[string]any) map[string]any {
 	return map[string]any{"project": project}
 }
@@ -455,7 +452,7 @@ func TestHandshakeDeterministicAndSideEffectFree(t *testing.T) {
 	}
 	// A derived (non-pin) response carries no timestamps, so two identical calls
 	// must produce byte-identical bodies.
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		again := do(t, h, http.MethodPost, "/v1/handshake", "", "", body)
 		if again.Body.String() != first.Body.String() {
 			t.Fatalf("handshake is not deterministic:\n first: %s\n again: %s", first.Body, again.Body)
@@ -1019,7 +1016,7 @@ func TestNamedAdminReachesSettingsDefaults(t *testing.T) {
 // env layer IS the globals — GET reports managed_by=env, PUT is refused 409, and
 // a handshake resolves through it (provenance global).
 func TestSettingsDefaultsEnvManaged(t *testing.T) {
-	envDefaults := &store.ClientSettings{CaptureTurns: bptr(false), RecallLimit: iptr(9)}
+	envDefaults := &store.ClientSettings{CaptureTurns: new(false), RecallLimit: new(9)}
 	h, ks := newConfigServer(t, "admin-secret", "", envDefaults)
 	if err := ks.PutAPIKey(context.Background(), store.APIKey{Name: "bot", Hash: hashOf("tok-bot")}); err != nil {
 		t.Fatalf("PutAPIKey: %v", err)

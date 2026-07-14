@@ -62,12 +62,12 @@ func remotePathSegments(url string) []string {
 	}
 	path := cleaned
 	if scpStyleRe.MatchString(cleaned) {
-		if i := strings.Index(cleaned, ":"); i >= 0 {
-			path = cleaned[i+1:]
+		if _, after, ok := strings.Cut(cleaned, ":"); ok {
+			path = after
 		}
 	}
 	var segs []string
-	for _, s := range strings.Split(path, "/") {
+	for s := range strings.SplitSeq(path, "/") {
 		if s != "" {
 			segs = append(segs, s)
 		}
@@ -136,8 +136,8 @@ func CanonicalRemote(url string) string {
 		authority, path = cleaned[:i], cleaned[i+1:]
 	default:
 		rest := schemeRe.ReplaceAllString(cleaned, "")
-		if i := strings.Index(rest, "/"); i >= 0 {
-			authority, path = rest[:i], rest[i+1:]
+		if before, after, ok := strings.Cut(rest, "/"); ok {
+			authority, path = before, after
 		} else {
 			authority = rest
 		}

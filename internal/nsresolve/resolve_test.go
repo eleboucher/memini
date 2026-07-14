@@ -238,7 +238,7 @@ func TestResolveDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		got, err := nsresolve.Resolve(context.Background(), f, nil, store.ClientSettings{}, "", "sd")
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)

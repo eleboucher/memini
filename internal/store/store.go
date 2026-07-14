@@ -464,37 +464,37 @@ func (s ClientSettings) Validate() error {
 // empty.
 func DefaultClientSettings() ClientSettings {
 	return ClientSettings{
-		CaptureTurns:  boolPtr(true),
-		SessionDigest: boolPtr(true),
-		InlineExtract: boolPtr(true),
-		AutoSave:      boolPtr(true),
+		CaptureTurns:  new(true),
+		SessionDigest: new(true),
+		InlineExtract: new(true),
+		AutoSave:      new(true),
 
-		AutoSaveInterval: intPtr(10),
+		AutoSaveInterval: new(10),
 
-		InjectBriefingPinned:     intPtr(5),
-		InjectBriefingFacts:      intPtr(5),
-		InjectBriefingProcedures: intPtr(5),
-		InjectBriefingRecent:     intPtr(3),
-		InjectBriefingMaxTok:     intPtr(0),
+		InjectBriefingPinned:     new(5),
+		InjectBriefingFacts:      new(5),
+		InjectBriefingProcedures: new(5),
+		InjectBriefingRecent:     new(3),
+		InjectBriefingMaxTok:     new(0),
 
-		InjectPretoolItems:    intPtr(3),
-		InjectPretoolMaxTok:   intPtr(0),
-		InjectPretoolMinScore: float64Ptr(0),
+		InjectPretoolItems:    new(3),
+		InjectPretoolMaxTok:   new(0),
+		InjectPretoolMinScore: new(float64(0)),
 		InjectPretoolTools:    &[]string{"Read", "Write", "Edit", "Glob", "Grep"},
-		InjectDedupe:          boolPtr(true),
+		InjectDedupe:          new(true),
 
 		InjectLabels: &[]string{},
 
-		Recall:      boolPtr(true),
-		Capture:     boolPtr(true),
-		RecallLimit: intPtr(3),
+		Recall:      new(true),
+		Capture:     new(true),
+		RecallLimit: new(3),
 
-		InjectRecallMaxTok:   intPtr(0),
-		InjectRecallMinScore: float64Ptr(0),
+		InjectRecallMaxTok:   new(0),
+		InjectRecallMinScore: new(float64(0)),
 
-		MinCaptureChars: intPtr(0),
-		NamespaceScope:  stringPtr("repo"),
-		NamespacePrefix: stringPtr(""),
+		MinCaptureChars: new(0),
+		NamespaceScope:  new("repo"),
+		NamespacePrefix: new(""),
 	}
 }
 
@@ -609,11 +609,6 @@ func applyPtr[T any](dst **T, src *T) bool {
 	*dst = src
 	return true
 }
-
-func boolPtr(b bool) *bool          { return &b }
-func intPtr(n int) *int             { return &n }
-func float64Ptr(f float64) *float64 { return &f }
-func stringPtr(s string) *string    { return &s }
 
 // APIKey is a persisted API credential: a unique human label, the hex
 // SHA-256 hash of the secret (the secret itself is never stored), an
