@@ -102,6 +102,24 @@ var (
 // one server-controlled string that can teach cross-tool policy (call order,
 // proactive use, storage conventions) — per-tool descriptions are read in
 // isolation during tool selection and can't express it.
+//
+// This block is also the CANONICAL save-policy text. Five semantic invariants
+// are mirrored (never byte-identically) across the surfaces named below:
+//  1. trigger categories: decision+rationale; bug root cause/gotcha;
+//     convention; stated preference or correction; environment/tool quirk;
+//     non-obvious command/workflow.
+//  2. exclusions: secrets/credentials; transient session state; task progress;
+//     facts in project docs/CLAUDE.md or trivially recoverable; passthrough
+//     text.
+//  3. tier is optional — omit to auto-classify.
+//  4. an explicit user request saves unconditionally, except secrets.
+//  5. visibility semantics (project default; personal follows the user;
+//     ancestor names share up the chain; episodic/working clamp to project).
+//
+// Mirror surfaces (owned by later tasks — do NOT edit them here):
+// plugin/scripts/_shared.mjs (MEMORY_INSTRUCTION), plugin/scripts/stop.mjs
+// (auto-save nudge wording), plugin/skills/remember/SKILL.md,
+// integrations/pi/plugin/src/index.ts, integrations/openclaw/plugin/src/index.ts.
 const serverInstructions = "memini is persistent cross-session memory for this agent. Namespaces are " +
 	"managed for you — you never construct or type a raw namespace path; you make semantic choices " +
 	"(scope to read, visibility to write) and learn the topology by reading provenance. Standing policy:\n" +
@@ -109,13 +127,18 @@ const serverInstructions = "memini is persistent cross-session memory for this a
 	"how-tos, recent activity, and a Scope line spelling out the ancestor chain you inherit from, " +
 	"e.g. \"Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2)\"). Prefer it over " +
 	"broad recall queries.\n" +
+	"- Saving memories is your job — do not wait to be asked. When you learn something durable — " +
+	"a decision and its rationale, a bug's root cause, a project convention, a stated user " +
+	"preference or a correction (a correction IS a preference), an environment quirk, a " +
+	"non-obvious command — call memory_remember before moving on: one atomic, self-contained " +
+	"fact per call. When the user explicitly asks you to remember something, save it before " +
+	"acknowledging, even if it seems trivial or already stored (near-duplicates are reinforced " +
+	"or merged server-side). Never store secrets or credentials, transient session state, task " +
+	"progress, or what's already in project docs/CLAUDE.md or trivially recoverable from code.\n" +
 	"- Before work that may have history — an unfamiliar file, a recurring bug, a non-obvious " +
 	"decision — call memory_recall first. Its scope argument is the only lever: \"project\" (just " +
 	"this project's own memories), \"full\" (default: project + inherited context — ancestors, your " +
 	"personal namespace, links), or \"everywhere\" (full + nested sub-projects).\n" +
-	"- After learning something durable (a decision and its why, a gotcha, a convention, a stated " +
-	"preference), call memory_remember proactively: one atomic, self-contained fact per call. " +
-	"Don't store what's already in project docs/CLAUDE.md or trivially recoverable from code.\n" +
 	"- visibility on memory_remember decides who should know: \"project\" (default, this project " +
 	"only), \"personal\" (about the user, follows them everywhere), or an ancestor namespace name " +
 	"read off the briefing Scope line (e.g. the team or org level) — on a durable write an " +
@@ -172,12 +195,16 @@ func NewServer(svc *service.Service, defaultNS, home, author, authorKind string)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:  "memory_remember",
 		Title: "Remember a fact",
-		Description: "Store a fact, decision, preference, or event for later recall. Call " +
-			"proactively when the user says 'remember this', after an architectural decision " +
-			"(capture the why), after discovering a non-obvious bug or convention, or when a " +
-			"stated preference should outlive this session. Keep memories atomic — one " +
-			"self-contained fact per call; search works better on small records. Do NOT store " +
-			"facts already in project docs/CLAUDE.md or trivially recoverable from code. tier: " +
+		Description: "Store a fact, decision, preference, or event for later recall. Do not wait " +
+			"to be asked — call this the moment you learn: a decision and why it was made, a bug's " +
+			"root cause, a project convention, a stated user preference, a correction from the user " +
+			"(a correction IS a durable preference), an environment or tool quirk, or a non-obvious " +
+			"command/workflow. When the user says 'remember this', 'note that', 'don't forget', " +
+			"'going forward...', or corrects you, call this tool FIRST, then acknowledge — and on an " +
+			"explicit request save unconditionally, even if it seems trivial or already stored. Keep " +
+			"memories atomic — one self-contained fact per call; search works better on small " +
+			"records. Do NOT store secrets or credentials, transient session state, task progress, " +
+			"or facts already in project docs/CLAUDE.md or trivially recoverable from code. tier: " +
 			"semantic=durable fact, procedural=how-to, episodic=event, working=scratch (default intake, omit to " +
 			"auto-classify). visibility: 'project' (default) keeps it here; 'personal' follows the " +
 			"user everywhere; or name an ancestor from the briefing Scope line to share it up that " +
