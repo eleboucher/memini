@@ -26,6 +26,7 @@ import {
   cacheBriefingHash,
   deleteLastRecallState,
   MEMORY_INSTRUCTION,
+  COMPACT_RECOVERY_DIRECTIVE,
   DEBUG,
 } from "./_shared.mjs";
 import { readOverride, assertBearerTransportSafe } from "./_client.gen.mjs";
@@ -216,6 +217,16 @@ async function main() {
 
   const inlineExtract = ctx.setting("inline_extract").value;
 
+  // The single memory directive emitted by all three paths below (empty briefing,
+  // unchanged briefing, fresh briefing) — computed once so they cannot drift.
+  // Claude Code sets payload.source to "startup" | "resume" | "clear" | "compact";
+  // after a compaction the context was rebuilt and durable facts learned before
+  // it may have fallen out of view, so append the compact-recovery prompt to nudge
+  // the model to flush anything not yet persisted. Empty when inline_extract is off.
+  const directive = inlineExtract
+    ? MEMORY_INSTRUCTION + (payload.source === "compact" ? COMPACT_RECOVERY_DIRECTIVE : "")
+    : "";
+
   // A single query-less briefing call returns a layered view: pinned identity,
   // durable facts/procedures, and recent activity — server-side ranked, so the
   // hook injects useful context without N searches.
@@ -229,7 +240,7 @@ async function main() {
   const empty =
     !b || (!b.pinned?.length && !b.facts?.length && !b.procedures?.length && !b.recent?.length);
   if (empty) {
-    if (inlineExtract) process.stdout.write(MEMORY_INSTRUCTION);
+    if (directive) process.stdout.write(directive);
     return;
   }
 
@@ -243,7 +254,7 @@ async function main() {
     // A re-fire usually means the context was rebuilt (resume / clear / compact),
     // which drops the memory directive. Skip the unchanged briefing but re-emit
     // the directive so the agent keeps saving durable facts via memory_remember.
-    if (inlineExtract) process.stdout.write(MEMORY_INSTRUCTION);
+    if (directive) process.stdout.write(directive);
     return;
   }
 
@@ -315,12 +326,13 @@ async function main() {
   }
   lines.push("</memini-context>");
 
-  // Memory directive: when MEMINI_INLINE_EXTRACT=1 (default), append a
+  // Memory directive: when MEMINI_INLINE_EXTRACT=1 (default), append the
   // directive telling the agent to persist durable facts via the
-  // memory_remember MCP tool. The Stop hook also scrapes legacy inline
-  // <memory> blocks from the transcript as a back-compat fallback.
-  if (inlineExtract) {
-    lines.push(MEMORY_INSTRUCTION);
+  // memory_remember MCP tool (plus the compact-recovery prompt after a
+  // compaction — see `directive` above). The Stop hook also scrapes legacy
+  // inline <memory> blocks from the transcript as a back-compat fallback.
+  if (directive) {
+    lines.push(directive);
   }
 
   // Record what we injected so a later SessionStart this session can skip an

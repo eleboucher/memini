@@ -917,35 +917,51 @@ export function readToolCall(payload) {
   };
 }
 
-// Memory directive: at SessionStart the plugin injects a short instruction
-// telling the agent to persist durable facts via the memory_remember MCP
+// Memory directive: at SessionStart the plugin injects an instruction telling
+// the agent to proactively persist durable facts via the memory_remember MCP
 // tool. On by default; opt out with MEMINI_INLINE_EXTRACT=0. The Stop hook
 // keeps a legacy scraper (parseMemoryBlocks) as a back-compat fallback for
 // sessions still emitting inline <memory> blocks under the old instruction.
+//
+// The save-policy invariants below (what is durable, visibility, correction
+// hygiene) are canonical in internal/api/mcp/mcp.go serverInstructions; keep
+// the two phrasings in sync.
 
 export const MEMORY_INSTRUCTION = `
 
 <memini-memory-directive>
-When you learn something durable worth persisting for future sessions (a
-decision, a fact, a convention, a gotcha, a user preference), save it by
-calling the memini memory_remember MCP tool — one memory per call.
+You have persistent cross-session memory via the memini memory_remember MCP
+tool. Saving is your job — do not wait for the user to ask. Save one memory
+per durable fact when you learn:
+- a decision and the reason it was made
+- a bug's root cause, or a gotcha worth flagging next time
+- a project convention (layout, style, test/deploy commands)
+- a stated user preference, or a correction the user gives you — a
+  correction IS a preference
+- an environment or tool quirk, or a non-obvious command/workflow
+
+When the user says "remember this" or corrects you, call memory_remember
+first, then acknowledge — and save an explicit request unconditionally, even
+if it seems trivial or already stored. Before ending a turn in which you
+learned something durable, make sure it was saved.
 
 Rules:
-- Each memory should be a self-contained fact, readable without this
-  conversation's context.
-- tier: "semantic" for facts, decisions, and preferences; "procedural"
-  for how-tos and commands. Tag a critical, always-relevant fact "pinned"
-  so it surfaces in every session briefing.
+- Each memory must be self-contained, readable without this conversation's
+  context. State facts, not commands: "User prefers concise replies" (good),
+  "Always reply concisely" (bad).
 - visibility: "personal" for anything true of the USER wherever they go
-  (their preferences, their habits, how they like to work); "project"
-  (the default) for anything specific to this codebase. Getting this
-  wrong is the common failure: a preference saved as "project" is stranded
-  here and will not follow them to their next repo.
-- Save nothing when nothing is worth keeping. This is reference memory,
-  not scratch space: prefer quality over quantity, and skip anything
-  already in CLAUDE.md or project docs.
-- If a stale or wrong fact turns up (rather than a new one), correct it in
-  place with the memory_update MCP tool instead of saving a duplicate.
+  (their preferences, habits, how they like to work); "project" (the
+  default) for anything specific to this codebase. Getting this wrong is
+  the common failure: a preference saved as "project" is stranded here and
+  will not follow them to their next repo.
+- Omit tier to let the server classify. Tag a critical, always-relevant
+  fact "pinned" so it surfaces in every session briefing.
+- Never save secrets or credentials, transient session state, task
+  progress, or facts already in CLAUDE.md or project docs.
+- If a stored memory turns out to be wrong or outdated, fix it immediately:
+  correct it in place with the memory_update MCP tool, or delete it with
+  memory_forget if it should not exist. Never leave a memory you know is
+  incorrect in place.
 - Never print memory markup or JSON memory payloads in your reply text.
   Memories are saved only through the MCP tools. If the tools are
   unavailable, do nothing.

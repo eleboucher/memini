@@ -620,6 +620,89 @@ test("MEMORY_INSTRUCTION tells the agent about visibility, not just tier", async
   assert.match(MEMORY_INSTRUCTION, /personal/);
 });
 
+test("session-start.mjs: source \"compact\" appends the compact-recovery directive (fresh briefing)", async () => {
+  // After a compaction the context was rebuilt and durable facts learned before
+  // it may no longer be visible — so the fresh-briefing path must emit BOTH the
+  // save directive AND the compact-recovery directive.
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          namespace: "team/app",
+          pinned: [],
+          facts: [{ content: "convention: use tabs" }],
+          procedures: [],
+          recent: [{ content: "last session did X" }],
+        }),
+      );
+    }),
+  );
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "compact-fresh", cwd: __dirname, source: "compact" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() },
+    );
+    assert.match(stdout, /<memini-memory-directive>/, "the save directive must still be emitted");
+    assert.match(stdout, /<memini-compact-recovery>/, "post-compaction must also emit the recovery directive");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: source \"compact\" appends the compact-recovery directive (empty briefing)", async () => {
+  // The empty-briefing path is one of the three emission sites; a post-compaction
+  // fire with no memories yet must still carry both directives.
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ namespace: "memini", pinned: [], facts: [], procedures: [], recent: [] }));
+    }),
+  );
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "compact-empty", cwd: __dirname, source: "compact" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() },
+    );
+    assert.match(stdout, /<memini-memory-directive>/, "the save directive must still be emitted on an empty briefing");
+    assert.match(stdout, /<memini-compact-recovery>/, "post-compaction must also emit the recovery directive on an empty briefing");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: source \"startup\" emits the memory directive but NOT compact recovery", async () => {
+  // A normal (non-compaction) start gets the save directive alone — the recovery
+  // directive is compaction-only, so it must be absent here.
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          namespace: "team/app",
+          pinned: [],
+          facts: [{ content: "convention: use tabs" }],
+          procedures: [],
+          recent: [],
+        }),
+      );
+    }),
+  );
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "startup1", cwd: __dirname, source: "startup" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() },
+    );
+    assert.match(stdout, /<memini-memory-directive>/, "startup still gets the save directive");
+    assert.doesNotMatch(stdout, /<memini-compact-recovery>/, "a non-compact start must not emit the recovery directive");
+  } finally {
+    await close();
+  }
+});
+
 // ─── REST client (postJSON / getJSON / postRemember) ──────────────────────
 
 test("X-Memini-Home header: emitted on GET/POST when MEMINI_HOME is set, absent when unset", async () => {
