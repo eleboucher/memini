@@ -781,11 +781,13 @@ test("MEMINI_SESSION_DIGEST=0 stops every session-digest write", async () => {
   const cache = freshCache();
   const off = { XDG_CACHE_HOME: cache, MEMINI_SESSION_DIGEST: "0" };
 
-  // PostToolUse must not even buffer (network-free: env override alone gates it).
+  // PostToolUse must not even buffer when NOTHING consumes it (network-free: env
+  // overrides alone gate it). Under the widened gate that means digest AND the
+  // auto-save nudge both off.
   await runHook(
     "post-tool-use.mjs",
     JSON.stringify({ session_id: "d0", cwd: __dirname, tool_name: "Edit", tool_input: { file_path: "a.go" } }),
-    off,
+    { ...off, MEMINI_AUTO_SAVE: "0" },
   );
   assert.equal(existsSync(join(cache, "memini", "sessions", "d0.jsonl")), false, "must not write the buffer when nothing will consume it");
 
@@ -805,6 +807,40 @@ test("MEMINI_SESSION_DIGEST=0 stops every session-digest write", async () => {
     await runHook("stop.mjs", payload, env);
     await runHook("pre-compact.mjs", payload, env);
     assert.deepEqual(hits, [], "no digest, no checkpoint, no pre-compact rescue");
+  } finally {
+    await close();
+  }
+});
+
+test("post-tool-use.mjs: session_digest off but auto_save on still buffers locally (no digest POST)", async () => {
+  const cache = freshCache();
+  // session_digest off, auto_save default on, min_events default 3 → the buffer
+  // now feeds the auto-save nudge, so it must still be written.
+  await runHook(
+    "post-tool-use.mjs",
+    JSON.stringify({ session_id: "as0", cwd: __dirname, tool_name: "Edit", tool_input: { file_path: "a.go" } }),
+    { XDG_CACHE_HOME: cache, MEMINI_SESSION_DIGEST: "0", MEMINI_BASE_URL: DEAD_URL },
+  );
+  assert.equal(existsSync(join(cache, "memini", "sessions", "as0.jsonl")), true, "auto-save consumes the buffer, so it must be written");
+
+  // The digest POST stays gated on session_digest alone: Stop writes no checkpoint
+  // even though a buffer exists.
+  const hits = [];
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
+      hits.push({ url: req.url });
+      res.statusCode = 201;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ id: "m1" }));
+    }),
+  );
+  try {
+    await runHook(
+      "stop.mjs",
+      JSON.stringify({ session_id: "as0", cwd: __dirname }),
+      { XDG_CACHE_HOME: cache, MEMINI_BASE_URL: url, MEMINI_SESSION_DIGEST: "0", MEMINI_CAPTURE_TURNS: "0", MEMINI_AUTO_SAVE: "0" },
+    );
+    assert.deepEqual(hits.filter((h) => h.url === "/v1/memories"), [], "session_digest off → no checkpoint POST even though the buffer exists");
   } finally {
     await close();
   }
@@ -1123,11 +1159,16 @@ test("stop/session-end/pre-compact: no session id → no server writes", async (
 });
 
 // Build a fake Claude Code transcript with `n` real user messages plus noise.
-function writeTranscript(path, userCount) {
+function writeTranscript(path, userCount, opts = {}) {
   const lines = [];
   for (let i = 0; i < userCount; i++) {
     lines.push(JSON.stringify({ type: "user", message: { role: "user", content: `q${i}` } }));
     lines.push(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "a" }] } }));
+  }
+  // Optionally embed memory-save tool_use blocks (one assistant row per name) so
+  // scanTranscriptStats sees real saves — used to assert nudge suppression.
+  for (const name of opts.saveTools || []) {
+    lines.push(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name }] } }));
   }
   lines.push(JSON.stringify({ type: "user", isSidechain: true, message: { content: "side" } }));
   lines.push(JSON.stringify({ type: "user", isMeta: true, message: { content: "meta" } }));
@@ -1136,7 +1177,7 @@ function writeTranscript(path, userCount) {
   writeFileSync(path, lines.join("\n") + "\n");
 }
 
-test("stop.mjs: blocks once after the auto-save interval, baselining first", async () => {
+test("stop.mjs: blocks once after the auto-save interval, baselining first (min_events=0 legacy path)", async () => {
   const cache = freshCache();
   const tp = join(cache, "transcript.jsonl");
   const { url, close } = await startMockServer(
@@ -1146,7 +1187,9 @@ test("stop.mjs: blocks once after the auto-save interval, baselining first", asy
       res.end(JSON.stringify({ id: "m1" }));
     }),
   );
-  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_AUTO_SAVE_INTERVAL: "5" };
+  // MEMINI_AUTO_SAVE_MIN_EVENTS=0 disables the activity gate, so an event-less
+  // fixture still nudges at the interval — the legacy count-only behavior.
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_AUTO_SAVE_INTERVAL: "5", MEMINI_AUTO_SAVE_MIN_EVENTS: "0" };
   try {
     writeTranscript(tp, 3);
     let { stdout } = await runHook("stop.mjs", JSON.stringify({ session_id: "as1", cwd: __dirname, transcript_path: tp }), env);
@@ -1160,6 +1203,101 @@ test("stop.mjs: blocks once after the auto-save interval, baselining first", asy
     ({ stdout } = await runHook("stop.mjs", JSON.stringify({ session_id: "as1", cwd: __dirname, transcript_path: tp }), env));
     const decision = JSON.parse(stdout);
     assert.equal(decision.decision, "block");
+    assert.match(decision.reason, /memory_remember/);
+  } finally {
+    await close();
+  }
+});
+
+test("stop.mjs: nudge anchors the session's edited files and commands (specifics path)", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const tp = join(cache, "sp.jsonl");
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (_req, res) => {
+      res.statusCode = 201;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ id: "m1" }));
+    }),
+  );
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_AUTO_SAVE_INTERVAL: "5" };
+  try {
+    // Baseline first so the events buffered next count as "fresh" (ts after the
+    // baseline timestamp).
+    writeTranscript(tp, 3);
+    let { stdout } = await runHook("stop.mjs", JSON.stringify({ session_id: "sp1", cwd: __dirname, transcript_path: tp }), env);
+    assert.equal(stdout.trim(), "", "first sight baselines");
+
+    // Buffer 3 events (>= default min_events) AFTER the baseline via post-tool-use
+    // (session_digest defaults on under the primed handshake → it buffers).
+    for (const [tool, input] of [
+      ["Edit", { file_path: "src/a.ts" }],
+      ["Edit", { file_path: "src/b.ts" }],
+      ["Bash", { command: "mise run test" }],
+    ]) {
+      await runHook("post-tool-use.mjs", JSON.stringify({ session_id: "sp1", cwd: __dirname, tool_name: tool, tool_input: input }), { XDG_CACHE_HOME: cache });
+    }
+
+    writeTranscript(tp, 9);
+    ({ stdout } = await runHook("stop.mjs", JSON.stringify({ session_id: "sp1", cwd: __dirname, transcript_path: tp }), env));
+    const decision = JSON.parse(stdout);
+    assert.equal(decision.decision, "block");
+    assert.match(decision.reason, /src\/a\.ts/, "anchors the edited file");
+    assert.match(decision.reason, /mise run test/, "anchors the command");
+    assert.match(decision.reason, /memory_remember/);
+  } finally {
+    await close();
+  }
+});
+
+test("stop.mjs: a memory_remember tool_use in the transcript suppresses the nudge", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const tp = join(cache, "su.jsonl");
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (_req, res) => {
+      res.statusCode = 201;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ id: "m1" }));
+    }),
+  );
+  // min_events=0 → without a save this WOULD nudge at the interval, so a pass-through
+  // here isolates suppression rather than the activity gate.
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_AUTO_SAVE_INTERVAL: "5", MEMINI_AUTO_SAVE_MIN_EVENTS: "0" };
+  try {
+    writeTranscript(tp, 3);
+    let { stdout } = await runHook("stop.mjs", JSON.stringify({ session_id: "su1", cwd: __dirname, transcript_path: tp }), env);
+    assert.equal(stdout.trim(), "", "first sight baselines");
+
+    writeTranscript(tp, 9, { saveTools: ["mcp__plugin_memini_memini__memory_remember"] });
+    ({ stdout } = await runHook("stop.mjs", JSON.stringify({ session_id: "su1", cwd: __dirname, transcript_path: tp }), env));
+    assert.equal(stdout.trim(), "", "an observed save suppresses the nudge past the interval");
+  } finally {
+    await close();
+  }
+});
+
+test("stop.mjs: a trivial (event-less) session defers at the interval, then discussion-nudges at 2x", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const tp = join(cache, "tr.jsonl");
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (_req, res) => {
+      res.statusCode = 201;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ id: "m1" }));
+    }),
+  );
+  // Default min_events=3, no buffered events → every window is "trivial".
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_AUTO_SAVE_INTERVAL: "5" };
+  const stop = (n) => (writeTranscript(tp, n), runHook("stop.mjs", JSON.stringify({ session_id: "tr1", cwd: __dirname, transcript_path: tp }), env));
+  try {
+    assert.equal((await stop(3)).stdout.trim(), "", "first sight baselines");
+    assert.equal((await stop(9)).stdout.trim(), "", "interval reached but trivial → defer, no block");
+    const { stdout } = await stop(13);
+    const decision = JSON.parse(stdout);
+    assert.equal(decision.decision, "block", "2x interval with no activity → nudge");
+    assert.match(decision.reason, /mostly discussion/, "as a discussion-variant nudge");
     assert.match(decision.reason, /memory_remember/);
   } finally {
     await close();
@@ -2778,7 +2916,9 @@ test("stop.mjs: turn-capture dedup survives an auto-save nudge (save-state co-te
         return false;
       }
     });
-  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_AUTO_SAVE_INTERVAL: "2" };
+  // min_events=0 makes the event-less fixture nudge at the interval (this test is
+  // about the save-state spread across a nudge, not the activity gate).
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_AUTO_SAVE_INTERVAL: "2", MEMINI_AUTO_SAVE_MIN_EVENTS: "0" };
   const payload = () => JSON.stringify({ session_id: "cot", cwd: __dirname, transcript_path: tp });
   try {
     // Run 0: 2 turns, tail msgA. First sight baselines auto-save (no block) and captures msgA.
@@ -2874,4 +3014,175 @@ test("buildSessionDigest: a command that fails then passes on retry is not marke
     "proj",
   );
   assert.ok(!d.content.includes("(failed)"), "a retried-and-passed command should not read as failed");
+});
+
+// ─── event-aware auto-save nudge (pure heuristic) ─────────────────────────
+
+test("isMemorySaveTool: matches bare + prefixed remember/update, rejects the rest", async () => {
+  const { isMemorySaveTool } = await import("./_shared.mjs");
+  assert.equal(isMemorySaveTool("memory_remember"), true);
+  assert.equal(isMemorySaveTool("memory_update"), true);
+  assert.equal(isMemorySaveTool("mcp__plugin_memini_memini__memory_remember"), true);
+  assert.equal(isMemorySaveTool("mcp__x__memory_update"), true);
+  assert.equal(isMemorySaveTool("memory_recall"), false);
+  assert.equal(isMemorySaveTool("memory_get"), false);
+  assert.equal(isMemorySaveTool("memory_forget"), false);
+  assert.equal(isMemorySaveTool("memory_list"), false);
+  assert.equal(isMemorySaveTool("xmemory_remember"), false, "suffix must be delimited by __");
+  assert.equal(isMemorySaveTool(""), false);
+  assert.equal(isMemorySaveTool(null), false);
+});
+
+test("scanTranscriptStats: counts real user messages like the old logic; saves incl. sidechain", async () => {
+  const { scanTranscriptStats } = await import("./_shared.mjs");
+  const transcript = [
+    { type: "user", message: { content: "real 1" } },
+    { type: "assistant", message: { content: [{ type: "tool_use", name: "memory_recall" }] } }, // not a save
+    { type: "assistant", message: { content: [{ type: "tool_use", name: "mcp__plugin_memini_memini__memory_remember" }] } }, // prefixed save
+    { type: "user", message: { content: "real 2" } },
+    { type: "user", isSidechain: true, message: { content: "side user" } }, // skipped
+    { type: "user", isMeta: true, message: { content: "meta" } }, // skipped
+    { type: "user", message: { content: [{ type: "tool_result", content: "r" }] } }, // array → skipped
+    { type: "user", message: { content: "<command-name>/foo</command-name>" } }, // noise → skipped
+    { type: "assistant", isSidechain: true, message: { content: [{ type: "tool_use", name: "memory_update" }] } }, // sidechain save COUNTS
+    { type: "assistant", message: { content: [{ type: "tool_use", name: "memory_get" }] } }, // not a save
+  ]
+    .map((r) => JSON.stringify(r))
+    .join("\n");
+  const s = scanTranscriptStats(transcript);
+  assert.equal(s.userMessages, 2, "sidechain/meta/tool_result/command noise are not user messages");
+  assert.equal(s.memorySaves, 2, "prefixed remember + bare sidechain update; recall/get ignored");
+  assert.deepEqual(scanTranscriptStats(""), { userMessages: 0, memorySaves: 0 });
+});
+
+test("evaluateAutoSave: below the interval → none, no state write", async () => {
+  const { evaluateAutoSave } = await import("./_shared.mjs");
+  const r = evaluateAutoSave({
+    state: { lastSavedCount: 0, lastSaveToolCount: 0, lastActivityBaselineTs: 100 },
+    stats: { userMessages: 3, memorySaves: 0 },
+    events: [],
+    now: 200,
+    interval: 5,
+    minEvents: 3,
+  });
+  assert.equal(r.action, "none");
+  assert.equal(r.nextState, undefined);
+});
+
+test("evaluateAutoSave: a save observed at the interval → suppress + full re-baseline", async () => {
+  const { evaluateAutoSave } = await import("./_shared.mjs");
+  const r = evaluateAutoSave({
+    state: { lastSavedCount: 0, lastSaveToolCount: 0, lastActivityBaselineTs: 100 },
+    stats: { userMessages: 5, memorySaves: 2 },
+    events: [{ ts: 150 }],
+    now: 200,
+    interval: 5,
+    minEvents: 3,
+  });
+  assert.equal(r.action, "suppress");
+  assert.deepEqual(r.nextState, { lastSavedCount: 5, lastSaveToolCount: 2, lastActivityBaselineTs: 200 });
+});
+
+test("evaluateAutoSave: interval + fresh >= minEvents → nudge/specifics", async () => {
+  const { evaluateAutoSave } = await import("./_shared.mjs");
+  const r = evaluateAutoSave({
+    state: { lastSavedCount: 0, lastSaveToolCount: 0, lastActivityBaselineTs: 100 },
+    stats: { userMessages: 5, memorySaves: 0 },
+    events: [{ ts: 90 }, { ts: 150 }, { ts: 160 }, { ts: 170 }], // one stale (<=100), three fresh
+    now: 200,
+    interval: 5,
+    minEvents: 3,
+  });
+  assert.equal(r.action, "nudge");
+  assert.equal(r.variant, "specifics");
+  assert.equal(r.fresh.length, 3, "only events after the baseline timestamp are fresh");
+  assert.deepEqual(r.nextState, { lastSavedCount: 5, lastSaveToolCount: 0, lastActivityBaselineTs: 200 });
+});
+
+test("evaluateAutoSave: fresh < minEvents defers below 2x, discussion-nudges at 2x", async () => {
+  const { evaluateAutoSave } = await import("./_shared.mjs");
+  const base = { state: { lastSavedCount: 0, lastSaveToolCount: 0, lastActivityBaselineTs: 100 }, events: [{ ts: 150 }], now: 200, interval: 5, minEvents: 3 };
+  const deferR = evaluateAutoSave({ ...base, stats: { userMessages: 5, memorySaves: 0 } });
+  assert.equal(deferR.action, "defer");
+  assert.equal(deferR.nextState, undefined, "a defer must not re-baseline, so it can escalate");
+  const nudgeR = evaluateAutoSave({ ...base, stats: { userMessages: 10, memorySaves: 0 } });
+  assert.equal(nudgeR.action, "nudge");
+  assert.equal(nudgeR.variant, "discussion");
+  assert.deepEqual(nudgeR.nextState, { lastSavedCount: 10, lastSaveToolCount: 0, lastActivityBaselineTs: 200 });
+});
+
+test("evaluateAutoSave: minEvents=0 → nudge at the interval regardless of activity", async () => {
+  const { evaluateAutoSave } = await import("./_shared.mjs");
+  const state = { lastSavedCount: 0, lastSaveToolCount: 0, lastActivityBaselineTs: 100 };
+  const generic = evaluateAutoSave({ state, stats: { userMessages: 5, memorySaves: 0 }, events: [], now: 200, interval: 5, minEvents: 0 });
+  assert.equal(generic.action, "nudge");
+  assert.equal(generic.variant, "generic", "no fresh events → generic");
+  const specifics = evaluateAutoSave({ state, stats: { userMessages: 5, memorySaves: 0 }, events: [{ ts: 150 }], now: 200, interval: 5, minEvents: 0 });
+  assert.equal(specifics.variant, "specifics", "any fresh event → specifics even at minEvents 0");
+});
+
+test("evaluateAutoSave: legacy state missing the new fields → silent baseline", async () => {
+  const { evaluateAutoSave } = await import("./_shared.mjs");
+  const r = evaluateAutoSave({
+    state: { lastSavedCount: 3 }, // legacy: no lastSaveToolCount / lastActivityBaselineTs
+    stats: { userMessages: 5, memorySaves: 0 },
+    events: [],
+    now: 200,
+    interval: 5,
+    minEvents: 3,
+  });
+  assert.equal(r.action, "baseline");
+  assert.deepEqual(r.nextState, { lastSavedCount: 5, lastSaveToolCount: 0, lastActivityBaselineTs: 200 });
+  const nullR = evaluateAutoSave({ state: null, stats: { userMessages: 5, memorySaves: 1 }, events: [], now: 200, interval: 5, minEvents: 3 });
+  assert.equal(nullR.action, "baseline");
+  assert.deepEqual(nullR.nextState, { lastSavedCount: 5, lastSaveToolCount: 1, lastActivityBaselineTs: 200 });
+});
+
+test("evaluateAutoSave: a count regression → silent baseline", async () => {
+  const { evaluateAutoSave } = await import("./_shared.mjs");
+  const r = evaluateAutoSave({
+    state: { lastSavedCount: 10, lastSaveToolCount: 0, lastActivityBaselineTs: 100 },
+    stats: { userMessages: 5, memorySaves: 0 }, // fewer messages than baseline → replaced transcript
+    events: [],
+    now: 200,
+    interval: 5,
+    minEvents: 3,
+  });
+  assert.equal(r.action, "baseline");
+  assert.deepEqual(r.nextState, { lastSavedCount: 5, lastSaveToolCount: 0, lastActivityBaselineTs: 200 });
+});
+
+test("renderAutoSaveNudge: specifics carries the anchors, generic/discussion do not", async () => {
+  const { renderAutoSaveNudge } = await import("./_shared.mjs");
+  const specifics = renderAutoSaveNudge("specifics", {
+    msgs: 7,
+    files: ["src/a.ts (3)", "src/b.ts"],
+    commands: ["mise run test"],
+    failedCommands: [],
+  });
+  assert.match(specifics, /7 user messages since the last save/);
+  assert.match(specifics, /You edited src\/a\.ts \(3\), src\/b\.ts/);
+  assert.match(specifics, /ran "mise run test"/);
+  assert.match(specifics, /memory_remember/);
+
+  const generic = renderAutoSaveNudge("generic", { msgs: 7, files: [], commands: [], failedCommands: [] });
+  assert.ok(!generic.includes("You edited"), "generic has no anchor");
+  assert.ok(!generic.includes("src/a.ts"));
+  assert.match(generic, /memory_remember/);
+
+  const discussion = renderAutoSaveNudge("discussion", { msgs: 12, files: [], commands: [], failedCommands: [] });
+  assert.ok(!discussion.includes("You edited"), "discussion has no file/command anchor");
+  assert.match(discussion, /mostly discussion/);
+  assert.match(discussion, /memory_remember/);
+
+  const failed = renderAutoSaveNudge("specifics", { msgs: 4, files: [], commands: ["protoc --go_out=."], failedCommands: ["protoc --go_out=."] });
+  assert.match(failed, /"protoc --go_out=\." \(failed\)/, "failed commands are marked");
+});
+
+test("COMPACT_RECOVERY_DIRECTIVE: names the recovery tag and the save tool", async () => {
+  const { COMPACT_RECOVERY_DIRECTIVE } = await import("./_shared.mjs");
+  assert.match(COMPACT_RECOVERY_DIRECTIVE, /<memini-compact-recovery>/);
+  assert.match(COMPACT_RECOVERY_DIRECTIVE, /<\/memini-compact-recovery>/);
+  assert.match(COMPACT_RECOVERY_DIRECTIVE, /memory_remember/);
+  assert.match(COMPACT_RECOVERY_DIRECTIVE, /Context was just compacted/);
 });

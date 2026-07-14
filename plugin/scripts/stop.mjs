@@ -4,9 +4,13 @@
 //      buffered tool events so a long session doesn't lose its tail. Unlike
 //      SessionEnd it does NOT delete the buffer — the session may continue and
 //      SessionEnd writes the durable digest.
-//   2. Auto-save nudge: every MEMINI_AUTO_SAVE_INTERVAL user messages, block
-//      the agent once and ask it to persist durable facts/decisions via the
-//      memini memory_remember MCP tool. On by default; opt out with
+//   2. Auto-save nudge: an event-aware heuristic (evaluateAutoSave). Once per
+//      MEMINI_AUTO_SAVE_INTERVAL user messages it may block the agent and ask it
+//      to persist durable facts via the memini memory_remember MCP tool — but it
+//      SUPPRESSES the nudge when the model already saved this window, DEFERS
+//      trivial windows (fewer than MEMINI_AUTO_SAVE_MIN_EVENTS buffered tool
+//      events) until the interval doubles, and ANCHORS a real nudge in the
+//      session's actual files/commands. On by default; opt out with
 //      MEMINI_AUTO_SAVE=0.
 
 import fs from "node:fs";
@@ -21,68 +25,63 @@ import {
   buildSessionDigest,
   readSaveState,
   writeSaveState,
+  scanTranscriptStats,
+  evaluateAutoSave,
+  renderAutoSaveNudge,
   parseMemoryBlocks,
   extractAssistantText,
   extractLastTurn,
-  isRealUserMessage,
   readTranscript,
   DEBUG,
 } from "./_shared.mjs";
 
-const autoSaveReason = (n) =>
-  `[memini auto-save] ${n} user messages since the last save. Before stopping, ` +
-  `review this conversation for durable decisions, facts, and user preferences, ` +
-  `and persist each with the memini memory_remember MCP tool (tier "semantic" ` +
-  `for facts/decisions, "procedural" for how-tos; one memory per item). ` +
-  `If nothing new is worth keeping, just stop again.`;
-
-/** Count real user messages in a Claude Code transcript (JSONL string). */
-function countUserMessages(raw) {
-  let n = 0;
-  for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
-    const r = parseJSON(line);
-    if (!r || r.type !== "user" || r.isSidechain || r.isMeta) continue;
-    if (!isRealUserMessage(r.message?.content)) continue;
-    n++;
-  }
-  return n;
-}
-
 /**
  * Decide whether to block the agent with an auto-save nudge. Returns a reason
- * string to block with, or null to pass through. Never throws. The auto_save
- * on/off switch and the interval come from the resolved session context (env
- * override > server setting > default), so an operator can tune both without
- * touching the machine.
+ * string to block with, or null to pass through. Never throws. The decision is
+ * an event-aware heuristic (evaluateAutoSave): it scans the transcript once for
+ * user-message and memory-save counts, reads the buffered tool events, and folds
+ * them against the persisted save-state. It suppresses when the model already
+ * saved, defers trivial windows, and anchors a real nudge in the session's
+ * files/commands. The auto_save switch, interval, and min-events knobs come from
+ * the resolved session context (env override > server setting > default).
  */
-function autoSaveReasonFor(payload, sessionId, ctx) {
+function autoSaveReasonFor(payload, sessionId, project, ctx) {
   if (!ctx.setting("auto_save").value) return null; // opt-out
   if (payload.stop_hook_active) return null; // loop guard: already in a save cycle
   const tp = payload.transcript_path;
   if (!tp) return null;
-  let count;
+  let raw;
   try {
-    count = countUserMessages(fs.readFileSync(tp, "utf8"));
+    raw = fs.readFileSync(tp, "utf8");
   } catch {
     return null; // unreadable transcript → never block
   }
+  const stats = scanTranscriptStats(raw);
+  const events = readSessionEvents(sessionId);
   const state = readSaveState(sessionId);
-  const last = state && typeof state.lastSavedCount === "number" ? state.lastSavedCount : null;
-  // First sight, or the transcript was replaced/cleared (count regressed):
-  // re-baseline silently so we don't block on a resumed session's backlog.
-  if (last === null || last > count) {
-    writeSaveState(sessionId, { ...(state || {}), lastSavedCount: count, updatedAt: new Date().toISOString() });
-    return null;
-  }
   const interval = Math.max(1, ctx.setting("auto_save_interval").value || 10);
-  if (count - last < interval) return null;
-  // Update at block time, not after the agent saves — so even if it saves
-  // nothing we wait another full interval before nudging again. Spread the
-  // existing state so we don't clobber captureTurn's lastCapturedTurn (written
-  // earlier in this same Stop run).
-  writeSaveState(sessionId, { ...state, lastSavedCount: count, updatedAt: new Date().toISOString() });
-  return autoSaveReason(count - last);
+  const minEvents = Math.max(0, ctx.setting("auto_save_min_events").value ?? 3);
+  const result = evaluateAutoSave({ state, stats, events, now: Date.now(), interval, minEvents });
+
+  // Persist the re-baseline (baseline/suppress/nudge) if the heuristic asked for
+  // one. Spread the existing state so we don't clobber captureTurn's
+  // lastCapturedTurn, written earlier in this same Stop run. defer/none carry no
+  // nextState, so the deltas keep growing.
+  if (result.nextState)
+    writeSaveState(sessionId, { ...(state || {}), ...result.nextState, updatedAt: new Date().toISOString() });
+
+  if (result.action !== "nudge") return null;
+
+  const prior = state && typeof state.lastSavedCount === "number" ? state.lastSavedCount : 0;
+  const msgs = stats.userMessages - prior;
+  let nudgeCtx = { msgs, files: [], commands: [], failedCommands: [] };
+  if (result.variant === "specifics") {
+    // Anchor on the fresh events only (a null digest → empty anchors).
+    const digest = buildSessionDigest(result.fresh, project);
+    if (digest)
+      nudgeCtx = { msgs, files: digest.renderedFiles, commands: digest.commands, failedCommands: digest.failedCommands };
+  }
+  return renderAutoSaveNudge(result.variant, nudgeCtx);
 }
 
 /**
@@ -189,7 +188,7 @@ async function main() {
 
   await captureTurn(payload, sessionId, project, ctx);
 
-  const reason = autoSaveReasonFor(payload, sessionId, ctx);
+  const reason = autoSaveReasonFor(payload, sessionId, project, ctx);
   if (reason) process.stdout.write(JSON.stringify({ decision: "block", reason }));
 }
 

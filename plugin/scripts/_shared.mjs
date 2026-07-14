@@ -737,7 +737,167 @@ export function buildSessionDigest(events, project) {
     files: [...fileCounts.keys()],
     commands: topCommands,
     count: events.length,
+    // Rendered anchors for the auto-save nudge: `files` sliced+annotated exactly
+    // as the "Edited:" line above, and the subset of commands that only ever
+    // failed (so a nudge can echo the session's activity in the digest's style).
+    renderedFiles: files.slice(0, 15),
+    failedCommands: topCommands.filter((c) => failedCmd.has(c) && !okCmd.has(c)),
   };
+}
+
+// --- Event-aware auto-save nudge ------------------------------------------
+//
+// The Stop hook nudges the model to persist durable memories, but a naive
+// "every N user messages" nudge fires blind: it interrupts even when the model
+// already saved, and it nudges trivial back-and-forth with nothing to save,
+// training the model to no-op the block. These pure helpers make the nudge
+// event-aware — suppress when saves are observed, defer trivial windows, and
+// anchor real nudges in the session's actual files/commands. Stop wires them up.
+
+/**
+ * True for the memini memory-writing MCP tools. MCP tool names carry a
+ * client-dependent prefix (e.g. mcp__plugin_memini_memini__memory_remember);
+ * the suffix is stable, so match the bare names or the delimited __ suffix.
+ * Deliberately excludes memory_recall/get/forget/list — only saves count.
+ */
+export function isMemorySaveTool(name) {
+  if (typeof name !== "string" || !name) return false;
+  return (
+    name === "memory_remember" ||
+    name === "memory_update" ||
+    name.endsWith("__memory_remember") ||
+    name.endsWith("__memory_update")
+  );
+}
+
+/**
+ * Single pass over a Claude Code transcript (JSONL string) → { userMessages,
+ * memorySaves }. userMessages uses the exact same predicate as the auto-save
+ * counter always has (skip sidechain/meta rows and non-real-user content).
+ * memorySaves counts memory_remember/memory_update tool_use blocks in assistant
+ * rows, INCLUDING sidechain assistant rows — a subagent's save is still a save.
+ */
+export function scanTranscriptStats(raw) {
+  let userMessages = 0;
+  let memorySaves = 0;
+  if (typeof raw !== "string" || !raw) return { userMessages, memorySaves };
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const r = parseJSON(line);
+    if (!r) continue;
+    if (r.type === "user") {
+      if (r.isSidechain || r.isMeta) continue;
+      if (isRealUserMessage(r.message?.content)) userMessages++;
+    } else if (r.type === "assistant") {
+      const c = r.message?.content;
+      if (Array.isArray(c)) {
+        for (const block of c) {
+          if (block?.type === "tool_use" && isMemorySaveTool(block.name)) memorySaves++;
+        }
+      }
+    }
+  }
+  return { userMessages, memorySaves };
+}
+
+/**
+ * Decide what the Stop hook should do about an auto-save nudge, as a pure
+ * function of the persisted save-state, the transcript stats, the buffered tool
+ * events, and the two knobs (interval, minEvents). Returns:
+ *   { action, variant?, nextState?, fresh? }
+ * where action ∈ baseline | none | suppress | defer | nudge. `nextState` is the
+ * set of save-state fields the caller must merge in (spreading existing state so
+ * co-tenants like lastCapturedTurn survive); its absence means "leave state as
+ * is". `fresh` (the events newer than the last activity baseline) is returned on
+ * a nudge so the caller can build the anchor. See the decision table in the
+ * task brief; the ordering of the branches below IS that table.
+ */
+export function evaluateAutoSave({ state, stats, events, now, interval, minEvents }) {
+  const reBaseline = {
+    lastSavedCount: stats.userMessages,
+    lastSaveToolCount: stats.memorySaves,
+    lastActivityBaselineTs: now,
+  };
+
+  // Row 1: no usable state (first sight, a legacy state missing the new fields,
+  // or a count regression from a replaced transcript) → silent full baseline.
+  if (
+    !state ||
+    typeof state.lastSavedCount !== "number" ||
+    typeof state.lastSaveToolCount !== "number" ||
+    typeof state.lastActivityBaselineTs !== "number" ||
+    state.lastSavedCount > stats.userMessages
+  ) {
+    return { action: "baseline", nextState: reBaseline };
+  }
+
+  const msgs = stats.userMessages - state.lastSavedCount;
+  const saves = stats.memorySaves - state.lastSaveToolCount;
+
+  // Row 2: below the interval → nothing yet.
+  if (msgs < interval) return { action: "none" };
+
+  // Row 3: the model already saved this window → suppress and re-baseline, so we
+  // don't interrupt a session that's keeping its memory current.
+  if (saves > 0) return { action: "suppress", nextState: reBaseline };
+
+  const fresh = Array.isArray(events)
+    ? events.filter((ev) => ev && typeof ev.ts === "number" && ev.ts > state.lastActivityBaselineTs)
+    : [];
+
+  // Row 4: the activity gate is disabled → nudge at the interval unconditionally,
+  // anchoring with fresh activity when there is any (legacy count-only behavior).
+  if (minEvents === 0) {
+    return { action: "nudge", variant: fresh.length > 0 ? "specifics" : "generic", nextState: reBaseline, fresh };
+  }
+
+  // Row 5: enough fresh activity → an anchored nudge.
+  if (fresh.length >= minEvents) {
+    return { action: "nudge", variant: "specifics", nextState: reBaseline, fresh };
+  }
+
+  // Row 6: a trivial window, still early → defer (no re-baseline) so the deltas
+  // keep growing toward the escalation threshold instead of resetting.
+  if (msgs < 2 * interval) return { action: "defer" };
+
+  // Row 7: a trivial window that has now doubled the interval → nudge anyway, as a
+  // discussion-variant (there may be decisions/preferences even without tool use).
+  return { action: "nudge", variant: "discussion", nextState: reBaseline, fresh };
+}
+
+/**
+ * Render the auto-save nudge text for a variant. ctx = { msgs, files, commands,
+ * failedCommands }, where files/commands come straight from buildSessionDigest
+ * (files pre-rendered with counts, commands raw, failedCommands the ones that
+ * only failed); generic/discussion pass empty arrays. Pure: no I/O.
+ */
+export function renderAutoSaveNudge(variant, ctx = {}) {
+  const { msgs = 0, files = [], commands = [], failedCommands = [] } = ctx;
+  let anchor = "";
+  if (variant === "specifics") {
+    const clauses = [];
+    if (files.length) clauses.push(`edited ${files.join(", ")}`);
+    if (commands.length) {
+      const rendered = commands.map(
+        (c) => `"${truncate(c, 80)}"` + (failedCommands.includes(c) ? " (failed)" : ""),
+      );
+      clauses.push(`ran ${rendered.join(", ")}`);
+    }
+    if (clauses.length) anchor = `You ${clauses.join("; ")}. `;
+  } else if (variant === "discussion") {
+    anchor = "This was mostly discussion — check for decisions and preferences. ";
+  }
+  return (
+    `[memini auto-save] ${msgs} user messages since the last save. ${anchor}` +
+    "Scan this conversation for anything durable you have not yet saved: " +
+    "decisions and their rationale, bug root causes, conventions, user preferences " +
+    "or corrections, environment quirks, non-obvious commands. Persist each with the " +
+    "memini memory_remember MCP tool — one self-contained fact per call; omit tier to " +
+    "auto-classify. If a memory recalled this session proved wrong or outdated, fix it " +
+    "now with memory_update, or memory_forget if it should not exist. Skip secrets, " +
+    "task progress, and anything already saved or already in project docs. If none of " +
+    "the above produced a durable decision, just stop again."
+  );
 }
 
 /** Extract a short hint of the agent's last user prompt for context. */
@@ -790,6 +950,15 @@ Rules:
   Memories are saved only through the MCP tools. If the tools are
   unavailable, do nothing.
 </memini-memory-directive>`;
+
+// Injected by SessionStart after a compaction (wired by a later task): durable
+// facts learned before the compaction may have fallen out of the model's
+// visible context, so prompt it to flush anything not yet persisted.
+export const COMPACT_RECOVERY_DIRECTIVE = `
+
+<memini-compact-recovery>
+Context was just compacted. Durable facts learned before compaction may no longer be visible to you. If you remember learning something durable this session that you have not saved with the memini memory_remember MCP tool, save it now — one self-contained fact per call. If everything durable is already saved, continue.
+</memini-compact-recovery>`;
 
 /**
  * Parse all <memory>...</memory> blocks from a text. Returns an array of
