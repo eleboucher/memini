@@ -20,6 +20,8 @@ type activityEvent struct {
 	OpID      string         `json:"op_id"`
 	Kind      string         `json:"kind"`
 	Namespace string         `json:"namespace"`
+	Actor     string         `json:"actor"`
+	ActorKind string         `json:"actor_kind"`
 	Query     string         `json:"query"`
 	Detail    map[string]any `json:"detail"`
 	Memories  []struct {

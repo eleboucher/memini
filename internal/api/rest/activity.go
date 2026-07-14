@@ -41,6 +41,7 @@ func (h *Server) ListActivity(w http.ResponseWriter, r *http.Request, params Lis
 	}
 	in := service.EventsInput{
 		Kinds: kinds,
+		Actor: strings.TrimSpace(deref(params.Actor)),
 		Tiers: tiers,
 		Text:  strings.TrimSpace(deref(params.Q)),
 		Since: deref(params.Since),
@@ -97,6 +98,17 @@ func apiActivityEvent(ev service.ActivityEvent) ActivityEvent {
 		Kind:      EventKind(ev.Kind),
 		Time:      ev.Time,
 		Namespace: ev.Namespace,
+	}
+	// Attribution: a named key surfaces its name; every actor with a known kind
+	// surfaces the kind. A legacy row (empty kind) omits both, rendering as a
+	// clean "unknown" client-side.
+	if ev.Actor != "" {
+		actor := ev.Actor
+		out.Actor = &actor
+	}
+	if ev.ActorKind != "" {
+		kind := ActivityEventActorKind(ev.ActorKind)
+		out.ActorKind = &kind
 	}
 	if ev.Query != "" {
 		q := ev.Query

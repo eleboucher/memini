@@ -47,7 +47,7 @@ func listTools(ctx context.Context, withLLM bool) ([]*mcpsdk.Tool, string, error
 		opts = append(opts, service.WithAnswerer(noopCompleter{}))
 	}
 	svc := service.New(nil, nil, opts...)
-	srv := mcpapi.NewServer(svc, "default", "", "")
+	srv := mcpapi.NewServer(svc, "default", "", "", "none")
 
 	st, ct := mcpsdk.NewInMemoryTransports()
 	ss, err := srv.Connect(ctx, st, nil)

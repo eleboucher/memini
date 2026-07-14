@@ -802,6 +802,13 @@ paths:
             Free-text filter, case-insensitive. Selects whole operations whose
             recall query or any served memory's summary contains it.
           schema: { type: string }
+        - name: actor
+          in: query
+          description: >
+            Restrict to events performed by this API key (exact name match).
+            The admin env key and dev-mode requests carry no name, so they are
+            never selected by this filter.
+          schema: { type: string }
         - name: since
           in: query
           description: Only events recorded at or after this instant.
@@ -1140,6 +1147,15 @@ components:
       required: [query]
       properties:
         query: { type: string }
+        source:
+          type: string
+          description: >
+            Why this recall ran — which integration or code path asked for it.
+            Recorded verbatim on the activity event (the "why" the feed shows).
+            Documented vocabulary: "pretool", "session_start", "mcp", "ui",
+            "api", "answer", "doctor". NOT enum-validated server-side, so an
+            unknown value from a fail-soft client is logged rather than
+            rejected. Absent defaults to "api".
         tiers: { type: array, items: { $ref: "#/components/schemas/Tier" } }
         levels: { type: array, items: { $ref: "#/components/schemas/Level" } }
         tags:
@@ -1338,6 +1354,20 @@ components:
         namespace:
           type: string
           description: The namespace the request was made against.
+        actor:
+          type: string
+          description: >
+            Who performed the operation: the name of the API key that
+            authenticated the request. Absent for the admin env key, a
+            dev-mode request, or a legacy row predating attribution —
+            actor_kind disambiguates those.
+        actor_kind:
+          type: string
+          enum: [key, env, none]
+          description: >
+            Classifies the actor: "key" (a named API key, actor holds its
+            name), "env" (the admin env key), "none" (an unauthenticated
+            dev-mode request). Absent on a legacy row predating attribution.
         query:
           type: string
           description: The recall query; absent for every other kind.

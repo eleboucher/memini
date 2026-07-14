@@ -58,6 +58,9 @@ func (h *Server) Mount(r chi.Router) {
 		// Authentication first: an unauthenticated caller gets 401, never a
 		// 400 that leaks namespace-validation behavior.
 		r.Use(h.auth.authMiddleware)
+		// Attribution rides on the authenticated principal, so it runs right
+		// after auth and before the handlers that log activity events.
+		r.Use(h.auth.actorMiddleware)
 		r.Use(h.auth.namespaceMiddleware)
 		r.Use(h.auth.homeMiddleware)
 		// Timeout is innermost (closest to the handler) so it bounds only
@@ -402,6 +405,13 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 		Query:     req.Query,
 		Tiers:     tiers,
 		Levels:    levels,
+	}
+	// The recall's "why": the caller may declare a source (fail-soft, never
+	// validated); an absent one defaults to "api" — an honest label for a
+	// direct REST search.
+	in.Source = "api"
+	if s := strings.TrimSpace(deref(req.Source)); s != "" {
+		in.Source = s
 	}
 	in.Tags = deref(req.Tags)
 	in.Metadata = deref(req.Metadata)
