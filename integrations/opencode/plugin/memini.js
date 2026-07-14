@@ -616,7 +616,7 @@ export function renderStatus(report) {
   return L.join("\n");
 }
 
-function createClient(cfg, log) {
+export function createClient(cfg, log) {
   const baseUrl = String(cfg.base_url).replace(/\/+$/, "");
   const secret = process.env.MEMINI_API_KEY;
   const guardPlaintextBearerAuth = createPlaintextBearerAuthGuard((m) => log.warn(m));

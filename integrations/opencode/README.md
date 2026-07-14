@@ -33,6 +33,33 @@ for every project:
 
 opencode installs it from npm with Bun at startup.
 
+### opencode v2 (beta)
+
+opencode's v2 preview (`opencode2`) uses a different plugin system: a `plugins`
+(plural) config array and a `Plugin.define({ id, setup })` module — the v1
+`{ id, server }` plugin above does not load under it. memini ships a v2 sibling
+at the `/v2` subpath that wires the same recall / capture / `memini_status`
+behaviour to the v2 `ctx.session.hook("request")`, `ctx.event.subscribe`, and
+`ctx.tool.transform` API:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [["@eleboucher/opencode-memini/v2", { "namespace": "my-project" }]],
+}
+```
+
+The same options and env vars below apply. Recall injects into the request's
+`system` prompt (rather than a synthetic message part).
+
+> **Beta status.** The v2 plugin `ctx` is still gaining these hooks upstream.
+> On a build where `ctx.session.hook` / `ctx.event.subscribe` / `ctx.tool.transform`
+> are absent, the plugin logs which capability is unavailable and no-ops that
+> part rather than crashing — it activates cleanly and lights up automatically
+> once opencode exposes the hook. Track the plugin `ctx` in opencode's
+> `core/src/plugin/host.ts`. Until then, stay on the v1 entry above with the
+> stable `opencode` binary.
+
 ### Configure
 
 Pass options inline via the `[name, options]` form:
