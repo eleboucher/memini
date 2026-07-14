@@ -17,6 +17,7 @@ reference when you need a specific setting.
 | Look up an MCP tool, CLI command or endpoint   | [MCP tools](reference/mcp-tools.md), [CLI](reference/cli.md), [REST](reference/rest-api.md) |
 | Understand how memini decides what to remember | [Tiers](tiers.md), [Categories](categories.md)                                              |
 | Understand which namespaces a search reads     | [Scopes](scopes.md)                                                                         |
+| Check what a word means exactly                | [Glossary](glossary.md)                                                                     |
 | Give each person their own credential          | [API keys](api-keys.md)                                                                     |
 | See the retrieval numbers                      | [Benchmarks](../bench/README.md)                                                            |
 
@@ -24,6 +25,8 @@ reference when you need a specific setting.
 
 Read these when you want to know why memini behaves the way it does.
 
+- [**Glossary**](glossary.md). One meaning per word: namespace, project, pin,
+  scope, and the overloads they replace.
 - [**Tiers**](tiers.md). Every memory is `working`, `episodic`, `semantic` or
   `procedural`. The tier decides how long it survives and whether it is allowed
   to cross a namespace boundary.
