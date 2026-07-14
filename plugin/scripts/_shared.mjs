@@ -942,7 +942,8 @@ per durable fact when you learn:
 
 When the user says "remember this" or corrects you, call memory_remember
 first, then acknowledge — and save an explicit request unconditionally, even
-if it seems trivial or already stored. Before ending a turn in which you
+if it seems trivial or already stored; secrets and credentials are the one
+exception. Before ending a turn in which you
 learned something durable, make sure it was saved.
 
 Rules:

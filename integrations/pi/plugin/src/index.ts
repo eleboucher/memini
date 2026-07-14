@@ -1334,7 +1334,8 @@ export default function meminiExtension(pi: ExtensionAPI): void {
       "preference), an environment or tool quirk, or a non-obvious command/workflow. When the user " +
       "says 'remember this', 'note that', 'don't forget', 'going forward...', or corrects you, call " +
       "this tool FIRST, then acknowledge — and on an explicit request save unconditionally, even if it " +
-      "seems trivial or already stored. Keep memories atomic — one self-contained fact per call; " +
+      "seems trivial or already stored; secrets and credentials are the one exception. Keep " +
+      "memories atomic — one self-contained fact per call; " +
       "search works better on small records. Do NOT store secrets or credentials, transient session " +
       "state, task progress, or facts already in project docs/CLAUDE.md or trivially recoverable from " +
       "code. To correct an existing memory, pass its id — the write updates it in place. If a stored " +

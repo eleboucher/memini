@@ -135,7 +135,8 @@ const serverInstructions = "memini is persistent cross-session memory for this a
 	"non-obvious command — call memory_remember before moving on: one atomic, self-contained " +
 	"fact per call. When the user explicitly asks you to remember something, save it before " +
 	"acknowledging, even if it seems trivial or already stored (near-duplicates are reinforced " +
-	"or merged server-side). Never store secrets or credentials, transient session state, task " +
+	"or merged server-side); secrets and credentials are the one exception. Never store " +
+	"secrets or credentials, transient session state, task " +
 	"progress, or what's already in project docs/CLAUDE.md or trivially recoverable from code.\n" +
 	"- Before work that may have history — an unfamiliar file, a recurring bug, a non-obvious " +
 	"decision — call memory_recall first. Its scope argument is the only lever: \"project\" (just " +
@@ -205,7 +206,8 @@ func NewServer(svc *service.Service, defaultNS, home, author, authorKind string)
 			"(a correction IS a durable preference), an environment or tool quirk, or a non-obvious " +
 			"command/workflow. When the user says 'remember this', 'note that', 'don't forget', " +
 			"'going forward...', or corrects you, call this tool FIRST, then acknowledge — and on an " +
-			"explicit request save unconditionally, even if it seems trivial or already stored. Keep " +
+			"explicit request save unconditionally, even if it seems trivial or already stored; " +
+			"secrets and credentials are the one exception. Keep " +
 			"memories atomic — one self-contained fact per call; search works better on small " +
 			"records. Do NOT store secrets or credentials, transient session state, task progress, " +
 			"or facts already in project docs/CLAUDE.md or trivially recoverable from code. tier: " +
