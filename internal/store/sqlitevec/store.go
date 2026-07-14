@@ -107,7 +107,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at)`,
-		// namespace is a partition key so KNN can isolate tenants efficiently.
+		// namespace is a partition key so KNN can isolate namespaces efficiently.
 		fmt.Sprintf(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_memories USING vec0(
 			namespace TEXT partition key,
 			embedding float[%d]

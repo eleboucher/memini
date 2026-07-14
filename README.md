@@ -35,7 +35,7 @@ memini draws on three earlier projects:
   See [docs/tiers.md](docs/tiers.md) for what each tier means and how memories move
   between them.
 - A stateless, K8s-native HTTP service with an opt-in LLM consolidation pipeline,
-  per-memory TTLs, per-tenant isolation, Prometheus metrics, and an `fsck` consistency
+  per-memory TTLs, per-namespace isolation, Prometheus metrics, and an `fsck` consistency
   checker (after `mnemory`).
 
 Hybrid results are re-ranked by a composite of relevance, access recency, and importance

@@ -122,9 +122,9 @@ func TestUpgradeFromLegacyDB(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 
 	seedLegacyDB(t, path, []legacyRow{
-		{rowID: 1, id: "m1", namespace: "tenant", tier: memory.TierWorking,
+		{rowID: 1, id: "m1", namespace: "team", tier: memory.TierWorking,
 			content: "the cat sat on the mat", embedding: unit(0)},
-		{rowID: 2, id: "m2", namespace: "tenant", tier: memory.TierSemantic,
+		{rowID: 2, id: "m2", namespace: "team", tier: memory.TierSemantic,
 			content: "go is a programming language", embedding: unit(1)},
 	})
 
@@ -136,14 +136,14 @@ func TestUpgradeFromLegacyDB(t *testing.T) {
 
 	t.Run("PreExistingRowsReadable", func(t *testing.T) {
 		for _, id := range []string{"m1", "m2"} {
-			if _, err := st.Get(ctx, "tenant", id); err != nil {
+			if _, err := st.Get(ctx, "team", id); err != nil {
 				t.Errorf("Get(%s): %v", id, err)
 			}
 		}
 	})
 
 	t.Run("VectorSearchFindsLegacyRow", func(t *testing.T) {
-		got, err := st.VectorSearch(ctx, "tenant", unit(0), store.Filter{}, 1)
+		got, err := st.VectorSearch(ctx, "team", unit(0), store.Filter{}, 1)
 		if err != nil {
 			t.Fatalf("VectorSearch: %v", err)
 		}
@@ -153,7 +153,7 @@ func TestUpgradeFromLegacyDB(t *testing.T) {
 	})
 
 	t.Run("KeywordSearchFindsLegacyRow", func(t *testing.T) {
-		got, err := st.KeywordSearch(ctx, "tenant", "cat", store.Filter{}, 5)
+		got, err := st.KeywordSearch(ctx, "team", "cat", store.Filter{}, 5)
 		if err != nil {
 			t.Fatalf("KeywordSearch: %v", err)
 		}
@@ -165,14 +165,14 @@ func TestUpgradeFromLegacyDB(t *testing.T) {
 	t.Run("NewWritesAreFingerprintDiscoverable", func(t *testing.T) {
 		now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 		m := &memory.Memory{
-			ID: "m3", Namespace: "tenant", Tier: memory.TierSemantic,
+			ID: "m3", Namespace: "team", Tier: memory.TierSemantic,
 			Content: "fresh durable fact", Embedding: unit(2),
 			CreatedAt: now, UpdatedAt: now, LastAccessedAt: now,
 		}
 		if err := st.Upsert(ctx, m); err != nil {
 			t.Fatalf("Upsert: %v", err)
 		}
-		got, err := st.GetByFingerprint(ctx, "tenant", memory.TierSemantic,
+		got, err := st.GetByFingerprint(ctx, "team", memory.TierSemantic,
 			memory.Fingerprint("fresh durable fact"), now)
 		if err != nil || got.ID != "m3" {
 			t.Fatalf("GetByFingerprint = (%v, %v), want m3", got, err)

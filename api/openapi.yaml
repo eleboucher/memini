@@ -1035,7 +1035,7 @@ components:
       name: X-Memini-Namespace
       in: header
       required: false
-      description: Tenant/agent namespace; falls back to the server default.
+      description: Namespace for this request; falls back to the server default.
       schema: { type: string }
   responses:
     Error:
@@ -2077,7 +2077,7 @@ components:
                 prepended to the derived name (personal/<repo>) exactly as the
                 setting would be, but wins over the server-merged setting the
                 same way any client env override does. Lets one credential
-                serve several tenants selected per shell/directory (e.g. a
+                serve several namespace trees selected per shell/directory (e.g. a
                 per-tree .envrc) without a pin or a second key.
             declared_namespace:
               type: string

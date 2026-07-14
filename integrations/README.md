@@ -43,7 +43,7 @@ use the tools via a `CLAUDE.md`-style file.
 
 ## Shared namespace across agents
 
-Every request is scoped to a **namespace** (tenant/agent). Point multiple
+Every request is scoped to a **namespace**. Point multiple
 agents at the same memini with the **same namespace** and they share one
 memory: remember a fact in Claude Code, recall it in Codex.
 

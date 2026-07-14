@@ -400,7 +400,7 @@ func TestHandshakePinBlockDetails(t *testing.T) {
 // override: it prepends to a derived name (personal/<repo>) exactly as the
 // namespace_prefix setting would, is reported with source "env", and wins over
 // a server-set global default — so one credential (here the no-principal env
-// key) can serve several tenants selected per shell/directory.
+// key) can serve several namespace trees selected per shell/directory.
 func TestHandshakeEnvNamespacePrefix(t *testing.T) {
 	h, _ := newConfigServer(t, "", "", nil)
 	const remote = "https://github.com/acme/phoenix.git"

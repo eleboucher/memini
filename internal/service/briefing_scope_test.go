@@ -214,7 +214,7 @@ func TestBriefingChildRollupLeafEmpty(t *testing.T) {
 
 // TestBriefingChildRollupCapsAtTen: more than 10 direct children keeps the 10
 // with the most recent writes and reports the omitted count via
-// ChildrenTruncated — a wide tenant root cannot balloon briefing size.
+// ChildrenTruncated — a wide root namespace cannot balloon briefing size.
 func TestBriefingChildRollupCapsAtTen(t *testing.T) {
 	svc, st := newReadsetSvc(t)
 	ctx := context.Background()

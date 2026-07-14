@@ -518,7 +518,7 @@ func TestListStatsNamespaces(t *testing.T) {
 		t.Fatalf("stats alice: unexpected %+v", stats)
 	}
 
-	// Namespaces lists both tenants.
+	// Namespaces lists both.
 	rec = do(t, h, http.MethodGet, "/v1/namespaces", "", apiKey, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("namespaces: want 200, got %d (%s)", rec.Code, rec.Body)
@@ -876,7 +876,7 @@ func TestErrorStatusMapping(t *testing.T) {
 }
 
 // TestDedupNamespaceScoping guards the isolation fix: POST /v1/dedup defaults
-// to the caller's namespace and must not touch other tenants unless
+// to the caller's namespace and must not touch other namespaces unless
 // all_namespaces is set.
 func TestDedupNamespaceScoping(t *testing.T) {
 	h := newServer(t)

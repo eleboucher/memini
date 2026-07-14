@@ -334,7 +334,7 @@ const mcpPrincipalKey mcpCtxKeyType = 0
 // An invalid nsHeader value is always rejected with 400 (matching the REST
 // API); an invalid homeHeader value is rejected with 400 too, UNLESS the
 // authenticated key is bound (in which case the header is never even looked
-// at) — never silently falling back to the default tenant.
+// at) — never silently falling back to the default namespace.
 //
 // This builds its own apiauth.Config from apiKey/keyStore/fileKeys, which is
 // fine when MCP is the only HTTP surface in the process. When REST is also
@@ -1007,7 +1007,7 @@ func (t *tools) answer(ctx context.Context, _ *mcpsdk.CallToolRequest, in answer
 
 type idArgs struct {
 	ID        string `json:"id" jsonschema:"the memory ID"`
-	Namespace string `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+	Namespace string `json:"namespace,omitempty" jsonschema:"namespace; defaults to the server namespace"`
 }
 
 // memoryItem is the full single-memory DTO returned by memory_get (recall
@@ -1104,7 +1104,7 @@ type updateArgs struct {
 	Metadata   map[string]any `json:"metadata,omitempty" jsonschema:"merged into existing metadata key-by-key"`
 	Importance *float64       `json:"importance,omitempty" jsonschema:"0..1; omit to keep"`
 	Confidence *float64       `json:"confidence,omitempty" jsonschema:"0..1; omit to keep"`
-	Namespace  string         `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+	Namespace  string         `json:"namespace,omitempty" jsonschema:"namespace; defaults to the server namespace"`
 }
 
 // update composes svc.Get + svc.Remember with the current ID (the documented
@@ -1183,7 +1183,7 @@ type listArgs struct {
 	Metadata  map[string]string `json:"metadata,omitempty" jsonschema:"only memories whose metadata has each key=value pair (AND)"`
 	Limit     int               `json:"limit,omitempty" jsonschema:"max results (default 20, newest first)"`
 	Offset    int               `json:"offset,omitempty" jsonschema:"skip this many results for paging"`
-	Namespace string            `json:"namespace,omitempty" jsonschema:"tenant namespace; defaults to the server namespace"`
+	Namespace string            `json:"namespace,omitempty" jsonschema:"namespace; defaults to the server namespace"`
 }
 
 type listResult struct {

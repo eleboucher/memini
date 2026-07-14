@@ -209,7 +209,7 @@ export interface paths {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -294,7 +294,7 @@ export interface paths {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path: {
@@ -317,7 +317,7 @@ export interface paths {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path: {
@@ -342,7 +342,7 @@ export interface paths {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path: {
@@ -1230,7 +1230,7 @@ export interface components {
                 agent?: string;
                 /** @description The client's MEMINI_NAMESPACE, when set. Sent so a pin can still beat it server-side — the client cannot make that call itself without knowing whether a pin exists. */
                 env_namespace?: string;
-                /** @description The client's MEMINI_NAMESPACE_PREFIX, when set. A client-side override of the namespace_prefix behavioral setting: it is prepended to the derived name (personal/<repo>) exactly as the setting would be, but wins over the server-merged setting the same way any client env override does. Lets one credential serve several tenants selected per shell/directory (e.g. a per-tree .envrc) without a pin or a second key. */
+                /** @description The client's MEMINI_NAMESPACE_PREFIX, when set. A client-side override of the namespace_prefix behavioral setting: it is prepended to the derived name (personal/<repo>) exactly as the setting would be, but wins over the server-merged setting the same way any client env override does. Lets one credential serve several namespace trees selected per shell/directory (e.g. a per-tree .envrc) without a pin or a second key. */
                 env_namespace_prefix?: string;
                 /** @description For gateway/integration callers with no meaningful cwd (a webhook relay, a CI job) to declare their namespace directly. Wins over derivation but not over a pin or env_namespace. */
                 declared_namespace?: string;
@@ -1318,7 +1318,7 @@ export interface components {
         };
     };
     parameters: {
-        /** @description Tenant/agent namespace; falls back to the server default. */
+        /** @description Namespace for this request; falls back to the server default. */
         Namespace: string;
     };
     requestBodies: never;
@@ -1393,7 +1393,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1417,7 +1417,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1472,7 +1472,7 @@ export interface operations {
                 order?: "asc" | "desc";
             };
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1496,7 +1496,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1528,7 +1528,7 @@ export interface operations {
                 tag: string;
             };
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1556,7 +1556,7 @@ export interface operations {
                 all_namespaces?: boolean;
             };
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1601,7 +1601,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1641,7 +1641,7 @@ export interface operations {
                 namespaces?: string[];
             };
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1666,7 +1666,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1691,7 +1691,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1715,7 +1715,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1753,7 +1753,7 @@ export interface operations {
                 dst?: string;
             };
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1783,7 +1783,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1817,7 +1817,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1851,7 +1851,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path: {
@@ -1889,7 +1889,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path: {
@@ -1915,7 +1915,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path: {
@@ -1939,7 +1939,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path: {
@@ -1965,7 +1965,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path: {
@@ -1994,7 +1994,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -2022,7 +2022,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -2201,7 +2201,7 @@ export interface operations {
                 all_namespaces?: boolean;
             };
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;

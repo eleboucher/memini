@@ -60,7 +60,7 @@ func TestSplitRecoversPooledNamespaces(t *testing.T) {
 		t.Fatal("dry-run must not move anything")
 	}
 
-	// Apply, then assert isolation: each tenant's memories live in their own ns.
+	// Apply, then assert isolation: each group's memories live in their own namespace.
 	rep, err := maintenance.Split(ctx, st, "pool", nil, false)
 	if err != nil {
 		t.Fatalf("split: %v", err)

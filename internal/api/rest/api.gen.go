@@ -854,7 +854,7 @@ type HandshakeRequest struct {
 		// EnvNamespace The client's MEMINI_NAMESPACE, when set. Sent so a pin can still beat it server-side — the client cannot make that call itself without knowing whether a pin exists.
 		EnvNamespace *string `json:"env_namespace,omitempty"`
 
-		// EnvNamespacePrefix The client's MEMINI_NAMESPACE_PREFIX, when set. A client-side override of the namespace_prefix behavioral setting: it is prepended to the derived name (personal/<repo>) exactly as the setting would be, but wins over the server-merged setting the same way any client env override does. Lets one credential serve several tenants selected per shell/directory (e.g. a per-tree .envrc) without a pin or a second key.
+		// EnvNamespacePrefix The client's MEMINI_NAMESPACE_PREFIX, when set. A client-side override of the namespace_prefix behavioral setting: it is prepended to the derived name (personal/<repo>) exactly as the setting would be, but wins over the server-merged setting the same way any client env override does. Lets one credential serve several namespace trees selected per shell/directory (e.g. a per-tree .envrc) without a pin or a second key.
 		EnvNamespacePrefix *string `json:"env_namespace_prefix,omitempty"`
 
 		// RemoteUrl Raw git remote URL, exactly as `git remote get-url origin` reports it — unnormalized.
@@ -1346,25 +1346,25 @@ type ListActivityParams struct {
 	// AllNamespaces Aggregate across every namespace, ignoring the namespace header.
 	AllNamespaces *bool `form:"all_namespaces,omitempty" json:"all_namespaces,omitempty"`
 
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
 // AnswerQuestionParams defines parameters for AnswerQuestion.
 type AnswerQuestionParams struct {
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
 // RunDedupParams defines parameters for RunDedup.
 type RunDedupParams struct {
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
 // RunFsckParams defines parameters for RunFsck.
 type RunFsckParams struct {
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
@@ -1379,13 +1379,13 @@ type DeleteLinkParams struct {
 	// Dst Target namespace to unlink. Required, via query or JSON body.
 	Dst *string `form:"dst,omitempty" json:"dst,omitempty"`
 
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
 // ListLinksParams defines parameters for ListLinks.
 type ListLinksParams struct {
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
@@ -1403,7 +1403,7 @@ type PutLinkJSONBody struct {
 
 // PutLinkParams defines parameters for PutLink.
 type PutLinkParams struct {
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
@@ -1412,7 +1412,7 @@ type ForgetByTagParams struct {
 	// Tag Exact tag a memory must carry to be deleted.
 	Tag string `form:"tag" json:"tag"`
 
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
@@ -1456,7 +1456,7 @@ type ListMemoriesParams struct {
 	// Order Sort direction. Defaults to desc (newest / highest first).
 	Order *ListMemoriesParamsOrder `form:"order,omitempty" json:"order,omitempty"`
 
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
@@ -1468,25 +1468,25 @@ type ListMemoriesParamsOrder string
 
 // RememberMemoryParams defines parameters for RememberMemory.
 type RememberMemoryParams struct {
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
 // ForgetMemoryParams defines parameters for ForgetMemory.
 type ForgetMemoryParams struct {
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
 // GetMemoryParams defines parameters for GetMemory.
 type GetMemoryParams struct {
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
 // GetMemoryHistoryParams defines parameters for GetMemoryHistory.
 type GetMemoryHistoryParams struct {
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
@@ -1498,19 +1498,19 @@ type ReassignMemoryJSONBody struct {
 
 // ReassignMemoryParams defines parameters for ReassignMemory.
 type ReassignMemoryParams struct {
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
 // SupersedeMemoryParams defines parameters for SupersedeMemory.
 type SupersedeMemoryParams struct {
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
 // DeleteNamespaceParams defines parameters for DeleteNamespace.
 type DeleteNamespaceParams struct {
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
@@ -1537,7 +1537,7 @@ type GetBriefingParams struct {
 	// Namespaces Repeatable. Brief exactly these namespaces instead of the default read set (the namespace, its subtree, and the global namespace). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected.
 	Namespaces *[]string `form:"namespaces,omitempty" json:"namespaces,omitempty"`
 
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
@@ -1554,13 +1554,13 @@ type MoveNamespaceJSONBody struct {
 
 // MoveNamespaceParams defines parameters for MoveNamespace.
 type MoveNamespaceParams struct {
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
 // GetReadSetParams defines parameters for GetReadSet.
 type GetReadSetParams struct {
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
@@ -1573,13 +1573,13 @@ type SplitNamespaceJSONBody struct {
 
 // SplitNamespaceParams defines parameters for SplitNamespace.
 type SplitNamespaceParams struct {
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
 // SearchMemoriesParams defines parameters for SearchMemories.
 type SearchMemoriesParams struct {
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
@@ -1588,7 +1588,7 @@ type GetStatsParams struct {
 	// AllNamespaces Aggregate counts across every namespace, ignoring the namespace header. Returns a single merged overview (namespace reported as "") so the admin UI's "All projects" view fetches one response instead of one request per namespace.
 	AllNamespaces *bool `form:"all_namespaces,omitempty" json:"all_namespaces,omitempty"`
 
-	// XMeminiNamespace Tenant/agent namespace; falls back to the server default.
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 

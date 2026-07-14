@@ -22,7 +22,7 @@ any namespace, the same as the single shared `MEMINI_API_KEY` token always
 could. Binding a key to a home namespace makes memini use that namespace by
 default for `visibility:"personal"` writes and the read cascade's home leg;
 it is a convenience default, not a fence. If you need hard namespace
-isolation between tenants, that's a deployment-topology decision (separate
+isolation between teams, that's a deployment-topology decision (separate
 memini instances/stores), not something an API key's bindings enforce.
 
 There is exactly one authorization bit a key carries, and it is deliberately

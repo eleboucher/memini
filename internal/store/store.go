@@ -17,7 +17,7 @@ import (
 var ErrNotFound = errors.New("memory not found")
 
 // ErrConflict is returned by Upsert when the given ID already exists in a
-// different namespace, preventing cross-tenant hijacking.
+// different namespace, preventing cross-namespace hijacking.
 var ErrConflict = errors.New("id exists in a different namespace")
 
 // Scored is a memory paired with a relevance score for the query that produced

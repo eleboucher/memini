@@ -91,7 +91,7 @@ func (l Level) Valid() bool {
 	}
 }
 
-// Memory is a single stored memory, scoped to a namespace (tenant/agent).
+// Memory is a single stored memory, scoped to a namespace.
 type Memory struct {
 	ID        string `json:"id"`
 	Namespace string `json:"namespace"`

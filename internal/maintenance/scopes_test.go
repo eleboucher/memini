@@ -62,7 +62,7 @@ func TestMigrateScopesMergesSharedIntoParent(t *testing.T) {
 
 	putScoped(t, st, emb, "acme/_shared", "s1", "shared fact one", 0.5)
 	putScoped(t, st, emb, "acme/_shared", "s2", "shared fact two", 0.5)
-	putScoped(t, st, emb, "acme", "existing", "tenant fact", 0.5)
+	putScoped(t, st, emb, "acme", "existing", "root fact", 0.5)
 
 	putScoped(t, st, emb, "a/b/_shared", "deep1", "deep shared fact", 0.5)
 
@@ -99,16 +99,16 @@ func TestMigrateScopesMergesSharedIntoParent(t *testing.T) {
 }
 
 // TestMigrateScopesSiblingShared pins the no-interaction property when a
-// tenant and one of its children both carry a _shared namespace in the same
+// root namespace and one of its children both carry a _shared namespace in the same
 // run: a/_shared merges into a and a/b/_shared merges into a/b, with no
 // cross-contamination between the two targets.
 func TestMigrateScopesSiblingShared(t *testing.T) {
 	ctx := context.Background()
 	st, emb := openScopesStore(t)
 
-	putScoped(t, st, emb, "a/_shared", "as1", "tenant shared fact", 0.5)
+	putScoped(t, st, emb, "a/_shared", "as1", "root shared fact", 0.5)
 	putScoped(t, st, emb, "a/b/_shared", "abs1", "project shared fact", 0.5)
-	putScoped(t, st, emb, "a", "a1", "tenant fact", 0.5)
+	putScoped(t, st, emb, "a", "a1", "root fact", 0.5)
 	putScoped(t, st, emb, "a/b", "ab1", "project fact", 0.5)
 
 	rep, err := maintenance.MigrateScopes(ctx, st, maintenance.ScopesOptions{Embedder: emb})
@@ -130,7 +130,7 @@ func TestMigrateScopesSiblingShared(t *testing.T) {
 	}
 
 	// Each target got exactly its own _shared sibling: nothing from the child
-	// merged up into the tenant or vice versa.
+	// merged up into the parent or vice versa.
 	if got := listAllNS(t, st, "a"); len(got) != 2 {
 		t.Errorf("a has %d memories, want 2 (own + a/_shared only)", len(got))
 	}
@@ -155,7 +155,7 @@ func TestMigrateScopesReportsMergeWhenDedupFails(t *testing.T) {
 
 	// Two memories in the target after the merge (>= MinClusterSize), so the
 	// dedup pass embeds them — and the failEmbedder trips on the marker.
-	putScoped(t, st, emb, "acme", "t1", "tenant marker fact", 0.5)
+	putScoped(t, st, emb, "acme", "t1", "root marker fact", 0.5)
 	putScoped(t, st, emb, "acme/_shared", "s1", "shared marker fact", 0.5)
 
 	rep, err := maintenance.MigrateScopes(ctx, st, maintenance.ScopesOptions{
@@ -209,7 +209,7 @@ func TestMigrateScopesRepointsLinks(t *testing.T) {
 }
 
 // TestMigrateScopesDedupsAfterMerge covers gap G14: Move relocates by unique
-// ID with no content dedup, so a duplicate fact seeded in both the tenant and
+// ID with no content dedup, so a duplicate fact seeded in both the parent and
 // its _shared sibling must collapse in the target after the merge.
 func TestMigrateScopesDedupsAfterMerge(t *testing.T) {
 	ctx := context.Background()
@@ -308,7 +308,7 @@ func TestMigrateScopesDryRun(t *testing.T) {
 
 	putScoped(t, st, emb, "acme/_shared", "s1", "shared fact one", 0.5)
 	putScoped(t, st, emb, "acme/_shared", "s2", "shared fact two", 0.5)
-	putScoped(t, st, emb, "acme", "existing", "tenant fact", 0.5)
+	putScoped(t, st, emb, "acme", "existing", "root fact", 0.5)
 
 	rep, err := maintenance.MigrateScopes(ctx, st, maintenance.ScopesOptions{
 		DryRun:   true,
@@ -377,7 +377,7 @@ func TestMigrateScopesGlobalNamespaceEnvNotRewritten(t *testing.T) {
 	st, emb := openScopesStore(t)
 	t.Setenv("MEMINI_GLOBAL_NAMESPACE", "shared/golang")
 
-	putScoped(t, st, emb, "acme", "existing", "tenant fact", 0.5)
+	putScoped(t, st, emb, "acme", "existing", "root fact", 0.5)
 
 	rep, err := maintenance.MigrateScopes(ctx, st, maintenance.ScopesOptions{Embedder: emb})
 	if err != nil {

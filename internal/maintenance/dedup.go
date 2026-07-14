@@ -36,7 +36,7 @@ type DedupOptions struct {
 	Tiers []memory.Tier
 	// Namespaces restricts the pass to these namespaces; nil/empty means every
 	// namespace. Clusters never span namespaces, so scoping the pass to one
-	// (the post-import case) is both cheaper and avoids touching other tenants.
+	// (the post-import case) is both cheaper and avoids touching other namespaces.
 	Namespaces []string
 	// NeighboursPerAnchor bounds the per-anchor vector-search fan-out. Larger
 	// values tighten clusters at higher vector-search cost. 0 falls back to

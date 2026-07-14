@@ -922,10 +922,10 @@ func (h *Server) GetStats(w http.ResponseWriter, r *http.Request, params GetStat
 // ListNamespaces implements GET /v1/namespaces.
 //
 // Unlike the other /v1 routes it is not namespace-scoped: it deliberately spans
-// tenants. memini authenticates with a single MEMINI_API_KEY that already
+// namespaces. memini authenticates with a single MEMINI_API_KEY that already
 // grants access to any namespace (the caller picks it via the namespace
 // header), so enumerating namespaces confers no extra privilege. If memini ever
-// grows per-tenant credentials, this endpoint must be gated behind an admin
+// grows per-namespace credentials, this endpoint must be gated behind an admin
 // scope.
 func (h *Server) ListNamespaces(w http.ResponseWriter, r *http.Request) {
 	ns, err := h.svc.Namespaces(r.Context())

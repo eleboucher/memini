@@ -63,7 +63,7 @@ func (h *Server) Handshake(w http.ResponseWriter, r *http.Request) {
 
 	// A client-side MEMINI_NAMESPACE_PREFIX overrides the merged
 	// namespace_prefix for this request, so one credential (even the admin
-	// env key, which has no per-key settings) can serve several tenants
+	// env key, which has no per-key settings) can serve several namespace trees
 	// selected per shell/directory — set the prefix, and derivation composes
 	// <prefix>/<repo>. Debug-override semantics: the client env wins over the
 	// server-merged value, the same way env_namespace does. Overriding merged

@@ -11,24 +11,24 @@ import (
 )
 
 func TestResolveDefaultNamespace_EnvWins(t *testing.T) {
-	t.Setenv("MEMINI_DEFAULT_NAMESPACE", "tenant-a")
+	t.Setenv("MEMINI_DEFAULT_NAMESPACE", "team-a")
 	t.Setenv("MEMINI_NAMESPACE", "")
 	stubRunGit(t, gitOK("/home/dev/some-repo"))
 
 	ns, src := resolveDefaultNamespace()
-	if ns != "tenant-a" || src != NamespaceFromEnv {
-		t.Fatalf("got (%q,%q), want (tenant-a, env)", ns, src)
+	if ns != "team-a" || src != NamespaceFromEnv {
+		t.Fatalf("got (%q,%q), want (team-a, env)", ns, src)
 	}
 }
 
 func TestResolveDefaultNamespace_AltEnvName(t *testing.T) {
 	t.Setenv("MEMINI_DEFAULT_NAMESPACE", "")
-	t.Setenv("MEMINI_NAMESPACE", "tenant-b")
+	t.Setenv("MEMINI_NAMESPACE", "team-b")
 	stubRunGit(t, gitOK("/home/dev/some-repo"))
 
 	ns, src := resolveDefaultNamespace()
-	if ns != "tenant-b" || src != NamespaceFromEnv {
-		t.Fatalf("got (%q,%q), want (tenant-b, env)", ns, src)
+	if ns != "team-b" || src != NamespaceFromEnv {
+		t.Fatalf("got (%q,%q), want (team-b, env)", ns, src)
 	}
 }
 

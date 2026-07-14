@@ -490,7 +490,7 @@ type Config struct {
 	Home string `env:"MEMINI_HOME"`
 }
 
-// DefaultNamespaceHeader is the request header carrying the tenant namespace.
+// DefaultNamespaceHeader is the request header carrying the per-request namespace.
 // Fixed (no env override): clients and plugins all send this exact header.
 const DefaultNamespaceHeader = "X-Memini-Namespace"
 
