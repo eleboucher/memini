@@ -169,6 +169,7 @@ export interface ActivityParams {
   kinds?: EventKind[]
   tiers?: Tier[]
   text?: string
+  actor?: string
   since?: string
   namespaces?: string[]
   limit?: number
@@ -183,6 +184,7 @@ function fetchActivity(p: ActivityParams): Promise<ActivityResponse> {
   p.kinds?.forEach((k) => q.append('kind', k))
   p.tiers?.forEach((t) => q.append('tier', t))
   if (p.text) q.set('q', p.text)
+  if (p.actor) q.set('actor', p.actor)
   if (p.since) q.set('since', p.since)
   if (p.limit) q.set('limit', String(p.limit))
   if (p.before) q.set('before', p.before)
@@ -223,6 +225,10 @@ function scopedSearch(query: string, opts: SearchOpts, ns?: string) {
     '/v1/search',
     {
       query,
+      // The recall's "why": this search came from the web UI. Recorded on the
+      // activity event so the feed distinguishes a human's UI search from an
+      // agent's pretool/mcp recall.
+      source: 'ui',
       tiers: opts.tiers?.length ? opts.tiers : undefined,
       tags: opts.tags?.length ? opts.tags : undefined,
       metadata: opts.metadata && Object.keys(opts.metadata).length ? opts.metadata : undefined,

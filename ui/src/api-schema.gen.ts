@@ -662,6 +662,8 @@ export interface components {
         };
         SearchRequest: {
             query: string;
+            /** @description Why this recall ran — which integration or code path asked for it. Recorded verbatim on the activity event (the "why" the feed shows). Documented vocabulary: "pretool", "session_start", "mcp", "ui", "api", "answer", "doctor". NOT enum-validated server-side, so an unknown value from a fail-soft client is logged rather than rejected. Absent defaults to "api". */
+            source?: string;
             tiers?: components["schemas"]["Tier"][];
             levels?: components["schemas"]["Level"][];
             /** @description A memory must carry every listed tag (AND). */
@@ -782,6 +784,13 @@ export interface components {
             time: string;
             /** @description The namespace the request was made against. */
             namespace: string;
+            /** @description Who performed the operation: the name of the API key that authenticated the request. Absent for the admin env key, a dev-mode request, or a legacy row predating attribution — actor_kind disambiguates those. */
+            actor?: string;
+            /**
+             * @description Classifies the actor: "key" (a named API key, actor holds its name), "env" (the admin env key), "none" (an unauthenticated dev-mode request). Absent on a legacy row predating attribution.
+             * @enum {string}
+             */
+            actor_kind?: "key" | "env" | "none";
             /** @description The recall query; absent for every other kind. */
             query?: string;
             /** @description Kind-specific context — a recall's degraded mode, a supersession's replacement id. */
@@ -2174,6 +2183,8 @@ export interface operations {
                 tier?: components["schemas"]["Tier"][];
                 /** @description Free-text filter, case-insensitive. Selects whole operations whose recall query or any served memory's summary contains it. */
                 q?: string;
+                /** @description Restrict to events performed by this API key (exact name match). The admin env key and dev-mode requests carry no name, so they are never selected by this filter. */
+                actor?: string;
                 /** @description Only events recorded at or after this instant. */
                 since?: string;
                 /** @description With all_namespaces=true, restrict the feed to these namespaces (repeatable, exact match); ignored otherwise. */

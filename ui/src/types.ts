@@ -50,6 +50,9 @@ export const EVENT_KINDS: EventKind[] = [
   'update',
   'forget',
   'supersede',
+  'pin',
+  'unpin',
+  'settings',
 ]
 
 export type Memory = Schemas['Memory']

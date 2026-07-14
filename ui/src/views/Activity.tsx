@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'preact/hooks'
 import { api, ApiError, isAllProjects } from '../api'
-import { namespace, refreshNonce } from '../store'
+import { identity, namespace, refreshNonce } from '../store'
 import { EVENT_KINDS, type ActivityEvent, type EventKind, type Memory, type Tier } from '../types'
 import { MemoryDrawer } from '../components/MemoryDrawer'
 import { TierBadge } from '../components/TierBadge'
@@ -45,9 +45,75 @@ function headline(ev: ActivityEvent): string {
       return 'forgot'
     case 'supersede':
       return 'superseded'
+    case 'pin':
+      return 'pinned a project namespace'
+    case 'unpin':
+      return 'removed a project pin'
+    case 'settings':
+      return 'changed settings'
     default:
       return ev.kind
   }
+}
+
+// actorLabel renders who performed an event. A named key shows its name; the
+// admin env key and dev-mode requests have no name, so they render by kind; a
+// legacy row (no kind at all) renders nothing — attribution predates it.
+function actorLabel(ev: ActivityEvent): string | null {
+  if (ev.actor) return ev.actor
+  switch (ev.actor_kind) {
+    case 'env':
+      return 'admin key'
+    case 'none':
+      return 'open access'
+    default:
+      return null
+  }
+}
+
+// detailChips renders the kind-specific "why"/"what" of an event as small chips:
+// a recall's source, a write's outcome (tier + auto-supersede/reinforce/merge
+// hint), and a config event's target (pinned keys/note, changed settings layer).
+function detailChips(ev: ActivityEvent): { label: string; title?: string; warn?: boolean }[] {
+  const d = (ev.detail ?? {}) as Record<string, unknown>
+  const chips: { label: string; title?: string; warn?: boolean }[] = []
+  const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null)
+
+  if (ev.kind === 'recall') {
+    // The source is the recall's "why". "api" is the unremarkable default, so
+    // it is left off — a chip on every direct search would be noise.
+    const source = str(d.source)
+    if (source && source !== 'api') chips.push({ label: source, title: 'What triggered this recall' })
+  }
+
+  if (ev.kind === 'remember' || ev.kind === 'update') {
+    const tier = str(d.tier)
+    if (tier) chips.push({ label: tier, title: 'Tier this write landed in' })
+    if (str(d.auto_superseded)) {
+      chips.push({ label: 'auto-superseded', title: `Replaced ${str(d.auto_superseded)}`, warn: true })
+    }
+    if (d.reinforced === true) chips.push({ label: 'reinforced', title: 'Folded into an existing memory' })
+    if (d.merge_hint === true) chips.push({ label: 'merge hint', title: 'A near-duplicate was flagged' })
+  }
+
+  if (ev.kind === 'pin' || ev.kind === 'unpin') {
+    const keys = Array.isArray(d.keys) ? (d.keys as unknown[]).filter((k): k is string => typeof k === 'string') : []
+    for (const k of keys) chips.push({ label: k, title: 'Pin key' })
+    const note = str(d.note)
+    if (note) chips.push({ label: note, title: 'Pin note' })
+  }
+
+  if (ev.kind === 'settings') {
+    const target = str(d.key_name)
+    if (target) chips.push({ label: target, title: 'Key whose settings changed' })
+    const layer = str(d.layer)
+    if (layer) chips.push({ label: layer, title: 'Settings layer' })
+    if (typeof d.admin === 'boolean') {
+      chips.push({ label: d.admin ? 'admin granted' : 'admin revoked', title: 'Admin capability change', warn: true })
+    }
+  }
+
+  return chips
 }
 
 const WINDOWS: { label: string; hours: number }[] = [
@@ -62,6 +128,8 @@ export function Activity() {
   const [hidden, setHidden] = useState<EventKind[]>(loadHiddenKinds)
   const [tiers, setTiers] = useState<Tier[]>([])
   const [text, setText] = useState('')
+  const [actor, setActor] = useState('')
+  const [keyNames, setKeyNames] = useState<string[]>([])
   const [hours, setHours] = useState(0)
   const [namespaces, setNamespaces] = useState<string[]>([])
   const [events, setEvents] = useState<ActivityEvent[]>([])
@@ -89,6 +157,7 @@ export function Activity() {
           kinds,
           tiers,
           text: text.trim() || undefined,
+          actor: actor.trim() || undefined,
           since: hours > 0 ? new Date(Date.now() - hours * 3600_000).toISOString() : undefined,
           namespaces,
           limit: PAGE,
@@ -105,15 +174,37 @@ export function Activity() {
         setLoading(false)
       }
     },
-    [kindsKey, tiersKey, text, hours, nsKey],
+    [kindsKey, tiersKey, text, actor, hours, nsKey],
   )
 
-  // Reset to the first page whenever the scope or any filter changes. The text
-  // box is debounced so a fetch doesn't fire on every keystroke.
+  // Reset to the first page whenever the scope or any filter changes. The free-
+  // text boxes (query, actor) are debounced so a fetch doesn't fire on every
+  // keystroke.
   useEffect(() => {
-    const t = setTimeout(() => void load(), text ? 250 : 0)
+    const t = setTimeout(() => void load(), text || actor ? 250 : 0)
     return () => clearTimeout(t)
-  }, [namespace.value, kindsKey, tiersKey, text, hours, nsKey, refreshNonce.value])
+  }, [namespace.value, kindsKey, tiersKey, text, actor, hours, nsKey, refreshNonce.value])
+
+  // Admins get a datalist of key names for the actor filter, so it autocompletes
+  // instead of forcing exact recall of a key's name.
+  useEffect(() => {
+    if (!identity.value?.admin) {
+      setKeyNames([])
+      return
+    }
+    let live = true
+    api
+      .listKeys()
+      .then((keys) => {
+        if (live) setKeyNames(keys.map((k) => k.name))
+      })
+      .catch(() => {
+        // The datalist is a convenience; a plain input still works without it.
+      })
+    return () => {
+      live = false
+    }
+  }, [identity.value?.admin])
 
   const toggleKind = (k: EventKind) => {
     const next = hidden.includes(k) ? hidden.filter((x) => x !== k) : [...hidden, k]
@@ -170,6 +261,22 @@ export function Activity() {
             value={text}
             onInput={(e) => setText((e.target as HTMLInputElement).value)}
           />
+          <input
+            class="chip act-actor"
+            type="search"
+            list={keyNames.length ? 'activity-actors' : undefined}
+            placeholder="Filter by actor (key name)…"
+            aria-label="Filter activity by actor"
+            value={actor}
+            onInput={(e) => setActor((e.target as HTMLInputElement).value)}
+          />
+          {keyNames.length > 0 && (
+            <datalist id="activity-actors">
+              {keyNames.map((n) => (
+                <option key={n} value={n} />
+              ))}
+            </datalist>
+          )}
           <select
             class="chip"
             aria-label="Time window"
@@ -209,6 +316,19 @@ export function Activity() {
                       degraded: {ev.detail.degraded}
                     </span>
                   )}
+                  {detailChips(ev).map((c, i) => (
+                    <span key={i} class={`chip ${c.warn ? 'warn' : ''}`} title={c.title}>
+                      {c.label}
+                    </span>
+                  ))}
+                  {(() => {
+                    const who = actorLabel(ev)
+                    return who ? (
+                      <span class="chip act-actor-chip" title="Who performed this operation">
+                        {who}
+                      </span>
+                    ) : null
+                  })()}
                   {showNs && <span class="chip mono">{ev.namespace}</span>}
                   <span class="grow" />
                   <span class="muted" title={fmtDate(ev.time)}>
