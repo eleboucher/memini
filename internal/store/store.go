@@ -366,6 +366,11 @@ type ClientSettings struct {
 
 	// MinCaptureChars is the minimum content length worth bothering to capture a turn.
 	MinCaptureChars *int `json:"min_capture_chars,omitempty"`
+	// RequestTimeoutMs is how long a client waits on one memini HTTP call before
+	// giving up; it must stay above the server's own RerankTimeout, or a slow
+	// reranker returns nothing at all instead of the composite-order fallback
+	// finalizeRecall degrades to. Must be >= 100.
+	RequestTimeoutMs *int `json:"request_timeout_ms,omitempty"`
 	// NamespaceScope is "repo" or "owner_repo": "repo" derives the namespace
 	// from the bare repo name; "owner_repo" disambiguates same-named repos
 	// across owners with an owner-repo slug (owner + "-" + repo).
@@ -390,6 +395,12 @@ func (s ClientSettings) Validate() error {
 	if s.AutoSaveInterval != nil && *s.AutoSaveInterval < 1 {
 		return fmt.Errorf("client settings: auto_save_interval must be >= 1, got %d", *s.AutoSaveInterval)
 	}
+	// 0 is deliberately NOT overloaded as "no timeout": a client with no timeout
+	// hangs forever on a wedged server instead of failing soft, which is the one
+	// outcome every hook in this repo is written to avoid.
+	if s.RequestTimeoutMs != nil && *s.RequestTimeoutMs < 100 {
+		return fmt.Errorf("client settings: request_timeout_ms must be >= 100, got %d", *s.RequestTimeoutMs)
+	}
 	nonNegativeInts := []struct {
 		key string
 		v   *int
@@ -406,6 +417,7 @@ func (s ClientSettings) Validate() error {
 		{"inject_recall_max_tok", s.InjectRecallMaxTok},
 		{"min_capture_chars", s.MinCaptureChars},
 	}
+	// request_timeout_ms is checked separately: its floor is 100, not 0.
 	for _, f := range nonNegativeInts {
 		if f.v != nil && *f.v < 0 {
 			return fmt.Errorf("client settings: %s must be >= 0, got %d", f.key, *f.v)
@@ -499,8 +511,15 @@ func DefaultClientSettings() ClientSettings {
 		InjectRecallMinScore: new(float64(0)),
 
 		MinCaptureChars: new(0),
-		NamespaceScope:  new("repo"),
-		NamespacePrefix: new(""),
+		// Above the server's 10s default RerankTimeout, with room for the 250ms
+		// response margin, the query embed and HTTP overhead — and already what
+		// MEMINI_TIMEOUT_MS means in the pi/opencode integrations, so the knob
+		// reads the same everywhere. A ceiling, not a target: the server degrades
+		// to composite order at its own deadline, so a healthy client never waits
+		// this long.
+		RequestTimeoutMs: new(30000),
+		NamespaceScope:   new("repo"),
+		NamespacePrefix:  new(""),
 	}
 }
 
@@ -597,6 +616,9 @@ func MergeClientSettings(layers ...SettingsLayer) (ClientSettings, map[string]st
 		}
 		if applyPtr(&out.MinCaptureChars, s.MinCaptureChars) {
 			sources["min_capture_chars"] = l.Source
+		}
+		if applyPtr(&out.RequestTimeoutMs, s.RequestTimeoutMs) {
+			sources["request_timeout_ms"] = l.Source
 		}
 		if applyPtr(&out.NamespaceScope, s.NamespaceScope) {
 			sources["namespace_scope"] = l.Source

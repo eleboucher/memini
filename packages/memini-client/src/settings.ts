@@ -20,6 +20,8 @@
  * imposing one shape on every harness.
  */
 
+import { DEFAULT_TIMEOUT_MS, MIN_TIMEOUT_MS } from "./bootstrap.js";
+
 export type SettingSource = "env-override" | "server" | "default";
 
 export interface BehaviorKnob {
@@ -30,6 +32,13 @@ export interface BehaviorKnob {
   kind: "bool" | "int" | "float" | "list";
   /** The built-in default — used when neither an env override nor a server value is present. */
   default: unknown;
+  /**
+   * Optional floor for an "int" knob, mirroring the ClientSettings schema's
+   * `minimum`. A configured value below it is raised to it rather than falling
+   * back to the (possibly much larger) default, so a deliberately tight value
+   * stays tight. Only request_timeout_ms has a non-zero floor today.
+   */
+  min?: number;
 }
 
 /**
@@ -68,12 +77,28 @@ export const BEHAVIOR_KNOBS: BehaviorKnob[] = [
   { envName: "MEMINI_INJECT_RECALL_MAX_TOK", wireKey: "inject_recall_max_tok", kind: "int", default: 0 },
   { envName: "MEMINI_INJECT_RECALL_MIN_SCORE", wireKey: "inject_recall_min_score", kind: "float", default: 0 },
   { envName: "MEMINI_MIN_CAPTURE_CHARS", wireKey: "min_capture_chars", kind: "int", default: 0 },
+  // Also read at the transport layer (bootstrap.ts's timeoutMs), because a
+  // request timeout has to exist before the handshake that fetches settings.
+  // Both spellings share DEFAULT_TIMEOUT_MS/MIN_TIMEOUT_MS, so there is exactly
+  // one number: raising it here (server-side) or in the env both work.
+  {
+    envName: "MEMINI_TIMEOUT_MS",
+    wireKey: "request_timeout_ms",
+    kind: "int",
+    default: DEFAULT_TIMEOUT_MS,
+    min: MIN_TIMEOUT_MS,
+  },
 ];
 
-/** Parses like plugin/scripts/_shared.mjs's intEnv: >=0 integer, else `fallback`. */
-function parseIntKnob(raw: string, fallback: number): number {
+/**
+ * Parses like plugin/scripts/_shared.mjs's intEnv: >=0 integer, else
+ * `fallback`. A knob with a `min` raises an in-range-but-too-small value to
+ * that floor instead of discarding it.
+ */
+function parseIntKnob(raw: string, fallback: number, min = 0): number {
   const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.max(min, n);
 }
 
 /** Parses like plugin/scripts/_shared.mjs's floatEnv: >=0 float, else `fallback`. */
@@ -111,7 +136,7 @@ export function effectiveSetting<T>(
         value = !/^(0|false|no|off)$/i.test(raw.trim());
         break;
       case "int":
-        value = parseIntKnob(raw, knob.default as number);
+        value = parseIntKnob(raw, knob.default as number, knob.min);
         break;
       case "float":
         value = parseFloatKnob(raw, knob.default as number);

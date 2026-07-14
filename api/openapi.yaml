@@ -1991,6 +1991,19 @@ components:
           minimum: 0
           default: 0
           description: Minimum content length worth bothering to capture a turn.
+        request_timeout_ms:
+          type: integer
+          minimum: 100
+          default: 30000
+          description: >
+            How long a client waits on one memini HTTP call before giving up
+            (MEMINI_TIMEOUT_MS locally). It must stay above the server's own
+            MEMINI_RERANK_TIMEOUT (default 10s): the server bounds a slow
+            reranker and degrades to composite order, but a client that hangs up
+            first gets nothing at all instead of an unranked result. Raise it
+            when a cross-encoder reranker, a deep MEMINI_RERANK_POOL, or a cold
+            model pushes recall past the default. The handshake keeps its own
+            short timeout and is not covered by this setting.
         namespace_scope:
           type: string
           enum: [repo, owner_repo]

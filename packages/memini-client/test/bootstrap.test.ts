@@ -6,6 +6,9 @@ import {
   assertBearerTransportSafe,
   isPlaintextBearerUnsafe,
   envEnabled,
+  envTimeoutMs,
+  DEFAULT_TIMEOUT_MS,
+  MIN_TIMEOUT_MS,
 } from "../src/bootstrap.js";
 
 // ─── envEnabled ─────────────────────────────────────────────────────
@@ -123,5 +126,40 @@ test("assertBearerTransportSafe: no secret, no throw even over plaintext to a re
 test("assertBearerTransportSafe: https to a remote host never throws", () => {
   assert.doesNotThrow(() =>
     assertBearerTransportSafe("https://remote.example.com", "secret", { MEMINI_REQUIRE_HTTPS: "1" }),
+  );
+});
+
+// ─── envTimeoutMs / Bootstrap.timeoutMs ─────────────────────────────
+
+test("envTimeoutMs: unset/garbage falls back, below-floor is raised, not discarded", () => {
+  assert.equal(envTimeoutMs(undefined), DEFAULT_TIMEOUT_MS, "unset -> default");
+  assert.equal(envTimeoutMs(""), DEFAULT_TIMEOUT_MS, "empty -> default");
+  assert.equal(envTimeoutMs("  "), DEFAULT_TIMEOUT_MS, "blank -> default");
+  assert.equal(envTimeoutMs("later"), DEFAULT_TIMEOUT_MS, "unparseable -> default");
+  assert.equal(envTimeoutMs("60000"), 60000, "a real value is honored");
+  assert.equal(envTimeoutMs(" 45000 "), 45000, "surrounding whitespace is ignored");
+  assert.equal(envTimeoutMs("20000.7"), 20000, "truncated to whole milliseconds");
+  // A deliberately tight timeout must stay tight. Falling back to the (much
+  // larger) default here would be the opposite of what the caller asked for.
+  assert.equal(envTimeoutMs("50"), MIN_TIMEOUT_MS, "below the floor -> the floor");
+  assert.equal(envTimeoutMs("0"), MIN_TIMEOUT_MS, "0 is not 'no timeout' -> the floor");
+  assert.equal(envTimeoutMs("-1"), MIN_TIMEOUT_MS, "negative -> the floor");
+});
+
+test("readBootstrap: MEMINI_TIMEOUT_MS overrides the default request timeout", () => {
+  assert.equal(readBootstrap({}).timeoutMs, DEFAULT_TIMEOUT_MS);
+  assert.equal(readBootstrap({ MEMINI_TIMEOUT_MS: "60000" }).timeoutMs, 60000);
+});
+
+// The bug this knob exists for: the client's ceiling must sit ABOVE the server's
+// own rerank budget (MEMINI_RERANK_TIMEOUT, default 10s). The server bounds a
+// slow reranker and degrades to composite order, but a client that gives up
+// first never receives that fallback — it gets nothing at all. Pinned here so a
+// future tightening of the default has to confront the invariant.
+test("DEFAULT_TIMEOUT_MS clears the server's 10s default rerank budget", () => {
+  const SERVER_RERANK_TIMEOUT_MS = 10_000; // internal/config/config.go: MEMINI_RERANK_TIMEOUT
+  assert.ok(
+    DEFAULT_TIMEOUT_MS > SERVER_RERANK_TIMEOUT_MS,
+    `client default ${DEFAULT_TIMEOUT_MS}ms must exceed the server's ${SERVER_RERANK_TIMEOUT_MS}ms rerank budget`,
   );
 });

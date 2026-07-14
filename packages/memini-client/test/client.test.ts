@@ -16,6 +16,7 @@ import {
   SESSION_CWD_TTL_MS,
 } from "../src/session.js";
 import { BEHAVIOR_KNOBS, effectiveSetting, type BehaviorKnob } from "../src/settings.js";
+import { DEFAULT_TIMEOUT_MS, MIN_TIMEOUT_MS } from "../src/bootstrap.js";
 
 function tmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "memini-client-"));
@@ -202,8 +203,8 @@ test("resolveHarnessCwd reads the real parent process cwd", () => {
 
 // ─── behavior knobs / effectiveSetting ──────────────────────────────
 
-test("BEHAVIOR_KNOBS covers exactly the 23 behavioral ClientSettings fields, excluding namespace_scope/namespace_prefix", () => {
-  assert.equal(BEHAVIOR_KNOBS.length, 23);
+test("BEHAVIOR_KNOBS covers exactly the 24 behavioral ClientSettings fields, excluding namespace_scope/namespace_prefix", () => {
+  assert.equal(BEHAVIOR_KNOBS.length, 24);
   const wireKeys = BEHAVIOR_KNOBS.map((k) => k.wireKey);
   assert.equal(new Set(wireKeys).size, wireKeys.length, "wireKey must be unique per knob");
   assert.equal(wireKeys.includes("namespace_scope"), false);
@@ -234,6 +235,42 @@ test("auto_save_min_events knob: int, default 3, MEMINI_AUTO_SAVE_MIN_EVENTS ove
   assert.deepEqual(effectiveSetting(k!, undefined, {}), { value: 3, source: "default" });
   assert.deepEqual(effectiveSetting(k!, { auto_save_min_events: 5 }, { MEMINI_AUTO_SAVE_MIN_EVENTS: "0" }), {
     value: 0,
+    source: "env-override",
+  });
+});
+
+// request_timeout_ms is the one knob that is ALSO read at the transport layer
+// (bootstrap.ts), because a request timeout has to exist before the handshake
+// that fetches settings. Both spellings must agree on the same default and the
+// same floor, or "raise the timeout" would mean two different things depending
+// on which layer answered.
+test("request_timeout_ms knob: int, agrees with the transport layer, env overrides a server value", () => {
+  const k = BEHAVIOR_KNOBS.find((k) => k.wireKey === "request_timeout_ms");
+  assert.ok(k, "request_timeout_ms must be a behavior knob");
+  assert.equal(k!.envName, "MEMINI_TIMEOUT_MS");
+  assert.equal(k!.kind, "int");
+  assert.equal(k!.default, DEFAULT_TIMEOUT_MS, "the knob and bootstrap must share one default");
+  assert.equal(k!.min, MIN_TIMEOUT_MS, "the knob and bootstrap must share one floor");
+
+  assert.deepEqual(effectiveSetting(k!, undefined, {}), {
+    value: DEFAULT_TIMEOUT_MS,
+    source: "default",
+  });
+  // The whole point of the server layer: an admin running a slow cross-encoder
+  // raises the ceiling once, and every client that handshakes picks it up.
+  assert.deepEqual(effectiveSetting(k!, { request_timeout_ms: 60000 }, {}), {
+    value: 60000,
+    source: "server",
+  });
+  // ...and a user can still override it locally.
+  assert.deepEqual(effectiveSetting(k!, { request_timeout_ms: 60000 }, { MEMINI_TIMEOUT_MS: "45000" }), {
+    value: 45000,
+    source: "env-override",
+  });
+  // A below-floor override is raised to the floor, not silently swapped for the
+  // default — matching envTimeoutMs and the schema's `minimum`.
+  assert.deepEqual(effectiveSetting(k!, undefined, { MEMINI_TIMEOUT_MS: "50" }), {
+    value: MIN_TIMEOUT_MS,
     source: "env-override",
   });
 });

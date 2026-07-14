@@ -118,7 +118,11 @@ test("resolveConfig: defaults match the documented contract", () => {
   assert.equal(cfg.skip_system_turns, true);
   assert.deepEqual(cfg.system_kinds, ["heartbeat", "cron"]);
   assert.equal(cfg.fallback_on_error, true);
-  assert.equal(cfg.timeout_ms, 5000);
+  // 30000, the shared client default — NOT the 5000 this used to be. The ceiling
+  // must stay above the server's MEMINI_RERANK_TIMEOUT (10s): the server degrades
+  // a slow rerank to composite order, but a client that hangs up first receives
+  // nothing at all, so a cross-encoder presented as "memory is broken".
+  assert.equal(cfg.timeout_ms, 30000);
   assert.equal(cfg.expose_tools, true);
   assert.equal(cfg.recall_limit, 3);
 });

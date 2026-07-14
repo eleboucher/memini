@@ -71,7 +71,7 @@ async function migrateOverrideToPin(ctx, cwd) {
       method: "PUT",
       headers,
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(ctx.timeoutMs),
     });
     if (res.ok) {
       console.error(`[memini] migrated your local namespace override for this project to a server pin`);

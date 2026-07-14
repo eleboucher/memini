@@ -47,7 +47,7 @@ async function pinsRequest(method, body) {
     method,
     headers,
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(boot.timeoutMs),
   });
   let parsed = null;
   try {

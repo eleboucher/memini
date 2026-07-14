@@ -97,7 +97,15 @@ class Tools:
             description="Caller's personal namespace, sent as X-Memini-Home (unset = no home leg)",
         )
         recall_limit: int = Field(default=3, description="Max memories returned by recall_memory")
-        timeout_ms: int = Field(default=5000, description="Per-request timeout (ms)")
+        timeout_ms: int = Field(
+            default=30000,
+            description=(
+                "Per-request timeout (ms). Must stay above the server's "
+                "MEMINI_RERANK_TIMEOUT (default 10s): the server degrades a slow "
+                "rerank to composite order, but a client that gives up first gets "
+                "nothing at all instead of an unranked result."
+            ),
+        )
         require_https: bool = Field(
             default=False,
             description="Refuse to send the API key over plaintext HTTP to a non-loopback host",

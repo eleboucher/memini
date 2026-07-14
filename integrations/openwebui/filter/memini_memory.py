@@ -184,7 +184,15 @@ class Filter:
         recall_limit: int = Field(
             default=3, description="Max memories injected per turn"
         )
-        timeout_ms: int = Field(default=5000, description="Per-request timeout (ms)")
+        timeout_ms: int = Field(
+            default=30000,
+            description=(
+                "Per-request timeout (ms). Must stay above the server's "
+                "MEMINI_RERANK_TIMEOUT (default 10s): the server degrades a slow "
+                "rerank to composite order, but a client that gives up first gets "
+                "nothing at all instead of an unranked result."
+            ),
+        )
         fallback_on_error: bool = Field(
             default=True,
             description="Degrade silently on memini errors instead of surfacing them",

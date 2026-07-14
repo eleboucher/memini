@@ -56,6 +56,7 @@ func TestDefaultClientSettings(t *testing.T) {
 		"recall_limit":               {d.RecallLimit, 3},
 		"inject_recall_max_tok":      {d.InjectRecallMaxTok, 0},
 		"min_capture_chars":          {d.MinCaptureChars, 0},
+		"request_timeout_ms":         {d.RequestTimeoutMs, 30000},
 	}
 	for name, f := range intFields {
 		if f.got == nil || *f.got != f.want {
@@ -131,6 +132,13 @@ func TestClientSettingsValidate(t *testing.T) {
 		{"recall_limit negative is invalid", store.ClientSettings{RecallLimit: new(-1)}, true},
 		{"inject_recall_max_tok negative is invalid", store.ClientSettings{InjectRecallMaxTok: new(-1)}, true},
 		{"min_capture_chars negative is invalid", store.ClientSettings{MinCaptureChars: new(-1)}, true},
+		{"request_timeout_ms = 100 is valid (boundary)", store.ClientSettings{RequestTimeoutMs: new(100)}, false},
+		{"request_timeout_ms = 99 is invalid", store.ClientSettings{RequestTimeoutMs: new(99)}, true},
+		// 0 is the tempting "no timeout" spelling, but a client with no timeout
+		// hangs forever on a wedged server rather than failing soft, so the
+		// schema's minimum rejects it rather than overloading it as "unbounded".
+		{"request_timeout_ms = 0 is invalid", store.ClientSettings{RequestTimeoutMs: new(0)}, true},
+		{"request_timeout_ms negative is invalid", store.ClientSettings{RequestTimeoutMs: new(-1)}, true},
 		{"inject_pretool_min_score = 0 is valid (boundary)", store.ClientSettings{InjectPretoolMinScore: new(0.0)}, false},
 		{"inject_pretool_min_score negative is invalid", store.ClientSettings{InjectPretoolMinScore: new(-0.1)}, true},
 		{"inject_recall_min_score negative is invalid", store.ClientSettings{InjectRecallMinScore: new(-0.1)}, true},
@@ -230,6 +238,32 @@ func TestMergeClientSettings(t *testing.T) {
 		// Every field must be non-nil once the defaults layer is included.
 		if got.CaptureTurns == nil || got.NamespacePrefix == nil || got.InjectLabels == nil {
 			t.Fatalf("merge with defaults first must leave every field non-nil: %+v", got)
+		}
+	})
+
+	// The reason request_timeout_ms is a server-pushed setting at all: the admin
+	// who deploys a slow cross-encoder raises the client ceiling once, globally,
+	// instead of asking every user to export MEMINI_TIMEOUT_MS. A key that talks
+	// to an even slower backend can then raise it further on top.
+	t.Run("request_timeout_ms layers global-then-key like any other field", func(t *testing.T) {
+		global := store.SettingsLayer{Source: "global", S: store.ClientSettings{
+			RequestTimeoutMs: new(30000), // the fleet runs a slow reranker
+		}}
+		got, sources := store.MergeClientSettings(defaults, global)
+		if got.RequestTimeoutMs == nil || *got.RequestTimeoutMs != 30000 {
+			t.Fatalf("request_timeout_ms = %v, want 30000 (the global layer's value)", got.RequestTimeoutMs)
+		}
+		if sources["request_timeout_ms"] != "global" {
+			t.Fatalf("sources[request_timeout_ms] = %q, want %q", sources["request_timeout_ms"], "global")
+		}
+
+		key := store.SettingsLayer{Source: "key:batch", S: store.ClientSettings{RequestTimeoutMs: new(60000)}}
+		got, sources = store.MergeClientSettings(defaults, global, key)
+		if got.RequestTimeoutMs == nil || *got.RequestTimeoutMs != 60000 {
+			t.Fatalf("request_timeout_ms = %v, want 60000 (the key layer's value)", got.RequestTimeoutMs)
+		}
+		if sources["request_timeout_ms"] != "key:batch" {
+			t.Fatalf("sources[request_timeout_ms] = %q, want %q", sources["request_timeout_ms"], "key:batch")
 		}
 	})
 

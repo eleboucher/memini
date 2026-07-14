@@ -65,10 +65,16 @@ import {
   type Bootstrap,
   type ProjectFacts,
   type HandshakeResult,
+  DEFAULT_TIMEOUT_MS as CLIENT_DEFAULT_TIMEOUT_MS,
 } from "@memini/client";
 
 const DEFAULT_BASE_URL = "http://localhost:8080";
-const DEFAULT_TIMEOUT_MS = 5000;
+// The shared client core's number, so MEMINI_TIMEOUT_MS / request_timeout_ms
+// means the same thing here as in the Claude hooks, pi and opencode. It must
+// stay above the server's MEMINI_RERANK_TIMEOUT (10s): the server degrades a
+// slow rerank to composite order, but a client that hangs up first gets nothing
+// at all. The old 5000 sat under it, so a cross-encoder returned no memories.
+const DEFAULT_TIMEOUT_MS = CLIENT_DEFAULT_TIMEOUT_MS;
 const DEFAULT_NAMESPACE = "openclaw";
 // performHandshake's own default (2500ms) is used when this isn't overridden;
 // named here only so callers reading this file see the actual value in force.
@@ -283,7 +289,7 @@ export function resolveConfig(
         ? c.system_kinds.map((k: any) => String(k).toLowerCase())
         : DEFAULT_SYSTEM_KINDS,
     fallback_on_error: c.fallback_on_error !== false,
-    timeout_ms: c.timeout_ms || DEFAULT_TIMEOUT_MS,
+    timeout_ms: Number(c.timeout_ms || process.env.MEMINI_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
     // On by default. The memory slot's automatic recall/capture cannot express
     // the levers the tools carry — scope (how wide to read), visibility (who
     // should know a fact), and the session briefing with its ancestor Scope
@@ -971,7 +977,7 @@ async function pinsRequest(
     method,
     headers,
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(boot.timeoutMs),
   });
   let parsed: any = null;
   try {
