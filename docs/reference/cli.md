@@ -32,7 +32,7 @@ flags below belong to the subcommands only. See the
 | [`memini namespace`](#memini-namespace) | Inspect and repair memory namespaces (recovery from botched imports / shared pools) |
 | [`memini namespace list`](#memini-namespace-list) | List namespaces and their memory counts |
 | [`memini namespace move`](#memini-namespace-move) | Move every memory from one namespace to another |
-| [`memini namespace split`](#memini-namespace-split) | Regroup a pooled namespace back into per-tenant namespaces by metadata |
+| [`memini namespace split`](#memini-namespace-split) | Regroup a pooled namespace back into per-source namespaces by metadata |
 | [`memini reembed`](#memini-reembed) | Re-embed every memory under the currently configured embedding model |
 | [`memini version`](#memini-version) | Print version information |
 

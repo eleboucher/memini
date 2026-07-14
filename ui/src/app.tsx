@@ -4,7 +4,7 @@ import { apiToken, identity, serverWarning, theme } from './store'
 import { verifyToken, ApiError } from './api'
 import { Login } from './views/Login'
 import { NamespaceSelect } from './components/NamespaceSelect'
-import { Projects } from './views/Projects'
+import { Namespaces } from './views/Namespaces'
 import { Dashboard } from './views/Dashboard'
 import { Browser } from './views/Browser'
 import { Search } from './views/Search'
@@ -16,7 +16,7 @@ import { Keys } from './views/Keys'
 import { Config } from './views/Config'
 import { Settings } from './views/Settings'
 import {
-  IconProjects,
+  IconNamespaces,
   IconOverview,
   IconBrowse,
   IconSearch,
@@ -34,7 +34,7 @@ import {
 import type { AnyComponent, JSX } from 'preact'
 
 // The nav and the routes are one table: path → view. Overview is "/" so a bare
-// load lands there (in "All projects" mode, ns === ''). LocationProvider
+// load lands there (in "All namespaces" mode, ns === ''). LocationProvider
 // intercepts clicks on the <a> links for client-side navigation, so the back/
 // forward buttons, shareable deep links, and reloads all resolve to the right
 // view (the server serves index.html on unknown paths — see internal/api/ui).
@@ -43,6 +43,14 @@ import type { AnyComponent, JSX } from 'preact'
 // URLs), which resolves correctly only when a deep-link reload is one level deep
 // (/browse → ./assets → /assets). A nested route like /memories/:id would make
 // a reload fetch /memories/assets/* and 404 — switch vite base to '/' first.
+// The namespaces landing page lived at /projects until the terminology
+// cleanup; keep old bookmarks and deep links working by redirecting.
+function LegacyProjectsRedirect() {
+  const { route } = useLocation()
+  useEffect(() => route('/namespaces', true), [route])
+  return null
+}
+
 const NAV: {
   path: string
   label: string
@@ -50,13 +58,13 @@ const NAV: {
   Icon: (p: JSX.SVGAttributes<SVGSVGElement>) => JSX.Element
   component: AnyComponent
 }[] = [
-  { path: '/projects', label: 'Projects', title: 'Projects', Icon: IconProjects, component: Projects },
+  { path: '/namespaces', label: 'Namespaces', title: 'Namespaces', Icon: IconNamespaces, component: Namespaces },
   { path: '/', label: 'Overview', title: 'Overview', Icon: IconOverview, component: Dashboard },
   { path: '/browse', label: 'Browse', title: 'Memory browser', Icon: IconBrowse, component: Browser },
   { path: '/search', label: 'Search', title: 'Recall', Icon: IconSearch, component: Search },
   { path: '/activity', label: 'Activity', title: 'Recent activity', Icon: IconActivity, component: Activity },
   { path: '/graph', label: 'Graph', title: 'Relationship graph', Icon: IconGraph, component: Graph },
-  { path: '/scopes', label: 'Scopes', title: 'Namespace scopes & links', Icon: IconScopes, component: Scopes },
+  { path: '/scopes', label: 'Read set', title: 'Read set & links', Icon: IconScopes, component: Scopes },
   { path: '/keys', label: 'Keys', title: 'API keys', Icon: IconKey, component: Keys },
   { path: '/config', label: 'Config', title: 'Server config', Icon: IconConfig, component: Config },
   { path: '/health', label: 'Health', title: 'Health & fsck', Icon: IconHealth, component: Health },
@@ -185,6 +193,7 @@ function Shell() {
             {NAV.map(({ path: to, component }) => (
               <Route key={to} path={to} component={component} />
             ))}
+            <Route path="/projects" component={LegacyProjectsRedirect} />
             <Route default component={Dashboard} />
           </Router>
         </div>

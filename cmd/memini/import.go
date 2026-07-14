@@ -142,7 +142,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 	}
 
 	// --merge-into collapses every source namespace into one. Confirm before
-	// discarding multi-tenant scoping, since that is exactly the failure mode
+	// discarding multi-namespace scoping, since that is exactly the failure mode
 	// that poisons a store (the original is preserved in metadata for recovery).
 	if importMergeInto != "" {
 		srcNS := distinctNamespaces(recs)
@@ -202,7 +202,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 	}
 
 	// Collapse near-duplicates created or exposed by the import, scoped to the
-	// namespaces it touched so other tenants are untouched.
+	// namespaces it touched so others are untouched.
 	if !importDryRun && !importNoDedup && dedup != nil && rep.Imported > 0 {
 		if err := dedup(cmd.Context(), namespacesOf(rep.Namespaces), importDedupSim, out); err != nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), "  dedup warning:", err) //nolint:errcheck

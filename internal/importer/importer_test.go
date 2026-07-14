@@ -164,7 +164,7 @@ func TestImportPreservesSourceNamespaces(t *testing.T) {
 			t.Errorf("namespace %q = %d, want %d (histogram %v)", ns, rep.Namespaces[ns], n, rep.Namespaces)
 		}
 	}
-	// Each tenant's memory is isolated in its own namespace.
+	// Each mnemory tenant's memories are isolated in their own namespace.
 	for ns := range want {
 		ms, err := st.List(ctx, ns, store.Filter{}, 0)
 		if err != nil {

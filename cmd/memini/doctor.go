@@ -690,7 +690,7 @@ func warnEnvSlashMigration(out io.Writer, cfg *config.Config, stats []nsStat) in
 // resolveReadSet, either the server's own answer or localReadSet's mirror —
 // as a NAMESPACE/ORIGIN/TIERS table, so "why does recall see/miss X" is
 // answerable without reading the resolver's source. It no longer prints
-// MEMINI_GLOBAL_NAMESPACE or a tenant-shared namespace: both are dead knobs
+// MEMINI_GLOBAL_NAMESPACE or a legacy shared namespace: both are dead knobs
 // under the ancestor/home/link cascade doctor now reflects (config still
 // carries the fields until T12 deletes them; doctor just stops reading them
 // here).

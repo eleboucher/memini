@@ -16,7 +16,7 @@
  *
  * The client never second-guesses a successful handshake: reimplementing
  * pin-lookup client-side is not just redundant, it would require shipping the
- * project_map to every client, which the server intentionally does not do.
+ * pins table to every client, which the server intentionally does not do.
  */
 
 import type { ProjectFacts } from "./facts.js";

@@ -1,5 +1,8 @@
 # Namespace scoping
 
+Vocabulary note: this page leans on the exact definitions of namespace,
+project, scope, and read set — the [glossary](glossary.md) pins them down.
+
 Namespaces are the slash-separated tree memini partitions memories into
 (`acme/phoenix/api`, `acme/phoenix`, `acme`). **Scoping** is the separate
 question of, on a write, which single namespace a memory lands in, and on a

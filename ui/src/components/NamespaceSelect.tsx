@@ -5,22 +5,22 @@ import { useAsync } from '../hooks'
 import { nsTree, type NsNode } from '../util'
 import { IconChevron, IconCheck } from '../icons'
 
-// NamespaceSelect switches the active tenant. The chosen value is sent as the
-// namespace header on every API call; empty ('') means "All projects" (reads
+// NamespaceSelect switches the active namespace. The chosen value is sent as the
+// namespace header on every API call; empty ('') means "All namespaces" (reads
 // aggregate across namespaces). Refetches the list on refresh so namespaces
 // created while the app is open appear without a reload. Namespaces render as
 // an indented tree (nsTree) rather than a flat list, so a namespace like
 // "acme/phoenix/api" appears nested under "acme/phoenix" nested under "acme"
-// — matching how Projects groups them — instead of one long flat option list.
+// — matching how Namespaces groups them — instead of one long flat option list.
 export function NamespaceSelect() {
   const [open, setOpen] = useState(false)
   const { data } = useAsync(() => api.namespaces(), [refreshNonce.value])
   const list = data ?? []
   const tree = nsTree(list)
-  const current = namespace.value || 'All projects'
+  const current = namespace.value || 'All namespaces'
   const menuRef = useRef<HTMLDivElement>(null)
   // Collapsed node paths, local to this popover (not persisted — it's a small
-  // navigation aid, not a durable view preference like Projects' boxes).
+  // navigation aid, not a durable view preference like Namespaces' boxes).
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
 
   const pick = (ns: string) => {
@@ -62,7 +62,7 @@ export function NamespaceSelect() {
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`Active project: ${current}`}
+        aria-label={`Active namespace: ${current}`}
       >
         <span class="status-dot ok" aria-hidden="true" />
         <span class="ns-name">{current}</span>
@@ -80,7 +80,7 @@ export function NamespaceSelect() {
               onClick={() => pick('')}
             >
               <span class="ck">{namespace.value === '' && <IconCheck aria-hidden="true" />}</span>
-              All projects
+              All namespaces
             </button>
             {tree.map((n) => (
               <NsRow
@@ -95,7 +95,7 @@ export function NamespaceSelect() {
             ))}
             {list.length === 0 && (
               <div class="opt" style={{ color: 'var(--muted)' }}>
-                no other projects yet
+                no other namespaces yet
               </div>
             )}
           </div>

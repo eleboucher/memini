@@ -34,6 +34,15 @@ func hasIndex(t *testing.T, db *sql.DB, name string) bool {
 	return err == nil
 }
 
+func hasTable(t *testing.T, db *sql.DB, name string) bool {
+	t.Helper()
+	err := db.QueryRow(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(new(int))
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("check table %s: %v", name, err)
+	}
+	return err == nil
+}
+
 // unit returns the i-th standard basis vector for the test embedding dim (8).
 func unit(i int) []float32 {
 	v := make([]float32, 8)
@@ -122,9 +131,9 @@ func TestUpgradeFromLegacyDB(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 
 	seedLegacyDB(t, path, []legacyRow{
-		{rowID: 1, id: "m1", namespace: "tenant", tier: memory.TierWorking,
+		{rowID: 1, id: "m1", namespace: "team", tier: memory.TierWorking,
 			content: "the cat sat on the mat", embedding: unit(0)},
-		{rowID: 2, id: "m2", namespace: "tenant", tier: memory.TierSemantic,
+		{rowID: 2, id: "m2", namespace: "team", tier: memory.TierSemantic,
 			content: "go is a programming language", embedding: unit(1)},
 	})
 
@@ -136,14 +145,14 @@ func TestUpgradeFromLegacyDB(t *testing.T) {
 
 	t.Run("PreExistingRowsReadable", func(t *testing.T) {
 		for _, id := range []string{"m1", "m2"} {
-			if _, err := st.Get(ctx, "tenant", id); err != nil {
+			if _, err := st.Get(ctx, "team", id); err != nil {
 				t.Errorf("Get(%s): %v", id, err)
 			}
 		}
 	})
 
 	t.Run("VectorSearchFindsLegacyRow", func(t *testing.T) {
-		got, err := st.VectorSearch(ctx, "tenant", unit(0), store.Filter{}, 1)
+		got, err := st.VectorSearch(ctx, "team", unit(0), store.Filter{}, 1)
 		if err != nil {
 			t.Fatalf("VectorSearch: %v", err)
 		}
@@ -153,7 +162,7 @@ func TestUpgradeFromLegacyDB(t *testing.T) {
 	})
 
 	t.Run("KeywordSearchFindsLegacyRow", func(t *testing.T) {
-		got, err := st.KeywordSearch(ctx, "tenant", "cat", store.Filter{}, 5)
+		got, err := st.KeywordSearch(ctx, "team", "cat", store.Filter{}, 5)
 		if err != nil {
 			t.Fatalf("KeywordSearch: %v", err)
 		}
@@ -165,19 +174,164 @@ func TestUpgradeFromLegacyDB(t *testing.T) {
 	t.Run("NewWritesAreFingerprintDiscoverable", func(t *testing.T) {
 		now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 		m := &memory.Memory{
-			ID: "m3", Namespace: "tenant", Tier: memory.TierSemantic,
+			ID: "m3", Namespace: "team", Tier: memory.TierSemantic,
 			Content: "fresh durable fact", Embedding: unit(2),
 			CreatedAt: now, UpdatedAt: now, LastAccessedAt: now,
 		}
 		if err := st.Upsert(ctx, m); err != nil {
 			t.Fatalf("Upsert: %v", err)
 		}
-		got, err := st.GetByFingerprint(ctx, "tenant", memory.TierSemantic,
+		got, err := st.GetByFingerprint(ctx, "team", memory.TierSemantic,
 			memory.Fingerprint("fresh durable fact"), now)
 		if err != nil || got.ID != "m3" {
 			t.Fatalf("GetByFingerprint = (%v, %v), want m3", got, err)
 		}
 	})
+}
+
+// TestMigrateRenamesProjectMapToPins opens a DB created when the pins table
+// was still named project_map and checks migrate renames it in place: the
+// seeded row survives (the table is not recreated empty next to a stray),
+// the old index is replaced by idx_pins_ns, and no project_map remains.
+func TestMigrateRenamesProjectMapToPins(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "prerename.db")
+
+	db, err := sql.Open("sqlite3", "file:"+path)
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	seed := []string{
+		`CREATE TABLE project_map (
+			key        TEXT PRIMARY KEY,
+			namespace  TEXT NOT NULL,
+			note       TEXT NOT NULL DEFAULT '',
+			created_by TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX idx_project_map_ns ON project_map(namespace)`,
+		`INSERT INTO project_map (key, namespace, note, created_by, created_at, updated_at)
+		 VALUES ('remote:github.com/acme/phoenix', 'acme/phoenix', 'seeded before rename', 'kit',
+			'2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+	}
+	for _, q := range seed {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("seed %q: %v", q, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	st, err := Open(ctx, path, 8)
+	if err != nil {
+		t.Fatalf("open pre-rename DB: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	got, err := st.GetPins(ctx, []string{"remote:github.com/acme/phoenix"})
+	if err != nil {
+		t.Fatalf("GetPins: %v", err)
+	}
+	if len(got) != 1 || got[0].Namespace != "acme/phoenix" || got[0].CreatedBy != "kit" {
+		t.Fatalf("GetPins = %+v, want the seeded pre-rename row", got)
+	}
+	if hasTable(t, st.db, "project_map") {
+		t.Error("project_map still exists after migrate; want it renamed to pins")
+	}
+	if !hasTable(t, st.db, "pins") {
+		t.Error("pins table missing after migrate")
+	}
+	if hasIndex(t, st.db, "idx_project_map_ns") {
+		t.Error("idx_project_map_ns still exists; want it dropped in favor of idx_pins_ns")
+	}
+	if !hasIndex(t, st.db, "idx_pins_ns") {
+		t.Error("idx_pins_ns missing after migrate")
+	}
+}
+
+// TestMigrateFoldsStrayProjectMapIntoPins covers the rollback window: after
+// the rename, an old binary re-creates project_map and writes pins into it.
+// The next migrate folds the stray's rows into pins — the stray wins on a key
+// conflict (it is the later write, the same last-write-wins rule as PutPins)
+// while created_at/created_by keep the pins row's values — and drops the
+// stray table, so no pin silently vanishes.
+func TestMigrateFoldsStrayProjectMapIntoPins(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "stray.db")
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	st, err := Open(ctx, path, 8)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := st.PutPins(ctx, []store.Pin{{
+		Key: "remote:github.com/acme/phoenix", Namespace: "acme/phoenix",
+		Note: "pre-rollback", CreatedBy: "kit", CreatedAt: created, UpdatedAt: created,
+	}}); err != nil {
+		t.Fatalf("PutPins: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", "file:"+path)
+	if err != nil {
+		t.Fatalf("open stray db: %v", err)
+	}
+	for _, q := range []string{
+		`CREATE TABLE project_map (
+			key        TEXT PRIMARY KEY,
+			namespace  TEXT NOT NULL,
+			note       TEXT NOT NULL DEFAULT '',
+			created_by TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`INSERT INTO project_map VALUES ('remote:github.com/acme/phoenix', 'acme/phoenix2',
+			'rollback re-pin', 'alex', '2026-02-01T00:00:00Z', '2026-02-01T00:00:00Z')`,
+		`INSERT INTO project_map VALUES ('path:/home/kit/dev/widgets', 'acme/widgets',
+			'rollback new pin', 'alex', '2026-02-01T00:00:00Z', '2026-02-01T00:00:00Z')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("seed stray %q: %v", q, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close stray db: %v", err)
+	}
+
+	st2, err := Open(ctx, path, 8)
+	if err != nil {
+		t.Fatalf("re-open: %v", err)
+	}
+	t.Cleanup(func() { _ = st2.Close() })
+
+	got, err := st2.GetPins(ctx, []string{"remote:github.com/acme/phoenix", "path:/home/kit/dev/widgets"})
+	if err != nil {
+		t.Fatalf("GetPins: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("GetPins returned %d pins, want 2: %+v", len(got), got)
+	}
+	byKey := map[string]store.Pin{}
+	for _, p := range got {
+		byKey[p.Key] = p
+	}
+	re := byKey["remote:github.com/acme/phoenix"]
+	if re.Namespace != "acme/phoenix2" || re.Note != "rollback re-pin" {
+		t.Errorf("conflicting key = %+v, want the stray's later write to win", re)
+	}
+	if re.CreatedBy != "kit" || !re.CreatedAt.Equal(created) {
+		t.Errorf("conflicting key created_at/by = %v/%q, want the pins row's provenance preserved", re.CreatedAt, re.CreatedBy)
+	}
+	if byKey["path:/home/kit/dev/widgets"].Namespace != "acme/widgets" {
+		t.Errorf("new stray key = %+v, want folded in", byKey["path:/home/kit/dev/widgets"])
+	}
+	if hasTable(t, st2.db, "project_map") {
+		t.Error("stray project_map still exists after migrate; want it folded and dropped")
+	}
 }
 
 // TestMigrateBackfillsEveryNewerColumn guards the bug class behind the crashloop:

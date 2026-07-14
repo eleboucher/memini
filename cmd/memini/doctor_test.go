@@ -32,7 +32,7 @@ func seedPool(t *testing.T, st store.Store, ns string, n, attributable int) {
 			Embedding: []float32{1, 0, 0, 0},
 		}
 		if i < attributable {
-			m.Metadata = map[string]any{"import_source_namespace": "tenant-" + strconv.Itoa(i%3)}
+			m.Metadata = map[string]any{"import_source_namespace": "team-" + strconv.Itoa(i%3)}
 		}
 		if err := st.Upsert(context.Background(), m); err != nil {
 			t.Fatalf("upsert: %v", err)
@@ -79,7 +79,7 @@ func TestDoctorFixPreviewWritesNothing(t *testing.T) {
 }
 
 // TestDoctorFixSplitsAttributablePool: with >=90% attributable and apply=true,
-// the pool is split into per-tenant namespaces.
+// the pool is split into per-source namespaces.
 func TestDoctorFixSplitsAttributablePool(t *testing.T) {
 	st := openTestStore(t)
 	seedPool(t, st, nsDefault, 600, 600)
@@ -89,7 +89,7 @@ func TestDoctorFixSplitsAttributablePool(t *testing.T) {
 		t.Fatalf("doctorFix apply: %v", err)
 	}
 	names, _ := st.ListNamespaces(context.Background())
-	// 3 tenant namespaces (tenant-0/1/2); the default pool should be drained.
+	// 3 source namespaces (team-0/1/2); the default pool should be drained.
 	for _, n := range names {
 		if n == nsDefault {
 			mems, _ := st.List(context.Background(), nsDefault, store.Filter{IncludeSuperseded: true, IncludeExpired: true}, 0)

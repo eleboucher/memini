@@ -39,7 +39,7 @@ var namespaceMoveCmd = &cobra.Command{
 
 var namespaceSplitCmd = &cobra.Command{
 	Use:   "split",
-	Short: "Regroup a pooled namespace back into per-tenant namespaces by metadata",
+	Short: "Regroup a pooled namespace back into per-source namespaces by metadata",
 	Long: "Regroup a namespace by metadata, moving each memory to the namespace named by " +
 		"the first grouping key it carries (default: " + strings.Join(maintenance.DefaultSplitKeys, ", ") + "). " +
 		"Memories with no grouping key stay put. This recovers a store whose imports collapsed into one pool.",

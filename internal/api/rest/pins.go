@@ -10,7 +10,7 @@ import (
 	"github.com/eleboucher/memini/internal/store"
 )
 
-// The project map (pins) surface: GET/PUT/DELETE /v1/pins. A pin is an
+// The pins surface: GET/PUT/DELETE /v1/pins. A pin is an
 // operator-created binding from a project's identity (canonical git remote
 // and/or absolute toplevel path) to a namespace, and it beats every other
 // namespace_source at handshake time. Any caller may write one — the audit
@@ -18,22 +18,22 @@ import (
 // authorization gate.
 
 // ListPins implements GET /v1/pins — every explicit project→namespace pin. Open
-// to every credential class: the project map is machine-wide derivation state,
-// not scoped to one namespace. 501 against a backend with no project_map.
+// to every credential class: pins are machine-wide derivation state,
+// not scoped to one namespace. 501 against a backend with no pin store.
 func (h *Server) ListPins(w http.ResponseWriter, r *http.Request) {
-	pms, ok := h.projectMapStore()
+	pms, ok := h.pinStore()
 	if !ok {
-		httputil.Error(w, http.StatusNotImplemented, "project map pins are not supported by this storage backend")
+		httputil.Error(w, http.StatusNotImplemented, "pins are not supported by this storage backend")
 		return
 	}
-	entries, err := pms.ListProjectMapEntries(r.Context())
+	entries, err := pms.ListPins(r.Context())
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
-	out := ProjectMapListResponse{Entries: make([]ProjectMapEntry, len(entries))}
+	out := PinListResponse{Entries: make([]Pin, len(entries))}
 	for i, e := range entries {
-		out.Entries[i] = apiProjectMapEntry(e)
+		out.Entries[i] = apiPin(e)
 	}
 	httputil.JSON(w, http.StatusOK, out)
 }
@@ -43,14 +43,14 @@ func (h *Server) ListPins(w http.ResponseWriter, r *http.Request) {
 // 400 if neither); the pin is stored under every key the facts yield, so a
 // project pinned by both its remote and its path resolves either way. The write
 // is activity-logged with its author (kind pin). 501 against a backend with no
-// project_map.
+// pin store.
 func (h *Server) PutPin(w http.ResponseWriter, r *http.Request) {
-	pms, ok := h.projectMapStore()
+	pms, ok := h.pinStore()
 	if !ok {
-		httputil.Error(w, http.StatusNotImplemented, "project map pins are not supported by this storage backend")
+		httputil.Error(w, http.StatusNotImplemented, "pins are not supported by this storage backend")
 		return
 	}
-	var req ProjectMapPutRequest
+	var req PinPutRequest
 	if !decode(w, r, &req) {
 		return
 	}
@@ -77,13 +77,13 @@ func (h *Server) PutPin(w http.ResponseWriter, r *http.Request) {
 	}
 	note := deref(req.Note)
 	now := time.Now().UTC()
-	entries := make([]store.ProjectMapEntry, len(keys))
+	entries := make([]store.Pin, len(keys))
 	for i, k := range keys {
-		entries[i] = store.ProjectMapEntry{
+		entries[i] = store.Pin{
 			Key: k, Namespace: ns, Note: note, CreatedBy: createdBy, CreatedAt: now, UpdatedAt: now,
 		}
 	}
-	if err := pms.PutProjectMapEntries(r.Context(), entries); err != nil {
+	if err := pms.PutPins(r.Context(), entries); err != nil {
 		writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
@@ -93,10 +93,10 @@ func (h *Server) PutPin(w http.ResponseWriter, r *http.Request) {
 	h.svc.LogConfigEvent(r.Context(), store.EventPin, ns, map[string]any{
 		"keys": keys, "note": note,
 	})
-	// Echo the stored row for the first (remote-preferred) key: PutProjectMapEntries
+	// Echo the stored row for the first (remote-preferred) key: PutPins
 	// preserves an existing pin's created_at/created_by on update, so re-reading
 	// reflects the true provenance rather than the "now" we just wrote.
-	stored, err := pms.GetProjectMapEntries(r.Context(), keys[:1])
+	stored, err := pms.GetPins(r.Context(), keys[:1])
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, err)
 		return
@@ -105,20 +105,20 @@ func (h *Server) PutPin(w http.ResponseWriter, r *http.Request) {
 	if len(stored) > 0 {
 		out = stored[0]
 	}
-	httputil.JSON(w, http.StatusOK, apiProjectMapEntry(out))
+	httputil.JSON(w, http.StatusOK, apiPin(out))
 }
 
 // DeletePin implements DELETE /v1/pins — remove a pin by its key facts
 // (remote_url and/or toplevel_path, 400 if neither). 404 when no matching pin
 // exists, 204 on success; the delete is activity-logged (kind unpin). 501
-// against a backend with no project_map.
+// against a backend with no pin store.
 func (h *Server) DeletePin(w http.ResponseWriter, r *http.Request) {
-	pms, ok := h.projectMapStore()
+	pms, ok := h.pinStore()
 	if !ok {
-		httputil.Error(w, http.StatusNotImplemented, "project map pins are not supported by this storage backend")
+		httputil.Error(w, http.StatusNotImplemented, "pins are not supported by this storage backend")
 		return
 	}
-	var req ProjectMapDeleteRequest
+	var req PinDeleteRequest
 	if !decode(w, r, &req) {
 		return
 	}
@@ -129,8 +129,8 @@ func (h *Server) DeletePin(w http.ResponseWriter, r *http.Request) {
 	}
 	// Read the matching pins first: it is the 404 signal, and it captures the
 	// pinned namespace + the keys that actually existed for the unpin audit
-	// event (DeleteProjectMapEntries only returns a count).
-	existing, err := pms.GetProjectMapEntries(r.Context(), keys)
+	// event (DeletePins only returns a count).
+	existing, err := pms.GetPins(r.Context(), keys)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, err)
 		return
@@ -139,7 +139,7 @@ func (h *Server) DeletePin(w http.ResponseWriter, r *http.Request) {
 		httputil.Error(w, http.StatusNotFound, "no pin matches the given remote_url/toplevel_path")
 		return
 	}
-	n, err := pms.DeleteProjectMapEntries(r.Context(), keys)
+	n, err := pms.DeletePins(r.Context(), keys)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, err)
 		return

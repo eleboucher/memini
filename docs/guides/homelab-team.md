@@ -194,7 +194,7 @@ Namespaces are a slash-separated tree, and reads cascade upward for free. A team
 setup is three levels:
 
 ```
-acme                 <- tenant root: org-wide durable facts
+acme                 <- org root: org-wide durable facts
 acme/phoenix         <- the project everyone works on
 personal/kit         <- kit's home namespace, bound to kit's key
 personal/robin       <- robin's home namespace

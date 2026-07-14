@@ -12,10 +12,24 @@ import { IconTrash, IconSettings, IconChevron } from '../icons'
 // Collapsed namespace boxes persist across reloads (keyed by the box's full
 // namespace path, so collapsing "acme/phoenix" doesn't also collapse "acme")
 // so navigation stays where the user left it.
-const COLLAPSE_KEY = 'memini.collapsedTenants'
+const COLLAPSE_KEY = 'memini.collapsedNamespaces'
+// The key was 'memini.collapsedTenants' (with '(no tenant)' as the flat
+// section's sentinel) until the terminology cleanup; fold saved state forward
+// once so collapse preferences survive the upgrade.
+const LEGACY_COLLAPSE_KEY = 'memini.collapsedTenants'
+const LEGACY_FLAT_SECTION = '(no tenant)'
 function loadCollapsed(): Set<string> {
   try {
-    const raw = localStorage.getItem(COLLAPSE_KEY)
+    let raw = localStorage.getItem(COLLAPSE_KEY)
+    if (raw === null) {
+      const legacy = localStorage.getItem(LEGACY_COLLAPSE_KEY)
+      if (legacy !== null) {
+        const keys = (JSON.parse(legacy) as string[]).map((k) => (k === LEGACY_FLAT_SECTION ? FLAT_SECTION : k))
+        raw = JSON.stringify(keys)
+        localStorage.setItem(COLLAPSE_KEY, raw)
+        localStorage.removeItem(LEGACY_COLLAPSE_KEY)
+      }
+    }
     return new Set(raw ? (JSON.parse(raw) as string[]) : [])
   } catch {
     return new Set()
@@ -32,61 +46,61 @@ function saveCollapsed(set: Set<string>) {
 // DRAG_MIME carries the dragged pod's full namespace between dragstart and drop.
 const DRAG_MIME = 'application/x-memini-namespace'
 
-interface Project {
+interface NsEntry {
   name: string // full stored namespace, e.g. "acme/phoenix/api"
   stats: Stats | null
 }
 
-// ProjectNode augments the plain nsTree() shape with the stats for `ns` (when
+// NsTreeNode augments the plain nsTree() shape with the stats for `ns` (when
 // it holds memories of its own) and a recursive `total` across the whole
 // subtree, so a box's header can show an aggregate count without re-walking
 // its children on every render.
-interface ProjectNode {
+interface NsTreeNode {
   ns: string
   label: string // the last path segment ("api" for "acme/phoenix/api")
   leaf: boolean
   stats: Stats | null
   total: number
-  children: ProjectNode[]
+  children: NsTreeNode[]
 }
 
-// projectLeaf is the last path segment of a namespace, or the whole name when
+// nsLeaf is the last path segment of a namespace, or the whole name when
 // it has none. Dropping a pod onto a box re-homes it as "<destNs>/<leaf>" —
 // i.e. it becomes a direct child of the box it was dropped on, regardless of
 // how deep it used to sit under its old parent.
-function projectLeaf(name: string): string {
+function nsLeaf(name: string): string {
   const slash = name.lastIndexOf('/')
   return slash === -1 ? name : name.slice(slash + 1)
 }
 
 // dropTarget computes the namespace a pod becomes when dropped on destNs.
-// An empty destNs (the shared flat section) un-tenants it to a bare leaf.
+// An empty destNs (the shared flat section) un-nests it to a bare leaf.
 // Returns "" when the drop is a no-op (dropped on its own direct parent).
 function dropTarget(draggedName: string, destNs: string): string {
-  const leaf = projectLeaf(draggedName)
+  const leaf = nsLeaf(draggedName)
   const target = destNs ? `${destNs}/${leaf}` : leaf
   return target === draggedName ? '' : target
 }
 
-// buildTree turns the flat project list into the namespace hierarchy (via
+// buildTree turns the flat entry list into the namespace hierarchy (via
 // nsTree), attaching each node's own stats (when it's a real, leaf namespace)
 // and a recursive memory total across its subtree.
-function buildTree(projects: Project[]): ProjectNode[] {
-  const statsByNs = new Map(projects.map((p) => [p.name, p.stats]))
-  const attach = (n: NsNode): ProjectNode => {
+function buildTree(entries: NsEntry[]): NsTreeNode[] {
+  const statsByNs = new Map(entries.map((p) => [p.name, p.stats]))
+  const attach = (n: NsNode): NsTreeNode => {
     const children = n.children.map(attach)
     const stats = n.leaf ? (statsByNs.get(n.ns) ?? null) : null
     const total = (stats?.total ?? 0) + children.reduce((s, c) => s + c.total, 0)
     const slash = n.ns.lastIndexOf('/')
     return { ns: n.ns, label: slash === -1 ? n.ns : n.ns.slice(slash + 1), leaf: n.leaf, stats, total, children }
   }
-  return nsTree(projects.map((p) => p.name)).map(attach)
+  return nsTree(entries.map((p) => p.name)).map(attach)
 }
 
-// countProjects is the number of real (leaf) namespaces in a node's subtree,
+// countNamespaces is the number of real (leaf) namespaces in a node's subtree,
 // including the node itself.
-function countProjects(node: ProjectNode): number {
-  return (node.leaf ? 1 : 0) + node.children.reduce((s, c) => s + countProjects(c), 0)
+function countNamespaces(node: NsTreeNode): number {
+  return (node.leaf ? 1 : 0) + node.children.reduce((s, c) => s + countNamespaces(c), 0)
 }
 
 // ManageTarget is the namespace whose Move/Split drawer is open, optionally with
@@ -96,7 +110,7 @@ interface ManageTarget {
   moveTo?: string
 }
 
-export function Projects() {
+export function Namespaces() {
   const { data, error, loading } = useAsync(async () => {
     const names = await api.namespaces()
     const stats = await Promise.all(names.map((n) => api.statsFor(n).catch(() => null)))
@@ -110,11 +124,11 @@ export function Projects() {
   if (loading && !data) return <div class="view"><Loading /></div>
   if (error) return <div class="view"><ErrorBanner message={error} /></div>
 
-  const projects = data ?? []
-  const tree = buildTree(projects)
+  const entries = data ?? []
+  const tree = buildTree(entries)
   // Only a root node with actual children earns a full box; childless root
   // leaves (flat namespaces like "docs" or "scratch") share one compact
-  // section of plain pods — the pre-tree "(no tenant)" look — instead of each
+  // section of plain pods — the compact "(ungrouped)" look — instead of each
   // spawning a box with a redundant single "(root)" pod inside.
   const boxRoots = tree.filter((n) => n.children.length > 0)
   const flatRoots = tree.filter((n) => n.children.length === 0)
@@ -129,10 +143,10 @@ export function Projects() {
 
   return (
     <div class="view">
-      {projects.length === 0 ? (
-        <Empty title="No projects" hint="Namespaces appear here once they hold memories." />
+      {entries.length === 0 ? (
+        <Empty title="No namespaces" hint="Namespaces appear here once they hold memories." />
       ) : (
-        <div class="tenant-list stagger">
+        <div class="ns-list stagger">
           {boxRoots.map((n) => (
             <NsBox key={n.ns} node={n} onManage={(name) => setManage({ name })} onDropPod={onDropPod} />
           ))}
@@ -149,20 +163,19 @@ export function Projects() {
 }
 
 // FLAT_SECTION keys the shared flat-namespace section's persisted collapse
-// state — the same key the old "(no tenant)" bucket used, so a collapse saved
-// before the tree refactor still applies.
-const FLAT_SECTION = '(no tenant)'
+// state under a sentinel that cannot collide with a real namespace path.
+const FLAT_SECTION = '(ungrouped)'
 
 // FlatSection renders every childless top-level namespace as a plain pod in
-// one shared box, restoring the old compact "(no tenant)" list: three flat
+// one shared box, keeping one compact "(ungrouped)" list: three flat
 // namespaces are three pods in one grid, not three boxes with a redundant
-// "(root)" pod each. Dropping a pod here un-tenants it (bare leaf name).
+// "(root)" pod each. Dropping a pod here un-nests it (bare leaf name).
 function FlatSection({
   nodes,
   onManage,
   onDropPod,
 }: {
-  nodes: ProjectNode[]
+  nodes: NsTreeNode[]
   onManage: (name: string) => void
   onDropPod: (draggedName: string, destNs: string) => void
 }) {
@@ -188,7 +201,7 @@ function FlatSection({
 
   return (
     <section
-      class={`tenant-box${dragOver ? ' drop-target' : ''}${collapsed ? ' collapsed' : ''}`}
+      class={`ns-box${dragOver ? ' drop-target' : ''}${collapsed ? ' collapsed' : ''}`}
       onDragOver={(e) => {
         if (e.dataTransfer?.types.includes(DRAG_MIME)) {
           e.preventDefault()
@@ -207,23 +220,23 @@ function FlatSection({
         e.stopPropagation()
         setDragOver(false)
         const dragged = e.dataTransfer?.getData(DRAG_MIME)
-        // '' destination = un-tenant to the bare leaf (see dropTarget).
+        // '' destination = un-nest to the bare leaf (see dropTarget).
         if (dragged) onDropPod(dragged, '')
       }}
     >
       <button
-        class="tenant-head"
+        class="ns-box-head"
         aria-expanded={!collapsed}
-        aria-label={`${collapsed ? 'Expand' : 'Collapse'} top-level projects`}
+        aria-label={`${collapsed ? 'Expand' : 'Collapse'} ungrouped namespaces`}
         onClick={toggle}
       >
-        <span class={`tenant-chevron${collapsed ? ' collapsed' : ''}`} aria-hidden="true">
+        <span class={`ns-box-chevron${collapsed ? ' collapsed' : ''}`} aria-hidden="true">
           <IconChevron />
         </span>
-        <span class="tenant-name">{FLAT_SECTION}</span>
-        <span class="tenant-count">
+        <span class="ns-box-name">{FLAT_SECTION}</span>
+        <span class="ns-box-count">
           <span class="v">{num(total)}</span> memories · {nodes.length}{' '}
-          {nodes.length === 1 ? 'project' : 'projects'}
+          {nodes.length === 1 ? 'namespace' : 'namespaces'}
         </span>
       </button>
       {!collapsed && (
@@ -247,7 +260,7 @@ function NsBox({
   onManage,
   onDropPod,
 }: {
-  node: ProjectNode
+  node: NsTreeNode
   onManage: (name: string) => void
   onDropPod: (draggedName: string, destNs: string) => void
 }) {
@@ -273,11 +286,11 @@ function NsBox({
   // children that themselves have children recurse into nested boxes.
   const podChildren = node.children.filter((c) => c.children.length === 0)
   const boxChildren = node.children.filter((c) => c.children.length > 0)
-  const projectCount = countProjects(node)
+  const nsCount = countNamespaces(node)
 
   return (
     <section
-      class={`tenant-box${dragOver ? ' drop-target' : ''}${collapsed ? ' collapsed' : ''}`}
+      class={`ns-box${dragOver ? ' drop-target' : ''}${collapsed ? ' collapsed' : ''}`}
       onDragOver={(e) => {
         // preventDefault marks this a valid drop target; without it onDrop never fires.
         if (e.dataTransfer?.types.includes(DRAG_MIME)) {
@@ -307,18 +320,18 @@ function NsBox({
       }}
     >
       <button
-        class="tenant-head"
+        class="ns-box-head"
         aria-expanded={!collapsed}
         aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${node.ns}`}
         onClick={toggle}
       >
-        <span class={`tenant-chevron${collapsed ? ' collapsed' : ''}`} aria-hidden="true">
+        <span class={`ns-box-chevron${collapsed ? ' collapsed' : ''}`} aria-hidden="true">
           <IconChevron />
         </span>
-        <span class="tenant-name">{node.label}</span>
-        <span class="tenant-count">
-          <span class="v">{num(node.total)}</span> memories · {projectCount}{' '}
-          {projectCount === 1 ? 'project' : 'projects'}
+        <span class="ns-box-name">{node.label}</span>
+        <span class="ns-box-count">
+          <span class="v">{num(node.total)}</span> memories · {nsCount}{' '}
+          {nsCount === 1 ? 'namespace' : 'namespaces'}
         </span>
       </button>
       {!collapsed && (node.leaf || podChildren.length > 0) && (
@@ -332,7 +345,7 @@ function NsBox({
         </div>
       )}
       {!collapsed && boxChildren.length > 0 && (
-        <div class="tenant-list nested">
+        <div class="ns-list nested">
           {boxChildren.map((c) => (
             <NsBox key={c.ns} node={c} onManage={onManage} onDropPod={onDropPod} />
           ))}

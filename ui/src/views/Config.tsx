@@ -13,7 +13,7 @@ import type {
   ClientSettings,
   HandshakeRequest,
   HandshakeResponse,
-  ProjectMapEntry,
+  Pin,
 } from '../types'
 
 // Config is the server-side configuration surface (Phase 8): every
@@ -406,7 +406,7 @@ function PinRow({
   onChanged,
   onError,
 }: {
-  pin: ProjectMapEntry
+  pin: Pin
   onChanged: () => void
   onError: (e: string | null) => void
 }) {

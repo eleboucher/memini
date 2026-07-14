@@ -14,10 +14,10 @@ import type {
   Level,
   ListResponse,
   Memory,
-  ProjectMapDeleteRequest,
-  ProjectMapEntry,
-  ProjectMapListResponse,
-  ProjectMapPutRequest,
+  PinDeleteRequest,
+  Pin,
+  PinListResponse,
+  PinPutRequest,
   SelfResponse,
   SettingsDefaultsResponse,
   SortKey,
@@ -47,7 +47,7 @@ export class ApiError extends Error {
 function headers(extra?: Record<string, string>, ns?: string): Record<string, string> {
   const h: Record<string, string> = { ...extra }
   // An explicit ns overrides the active namespace (used to scope a request to a
-  // specific project without switching the global selection).
+  // specific namespace without switching the global selection).
   const effective = ns ?? namespace.value
   if (effective) h[namespaceHeader.value] = effective
   // The server bearer-gates /v1, /mcp and /metrics when MEMINI_API_KEY is set;
@@ -142,7 +142,7 @@ export interface ListParams {
   sort?: SortKey
   order?: SortOrder
   limit?: number
-  // namespaces narrows an "All projects" listing; ignored when a namespace is
+  // namespaces narrows an "All namespaces" listing; ignored when a namespace is
   // active (scopedList doesn't send it — the header already scopes the request).
   namespaces?: string[]
 }
@@ -188,7 +188,7 @@ function fetchActivity(p: ActivityParams): Promise<ActivityResponse> {
   if (p.since) q.set('since', p.since)
   if (p.limit) q.set('limit', String(p.limit))
   if (p.before) q.set('before', p.before)
-  if (isAllProjects()) {
+  if (isAllNamespaces()) {
     q.set('all_namespaces', 'true')
     p.namespaces?.forEach((n) => q.append('namespace', n))
   }
@@ -196,9 +196,9 @@ function fetchActivity(p: ActivityParams): Promise<ActivityResponse> {
   return req<ActivityResponse>('GET', '/v1/activity' + (qs ? `?${qs}` : ''))
 }
 
-// isAllProjects reports the "All projects" aggregate mode: the active namespace
+// isAllNamespaces reports the "All namespaces" aggregate mode: the active namespace
 // is unset, so reads fan out across every namespace and merge client-side.
-export function isAllProjects(): boolean {
+export function isAllNamespaces(): boolean {
   return namespace.value === ''
 }
 
@@ -245,10 +245,10 @@ interface SearchOpts {
   limit?: number
 }
 
-// ---- "All projects" aggregation -------------------------------------------
+// ---- "All namespaces" aggregation -------------------------------------------
 // stats/list aggregate server-side via all_namespaces=true: one request, with
 // the server merging namespaces and applying limit as a single global cap. (No
-// namespace header is sent in "All projects" mode, so the server spans tenants.)
+// namespace header is sent in "All namespaces" mode, so the server spans namespaces.)
 // search still fans out and merges client-side — see searchAll.
 
 function statsAll(): Promise<Stats> {
@@ -289,19 +289,19 @@ function listNamespaces() {
 }
 
 export const api = {
-  // Active-namespace aware: aggregate across all projects when "All projects"
+  // Active-namespace aware: aggregate across all namespaces when "All namespaces"
   // is selected, otherwise scope to the active namespace.
-  stats: () => (isAllProjects() ? statsAll() : scopedStats()),
-  list: (p: ListParams = {}) => (isAllProjects() ? listAll(p) : scopedList(p)),
+  stats: () => (isAllNamespaces() ? statsAll() : scopedStats()),
+  list: (p: ListParams = {}) => (isAllNamespaces() ? listAll(p) : scopedList(p)),
   search: (query: string, opts: SearchOpts = {}) =>
-    isAllProjects() ? searchAll(query, opts) : scopedSearch(query, opts),
+    isAllNamespaces() ? searchAll(query, opts) : scopedSearch(query, opts),
 
-  // activity is namespace-aware via the header, or aggregates in All-projects
+  // activity is namespace-aware via the header, or aggregates in All-namespaces
   // mode; see fetchActivity.
   activity: (p: ActivityParams = {}) => fetchActivity(p),
 
   // statsFor fetches stats for one explicit namespace, ignoring the active
-  // selection. Backs the Projects landing.
+  // selection. Backs the Namespaces landing.
   statsFor: (ns: string) => scopedStats(ns),
 
   namespaces: listNamespaces,
@@ -331,7 +331,7 @@ export const api = {
     ),
 
   // reassignMemory moves a single memory to `to`. It must scope to the memory's
-  // own namespace (like remove) so "All projects" mode targets the right record
+  // own namespace (like remove) so "All namespaces" mode targets the right record
   // rather than the server default; the source namespace is the request header.
   reassignMemory: (id: string, to: string, ns?: string) =>
     req<{ moved: number }>(
@@ -343,7 +343,7 @@ export const api = {
 
   get: (id: string, ns?: string) => req<Memory>('GET', `/v1/memories/${encodeURIComponent(id)}`, undefined, ns),
 
-  // remove must scope to the memory's own namespace: in "All projects" mode the
+  // remove must scope to the memory's own namespace: in "All namespaces" mode the
   // active namespace is empty, so without this the server would fall back to
   // its default namespace and delete the wrong record (or 404).
   remove: (id: string, ns?: string) =>
@@ -374,13 +374,13 @@ export const api = {
   fsck: () => req<FsckReport>('POST', '/v1/fsck'),
 
   // dedup collapses near-duplicate memories. It scopes to the active namespace
-  // via the request header; in "All projects" mode there's no active namespace,
+  // via the request header; in "All namespaces" mode there's no active namespace,
   // so it runs store-wide. dryRun previews the clusters without tombstoning.
   dedup: (opts: { similarity?: number; dryRun?: boolean } = {}) => {
     const body: DedupRequest = {}
     if (opts.similarity != null) body.similarity = opts.similarity
     if (opts.dryRun != null) body.dry_run = opts.dryRun
-    if (isAllProjects()) body.all_namespaces = true
+    if (isAllNamespaces()) body.all_namespaces = true
     return req<DedupReport>('POST', '/v1/dedup', body)
   },
 
@@ -425,12 +425,12 @@ export const api = {
   putSettingsDefaults: (body: Partial<ClientSettings>) =>
     req<ClientSettings>('PUT', '/v1/settings/defaults', body),
 
-  listPins: () => req<ProjectMapListResponse>('GET', '/v1/pins').then((r) => r.entries ?? []),
+  listPins: () => req<PinListResponse>('GET', '/v1/pins').then((r) => r.entries ?? []),
 
-  putPin: (body: ProjectMapPutRequest) => req<ProjectMapEntry>('PUT', '/v1/pins', body),
+  putPin: (body: PinPutRequest) => req<Pin>('PUT', '/v1/pins', body),
 
   // deletePin identifies the pin to remove by remote_url/toplevel_path in
   // the body (there's no synthetic ID) — parsePinKey (util.ts) recovers
   // those facts from a listed entry's combined `key` string.
-  deletePin: (body: ProjectMapDeleteRequest) => req<void>('DELETE', '/v1/pins', body),
+  deletePin: (body: PinDeleteRequest) => req<void>('DELETE', '/v1/pins', body),
 }

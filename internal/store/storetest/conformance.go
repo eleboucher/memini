@@ -54,7 +54,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("NamespaceLinks", func(t *testing.T) { testNamespaceLinks(t, st, dims) })
 	t.Run("NamespaceActivity", func(t *testing.T) { testNamespaceActivity(t, st, dims) })
 	t.Run("APIKeys", func(t *testing.T) { testAPIKeys(t, st, dims) })
-	t.Run("ProjectMap", func(t *testing.T) { testProjectMap(t, st, dims) })
+	t.Run("Pins", func(t *testing.T) { testPin(t, st, dims) })
 	t.Run("ClientSettings", func(t *testing.T) { testClientSettings(t, st, dims) })
 	t.Run("ListSort", func(t *testing.T) { testListSort(t, st, dims) })
 	t.Run("MemoryTypeFilter", func(t *testing.T) { testMemoryTypeFilter(t, st, dims) })
@@ -2648,48 +2648,48 @@ func apiKeyHash(seed string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// testProjectMap covers store.ProjectMapStore, the config-handshake
+// testPin covers store.PinStore, the config-handshake
 // redesign's project→namespace pin table. It is an optional capability
 // interface (the APIKeyStore precedent), so a driver that predates it skips
 // cleanly.
-func testProjectMap(t *testing.T, st store.Store, dims int) {
+func testPin(t *testing.T, st store.Store, dims int) {
 	_ = dims // pins carry no embedding; kept for signature parity with the other subtests
-	pm, ok := st.(store.ProjectMapStore)
+	pm, ok := st.(store.PinStore)
 	if !ok {
-		t.Skip("store does not implement store.ProjectMapStore")
+		t.Skip("store does not implement store.PinStore")
 	}
 	ns := t.Name()
-	t.Run("UpsertRoundTripBothKeyKinds", func(t *testing.T) { testProjectMapRoundTrip(t, pm, ns) })
-	t.Run("UpdatePreservesCreatedAtAndCreatedBy", func(t *testing.T) { testProjectMapUpdatePreservesCreated(t, pm, ns) })
-	t.Run("DeleteReturnsAccurateCount", func(t *testing.T) { testProjectMapDelete(t, pm, ns) })
-	t.Run("ListStableOrder", func(t *testing.T) { testProjectMapListOrder(t, pm, ns) })
-	t.Run("RenameExactMatchOnly", func(t *testing.T) { testProjectMapRename(t, pm, ns) })
-	t.Run("MultiEntryPutIsAtomic", func(t *testing.T) { testProjectMapAtomicPut(t, pm, ns) })
+	t.Run("UpsertRoundTripBothKeyKinds", func(t *testing.T) { testPinRoundTrip(t, pm, ns) })
+	t.Run("UpdatePreservesCreatedAtAndCreatedBy", func(t *testing.T) { testPinUpdatePreservesCreated(t, pm, ns) })
+	t.Run("DeleteReturnsAccurateCount", func(t *testing.T) { testPinDelete(t, pm, ns) })
+	t.Run("ListStableOrder", func(t *testing.T) { testPinListOrder(t, pm, ns) })
+	t.Run("RenameExactMatchOnly", func(t *testing.T) { testPinRename(t, pm, ns) })
+	t.Run("MultiEntryPutIsAtomic", func(t *testing.T) { testPinAtomicPut(t, pm, ns) })
 }
 
-// testProjectMapRoundTrip covers PutProjectMapEntries/GetProjectMapEntries
+// testPinRoundTrip covers PutPins/GetPins
 // round-tripping both key shapes ("remote:<canonical>" and
 // "path:<absolute-toplevel>") in a single call.
-func testProjectMapRoundTrip(t *testing.T, pm store.ProjectMapStore, ns string) {
+func testPinRoundTrip(t *testing.T, pm store.PinStore, ns string) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	remoteKey := "remote:" + ns + "-rt-github.com-acme-widgets"
 	pathKey := "path:/srv/" + ns + "-rt-bare-repo"
-	entries := []store.ProjectMapEntry{
+	entries := []store.Pin{
 		{Key: remoteKey, Namespace: ns + "/widgets", Note: "pinned by ops", CreatedBy: "ci-bot", CreatedAt: now, UpdatedAt: now},
 		{Key: pathKey, Namespace: ns + "/bare", Note: "", CreatedBy: "", CreatedAt: now, UpdatedAt: now},
 	}
-	if err := pm.PutProjectMapEntries(ctx, entries); err != nil {
+	if err := pm.PutPins(ctx, entries); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	got, err := pm.GetProjectMapEntries(ctx, []string{remoteKey, pathKey})
+	got, err := pm.GetPins(ctx, []string{remoteKey, pathKey})
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("get = %d entries, want 2", len(got))
 	}
-	byKey := make(map[string]store.ProjectMapEntry, len(got))
+	byKey := make(map[string]store.Pin, len(got))
 	for _, e := range got {
 		byKey[e.Key] = e
 	}
@@ -2710,17 +2710,17 @@ func testProjectMapRoundTrip(t *testing.T, pm store.ProjectMapStore, ns string) 
 	}
 }
 
-// testProjectMapUpdatePreservesCreated pins the deliberate semantic choice
-// documented on store.ProjectMapStore.PutProjectMapEntries: a second Put for
+// testPinUpdatePreservesCreated pins the deliberate semantic choice
+// documented on store.PinStore.PutPins: a second Put for
 // the same Key updates Namespace/Note/UpdatedAt but preserves the row's
 // original CreatedAt/CreatedBy even when the second call passes different
 // values for them — a pin's provenance is fixed at creation.
-func testProjectMapUpdatePreservesCreated(t *testing.T, pm store.ProjectMapStore, ns string) {
+func testPinUpdatePreservesCreated(t *testing.T, pm store.PinStore, ns string) {
 	ctx := context.Background()
 	key := "remote:" + ns + "-upd-github.com-acme-widgets"
 	created := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Millisecond)
 	firstUpdate := created.Add(time.Hour)
-	if err := pm.PutProjectMapEntries(ctx, []store.ProjectMapEntry{
+	if err := pm.PutPins(ctx, []store.Pin{
 		{Key: key, Namespace: ns + "/orig", Note: "first", CreatedBy: "alice", CreatedAt: created, UpdatedAt: firstUpdate},
 	}); err != nil {
 		t.Fatalf("put (insert): %v", err)
@@ -2729,7 +2729,7 @@ func testProjectMapUpdatePreservesCreated(t *testing.T, pm store.ProjectMapStore
 	secondUpdate := firstUpdate.Add(time.Hour)
 	// Deliberately different CreatedAt/CreatedBy on the update, to prove the
 	// store ignores them once the row exists.
-	if err := pm.PutProjectMapEntries(ctx, []store.ProjectMapEntry{
+	if err := pm.PutPins(ctx, []store.Pin{
 		{
 			Key: key, Namespace: ns + "/updated", Note: "second", CreatedBy: "mallory",
 			CreatedAt: time.Now().UTC(), UpdatedAt: secondUpdate,
@@ -2738,7 +2738,7 @@ func testProjectMapUpdatePreservesCreated(t *testing.T, pm store.ProjectMapStore
 		t.Fatalf("put (update): %v", err)
 	}
 
-	got, err := pm.GetProjectMapEntries(ctx, []string{key})
+	got, err := pm.GetPins(ctx, []string{key})
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -2760,22 +2760,22 @@ func testProjectMapUpdatePreservesCreated(t *testing.T, pm store.ProjectMapStore
 	}
 }
 
-// testProjectMapDelete covers DeleteProjectMapEntries' accurate-count return,
+// testPinDelete covers DeletePins' accurate-count return,
 // including 0 for a batch of entirely-missing keys.
-func testProjectMapDelete(t *testing.T, pm store.ProjectMapStore, ns string) {
+func testPinDelete(t *testing.T, pm store.PinStore, ns string) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	k1 := "path:/srv/" + ns + "-del-1"
 	k2 := "path:/srv/" + ns + "-del-2"
 	missing := "path:/srv/" + ns + "-del-missing"
-	if err := pm.PutProjectMapEntries(ctx, []store.ProjectMapEntry{
+	if err := pm.PutPins(ctx, []store.Pin{
 		{Key: k1, Namespace: ns + "/d1", CreatedAt: now, UpdatedAt: now},
 		{Key: k2, Namespace: ns + "/d2", CreatedAt: now, UpdatedAt: now},
 	}); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 
-	n, err := pm.DeleteProjectMapEntries(ctx, []string{k1, missing})
+	n, err := pm.DeletePins(ctx, []string{k1, missing})
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -2783,7 +2783,7 @@ func testProjectMapDelete(t *testing.T, pm store.ProjectMapStore, ns string) {
 		t.Fatalf("delete count = %d, want 1 (one real key, one already-missing)", n)
 	}
 
-	n, err = pm.DeleteProjectMapEntries(ctx, []string{missing})
+	n, err = pm.DeletePins(ctx, []string{missing})
 	if err != nil {
 		t.Fatalf("delete (all missing): %v", err)
 	}
@@ -2791,7 +2791,7 @@ func testProjectMapDelete(t *testing.T, pm store.ProjectMapStore, ns string) {
 		t.Fatalf("delete count (all missing) = %d, want 0", n)
 	}
 
-	got, err := pm.GetProjectMapEntries(ctx, []string{k1, k2})
+	got, err := pm.GetPins(ctx, []string{k1, k2})
 	if err != nil {
 		t.Fatalf("get after delete: %v", err)
 	}
@@ -2800,9 +2800,9 @@ func testProjectMapDelete(t *testing.T, pm store.ProjectMapStore, ns string) {
 	}
 }
 
-// testProjectMapListOrder covers ListProjectMapEntries returning a stable
+// testPinListOrder covers ListPins returning a stable
 // order (by Key) across both key shapes.
-func testProjectMapListOrder(t *testing.T, pm store.ProjectMapStore, ns string) {
+func testPinListOrder(t *testing.T, pm store.PinStore, ns string) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	keys := []string{
@@ -2810,14 +2810,14 @@ func testProjectMapListOrder(t *testing.T, pm store.ProjectMapStore, ns string) 
 		"remote:" + ns + "-list-a",
 		"path:/srv/" + ns + "-list-b",
 	}
-	entries := make([]store.ProjectMapEntry, 0, len(keys))
+	entries := make([]store.Pin, 0, len(keys))
 	for _, k := range keys {
-		entries = append(entries, store.ProjectMapEntry{Key: k, Namespace: ns + "/x", CreatedAt: now, UpdatedAt: now})
+		entries = append(entries, store.Pin{Key: k, Namespace: ns + "/x", CreatedAt: now, UpdatedAt: now})
 	}
-	if err := pm.PutProjectMapEntries(ctx, entries); err != nil {
+	if err := pm.PutPins(ctx, entries); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	all, err := pm.ListProjectMapEntries(ctx)
+	all, err := pm.ListPins(ctx)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -2841,10 +2841,10 @@ func testProjectMapListOrder(t *testing.T, pm store.ProjectMapStore, ns string) 
 	}
 }
 
-// testProjectMapRename covers RenameProjectMapNamespaces' exact-match
+// testPinRename covers RenamePinNamespaces' exact-match
 // semantics: a namespace that merely looks alike (e.g. "memini2" against
 // from="memini") must not be touched.
-func testProjectMapRename(t *testing.T, pm store.ProjectMapStore, ns string) {
+func testPinRename(t *testing.T, pm store.PinStore, ns string) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	from := ns + "-ren-memini"
@@ -2853,22 +2853,22 @@ func testProjectMapRename(t *testing.T, pm store.ProjectMapStore, ns string) {
 
 	k1 := "remote:" + ns + "-ren-a"
 	k2 := "path:/srv/" + ns + "-ren-b"
-	if err := pm.PutProjectMapEntries(ctx, []store.ProjectMapEntry{
+	if err := pm.PutPins(ctx, []store.Pin{
 		{Key: k1, Namespace: from, CreatedAt: now, UpdatedAt: now},
 		{Key: k2, Namespace: similar, CreatedAt: now, UpdatedAt: now},
 	}); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 
-	if err := pm.RenameProjectMapNamespaces(ctx, from, to); err != nil {
+	if err := pm.RenamePinNamespaces(ctx, from, to); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
 
-	got, err := pm.GetProjectMapEntries(ctx, []string{k1, k2})
+	got, err := pm.GetPins(ctx, []string{k1, k2})
 	if err != nil {
 		t.Fatalf("get after rename: %v", err)
 	}
-	byKey := make(map[string]store.ProjectMapEntry, len(got))
+	byKey := make(map[string]store.Pin, len(got))
 	for _, e := range got {
 		byKey[e.Key] = e
 	}
@@ -2880,20 +2880,20 @@ func testProjectMapRename(t *testing.T, pm store.ProjectMapStore, ns string) {
 	}
 }
 
-// testProjectMapAtomicPut covers PutProjectMapEntries writing a multi-entry
+// testPinAtomicPut covers PutPins writing a multi-entry
 // batch in a single transaction: both rows must land together.
-func testProjectMapAtomicPut(t *testing.T, pm store.ProjectMapStore, ns string) {
+func testPinAtomicPut(t *testing.T, pm store.PinStore, ns string) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	k1 := "remote:" + ns + "-atomic-1"
 	k2 := "path:/srv/" + ns + "-atomic-2"
-	if err := pm.PutProjectMapEntries(ctx, []store.ProjectMapEntry{
+	if err := pm.PutPins(ctx, []store.Pin{
 		{Key: k1, Namespace: ns + "/a1", CreatedAt: now, UpdatedAt: now},
 		{Key: k2, Namespace: ns + "/a2", CreatedAt: now, UpdatedAt: now},
 	}); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	got, err := pm.GetProjectMapEntries(ctx, []string{k1, k2})
+	got, err := pm.GetPins(ctx, []string{k1, k2})
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}

@@ -41,7 +41,7 @@ type AuthConfig struct {
 	// before APIKeyStore — see apiauth.Config.Authenticate. nil (the default)
 	// means the feature is unused, matching a server built before it existed.
 	FileKeys *apiauth.FileKeySet
-	// NamespaceHeader names the request header carrying the tenant namespace.
+	// NamespaceHeader names the request header carrying the per-request namespace.
 	NamespaceHeader string
 	// DefaultNamespace is used when the header is absent and the
 	// authenticated key (if any) carries no per-key default either.
@@ -89,7 +89,7 @@ type AuthConfig struct {
 	keyAuth apiauth.Config
 }
 
-// namespaceMiddleware resolves the tenant namespace and stores it on the
+// namespaceMiddleware resolves the per-request namespace and stores it on the
 // request context. Returns 400 when the header is present but contains an
 // invalid value.
 //
@@ -110,7 +110,7 @@ func (a AuthConfig) namespaceMiddleware(next http.Handler) http.Handler {
 		// Canonicalize the header (trim spaces, strip surrounding slashes,
 		// collapse "//") so "work/_shared/" and "work/_shared" address the same
 		// rows, ListNamespaces never splits into non-canonical duplicates, and
-		// the tenant-shared self-merge guard (which compares against the
+		// the legacy shared-namespace self-merge guard (which compares against the
 		// canonical "<tenant>/_shared") holds. Matches how the server derives
 		// its own default namespace (config.sanitizeNamespacePath).
 		ns := httputil.NormalizeNamespace(r.Header.Get(a.NamespaceHeader))

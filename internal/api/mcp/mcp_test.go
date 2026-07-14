@@ -64,7 +64,7 @@ func openStore(t *testing.T) store.Store {
 // override argument (gap G3: addressing vs. choosing), a test that needs
 // fixture data in more than one namespace opens one connectAt per namespace
 // — each writes to ITS OWN primary — sharing the same underlying svc/store,
-// exactly mirroring how the real deployment has one server per tenant.
+// exactly mirroring how the real deployment has one server per namespace.
 func connectAt(t *testing.T, svc *service.Service, ns, home string) *mcpsdk.ClientSession {
 	t.Helper()
 	srv := meminimcp.NewServer(svc, ns, home, "", "none")
@@ -1215,7 +1215,7 @@ func TestListToolDefaultLimitAndOffset(t *testing.T) {
 }
 
 // TestInvalidNamespaceIsRejected pins that an addressing tool's namespace
-// argument is validated, never silently rerouted to the default tenant.
+// argument is validated, never silently rerouted to the default namespace.
 // memory_remember/recall/briefing have no namespace argument at all (gap
 // G3: it's addressing-only now); memory_get/update/forget/list still take
 // one, since the LLM copies it verbatim from a prior recall/list result.
@@ -1229,7 +1229,7 @@ func TestInvalidNamespaceIsRejected(t *testing.T) {
 		t.Fatalf("transport: %v", err)
 	}
 	if !res.IsError {
-		t.Fatal("over-long namespace must error, never fall back to the default tenant")
+		t.Fatal("over-long namespace must error, never fall back to the default namespace")
 	}
 }
 
@@ -1237,7 +1237,7 @@ func TestInvalidNamespaceIsRejected(t *testing.T) {
 // rejected with 400 on the HTTP surface (matching REST) — with and without an
 // API key configured. The keyless case matters most: the pre-fix code returned
 // the inner handler directly when no key was set, silently routing invalid
-// namespaces to the default tenant.
+// namespaces to the default namespace.
 func TestHTTPHandlerNamespaceHeader(t *testing.T) {
 	ctx := context.Background()
 	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "ns.db"), dims)
@@ -1269,7 +1269,7 @@ func TestHTTPHandlerNamespaceHeader(t *testing.T) {
 		if got := req(h, badNS, "").Code; got != http.StatusBadRequest {
 			t.Errorf("invalid namespace without auth: got %d, want 400", got)
 		}
-		if got := req(h, "tenant-a", "").Code; got == http.StatusBadRequest {
+		if got := req(h, "team-a", "").Code; got == http.StatusBadRequest {
 			t.Errorf("valid namespace: got 400, want it to pass")
 		}
 	})

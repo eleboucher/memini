@@ -137,7 +137,7 @@ Browse memories without a query — filter by tier, tags, or metadata (e.g. all 
 | `levels` | string[] |  | restrict to levels (explicit/deduced); empty means all. One of `explicit`, `deduced`. |
 | `limit` | integer |  | max results (default 20, newest first) |
 | `metadata` | object |  | only memories whose metadata has each key=value pair (AND) |
-| `namespace` | string |  | tenant namespace; defaults to the server namespace |
+| `namespace` | string |  | namespace; defaults to the server namespace |
 | `offset` | integer |  | skip this many results for paging |
 | `tags` | string[] |  | only memories carrying every listed tag (AND) |
 | `tiers` | string[] |  | restrict to tiers (working/episodic/semantic/procedural); empty means all. One of `working`, `episodic`, `semantic`, `procedural`. |
@@ -151,7 +151,7 @@ Fetch one memory with full metadata, tags, and timestamps by ID (ids come from m
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | string | yes | the memory ID |
-| `namespace` | string |  | tenant namespace; defaults to the server namespace |
+| `namespace` | string |  | namespace; defaults to the server namespace |
 
 ## `memory_history`
 
@@ -162,7 +162,7 @@ Trace the bi-temporal supersession lineage of a memory by ID: the fact itself pl
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | string | yes | the memory ID |
-| `namespace` | string |  | tenant namespace; defaults to the server namespace |
+| `namespace` | string |  | namespace; defaults to the server namespace |
 
 ## `memory_update`
 
@@ -177,7 +177,7 @@ Update fields of an existing memory by ID (partial: only provided fields change;
 | `content` | string |  | replacement content; omit to keep |
 | `importance` | number |  | 0..1; omit to keep |
 | `metadata` | object |  | merged into existing metadata key-by-key |
-| `namespace` | string |  | tenant namespace; defaults to the server namespace |
+| `namespace` | string |  | namespace; defaults to the server namespace |
 | `summary` | string |  | replacement summary; omit to keep |
 | `tags` | string[] |  | replacement tag set; omit to keep |
 | `tier` | string |  | move to this tier; omit to keep. One of `working`, `episodic`, `semantic`, `procedural`. |
@@ -191,5 +191,5 @@ Permanently delete a memory by ID — use for wrong, outdated, or unwanted memor
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | string | yes | the memory ID |
-| `namespace` | string |  | tenant namespace; defaults to the server namespace |
+| `namespace` | string |  | namespace; defaults to the server namespace |
 

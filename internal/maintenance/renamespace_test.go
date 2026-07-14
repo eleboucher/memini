@@ -60,7 +60,7 @@ func TestSplitRecoversPooledNamespaces(t *testing.T) {
 		t.Fatal("dry-run must not move anything")
 	}
 
-	// Apply, then assert isolation: each tenant's memories live in their own ns.
+	// Apply, then assert isolation: each group's memories live in their own namespace.
 	rep, err := maintenance.Split(ctx, st, "pool", nil, false)
 	if err != nil {
 		t.Fatalf("split: %v", err)
@@ -295,13 +295,13 @@ func TestMoveReportsMovedOnAPIKeyRenameFailure(t *testing.T) {
 	}
 }
 
-// TestMoveRenamesProjectMapNamespaces is the config-handshake companion to
-// TestMoveRenamesAPIKeyNamespaces: Move rewrites project_map pins whose
+// TestMoveRenamesPinNamespaces is the config-handshake companion to
+// TestMoveRenamesAPIKeyNamespaces: Move rewrites pins whose
 // namespace matches the moved namespace (exactly — a namespace that merely
 // starts with fromNS is untouched), since a pin is keyed by project identity,
 // not memory ID, so Reassign never relocates it. Without this, a handshake for
 // the moved project would keep resolving to the now-empty old namespace.
-func TestMoveRenamesProjectMapNamespaces(t *testing.T) {
+func TestMoveRenamesPinNamespaces(t *testing.T) {
 	ctx := context.Background()
 	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "m.db"), 4)
 	if err != nil {
@@ -311,25 +311,25 @@ func TestMoveRenamesProjectMapNamespaces(t *testing.T) {
 
 	seedPooled(t, st, "old", map[string]string{"x": ""})
 
-	var pms store.ProjectMapStore = st
-	if err := pms.PutProjectMapEntries(ctx, []store.ProjectMapEntry{
+	var pms store.PinStore = st
+	if err := pms.PutPins(ctx, []store.Pin{
 		{Key: "remote:github.com/acme/app", Namespace: "old"},
 		{Key: "path:/srv/app", Namespace: "old"},
 		{Key: "remote:github.com/acme/other", Namespace: "other"},
 		{Key: "remote:github.com/acme/prefix", Namespace: "oldish"}, // starts with "old" but isn't it
 	}); err != nil {
-		t.Fatalf("put project map entries: %v", err)
+		t.Fatalf("put pins: %v", err)
 	}
 
 	if _, err := maintenance.Move(ctx, st, "old", "new", false); err != nil {
 		t.Fatalf("move: %v", err)
 	}
 
-	all, err := pms.ListProjectMapEntries(ctx)
+	all, err := pms.ListPins(ctx)
 	if err != nil {
-		t.Fatalf("list project map entries: %v", err)
+		t.Fatalf("list pins: %v", err)
 	}
-	byKey := map[string]store.ProjectMapEntry{}
+	byKey := map[string]store.Pin{}
 	for _, e := range all {
 		byKey[e.Key] = e
 	}
@@ -347,21 +347,21 @@ func TestMoveRenamesProjectMapNamespaces(t *testing.T) {
 	}
 }
 
-// failProjectMapRenameStore wraps a real store but fails
-// RenameProjectMapNamespaces, mirroring failAPIKeyRenameStore above.
-type failProjectMapRenameStore struct {
+// failPinRenameStore wraps a real store but fails
+// RenamePinNamespaces, mirroring failAPIKeyRenameStore above.
+type failPinRenameStore struct {
 	store.Store
-	store.ProjectMapStore
+	store.PinStore
 }
 
-func (f *failProjectMapRenameStore) RenameProjectMapNamespaces(context.Context, string, string) error {
-	return errors.New("simulated project map rename failure")
+func (f *failPinRenameStore) RenamePinNamespaces(context.Context, string, string) error {
+	return errors.New("simulated pin rename failure")
 }
 
-// TestMoveReportsMovedOnProjectMapRenameFailure mirrors the link/api-key
-// partial-failure tests: a RenameProjectMapNamespaces error must surface
+// TestMoveReportsMovedOnPinRenameFailure mirrors the link/api-key
+// partial-failure tests: a RenamePinNamespaces error must surface
 // alongside the true moved count, since Reassign has already committed.
-func TestMoveReportsMovedOnProjectMapRenameFailure(t *testing.T) {
+func TestMoveReportsMovedOnPinRenameFailure(t *testing.T) {
 	ctx := context.Background()
 	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "m.db"), 4)
 	if err != nil {
@@ -371,14 +371,14 @@ func TestMoveReportsMovedOnProjectMapRenameFailure(t *testing.T) {
 
 	seedPooled(t, st, "old", map[string]string{"x": "", "y": ""})
 
-	var pms store.ProjectMapStore = st
-	frs := &failProjectMapRenameStore{Store: st, ProjectMapStore: pms}
+	var pms store.PinStore = st
+	frs := &failPinRenameStore{Store: st, PinStore: pms}
 	rep, err := maintenance.Move(ctx, frs, "old", "new", false)
 	if err == nil {
-		t.Fatal("move with a failing project map rename should return the error")
+		t.Fatal("move with a failing pin rename should return the error")
 	}
 	if rep.Moved != 2 || rep.Targets["new"] != 2 {
-		t.Fatalf("report = %+v, want Moved=2 Targets[new]=2 despite the project map rename error", rep)
+		t.Fatalf("report = %+v, want Moved=2 Targets[new]=2 despite the pin rename error", rep)
 	}
 	mems, err := st.List(ctx, "new", store.Filter{IncludeSuperseded: true, IncludeExpired: true}, 0)
 	if err != nil {

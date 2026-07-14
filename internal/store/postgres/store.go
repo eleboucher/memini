@@ -189,10 +189,42 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_ns_time ON memory_events(namespace, created_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_time ON memory_events(created_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_memory ON memory_events(memory_id)`,
-		// project_map records project→namespace pins (see store.ProjectMapStore,
+		// pins was named project_map until the terminology cleanup; rename an
+		// existing table and its index in place, before the CREATE below can
+		// plant a fresh empty pins next to it, so old installs keep their
+		// rows. The exception guard tolerates a concurrent migrate (another
+		// replica or the CLI) winning the rename between the check and the
+		// ALTER. If both tables exist — an old binary re-created project_map
+		// after the rename (a rollback window) and may have written pins into
+		// it — the stray's rows are folded into pins and the stray dropped,
+		// so no pin silently vanishes; on a key conflict the stray row wins
+		// (the later write, the same last-write-wins rule as PutPins) while
+		// created_at/created_by keep the pins row's values, as PutPins does.
+		`DO $$
+		BEGIN
+			IF to_regclass('project_map') IS NOT NULL AND to_regclass('pins') IS NULL THEN
+				BEGIN
+					ALTER TABLE project_map RENAME TO pins;
+				EXCEPTION WHEN undefined_table OR duplicate_table THEN
+					NULL;
+				END;
+				IF to_regclass('idx_project_map_ns') IS NOT NULL AND to_regclass('idx_pins_ns') IS NULL THEN
+					ALTER INDEX idx_project_map_ns RENAME TO idx_pins_ns;
+				END IF;
+			END IF;
+			IF to_regclass('project_map') IS NOT NULL AND to_regclass('pins') IS NOT NULL THEN
+				INSERT INTO pins (key, namespace, note, created_by, created_at, updated_at)
+					SELECT key, namespace, note, created_by, created_at, updated_at FROM project_map
+					ON CONFLICT (key) DO UPDATE SET
+						namespace=EXCLUDED.namespace, note=EXCLUDED.note, updated_at=EXCLUDED.updated_at;
+				DROP TABLE project_map;
+			END IF;
+		END
+		$$`,
+		// pins records project→namespace pins (see store.PinStore,
 		// the config-handshake redesign): key is "remote:<canonical-remote>" or
 		// "path:<absolute-toplevel>".
-		`CREATE TABLE IF NOT EXISTS project_map (
+		`CREATE TABLE IF NOT EXISTS pins (
 			key        text PRIMARY KEY,
 			namespace  text NOT NULL,
 			note       text NOT NULL DEFAULT '',
@@ -200,7 +232,7 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 			created_at timestamptz NOT NULL,
 			updated_at timestamptz NOT NULL
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_project_map_ns ON project_map(namespace)`,
+		`CREATE INDEX IF NOT EXISTS idx_pins_ns ON pins(namespace)`,
 	}
 	for _, q := range stmts {
 		if _, err := conn.Exec(ctx, q); err != nil {

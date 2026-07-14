@@ -1,16 +1,16 @@
 package nsresolve
 
-// Pin-key prefixes. A project_map row is keyed either by a canonicalized git
+// Pin-key prefixes. A pin row is keyed either by a canonicalized git
 // remote ("remote:github.com/acme/app") or by an absolute git toplevel path
 // ("path:/home/kit/src/app"). The two forms let a pin survive both a folder
 // move (the remote is stable) and a dropped/renamed remote (the path is
-// stable) — see store.ProjectMapEntry.
+// stable) — see store.Pin.
 const (
 	remoteKeyPrefix = "remote:"
 	pathKeyPrefix   = "path:"
 )
 
-// PinKeys returns the project_map lookup keys for these facts, in preference
+// PinKeys returns the pin lookup keys for these facts, in preference
 // order: the canonical-remote key first (a repo's identity travels with it
 // across clones and folder moves), then the toplevel-path key. Either may be
 // absent when its fact is; the result is empty when the facts carry neither a

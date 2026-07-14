@@ -209,7 +209,7 @@ export interface paths {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -294,7 +294,7 @@ export interface paths {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path: {
@@ -317,7 +317,7 @@ export interface paths {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path: {
@@ -342,7 +342,7 @@ export interface paths {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path: {
@@ -581,7 +581,7 @@ export interface paths {
         };
         /**
          * List explicit project→namespace pins
-         * @description Open to every credential class: the project map is machine-wide derivation state, not scoped to one namespace, and any caller's handshake already reveals whichever pin matches its project facts.
+         * @description Open to every credential class: pins are machine-wide derivation state, not scoped to one namespace, and any caller's handshake already reveals whichever pin matches its project facts.
          */
         get: operations["listPins"];
         /**
@@ -1235,7 +1235,7 @@ export interface components {
                 agent?: string;
                 /** @description The client's MEMINI_NAMESPACE, when set. Sent so a pin can still beat it server-side — the client cannot make that call itself without knowing whether a pin exists. */
                 env_namespace?: string;
-                /** @description The client's MEMINI_NAMESPACE_PREFIX, when set. A client-side override of the namespace_prefix behavioral setting: it is prepended to the derived name (personal/<repo>) exactly as the setting would be, but wins over the server-merged setting the same way any client env override does. Lets one credential serve several tenants selected per shell/directory (e.g. a per-tree .envrc) without a pin or a second key. */
+                /** @description The client's MEMINI_NAMESPACE_PREFIX, when set. A client-side override of the namespace_prefix behavioral setting: it is prepended to the derived name (personal/<repo>) exactly as the setting would be, but wins over the server-merged setting the same way any client env override does. Lets one credential serve several namespace trees selected per shell/directory (e.g. a per-tree .envrc) without a pin or a second key. */
                 env_namespace_prefix?: string;
                 /** @description For gateway/integration callers with no meaningful cwd (a webhook relay, a CI job) to declare their namespace directly. Wins over derivation but not over a pin or env_namespace. */
                 declared_namespace?: string;
@@ -1256,10 +1256,10 @@ export interface components {
             namespace_source: "pin" | "env" | "declared" | "remote" | "toplevel" | "cwd" | "key_default" | "server_default";
             /** @description Present only when namespace_source is "pin". */
             pin?: {
-                /** @description The project_map key that matched (remote:<canonical-remote> or path:<toplevel_path>). */
+                /** @description The pin key that matched (remote:<canonical-remote> or path:<toplevel_path>). */
                 key: string;
                 note?: string;
-                /** @description Name of the API key that created the pin, when known — same semantics as ProjectMapEntry.created_by (absent for a pin created by the admin key or in dev mode, which carry no named principal). */
+                /** @description Name of the API key that created the pin, when known — same semantics as Pin.created_by (absent for a pin created by the admin key or in dev mode, which carry no named principal). */
                 created_by?: string;
                 /** Format: date-time */
                 updated_at: string;
@@ -1279,8 +1279,8 @@ export interface components {
             };
         };
         /** @description One explicit project→namespace pin, keyed by remote_url (canonicalized) or toplevel_path. */
-        ProjectMapEntry: {
-            /** @description The project_map key: "remote:<canonical-remote>" or "path:<abs-toplevel>". */
+        Pin: {
+            /** @description The pin key: "remote:<canonical-remote>" or "path:<abs-toplevel>". */
             key: string;
             namespace: string;
             note?: string;
@@ -1291,11 +1291,11 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
-        ProjectMapListResponse: {
-            entries: components["schemas"]["ProjectMapEntry"][];
+        PinListResponse: {
+            entries: components["schemas"]["Pin"][];
         };
         /** @description At least one of remote_url/toplevel_path is required (400 if neither is given) — that is the key fact the pin is stored under. */
-        ProjectMapPutRequest: {
+        PinPutRequest: {
             namespace: string;
             /** @description Raw git remote URL; canonicalized server-side into the remote:<canonical> key. */
             remote_url?: string;
@@ -1304,7 +1304,7 @@ export interface components {
             note?: string;
         };
         /** @description At least one of remote_url/toplevel_path is required (400 if neither is given) to identify the pin to delete. */
-        ProjectMapDeleteRequest: {
+        PinDeleteRequest: {
             remote_url?: string;
             toplevel_path?: string;
         };
@@ -1323,7 +1323,7 @@ export interface components {
         };
     };
     parameters: {
-        /** @description Tenant/agent namespace; falls back to the server default. */
+        /** @description Namespace for this request; falls back to the server default. */
         Namespace: string;
     };
     requestBodies: never;
@@ -1398,7 +1398,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1422,7 +1422,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1461,9 +1461,9 @@ export interface operations {
                 include_superseded?: boolean;
                 /** @description Caps the result count; 0 or absent returns all matches. */
                 limit?: number;
-                /** @description Aggregate across every namespace, ignoring the namespace header. The server merges all namespaces and applies limit as a single global cap under the requested sort, so the admin UI's "All projects" view fetches one response instead of one request per namespace. */
+                /** @description Aggregate across every namespace, ignoring the namespace header. The server merges all namespaces and applies limit as a single global cap under the requested sort, so the admin UI's "All namespaces" view fetches one response instead of one request per namespace. */
                 all_namespaces?: boolean;
-                /** @description With all_namespaces=true, restrict the aggregate to these namespaces (repeatable, exact match); ignored otherwise. Lets the browser narrow an "All projects" listing without changing the active namespace. */
+                /** @description With all_namespaces=true, restrict the aggregate to these namespaces (repeatable, exact match); ignored otherwise. Lets the browser narrow an "All namespaces" listing without changing the active namespace. */
                 namespace?: string[];
                 /** @description Repeatable and/or comma-separated metadata.memory_type filter; a memory matches if its type is ANY of the listed values (OR). Distinct from "meta", which ANDs one value per key. */
                 memory_type?: string[];
@@ -1477,7 +1477,7 @@ export interface operations {
                 order?: "asc" | "desc";
             };
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1501,7 +1501,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1533,7 +1533,7 @@ export interface operations {
                 tag: string;
             };
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1557,11 +1557,11 @@ export interface operations {
     getStats: {
         parameters: {
             query?: {
-                /** @description Aggregate counts across every namespace, ignoring the namespace header. Returns a single merged overview (namespace reported as "") so the admin UI's "All projects" view fetches one response instead of one request per namespace. */
+                /** @description Aggregate counts across every namespace, ignoring the namespace header. Returns a single merged overview (namespace reported as "") so the admin UI's "All namespaces" view fetches one response instead of one request per namespace. */
                 all_namespaces?: boolean;
             };
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1606,7 +1606,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1646,7 +1646,7 @@ export interface operations {
                 namespaces?: string[];
             };
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1671,7 +1671,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1696,7 +1696,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1720,7 +1720,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1758,7 +1758,7 @@ export interface operations {
                 dst?: string;
             };
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1788,7 +1788,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1822,7 +1822,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -1856,7 +1856,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path: {
@@ -1894,7 +1894,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path: {
@@ -1920,7 +1920,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path: {
@@ -1944,7 +1944,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path: {
@@ -1970,7 +1970,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path: {
@@ -1999,7 +1999,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -2027,7 +2027,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -2206,7 +2206,7 @@ export interface operations {
                 all_namespaces?: boolean;
             };
             header?: {
-                /** @description Tenant/agent namespace; falls back to the server default. */
+                /** @description Namespace for this request; falls back to the server default. */
                 "X-Memini-Namespace"?: components["parameters"]["Namespace"];
             };
             path?: never;
@@ -2369,7 +2369,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProjectMapListResponse"];
+                    "application/json": components["schemas"]["PinListResponse"];
                 };
             };
             501: components["responses"]["Error"];
@@ -2384,7 +2384,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ProjectMapPutRequest"];
+                "application/json": components["schemas"]["PinPutRequest"];
             };
         };
         responses: {
@@ -2394,7 +2394,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProjectMapEntry"];
+                    "application/json": components["schemas"]["Pin"];
                 };
             };
             400: components["responses"]["Error"];
@@ -2410,7 +2410,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ProjectMapDeleteRequest"];
+                "application/json": components["schemas"]["PinDeleteRequest"];
             };
         };
         responses: {

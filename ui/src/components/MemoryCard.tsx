@@ -25,7 +25,7 @@ export function MemoryCard({ memory: m, score, onOpen, showNamespace, from, from
         <TierBadge tier={m.tier} />
         <MemoryTypeBadge type={memoryType(m)} />
         {showNamespace && m.namespace && (
-          <span class="chip" title="Project">{m.namespace}</span>
+          <span class="chip" title="Namespace">{m.namespace}</span>
         )}
         {from && (
           <span class="chip" title={`In scope via ${from}`}>

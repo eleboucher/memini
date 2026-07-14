@@ -7,10 +7,10 @@ interface Props {
   onChange: (namespaces: string[]) => void
 }
 
-// NamespaceFilter narrows an "All projects" listing to a subset of namespaces
+// NamespaceFilter narrows an "All namespaces" listing to a subset of namespaces
 // without touching the global namespace picker — the picker switches which
-// project you're working in, this only narrows what the aggregate shows.
-// Rendered only in All-projects mode (the caller gates it); a scoped listing is
+// namespace you're working in, this only narrows what the aggregate shows.
+// Rendered only in All-namespaces mode (the caller gates it); a scoped listing is
 // already restricted by the namespace header.
 export function NamespaceFilter({ selected, onChange }: Props) {
   const [open, setOpen] = useState(false)
@@ -23,10 +23,10 @@ export function NamespaceFilter({ selected, onChange }: Props) {
 
   const label =
     selected.length === 0
-      ? 'All projects'
+      ? 'All namespaces'
       : selected.length === 1
         ? selected[0]
-        : `${selected.length} projects`
+        : `${selected.length} namespaces`
 
   return (
     <div class="ns-filter">
@@ -34,14 +34,14 @@ export function NamespaceFilter({ selected, onChange }: Props) {
         type="button"
         class={`chip ${selected.length ? 'on' : ''}`}
         aria-expanded={open}
-        aria-label="Filter by project"
+        aria-label="Filter by namespace"
         onClick={() => setOpen(!open)}
       >
         {label} ▾
       </button>
       {open && (
-        <div class="ns-filter-menu panel" role="group" aria-label="Projects">
-          {names.length === 0 && <span class="muted">No projects</span>}
+        <div class="ns-filter-menu panel" role="group" aria-label="Namespaces">
+          {names.length === 0 && <span class="muted">No namespaces</span>}
           {names.map((n) => (
             <label key={n} class="ns-filter-item">
               <input

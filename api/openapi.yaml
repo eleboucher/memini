@@ -137,7 +137,7 @@ paths:
           description: >
             Aggregate across every namespace, ignoring the namespace header. The
             server merges all namespaces and applies limit as a single global cap
-            under the requested sort, so the admin UI's "All projects" view fetches
+            under the requested sort, so the admin UI's "All namespaces" view fetches
             one response instead of one request per namespace.
           schema: { type: boolean, default: false }
         - name: namespace
@@ -145,7 +145,7 @@ paths:
           description: >
             With all_namespaces=true, restrict the aggregate to these namespaces
             (repeatable, exact match); ignored otherwise. Lets the browser narrow
-            an "All projects" listing without changing the active namespace.
+            an "All namespaces" listing without changing the active namespace.
           schema: { type: array, items: { type: string } }
         - name: memory_type
           in: query
@@ -217,7 +217,7 @@ paths:
           description: >
             Aggregate counts across every namespace, ignoring the namespace
             header. Returns a single merged overview (namespace reported as "")
-            so the admin UI's "All projects" view fetches one response instead
+            so the admin UI's "All namespaces" view fetches one response instead
             of one request per namespace.
           schema: { type: boolean, default: false }
       responses:
@@ -972,7 +972,7 @@ paths:
       tags: [memory]
       summary: List explicit project→namespace pins
       description: >
-        Open to every credential class: the project map is machine-wide
+        Open to every credential class: pins are machine-wide
         derivation state, not scoped to one namespace, and any caller's
         handshake already reveals whichever pin matches its project facts.
       responses:
@@ -980,7 +980,7 @@ paths:
           description: OK
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/ProjectMapListResponse" }
+              schema: { $ref: "#/components/schemas/PinListResponse" }
         "501": { $ref: "#/components/responses/Error" }
     put:
       operationId: putPin
@@ -997,13 +997,13 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/ProjectMapPutRequest" }
+            schema: { $ref: "#/components/schemas/PinPutRequest" }
       responses:
         "200":
           description: OK
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/ProjectMapEntry" }
+              schema: { $ref: "#/components/schemas/Pin" }
         "400": { $ref: "#/components/responses/Error" }
         "501": { $ref: "#/components/responses/Error" }
     delete:
@@ -1019,7 +1019,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/ProjectMapDeleteRequest" }
+            schema: { $ref: "#/components/schemas/PinDeleteRequest" }
       responses:
         "204": { description: Deleted }
         "400": { $ref: "#/components/responses/Error" }
@@ -1035,7 +1035,7 @@ components:
       name: X-Memini-Namespace
       in: header
       required: false
-      description: Tenant/agent namespace; falls back to the server default.
+      description: Namespace for this request; falls back to the server default.
       schema: { type: string }
   responses:
     Error:
@@ -2086,7 +2086,7 @@ components:
                 prepended to the derived name (personal/<repo>) exactly as the
                 setting would be, but wins over the server-merged setting the
                 same way any client env override does. Lets one credential
-                serve several tenants selected per shell/directory (e.g. a
+                serve several namespace trees selected per shell/directory (e.g. a
                 per-tree .envrc) without a pin or a second key.
             declared_namespace:
               type: string
@@ -2120,14 +2120,14 @@ components:
             key:
               type: string
               description: >
-                The project_map key that matched
+                The pin key that matched
                 (remote:<canonical-remote> or path:<toplevel_path>).
             note: { type: string }
             created_by:
               type: string
               description: >
                 Name of the API key that created the pin, when known —
-                same semantics as ProjectMapEntry.created_by (absent for
+                same semantics as Pin.created_by (absent for
                 a pin created by the admin key or in dev mode, which
                 carry no named principal).
             updated_at: { type: string, format: date-time }
@@ -2154,7 +2154,7 @@ components:
           properties:
             version: { type: string }
             default_namespace: { type: string }
-    ProjectMapEntry:
+    Pin:
       type: object
       required: [key, namespace, created_at, updated_at]
       description: >
@@ -2163,7 +2163,7 @@ components:
       properties:
         key:
           type: string
-          description: 'The project_map key: "remote:<canonical-remote>" or "path:<abs-toplevel>".'
+          description: 'The pin key: "remote:<canonical-remote>" or "path:<abs-toplevel>".'
         namespace: { type: string }
         note: { type: string }
         created_by:
@@ -2171,14 +2171,14 @@ components:
           description: Name of the API key that created the pin, when known.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
-    ProjectMapListResponse:
+    PinListResponse:
       type: object
       required: [entries]
       properties:
         entries:
           type: array
-          items: { $ref: "#/components/schemas/ProjectMapEntry" }
-    ProjectMapPutRequest:
+          items: { $ref: "#/components/schemas/Pin" }
+    PinPutRequest:
       type: object
       required: [namespace]
       description: >
@@ -2195,7 +2195,7 @@ components:
           type: string
           description: Absolute git toplevel path; stored as the path:<toplevel_path> key.
         note: { type: string }
-    ProjectMapDeleteRequest:
+    PinDeleteRequest:
       type: object
       description: >
         At least one of remote_url/toplevel_path is required (400 if

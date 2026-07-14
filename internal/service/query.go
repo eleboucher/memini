@@ -43,7 +43,7 @@ type ListInput struct {
 	Limit int
 	// AllNamespaces lists across every namespace instead of in.Namespace, with
 	// Limit applied as a single global cap under Sort. Backs the admin UI's
-	// "All projects" view.
+	// "All namespaces" view.
 	AllNamespaces bool
 	// Namespaces, with AllNamespaces, restricts the aggregate to these namespaces
 	// (exact match); empty means every namespace. Ignored without AllNamespaces.
@@ -189,7 +189,7 @@ func (s *Service) Stats(ctx context.Context, namespace string) (Stats, error) {
 }
 
 // StatsAll merges per-namespace overviews into a single store-wide one
-// (namespace reported as ""), backing the admin UI's "All projects" dashboard.
+// (namespace reported as ""), backing the admin UI's "All namespaces" dashboard.
 func (s *Service) StatsAll(ctx context.Context) (Stats, error) {
 	names, err := s.store.ListNamespaces(ctx)
 	if err != nil {
@@ -227,7 +227,7 @@ func (s *Service) StatsAll(ctx context.Context) (Stats, error) {
 }
 
 // Namespaces returns the distinct namespaces holding memories, for the UI
-// tenant switcher.
+// namespace switcher.
 func (s *Service) Namespaces(ctx context.Context) ([]string, error) {
 	return s.store.ListNamespaces(ctx)
 }
@@ -273,7 +273,7 @@ type ChildSummary struct {
 const (
 	// childRollupMaxChildren caps how many direct children a briefing rolls up
 	// (gap G9): the most recently written win, the rest are counted in
-	// Briefing.ChildrenTruncated — so a wide tenant root can't balloon
+	// Briefing.ChildrenTruncated — so a wide root namespace cannot balloon
 	// briefing cost or token size.
 	childRollupMaxChildren = 10
 	// childRollupPerSection caps each child's pinned and recent highlight

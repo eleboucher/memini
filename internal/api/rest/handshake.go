@@ -63,7 +63,7 @@ func (h *Server) Handshake(w http.ResponseWriter, r *http.Request) {
 
 	// A client-side MEMINI_NAMESPACE_PREFIX overrides the merged
 	// namespace_prefix for this request, so one credential (even the admin
-	// env key, which has no per-key settings) can serve several tenants
+	// env key, which has no per-key settings) can serve several namespace trees
 	// selected per shell/directory — set the prefix, and derivation composes
 	// <prefix>/<repo>. Debug-override semantics: the client env wins over the
 	// server-merged value, the same way env_namespace does. Overriding merged
@@ -75,7 +75,7 @@ func (h *Server) Handshake(w http.ResponseWriter, r *http.Request) {
 		sources["namespace_prefix"] = settingsSourceEnv
 	}
 
-	// Pins are backed by ProjectMapStore; a backend without that capability
+	// Pins are backed by PinStore; a backend without that capability
 	// resolves derived-only (a nil PinLookup skips the pin step). Fetch the
 	// candidate pins once, up front — the same entries answer both the lookup
 	// and, on a hit, the response's pin block.
@@ -136,13 +136,13 @@ func (h *Server) Handshake(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusOK, resp)
 }
 
-// pinLookup builds an nsresolve.PinLookup over the project_map, fetching the
+// pinLookup builds an nsresolve.PinLookup over the pins table, fetching the
 // candidate pins for facts once and returning them by key so the caller can
 // also render the matched pin. Returns (nil, nil, nil) — "no pins" — when the
-// backend has no ProjectMapStore or the facts carry no pin key, so Resolve
+// backend has no PinStore or the facts carry no pin key, so Resolve
 // falls through to derivation gracefully.
-func (h *Server) pinLookup(ctx context.Context, facts nsresolve.Facts) (nsresolve.PinLookup, map[string]store.ProjectMapEntry, error) {
-	pms, ok := h.projectMapStore()
+func (h *Server) pinLookup(ctx context.Context, facts nsresolve.Facts) (nsresolve.PinLookup, map[string]store.Pin, error) {
+	pms, ok := h.pinStore()
 	if !ok {
 		return nil, nil, nil
 	}
@@ -150,11 +150,11 @@ func (h *Server) pinLookup(ctx context.Context, facts nsresolve.Facts) (nsresolv
 	if len(keys) == 0 {
 		return nil, nil, nil
 	}
-	got, err := pms.GetProjectMapEntries(ctx, keys)
+	got, err := pms.GetPins(ctx, keys)
 	if err != nil {
 		return nil, nil, err
 	}
-	byKey := make(map[string]store.ProjectMapEntry, len(got))
+	byKey := make(map[string]store.Pin, len(got))
 	for _, e := range got {
 		byKey[e.Key] = e
 	}

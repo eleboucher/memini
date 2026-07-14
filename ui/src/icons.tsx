@@ -54,7 +54,7 @@ export const IconConfig = base([
   <path d="m3 12 9 4.5 9-4.5" opacity="0.7" />,
   <path d="m3 16.5 9 4.5 9-4.5" opacity="0.45" />,
 ])
-export const IconProjects = base([
+export const IconNamespaces = base([
   <rect x="3" y="3" width="7" height="7" rx="1.5" />,
   <rect x="14" y="3" width="7" height="7" rx="1.5" />,
   <rect x="3" y="14" width="7" height="7" rx="1.5" />,

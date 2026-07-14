@@ -3,7 +3,7 @@
 // (POST /v1/handshake) into the one namespace that caller should use, applying
 // the precedence pin > env > declared > derive > key-default > server-default.
 //
-// It deliberately owns no I/O: the only way it reaches the project_map pin
+// It deliberately owns no I/O: the only way it reaches the pin
 // table is the PinLookup callback the caller supplies, so the package stays a
 // pure function of (facts, settings, callback results) — the same inputs always
 // produce the same Result, which is what lets the handshake be deterministic
