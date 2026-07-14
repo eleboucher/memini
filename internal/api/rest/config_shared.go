@@ -31,6 +31,12 @@ const (
 // handlers so the three don't each repeat the literal "layer".
 const eventDetailLayer = "layer"
 
+// eventDetailKeyName is the LogConfigEvent detail key naming which API key a
+// config-surface write targeted, shared by selfsettings.go and apikeys.go
+// (per-key settings edits and admin-flag flips) so they don't each repeat the
+// literal "key_name".
+const eventDetailKeyName = "key_name"
+
 // projectMapStore type-asserts the backing store to store.ProjectMapStore, the
 // optional capability the project-map pins need (keyStore/linkStore's
 // precedent). Returns false — a 501 to the caller — for a driver that predates
@@ -139,14 +145,15 @@ func principalPtr(ctx context.Context) *apiauth.Principal {
 }
 
 // identityFor maps the request's authenticated principal onto the wire
-// CallerIdentity. A named table/file key is authenticated and reports its
-// name/home/default; the admin key authenticates with no principal but a
-// bearer, so it is authenticated-but-nameless; dev mode (no bearer) is
-// unauthenticated. Mirrors the nil-principal distinction requireAdminOrDev
-// leans on.
+// CallerIdentity, including the effective admin capability. A named table/file
+// key is authenticated and reports its name/home/default and its own Admin
+// flag; the admin key and dev mode both authenticate with no principal and are
+// effectively admin (the nil principal IS the admin/dev signal requireAdmin
+// leans on), differing only in Authenticated: the admin key carries a bearer,
+// dev mode (no bearer) does not.
 func (h *Server) identityFor(r *http.Request) CallerIdentity {
 	if p, ok := principalFromContext(r.Context()); ok {
-		id := CallerIdentity{Authenticated: true}
+		id := CallerIdentity{Authenticated: true, Admin: p.Admin}
 		name := p.Name
 		id.KeyName = &name
 		if p.HomeNS != "" {
@@ -159,7 +166,7 @@ func (h *Server) identityFor(r *http.Request) CallerIdentity {
 		}
 		return id
 	}
-	return CallerIdentity{Authenticated: bearerPresent(r)}
+	return CallerIdentity{Authenticated: bearerPresent(r), Admin: true}
 }
 
 // bearerPresent reports whether the request carried a non-empty bearer token —

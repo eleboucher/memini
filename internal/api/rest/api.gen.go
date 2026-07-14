@@ -531,6 +531,9 @@ type AnswerResponse struct {
 
 // ApiKey defines model for ApiKey.
 type ApiKey struct {
+	// Admin Whether this key is an admin credential: it may reach the admin-gated surfaces (/v1/keys CRUD and /v1/settings/defaults), exactly like the admin env key (MEMINI_API_KEY). A self-guard still applies — an admin key cannot demote, disable, or delete itself over this API.
+	Admin bool `json:"admin"`
+
 	// CreatedAt Omitted for a source=file key: MEMINI_API_KEYS_FILE entries carry no creation timestamp (the file is the source of truth, not a database row) — always present for source=db.
 	CreatedAt *time.Time `json:"created_at,omitempty"`
 
@@ -554,6 +557,9 @@ type ApiKeySource string
 
 // ApiKeyWithSecret defines model for ApiKeyWithSecret.
 type ApiKeyWithSecret struct {
+	// Admin Whether this key is an admin credential: it may reach the admin-gated surfaces (/v1/keys CRUD and /v1/settings/defaults), exactly like the admin env key (MEMINI_API_KEY). A self-guard still applies — an admin key cannot demote, disable, or delete itself over this API.
+	Admin bool `json:"admin"`
+
 	// CreatedAt Omitted for a source=file key: MEMINI_API_KEYS_FILE entries carry no creation timestamp (the file is the source of truth, not a database row) — always present for source=db.
 	CreatedAt *time.Time `json:"created_at,omitempty"`
 
@@ -621,6 +627,8 @@ type BriefingItem struct {
 
 // CallerIdentity Who the request authenticated as, independent of any resolved namespace.
 type CallerIdentity struct {
+	// Admin Effective admin capability: true for the admin env key, dev mode with no auth configured, and a named key with admin=true. When true the caller may reach the admin-gated surfaces (/v1/keys CRUD and /v1/settings/defaults); when false those return 403.
+	Admin         bool `json:"admin"`
 	Authenticated bool `json:"authenticated"`
 
 	// DefaultNamespace The key's bound default namespace, if any.
@@ -629,7 +637,7 @@ type CallerIdentity struct {
 	// Home The key's bound home namespace, if any.
 	Home *string `json:"home,omitempty"`
 
-	// KeyName Name of the API key that authenticated the request; absent for the admin key or dev mode (no named principal — see requireAdminOrDev's doc for the same distinction on /v1/keys).
+	// KeyName Name of the API key that authenticated the request; absent for the admin key or dev mode (no named principal).
 	KeyName *string `json:"key_name,omitempty"`
 }
 
@@ -723,6 +731,9 @@ type ClusterAction struct {
 
 // CreateApiKeyRequest defines model for CreateApiKeyRequest.
 type CreateApiKeyRequest struct {
+	// Admin Create the key as an admin credential (see ApiKey.admin). Defaults to false — a plain key that cannot reach the admin-gated surfaces.
+	Admin *bool `json:"admin,omitempty"`
+
 	// DefaultNamespace Namespace applied when a request presents this key with no explicit namespace header.
 	DefaultNamespace *string `json:"default_namespace,omitempty"`
 
@@ -1240,6 +1251,9 @@ type Tier string
 
 // UpdateApiKeyRequest defines model for UpdateApiKeyRequest.
 type UpdateApiKeyRequest struct {
+	// Admin Omit to leave the current admin capability unchanged; grant it with true, revoke it with false. A named admin key cannot revoke its own admin (admin=false targeting the key that authenticated the request) — that returns 409; use the admin env key or another admin key.
+	Admin *bool `json:"admin,omitempty"`
+
 	// DefaultNamespace Omit to leave the current default unchanged; an explicit empty string clears it.
 	DefaultNamespace *string `json:"default_namespace,omitempty"`
 
@@ -1604,7 +1618,7 @@ type ServerInterface interface {
 	// Resolve namespace, identity, and behavioral settings from client-supplied project facts
 	// (POST /v1/handshake)
 	Handshake(w http.ResponseWriter, r *http.Request)
-	// List API keys (name/home/default namespace/created/disabled/source — never a secret or hash)
+	// List API keys (name/home/default namespace/created/disabled/admin/source — never a secret or hash)
 	// (GET /v1/keys)
 	ListApiKeys(w http.ResponseWriter, r *http.Request)
 	// Create a new API key, returning its secret exactly once
@@ -1613,7 +1627,7 @@ type ServerInterface interface {
 	// Delete an API key
 	// (DELETE /v1/keys/{name})
 	DeleteApiKey(w http.ResponseWriter, r *http.Request, name string)
-	// Update an API key's home namespace, default namespace, disabled state, and/or per-key settings
+	// Update an API key's home namespace, default namespace, disabled state, admin capability, and/or per-key settings
 	// (PATCH /v1/keys/{name})
 	UpdateApiKey(w http.ResponseWriter, r *http.Request, name string)
 	// Rotate an API key's secret, returning the new secret exactly once
@@ -1733,7 +1747,7 @@ func (_ Unimplemented) Handshake(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// List API keys (name/home/default namespace/created/disabled/source — never a secret or hash)
+// List API keys (name/home/default namespace/created/disabled/admin/source — never a secret or hash)
 // (GET /v1/keys)
 func (_ Unimplemented) ListApiKeys(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -1751,7 +1765,7 @@ func (_ Unimplemented) DeleteApiKey(w http.ResponseWriter, r *http.Request, name
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Update an API key's home namespace, default namespace, disabled state, and/or per-key settings
+// Update an API key's home namespace, default namespace, disabled state, admin capability, and/or per-key settings
 // (PATCH /v1/keys/{name})
 func (_ Unimplemented) UpdateApiKey(w http.ResponseWriter, r *http.Request, name string) {
 	w.WriteHeader(http.StatusNotImplemented)

@@ -65,6 +65,7 @@ func handshakeBody(project map[string]any) map[string]any {
 
 type callerIdentityDTO struct {
 	Authenticated    bool    `json:"authenticated"`
+	Admin            bool    `json:"admin"`
 	KeyName          *string `json:"key_name"`
 	Home             *string `json:"home"`
 	DefaultNamespace *string `json:"default_namespace"`
@@ -742,6 +743,117 @@ func TestSettingsDefaultsDevModeAllowed(t *testing.T) {
 	rec := do(t, h, http.MethodGet, "/v1/settings/defaults", "", "", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("dev-mode GET defaults: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+}
+
+// --- per-key admin: identity wire + named-admin reaches admin surfaces -------
+
+// TestIdentityAdminByCredentialClass pins CallerIdentity.admin (the effective
+// admin capability) across every credential class, on BOTH GET /v1/self and
+// POST /v1/handshake: dev mode is unauthenticated-but-admin (bootstrap open),
+// the admin env key and a named admin key are authenticated-and-admin, and a
+// named non-admin key is authenticated-but-not-admin.
+func TestIdentityAdminByCredentialClass(t *testing.T) {
+	fileYAML := `
+keys:
+  - name: fadmin
+    secret: "tok-fadmin"
+    admin: true
+  - name: fplain
+    secret: "tok-fplain"
+`
+	h, ks := newConfigServer(t, "admin-secret", fileYAML, nil)
+	if err := ks.PutAPIKey(context.Background(), store.APIKey{Name: "tadmin", Hash: hashOf("tok-tadmin"), Admin: true}); err != nil {
+		t.Fatalf("seed table admin: %v", err)
+	}
+	if err := ks.PutAPIKey(context.Background(), store.APIKey{Name: "tplain", Hash: hashOf("tok-tplain")}); err != nil {
+		t.Fatalf("seed table non-admin: %v", err)
+	}
+	body := handshakeBody(map[string]any{"cwd_basename": "proj", "remote_url": "https://github.com/acme/phoenix.git"})
+
+	cases := []struct {
+		class             string
+		token             string
+		wantAuthenticated bool
+		wantAdmin         bool
+	}{
+		{"env key", "admin-secret", true, true},
+		{"named table admin", "tok-tadmin", true, true},
+		{"named file admin", "tok-fadmin", true, true},
+		{"named table non-admin", "tok-tplain", true, false},
+		{"named file non-admin", "tok-fplain", true, false},
+	}
+	for _, c := range cases {
+		t.Run("self/"+c.class, func(t *testing.T) {
+			rec := do(t, h, http.MethodGet, "/v1/self", "", c.token, nil)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET /v1/self: want 200, got %d (%s)", rec.Code, rec.Body)
+			}
+			var out selfRespDTO
+			mustJSON(t, rec, &out)
+			if out.Identity.Authenticated != c.wantAuthenticated || out.Identity.Admin != c.wantAdmin {
+				t.Errorf("self identity = {authenticated:%v admin:%v}, want {%v %v}",
+					out.Identity.Authenticated, out.Identity.Admin, c.wantAuthenticated, c.wantAdmin)
+			}
+		})
+		t.Run("handshake/"+c.class, func(t *testing.T) {
+			rec := do(t, h, http.MethodPost, "/v1/handshake", "", c.token, body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("handshake: want 200, got %d (%s)", rec.Code, rec.Body)
+			}
+			var out handshakeRespDTO
+			mustJSON(t, rec, &out)
+			if out.Identity.Authenticated != c.wantAuthenticated || out.Identity.Admin != c.wantAdmin {
+				t.Errorf("handshake identity = {authenticated:%v admin:%v}, want {%v %v}",
+					out.Identity.Authenticated, out.Identity.Admin, c.wantAuthenticated, c.wantAdmin)
+			}
+		})
+	}
+
+	// Dev mode (separate bare server, no bearer): unauthenticated but admin=true.
+	dev, _ := newConfigServer(t, "", "", nil)
+	rec := do(t, dev, http.MethodGet, "/v1/self", "", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dev GET /v1/self: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var self selfRespDTO
+	mustJSON(t, rec, &self)
+	if self.Identity.Authenticated || !self.Identity.Admin {
+		t.Errorf("dev self identity = {authenticated:%v admin:%v}, want {false true}", self.Identity.Authenticated, self.Identity.Admin)
+	}
+	rec = do(t, dev, http.MethodPost, "/v1/handshake", "", "", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dev handshake: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var hs handshakeRespDTO
+	mustJSON(t, rec, &hs)
+	if hs.Identity.Authenticated || !hs.Identity.Admin {
+		t.Errorf("dev handshake identity = {authenticated:%v admin:%v}, want {false true}", hs.Identity.Authenticated, hs.Identity.Admin)
+	}
+}
+
+// TestNamedAdminReachesSettingsDefaults pins that a named admin key now passes
+// the GET/PUT /v1/settings/defaults gate that previously 403'd every named key
+// — and that PutSelfSettings polarity is UNCHANGED: the same named admin key
+// still edits its own per-key settings (200), because self-settings requires a
+// named principal regardless of admin.
+func TestNamedAdminReachesSettingsDefaults(t *testing.T) {
+	h, ks := newConfigServer(t, "admin-secret", "", nil)
+	if err := ks.PutAPIKey(context.Background(), store.APIKey{Name: "tadmin", Hash: hashOf("tok-tadmin"), Admin: true}); err != nil {
+		t.Fatalf("seed table admin: %v", err)
+	}
+	rec := do(t, h, http.MethodGet, "/v1/settings/defaults", "", "tok-tadmin", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("named admin GET defaults: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	rec = do(t, h, http.MethodPut, "/v1/settings/defaults", "", "tok-tadmin", map[string]any{"capture_turns": false})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("named admin PUT defaults: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	// PutSelfSettings polarity unchanged: a named admin still edits its own key.
+	rec = do(t, h, http.MethodPut, "/v1/self/settings", "", "tok-tadmin", map[string]any{"recall_limit": 3})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("named admin PUT self settings: want 200, got %d (%s)", rec.Code, rec.Body)
 	}
 }
 

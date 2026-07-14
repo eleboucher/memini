@@ -14,7 +14,7 @@ import (
 // Admin-gated like /v1/keys: a named table/file key gets 403 and sees its own
 // merged result via /v1/handshake or /v1/self instead.
 func (h *Server) GetSettingsDefaults(w http.ResponseWriter, r *http.Request) {
-	if !requireAdminOrDev(w, r) {
+	if !requireAdmin(w, r) {
 		return
 	}
 	global, env, capable, err := h.globalDefaults(r.Context())
@@ -47,7 +47,7 @@ func (h *Server) GetSettingsDefaults(w http.ResponseWriter, r *http.Request) {
 // pinned by MEMINI_CLIENT_DEFAULTS (env-managed: the environment is the single
 // source of truth), and 501 against a backend that cannot persist it.
 func (h *Server) PutSettingsDefaults(w http.ResponseWriter, r *http.Request) {
-	if !requireAdminOrDev(w, r) {
+	if !requireAdmin(w, r) {
 		return
 	}
 	if h.auth.ClientDefaults != nil {
