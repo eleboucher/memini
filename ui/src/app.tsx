@@ -43,6 +43,14 @@ import type { AnyComponent, JSX } from 'preact'
 // URLs), which resolves correctly only when a deep-link reload is one level deep
 // (/browse → ./assets → /assets). A nested route like /memories/:id would make
 // a reload fetch /memories/assets/* and 404 — switch vite base to '/' first.
+// The namespaces landing page lived at /projects until the terminology
+// cleanup; keep old bookmarks and deep links working by redirecting.
+function LegacyProjectsRedirect() {
+  const { route } = useLocation()
+  useEffect(() => route('/namespaces', true), [route])
+  return null
+}
+
 const NAV: {
   path: string
   label: string
@@ -185,6 +193,7 @@ function Shell() {
             {NAV.map(({ path: to, component }) => (
               <Route key={to} path={to} component={component} />
             ))}
+            <Route path="/projects" component={LegacyProjectsRedirect} />
             <Route default component={Dashboard} />
           </Router>
         </div>

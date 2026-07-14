@@ -13,9 +13,23 @@ import { IconTrash, IconSettings, IconChevron } from '../icons'
 // namespace path, so collapsing "acme/phoenix" doesn't also collapse "acme")
 // so navigation stays where the user left it.
 const COLLAPSE_KEY = 'memini.collapsedNamespaces'
+// The key was 'memini.collapsedTenants' (with '(no tenant)' as the flat
+// section's sentinel) until the terminology cleanup; fold saved state forward
+// once so collapse preferences survive the upgrade.
+const LEGACY_COLLAPSE_KEY = 'memini.collapsedTenants'
+const LEGACY_FLAT_SECTION = '(no tenant)'
 function loadCollapsed(): Set<string> {
   try {
-    const raw = localStorage.getItem(COLLAPSE_KEY)
+    let raw = localStorage.getItem(COLLAPSE_KEY)
+    if (raw === null) {
+      const legacy = localStorage.getItem(LEGACY_COLLAPSE_KEY)
+      if (legacy !== null) {
+        const keys = (JSON.parse(legacy) as string[]).map((k) => (k === LEGACY_FLAT_SECTION ? FLAT_SECTION : k))
+        raw = JSON.stringify(keys)
+        localStorage.setItem(COLLAPSE_KEY, raw)
+        localStorage.removeItem(LEGACY_COLLAPSE_KEY)
+      }
+    }
     return new Set(raw ? (JSON.parse(raw) as string[]) : [])
   } catch {
     return new Set()
@@ -211,16 +225,16 @@ function FlatSection({
       }}
     >
       <button
-        class="ns-head"
+        class="ns-box-head"
         aria-expanded={!collapsed}
         aria-label={`${collapsed ? 'Expand' : 'Collapse'} ungrouped namespaces`}
         onClick={toggle}
       >
-        <span class={`ns-chevron${collapsed ? ' collapsed' : ''}`} aria-hidden="true">
+        <span class={`ns-box-chevron${collapsed ? ' collapsed' : ''}`} aria-hidden="true">
           <IconChevron />
         </span>
-        <span class="ns-name">{FLAT_SECTION}</span>
-        <span class="ns-count">
+        <span class="ns-box-name">{FLAT_SECTION}</span>
+        <span class="ns-box-count">
           <span class="v">{num(total)}</span> memories · {nodes.length}{' '}
           {nodes.length === 1 ? 'namespace' : 'namespaces'}
         </span>
@@ -306,16 +320,16 @@ function NsBox({
       }}
     >
       <button
-        class="ns-head"
+        class="ns-box-head"
         aria-expanded={!collapsed}
         aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${node.ns}`}
         onClick={toggle}
       >
-        <span class={`ns-chevron${collapsed ? ' collapsed' : ''}`} aria-hidden="true">
+        <span class={`ns-box-chevron${collapsed ? ' collapsed' : ''}`} aria-hidden="true">
           <IconChevron />
         </span>
-        <span class="ns-name">{node.label}</span>
-        <span class="ns-count">
+        <span class="ns-box-name">{node.label}</span>
+        <span class="ns-box-count">
           <span class="v">{num(node.total)}</span> memories · {nsCount}{' '}
           {nsCount === 1 ? 'namespace' : 'namespaces'}
         </span>

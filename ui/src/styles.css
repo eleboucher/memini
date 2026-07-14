@@ -671,7 +671,7 @@ label.field .desc {
    Projects landing
    ============================================================================ */
 
-/* Tenant view: k8s-style namespace boxes (tenants) holding project "pods". */
+/* Namespaces view: k8s-style namespace boxes holding namespace "pods". */
 .ns-list {
   display: flex;
   flex-direction: column;
@@ -686,7 +686,7 @@ label.field .desc {
     border-color 0.15s var(--ease),
     background 0.15s var(--ease);
 }
-/* Highlighted while a pod is dragged over this tenant box (drop target). */
+/* Highlighted while a pod is dragged over this namespace box (drop target). */
 .ns-box.drop-target {
   border-color: var(--accent, var(--line-strong));
   border-style: dashed;
@@ -702,7 +702,7 @@ label.field .desc {
 .pod.dragging {
   cursor: grabbing;
 }
-.ns-head {
+.ns-box-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -722,40 +722,40 @@ label.field .desc {
   cursor: pointer;
 }
 /* A collapsed box drops the divider gap so the header sits flush. */
-.ns-box.collapsed .ns-head {
+.ns-box.collapsed .ns-box-head {
   margin-bottom: 0;
   padding-bottom: 0;
   border-bottom: 0;
 }
-.ns-chevron {
+.ns-box-chevron {
   display: inline-flex;
   align-items: center;
   align-self: center;
   color: var(--muted);
   transition: transform 0.15s var(--ease);
 }
-.ns-chevron svg {
+.ns-box-chevron svg {
   width: 16px;
   height: 16px;
 }
 /* Chevron points down when open; rotate to point right when collapsed. */
-.ns-chevron.collapsed {
+.ns-box-chevron.collapsed {
   transform: rotate(-90deg);
 }
-.ns-name {
+.ns-box-name {
   font-family: var(--font-display);
   font-size: 20px;
   font-weight: 500;
   letter-spacing: -0.01em;
   margin-right: auto;
 }
-.ns-count {
+.ns-box-count {
   font-size: 12px;
   color: var(--muted);
   font-family: var(--font-mono);
   white-space: nowrap;
 }
-.ns-count .v {
+.ns-box-count .v {
   color: var(--text);
   font-weight: 600;
 }
@@ -775,7 +775,7 @@ label.field .desc {
   padding-left: 20px;
   border-left: 2px solid var(--line);
 }
-.ns-box .ns-box .ns-name {
+.ns-box .ns-box .ns-box-name {
   font-size: 17px;
 }
 .pod {
@@ -1180,7 +1180,7 @@ pre.json {
   font-family: var(--font-mono);
   color: var(--faint);
 }
-/* Tenant filter, top-left over the canvas. */
+/* Root filter, top-left over the canvas. */
 .graph-controls {
   position: absolute;
   left: 16px;
