@@ -61,6 +61,20 @@ func (h *Server) Handshake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A client-side MEMINI_NAMESPACE_PREFIX overrides the merged
+	// namespace_prefix for this request, so one credential (even the admin
+	// env key, which has no per-key settings) can serve several tenants
+	// selected per shell/directory — set the prefix, and derivation composes
+	// <prefix>/<repo>. Debug-override semantics: the client env wins over the
+	// server-merged value, the same way env_namespace does. Overriding merged
+	// here (before Resolve) makes both the derived namespace and the response's
+	// reported settings reflect it, from the one merged value.
+	if p := strings.TrimSpace(deref(req.Project.EnvNamespacePrefix)); p != "" {
+		prefix := p
+		merged.NamespacePrefix = &prefix
+		sources["namespace_prefix"] = settingsSourceEnv
+	}
+
 	// Pins are backed by ProjectMapStore; a backend without that capability
 	// resolves derived-only (a nil PinLookup skips the pin step). Fetch the
 	// candidate pins once, up front — the same entries answer both the lookup

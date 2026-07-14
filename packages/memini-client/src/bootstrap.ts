@@ -28,6 +28,14 @@ export interface Bootstrap {
   agent: string;
   /** MEMINI_NAMESPACE, trimmed — "" when unset. */
   namespaceEnv: string;
+  /**
+   * MEMINI_NAMESPACE_PREFIX, trimmed — "" when unset. A client-side override
+   * of the namespace_prefix setting: prepended to a *derived* namespace
+   * (personal/<repo>), letting one credential serve several tenants selected
+   * per shell/directory. Sent to the server as a fact for the online path;
+   * used here for the degraded (server-down) fallback in resolve.ts.
+   */
+  namespacePrefixEnv: string;
   /** MEMINI_HOME, trimmed — "" when unset. */
   homeEnv: string;
 }
@@ -55,6 +63,7 @@ export function readBootstrap(env: Record<string, string | undefined> = process.
     debug: envEnabled(env["MEMINI_DEBUG"], false),
     agent: env["MEMINI_AGENT"] || "",
     namespaceEnv: (env["MEMINI_NAMESPACE"] || "").trim(),
+    namespacePrefixEnv: (env["MEMINI_NAMESPACE_PREFIX"] || "").trim(),
     homeEnv: (env["MEMINI_HOME"] || "").trim(),
   };
 }

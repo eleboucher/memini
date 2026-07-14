@@ -90,3 +90,31 @@ test("resolveNamespace: local derivation all the way down to 'default' is still 
   assert.equal(got.source, "local-default");
   assert.equal(got.degraded, true);
 });
+
+test("resolveNamespace: MEMINI_NAMESPACE_PREFIX prepends to a derived name offline", () => {
+  const boot = readBootstrap({ MEMINI_NAMESPACE_PREFIX: "work" });
+  const facts: ProjectFacts = { remote_url: "https://github.com/acme/phoenix.git", cwd_basename: "ignored" };
+
+  const got = resolveNamespace(boot, facts, undefined);
+  assert.equal(got.namespace, "work/phoenix");
+  assert.equal(got.source, "local-remote");
+  assert.equal(got.degraded, true);
+});
+
+test("resolveNamespace: MEMINI_NAMESPACE_PREFIX never prefixes the 'default' fallback", () => {
+  const boot = readBootstrap({ MEMINI_NAMESPACE_PREFIX: "work" });
+  const facts: ProjectFacts = { cwd_basename: "" };
+
+  const got = resolveNamespace(boot, facts, undefined);
+  assert.equal(got.namespace, "default");
+  assert.equal(got.source, "local-default");
+});
+
+test("resolveNamespace: MEMINI_NAMESPACE (verbatim) beats the prefix — the prefix only shapes derivation", () => {
+  const boot = readBootstrap({ MEMINI_NAMESPACE: "pinned-env", MEMINI_NAMESPACE_PREFIX: "work" });
+  const facts: ProjectFacts = { remote_url: "https://github.com/acme/phoenix.git", cwd_basename: "ignored" };
+
+  const got = resolveNamespace(boot, facts, undefined);
+  assert.equal(got.namespace, "pinned-env");
+  assert.equal(got.source, "env");
+});

@@ -153,5 +153,14 @@ export function resolveNamespace(
     return { namespace: boot.namespaceEnv, source: "env", degraded: true };
   }
   const { namespace, source } = deriveLocalNamespace(facts);
+  // Mirror the server's applyPrefix: MEMINI_NAMESPACE_PREFIX composes only with
+  // a *derived* name (remote/toplevel/cwd), never with a verbatim declared
+  // namespace or the bare "default" fallback. deriveLocalNamespace has already
+  // appended any agent suffix, so prepending here yields <prefix>/<base>/<agent>
+  // — the same order as the server (applyPrefix then withAgent).
+  const prefix = boot.namespacePrefixEnv;
+  if (prefix && (source === "remote" || source === "toplevel" || source === "cwd")) {
+    return { namespace: `${prefix}/${namespace}`, source: `local-${source}`, degraded: true };
+  }
   return { namespace, source: `local-${source}`, degraded: true };
 }

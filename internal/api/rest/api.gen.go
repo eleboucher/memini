@@ -854,6 +854,9 @@ type HandshakeRequest struct {
 		// EnvNamespace The client's MEMINI_NAMESPACE, when set. Sent so a pin can still beat it server-side — the client cannot make that call itself without knowing whether a pin exists.
 		EnvNamespace *string `json:"env_namespace,omitempty"`
 
+		// EnvNamespacePrefix The client's MEMINI_NAMESPACE_PREFIX, when set. A client-side override of the namespace_prefix behavioral setting: it is prepended to the derived name (personal/<repo>) exactly as the setting would be, but wins over the server-merged setting the same way any client env override does. Lets one credential serve several tenants selected per shell/directory (e.g. a per-tree .envrc) without a pin or a second key.
+		EnvNamespacePrefix *string `json:"env_namespace_prefix,omitempty"`
+
 		// RemoteUrl Raw git remote URL, exactly as `git remote get-url origin` reports it — unnormalized.
 		RemoteUrl *string `json:"remote_url,omitempty"`
 

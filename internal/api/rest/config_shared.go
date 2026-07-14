@@ -23,6 +23,12 @@ const (
 	settingsSourceDefault = "default"
 	settingsSourceGlobal  = "global"
 	settingsSourceKey     = "key"
+	// settingsSourceEnv marks a field a client env override supplied for this
+	// request (e.g. MEMINI_NAMESPACE_PREFIX → namespace_prefix), which wins
+	// over the merged default/global/key layers. Not one of the persisted
+	// layer labels above — it never reaches MergeClientSettings, it is stamped
+	// by the handshake after the merge (see Handshake).
+	settingsSourceEnv = "env"
 )
 
 // eventDetailLayer is the LogConfigEvent detail key naming which settings

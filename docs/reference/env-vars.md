@@ -29,15 +29,16 @@ The handful of variables that exist purely so the client can find the server
 and prove who it is. Nothing here is server data — it never travels further
 than the request the client is about to make.
 
-| Variable               | Purpose                                                                                                                                                                               |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MEMINI_BASE_URL`      | Where the server is. Defaults to `http://localhost:8080`.                                                                                                                             |
-| `MEMINI_API_KEY`       | The bearer token this client sends. Absent means an unauthenticated request.                                                                                                          |
-| `MEMINI_REQUIRE_HTTPS` | Refuse to send `MEMINI_API_KEY` over plaintext HTTP to a non-loopback host (a hard throw, not a warning) — a client-side guard, `@memini/client`'s `assertBearerTransportSafe`.       |
-| `MEMINI_DEBUG`         | Verbose hook/client logging to stderr.                                                                                                                                                |
-| `MEMINI_AGENT`         | A per-agent suffix (e.g. `reviewer`), sent as a project fact so the server can nest a per-agent namespace segment under the resolved one.                                             |
-| `MEMINI_NAMESPACE`     | An explicit namespace, sent as a fact so the **server** can weigh it against a pin (see [Context](#3-context-namespace-resolution) below) — the client cannot make that call locally. |
-| `MEMINI_HOME`          | This caller's personal namespace, sent as `X-Memini-Home` on every request.                                                                                                           |
+| Variable                  | Purpose                                                                                                                                                                                                                                                                                                                          |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEMINI_BASE_URL`         | Where the server is. Defaults to `http://localhost:8080`.                                                                                                                                                                                                                                                                        |
+| `MEMINI_API_KEY`          | The bearer token this client sends. Absent means an unauthenticated request.                                                                                                                                                                                                                                                     |
+| `MEMINI_REQUIRE_HTTPS`    | Refuse to send `MEMINI_API_KEY` over plaintext HTTP to a non-loopback host (a hard throw, not a warning) — a client-side guard, `@memini/client`'s `assertBearerTransportSafe`.                                                                                                                                                  |
+| `MEMINI_DEBUG`            | Verbose hook/client logging to stderr.                                                                                                                                                                                                                                                                                           |
+| `MEMINI_AGENT`            | A per-agent suffix (e.g. `reviewer`), sent as a project fact so the server can nest a per-agent namespace segment under the resolved one.                                                                                                                                                                                        |
+| `MEMINI_NAMESPACE`        | An explicit namespace, sent as a fact so the **server** can weigh it against a pin (see [Context](#3-context-namespace-resolution) below) — the client cannot make that call locally.                                                                                                                                            |
+| `MEMINI_NAMESPACE_PREFIX` | A client-side override of the `namespace_prefix` behavior setting, sent as a fact. Prepended to the **derived** name (`<prefix>/<repo>`), so one credential can serve several tenants selected per shell/directory (e.g. a per-tree `.envrc`) — no pin, no second key. See [Behavior](#4-behavior-settings-layered-server-data). |
+| `MEMINI_HOME`             | This caller's personal namespace, sent as `X-Memini-Home` on every request.                                                                                                                                                                                                                                                      |
 
 Everything past this point is **server data**. The client sends what it knows
 (bootstrap facts) and reads back what the server resolved; it does not derive
@@ -64,7 +65,7 @@ The namespace a write lands in and a plain recall draws from. Resolved
 1. pin                 <- /v1/pins, set by /memini:namespace; follows you across machines
 2. MEMINI_NAMESPACE     <- sent as a fact; a pin still beats it
 3. declared_namespace   <- gateway/integration callers with no meaningful cwd
-4. derive               <- git remote > git toplevel > cwd basename (+ MEMINI_AGENT)
+4. derive               <- git remote > git toplevel > cwd basename (+ namespace_prefix / MEMINI_NAMESPACE_PREFIX, + MEMINI_AGENT)
 5. key default_namespace
 6. server default       <- MEMINI_DEFAULT_NAMESPACE / MEMINI_NAMESPACE (server env)
 ```
@@ -124,12 +125,22 @@ overridden through the API. See
 [`MEMINI_CLIENT_DEFAULTS`](configuration.md#memini_client_defaults) and the
 [homelab guide](../guides/homelab-team.md) for a values.yaml example.
 
-Two fields — `namespace_scope` and `namespace_prefix` — are server-resolved
-behavior settings with **no** client-side debug override: there is no
-`MEMINI_NAMESPACE_SCOPE` (removed; see below) or equivalent env var for
-either. They only take effect through a live handshake; the degraded local
-derivation path always behaves as `namespace_scope: repo` with no prefix,
-because there is no server to apply the setting from.
+`namespace_scope` is a server-resolved behavior setting with **no**
+client-side debug override: there is no `MEMINI_NAMESPACE_SCOPE` (removed; see
+below). It only takes effect through a live handshake; the degraded local
+derivation path always behaves as `namespace_scope: repo`.
+
+`namespace_prefix` is the exception: it **does** have a client override,
+`MEMINI_NAMESPACE_PREFIX`, sent as a fact and honored the same way any client
+env override is (it wins over the merged global/per-key value). It is prepended
+to a **derived** namespace only — never to a verbatim `MEMINI_NAMESPACE` or a
+gateway `declared_namespace` — giving `<prefix>/<repo>`. This is what lets a
+single credential (even the admin env key, which has no per-key settings) serve
+several tenants selected by directory: point a per-tree `.envrc` (or a shell
+hook) at `export MEMINI_NAMESPACE_PREFIX=<tenant>` and every repo under that
+tree resolves to `<tenant>/<repo>`, with the repo name derived from the git
+remote so it stays stable across machines. Unlike the other two, it is also
+applied in the degraded local path, so it keeps working with the server down.
 
 ## The four that mean two things
 

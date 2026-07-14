@@ -63,6 +63,13 @@ test("gatherFacts: blank MEMINI_AGENT/MEMINI_NAMESPACE leave the fields absent",
   assert.equal(facts.env_namespace, undefined);
 });
 
+test("gatherFacts: populates env_namespace_prefix from MEMINI_NAMESPACE_PREFIX (trimmed), absent when blank", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "memini-facts-prefix-"));
+  assert.equal(gatherFacts(dir, { MEMINI_NAMESPACE_PREFIX: "  work  " }).env_namespace_prefix, "work");
+  assert.equal(gatherFacts(dir, { MEMINI_NAMESPACE_PREFIX: "   " }).env_namespace_prefix, undefined);
+  assert.equal(gatherFacts(dir, {}).env_namespace_prefix, undefined);
+});
+
 // ─── factsFingerprint ───────────────────────────────────────────────
 
 test("factsFingerprint: stable regardless of key insertion order", () => {

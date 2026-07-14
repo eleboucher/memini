@@ -399,6 +399,50 @@ func TestHandshakePinBlockDetails(t *testing.T) {
 	}
 }
 
+// TestHandshakeEnvNamespacePrefix pins the client-side MEMINI_NAMESPACE_PREFIX
+// override: it prepends to a derived name (personal/<repo>) exactly as the
+// namespace_prefix setting would, is reported with source "env", and wins over
+// a server-set global default — so one credential (here the no-principal env
+// key) can serve several tenants selected per shell/directory.
+func TestHandshakeEnvNamespacePrefix(t *testing.T) {
+	h, _ := newConfigServer(t, "", "", nil)
+	const remote = "https://github.com/acme/phoenix.git"
+
+	// A global default prefix, to prove the client env wins over it.
+	rec := do(t, h, http.MethodPut, "/v1/settings/defaults", "", "", map[string]any{"namespace_prefix": "personal"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put defaults: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	rec = do(t, h, http.MethodPost, "/v1/handshake", "", "", handshakeBody(map[string]any{
+		"cwd_basename": "proj", "remote_url": remote, "env_namespace_prefix": "work",
+	}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("handshake: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var got handshakeRespDTO
+	mustJSON(t, rec, &got)
+	if got.Namespace != "work/phoenix" || got.NamespaceSource != "remote" {
+		t.Fatalf("env prefix override: got %q/%q, want work/phoenix/remote", got.Namespace, got.NamespaceSource)
+	}
+	if got.Settings["namespace_prefix"] != "work" {
+		t.Errorf("settings.namespace_prefix = %v, want work", got.Settings["namespace_prefix"])
+	}
+	if got.SettingsSources["namespace_prefix"] != "env" {
+		t.Errorf("settings_sources.namespace_prefix = %q, want env", got.SettingsSources["namespace_prefix"])
+	}
+
+	// Without the env override, the global default applies (personal), proving
+	// the override is per-request, not sticky.
+	rec = do(t, h, http.MethodPost, "/v1/handshake", "", "", handshakeBody(map[string]any{
+		"cwd_basename": "proj", "remote_url": remote,
+	}))
+	mustJSON(t, rec, &got)
+	if got.Namespace != "personal/phoenix" {
+		t.Fatalf("without env prefix: got %q, want personal/phoenix (global default)", got.Namespace)
+	}
+}
+
 // --- handshake: determinism + no writes --------------------------------------
 
 func TestHandshakeDeterministicAndSideEffectFree(t *testing.T) {

@@ -52,6 +52,7 @@ test("readBootstrap: reads the real vars, with the documented trim/raw semantics
     MEMINI_DEBUG: "true",
     MEMINI_AGENT: "  reviewer  ",
     MEMINI_NAMESPACE: "  acme/phoenix  ",
+    MEMINI_NAMESPACE_PREFIX: "  work  ",
     MEMINI_HOME: "  personal/kit  ",
   });
   assert.equal(b.baseUrl, "https://memini.example.com");
@@ -60,8 +61,9 @@ test("readBootstrap: reads the real vars, with the documented trim/raw semantics
   assert.equal(b.debug, true);
   // agent is raw — NOT trimmed here (sanitization happens where a namespace is built).
   assert.equal(b.agent, "  reviewer  ");
-  // namespaceEnv/homeEnv ARE trimmed.
+  // namespaceEnv/namespacePrefixEnv/homeEnv ARE trimmed.
   assert.equal(b.namespaceEnv, "acme/phoenix");
+  assert.equal(b.namespacePrefixEnv, "work");
   assert.equal(b.homeEnv, "personal/kit");
 });
 

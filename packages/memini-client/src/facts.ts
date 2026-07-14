@@ -20,6 +20,8 @@ export interface ProjectFacts {
   cwd_basename: string;
   agent?: string;
   env_namespace?: string;
+  /** MEMINI_NAMESPACE_PREFIX, when set — a client override of namespace_prefix. */
+  env_namespace_prefix?: string;
   /** For gateway/CI callers with no meaningful cwd. Set by those callers, never by gatherFacts. */
   declared_namespace?: string;
 }
@@ -71,6 +73,9 @@ export function gatherFacts(
 
   const ns = (env["MEMINI_NAMESPACE"] || "").trim();
   if (ns) facts.env_namespace = ns;
+
+  const prefix = (env["MEMINI_NAMESPACE_PREFIX"] || "").trim();
+  if (prefix) facts.env_namespace_prefix = prefix;
 
   return facts;
 }

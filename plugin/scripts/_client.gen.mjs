@@ -261,6 +261,7 @@ function readBootstrap(env = process.env) {
     debug: envEnabled(env["MEMINI_DEBUG"], false),
     agent: env["MEMINI_AGENT"] || "",
     namespaceEnv: (env["MEMINI_NAMESPACE"] || "").trim(),
+    namespacePrefixEnv: (env["MEMINI_NAMESPACE_PREFIX"] || "").trim(),
     homeEnv: (env["MEMINI_HOME"] || "").trim()
   };
 }
@@ -313,6 +314,8 @@ function gatherFacts(cwd, env = process.env) {
   if (agent) facts.agent = agent;
   const ns = (env["MEMINI_NAMESPACE"] || "").trim();
   if (ns) facts.env_namespace = ns;
+  const prefix = (env["MEMINI_NAMESPACE_PREFIX"] || "").trim();
+  if (prefix) facts.env_namespace_prefix = prefix;
   return facts;
 }
 function factsFingerprint(f) {
@@ -383,6 +386,10 @@ function resolveNamespace(boot, facts, hs) {
     return { namespace: boot.namespaceEnv, source: "env", degraded: true };
   }
   const { namespace, source } = deriveLocalNamespace(facts);
+  const prefix = boot.namespacePrefixEnv;
+  if (prefix && (source === "remote" || source === "toplevel" || source === "cwd")) {
+    return { namespace: `${prefix}/${namespace}`, source: `local-${source}`, degraded: true };
+  }
   return { namespace, source: `local-${source}`, degraded: true };
 }
 

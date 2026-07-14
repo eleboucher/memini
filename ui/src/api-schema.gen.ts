@@ -1228,6 +1228,8 @@ export interface components {
                 agent?: string;
                 /** @description The client's MEMINI_NAMESPACE, when set. Sent so a pin can still beat it server-side — the client cannot make that call itself without knowing whether a pin exists. */
                 env_namespace?: string;
+                /** @description The client's MEMINI_NAMESPACE_PREFIX, when set. A client-side override of the namespace_prefix behavioral setting: it is prepended to the derived name (personal/<repo>) exactly as the setting would be, but wins over the server-merged setting the same way any client env override does. Lets one credential serve several tenants selected per shell/directory (e.g. a per-tree .envrc) without a pin or a second key. */
+                env_namespace_prefix?: string;
                 /** @description For gateway/integration callers with no meaningful cwd (a webhook relay, a CI job) to declare their namespace directly. Wins over derivation but not over a pin or env_namespace. */
                 declared_namespace?: string;
             };
