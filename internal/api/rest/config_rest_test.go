@@ -1062,17 +1062,18 @@ func TestSettingsDefaultsEnvManaged(t *testing.T) {
 // config_shared.go. Those functions are written by hand against a GENERATED wire
 // struct, so a field omitted from either direction fails silently — it compiles,
 // it round-trips as nil, and the setting simply never reaches the client.
-// A setting that a deployment cannot actually deliver to its clients is worse
-// than no setting at all, so every knob a server can push is asserted here to
-// survive PUT -> handshake.
+// auto_save_min_events shipped exactly that way. A setting that a deployment
+// cannot actually deliver to its clients is worse than no setting at all, so
+// every knob a server can push is asserted here to survive PUT -> handshake.
 func TestSettingsRoundTripAcrossTheWire(t *testing.T) {
 	h, _ := newConfigServer(t, "admin-secret", "", nil)
 
 	// A deployment behind a slow cross-encoder raises the client ceiling
 	// fleet-wide, rather than asking every user to export MEMINI_TIMEOUT_MS.
 	want := map[string]any{
-		"request_timeout_ms": float64(30000),
-		"recall_limit":       float64(9),
+		"request_timeout_ms":   float64(30000),
+		"auto_save_min_events": float64(7),
+		"recall_limit":         float64(9),
 	}
 	rec := do(t, h, http.MethodPut, "/v1/settings/defaults", "", "admin-secret", want)
 	if rec.Code != http.StatusOK {
