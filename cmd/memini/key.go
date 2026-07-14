@@ -130,7 +130,10 @@ type keyAddOpts struct {
 // existing row — most critically Disabled: a key disabled during incident
 // response must not be silently re-enabled by a later secret rotation. Admin
 // carries forward the same way: rotating an admin key never silently demotes
-// it, and rotating a non-admin key never silently promotes it.
+// it, and rotating a non-admin key never silently promotes it. Settings has no
+// CLI flag at all, so it is ALWAYS carried forward from the existing row — the
+// store upsert overwrites settings=excluded.settings, so omitting it here would
+// wipe a key's per-key Settings on every rotation.
 // Returns the plaintext secret (present exactly here and nowhere else) and
 // the stored row as persisted (re-read via GetAPIKeyByHash so CreatedAt
 // reflects what was actually written, not just the zero value passed in).
@@ -145,12 +148,18 @@ func addAPIKey(ctx context.Context, ks store.APIKeyStore, name string, opts keyA
 	// method: keys are few, and the store contract stays as-is.
 	var home, defaultNS string
 	var disabled, admin bool
+	var settings store.ClientSettings
 	existing, err := findAPIKeyByName(ctx, ks, name)
 	if err != nil {
 		return "", store.APIKey{}, fmt.Errorf("add api key %q: look up existing: %w", name, err)
 	}
 	if existing != nil {
 		home, defaultNS, disabled, admin = existing.HomeNS, existing.DefaultNS, existing.Disabled, existing.Admin
+		// Settings has no --flag here, so it is always carried forward from the
+		// existing row: the store upsert overwrites settings=excluded.settings,
+		// so leaving this at the zero value would silently wipe a key's per-key
+		// Settings on every CLI rotation.
+		settings = existing.Settings
 	}
 	if opts.Home != nil {
 		h, herr := normalizeOptionalNamespace(*opts.Home)
@@ -183,6 +192,7 @@ func addAPIKey(ctx context.Context, ks store.APIKeyStore, name string, opts keyA
 		DefaultNS: defaultNS,
 		Disabled:  disabled,
 		Admin:     admin,
+		Settings:  settings,
 		// CreatedAt intentionally left zero: PutAPIKey stamps "now" for a
 		// brand-new row and preserves the existing CreatedAt on rotation.
 	}

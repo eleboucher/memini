@@ -201,6 +201,45 @@ func TestAddAPIKeyRotationExplicitDemoteClearsAdmin(t *testing.T) {
 	}
 }
 
+// TestAddAPIKeyRotationPreservesSettings is the regression pin for the rider
+// bug: addAPIKey seeded home/default/disabled/admin from the existing row but
+// NOT Settings, while the store upsert overwrites settings=excluded.settings —
+// so a plain CLI rotation silently wiped a key's per-key Settings. A key with a
+// per-key Settings override must keep it across a secret rotation.
+func TestAddAPIKeyRotationPreservesSettings(t *testing.T) {
+	st := openTestStore(t)
+	ks, err := keyStoreOf(st)
+	if err != nil {
+		t.Fatalf("keyStoreOf: %v", err)
+	}
+	ctx := context.Background()
+
+	// Seed a key carrying a per-key Settings override (there is no CLI flag for
+	// settings, so seed it directly through the store).
+	if _, _, err := addAPIKey(ctx, ks, "settings-len", keyAddOpts{}); err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+	seeded, err := findAPIKeyByName(ctx, ks, "settings-len")
+	if err != nil || seeded == nil {
+		t.Fatalf("lookup seeded key: %v", err)
+	}
+	seeded.Settings = store.ClientSettings{CaptureTurns: boolPtr(false)}
+	if err := ks.PutAPIKey(ctx, *seeded); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	// Rotate with no flags — Settings has no flag, so it must be carried forward.
+	// (Compare by field value: the store round-trip re-allocates the pointer, so
+	// a struct != would compare pointer identity, not the stored value.)
+	_, rotated, err := addAPIKey(ctx, ks, "settings-len", keyAddOpts{})
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if rotated.Settings.CaptureTurns == nil || *rotated.Settings.CaptureTurns {
+		t.Errorf("rotation must preserve per-key Settings (capture_turns=false), got %+v", rotated.Settings)
+	}
+}
+
 func TestAddAPIKeyDisabledFlag(t *testing.T) {
 	st := openTestStore(t)
 	ks, err := keyStoreOf(st)
