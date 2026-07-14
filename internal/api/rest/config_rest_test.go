@@ -51,7 +51,7 @@ func newConfigServer(t *testing.T, adminKey, fileYAML string, clientDefaults *st
 	return r, ks
 }
 
-// storeNoAPIKeys hides the optional APIKeyStore/ProjectMapStore/etc capabilities
+// storeNoAPIKeys hides the optional APIKeyStore/PinStore/etc capabilities
 // of a Store (a type assertion to any of them fails), exercising the 501 degrade
 // paths. Only the base Store methods are promoted from the embedded interface.
 type storeNoAPIKeys struct{ store.Store }
@@ -162,7 +162,7 @@ keys:
 }
 
 // newDegradedServer is a dev-mode server whose store hides every optional
-// capability (no APIKeyStore/ProjectMapStore/ClientSettingsStore), for
+// capability (no APIKeyStore/PinStore/ClientSettingsStore), for
 // exercising the 501 degrade paths. Dev mode (no admin key, no key store)
 // authenticates every request with a nil principal.
 func newDegradedServer(t *testing.T) http.Handler {
@@ -238,9 +238,9 @@ func TestSettingsDefaults501NoStore(t *testing.T) {
 	}
 }
 
-// TestPins501NoProjectMapStore pins the pins capability degrade: every verb
-// answers 501 against a backend with no project_map.
-func TestPins501NoProjectMapStore(t *testing.T) {
+// TestPins501NoPinStore pins the pins capability degrade: every verb
+// answers 501 against a backend with no pin store.
+func TestPins501NoPinStore(t *testing.T) {
 	h := newDegradedServer(t)
 	cases := []struct {
 		method string
@@ -259,7 +259,7 @@ func TestPins501NoProjectMapStore(t *testing.T) {
 }
 
 // TestHandshakeDegradesWithoutPins pins that a handshake against a backend with
-// no project_map resolves derived-only rather than erroring — the pin step is
+// no pin store resolves derived-only rather than erroring — the pin step is
 // simply skipped.
 func TestHandshakeDegradesWithoutPins(t *testing.T) {
 	h := newDegradedServer(t)
@@ -678,7 +678,7 @@ func TestActivityAttributionDevMode(t *testing.T) {
 
 // TestListPinsEveryCredentialClass pins that GET /v1/pins answers for every
 // credential class (admin, dev mode, named table key, named file key): it is
-// ungated by design (see ListPins's doc comment) — the project map is
+// ungated by design (see ListPins's doc comment) — pins are
 // machine-wide derivation state, not scoped to one namespace or principal.
 func TestListPinsEveryCredentialClass(t *testing.T) {
 	fileYAML := `

@@ -81,6 +81,12 @@ var backfillColumns = []struct{ name, decl string }{
 }
 
 func (s *Store) migrate(ctx context.Context) error {
+	// pins was named project_map until the terminology cleanup; rename an
+	// existing table in place, before the CREATE below can plant a fresh
+	// empty pins next to it, so old installs keep their rows.
+	if err := s.renamePinsTable(ctx); err != nil {
+		return err
+	}
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS memories (
 			rowid            INTEGER PRIMARY KEY,
@@ -170,11 +176,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_ns_time ON memory_events(namespace, created_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_time ON memory_events(created_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_memory ON memory_events(memory_id)`,
-		// project_map records project→namespace pins (see store.ProjectMapStore,
+		// pins records project→namespace pins (see store.PinStore,
 		// the config-handshake redesign): key is "remote:<canonical-remote>" or
 		// "path:<absolute-toplevel>"; created_at/updated_at are RFC3339 strings,
 		// as with api_keys/namespace_links above.
-		`CREATE TABLE IF NOT EXISTS project_map (
+		`CREATE TABLE IF NOT EXISTS pins (
 			key        TEXT PRIMARY KEY,
 			namespace  TEXT NOT NULL,
 			note       TEXT NOT NULL DEFAULT '',
@@ -182,7 +188,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_project_map_ns ON project_map(namespace)`,
+		`CREATE INDEX IF NOT EXISTS idx_pins_ns ON pins(namespace)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -226,6 +232,37 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx,
 		`CREATE INDEX IF NOT EXISTS idx_memories_fingerprint ON memories(namespace, tier, fingerprint)`); err != nil {
 		return fmt.Errorf("sqlitevec: migrate: create idx_memories_fingerprint: %w", err)
+	}
+	return nil
+}
+
+// renamePinsTable renames a pre-rename project_map table to pins, once. A
+// fresh database (neither table) and an already-renamed one (pins present)
+// are both no-ops; if both exist (an old binary re-created an empty
+// project_map after the rename), the stray is left alone rather than merged
+// by guesswork. SQLite keeps the old index name across a table rename, so
+// the index is dropped here and migrate's CREATE INDEX rebuilds idx_pins_ns.
+func (s *Store) renamePinsTable(ctx context.Context) error {
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='project_map'`).Scan(&n); err != nil {
+		return fmt.Errorf("sqlitevec: inspect project_map: %w", err)
+	}
+	if n == 0 {
+		return nil
+	}
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pins'`).Scan(&n); err != nil {
+		return fmt.Errorf("sqlitevec: inspect pins: %w", err)
+	}
+	if n > 0 {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE project_map RENAME TO pins`); err != nil {
+		return fmt.Errorf("sqlitevec: rename project_map to pins: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DROP INDEX IF EXISTS idx_project_map_ns`); err != nil {
+		return fmt.Errorf("sqlitevec: drop idx_project_map_ns: %w", err)
 	}
 	return nil
 }

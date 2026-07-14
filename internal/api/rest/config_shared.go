@@ -12,7 +12,7 @@ import (
 
 // Shared plumbing for the config-handshake surface (handshake / self /
 // settings-defaults / pins). The eight handlers live in handshake.go,
-// selfsettings.go, settingsdefaults.go and projectmap.go; this file holds the
+// selfsettings.go, settingsdefaults.go and pins.go; this file holds the
 // capability accessors, the settings-layer merge, the identity mapping, and the
 // store.ClientSettings <-> generated-ClientSettings conversions they share.
 
@@ -48,12 +48,12 @@ const eventDetailKeyName = "key_name"
 // kept here next to its sibling so apikeys.go doesn't inline the literal.
 const eventDetailAdmin = "admin"
 
-// projectMapStore type-asserts the backing store to store.ProjectMapStore, the
+// pinStore type-asserts the backing store to store.PinStore, the
 // optional capability the project-map pins need (keyStore/linkStore's
 // precedent). Returns false — a 501 to the caller — for a driver that predates
 // it, so a handshake against such a backend resolves derived-only.
-func (h *Server) projectMapStore() (store.ProjectMapStore, bool) {
-	pms, ok := h.svc.Store().(store.ProjectMapStore)
+func (h *Server) pinStore() (store.PinStore, bool) {
+	pms, ok := h.svc.Store().(store.PinStore)
 	return pms, ok
 }
 
@@ -206,9 +206,9 @@ func apiReadSet(entries []service.ReadSetEntry) []ReadSetEntryItem {
 	return out
 }
 
-// apiProjectMapEntry maps a store.ProjectMapEntry onto the wire shape, omitting
+// apiPin maps a store.Pin onto the wire shape, omitting
 // the optional note/created_by when empty.
-func apiProjectMapEntry(e store.ProjectMapEntry) ProjectMapEntry {
+func apiPin(e store.Pin) ProjectMapEntry {
 	out := ProjectMapEntry{Key: e.Key, Namespace: e.Namespace, CreatedAt: e.CreatedAt, UpdatedAt: e.UpdatedAt}
 	if e.Note != "" {
 		note := e.Note

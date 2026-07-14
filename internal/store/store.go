@@ -676,13 +676,13 @@ type APIKeyStore interface {
 	RenameAPIKeyNamespaces(ctx context.Context, from, to string) error
 }
 
-// ProjectMapEntry is a persisted project→namespace pin: an operator-created
+// Pin is a persisted project→namespace binding: an operator-created
 // binding from a project's identity to the namespace every handshake for
 // that project resolves to, overriding derivation. Key is the lookup key:
 // "remote:<canonical-remote>" for a git-remote pin (canonical = normalized,
 // credential-stripped) or "path:<absolute-toplevel>" for a path pin (used for
 // remoteless repos and bare directories).
-type ProjectMapEntry struct {
+type Pin struct {
 	Key       string
 	Namespace string
 	Note      string
@@ -693,33 +693,33 @@ type ProjectMapEntry struct {
 	UpdatedAt time.Time
 }
 
-// ProjectMapStore is implemented by drivers that persist project_map, the
+// PinStore is implemented by drivers that persist pins, the
 // config-handshake redesign's project→namespace pin table. It is an optional
 // capability interface — the EmbedModelStore/LinkStore/APIKeyStore precedent
 // above — so callers type-assert and degrade gracefully against a driver
 // that predates it.
-type ProjectMapStore interface {
-	// PutProjectMapEntries upserts entries in a single transaction, keyed by
+type PinStore interface {
+	// PutPins upserts entries in a single transaction, keyed by
 	// each entry's Key. An update preserves the existing row's CreatedAt and
 	// CreatedBy — a pin's provenance is fixed at creation, unlike APIKey's
 	// CreatedAt (which import restore can still overwrite by design) — while
 	// Namespace, Note, and UpdatedAt take the incoming values.
-	PutProjectMapEntries(ctx context.Context, entries []ProjectMapEntry) error
-	// GetProjectMapEntries returns the entries matching the given keys, in no
+	PutPins(ctx context.Context, entries []Pin) error
+	// GetPins returns the entries matching the given keys, in no
 	// particular order; a key with no matching row is simply absent from the
 	// result (not an error).
-	GetProjectMapEntries(ctx context.Context, keys []string) ([]ProjectMapEntry, error)
-	// DeleteProjectMapEntries removes the entries with the given keys and
+	GetPins(ctx context.Context, keys []string) ([]Pin, error)
+	// DeletePins removes the entries with the given keys and
 	// returns the number of rows actually deleted; a key with no matching row
 	// does not count and is not an error.
-	DeleteProjectMapEntries(ctx context.Context, keys []string) (int64, error)
-	// ListProjectMapEntries returns every entry ordered by Key, for the CLI/UI.
-	ListProjectMapEntries(ctx context.Context) ([]ProjectMapEntry, error)
-	// RenameProjectMapNamespaces rewrites every entry whose Namespace exactly
+	DeletePins(ctx context.Context, keys []string) (int64, error)
+	// ListPins returns every entry ordered by Key, for the CLI/UI.
+	ListPins(ctx context.Context) ([]Pin, error)
+	// RenamePinNamespaces rewrites every entry whose Namespace exactly
 	// equals from to to instead (maintenance.Move, alongside
 	// RenameLinkEndpoints/RenameAPIKeyNamespaces); a namespace that merely
 	// starts with from (e.g. "memini2" against from="memini") is untouched.
-	RenameProjectMapNamespaces(ctx context.Context, from, to string) error
+	RenamePinNamespaces(ctx context.Context, from, to string) error
 }
 
 // ClientSettingsStore is implemented by drivers that persist the server's
@@ -741,7 +741,7 @@ type EventKind string
 
 // EventPin/EventUnpin/EventSettings are part of the config-handshake wire
 // contract (api/openapi.yaml's EventKind enum) landed ahead of the
-// project_map/settings write paths that will actually emit them — see
+// pin/settings write paths that will actually emit them — see
 // internal/api/rest/config_stubs.go. Recognizing them here now means the
 // GET /v1/activity ?kind= filter never 400s on a value the spec itself
 // advertises as valid.

@@ -34,6 +34,15 @@ func hasIndex(t *testing.T, db *sql.DB, name string) bool {
 	return err == nil
 }
 
+func hasTable(t *testing.T, db *sql.DB, name string) bool {
+	t.Helper()
+	err := db.QueryRow(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(new(int))
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("check table %s: %v", name, err)
+	}
+	return err == nil
+}
+
 // unit returns the i-th standard basis vector for the test embedding dim (8).
 func unit(i int) []float32 {
 	v := make([]float32, 8)
@@ -178,6 +187,68 @@ func TestUpgradeFromLegacyDB(t *testing.T) {
 			t.Fatalf("GetByFingerprint = (%v, %v), want m3", got, err)
 		}
 	})
+}
+
+// TestMigrateRenamesProjectMapToPins opens a DB created when the pins table
+// was still named project_map and checks migrate renames it in place: the
+// seeded row survives (the table is not recreated empty next to a stray),
+// the old index is replaced by idx_pins_ns, and no project_map remains.
+func TestMigrateRenamesProjectMapToPins(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "prerename.db")
+
+	db, err := sql.Open("sqlite3", "file:"+path)
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	seed := []string{
+		`CREATE TABLE project_map (
+			key        TEXT PRIMARY KEY,
+			namespace  TEXT NOT NULL,
+			note       TEXT NOT NULL DEFAULT '',
+			created_by TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX idx_project_map_ns ON project_map(namespace)`,
+		`INSERT INTO project_map (key, namespace, note, created_by, created_at, updated_at)
+		 VALUES ('remote:github.com/acme/phoenix', 'acme/phoenix', 'seeded before rename', 'kit',
+			'2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+	}
+	for _, q := range seed {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("seed %q: %v", q, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	st, err := Open(ctx, path, 8)
+	if err != nil {
+		t.Fatalf("open pre-rename DB: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	got, err := st.GetPins(ctx, []string{"remote:github.com/acme/phoenix"})
+	if err != nil {
+		t.Fatalf("GetPins: %v", err)
+	}
+	if len(got) != 1 || got[0].Namespace != "acme/phoenix" || got[0].CreatedBy != "kit" {
+		t.Fatalf("GetPins = %+v, want the seeded pre-rename row", got)
+	}
+	if hasTable(t, st.db, "project_map") {
+		t.Error("project_map still exists after migrate; want it renamed to pins")
+	}
+	if !hasTable(t, st.db, "pins") {
+		t.Error("pins table missing after migrate")
+	}
+	if hasIndex(t, st.db, "idx_project_map_ns") {
+		t.Error("idx_project_map_ns still exists; want it dropped in favor of idx_pins_ns")
+	}
+	if !hasIndex(t, st.db, "idx_pins_ns") {
+		t.Error("idx_pins_ns missing after migrate")
+	}
 }
 
 // TestMigrateBackfillsEveryNewerColumn guards the bug class behind the crashloop:

@@ -269,7 +269,7 @@ func TestPinKeysOrderAndPresence(t *testing.T) {
 }
 
 // TestResolveSkipsPinsWhenCapabilityAbsent pins the graceful degrade: a nil
-// PinLookup (a backend with no project_map capability) resolves derived-only
+// PinLookup (a backend with no pin capability) resolves derived-only
 // rather than erroring.
 func TestResolveSkipsPinsWhenCapabilityAbsent(t *testing.T) {
 	f := nsresolve.Facts{RemoteURL: "https://github.com/acme/phoenix.git", ToplevelPath: "/srv/app"}

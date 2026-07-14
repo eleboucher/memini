@@ -58,7 +58,7 @@ type Facts struct {
 }
 
 // Result is a resolved namespace plus why it was chosen. PinKey is set (to the
-// project_map key that matched) only when Source == SourcePin.
+// pin key that matched) only when Source == SourcePin.
 type Result struct {
 	Namespace string
 	Source    string
@@ -66,7 +66,7 @@ type Result struct {
 }
 
 // PinLookup resolves the first of keys (given in preference order) that has a
-// project_map pin, returning its namespace and the key that matched. ok is
+// pin, returning its namespace and the key that matched. ok is
 // false when none of the keys is pinned. A nil PinLookup, or one that reports a
 // backend without the pin capability, means "no pins" — Resolve then falls
 // through to derivation, exactly as it does for an unpinned project.
@@ -75,7 +75,7 @@ type PinLookup func(ctx context.Context, keys []string) (namespace string, key s
 // Resolve turns project facts into the one namespace a caller should use,
 // applying the precedence (highest first):
 //
-//  1. pin           — an operator-created project_map entry for this project.
+//  1. pin           — an operator-created pin for this project.
 //  2. env           — the client's MEMINI_NAMESPACE.
 //  3. declared      — a namespace a gateway/CI caller stated outright.
 //  4. derive        — from the git remote (repo name, or owner-repo slug under

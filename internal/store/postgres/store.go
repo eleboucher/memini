@@ -189,10 +189,26 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_ns_time ON memory_events(namespace, created_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_time ON memory_events(created_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_memory ON memory_events(memory_id)`,
-		// project_map records project→namespace pins (see store.ProjectMapStore,
+		// pins was named project_map until the terminology cleanup; rename an
+		// existing table and its index in place, before the CREATE below can
+		// plant a fresh empty pins next to it, so old installs keep their
+		// rows. If both tables exist (an old binary re-created an empty
+		// project_map after the rename), the stray is left alone rather than
+		// merged by guesswork.
+		`DO $$
+		BEGIN
+			IF to_regclass('project_map') IS NOT NULL AND to_regclass('pins') IS NULL THEN
+				ALTER TABLE project_map RENAME TO pins;
+				IF to_regclass('idx_project_map_ns') IS NOT NULL AND to_regclass('idx_pins_ns') IS NULL THEN
+					ALTER INDEX idx_project_map_ns RENAME TO idx_pins_ns;
+				END IF;
+			END IF;
+		END
+		$$`,
+		// pins records project→namespace pins (see store.PinStore,
 		// the config-handshake redesign): key is "remote:<canonical-remote>" or
 		// "path:<absolute-toplevel>".
-		`CREATE TABLE IF NOT EXISTS project_map (
+		`CREATE TABLE IF NOT EXISTS pins (
 			key        text PRIMARY KEY,
 			namespace  text NOT NULL,
 			note       text NOT NULL DEFAULT '',
@@ -200,7 +216,7 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 			created_at timestamptz NOT NULL,
 			updated_at timestamptz NOT NULL
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_project_map_ns ON project_map(namespace)`,
+		`CREATE INDEX IF NOT EXISTS idx_pins_ns ON pins(namespace)`,
 	}
 	for _, q := range stmts {
 		if _, err := conn.Exec(ctx, q); err != nil {
