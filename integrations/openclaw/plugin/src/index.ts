@@ -1546,17 +1546,25 @@ export function registerMeminiTools(api: any, client: MeminiClient, ctx: Session
     },
     {
       name: "memory_remember",
+      // Save-policy invariants are canonical in internal/api/mcp/mcp.go serverInstructions.
       description:
-        "Store a durable fact, decision, or preference in long-term memory (memini). Call proactively when " +
-        "the user says 'remember this', after an architectural decision (capture the why), or after " +
-        "discovering a non-obvious bug or convention. Keep memories atomic — one self-contained fact per " +
-        "call. Don't store what's already in project docs or trivially recoverable from code. To correct " +
-        "an existing memory, pass its id — the write updates it in place. visibility decides who should " +
-        "know: 'project' (default) keeps it here; 'personal' follows the user everywhere; or name an " +
-        "ancestor from the memory_briefing Scope line to share it up that chain. reinforced=true in the " +
-        "result means the fact was ALREADY KNOWN: no new memory was created, the existing one was " +
-        "strengthened, and `id` names that pre-existing memory rather than anything you just wrote — do " +
-        "not report it to the user as a new save.",
+        "Store a fact, decision, preference, or event for later recall. Do not wait to be asked — call " +
+        "this the moment you learn: a decision and why it was made, a bug's root cause, a project " +
+        "convention, a stated user preference, a correction from the user (a correction IS a durable " +
+        "preference), an environment or tool quirk, or a non-obvious command/workflow. When the user " +
+        "says 'remember this', 'note that', 'don't forget', 'going forward...', or corrects you, call " +
+        "this tool FIRST, then acknowledge — and on an explicit request save unconditionally, even if it " +
+        "seems trivial or already stored. Keep memories atomic — one self-contained fact per call; " +
+        "search works better on small records. Do NOT store secrets or credentials, transient session " +
+        "state, task progress, or facts already in project docs/CLAUDE.md or trivially recoverable from " +
+        "code. To correct an existing memory, pass its id — the write updates it in place. If a stored " +
+        "memory proves wrong or outdated, fix it immediately: re-save the corrected fact with the " +
+        "existing id, or delete it with memory_forget if it should not exist — never leave a " +
+        "known-incorrect memory in place. visibility decides who should know: 'project' (default) keeps " +
+        "it here; 'personal' follows the user everywhere; or name an ancestor from the memory_briefing " +
+        "Scope line to share it up that chain. reinforced=true in the result means the fact was ALREADY " +
+        "KNOWN: no new memory was created, the existing one was strengthened, and `id` names that " +
+        "pre-existing memory rather than anything you just wrote — do not report it to the user as a new save.",
       parameters: Type.Object({
         content: Type.String({ description: "The fact to remember — atomic and self-contained." }),
         id: Type.Optional(
