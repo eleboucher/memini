@@ -103,7 +103,7 @@ var (
 // proactive use, storage conventions) — per-tool descriptions are read in
 // isolation during tool selection and can't express it.
 //
-// This block is also the CANONICAL save-policy text. Five semantic invariants
+// This block is also the CANONICAL save-policy text. Six semantic invariants
 // are mirrored (never byte-identically) across the surfaces named below:
 //  1. trigger categories: decision+rationale; bug root cause/gotcha;
 //     convention; stated preference or correction; environment/tool quirk;
@@ -115,6 +115,8 @@ var (
 //  4. an explicit user request saves unconditionally, except secrets.
 //  5. visibility semantics (project default; personal follows the user;
 //     ancestor names share up the chain; episodic/working clamp to project).
+//  6. correction hygiene: a memory discovered to be wrong or outdated is fixed
+//     immediately (update) or removed (forget), never left in place.
 //
 // Mirror surfaces (owned by later tasks — do NOT edit them here):
 // plugin/scripts/_shared.mjs (MEMORY_INSTRUCTION), plugin/scripts/stop.mjs
@@ -154,8 +156,10 @@ const serverInstructions = "memini is persistent cross-session memory for this a
 	"where knowledge actually lives — never guess or construct a namespace path.\n" +
 	"- Conventions: tag critical always-relevant facts \"pinned\" (they surface in every briefing); " +
 	"set metadata.category to a topic bucket (e.g. bug_fixes, architecture_decisions, coding_conventions).\n" +
-	"- To correct or extend a stored fact, use memory_update on its id rather than writing a " +
-	"near-duplicate; memory_forget only for memories that should not exist. memory_get/update/forget " +
+	"- Keep the store correct: when a stored memory proves wrong or outdated — recall says one " +
+	"thing, reality shows another — fix it immediately with memory_update on its id, or " +
+	"memory_forget if it should not exist; never leave known-incorrect data in place, and never " +
+	"write a near-duplicate instead of correcting. memory_get/update/forget " +
 	"take a namespace argument purely for addressing — copy it verbatim from a memory_recall/" +
 	"memory_list result's namespace field, never type one yourself.\n" +
 	"- Empty recall means nothing is known — proceed from first principles, never invent a " +
@@ -229,7 +233,8 @@ func NewServer(svc *service.Service, defaultNS, home, author, authorKind string)
 			"history: editing an unfamiliar file, debugging a recurring issue, making a " +
 			"non-obvious decision, or when asked 'what do we know about X'. Prefer a short " +
 			"descriptive query ('JWT auth setup'). Results include created_at — on conflicting " +
-			"memories prefer the most recent and surface the conflict. Empty results mean " +
+			"memories prefer the most recent, surface the conflict, and fix the stale one " +
+			"(memory_update to correct it, memory_forget if it should not exist). Empty results mean " +
 			"nothing is known: proceed from first principles, never invent a remembered fact. A " +
 			"degraded field means semantic search was unavailable and results are keyword-only — " +
 			"treat as incomplete. scope picks how wide to read: 'project' (just this project), " +
