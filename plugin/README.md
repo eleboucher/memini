@@ -19,14 +19,33 @@ the agent _when_ to use the memory tools.
 ### Auto-save (Stop)
 
 Agents forget to save. So the `Stop` hook counts the conversation's user
-messages (from the transcript) and, every `MEMINI_AUTO_SAVE_INTERVAL` (default
-10), **blocks the stop once** with a short instruction: review the conversation
-for durable decisions/facts/preferences and persist each via the `memory_remember`
-MCP tool. The agent saves, then stops normally (the next `Stop` carries
-`stop_hook_active` and passes through — no loop). It nudges at most once per
-interval even if the agent saves nothing, and never blocks when the transcript
-is unreadable. On by default; set `MEMINI_AUTO_SAVE=0` to disable. Codex sends no
-transcript path, so the nudge is inert there.
+messages (from the transcript) and, at most once every `MEMINI_AUTO_SAVE_INTERVAL`
+(default 10), **blocks the stop once** with a short instruction: review the
+conversation for durable decisions/facts/preferences and persist each via the
+`memory_remember` MCP tool. The agent saves, then stops normally (the next `Stop`
+carries `stop_hook_active` and passes through — no loop).
+
+The nudge is **event-aware** — it interrupts only when there is likely something
+to save:
+
+- **Already saving?** If the transcript shows any `memory_remember` /
+  `memory_update` call since the counter last reset — including a subagent's —
+  the nudge is **suppressed** and the counter re-baselines. A session keeping its
+  memory current is never interrupted.
+- **Trivial window?** If fewer than `MEMINI_AUTO_SAVE_MIN_EVENTS` (default 3)
+  state-changing tool calls were buffered since that reset, the nudge is
+  **deferred** — the counter keeps growing, not resetting — until the interval
+  **doubles** (2×), at which point it fires a discussion-variant nudge (there may
+  be decisions or preferences worth saving even with no tool activity).
+- **Real activity?** When it fires after real work, the nudge **names the actual
+  files edited and commands run** in that window as anchors, so the agent knows
+  what to look back over.
+
+It still nudges at most once per interval even if the agent saves nothing, and
+never blocks when the transcript is unreadable. On by default; set
+`MEMINI_AUTO_SAVE=0` to disable, or `MEMINI_AUTO_SAVE_MIN_EVENTS=0` to drop the
+activity gate and nudge on the message interval alone. Codex sends no transcript
+path, so the nudge is inert there.
 
 ### Session capture: buffer → digest
 
@@ -52,10 +71,13 @@ real memories out of the box — not just session digests:
 - **Memory directive** (`MEMINI_INLINE_EXTRACT`): `SessionStart` injects a
   short directive asking the agent to persist durable facts via the
   `memory_remember` MCP tool (tier `semantic`) instead of printing them into
-  its reply. `Stop` still scans transcripts for legacy `<memory>` blocks and
-  persists those too, as a back-compat fallback for sessions started under the
-  old directive. Model-curated, so it stays low-noise. Set to `0` to disable
-  both.
+  its reply. After a context **compaction**, `SessionStart` re-fires and appends
+  a short **recovery note** to that directive, prompting the agent to flush any
+  durable fact it learned before the compaction — which may have scrolled out of
+  the rebuilt context — but never saved. The note rides this same switch. `Stop`
+  still scans transcripts for legacy `<memory>` blocks and persists those too, as
+  a back-compat fallback for sessions started under the old directive.
+  Model-curated, so it stays low-noise. Set to `0` to disable both.
 
 Plus 3 skills (`remember`, `recall`, `recap`) the agent invokes directly.
 
@@ -304,13 +326,14 @@ client** — it wins over whatever the server resolved, without touching the
 server's stored value for anyone else. `/memini:status` shows each knob's
 actual source (`env-override` / `server (key|global|default)`).
 
-| Env var                     | Default | Description                                                                                    |
-| --------------------------- | ------- | ---------------------------------------------------------------------------------------------- |
-| `MEMINI_AUTO_SAVE`          | on      | periodic auto-save nudge on `Stop`.                                                            |
-| `MEMINI_AUTO_SAVE_INTERVAL` | `10`    | user messages between auto-save nudges.                                                        |
-| `MEMINI_CAPTURE_TURNS`      | on      | auto-capture each user→assistant turn as episodic memory.                                      |
-| `MEMINI_SESSION_DIGEST`     | on      | record session digests (files edited, commands run); `0` to keep memory to durable facts only. |
-| `MEMINI_INLINE_EXTRACT`     | on      | inject the memory-save directive (`memory_remember`) and scrape legacy `<memory>` blocks.      |
+| Env var                       | Default | Description                                                                                                       |
+| ----------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------- |
+| `MEMINI_AUTO_SAVE`            | on      | periodic auto-save nudge on `Stop`.                                                                               |
+| `MEMINI_AUTO_SAVE_INTERVAL`   | `10`    | user messages between auto-save nudges.                                                                           |
+| `MEMINI_AUTO_SAVE_MIN_EVENTS` | `3`     | min buffered tool events before an auto-save nudge fires; `0` disables the activity gate (interval-only cadence). |
+| `MEMINI_CAPTURE_TURNS`        | on      | auto-capture each user→assistant turn as episodic memory.                                                         |
+| `MEMINI_SESSION_DIGEST`       | on      | record session digests (files edited, commands run); `0` to keep memory to durable facts only.                    |
+| `MEMINI_INLINE_EXTRACT`       | on      | inject the memory-save directive (`memory_remember`) and scrape legacy `<memory>` blocks.                         |
 
 ### Removed variables
 
