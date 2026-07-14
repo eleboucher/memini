@@ -92,7 +92,7 @@ export function shortId(id: string): string {
   return id.length > 12 ? id.slice(0, 8) : id
 }
 
-// parsePinKey splits a ProjectMapEntry.key ("remote:<canonical-remote>" or
+// parsePinKey splits a Pin.key ("remote:<canonical-remote>" or
 // "path:<abs-toplevel>") back into the remote_url/toplevel_path pair the
 // pins API's PUT/DELETE bodies expect — GET /v1/pins only returns the
 // combined key string, not the original facts it was stored under.

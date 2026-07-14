@@ -14,10 +14,10 @@ import type {
   Level,
   ListResponse,
   Memory,
-  ProjectMapDeleteRequest,
-  ProjectMapEntry,
-  ProjectMapListResponse,
-  ProjectMapPutRequest,
+  PinDeleteRequest,
+  Pin,
+  PinListResponse,
+  PinPutRequest,
   SelfResponse,
   SettingsDefaultsResponse,
   SortKey,
@@ -425,12 +425,12 @@ export const api = {
   putSettingsDefaults: (body: Partial<ClientSettings>) =>
     req<ClientSettings>('PUT', '/v1/settings/defaults', body),
 
-  listPins: () => req<ProjectMapListResponse>('GET', '/v1/pins').then((r) => r.entries ?? []),
+  listPins: () => req<PinListResponse>('GET', '/v1/pins').then((r) => r.entries ?? []),
 
-  putPin: (body: ProjectMapPutRequest) => req<ProjectMapEntry>('PUT', '/v1/pins', body),
+  putPin: (body: PinPutRequest) => req<Pin>('PUT', '/v1/pins', body),
 
   // deletePin identifies the pin to remove by remote_url/toplevel_path in
   // the body (there's no synthetic ID) — parsePinKey (util.ts) recovers
   // those facts from a listed entry's combined `key` string.
-  deletePin: (body: ProjectMapDeleteRequest) => req<void>('DELETE', '/v1/pins', body),
+  deletePin: (body: PinDeleteRequest) => req<void>('DELETE', '/v1/pins', body),
 }

@@ -31,7 +31,7 @@ func (h *Server) ListPins(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
-	out := ProjectMapListResponse{Entries: make([]ProjectMapEntry, len(entries))}
+	out := PinListResponse{Entries: make([]Pin, len(entries))}
 	for i, e := range entries {
 		out.Entries[i] = apiPin(e)
 	}
@@ -50,7 +50,7 @@ func (h *Server) PutPin(w http.ResponseWriter, r *http.Request) {
 		httputil.Error(w, http.StatusNotImplemented, "pins are not supported by this storage backend")
 		return
 	}
-	var req ProjectMapPutRequest
+	var req PinPutRequest
 	if !decode(w, r, &req) {
 		return
 	}
@@ -118,7 +118,7 @@ func (h *Server) DeletePin(w http.ResponseWriter, r *http.Request) {
 		httputil.Error(w, http.StatusNotImplemented, "pins are not supported by this storage backend")
 		return
 	}
-	var req ProjectMapDeleteRequest
+	var req PinDeleteRequest
 	if !decode(w, r, &req) {
 		return
 	}

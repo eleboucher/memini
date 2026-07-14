@@ -581,7 +581,7 @@ export interface paths {
         };
         /**
          * List explicit project→namespace pins
-         * @description Open to every credential class: the project map is machine-wide derivation state, not scoped to one namespace, and any caller's handshake already reveals whichever pin matches its project facts.
+         * @description Open to every credential class: pins are machine-wide derivation state, not scoped to one namespace, and any caller's handshake already reveals whichever pin matches its project facts.
          */
         get: operations["listPins"];
         /**
@@ -1251,10 +1251,10 @@ export interface components {
             namespace_source: "pin" | "env" | "declared" | "remote" | "toplevel" | "cwd" | "key_default" | "server_default";
             /** @description Present only when namespace_source is "pin". */
             pin?: {
-                /** @description The project_map key that matched (remote:<canonical-remote> or path:<toplevel_path>). */
+                /** @description The pin key that matched (remote:<canonical-remote> or path:<toplevel_path>). */
                 key: string;
                 note?: string;
-                /** @description Name of the API key that created the pin, when known — same semantics as ProjectMapEntry.created_by (absent for a pin created by the admin key or in dev mode, which carry no named principal). */
+                /** @description Name of the API key that created the pin, when known — same semantics as Pin.created_by (absent for a pin created by the admin key or in dev mode, which carry no named principal). */
                 created_by?: string;
                 /** Format: date-time */
                 updated_at: string;
@@ -1274,8 +1274,8 @@ export interface components {
             };
         };
         /** @description One explicit project→namespace pin, keyed by remote_url (canonicalized) or toplevel_path. */
-        ProjectMapEntry: {
-            /** @description The project_map key: "remote:<canonical-remote>" or "path:<abs-toplevel>". */
+        Pin: {
+            /** @description The pin key: "remote:<canonical-remote>" or "path:<abs-toplevel>". */
             key: string;
             namespace: string;
             note?: string;
@@ -1286,11 +1286,11 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
-        ProjectMapListResponse: {
-            entries: components["schemas"]["ProjectMapEntry"][];
+        PinListResponse: {
+            entries: components["schemas"]["Pin"][];
         };
         /** @description At least one of remote_url/toplevel_path is required (400 if neither is given) — that is the key fact the pin is stored under. */
-        ProjectMapPutRequest: {
+        PinPutRequest: {
             namespace: string;
             /** @description Raw git remote URL; canonicalized server-side into the remote:<canonical> key. */
             remote_url?: string;
@@ -1299,7 +1299,7 @@ export interface components {
             note?: string;
         };
         /** @description At least one of remote_url/toplevel_path is required (400 if neither is given) to identify the pin to delete. */
-        ProjectMapDeleteRequest: {
+        PinDeleteRequest: {
             remote_url?: string;
             toplevel_path?: string;
         };
@@ -2364,7 +2364,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProjectMapListResponse"];
+                    "application/json": components["schemas"]["PinListResponse"];
                 };
             };
             501: components["responses"]["Error"];
@@ -2379,7 +2379,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ProjectMapPutRequest"];
+                "application/json": components["schemas"]["PinPutRequest"];
             };
         };
         responses: {
@@ -2389,7 +2389,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProjectMapEntry"];
+                    "application/json": components["schemas"]["Pin"];
                 };
             };
             400: components["responses"]["Error"];
@@ -2405,7 +2405,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ProjectMapDeleteRequest"];
+                "application/json": components["schemas"]["PinDeleteRequest"];
             };
         };
         responses: {

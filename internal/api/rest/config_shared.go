@@ -208,8 +208,8 @@ func apiReadSet(entries []service.ReadSetEntry) []ReadSetEntryItem {
 
 // apiPin maps a store.Pin onto the wire shape, omitting
 // the optional note/created_by when empty.
-func apiPin(e store.Pin) ProjectMapEntry {
-	out := ProjectMapEntry{Key: e.Key, Namespace: e.Namespace, CreatedAt: e.CreatedAt, UpdatedAt: e.UpdatedAt}
+func apiPin(e store.Pin) Pin {
+	out := Pin{Key: e.Key, Namespace: e.Namespace, CreatedAt: e.CreatedAt, UpdatedAt: e.UpdatedAt}
 	if e.Note != "" {
 		note := e.Note
 		out.Note = &note

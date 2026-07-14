@@ -881,10 +881,10 @@ type HandshakeResponse struct {
 
 	// Pin Present only when namespace_source is "pin".
 	Pin *struct {
-		// CreatedBy Name of the API key that created the pin, when known — same semantics as ProjectMapEntry.created_by (absent for a pin created by the admin key or in dev mode, which carry no named principal).
+		// CreatedBy Name of the API key that created the pin, when known — same semantics as Pin.created_by (absent for a pin created by the admin key or in dev mode, which carry no named principal).
 		CreatedBy *string `json:"created_by,omitempty"`
 
-		// Key The project_map key that matched (remote:<canonical-remote> or path:<toplevel_path>).
+		// Key The pin key that matched (remote:<canonical-remote> or path:<toplevel_path>).
 		Key       string    `json:"key"`
 		Note      *string   `json:"note,omitempty"`
 		UpdatedAt time.Time `json:"updated_at"`
@@ -991,33 +991,33 @@ type NamespacesResponse struct {
 	Namespaces []string `json:"namespaces"`
 }
 
-// ProjectMapDeleteRequest At least one of remote_url/toplevel_path is required (400 if neither is given) to identify the pin to delete.
-type ProjectMapDeleteRequest struct {
-	RemoteUrl    *string `json:"remote_url,omitempty"`
-	ToplevelPath *string `json:"toplevel_path,omitempty"`
-}
-
-// ProjectMapEntry One explicit project→namespace pin, keyed by remote_url (canonicalized) or toplevel_path.
-type ProjectMapEntry struct {
+// Pin One explicit project→namespace pin, keyed by remote_url (canonicalized) or toplevel_path.
+type Pin struct {
 	CreatedAt time.Time `json:"created_at"`
 
 	// CreatedBy Name of the API key that created the pin, when known.
 	CreatedBy *string `json:"created_by,omitempty"`
 
-	// Key The project_map key: "remote:<canonical-remote>" or "path:<abs-toplevel>".
+	// Key The pin key: "remote:<canonical-remote>" or "path:<abs-toplevel>".
 	Key       string    `json:"key"`
 	Namespace string    `json:"namespace"`
 	Note      *string   `json:"note,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// ProjectMapListResponse defines model for ProjectMapListResponse.
-type ProjectMapListResponse struct {
-	Entries []ProjectMapEntry `json:"entries"`
+// PinDeleteRequest At least one of remote_url/toplevel_path is required (400 if neither is given) to identify the pin to delete.
+type PinDeleteRequest struct {
+	RemoteUrl    *string `json:"remote_url,omitempty"`
+	ToplevelPath *string `json:"toplevel_path,omitempty"`
 }
 
-// ProjectMapPutRequest At least one of remote_url/toplevel_path is required (400 if neither is given) — that is the key fact the pin is stored under.
-type ProjectMapPutRequest struct {
+// PinListResponse defines model for PinListResponse.
+type PinListResponse struct {
+	Entries []Pin `json:"entries"`
+}
+
+// PinPutRequest At least one of remote_url/toplevel_path is required (400 if neither is given) — that is the key fact the pin is stored under.
+type PinPutRequest struct {
 	Namespace string  `json:"namespace"`
 	Note      *string `json:"note,omitempty"`
 
@@ -1629,10 +1629,10 @@ type MoveNamespaceJSONRequestBody MoveNamespaceJSONBody
 type SplitNamespaceJSONRequestBody SplitNamespaceJSONBody
 
 // DeletePinJSONRequestBody defines body for DeletePin for application/json ContentType.
-type DeletePinJSONRequestBody = ProjectMapDeleteRequest
+type DeletePinJSONRequestBody = PinDeleteRequest
 
 // PutPinJSONRequestBody defines body for PutPin for application/json ContentType.
-type PutPinJSONRequestBody = ProjectMapPutRequest
+type PutPinJSONRequestBody = PinPutRequest
 
 // SearchMemoriesJSONRequestBody defines body for SearchMemories for application/json ContentType.
 type SearchMemoriesJSONRequestBody = SearchRequest
