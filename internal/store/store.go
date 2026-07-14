@@ -788,7 +788,18 @@ type Event struct {
 	Score *float64
 	// Detail carries kind-specific context — a recall's degraded mode, a
 	// briefing row's section, a supersession's replacement id.
-	Detail    map[string]any
+	Detail map[string]any
+	// Actor is who performed the operation: the name of the NAMED API key that
+	// authenticated the request, or "" for the admin env key, an
+	// unauthenticated dev-mode request, or a legacy row written before
+	// attribution existed. ActorKind disambiguates the empty cases.
+	Actor string
+	// ActorKind classifies the actor: "key" (a named API key, Actor holds its
+	// name), "env" (the admin env key, Actor is ""), "none" (unauthenticated
+	// dev mode, Actor is ""), or "" (a legacy row predating attribution —
+	// unknown). Attribution is automatic and unconditional, stamped on every
+	// event row from the request context (service.WithActor).
+	ActorKind string
 	CreatedAt time.Time
 }
 
@@ -808,6 +819,11 @@ type EventFilter struct {
 	Namespaces []string
 	// Kinds restricts to these kinds; empty means all.
 	Kinds []EventKind
+	// Actor restricts to events performed by the named API key (exact match on
+	// Event.Actor); empty means no constraint. Matches the key name only — the
+	// admin env key and dev-mode requests carry no name and so are never
+	// selected by this filter.
+	Actor string
 	// Tiers restricts to operations that touched a memory of one of these tiers
 	// (OR); empty means no constraint.
 	Tiers []memory.Tier

@@ -246,6 +246,154 @@ func TestWriteEventsDistinguishRememberFromUpdate(t *testing.T) {
 	}
 }
 
+// TestRecallSourceLandsInDetail covers the recall "why": the source the caller
+// declared is recorded verbatim in the event detail, including the zero-hit
+// sentinel — "who searched for what, and found nothing" is answerable.
+func TestRecallSourceLandsInDetail(t *testing.T) {
+	ctx := context.Background()
+	svc := newEventSvc(t)
+
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "n", Content: "the cache is redis", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	if _, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "n", Query: "cache", Limit: 5, Source: "pretool",
+	}); err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	// A zero-hit recall still carries the source on its sentinel row.
+	if _, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "empty", Query: "nothing here", Limit: 5, Source: "ui",
+	}); err != nil {
+		t.Fatalf("zero-hit recall: %v", err)
+	}
+
+	hit, err := svc.Events(ctx, service.EventsInput{
+		Namespace: "n", Kinds: []store.EventKind{store.EventRecall},
+	})
+	if err != nil {
+		t.Fatalf("events n: %v", err)
+	}
+	if len(hit.Events) != 1 || hit.Events[0].Detail["source"] != "pretool" {
+		t.Fatalf("recall detail = %+v, want source=pretool", hit.Events)
+	}
+	sentinel, err := svc.Events(ctx, service.EventsInput{Namespace: "empty"})
+	if err != nil {
+		t.Fatalf("events empty: %v", err)
+	}
+	if len(sentinel.Events) != 1 || sentinel.Events[0].Detail["source"] != "ui" {
+		t.Fatalf("sentinel detail = %+v, want source=ui", sentinel.Events)
+	}
+}
+
+// TestActorThreadsThroughEveryKind is the point of attribution: the actor
+// stamped on the request context (service.WithActor) must land on every event
+// kind — recall, remember, forget, briefing, and a config event — since they
+// all funnel through logEvents. A request with no actor stamps the legacy
+// empty kind, which renders as "unknown".
+func TestActorThreadsThroughEveryKind(t *testing.T) {
+	ctx := context.Background()
+	svc := newEventSvc(t)
+	named := service.WithActor(ctx, "alice", "key")
+
+	m, err := svc.Remember(named, service.RememberInput{
+		Namespace: "n", Content: "the database is postgres", Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	if _, err := svc.Recall(named, service.RecallInput{Namespace: "n", Query: "database", Limit: 5}); err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if _, err := svc.Briefing(named, "n", service.BriefingOpts{}); err != nil {
+		t.Fatalf("briefing: %v", err)
+	}
+	svc.LogConfigEvent(named, store.EventPin, "n", map[string]any{"keys": []string{"k"}})
+	if err := svc.Forget(named, "n", m.ID); err != nil {
+		t.Fatalf("forget: %v", err)
+	}
+
+	page, err := svc.Events(ctx, service.EventsInput{Namespace: "n"})
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	seen := map[store.EventKind]bool{}
+	for _, ev := range page.Events {
+		seen[ev.Kind] = true
+		if ev.Actor != "alice" || ev.ActorKind != "key" {
+			t.Errorf("%s event actor = (%q, %q), want (alice, key)", ev.Kind, ev.Actor, ev.ActorKind)
+		}
+	}
+	for _, want := range []store.EventKind{
+		store.EventRemember, store.EventRecall, store.EventBriefing, store.EventPin, store.EventForget,
+	} {
+		if !seen[want] {
+			t.Errorf("no %s event logged", want)
+		}
+	}
+
+	// A request with no actor stamped (background work, dev mode) logs the
+	// empty legacy attribution rather than inheriting a previous request's.
+	if _, err := svc.Recall(ctx, service.RecallInput{Namespace: "other", Query: "q", Limit: 5}); err != nil {
+		t.Fatalf("unattributed recall: %v", err)
+	}
+	anon, err := svc.Events(ctx, service.EventsInput{Namespace: "other"})
+	if err != nil {
+		t.Fatalf("events other: %v", err)
+	}
+	if len(anon.Events) != 1 || anon.Events[0].Actor != "" || anon.Events[0].ActorKind != "" {
+		t.Fatalf("unattributed event = %+v, want empty actor", anon.Events)
+	}
+}
+
+// TestActorEnvKindHasNoName pins the env/none cases: the admin env key and
+// dev mode carry a kind but no name, and that distinction round-trips.
+func TestActorEnvKindHasNoName(t *testing.T) {
+	ctx := context.Background()
+	svc := newEventSvc(t)
+
+	if _, err := svc.Recall(service.WithActor(ctx, "", "env"), service.RecallInput{
+		Namespace: "env-ns", Query: "q", Limit: 5,
+	}); err != nil {
+		t.Fatalf("env recall: %v", err)
+	}
+	page, err := svc.Events(ctx, service.EventsInput{Namespace: "env-ns"})
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if len(page.Events) != 1 || page.Events[0].Actor != "" || page.Events[0].ActorKind != "env" {
+		t.Fatalf("env event = %+v, want actor='' kind='env'", page.Events)
+	}
+}
+
+// TestWriteEventRecordsOutcomeDetail covers the write-outcome enrichment: a
+// plain write records its tier; an auto-superseding write also records the id
+// it replaced.
+func TestWriteEventRecordsOutcomeDetail(t *testing.T) {
+	ctx := context.Background()
+	svc := newEventSvc(t)
+
+	if _, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "n", Content: "a plain durable fact", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	page, err := svc.Events(ctx, service.EventsInput{
+		Namespace: "n", Kinds: []store.EventKind{store.EventRemember},
+	})
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if len(page.Events) != 1 {
+		t.Fatalf("got %d remember events, want 1", len(page.Events))
+	}
+	if got := page.Events[0].Detail["tier"]; got != string(memory.TierSemantic) {
+		t.Fatalf("write detail tier = %v, want %q", got, memory.TierSemantic)
+	}
+}
+
 // TestForgetEventKeepsSnapshot is why the log denormalizes the memory: after
 // the row is deleted, the snapshot is the only thing left that can describe
 // what was forgotten.

@@ -16,7 +16,7 @@ import (
 var _ store.EventLogStore = (*Store)(nil)
 
 const eventColumns = `id, op_id, kind, namespace, query, memory_id, memory_ns,
-	memory_tier, memory_summary, rank, score, detail, created_at`
+	memory_tier, memory_summary, rank, score, detail, actor, actor_kind, created_at`
 
 // AppendEvents inserts one operation's rows in a single batch, so they land
 // contiguously and share a created_at — the adjacency ListEvents' ordering
@@ -34,11 +34,11 @@ func (s *Store) AppendEvents(ctx context.Context, events []store.Event) error {
 		batch.Queue(
 			`INSERT INTO memory_events
 				(op_id, kind, namespace, query, memory_id, memory_ns, memory_tier,
-				 memory_summary, rank, score, detail, created_at)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)`,
+				 memory_summary, rank, score, detail, actor, actor_kind, created_at)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14)`,
 			e.OpID, string(e.Kind), e.Namespace, e.Query, e.MemoryID, e.MemoryNS,
 			string(e.MemoryTier), e.MemorySummary, e.Rank, e.Score,
-			string(detail), e.CreatedAt,
+			string(detail), e.Actor, e.ActorKind, e.CreatedAt,
 		)
 	}
 	if err := s.pool.SendBatch(ctx, batch).Close(); err != nil {
@@ -64,6 +64,9 @@ func (s *Store) ListEvents(ctx context.Context, f store.EventFilter) ([]store.Ev
 			kinds[i] = string(k)
 		}
 		q.WriteString(" AND kind = ANY(" + b.add(kinds) + ")")
+	}
+	if f.Actor != "" {
+		q.WriteString(" AND actor = " + b.add(f.Actor))
 	}
 	if !f.Since.IsZero() {
 		q.WriteString(" AND created_at >= " + b.add(f.Since))
@@ -113,7 +116,8 @@ func (s *Store) ListEvents(ctx context.Context, f store.EventFilter) ([]store.Ev
 			detail []byte
 		)
 		if err := rs.Scan(&e.ID, &e.OpID, &kind, &e.Namespace, &e.Query, &e.MemoryID,
-			&e.MemoryNS, &tier, &e.MemorySummary, &e.Rank, &e.Score, &detail, &e.CreatedAt); err != nil {
+			&e.MemoryNS, &tier, &e.MemorySummary, &e.Rank, &e.Score, &detail,
+			&e.Actor, &e.ActorKind, &e.CreatedAt); err != nil {
 			return nil, err
 		}
 		e.Kind = store.EventKind(kind)

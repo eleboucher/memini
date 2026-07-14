@@ -250,6 +250,13 @@ func testEventLog(t *testing.T, st store.Store, _ int) {
 // eventScore is the composite score the seeded recall's top hit was served with.
 const eventScore = 0.75
 
+// eventActor / eventActorKind are the named key the seeded recall is attributed
+// to, and its kind (see store.Event.ActorKind).
+const (
+	eventActor     = "alice"
+	eventActorKind = "key"
+)
+
 // seedEvents writes the fixture the event-log subtests read: one recall serving
 // two memories of different tiers (two rows, one op_id, one timestamp), a later
 // write in the same namespace, and one event in another namespace.
@@ -263,23 +270,27 @@ func seedEvents(t *testing.T, els store.EventLogStore, ns, other string, base ti
 			OpID: opRecall, Kind: store.EventRecall, Namespace: ns, Query: eventQuery,
 			MemoryID: "m1", MemoryNS: ns, MemoryTier: memory.TierSemantic,
 			MemorySummary: "we chose sqlite", Rank: 1, Score: &score,
-			Detail: map[string]any{"degraded": "vector"}, CreatedAt: base,
+			Detail: map[string]any{"degraded": "vector"},
+			Actor:  eventActor, ActorKind: eventActorKind, CreatedAt: base,
 		},
 		{
 			OpID: opRecall, Kind: store.EventRecall, Namespace: ns, Query: eventQuery,
 			MemoryID: "m2", MemoryNS: ns, MemoryTier: memory.TierEpisodic,
-			MemorySummary: "sqlite benchmark", Rank: 2, CreatedAt: base,
+			MemorySummary: "sqlite benchmark", Rank: 2,
+			Actor: eventActor, ActorKind: eventActorKind, CreatedAt: base,
 		},
 	}); err != nil {
 		t.Fatalf("append recall: %v", err)
 	}
+	// The admin env key carries a kind but no name.
 	if err := els.AppendEvents(ctx, []store.Event{{
 		OpID: "op-remember", Kind: store.EventRemember, Namespace: ns,
 		MemoryID: "m3", MemoryNS: ns, MemoryTier: memory.TierSemantic,
-		MemorySummary: "a new fact", CreatedAt: base.Add(time.Minute),
+		MemorySummary: "a new fact", ActorKind: "env", CreatedAt: base.Add(time.Minute),
 	}}); err != nil {
 		t.Fatalf("append remember: %v", err)
 	}
+	// A legacy row predating attribution: both actor fields empty.
 	if err := els.AppendEvents(ctx, []store.Event{{
 		OpID: "op-elsewhere", Kind: store.EventGet, Namespace: other,
 		MemoryID: "m4", MemoryNS: other, CreatedAt: base.Add(2 * time.Minute),
@@ -343,6 +354,19 @@ func testEventRoundTrip(t *testing.T, els store.EventLogStore, ns string, base t
 	if got := top.Detail["degraded"]; got != "vector" {
 		t.Fatalf("detail round trip: degraded = %v, want %q", got, "vector")
 	}
+	// Attribution round-trips: a named key carries name+kind.
+	if top.Actor != eventActor || top.ActorKind != eventActorKind {
+		t.Fatalf("actor round trip: got (%q, %q), want (alice, key)", top.Actor, top.ActorKind)
+	}
+	// A legacy row (seeded with both actor fields empty) round-trips as the ''
+	// default, not null — "unknown", cleanly distinguishable from a named actor.
+	legacy := mustListEvents(t, els, store.EventFilter{Namespaces: []string{ns + "-other"}})
+	if len(legacy) != 1 {
+		t.Fatalf("expected 1 legacy row, got %d", len(legacy))
+	}
+	if legacy[0].Actor != "" || legacy[0].ActorKind != "" {
+		t.Fatalf("legacy row actor = (%q, %q), want both empty", legacy[0].Actor, legacy[0].ActorKind)
+	}
 	if !top.CreatedAt.Equal(base) {
 		t.Fatalf("created_at round trip: got %s, want %s", top.CreatedAt, base)
 	}
@@ -404,6 +428,22 @@ func testEventFilters(t *testing.T, els store.EventLogStore, ns, other string, b
 	narrowed := mustListEvents(t, els, store.EventFilter{Namespaces: []string{other}})
 	if len(narrowed) != 1 || narrowed[0].Namespace != other {
 		t.Fatalf("namespaces=[%s] returned %+v, want only that namespace's event", other, narrowed)
+	}
+
+	// The actor filter selects only the named key's rows — both recall rows,
+	// none of the env/legacy ones. It matches the name exactly, so the
+	// nameless env and legacy rows are never selected.
+	byActor := mustListEvents(t, els, store.EventFilter{Actor: eventActor})
+	if len(byActor) != 2 {
+		t.Fatalf("actor filter returned %d rows, want the 2 recall rows", len(byActor))
+	}
+	for _, e := range byActor {
+		if e.Actor != eventActor || e.Kind != store.EventRecall {
+			t.Fatalf("actor filter leaked a non-alice row: %+v", e)
+		}
+	}
+	if got := mustListEvents(t, els, store.EventFilter{Actor: "nobody"}); len(got) != 0 {
+		t.Fatalf("actor=nobody matched %d rows, want none", len(got))
 	}
 }
 

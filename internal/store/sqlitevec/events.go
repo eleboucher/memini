@@ -14,7 +14,7 @@ import (
 var _ store.EventLogStore = (*Store)(nil)
 
 const eventColumns = `id, op_id, kind, namespace, query, memory_id, memory_ns,
-	memory_tier, memory_summary, rank, score, detail, created_at`
+	memory_tier, memory_summary, rank, score, detail, actor, actor_kind, created_at`
 
 // AppendEvents inserts one operation's rows in a single transaction, so they
 // land contiguously and share a created_at — the adjacency ListEvents' ordering
@@ -37,11 +37,11 @@ func (s *Store) AppendEvents(ctx context.Context, events []store.Event) error {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO memory_events
 				(op_id, kind, namespace, query, memory_id, memory_ns, memory_tier,
-				 memory_summary, rank, score, detail, created_at)
-			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+				 memory_summary, rank, score, detail, actor, actor_kind, created_at)
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			e.OpID, string(e.Kind), e.Namespace, e.Query, e.MemoryID, e.MemoryNS,
 			string(e.MemoryTier), e.MemorySummary, e.Rank, f64Ptr(e.Score),
-			string(detail), ms(e.CreatedAt),
+			string(detail), e.Actor, e.ActorKind, ms(e.CreatedAt),
 		); err != nil {
 			return fmt.Errorf("sqlitevec: insert event: %w", err)
 		}
@@ -79,6 +79,10 @@ func (s *Store) ListEvents(ctx context.Context, f store.EventFilter) ([]store.Ev
 			args = append(args, string(k))
 		}
 		b.WriteString(")")
+	}
+	if f.Actor != "" {
+		b.WriteString(" AND actor = ?")
+		args = append(args, f.Actor)
 	}
 	if !f.Since.IsZero() {
 		b.WriteString(" AND created_at >= ?")
@@ -135,7 +139,8 @@ func (s *Store) ListEvents(ctx context.Context, f store.EventFilter) ([]store.Ev
 			createdAt int64
 		)
 		if err := rows.Scan(&e.ID, &e.OpID, &kind, &e.Namespace, &e.Query, &e.MemoryID,
-			&e.MemoryNS, &tier, &e.MemorySummary, &e.Rank, &score, &detail, &createdAt); err != nil {
+			&e.MemoryNS, &tier, &e.MemorySummary, &e.Rank, &score, &detail,
+			&e.Actor, &e.ActorKind, &createdAt); err != nil {
 			return nil, err
 		}
 		e.Kind = store.EventKind(kind)

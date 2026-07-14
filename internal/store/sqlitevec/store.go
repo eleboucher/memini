@@ -160,6 +160,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			rank           INTEGER NOT NULL DEFAULT 0,
 			score          REAL,
 			detail         TEXT NOT NULL DEFAULT '{}',
+			actor          TEXT NOT NULL DEFAULT '',
+			actor_kind     TEXT NOT NULL DEFAULT '',
 			created_at     INTEGER NOT NULL
 		)`,
 		// The read path is always newest-first, optionally narrowed by namespace;
@@ -208,6 +210,16 @@ func (s *Store) migrate(ctx context.Context) error {
 	// api_keys.admin holds the per-key admin capability (admin-keys redesign);
 	// see store.APIKey.Admin's doc.
 	if err := s.addColumnIfMissing(ctx, "api_keys", "admin", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// memory_events.actor/actor_kind carry activity attribution (admin-keys T5):
+	// who performed each operation. Added after the table first shipped, so
+	// ALTER-add them for databases created before attribution existed; a legacy
+	// row keeps the '' default, which renders as "unknown" (see store.Event).
+	if err := s.addColumnIfMissing(ctx, "memory_events", "actor", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "memory_events", "actor_kind", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	// After the backfill: on an old DB the fingerprint column exists only now.

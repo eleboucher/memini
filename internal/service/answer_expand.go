@@ -112,7 +112,7 @@ func (s *Service) answerExpand(ctx context.Context, in AnswerInput) (AnswerResul
 	for _, q := range queries {
 		res, err := s.Recall(ctx, RecallInput{
 			Namespace: in.Namespace, Home: in.Home, Query: q, Limit: in.Limit, Tiers: in.Tiers,
-			Levels: in.Levels, Tags: in.Tags, Metadata: in.Metadata, Scope: in.Scope,
+			Levels: in.Levels, Tags: in.Tags, Metadata: in.Metadata, Scope: in.Scope, Source: sourceAnswer,
 		})
 		if err != nil {
 			s.metrics.AnswerResult("error")

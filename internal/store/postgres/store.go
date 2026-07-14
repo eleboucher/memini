@@ -172,8 +172,17 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 			rank           integer NOT NULL DEFAULT 0,
 			score          double precision,
 			detail         jsonb NOT NULL DEFAULT '{}',
+			actor          text NOT NULL DEFAULT '',
+			actor_kind     text NOT NULL DEFAULT '',
 			created_at     timestamptz NOT NULL
 		)`,
+		// memory_events.actor/actor_kind carry activity attribution (admin-keys
+		// T5): who performed each operation. Added after the table first
+		// shipped, so ADD COLUMN IF NOT EXISTS for databases created before
+		// attribution existed; a legacy row keeps the '' default, which renders
+		// as "unknown" (see store.Event).
+		`ALTER TABLE memory_events ADD COLUMN IF NOT EXISTS actor text NOT NULL DEFAULT ''`,
+		`ALTER TABLE memory_events ADD COLUMN IF NOT EXISTS actor_kind text NOT NULL DEFAULT ''`,
 		// The read path is always newest-first, optionally narrowed by namespace;
 		// the (created_at DESC, id DESC) tail matches ListEvents' ordering so the
 		// keyset cursor walks the index.
