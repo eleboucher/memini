@@ -202,8 +202,8 @@ test("resolveHarnessCwd reads the real parent process cwd", () => {
 
 // ─── behavior knobs / effectiveSetting ──────────────────────────────
 
-test("BEHAVIOR_KNOBS covers exactly the 22 behavioral ClientSettings fields, excluding namespace_scope/namespace_prefix", () => {
-  assert.equal(BEHAVIOR_KNOBS.length, 22);
+test("BEHAVIOR_KNOBS covers exactly the 23 behavioral ClientSettings fields, excluding namespace_scope/namespace_prefix", () => {
+  assert.equal(BEHAVIOR_KNOBS.length, 23);
   const wireKeys = BEHAVIOR_KNOBS.map((k) => k.wireKey);
   assert.equal(new Set(wireKeys).size, wireKeys.length, "wireKey must be unique per knob");
   assert.equal(wireKeys.includes("namespace_scope"), false);
@@ -221,6 +221,19 @@ test("inject_dedupe knob: bool, default true, MEMINI_INJECT_DEDUPE=0 overrides a
   assert.deepEqual(effectiveSetting(k!, undefined, {}), { value: true, source: "default" });
   assert.deepEqual(effectiveSetting(k!, { inject_dedupe: true }, { MEMINI_INJECT_DEDUPE: "0" }), {
     value: false,
+    source: "env-override",
+  });
+});
+
+test("auto_save_min_events knob: int, default 3, MEMINI_AUTO_SAVE_MIN_EVENTS overrides a server value", () => {
+  const k = BEHAVIOR_KNOBS.find((k) => k.wireKey === "auto_save_min_events");
+  assert.ok(k, "auto_save_min_events must be a behavior knob");
+  assert.equal(k!.envName, "MEMINI_AUTO_SAVE_MIN_EVENTS");
+  assert.equal(k!.kind, "int");
+  assert.equal(k!.default, 3);
+  assert.deepEqual(effectiveSetting(k!, undefined, {}), { value: 3, source: "default" });
+  assert.deepEqual(effectiveSetting(k!, { auto_save_min_events: 5 }, { MEMINI_AUTO_SAVE_MIN_EVENTS: "0" }), {
+    value: 0,
     source: "env-override",
   });
 });

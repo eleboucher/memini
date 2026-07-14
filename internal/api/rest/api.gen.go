@@ -679,6 +679,9 @@ type ClientSettings struct {
 	// AutoSaveInterval User-message interval between auto-save nudges.
 	AutoSaveInterval *int `json:"auto_save_interval,omitempty"`
 
+	// AutoSaveMinEvents Minimum buffered state-changing tool events since the last auto-save baseline for the interval nudge to fire; 0 disables the activity gate (interval-only cadence).
+	AutoSaveMinEvents *int `json:"auto_save_min_events,omitempty"`
+
 	// Capture Enable capture (turns/digests) at all.
 	Capture *bool `json:"capture,omitempty"`
 
@@ -1179,6 +1182,9 @@ type SettingsDefaultsResponse struct {
 
 	// AutoSaveInterval User-message interval between auto-save nudges.
 	AutoSaveInterval *int `json:"auto_save_interval,omitempty"`
+
+	// AutoSaveMinEvents Minimum buffered state-changing tool events since the last auto-save baseline for the interval nudge to fire; 0 disables the activity gate (interval-only cadence).
+	AutoSaveMinEvents *int `json:"auto_save_min_events,omitempty"`
 
 	// Capture Enable capture (turns/digests) at all.
 	Capture *bool `json:"capture,omitempty"`

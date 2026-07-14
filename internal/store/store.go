@@ -318,6 +318,10 @@ type ClientSettings struct {
 	// AutoSaveInterval is the user-message interval between auto-save nudges;
 	// must be >= 1.
 	AutoSaveInterval *int `json:"auto_save_interval,omitempty"`
+	// AutoSaveMinEvents is the minimum number of buffered state-changing tool
+	// events since the last auto-save baseline for the interval nudge to fire;
+	// 0 disables the activity gate (interval-only cadence). Must be >= 0.
+	AutoSaveMinEvents *int `json:"auto_save_min_events,omitempty"`
 
 	// InjectBriefingPinned caps pinned memories in the session-start briefing.
 	InjectBriefingPinned *int `json:"inject_briefing_pinned,omitempty"`
@@ -390,6 +394,7 @@ func (s ClientSettings) Validate() error {
 		key string
 		v   *int
 	}{
+		{"auto_save_min_events", s.AutoSaveMinEvents},
 		{"inject_briefing_pinned", s.InjectBriefingPinned},
 		{"inject_briefing_facts", s.InjectBriefingFacts},
 		{"inject_briefing_procedures", s.InjectBriefingProcedures},
@@ -469,7 +474,8 @@ func DefaultClientSettings() ClientSettings {
 		InlineExtract: new(true),
 		AutoSave:      new(true),
 
-		AutoSaveInterval: new(10),
+		AutoSaveInterval:  new(10),
+		AutoSaveMinEvents: new(3),
 
 		InjectBriefingPinned:     new(5),
 		InjectBriefingFacts:      new(5),
@@ -537,6 +543,9 @@ func MergeClientSettings(layers ...SettingsLayer) (ClientSettings, map[string]st
 		}
 		if applyPtr(&out.AutoSaveInterval, s.AutoSaveInterval) {
 			sources["auto_save_interval"] = l.Source
+		}
+		if applyPtr(&out.AutoSaveMinEvents, s.AutoSaveMinEvents) {
+			sources["auto_save_min_events"] = l.Source
 		}
 		if applyPtr(&out.InjectBriefingPinned, s.InjectBriefingPinned) {
 			sources["inject_briefing_pinned"] = l.Source

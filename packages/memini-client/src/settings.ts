@@ -1,7 +1,7 @@
 /**
  * Behavioral settings resolution for the config-handshake redesign.
  *
- * BEHAVIOR_KNOBS/effectiveSetting cover the 22 behavioral fields of the
+ * BEHAVIOR_KNOBS/effectiveSetting cover the 23 behavioral fields of the
  * spec's ClientSettings (api/openapi.yaml) — everything a HandshakeResponse
  * can hand back as a server-merged default, and everything a local env var
  * can still override. namespace_scope/namespace_prefix are deliberately
@@ -45,6 +45,7 @@ export const BEHAVIOR_KNOBS: BehaviorKnob[] = [
   { envName: "MEMINI_INLINE_EXTRACT", wireKey: "inline_extract", kind: "bool", default: true },
   { envName: "MEMINI_AUTO_SAVE", wireKey: "auto_save", kind: "bool", default: true },
   { envName: "MEMINI_AUTO_SAVE_INTERVAL", wireKey: "auto_save_interval", kind: "int", default: 10 },
+  { envName: "MEMINI_AUTO_SAVE_MIN_EVENTS", wireKey: "auto_save_min_events", kind: "int", default: 3 },
   { envName: "MEMINI_INJECT_BRIEFING_PINNED", wireKey: "inject_briefing_pinned", kind: "int", default: 5 },
   { envName: "MEMINI_INJECT_BRIEFING_FACTS", wireKey: "inject_briefing_facts", kind: "int", default: 5 },
   { envName: "MEMINI_INJECT_BRIEFING_PROCEDURES", wireKey: "inject_briefing_procedures", kind: "int", default: 5 },

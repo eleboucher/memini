@@ -49,6 +49,13 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
     "min": 1
   },
   {
+    "key": "auto_save_min_events",
+    "type": "integer",
+    "default": 3,
+    "description": "Minimum buffered state-changing tool events since the last auto-save baseline for the interval nudge to fire; 0 disables the activity gate (interval-only cadence).",
+    "min": 0
+  },
+  {
     "key": "inject_briefing_pinned",
     "type": "integer",
     "default": 5,
