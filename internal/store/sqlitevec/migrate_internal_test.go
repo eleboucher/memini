@@ -251,6 +251,89 @@ func TestMigrateRenamesProjectMapToPins(t *testing.T) {
 	}
 }
 
+// TestMigrateFoldsStrayProjectMapIntoPins covers the rollback window: after
+// the rename, an old binary re-creates project_map and writes pins into it.
+// The next migrate folds the stray's rows into pins — the stray wins on a key
+// conflict (it is the later write, the same last-write-wins rule as PutPins)
+// while created_at/created_by keep the pins row's values — and drops the
+// stray table, so no pin silently vanishes.
+func TestMigrateFoldsStrayProjectMapIntoPins(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "stray.db")
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	st, err := Open(ctx, path, 8)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := st.PutPins(ctx, []store.Pin{{
+		Key: "remote:github.com/acme/phoenix", Namespace: "acme/phoenix",
+		Note: "pre-rollback", CreatedBy: "kit", CreatedAt: created, UpdatedAt: created,
+	}}); err != nil {
+		t.Fatalf("PutPins: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", "file:"+path)
+	if err != nil {
+		t.Fatalf("open stray db: %v", err)
+	}
+	for _, q := range []string{
+		`CREATE TABLE project_map (
+			key        TEXT PRIMARY KEY,
+			namespace  TEXT NOT NULL,
+			note       TEXT NOT NULL DEFAULT '',
+			created_by TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`INSERT INTO project_map VALUES ('remote:github.com/acme/phoenix', 'acme/phoenix2',
+			'rollback re-pin', 'alex', '2026-02-01T00:00:00Z', '2026-02-01T00:00:00Z')`,
+		`INSERT INTO project_map VALUES ('path:/home/kit/dev/widgets', 'acme/widgets',
+			'rollback new pin', 'alex', '2026-02-01T00:00:00Z', '2026-02-01T00:00:00Z')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("seed stray %q: %v", q, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close stray db: %v", err)
+	}
+
+	st2, err := Open(ctx, path, 8)
+	if err != nil {
+		t.Fatalf("re-open: %v", err)
+	}
+	t.Cleanup(func() { _ = st2.Close() })
+
+	got, err := st2.GetPins(ctx, []string{"remote:github.com/acme/phoenix", "path:/home/kit/dev/widgets"})
+	if err != nil {
+		t.Fatalf("GetPins: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("GetPins returned %d pins, want 2: %+v", len(got), got)
+	}
+	byKey := map[string]store.Pin{}
+	for _, p := range got {
+		byKey[p.Key] = p
+	}
+	re := byKey["remote:github.com/acme/phoenix"]
+	if re.Namespace != "acme/phoenix2" || re.Note != "rollback re-pin" {
+		t.Errorf("conflicting key = %+v, want the stray's later write to win", re)
+	}
+	if re.CreatedBy != "kit" || !re.CreatedAt.Equal(created) {
+		t.Errorf("conflicting key created_at/by = %v/%q, want the pins row's provenance preserved", re.CreatedAt, re.CreatedBy)
+	}
+	if byKey["path:/home/kit/dev/widgets"].Namespace != "acme/widgets" {
+		t.Errorf("new stray key = %+v, want folded in", byKey["path:/home/kit/dev/widgets"])
+	}
+	if hasTable(t, st2.db, "project_map") {
+		t.Error("stray project_map still exists after migrate; want it folded and dropped")
+	}
+}
+
 // TestMigrateBackfillsEveryNewerColumn guards the bug class behind the crashloop:
 // a column referenced (by an index or query) before migrate ALTER-adds it on an
 // existing DB. Driven by backfillColumns, so adding a column is covered for free:

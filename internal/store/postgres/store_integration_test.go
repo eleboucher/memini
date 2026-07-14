@@ -125,4 +125,65 @@ func TestMigrateRenamesProjectMapToPins(t *testing.T) {
 			t.Errorf("relation %q present = %v, want %v", name, present, wantPresent)
 		}
 	}
+
+	// Rollback window: an old binary re-creates project_map next to pins and
+	// writes into it. The next Open folds the stray's rows into pins — the
+	// stray wins on a key conflict (the later write, PutPins' last-write-wins
+	// rule) while created_at/created_by keep the pins row's values — and
+	// drops the stray, so no pin silently vanishes.
+	stray := []string{
+		`CREATE TABLE project_map (
+			key        text PRIMARY KEY,
+			namespace  text NOT NULL,
+			note       text NOT NULL DEFAULT '',
+			created_by text NOT NULL DEFAULT '',
+			created_at timestamptz NOT NULL,
+			updated_at timestamptz NOT NULL
+		)`,
+		`INSERT INTO project_map VALUES ('remote:github.com/acme/phoenix', 'acme/phoenix2',
+			'rollback re-pin', 'alex', '2026-02-01T00:00:00Z', '2026-02-01T00:00:00Z')`,
+		`INSERT INTO project_map VALUES ('path:/home/kit/dev/widgets', 'acme/widgets',
+			'rollback new pin', 'alex', '2026-02-01T00:00:00Z', '2026-02-01T00:00:00Z')`,
+	}
+	for _, q := range stray {
+		if _, err := check.Exec(ctx, q); err != nil {
+			t.Fatalf("seed stray %q: %v", q, err)
+		}
+	}
+
+	st2, err := postgres.Open(ctx, scratchDSN, 8)
+	if err != nil {
+		t.Fatalf("re-open with stray project_map: %v", err)
+	}
+	defer func() { _ = st2.Close() }()
+
+	got2, err := st2.GetPins(ctx, []string{"remote:github.com/acme/phoenix", "path:/home/kit/dev/widgets"})
+	if err != nil {
+		t.Fatalf("GetPins after fold: %v", err)
+	}
+	if len(got2) != 2 {
+		t.Fatalf("GetPins after fold returned %d pins, want 2: %+v", len(got2), got2)
+	}
+	for _, p := range got2 {
+		switch p.Key {
+		case "remote:github.com/acme/phoenix":
+			if p.Namespace != "acme/phoenix2" || p.Note != "rollback re-pin" {
+				t.Errorf("conflicting key = %+v, want the stray's later write to win", p)
+			}
+			if p.CreatedBy != "kit" {
+				t.Errorf("conflicting key created_by = %q, want the pins row's provenance preserved", p.CreatedBy)
+			}
+		case "path:/home/kit/dev/widgets":
+			if p.Namespace != "acme/widgets" {
+				t.Errorf("new stray key = %+v, want folded in", p)
+			}
+		}
+	}
+	var reg *string
+	if err := check.QueryRow(ctx, `SELECT to_regclass('project_map')::text`).Scan(&reg); err != nil {
+		t.Fatalf("to_regclass(project_map) after fold: %v", err)
+	}
+	if reg != nil {
+		t.Error("stray project_map still exists after migrate; want it folded and dropped")
+	}
 }

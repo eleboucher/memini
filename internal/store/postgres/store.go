@@ -192,16 +192,32 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		// pins was named project_map until the terminology cleanup; rename an
 		// existing table and its index in place, before the CREATE below can
 		// plant a fresh empty pins next to it, so old installs keep their
-		// rows. If both tables exist (an old binary re-created an empty
-		// project_map after the rename), the stray is left alone rather than
-		// merged by guesswork.
+		// rows. The exception guard tolerates a concurrent migrate (another
+		// replica or the CLI) winning the rename between the check and the
+		// ALTER. If both tables exist — an old binary re-created project_map
+		// after the rename (a rollback window) and may have written pins into
+		// it — the stray's rows are folded into pins and the stray dropped,
+		// so no pin silently vanishes; on a key conflict the stray row wins
+		// (the later write, the same last-write-wins rule as PutPins) while
+		// created_at/created_by keep the pins row's values, as PutPins does.
 		`DO $$
 		BEGIN
 			IF to_regclass('project_map') IS NOT NULL AND to_regclass('pins') IS NULL THEN
-				ALTER TABLE project_map RENAME TO pins;
+				BEGIN
+					ALTER TABLE project_map RENAME TO pins;
+				EXCEPTION WHEN undefined_table OR duplicate_table THEN
+					NULL;
+				END;
 				IF to_regclass('idx_project_map_ns') IS NOT NULL AND to_regclass('idx_pins_ns') IS NULL THEN
 					ALTER INDEX idx_project_map_ns RENAME TO idx_pins_ns;
 				END IF;
+			END IF;
+			IF to_regclass('project_map') IS NOT NULL AND to_regclass('pins') IS NOT NULL THEN
+				INSERT INTO pins (key, namespace, note, created_by, created_at, updated_at)
+					SELECT key, namespace, note, created_by, created_at, updated_at FROM project_map
+					ON CONFLICT (key) DO UPDATE SET
+						namespace=EXCLUDED.namespace, note=EXCLUDED.note, updated_at=EXCLUDED.updated_at;
+				DROP TABLE project_map;
 			END IF;
 		END
 		$$`,

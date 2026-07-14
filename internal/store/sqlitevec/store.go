@@ -237,32 +237,63 @@ func (s *Store) migrate(ctx context.Context) error {
 }
 
 // renamePinsTable renames a pre-rename project_map table to pins, once. A
-// fresh database (neither table) and an already-renamed one (pins present)
-// are both no-ops; if both exist (an old binary re-created an empty
-// project_map after the rename), the stray is left alone rather than merged
-// by guesswork. SQLite keeps the old index name across a table rename, so
-// the index is dropped here and migrate's CREATE INDEX rebuilds idx_pins_ns.
+// fresh database (neither table) and an already-renamed one (only pins) are
+// no-ops. If both exist — an old binary re-created project_map after the
+// rename (a rollback window) and may have written pins into it — the stray's
+// rows are folded into pins and the stray is dropped, so no pin silently
+// vanishes; on a key conflict the stray row wins (it is the later write, the
+// same last-write-wins rule as PutPins) while created_at/created_by keep the
+// pins row's values, as PutPins does. SQLite keeps the old index name across
+// a table rename, so the index is dropped here and migrate's CREATE INDEX
+// rebuilds idx_pins_ns.
 func (s *Store) renamePinsTable(ctx context.Context) error {
-	var n int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='project_map'`).Scan(&n); err != nil {
-		return fmt.Errorf("sqlitevec: inspect project_map: %w", err)
+	hasTable := func(name string) (bool, error) {
+		var n int
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n); err != nil {
+			return false, fmt.Errorf("sqlitevec: inspect %s: %w", name, err)
+		}
+		return n > 0, nil
 	}
-	if n == 0 {
+	hasOld, err := hasTable("project_map")
+	if err != nil {
+		return err
+	}
+	if !hasOld {
 		return nil
 	}
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pins'`).Scan(&n); err != nil {
-		return fmt.Errorf("sqlitevec: inspect pins: %w", err)
+	hasNew, err := hasTable("pins")
+	if err != nil {
+		return err
 	}
-	if n > 0 {
+	if !hasNew {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE project_map RENAME TO pins`); err != nil {
+			// A concurrent migrate (another server process or the CLI on the
+			// same file) may have renamed it between the check and the ALTER;
+			// if the end state is what we wanted, the race is benign.
+			if old, err2 := hasTable("project_map"); err2 == nil && !old {
+				if now, err2 := hasTable("pins"); err2 == nil && now {
+					return nil
+				}
+			}
+			return fmt.Errorf("sqlitevec: rename project_map to pins: %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx, `DROP INDEX IF EXISTS idx_project_map_ns`); err != nil {
+			return fmt.Errorf("sqlitevec: drop idx_project_map_ns: %w", err)
+		}
 		return nil
 	}
-	if _, err := s.db.ExecContext(ctx, `ALTER TABLE project_map RENAME TO pins`); err != nil {
-		return fmt.Errorf("sqlitevec: rename project_map to pins: %w", err)
+	// Both exist: fold the stray forward, then drop it (its index goes with it).
+	// The WHERE true is SQLite's required disambiguator for INSERT..SELECT..ON CONFLICT.
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO pins (key, namespace, note, created_by, created_at, updated_at)
+		 SELECT key, namespace, note, created_by, created_at, updated_at FROM project_map WHERE true
+		 ON CONFLICT(key) DO UPDATE SET
+			namespace=excluded.namespace, note=excluded.note, updated_at=excluded.updated_at`); err != nil {
+		return fmt.Errorf("sqlitevec: fold stray project_map into pins: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx, `DROP INDEX IF EXISTS idx_project_map_ns`); err != nil {
-		return fmt.Errorf("sqlitevec: drop idx_project_map_ns: %w", err)
+	if _, err := s.db.ExecContext(ctx, `DROP TABLE project_map`); err != nil {
+		return fmt.Errorf("sqlitevec: drop stray project_map: %w", err)
 	}
 	return nil
 }
