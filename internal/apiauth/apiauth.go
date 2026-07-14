@@ -20,16 +20,19 @@ import (
 	"github.com/eleboucher/memini/internal/store"
 )
 
-// Principal identifies a request as authenticated by a NAMED table key —
-// never the admin env key, which authenticates with no principal at all (see
-// Config.Authenticate). Name is the attribution identity consumed by
-// RememberInput.Author; HomeNS/DefaultNS carry the key's bound home and
+// Principal identifies a request as authenticated by a NAMED key (table or
+// file) — never the admin env key, which authenticates with no principal at
+// all (see Config.Authenticate). Name is the attribution identity consumed
+// by RememberInput.Author; HomeNS/DefaultNS carry the key's bound home and
 // per-key default namespace, consumed by the caller's home/namespace
-// resolution.
+// resolution. Admin carries the key's per-key admin capability
+// (store.APIKey.Admin) — adminness is now a capability any named principal
+// can hold, no longer solely the nil-principal env key's exclusive property.
 type Principal struct {
 	Name      string
 	HomeNS    string
 	DefaultNS string
+	Admin     bool
 }
 
 // keyTableCacheTTL bounds how stale the "does the api_keys table hold any
@@ -143,7 +146,7 @@ func (c Config) Authenticate(ctx context.Context, token string) (p *Principal, o
 			if key.Disabled {
 				return nil, false, nil
 			}
-			return &Principal{Name: key.Name, HomeNS: key.HomeNS, DefaultNS: key.DefaultNS}, true, nil
+			return &Principal{Name: key.Name, HomeNS: key.HomeNS, DefaultNS: key.DefaultNS, Admin: key.Admin}, true, nil
 		}
 	}
 	if token != "" && c.KeyStore != nil {
@@ -152,7 +155,7 @@ func (c Config) Authenticate(ctx context.Context, token string) (p *Principal, o
 			return nil, false, gerr
 		}
 		if key != nil && !key.Disabled {
-			return &Principal{Name: key.Name, HomeNS: key.HomeNS, DefaultNS: key.DefaultNS}, true, nil
+			return &Principal{Name: key.Name, HomeNS: key.HomeNS, DefaultNS: key.DefaultNS, Admin: key.Admin}, true, nil
 		}
 		return nil, false, nil
 	}

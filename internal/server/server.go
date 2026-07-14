@@ -58,9 +58,10 @@ type Options struct {
 	// in-cluster (keep it off any public route).
 	MetricsAddr string
 	// UIAddr, when set and distinct from Addr, serves the admin UI on its own
-	// listener instead of the main router (see MountUI). The shell embeds the
-	// API key, so isolating it keeps that key off the main port — expose UIAddr
-	// only on a trusted (LAN) gateway.
+	// listener instead of the main router (see MountUI). The shell carries no
+	// credential (the SPA signs in against /v1/self in the browser); a dedicated
+	// listener just lets an operator expose the UI on a different port/gateway
+	// from the main API.
 	UIAddr string
 }
 
@@ -103,9 +104,9 @@ func (s *Server) Router() chi.Router { return s.router }
 // MountUI arranges for the SPA handler to be served. When UIAddr is set and
 // distinct from Addr, spa is served ONLY on that dedicated listener, which
 // delegates requests matching an API route to the main router so the
-// same-origin SPA can still call /v1 — keeping the token-embedding shell off
-// the main port. Otherwise spa is mounted as a catch-all on the main router,
-// serving it on the main port (single-listener default).
+// same-origin SPA can still call /v1 — letting an operator serve the UI on a
+// separate port from the main API. Otherwise spa is mounted as a catch-all on
+// the main router, serving it on the main port (single-listener default).
 func (s *Server) MountUI(spa http.Handler) {
 	if s.cfg.UIAddr != "" && s.cfg.UIAddr != s.cfg.Addr {
 		mux, _ := s.router.(*chi.Mux)

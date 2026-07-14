@@ -18,6 +18,27 @@ const (
 	BearerAuthScopes bearerAuthContextKey = "bearerAuth.Scopes"
 )
 
+// Defines values for ActivityEventActorKind.
+const (
+	ActivityEventActorKindEnv  ActivityEventActorKind = "env"
+	ActivityEventActorKindKey  ActivityEventActorKind = "key"
+	ActivityEventActorKindNone ActivityEventActorKind = "none"
+)
+
+// Valid indicates whether the value is a known member of the ActivityEventActorKind enum.
+func (e ActivityEventActorKind) Valid() bool {
+	switch e {
+	case ActivityEventActorKindEnv:
+		return true
+	case ActivityEventActorKindKey:
+		return true
+	case ActivityEventActorKindNone:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AnswerRequestScope.
 const (
 	AnswerRequestScopeEverywhere AnswerRequestScope = "everywhere"
@@ -455,6 +476,12 @@ func (e GetBriefingParamsScope) Valid() bool {
 
 // ActivityEvent One logical operation, with the memories it served or wrote.
 type ActivityEvent struct {
+	// Actor Who performed the operation: the name of the API key that authenticated the request. Absent for the admin env key, a dev-mode request, or a legacy row predating attribution — actor_kind disambiguates those.
+	Actor *string `json:"actor,omitempty"`
+
+	// ActorKind Classifies the actor: "key" (a named API key, actor holds its name), "env" (the admin env key), "none" (an unauthenticated dev-mode request). Absent on a legacy row predating attribution.
+	ActorKind *ActivityEventActorKind `json:"actor_kind,omitempty"`
+
 	// Detail Kind-specific context — a recall's degraded mode, a supersession's replacement id.
 	Detail *map[string]interface{} `json:"detail,omitempty"`
 
@@ -472,6 +499,9 @@ type ActivityEvent struct {
 	Query *string   `json:"query,omitempty"`
 	Time  time.Time `json:"time"`
 }
+
+// ActivityEventActorKind Classifies the actor: "key" (a named API key, actor holds its name), "env" (the admin env key), "none" (an unauthenticated dev-mode request). Absent on a legacy row predating attribution.
+type ActivityEventActorKind string
 
 // ActivityMemory One memory as it appeared in an event — a snapshot taken at serve time, so a forgotten memory still renders — plus why it was there.
 type ActivityMemory struct {
@@ -531,6 +561,9 @@ type AnswerResponse struct {
 
 // ApiKey defines model for ApiKey.
 type ApiKey struct {
+	// Admin Whether this key is an admin credential: it may reach the admin-gated surfaces (/v1/keys CRUD and /v1/settings/defaults), exactly like the admin env key (MEMINI_API_KEY). A self-guard still applies — an admin key cannot demote, disable, or delete itself over this API.
+	Admin bool `json:"admin"`
+
 	// CreatedAt Omitted for a source=file key: MEMINI_API_KEYS_FILE entries carry no creation timestamp (the file is the source of truth, not a database row) — always present for source=db.
 	CreatedAt *time.Time `json:"created_at,omitempty"`
 
@@ -554,6 +587,9 @@ type ApiKeySource string
 
 // ApiKeyWithSecret defines model for ApiKeyWithSecret.
 type ApiKeyWithSecret struct {
+	// Admin Whether this key is an admin credential: it may reach the admin-gated surfaces (/v1/keys CRUD and /v1/settings/defaults), exactly like the admin env key (MEMINI_API_KEY). A self-guard still applies — an admin key cannot demote, disable, or delete itself over this API.
+	Admin bool `json:"admin"`
+
 	// CreatedAt Omitted for a source=file key: MEMINI_API_KEYS_FILE entries carry no creation timestamp (the file is the source of truth, not a database row) — always present for source=db.
 	CreatedAt *time.Time `json:"created_at,omitempty"`
 
@@ -621,6 +657,8 @@ type BriefingItem struct {
 
 // CallerIdentity Who the request authenticated as, independent of any resolved namespace.
 type CallerIdentity struct {
+	// Admin Effective admin capability: true for the admin env key, dev mode with no auth configured, and a named key with admin=true. When true the caller may reach the admin-gated surfaces (/v1/keys CRUD and /v1/settings/defaults); when false those return 403.
+	Admin         bool `json:"admin"`
 	Authenticated bool `json:"authenticated"`
 
 	// DefaultNamespace The key's bound default namespace, if any.
@@ -629,7 +667,7 @@ type CallerIdentity struct {
 	// Home The key's bound home namespace, if any.
 	Home *string `json:"home,omitempty"`
 
-	// KeyName Name of the API key that authenticated the request; absent for the admin key or dev mode (no named principal — see requireAdminOrDev's doc for the same distinction on /v1/keys).
+	// KeyName Name of the API key that authenticated the request; absent for the admin key or dev mode (no named principal).
 	KeyName *string `json:"key_name,omitempty"`
 }
 
@@ -723,6 +761,9 @@ type ClusterAction struct {
 
 // CreateApiKeyRequest defines model for CreateApiKeyRequest.
 type CreateApiKeyRequest struct {
+	// Admin Create the key as an admin credential (see ApiKey.admin). Defaults to false — a plain key that cannot reach the admin-gated surfaces.
+	Admin *bool `json:"admin,omitempty"`
+
 	// DefaultNamespace Namespace applied when a request presents this key with no explicit namespace header.
 	DefaultNamespace *string `json:"default_namespace,omitempty"`
 
@@ -1089,6 +1130,9 @@ type SearchRequest struct {
 	// Scope "full" (default) searches the request namespace plus its ancestor/home/link cascade; "project" searches only the request namespace (no cascade); "everywhere" is "full" plus the request namespace's subtree, for the multi-agent read-shared-plus-private pattern. "exact" and "subtree" are deprecated aliases kept for back-compat: "exact" behaves as "project" (its original, pre-cascade meaning — the request namespace only) and "subtree" behaves as "everywhere". Any other value is rejected with 400.
 	Scope *SearchRequestScope `json:"scope,omitempty"`
 
+	// Source Why this recall ran — which integration or code path asked for it. Recorded verbatim on the activity event (the "why" the feed shows). Documented vocabulary: "pretool", "session_start", "mcp", "ui", "api", "answer", "doctor". NOT enum-validated server-side, so an unknown value from a fail-soft client is logged rather than rejected. Absent defaults to "api".
+	Source *string `json:"source,omitempty"`
+
 	// Tags A memory must carry every listed tag (AND).
 	Tags  *[]string `json:"tags,omitempty"`
 	Tiers *[]Tier   `json:"tiers,omitempty"`
@@ -1240,6 +1284,9 @@ type Tier string
 
 // UpdateApiKeyRequest defines model for UpdateApiKeyRequest.
 type UpdateApiKeyRequest struct {
+	// Admin Omit to leave the current admin capability unchanged; grant it with true, revoke it with false. A named admin key cannot revoke its own admin (admin=false targeting the key that authenticated the request) — that returns 409; use the admin env key or another admin key.
+	Admin *bool `json:"admin,omitempty"`
+
 	// DefaultNamespace Omit to leave the current default unchanged; an explicit empty string clears it.
 	DefaultNamespace *string `json:"default_namespace,omitempty"`
 
@@ -1274,6 +1321,9 @@ type ListActivityParams struct {
 
 	// Q Free-text filter, case-insensitive. Selects whole operations whose recall query or any served memory's summary contains it.
 	Q *string `form:"q,omitempty" json:"q,omitempty"`
+
+	// Actor Restrict to events performed by this API key (exact name match). The admin env key and dev-mode requests carry no name, so they are never selected by this filter.
+	Actor *string `form:"actor,omitempty" json:"actor,omitempty"`
 
 	// Since Only events recorded at or after this instant.
 	Since *time.Time `form:"since,omitempty" json:"since,omitempty"`
@@ -1604,7 +1654,7 @@ type ServerInterface interface {
 	// Resolve namespace, identity, and behavioral settings from client-supplied project facts
 	// (POST /v1/handshake)
 	Handshake(w http.ResponseWriter, r *http.Request)
-	// List API keys (name/home/default namespace/created/disabled/source — never a secret or hash)
+	// List API keys (name/home/default namespace/created/disabled/admin/source — never a secret or hash)
 	// (GET /v1/keys)
 	ListApiKeys(w http.ResponseWriter, r *http.Request)
 	// Create a new API key, returning its secret exactly once
@@ -1613,7 +1663,7 @@ type ServerInterface interface {
 	// Delete an API key
 	// (DELETE /v1/keys/{name})
 	DeleteApiKey(w http.ResponseWriter, r *http.Request, name string)
-	// Update an API key's home namespace, default namespace, disabled state, and/or per-key settings
+	// Update an API key's home namespace, default namespace, disabled state, admin capability, and/or per-key settings
 	// (PATCH /v1/keys/{name})
 	UpdateApiKey(w http.ResponseWriter, r *http.Request, name string)
 	// Rotate an API key's secret, returning the new secret exactly once
@@ -1733,7 +1783,7 @@ func (_ Unimplemented) Handshake(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// List API keys (name/home/default namespace/created/disabled/source — never a secret or hash)
+// List API keys (name/home/default namespace/created/disabled/admin/source — never a secret or hash)
 // (GET /v1/keys)
 func (_ Unimplemented) ListApiKeys(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -1751,7 +1801,7 @@ func (_ Unimplemented) DeleteApiKey(w http.ResponseWriter, r *http.Request, name
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Update an API key's home namespace, default namespace, disabled state, and/or per-key settings
+// Update an API key's home namespace, default namespace, disabled state, admin capability, and/or per-key settings
 // (PATCH /v1/keys/{name})
 func (_ Unimplemented) UpdateApiKey(w http.ResponseWriter, r *http.Request, name string) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -1978,6 +2028,19 @@ func (siw *ServerInterfaceWrapper) ListActivity(w http.ResponseWriter, r *http.R
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "q"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "q", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "actor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "actor", r.URL.Query(), &params.Actor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "actor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "actor", Err: err})
 		}
 		return
 	}

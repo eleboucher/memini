@@ -135,7 +135,7 @@ var answerTools = []llm.Tool{
 func (s *Service) answerAgentic(ctx context.Context, in AnswerInput, tc llm.ToolChat, iters int) (AnswerResult, error) {
 	prefetch, err := s.Recall(ctx, RecallInput{
 		Namespace: in.Namespace, Home: in.Home, Query: in.Query, Limit: in.Limit, Tiers: in.Tiers,
-		Levels: in.Levels, Tags: in.Tags, Metadata: in.Metadata, Scope: in.Scope,
+		Levels: in.Levels, Tags: in.Tags, Metadata: in.Metadata, Scope: in.Scope, Source: sourceAnswer,
 	})
 	if err != nil {
 		s.metrics.AnswerResult("error")
@@ -229,7 +229,7 @@ func (s *Service) execAnswerTool(
 	switch call.Name {
 	case "search_memory":
 		ri := RecallInput{Namespace: in.Namespace, Home: in.Home, Query: args.Query, Limit: k,
-			Levels: in.Levels, Tags: in.Tags, Metadata: in.Metadata, Scope: in.Scope}
+			Levels: in.Levels, Tags: in.Tags, Metadata: in.Metadata, Scope: in.Scope, Source: sourceAnswer}
 		switch args.Tier {
 		case string(memory.TierEpisodic):
 			ri.Tiers = []memory.Tier{memory.TierWorking, memory.TierEpisodic}
@@ -247,7 +247,7 @@ func (s *Service) execAnswerTool(
 			return "error: date must be YYYY-MM-DD"
 		}
 		res, err = s.Recall(ctx, RecallInput{Namespace: in.Namespace, Home: in.Home, Query: args.Query, Limit: k,
-			Levels: in.Levels, Tags: in.Tags, Metadata: in.Metadata, AsOf: asOf, Scope: in.Scope})
+			Levels: in.Levels, Tags: in.Tags, Metadata: in.Metadata, AsOf: asOf, Scope: in.Scope, Source: sourceAnswer})
 	default:
 		return "error: unknown tool " + call.Name
 	}

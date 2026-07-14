@@ -79,11 +79,11 @@ controllers:
           # -- Dedicated metrics listener; keeps /metrics off the main port and
           # every route, so it needs no bearer token. "" serves it on the main port.
           MEMINI_METRICS_ADDR: ":9090"
-          # -- Dedicated admin-UI listener. The UI shell embeds MEMINI_API_KEY so
-          # the browser can call /v1; serving it on its own port keeps that key off
-          # the main port (which then carries only the token-free API). Expose this
-          # port only on a trusted (LAN) gateway — see route.ui. "" serves the UI
-          # on the main port instead (the key then rides / on the main port).
+          # -- Dedicated admin-UI listener. The UI shell is credential-free (it
+          # never contains MEMINI_API_KEY; the SPA signs in against /v1/self in
+          # the browser and keeps its token in localStorage). A dedicated port
+          # still keeps the UI off the main API port; expose it only on a trusted
+          # (LAN) gateway (see route.ui). "" serves the UI on the main port.
           MEMINI_UI_ADDR: ":8081"
           # -- Storage backend: "sqlite" (default) or "postgres". For postgres,
           # set this to "postgres", switch controllers.main.type to deployment,
@@ -169,12 +169,21 @@ controllers:
 
   # --- Bearer-token auth (protects both /v1 and /mcp) ---
   # REQUIRED before exposing memini off-cluster via a route. There is no
-  # chart-created secret: reference your own Secret here.
+  # chart-created secret: reference your own Secret here. This is the break-glass
+  # admin/bootstrap credential; it is no longer the only admin (named/file keys
+  # can carry admin: true), so keep it as recovery and issue per-person keys via
+  # the keys file below. See docs/api-keys.md and docs/guides/access-control.md.
   # MEMINI_API_KEY:
   #   valueFrom:
   #     secretKeyRef:
   #       name: memini-auth
   #       key: api-key
+
+  # --- Declarative named API keys (MEMINI_API_KEYS_FILE) ---
+  # One admin key per human, non-admin keys per agent/CI, reviewable in Git and
+  # loaded once at boot (fail-loud validation). Mount the YAML from a Secret
+  # (see the `persistence.api-keys` block below) and point the server at it.
+  # MEMINI_API_KEYS_FILE: /etc/memini/api-keys.yaml
 
   # -- Periodic fsck CronJob. Disabled by default — the in-process sweeper
   # already handles decay. If enabled, the container needs MEMINI_API_KEY in env
@@ -244,8 +253,9 @@ service:
       http:
         port: 8080
         primary: true
-      # -- Dedicated admin-UI port (MEMINI_UI_ADDR). Carries the token-embedding
-      # shell; wire route.ui to it and keep that route on an internal gateway.
+      # -- Dedicated admin-UI port (MEMINI_UI_ADDR). Serves the credential-free
+      # SPA (it signs in in-browser); wire route.ui to it and keep that route on
+      # an internal gateway, since a stored token is same-origin-readable.
       ui:
         port: 8081
       # -- Dedicated metrics port (MEMINI_METRICS_ADDR). Not referenced by any
@@ -268,6 +278,19 @@ persistence:
     # storageClass: ""
     globalMounts:
       - path: /data
+  # -- Declarative API keys mounted from a Secret (MEMINI_API_KEYS_FILE above).
+  # Disabled by default. Enable it, reference a Secret whose data key
+  # `api-keys.yaml` holds the file (SOPS-decrypted by your GitOps pipeline), and
+  # set MEMINI_API_KEYS_FILE: /etc/memini/api-keys.yaml in env above. See
+  # docs/guides/access-control.md for the file's contents.
+  api-keys:
+    enabled: false
+    type: secret
+    name: memini-api-keys
+    globalMounts:
+      - path: /etc/memini/api-keys.yaml
+        subPath: api-keys.yaml
+        readOnly: true
 # -- Prometheus Operator ServiceMonitor. Disabled by default; flip `enabled` to
 # scrape /metrics from the dedicated `metrics` port (MEMINI_METRICS_ADDR / the
 # service port below). That port is unauthenticated and kept off every route, so
@@ -288,11 +311,11 @@ serviceMonitor:
 # by default — the operator enables and attaches them to an existing Gateway.
 # Exposing /v1 or /mcp REQUIRES bearer auth: set MEMINI_API_KEY (see env above).
 route:
-  # -- Public API + MCP surface, on the token-free `http` port. Enable, set the
-  # gateway in parentRefs and the hostname. Because MEMINI_UI_ADDR moves the
-  # token-embedding shell to its own port, this route can safely forward all of
-  # `http` (only /v1, /mcp, /healthz, /readyz live there — no API key). Add
-  # rules[].matches to scope it further if you want to keep the probes private.
+  # -- Public API + MCP surface, on the `http` port. Enable, set the gateway in
+  # parentRefs and the hostname. Only /v1, /mcp, /healthz, /readyz live here
+  # (the UI is on its own port via MEMINI_UI_ADDR), so this route can safely
+  # forward all of `http` once MEMINI_API_KEY gates it. Add rules[].matches to
+  # scope it further if you want to keep the probes private.
   main:
     enabled: false
     kind: HTTPRoute
@@ -302,11 +325,11 @@ route:
       - backendRefs:
           - identifier: main
             port: http
-  # -- Admin UI, on the `ui` port (MEMINI_UI_ADDR) whose shell embeds the API
-  # key. Disabled by default; enable on installs that want the SPA through a
-  # Gateway, and wire it to an INTERNAL gateway so the key never leaves the LAN.
-  # If MEMINI_UI_ADDR is "" the UI rides the main port instead — then point this
-  # at `port: http` and treat that whole route as trusted.
+  # -- Admin UI, on the `ui` port (MEMINI_UI_ADDR). The shell is credential-free,
+  # but a signed-in token is same-origin-readable, so wire this to an INTERNAL
+  # gateway. Disabled by default; enable on installs that want the SPA through a
+  # Gateway. If MEMINI_UI_ADDR is "" the UI rides the main port instead — then
+  # point this at `port: http` and treat that whole route as trusted.
   ui:
     enabled: false
     kind: HTTPRoute

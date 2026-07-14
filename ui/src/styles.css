@@ -1440,6 +1440,18 @@ pre.json {
 .evkind.supersede {
   --kc: var(--tier-procedural);
 }
+.evkind.pin,
+.evkind.unpin,
+.evkind.settings {
+  --kc: var(--tier-working);
+}
+
+/* The actor chip names who performed an operation — a quiet accent, since it
+   annotates rather than categorizes the event. */
+.act-actor-chip {
+  border-color: color-mix(in oklab, var(--accent) 40%, transparent);
+  color: color-mix(in oklab, var(--accent) 70%, var(--text));
+}
 
 .chip.warn {
   border-color: color-mix(in oklab, var(--tier-procedural) 50%, transparent);
@@ -1589,7 +1601,14 @@ pre.json {
   font-family: var(--font-ui);
   color: var(--text);
 }
-.act-search::placeholder {
+.act-actor {
+  min-width: 180px;
+  padding: 4px 10px;
+  font-family: var(--font-ui);
+  color: var(--text);
+}
+.act-search::placeholder,
+.act-actor::placeholder {
   color: var(--muted);
 }
 
@@ -1718,4 +1737,54 @@ pre.json {
   align-items: center;
   gap: 8px;
   margin-left: auto;
+}
+
+/* ============================================================================
+   Login gate — the pre-Shell auth screen (views/Login.tsx, app.tsx's AuthGate)
+   ============================================================================ */
+
+.login-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.login-panel {
+  width: min(420px, 100%);
+}
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 22px;
+}
+.login-brand .mark {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 24px;
+  letter-spacing: -0.02em;
+}
+/* Plain text disclosure toggle for the base-URL field — a quiet control, not a
+   button, so it doesn't compete with the primary Sign in action. */
+.login-adv-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.15s var(--ease);
+}
+.login-adv-toggle:hover {
+  color: var(--text);
+}
+.login-adv-toggle svg {
+  width: 15px;
+  height: 15px;
 }

@@ -135,6 +135,7 @@ async function main() {
       limit: itemsPerFile,
       exclude,
       minScore,
+      source: "pretool",
     });
     // The session-id exclusion misses turn captures written before a
     // resume/clear/compact rolled the session id (old rows keep the old id,

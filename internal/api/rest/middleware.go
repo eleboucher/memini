@@ -9,6 +9,7 @@ import (
 
 	"github.com/eleboucher/memini/internal/apiauth"
 	"github.com/eleboucher/memini/internal/httputil"
+	"github.com/eleboucher/memini/internal/service"
 	"github.com/eleboucher/memini/internal/store"
 )
 
@@ -207,6 +208,35 @@ func (a AuthConfig) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		ctx := context.WithValue(r.Context(), principalKey, *p)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// actorMiddleware stamps request-scoped attribution onto the context so every
+// activity event the request logs records who performed it (service.WithActor,
+// which survives logEvents' fire-and-forget hop). Attribution is automatic and
+// unconditional — there is no setting to disable it. Classification:
+//
+//   - a named table/file key authenticated the request → (its name, "key")
+//   - the admin env key authenticated it (nil principal, a bearer was
+//     presented) → ("", "env")
+//   - no bearer at all (auth-disabled dev mode) → ("", "none")
+//
+// Must run after authMiddleware: it reads the principal that middleware
+// resolved. The env/none split is a pragmatic bearer-presence heuristic (a
+// stray bearer in pure dev mode would read as "env"); the exact edge is not
+// worth a store lookup, and both render cleanly.
+func (a AuthConfig) actorMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var name, kind string
+		if p, ok := principalFromContext(r.Context()); ok {
+			name, kind = p.Name, "key"
+		} else if strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")) != "" {
+			kind = "env"
+		} else {
+			kind = "none"
+		}
+		ctx := service.WithActor(r.Context(), name, kind)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

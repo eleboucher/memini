@@ -405,8 +405,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List API keys (name/home/default namespace/created/disabled/source — never a secret or hash)
-         * @description Admin-gated (K3b): allowed only when the request authenticated with the admin env key, or when auth is disabled entirely (dev/bootstrap mode — no admin key, an empty api_keys table, and no MEMINI_API_KEYS_FILE keys). A request authenticated by a named table or file key gets 403. Includes keys from both the api_keys table (source=db, mutable via this API) and the declarative MEMINI_API_KEYS_FILE (source=file, read-only here — see updateApiKey/deleteApiKey/rotateApiKey).
+         * List API keys (name/home/default namespace/created/disabled/admin/source — never a secret or hash)
+         * @description Admin-gated: allowed for the admin env key (MEMINI_API_KEY), a named key with admin=true, or dev/bootstrap mode (auth disabled entirely — no admin key, an empty api_keys table, and no MEMINI_API_KEYS_FILE keys). A request authenticated by a non-admin named table or file key gets 403. Includes keys from both the api_keys table (source=db, mutable via this API) and the declarative MEMINI_API_KEYS_FILE (source=file, read-only here — see updateApiKey/deleteApiKey/rotateApiKey).
          */
         get: operations["listApiKeys"];
         put?: never;
@@ -435,14 +435,14 @@ export interface paths {
         post?: never;
         /**
          * Delete an API key
-         * @description Admin-gated, see listApiKeys. 404 if no such key exists; 409 for a MEMINI_API_KEYS_FILE-sourced key (remove it from the file instead).
+         * @description Admin-gated, see listApiKeys. 404 if no such key exists; 409 for a MEMINI_API_KEYS_FILE-sourced key (remove it from the file instead), or when a named admin key targets ITSELF (self-delete) — a break-glass guard, use the admin env key or another admin key instead.
          */
         delete: operations["deleteApiKey"];
         options?: never;
         head?: never;
         /**
-         * Update an API key's home namespace, default namespace, disabled state, and/or per-key settings
-         * @description Admin-gated, see listApiKeys. Preserve-unspecified semantics matching `memini key add`'s rotation contract: an omitted field leaves the stored value unchanged; an explicitly passed field — including an explicit empty home/default_namespace, or disabled=false — overrides it. A `settings` object replaces the key's per-key behavioral settings override: its present fields replace the corresponding stored values, while fields left unset within it continue to inherit the server's global defaults. 404 if no such key exists; 409 for a MEMINI_API_KEYS_FILE-sourced key (managed declaratively via that file, not this API).
+         * Update an API key's home namespace, default namespace, disabled state, admin capability, and/or per-key settings
+         * @description Admin-gated, see listApiKeys. Preserve-unspecified semantics matching `memini key add`'s rotation contract: an omitted field leaves the stored value unchanged; an explicitly passed field — including an explicit empty home/default_namespace, disabled=false, or admin=false — overrides it. A `settings` object replaces the key's per-key behavioral settings override: its present fields replace the corresponding stored values, while fields left unset within it continue to inherit the server's global defaults. 404 if no such key exists; 409 for a MEMINI_API_KEYS_FILE-sourced key (managed declaratively via that file, not this API), or when a named admin key targets ITSELF with admin=false (self-demote) or disabled=true (self-disable) — a break-glass guard, use the admin env key or another admin key instead.
          */
         patch: operations["updateApiKey"];
         trace?: never;
@@ -458,7 +458,7 @@ export interface paths {
         put?: never;
         /**
          * Rotate an API key's secret, returning the new secret exactly once
-         * @description Admin-gated, see listApiKeys. Generates a fresh secret (the one canonical generator, apiauth.GenerateSecret); the old secret stops authenticating immediately. Preserves the key's created_at, home/default namespace bindings, and disabled state unchanged. 404 if no such key exists; 409 for a MEMINI_API_KEYS_FILE-sourced key.
+         * @description Admin-gated, see listApiKeys. Generates a fresh secret (the one canonical generator, apiauth.GenerateSecret); the old secret stops authenticating immediately. Preserves the key's created_at, home/default namespace bindings, disabled state, and admin capability unchanged. A named admin key MAY rotate itself — unlike self-demote, self-disable, and self-delete, rotation is a credential refresh handed back to the prover of the old secret, not a capability loss. 404 if no such key exists; 409 for a MEMINI_API_KEYS_FILE-sourced key.
          */
         post: operations["rotateApiKey"];
         delete?: never;
@@ -557,12 +557,12 @@ export interface paths {
         };
         /**
          * The server's global default ClientSettings
-         * @description The defaults every key inherits from absent a per-key override. Admin-gated like /v1/keys (see listApiKeys): allowed for the admin env key, or when auth is disabled entirely (dev/bootstrap mode); a named table or file key gets 403 — a named caller sees its own merged result via /v1/handshake or /v1/self instead.
+         * @description The defaults every key inherits from absent a per-key override. Admin-gated like /v1/keys (see listApiKeys): allowed for the admin env key, a named key with admin=true, or dev/bootstrap mode; a non-admin named table or file key gets 403 — such a caller sees its own merged result via /v1/handshake or /v1/self instead.
          */
         get: operations["getSettingsDefaults"];
         /**
          * Replace the server's global default ClientSettings
-         * @description Admin-gated like /v1/keys (see listApiKeys): this changes what every key on the server inherits absent its own override. May be rejected when the server locks this layer read-only via its own configuration — a later phase's concern, not this contract's.
+         * @description Admin-gated like /v1/keys (see listApiKeys — the admin env key, a named key with admin=true, or dev mode): this changes what every key on the server inherits absent its own override. May be rejected when the server locks this layer read-only via its own configuration — a later phase's concern, not this contract's.
          */
         put: operations["putSettingsDefaults"];
         post?: never;
@@ -662,6 +662,8 @@ export interface components {
         };
         SearchRequest: {
             query: string;
+            /** @description Why this recall ran — which integration or code path asked for it. Recorded verbatim on the activity event (the "why" the feed shows). Documented vocabulary: "pretool", "session_start", "mcp", "ui", "api", "answer", "doctor". NOT enum-validated server-side, so an unknown value from a fail-soft client is logged rather than rejected. Absent defaults to "api". */
+            source?: string;
             tiers?: components["schemas"]["Tier"][];
             levels?: components["schemas"]["Level"][];
             /** @description A memory must carry every listed tag (AND). */
@@ -782,6 +784,13 @@ export interface components {
             time: string;
             /** @description The namespace the request was made against. */
             namespace: string;
+            /** @description Who performed the operation: the name of the API key that authenticated the request. Absent for the admin env key, a dev-mode request, or a legacy row predating attribution — actor_kind disambiguates those. */
+            actor?: string;
+            /**
+             * @description Classifies the actor: "key" (a named API key, actor holds its name), "env" (the admin env key), "none" (an unauthenticated dev-mode request). Absent on a legacy row predating attribution.
+             * @enum {string}
+             */
+            actor_kind?: "key" | "env" | "none";
             /** @description The recall query; absent for every other kind. */
             query?: string;
             /** @description Kind-specific context — a recall's degraded mode, a supersession's replacement id. */
@@ -1003,6 +1012,8 @@ export interface components {
              */
             created_at?: string;
             disabled: boolean;
+            /** @description Whether this key is an admin credential: it may reach the admin-gated surfaces (/v1/keys CRUD and /v1/settings/defaults), exactly like the admin env key (MEMINI_API_KEY). A self-guard still applies — an admin key cannot demote, disable, or delete itself over this API. */
+            admin: boolean;
             source: components["schemas"]["ApiKeySource"];
             /** @description Per-key behavioral settings override; fields left unset inherit the server's global defaults. */
             settings?: components["schemas"]["ClientSettings"];
@@ -1025,6 +1036,11 @@ export interface components {
              * @default false
              */
             disabled: boolean;
+            /**
+             * @description Create the key as an admin credential (see ApiKey.admin). Defaults to false — a plain key that cannot reach the admin-gated surfaces.
+             * @default false
+             */
+            admin: boolean;
         };
         UpdateApiKeyRequest: {
             /** @description Omit to leave the current binding unchanged; an explicit empty string clears it. */
@@ -1033,13 +1049,17 @@ export interface components {
             default_namespace?: string;
             /** @description Omit to leave the current disabled state unchanged. */
             disabled?: boolean;
+            /** @description Omit to leave the current admin capability unchanged; grant it with true, revoke it with false. A named admin key cannot revoke its own admin (admin=false targeting the key that authenticated the request) — that returns 409; use the admin env key or another admin key. */
+            admin?: boolean;
             /** @description Omit to leave the key's settings override unchanged; present fields replace the corresponding stored value (fields left unset within it continue to inherit the server's global defaults). */
             settings?: components["schemas"]["ClientSettings"];
         };
         /** @description Who the request authenticated as, independent of any resolved namespace. */
         CallerIdentity: {
             authenticated: boolean;
-            /** @description Name of the API key that authenticated the request; absent for the admin key or dev mode (no named principal — see requireAdminOrDev's doc for the same distinction on /v1/keys). */
+            /** @description Effective admin capability: true for the admin env key, dev mode with no auth configured, and a named key with admin=true. When true the caller may reach the admin-gated surfaces (/v1/keys CRUD and /v1/settings/defaults); when false those return 403. */
+            admin: boolean;
+            /** @description Name of the API key that authenticated the request; absent for the admin key or dev mode (no named principal). */
             key_name?: string;
             /** @description The key's bound home namespace, if any. */
             home?: string;
@@ -2163,6 +2183,8 @@ export interface operations {
                 tier?: components["schemas"]["Tier"][];
                 /** @description Free-text filter, case-insensitive. Selects whole operations whose recall query or any served memory's summary contains it. */
                 q?: string;
+                /** @description Restrict to events performed by this API key (exact name match). The admin env key and dev-mode requests carry no name, so they are never selected by this filter. */
+                actor?: string;
                 /** @description Only events recorded at or after this instant. */
                 since?: string;
                 /** @description With all_namespaces=true, restrict the feed to these namespaces (repeatable, exact match); ignored otherwise. */

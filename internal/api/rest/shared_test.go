@@ -44,7 +44,7 @@ func TestSharedMemoryAcrossSurfaces(t *testing.T) {
 	}
 
 	// Agent B: recall over MCP, bound to the same namespace and service.
-	srv := meminimcp.NewServer(svc, ns, "", "")
+	srv := meminimcp.NewServer(svc, ns, "", "", "none")
 	clientT, serverT := mcpsdk.NewInMemoryTransports()
 	if _, err := srv.Connect(ctx, serverT, nil); err != nil {
 		t.Fatalf("mcp server connect: %v", err)

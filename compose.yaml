@@ -37,5 +37,16 @@ services:
       # Opt-in consolidation: point at any OpenAI-compatible chat endpoint.
       # MEMINI_LLM_BASE_URL: http://your-llm/v1
       # MEMINI_LLM_MODEL: gpt-4o-mini
+      # Break-glass admin/bootstrap credential. Turns auth on for /v1 and /mcp.
+      # No longer the only admin: named/file keys can carry admin: true, so keep
+      # this as recovery and issue per-person keys below. See docs/api-keys.md.
+      # MEMINI_API_KEY: change-me
+      # Declarative named keys (one admin key per human, non-admin per agent/CI).
+      # Mount the file read-only and point the server at it; see the `volumes`
+      # block below and docs/guides/access-control.md for the file's contents.
+      # MEMINI_API_KEYS_FILE: /etc/memini/api-keys.yaml
     ports:
       - "8080:8080"
+    # volumes:
+    #   # SOPS-decrypt api-keys.yaml before it reaches here in a real deploy.
+    #   - ./api-keys.yaml:/etc/memini/api-keys.yaml:ro

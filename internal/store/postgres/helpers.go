@@ -233,11 +233,11 @@ func scanAPIKeys(rs rows) ([]store.APIKey, error) {
 }
 
 // scanAPIKey scans a single (name, key_hash, home_ns, default_ns,
-// created_at, disabled, settings) row.
+// created_at, disabled, settings, admin) row.
 func scanAPIKey(s rowScanner) (store.APIKey, error) {
 	var k store.APIKey
 	var settingsBytes []byte
-	if err := s.Scan(&k.Name, &k.Hash, &k.HomeNS, &k.DefaultNS, &k.CreatedAt, &k.Disabled, &settingsBytes); err != nil {
+	if err := s.Scan(&k.Name, &k.Hash, &k.HomeNS, &k.DefaultNS, &k.CreatedAt, &k.Disabled, &settingsBytes, &k.Admin); err != nil {
 		return k, err
 	}
 	k.CreatedAt = k.CreatedAt.UTC()

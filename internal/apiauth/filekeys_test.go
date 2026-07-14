@@ -80,6 +80,35 @@ keys:
 	}
 }
 
+// TestLoadFileKeysParsesAdmin covers the admin YAML field parsing into
+// store.APIKey.Admin, both explicitly true and the false-by-default case for
+// an entry that omits it entirely.
+func TestLoadFileKeysParsesAdmin(t *testing.T) {
+	path := writeKeysFile(t, `
+keys:
+  - name: root-alex
+    hash: "`+hashOf("tok-root-alex")+`"
+    admin: true
+  - name: plain-bob
+    hash: "`+hashOf("tok-plain-bob")+`"
+`)
+	fk, err := apiauth.LoadFileKeys(path)
+	if err != nil {
+		t.Fatalf("LoadFileKeys: %v", err)
+	}
+	keys := fk.FileKeys()
+	byName := map[string]bool{}
+	for _, k := range keys {
+		byName[k.Name] = k.Admin
+	}
+	if admin, ok := byName["root-alex"]; !ok || !admin {
+		t.Fatalf("root-alex: want admin=true, got %+v", keys)
+	}
+	if admin, ok := byName["plain-bob"]; !ok || admin {
+		t.Fatalf("plain-bob (no admin field): want admin=false, got %+v", keys)
+	}
+}
+
 func TestLoadFileKeysDisabledEntry(t *testing.T) {
 	path := writeKeysFile(t, `
 keys:

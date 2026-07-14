@@ -196,10 +196,14 @@ export async function postJSON(path, body, namespace, timeoutMs = 5000) {
  * score-fusion edge cases where the server's normalization disagrees with
  * what the caller wants.
  */
-export async function postSearch(query, namespace, { limit = 5, tiers, exclude, minScore } = {}) {
+export async function postSearch(query, namespace, { limit = 5, tiers, exclude, minScore, source } = {}) {
   const body = { query, limit };
   if (tiers) body.tiers = tiers;
   if (typeof minScore === "number" && minScore > 0) body.min_score = minScore;
+  // source is the recall's "why" — recorded on the activity event so the feed
+  // can show which integration asked. Passed through verbatim; the server never
+  // validates it, so a future caller's unknown value is logged, not rejected.
+  if (source) body.source = source;
   // exclude drops memories carrying any of these metadata key=value pairs, e.g.
   // {session_id} so a session's own captured digests aren't recalled back at it
   // while still in the live context.

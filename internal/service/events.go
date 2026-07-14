@@ -32,6 +32,39 @@ const (
 // a pathological all-recalls page to one extra round trip.
 const eventRowFanout = 8
 
+// actorCtxKey is the private context key carrying request-scoped attribution.
+// A context value (not a parameter on every service method) is what lets the
+// actor survive logEvents' fire-and-forget hop: context.WithoutCancel keeps
+// values, so a detached background write still stamps the right actor.
+type actorCtxKey struct{}
+
+// actor is who a request is attributed to: the name of the API key that
+// authenticated it and a kind classifying the empty-name cases. See
+// store.Event.Actor/ActorKind for the vocabulary ("key"/"env"/"none"/"").
+type actor struct {
+	name string
+	kind string
+}
+
+// WithActor stamps request-scoped attribution onto ctx so every event the
+// request logs records who performed it. The REST and MCP surfaces call it
+// once, right after authenticating: a named key → (name, "key"); the admin env
+// key → ("", "env"); an unauthenticated dev-mode request → ("", "none").
+// Attribution is automatic and unconditional — never a setting — so callers
+// always stamp; a context with no actor (background maintenance, tests) simply
+// logs the legacy "" kind.
+func WithActor(ctx context.Context, name, kind string) context.Context {
+	return context.WithValue(ctx, actorCtxKey{}, actor{name: name, kind: kind})
+}
+
+// actorFromContext returns the request's stamped attribution, or the zero
+// (empty) actor when none was stamped — which round-trips as the legacy
+// "unknown" row and renders cleanly everywhere.
+func actorFromContext(ctx context.Context) actor {
+	a, _ := ctx.Value(actorCtxKey{}).(actor)
+	return a
+}
+
 // eventLog returns the store's activity-log capability, and whether logging is
 // both supported and enabled. Drivers that predate the log simply don't
 // implement it — the type assertion is the same degrade-gracefully pattern the
@@ -52,6 +85,14 @@ func (s *Service) logEvents(ctx context.Context, events []store.Event) {
 	els, ok := s.eventLog()
 	if !ok || len(events) == 0 {
 		return
+	}
+	// Attribution: every row of one operation shares the request's actor. This
+	// is the single funnel every kind flows through (recall, write, briefing,
+	// config), so stamping here covers them all in one place.
+	a := actorFromContext(ctx)
+	for i := range events {
+		events[i].Actor = a.name
+		events[i].ActorKind = a.kind
 	}
 	write := func(ctx context.Context) {
 		if err := els.AppendEvents(ctx, events); err != nil {
@@ -87,6 +128,12 @@ func (s *Service) logRecallEvent(ctx context.Context, in RecallInput, results []
 	detail := map[string]any{}
 	if in.Degraded != nil && *in.Degraded != "" {
 		detail["degraded"] = *in.Degraded
+	}
+	// The recall's "why": which integration asked. Recorded verbatim on every
+	// row including the zero-hit sentinel, so "who searched for what, and got
+	// nothing" is answerable from the feed.
+	if in.Source != "" {
+		detail["source"] = in.Source
 	}
 	base := store.Event{
 		OpID:      s.newID(),
@@ -160,12 +207,32 @@ func (s *Service) logBriefingEvent(ctx context.Context, namespace string, b Brie
 // that already resolved to a row (existing != nil) is an update, anything else
 // is a new memory. Distinguishing them here is what lets the feed say "updated"
 // rather than "remembered" for MCP's memory_update, which composes Get+Remember.
-func (s *Service) logWriteEvent(ctx context.Context, m, existing *memory.Memory) {
+//
+// detail carries what the write decided — its final tier, and any outcome
+// flags (an auto-superseded predecessor id, a surfaced merge hint) — built at
+// the Upsert call site where that plumbing is in scope.
+func (s *Service) logWriteEvent(ctx context.Context, m, existing *memory.Memory, detail map[string]any) {
 	kind := store.EventRemember
 	if existing != nil {
 		kind = store.EventUpdate
 	}
-	s.logMemoryEvent(ctx, kind, m.Namespace, m, nil)
+	s.logMemoryEvent(ctx, kind, m.Namespace, m, detail)
+}
+
+// writeOutcomeDetail builds the detail a write event records: its final tier
+// always, plus the outcome flags that fired — the predecessor id an
+// auto-supersede will tombstone, and whether the dedup gate surfaced a merge
+// hint. A free function so its branches stay out of Remember's cyclomatic
+// budget (already at the limit).
+func writeOutcomeDetail(tier memory.Tier, supersedeID string, hint *MergeHint) map[string]any {
+	d := map[string]any{"tier": string(tier)}
+	if supersedeID != "" {
+		d["auto_superseded"] = supersedeID
+	}
+	if hint != nil && hint.SimilarID != "" {
+		d["merge_hint"] = true
+	}
+	return d
 }
 
 // logMemoryEvent records a single-memory operation (a get, or a write).
@@ -246,7 +313,8 @@ type ActivityMemory struct {
 }
 
 // ActivityEvent is one logical operation: what happened, when, against which
-// namespace, and — for a recall — the query and the memories it served.
+// namespace, who performed it, and — for a recall — the query and the memories
+// it served.
 type ActivityEvent struct {
 	OpID      string
 	Kind      store.EventKind
@@ -254,6 +322,10 @@ type ActivityEvent struct {
 	Namespace string
 	Query     string
 	Detail    map[string]any
+	// Actor/ActorKind are who performed the operation — see store.Event. Empty
+	// on a legacy row that predates attribution.
+	Actor     string
+	ActorKind string
 	Memories  []ActivityMemory
 }
 
@@ -269,6 +341,9 @@ type EventsInput struct {
 	Namespaces []string
 	// Kinds restricts to these event kinds; empty means all.
 	Kinds []store.EventKind
+	// Actor restricts to events performed by the named API key (exact match);
+	// empty means no constraint.
+	Actor string
 	// Tiers restricts to operations that touched a memory of one of these tiers.
 	Tiers []memory.Tier
 	// Text restricts to operations whose query or a served memory's summary
@@ -317,6 +392,7 @@ func (s *Service) Events(ctx context.Context, in EventsInput) (EventsPage, error
 		Namespace:  in.Namespace,
 		Namespaces: in.Namespaces,
 		Kinds:      in.Kinds,
+		Actor:      in.Actor,
 		Tiers:      in.Tiers,
 		Text:       in.Text,
 		Since:      in.Since,
@@ -384,6 +460,8 @@ func groupEvents(rows []store.Event) []ActivityEvent {
 			Namespace: head.Namespace,
 			Query:     head.Query,
 			Detail:    head.Detail,
+			Actor:     head.Actor,
+			ActorKind: head.ActorKind,
 		}
 		for _, r := range rows[i:j] {
 			// The sentinel row of a zero-hit recall carries no memory.

@@ -151,12 +151,25 @@ const serverInstructions = "memini is persistent cross-session memory for this a
 // table key that authenticated this session ("" for the admin key, an
 // unauthenticated stdio session, or auth-disabled dev mode); it is stamped
 // as metadata.author on writes via RememberInput.Author — see
-// service.stampAuthor.
-func NewServer(svc *service.Service, defaultNS, home, author string) *mcpsdk.Server {
+// service.stampAuthor. authorKind classifies author for activity attribution
+// ("key" for a named key, "env" for the admin env key, "none" for an
+// unauthenticated stdio/dev session — see store.Event); a receiving middleware
+// stamps (author, authorKind) onto every tool call's context via
+// service.WithActor, so all tools inherit it without threading a parameter.
+func NewServer(svc *service.Service, defaultNS, home, author, authorKind string) *mcpsdk.Server {
 	s := mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    "memini",
 		Version: version.Version,
 	}, &mcpsdk.ServerOptions{Instructions: serverInstructions})
+
+	// Attribution is session-fixed and automatic: stamp it once here so every
+	// tool handler's ctx carries who is calling. Survives service.logEvents'
+	// fire-and-forget hop (context.WithoutCancel keeps values).
+	s.AddReceivingMiddleware(func(next mcpsdk.MethodHandler) mcpsdk.MethodHandler {
+		return func(ctx context.Context, method string, req mcpsdk.Request) (mcpsdk.Result, error) {
+			return next(service.WithActor(ctx, author, authorKind), method, req)
+		}
+	})
 
 	h := &tools{svc: svc, defaultNS: defaultNS, defaultHome: home, defaultAuthor: author}
 
@@ -377,7 +390,16 @@ func HTTPHandlerWithAuth(svc *service.Service, nsHeader, defaultNS, homeHeader s
 			}
 			home = p.HomeNS
 		}
-		return NewServer(svc, ns, home, p.Name)
+		// Attribution kind mirrors REST's actorMiddleware: a named principal is
+		// "key"; otherwise a presented bearer (the admin env key authenticated)
+		// is "env", and no bearer at all (dev mode) is "none".
+		kind := "none"
+		if p.Name != "" {
+			kind = "key"
+		} else if strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")) != "" {
+			kind = "env"
+		}
+		return NewServer(svc, ns, home, p.Name, kind)
 	}, nil)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -429,7 +451,9 @@ func HTTPHandlerWithAuth(svc *service.Service, nsHeader, defaultNS, homeHeader s
 // home is resolved by the caller from MEMINI_HOME (there are no headers on
 // stdio); "" means no home leg.
 func RunStdio(ctx context.Context, svc *service.Service, defaultNS, home string) error {
-	return NewServer(svc, defaultNS, home, "").Run(ctx, &mcpsdk.StdioTransport{})
+	// Stdio has no auth: an unauthenticated local session, so attribution kind
+	// is "none" with no key name.
+	return NewServer(svc, defaultNS, home, "", "none").Run(ctx, &mcpsdk.StdioTransport{})
 }
 
 // tools holds the MCP tool handlers.
@@ -734,9 +758,13 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 		return nil, recallResult{}, err
 	}
 	input := service.RecallInput{
-		Namespace:         t.defaultNS,
-		Home:              t.defaultHome,
-		Query:             in.Query,
+		Namespace: t.defaultNS,
+		Home:      t.defaultHome,
+		Query:     in.Query,
+		// A recall over MCP is always sourced "mcp": the tool has no source
+		// argument (adding one is surface for no gain — a caller could only
+		// mislabel its own call), so the transport fixes it.
+		Source:            "mcp",
 		Tiers:             tiers,
 		Levels:            levels,
 		Tags:              in.Tags,

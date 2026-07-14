@@ -369,7 +369,7 @@
                         },
                         "MEMINI_UI_ADDR": {
                           "default": ":8081",
-                          "description": "Dedicated admin-UI listener. The UI shell embeds MEMINI_API_KEY so\nthe browser can call /v1; serving it on its own port keeps that key off\nthe main port (which then carries only the token-free API). Expose this\nport only on a trusted (LAN) gateway — see route.ui. \"\" serves the UI\non the main port instead (the key then rides / on the main port).",
+                          "description": "Dedicated admin-UI listener. The UI shell is credential-free (it\nnever contains MEMINI_API_KEY; the SPA signs in against /v1/self in\nthe browser and keeps its token in localStorage). A dedicated port\nstill keeps the UI off the main API port; expose it only on a trusted\n(LAN) gateway (see route.ui). \"\" serves the UI on the main port.",
                           "title": "MEMINI_UI_ADDR",
                           "type": "string"
                         },
@@ -825,6 +825,59 @@
     "persistence": {
       "description": "Persistent storage for the sqlite backend, mounted at /data. A standalone\nPVC (single-replica memini sqlite is single-writer). For the postgres backend\nset `persistence.data.enabled: false`.",
       "properties": {
+        "api-keys": {
+          "description": "Declarative API keys mounted from a Secret (MEMINI_API_KEYS_FILE above).\nDisabled by default. Enable it, reference a Secret whose data key\n`api-keys.yaml` holds the file (SOPS-decrypted by your GitOps pipeline), and\nset MEMINI_API_KEYS_FILE: /etc/memini/api-keys.yaml in env above. See\ndocs/guides/access-control.md for the file's contents.",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "title": "enabled",
+              "type": "boolean"
+            },
+            "globalMounts": {
+              "items": {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "path": {
+                        "default": "/etc/memini/api-keys.yaml",
+                        "title": "path",
+                        "type": "string"
+                      },
+                      "readOnly": {
+                        "default": true,
+                        "title": "readOnly",
+                        "type": "boolean"
+                      },
+                      "subPath": {
+                        "default": "api-keys.yaml",
+                        "title": "subPath",
+                        "type": "string"
+                      }
+                    },
+                    "required": [],
+                    "type": "object"
+                  }
+                ],
+                "required": []
+              },
+              "title": "globalMounts",
+              "type": "array"
+            },
+            "name": {
+              "default": "memini-api-keys",
+              "title": "name",
+              "type": "string"
+            },
+            "type": {
+              "default": "secret",
+              "title": "type",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "api-keys",
+          "type": "object"
+        },
         "data": {
           "properties": {
             "accessMode": {
@@ -914,7 +967,7 @@
       "description": "Gateway API HTTPRoutes (the modern replacement for Ingress). BOTH disabled\nby default — the operator enables and attaches them to an existing Gateway.\nExposing /v1 or /mcp REQUIRES bearer auth: set MEMINI_API_KEY (see env above).",
       "properties": {
         "main": {
-          "description": "Public API + MCP surface, on the token-free `http` port. Enable, set the\ngateway in parentRefs and the hostname. Because MEMINI_UI_ADDR moves the\ntoken-embedding shell to its own port, this route can safely forward all of\n`http` (only /v1, /mcp, /healthz, /readyz live there — no API key). Add\nrules[].matches to scope it further if you want to keep the probes private.",
+          "description": "Public API + MCP surface, on the `http` port. Enable, set the gateway in\nparentRefs and the hostname. Only /v1, /mcp, /healthz, /readyz live here\n(the UI is on its own port via MEMINI_UI_ADDR), so this route can safely\nforward all of `http` once MEMINI_API_KEY gates it. Add rules[].matches to\nscope it further if you want to keep the probes private.",
           "properties": {
             "enabled": {
               "default": false,
@@ -986,7 +1039,7 @@
           "type": "object"
         },
         "ui": {
-          "description": "Admin UI, on the `ui` port (MEMINI_UI_ADDR) whose shell embeds the API\nkey. Disabled by default; enable on installs that want the SPA through a\nGateway, and wire it to an INTERNAL gateway so the key never leaves the LAN.\nIf MEMINI_UI_ADDR is \"\" the UI rides the main port instead — then point this\nat `port: http` and treat that whole route as trusted.",
+          "description": "Admin UI, on the `ui` port (MEMINI_UI_ADDR). The shell is credential-free,\nbut a signed-in token is same-origin-readable, so wire this to an INTERNAL\ngateway. Disabled by default; enable on installs that want the SPA through a\nGateway. If MEMINI_UI_ADDR is \"\" the UI rides the main port instead — then\npoint this at `port: http` and treat that whole route as trusted.",
           "properties": {
             "enabled": {
               "default": false,
@@ -1130,7 +1183,7 @@
                   "type": "object"
                 },
                 "ui": {
-                  "description": "Dedicated admin-UI port (MEMINI_UI_ADDR). Carries the token-embedding\nshell; wire route.ui to it and keep that route on an internal gateway.",
+                  "description": "Dedicated admin-UI port (MEMINI_UI_ADDR). Serves the credential-free\nSPA (it signs in in-browser); wire route.ui to it and keep that route on\nan internal gateway, since a stored token is same-origin-readable.",
                   "properties": {
                     "port": {
                       "default": 8081,

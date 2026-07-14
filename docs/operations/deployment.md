@@ -97,21 +97,29 @@ commented as documentation and covers more than this page can.
 The chart splits the surface across three listeners so that each one can be
 exposed, or not, on its own terms:
 
-| Port               | Variable              | Carries                                                             |
-| ------------------ | --------------------- | ------------------------------------------------------------------- |
-| `8080` (`http`)    | `MEMINI_HTTP_ADDR`    | REST `/v1`, MCP, probes. Bearer-gated when `MEMINI_API_KEY` is set. |
-| `8081` (`ui`)      | `MEMINI_UI_ADDR`      | The admin UI. Its shell **embeds `MEMINI_API_KEY`**.                |
-| `9090` (`metrics`) | `MEMINI_METRICS_ADDR` | `/metrics`, unauthenticated, kept off every route.                  |
+| Port               | Variable              | Carries                                                              |
+| ------------------ | --------------------- | -------------------------------------------------------------------- |
+| `8080` (`http`)    | `MEMINI_HTTP_ADDR`    | REST `/v1`, MCP, probes. Bearer-gated when `MEMINI_API_KEY` is set.  |
+| `8081` (`ui`)      | `MEMINI_UI_ADDR`      | The admin UI (a credential-free shell; the SPA signs in in-browser). |
+| `9090` (`metrics`) | `MEMINI_METRICS_ADDR` | `/metrics`, unauthenticated, kept off every route.                   |
 
-That split is the point. Because the UI has its own port, the `http` port carries
-no embedded credential and can be routed publicly (with `MEMINI_API_KEY` set).
-The `ui` port must go to an internal gateway only: anyone who can load it can
-read the admin key. See [web-ui.md](web-ui.md).
+The UI shell carries no credential (it never contains `MEMINI_API_KEY`; the SPA
+signs in against `/v1/self` in the browser and keeps its token in
+`localStorage`). A dedicated `ui` port is still worth keeping internal, because a
+stored token is readable by any same-origin script, but it is no longer the
+key-in-public-HTML hazard it once was. See [web-ui.md](web-ui.md).
 
 Two `HTTPRoute`s (Gateway API) ship disabled: `route.main` for the API on `http`,
 `route.ui` for the UI on `ui`. Enable them and attach them to your Gateways.
 **Set `MEMINI_API_KEY` before exposing `/v1` or `/mcp` off-cluster.** The chart
 creates no secret; reference your own with `valueFrom.secretKeyRef`.
+
+`MEMINI_API_KEY` is the break-glass admin credential. For per-person and
+per-agent keys (the recommended shape on a shared server), mount a
+`MEMINI_API_KEYS_FILE` from a Secret. `values.yaml` carries a commented
+`persistence` example that mounts one at `/etc/memini/api-keys.yaml`; the
+[access control guide](../guides/access-control.md) walks the full file (one
+admin key per human, non-admin keys per agent) and the Secret it comes from.
 
 ### Postgres backend
 

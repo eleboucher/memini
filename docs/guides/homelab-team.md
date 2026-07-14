@@ -70,7 +70,9 @@ do, and each one can carry a home namespace, which is how a developer's personal
 memories follow them without every client having to export the right env var.
 
 The declarative file is the right form for a homelab, because it lives in the
-same repo as the rest of your config:
+same repo as the rest of your config. Give each human an **admin** key
+(`admin: true`) so they can manage keys and edit server defaults without reaching
+for the break-glass env key, and leave agents and CI **non-admin** (the default):
 
 ```yaml
 # api-keys.yaml, referenced by MEMINI_API_KEYS_FILE
@@ -79,13 +81,22 @@ keys:
     secret: "correct-horse-battery-staple" # SOPS-encrypt this file at rest
     home: personal/kit
     default_namespace: acme
+    admin: true
   - name: robin
     hash: "b9f195c5cc7ef6afadbfbc42892ad47d3b24c6bc94bb510c4564a90a14e8b799"
     home: personal/robin
     default_namespace: acme
+    admin: true
   - name: ci
-    secret: "another-secret"
+    secret: "another-secret" # non-admin: reads and writes, cannot manage keys
 ```
+
+Admin is a per-key attribute, not the env key's exclusive property anymore. With
+one admin key per human, `MEMINI_API_KEY` becomes **break-glass**: set it and
+keep it in a secret, reach for it only when named-key administration has locked
+itself out. The [access control guide](access-control.md) walks the whole team
+setup (break-glass key, admin per human, non-admin per agent, rotation, and what
+each role sees) end to end.
 
 ```sh
 # server (the memini process)
@@ -101,13 +112,16 @@ For an imperatively managed instance, the CLI does the same job against the
 store's own key table:
 
 ```sh
-memini key add kit --home personal/kit --default-namespace acme
-memini key add robin --home personal/robin --default-namespace acme
-memini key ls
+memini key add kit   --home personal/kit   --default-namespace acme --admin
+memini key add robin --home personal/robin --default-namespace acme --admin
+memini key add ci    --default-namespace acme          # non-admin: no --admin
+memini key ls                                          # NAME/HOME/DEFAULT NS/CREATED/DISABLED/ADMIN
 ```
 
 `key add` prints the secret exactly once. Re-running it against an existing name
-rotates the secret and preserves everything else.
+rotates the secret and preserves everything else, including the admin flag (a
+bare `memini key add kit` never silently demotes or promotes; pass `--admin` /
+`--admin=false` to change it).
 
 Two rules that bite people, both covered in full in
 [api-keys.md](../api-keys.md): a key is **identity, not authorization** (any valid
@@ -140,33 +154,39 @@ Helm chart has a commented example in `values.yaml`; see
 [`MEMINI_CLIENT_DEFAULTS`](../reference/configuration.md#memini_client_defaults)
 for the full validation rules.
 
-## The UI embeds your API key
+## Signing in to the UI
 
-This is the security point to internalize before you expose anything.
+The admin UI is a real login now, and the served shell carries **no** credential:
+it never contains `MEMINI_API_KEY`. Each person signs in once per browser by
+pasting an API key (their own named admin key, ideally, not the break-glass env
+key); it is verified against `GET /v1/self` and then kept in that browser's
+`localStorage` and sent as a bearer on every `/v1` call. Serving `/` to an
+anonymous request leaks nothing.
 
-When `MEMINI_API_KEY` is set and the admin UI is enabled, the server embeds that
-key in the UI shell, so the same-origin SPA can call `/v1` without anyone pasting
-a token. That means **anyone who can load `/` can read your admin key**, and the
-admin key is the only credential that can manage other keys. The server logs a
-warning at boot when it detects this shape.
-
-Three ways out, in descending order of how much you get to keep:
+The security point to internalize is narrower than it used to be, but real: a
+stored token lives in `localStorage`, which **any same-origin script can read**.
+That is a much better position than the old behavior (the server used to embed
+the admin key in the public HTML shell, so anyone who could `GET /` had it), and
+the stored token can now be a per-person, non-admin-of-last-resort credential.
+Still, isolate the UI if the origin is at all shared:
 
 ```sh
 # server (the memini process)
-export MEMINI_API_KEY=<admin-token>
 export MEMINI_UI_ADDR=:8081        # UI on its own listener; expose only on a trusted LAN gateway
 ```
 
 `MEMINI_UI_ADDR` moves the UI to a dedicated port. That port serves both the UI
 and the API (the SPA needs same-origin `/v1`), so route it only where reaching it
-already implies trust. The main port then carries the API and `/mcp` with no
-token-bearing HTML on it. The Helm chart does exactly this and gives the UI its
-own service port.
+already implies trust. The Helm chart does exactly this and gives the UI its own
+service port.
 
 The blunter option is `MEMINI_UI_ENABLED=false`, which runs memini headless as an
 API and MCP service. Or leave the UI on the main port and simply never route that
 port anywhere untrusted, which on a homelab is often the honest answer.
+
+See [web-ui.md](../operations/web-ui.md) for the full login flow (first-run
+bootstrap, logout, the dev-mode banner, rotate-self) and
+[access-control.md](access-control.md) for what each role sees signed in.
 
 ## Namespace topology
 
@@ -193,7 +213,7 @@ Each developer's client points at the shared server with their own key:
 ```sh
 # client (your agent host)
 export MEMINI_BASE_URL=https://memini.internal.example
-export MEMINI_API_KEY=<kit's named key, not the admin key>
+export MEMINI_API_KEY=<kit's own named key, not the shared break-glass env key>
 ```
 
 The plugin resolves the project namespace from the git remote and sends it as

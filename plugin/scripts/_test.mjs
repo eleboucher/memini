@@ -1287,6 +1287,7 @@ test("pre-tool-use.mjs: cache hit → recalls by file path under the handshake n
     assert.equal(hits.length, 1);
     assert.equal(hits[0].ns, "srv/app", "recall must target the cached-handshake namespace");
     assert.match(JSON.parse(hits[0].body).query, /Read on internal\/auth\.go/);
+    assert.equal(JSON.parse(hits[0].body).source, "pretool", "PreToolUse recall must declare source=pretool");
   } finally {
     await close();
   }

@@ -2,9 +2,12 @@
 
 memini supports multiple named API keys, each optionally bound to a **home**
 namespace (identity) and a **default** namespace (context), instead of a
-single shared bearer token. This doc covers what a key is, how the two
-namespace bindings differ, the secret lifecycle, the declarative file format,
-bootstrap and lockout behavior, and attribution. It's orthogonal to
+single shared bearer token. This doc covers what a key is, the **admin
+attribute** that gates key management, how the two namespace bindings differ,
+the secret lifecycle, the declarative file format, bootstrap and lockout
+behavior, and attribution. If you are setting up a team from scratch, the
+task-oriented [access control guide](guides/access-control.md) walks the whole
+thing end to end; this page is the reference it builds on. It's orthogonal to
 [scopes.md](scopes.md) (how a namespace's read set is composed once a
 request's namespace/home are resolved — a key's bindings are one of the
 inputs to that resolution) and to [tiers.md](tiers.md) (what a memory's tier
@@ -22,20 +25,355 @@ it is a convenience default, not a fence. If you need hard namespace
 isolation between tenants, that's a deployment-topology decision (separate
 memini instances/stores), not something an API key's bindings enforce.
 
+There is exactly one authorization bit a key carries, and it is deliberately
+narrow: the **admin attribute**. It gates key management (`/v1/keys` CRUD) and
+the server-wide settings defaults (`/v1/settings/defaults`), and nothing else.
+An admin key reads and writes namespaces on exactly the same terms as any other
+key; a non-admin key is blocked only from those two surfaces. See
+[The admin attribute](#the-admin-attribute) below for the full model.
+
 ## Three kinds of key
 
-| Kind  | Configured via                                                     | Mutable via API/CLI?                                  | Typical use                                                     |
-| ----- | ------------------------------------------------------------------ | ----------------------------------------------------- | --------------------------------------------------------------- |
-| Admin | `MEMINI_API_KEY` env var                                           | n/a (one shared value)                                | Server operator; the only key that can manage other keys        |
-| Named | `memini key add` / `POST /v1/keys`, stored in the `api_keys` table | Yes — add/rotate/disable/delete                       | Per-person or per-integration credentials, imperatively managed |
-| File  | `MEMINI_API_KEYS_FILE` (declarative YAML), loaded once at boot     | No — immutable via the API; edit the file and restart | GitOps-managed fleets, SOPS-encrypted secrets                   |
+A credential comes from one of three **sources**. The source decides how a key
+is created and whether it can change at runtime. Whether a key is an **admin**
+(the next section) is a separate attribute, orthogonal to its source: a named
+key or a file key can be an admin, and the env key always is.
 
-A request authenticates against these in order: admin key first (constant-time
+| Kind              | Configured via                                                     | Mutable via API/CLI?                                    | Admin?                   | Typical use                                                                   |
+| ----------------- | ------------------------------------------------------------------ | ------------------------------------------------------- | ------------------------ | ----------------------------------------------------------------------------- |
+| Env (break-glass) | `MEMINI_API_KEY` env var                                           | n/a (one shared value)                                  | Always                   | The operator's always-on recovery credential; authenticates with no principal |
+| Named             | `memini key add` / `POST /v1/keys`, stored in the `api_keys` table | Yes: add/rotate/disable/delete, plus grant/revoke admin | Optional (`--admin`)     | Per-person or per-integration credentials, imperatively managed               |
+| File              | `MEMINI_API_KEYS_FILE` (declarative YAML), loaded once at boot     | No: immutable via the API; edit the file and restart    | Optional (`admin: true`) | GitOps-managed fleets, SOPS-encrypted secrets                                 |
+
+The env key is no longer the _only_ credential that can manage other keys: any
+key with the admin attribute can. It stays special in one way that earns the
+"break-glass" name: it authenticates with no principal at all, so the
+self-guard (below) can never lock it out, and it is the one credential that
+always works when every named admin has managed to demote itself. It also gates
+two operator surfaces that named admin keys do **not** unlock: `/metrics` and
+verbose `/healthz` (see [The metrics/healthz asymmetry](#the-metricshealthz-asymmetry)).
+
+A request authenticates against these in order: env key first (constant-time
 compare), then the file keys (by hash), then the table (by hash). A key found
 in the file or table but disabled is rejected outright — it never falls
 through to a lower-precedence check. See `internal/apiauth.Config.Authenticate`
 for the exact precedence and edge cases (e.g. what happens with no token
 presented at all).
+
+## The admin attribute
+
+Every key is either an **admin** or it is not. Admin is a boolean the server
+tracks per key (`store.APIKey.Admin`, `ApiKey.admin` on the wire), and it gates
+exactly two surfaces:
+
+- **`/v1/keys` CRUD** (list, create, update, rotate, delete): managing other
+  keys, including granting and revoking admin.
+- **`/v1/settings/defaults`** (GET and PUT): the server-wide behavior defaults
+  layer (see [env-vars.md](reference/env-vars.md#4-behavior-settings-layered-server-data)).
+
+Three classes of caller pass that gate: the env `MEMINI_API_KEY`, dev/bootstrap
+mode (no auth configured at all), and a named or file key with `admin: true`.
+Everything else is a non-admin, and hitting either surface returns a verbatim
+`403`:
+
+```json
+{
+  "error": "admin credential required: this endpoint needs the admin env key (MEMINI_API_KEY) or an API key with admin=true"
+}
+```
+
+That string is deliberately different from the old `"admin key required"` so any
+out-of-tree tooling that matched the previous text fails loudly rather than
+silently mis-classifying a response. Nothing else changes for a non-admin key:
+it still reads and writes any namespace exactly as before (a key is
+[identity, not authorization](#keys-are-identity-not-authorization)).
+
+### Checking whether the current key is an admin
+
+`GET /v1/self` reports the caller's effective admin capability in
+`identity.admin`. A named admin key sees:
+
+```json
+{
+  "identity": {
+    "authenticated": true,
+    "admin": true,
+    "key_name": "robin",
+    "home": "personal/robin"
+  },
+  "settings": { "...": "fully resolved, every field present" },
+  "settings_sources": { "...": "per-field default/global/key provenance" }
+}
+```
+
+Dev mode (no auth configured) reports `"authenticated": false, "admin": true`
+with no `key_name`; the env break-glass key reports `"authenticated": true,
+"admin": true` with no `key_name` (neither authenticates as a named principal).
+A non-admin named key reports `"admin": false`, and that is exactly what the
+admin UI reads to render its locked states instead of probing a 403.
+
+### Creating an admin key
+
+Pass `"admin": true` when creating the key. As the env key (or any admin):
+
+```console
+$ curl -sS -X POST http://localhost:8080/v1/keys \
+    -H "Authorization: Bearer $MEMINI_API_KEY" \
+    -H 'Content-Type: application/json' \
+    -d '{"name": "robin", "home": "personal/robin", "default_namespace": "acme", "admin": true}'
+```
+
+```json
+{
+  "name": "robin",
+  "home": "personal/robin",
+  "default_namespace": "acme",
+  "created_at": "2026-07-13T18:22:04Z",
+  "disabled": false,
+  "admin": true,
+  "source": "db",
+  "secret": "k9f2c8a1b3d47e6a0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4"
+}
+```
+
+The `secret` is shown exactly once, here (see [Secret lifecycle](#secret-lifecycle)).
+`"admin": false` (or omitting `admin`) creates a plain key.
+
+The CLI mints one against the store directly, which is how a deployment with no
+env key at all still gets its first admin:
+
+```console
+$ memini key add robin --home personal/robin --default-namespace acme --admin
+Secret (save this now — it is not stored and cannot be shown again):
+k9f2c8a1b3d47e6a0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4
+
+NAME   HOME            DEFAULT NS  CREATED               DISABLED  ADMIN
+robin  personal/robin  acme        2026-07-13T18:22:04Z  false     true
+```
+
+### Granting and revoking admin on an existing key
+
+`PATCH /v1/keys/{name}` with just `{"admin": true}` promotes an existing key;
+`{"admin": false}` demotes it. Omitting the field leaves the current capability
+untouched (the same preserve-unspecified contract as `home`/`disabled`; see
+[Secret lifecycle](#secret-lifecycle)). Neither rotates the secret.
+
+```console
+$ curl -sS -X PATCH http://localhost:8080/v1/keys/ci-bot \
+    -H "Authorization: Bearer $MEMINI_API_KEY" \
+    -H 'Content-Type: application/json' \
+    -d '{"admin": true}'
+```
+
+```json
+{
+  "name": "ci-bot",
+  "default_namespace": "acme",
+  "created_at": "2026-06-01T09:15:00Z",
+  "disabled": false,
+  "admin": true,
+  "source": "db"
+}
+```
+
+Revoking is the mirror image, `{"admin": false}`. On the CLI, a rotation carries
+the flag explicitly: `memini key add ci-bot --admin=false` demotes while
+generating a fresh secret; a bare `memini key add ci-bot` rotates and
+**preserves** whatever admin state the key already had (see
+[Secret lifecycle](#secret-lifecycle)).
+
+### The self-guard
+
+An admin can lock the whole surface against everyone in a single request by
+demoting, disabling, or deleting its own key. The server refuses that one move.
+A **named** admin key acting on **itself** cannot:
+
+- demote itself (`PATCH {"admin": false}` on its own name),
+- disable itself (`PATCH {"disabled": true}` on its own name), or
+- delete itself (`DELETE` on its own name).
+
+Each returns a `409` naming the escape hatch. Demote or disable:
+
+```console
+$ curl -sS -X PATCH http://localhost:8080/v1/keys/robin \
+    -H "Authorization: Bearer $ROBIN_SECRET" \
+    -d '{"admin": false}'
+```
+
+```json
+{
+  "error": "api key \"robin\" cannot demote or disable itself; use the admin env key (MEMINI_API_KEY) or another admin key"
+}
+```
+
+Delete:
+
+```console
+$ curl -sS -X DELETE http://localhost:8080/v1/keys/robin \
+    -H "Authorization: Bearer $ROBIN_SECRET"
+```
+
+```json
+{
+  "error": "api key \"robin\" cannot delete itself; use the admin env key (MEMINI_API_KEY) or another admin key"
+}
+```
+
+The guard is narrow on purpose. The env key and dev mode authenticate with no
+principal, so "self" never matches them: they are the break-glass escape the
+409 points back at. And a named admin may still demote, disable, or delete a
+**different** admin key. That leaves the last-admin footgun open across two
+keys (below), which is a recoverable state, not one the guard prevents.
+
+### Rotate-self is allowed
+
+Rotation is the one self-targeting action that is **not** blocked.
+`POST /v1/keys/{name}/rotate` against your own key succeeds and returns the new
+secret, because rotation is a credential refresh handed back to the prover of
+the old secret, not a capability loss. Admin, home, default namespace, and
+disabled state all carry across the hash swap unchanged:
+
+```console
+$ curl -sS -X POST http://localhost:8080/v1/keys/robin/rotate \
+    -H "Authorization: Bearer $ROBIN_SECRET"
+```
+
+```json
+{
+  "name": "robin",
+  "home": "personal/robin",
+  "default_namespace": "acme",
+  "created_at": "2026-07-13T18:22:04Z",
+  "disabled": false,
+  "admin": true,
+  "source": "db",
+  "secret": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
+}
+```
+
+The old secret stops authenticating immediately, so a caller rotating the key
+it is signed in with must adopt the returned `secret` for its next request. The
+admin UI does this for you (it swaps the session token before any refetch); a
+script has to capture the new `secret` and use it going forward, or its very
+next call 401s.
+
+### The grant/revoke activity event
+
+Minting an admin key, or flipping the flag on an existing one, is a privileged
+act, so it is audited. Each grant or revoke writes an activity event (kind
+`settings`, reusing the settings-change event rather than adding a new kind)
+carrying the target key's name and its new state:
+
+```json
+{
+  "kind": "settings",
+  "detail": { "key_name": "ci-bot", "admin": true }
+}
+```
+
+It appears in `GET /v1/activity` and the UI's **Activity** view. A no-op PATCH
+(`admin: true` on a key that is already an admin) writes nothing; only a real
+change is recorded. Creating a plain (non-admin) key writes no event either.
+
+### A file with an admin human and non-admin agents
+
+`MEMINI_API_KEYS_FILE` carries the attribute as an `admin: true` YAML bool,
+defaulting to `false` when omitted. A realistic team file mixes one admin key
+per human with non-admin keys for every agent and CI runner:
+
+```yaml
+# api-keys.yaml, referenced by MEMINI_API_KEYS_FILE. SOPS-encrypt at rest.
+keys:
+  # A human operator. admin: true, so robin manages keys and edits server
+  # defaults from the UI or curl without ever needing the env key.
+  - name: robin
+    secret: "correct-horse-battery-staple"
+    home: personal/robin
+    default_namespace: acme
+    admin: true
+
+  # A second human, admin via a pre-computed hash so the secret never touches
+  # this file in plaintext (mint it elsewhere, paste only the sha256).
+  - name: kit
+    hash: "b9f195c5cc7ef6afadbfbc42892ad47d3b24c6bc94bb510c4564a90a14e8b799"
+    home: personal/kit
+    default_namespace: acme
+    admin: true
+
+  # A CI runner. NOT an admin: it reads and writes memories but cannot reach
+  # /v1/keys. admin defaults to false, so just leave it off.
+  - name: ci
+    secret: "another-secret-entirely"
+    default_namespace: acme
+
+  # A per-agent key, also non-admin, with its own behavior override.
+  - name: reviewer-bot
+    secret: "a-third-secret"
+    default_namespace: acme/phoenix
+    settings:
+      capture_turns: false
+      recall_limit: 5
+```
+
+Because file keys are immutable at runtime (every `/v1/keys` mutation against a
+file key returns `409`; see [Secret lifecycle](#secret-lifecycle)), you change a
+file key's admin state by editing the file and restarting, not through the API
+or UI.
+
+### The last-admin footgun and recovery
+
+The self-guard stops a single key from locking itself out, but it cannot stop
+**two** admins from demoting each other down to zero named admins, one call each.
+If that happens (or if you edit the last `admin: true` out of the keys file),
+`/v1/keys` is unreachable through the API and the UI: every named key is now a
+non-admin, so every request 403s. Two recovery paths always work, and neither
+goes through the gated surface:
+
+1. **The env break-glass key.** If `MEMINI_API_KEY` is set, present it as the
+   bearer. It authenticates with no principal, so the self-guard never applied
+   to it and it can re-grant admin to any key:
+
+   ```console
+   $ curl -sS -X PATCH http://localhost:8080/v1/keys/robin \
+       -H "Authorization: Bearer $MEMINI_API_KEY" -d '{"admin": true}'
+   ```
+
+2. **The `memini key` CLI.** It talks to the store directly and is never gated
+   by the admin rule, so it works even with no env key configured at all:
+
+   ```console
+   $ memini key add robin --admin   # re-mints robin's secret AND re-grants admin
+   ```
+
+   (This rotates robin's secret as a side effect; if you only want to re-grant
+   without a new secret, use the env key path above instead.)
+
+This is the same fail-closed philosophy as the bootstrap lockout
+([below](#bootstrapping-and-the-lockout)): key management is deliberately a
+surface a non-admin credential can never grant itself back into. Keep at least
+one of {an env key, CLI access to the store} on hand and the footgun is a
+five-second fix.
+
+### The metrics/healthz asymmetry
+
+Two operator surfaces authenticate **only** against the env `MEMINI_API_KEY`,
+never against a named admin key:
+
+- **`/metrics`** on the main HTTP port (when `MEMINI_METRICS_ADDR` is empty).
+- **`GET /healthz?verbose=1`**, whose per-dependency error detail is gated;
+  an absent or wrong token degrades to the plain `healthz` body rather than
+  erroring.
+
+This is deliberate. Both are gated at the HTTP server layer (`bearerAuth` /
+`validBearer`), which is upstream of the apiauth principal resolution and knows
+only the single env key, not the `api_keys` table or the file. A named admin key
+manages other keys and edits server defaults, but it does **not** pull `/metrics`
+or verbose `/healthz` with its own bearer. If you run named admins and want
+`/metrics`, either move it to its own unauthenticated in-cluster listener with
+`MEMINI_METRICS_ADDR` (the recommended shape; see
+[configuration.md](reference/configuration.md#memini_metrics_addr)) or set an env
+key for the scraper to use. The verbose `/healthz` detail is likewise an
+operator-only view, not something a per-person admin key is meant to unlock.
 
 ## Home binding vs default namespace: identity vs context
 
@@ -53,7 +391,7 @@ it silently ignores it and logs the mismatch once at debug level (`X-Memini-Home
 ignored: request key is bound to a home namespace`). Sending the header is
 harmless; it just never takes effect for a key with `home` set. An **unbound**
 key (no `home` configured) falls through to ordinary header-driven resolution,
-identical to the admin key.
+identical to the env key.
 
 **Worked example.** Key `kit` is created with `home: personal/kit` and
 `default_namespace: acme`. A client sends `X-Memini-Namespace: acme/phoenix`
@@ -76,13 +414,15 @@ namespace resolves to the key's `default_namespace`, `acme`.
 - **Rotation preserves unspecified fields.** Re-running `memini key add
 <name>` (or `POST /v1/keys/{name}/rotate`) against an existing name
   generates a fresh secret and hash but keeps `CreatedAt`, `home`,
-  `default_namespace`, and `Disabled` exactly as they were, unless a flag/field
-  is explicitly passed to change it. A key disabled during incident response
-  is never silently re-enabled by a later rotation — `--disabled=false` (or
-  `disabled: false` in the PATCH body) must be explicit.
+  `default_namespace`, `Disabled`, and `Admin` exactly as they were, unless a
+  flag/field is explicitly passed to change it. A key disabled during incident
+  response is never silently re-enabled by a later rotation, and an admin key
+  is never silently demoted by one: `--disabled=false` / `--admin=false` (or
+  `disabled: false` / `admin: false` in the PATCH body) must be explicit.
   `PATCH /v1/keys/{name}` follows the same preserve-unspecified contract for
-  updating `home`/`default_namespace`/`disabled`/`settings` without rotating
-  the secret — see [Per-key behavior settings](#per-key-behavior-settings)
+  updating `home`/`default_namespace`/`disabled`/`admin`/`settings` without
+  rotating the secret — see [The admin attribute](#the-admin-attribute) for the
+  admin field's self-guard and [Per-key behavior settings](#per-key-behavior-settings)
   below for what `settings` does.
 - **File keys are immutable via the API.** A key sourced from
   `MEMINI_API_KEYS_FILE` can't be rotated, disabled, or deleted through the CLI
@@ -96,18 +436,20 @@ A key's identity (`home`/`default_namespace`) is one axis; its **behavior**
 separate one, layered as built-in defaults ← the server's global defaults
 ← this key's own override. Three endpoints touch that per-key layer:
 
-| Endpoint                | Who can call it                                            | What it does                                                                                                                                         |
-| ----------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PATCH /v1/keys/{name}` | Admin only (see [Three kinds of key](#three-kinds-of-key)) | Sets or clears `settings` on any table-sourced key by name, alongside `home`/`default_namespace`/`disabled`.                                         |
-| `PUT /v1/self/settings` | The key itself (a **named** key only)                      | Full-replace of the caller's own `settings`. No merge/patch variant: `GET /v1/self`, edit the result, `PUT` it back.                                 |
-| `GET /v1/self`          | Any authenticated caller                                   | This key's identity plus its fully-resolved `settings` (every field present) and `settings_sources` (per-field `default`/`global`/`key` provenance). |
+| Endpoint                | Who can call it                                              | What it does                                                                                                                                         |
+| ----------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PATCH /v1/keys/{name}` | Admin only (see [The admin attribute](#the-admin-attribute)) | Sets or clears `settings` on any table-sourced key by name, alongside `home`/`default_namespace`/`disabled`/`admin`.                                 |
+| `PUT /v1/self/settings` | The key itself (a **named** key only)                        | Full-replace of the caller's own `settings`. No merge/patch variant: `GET /v1/self`, edit the result, `PUT` it back.                                 |
+| `GET /v1/self`          | Any authenticated caller                                     | This key's identity plus its fully-resolved `settings` (every field present) and `settings_sources` (per-field `default`/`global`/`key` provenance). |
 
 `PUT /v1/self/settings` is how a named key manages its own behavior without
-needing the admin key at all — the natural fit for "I want my own recall limit
-lower" without touching anyone else's. It 403s for the admin key and for dev
-mode (auth disabled): neither authenticates as a **named** principal, so
-there is no "self" to update — use `PUT /v1/settings/defaults` for the global
-layer instead (see [scopes.md](scopes.md) and
+needing an admin credential at all — the natural fit for "I want my own recall
+limit lower" without touching anyone else's. A **named** admin key can still use
+it (it is a named principal like any other), so admins are not forced to manage
+their own settings through the defaults layer. It 403s only for the env
+break-glass key and for dev mode (auth disabled): neither authenticates as a
+**named** principal, so there is no "self" to update — use
+`PUT /v1/settings/defaults` for the global layer instead (see [scopes.md](scopes.md) and
 [env-vars.md](reference/env-vars.md#4-behavior-settings-layered-server-data)
 for how the layers stack). It 409s for a `MEMINI_API_KEYS_FILE`-sourced key,
 matching every other file-key mutation: that key's `settings` comes from the
@@ -158,7 +500,9 @@ keys:
 ```
 
 Each entry needs a unique `name` and **exactly one** of `hash` or `secret`;
-`home`/`default_namespace`/`disabled`/`settings` are optional. Validation is
+`home`/`default_namespace`/`disabled`/`admin`/`settings` are optional (`admin`
+defaults to `false`; see [The admin attribute](#the-admin-attribute)).
+Validation is
 **fail-loud** at boot: malformed YAML, a missing name, both or neither of
 `hash`/`secret`, a hash that isn't 32 bytes of hex, a duplicate name, two
 entries sharing a secret, an invalid `home`/`default_namespace`, or a
@@ -185,41 +529,63 @@ manifests repo at all.
 With **no `MEMINI_API_KEY` set** and **no keys yet** (an empty `api_keys`
 table and no `MEMINI_API_KEYS_FILE`), the server runs in dev/bootstrap mode:
 every request is allowed unauthenticated, including `/v1/keys` itself. This is
-the intended way to create your first key from the UI: open the **Keys**
-view, create a key, and auth is enforced immediately afterward (no cache lag —
-see [Revocation lag](#revocation-lag) below for the one caveat).
+the intended way to create your first key.
+
+**Create the first key with `admin: true`.** In dev mode there is no other
+admin around to promote it afterward, so the first key has to arrive already
+able to manage keys. The admin UI knows this: in dev mode its create form
+**defaults the admin checkbox to checked**, and shows an inline warning if you
+uncheck it. On the CLI or curl, pass the flag yourself:
+
+```console
+$ memini key add robin --home personal/robin --admin
+```
+
+The moment that key exists, auth turns on (no cache lag through the running
+server itself, which invalidates its bootstrap cache on the write; see
+[Revocation lag](#revocation-lag) for the one CLI-vs-server caveat). From then
+on only an admin credential reaches `/v1/keys`, and robin is one.
 
 > [!WARNING]
-> **Post-bootstrap lockout.** Once that first key exists and no
-> `MEMINI_API_KEY` (admin key) is configured, `/v1/keys` becomes unreachable
-> through REST or the UI: any named key gets a 403 ("admin key required"),
-> and a request with no token at all is now rejected too, since the table is
-> no longer empty. There is no way back into key management through the API
-> at that point. This is fail-closed by design — key management is
-> deliberately an admin-only surface, never something a named credential can
-> grant itself. Avoid it by either setting `MEMINI_API_KEY` before or
-> immediately after creating the first key, or by managing keys entirely
-> through the `memini key` CLI (which talks to the store directly and is
-> never gated by this rule) if you don't want to run an admin key at all.
+> **The non-admin-first-key lockout.** If you create the first key **without**
+> admin, and no `MEMINI_API_KEY` is configured, `/v1/keys` becomes unreachable
+> through REST and the UI: that key is a non-admin, so it gets a `403`
+> (`"admin credential required: ..."`), and a request with no token is rejected
+> too now that the table is non-empty. There is no way back in through the API.
+> This is fail-closed by design: key management is never something a non-admin
+> credential can grant itself. Recover exactly as for
+> [the last-admin footgun](#the-last-admin-footgun-and-recovery) above, with the
+> env break-glass key or the `memini key` CLI
+> (`memini key add <name> --admin`), which talks to the store directly and is
+> never gated by this rule.
+
+The env `MEMINI_API_KEY` is the **break-glass** answer to both lockouts. Set it
+and you always hold a principal-less admin credential the self-guard can never
+lock out, independent of whatever named admins exist. You do not have to run
+one, since a deployment can live entirely on named admin keys minted through the
+CLI, but keeping one configured (or keeping CLI access to the store) is what
+turns either lockout into a five-second fix rather than a rebuild.
 
 ## Attribution
 
 A memory written by a request authenticated with a **named** key (table or
-file) stamps that key's name into `metadata.author`, unless the caller
-already set `metadata.author` explicitly on the write — the stamp only fills
-an absence, it never overwrites an explicit value. The **admin** key
-authenticates with no principal at all, so it never stamps an author. This
-applies uniformly across the REST and MCP write paths.
+file, admin or not) stamps that key's name into `metadata.author`, unless the
+caller already set `metadata.author` explicitly on the write — the stamp only
+fills an absence, it never overwrites an explicit value. The env break-glass key
+and dev mode authenticate with no principal at all, so they never stamp an
+author. The admin _attribute_ makes no difference here: a named admin key stamps
+its name exactly like any other named key. This applies uniformly across the
+REST and MCP write paths.
 
 ## Knobs
 
-| Knob                          | Default | Description                                                                                                                                                                                                                                                                        |
-| ----------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MEMINI_API_KEY`              | —       | The **admin/bootstrap key**: a bearer token that authenticates with no principal at all, required as the highest-precedence check, and the only credential that can manage other keys via `/v1/keys` (see [Bootstrapping](#bootstrapping-and-the-lockout)). Also gates `/metrics`. |
-| `MEMINI_API_KEYS_FILE`        | —       | Path to a declarative YAML file of named keys, loaded once at boot (fail-loud validation). See [Declarative file](#declarative-file-memini_api_keys_file).                                                                                                                         |
-| `home` (per-key)              | unbound | The key's bound personal namespace — identity, overrides `X-Memini-Home`. See [Home binding vs default namespace](#home-binding-vs-default-namespace-identity-vs-context).                                                                                                         |
-| `default_namespace` (per-key) | unset   | The namespace applied when the request sends no `X-Memini-Namespace` header — context, the header always wins. Same section as above.                                                                                                                                              |
-| `disabled` (per-key)          | `false` | Rejects the key outright at auth time without deleting it (e.g. incident response, mid-rotation holding pattern).                                                                                                                                                                  |
+| Knob                          | Default | Description                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEMINI_API_KEY`              | —       | The **break-glass admin/bootstrap key**: a bearer token that authenticates with no principal, sits at the highest-precedence check, and can manage other keys via `/v1/keys`. No longer the _only_ admin credential (any key with `admin: true` qualifies; see [The admin attribute](#the-admin-attribute)), but the one the self-guard can never lock out. Also gates `/metrics` and verbose `/healthz`, which named admin keys do not. |
+| `MEMINI_API_KEYS_FILE`        | —       | Path to a declarative YAML file of named keys, loaded once at boot (fail-loud validation). See [Declarative file](#declarative-file-memini_api_keys_file).                                                                                                                                                                                                                                                                               |
+| `home` (per-key)              | unbound | The key's bound personal namespace — identity, overrides `X-Memini-Home`. See [Home binding vs default namespace](#home-binding-vs-default-namespace-identity-vs-context).                                                                                                                                                                                                                                                               |
+| `default_namespace` (per-key) | unset   | The namespace applied when the request sends no `X-Memini-Namespace` header — context, the header always wins. Same section as above.                                                                                                                                                                                                                                                                                                    |
+| `disabled` (per-key)          | `false` | Rejects the key outright at auth time without deleting it (e.g. incident response, mid-rotation holding pattern).                                                                                                                                                                                                                                                                                                                        |
 
 ## Revocation lag
 

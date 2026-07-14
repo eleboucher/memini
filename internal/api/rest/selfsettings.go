@@ -85,7 +85,7 @@ func (h *Server) PutSelfSettings(w http.ResponseWriter, r *http.Request) {
 	// Settings never affect the auth path (GetAPIKeyByHash ignores them) and
 	// resolveSettingsFor reads them fresh from the store on every request, so —
 	// unlike the /v1/keys mutations — there is no auth cache to invalidate.
-	h.svc.LogConfigEvent(r.Context(), store.EventSettings, "", map[string]any{"key_name": p.Name, eventDetailLayer: settingsSourceKey})
+	h.svc.LogConfigEvent(r.Context(), store.EventSettings, "", map[string]any{eventDetailKeyName: p.Name, eventDetailLayer: settingsSourceKey})
 
 	resp, err := h.selfResponse(r.Context(), r, &p)
 	if err != nil {

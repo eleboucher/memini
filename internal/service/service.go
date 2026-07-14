@@ -1166,7 +1166,12 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		return nil, fmt.Errorf("remember: store: %w", err)
 	}
 
-	s.logWriteEvent(ctx, m, existing)
+	// Record what the write decided: its final tier always, plus the outcome
+	// flags available here — the predecessor this write auto-supersedes (set
+	// below), and any near-duplicate merge hint the dedup gate surfaced. Built
+	// by a free function so its branches don't count against Remember's
+	// cyclomatic budget (already at the limit).
+	s.logWriteEvent(ctx, m, existing, writeOutcomeDetail(m.Tier, supersedeID, in.MergeHint))
 
 	// Auto-supersede: now that the replacement is durably stored, tombstone the
 	// near-duplicate in the background. Deferred to here so a failed Upsert above
@@ -1672,7 +1677,14 @@ func (s *Service) invalidate(ctx context.Context, m *memory.Memory, newID string
 type RecallInput struct {
 	Namespace string
 	Query     string
-	Tiers     []memory.Tier
+	// Source is the "why" behind this recall — which integration or code path
+	// asked for it (documented vocabulary: "pretool", "session_start", "mcp",
+	// "ui", "api", "answer", "doctor"). It is recorded verbatim in the recall
+	// event's detail (including the zero-hit sentinel), never validated, so an
+	// unknown value from a fail-soft client is logged rather than rejected.
+	// "" means the caller supplied none (the event omits it).
+	Source string
+	Tiers  []memory.Tier
 	// Levels restricts recall to memories whose derivation level matches one of the
 	// listed values; empty means no level constraint.
 	Levels []memory.Level

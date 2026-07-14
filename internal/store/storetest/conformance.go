@@ -250,6 +250,13 @@ func testEventLog(t *testing.T, st store.Store, _ int) {
 // eventScore is the composite score the seeded recall's top hit was served with.
 const eventScore = 0.75
 
+// eventActor / eventActorKind are the named key the seeded recall is attributed
+// to, and its kind (see store.Event.ActorKind).
+const (
+	eventActor     = "alice"
+	eventActorKind = "key"
+)
+
 // seedEvents writes the fixture the event-log subtests read: one recall serving
 // two memories of different tiers (two rows, one op_id, one timestamp), a later
 // write in the same namespace, and one event in another namespace.
@@ -263,23 +270,27 @@ func seedEvents(t *testing.T, els store.EventLogStore, ns, other string, base ti
 			OpID: opRecall, Kind: store.EventRecall, Namespace: ns, Query: eventQuery,
 			MemoryID: "m1", MemoryNS: ns, MemoryTier: memory.TierSemantic,
 			MemorySummary: "we chose sqlite", Rank: 1, Score: &score,
-			Detail: map[string]any{"degraded": "vector"}, CreatedAt: base,
+			Detail: map[string]any{"degraded": "vector"},
+			Actor:  eventActor, ActorKind: eventActorKind, CreatedAt: base,
 		},
 		{
 			OpID: opRecall, Kind: store.EventRecall, Namespace: ns, Query: eventQuery,
 			MemoryID: "m2", MemoryNS: ns, MemoryTier: memory.TierEpisodic,
-			MemorySummary: "sqlite benchmark", Rank: 2, CreatedAt: base,
+			MemorySummary: "sqlite benchmark", Rank: 2,
+			Actor: eventActor, ActorKind: eventActorKind, CreatedAt: base,
 		},
 	}); err != nil {
 		t.Fatalf("append recall: %v", err)
 	}
+	// The admin env key carries a kind but no name.
 	if err := els.AppendEvents(ctx, []store.Event{{
 		OpID: "op-remember", Kind: store.EventRemember, Namespace: ns,
 		MemoryID: "m3", MemoryNS: ns, MemoryTier: memory.TierSemantic,
-		MemorySummary: "a new fact", CreatedAt: base.Add(time.Minute),
+		MemorySummary: "a new fact", ActorKind: "env", CreatedAt: base.Add(time.Minute),
 	}}); err != nil {
 		t.Fatalf("append remember: %v", err)
 	}
+	// A legacy row predating attribution: both actor fields empty.
 	if err := els.AppendEvents(ctx, []store.Event{{
 		OpID: "op-elsewhere", Kind: store.EventGet, Namespace: other,
 		MemoryID: "m4", MemoryNS: other, CreatedAt: base.Add(2 * time.Minute),
@@ -343,6 +354,19 @@ func testEventRoundTrip(t *testing.T, els store.EventLogStore, ns string, base t
 	if got := top.Detail["degraded"]; got != "vector" {
 		t.Fatalf("detail round trip: degraded = %v, want %q", got, "vector")
 	}
+	// Attribution round-trips: a named key carries name+kind.
+	if top.Actor != eventActor || top.ActorKind != eventActorKind {
+		t.Fatalf("actor round trip: got (%q, %q), want (alice, key)", top.Actor, top.ActorKind)
+	}
+	// A legacy row (seeded with both actor fields empty) round-trips as the ''
+	// default, not null — "unknown", cleanly distinguishable from a named actor.
+	legacy := mustListEvents(t, els, store.EventFilter{Namespaces: []string{ns + "-other"}})
+	if len(legacy) != 1 {
+		t.Fatalf("expected 1 legacy row, got %d", len(legacy))
+	}
+	if legacy[0].Actor != "" || legacy[0].ActorKind != "" {
+		t.Fatalf("legacy row actor = (%q, %q), want both empty", legacy[0].Actor, legacy[0].ActorKind)
+	}
 	if !top.CreatedAt.Equal(base) {
 		t.Fatalf("created_at round trip: got %s, want %s", top.CreatedAt, base)
 	}
@@ -404,6 +428,22 @@ func testEventFilters(t *testing.T, els store.EventLogStore, ns, other string, b
 	narrowed := mustListEvents(t, els, store.EventFilter{Namespaces: []string{other}})
 	if len(narrowed) != 1 || narrowed[0].Namespace != other {
 		t.Fatalf("namespaces=[%s] returned %+v, want only that namespace's event", other, narrowed)
+	}
+
+	// The actor filter selects only the named key's rows — both recall rows,
+	// none of the env/legacy ones. It matches the name exactly, so the
+	// nameless env and legacy rows are never selected.
+	byActor := mustListEvents(t, els, store.EventFilter{Actor: eventActor})
+	if len(byActor) != 2 {
+		t.Fatalf("actor filter returned %d rows, want the 2 recall rows", len(byActor))
+	}
+	for _, e := range byActor {
+		if e.Actor != eventActor || e.Kind != store.EventRecall {
+			t.Fatalf("actor filter leaked a non-alice row: %+v", e)
+		}
+	}
+	if got := mustListEvents(t, els, store.EventFilter{Actor: "nobody"}); len(got) != 0 {
+		t.Fatalf("actor=nobody matched %d rows, want none", len(got))
 	}
 }
 
@@ -2092,6 +2132,158 @@ func testAPIKeys(t *testing.T, st store.Store, dims int) {
 	t.Run("DuplicateHashDifferentNameErrors", func(t *testing.T) { testAPIKeyDuplicateHash(t, ks, ns) })
 	t.Run("DefaultNSRoundTrip", func(t *testing.T) { testAPIKeyDefaultNSRoundTrip(t, ks, ns) })
 	t.Run("RenameNamespaces", func(t *testing.T) { testAPIKeyRenameNamespaces(t, ks, ns) })
+	t.Run("AdminRoundTrip", func(t *testing.T) { testAPIKeyAdminRoundTrip(t, ks, ns) })
+	t.Run("AdminSurvivesRenameNamespaces", func(t *testing.T) { testAPIKeyAdminSurvivesRename(t, ks, ns) })
+	t.Run("AdminPreservedOnUpsertWithZeroCreatedAt", func(t *testing.T) { testAPIKeyAdminPreservedOnUpsert(t, ks, ns) })
+}
+
+// testAPIKeyAdminRoundTrip covers store.APIKey.Admin round-tripping through
+// PutAPIKey/GetAPIKeyByHash/ListAPIKeys for both values — true (the key
+// authenticates the /v1/keys and /v1/settings/defaults surfaces) and false
+// (the sibling case to Disabled's own false-by-default round trip).
+func testAPIKeyAdminRoundTrip(t *testing.T, ks store.APIKeyStore, ns string) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	adminName := ns + "-admin-true"
+	admin := store.APIKey{Name: adminName, Hash: apiKeyHash(adminName), CreatedAt: now, Admin: true}
+	if err := ks.PutAPIKey(ctx, admin); err != nil {
+		t.Fatalf("put admin=true: %v", err)
+	}
+	got, err := ks.GetAPIKeyByHash(ctx, admin.Hash)
+	if err != nil {
+		t.Fatalf("get by hash (admin=true): %v", err)
+	}
+	if got == nil || !got.Admin {
+		t.Fatalf("admin=true round-trip = %+v, want Admin=true", got)
+	}
+
+	nonAdminName := ns + "-admin-false"
+	nonAdmin := store.APIKey{Name: nonAdminName, Hash: apiKeyHash(nonAdminName), CreatedAt: now, Admin: false}
+	if err := ks.PutAPIKey(ctx, nonAdmin); err != nil {
+		t.Fatalf("put admin=false: %v", err)
+	}
+	got, err = ks.GetAPIKeyByHash(ctx, nonAdmin.Hash)
+	if err != nil {
+		t.Fatalf("get by hash (admin=false): %v", err)
+	}
+	if got == nil || got.Admin {
+		t.Fatalf("admin=false round-trip = %+v, want Admin=false", got)
+	}
+
+	// ListAPIKeys carries it too.
+	all, err := ks.ListAPIKeys(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, k := range all {
+		switch k.Name {
+		case adminName:
+			seen[adminName] = true
+			if !k.Admin {
+				t.Fatalf("list: %q admin = false, want true", adminName)
+			}
+		case nonAdminName:
+			seen[nonAdminName] = true
+			if k.Admin {
+				t.Fatalf("list: %q admin = true, want false", nonAdminName)
+			}
+		}
+	}
+	if !seen[adminName] || !seen[nonAdminName] {
+		t.Fatalf("list missing one of the admin round-trip keys: %+v", all)
+	}
+}
+
+// testAPIKeyAdminSurvivesRename covers store.APIKey.Admin surviving
+// RenameAPIKeyNamespaces (which only touches HomeNS/DefaultNS) — the same
+// precedent as testAPIKeySettingsSurviveRename for the per-key Settings
+// override.
+func testAPIKeyAdminSurvivesRename(t *testing.T, ks store.APIKeyStore, ns string) {
+	ctx := context.Background()
+	name := ns + "-admin-rename"
+	from := ns + "-admin-rename-old"
+	to := ns + "-admin-rename-new"
+	k := store.APIKey{
+		Name:      name,
+		Hash:      apiKeyHash(name),
+		HomeNS:    from,
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+		Admin:     true,
+	}
+	if err := ks.PutAPIKey(ctx, k); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if err := ks.RenameAPIKeyNamespaces(ctx, from, to); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	got, err := ks.GetAPIKeyByHash(ctx, k.Hash)
+	if err != nil {
+		t.Fatalf("get by hash after rename: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("key vanished after rename")
+	}
+	if got.HomeNS != to {
+		t.Fatalf("home_ns after rename = %q, want %q", got.HomeNS, to)
+	}
+	if !got.Admin {
+		t.Fatalf("admin did not survive rename: %+v, want Admin=true", got)
+	}
+}
+
+// testAPIKeyAdminPreservedOnUpsert covers store.APIKey.Admin round-tripping
+// through the upsert-with-zero-CreatedAt path (rotation): the manual
+// read-then-conditional-write CreatedAt-preserve logic must not accidentally
+// drop Admin from the INSERT/ON CONFLICT column list, in either direction
+// (false->true and true->false), while CreatedAt itself is preserved from
+// the original row.
+func testAPIKeyAdminPreservedOnUpsert(t *testing.T, ks store.APIKeyStore, ns string) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	// false -> true across a zero-CreatedAt upsert.
+	nameA := ns + "-admin-upsert-a"
+	original := store.APIKey{Name: nameA, Hash: apiKeyHash(nameA + "-v1"), CreatedAt: now, Admin: false}
+	if err := ks.PutAPIKey(ctx, original); err != nil {
+		t.Fatalf("put original (a): %v", err)
+	}
+	rotatedA := store.APIKey{Name: nameA, Hash: apiKeyHash(nameA + "-v2"), Admin: true}
+	if err := ks.PutAPIKey(ctx, rotatedA); err != nil {
+		t.Fatalf("put rotated (a): %v", err)
+	}
+	got, err := ks.GetAPIKeyByHash(ctx, rotatedA.Hash)
+	if err != nil {
+		t.Fatalf("get by hash after rotation (a): %v", err)
+	}
+	if got == nil || !got.Admin {
+		t.Fatalf("admin after false->true upsert = %+v, want Admin=true", got)
+	}
+	if !got.CreatedAt.Equal(now) {
+		t.Fatalf("created_at after rotation (a) = %v, want preserved %v", got.CreatedAt, now)
+	}
+
+	// true -> false across a zero-CreatedAt upsert.
+	nameB := ns + "-admin-upsert-b"
+	originalB := store.APIKey{Name: nameB, Hash: apiKeyHash(nameB + "-v1"), CreatedAt: now, Admin: true}
+	if err := ks.PutAPIKey(ctx, originalB); err != nil {
+		t.Fatalf("put original (b): %v", err)
+	}
+	rotatedB := store.APIKey{Name: nameB, Hash: apiKeyHash(nameB + "-v2"), Admin: false}
+	if err := ks.PutAPIKey(ctx, rotatedB); err != nil {
+		t.Fatalf("put rotated (b): %v", err)
+	}
+	got, err = ks.GetAPIKeyByHash(ctx, rotatedB.Hash)
+	if err != nil {
+		t.Fatalf("get by hash after rotation (b): %v", err)
+	}
+	if got == nil || got.Admin {
+		t.Fatalf("admin after true->false upsert = %+v, want Admin=false", got)
+	}
+	if !got.CreatedAt.Equal(now) {
+		t.Fatalf("created_at after rotation (b) = %v, want preserved %v", got.CreatedAt, now)
+	}
 }
 
 // testAPIKeyDefaultNSRoundTrip covers PutAPIKey/GetAPIKeyByHash/ListAPIKeys
@@ -2223,6 +2415,7 @@ func testAPIKeyRoundTrip(t *testing.T, ks store.APIKeyStore, ns string) {
 		DefaultNS: ns + "-default",
 		CreatedAt: now,
 		Disabled:  true,
+		Admin:     true,
 	}
 	if err := ks.PutAPIKey(ctx, k); err != nil {
 		t.Fatalf("put api key: %v", err)
@@ -2235,7 +2428,7 @@ func testAPIKeyRoundTrip(t *testing.T, ks store.APIKeyStore, ns string) {
 		t.Fatalf("get by hash: got nil, want a key")
 	}
 	if got.Name != k.Name || got.Hash != k.Hash || got.HomeNS != k.HomeNS ||
-		got.DefaultNS != k.DefaultNS || got.Disabled != k.Disabled {
+		got.DefaultNS != k.DefaultNS || got.Disabled != k.Disabled || got.Admin != k.Admin {
 		t.Fatalf("round-trip mismatch: %+v, want %+v", got, k)
 	}
 	if !got.CreatedAt.Equal(k.CreatedAt) {

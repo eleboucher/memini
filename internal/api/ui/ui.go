@@ -5,9 +5,7 @@
 package ui
 
 import (
-	"bytes"
 	"embed"
-	"html"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -22,13 +20,15 @@ var assets embed.FS
 // from the embedded filesystem; everything else falls back to index.html so
 // client-side routing works on deep links and reloads.
 //
-// The shell is intentionally public (no bearer auth): when MEMINI_API_KEY is
-// set the API it calls (/v1) enforces the token. apiKey, when non-empty, is
-// injected into the shell so the same-origin UI authenticates without the
-// operator pasting it — which exposes the key to anyone who can load the page,
-// so only set it where reaching the UI already implies trust.
-func Mount(r chi.Router, apiKey string) error {
-	h, err := Handler(apiKey)
+// The shell is intentionally public (no bearer auth) and carries no credential
+// of its own: it never contains MEMINI_API_KEY. The SPA authenticates in-app —
+// the operator signs in once at the Login gate, the token is verified against
+// GET /v1/self and persisted in the browser's localStorage, and every /v1 call
+// carries it as a bearer. Serving the shell to an anonymous GET / therefore
+// leaks nothing; the API it calls still enforces the token when MEMINI_API_KEY
+// is set.
+func Mount(r chi.Router) error {
+	h, err := Handler()
 	if err != nil {
 		return err
 	}
@@ -38,9 +38,10 @@ func Mount(r chi.Router, apiKey string) error {
 
 // Handler returns the SPA handler that Mount installs as a catch-all. It is
 // exposed so the server can serve the shell on a dedicated listener (see
-// MEMINI_UI_ADDR) instead of the main API port, keeping the token-embedding
-// shell off any port that carries the token-free API.
-func Handler(apiKey string) (http.Handler, error) {
+// MEMINI_UI_ADDR) instead of the main API port. The shell is token-free either
+// way; the dedicated listener also serves /v1 so the same-origin SPA can reach
+// the API it authenticates against.
+func Handler() (http.Handler, error) {
 	dist, err := fs.Sub(assets, "dist")
 	if err != nil {
 		return nil, err
@@ -49,7 +50,6 @@ func Handler(apiKey string) (http.Handler, error) {
 	if err != nil {
 		index = []byte(placeholder)
 	}
-	index = injectToken(index, apiKey)
 	fileServer := http.FileServer(http.FS(dist))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -87,23 +87,6 @@ func Handler(apiKey string) (http.Handler, error) {
 func exists(fsys fs.FS, name string) bool {
 	info, err := fs.Stat(fsys, name)
 	return err == nil && !info.IsDir()
-}
-
-// injectToken embeds apiKey into the shell as a <meta> tag the SPA reads to seed
-// its bearer token. It is inserted before </head> when present (otherwise
-// prepended). The value is HTML-attribute escaped. A blank key is a no-op.
-func injectToken(index []byte, apiKey string) []byte {
-	if apiKey == "" {
-		return index
-	}
-	tag := []byte(`<meta name="memini-token" content="` + html.EscapeString(apiKey) + `">`)
-	if i := bytes.Index(index, []byte("</head>")); i >= 0 {
-		out := make([]byte, 0, len(index)+len(tag))
-		out = append(out, index[:i]...)
-		out = append(out, tag...)
-		return append(out, index[i:]...)
-	}
-	return append(tag, index...)
 }
 
 // placeholder is served when the UI bundle was not built into the binary.

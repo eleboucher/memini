@@ -144,13 +144,17 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 			home_ns    text NOT NULL DEFAULT '',
 			default_ns text NOT NULL DEFAULT '',
 			created_at timestamptz NOT NULL,
-			disabled   boolean NOT NULL DEFAULT false
+			disabled   boolean NOT NULL DEFAULT false,
+			admin      boolean NOT NULL DEFAULT false
 		)`,
 		// Backfill default_ns on databases whose api_keys table predates it.
 		`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS default_ns text NOT NULL DEFAULT ''`,
 		// api_keys.settings holds the per-key store.ClientSettings override
 		// (config-handshake redesign) as jsonb; '{}' means no override.
 		`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS settings jsonb NOT NULL DEFAULT '{}'`,
+		// api_keys.admin holds the per-key admin capability (admin-keys
+		// redesign); see store.APIKey.Admin's doc.
+		`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS admin boolean NOT NULL DEFAULT false`,
 		// memory_events is the activity log (see store.EventLogStore): one row
 		// per (operation, memory), rows of one operation sharing op_id. The
 		// memory_* columns are a snapshot, not a join — they keep the feed a
@@ -168,8 +172,17 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 			rank           integer NOT NULL DEFAULT 0,
 			score          double precision,
 			detail         jsonb NOT NULL DEFAULT '{}',
+			actor          text NOT NULL DEFAULT '',
+			actor_kind     text NOT NULL DEFAULT '',
 			created_at     timestamptz NOT NULL
 		)`,
+		// memory_events.actor/actor_kind carry activity attribution (admin-keys
+		// T5): who performed each operation. Added after the table first
+		// shipped, so ADD COLUMN IF NOT EXISTS for databases created before
+		// attribution existed; a legacy row keeps the '' default, which renders
+		// as "unknown" (see store.Event).
+		`ALTER TABLE memory_events ADD COLUMN IF NOT EXISTS actor text NOT NULL DEFAULT ''`,
+		`ALTER TABLE memory_events ADD COLUMN IF NOT EXISTS actor_kind text NOT NULL DEFAULT ''`,
 		// The read path is always newest-first, optionally narrowed by namespace;
 		// the (created_at DESC, id DESC) tail matches ListEvents' ordering so the
 		// keyset cursor walks the index.
@@ -906,12 +919,12 @@ func (s *Store) PutAPIKey(ctx context.Context, k store.APIKey) error {
 		return fmt.Errorf("postgres: marshal api key settings: %w", err)
 	}
 	_, err = tx.Exec(ctx,
-		`INSERT INTO api_keys (name, key_hash, home_ns, default_ns, created_at, disabled, settings)
-		VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+		`INSERT INTO api_keys (name, key_hash, home_ns, default_ns, created_at, disabled, settings, admin)
+		VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
 		ON CONFLICT (name) DO UPDATE SET
 			key_hash=EXCLUDED.key_hash, home_ns=EXCLUDED.home_ns, default_ns=EXCLUDED.default_ns,
-			created_at=EXCLUDED.created_at, disabled=EXCLUDED.disabled, settings=EXCLUDED.settings`,
-		k.Name, k.Hash, k.HomeNS, k.DefaultNS, created, k.Disabled, string(settingsJSON))
+			created_at=EXCLUDED.created_at, disabled=EXCLUDED.disabled, settings=EXCLUDED.settings, admin=EXCLUDED.admin`,
+		k.Name, k.Hash, k.HomeNS, k.DefaultNS, created, k.Disabled, string(settingsJSON), k.Admin)
 	if err != nil {
 		return fmt.Errorf("postgres: put api key: %w", err)
 	}
@@ -931,7 +944,7 @@ func (s *Store) DeleteAPIKey(ctx context.Context, name string) (bool, error) {
 // ListAPIKeys returns every key ordered by name.
 func (s *Store) ListAPIKeys(ctx context.Context) ([]store.APIKey, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled, settings FROM api_keys ORDER BY name`)
+		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled, settings, admin FROM api_keys ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: list api keys: %w", err)
 	}
@@ -942,7 +955,7 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]store.APIKey, error) {
 // does.
 func (s *Store) GetAPIKeyByHash(ctx context.Context, hash string) (*store.APIKey, error) {
 	row := s.pool.QueryRow(ctx,
-		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled, settings FROM api_keys WHERE key_hash=$1`, hash)
+		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled, settings, admin FROM api_keys WHERE key_hash=$1`, hash)
 	k, err := scanAPIKey(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

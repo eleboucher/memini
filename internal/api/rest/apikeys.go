@@ -19,22 +19,24 @@ func (h *Server) keyStore() (store.APIKeyStore, bool) {
 	return ks, ok
 }
 
-// requireAdminOrDev enforces the K3b admin gating rule (binding): /v1/keys
-// is reachable only when the request authenticated with the admin env key,
-// or when auth is disabled entirely (dev/bootstrap mode). Both of those
-// cases resolve through apiauth.Config.Authenticate with NO principal
-// stored on the request context (see authMiddleware) — the admin key
-// authenticates with a nil principal exactly like dev mode does, and that
-// existing signal already distinguishes exactly what this gate needs: a
-// NAMED principal (table or file key) means the caller authenticated with
-// something other than the admin key, so it is refused regardless of which
-// key it is. Key management is an admin-only surface, not something a named
-// credential can grant itself — writes the 403 and returns false when the
-// caller must stop.
-func requireAdminOrDev(w http.ResponseWriter, r *http.Request) bool {
-	if _, ok := principalFromContext(r.Context()); ok {
+// requireAdmin enforces the admin gating rule for the admin-only surfaces
+// (/v1/keys CRUD and /v1/settings/defaults): the caller must hold an admin
+// credential. Admin is now a per-key capability, not the mere absence of a
+// principal. Three classes pass:
+//   - the admin env key and dev/bootstrap mode, which both resolve with NO
+//     principal on the request context (see authMiddleware) — the nil
+//     principal is still the admin/dev signal, unchanged;
+//   - a NAMED principal (table or file key) whose Admin flag is set.
+//
+// A named principal without admin is the only refusal — key management is no
+// longer a surface a named credential can never reach, only one a non-admin
+// named credential cannot. Writes the 403 and returns false when the caller
+// must stop; the message is deliberately different from the old
+// "admin key required" so stale out-of-tree matchers fail loudly.
+func requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if p, ok := principalFromContext(r.Context()); ok && !p.Admin {
 		httputil.Error(w, http.StatusForbidden,
-			"admin key required: /v1/keys manages API keys and is not reachable with a named API key")
+			"admin credential required: this endpoint needs the admin env key (MEMINI_API_KEY) or an API key with admin=true")
 		return false
 	}
 	return true
@@ -49,7 +51,7 @@ func requireAdminOrDev(w http.ResponseWriter, r *http.Request) bool {
 // row), so emitting the Go zero time would render as a nonsensical
 // "0001-01-01" in the UI rather than being recognizably absent.
 func apiKeyModel(k store.APIKey, source ApiKeySource) ApiKey {
-	out := ApiKey{Name: k.Name, Disabled: k.Disabled, Source: source}
+	out := ApiKey{Name: k.Name, Disabled: k.Disabled, Admin: k.Admin, Source: source}
 	if !k.CreatedAt.IsZero() {
 		out.CreatedAt = &k.CreatedAt
 	}
@@ -74,7 +76,7 @@ func apiKeyModel(k store.APIKey, source ApiKeySource) ApiKey {
 // always non-zero here — but the same nil-when-zero guard is applied for
 // consistency with apiKeyModel.
 func apiKeyWithSecretModel(k store.APIKey, source ApiKeySource, secret string) ApiKeyWithSecret {
-	out := ApiKeyWithSecret{Name: k.Name, Disabled: k.Disabled, Source: source, Secret: secret}
+	out := ApiKeyWithSecret{Name: k.Name, Disabled: k.Disabled, Admin: k.Admin, Source: source, Secret: secret}
 	if !k.CreatedAt.IsZero() {
 		out.CreatedAt = &k.CreatedAt
 	}
@@ -93,9 +95,9 @@ func apiKeyWithSecretModel(k store.APIKey, source ApiKeySource, secret string) A
 
 // ListApiKeys implements GET /v1/keys: every table key (source=db) plus
 // every declaratively managed file key (source=file, K2b) — never a secret
-// or hash. Admin-gated, see requireAdminOrDev.
+// or hash. Admin-gated, see requireAdmin.
 func (h *Server) ListApiKeys(w http.ResponseWriter, r *http.Request) {
-	if !requireAdminOrDev(w, r) {
+	if !requireAdmin(w, r) {
 		return
 	}
 	ks, ok := h.keyStore()
@@ -157,7 +159,7 @@ func normalizeOptionalNamespace(ns string) (string, error) {
 // secret exactly once alongside the key's metadata. Admin-gated. 409 if the
 // name is already taken by a table OR file key.
 func (h *Server) CreateApiKey(w http.ResponseWriter, r *http.Request) {
-	if !requireAdminOrDev(w, r) {
+	if !requireAdmin(w, r) {
 		return
 	}
 	ks, ok := h.keyStore()
@@ -220,6 +222,7 @@ func (h *Server) CreateApiKey(w http.ResponseWriter, r *http.Request) {
 		HomeNS:    home,
 		DefaultNS: defaultNS,
 		Disabled:  deref(req.Disabled),
+		Admin:     deref(req.Admin),
 		// CreatedAt intentionally left zero: PutAPIKey stamps "now" for a
 		// brand-new row (store.APIKeyStore.PutAPIKey's doc).
 	}
@@ -232,6 +235,11 @@ func (h *Server) CreateApiKey(w http.ResponseWriter, r *http.Request) {
 	// instead of riding apiauth's ~10s table-emptiness cache — see
 	// apiauth.Config.Invalidate's doc.
 	h.auth.keyAuth.Invalidate()
+	// Minting an admin credential is a privileged act worth auditing, the same
+	// way a settings edit is; a plain key carries no such event.
+	if key.Admin {
+		h.logAdminFlagEvent(r.Context(), name, true)
+	}
 	stored, err := ks.GetAPIKeyByHash(r.Context(), key.Hash)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, err)
@@ -244,17 +252,28 @@ func (h *Server) CreateApiKey(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusCreated, apiKeyWithSecretModel(*stored, Db, secret))
 }
 
+// logAdminFlagEvent records an admin-capability change as a store.EventSettings
+// activity entry (no new EventKind — same reuse as the per-key settings edit
+// above at UpdateApiKey), with detail {key_name, admin}. Called only when a
+// create grants admin or an update flips the flag, so the activity log carries
+// an audit trail of who became (or stopped being) an admin key.
+func (h *Server) logAdminFlagEvent(ctx context.Context, name string, admin bool) {
+	h.svc.LogConfigEvent(ctx, store.EventSettings, "", map[string]any{eventDetailKeyName: name, eventDetailAdmin: admin})
+}
+
 // UpdateApiKey implements PATCH /v1/keys/{name}: preserve-unspecified
 // semantics matching `memini key add`'s rotation contract — an omitted
 // field (nil pointer) leaves the stored value unchanged; an explicitly
-// passed field (including an explicit empty string, or disabled=false)
-// overrides it. Admin-gated. 404 absent, 409 for a file-sourced key.
+// passed field (including an explicit empty string, disabled=false, or
+// admin=false) overrides it. Admin-gated. 404 absent, 409 for a file-sourced
+// key OR when a named admin key targets itself with a self-demote/self-disable
+// (the self-guard below).
 //
 // Lookup-then-Put is not transactional (K3 note, carried forward): two
 // concurrent PATCHes to the same key could race and one's update could be
 // silently lost. Acceptable for an admin-only, low-frequency operation.
 func (h *Server) UpdateApiKey(w http.ResponseWriter, r *http.Request, name string) {
-	if !requireAdminOrDev(w, r) {
+	if !requireAdmin(w, r) {
 		return
 	}
 	ks, ok := h.keyStore()
@@ -280,6 +299,20 @@ func (h *Server) UpdateApiKey(w http.ResponseWriter, r *http.Request, name strin
 		httputil.Error(w, http.StatusNotFound, fmt.Sprintf("no api key named %q", name))
 		return
 	}
+	// Self-guard: a NAMED admin key acting on ITSELF cannot demote (admin=false)
+	// or disable (disabled=true) its own credential — that is the one way an
+	// admin could lock the surface against itself in a single call. The env key
+	// and dev mode have no principal, so "self" never matches (they are the
+	// break-glass escape this points back at). A named admin may still demote or
+	// disable a DIFFERENT admin key; the last-admin footgun across two keys is a
+	// documented, recoverable state (env key / CLI), not one this prevents.
+	if p, ok := principalFromContext(r.Context()); ok && p.Name == name {
+		if (req.Admin != nil && !*req.Admin) || (req.Disabled != nil && *req.Disabled) {
+			httputil.Error(w, http.StatusConflict, fmt.Sprintf(
+				"api key %q cannot demote or disable itself; use the admin env key (MEMINI_API_KEY) or another admin key", name))
+			return
+		}
+	}
 	updated := *existing
 	if req.Home != nil {
 		home, herr := normalizeOptionalNamespace(*req.Home)
@@ -300,6 +333,13 @@ func (h *Server) UpdateApiKey(w http.ResponseWriter, r *http.Request, name strin
 	if req.Disabled != nil {
 		updated.Disabled = *req.Disabled
 	}
+	if req.Admin != nil {
+		updated.Admin = *req.Admin
+	}
+	// Whether this PATCH actually flipped the admin capability (grant or
+	// revoke), used below to emit an audit event only on a real change — a
+	// no-op admin=true against an already-admin key writes nothing.
+	adminFlipped := updated.Admin != existing.Admin
 	// Settings: absent (nil) preserves the existing blob untouched (the same
 	// preserve-unspecified convention as home/default_namespace/disabled
 	// above); present REPLACES it wholesale -- full-replace, not a merge, so
@@ -331,15 +371,19 @@ func (h *Server) UpdateApiKey(w http.ResponseWriter, r *http.Request, name strin
 		// /v1/self/settings's own LogConfigEvent call; the "key_name" here is
 		// the admin-supplied target rather than the caller's own name, since
 		// the two endpoints edit different keys' settings.
-		h.svc.LogConfigEvent(r.Context(), store.EventSettings, "", map[string]any{"key_name": name, eventDetailLayer: settingsSourceKey})
+		h.svc.LogConfigEvent(r.Context(), store.EventSettings, "", map[string]any{eventDetailKeyName: name, eventDetailLayer: settingsSourceKey})
+	}
+	if adminFlipped {
+		h.logAdminFlagEvent(r.Context(), name, updated.Admin)
 	}
 	httputil.JSON(w, http.StatusOK, apiKeyModel(updated, Db))
 }
 
 // DeleteApiKey implements DELETE /v1/keys/{name}. Admin-gated. 404 absent,
-// 409 for a file-sourced key.
+// 409 for a file-sourced key OR when a named admin key targets itself (the
+// self-guard below, mirroring UpdateApiKey's self-demote/self-disable guard).
 func (h *Server) DeleteApiKey(w http.ResponseWriter, r *http.Request, name string) {
-	if !requireAdminOrDev(w, r) {
+	if !requireAdmin(w, r) {
 		return
 	}
 	ks, ok := h.keyStore()
@@ -350,6 +394,15 @@ func (h *Server) DeleteApiKey(w http.ResponseWriter, r *http.Request, name strin
 	if h.auth.FileKeys.IsFileKey(name) {
 		httputil.Error(w, http.StatusConflict,
 			fmt.Sprintf("api key %q is managed declaratively via MEMINI_API_KEYS_FILE, not this API", name))
+		return
+	}
+	// Self-guard: a named admin key cannot delete its own credential — same
+	// break-glass rationale as UpdateApiKey (the env key / dev mode have no
+	// principal, so "self" never matches them). A named admin may still delete a
+	// DIFFERENT key.
+	if p, ok := principalFromContext(r.Context()); ok && p.Name == name {
+		httputil.Error(w, http.StatusConflict, fmt.Sprintf(
+			"api key %q cannot delete itself; use the admin env key (MEMINI_API_KEY) or another admin key", name))
 		return
 	}
 	found, err := ks.DeleteAPIKey(r.Context(), name)
@@ -372,12 +425,18 @@ func (h *Server) DeleteApiKey(w http.ResponseWriter, r *http.Request, name strin
 
 // RotateApiKey implements POST /v1/keys/{name}/rotate: generates a fresh
 // secret (apiauth.GenerateSecret), replacing the stored hash while
-// preserving CreatedAt, home/default namespace bindings, and disabled
-// state — same contract as `memini key add` re-run against an existing
-// name. Admin-gated. 404 absent, 409 for a file-sourced key. Same
+// preserving CreatedAt, home/default namespace bindings, disabled state, and
+// admin capability — same contract as `memini key add` re-run against an
+// existing name. Admin-gated. 404 absent, 409 for a file-sourced key. Same
 // lookup-then-Put non-transactional caveat as UpdateApiKey.
+//
+// Rotate-self is DELIBERATELY allowed — unlike self-demote/self-disable/
+// self-delete, rotation is not a capability loss but a credential refresh
+// handed back to the prover of the old secret (the response carries the new
+// secret), so there is no self-guard here. The `updated := *existing` struct
+// copy below preserves Admin across the hash swap for free; a test pins that.
 func (h *Server) RotateApiKey(w http.ResponseWriter, r *http.Request, name string) {
-	if !requireAdminOrDev(w, r) {
+	if !requireAdmin(w, r) {
 		return
 	}
 	ks, ok := h.keyStore()

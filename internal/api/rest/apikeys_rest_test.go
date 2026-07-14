@@ -2,7 +2,9 @@ package rest_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -55,6 +57,7 @@ type apiKeyDTO struct {
 	DefaultNamespace string         `json:"default_namespace"`
 	CreatedAt        *time.Time     `json:"created_at"`
 	Disabled         bool           `json:"disabled"`
+	Admin            bool           `json:"admin"`
 	Source           string         `json:"source"`
 	Settings         map[string]any `json:"settings"`
 }
@@ -792,4 +795,345 @@ func TestRotateApiKeyPreservesAndExposesSettings(t *testing.T) {
 	if v, _ := rotated.Settings["capture_turns"].(bool); v {
 		t.Errorf("rotated capture_turns = %v, want false", rotated.Settings["capture_turns"])
 	}
+}
+
+// --- Per-key admin: gate matrix, self-guards, create/patch flag, activity ----
+
+// adminGateMessage is the exact 403 text requireAdmin writes, deliberately
+// different from the old "admin key required" so out-of-tree matchers of the
+// old string fail loudly. Tests assert on this substring.
+const adminGateMessage = "admin credential required"
+
+// TestRequireAdminGateMatrix pins the new requireAdmin truth table across all
+// seven admin-gated endpoints (5 keys handlers + GET/PUT
+// /v1/settings/defaults). A named key with admin=true (table OR file) is now
+// ALLOWED where it used to be 403; a non-admin named key (table OR file) is
+// still 403, now carrying the new message. The admin env key stays allowed;
+// dev mode is covered per its reachable endpoints below (a seeded target key
+// would fill the api_keys table and exit dev mode — see
+// TestDeleteApiKeyInvalidatesCacheImmediately's note).
+func TestRequireAdminGateMatrix(t *testing.T) {
+	fileYAML := `
+keys:
+  - name: fadmin
+    secret: "tok-fadmin"
+    admin: true
+  - name: fplain
+    secret: "tok-fplain"
+`
+	h, ks := newConfigServer(t, "admin-secret", fileYAML, nil)
+	ctx := context.Background()
+	if err := ks.PutAPIKey(ctx, store.APIKey{Name: "tadmin", Hash: hashOf("tok-tadmin"), Admin: true}); err != nil {
+		t.Fatalf("seed table admin: %v", err)
+	}
+	if err := ks.PutAPIKey(ctx, store.APIKey{Name: "tplain", Hash: hashOf("tok-tplain")}); err != nil {
+		t.Fatalf("seed table non-admin: %v", err)
+	}
+
+	// A fresh, non-caller db target for the mutating endpoints so the gate is
+	// what's exercised, never the self-guard or a 404.
+	var n int
+	freshTarget := func() string {
+		n++
+		name := fmt.Sprintf("gm-target-%d", n)
+		if err := ks.PutAPIKey(ctx, store.APIKey{Name: name, Hash: hashOf(name + "-secret")}); err != nil {
+			t.Fatalf("seed target: %v", err)
+		}
+		return name
+	}
+
+	endpoints := []struct {
+		name string
+		call func(token string) *httptest.ResponseRecorder
+	}{
+		{"GET /v1/keys", func(tok string) *httptest.ResponseRecorder {
+			return do(t, h, http.MethodGet, "/v1/keys", "", tok, nil)
+		}},
+		{"POST /v1/keys", func(tok string) *httptest.ResponseRecorder {
+			n++
+			return do(t, h, http.MethodPost, "/v1/keys", "", tok, map[string]any{"name": fmt.Sprintf("gm-create-%d", n)})
+		}},
+		{"PATCH /v1/keys/{name}", func(tok string) *httptest.ResponseRecorder {
+			return do(t, h, http.MethodPatch, "/v1/keys/"+freshTarget(), "", tok, map[string]any{"disabled": true})
+		}},
+		{"DELETE /v1/keys/{name}", func(tok string) *httptest.ResponseRecorder {
+			return do(t, h, http.MethodDelete, "/v1/keys/"+freshTarget(), "", tok, nil)
+		}},
+		{"POST /v1/keys/{name}/rotate", func(tok string) *httptest.ResponseRecorder {
+			return do(t, h, http.MethodPost, "/v1/keys/"+freshTarget()+"/rotate", "", tok, nil)
+		}},
+		{"GET /v1/settings/defaults", func(tok string) *httptest.ResponseRecorder {
+			return do(t, h, http.MethodGet, "/v1/settings/defaults", "", tok, nil)
+		}},
+		{"PUT /v1/settings/defaults", func(tok string) *httptest.ResponseRecorder {
+			return do(t, h, http.MethodPut, "/v1/settings/defaults", "", tok, map[string]any{"capture_turns": true})
+		}},
+	}
+
+	allowed := []struct{ class, token string }{
+		{"env key", "admin-secret"},
+		{"named table admin", "tok-tadmin"},
+		{"named file admin", "tok-fadmin"},
+	}
+	denied := []struct{ class, token string }{
+		{"named table non-admin", "tok-tplain"},
+		{"named file non-admin", "tok-fplain"},
+	}
+
+	for _, ep := range endpoints {
+		for _, c := range allowed {
+			rec := ep.call(c.token)
+			if rec.Code >= 400 {
+				t.Errorf("%s as %s: want allowed (2xx), got %d (%s)", ep.name, c.class, rec.Code, rec.Body)
+			}
+		}
+		for _, c := range denied {
+			rec := ep.call(c.token)
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("%s as %s: want 403, got %d (%s)", ep.name, c.class, rec.Code, rec.Body)
+			} else if !strings.Contains(rec.Body.String(), adminGateMessage) {
+				t.Errorf("%s as %s: 403 body must carry %q, got %s", ep.name, c.class, adminGateMessage, rec.Body)
+			}
+		}
+	}
+
+	// Dev mode (separate bare server, no admin key, empty table): the gate
+	// allows the endpoints reachable without seeding table rows (which would
+	// exit dev mode). POST create is covered by TestBootstrapFlowEndToEnd.
+	dev, _ := newConfigServer(t, "", "", nil)
+	for _, ep := range []struct {
+		method, path string
+		body         any
+	}{
+		{http.MethodGet, "/v1/keys", nil},
+		{http.MethodGet, "/v1/settings/defaults", nil},
+		{http.MethodPut, "/v1/settings/defaults", map[string]any{"capture_turns": true}},
+	} {
+		rec := do(t, dev, ep.method, ep.path, "", "", ep.body)
+		if rec.Code >= 400 {
+			t.Errorf("dev mode %s %s: want allowed (2xx), got %d (%s)", ep.method, ep.path, rec.Code, rec.Body)
+		}
+	}
+}
+
+// TestUpdateApiKeyAdminSelfGuardsAndCrossKey pins the self-guard truth table on
+// PATCH: a NAMED admin key acting on ITSELF cannot demote (admin=false) or
+// disable (disabled=true) itself — both 409 naming the escape hatch — but the
+// same key acting on a DIFFERENT key may grant or revoke admin freely (200),
+// and a PATCH that omits admin leaves the flag untouched.
+func TestUpdateApiKeyAdminSelfGuardsAndCrossKey(t *testing.T) {
+	h, ks := newConfigServer(t, "", "", nil)
+	ctx := context.Background()
+	if err := ks.PutAPIKey(ctx, store.APIKey{Name: "boss", Hash: hashOf("tok-boss"), Admin: true}); err != nil {
+		t.Fatalf("seed boss: %v", err)
+	}
+	if err := ks.PutAPIKey(ctx, store.APIKey{Name: "peer", Hash: hashOf("tok-peer"), Admin: true}); err != nil {
+		t.Fatalf("seed peer: %v", err)
+	}
+	if err := ks.PutAPIKey(ctx, store.APIKey{Name: "worker", Hash: hashOf("tok-worker")}); err != nil {
+		t.Fatalf("seed worker: %v", err)
+	}
+
+	// Self-demote → 409.
+	rec := do(t, h, http.MethodPatch, "/v1/keys/boss", "", "tok-boss", map[string]any{"admin": false})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("self-demote: want 409, got %d (%s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "cannot demote or disable itself") {
+		t.Errorf("self-demote 409 body = %s, want the demote/disable guard message", rec.Body)
+	}
+	// Self-disable → 409.
+	rec = do(t, h, http.MethodPatch, "/v1/keys/boss", "", "tok-boss", map[string]any{"disabled": true})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("self-disable: want 409, got %d (%s)", rec.Code, rec.Body)
+	}
+	// boss is still admin and still enabled after the guarded rejections.
+	if k := findKey(t, ks, "boss"); !k.Admin || k.Disabled {
+		t.Fatalf("boss must be unchanged by rejected self-edits, got admin=%v disabled=%v", k.Admin, k.Disabled)
+	}
+
+	// Cross-key: boss revokes peer's admin (200), then grants worker admin (200).
+	rec = do(t, h, http.MethodPatch, "/v1/keys/peer", "", "tok-boss", map[string]any{"admin": false})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke peer admin: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var out apiKeyDTO
+	mustJSON(t, rec, &out)
+	if out.Admin {
+		t.Errorf("peer admin = %v, want false after revoke", out.Admin)
+	}
+	rec = do(t, h, http.MethodPatch, "/v1/keys/worker", "", "tok-boss", map[string]any{"admin": true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("grant worker admin: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	out = apiKeyDTO{}
+	mustJSON(t, rec, &out)
+	if !out.Admin {
+		t.Errorf("worker admin = %v, want true after grant", out.Admin)
+	}
+
+	// PATCH omitting admin preserves it: worker is admin now; a home-only patch
+	// must leave admin=true.
+	rec = do(t, h, http.MethodPatch, "/v1/keys/worker", "", "tok-boss", map[string]any{"home": "acme/w"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("home-only patch: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	out = apiKeyDTO{}
+	mustJSON(t, rec, &out)
+	if !out.Admin {
+		t.Errorf("admin must survive a PATCH that omits it, got %v", out.Admin)
+	}
+
+	// The env key / dev mode has no principal, so "self" never matches: a nil
+	// principal disabling any key (here via a separate admin-env server) is not
+	// a self-edit. Covered by the existing enable/disable tests; here we assert
+	// a named admin CAN still disable a DIFFERENT key.
+	rec = do(t, h, http.MethodPatch, "/v1/keys/worker", "", "tok-boss", map[string]any{"disabled": true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("disable a different key: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+}
+
+// TestDeleteApiKeySelfGuard pins that a named admin key cannot delete itself
+// (409) but may delete a different key (204).
+func TestDeleteApiKeySelfGuard(t *testing.T) {
+	h, ks := newConfigServer(t, "", "", nil)
+	ctx := context.Background()
+	if err := ks.PutAPIKey(ctx, store.APIKey{Name: "boss", Hash: hashOf("tok-boss"), Admin: true}); err != nil {
+		t.Fatalf("seed boss: %v", err)
+	}
+	if err := ks.PutAPIKey(ctx, store.APIKey{Name: "victim", Hash: hashOf("tok-victim")}); err != nil {
+		t.Fatalf("seed victim: %v", err)
+	}
+
+	rec := do(t, h, http.MethodDelete, "/v1/keys/boss", "", "tok-boss", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("self-delete: want 409, got %d (%s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "cannot delete itself") {
+		t.Errorf("self-delete 409 body = %s, want the delete guard message", rec.Body)
+	}
+	if k := findKey(t, ks, "boss"); k == nil {
+		t.Fatal("boss must survive its own rejected delete")
+	}
+
+	rec = do(t, h, http.MethodDelete, "/v1/keys/victim", "", "tok-boss", nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete a different key: want 204, got %d (%s)", rec.Code, rec.Body)
+	}
+}
+
+// TestRotateApiKeySelfAllowedPreservesAdmin pins that rotate-self stays ALLOWED
+// — it's a credential refresh returned to the prover of the old secret, not a
+// capability change — and that the struct-copy in the handler preserves Admin
+// across the secret swap.
+func TestRotateApiKeySelfAllowedPreservesAdmin(t *testing.T) {
+	h, ks := newConfigServer(t, "", "", nil)
+	ctx := context.Background()
+	if err := ks.PutAPIKey(ctx, store.APIKey{Name: "boss", Hash: hashOf("tok-boss"), Admin: true}); err != nil {
+		t.Fatalf("seed boss: %v", err)
+	}
+	rec := do(t, h, http.MethodPost, "/v1/keys/boss/rotate", "", "tok-boss", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rotate self: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var rotated apiKeyWithSecretDTO
+	mustJSON(t, rec, &rotated)
+	if !rotated.Admin {
+		t.Errorf("rotate-self must preserve admin=true, got %v", rotated.Admin)
+	}
+	if rotated.Secret == "" || rotated.Secret == "tok-boss" {
+		t.Fatal("rotate must mint a new secret")
+	}
+	if k := findKey(t, ks, "boss"); k == nil || !k.Admin {
+		t.Fatalf("stored boss must remain admin after self-rotate, got %+v", k)
+	}
+}
+
+// TestCreateApiKeyAdminFlag pins that POST create honors admin=true in the
+// request and reflects it in the response, and that omitting admin defaults to
+// false.
+func TestCreateApiKeyAdminFlag(t *testing.T) {
+	h, _ := newKeysTestServer(t, "admin-secret", "")
+	rec := do(t, h, http.MethodPost, "/v1/keys", "", "admin-secret", map[string]any{"name": "adminkey", "admin": true})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create admin: want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+	var out apiKeyWithSecretDTO
+	mustJSON(t, rec, &out)
+	if !out.Admin {
+		t.Errorf("created admin key admin = %v, want true", out.Admin)
+	}
+
+	rec = do(t, h, http.MethodPost, "/v1/keys", "", "admin-secret", map[string]any{"name": "plainkey"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create plain: want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+	out = apiKeyWithSecretDTO{}
+	mustJSON(t, rec, &out)
+	if out.Admin {
+		t.Errorf("created plain key admin = %v, want false (default)", out.Admin)
+	}
+}
+
+// TestAdminFlagActivityEvent pins that flipping the admin flag is
+// activity-logged (kind=settings, detail {key_name, admin}) on both a
+// create-with-admin=true and a PATCH that grants or revokes admin.
+func TestAdminFlagActivityEvent(t *testing.T) {
+	h, _ := newConfigServer(t, "admin-secret", "", nil)
+
+	// Create with admin=true → one event, admin=true.
+	rec := do(t, h, http.MethodPost, "/v1/keys", "", "admin-secret", map[string]any{"name": "grantee", "admin": true})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create admin: want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+	// PATCH revoke → another event, admin=false.
+	rec = do(t, h, http.MethodPatch, "/v1/keys/grantee", "", "admin-secret", map[string]any{"admin": false})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	// PATCH grant again → a third event, admin=true.
+	rec = do(t, h, http.MethodPatch, "/v1/keys/grantee", "", "admin-secret", map[string]any{"admin": true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("grant: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	// A PATCH that does NOT flip admin (already true) writes no admin event.
+	rec = do(t, h, http.MethodPatch, "/v1/keys/grantee", "", "admin-secret", map[string]any{"admin": true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("no-op admin patch: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	rec = do(t, h, http.MethodGet, "/v1/activity?kind=settings&all_namespaces=true", "", "admin-secret", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("activity: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var act activityResponse
+	mustJSON(t, rec, &act)
+	if len(act.Events) != 3 {
+		t.Fatalf("admin-flip events = %d, want 3 (create-admin, revoke, grant; no-op excluded): %+v", len(act.Events), act.Events)
+	}
+	for _, ev := range act.Events {
+		if name, _ := ev.Detail["key_name"].(string); name != "grantee" {
+			t.Errorf("event detail.key_name = %q, want grantee", name)
+		}
+		if _, ok := ev.Detail["admin"]; !ok {
+			t.Errorf("event detail must carry admin, got %+v", ev.Detail)
+		}
+	}
+}
+
+// findKey is a test helper mirroring the handler's by-name lookup; returns nil
+// when no such key exists.
+func findKey(t *testing.T, ks store.APIKeyStore, name string) *store.APIKey {
+	t.Helper()
+	keys, err := ks.ListAPIKeys(context.Background())
+	if err != nil {
+		t.Fatalf("ListAPIKeys: %v", err)
+	}
+	for i := range keys {
+		if keys[i].Name == name {
+			return &keys[i]
+		}
+	}
+	return nil
 }

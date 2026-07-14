@@ -404,8 +404,13 @@ the server and give it a token:
 
 ```sh
 export MEMINI_BASE_URL=https://memini.example.com   # MCP /mcp endpoint is derived
-export MEMINI_API_KEY=<the server's MEMINI_API_KEY>
+export MEMINI_API_KEY=<any valid key; a per-person named key is ideal>
 ```
+
+This bearer does **not** need to be an admin key: the plugin only reads and
+writes memories, it never manages keys, so a named non-admin key (ideally bound
+to your `home` namespace) is the right credential here, not the server's
+break-glass `MEMINI_API_KEY`. See [docs/api-keys.md](../docs/api-keys.md).
 
 Both the hooks (REST) and the MCP tools then send `Authorization: Bearer
 $MEMINI_API_KEY`. The **namespace stays per-project** even against one shared

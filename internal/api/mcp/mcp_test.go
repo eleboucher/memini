@@ -67,7 +67,7 @@ func openStore(t *testing.T) store.Store {
 // exactly mirroring how the real deployment has one server per tenant.
 func connectAt(t *testing.T, svc *service.Service, ns, home string) *mcpsdk.ClientSession {
 	t.Helper()
-	srv := meminimcp.NewServer(svc, ns, home, "")
+	srv := meminimcp.NewServer(svc, ns, home, "", "none")
 	clientT, serverT := mcpsdk.NewInMemoryTransports()
 	ctx := context.Background()
 	if _, err := srv.Connect(ctx, serverT, nil); err != nil {
@@ -116,6 +116,39 @@ func TestToolsListed(t *testing.T) {
 		if !found {
 			t.Errorf("tool %q not advertised", name)
 		}
+	}
+}
+
+// TestRecallSourceIsMcp pins the MCP "why": a memory_recall over MCP is always
+// sourced "mcp" (the transport fixes it; the tool has no source argument), and
+// its activity event is attributed to the session's actor kind ("none" for an
+// unauthenticated stdio/in-memory session).
+func TestRecallSourceIsMcp(t *testing.T) {
+	ctx := context.Background()
+	svc := service.New(openStore(t), embedtest.New(dims),
+		service.WithEventLog(true), service.WithSyncEventLog())
+	cs := connectAt(t, svc, "default", "")
+
+	if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name:      "memory_recall",
+		Arguments: map[string]any{"query": "anything"},
+	}); err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	page, err := svc.Events(ctx, service.EventsInput{
+		Namespace: "default", Kinds: []store.EventKind{store.EventRecall},
+	})
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if len(page.Events) != 1 {
+		t.Fatalf("got %d recall events, want 1", len(page.Events))
+	}
+	if got := page.Events[0].Detail["source"]; got != "mcp" {
+		t.Errorf("recall source = %v, want mcp", got)
+	}
+	if page.Events[0].ActorKind != "none" {
+		t.Errorf("recall actor kind = %q, want none", page.Events[0].ActorKind)
 	}
 }
 
@@ -361,7 +394,7 @@ func TestRecallDegradedSurfacedViaMCP(t *testing.T) {
 	connectDegraded := func(t *testing.T) *mcpsdk.ClientSession {
 		t.Helper()
 		svc := service.New(st, errEmbedder{dims: dims}, service.WithRecallEmbedTimeout(time.Second))
-		srv := meminimcp.NewServer(svc, "default", "", "")
+		srv := meminimcp.NewServer(svc, "default", "", "", "none")
 		clientT, serverT := mcpsdk.NewInMemoryTransports()
 		if _, err := srv.Connect(ctx, serverT, nil); err != nil {
 			t.Fatalf("server connect: %v", err)
@@ -439,7 +472,7 @@ func TestRememberDegradedSurfacedViaMCP(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 
 	svc := service.New(st, errEmbedder{dims: dims}, service.WithWriteEmbedTimeout(time.Second))
-	srv := meminimcp.NewServer(svc, "default", "", "")
+	srv := meminimcp.NewServer(svc, "default", "", "", "none")
 	clientT, serverT := mcpsdk.NewInMemoryTransports()
 	if _, err := srv.Connect(ctx, serverT, nil); err != nil {
 		t.Fatalf("server connect: %v", err)
@@ -864,7 +897,7 @@ func TestUpdateToolTransientStoreErrorNotMisreportedAsNotFound(t *testing.T) {
 	t.Cleanup(func() { _ = base.Close() })
 	svc := service.New(errGetStore{Store: base}, embedtest.New(dims))
 
-	srv := meminimcp.NewServer(svc, "default", "", "")
+	srv := meminimcp.NewServer(svc, "default", "", "", "none")
 	clientT, serverT := mcpsdk.NewInMemoryTransports()
 	ctx := context.Background()
 	if _, err := srv.Connect(ctx, serverT, nil); err != nil {
@@ -926,7 +959,7 @@ func TestRecallUsesServerDefaultHome(t *testing.T) {
 	recallWithHome := func(home string) []struct {
 		Namespace string `json:"namespace"`
 	} {
-		srv := meminimcp.NewServer(svc, "default", home, "")
+		srv := meminimcp.NewServer(svc, "default", home, "", "none")
 		clientT, serverT := mcpsdk.NewInMemoryTransports()
 		if _, err := srv.Connect(ctx, serverT, nil); err != nil {
 			t.Fatalf("server connect: %v", err)

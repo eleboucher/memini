@@ -70,10 +70,11 @@ type Config struct {
 	// gates it.
 	MetricsAddr string `env:"MEMINI_METRICS_ADDR"`
 	// UIAddr, when set (e.g. ":8081") and distinct from HTTPAddr, serves the
-	// admin UI on its own listener instead of the main HTTP port. The shell
-	// embeds MEMINI_API_KEY, so isolating it to a dedicated port lets operators
-	// expose that port only on a trusted (LAN) gateway while the main port
-	// carries the token-free API. The UI listener also serves the API so the
+	// admin UI on its own listener instead of the main HTTP port. The shell is
+	// credential-free — it never contains MEMINI_API_KEY; the SPA signs in
+	// against /v1/self in the browser and keeps its token in localStorage. A
+	// dedicated listener just lets operators expose the UI on a different
+	// port/gateway from the main API. The UI listener also serves the API so the
 	// same-origin SPA can call /v1. Empty (the default) keeps the UI on the main
 	// port when MEMINI_UI_ENABLED is true.
 	UIAddr string `env:"MEMINI_UI_ADDR"`
@@ -396,17 +397,19 @@ type Config struct {
 
 	// Auth (optional).
 
-	// APIKey is the admin, or bootstrap, credential. When set, every request
-	// must present it as a bearer token, it also gates /metrics, and it is the
-	// only credential allowed to manage other keys through /v1/keys. Named keys
-	// (see APIKeysFile and `memini key`) are the per-person credentials; this is
-	// the one that creates them.
+	// APIKey is the break-glass admin and bootstrap credential. When set, every
+	// request must present it (or a valid named key) as a bearer token, and it
+	// authenticates as an admin with no principal at all — the recovery path that
+	// always works even when no named admin key does. Named keys (see APIKeysFile
+	// and `memini key`) can now hold their own admin capability, so this is no
+	// longer the ONLY key that can manage others through /v1/keys; it is the one
+	// that can bootstrap the first named key and the one to fall back on if the
+	// last named admin locks itself out.
 	//
-	// Note that when this is set and the admin UI is enabled, the server embeds
-	// the key in the UI shell so the same-origin UI can authenticate without the
-	// operator pasting it. Anyone who can load / can therefore read the key.
-	// Expose the UI only where reaching it already implies trust, move it to its
-	// own listener with UIAddr, or turn it off with UIEnabled.
+	// It also gates two operator surfaces that authenticate ONLY against this
+	// env key, never against a named admin key: /metrics on the main port, and
+	// the verbose dependency detail of GET /healthz?verbose=1. A named admin key
+	// manages other keys but does not unlock those two.
 	APIKey string `env:"MEMINI_API_KEY"`
 
 	// APIKeysFile (optional; K2b), when set, names a YAML file of

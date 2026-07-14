@@ -122,6 +122,124 @@ func TestAddAPIKeyGeneratesSecretThatAuthenticates(t *testing.T) {
 	}
 }
 
+// TestAddAPIKeyAdminFlag pins that --admin creates the key with Admin=true,
+// mirroring TestAddAPIKeyDisabledFlag for the sibling bool.
+func TestAddAPIKeyAdminFlag(t *testing.T) {
+	st := openTestStore(t)
+	ks, err := keyStoreOf(st)
+	if err != nil {
+		t.Fatalf("keyStoreOf: %v", err)
+	}
+	_, key, err := addAPIKey(context.Background(), ks, "root-frank", keyAddOpts{Admin: boolPtr(true)})
+	if err != nil {
+		t.Fatalf("addAPIKey: %v", err)
+	}
+	if !key.Admin {
+		t.Fatal("expected key to be created with Admin=true")
+	}
+}
+
+func TestAddAPIKeyAdminDefaultsFalse(t *testing.T) {
+	st := openTestStore(t)
+	ks, err := keyStoreOf(st)
+	if err != nil {
+		t.Fatalf("keyStoreOf: %v", err)
+	}
+	_, key, err := addAPIKey(context.Background(), ks, "plain-frank", keyAddOpts{})
+	if err != nil {
+		t.Fatalf("addAPIKey: %v", err)
+	}
+	if key.Admin {
+		t.Fatal("expected key to default to Admin=false when --admin is not passed")
+	}
+}
+
+// TestAddAPIKeyRotationPreservesAdmin pins that rotating an existing key
+// WITHOUT passing --admin carries Admin forward unchanged — the same
+// presence-tracked-like-Disabled contract as home/default-namespace/disabled.
+func TestAddAPIKeyRotationPreservesAdmin(t *testing.T) {
+	st := openTestStore(t)
+	ks, err := keyStoreOf(st)
+	if err != nil {
+		t.Fatalf("keyStoreOf: %v", err)
+	}
+	ctx := context.Background()
+
+	if _, _, err := addAPIKey(ctx, ks, "root-ivy", keyAddOpts{Admin: boolPtr(true)}); err != nil {
+		t.Fatalf("addAPIKey: %v", err)
+	}
+	_, rotated, err := addAPIKey(ctx, ks, "root-ivy", keyAddOpts{})
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if !rotated.Admin {
+		t.Error("rotation must preserve Admin, got false")
+	}
+}
+
+// TestAddAPIKeyRotationExplicitDemoteClearsAdmin pins the deliberate inverse:
+// an explicitly passed --admin=false on rotation demotes the key — operator
+// intent stated on the command line always wins, mirroring
+// TestAddAPIKeyRotationExplicitEnableReEnables for Disabled.
+func TestAddAPIKeyRotationExplicitDemoteClearsAdmin(t *testing.T) {
+	st := openTestStore(t)
+	ks, err := keyStoreOf(st)
+	if err != nil {
+		t.Fatalf("keyStoreOf: %v", err)
+	}
+	ctx := context.Background()
+
+	if _, _, err := addAPIKey(ctx, ks, "root-kim", keyAddOpts{Admin: boolPtr(true)}); err != nil {
+		t.Fatalf("addAPIKey: %v", err)
+	}
+	_, rotated, err := addAPIKey(ctx, ks, "root-kim", keyAddOpts{Admin: boolPtr(false)})
+	if err != nil {
+		t.Fatalf("rotate with explicit --admin=false: %v", err)
+	}
+	if rotated.Admin {
+		t.Error("explicit --admin=false must demote the key")
+	}
+}
+
+// TestAddAPIKeyRotationPreservesSettings is the regression pin for the rider
+// bug: addAPIKey seeded home/default/disabled/admin from the existing row but
+// NOT Settings, while the store upsert overwrites settings=excluded.settings —
+// so a plain CLI rotation silently wiped a key's per-key Settings. A key with a
+// per-key Settings override must keep it across a secret rotation.
+func TestAddAPIKeyRotationPreservesSettings(t *testing.T) {
+	st := openTestStore(t)
+	ks, err := keyStoreOf(st)
+	if err != nil {
+		t.Fatalf("keyStoreOf: %v", err)
+	}
+	ctx := context.Background()
+
+	// Seed a key carrying a per-key Settings override (there is no CLI flag for
+	// settings, so seed it directly through the store).
+	if _, _, err := addAPIKey(ctx, ks, "settings-len", keyAddOpts{}); err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+	seeded, err := findAPIKeyByName(ctx, ks, "settings-len")
+	if err != nil || seeded == nil {
+		t.Fatalf("lookup seeded key: %v", err)
+	}
+	seeded.Settings = store.ClientSettings{CaptureTurns: boolPtr(false)}
+	if err := ks.PutAPIKey(ctx, *seeded); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	// Rotate with no flags — Settings has no flag, so it must be carried forward.
+	// (Compare by field value: the store round-trip re-allocates the pointer, so
+	// a struct != would compare pointer identity, not the stored value.)
+	_, rotated, err := addAPIKey(ctx, ks, "settings-len", keyAddOpts{})
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if rotated.Settings.CaptureTurns == nil || *rotated.Settings.CaptureTurns {
+		t.Errorf("rotation must preserve per-key Settings (capture_turns=false), got %+v", rotated.Settings)
+	}
+}
+
 func TestAddAPIKeyDisabledFlag(t *testing.T) {
 	st := openTestStore(t)
 	ks, err := keyStoreOf(st)
@@ -395,13 +513,13 @@ func TestPrintAPIKeysTableNeverShowsHash(t *testing.T) {
 	printAPIKeys(&buf, []store.APIKey{
 		{
 			Name: "alice", Hash: hashLike, HomeNS: "acme/phoenix", DefaultNS: "acme/default",
-			CreatedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), Disabled: false,
+			CreatedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), Disabled: false, Admin: true,
 		},
 		{Name: "bob", Disabled: true},
 	})
 	out := buf.String()
 	for _, want := range []string{
-		"NAME", "HOME", "DEFAULT NS", "CREATED", "DISABLED",
+		"NAME", "HOME", "DEFAULT NS", "CREATED", "DISABLED", "ADMIN",
 		"alice", "acme/phoenix", "acme/default", "bob", "true",
 	} {
 		if !strings.Contains(out, want) {
@@ -410,5 +528,27 @@ func TestPrintAPIKeysTableNeverShowsHash(t *testing.T) {
 	}
 	if strings.Contains(out, hashLike) {
 		t.Errorf("table must never print the key hash, got:\n%s", out)
+	}
+}
+
+// TestPrintAPIKeysTableShowsAdminColumn pins that the ADMIN column reflects
+// each key's Admin value independently of DISABLED (they are unrelated
+// booleans, so this catches a copy-paste column mixup).
+func TestPrintAPIKeysTableShowsAdminColumn(t *testing.T) {
+	var buf bytes.Buffer
+	printAPIKeys(&buf, []store.APIKey{
+		{Name: "root-alice", Admin: true},
+		{Name: "plain-bob", Admin: false},
+	})
+	out := buf.String()
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 3 { // header + 2 rows
+		t.Fatalf("want 3 lines (header + 2 rows), got %d:\n%s", len(lines), out)
+	}
+	if !strings.Contains(lines[1], "root-alice") || !strings.Contains(lines[1], "true") {
+		t.Errorf("root-alice row should show admin=true, got %q", lines[1])
+	}
+	if !strings.Contains(lines[2], "plain-bob") || !strings.Contains(lines[2], "false") {
+		t.Errorf("plain-bob row should show admin=false, got %q", lines[2])
 	}
 }

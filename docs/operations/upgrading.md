@@ -230,6 +230,85 @@ that changed. A never-recalled fact written 8 days ago is now episodic and on a
 Set `MEMINI_DEMOTE_AFTER=0` to restore the old behaviour, or raise it (for
 example `1440h`, 60 days) if you want the sweep but on a longer horizon.
 
+## The admin UI now requires signing in
+
+Before this release, when `MEMINI_API_KEY` was set the server **injected** that
+key into the UI shell (a `<meta name="memini-token">` tag) so the same-origin
+browser authenticated with no interaction. That injection is **removed**. The
+served shell is now credential-free (it never contains `MEMINI_API_KEY`), and the
+UI is a real login: you paste an API key once per browser, it is verified against
+`GET /v1/self`, and it persists in that browser's `localStorage`.
+
+Two things drove the change. Serving the admin key inside HTML handed to anyone
+who could so much as `GET /` was the wrong default. And admin is now a **per-key
+attribute** (see [api-keys.md](../api-keys.md#the-admin-attribute)), so the
+browser can hold a per-person, non-break-glass credential rather than the one
+shared admin key.
+
+**What this costs you:** every browser signs in once after the upgrade. There is
+no config change to make it work; there is a paste. Below is what "sign in once"
+means per deployment.
+
+### Same-origin homelab (UI on the main port)
+
+Nothing to configure. The first time each person opens the UI after upgrading,
+they paste a key at the sign-in screen. If you were relying on the auto-embedded
+admin key, this is the moment to stop sharing it: mint one **named admin key per
+person** (`memini key add <name> --admin`, or the UI's create form) and hand each
+person their own, keeping `MEMINI_API_KEY` as break-glass. The
+[access control guide](../guides/access-control.md) walks that end to end. If you
+would rather keep it simple, pasting the existing `MEMINI_API_KEY` once per
+browser also works.
+
+### Remote UI (the UI points at a remote memini)
+
+Same paste-once, plus the base URL. Previously a remote target was configured in
+Settings against an embedded token; now you set the API base URL in the sign-in
+screen's collapsed **Advanced** section (Settings is unreachable until you are
+signed in) and paste the key there.
+
+### Compose
+
+No config change. If your runbook said "open the UI and it just works", update it
+to "open the UI and sign in with a key". Mounting a `MEMINI_API_KEYS_FILE` (see
+the commented example in [`compose.yaml`](../../compose.yaml)) lets each person
+sign in with their own named key rather than a shared token.
+
+### Helm
+
+Structurally unchanged: the chart already gives the UI its own listener
+(`MEMINI_UI_ADDR`) and recommends routing it only to an internal gateway. Keep
+that. Each admin signs in once per browser with their own named admin key; mint
+them with `memini key add --admin` or a `MEMINI_API_KEYS_FILE` mounted from a
+Secret (there is a commented mounting example in
+[`charts/memini/values.yaml`](../../charts/memini/values.yaml) and a full
+walkthrough in the [access control guide](../guides/access-control.md)).
+
+### The 403 string changed (out-of-tree tooling)
+
+The admin-gate rejection changed text, on purpose, so any tooling that
+string-matched the old wording fails loudly instead of silently mis-reading a
+response:
+
+| Before               | After                                                                                                             |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `admin key required` | `admin credential required: this endpoint needs the admin env key (MEMINI_API_KEY) or an API key with admin=true` |
+
+If you have a script or integration that matched `"admin key required"` on a
+`403` from `/v1/keys` or `/v1/settings/defaults`, update it. Better, match the
+`403` status rather than the string. The UI itself no longer probes this at all;
+it reads `identity.admin` from `GET /v1/self`.
+
+### New: admin is a per-key attribute
+
+The flip side of the removal is a new capability. `MEMINI_API_KEY` is no longer
+the only credential that can manage keys: any named or file key can carry
+`admin: true` (`--admin` on the CLI, `admin: true` in the keys file, the admin
+checkbox in the UI). The env key becomes **break-glass**, and named admins do the
+day-to-day. It also gates two operator surfaces named admins do **not** unlock,
+`/metrics` and verbose `/healthz`; see
+[api-keys.md](../api-keys.md#the-metricshealthz-asymmetry).
+
 ## Client-side: the config-handshake redesign
 
 Everything above is the server. This section is the client — the Claude Code

@@ -20,7 +20,7 @@ flags below belong to the subcommands only. See the
 | [`memini import`](#memini-import) | Bulk-load an export from another memory system |
 | [`memini key`](#memini-key) | Manage local API keys (this store's api_keys table only) |
 | [`memini key add`](#memini-key-add) | Create an API key, or rotate an existing one's secret |
-| [`memini key ls`](#memini-key-ls) | List API keys (name, home/default namespace, created, disabled — never secrets or hashes) |
+| [`memini key ls`](#memini-key-ls) | List API keys (name, home/default namespace, created, disabled, admin — never secrets or hashes) |
 | [`memini key rm`](#memini-key-rm) | Delete an API key |
 | [`memini link`](#memini-link) | Manage cross-namespace read links (durable-tier recall from another namespace) |
 | [`memini link add`](#memini-link-add) | Create or replace a read link from src to dst |
@@ -131,7 +131,7 @@ memini key
 
 ## `memini key add`
 
-Create a new named API key, generating a random secret that is printed exactly once to stdout — it is never stored and cannot be recovered or shown again, so save it now. Re-running with a name that already exists ROTATES that key: a new secret is generated and the old one stops authenticating immediately, while the key's CreatedAt, home/default namespace bindings, and disabled state are all preserved unless the corresponding flag is explicitly passed (an explicit --home "" clears the binding; an explicit --disabled=false re-enables a disabled key — rotation alone never re-enables one).
+Create a new named API key, generating a random secret that is printed exactly once to stdout — it is never stored and cannot be recovered or shown again, so save it now. Re-running with a name that already exists ROTATES that key: a new secret is generated and the old one stops authenticating immediately, while the key's CreatedAt, home/default namespace bindings, disabled state, and admin state are all preserved unless the corresponding flag is explicitly passed (an explicit --home "" clears the binding; an explicit --disabled=false re-enables a disabled key — rotation alone never re-enables one; an explicit --admin=false demotes an admin key — rotation alone never demotes one).
 
 ```
 memini key add <name> [flags]
@@ -139,13 +139,14 @@ memini key add <name> [flags]
 
 | Flag | Default | Does |
 | --- | --- | --- |
+| `--admin` |  | grant the key admin (the /v1/keys and /v1/settings/defaults surfaces, gated at the REST layer) |
 | `--default-namespace` |  | namespace applied when a request presents this key with no explicit namespace header |
 | `--disabled` |  | create the key already disabled |
 | `--home` |  | bind the key to a home namespace (default: unbound) |
 
 ## `memini key ls`
 
-List API keys (name, home/default namespace, created, disabled — never secrets or hashes)
+List API keys (name, home/default namespace, created, disabled, admin — never secrets or hashes)
 
 ```
 memini key ls

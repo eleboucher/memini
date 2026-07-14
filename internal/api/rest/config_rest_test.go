@@ -65,6 +65,7 @@ func handshakeBody(project map[string]any) map[string]any {
 
 type callerIdentityDTO struct {
 	Authenticated    bool    `json:"authenticated"`
+	Admin            bool    `json:"admin"`
 	KeyName          *string `json:"key_name"`
 	Home             *string `json:"home"`
 	DefaultNamespace *string `json:"default_namespace"`
@@ -496,8 +497,14 @@ func TestPinsLifecycleAndAudit(t *testing.T) {
 	if len(pinAct.Events) != 1 || pinAct.Events[0].Namespace != "team/app" {
 		t.Fatalf("pin event = %+v, want one against team/app", pinAct.Events)
 	}
-	if by, _ := pinAct.Events[0].Detail["by"].(string); by != "bot" {
-		t.Errorf("pin event detail.by = %q, want bot", by)
+	// The actor now lives on the event row (not detail.by): the named key "bot"
+	// created the pin, so it is attributed on the event with kind "key".
+	if pinAct.Events[0].Actor != "bot" || pinAct.Events[0].ActorKind != "key" {
+		t.Errorf("pin event actor = (%q, %q), want (bot, key)",
+			pinAct.Events[0].Actor, pinAct.Events[0].ActorKind)
+	}
+	if _, ok := pinAct.Events[0].Detail["by"]; ok {
+		t.Errorf("pin event detail still carries redundant \"by\": %+v", pinAct.Events[0].Detail)
 	}
 
 	// Delete by the same key fact → 204, then a repeat → 404.
@@ -517,6 +524,80 @@ func TestPinsLifecycleAndAudit(t *testing.T) {
 	mustJSON(t, rec, &unpinAct)
 	if len(unpinAct.Events) != 1 {
 		t.Fatalf("unpin event = %+v, want exactly one", unpinAct.Events)
+	}
+}
+
+// TestActivityAttribution is the point of T5: every activity event records who
+// performed it. A named key is attributed by name (kind "key"), the admin env
+// key by kind "env" (no name), and a dev-mode request by kind "none". The
+// actor filter then selects exactly one key's operations.
+func TestActivityAttribution(t *testing.T) {
+	h, ks := newConfigServer(t, "admin-secret", "", nil)
+	if err := ks.PutAPIKey(context.Background(), store.APIKey{Name: "bot", Hash: hashOf("tok-bot")}); err != nil {
+		t.Fatalf("PutAPIKey: %v", err)
+	}
+
+	// A named key's recall is attributed to it; the admin env key's is "env".
+	if rec := do(t, h, http.MethodPost, "/v1/search", "team/app", "tok-bot",
+		map[string]any{"query": "named search"}); rec.Code != http.StatusOK {
+		t.Fatalf("named search: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	if rec := do(t, h, http.MethodPost, "/v1/search", "team/app", "admin-secret",
+		map[string]any{"query": "env search"}); rec.Code != http.StatusOK {
+		t.Fatalf("env search: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	rec := do(t, h, http.MethodGet, "/v1/activity?kind=recall", "team/app", "admin-secret", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("activity: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var act activityResponse
+	mustJSON(t, rec, &act)
+	byQuery := map[string]activityEvent{}
+	for _, e := range act.Events {
+		byQuery[e.Query] = e
+	}
+	if got := byQuery["named search"]; got.Actor != "bot" || got.ActorKind != "key" {
+		t.Errorf("named recall actor = (%q, %q), want (bot, key)", got.Actor, got.ActorKind)
+	}
+	if got := byQuery["env search"]; got.Actor != "" || got.ActorKind != "env" {
+		t.Errorf("env recall actor = (%q, %q), want ('', env)", got.Actor, got.ActorKind)
+	}
+	// The recall's "why" defaults to "api" for a direct REST search.
+	if got := byQuery["named search"].Detail["source"]; got != "api" {
+		t.Errorf("recall source = %v, want api", got)
+	}
+
+	// The actor filter selects only the named key's operations.
+	rec = do(t, h, http.MethodGet, "/v1/activity?kind=recall&actor=bot", "team/app", "admin-secret", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("actor filter: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var filtered activityResponse
+	mustJSON(t, rec, &filtered)
+	if len(filtered.Events) != 1 || filtered.Events[0].Query != "named search" {
+		t.Fatalf("actor=bot returned %+v, want only the named search", filtered.Events)
+	}
+}
+
+// TestActivityAttributionDevMode covers the "none" kind: an unauthenticated
+// dev-mode request (no admin key, no table keys) carries no bearer, so its
+// events are attributed to kind "none" with no name.
+func TestActivityAttributionDevMode(t *testing.T) {
+	h, _ := newConfigServer(t, "", "", nil) // no admin key, empty table → auth disabled
+
+	if rec := do(t, h, http.MethodPost, "/v1/search", "dev", "",
+		map[string]any{"query": "dev search"}); rec.Code != http.StatusOK {
+		t.Fatalf("dev search: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	rec := do(t, h, http.MethodGet, "/v1/activity?kind=recall", "dev", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("activity: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var act activityResponse
+	mustJSON(t, rec, &act)
+	if len(act.Events) != 1 || act.Events[0].Actor != "" || act.Events[0].ActorKind != "none" {
+		t.Fatalf("dev event = %+v, want actor='' kind='none'", act.Events)
 	}
 }
 
@@ -742,6 +823,117 @@ func TestSettingsDefaultsDevModeAllowed(t *testing.T) {
 	rec := do(t, h, http.MethodGet, "/v1/settings/defaults", "", "", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("dev-mode GET defaults: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+}
+
+// --- per-key admin: identity wire + named-admin reaches admin surfaces -------
+
+// TestIdentityAdminByCredentialClass pins CallerIdentity.admin (the effective
+// admin capability) across every credential class, on BOTH GET /v1/self and
+// POST /v1/handshake: dev mode is unauthenticated-but-admin (bootstrap open),
+// the admin env key and a named admin key are authenticated-and-admin, and a
+// named non-admin key is authenticated-but-not-admin.
+func TestIdentityAdminByCredentialClass(t *testing.T) {
+	fileYAML := `
+keys:
+  - name: fadmin
+    secret: "tok-fadmin"
+    admin: true
+  - name: fplain
+    secret: "tok-fplain"
+`
+	h, ks := newConfigServer(t, "admin-secret", fileYAML, nil)
+	if err := ks.PutAPIKey(context.Background(), store.APIKey{Name: "tadmin", Hash: hashOf("tok-tadmin"), Admin: true}); err != nil {
+		t.Fatalf("seed table admin: %v", err)
+	}
+	if err := ks.PutAPIKey(context.Background(), store.APIKey{Name: "tplain", Hash: hashOf("tok-tplain")}); err != nil {
+		t.Fatalf("seed table non-admin: %v", err)
+	}
+	body := handshakeBody(map[string]any{"cwd_basename": "proj", "remote_url": "https://github.com/acme/phoenix.git"})
+
+	cases := []struct {
+		class             string
+		token             string
+		wantAuthenticated bool
+		wantAdmin         bool
+	}{
+		{"env key", "admin-secret", true, true},
+		{"named table admin", "tok-tadmin", true, true},
+		{"named file admin", "tok-fadmin", true, true},
+		{"named table non-admin", "tok-tplain", true, false},
+		{"named file non-admin", "tok-fplain", true, false},
+	}
+	for _, c := range cases {
+		t.Run("self/"+c.class, func(t *testing.T) {
+			rec := do(t, h, http.MethodGet, "/v1/self", "", c.token, nil)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET /v1/self: want 200, got %d (%s)", rec.Code, rec.Body)
+			}
+			var out selfRespDTO
+			mustJSON(t, rec, &out)
+			if out.Identity.Authenticated != c.wantAuthenticated || out.Identity.Admin != c.wantAdmin {
+				t.Errorf("self identity = {authenticated:%v admin:%v}, want {%v %v}",
+					out.Identity.Authenticated, out.Identity.Admin, c.wantAuthenticated, c.wantAdmin)
+			}
+		})
+		t.Run("handshake/"+c.class, func(t *testing.T) {
+			rec := do(t, h, http.MethodPost, "/v1/handshake", "", c.token, body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("handshake: want 200, got %d (%s)", rec.Code, rec.Body)
+			}
+			var out handshakeRespDTO
+			mustJSON(t, rec, &out)
+			if out.Identity.Authenticated != c.wantAuthenticated || out.Identity.Admin != c.wantAdmin {
+				t.Errorf("handshake identity = {authenticated:%v admin:%v}, want {%v %v}",
+					out.Identity.Authenticated, out.Identity.Admin, c.wantAuthenticated, c.wantAdmin)
+			}
+		})
+	}
+
+	// Dev mode (separate bare server, no bearer): unauthenticated but admin=true.
+	dev, _ := newConfigServer(t, "", "", nil)
+	rec := do(t, dev, http.MethodGet, "/v1/self", "", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dev GET /v1/self: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var self selfRespDTO
+	mustJSON(t, rec, &self)
+	if self.Identity.Authenticated || !self.Identity.Admin {
+		t.Errorf("dev self identity = {authenticated:%v admin:%v}, want {false true}", self.Identity.Authenticated, self.Identity.Admin)
+	}
+	rec = do(t, dev, http.MethodPost, "/v1/handshake", "", "", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dev handshake: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var hs handshakeRespDTO
+	mustJSON(t, rec, &hs)
+	if hs.Identity.Authenticated || !hs.Identity.Admin {
+		t.Errorf("dev handshake identity = {authenticated:%v admin:%v}, want {false true}", hs.Identity.Authenticated, hs.Identity.Admin)
+	}
+}
+
+// TestNamedAdminReachesSettingsDefaults pins that a named admin key now passes
+// the GET/PUT /v1/settings/defaults gate that previously 403'd every named key
+// — and that PutSelfSettings polarity is UNCHANGED: the same named admin key
+// still edits its own per-key settings (200), because self-settings requires a
+// named principal regardless of admin.
+func TestNamedAdminReachesSettingsDefaults(t *testing.T) {
+	h, ks := newConfigServer(t, "admin-secret", "", nil)
+	if err := ks.PutAPIKey(context.Background(), store.APIKey{Name: "tadmin", Hash: hashOf("tok-tadmin"), Admin: true}); err != nil {
+		t.Fatalf("seed table admin: %v", err)
+	}
+	rec := do(t, h, http.MethodGet, "/v1/settings/defaults", "", "tok-tadmin", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("named admin GET defaults: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	rec = do(t, h, http.MethodPut, "/v1/settings/defaults", "", "tok-tadmin", map[string]any{"capture_turns": false})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("named admin PUT defaults: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	// PutSelfSettings polarity unchanged: a named admin still edits its own key.
+	rec = do(t, h, http.MethodPut, "/v1/self/settings", "", "tok-tadmin", map[string]any{"recall_limit": 3})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("named admin PUT self settings: want 200, got %d (%s)", rec.Code, rec.Body)
 	}
 }
 

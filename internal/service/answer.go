@@ -12,6 +12,11 @@ import (
 	"github.com/eleboucher/memini/internal/store"
 )
 
+// sourceAnswer is the recall Source stamped on every recall the answer/grounding
+// path issues, so the activity feed distinguishes an answer's internal retrieval
+// from a direct search (see RecallInput.Source and the source vocabulary).
+const sourceAnswer = "answer"
+
 // answerSystem is memini's reader prompt for Answer. It follows the
 // conventions the LongMemEval/LoCoMo leaders converged on (mem0 benchmark
 // prompt, Hindsight CARA): chronological context, chain-of-thought reasoning,
@@ -154,6 +159,7 @@ func (s *Service) Answer(ctx context.Context, in AnswerInput) (AnswerResult, err
 	res, err := s.Recall(ctx, RecallInput{
 		Namespace: in.Namespace, Home: in.Home, Query: in.Query, Limit: in.Limit, Tiers: in.Tiers,
 		Levels: in.Levels, Tags: in.Tags, Metadata: in.Metadata, Scope: in.Scope,
+		Source:        sourceAnswer,
 		IncludeLinked: true, // C6: expand 1-hop linked memories for multi-hop answers
 	})
 	if err != nil {

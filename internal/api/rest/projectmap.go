@@ -87,8 +87,11 @@ func (h *Server) PutPin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusInternalServerError, err)
 		return
 	}
+	// The actor now lives on the event row (stamped from the request context),
+	// so the detail no longer carries a redundant "by"; key_name-style detail
+	// stays the target, never the actor.
 	h.svc.LogConfigEvent(r.Context(), store.EventPin, ns, map[string]any{
-		"keys": keys, "by": createdBy, "note": note,
+		"keys": keys, "note": note,
 	})
 	// Echo the stored row for the first (remote-preferred) key: PutProjectMapEntries
 	// preserves an existing pin's created_at/created_by on update, so re-reading
@@ -145,16 +148,14 @@ func (h *Server) DeletePin(w http.ResponseWriter, r *http.Request) {
 		httputil.Error(w, http.StatusNotFound, "no pin matches the given remote_url/toplevel_path")
 		return
 	}
-	by := ""
-	if p, ok := principalFromContext(r.Context()); ok {
-		by = p.Name
-	}
 	deletedKeys := make([]string, len(existing))
 	for i, e := range existing {
 		deletedKeys[i] = e.Key
 	}
+	// The actor lives on the event row now (see PutPin), so the unpin detail
+	// carries only the keys it removed — no redundant "by".
 	h.svc.LogConfigEvent(r.Context(), store.EventUnpin, existing[0].Namespace, map[string]any{
-		"keys": deletedKeys, "by": by,
+		"keys": deletedKeys,
 	})
 	w.WriteHeader(http.StatusNoContent)
 }

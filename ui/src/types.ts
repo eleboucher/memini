@@ -50,6 +50,9 @@ export const EVENT_KINDS: EventKind[] = [
   'update',
   'forget',
   'supersede',
+  'pin',
+  'unpin',
+  'settings',
 ]
 
 export type Memory = Schemas['Memory']
@@ -89,6 +92,7 @@ export interface UpdateApiKeyBody {
   home?: string
   default_namespace?: string
   disabled?: boolean
+  admin?: boolean
   settings?: Partial<ClientSettings>
 }
 

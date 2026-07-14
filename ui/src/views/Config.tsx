@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 import { api } from '../api'
-import { refreshNonce } from '../store'
+import { identity, refreshNonce } from '../store'
 import { useAsync } from '../hooks'
 import { SETTINGS_CATALOG } from '../settings-catalog.gen'
 import { SettingsEditor, formatSettingValue } from '../components/SettingsEditor'
@@ -8,6 +8,7 @@ import { Loading, ErrorBanner, Empty } from '../components/States'
 import { IconTrash } from '../icons'
 import { parsePinKey, fmtDate } from '../util'
 import type {
+  ApiKey,
   CallerIdentity,
   ClientSettings,
   HandshakeRequest,
@@ -158,13 +159,15 @@ function IdentityPanel({ identity, nonNamed }: { identity: CallerIdentity; nonNa
 
 function SettingsTab() {
   const self = useAsync(() => api.self(), [refreshNonce.value])
-  const keysAsync = useAsync(() => api.listKeys(), [refreshNonce.value])
+  // identity.admin is the authoritative admin signal (env key, dev mode, or a
+  // named key with admin=true); the key-picker below is admin-only, so skip its
+  // fetch entirely for a non-admin rather than firing a request just to 403.
+  const isAdmin = identity.value?.admin === true
+  const keysAsync = useAsync(
+    () => (isAdmin ? api.listKeys() : Promise.resolve<ApiKey[]>([])),
+    [refreshNonce.value],
+  )
   const [pickedKey, setPickedKey] = useState('')
-  // listKeys is admin-gated exactly like this picker should be: it resolves
-  // to a real array only for the admin key/dev mode, and 403s (surfacing as
-  // keysAsync.error) for a named key — so "did it resolve" doubles as the
-  // admin check without a second round-trip.
-  const isAdmin = keysAsync.data !== null && !keysAsync.error
 
   const defaultsForMerge = useAsync(
     () => (pickedKey ? api.getSettingsDefaults() : Promise.resolve(null)),
@@ -175,7 +178,7 @@ function SettingsTab() {
   if (self.error) return <ErrorBanner message={self.error} />
   if (!self.data) return null
 
-  const identity = self.data.identity
+  const selfIdentity = self.data.identity
   const pickedRow = pickedKey ? (keysAsync.data ?? []).find((k) => k.name === pickedKey) : undefined
   const showingKey = Boolean(pickedKey && pickedRow)
   const mergeReady = !showingKey || Boolean(defaultsForMerge.data)
@@ -201,7 +204,7 @@ function SettingsTab() {
 
   return (
     <>
-      <IdentityPanel identity={identity} nonNamed={!identity.key_name} />
+      <IdentityPanel identity={selfIdentity} nonNamed={!selfIdentity.key_name} />
       {isAdmin && (
         <div
           class="panel panel-pad"
@@ -245,7 +248,14 @@ function SettingsTab() {
 
 function DefaultsTab() {
   const [nonce, setNonce] = useState(0)
-  const { data, error, loading } = useAsync(() => api.getSettingsDefaults(), [nonce])
+  // The defaults layer is admin-gated. identity.admin tells us up front, so a
+  // non-admin session skips the fetch and lands on the locked state below
+  // rather than round-tripping to a 403.
+  const nonAdmin = identity.value?.admin === false
+  const { data, error, loading } = useAsync(
+    () => (nonAdmin ? Promise.resolve(null) : api.getSettingsDefaults()),
+    [nonce],
+  )
   const [explicit, setExplicit] = useState<Record<string, unknown> | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveErr, setSaveErr] = useState<string | null>(null)
@@ -267,11 +277,12 @@ function DefaultsTab() {
     // the admin is mid-edit on.
   }, [data])
 
-  if (error?.includes('admin key required')) {
+  if (nonAdmin) {
+    const who = identity.value?.key_name
     return (
       <Empty
-        title="Admin credential required"
-        hint="Viewing or editing the server's global default settings needs the admin key. Set it under UI settings (API token), then reload this page."
+        title="Admin access required"
+        hint={`Signed in as ${who ? `"${who}"` : 'this key'}, which is not an admin key. Viewing or editing the server's global default settings needs an admin credential — the admin env key (MEMINI_API_KEY) or an API key with admin=true.`}
       />
     )
   }
