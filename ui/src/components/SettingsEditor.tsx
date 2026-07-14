@@ -1,4 +1,4 @@
-import { useId } from 'preact/hooks'
+import { useEffect, useId, useState } from 'preact/hooks'
 import { SETTINGS_CATALOG, type SettingsCatalogEntry } from '../settings-catalog.gen'
 import { IconRefresh } from '../icons'
 
@@ -143,7 +143,12 @@ function FieldControl({
         disabled={readOnly}
         style={{ width: '110px' }}
         onInput={(e) => {
-          const n = Number((e.target as HTMLInputElement).value)
+          const raw = (e.target as HTMLInputElement).value
+          // Ignore an emptied field rather than coercing "" to 0 (Number('')
+          // === 0): clearing the box should not silently write a value that
+          // can also fall below the field's declared min.
+          if (raw.trim() === '') return
+          const n = Number(raw)
           if (!Number.isNaN(n)) onChange(n)
         }}
       />
@@ -203,22 +208,69 @@ function FieldControl({
 
   // Plain string array (inject_pretool_tools): a comma-separated free-text
   // input, matching MetaFilter's tag-parsing convention elsewhere in the UI.
+  return (
+    <StringArrayInput
+      controlId={controlId}
+      value={value}
+      placeholder={placeholder}
+      readOnly={readOnly}
+      onChange={onChange}
+    />
+  )
+}
+
+// parseTagList splits a comma-separated free-text value into trimmed,
+// non-empty tags — the wire form for a plain string-array setting.
+function parseTagList(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+// StringArrayInput is the comma-separated free-text control for a plain string
+// array (inject_pretool_tools). It keeps the raw text in local state instead of
+// rendering `value.join(', ')` directly: a controlled input driven by the
+// parsed array collapses a separator the instant it's typed (typing "Read,"
+// re-renders as "Read"), making multi-value edits impossible. The parsed array
+// is still committed to the parent on every keystroke; local text only governs
+// what the box displays. An external change to `value` (e.g. Reset) re-seeds
+// the text, but only when it diverges from what the current text parses to, so
+// a keystroke's own onChange round-trip doesn't clobber the in-progress text.
+function StringArrayInput({
+  controlId,
+  value,
+  placeholder,
+  readOnly,
+  onChange,
+}: {
+  controlId: string
+  value: unknown
+  placeholder: unknown
+  readOnly?: boolean
+  onChange: (v: unknown) => void
+}) {
   const arr = Array.isArray(value) ? (value as string[]) : []
+  const [text, setText] = useState(arr.join(', '))
+  useEffect(() => {
+    if (parseTagList(text).join(' ') !== arr.join(' ')) {
+      setText(arr.join(', '))
+    }
+    // Re-seed only on an external value change, not on every text edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value])
   return (
     <input
       id={controlId}
       class="input mono"
-      value={arr.join(', ')}
+      value={text}
       placeholder={Array.isArray(placeholder) ? (placeholder as string[]).join(', ') : ''}
       disabled={readOnly}
-      onInput={(e) =>
-        onChange(
-          (e.target as HTMLInputElement).value
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean),
-        )
-      }
+      onInput={(e) => {
+        const raw = (e.target as HTMLInputElement).value
+        setText(raw)
+        onChange(parseTagList(raw))
+      }}
     />
   )
 }

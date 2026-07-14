@@ -301,9 +301,13 @@ func scanAPIKey(s scanner) (store.APIKey, error) {
 	k.Admin = admin != 0
 	// Tolerant decode: unknown fields in an older/newer writer's blob are
 	// ignored (json.Unmarshal's default behavior) — strict validation is the
-	// REST boundary's job, not the store's.
-	if err := json.Unmarshal([]byte(settingsJSON), &k.Settings); err != nil {
-		return k, fmt.Errorf("sqlitevec: unmarshal api key settings: %w", err)
+	// REST boundary's job, not the store's. An empty column value (a raw or
+	// legacy write that predates the DEFAULT '{}' backfill) leaves Settings
+	// zero rather than failing the scan, matching the Postgres driver's guard.
+	if len(settingsJSON) > 0 {
+		if err := json.Unmarshal([]byte(settingsJSON), &k.Settings); err != nil {
+			return k, fmt.Errorf("sqlitevec: unmarshal api key settings: %w", err)
+		}
 	}
 	return k, nil
 }

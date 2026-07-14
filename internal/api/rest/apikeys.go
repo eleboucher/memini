@@ -405,6 +405,14 @@ func (h *Server) DeleteApiKey(w http.ResponseWriter, r *http.Request, name strin
 			"api key %q cannot delete itself; use the admin env key (MEMINI_API_KEY) or another admin key", name))
 		return
 	}
+	// Look up the key before deleting so an admin-key removal can be audited:
+	// deleting an admin key removes an admin credential just like a self-demote
+	// does, and that capability loss must land in the activity log too.
+	existing, err := findAPIKeyByName(r.Context(), ks, name)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, err)
+		return
+	}
 	found, err := ks.DeleteAPIKey(r.Context(), name)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, err)
@@ -413,6 +421,9 @@ func (h *Server) DeleteApiKey(w http.ResponseWriter, r *http.Request, name strin
 	if !found {
 		httputil.Error(w, http.StatusNotFound, fmt.Sprintf("no api key named %q", name))
 		return
+	}
+	if existing != nil && existing.Admin {
+		h.logAdminFlagEvent(r.Context(), name, false)
 	}
 	// Invalidate immediately: deleting the last row must relax the
 	// table-emptiness reading back to dev mode right away when no admin key

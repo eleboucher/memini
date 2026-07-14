@@ -127,9 +127,11 @@ func CanonicalRemote(url string) string {
 
 	var authority, path string
 	switch {
-	case scpStyleRe.MatchString(cleaned) && !schemeRe.MatchString(cleaned):
+	case scpStyleRe.MatchString(cleaned):
 		// scp-style: everything before the first colon is the authority, the
-		// rest is the path.
+		// rest is the path. scpStyleRe (`^[^/:]+:[^/]`) can never match a
+		// scheme:// URL (the char after the first colon is always "/"), so no
+		// schemeRe guard is needed here — the default branch handles schemes.
 		i := strings.Index(cleaned, ":")
 		authority, path = cleaned[:i], cleaned[i+1:]
 	default:

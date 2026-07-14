@@ -10,6 +10,16 @@ import (
 
 func ptr[T any](v T) *T { return &v }
 
+// sliceOfLen returns a *[]string of n copies of s, for exercising the
+// inject_pretool_tools element-count bound.
+func sliceOfLen(n int, s string) *[]string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = s
+	}
+	return &out
+}
+
 // TestDefaultClientSettings pins every field's built-in default against the
 // ClientSettings schema in api/openapi.yaml (config-handshake redesign) — the
 // schema wins on any disagreement, so a drift here should be resolved by
@@ -133,6 +143,10 @@ func TestClientSettingsValidate(t *testing.T) {
 		{"namespace_prefix valid path", store.ClientSettings{NamespacePrefix: ptr("acme/team")}, false},
 		{"namespace_prefix with NUL byte is invalid", store.ClientSettings{NamespacePrefix: ptr("acme\x00team")}, true},
 		{"namespace_prefix over 256 bytes is invalid", store.ClientSettings{NamespacePrefix: ptr(strings.Repeat("a", 257))}, true},
+		{"inject_pretool_tools within bounds is valid", store.ClientSettings{InjectPretoolTools: &[]string{"Read", "Write"}}, false},
+		{"inject_pretool_tools with 64 entries is valid (boundary)", store.ClientSettings{InjectPretoolTools: sliceOfLen(64, "t")}, false},
+		{"inject_pretool_tools over 64 entries is invalid", store.ClientSettings{InjectPretoolTools: sliceOfLen(65, "t")}, true},
+		{"inject_pretool_tools with an over-128-char entry is invalid", store.ClientSettings{InjectPretoolTools: &[]string{strings.Repeat("a", 129)}}, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

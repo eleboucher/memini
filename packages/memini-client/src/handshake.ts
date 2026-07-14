@@ -180,7 +180,24 @@ export function writeCachedHandshake(
       factsHash: factsFingerprint(facts),
       writtenAt: now,
     };
-    fs.writeFileSync(p, JSON.stringify(rec));
+    // Atomic replace: write a per-writer temp file then rename it into place.
+    // Session start can have two live writers at once (the SessionStart hook
+    // and the MCP headers helper), and a plain writeFileSync can interleave
+    // into a torn JSON file the reader then chokes on. rename(2) is atomic on
+    // the same filesystem, so a reader always sees a whole record or the old
+    // one — never a half-written one.
+    const tmp = `${p}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(rec));
+      fs.renameSync(tmp, p);
+    } catch (e) {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        // temp file may not exist; ignore
+      }
+      throw e;
+    }
   } catch {
     // best-effort
   }

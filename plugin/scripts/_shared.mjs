@@ -62,14 +62,17 @@ const CLIENT_NAME = "memini-claude-plugin";
  *
  * Cache policy: on a live handshake SUCCESS we ALWAYS writeCachedHandshake; on
  * ANY failure we write nothing — the ABSENCE of a cache entry is itself the
- * degraded signal a later hook reads (see `never`, above).
+ * degraded signal a later hook reads (see `never`, above). `noPersist: true`
+ * suppresses that write so a read-only diagnostic (/memini:status) can force a
+ * fresh live handshake without mutating the session's cached entry underneath
+ * the hooks that own it.
  *
  * The returned `setting(wireKey)` resolves a behavioral knob with provenance:
  * a local MEMINI_* env override beats the server-merged value beats the
  * built-in default (exactly effectiveSetting's precedence). Returns
  * { namespace, source, degraded, facts, handshake, boot, setting }.
  */
-export async function getSessionContext({ cwd, ppid, allowNetwork = "on-miss", timeoutMs, env = process.env } = {}) {
+export async function getSessionContext({ cwd, ppid, allowNetwork = "on-miss", timeoutMs, noPersist = false, env = process.env } = {}) {
   const boot = readBootstrap(env);
   const facts = gatherFacts(cwd, env);
 
@@ -95,13 +98,13 @@ export async function getSessionContext({ cwd, ppid, allowNetwork = "on-miss", t
     hs = readCachedHandshake(ppid, cwd, facts, env);
   } else if (allowNetwork === "always") {
     hs = await live();
-    if (hs) writeCachedHandshake(ppid, cwd, facts, hs, env);
+    if (hs && !noPersist) writeCachedHandshake(ppid, cwd, facts, hs, env);
   } else {
     // "on-miss"
     hs = readCachedHandshake(ppid, cwd, facts, env);
     if (!hs) {
       hs = await live();
-      if (hs) writeCachedHandshake(ppid, cwd, facts, hs, env);
+      if (hs && !noPersist) writeCachedHandshake(ppid, cwd, facts, hs, env);
     }
   }
 

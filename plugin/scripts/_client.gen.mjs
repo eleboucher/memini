@@ -447,7 +447,17 @@ function writeCachedHandshake(ppid, cwd, facts, result, env = process.env, now =
       factsHash: factsFingerprint(facts),
       writtenAt: now
     };
-    fs3.writeFileSync(p, JSON.stringify(rec));
+    const tmp = `${p}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    try {
+      fs3.writeFileSync(tmp, JSON.stringify(rec));
+      fs3.renameSync(tmp, p);
+    } catch (e) {
+      try {
+        fs3.unlinkSync(tmp);
+      } catch {
+      }
+      throw e;
+    }
   } catch {
   }
 }

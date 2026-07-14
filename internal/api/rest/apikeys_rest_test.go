@@ -1122,6 +1122,54 @@ func TestAdminFlagActivityEvent(t *testing.T) {
 	}
 }
 
+// TestDeleteAdminKeyActivityEvent pins that deleting an admin key records the
+// admin-capability loss (kind=settings, detail {key_name, admin=false}), the
+// same audit trail a self-demote leaves — and that deleting a non-admin key
+// records no such event.
+func TestDeleteAdminKeyActivityEvent(t *testing.T) {
+	h, _ := newConfigServer(t, "admin-secret", "", nil)
+
+	rec := do(t, h, http.MethodPost, "/v1/keys", "", "admin-secret", map[string]any{"name": "adminkey", "admin": true})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create admin: want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+	rec = do(t, h, http.MethodPost, "/v1/keys", "", "admin-secret", map[string]any{"name": "plainkey"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create plain: want 201, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	if rec = do(t, h, http.MethodDelete, "/v1/keys/adminkey", "", "admin-secret", nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete admin: want 204, got %d (%s)", rec.Code, rec.Body)
+	}
+	if rec = do(t, h, http.MethodDelete, "/v1/keys/plainkey", "", "admin-secret", nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete plain: want 204, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	// Two creates granted admin once (adminkey), and one delete revoked it —
+	// so exactly two admin-flip events: the create-with-admin and the delete.
+	// The non-admin key's create and delete contribute none.
+	rec = do(t, h, http.MethodGet, "/v1/activity?kind=settings&all_namespaces=true", "", "admin-secret", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("activity: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var act activityResponse
+	mustJSON(t, rec, &act)
+	deleteEvents := 0
+	for _, ev := range act.Events {
+		name, _ := ev.Detail["key_name"].(string)
+		admin, _ := ev.Detail["admin"].(bool)
+		if name == "adminkey" && !admin {
+			deleteEvents++
+		}
+		if name == "plainkey" {
+			t.Errorf("a non-admin key delete must log no admin event, got %+v", ev.Detail)
+		}
+	}
+	if deleteEvents != 1 {
+		t.Fatalf("admin-key delete audit events = %d, want 1: %+v", deleteEvents, act.Events)
+	}
+}
+
 // findKey is a test helper mirroring the handler's by-name lookup; returns nil
 // when no such key exists.
 func findKey(t *testing.T, ks store.APIKeyStore, name string) *store.APIKey {

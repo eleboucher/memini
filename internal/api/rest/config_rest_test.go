@@ -365,6 +365,40 @@ func TestHandshakeNamespacePrecedence(t *testing.T) {
 	}
 }
 
+// TestHandshakePinBlockDetails pins that a pin hit populates the response's
+// pin block beyond just the key: the note round-trips and updated_at is a real
+// timestamp. TestHandshakeNamespacePrecedence only asserts Pin.Key, so this
+// covers the note/timestamp wiring in Handshake's SourcePin branch.
+func TestHandshakePinBlockDetails(t *testing.T) {
+	h, _ := newConfigServer(t, "", "", nil)
+	const remote = "https://github.com/acme/phoenix.git"
+
+	rec := do(t, h, http.MethodPut, "/v1/pins", "", "", map[string]any{
+		"namespace": "pinned/ns", "remote_url": remote, "note": "team decision",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put pin: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	rec = do(t, h, http.MethodPost, "/v1/handshake", "", "", handshakeBody(map[string]any{
+		"cwd_basename": "proj", "remote_url": remote,
+	}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("handshake: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var got handshakeRespDTO
+	mustJSON(t, rec, &got)
+	if got.Pin == nil {
+		t.Fatalf("expected a pin block, got none")
+	}
+	if got.Pin.Note == nil || *got.Pin.Note != "team decision" {
+		t.Errorf("pin note = %v, want %q", got.Pin.Note, "team decision")
+	}
+	if got.Pin.UpdatedAt == "" {
+		t.Errorf("pin updated_at is empty, want a timestamp")
+	}
+}
+
 // --- handshake: determinism + no writes --------------------------------------
 
 func TestHandshakeDeterministicAndSideEffectFree(t *testing.T) {

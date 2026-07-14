@@ -474,7 +474,13 @@ function SecretModal({
   const [copied, setCopied] = useState(false)
 
   const copy = () => {
-    Promise.resolve(navigator.clipboard?.writeText(secret))
+    // Only report success when the Clipboard API is actually present:
+    // navigator.clipboard?.writeText(...) yields undefined when it isn't, and
+    // Promise.resolve(undefined) would still flip to "Copied" — falsely telling
+    // the operator the one-time secret was copied when it wasn't.
+    if (!navigator.clipboard) return
+    navigator.clipboard
+      .writeText(secret)
       .then(() => {
         setCopied(true)
         setTimeout(() => setCopied(false), 1200)

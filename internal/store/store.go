@@ -436,6 +436,19 @@ func (s ClientSettings) Validate() error {
 			return fmt.Errorf("client settings: namespace_prefix: %w", err)
 		}
 	}
+	// InjectPretoolTools is a tool-name allowlist; unmatched names are inert, so
+	// this is a bounded-DoS guard, not a correctness one — a caller must not be
+	// able to persist an oversized blob into its own row up to the decode cap.
+	if s.InjectPretoolTools != nil {
+		if n := len(*s.InjectPretoolTools); n > 64 {
+			return fmt.Errorf("client settings: inject_pretool_tools may list at most 64 tools, got %d", n)
+		}
+		for _, name := range *s.InjectPretoolTools {
+			if len(name) > 128 {
+				return fmt.Errorf("client settings: inject_pretool_tools value must be <= 128 chars, got %d", len(name))
+			}
+		}
+	}
 	return nil
 }
 

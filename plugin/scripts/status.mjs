@@ -147,8 +147,10 @@ async function main() {
 
   // A live handshake — status is a diagnostic, always fresh. allowNetwork
   // "always" round-trips the server (or degrades to local derivation and
-  // built-in defaults when it can't reach it).
-  const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "always", timeoutMs: 4000 });
+  // built-in defaults when it can't reach it). noPersist keeps this read-only:
+  // a diagnostic must not overwrite the session's cached handshake that the
+  // hooks own.
+  const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "always", timeoutMs: 4000, noPersist: true });
   const hs = ctx.handshake;
   const boot = ctx.boot;
   const reachable = !ctx.degraded;

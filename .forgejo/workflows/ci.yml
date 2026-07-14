@@ -121,6 +121,21 @@ jobs:
           pnpm --filter @memini/client run bundle
           git diff --exit-code plugin/scripts/_client.gen.mjs
 
+      # The UI's settings catalog and API schema are generated from
+      # api/openapi.yaml (gen-catalog.mjs + openapi-typescript); fail if the
+      # committed files drifted from the spec — the same gate as the REST, docs,
+      # and plugin-bundle checks, and what makes the "help text can't drift from
+      # the contract" guarantee real. Also type-check the UI, which nothing else
+      # in CI does. cd (not working-directory:) and --no-package-lock per this
+      # runner's quirks; git pathspecs are ui-relative because cwd persists.
+      - name: Check generated UI files are current and UI type-checks
+        run: |
+          cd ui
+          npm install --no-package-lock
+          npm run gen-api
+          git diff --exit-code src/settings-catalog.gen.ts src/api-schema.gen.ts
+          npm run typecheck
+
       # Claude Code / Codex hook scripts (pure node, no deps).
       - name: Test Claude Code + Codex plugin scripts
         run: node --test plugin/scripts/_test.mjs

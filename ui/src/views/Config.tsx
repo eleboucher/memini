@@ -228,8 +228,13 @@ function SettingsTab() {
           </select>
         </div>
       )}
-      {showingKey && defaultsForMerge.error && <ErrorBanner message={defaultsForMerge.error} />}
-      {showingKey && !mergeReady ? (
+      {showingKey && defaultsForMerge.error ? (
+        // The defaults fetch failed — show the error alone. Falling through to
+        // the spinner below would leave a permanent "Merging…" (mergeReady
+        // stays false without data), and the table would show self's settings,
+        // not the inspected key's.
+        <ErrorBanner message={defaultsForMerge.error} />
+      ) : showingKey && !mergeReady ? (
         <Loading label="Merging…" />
       ) : (
         <SettingsTable settings={settings} sources={sources} computedBy={computedBy} note={note} />
