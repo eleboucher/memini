@@ -32,13 +32,16 @@ none):
 
 ```yaml
 # charts/memini/values.yaml
-app:
-  env:
-    MEMINI_API_KEY:
-      valueFrom:
-        secretKeyRef:
-          name: memini-auth
-          key: api-key
+controllers:
+  main:
+    containers:
+      main:
+        env:
+          MEMINI_API_KEY:
+            valueFrom:
+              secretKeyRef:
+                name: memini-auth
+                key: api-key
 ```
 
 ```sh
@@ -119,7 +122,7 @@ memories follow them across every repo without exporting `MEMINI_HOME` anywhere
 Everything that is not a human administrator gets a **non-admin** key. A CI
 runner, a per-agent worker, an integration gateway: they read and write memories
 all day, and they have no business reaching `/v1/keys` or the server defaults.
-`admin` defaults to `false`, so you get this by simply not asking for admin:
+`admin` defaults to `false`, so you get this by not asking for admin:
 
 ```console
 $ memini key add ci --default-namespace acme
@@ -199,9 +202,12 @@ add a `secret`-type persistence volume and set the env var:
 
 ```yaml
 # charts/memini/values.yaml
-app:
-  env:
-    MEMINI_API_KEYS_FILE: /etc/memini/api-keys.yaml
+controllers:
+  main:
+    containers:
+      main:
+        env:
+          MEMINI_API_KEYS_FILE: /etc/memini/api-keys.yaml
 persistence:
   api-keys:
     enabled: true
