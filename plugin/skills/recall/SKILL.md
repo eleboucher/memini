@@ -94,6 +94,11 @@ hit Z." When you state a fact that came from memory, quote the stored
 content verbatim rather than paraphrasing it into something it didn't say;
 if a memory is ambiguous, say so instead of guessing.
 
+- If a recalled memory is contradicted by what you observe in the code or
+  by the user, do not just ignore it: fix it with `memory_update`, or
+  `memory_forget` if it should not exist. Never leave a memory you know is
+  incorrect in place.
+
 ## Unhappy paths
 
 - **No results**: say memini has nothing on this and proceed from first

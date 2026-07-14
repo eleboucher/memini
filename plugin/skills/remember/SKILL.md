@@ -2,11 +2,15 @@
 name: remember
 description: >-
   Save a durable fact, decision, or preference to memini. Use this skill
-  proactively when the user says "remember this", after discovering a bug,
-  after making an architectural decision, after learning a project
-  convention, or whenever something learned in this session should outlive
-  the session itself. The MCP tool is `memory_remember` on the bundled `memini` server.
+  proactively — do not wait to be asked — when the user says "remember this"
+  or corrects you, after discovering a bug's root cause, after making an
+  architectural decision, after learning a project convention or environment
+  quirk, or whenever something learned in this session should outlive the
+  session itself. The MCP tool is `memory_remember` on the bundled `memini` server.
 ---
+
+<!-- Save-policy invariants (when to call, when not, secrets exclusion) are
+canonical in internal/api/mcp/mcp.go serverInstructions; keep this in sync. -->
 
 # remember (memini)
 
@@ -64,18 +68,36 @@ tool with:
 
 ## When to call
 
-- The user says "remember this", "save this", "don't forget", "note that".
-- You discover a non-obvious bug or root cause worth flagging next time.
+Do not wait to be asked. Capture at the moment of learning, not at session end.
+
+- The user says "remember this", "save this", "don't forget", "note that",
+  "next time", "going forward", "always/never do X". Call `memory_remember`
+  FIRST, then acknowledge. On an explicit request, save unconditionally —
+  even if it seems trivial, fleeting, or already stored (the server
+  reinforces or merges near-duplicates; that is its job, not yours).
+- The user corrects you. A correction IS a preference — capture it.
 - You make an architectural decision (e.g. "we chose jose over jsonwebtoken
   for Edge compatibility"). Capture the _why_, not just the _what_.
+- You discover a non-obvious bug or root cause worth flagging next time.
 - You learn a project convention (test layout, deploy command, code style).
-- The user states a preference (response style, formatting, tool choice).
+- You hit an environment or tool quirk (e.g. "tests need DOCKER_HOST unset
+  on this machine").
+- You learn a non-obvious command or workflow the project depends on.
 
 ## When NOT to call
 
-- The fact is already in `CLAUDE.md`, `.cursorrules`, or project docs.
-- The fact is recoverable trivially from the codebase.
-- The fact is a one-off (e.g. "today is Tuesday") with no future relevance.
+- Secrets, credentials, API keys, tokens — never, even on explicit request
+  (this outranks the save-unconditionally rule; explain and point to a
+  secret manager instead).
+- Transient session state (what file you just opened, the branch you happen
+  to be on mid-task).
+- Task progress or TODO state — the plugin's session digests capture
+  activity automatically; memories are for what stays true.
+- Facts already in `CLAUDE.md`, `.cursorrules`, or project docs, or
+  trivially recoverable from the codebase.
+- Text the user is merely asking you to translate, edit, or summarize —
+  content passing through your hands is not a fact about the user or
+  project.
 
 ## Examples
 
@@ -93,6 +115,21 @@ Call with tier `episodic`:
 > The 2026-06-09 outage was caused by a Postgres connection-pool
 > exhaustion under load. The fix was raising `max_connections` to 200
 > and adding pgbouncer.
+
+State facts, not commands — a memory is a claim about the world, not an
+instruction to your future self:
+
+- Good: "User prefers pnpm over npm in all their projects" (declarative,
+  visibility `personal`)
+- Bad: "Always use pnpm" (a command — future recall cannot tell where it
+  applies or why)
+- Good: "TestAuthRefresh flakes because of a hard-coded 100ms timeout in
+  auth/refresh_test.go; the fix pattern is deadline-based waiting"
+- Bad: "Fixed a flaky test today" (not self-contained, no future value)
+
+If a stored memory turns out to be wrong or outdated, fix it immediately:
+correct it in place with `memory_update`, or delete it with `memory_forget`
+if it should not exist. Never leave a memory you know is incorrect in place.
 
 Keep memories atomic — one fact per call. Search works better on small,
 focused records than on walls of text.
