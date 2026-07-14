@@ -37,6 +37,13 @@ func TestLoadDefaults(t *testing.T) {
 	if err := os.Chdir(leaf); err != nil {
 		t.Fatalf("Chdir: %v", err)
 	}
+	// Git hooks (e.g. lefthook's pre-push test run from a linked worktree)
+	// export an absolute GIT_DIR, which would resolve the repo from inside
+	// the temp dir and turn the cwd assertion below into a git one.
+	for _, k := range []string{"GIT_DIR", "GIT_WORK_TREE"} {
+		t.Setenv(k, "") // records the original for restoration
+		_ = os.Unsetenv(k)
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
