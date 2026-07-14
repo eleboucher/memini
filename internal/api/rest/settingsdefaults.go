@@ -11,8 +11,9 @@ import (
 // GetSettingsDefaults implements GET /v1/settings/defaults — the server's global
 // default ClientSettings (merged over the built-ins so every field is present)
 // plus managed_by, so the admin UI can render an env-managed layer read-only.
-// Admin-gated like /v1/keys: a named table/file key gets 403 and sees its own
-// merged result via /v1/handshake or /v1/self instead.
+// Admin-gated like /v1/keys: only an admin credential passes — the env key, dev
+// mode, or a named key with admin=true. A NON-admin named key gets 403 and sees
+// its own merged result via /v1/handshake or /v1/self instead.
 func (h *Server) GetSettingsDefaults(w http.ResponseWriter, r *http.Request) {
 	if !requireAdmin(w, r) {
 		return

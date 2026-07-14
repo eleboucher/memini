@@ -1,4 +1,4 @@
-import { apiToken, baseUrl, identity, namespace, namespaceHeader, serverWarning } from './store'
+import { apiToken, baseUrl, identity, namespace, namespaceHeader, serverWarning, sessionEnded } from './store'
 import type {
   ActivityResponse,
   ApiKeysResponse,
@@ -85,8 +85,13 @@ async function req<T>(method: string, path: string, body?: unknown, ns?: string)
     // rotated or revoked out from under us. Clearing identity bounces the app
     // back to the Login gate (see app.tsx's AuthGate) instead of leaving every
     // view stuck on an error banner. Do this before throwing so the throw's
-    // own handler still sees the message.
-    if (res.status === 401) identity.value = null
+    // own handler still sees the message. Flag sessionEnded only when a live
+    // session is actually being torn down (identity was non-null) so the Login
+    // gate can say "your session ended" rather than showing a bare form.
+    if (res.status === 401) {
+      if (identity.value !== null) sessionEnded.value = true
+      identity.value = null
+    }
     throw new ApiError(res.status, msg)
   }
   return data as T

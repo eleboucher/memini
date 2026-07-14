@@ -1,5 +1,5 @@
 import { useState } from 'preact/hooks'
-import { apiToken, baseUrl, identity } from '../store'
+import { apiToken, baseUrl, identity, sessionEnded } from '../store'
 import { verifyToken, ApiError } from '../api'
 import { LogoMark, IconChevron, IconKey } from '../icons'
 
@@ -26,6 +26,7 @@ export function Login({ initialError }: { initialError?: string | null }) {
       // Adopt only after the server accepted the token — the input is preserved
       // on failure so a typo is a one-character fix, not a full re-paste.
       apiToken.value = token
+      sessionEnded.value = false
       identity.value = res.identity
     } catch (e2) {
       setErr(e2 instanceof ApiError ? e2.message : String(e2))
@@ -46,7 +47,14 @@ export function Login({ initialError }: { initialError?: string | null }) {
           <span class="hint">paste an API key to connect</span>
         </div>
 
-        {err && <div class="banner err" role="alert">{err}</div>}
+        {err ? (
+          <div class="banner err" role="alert">{err}</div>
+        ) : sessionEnded.value ? (
+          <div class="banner warn" role="status">
+            Your session ended — the API key it ran on was revoked or rotated. Sign in again with a
+            current key.
+          </div>
+        ) : null}
 
         <label class="field">
           <span class="lbl">API key</span>

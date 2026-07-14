@@ -369,10 +369,17 @@ function CreateKeyForm({
   onCreated: (name: string, secret: string) => void
   onError: (e: string | null) => void
 }) {
+  // Dev-mode bootstrap: no auth is configured yet, so this is very likely the
+  // FIRST key, and creating it turns auth on. A non-admin first key would lock
+  // this browser out of every admin view the moment it does — so default the
+  // admin box to checked here, and warn loudly if the operator unchecks it.
+  // Once auth is on (authenticated=true), this is an ordinary admin minting a
+  // key, and non-admin is the sensible default, so the box starts unchecked.
+  const bootstrapping = identity.value != null && !identity.value.authenticated
   const [name, setName] = useState('')
   const [home, setHome] = useState('')
   const [defaultNS, setDefaultNS] = useState('')
-  const [admin, setAdmin] = useState(false)
+  const [admin, setAdmin] = useState(bootstrapping)
   const [busy, setBusy] = useState(false)
 
   const submit = async (e: Event) => {
@@ -402,6 +409,7 @@ function CreateKeyForm({
   }
 
   return (
+    <>
     <form onSubmit={submit} style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
       <input
         class="input"
@@ -438,6 +446,15 @@ function CreateKeyForm({
         Create key
       </button>
     </form>
+    {bootstrapping && !admin && (
+      <div class="banner warn" role="status" style={{ marginTop: '8px' }}>
+        Creating a non-admin first key locks this browser out of the admin views (Keys, Config,
+        server defaults) the moment auth turns on. Recovery then needs the <code>MEMINI_API_KEY</code>{' '}
+        env key or the <code>memini key</code> CLI. Leave <strong>admin</strong> checked unless you
+        have one of those on hand.
+      </div>
+    )}
+    </>
   )
 }
 

@@ -1,11 +1,11 @@
 package ui
 
 import (
-	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -13,7 +13,7 @@ import (
 
 func TestMountWellKnown404(t *testing.T) {
 	r := chi.NewRouter()
-	if err := Mount(r, ""); err != nil {
+	if err := Mount(r); err != nil {
 		t.Fatalf("mount: %v", err)
 	}
 	srv := httptest.NewServer(r)
@@ -69,37 +69,40 @@ func TestMountWellKnown404(t *testing.T) {
 	})
 }
 
-func TestInjectToken(t *testing.T) {
-	const shell = `<!doctype html><html><head><title>memini</title></head><body></body></html>`
+// TestShellIsTokenFree pins the security property that made the meta-tag
+// injection worth removing: the shell served to an anonymous GET / (or any deep
+// link that falls back to it) carries no credential. The SPA signs in against
+// GET /v1/self in the browser; the server never embeds MEMINI_API_KEY (or any
+// bearer) into the HTML it hands out, so serving it publicly leaks nothing.
+func TestShellIsTokenFree(t *testing.T) {
+	// A sentinel that would be the operator's admin key if the old injection
+	// path still existed. Handler takes no key and reads no key, so there is no
+	// wiring by which it could reach the served bytes — this asserts that.
+	const sentinel = "s3cret-admin-key-do-not-serve"
+	t.Setenv("MEMINI_API_KEY", sentinel)
 
-	t.Run("blank key is a no-op", func(t *testing.T) {
-		if got := injectToken([]byte(shell), ""); !bytes.Equal(got, []byte(shell)) {
-			t.Fatalf("blank key mutated shell: %s", got)
-		}
-	})
+	r := chi.NewRouter()
+	if err := Mount(r); err != nil {
+		t.Fatalf("mount: %v", err)
+	}
+	srv := httptest.NewServer(r)
+	defer srv.Close()
 
-	t.Run("injected before </head>", func(t *testing.T) {
-		got := string(injectToken([]byte(shell), "s3cret"))
-		want := `<meta name="memini-token" content="s3cret"></head>`
-		if !bytes.Contains([]byte(got), []byte(want)) {
-			t.Fatalf("tag not before </head>: %s", got)
+	for _, path := range []string{"/", "/keys", "/some/deep/route"} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("get %s: %v", path, err)
 		}
-	})
-
-	t.Run("attribute value is escaped", func(t *testing.T) {
-		got := string(injectToken([]byte(shell), `a"><script>`))
-		if bytes.Contains([]byte(got), []byte(`content="a"><script>`)) {
-			t.Fatalf("unescaped token leaked markup: %s", got)
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		shell := string(body)
+		if strings.Contains(shell, sentinel) {
+			t.Fatalf("%s: served shell leaked the configured api key", path)
 		}
-		if !bytes.Contains([]byte(got), []byte(`a&#34;&gt;&lt;script&gt;`)) {
-			t.Fatalf("token not escaped: %s", got)
+		// The retired injection point: no <meta name="memini-token"> may ever
+		// reappear in the shell, whatever it is seeded with.
+		if strings.Contains(shell, "memini-token") {
+			t.Fatalf("%s: served shell still carries a memini-token meta tag", path)
 		}
-	})
-
-	t.Run("prepended when no head", func(t *testing.T) {
-		got := string(injectToken([]byte("<body>x</body>"), "k"))
-		if want := `<meta name="memini-token" content="k"><body>`; !bytes.HasPrefix([]byte(got), []byte(want)) {
-			t.Fatalf("not prepended: %s", got)
-		}
-	})
+	}
 }

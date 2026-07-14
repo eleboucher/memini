@@ -37,6 +37,11 @@ const eventDetailLayer = "layer"
 // literal "key_name".
 const eventDetailKeyName = "key_name"
 
+// eventDetailAdmin is the LogConfigEvent detail key carrying the new admin
+// state (bool) on an admin-flag grant/revoke, alongside eventDetailKeyName —
+// kept here next to its sibling so apikeys.go doesn't inline the literal.
+const eventDetailAdmin = "admin"
+
 // projectMapStore type-asserts the backing store to store.ProjectMapStore, the
 // optional capability the project-map pins need (keyStore/linkStore's
 // precedent). Returns false — a 501 to the caller — for a driver that predates

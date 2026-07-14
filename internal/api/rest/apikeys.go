@@ -258,7 +258,7 @@ func (h *Server) CreateApiKey(w http.ResponseWriter, r *http.Request) {
 // create grants admin or an update flips the flag, so the activity log carries
 // an audit trail of who became (or stopped being) an admin key.
 func (h *Server) logAdminFlagEvent(ctx context.Context, name string, admin bool) {
-	h.svc.LogConfigEvent(ctx, store.EventSettings, "", map[string]any{eventDetailKeyName: name, "admin": admin})
+	h.svc.LogConfigEvent(ctx, store.EventSettings, "", map[string]any{eventDetailKeyName: name, eventDetailAdmin: admin})
 }
 
 // UpdateApiKey implements PATCH /v1/keys/{name}: preserve-unspecified

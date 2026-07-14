@@ -51,6 +51,15 @@ export const theme = signal<Theme>(initial.theme)
 // auth configured); admin drives the admin-gated views' locked states.
 export const identity = signal<CallerIdentity | null>(null)
 
+// Set true when a request 401s WHILE a session was live (api.ts, only when it
+// clears a previously non-null identity) — the key this browser was signed in
+// with got revoked or rotated out from under it. The Login gate reads it to
+// explain the bounce ("your session ended") instead of showing a bare form;
+// cleared on the next successful sign-in. Not persisted: a full reload starts
+// fresh and, if the stored token is now dead, surfaces that as a startup error
+// instead.
+export const sessionEnded = signal(false)
+
 // A monotonically increasing nonce views watch to force a refetch.
 export const refreshNonce = signal(0)
 export function refresh() {
