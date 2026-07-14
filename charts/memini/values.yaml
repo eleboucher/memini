@@ -182,7 +182,8 @@ controllers:
   # --- Declarative named API keys (MEMINI_API_KEYS_FILE) ---
   # One admin key per human, non-admin keys per agent/CI, reviewable in Git and
   # loaded once at boot (fail-loud validation). Mount the YAML from a Secret
-  # (see the `persistence.api-keys` block below) and point the server at it.
+  # via the `persistence.api-keys` block below (it needs `enabled: true` AND
+  # this env var; either one alone does nothing) and point the server at it.
   # MEMINI_API_KEYS_FILE: /etc/memini/api-keys.yaml
 
   # -- Periodic fsck CronJob. Disabled by default — the in-process sweeper
@@ -279,10 +280,18 @@ persistence:
     globalMounts:
       - path: /data
   # -- Declarative API keys mounted from a Secret (MEMINI_API_KEYS_FILE above).
-  # Disabled by default. Enable it, reference a Secret whose data key
-  # `api-keys.yaml` holds the file (SOPS-decrypted by your GitOps pipeline), and
-  # set MEMINI_API_KEYS_FILE: /etc/memini/api-keys.yaml in env above. See
+  # The wiring is three pieces and all three are required: a Secret whose data
+  # key `api-keys.yaml` holds the file (SOPS-decrypted by your GitOps pipeline,
+  # referenced by `name` below), `enabled: true` here, and
+  # MEMINI_API_KEYS_FILE: /etc/memini/api-keys.yaml in env above. See
   # docs/guides/access-control.md for the file's contents.
+  #
+  # Upgrading with your own `persistence.api-keys` block from before v0.7.1:
+  # this chart-side block is new, and helm merges it underneath your values, so
+  # its `enabled: false` wins whenever your block does not set the flag at all.
+  # The failure is silent: the keys mount and volume simply vanish from the
+  # rendered pod and the server boots without the file. Add `enabled: true` to
+  # your block; nothing else needs to change.
   api-keys:
     enabled: false
     type: secret
