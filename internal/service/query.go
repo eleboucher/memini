@@ -418,6 +418,12 @@ func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingO
 	byDurable(procs)
 	sort.SliceStable(recent, func(i, j int) bool { return recent[i].CreatedAt.After(recent[j].CreatedAt) })
 
+	// Drop just-captured turns from the recent section: a turn still in the
+	// caller's live transcript is not long-term memory yet, and surfacing it
+	// in the briefing makes the agent parrot itself. Mirrors Recall's
+	// applyTurnEchoGuard.
+	recent = s.filterFreshTurns(recent, now)
+
 	// Pinned sort: by DurableScore first, then created_at desc — so the always
 	// injected "top-of-mind" set keeps stable ordering as new pinned memories
 	// land (pinned memories are exempt from demotion, but a fresh pin can still

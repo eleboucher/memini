@@ -2212,6 +2212,28 @@ func isTurnCapture(meta map[string]any) bool {
 	return ok && v == "turn"
 }
 
+// filterFreshTurns drops just-captured episodic turns (metadata.format="turn"
+// younger than the server's echo window) from a memory slice. Shared by Recall
+// (via applyTurnEchoGuard on Scored) and Briefing (on raw memories), so the
+// briefing's "recent" section doesn't echo a turn still in the caller's live
+// transcript.
+func (s *Service) filterFreshTurns(mems []*memory.Memory, now time.Time) []*memory.Memory {
+	if s.turnEchoWindow <= 0 {
+		return mems
+	}
+	cutoff := now.Add(-s.turnEchoWindow)
+	filtered := mems[:0]
+	for _, m := range mems {
+		if m.Tier.Term() == memory.ShortTerm &&
+			m.CreatedAt.After(cutoff) &&
+			isTurnCapture(m.Metadata) {
+			continue
+		}
+		filtered = append(filtered, m)
+	}
+	return filtered
+}
+
 // buildFactsOnWrite routes a fresh short-term capture to write-time fact
 // building: LLM distillation (batched per session when configured and the
 // capture carries a session_id, else per-capture) or the heuristic extractor

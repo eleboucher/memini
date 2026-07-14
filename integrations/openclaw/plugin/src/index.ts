@@ -1350,7 +1350,18 @@ const TOOL_NAMES = ["memory_recall", "memory_briefing", "memory_list", "memory_r
 // The factory itself still returns synchronously (OpenClaw's contract): the
 // live handshake is awaited INSIDE each tool's already-async execute(), not
 // before the factory returns the tool array.
-export function registerMeminiTools(api: any, client: MeminiClient, ctx: SessionContext) {
+// EchoGuard is the echo-suppression state shared between the hook handlers
+// (recallHandler/captureHandler) and the explicit tools (memory_recall). The
+// tools bypass the prependContext channel, so without this they'd return
+// just-captured turns and already-injected memories that recallHandler
+// already filters.
+export interface EchoGuard {
+  freshCaptured: (ns: string) => Set<string>;
+  injectedIds: (session: string) => Set<string> | undefined;
+  rememberInjected: (session: string, ids: string[]) => void;
+}
+
+export function registerMeminiTools(api: any, client: MeminiClient, ctx: SessionContext, echo?: EchoGuard) {
   const text = (obj: any) => ({ content: [{ type: "text", text: JSON.stringify(obj) }] });
   const Tags = Type.Optional(
     Type.Array(Type.String(), { description: "Match only memories carrying every listed tag (AND)." }),
@@ -1434,8 +1445,13 @@ export function registerMeminiTools(api: any, client: MeminiClient, ctx: Session
         // 400s on one, and a hallucinated value must not turn a recall into an
         // error.
         if (VALID_SCOPES.includes(params.scope)) body.scope = params.scope;
+        // Echo guard: exclude this session's own just-captured turns — they're
+        // still in the live transcript, so recalling them echoes the conversation
+        // back as "long-term memory". Mirrors recallHandler.
+        const session = echo ? sessionIdentity(toolCtx) : "";
+        if (session) body.exclude_metadata = { session_id: session };
         const res = await client.postJson("/v1/search", body, ns);
-        const results = (res?.results || []).map((r: any) => ({
+        let results = (res?.results || []).map((r: any) => ({
           id: r?.memory?.id || "",
           content: r?.memory?.content || "",
           summary: r?.memory?.summary || "",
@@ -1443,6 +1459,24 @@ export function registerMeminiTools(api: any, client: MeminiClient, ctx: Session
           score: typeof r?.score === "number" ? r.score : 0,
           ...provenance(r?.memory, r?.from),
         }));
+        // Client-side echo guard: drop just-captured and already-injected IDs,
+        // mirroring recallHandler's three-layer filter. The server-side
+        // temporal guard already drops fresh turn captures, but exclude_metadata
+        // saves a recall slot and the injectedBySession dedupe prevents
+        // re-injecting what the model already saw via the auto-prepend path.
+        if (echo) {
+          const captured = echo.freshCaptured(ns);
+          if (captured.size) results = results.filter((r: any) => !captured.has(r.id));
+          if (session) {
+            const seen = echo.injectedIds(session);
+            if (seen?.size) results = results.filter((r: any) => !seen.has(r.id));
+          }
+        }
+        // Record injected IDs so recallHandler doesn't re-inject what the model
+        // already pulled explicitly.
+        if (echo && session) {
+          echo.rememberInjected(session, results.map((r: any) => r.id).filter(Boolean));
+        }
         // /v1/search already carries degraded/note on `res`; pass them through
         // rather than dropping them silently.
         return text(res?.degraded ? { results, degraded: res.degraded, note: res.note } : { results });
@@ -1664,6 +1698,12 @@ const plugin: {
     // so the map can't grow without limit across long-lived gateways.
     const injectedBySession = new Map<string, Set<string>>();
     const MAX_TRACKED_SESSIONS = 200;
+    // Scale the per-session dedupe cap with recall_limit so a high limit
+    // doesn't collapse the dedupe window: recall_limit=50 with 5 steps/turn
+    // injects 250 ids/turn, evicting 200 of them from a fixed cap=50 — the
+    // guard degrades to "this step" instead of "this turn." At the default
+    // recall_limit=3, 10 turns × 3 = 30 ids, well under 200.
+    const MAX_INJECTED_PER_SESSION = Math.max(200, (sessionCtx.cfg.recall_limit || 3) * 10);
     const rememberInjected = (session: string, ids: string[]) => {
       let seen = injectedBySession.get(session);
       if (!seen) {
@@ -1676,19 +1716,27 @@ const plugin: {
         }
       }
       for (const id of ids) if (id) seen.add(id);
+      while (seen.size > MAX_INJECTED_PER_SESSION) {
+        const oldest = seen.values().next().value;
+        if (oldest === undefined) break;
+        seen.delete(oldest);
+      }
     };
 
     // Echo guard: track IDs this namespace just captured so the next recall can
     // drop them. Keyed by namespace (agent identity) not session, because the
     // session id can be absent/rolled at recall while the namespace is stable.
-    // Bounded: oldest captures age out and become recallable again.
-    const recentlyCaptured = new Map<string, Set<string>>();
-    const MAX_CAPTURED_PER_NS = 5;
+    // Time-based, mirroring the server's fresh-turn window: a capture ages back
+    // into recall once it stops being live context, regardless of how many
+    // captures followed it (a count-aged guard lets a fresh burst wider than
+    // the count slip through). The count cap is only a memory bound.
+    const recentlyCaptured = new Map<string, Map<string, number>>();
+    const CAPTURED_ECHO_WINDOW_MS = 5 * 60_000;
     const MAX_CAPTURED_NAMESPACES = 200;
     const rememberCaptured = (ns: string, id: string) => {
       let seen = recentlyCaptured.get(ns);
       if (!seen) {
-        seen = new Set<string>();
+        seen = new Map<string, number>();
         recentlyCaptured.set(ns, seen);
         while (recentlyCaptured.size > MAX_CAPTURED_NAMESPACES) {
           const oldest = recentlyCaptured.keys().next().value;
@@ -1696,12 +1744,18 @@ const plugin: {
           recentlyCaptured.delete(oldest);
         }
       }
-      seen.add(id);
-      while (seen.size > MAX_CAPTURED_PER_NS) {
-        const oldest = seen.values().next().value;
-        if (oldest === undefined) break;
-        seen.delete(oldest);
+      seen.set(id, Date.now());
+    };
+    const freshCaptured = (ns: string): Set<string> => {
+      const fresh = new Set<string>();
+      const seen = recentlyCaptured.get(ns);
+      if (!seen) return fresh;
+      const cutoff = Date.now() - CAPTURED_ECHO_WINDOW_MS;
+      for (const [id, at] of seen) {
+        if (at < cutoff) seen.delete(id);
+        else fresh.add(id);
       }
+      return fresh;
     };
 
     const recallHandler = async (event: any, hookCtx: any) => {
@@ -1725,8 +1779,8 @@ const plugin: {
       let results = Array.isArray(result?.results) ? result.results : [];
       // Drop just-captured turns: they're live context, not long-term memory.
       // Survives session-id asymmetry (keyed by stable namespace).
-      const captured = recentlyCaptured.get(ns);
-      if (captured?.size) results = results.filter((r: any) => !captured.has(r?.memory?.id));
+      const captured = freshCaptured(ns);
+      if (captured.size) results = results.filter((r: any) => !captured.has(r?.memory?.id));
       // Suppress memories this session has already been shown so a multi-step
       // turn doesn't re-inject the same block on every tool call (#21).
       if (session) {
@@ -1801,7 +1855,11 @@ const plugin: {
     // a failure (e.g. typebox unavailable) is logged and leaves the slot working.
     if (sessionCtx.cfg.expose_tools && typeof api.registerTool === "function") {
       try {
-        registerMeminiTools(api, client, sessionCtx);
+        registerMeminiTools(api, client, sessionCtx, {
+          freshCaptured,
+          injectedIds: (session: string) => injectedBySession.get(session),
+          rememberInjected,
+        });
       } catch (e) {
         api.logger?.warn?.(`memini: tool registration skipped: ${String(e)}`);
       }
