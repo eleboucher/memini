@@ -1,12 +1,13 @@
 # Recipes
 
-Four deployments, worked end to end. Each one is a real, complete configuration
+Five guides, worked end to end. Each one is a real, complete configuration
 rather than a menu of options: pick the closest, get it running, then diverge.
 
 | Recipe                                              | Shape                                                                                                          |
 | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | [Solo laptop](solo-laptop.md)                       | One developer, one machine. SQLite, a local embeddings endpoint, no LLM.                                       |
 | [Homelab team](homelab-team.md)                     | Three to five developers, self-hosted. Postgres and VectorChord, remote MCP over HTTP, a named key per person. |
+| [Access control](access-control.md)                 | A team's keys end to end: break-glass env key, one admin key per human, non-admin keys per agent/CI, rotation. |
 | [Tuning recall](tuning-recall.md)                   | Recall is bad and you want to know which knob to turn. Symptom, cause, setting.                                |
 | [Multi-agent namespaces](multi-agent-namespaces.md) | Several agents on one memini, sharing project knowledge without stepping on each other.                        |
 

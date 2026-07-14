@@ -42,11 +42,14 @@ path under `~/.local/share` (or wherever you keep application state) and forget
 about it.
 
 **The admin UI is on by default** at `/`, on the same port as the API and the MCP
-endpoint. On a laptop with no `MEMINI_API_KEY` set, that is fine: the listener is
-local, there is no token to leak, and the UI is the fastest way to see what your
-agent has actually stored. (If you do set an admin key, read the security note in
-the [homelab guide](homelab-team.md#the-ui-embeds-your-api-key), because the rules
-change.)
+endpoint. On a laptop with no `MEMINI_API_KEY` set, the server runs in dev mode:
+the UI opens straight to the dashboard with no sign-in (it shows a small amber
+**no auth** chip to remind you), and it is the fastest way to see what your agent
+has actually stored. The served shell never contains a credential, so nothing
+leaks even if you set a key later. If you do set `MEMINI_API_KEY`, you sign in to
+the UI once per browser by pasting it (or, better, a named key); see
+[signing in to the UI](homelab-team.md#signing-in-to-the-ui) and the
+[access control guide](access-control.md) for the per-key model.
 
 ## No LLM is a real mode, not a degraded one
 
