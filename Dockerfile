@@ -4,10 +4,16 @@ ARG NODE_VERSION=24
 
 FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-alpine AS ui
 WORKDIR /ui
-COPY ui/package.json ui/package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm npm ci
+RUN npm install -g pnpm@11
+# ui is a standalone pnpm project (its own lockfile, not a workspace member),
+# so --ignore-workspace; the Docker context copies only ui/, never the
+# workspace root. gen-api is NOT run here — the generated api-schema is
+# committed, and this stage cannot see ../api/openapi.yaml to regenerate it.
+COPY ui/package.json ui/pnpm-lock.yaml ./
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm install --ignore-workspace --frozen-lockfile
 COPY ui/ ./
-RUN npm run build
+RUN pnpm run build
 
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS build
 WORKDIR /workspace

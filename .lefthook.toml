@@ -10,9 +10,10 @@ run = "golangci-lint run"
 [pre-commit.commands.format]
 # oxfmt formats markdown/json/yaml; honours .prettierignore.
 glob = "*.{md,json,yaml,yml}"
-# Generated lockfile is ignored by oxfmt; excluding it stops the formatter from
-# being handed only-ignored files and exiting non-zero.
-exclude = ["**/package-lock.json"]
+# Generated lockfiles are ignored by oxfmt; excluding them stops the formatter
+# from being handed only-ignored files and exiting non-zero. pnpm-lock.yaml
+# covers both the workspace root and the standalone ui/ project.
+exclude = ["**/package-lock.json", "**/pnpm-lock.yaml"]
 run = "oxfmt --write --no-error-on-unmatched-pattern {staged_files}"
 stage_fixed = true
 

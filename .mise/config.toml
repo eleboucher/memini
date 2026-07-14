@@ -73,12 +73,19 @@ dir = "ui"
 # gen-api regenerates src/api-schema.gen.ts from api/openapi.yaml so the UI
 # types can't drift from the spec. The generated file stays committed: the
 # Docker build only copies ui/ and cannot regenerate it.
-run = "npm ci && npm run gen-api && npm run build"
+#
+# --ignore-workspace is required: ui/ lives inside the pnpm-workspace root but
+# is NOT a member, so a bare `pnpm install` here resolves the workspace's
+# projects (packages/*, the plugins) and skips ui's own deps entirely. The flag
+# makes pnpm treat ui as the standalone project it is, installing from ui's own
+# pnpm-lock.yaml.
+run = "pnpm install --ignore-workspace --frozen-lockfile && pnpm run gen-api && pnpm run build"
 
 [tasks.ui-dev]
 description = "Run the UI dev server with HMR (proxies /v1 to a local memini on :8080)"
 dir = "ui"
-run = "npm install && npm run dev"
+# --ignore-workspace: see the `ui` task above.
+run = "pnpm install --ignore-workspace && pnpm run dev"
 
 [tasks.run]
 description = "Run the service from source"
