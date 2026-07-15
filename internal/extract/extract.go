@@ -9,6 +9,7 @@ package extract
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/eleboucher/memini/internal/memory"
 )
@@ -128,7 +129,7 @@ func Typed(text string) []Result {
 	var out []Result
 	for seg := range strings.SplitSeq(text, "\n\n") {
 		seg = strings.TrimSpace(seg)
-		if len(seg) < 20 {
+		if utf8.RuneCountInString(seg) < MinFactChars {
 			continue
 		}
 		prose := strings.ToLower(proseOnly(seg))
@@ -226,18 +227,36 @@ var hedgePatterns = []*regexp.Regexp{
 // history, not a single fact, however many markers it contains.
 var roleScaffold = regexp.MustCompile(`(?mi)^\s*(user|assistant)\s*:`)
 
-// ClassifyMaxChars bounds a classifiable write: one durable fact is terse;
-// longer content is session history even when it contains decision markers.
+// ClassifyMaxChars bounds a classifiable write, in runes: one durable fact is
+// terse; longer content is session history even when it contains decision
+// markers. Runes, not bytes — a byte bound would put non-ASCII prose over the
+// ceiling at a third of the nominal length, silently denying it a durable tier.
 const ClassifyMaxChars = 400
 
-// Classify labels an entire write whose caller picked no tier. It is stricter
-// than Typed because the verdict covers the full text rather than an extracted
-// segment: the content must be short, prose-shaped, unhedged, not a transcript,
-// and clear the same marker-confidence gate. ok=false means no confident call —
-// callers fall back to the working-intake default.
-func Classify(text string) (Kind, bool) {
+// MinFactChars floors an extractable segment and a classifiable write, in
+// runes: below this there is too little text to be a fact. Runes for the same
+// reason as ClassifyMaxChars — on bytes, non-ASCII prose clears a floor that
+// the same amount of ASCII prose does not.
+//
+// Exported because it bounds the useful range of a classify ceiling: a ceiling
+// under MinFactChars can admit nothing, so config rejects that range rather
+// than letting it read as a tight bound and act as an off switch.
+const MinFactChars = 20
+
+// Classify labels an entire write whose caller picked no tier, bounded by the
+// built-in ClassifyMaxChars. See ClassifyWith.
+func Classify(text string) (Kind, bool) { return ClassifyWith(text, ClassifyMaxChars) }
+
+// ClassifyWith labels an entire write whose caller picked no tier, bounding it
+// at maxChars runes. It is stricter than Typed because the verdict covers the
+// full text rather than an extracted segment: the content must be short,
+// prose-shaped, unhedged, not a transcript, and clear the same
+// marker-confidence gate. ok=false means no confident call — callers fall back
+// to the working-intake default. maxChars <= 0 declines every write, since a
+// zero-length ceiling admits nothing.
+func ClassifyWith(text string, maxChars int) (Kind, bool) {
 	seg := strings.TrimSpace(text)
-	if len(seg) < 20 || len(seg) > ClassifyMaxChars {
+	if n := utf8.RuneCountInString(seg); n < MinFactChars || n > maxChars {
 		return "", false
 	}
 	if roleScaffold.MatchString(seg) {

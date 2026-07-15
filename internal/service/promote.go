@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/eleboucher/memini/internal/extract"
 	"github.com/eleboucher/memini/internal/llm"
@@ -168,9 +169,16 @@ func (s *Service) promote(ctx context.Context, ns string, batch []*memory.Memory
 	return written, nil
 }
 
-// promoteWholeMaxChars bounds whole-content heuristic promotion: a source this
-// short reads as a single statement, so it can become a fact verbatim.
-const promoteWholeMaxChars = 240
+// DefaultPromoteWholeMaxChars bounds whole-content heuristic promotion, in
+// runes: a source this short reads as a single statement, so it can become a
+// fact verbatim. Runes, not bytes — a byte bound would deny promotion to
+// non-ASCII prose at a third of the nominal length, however often it was
+// recalled. Overridden by WithPromoteWholeMaxChars.
+//
+// Exported so the server's MEMINI_PROMOTE_WHOLE_MAX_CHARS default can be pinned
+// against it: the env default is a struct tag and cannot reference this
+// constant, so only a test keeps the two from drifting apart.
+const DefaultPromoteWholeMaxChars = 240
 
 // promoteHeuristic is the LLM-less promotion path: each stamped source is run
 // through the marker extractor and the typed segments are written as durable
@@ -194,7 +202,7 @@ func (s *Service) promoteHeuristic(ctx context.Context, ns string, batch []*memo
 					Metadata: map[string]any{"memory_type": string(r.Kind), "promoted_from": m.ID},
 				})
 			}
-		} else if src != "" && len(src) <= promoteWholeMaxChars {
+		} else if src != "" && utf8.RuneCountInString(src) <= s.promoteWholeMaxChars {
 			ins = append(ins, RememberInput{
 				Namespace: ns, Content: src, Tier: memory.TierSemantic,
 				Level:    memory.LevelExplicit,

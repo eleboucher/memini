@@ -3,6 +3,7 @@ package extract
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/eleboucher/memini/internal/memory"
 )
@@ -90,13 +91,43 @@ func TestKindTier(t *testing.T) {
 	}
 }
 
+// asciiOfLen builds pure-ASCII prose of exactly n runes carrying two distinct
+// "problem" markers ("bug", "not working"), so it scores 2 and clears
+// MinConfidence at any length — leaving the length gates as the only thing that
+// can reject it. ASCII so len(s) == RuneCountInString(s) and the case pins the
+// same boundary under either counting.
+func asciiOfLen(t *testing.T, n int) string {
+	t.Helper()
+	const base = "bug not working " // 16 runes, both markers
+	if n < len(base) {
+		t.Fatalf("asciiOfLen(%d): shorter than the %d-rune marker base", n, len(base))
+	}
+	s := base + strings.Repeat("x", n-len(base))
+	if got := utf8.RuneCountInString(s); got != n {
+		t.Fatalf("asciiOfLen(%d) produced %d runes", n, got)
+	}
+	if len(s) != n {
+		t.Fatalf("asciiOfLen(%d) is not pure ASCII: %d bytes", n, len(s))
+	}
+	return s
+}
+
 func TestClassify(t *testing.T) {
-	tests := []struct {
+	type classifyCase struct {
 		name string
 		text string
 		want Kind
 		ok   bool
-	}{
+	}
+	// For ASCII, bytes and runes agree, so switching the gates to runes must not
+	// have moved either boundary by even one character. Pinned exactly on both
+	// sides: the whole claim of the rune fix is that ASCII is untouched.
+	tests := []classifyCase{
+		{"ascii at the floor", asciiOfLen(t, MinFactChars), KindProblem, true},
+		{"ascii one under the floor", asciiOfLen(t, MinFactChars-1), "", false},
+		{"ascii at the ceiling", asciiOfLen(t, ClassifyMaxChars), KindProblem, true},
+		{"ascii one over the ceiling", asciiOfLen(t, ClassifyMaxChars+1), "", false},
+
 		{"decision", "We decided to use Postgres instead of MySQL for the vector store.", KindDecision, true},
 		{"preference", "I prefer table-driven tests, please always use them instead of ad-hoc asserts.", KindPreference, true},
 		{"problem fix", "The bug was a nil map write; the fix was initializing metadata in the constructor.", KindProblem, true},
@@ -107,6 +138,17 @@ func TestClassify(t *testing.T) {
 		{"single weak marker", "I prefer tabs.", "", false},
 		{"too short", "use postgres", "", false},
 		{"too long", strings.Repeat("we decided to go with postgres instead of mysql. ", 20), "", false},
+		// Non-ASCII prose is counted in runes, not bytes: this is ~210 runes but
+		// ~534 bytes, so a byte-based ceiling would silently refuse to classify it
+		// and drop the write into the short-lived working tier.
+		{"cjk under the rune ceiling, over a byte ceiling",
+			"We decided to go with Postgres instead of MySQL. " +
+				strings.Repeat("这个部署流水线在十六个核心上并行运行测试以最小化延迟。", 6),
+			KindDecision, true},
+		// The floor is runes too, and that cuts the other way: 18 runes but 22
+		// bytes. A byte floor let this through while rejecting the same-length
+		// ASCII text, so two markers on a scrap of prose became a durable fact.
+		{"cjk under the rune floor, over a byte floor", "bug not working 是的", "", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
