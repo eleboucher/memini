@@ -157,8 +157,13 @@ function NsRow({
         ) : (
           // A synthetic path-prefix node (e.g. "acme/phoenix" when only
           // "acme/phoenix/api" holds memories) — a group label, not a
-          // selectable namespace.
-          <span class="opt opt-group">{label}</span>
+          // selectable namespace. It keeps the empty check slot so its label
+          // lands on the same x as a leaf's at the same depth; without it the
+          // group's label sits 22px left and nesting reads wrong.
+          <span class="opt opt-group">
+            <span class="ck" aria-hidden="true" />
+            {label}
+          </span>
         )}
       </div>
       {hasChildren &&

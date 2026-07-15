@@ -1279,6 +1279,9 @@ pre.json {
 }
 .menu .opt .ck {
   width: 14px;
+  /* A fixed gutter, like .tree-chevron/.tree-spacer: without this a long label
+     shrinks the slot and drags its row's text out of line with the others. */
+  flex: none;
 }
 
 /* Indented namespace tree inside the menu popover (NamespaceSelect). Each
