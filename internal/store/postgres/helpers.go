@@ -19,6 +19,17 @@ func (a *args) add(v any) string {
 	return fmt.Sprintf("$%d", len(a.vals))
 }
 
+// prefixed qualifies each column in a comma-separated list with alias, for a
+// query that joins another table carrying the same column names. Mirrors
+// sqlitevec's helper of the same name.
+func prefixed(columns, alias string) string {
+	parts := strings.Split(columns, ",")
+	for i, p := range parts {
+		parts[i] = alias + "." + strings.TrimSpace(p)
+	}
+	return strings.Join(parts, ", ")
+}
+
 // filterClause appends the SQL conditions for f, registering any parameters on
 // b, with every column left unqualified. Safe only in a single-table query.
 func filterClause(b *args, f store.Filter) string {

@@ -120,6 +120,20 @@ func (s *Store) migrate(ctx context.Context) error {
 		)`, s.dims),
 		// Porter stemming so queries match morphological variants (move/moved/moving).
 		`CREATE VIRTUAL TABLE IF NOT EXISTS fts_memories USING fts5(content, summary, tags, tokenize='porter unicode61')`,
+		// Chunked embedding (see chunks.go): additive, so a store that never
+		// turns MEMINI_CHUNK_EMBED on simply carries two empty tables, and an
+		// older binary against this schema ignores them.
+		`CREATE TABLE IF NOT EXISTS memory_chunks (
+			rowid        INTEGER PRIMARY KEY,
+			memory_rowid INTEGER NOT NULL,
+			chunk_idx    INTEGER NOT NULL,
+			UNIQUE(memory_rowid, chunk_idx)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_memory ON memory_chunks(memory_rowid)`,
+		fmt.Sprintf(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
+			namespace TEXT partition key,
+			embedding float[%d]
+		)`, s.dims),
 		// Key/value store for store-level metadata (e.g. the embedding model the
 		// vectors were produced with — see EmbedModel/SetEmbedModel).
 		`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
@@ -320,7 +334,9 @@ func (s *Store) verifyVecDims(ctx context.Context) error {
 		return fmt.Errorf("sqlitevec: store was created with %d embedding dims but is configured for %d; "+
 			"set MEMINI_EMBED_DIMS=%d to match the existing data, or migrate to a new database", got, s.dims, got)
 	}
-	return nil
+	// Chunk vectors are the same space and must be the same width; a mismatch
+	// there would return garbage from chunk recall just as silently.
+	return s.verifyChunkVecDims(ctx)
 }
 
 // parseVecDims extracts N from a vec0 "embedding float[N]" column declaration.
@@ -467,6 +483,12 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 			return fmt.Errorf("sqlitevec: insert vector: %w", err)
 		}
 	}
+	// Chunks are rewritten in the same transaction as the row, so content and
+	// its chunk vectors can never be observed out of step. An upsert carrying
+	// none clears them — see Memory.Chunks.
+	if err := s.writeChunks(ctx, tx, rowID, m.Namespace, m.Chunks); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM fts_memories WHERE rowid=?`, rowID); err != nil {
 		return fmt.Errorf("sqlitevec: clear fts: %w", err)
 	}
@@ -577,6 +599,12 @@ func (s *Store) Delete(ctx context.Context, namespace, id string) error {
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.ErrNotFound
 	} else if err != nil {
+		return err
+	}
+	if err := deleteChunksFor(ctx, tx, []int64{rowID}); err != nil {
+		return err
+	}
+	if err := deleteChunksFor(ctx, tx, []int64{rowID}); err != nil {
 		return err
 	}
 	for _, q := range []string{
@@ -826,6 +854,11 @@ func (s *Store) DeleteNamespace(ctx context.Context, namespace string) (int64, e
 	}
 	if len(rowIDs) > 0 {
 		for _, q := range []string{
+			// Chunks first: their mapping rows are the only way to reach their
+			// vec0 rows, so dropping the memories first would orphan them.
+			`DELETE FROM vec_chunks WHERE rowid IN (SELECT rowid FROM memory_chunks
+				WHERE memory_rowid IN (SELECT rowid FROM memories WHERE namespace=?))`,
+			`DELETE FROM memory_chunks WHERE memory_rowid IN (SELECT rowid FROM memories WHERE namespace=?)`,
 			`DELETE FROM vec_memories WHERE rowid IN (SELECT rowid FROM memories WHERE namespace=?)`,
 			`DELETE FROM fts_memories WHERE rowid IN (SELECT rowid FROM memories WHERE namespace=?)`,
 			`DELETE FROM memories WHERE namespace=?`,
@@ -885,6 +918,13 @@ func (s *Store) Reassign(ctx context.Context, fromNS string, ids []string, toNS 
 				`INSERT INTO vec_memories(rowid, namespace, embedding) VALUES (?,?,?)`, rowID, toNS, emb); err != nil {
 				return 0, fmt.Errorf("sqlitevec: reassign insert vector: %w", err)
 			}
+		}
+		// vec_chunks.namespace is a partition key too, so the same rewrite is
+		// needed per chunk. Skipping it would leave the chunks partitioned under
+		// the old namespace: still reachable by a recall there, and invisible to
+		// one in the namespace the memory now lives in.
+		if err := reassignChunks(ctx, tx, rowID, toNS); err != nil {
+			return 0, err
 		}
 		moved++
 	}

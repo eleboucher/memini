@@ -143,6 +143,29 @@ type Memory struct {
 	// Embedding is the dense vector for similarity search. It is required when
 	// writing to the store and is omitted from API responses.
 	Embedding []float32 `json:"-"`
+
+	// Chunks are per-segment vectors covering content that runs past the
+	// per-item embed budget, so recall can match text the Embedding above does
+	// not reach. Optional: a store need not implement store.ChunkStore, and
+	// short content has none by design (see internal/chunk).
+	//
+	// It follows Embedding's contract — an Upsert with none clears whatever the
+	// row had. That is deliberate: content and chunks are written together, so
+	// a caller that changed the content and did not recompute chunks has stale
+	// ones, and stale chunks are worse than missing ones. Missing chunks are
+	// repaired by the backfill loop; stale chunks make recall return a memory
+	// whose text no longer contains the passage that matched it. Callers that
+	// change content without recomputing must stamp metadata pending_chunks so
+	// the backfill picks the row up.
+	Chunks []Chunk `json:"-"`
+}
+
+// Chunk is one embedded segment of a memory's content. Idx is its position in
+// the content, from 0; it exists so a row is stable across re-splits and so a
+// chunk can later be traced back to the text it covers.
+type Chunk struct {
+	Idx       int
+	Embedding []float32
 }
 
 // Expired reports whether the memory has passed its TTL as of now.

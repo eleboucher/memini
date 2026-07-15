@@ -227,6 +227,45 @@ type EmbedModelStore interface {
 	SetEmbedModel(ctx context.Context, model string) error
 }
 
+// ChunkStore is the optional chunked-embedding capability: per-segment vectors
+// for content that runs past the per-item embed budget, so recall can match
+// text the document vector does not cover.
+//
+// It is a SEPARATE capability rather than a change to VectorSearch, and that
+// separation is load-bearing. VectorSearch has six callers and three of them
+// destroy data: write-dedup (coalesce/supersede tombstones the loser),
+// contradiction routing (closes a fact's validity window), and the maintenance
+// dedup sweep (tombstones). Chunk similarity is max-pooled, which makes a long
+// memory a near-duplicate of anything matching any one of its paragraphs — so
+// pooling inside VectorSearch would have those three tombstone unrelated
+// memories. VectorSearch's semantics are therefore frozen, and recall unions
+// the two legs instead. Chunks are purely additive: they can only add hits,
+// never remove or rewrite a memory.
+//
+// Because the document vector stays authoritative, a store that implements this
+// needs no migration to be correct, and dropping back to a build without it
+// loses only the extra recall.
+type ChunkStore interface {
+	// ChunkVectorSearch returns the k memories whose best-matching chunk is
+	// nearest to vec, best-first, one row per memory (max-pooled over its
+	// chunks). Scores are in the same space as VectorSearch's, so a caller can
+	// compare the two legs directly — which matters because the recall gates
+	// (semantic floor, min-score) are absolute thresholds, not ranks.
+	//
+	// Filter applies to the memories, not the chunks. Rows whose memory is
+	// filtered out never appear.
+	ChunkVectorSearch(ctx context.Context, namespace string, vec []float32, f Filter, k int) ([]Scored, error)
+
+	// ListUnchunked returns up to limit live memories in the namespace whose
+	// content exceeds minRunes but which have no chunk rows — the backfill's
+	// work queue. Namespace "" means every namespace.
+	//
+	// This is a query rather than a metadata flag because rows that predate
+	// chunking carry no flag to find them by, and adding one would mean
+	// rewriting every row before the feature could do anything.
+	ListUnchunked(ctx context.Context, namespace string, minRunes, limit int) ([]*memory.Memory, error)
+}
+
 // NamespaceLink is a directed cross-namespace read link: recall scoped to Src
 // additionally reads durable memories from Dst. Tiers restricts which tiers
 // cross the boundary; nil means the service layer applies its durable-tier

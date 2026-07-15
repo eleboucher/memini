@@ -108,6 +108,19 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		`CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_fts ON memories USING gin(fts)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_vec ON memories USING vchordrq (embedding vector_l2_ops)`,
+		// Chunked embedding (see chunks.go): additive and FK-cascaded, so a
+		// store that never enables it just carries an empty table, and an older
+		// binary against this schema ignores it entirely.
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS memory_chunks (
+			memory_id  text NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+			chunk_idx  integer NOT NULL,
+			namespace  text NOT NULL,
+			embedding  vector(%d) NOT NULL,
+			PRIMARY KEY (memory_id, chunk_idx)
+		)`, dims),
+		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_ns ON memory_chunks(namespace)`,
+		// Mirrors idx_memories_vec so the chunk KNN gets the same plan.
+		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_vec ON memory_chunks USING vchordrq (embedding vector_l2_ops)`,
 		// Backfill temporal-validity, confidence, fingerprint, and level columns on
 		// databases created before them.
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS valid_from timestamptz`,
@@ -327,6 +340,11 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		// Conflict on id but the existing row belongs to another namespace, so
 		// the guarded update matched nothing.
 		return fmt.Errorf("postgres: id %q exists in another namespace: %w", m.ID, store.ErrConflict)
+	}
+	// Same transaction as the row, so content and its chunk vectors are never
+	// observed out of step. An upsert with no chunks clears them.
+	if err := s.writeChunks(ctx, tx, m); err != nil {
+		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
@@ -655,6 +673,16 @@ func (s *Store) Reassign(ctx context.Context, fromNS string, ids []string, toNS 
 		`UPDATE memories SET namespace=$1 WHERE namespace=$2 AND id = ANY($3)`, toNS, fromNS, ids)
 	if err != nil {
 		return 0, err
+	}
+	// memory_chunks carries its own namespace (the chunk KNN filters on it
+	// before the join). The FK cascades deletes, not a namespace change, so the
+	// chunks must be moved explicitly — otherwise they stay filed under the old
+	// namespace: matched by a recall there, invisible to one where the memory
+	// now lives.
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE memory_chunks SET namespace=$1 WHERE namespace=$2 AND memory_id = ANY($3)`,
+		toNS, fromNS, ids); err != nil {
+		return 0, fmt.Errorf("postgres: reassign chunks: %w", err)
 	}
 	return tag.RowsAffected(), nil
 }
