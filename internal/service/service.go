@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/eleboucher/memini/internal/chunk"
 	"github.com/eleboucher/memini/internal/contradict"
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/extract"
@@ -303,6 +304,19 @@ type Service struct {
 	// longer marker-less source is never promoted. See config.PromoteWholeMaxChars.
 	promoteWholeMaxChars int
 
+	// chunkEmbed turns chunked embedding on: the backfill loop builds chunks for
+	// long memories, and recall unions their vectors with the document ones.
+	// Off leaves every path byte-identical to before the feature existed.
+	chunkEmbed bool
+	// chunkStore is the store's optional ChunkStore capability, nil when the
+	// driver does not implement it.
+	chunkStore store.ChunkStore
+	// chunkCfg bounds the split. See internal/chunk.
+	chunkCfg chunk.Config
+	// chunkScoreWeight scales the chunk leg when merging it with the document
+	// leg; see mergeVectorLegs for why it exists.
+	chunkScoreWeight float64
+
 	metrics Metrics
 	// syncReinforce makes recall reinforcement synchronous (deterministic tests).
 	syncReinforce bool
@@ -525,6 +539,29 @@ func WithClassifyMaxChars(n int) Option { return func(s *Service) { s.classifyMa
 // 0 leaves only marker extraction.
 func WithPromoteWholeMaxChars(n int) Option {
 	return func(s *Service) { s.promoteWholeMaxChars = n }
+}
+
+// WithChunkEmbed turns chunked embedding on under cfg. It is a no-op unless the
+// store implements store.ChunkStore — a driver without the capability simply
+// keeps the previous behaviour rather than erroring, matching how every other
+// optional capability degrades.
+func WithChunkEmbed(cfg chunk.Config) Option {
+	return func(s *Service) {
+		cs, ok := s.store.(store.ChunkStore)
+		if !ok {
+			slog.Warn("chunked embedding requested but the store does not support it; continuing without it")
+			return
+		}
+		s.chunkEmbed = true
+		s.chunkStore = cs
+		s.chunkCfg = cfg
+	}
+}
+
+// WithChunkScoreWeight scales chunk scores against document scores when the two
+// legs are merged. See mergeVectorLegs.
+func WithChunkScoreWeight(w float64) Option {
+	return func(s *Service) { s.chunkScoreWeight = w }
 }
 
 // WithMetrics installs an observability sink for consolidation events.
@@ -791,6 +828,8 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 		promoteMinAccess:     3,
 		classifyMaxChars:     extract.ClassifyMaxChars,
 		promoteWholeMaxChars: DefaultPromoteWholeMaxChars,
+		chunkCfg:             chunk.DefaultConfig(),
+		chunkScoreWeight:     1,
 		rerankTimeout:        defaultRerankTimeout,
 		scoreFusionAlpha:     search.DefaultFusionAlpha, // convex score fusion by default; negative selects RRF
 		reservePromoteRatio:  defaultReservePromoteRatio,
@@ -1972,7 +2011,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		}
 		if vec != nil {
 			g2.Go(func() error {
-				v, err := s.store.VectorSearch(g2ctx, ns, vec, f, poolK)
+				v, err := s.vectorLeg(g2ctx, ns, vec, f, poolK)
 				if err != nil {
 					return fmt.Errorf("recall: vector search: %w", err)
 				}

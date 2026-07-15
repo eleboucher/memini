@@ -48,6 +48,11 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_EMBED_MAX_BATCH_CHARS`](#memini_embed_max_batch_chars) | `24000` | [Embeddings](#embeddings) |
 | [`MEMINI_EMBED_MAX_ITEM_CHARS`](#memini_embed_max_item_chars) | `8000` | [Embeddings](#embeddings) |
 | [`MEMINI_EMBED_MAX_CONCURRENCY`](#memini_embed_max_concurrency) | `0` | [Embeddings](#embeddings) |
+| [`MEMINI_CHUNK_EMBED`](#memini_chunk_embed) | `false` | [Embeddings](#embeddings) |
+| [`MEMINI_CHUNK_SIZE`](#memini_chunk_size) | `1200` | [Embeddings](#embeddings) |
+| [`MEMINI_CHUNK_OVERLAP`](#memini_chunk_overlap) | `200` | [Embeddings](#embeddings) |
+| [`MEMINI_CHUNK_MIN_CONTENT`](#memini_chunk_min_content) | `1200` | [Embeddings](#embeddings) |
+| [`MEMINI_CHUNK_MAX_PER_MEMORY`](#memini_chunk_max_per_memory) | `64` | [Embeddings](#embeddings) |
 | [`MEMINI_REEMBED_ON_MODEL_CHANGE`](#memini_reembed_on_model_change) | `false` | [Embeddings](#embeddings) |
 | [`MEMINI_LLM_BASE_URL`](#memini_llm_base_url) | none | [LLM (optional)](#llm-optional) |
 | [`MEMINI_LLM_API_KEY`](#memini_llm_api_key) | none | [LLM (optional)](#llm-optional) |
@@ -242,6 +247,40 @@ This bounds what is findable, not what is stored: a memory longer than this is s
 int, default `0`. Set by `Config.EmbedMaxConcurrency`.
 
 `MEMINI_EMBED_MAX_CONCURRENCY` caps in-flight calls to the embeddings backend. 0 is unbounded. Set to 1-2 for self-hosted backends that can't service a recall burst in parallel.
+
+### `MEMINI_CHUNK_EMBED`
+
+bool, default `false`. Set by `Config.ChunkEmbed`.
+
+`MEMINI_CHUNK_EMBED` additionally embeds long memories in overlapping segments, so recall can match text past MEMINI_EMBED_MAX_ITEM_CHARS instead of only the prefix that fits in one vector. Off by default.
+
+It is purely additive: the whole-memory vector is unchanged and still searched, and chunk hits are merged into it. Turning this on can only add results, never remove or re-rank away an existing one; turning it back off returns exactly the previous behaviour, leaving unused rows behind.
+
+Chunks are built by the background loop on MEMINI_BACKFILL_INTERVAL, not at write time — a long memory is many embedder round-trips, which would blow MEMINI_WRITE_EMBED_TIMEOUT for precisely the writes this helps. So recall improves for a long memory shortly after it is written, not at the instant it is.
+
+### `MEMINI_CHUNK_SIZE`
+
+int, default `1200`. Set by `Config.ChunkSize`.
+
+`MEMINI_CHUNK_SIZE` is the maximum runes in one chunk. Keep it under your embedder's context: a chunk over MEMINI_EMBED_MAX_ITEM_CHARS would itself be truncated, which is the failure chunking exists to remove. The default suits the 512-token local models (BGE, e5) as well as OpenAI's.
+
+### `MEMINI_CHUNK_OVERLAP`
+
+int, default `200`. Set by `Config.ChunkOverlap`.
+
+`MEMINI_CHUNK_OVERLAP` is how many runes each chunk repeats from the previous one, so a fact spanning a boundary survives whole in one of them. Must be less than MEMINI_CHUNK_SIZE.
+
+### `MEMINI_CHUNK_MIN_CONTENT`
+
+int, default `1200`. Set by `Config.ChunkMinContent`.
+
+`MEMINI_CHUNK_MIN_CONTENT` is the content length at or below which a memory gets no chunks at all. Below this the whole-memory vector already covers the text, so a chunk would duplicate it: a wasted embedder call, a wasted row, and a duplicate hit to merge away. Keep it at or above MEMINI_CHUNK_SIZE.
+
+### `MEMINI_CHUNK_MAX_PER_MEMORY`
+
+int, default `64`. Set by `Config.ChunkMaxPerMemory`.
+
+`MEMINI_CHUNK_MAX_PER_MEMORY` caps the chunks one memory may produce (the default covers roughly 64k runes). Past it the tail stays uncovered by chunk recall and the server logs a warning — an observable ceiling, unlike the silent one it replaces.
 
 ### `MEMINI_REEMBED_ON_MODEL_CHANGE`
 

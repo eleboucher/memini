@@ -18,6 +18,7 @@ import (
 	"github.com/eleboucher/memini/internal/api/rest"
 	"github.com/eleboucher/memini/internal/api/ui"
 	"github.com/eleboucher/memini/internal/apiauth"
+	"github.com/eleboucher/memini/internal/chunk"
 	"github.com/eleboucher/memini/internal/config"
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/llm"
@@ -350,6 +351,16 @@ func buildServiceStack(
 	// memory.Quality — set it here from config rather than threading it through
 	// every recall call.
 	memory.StabilityK = cfg.StabilityK
+	if cfg.ChunkEmbed {
+		svcOpts = append(svcOpts, service.WithChunkEmbed(chunk.Config{
+			Size:       cfg.ChunkSize,
+			Overlap:    cfg.ChunkOverlap,
+			MinContent: cfg.ChunkMinContent,
+			MaxChunks:  cfg.ChunkMaxPerMemory,
+		}))
+		log.Info("chunked embedding on",
+			"size", cfg.ChunkSize, "overlap", cfg.ChunkOverlap, "min_content", cfg.ChunkMinContent)
+	}
 	svc := service.New(st, embedder, svcOpts...)
 
 	workerCtx, stopWorkers := context.WithCancel(ctx)
@@ -363,6 +374,10 @@ func buildServiceStack(
 	workers.Go(func() { svc.StartDistillBatcher(workerCtx) })
 	workers.Go(func() { svc.RunPromoter(workerCtx, cfg.PromoteInterval) })
 	workers.Go(func() { svc.RunEmbedBackfill(workerCtx, cfg.BackfillInterval) })
+	// Shares BackfillInterval with the embed backfill: both are the same kind of
+	// job (repair an index the write path could not finish) and there is no
+	// reason for an operator to tune them apart. No-op unless MEMINI_CHUNK_EMBED.
+	workers.Go(func() { svc.RunChunkBackfill(workerCtx, cfg.BackfillInterval) })
 	sweeper := maintenance.NewSweeper(st, log, maintenance.SweeperConfig{
 		Interval:          cfg.SweepInterval,
 		ShortTermCap:      cfg.ShortTermCap,

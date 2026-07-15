@@ -180,6 +180,41 @@ type Config struct {
 	// is unbounded. Set to 1-2 for self-hosted backends that can't service a
 	// recall burst in parallel.
 	EmbedMaxConcurrency int `env:"MEMINI_EMBED_MAX_CONCURRENCY" envDefault:"0"`
+
+	// ChunkEmbed additionally embeds long memories in overlapping segments, so
+	// recall can match text past MEMINI_EMBED_MAX_ITEM_CHARS instead of only the
+	// prefix that fits in one vector. Off by default.
+	//
+	// It is purely additive: the whole-memory vector is unchanged and still
+	// searched, and chunk hits are merged into it. Turning this on can only add
+	// results, never remove or re-rank away an existing one; turning it back off
+	// returns exactly the previous behaviour, leaving unused rows behind.
+	//
+	// Chunks are built by the background loop on MEMINI_BACKFILL_INTERVAL, not
+	// at write time — a long memory is many embedder round-trips, which would
+	// blow MEMINI_WRITE_EMBED_TIMEOUT for precisely the writes this helps. So
+	// recall improves for a long memory shortly after it is written, not at the
+	// instant it is.
+	ChunkEmbed bool `env:"MEMINI_CHUNK_EMBED" envDefault:"false"`
+	// ChunkSize is the maximum runes in one chunk. Keep it under your embedder's
+	// context: a chunk over MEMINI_EMBED_MAX_ITEM_CHARS would itself be
+	// truncated, which is the failure chunking exists to remove. The default
+	// suits the 512-token local models (BGE, e5) as well as OpenAI's.
+	ChunkSize int `env:"MEMINI_CHUNK_SIZE" envDefault:"1200"`
+	// ChunkOverlap is how many runes each chunk repeats from the previous one,
+	// so a fact spanning a boundary survives whole in one of them. Must be less
+	// than MEMINI_CHUNK_SIZE.
+	ChunkOverlap int `env:"MEMINI_CHUNK_OVERLAP" envDefault:"200"`
+	// ChunkMinContent is the content length at or below which a memory gets no
+	// chunks at all. Below this the whole-memory vector already covers the text,
+	// so a chunk would duplicate it: a wasted embedder call, a wasted row, and a
+	// duplicate hit to merge away. Keep it at or above MEMINI_CHUNK_SIZE.
+	ChunkMinContent int `env:"MEMINI_CHUNK_MIN_CONTENT" envDefault:"1200"`
+	// ChunkMaxPerMemory caps the chunks one memory may produce (the default
+	// covers roughly 64k runes). Past it the tail stays uncovered by chunk
+	// recall and the server logs a warning — an observable ceiling, unlike the
+	// silent one it replaces.
+	ChunkMaxPerMemory int `env:"MEMINI_CHUNK_MAX_PER_MEMORY" envDefault:"64"`
 	// ReembedOnModelChange makes the server re-embed every stored memory at
 	// startup when MEMINI_EMBED_MODEL differs from the model the vectors were
 	// produced with, instead of refusing to start. Off by default: re-embedding
@@ -816,6 +851,38 @@ func gitToplevel(dir string) string {
 	return strings.TrimSpace(out)
 }
 
+// validateChunking checks the chunked-embedding knobs. Split out of validate()
+// rather than inlined: validate() is already at the cyclomatic ceiling, and
+// these five rules only relate to each other.
+func (c *Config) validateChunking() error {
+	if !c.ChunkEmbed {
+		return nil // the knobs are inert; a stale value must not block boot
+	}
+	if c.ChunkSize <= 0 {
+		return fmt.Errorf("MEMINI_CHUNK_SIZE must be > 0 when MEMINI_CHUNK_EMBED is on, got %d", c.ChunkSize)
+	}
+	if c.ChunkOverlap < 0 || c.ChunkOverlap >= c.ChunkSize {
+		// An overlap at or past the size rewinds at least as far as each chunk
+		// advances, so the split could never reach the end of the content.
+		return fmt.Errorf("MEMINI_CHUNK_OVERLAP must be >= 0 and < MEMINI_CHUNK_SIZE (%d), got %d",
+			c.ChunkSize, c.ChunkOverlap)
+	}
+	if c.ChunkMaxPerMemory <= 0 {
+		return fmt.Errorf("MEMINI_CHUNK_MAX_PER_MEMORY must be > 0, got %d", c.ChunkMaxPerMemory)
+	}
+	if c.ChunkMinContent < 0 {
+		return fmt.Errorf("MEMINI_CHUNK_MIN_CONTENT must be >= 0, got %d", c.ChunkMinContent)
+	}
+	if c.EmbedMaxItemChars > 0 && c.ChunkSize > c.EmbedMaxItemChars {
+		// A chunk over the per-item budget is truncated on its way to the
+		// embedder — the exact bug chunking removes, reintroduced one layer
+		// down. Refuse rather than ship a feature that silently does nothing.
+		return fmt.Errorf("MEMINI_CHUNK_SIZE (%d) exceeds MEMINI_EMBED_MAX_ITEM_CHARS (%d): "+
+			"chunks would themselves be truncated before embedding", c.ChunkSize, c.EmbedMaxItemChars)
+	}
+	return nil
+}
+
 func (c *Config) validate() error {
 	switch c.Backend {
 	case BackendSQLite:
@@ -889,6 +956,9 @@ func (c *Config) validate() error {
 	// is either under the floor or over the ceiling. That reads like a tight
 	// bound and silently acts as an off switch, sending every untier'd write to
 	// the working tier, so refuse it. 0 stays legal — it says "off" plainly.
+	if err := c.validateChunking(); err != nil {
+		return err
+	}
 	if c.ClassifyMaxChars > 0 && c.ClassifyMaxChars < extract.MinFactChars {
 		return fmt.Errorf(
 			"MEMINI_CLASSIFY_MAX_CHARS must be 0 (off) or >= %d, got %d: a ceiling below "+
