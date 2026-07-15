@@ -24,6 +24,8 @@ import {
   describeSettings,
   renderStatus,
   redactSecret,
+  parseVersion,
+  compareVersions,
 } from "./memini.js";
 
 test("namespace derives from the git worktree basename", () => {
@@ -122,6 +124,35 @@ test("resolveConfig: inline options win over MEMINI_INJECT_RECALL_* env", () => 
   } finally {
     delete process.env["MEMINI_INJECT_RECALL_MAX_TOK"];
   }
+});
+
+// --- Auto-update ------------------------------------------------------------
+
+test("parseVersion extracts major.minor.patch", () => {
+  assert.deepEqual(parseVersion("1.2.3"), { major: 1, minor: 2, patch: 3 });
+  assert.deepEqual(parseVersion("0.7.2"), { major: 0, minor: 7, patch: 2 });
+  assert.deepEqual(parseVersion("^0.5.2"), { major: 0, minor: 5, patch: 2 });
+  assert.equal(parseVersion("not-a-version"), null);
+  assert.equal(parseVersion(""), null);
+});
+
+test("compareVersions returns -1, 0, or 1", () => {
+  assert.equal(compareVersions("0.5.2", "0.7.2"), -1);
+  assert.equal(compareVersions("0.7.2", "0.7.2"), 0);
+  assert.equal(compareVersions("0.7.2", "0.5.2"), 1);
+  assert.equal(compareVersions("1.0.0", "0.9.9"), 1);
+  assert.equal(compareVersions("0.9.9", "1.0.0"), -1);
+  // Same major, different minor
+  assert.equal(compareVersions("0.5.0", "0.7.0"), -1);
+});
+
+test("resolveConfig includes auto_update defaulting to true", () => {
+  assert.equal(resolveConfig({}, undefined, "/repo").auto_update, true);
+  assert.equal(resolveConfig({ MEMINI_AUTO_UPDATE: "0" }, undefined, "/repo").auto_update, false);
+  assert.equal(resolveConfig({ MEMINI_AUTO_UPDATE: "false" }, undefined, "/repo").auto_update, false);
+  assert.equal(resolveConfig({}, { auto_update: false }, "/repo").auto_update, false);
+  assert.equal(resolveConfig({ MEMINI_AUTO_UPDATE: "1" }, { auto_update: false }, "/repo").auto_update, false);
+  assert.equal(resolveConfig({ MEMINI_AUTO_UPDATE: "0" }, { auto_update: true }, "/repo").auto_update, true);
 });
 
 test("resolveConfig rejects malformed recall_limit (NaN / negative) gracefully", () => {

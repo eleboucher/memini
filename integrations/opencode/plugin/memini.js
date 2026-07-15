@@ -19,9 +19,11 @@
  * the options/env table in ../README.md.
  */
 
-import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { execSync, spawnSync } from "node:child_process";
+import { readFileSync, existsSync, rmSync, writeFileSync, statSync } from "node:fs";
+import { resolve, join, dirname } from "node:path";
+import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 const DEFAULT_BASE_URL = "http://localhost:8080";
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -49,6 +51,152 @@ function readPluginVersion() {
   }
 }
 const CLIENT_VERSION = readPluginVersion();
+
+// Auto-update: opencode never re-fetches cached npm plugins, so the plugin
+// checks npm dist-tags once per process and self-updates (same major version
+// only) so the running copy stays current.
+const PACKAGE_NAME = "@eleboucher/opencode-memini";
+const NPM_REGISTRY_URL = `https://registry.npmjs.org/-/package/${PACKAGE_NAME}/dist-tags`;
+const NPM_FETCH_TIMEOUT = 5000;
+const BUN_INSTALL_TIMEOUT_MS = 60000;
+let autoUpdateChecked = false;
+
+/**
+ * parseVersion extracts major.minor.patch from a semver string. Exported for
+ * testing.
+ */
+export function parseVersion(version) {
+  const normalized = String(version).trim().replace(/^[~^=<>\s]+/, "");
+  const match = normalized.match(/^(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
+}
+
+/**
+ * compareVersions returns -1, 0, or 1. Exported for testing.
+ */
+export function compareVersions(a, b) {
+  const va = parseVersion(a);
+  const vb = parseVersion(b);
+  if (!va || !vb) return 0;
+  if (va.major !== vb.major) return va.major < vb.major ? -1 : 1;
+  if (va.minor !== vb.minor) return va.minor < vb.minor ? -1 : 1;
+  if (va.patch !== vb.patch) return va.patch < vb.patch ? -1 : 1;
+  return 0;
+}
+
+/**
+ * resolveInstallContext finds the opencode plugin cache directory that holds
+ * this running plugin instance, by walking up from import.meta.url. Returns
+ * { installDir, packageJsonPath } or null.
+ */
+function resolveInstallContext() {
+  try {
+    const pluginDir = dirname(fileURLToPath(import.meta.url));
+    const nodeModulesDir = dirname(pluginDir);
+    const installDir = dirname(nodeModulesDir);
+    const packageJsonPath = join(installDir, "package.json");
+    if (existsSync(packageJsonPath)) {
+      return { installDir, packageJsonPath };
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * fetchLatestVersion queries npm dist-tags with a timeout. Returns the version
+ * string or null on failure.
+ */
+async function fetchLatestVersion() {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), NPM_FETCH_TIMEOUT);
+    try {
+      const resp = await fetch(NPM_REGISTRY_URL, {
+        signal: controller.signal,
+        headers: { Accept: "application/json" },
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      return data?.latest ?? null;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * prepareCacheUpdate rewrites the cache package.json to pin the new version,
+ * removes the installed node_modules package, and cleans bun.lock. Returns
+ * the installDir on success, null on failure.
+ */
+function prepareCacheUpdate(newVersion, log) {
+  const ctx = resolveInstallContext();
+  if (!ctx) {
+    log.warn("auto-update: could not resolve install context");
+    return null;
+  }
+  // Rewrite package.json with the new version pin
+  try {
+    const pkg = JSON.parse(readFileSync(ctx.packageJsonPath, "utf8"));
+    if (pkg.dependencies && pkg.dependencies[PACKAGE_NAME] === newVersion) {
+      return ctx.installDir; // already updated
+    }
+    pkg.dependencies = { ...pkg.dependencies, [PACKAGE_NAME]: newVersion };
+    writeFileSync(ctx.packageJsonPath, JSON.stringify(pkg, null, 2));
+  } catch (err) {
+    log.warn(`auto-update: failed to rewrite cache package.json: ${String(err)}`);
+    return null;
+  }
+  // Remove installed node_modules so bun install re-fetches
+  try {
+    const pkgDir = join(ctx.installDir, "node_modules", "@eleboucher", "opencode-memini");
+    if (existsSync(pkgDir)) rmSync(pkgDir, { recursive: true, force: true });
+  } catch (err) {
+    log.warn(`auto-update: failed to remove cached node_modules: ${String(err)}`);
+    return null;
+  }
+  // Clean bun.lock entry if it exists
+  const lockPath = join(ctx.installDir, "bun.lock");
+  if (existsSync(lockPath)) {
+    try {
+      const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+      let modified = false;
+      if (lock.workspaces?.[""]?.dependencies?.[PACKAGE_NAME]) {
+        delete lock.workspaces[""].dependencies[PACKAGE_NAME];
+        modified = true;
+      }
+      if (lock.packages?.[PACKAGE_NAME]) {
+        delete lock.packages[PACKAGE_NAME];
+        modified = true;
+      }
+      if (modified) writeFileSync(lockPath, JSON.stringify(lock, null, 2));
+    } catch {
+      // bun.lock format varies; if we can't parse it, leave it — bun install
+      // will reconcile.
+    }
+  }
+  return ctx.installDir;
+}
+
+/**
+ * runBunInstall runs `bun install` in the given directory with a timeout.
+ * Returns true on success (exit code 0), false otherwise.
+ */
+function runBunInstall(installDir) {
+  try {
+    const result = spawnSync(process.execPath, ["install"], {
+      cwd: installDir,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: BUN_INSTALL_TIMEOUT_MS,
+    });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
 
 // How long a memoized handshake stays trustworthy on a live plugin instance,
 // and how long a single handshake call is allowed to block before falling
@@ -214,6 +362,7 @@ export function resolveConfig(env, options, worktree) {
       o.fallback_on_error !== undefined
         ? o.fallback_on_error !== false
         : envBool(e.MEMINI_FALLBACK, true),
+    auto_update: o.auto_update !== undefined ? o.auto_update !== false : envBool(e.MEMINI_AUTO_UPDATE, true),
     // Recorded so effectiveConfig() can tell "explicitly set to the built-in
     // default" apart from "not set at all" — only the latter may be filled in
     // from the server.
@@ -1040,6 +1189,46 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
     }),
 
     event: guard("event", async ({ event }) => {
+      // Auto-update check: fires once per process on the first session.created
+      if (
+        !autoUpdateChecked &&
+        event &&
+        event.type === "session.created" &&
+        !event.properties?.info?.parentID // skip sub-sessions
+      ) {
+        autoUpdateChecked = true;
+        const live = await currentConfig();
+        if (live.auto_update) {
+          // Fire-and-forget — never blocks the event hook
+          (async () => {
+            try {
+              const latest = await fetchLatestVersion();
+              if (!latest) return;
+              if (compareVersions(CLIENT_VERSION, latest) >= 0) return; // already up to date
+              // Only auto-update within the same major version
+              const cur = parseVersion(CLIENT_VERSION);
+              const nxt = parseVersion(latest);
+              if (!cur || !nxt || cur.major !== nxt.major) {
+                log.warn(`auto-update: v${latest} available (major bump — update manually: pin @eleboucher/opencode-memini@${latest} in opencode.json)`);
+                return;
+              }
+              log.warn(`auto-update: updating ${CLIENT_VERSION} → ${latest}`);
+              const installDir = prepareCacheUpdate(latest, log);
+              if (!installDir) return;
+              const ok = runBunInstall(installDir);
+              if (ok) {
+                log.warn(`auto-update: installed v${latest} — restart opencode to apply`);
+              } else {
+                log.warn(`auto-update: bun install failed; will retry next session`);
+              }
+            } catch (err) {
+              log.warn(`auto-update: check failed: ${String(err)}`);
+            }
+          })();
+        }
+        return;
+      }
+
       const live = await currentConfig();
       if (!live.capture || !event || event.type !== "session.idle") return;
       const sessionID = event.properties && event.properties.sessionID;
