@@ -10,6 +10,7 @@ import (
 
 	"github.com/caarlos0/env/v11"
 
+	"github.com/eleboucher/memini/internal/extract"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/store"
 )
@@ -24,6 +25,22 @@ const (
 	// defaultNamespace is the ultimate fallback when env, git, and cwd all
 	// fail to produce a usable name.
 	defaultNamespace = "default"
+)
+
+// The truncation budgets' defaults, exported for the tools that build an
+// embedder or reranker outside the server — cmd/bench and cmd/qa — so they
+// start from the same numbers the server does instead of copied literals. A
+// benchmark run against a stale budget measures a deployment nobody has.
+//
+// These duplicate the matching `envDefault` tags below, which cannot reference
+// a constant. cmd/memini's TestTruncationDefaultsMatchPackageConstants pins the
+// two together; keep that test passing rather than editing one side alone.
+const (
+	DefaultEmbedMaxBatch       = 20
+	DefaultEmbedMaxBatchChars  = 24000
+	DefaultEmbedMaxItemChars   = 8000
+	DefaultRerankMaxDocChars   = 2048
+	DefaultRerankMaxBatchChars = 6000
 )
 
 // NamespaceSource records how DefaultNamespace was resolved, useful for
@@ -135,8 +152,30 @@ type Config struct {
 	// over a whole namespace) can't exceed the server's max client batch and
 	// fail with 422. The TEI default is 32; 20 leaves headroom.
 	EmbedMaxBatch int `env:"MEMINI_EMBED_MAX_BATCH" envDefault:"20"`
-	// EmbedMaxBatchChars caps total characters per request (0 disables).
+	// EmbedMaxBatchChars caps total bytes per request (0 disables). Bytes, not
+	// runes: this guards the HTTP payload the backend has to accept, and the
+	// backend's limit is on the wire size.
 	EmbedMaxBatchChars int `env:"MEMINI_EMBED_MAX_BATCH_CHARS" envDefault:"24000"`
+	// EmbedMaxItemChars truncates any single text to this many runes before
+	// embedding, so one oversized memory can't blow the per-request budget or
+	// exceed the model's context.
+	//
+	// This bounds what is findable, not what is stored: a memory longer than
+	// this is stored and returned whole, but its vector represents only the
+	// prefix, so vector recall cannot match the text beyond it. Raise it toward
+	// your embedder's real context window (text-embedding-3-small accepts 8191
+	// tokens, roughly 32000 characters) if you store long memories, and watch
+	// for the "embed: truncating over-long text" warning.
+	//
+	// 0 disables truncation, and is a foot-gun rather than a faster setting:
+	// this is the only guard that keeps an oversized text off the wire, since
+	// the batcher always sends the first item of a batch whatever its size. A
+	// text past the backend's context is then rejected, the write lands with no
+	// vector (metadata pending_embed), and the backfill re-sends the same
+	// oversized text on every tick — so the memory is permanently unreachable by
+	// vector recall while the API reports the failure as temporary. Set 0 only
+	// if you are certain every memory fits your backend's context.
+	EmbedMaxItemChars int `env:"MEMINI_EMBED_MAX_ITEM_CHARS" envDefault:"8000"`
 	// EmbedMaxConcurrency caps in-flight calls to the embeddings backend. 0
 	// is unbounded. Set to 1-2 for self-hosted backends that can't service a
 	// recall burst in parallel.
@@ -249,6 +288,22 @@ type Config struct {
 	// rerank.CrossEncoder.Rerank), which is far more likely to blow RerankTimeout
 	// than a large body is to trouble the server. 0 disables proactive batching.
 	RerankMaxBatchChars int `env:"MEMINI_RERANK_MAX_BATCH_CHARS" envDefault:"6000"`
+	// RerankMaxDocChars truncates each document sent to the cross-encoder to
+	// this many runes, bounding a single (query, document) pair against the
+	// model's context. Raise it toward your reranker's context window if your
+	// memories are long and the tail carries the signal.
+	//
+	// RerankMaxBatchChars overrides it whenever it is smaller, so the effective
+	// per-document cap is the lower of the two. That includes 0: 0 here means
+	// "no cap of my own", which leaves RerankMaxBatchChars (6000 by default) as
+	// the cap — NOT unlimited. Truncation is off only when both are 0.
+	RerankMaxDocChars int `env:"MEMINI_RERANK_MAX_DOC_CHARS" envDefault:"2048"`
+	// RerankLLMMaxDocChars truncates each candidate in the LLM reranker's prompt
+	// to this many bytes (not runes — the cut lands on a rune boundary), keeping
+	// a deep pool of long memories from blowing a RAM-limited local chat
+	// server's context. 0 disables truncation. Only used when MEMINI_RERANK is
+	// the LLM reranker; the cross-encoder uses RerankMaxDocChars.
+	RerankLLMMaxDocChars int `env:"MEMINI_RERANK_LLM_MAX_DOC_CHARS" envDefault:"300"`
 	// RerankTimeout bounds a single reranker call; past it, recall degrades to
 	// composite order instead of stalling on a slow or congested backend.
 	RerankTimeout time.Duration `env:"MEMINI_RERANK_TIMEOUT" envDefault:"10s"`
@@ -304,6 +359,22 @@ type Config struct {
 	// episodic memory. Only episodic is gated. Default 120 (on); set 0 to disable.
 	EpisodicMinChars int `env:"MEMINI_EPISODIC_MIN_CHARS" envDefault:"120"`
 
+	// ClassifyMaxChars bounds a write that picked no tier, in runes: below it
+	// the heuristic may label the content semantic or procedural, above it the
+	// content reads as session history and falls back to the working tier.
+	//
+	// This is a cliff, not a truncation — nothing is cut, but a long write that
+	// would have earned a durable tier silently lands in working instead and
+	// expires with it. Raise it if you write long durable facts without passing
+	// an explicit tier. 0 disables classification, so every untier'd write takes
+	// the working default.
+	//
+	// Must be 0 or at least 20 (the extractor's floor, below which there is too
+	// little text to be a fact). A ceiling between the two would classify
+	// nothing at all while reading like a tight bound, so the server refuses it
+	// rather than silently behaving as 0.
+	ClassifyMaxChars int `env:"MEMINI_CLASSIFY_MAX_CHARS" envDefault:"400"`
+
 	// Write-time fact building (LLM distill, else heuristic extract) is automatic;
 	// it self-selects on LLM presence, so there is no toggle.
 
@@ -330,6 +401,17 @@ type Config struct {
 	// PromoteMinAccess is the minimum access_count for an episodic memory to be
 	// considered for promotion.
 	PromoteMinAccess int `env:"MEMINI_PROMOTE_MIN_ACCESS" envDefault:"3"`
+	// PromoteWholeMaxChars bounds LLM-less whole-content promotion, in runes: an
+	// eligible episodic memory with no extractable marker is promoted verbatim
+	// only if it is this short, since a longer one is unlikely to be the single
+	// statement that promotion produces.
+	//
+	// This is a cliff, not a truncation — a longer source is simply never
+	// promoted, however often it was recalled. Raise it if your durable facts
+	// are written as paragraphs rather than sentences. 0 disables whole-content
+	// promotion, leaving only marker extraction. Ignored when an LLM is
+	// configured: distillation replaces the heuristic.
+	PromoteWholeMaxChars int `env:"MEMINI_PROMOTE_WHOLE_MAX_CHARS" envDefault:"240"`
 
 	// BackfillInterval is how often the vector backfill loop re-embeds
 	// memories left vectorless by a degraded write (metadata pending_embed);
@@ -522,13 +604,11 @@ var deprecatedVars = []struct {
 	{"MEMINI_AUTO_SUPERSEDE_MIN_SCORE", "use MEMINI_WRITE_DEDUP_SCORE with MEMINI_WRITE_DEDUP_ACTION=supersede", false},
 	{"MEMINI_DEDUP_MIN_CLUSTER_SIZE", "now a fixed internal default (2)", false},
 	{"MEMINI_DEDUP_NEIGHBOURS", "now a fixed internal default (20)", false},
-	{"MEMINI_EMBED_MAX_ITEM_CHARS", "now a fixed internal default (8000); batch-char budgets stay configurable", false},
 	{"MEMINI_CONSOLIDATE_QUEUE_CAP", "now a fixed internal default (1024)", false},
 	{"MEMINI_NAMESPACE_HEADER", "the header name is fixed to X-Memini-Namespace", false},
 	{"MEMINI_FUSION_ALPHA", "now a baked retrieval default (0.5); tune via the benchmark harness, not env", false},
 	{"MEMINI_RECALL_MIN_SEMANTIC_SCORE", "now a baked retrieval default (0, off)", false},
 	{"MEMINI_TEMPORAL_BOOST", "now a baked retrieval default (0.40)", false},
-	{"MEMINI_RERANK_MAX_DOC_CHARS", "now a fixed internal default (2048); MEMINI_RERANK_MAX_BATCH_CHARS remains configurable", false},
 	{"MEMINI_REDACT_SECRETS", "secret redaction is always on", false},
 	{"MEMINI_REINFORCE_SKIP_MARKERS", "always on", false},
 	{"MEMINI_WRITE_DEDUP_FINGERPRINT", "exact-restatement dedup is always on", false},
@@ -790,6 +870,30 @@ func (c *Config) validate() error {
 	}
 	if c.EpisodicMinChars < 0 {
 		return fmt.Errorf("MEMINI_EPISODIC_MIN_CHARS must be >= 0, got %d", c.EpisodicMinChars)
+	}
+	for _, f := range []struct {
+		name string
+		v    int
+	}{
+		{"MEMINI_EMBED_MAX_ITEM_CHARS", c.EmbedMaxItemChars},
+		{"MEMINI_RERANK_MAX_DOC_CHARS", c.RerankMaxDocChars},
+		{"MEMINI_RERANK_LLM_MAX_DOC_CHARS", c.RerankLLMMaxDocChars},
+		{"MEMINI_CLASSIFY_MAX_CHARS", c.ClassifyMaxChars},
+		{"MEMINI_PROMOTE_WHOLE_MAX_CHARS", c.PromoteWholeMaxChars},
+	} {
+		if f.v < 0 {
+			return fmt.Errorf("%s must be >= 0, got %d", f.name, f.v)
+		}
+	}
+	// A classify ceiling below the extractor's floor admits nothing: every write
+	// is either under the floor or over the ceiling. That reads like a tight
+	// bound and silently acts as an off switch, sending every untier'd write to
+	// the working tier, so refuse it. 0 stays legal — it says "off" plainly.
+	if c.ClassifyMaxChars > 0 && c.ClassifyMaxChars < extract.MinFactChars {
+		return fmt.Errorf(
+			"MEMINI_CLASSIFY_MAX_CHARS must be 0 (off) or >= %d, got %d: a ceiling below "+
+				"the %d-character floor classifies nothing at all",
+			extract.MinFactChars, c.ClassifyMaxChars, extract.MinFactChars)
 	}
 	if c.DistillBatchTokens < 0 {
 		return fmt.Errorf("MEMINI_DISTILL_BATCH_TOKENS must be >= 0, got %d", c.DistillBatchTokens)

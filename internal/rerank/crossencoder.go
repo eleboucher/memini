@@ -36,7 +36,11 @@ type Config struct {
 	BaseURL string
 	Model   string
 	APIKey  string
-	// MaxDocChars truncates each document before sending. 0 disables.
+	// MaxDocChars truncates each document (in runes) before sending. MaxBatchChars
+	// overrides it whenever it is smaller, so the effective cap is the lower of
+	// the two — including when this is 0, which means "no cap of my own" and
+	// leaves MaxBatchChars in force, not unlimited. Truncation is off only when
+	// both are 0. See Rerank.
 	MaxDocChars int
 	// MaxBatchChars caps the total characters across query and documents in
 	// a single /rerank request. Set just below the model's effective context

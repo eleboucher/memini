@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/eleboucher/memini/bench"
+	"github.com/eleboucher/memini/internal/config"
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/search"
@@ -111,7 +112,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	embedder, err := embed.NewCached(embed.NewBatched(client, 20, 24000, 8000), 16384)
+	batched := embed.NewBatched(client, config.DefaultEmbedMaxBatch,
+		config.DefaultEmbedMaxBatchChars, config.DefaultEmbedMaxItemChars)
+	embedder, err := embed.NewCached(batched, 16384)
 	if err != nil {
 		return err
 	}

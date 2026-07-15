@@ -296,6 +296,12 @@ type Service struct {
 	// episodic memories into durable semantic facts.
 	distiller        llm.Distiller
 	promoteMinAccess int
+	// classifyMaxChars bounds a write that picked no tier (runes); above it the
+	// content falls back to the working tier. See config.ClassifyMaxChars.
+	classifyMaxChars int
+	// promoteWholeMaxChars bounds LLM-less whole-content promotion (runes); a
+	// longer marker-less source is never promoted. See config.PromoteWholeMaxChars.
+	promoteWholeMaxChars int
 
 	metrics Metrics
 	// syncReinforce makes recall reinforcement synchronous (deterministic tests).
@@ -510,6 +516,16 @@ func WithWriteEmbedTimeout(d time.Duration) Option {
 // WithPromoteMinAccess sets the minimum access_count for an episodic memory to
 // be eligible for promotion.
 func WithPromoteMinAccess(n int) Option { return func(s *Service) { s.promoteMinAccess = n } }
+
+// WithClassifyMaxChars bounds a write that picked no tier, in runes. 0 declines
+// every classification, so untier'd writes take the working default.
+func WithClassifyMaxChars(n int) Option { return func(s *Service) { s.classifyMaxChars = n } }
+
+// WithPromoteWholeMaxChars bounds LLM-less whole-content promotion, in runes.
+// 0 leaves only marker extraction.
+func WithPromoteWholeMaxChars(n int) Option {
+	return func(s *Service) { s.promoteWholeMaxChars = n }
+}
 
 // WithMetrics installs an observability sink for consolidation events.
 func WithMetrics(m Metrics) Option { return func(s *Service) { s.metrics = m } }
@@ -773,6 +789,8 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 		consolidateMode:      ConsolidateAsync,
 		consolidateMinScore:  0.3,
 		promoteMinAccess:     3,
+		classifyMaxChars:     extract.ClassifyMaxChars,
+		promoteWholeMaxChars: DefaultPromoteWholeMaxChars,
 		rerankTimeout:        defaultRerankTimeout,
 		scoreFusionAlpha:     search.DefaultFusionAlpha, // convex score fusion by default; negative selects RRF
 		reservePromoteRatio:  defaultReservePromoteRatio,
@@ -948,7 +966,9 @@ func (s *Service) sanitizeContent(ctx context.Context, in RememberInput, tier me
 // label the caller records. The returned RememberInput carries the resolved
 // Namespace only on success; an error return leaves it as given, which the
 // caller never uses since it discards in on that path.
-func validateRememberInput(in RememberInput) (RememberInput, memory.Tier, error) {
+// classifyMaxChars bounds the tier heuristic for a write that named no tier;
+// see Service.classifyMaxChars.
+func validateRememberInput(in RememberInput, classifyMaxChars int) (RememberInput, memory.Tier, error) {
 	if in.Namespace == "" {
 		return in, "", invalidInputf("remember: namespace is required")
 	}
@@ -958,7 +978,7 @@ func validateRememberInput(in RememberInput) (RememberInput, memory.Tier, error)
 	tier := in.Tier
 	if tier == "" {
 		tier = memory.TierWorking
-		if kind, ok := extract.Classify(in.Content); ok {
+		if kind, ok := extract.ClassifyWith(in.Content, classifyMaxChars); ok {
 			tier = kind.Tier()
 		}
 	}
@@ -1028,7 +1048,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	defer func() {
 		s.metrics.OpDuration("remember", time.Since(start))
 	}()
-	in, tier, err := validateRememberInput(in)
+	in, tier, err := validateRememberInput(in, s.classifyMaxChars)
 	if err != nil {
 		s.metrics.RememberResult("error", string(tier))
 		return nil, err

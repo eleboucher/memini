@@ -46,6 +46,7 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_EMBED_QUERY_PREFIX`](#memini_embed_query_prefix) | none | [Embeddings](#embeddings) |
 | [`MEMINI_EMBED_MAX_BATCH`](#memini_embed_max_batch) | `20` | [Embeddings](#embeddings) |
 | [`MEMINI_EMBED_MAX_BATCH_CHARS`](#memini_embed_max_batch_chars) | `24000` | [Embeddings](#embeddings) |
+| [`MEMINI_EMBED_MAX_ITEM_CHARS`](#memini_embed_max_item_chars) | `8000` | [Embeddings](#embeddings) |
 | [`MEMINI_EMBED_MAX_CONCURRENCY`](#memini_embed_max_concurrency) | `0` | [Embeddings](#embeddings) |
 | [`MEMINI_REEMBED_ON_MODEL_CHANGE`](#memini_reembed_on_model_change) | `false` | [Embeddings](#embeddings) |
 | [`MEMINI_LLM_BASE_URL`](#memini_llm_base_url) | none | [LLM (optional)](#llm-optional) |
@@ -58,6 +59,8 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_RERANK_POOL`](#memini_rerank_pool) | `0` | [Reranking](#reranking) |
 | [`MEMINI_RERANK_TIMEOUT`](#memini_rerank_timeout) | `10s` | [Reranking](#reranking) |
 | [`MEMINI_RERANK_MAX_BATCH_CHARS`](#memini_rerank_max_batch_chars) | `6000` | [Reranking](#reranking) |
+| [`MEMINI_RERANK_MAX_DOC_CHARS`](#memini_rerank_max_doc_chars) | `2048` | [Reranking](#reranking) |
+| [`MEMINI_RERANK_LLM_MAX_DOC_CHARS`](#memini_rerank_llm_max_doc_chars) | `300` | [Reranking](#reranking) |
 | [`MEMINI_RERANK_MAX_CONCURRENCY`](#memini_rerank_max_concurrency) | `0` | [Reranking](#reranking) |
 | [`MEMINI_ACTIVITY_LOG`](#memini_activity_log) | `true` | [Activity log](#activity-log) |
 | [`MEMINI_ACTIVITY_RETENTION`](#memini_activity_retention) | `720h` | [Activity log](#activity-log) |
@@ -75,12 +78,14 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_SPLIT_DEDUP_LLM_MERGE`](#memini_split_dedup_llm_merge) | `false` | [Write-time dedup and contradiction](#write-time-dedup-and-contradiction) |
 | [`MEMINI_CONTRADICT_DOWNRANK`](#memini_contradict_downrank) | `true` | [Write-time dedup and contradiction](#write-time-dedup-and-contradiction) |
 | [`MEMINI_EPISODIC_MIN_CHARS`](#memini_episodic_min_chars) | `120` | [Write-time dedup and contradiction](#write-time-dedup-and-contradiction) |
+| [`MEMINI_CLASSIFY_MAX_CHARS`](#memini_classify_max_chars) | `400` | [Write-time dedup and contradiction](#write-time-dedup-and-contradiction) |
 | [`MEMINI_CONSOLIDATE_MODE`](#memini_consolidate_mode) | `async` | [Consolidation and promotion](#consolidation-and-promotion) |
 | [`MEMINI_CONSOLIDATE_MIN_SCORE`](#memini_consolidate_min_score) | `0.3` | [Consolidation and promotion](#consolidation-and-promotion) |
 | [`MEMINI_DISTILL_BATCH_TOKENS`](#memini_distill_batch_tokens) | `1024` | [Consolidation and promotion](#consolidation-and-promotion) |
 | [`MEMINI_DISTILL_BATCH_MAX_AGE`](#memini_distill_batch_max_age) | `10m` | [Consolidation and promotion](#consolidation-and-promotion) |
 | [`MEMINI_PROMOTE_INTERVAL`](#memini_promote_interval) | `24h` | [Consolidation and promotion](#consolidation-and-promotion) |
 | [`MEMINI_PROMOTE_MIN_ACCESS`](#memini_promote_min_access) | `3` | [Consolidation and promotion](#consolidation-and-promotion) |
+| [`MEMINI_PROMOTE_WHOLE_MAX_CHARS`](#memini_promote_whole_max_chars) | `240` | [Consolidation and promotion](#consolidation-and-promotion) |
 | [`MEMINI_BACKFILL_INTERVAL`](#memini_backfill_interval) | `1m` | [Consolidation and promotion](#consolidation-and-promotion) |
 | [`MEMINI_SWEEP_INTERVAL`](#memini_sweep_interval) | `1h` | [Maintenance and decay](#maintenance-and-decay) |
 | [`MEMINI_SHORT_TERM_CAP`](#memini_short_term_cap) | `1000` | [Maintenance and decay](#maintenance-and-decay) |
@@ -220,7 +225,17 @@ int, default `20`. Set by `Config.EmbedMaxBatch`.
 
 int, default `24000`. Set by `Config.EmbedMaxBatchChars`.
 
-`MEMINI_EMBED_MAX_BATCH_CHARS` caps total characters per request (0 disables).
+`MEMINI_EMBED_MAX_BATCH_CHARS` caps total bytes per request (0 disables). Bytes, not runes: this guards the HTTP payload the backend has to accept, and the backend's limit is on the wire size.
+
+### `MEMINI_EMBED_MAX_ITEM_CHARS`
+
+int, default `8000`. Set by `Config.EmbedMaxItemChars`.
+
+`MEMINI_EMBED_MAX_ITEM_CHARS` truncates any single text to this many runes before embedding, so one oversized memory can't blow the per-request budget or exceed the model's context.
+
+This bounds what is findable, not what is stored: a memory longer than this is stored and returned whole, but its vector represents only the prefix, so vector recall cannot match the text beyond it. Raise it toward your embedder's real context window (text-embedding-3-small accepts 8191 tokens, roughly 32000 characters) if you store long memories, and watch for the "embed: truncating over-long text" warning.
+
+0 disables truncation, and is a foot-gun rather than a faster setting: this is the only guard that keeps an oversized text off the wire, since the batcher always sends the first item of a batch whatever its size. A text past the backend's context is then rejected, the write lands with no vector (metadata pending_embed), and the backfill re-sends the same oversized text on every tick — so the memory is permanently unreachable by vector recall while the API reports the failure as temporary. Set 0 only if you are certain every memory fits your backend's context.
 
 ### `MEMINI_EMBED_MAX_CONCURRENCY`
 
@@ -305,6 +320,20 @@ duration, default `10s`. Set by `Config.RerankTimeout`.
 int, default `6000`. Set by `Config.RerankMaxBatchChars`.
 
 `MEMINI_RERANK_MAX_BATCH_CHARS` caps the total characters across the query and all documents in a single /rerank request. This is an HTTP payload guard, not a context-window guard: a Cohere-style /rerank server scores each (query, document) pair in its own forward pass, so the model's context bounds a single pair, never the batch. Sizing this near the model context shards a deep `MEMINI_RERANK_POOL` into many *serial* requests (see rerank.CrossEncoder.Rerank), which is far more likely to blow `MEMINI_RERANK_TIMEOUT` than a large body is to trouble the server. 0 disables proactive batching.
+
+### `MEMINI_RERANK_MAX_DOC_CHARS`
+
+int, default `2048`. Set by `Config.RerankMaxDocChars`.
+
+`MEMINI_RERANK_MAX_DOC_CHARS` truncates each document sent to the cross-encoder to this many runes, bounding a single (query, document) pair against the model's context. Raise it toward your reranker's context window if your memories are long and the tail carries the signal.
+
+`MEMINI_RERANK_MAX_BATCH_CHARS` overrides it whenever it is smaller, so the effective per-document cap is the lower of the two. That includes 0: 0 here means "no cap of my own", which leaves `MEMINI_RERANK_MAX_BATCH_CHARS` (6000 by default) as the cap — NOT unlimited. Truncation is off only when both are 0.
+
+### `MEMINI_RERANK_LLM_MAX_DOC_CHARS`
+
+int, default `300`. Set by `Config.RerankLLMMaxDocChars`.
+
+`MEMINI_RERANK_LLM_MAX_DOC_CHARS` truncates each candidate in the LLM reranker's prompt to this many bytes (not runes — the cut lands on a rune boundary), keeping a deep pool of long memories from blowing a RAM-limited local chat server's context. 0 disables truncation. Only used when MEMINI_RERANK is the LLM reranker; the cross-encoder uses `MEMINI_RERANK_MAX_DOC_CHARS`.
 
 ### `MEMINI_RERANK_MAX_CONCURRENCY`
 
@@ -427,6 +456,16 @@ int, default `120`. Set by `Config.EpisodicMinChars`.
 
 `MEMINI_EPISODIC_MIN_CHARS` drops an episodic write whose substantive content (role scaffolding stripped) is below this many characters — the low-signal per-turn chatter ("keep going", "ok", "hello") that otherwise dominates episodic memory. Only episodic is gated. Default 120 (on); set 0 to disable.
 
+### `MEMINI_CLASSIFY_MAX_CHARS`
+
+int, default `400`. Set by `Config.ClassifyMaxChars`.
+
+`MEMINI_CLASSIFY_MAX_CHARS` bounds a write that picked no tier, in runes: below it the heuristic may label the content semantic or procedural, above it the content reads as session history and falls back to the working tier.
+
+This is a cliff, not a truncation — nothing is cut, but a long write that would have earned a durable tier silently lands in working instead and expires with it. Raise it if you write long durable facts without passing an explicit tier. 0 disables classification, so every untier'd write takes the working default.
+
+Must be 0 or at least 20 (the extractor's floor, below which there is too little text to be a fact). A ceiling between the two would classify nothing at all while reading like a tight bound, so the server refuses it rather than silently behaving as 0.
+
 ## Consolidation and promotion
 
 How raw captures become durable knowledge. Runs with an LLM when one is configured and with marker heuristics otherwise, so durable facts still accumulate in an embedder-only deployment.
@@ -466,6 +505,14 @@ duration, default `24h`. Set by `Config.PromoteInterval`.
 int, default `3`. Set by `Config.PromoteMinAccess`.
 
 `MEMINI_PROMOTE_MIN_ACCESS` is the minimum access_count for an episodic memory to be considered for promotion.
+
+### `MEMINI_PROMOTE_WHOLE_MAX_CHARS`
+
+int, default `240`. Set by `Config.PromoteWholeMaxChars`.
+
+`MEMINI_PROMOTE_WHOLE_MAX_CHARS` bounds LLM-less whole-content promotion, in runes: an eligible episodic memory with no extractable marker is promoted verbatim only if it is this short, since a longer one is unlikely to be the single statement that promotion produces.
+
+This is a cliff, not a truncation — a longer source is simply never promoted, however often it was recalled. Raise it if your durable facts are written as paragraphs rather than sentences. 0 disables whole-content promotion, leaving only marker extraction. Ignored when an LLM is configured: distillation replaces the heuristic.
 
 ### `MEMINI_BACKFILL_INTERVAL`
 
@@ -629,13 +676,11 @@ old tuning value quietly stops applying. If you are upgrading, read
 | `MEMINI_AUTO_SUPERSEDE_MIN_SCORE` | use MEMINI_WRITE_DEDUP_SCORE with MEMINI_WRITE_DEDUP_ACTION=supersede |
 | `MEMINI_DEDUP_MIN_CLUSTER_SIZE` | now a fixed internal default (2) |
 | `MEMINI_DEDUP_NEIGHBOURS` | now a fixed internal default (20) |
-| `MEMINI_EMBED_MAX_ITEM_CHARS` | now a fixed internal default (8000); batch-char budgets stay configurable |
 | `MEMINI_CONSOLIDATE_QUEUE_CAP` | now a fixed internal default (1024) |
 | `MEMINI_NAMESPACE_HEADER` | the header name is fixed to X-Memini-Namespace |
 | `MEMINI_FUSION_ALPHA` | now a baked retrieval default (0.5); tune via the benchmark harness, not env |
 | `MEMINI_RECALL_MIN_SEMANTIC_SCORE` | now a baked retrieval default (0, off) |
 | `MEMINI_TEMPORAL_BOOST` | now a baked retrieval default (0.40) |
-| `MEMINI_RERANK_MAX_DOC_CHARS` | now a fixed internal default (2048); MEMINI_RERANK_MAX_BATCH_CHARS remains configurable |
 | `MEMINI_REDACT_SECRETS` | secret redaction is always on |
 | `MEMINI_REINFORCE_SKIP_MARKERS` | always on |
 | `MEMINI_WRITE_DEDUP_FINGERPRINT` | exact-restatement dedup is always on |

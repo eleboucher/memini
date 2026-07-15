@@ -335,6 +335,8 @@ func buildServiceStack(
 		service.WithRecallSemanticReserve(cfg.RecallSemanticReserve),
 		service.WithTurnEchoWindow(cfg.TurnEchoWindow),
 		service.WithEpisodicMinChars(cfg.EpisodicMinChars),
+		service.WithClassifyMaxChars(cfg.ClassifyMaxChars),
+		service.WithPromoteWholeMaxChars(cfg.PromoteWholeMaxChars),
 		service.WithEventLog(cfg.ActivityLog),
 		// Write-time fact building self-selects: distill (LLM) no-ops without a
 		// consolidator; extract (heuristic) only fires when no LLM is configured.
@@ -416,7 +418,7 @@ func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger, onInFl
 		}
 		log.Info("LLM recall reranking enabled (adds one LLM call per recall)",
 			"model", cfg.LLMModel)
-		return wrapRerank(rerank.NewLLM(chat), cfg.RerankMaxConcurrency, onInFlight, log, "llm"), "llm", nil
+		return wrapRerank(rerank.NewLLM(chat, cfg.RerankLLMMaxDocChars), cfg.RerankMaxConcurrency, onInFlight, log, "llm"), "llm", nil
 	}
 	if cfg.RerankModel == "" {
 		log.Warn("MEMINI_RERANK is set without MEMINI_RERANK_MODEL; the /rerank request omits the model field (backend-dependent behavior)")
@@ -425,7 +427,7 @@ func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger, onInFl
 		BaseURL:       cfg.Rerank,
 		Model:         cfg.RerankModel,
 		APIKey:        cfg.RerankAPIKey,
-		MaxDocChars:   rerankMaxDocChars,
+		MaxDocChars:   cfg.RerankMaxDocChars,
 		MaxBatchChars: cfg.RerankMaxBatchChars,
 	})
 	if err != nil {
@@ -570,20 +572,13 @@ func buildEmbedder(cfg *config.Config, log *slog.Logger, onInFlight func(n int64
 	if cfg.EmbedMaxConcurrency > 0 {
 		log.Info("embed concurrency cap", "max_in_flight", cfg.EmbedMaxConcurrency)
 	}
-	batched := embed.NewBatched(limited, cfg.EmbedMaxBatch, cfg.EmbedMaxBatchChars, embedMaxItemChars)
+	batched := embed.NewBatched(limited, cfg.EmbedMaxBatch, cfg.EmbedMaxBatchChars, cfg.EmbedMaxItemChars)
 	return embed.NewCached(batched, 4096)
 }
 
 // Fixed internal defaults (no env override). The benchmark harness overrides the
 // retrieval knobs via service.Option; production runs these baked values.
 const (
-	// embedMaxItemChars truncates any single text before embedding so one
-	// oversized memory can't blow the per-request budget. The per-request and
-	// per-batch budgets remain configurable.
-	embedMaxItemChars = 8000
-	// rerankMaxDocChars truncates each document sent to the cross-encoder.
-	// MEMINI_RERANK_MAX_BATCH_CHARS remains configurable.
-	rerankMaxDocChars = 2048
 	// Baked retrieval default (formerly MEMINI_TEMPORAL_BOOST). RecallMinScore
 	// and RecallSemanticReserve are configurable again (see internal/config).
 	defaultTemporalBoost = 0.40

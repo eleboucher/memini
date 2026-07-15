@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -236,6 +237,30 @@ func TestLoadValidationErrors(t *testing.T) {
 			env:  map[string]string{"MEMINI_CONSOLIDATE_MODE": "eventually"},
 		},
 		{
+			name: "negative embed max item chars",
+			env:  map[string]string{"MEMINI_EMBED_MAX_ITEM_CHARS": "-1"},
+		},
+		{
+			name: "negative promote whole max chars",
+			env:  map[string]string{"MEMINI_PROMOTE_WHOLE_MAX_CHARS": "-1"},
+		},
+		{
+			name: "negative rerank llm max doc chars",
+			env:  map[string]string{"MEMINI_RERANK_LLM_MAX_DOC_CHARS": "-1"},
+		},
+		// A classify ceiling under the extractor's 20-rune floor admits nothing:
+		// it reads as a tight bound but silently acts as an off switch, so it is
+		// refused rather than accepted. 0 (plainly "off") stays legal, and is
+		// covered by TestLoadOverrides.
+		{
+			name: "classify max chars below the extractor floor",
+			env:  map[string]string{"MEMINI_CLASSIFY_MAX_CHARS": "19"},
+		},
+		{
+			name: "classify max chars just above zero",
+			env:  map[string]string{"MEMINI_CLASSIFY_MAX_CHARS": "1"},
+		},
+		{
 			name: "dedup similarity out of range",
 			env:  map[string]string{"MEMINI_DEDUP_SIMILARITY": "1.5"},
 		},
@@ -344,6 +369,8 @@ var meminiEnvKeys = []string{
 	"MEMINI_LLM_BASE_URL", "MEMINI_LLM_API_KEY", "MEMINI_LLM_MODEL",
 	"MEMINI_RERANK", "MEMINI_RERANK_MODEL", "MEMINI_RERANK_API_KEY",
 	"MEMINI_RERANK_TIMEOUT", "MEMINI_RERANK_MAX_BATCH_CHARS",
+	"MEMINI_EMBED_MAX_ITEM_CHARS", "MEMINI_RERANK_MAX_DOC_CHARS", "MEMINI_RERANK_LLM_MAX_DOC_CHARS",
+	"MEMINI_CLASSIFY_MAX_CHARS", "MEMINI_PROMOTE_WHOLE_MAX_CHARS",
 	"MEMINI_CONSOLIDATE_MODE", "MEMINI_CONSOLIDATE_MIN_SCORE",
 	"MEMINI_PROMOTE_INTERVAL", "MEMINI_PROMOTE_MIN_ACCESS", "MEMINI_BACKFILL_INTERVAL",
 	"MEMINI_SWEEP_INTERVAL", "MEMINI_SHORT_TERM_CAP", "MEMINI_UI_ENABLED",
@@ -355,6 +382,40 @@ var meminiEnvKeys = []string{
 	"MEMINI_GLOBAL_NAMESPACE", "MEMINI_TENANT_SHARED",
 	"MEMINI_HOME",
 	"MEMINI_CLIENT_DEFAULTS",
+}
+
+// TestUndeprecatedVarsAreLive pins that a variable which is read is never also
+// listed as removed. Both of these were once fixed internal defaults and are
+// configurable again; leaving the deprecation entry behind would warn that the
+// operator's setting is ignored while it silently took effect, and would render
+// the same name into both the settings table and the "Removed" table of the
+// generated reference.
+func TestUndeprecatedVarsAreLive(t *testing.T) {
+	for _, tc := range []struct {
+		env  string
+		want int
+		got  func(*config.Config) int
+	}{
+		{"MEMINI_EMBED_MAX_ITEM_CHARS", 12345, func(c *config.Config) int { return c.EmbedMaxItemChars }},
+		{"MEMINI_RERANK_MAX_DOC_CHARS", 4096, func(c *config.Config) int { return c.RerankMaxDocChars }},
+	} {
+		t.Run(tc.env, func(t *testing.T) {
+			clearMeminiEnv(t)
+			t.Setenv(tc.env, strconv.Itoa(tc.want))
+			for _, w := range config.DeprecationWarnings() {
+				if strings.Contains(w, tc.env) {
+					t.Fatalf("%s is read but still warns as deprecated: %q", tc.env, w)
+				}
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := tc.got(cfg); got != tc.want {
+				t.Fatalf("%s = %d, want %d", tc.env, got, tc.want)
+			}
+		})
+	}
 }
 
 // TestFatalDeprecatedVarsUnset pins the clean-boot case: with neither deleted
