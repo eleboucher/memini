@@ -1192,6 +1192,16 @@ export interface components {
              */
             min_capture_chars: number;
             /**
+             * @description Truncate the user side of a captured turn to this many characters. The cut is marked with "[...truncated]" so a later reader can tell a fragment from a whole turn. 0 captures the user text whole — the server still applies its own limits, and a very long turn costs episodic storage and recall context.
+             * @default 1000
+             */
+            capture_user_max_chars: number;
+            /**
+             * @description Truncate the assistant side of a captured turn to this many characters, marked like capture_user_max_chars. Larger than the user side because the answer usually carries the durable content. 0 captures the assistant text whole.
+             * @default 3000
+             */
+            capture_assistant_max_chars: number;
+            /**
              * @description "repo" derives the namespace from the bare repo name; "owner_repo" disambiguates same-named repos across owners with an owner-repo slug (owner + "-" + repo).
              * @default repo
              * @enum {string}

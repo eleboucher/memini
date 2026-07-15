@@ -40,6 +40,25 @@ function validateNamespace(ns) {
   return null;
 }
 
+// src/capture.ts
+var TRUNCATION_MARKER = "\n[...truncated]";
+function truncateForCapture(s, max) {
+  if (typeof max !== "number" || !Number.isFinite(max) || max <= 0) return s;
+  const cap = Math.floor(max);
+  if (s.length <= cap) return s;
+  let i = 0;
+  for (let n = 0; i < s.length && n < cap; n++) {
+    i += s.codePointAt(i) > 65535 ? 2 : 1;
+  }
+  if (i >= s.length) return s;
+  return s.slice(0, i) + TRUNCATION_MARKER;
+}
+function buildTurnCapture(userText, assistantText, userMax, assistantMax) {
+  return `${truncateForCapture(userText, userMax)}
+
+${truncateForCapture(assistantText, assistantMax)}`;
+}
+
 // src/override.ts
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
@@ -209,7 +228,14 @@ var BEHAVIOR_KNOBS = [
   { envName: "MEMINI_RECALL_LIMIT", wireKey: "recall_limit", kind: "int", default: 3 },
   { envName: "MEMINI_INJECT_RECALL_MAX_TOK", wireKey: "inject_recall_max_tok", kind: "int", default: 0 },
   { envName: "MEMINI_INJECT_RECALL_MIN_SCORE", wireKey: "inject_recall_min_score", kind: "float", default: 0 },
-  { envName: "MEMINI_MIN_CAPTURE_CHARS", wireKey: "min_capture_chars", kind: "int", default: 0 }
+  { envName: "MEMINI_MIN_CAPTURE_CHARS", wireKey: "min_capture_chars", kind: "int", default: 0 },
+  { envName: "MEMINI_CAPTURE_USER_MAX_CHARS", wireKey: "capture_user_max_chars", kind: "int", default: 1e3 },
+  {
+    envName: "MEMINI_CAPTURE_ASSISTANT_MAX_CHARS",
+    wireKey: "capture_assistant_max_chars",
+    kind: "int",
+    default: 3e3
+  }
 ];
 function parseIntKnob(raw, fallback) {
   const n = Number.parseInt(raw, 10);
@@ -497,7 +523,9 @@ export {
   MAX_NAMESPACE_BYTES,
   OVERRIDES_VERSION,
   SESSION_CWD_TTL_MS,
+  TRUNCATION_MARKER,
   assertBearerTransportSafe,
+  buildTurnCapture,
   cacheDir,
   defaultOverridesPath,
   deleteCachedHandshake,
@@ -528,6 +556,7 @@ export {
   resolveHarnessCwd,
   resolveNamespace,
   sessionCwdPath,
+  truncateForCapture,
   validateNamespace,
   writeCachedHandshake,
   writeSessionCwd

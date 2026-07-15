@@ -182,6 +182,20 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
     "min": 0
   },
   {
+    "key": "capture_user_max_chars",
+    "type": "integer",
+    "default": 1000,
+    "description": "Truncate the user side of a captured turn to this many characters. The cut is marked with \"[...truncated]\" so a later reader can tell a fragment from a whole turn. 0 captures the user text whole — the server still applies its own limits, and a very long turn costs episodic storage and recall context.",
+    "min": 0
+  },
+  {
+    "key": "capture_assistant_max_chars",
+    "type": "integer",
+    "default": 3000,
+    "description": "Truncate the assistant side of a captured turn to this many characters, marked like capture_user_max_chars. Larger than the user side because the answer usually carries the durable content. 0 captures the assistant text whole.",
+    "min": 0
+  },
+  {
     "key": "namespace_scope",
     "type": "string",
     "default": "repo",

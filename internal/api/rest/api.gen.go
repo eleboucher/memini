@@ -685,8 +685,14 @@ type ClientSettings struct {
 	// Capture Enable capture (turns/digests) at all.
 	Capture *bool `json:"capture,omitempty"`
 
+	// CaptureAssistantMaxChars Truncate the assistant side of a captured turn to this many characters, marked like capture_user_max_chars. Larger than the user side because the answer usually carries the durable content. 0 captures the assistant text whole.
+	CaptureAssistantMaxChars *int `json:"capture_assistant_max_chars,omitempty"`
+
 	// CaptureTurns Capture each user→assistant turn as episodic memory.
 	CaptureTurns *bool `json:"capture_turns,omitempty"`
+
+	// CaptureUserMaxChars Truncate the user side of a captured turn to this many characters. The cut is marked with "[...truncated]" so a later reader can tell a fragment from a whole turn. 0 captures the user text whole — the server still applies its own limits, and a very long turn costs episodic storage and recall context.
+	CaptureUserMaxChars *int `json:"capture_user_max_chars,omitempty"`
 
 	// InjectBriefingFacts Max durable semantic facts in the session-start briefing.
 	InjectBriefingFacts *int `json:"inject_briefing_facts,omitempty"`
@@ -1189,8 +1195,14 @@ type SettingsDefaultsResponse struct {
 	// Capture Enable capture (turns/digests) at all.
 	Capture *bool `json:"capture,omitempty"`
 
+	// CaptureAssistantMaxChars Truncate the assistant side of a captured turn to this many characters, marked like capture_user_max_chars. Larger than the user side because the answer usually carries the durable content. 0 captures the assistant text whole.
+	CaptureAssistantMaxChars *int `json:"capture_assistant_max_chars,omitempty"`
+
 	// CaptureTurns Capture each user→assistant turn as episodic memory.
 	CaptureTurns *bool `json:"capture_turns,omitempty"`
+
+	// CaptureUserMaxChars Truncate the user side of a captured turn to this many characters. The cut is marked with "[...truncated]" so a later reader can tell a fragment from a whole turn. 0 captures the user text whole — the server still applies its own limits, and a very long turn costs episodic storage and recall context.
+	CaptureUserMaxChars *int `json:"capture_user_max_chars,omitempty"`
 
 	// InjectBriefingFacts Max durable semantic facts in the session-start briefing.
 	InjectBriefingFacts *int `json:"inject_briefing_facts,omitempty"`

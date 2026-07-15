@@ -34,6 +34,7 @@ import {
   resolveConfig,
   buildFacts,
   effectiveConfig,
+  buildTurnCapture,
   memoizeAsync,
   extractPartsText,
   formatResults,
@@ -322,7 +323,7 @@ export async function setup(ctx) {
     const stored = await rest.postJson(
       "/v1/memories",
       {
-        content: `${userText.slice(0, 1000)}\n\n${assistantText.slice(0, 3000)}`,
+        content: buildTurnCapture(userText, assistantText, live.capture_user_max_chars, live.capture_assistant_max_chars),
         tags: ["opencode"],
         metadata,
       },

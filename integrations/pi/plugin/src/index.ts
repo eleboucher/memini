@@ -36,6 +36,7 @@ import {
   resolveNamespace,
   deriveLocalNamespace,
   effectiveSetting,
+  buildTurnCapture,
   BEHAVIOR_KNOBS,
   HANDSHAKE_TTL_MS,
   normalizeNamespace,
@@ -235,6 +236,8 @@ export interface LiveConfig {
   recall_limit: number;
   recall_max_tokens: number;
   recall_min_score: number;
+  capture_user_max_chars: number;
+  capture_assistant_max_chars: number;
 }
 
 function knob(wireKey: string) {
@@ -269,6 +272,8 @@ export function resolveLiveConfig(
     recall_limit: effectiveSetting<number>(knob("recall_limit"), server, env).value,
     recall_max_tokens: effectiveSetting<number>(knob("inject_recall_max_tok"), server, env).value,
     recall_min_score: effectiveSetting<number>(knob("inject_recall_min_score"), server, env).value,
+    capture_user_max_chars: effectiveSetting<number>(knob("capture_user_max_chars"), server, env).value,
+    capture_assistant_max_chars: effectiveSetting<number>(knob("capture_assistant_max_chars"), server, env).value,
   };
 }
 
@@ -515,9 +520,16 @@ export function extractLastAssistantText(messages: any[]): string {
 }
 
 // buildTurnContent assembles the episodic payload from the user prompt and the
-// assistant reply, bounding each side. Exported for testing.
-export function buildTurnContent(userText: string, assistantText: string): string {
-  return `${String(userText).slice(0, 1000)}\n\n${String(assistantText).slice(0, 3000)}`;
+// assistant reply, bounding each side by the server-resolved capture settings.
+// Delegates to @memini/client so every integration cuts identically: marked, and
+// never through the middle of a character. Exported for testing.
+export function buildTurnContent(
+  userText: string,
+  assistantText: string,
+  userMax: number,
+  assistantMax: number,
+): string {
+  return buildTurnCapture(String(userText), String(assistantText), userMax, assistantMax);
 }
 
 // --- pins (/memini:namespace) -------------------------------------------------
@@ -1167,7 +1179,7 @@ export default function meminiExtension(pi: ExtensionAPI): void {
     const stored = await client.postJson(
       "/v1/memories",
       {
-        content: buildTurnContent(userText, assistantText),
+        content: buildTurnContent(userText, assistantText, live.capture_user_max_chars, live.capture_assistant_max_chars),
         tags: ["pi"],
         metadata,
       },

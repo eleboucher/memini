@@ -539,11 +539,18 @@ test("extractLastAssistantText returns only the latest assistant turn", () => {
   assert.equal(extractLastAssistantText([]), "");
 });
 
-test("buildTurnContent bounds each side", () => {
-  const content = buildTurnContent("u".repeat(2000), "a".repeat(5000));
+test("buildTurnContent bounds each side by the passed-in (server-resolved) caps", () => {
+  const content = buildTurnContent("u".repeat(2000), "a".repeat(5000), 1000, 3000);
   const [user, assistant] = content.split("\n\n");
-  assert.equal(user.length, 1000);
-  assert.equal(assistant.length, 3000);
+  // Each side is its cap plus the truncation marker, which is what tells a
+  // later reader the turn is a fragment.
+  assert.equal(user, "u".repeat(1000) + "\n[...truncated]");
+  assert.equal(assistant, "a".repeat(3000) + "\n[...truncated]");
+});
+
+test("buildTurnContent: a 0 cap captures that side whole rather than emptying it", () => {
+  const content = buildTurnContent("uuu", "aaa", 0, 0);
+  assert.equal(content, "uuu\n\naaa");
 });
 
 test("briefingPath only forwards a known scope; a hallucinated one is dropped", () => {

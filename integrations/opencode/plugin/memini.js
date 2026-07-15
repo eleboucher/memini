@@ -352,6 +352,12 @@ export function resolveConfig(env, options, worktree) {
       o.recall_max_tokens !== undefined
         ? Number(o.recall_max_tokens) || 0
         : intEnv("MEMINI_INJECT_RECALL_MAX_TOK", 0),
+    // Capture bounds: env override, else the built-in default; effectiveConfig
+    // layers the server's value on top once a handshake is in hand. This plugin
+    // ships standalone (no build step), so it carries its own copy of the
+    // wire keys rather than importing @memini/client.
+    capture_user_max_chars: intEnvFrom(e, "MEMINI_CAPTURE_USER_MAX_CHARS", 1000),
+    capture_assistant_max_chars: intEnvFrom(e, "MEMINI_CAPTURE_ASSISTANT_MAX_CHARS", 3000),
     recall_min_score:
       o.recall_min_score !== undefined
         ? Number(o.recall_min_score) || 0
@@ -417,6 +423,12 @@ export function effectiveConfig(cfg, hs) {
       explicit.recall_min_score || !Number.isFinite(s.inject_recall_min_score)
         ? cfg.recall_min_score
         : s.inject_recall_min_score,
+    capture_user_max_chars: Number.isFinite(s.capture_user_max_chars)
+      ? s.capture_user_max_chars
+      : cfg.capture_user_max_chars,
+    capture_assistant_max_chars: Number.isFinite(s.capture_assistant_max_chars)
+      ? s.capture_assistant_max_chars
+      : cfg.capture_assistant_max_chars,
   };
 }
 
@@ -532,7 +544,17 @@ export function createPlaintextBearerAuthGuard(warn, env) {
  * input and shouldn't crash a hook.
  */
 export function intEnv(name, defaultValue) {
-  const raw = process.env[name];
+  return intEnvFrom(process.env, name, defaultValue);
+}
+
+/**
+ * intEnv against an explicit env bag. resolveConfig and describeSettings are
+ * handed an `env` and read every other value off it; a knob resolved through
+ * intEnv (which closes over process.env) silently ignores that argument, so a
+ * caller inspecting a hypothetical environment gets the ambient one instead.
+ */
+export function intEnvFrom(env, name, defaultValue) {
+  const raw = (env || {})[name];
   if (raw == null || raw === "") return defaultValue;
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n < 0) return defaultValue;
@@ -602,6 +624,44 @@ export function fitByTokens(items, maxTokens) {
     used += t;
   }
   return { items: out, tokens: used, dropped };
+}
+
+/**
+ * Truncate `s` to `max` CHARACTERS for a turn capture, marking the cut. `max <= 0`
+ * captures it whole. Mirrors @memini/client's truncateForCapture — this plugin
+ * ships standalone (no build step), so it carries a copy rather than importing it.
+ *
+ * Distinct from truncate() below, and deliberately so: this one spreads into an
+ * array to iterate by code point, because `slice` indexes UTF-16 code units and
+ * would cut an emoji in half into a lone surrogate — invalid UTF-8 on the wire.
+ * It also treats 0 as uncapped rather than as "".
+ */
+export function truncateForCapture(s, max) {
+  s = String(s);
+  // Anything not a positive finite number means "no cap": 0 (uncapped by
+  // contract), negatives, and also NaN/null/undefined/strings, since a server's
+  // settings value reaches here unvalidated. Failing open (store the text) is
+  // the only safe direction this close to the write.
+  if (typeof max !== "number" || !Number.isFinite(max) || max <= 0) return s;
+  const cap = Math.floor(max);
+  // UTF-16 length >= code-point count, so this proves it fits without counting.
+  if (s.length <= cap) return s;
+  // Walk to the cut rather than spreading the whole string, stepping by code
+  // point so a surrogate pair is never split.
+  let i = 0;
+  for (let n = 0; i < s.length && n < cap; n++) {
+    i += s.codePointAt(i) > 0xffff ? 2 : 1;
+  }
+  if (i >= s.length) return s;
+  return s.slice(0, i) + "\n[...truncated]";
+}
+
+/**
+ * Assemble a captured turn's stored body from its two sides, each under its own
+ * server-resolved bound. 0 on a side captures that side whole.
+ */
+export function buildTurnCapture(userText, assistantText, userMax, assistantMax) {
+  return `${truncateForCapture(userText, userMax)}\n\n${truncateForCapture(assistantText, assistantMax)}`;
 }
 
 /**
@@ -1242,7 +1302,7 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       const stored = await rest.postJson(
         "/v1/memories",
         {
-          content: `${userText.slice(0, 1000)}\n\n${assistantText.slice(0, 3000)}`,
+          content: buildTurnCapture(userText, assistantText, live.capture_user_max_chars, live.capture_assistant_max_chars),
           tags: ["opencode"],
           metadata,
         },

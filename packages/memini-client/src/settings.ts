@@ -68,6 +68,13 @@ export const BEHAVIOR_KNOBS: BehaviorKnob[] = [
   { envName: "MEMINI_INJECT_RECALL_MAX_TOK", wireKey: "inject_recall_max_tok", kind: "int", default: 0 },
   { envName: "MEMINI_INJECT_RECALL_MIN_SCORE", wireKey: "inject_recall_min_score", kind: "float", default: 0 },
   { envName: "MEMINI_MIN_CAPTURE_CHARS", wireKey: "min_capture_chars", kind: "int", default: 0 },
+  { envName: "MEMINI_CAPTURE_USER_MAX_CHARS", wireKey: "capture_user_max_chars", kind: "int", default: 1000 },
+  {
+    envName: "MEMINI_CAPTURE_ASSISTANT_MAX_CHARS",
+    wireKey: "capture_assistant_max_chars",
+    kind: "int",
+    default: 3000,
+  },
 ];
 
 /** Parses like plugin/scripts/_shared.mjs's intEnv: >=0 integer, else `fallback`. */

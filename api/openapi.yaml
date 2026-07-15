@@ -1991,6 +1991,25 @@ components:
           minimum: 0
           default: 0
           description: Minimum content length worth bothering to capture a turn.
+        capture_user_max_chars:
+          type: integer
+          minimum: 0
+          default: 1000
+          description: >
+            Truncate the user side of a captured turn to this many characters.
+            The cut is marked with "[...truncated]" so a later reader can tell a
+            fragment from a whole turn. 0 captures the user text whole — the
+            server still applies its own limits, and a very long turn costs
+            episodic storage and recall context.
+        capture_assistant_max_chars:
+          type: integer
+          minimum: 0
+          default: 3000
+          description: >
+            Truncate the assistant side of a captured turn to this many
+            characters, marked like capture_user_max_chars. Larger than the user
+            side because the answer usually carries the durable content. 0
+            captures the assistant text whole.
         namespace_scope:
           type: string
           enum: [repo, owner_repo]

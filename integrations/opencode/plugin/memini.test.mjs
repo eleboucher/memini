@@ -1,13 +1,16 @@
 // Run: node --test (from this directory). Not shipped by install.sh.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import {
   MeminiPlugin,
   resolveConfig,
   effectiveConfig,
+  truncateForCapture,
+  buildTurnCapture,
   memoizeAsync,
   buildFacts,
   deriveNamespace,
@@ -1195,4 +1198,42 @@ test("event never rejects, even when client.session.messages throws", async () =
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+// --- turn-capture truncation conformance ------------------------------------
+//
+// This plugin ships standalone (no build step), so it carries its own copy of
+// the client core's truncateForCapture. The copy is only useful if it IS the
+// same function, and it once was not: it and the core disagreed on a NaN cap
+// from birth, each passing its own tests. The shared fixture is what makes the
+// two the same function rather than two functions with the same name.
+const captureVectors = JSON.parse(
+  readFileSync(
+    join(
+      fileURLToPath(new URL(".", import.meta.url)),
+      "..",
+      "..",
+      "..",
+      "packages",
+      "memini-client",
+      "test",
+      "fixtures",
+      "capture-vectors.json",
+    ),
+    "utf8",
+  ),
+);
+
+for (const v of captureVectors.cases) {
+  test(`capture vector: ${v.name}`, () => {
+    assert.equal(truncateForCapture(v.text, v.max), v.expect);
+  });
+}
+
+test("capture vectors: the fixture's marker is this copy's marker", () => {
+  assert.equal(truncateForCapture("ab", 1), "a" + captureVectors.marker);
+});
+
+test("buildTurnCapture: 0 on a side captures it whole", () => {
+  assert.equal(buildTurnCapture("uuu", "aaa", 0, 2), "uuu\n\naa" + captureVectors.marker);
 });

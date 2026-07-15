@@ -202,12 +202,16 @@ test("resolveHarnessCwd reads the real parent process cwd", () => {
 
 // ─── behavior knobs / effectiveSetting ──────────────────────────────
 
-test("BEHAVIOR_KNOBS covers exactly the 23 behavioral ClientSettings fields, excluding namespace_scope/namespace_prefix", () => {
-  assert.equal(BEHAVIOR_KNOBS.length, 23);
+test("BEHAVIOR_KNOBS covers exactly the 25 behavioral ClientSettings fields, excluding namespace_scope/namespace_prefix", () => {
+  assert.equal(BEHAVIOR_KNOBS.length, 25);
   const wireKeys = BEHAVIOR_KNOBS.map((k) => k.wireKey);
   assert.equal(new Set(wireKeys).size, wireKeys.length, "wireKey must be unique per knob");
   assert.equal(wireKeys.includes("namespace_scope"), false);
   assert.equal(wireKeys.includes("namespace_prefix"), false);
+  // The capture bounds are server-resolved settings like any other knob — they
+  // were once literals inlined in each integration's capture hook.
+  assert.ok(wireKeys.includes("capture_user_max_chars"));
+  assert.ok(wireKeys.includes("capture_assistant_max_chars"));
   const envNames = BEHAVIOR_KNOBS.map((k) => k.envName);
   assert.equal(new Set(envNames).size, envNames.length, "envName must be unique per knob");
 });

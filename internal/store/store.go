@@ -366,6 +366,12 @@ type ClientSettings struct {
 
 	// MinCaptureChars is the minimum content length worth bothering to capture a turn.
 	MinCaptureChars *int `json:"min_capture_chars,omitempty"`
+	// CaptureUserMaxChars truncates the user side of a captured turn to this
+	// many characters, marking the cut; 0 captures it whole.
+	CaptureUserMaxChars *int `json:"capture_user_max_chars,omitempty"`
+	// CaptureAssistantMaxChars truncates the assistant side of a captured turn
+	// to this many characters, marking the cut; 0 captures it whole.
+	CaptureAssistantMaxChars *int `json:"capture_assistant_max_chars,omitempty"`
 	// NamespaceScope is "repo" or "owner_repo": "repo" derives the namespace
 	// from the bare repo name; "owner_repo" disambiguates same-named repos
 	// across owners with an owner-repo slug (owner + "-" + repo).
@@ -405,6 +411,8 @@ func (s ClientSettings) Validate() error {
 		{"recall_limit", s.RecallLimit},
 		{"inject_recall_max_tok", s.InjectRecallMaxTok},
 		{"min_capture_chars", s.MinCaptureChars},
+		{"capture_user_max_chars", s.CaptureUserMaxChars},
+		{"capture_assistant_max_chars", s.CaptureAssistantMaxChars},
 	}
 	for _, f := range nonNegativeInts {
 		if f.v != nil && *f.v < 0 {
@@ -498,9 +506,11 @@ func DefaultClientSettings() ClientSettings {
 		InjectRecallMaxTok:   new(0),
 		InjectRecallMinScore: new(float64(0)),
 
-		MinCaptureChars: new(0),
-		NamespaceScope:  new("repo"),
-		NamespacePrefix: new(""),
+		MinCaptureChars:          new(0),
+		CaptureUserMaxChars:      new(1000),
+		CaptureAssistantMaxChars: new(3000),
+		NamespaceScope:           new("repo"),
+		NamespacePrefix:          new(""),
 	}
 }
 
@@ -525,7 +535,7 @@ type SettingsLayer struct {
 // provenance the REST layer (a later phase) surfaces to callers.
 func MergeClientSettings(layers ...SettingsLayer) (ClientSettings, map[string]string) {
 	var out ClientSettings
-	sources := make(map[string]string, 24)
+	sources := make(map[string]string, 26)
 
 	for _, l := range layers {
 		s := l.S
@@ -597,6 +607,12 @@ func MergeClientSettings(layers ...SettingsLayer) (ClientSettings, map[string]st
 		}
 		if applyPtr(&out.MinCaptureChars, s.MinCaptureChars) {
 			sources["min_capture_chars"] = l.Source
+		}
+		if applyPtr(&out.CaptureUserMaxChars, s.CaptureUserMaxChars) {
+			sources["capture_user_max_chars"] = l.Source
+		}
+		if applyPtr(&out.CaptureAssistantMaxChars, s.CaptureAssistantMaxChars) {
+			sources["capture_assistant_max_chars"] = l.Source
 		}
 		if applyPtr(&out.NamespaceScope, s.NamespaceScope) {
 			sources["namespace_scope"] = l.Source
