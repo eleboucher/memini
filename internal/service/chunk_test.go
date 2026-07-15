@@ -265,3 +265,36 @@ func containsPhrase(got []store.Scored, phrase string) bool {
 	}
 	return false
 }
+
+// gaugeRecorder records the chunk-backfill gauge.
+type gaugeRecorder struct {
+	service.Metrics
+	last  int
+	calls int
+}
+
+func (g *gaugeRecorder) ChunkBackfillPending(n int) { g.last = n; g.calls++ }
+
+// TestChunkBackfillReportsItsBacklog pins the gauge. The batch is capped, so a
+// backlog that never reaches 0 is the signal that chunked recall is silently
+// not reaching those memories: without it the feature can be quietly doing
+// nothing and nobody would know, which is the same class of failure the whole
+// change exists to end.
+func TestChunkBackfillReportsItsBacklog(t *testing.T) {
+	ctx := context.Background()
+	st := chunkTestStore(t)
+	g := &gaugeRecorder{Metrics: service.NopMetrics()}
+	svc := chunkService(t, st, service.WithChunkEmbed(testChunkCfg()), service.WithMetrics(g))
+
+	mustRememberLong(t, svc, longMemoryWithBuriedPhrase("a buried detail"))
+	if _, err := svc.BackfillChunks(ctx); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if g.calls == 0 {
+		t.Fatal("the chunk backfill never reported its backlog: an operator cannot see it stall")
+	}
+	// One memory found, one chunked, so nothing is left behind.
+	if g.last != 0 {
+		t.Errorf("pending = %d after chunking the only candidate, want 0", g.last)
+	}
+}

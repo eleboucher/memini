@@ -41,6 +41,13 @@ const (
 	DefaultEmbedMaxItemChars   = 8000
 	DefaultRerankMaxDocChars   = 2048
 	DefaultRerankMaxBatchChars = 6000
+
+	// The chunking defaults, exported for cmd/bench for the same reason. These
+	// mirror chunk.DefaultConfig(); TestChunkDefaultsAreCoherent pins the two.
+	DefaultChunkSize         = 1200
+	DefaultChunkOverlap      = 200
+	DefaultChunkMinContent   = 1200
+	DefaultChunkMaxPerMemory = 64
 )
 
 // NamespaceSource records how DefaultNamespace was resolved, useful for
@@ -215,6 +222,18 @@ type Config struct {
 	// recall and the server logs a warning — an observable ceiling, unlike the
 	// silent one it replaces.
 	ChunkMaxPerMemory int `env:"MEMINI_CHUNK_MAX_PER_MEMORY" envDefault:"64"`
+	// ChunkScoreWeight scales a chunk hit's score before it is compared with a
+	// whole-memory hit. 1 leaves the two directly comparable.
+	//
+	// It exists because max-pooling has a length bias: a maximum over more
+	// samples is higher in expectation, so a long memory with many chunks tends
+	// to out-score a short one on the same query. Recall's gates
+	// (MEMINI_RECALL_MIN_SCORE, the semantic reserve) are absolute thresholds
+	// calibrated against the current score distribution rather than ranks, so
+	// that bias shifts real behaviour rather than just reordering results.
+	// Below 1 a chunk hit must beat a whole-memory hit by a margin to win. Tune
+	// it with the benchmark harness (mise run bench), not by intuition.
+	ChunkScoreWeight float64 `env:"MEMINI_CHUNK_SCORE_WEIGHT" envDefault:"1.0"`
 	// ReembedOnModelChange makes the server re-embed every stored memory at
 	// startup when MEMINI_EMBED_MODEL differs from the model the vectors were
 	// produced with, instead of refusing to start. Off by default: re-embedding
@@ -872,6 +891,13 @@ func (c *Config) validateChunking() error {
 	}
 	if c.ChunkMinContent < 0 {
 		return fmt.Errorf("MEMINI_CHUNK_MIN_CONTENT must be >= 0, got %d", c.ChunkMinContent)
+	}
+	if c.ChunkScoreWeight <= 0 {
+		// 0 would score every chunk hit at 0, which is not "off" but "collect
+		// the rows, embed them, then discard every result" — set
+		// MEMINI_CHUNK_EMBED=false to turn the feature off.
+		return fmt.Errorf("MEMINI_CHUNK_SCORE_WEIGHT must be > 0, got %v: "+
+			"set MEMINI_CHUNK_EMBED=false to disable chunked recall", c.ChunkScoreWeight)
 	}
 	if c.EmbedMaxItemChars > 0 && c.ChunkSize > c.EmbedMaxItemChars {
 		// A chunk over the per-item budget is truncated on its way to the

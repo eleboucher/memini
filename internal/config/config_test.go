@@ -280,6 +280,16 @@ func TestLoadValidationErrors(t *testing.T) {
 			name: "zero chunks per memory",
 			env:  map[string]string{"MEMINI_CHUNK_EMBED": "true", "MEMINI_CHUNK_MAX_PER_MEMORY": "0"},
 		},
+		// 0 is not "off", it is "collect the rows, embed them, then score every
+		// result at zero". MEMINI_CHUNK_EMBED=false is how you turn it off.
+		{
+			name: "zero chunk score weight",
+			env:  map[string]string{"MEMINI_CHUNK_EMBED": "true", "MEMINI_CHUNK_SCORE_WEIGHT": "0"},
+		},
+		{
+			name: "negative chunk score weight",
+			env:  map[string]string{"MEMINI_CHUNK_EMBED": "true", "MEMINI_CHUNK_SCORE_WEIGHT": "-1"},
+		},
 		// A chunk over the per-item embed budget would itself be truncated,
 		// silently reintroducing the bug chunking removes.
 		{
@@ -401,7 +411,7 @@ var meminiEnvKeys = []string{
 	"MEMINI_EMBED_MAX_ITEM_CHARS", "MEMINI_RERANK_MAX_DOC_CHARS", "MEMINI_RERANK_LLM_MAX_DOC_CHARS",
 	"MEMINI_CLASSIFY_MAX_CHARS", "MEMINI_PROMOTE_WHOLE_MAX_CHARS",
 	"MEMINI_CHUNK_EMBED", "MEMINI_CHUNK_SIZE", "MEMINI_CHUNK_OVERLAP",
-	"MEMINI_CHUNK_MIN_CONTENT", "MEMINI_CHUNK_MAX_PER_MEMORY",
+	"MEMINI_CHUNK_MIN_CONTENT", "MEMINI_CHUNK_MAX_PER_MEMORY", "MEMINI_CHUNK_SCORE_WEIGHT",
 	"MEMINI_CONSOLIDATE_MODE", "MEMINI_CONSOLIDATE_MIN_SCORE",
 	"MEMINI_PROMOTE_INTERVAL", "MEMINI_PROMOTE_MIN_ACCESS", "MEMINI_BACKFILL_INTERVAL",
 	"MEMINI_SWEEP_INTERVAL", "MEMINI_SHORT_TERM_CAP", "MEMINI_UI_ENABLED",
@@ -485,6 +495,29 @@ func TestChunkDefaultsAreCoherent(t *testing.T) {
 	}
 	if cfg.ChunkEmbed {
 		t.Error("MEMINI_CHUNK_EMBED defaults on; it must be opt-in")
+	}
+	// 1 leaves the chunk and document legs directly comparable, which is the
+	// only default that does not silently retune recall the moment chunking is
+	// switched on.
+	if cfg.ChunkScoreWeight != 1 {
+		t.Errorf("MEMINI_CHUNK_SCORE_WEIGHT default = %v, want 1", cfg.ChunkScoreWeight)
+	}
+}
+
+// TestChunkScoreWeightOverride pins that the knob is reachable at all. It was
+// briefly not: the service option and the multiply existed, but no config field
+// and no wiring, so the remedy for max-pool's length bias was unreachable while
+// the bias itself was live.
+func TestChunkScoreWeightOverride(t *testing.T) {
+	clearMeminiEnv(t)
+	t.Setenv("MEMINI_CHUNK_EMBED", "true")
+	t.Setenv("MEMINI_CHUNK_SCORE_WEIGHT", "0.6")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ChunkScoreWeight != 0.6 {
+		t.Errorf("ChunkScoreWeight = %v, want 0.6", cfg.ChunkScoreWeight)
 	}
 }
 

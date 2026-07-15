@@ -130,6 +130,7 @@ func (m *countingMetrics) EmbedBackfillPending(n int) {
 	m.embedBackfillCalls++
 	m.mu.Unlock()
 }
+func (m *countingMetrics) ChunkBackfillPending(int) {}
 
 // TestRecallEmbedErrorFailsOnce confirms an embed failure still hard-fails
 // recall with the original wrap and reports the error metric exactly once.

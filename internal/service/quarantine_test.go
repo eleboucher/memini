@@ -39,6 +39,7 @@ func (*sanitizeRecorder) CorroborateResult(string)            {}
 func (*sanitizeRecorder) ContradictResult(string)             {}
 func (*sanitizeRecorder) TierClassified(string)               {}
 func (*sanitizeRecorder) EmbedBackfillPending(int)            {}
+func (*sanitizeRecorder) ChunkBackfillPending(int)            {}
 
 // A garbled, script-salad digest of the kind an upstream model/harness glitch
 // produces: Latin glued to CJK over and over. Triggers sanitize.Garbled.

@@ -53,6 +53,7 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_CHUNK_OVERLAP`](#memini_chunk_overlap) | `200` | [Embeddings](#embeddings) |
 | [`MEMINI_CHUNK_MIN_CONTENT`](#memini_chunk_min_content) | `1200` | [Embeddings](#embeddings) |
 | [`MEMINI_CHUNK_MAX_PER_MEMORY`](#memini_chunk_max_per_memory) | `64` | [Embeddings](#embeddings) |
+| [`MEMINI_CHUNK_SCORE_WEIGHT`](#memini_chunk_score_weight) | `1.0` | [Embeddings](#embeddings) |
 | [`MEMINI_REEMBED_ON_MODEL_CHANGE`](#memini_reembed_on_model_change) | `false` | [Embeddings](#embeddings) |
 | [`MEMINI_LLM_BASE_URL`](#memini_llm_base_url) | none | [LLM (optional)](#llm-optional) |
 | [`MEMINI_LLM_API_KEY`](#memini_llm_api_key) | none | [LLM (optional)](#llm-optional) |
@@ -281,6 +282,14 @@ int, default `1200`. Set by `Config.ChunkMinContent`.
 int, default `64`. Set by `Config.ChunkMaxPerMemory`.
 
 `MEMINI_CHUNK_MAX_PER_MEMORY` caps the chunks one memory may produce (the default covers roughly 64k runes). Past it the tail stays uncovered by chunk recall and the server logs a warning — an observable ceiling, unlike the silent one it replaces.
+
+### `MEMINI_CHUNK_SCORE_WEIGHT`
+
+float64, default `1.0`. Set by `Config.ChunkScoreWeight`.
+
+`MEMINI_CHUNK_SCORE_WEIGHT` scales a chunk hit's score before it is compared with a whole-memory hit. 1 leaves the two directly comparable.
+
+It exists because max-pooling has a length bias: a maximum over more samples is higher in expectation, so a long memory with many chunks tends to out-score a short one on the same query. Recall's gates (MEMINI_RECALL_MIN_SCORE, the semantic reserve) are absolute thresholds calibrated against the current score distribution rather than ranks, so that bias shifts real behaviour rather than just reordering results. Below 1 a chunk hit must beat a whole-memory hit by a margin to win. Tune it with the benchmark harness (mise run bench), not by intuition.
 
 ### `MEMINI_REEMBED_ON_MODEL_CHANGE`
 

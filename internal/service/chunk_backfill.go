@@ -75,6 +75,7 @@ func (s *Service) BackfillChunks(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	found := len(pending)
 
 	done := 0
 	for i, m := range pending {
@@ -97,7 +98,9 @@ func (s *Service) BackfillChunks(ctx context.Context) (int, error) {
 		vecs, err := s.embedChunks(ctx, res.Chunks)
 		if err != nil {
 			if i == 0 {
-				slog.WarnContext(ctx, "chunk backfill: embedder unavailable, deferring tick", "err", err)
+				slog.WarnContext(ctx, "chunk backfill: embedder unavailable, deferring tick",
+					"pending", found, "err", err)
+				s.metrics.ChunkBackfillPending(found)
 				return done, nil
 			}
 			slog.WarnContext(ctx, "chunk backfill: embed chunks", "namespace", m.Namespace, "id", m.ID, "err", err)
@@ -134,6 +137,10 @@ func (s *Service) BackfillChunks(ctx context.Context) (int, error) {
 		}
 		done++
 	}
+	// The batch is capped, so this is the backlog within this tick rather than
+	// the whole queue: a gauge that never reaches 0 means chunked recall is not
+	// reaching those memories, which is the failure worth alerting on.
+	s.metrics.ChunkBackfillPending(found - done)
 	return done, nil
 }
 

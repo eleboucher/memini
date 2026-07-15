@@ -358,8 +358,10 @@ func buildServiceStack(
 			MinContent: cfg.ChunkMinContent,
 			MaxChunks:  cfg.ChunkMaxPerMemory,
 		}))
+		svcOpts = append(svcOpts, service.WithChunkScoreWeight(cfg.ChunkScoreWeight))
 		log.Info("chunked embedding on",
-			"size", cfg.ChunkSize, "overlap", cfg.ChunkOverlap, "min_content", cfg.ChunkMinContent)
+			"size", cfg.ChunkSize, "overlap", cfg.ChunkOverlap,
+			"min_content", cfg.ChunkMinContent, "score_weight", cfg.ChunkScoreWeight)
 	}
 	svc := service.New(st, embedder, svcOpts...)
 

@@ -26,6 +26,10 @@ import (
 // memory, best-first, exactly what a plain VectorSearch returns — so fusion,
 // the semantic gate, temporal boost, reserve, and dedup all see the shape they
 // already expect.
+//
+// When there is nothing to add, nothing is touched: an empty chunk leg returns
+// the store's own rows in the store's own order, rather than the merge's. See
+// mergeIfChunked for why that distinction is load-bearing rather than pedantic.
 func (s *Service) vectorLeg(ctx context.Context, ns string, vec []float32, f store.Filter, k int) ([]store.Scored, error) {
 	docs, err := s.store.VectorSearch(ctx, ns, vec, f, k)
 	if err != nil {
@@ -44,7 +48,24 @@ func (s *Service) vectorLeg(ctx context.Context, ns string, vec []float32, f sto
 			"namespace", ns, "err", err)
 		return docs, nil
 	}
-	return mergeVectorLegs(docs, chunks, s.chunkScoreWeight, k), nil
+	return s.mergeIfChunked(docs, chunks, k), nil
+}
+
+// mergeIfChunked merges the legs, or returns the documents untouched when the
+// chunk leg is empty.
+//
+// Skipping the merge is not an optimization. mergeVectorLegs re-sorts, and its
+// tie-break (by ID, for determinism) is not the store's order for
+// equally-scoring rows, so running it over the documents alone REORDERS tied
+// hits and changes what recall injects. That showed up on the sample benchmark:
+// with chunking on and zero memories long enough to chunk, injected tokens
+// moved from 78 to 81. "Additive" has to mean the path with nothing to add is
+// bit-for-bit the path that existed before.
+func (s *Service) mergeIfChunked(docs, chunks []store.Scored, k int) []store.Scored {
+	if len(chunks) == 0 {
+		return docs
+	}
+	return mergeVectorLegs(docs, chunks, s.chunkScoreWeight, k)
 }
 
 // mergeVectorLegs merges the two legs keyed by memory ID, keeping each memory's

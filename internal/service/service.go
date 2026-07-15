@@ -163,6 +163,10 @@ type Metrics interface {
 	// EmbedBackfillPending reports the number of memories still marked
 	// pending_embed after one backfill tick (0 once the queue is drained).
 	EmbedBackfillPending(n int)
+	// ChunkBackfillPending reports the number of long memories still without
+	// chunk vectors after one chunk-backfill tick (0 once the queue is
+	// drained). Only meaningful with MEMINI_CHUNK_EMBED on.
+	ChunkBackfillPending(n int)
 }
 
 type nopMetrics struct{}
@@ -187,6 +191,12 @@ func (nopMetrics) CorroborateResult(string)            {}
 func (nopMetrics) ContradictResult(string)             {}
 func (nopMetrics) TierClassified(string)               {}
 func (nopMetrics) EmbedBackfillPending(int)            {}
+func (nopMetrics) ChunkBackfillPending(int)            {}
+
+// NopMetrics is exported for tests, mirroring store.NopMetrics: it lets a test
+// outside this package embed a working sink and override only the one method it
+// cares about, rather than restating the whole interface.
+func NopMetrics() Metrics { return nopMetrics{} }
 
 // ErrInvalidInput marks errors caused by the caller's request (missing fields,
 // unknown tiers) as opposed to backend failures. API layers map it to 400;
