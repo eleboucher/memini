@@ -199,6 +199,35 @@ The full generated table lives in
 [configuration.md](../reference/configuration.md#removed-settings), which is
 generated from the code and is always current.
 
+## Long memories can now be searched past the embedding budget (opt-in)
+
+`MEMINI_EMBED_MAX_ITEM_CHARS` bounds what a memory's vector can represent, not
+what it stores. Past it, text is kept and returned whole but vector recall
+cannot match it. Raising the budget moves that ceiling; `MEMINI_CHUNK_EMBED=true`
+removes it, by additionally embedding long memories in overlapping segments and
+merging those hits into recall.
+
+It is off by default, and off is exactly the previous behaviour. On, it is
+purely additive: the whole-memory vector is unchanged and still searched, so
+enabling it can only add results — it never removes one, and never rewrites,
+merges, or tombstones a memory. Turning it back off restores the previous
+behaviour immediately, leaving unused rows behind.
+
+Two things to know before enabling it:
+
+- **Chunks are built in the background**, on `MEMINI_BACKFILL_INTERVAL`, not at
+  write time. A long memory is many embedder round-trips, and doing that inside
+  a write would blow `MEMINI_WRITE_EMBED_TIMEOUT` for exactly the writes this
+  helps. So a long memory becomes fully searchable shortly after it is written,
+  not instantly — its whole-memory vector works the entire time.
+- **It costs embedder calls and rows**, once per long memory, plus a re-run
+  after anything rewrites that memory's content. Memories at or under
+  `MEMINI_CHUNK_MIN_CONTENT` are skipped entirely and cost nothing.
+
+Existing memories are picked up by the same background loop — there is no
+migration step and no downtime. Both storage backends gain a table; a rollback
+to an older binary ignores it.
+
 ## Two truncation budgets are configurable again
 
 `MEMINI_EMBED_MAX_ITEM_CHARS` and `MEMINI_RERANK_MAX_DOC_CHARS` were listed above
