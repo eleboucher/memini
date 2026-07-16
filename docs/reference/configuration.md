@@ -277,7 +277,7 @@ int, default `200`. Set by `Config.ChunkOverlap`.
 
 int, default `1200`. Set by `Config.ChunkMinContent`.
 
-`MEMINI_CHUNK_MIN_CONTENT` is the content length at or below which a memory gets no chunks at all. Below this the whole-memory vector already covers the text, so a chunk would duplicate it: a wasted embedder call, a wasted row, and a duplicate hit to merge away. Keep it at or above MEMINI_CHUNK_SIZE.
+`MEMINI_CHUNK_MIN_CONTENT` is the content length at or below which a memory gets no chunks at all. Below this the whole-memory vector already covers the text, so a chunk would duplicate it: a wasted embedder call, a wasted row, and a duplicate hit to merge away. Must be at or above MEMINI_CHUNK_SIZE — enforced at boot, because a lower value silently produces exactly one whole-content chunk per mid-sized memory, the pure waste this floor exists to prevent.
 
 ### `MEMINI_CHUNK_MAX_PER_MEMORY`
 

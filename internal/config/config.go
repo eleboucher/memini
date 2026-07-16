@@ -224,7 +224,10 @@ type Config struct {
 	// ChunkMinContent is the content length at or below which a memory gets no
 	// chunks at all. Below this the whole-memory vector already covers the text,
 	// so a chunk would duplicate it: a wasted embedder call, a wasted row, and a
-	// duplicate hit to merge away. Keep it at or above MEMINI_CHUNK_SIZE.
+	// duplicate hit to merge away. Must be at or above MEMINI_CHUNK_SIZE —
+	// enforced at boot, because a lower value silently produces exactly one
+	// whole-content chunk per mid-sized memory, the pure waste this floor
+	// exists to prevent.
 	ChunkMinContent int `env:"MEMINI_CHUNK_MIN_CONTENT" envDefault:"1200"`
 	// ChunkMaxPerMemory caps the chunks one memory may produce (the default
 	// covers roughly 64k runes). Past it the tail stays uncovered by chunk
@@ -898,8 +901,15 @@ func (c *Config) validateChunking() error {
 	if c.ChunkMaxPerMemory <= 0 {
 		return fmt.Errorf("MEMINI_CHUNK_MAX_PER_MEMORY must be > 0, got %d", c.ChunkMaxPerMemory)
 	}
-	if c.ChunkMinContent < 0 {
-		return fmt.Errorf("MEMINI_CHUNK_MIN_CONTENT must be >= 0, got %d", c.ChunkMinContent)
+	if c.ChunkMinContent < c.ChunkSize {
+		// Content in (MinContent, Size] fits one window, so Split emits a
+		// single chunk equal to the whole content — a verbatim duplicate of
+		// the document vector, once per mid-sized memory, corpus-wide. Every
+		// document (and the default) keeps MinContent >= Size; refuse a value
+		// that quietly buys nothing but embedder spend.
+		return fmt.Errorf("MEMINI_CHUNK_MIN_CONTENT must be >= MEMINI_CHUNK_SIZE (%d), got %d: "+
+			"a lower floor makes every mid-sized memory a single whole-content chunk that duplicates "+
+			"its own document vector", c.ChunkSize, c.ChunkMinContent)
 	}
 	if c.ChunkScoreWeight <= 0 {
 		// 0 would score every chunk hit at 0, which is not "off" but "collect

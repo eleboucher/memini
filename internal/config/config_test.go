@@ -280,6 +280,13 @@ func TestLoadValidationErrors(t *testing.T) {
 			name: "zero chunks per memory",
 			env:  map[string]string{"MEMINI_CHUNK_EMBED": "true", "MEMINI_CHUNK_MAX_PER_MEMORY": "0"},
 		},
+		// A floor below the size makes every memory in (floor, size] a single
+		// whole-content chunk — a verbatim duplicate of its own document
+		// vector, corpus-wide, which is exactly the waste the floor prevents.
+		{
+			name: "chunk min content below the chunk size",
+			env:  map[string]string{"MEMINI_CHUNK_EMBED": "true", "MEMINI_CHUNK_MIN_CONTENT": "200"},
+		},
 		// 0 is not "off", it is "collect the rows, embed them, then score every
 		// result at zero". MEMINI_CHUNK_EMBED=false is how you turn it off.
 		{
