@@ -163,13 +163,25 @@ func (s *Service) logRecallEvent(ctx context.Context, in RecallInput, results []
 // within this window yields its section's last slot to a staler one.
 const briefingExplorationWindow = 7 * 24 * time.Hour
 
+// servedRecencyFloor is the lower age bound on a "recently served" event: serves
+// younger than this are ignored. Briefing logs a serve on EVERY call, and a
+// SessionStart re-fires within one session (resume/clear/compact); the client
+// skips re-injecting a byte-identical briefing, which only stays identical if a
+// re-fire sees the SAME served set. Without a floor, the just-logged serves of
+// the current sitting would make the whole top-N "served" and rotate the last
+// slot on every re-fire, defeating that guard. The floor makes "recently served"
+// mean "served in a prior sitting, not this one". A long session that re-fires
+// after >1h may rotate once — post-compact re-injection is acceptable there.
+const servedRecencyFloor = time.Hour
+
 // recentlyServedIDs returns the set of memory IDs any briefing served in
-// namespace within briefingExplorationWindow of now — the input the reserved
-// exploration slot tests candidates against. Scoped to the primary namespace
-// because that is where a briefing's serves are logged (see logBriefingEvent).
-// It degrades like every other log-dependent path: a store with no event log
-// (or logging disabled), or a failed query, yields a nil set, and the briefing
-// then ranks by pure DurableScore exactly as before the slot existed.
+// namespace between servedRecencyFloor and briefingExplorationWindow before now
+// — the input the reserved exploration slot tests candidates against. Scoped to
+// the primary namespace because that is where a briefing's serves are logged
+// (see logBriefingEvent). It degrades like every other log-dependent path: a
+// store with no event log (or logging disabled), or a failed query, yields a nil
+// set, and the briefing then ranks by pure DurableScore exactly as before the
+// slot existed. now is threaded from s.now() so the floor stays deterministic.
 func (s *Service) recentlyServedIDs(ctx context.Context, namespace string, now time.Time) map[string]bool {
 	els, ok := s.eventLog()
 	if !ok {
@@ -183,8 +195,14 @@ func (s *Service) recentlyServedIDs(ctx context.Context, namespace string, now t
 	if err != nil {
 		return nil
 	}
+	floor := now.Add(-servedRecencyFloor)
 	served := make(map[string]bool, len(rows))
 	for _, r := range rows {
+		// Skip this sitting's own serves: an event younger than the floor was
+		// logged by a re-fire of the current session, not a prior one.
+		if r.CreatedAt.After(floor) {
+			continue
+		}
 		if r.MemoryID != "" {
 			served[r.MemoryID] = true
 		}

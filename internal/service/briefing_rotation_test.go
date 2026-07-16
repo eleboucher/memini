@@ -72,6 +72,26 @@ func putBriefingEvent(t *testing.T, st *sqlitevec.Store, memID string) {
 	}
 }
 
+// putFreshBriefingEvent records that a briefing in rotationNS served memID at
+// rotationNow itself — inside servedRecencyFloor. This models THIS sitting's own
+// serve (a compact/resume re-fire), which recentlyServedIDs must NOT count as
+// "recently served".
+func putFreshBriefingEvent(t *testing.T, st *sqlitevec.Store, memID string) {
+	t.Helper()
+	e := store.Event{
+		OpID:       "fresh-" + memID,
+		Kind:       store.EventBriefing,
+		Namespace:  rotationNS,
+		MemoryID:   memID,
+		MemoryNS:   rotationNS,
+		MemoryTier: memory.TierSemantic,
+		CreatedAt:  rotationNow, // this sitting — inside the 1h floor
+	}
+	if err := st.AppendEvents(context.Background(), []store.Event{e}); err != nil {
+		t.Fatalf("append fresh briefing event %s: %v", memID, err)
+	}
+}
+
 // seedRankedFacts writes ids[0]..ids[n-1] into rotationNS as semantic facts with
 // strictly descending DurableScore, so ids is the exact pure-DurableScore order.
 func seedRankedFacts(t *testing.T, st *sqlitevec.Store, ids ...string) {
@@ -114,6 +134,30 @@ func TestBriefingReservesLastSlotForUnservedItem(t *testing.T) {
 	}
 	if !eqIDs(b.Facts, "f1", "f2", "f3", "f4", "f6") {
 		t.Fatalf("facts = %v, want [f1 f2 f3 f4 f6] (last slot reserved for the highest unserved item, first 4 unchanged)", idList(b.Facts))
+	}
+}
+
+// TestBriefingFreshServesDoNotRotate: serves stamped inside servedRecencyFloor
+// are THIS sitting's own log (a compact/resume re-fire), not a prior sitting's,
+// so they must not count as "recently served". With every top-N candidate served
+// only just now, there is nothing older to displace, so the section renders pure
+// DurableScore order — which is what keeps the client's byte-identical-briefing
+// hash guard suppressing re-injection within a session.
+func TestBriefingFreshServesDoNotRotate(t *testing.T) {
+	svc, st := newRotationSvc(t)
+	ctx := context.Background()
+	seedRankedFacts(t, st, "f1", "f2", "f3", "f4", "f5", "f6", "f7")
+	// Every top-5 item was served at rotationNow itself — inside the floor.
+	for _, id := range []string{"f1", "f2", "f3", "f4", "f5"} {
+		putFreshBriefingEvent(t, st, id)
+	}
+
+	b, err := svc.Briefing(ctx, "acme", BriefingOpts{})
+	if err != nil {
+		t.Fatalf("briefing: %v", err)
+	}
+	if !eqIDs(b.Facts, "f1", "f2", "f3", "f4", "f5") {
+		t.Fatalf("facts = %v, want pure order [f1 f2 f3 f4 f5] — fresh serves inside the floor must not rotate", idList(b.Facts))
 	}
 }
 

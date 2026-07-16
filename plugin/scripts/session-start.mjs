@@ -124,8 +124,10 @@ function formatMemory(m, section, labels, from) {
   const text = escapeMeminiTags((m?.summary || m?.content || "").trim());
   if (!text) return null;
   // Provenance is appended to whatever base line we build below, so an empty
-  // `from` (the primary-namespace common case) yields no suffix.
-  const prov = from ? ` (from ${from})` : "";
+  // `from` (the primary-namespace common case) yields no suffix. `from` is a
+  // namespace/origin name — namespace validation allows "<", so escape it like
+  // stored content, or a hostile directory name could smuggle a `<memini` tag in.
+  const prov = from ? ` (from ${escapeMeminiTags(from)})` : "";
   // Cap the CONTENT at 280 code points, rune-safe (mirrors childTitle in
   // mcp.go): Array.from counts code points, so an astral character at the
   // boundary is never split into a broken surrogate half, and "…" is appended
@@ -359,7 +361,9 @@ async function main() {
   // memory_remember's error message enumerates the same chain. Dropping it here
   // meant the model was directed to read a line it was never shown, which made
   // visibility:"<ancestor>" effectively unreachable through the hook briefing.
-  if (b.scope_header) lines.push(b.scope_header);
+  // Escape like stored content: scope_header is server-built from namespace
+  // names, which may contain "<", so a forged `<memini` tag must not survive raw.
+  if (b.scope_header) lines.push(escapeMeminiTags(b.scope_header));
 
   let totalDropped = 0;
   for (const b of blocks) {
