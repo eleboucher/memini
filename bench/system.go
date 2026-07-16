@@ -212,8 +212,6 @@ func newMeminiBackend(st store.Store, e embed.Embedder, o SystemOpts) *meminiBac
 	return b
 }
 
-// ingest loads the corpus once: direct upserts (upsert mode) or the production
-// write path (write mode).
 // drainChunks builds every pending chunk before the recall phase. The server
 // does this on a ticker; a benchmark has no ticker and must not measure a
 // half-built index, so it runs the loop to completion here. A no-op when
@@ -237,8 +235,21 @@ func (b *meminiBackend) drainChunks(ctx context.Context) {
 		}
 		total += n
 	}
+	// BackfillChunks reports a deferred tick (embedder down) and a drained
+	// queue identically — (0, nil) — because the server's ticker retries
+	// either way. A one-shot drain cannot, so verify emptiness rather than
+	// trust the loop: measuring the chunk-union system against a half-built
+	// index would report the feature as worthless with a green run.
+	if left, err := b.svc.ChunkBacklog(ctx); err != nil {
+		b.ingErr = fmt.Errorf("chunk backlog: %w", err)
+	} else if left > 0 {
+		b.ingErr = fmt.Errorf("chunk backfill stalled with %d memories still unchunked (embedder down?)", left)
+	}
 	fmt.Fprintf(os.Stderr, "bench: chunked %d memories\n", total)
 }
+
+// ingest loads the corpus once: direct upserts (upsert mode) or the production
+// write path (write mode).
 
 func (b *meminiBackend) ingest(ctx context.Context, items []Item) error {
 	b.once.Do(func() {
