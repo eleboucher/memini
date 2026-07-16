@@ -976,7 +976,50 @@ func validateRememberInput(in RememberInput) (RememberInput, memory.Tier, error)
 	return in, tier, nil
 }
 
-// embedForRemember embeds fresh write content. When writeEmbedTimeout is set
+// reusableVector returns the stored vector when this write is an update that
+// leaves content byte-identical, so a tags-, metadata- or importance-only edit
+// costs no embedder call. ok is false when the caller must embed for real.
+//
+// in.Content is compared after scrubInput/sanitizeContent have rewritten it, so
+// it is the exact string embedForRemember would send to the embedder — equality
+// with the stored content makes the reused vector identical to the one a
+// re-embed would produce, not merely close. (Writes get no queryPrefix; that is
+// recall-only.)
+//
+// The vector is read back through the store rather than off existing.Embedding,
+// which is always empty: Get omits the vector from every read path (see
+// memory.Memory.Embedding). Reusing that empty slice would hand Upsert a
+// zero-length embedding, which it reads as "drop the vector" — silently
+// evicting the memory from semantic recall on every metadata edit.
+//
+// A vectorless row (degraded write, pending_embed) has nothing to reuse and
+// falls through to a real embed: that is the documented recovery path, and
+// GetEmbedding reporting (nil, nil) rather than an error is what keeps it
+// distinct from a missing row. A GetEmbedding error also falls through — a
+// redundant embed is strictly better than failing a write that would otherwise
+// succeed.
+func (s *Service) reusableVector(ctx context.Context, in *RememberInput, existing *memory.Memory) ([]float32, bool) {
+	if existing == nil || existing.Content != in.Content {
+		return nil, false
+	}
+	vec, err := s.store.GetEmbedding(ctx, in.Namespace, in.ID)
+	if err != nil {
+		slog.WarnContext(ctx, "remember: reading the stored vector failed, re-embedding instead",
+			"namespace", in.Namespace, "id", in.ID, "err", err)
+		return nil, false
+	}
+	if len(vec) == 0 {
+		return nil, false
+	}
+	// The row carries a valid vector for exactly this content, so it is not
+	// degraded — mirror the embed success path and clear any stale flag.
+	delete(in.Metadata, "pending_embed")
+	return vec, true
+}
+
+// embedForRemember embeds fresh write content, or reuses the stored vector when
+// an update leaves content unchanged (see reusableVector). When
+// writeEmbedTimeout is set
 // (> 0), the embed is bounded and a timeout or error degrades the write: it
 // returns a nil vector (the caller stores the memory keyword-searchable only)
 // and stamps the memory.PendingEmbedKey metadata flag so a background backfill
@@ -985,7 +1028,10 @@ func validateRememberInput(in RememberInput) (RememberInput, memory.Tier, error)
 // fail-fast default. in.Metadata is mutated in place (allocated if nil),
 // mirroring stampClassifiedTier/scrubInput: callers that share a Metadata map
 // across writes will see the flag too.
-func (s *Service) embedForRemember(ctx context.Context, in *RememberInput) ([]float32, error) {
+func (s *Service) embedForRemember(ctx context.Context, in *RememberInput, existing *memory.Memory) ([]float32, error) {
+	if vec, ok := s.reusableVector(ctx, in, existing); ok {
+		return vec, nil
+	}
 	if s.writeEmbedTimeout <= 0 {
 		vec, err := embed.EmbedOne(ctx, s.embedder, in.Content)
 		if err != nil {
@@ -1070,19 +1116,11 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		return existing, nil
 	}
 
-	vec, err := s.embedForRemember(ctx, &in)
-	if err != nil {
-		s.metrics.RememberResult("error", string(tier))
-		return nil, err
-	}
-
-	now := s.now()
-	id := in.ID
-	if id == "" {
-		id = s.newID()
-	}
 	// An update by ID preserves the existing row's validity start and confidence;
-	// load it so the upsert below doesn't reset them.
+	// load it so the upsert below doesn't reset them. This runs before the embed
+	// because embedForRemember reuses the loaded row's stored vector when the
+	// update leaves content unchanged (see reusableVector). A create skips it
+	// entirely — in.ID is empty — so the fresh-write path pays nothing.
 	var existing *memory.Memory
 	if in.ID != "" {
 		ex, gerr := s.store.Get(ctx, in.Namespace, in.ID)
@@ -1094,6 +1132,18 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 			s.metrics.RememberResult("error", string(tier))
 			return nil, fmt.Errorf("remember: load existing: %w", gerr)
 		}
+	}
+
+	vec, err := s.embedForRemember(ctx, &in, existing)
+	if err != nil {
+		s.metrics.RememberResult("error", string(tier))
+		return nil, err
+	}
+
+	now := s.now()
+	id := in.ID
+	if id == "" {
+		id = s.newID()
 	}
 	m := &memory.Memory{
 		ID:             id,

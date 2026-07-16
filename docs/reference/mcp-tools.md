@@ -176,7 +176,7 @@ Update fields of an existing memory by ID (partial: only provided fields change;
 | `confidence` | number |  | 0..1; omit to keep |
 | `content` | string |  | replacement content; omit to keep |
 | `importance` | number |  | 0..1; omit to keep |
-| `metadata` | object |  | merged into existing metadata key-by-key |
+| `metadata` | object |  | merged into existing metadata key-by-key; a null value deletes that key |
 | `namespace` | string |  | namespace; defaults to the server namespace |
 | `summary` | string |  | replacement summary; omit to keep |
 | `tags` | string[] |  | replacement tag set; omit to keep |

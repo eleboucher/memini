@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -73,6 +74,100 @@ func TestSharedMemoryAcrossSurfaces(t *testing.T) {
 	}
 	if len(out.Results) == 0 || out.Results[0].Content != "the deploy key lives in vault at secret/ci/deploy" {
 		t.Fatalf("agent B did not recall agent A's memory: %+v", out.Results)
+	}
+}
+
+// TestUpdateSemanticsMatchAcrossSurfaces pins the point of sharing
+// service.Update: an identical partial edit sent as a REST PATCH and as an MCP
+// memory_update must produce the identical row. Both surfaces used to be free to
+// drift — the omit-to-keep rules and the metadata merge lived only in the MCP
+// handler, and REST's nearest equivalent (POST with an id) replaces wholesale.
+func TestUpdateSemanticsMatchAcrossSurfaces(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "parity.db"), dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := service.New(st, embedtest.New(dims))
+	const ns = "parity-project"
+
+	seed := func(t *testing.T) *memory.Memory {
+		t.Helper()
+		m, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: ns, Content: "the deploy key lives in vault at secret/ci/deploy",
+			Summary: "deploy key location", Tier: memory.TierSemantic, Tags: []string{"ops"},
+			Metadata: map[string]any{"source": "handbook", "reviewed": "no"},
+		})
+		if err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		return m
+	}
+
+	// The same partial edit, expressed for each surface: change one metadata
+	// key, retag, and leave content/summary/tier to carry over.
+	viaREST := seed(t)
+	r := chi.NewRouter()
+	rest.New(svc, rest.AuthConfig{NamespaceHeader: nsHdr, DefaultNamespace: "default"}).Mount(r)
+	rec := do(t, r, http.MethodPatch, "/v1/memories/"+viaREST.ID, ns, "", map[string]any{
+		"tags": []string{"ops", "vault"}, "metadata": map[string]any{"reviewed": "yes"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("REST patch: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	viaMCP := seed(t)
+	srv := meminimcp.NewServer(svc, ns, "", "", "none")
+	clientT, serverT := mcpsdk.NewInMemoryTransports()
+	if _, err := srv.Connect(ctx, serverT, nil); err != nil {
+		t.Fatalf("mcp server connect: %v", err)
+	}
+	cs, err := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "agent", Version: "0"}, nil).Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatalf("mcp client connect: %v", err)
+	}
+	defer func() { _ = cs.Close() }()
+	if _, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "memory_update",
+		Arguments: map[string]any{
+			"id": viaMCP.ID, "tags": []string{"ops", "vault"},
+			"metadata": map[string]any{"reviewed": "yes"},
+		},
+	}); err != nil {
+		t.Fatalf("mcp update: %v", err)
+	}
+
+	// Compare what actually landed in the store, not what each surface echoed.
+	gotREST, err := st.Get(ctx, ns, viaREST.ID)
+	if err != nil {
+		t.Fatalf("get rest row: %v", err)
+	}
+	gotMCP, err := st.Get(ctx, ns, viaMCP.ID)
+	if err != nil {
+		t.Fatalf("get mcp row: %v", err)
+	}
+
+	if gotREST.Content != gotMCP.Content {
+		t.Fatalf("content diverged: REST %q vs MCP %q", gotREST.Content, gotMCP.Content)
+	}
+	if gotREST.Summary != gotMCP.Summary {
+		t.Fatalf("summary diverged: REST %q vs MCP %q", gotREST.Summary, gotMCP.Summary)
+	}
+	if gotREST.Tier != gotMCP.Tier {
+		t.Fatalf("tier diverged: REST %q vs MCP %q", gotREST.Tier, gotMCP.Tier)
+	}
+	if !slices.Equal(gotREST.Tags, gotMCP.Tags) {
+		t.Fatalf("tags diverged: REST %v vs MCP %v", gotREST.Tags, gotMCP.Tags)
+	}
+	for _, k := range []string{"source", "reviewed"} {
+		if gotREST.Metadata[k] != gotMCP.Metadata[k] {
+			t.Fatalf("metadata[%q] diverged: REST %v vs MCP %v", k, gotREST.Metadata[k], gotMCP.Metadata[k])
+		}
+	}
+	// And the merge actually happened on both: the untouched key survived.
+	if gotREST.Metadata["source"] != "handbook" {
+		t.Fatalf("metadata[source] = %v on both surfaces, want the merge to preserve it", gotREST.Metadata["source"])
 	}
 }
 

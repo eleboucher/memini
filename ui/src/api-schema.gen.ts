@@ -310,7 +310,13 @@ export interface paths {
         delete: operations["forgetMemory"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Update a memory in place
+         * @description Changes only the fields present in the body; anything omitted carries over from the stored record. metadata merges into the existing metadata key-by-key and an explicit null deletes that key — POST /v1/memories with an id replaces metadata wholesale instead.
+         *
+         *     The write-time lifecycle still runs (validation, secret redaction, content sanitization), so this is not a bare field write. Content is re-embedded only when it actually changes, so a tags- or metadata-only update costs no embedder call.
+         */
+        patch: operations["updateMemory"];
         trace?: never;
     };
     "/v1/memories/{id}/history": {
@@ -614,6 +620,7 @@ export interface components {
             tier?: components["schemas"]["Tier"];
             summary?: string;
             tags?: string[];
+            /** @description Replaces the stored metadata wholesale when this write carries an id (an upsert). Use PATCH /v1/memories/{id} to merge key-by-key instead. */
             metadata?: {
                 [key: string]: unknown;
             };
@@ -642,6 +649,31 @@ export interface components {
             confidence?: number;
             /** @description Write-side namespace scoping. Omit or "project" (default) writes to the request namespace itself. "personal" writes to the caller's home namespace (X-Memini-Home header / MEMINI_HOME on the client) instead — an error if no home namespace is configured. Any other value must name an ancestor of the request namespace, either its full path or an unambiguous last path segment (e.g. "acme" for request namespace "acme/phoenix/api"), and the write lands there instead. Ignored for non-durable writes: an episodic/working memory always stays in the request namespace regardless of visibility. */
             visibility?: string;
+        };
+        /** @description A partial edit: every property is optional and anything omitted keeps its stored value. Sending an explicit value writes it, so summary: "" clears the summary rather than being ignored. */
+        UpdateMemoryRequest: {
+            content?: string;
+            summary?: string;
+            /** @description Move the memory to this tier. Omit to keep the stored tier. */
+            tier?: components["schemas"]["Tier"];
+            /** @description Relabel derivation provenance. Omit to keep the stored level. */
+            level?: components["schemas"]["Level"];
+            /** @description Replaces the stored tag set wholesale. Omit to keep it; send an empty array to clear it. */
+            tags?: string[];
+            /** @description Merges into the stored metadata key-by-key: listed keys are added or overwritten, unlisted keys are untouched, and a key sent with a null value is deleted. POST /v1/memories with an id replaces metadata wholesale instead. */
+            metadata?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Format: double
+             * @description Omit to keep the stored importance. Note that 0 is currently indistinguishable from omitted and keeps the stored value.
+             */
+            importance?: number;
+            /**
+             * Format: double
+             * @description Omit to keep the stored confidence; ignored for short-term tiers.
+             */
+            confidence?: number;
         };
         SupersedeRequest: {
             /** @description ID of the memory that replaces the target. */
@@ -1945,6 +1977,38 @@ export interface operations {
                 content?: never;
             };
             404: components["responses"]["Error"];
+        };
+    };
+    updateMemory: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Namespace for this request; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateMemoryRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Memory"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            500: components["responses"]["Error"];
         };
     };
     getMemoryHistory: {

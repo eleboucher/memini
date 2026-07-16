@@ -51,6 +51,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("GetByFingerprint", func(t *testing.T) { testGetByFingerprint(t, st, dims) })
 	t.Run("LevelFilter", func(t *testing.T) { testLevelFilter(t, st, dims) })
 	t.Run("VectorlessRow", func(t *testing.T) { testVectorlessRow(t, st, dims) })
+	t.Run("GetEmbedding", func(t *testing.T) { testGetEmbedding(t, st, dims) })
 	t.Run("NamespaceLinks", func(t *testing.T) { testNamespaceLinks(t, st, dims) })
 	t.Run("NamespaceActivity", func(t *testing.T) { testNamespaceActivity(t, st, dims) })
 	t.Run("APIKeys", func(t *testing.T) { testAPIKeys(t, st, dims) })
@@ -584,6 +585,53 @@ func testNamespaceActivity(t *testing.T, st store.Store, dims int) {
 // vector must make it vector-searchable; re-upserting a vectored row without a
 // vector must remove the now-stale vector-index entry, not just leave it
 // unreachable through the new write.
+// testGetEmbedding pins the three-way contract callers depend on to tell "reuse
+// this vector" from "go embed": a stored vector round-trips exactly, a
+// vectorless row reports (nil, nil) rather than an error, and a missing memory
+// is ErrNotFound. Conflating the middle case with either neighbour is what
+// makes a skip-the-embed write either lose the vector or fail closed.
+func testGetEmbedding(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+
+	// (a) a stored vector round-trips byte-for-byte.
+	want := vec(dims, 0.25, -0.5, 0.75)
+	mustUpsert(t, st, mem(ns, "vectored", "content with a vector", want))
+	got, err := st.GetEmbedding(ctx, ns, id(ns, "vectored"))
+	if err != nil {
+		t.Fatalf("get embedding: %v", err)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("embedding round-trip mismatch:\n got %v\nwant %v", got, want)
+	}
+
+	// (b) a vectorless row is (nil, nil) — present, but nothing to reuse.
+	mustUpsert(t, st, mem(ns, "vectorless", "content with no vector", nil))
+	got, err = st.GetEmbedding(ctx, ns, id(ns, "vectorless"))
+	if err != nil {
+		t.Fatalf("get embedding on a vectorless row: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("vectorless row should report a nil embedding, got %v", got)
+	}
+
+	// (c) a missing memory is ErrNotFound, distinct from (b).
+	if _, err := st.GetEmbedding(ctx, ns, id(ns, "absent")); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("get embedding on a missing memory: want ErrNotFound, got %v", err)
+	}
+
+	// (d) a row that loses its vector reports (nil, nil) again — the degraded
+	// re-upsert path, which must not keep serving the old vector.
+	mustUpsert(t, st, mem(ns, "vectored", "content with a vector", nil))
+	got, err = st.GetEmbedding(ctx, ns, id(ns, "vectored"))
+	if err != nil {
+		t.Fatalf("get embedding after dropping the vector: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("embedding should be gone after a vectorless re-upsert, got %v", got)
+	}
+}
+
 func testVectorlessRow(t *testing.T, st store.Store, dims int) {
 	ctx := context.Background()
 	ns := t.Name()
