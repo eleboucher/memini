@@ -93,6 +93,12 @@ type verboseHealthBody struct {
 			LastError   string `json:"last_error"`
 			LastSuccess string `json:"last_success"`
 		} `json:"llm"`
+		Reranker struct {
+			Configured  bool   `json:"configured"`
+			OK          bool   `json:"ok"`
+			LastError   string `json:"last_error"`
+			LastSuccess string `json:"last_success"`
+		} `json:"reranker"`
 	} `json:"deps"`
 }
 
@@ -214,6 +220,51 @@ func TestHealthzVerboseLLMConfigured(t *testing.T) {
 	}
 	if body.Deps.LLM.LastSuccess == "" {
 		t.Errorf("llm.last_success empty, want an RFC3339 timestamp")
+	}
+}
+
+func TestHealthzVerboseRerankerNotConfigured(t *testing.T) {
+	srv := newTestServer(t)
+	srv.SetDeps(server.NewDepTracker())
+
+	_, body := getVerboseHealth(t, srv)
+	if body.Deps.Reranker.Configured {
+		t.Errorf("reranker.configured = true, want false")
+	}
+}
+
+func TestHealthzVerboseRerankerConfigured(t *testing.T) {
+	srv := newTestServer(t)
+	deps := server.NewDepTracker()
+	deps.Record("reranker", nil)
+	srv.SetDeps(deps)
+	srv.SetRerankConfigured(true)
+
+	_, body := getVerboseHealth(t, srv)
+	if !body.Deps.Reranker.Configured {
+		t.Errorf("reranker.configured = false, want true")
+	}
+	if !body.Deps.Reranker.OK {
+		t.Errorf("reranker.ok = false, want true")
+	}
+	if body.Deps.Reranker.LastSuccess == "" {
+		t.Errorf("reranker.last_success empty, want an RFC3339 timestamp")
+	}
+}
+
+func TestHealthzVerboseRerankerDown(t *testing.T) {
+	srv := newTestServer(t)
+	deps := server.NewDepTracker()
+	deps.Record("reranker", errors.New("rerank backend unreachable"))
+	srv.SetDeps(deps)
+	srv.SetRerankConfigured(true)
+
+	_, body := getVerboseHealth(t, srv)
+	if body.Deps.Reranker.OK {
+		t.Errorf("reranker.ok = true, want false")
+	}
+	if body.Deps.Reranker.LastError == "" {
+		t.Errorf("reranker.last_error empty, want the recorded error")
 	}
 }
 

@@ -38,11 +38,13 @@ type Server struct {
 	uiHandler http.Handler
 
 	ready atomic.Pointer[ReadinessFunc]
-	// deps and llmConfigured back the verbose healthz dependency blocks; both
-	// are set once at startup (see SetDeps/SetLLMConfigured) but use atomics
-	// for the same late-binding reason as ready.
-	deps          atomic.Pointer[DepTracker]
-	llmConfigured atomic.Bool
+	// deps, llmConfigured and rerankConfigured back the verbose healthz
+	// dependency blocks; all are set once at startup (see
+	// SetDeps/SetLLMConfigured/SetRerankConfigured) but use atomics for the
+	// same late-binding reason as ready.
+	deps             atomic.Pointer[DepTracker]
+	llmConfigured    atomic.Bool
+	rerankConfigured atomic.Bool
 }
 
 // Options configures the server without importing the config package.
@@ -154,6 +156,10 @@ func (s *Server) SetDeps(t *DepTracker) { s.deps.Store(t) }
 // SetLLMConfigured records whether the LLM pipeline is configured, for the
 // "llm.configured" field in verbose healthz.
 func (s *Server) SetLLMConfigured(v bool) { s.llmConfigured.Store(v) }
+
+// SetRerankConfigured records whether recall reranking is configured, for the
+// verbose healthz reranker block.
+func (s *Server) SetRerankConfigured(v bool) { s.rerankConfigured.Store(v) }
 
 // Run starts the HTTP server and blocks until ctx is cancelled, then performs
 // a graceful shutdown bounded by the configured timeout.

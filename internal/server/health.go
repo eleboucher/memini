@@ -23,12 +23,14 @@ type depBlock struct {
 	LastSuccess string `json:"last_success,omitempty"`
 }
 
-// llmDepBlock adds Configured ahead of the shared depBlock fields. OK must
-// NOT be omitempty: false is the zero value, so omitempty would drop the
-// "ok" key exactly when the LLM is configured but down — the one signal
-// this block exists to report. An unconfigured LLM renders ok:false too;
-// consumers gate on configured first.
-type llmDepBlock struct {
+// optionalDepBlock adds Configured ahead of the shared depBlock fields. It
+// backs both the "llm" and "reranker" blocks — dependencies that are only
+// present when configured. OK must NOT be omitempty: false is the zero value,
+// so omitempty would drop the "ok" key exactly when the dependency is
+// configured but down — the one signal this block exists to report. An
+// unconfigured dependency renders ok:false too; consumers gate on configured
+// first.
+type optionalDepBlock struct {
 	Configured  bool   `json:"configured"`
 	OK          bool   `json:"ok"`
 	LastError   string `json:"last_error,omitempty"`
@@ -39,9 +41,10 @@ type verboseHealth struct {
 	Status  string `json:"status"`
 	Version string `json:"version"`
 	Deps    struct {
-		Store    depBlock    `json:"store"`
-		Embedder depBlock    `json:"embedder"`
-		LLM      llmDepBlock `json:"llm"`
+		Store    depBlock         `json:"store"`
+		Embedder depBlock         `json:"embedder"`
+		LLM      optionalDepBlock `json:"llm"`
+		Reranker optionalDepBlock `json:"reranker"`
 	} `json:"deps"`
 }
 
@@ -85,6 +88,14 @@ func (s *Server) verboseHealthz(ctx context.Context) verboseHealth {
 		resp.Deps.LLM.OK = b.OK
 		resp.Deps.LLM.LastError = b.LastError
 		resp.Deps.LLM.LastSuccess = b.LastSuccess
+	}
+
+	resp.Deps.Reranker.Configured = s.rerankConfigured.Load()
+	if resp.Deps.Reranker.Configured {
+		b := s.depBlockFor("reranker")
+		resp.Deps.Reranker.OK = b.OK
+		resp.Deps.Reranker.LastError = b.LastError
+		resp.Deps.Reranker.LastSuccess = b.LastSuccess
 	}
 	return resp
 }

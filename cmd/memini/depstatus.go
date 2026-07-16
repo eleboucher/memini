@@ -7,6 +7,7 @@ import (
 
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/llm"
+	"github.com/eleboucher/memini/internal/rerank"
 	"github.com/eleboucher/memini/internal/server"
 )
 
@@ -56,6 +57,20 @@ func (r recordingLLM) Distill(ctx context.Context, in llm.DistillInput) ([]llm.F
 	facts, err := r.Client.Distill(ctx, in)
 	r.deps.Record("llm", err)
 	return facts, err
+}
+
+// recordingReranker wraps a rerank.Reranker the same way recordingEmbedder
+// wraps an embed.Embedder: every recall-path Rerank outcome feeds the
+// dep-status tracker under the "reranker" key.
+type recordingReranker struct {
+	rerank.Reranker
+	deps *server.DepTracker
+}
+
+func (r recordingReranker) Rerank(ctx context.Context, query string, candidates []rerank.Candidate) ([]string, error) {
+	ids, err := r.Reranker.Rerank(ctx, query, candidates)
+	r.deps.Record("reranker", err)
+	return ids, err
 }
 
 // probeEmbedder performs a one-shot tiny embed at startup so an unreachable
