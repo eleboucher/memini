@@ -177,7 +177,7 @@ func (s *Service) Stats(ctx context.Context, namespace string) (Stats, error) {
 			if m.Tier.Term() == memory.LongTerm && m.EffectiveConfidence(now) < memory.ConfidenceDemoteFloor {
 				st.LowConfidenceDurable++
 			}
-			if v, _ := m.Metadata["pending_embed"].(string); v == pendingEmbedValue {
+			if m.PendingEmbed() {
 				st.PendingEmbed++
 			}
 			st.TotalAccesses += m.AccessCount

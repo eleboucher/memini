@@ -672,8 +672,8 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 			Tier:           string(hint.Tier),
 		}
 	}
-	if pending, ok := m.Metadata["pending_embed"].(string); ok && pending == "true" {
-		res.Degraded = "pending_embed"
+	if m.PendingEmbed() {
+		res.Degraded = memory.PendingEmbedKey
 		res.Note = "embeddings unavailable; stored keyword-searchable only, vector will be backfilled automatically"
 	}
 	return nil, res, nil

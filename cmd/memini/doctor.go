@@ -324,13 +324,6 @@ type nsStat struct {
 	pendingEmbed int // live vectorless degraded writes (pending_embed="true") awaiting backfill
 }
 
-// pendingEmbedTrue is the Metadata["pending_embed"] sentinel marking a
-// vectorless degraded write awaiting embed backfill. It mirrors
-// internal/service's package-private pendingEmbedValue (unimportable from
-// cmd/memini) and is a named constant only to keep goconst quiet — matching the
-// tiersAll/labelUnset precedent, not exported semantics.
-const pendingEmbedTrue = "true"
-
 func namespaceStats(ctx context.Context, st store.Store) ([]nsStat, error) {
 	names, err := st.ListNamespaces(ctx)
 	if err != nil {
@@ -368,8 +361,7 @@ func namespaceStats(ctx context.Context, st store.Store) ([]nsStat, error) {
 				// over live memories and the backfill never lists superseded or
 				// expired rows, so counting them here would report a backlog
 				// nothing will ever drain.
-				if v, _ := m.Metadata["pending_embed"].(string); v == pendingEmbedTrue &&
-					m.SupersededBy == nil && !m.Expired(now) {
+				if m.PendingEmbed() && m.SupersededBy == nil && !m.Expired(now) {
 					s.pendingEmbed++
 				}
 			}

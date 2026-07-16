@@ -150,6 +150,22 @@ func (m *Memory) Expired(now time.Time) bool {
 	return m.ExpiresAt != nil && !m.ExpiresAt.After(now)
 }
 
+// PendingEmbedKey/PendingEmbedValue are the metadata flag a degraded write
+// carries when it was stored vectorless because the embedder was unreachable;
+// the backfill loop re-embeds flagged rows and deletes the key on success.
+const (
+	PendingEmbedKey   = "pending_embed"
+	PendingEmbedValue = "true"
+)
+
+// PendingEmbed reports whether this memory is still awaiting its embedding
+// (stored vectorless by a degraded write; keyword-retrieval only until the
+// backfill clears the flag).
+func (m *Memory) PendingEmbed() bool {
+	v, _ := m.Metadata[PendingEmbedKey].(string)
+	return v == PendingEmbedValue
+}
+
 // retentionHalfLife is the time since last access at which the recency factor
 // of a memory's retention score halves.
 const retentionHalfLife = 7 * 24 * time.Hour

@@ -979,7 +979,7 @@ func validateRememberInput(in RememberInput) (RememberInput, memory.Tier, error)
 // embedForRemember embeds fresh write content. When writeEmbedTimeout is set
 // (> 0), the embed is bounded and a timeout or error degrades the write: it
 // returns a nil vector (the caller stores the memory keyword-searchable only)
-// and stamps in.Metadata["pending_embed"] = "true" so a background backfill
+// and stamps the memory.PendingEmbedKey metadata flag so a background backfill
 // can pick it up later, rather than failing the write. writeEmbedTimeout <= 0
 // keeps the embed unbounded and any error fatal — the pre-fallback,
 // fail-fast default. in.Metadata is mutated in place (allocated if nil),
@@ -991,7 +991,7 @@ func (s *Service) embedForRemember(ctx context.Context, in *RememberInput) ([]fl
 		if err != nil {
 			return nil, fmt.Errorf("remember: embed: %w", err)
 		}
-		delete(in.Metadata, "pending_embed")
+		delete(in.Metadata, memory.PendingEmbedKey)
 		return vec, nil
 	}
 	ectx, cancel := context.WithTimeout(ctx, s.writeEmbedTimeout)
@@ -1005,7 +1005,7 @@ func (s *Service) embedForRemember(ctx context.Context, in *RememberInput) ([]fl
 		// caller, inflate the backfill gauge, and cause a redundant
 		// re-embed next tick. delete on a nil map is a no-op, so this is
 		// safe even when in.Metadata was never set.
-		delete(in.Metadata, "pending_embed")
+		delete(in.Metadata, memory.PendingEmbedKey)
 		return vec, nil
 	}
 	reason := "embed_error"
@@ -1018,7 +1018,7 @@ func (s *Service) embedForRemember(ctx context.Context, in *RememberInput) ([]fl
 	if in.Metadata == nil {
 		in.Metadata = map[string]any{}
 	}
-	in.Metadata["pending_embed"] = pendingEmbedValue
+	in.Metadata[memory.PendingEmbedKey] = memory.PendingEmbedValue
 	return nil, nil
 }
 

@@ -16,11 +16,6 @@ import (
 // one tick into an unbounded, slow-draining scan.
 const backfillBatch = 100
 
-// pendingEmbedValue is the metadata value stamped under the "pending_embed"
-// key to mark a write stored vectorless (embed budget exceeded or the embedder
-// errored) and awaiting the backfill loop.
-const pendingEmbedValue = "true"
-
 // RunEmbedBackfill periodically re-embeds memories that were stored vectorless
 // (metadata pending_embed="true", stamped by embedForRemember when the
 // write-time embed budget was exceeded or the embedder errored) until ctx is
@@ -70,7 +65,7 @@ func (s *Service) BackfillEmbeddings(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
-	filter := store.Filter{Metadata: map[string]string{"pending_embed": pendingEmbedValue}, Now: s.now()}
+	filter := store.Filter{Metadata: map[string]string{memory.PendingEmbedKey: memory.PendingEmbedValue}, Now: s.now()}
 	var pending []*memory.Memory
 	for _, ns := range namespaces {
 		mems, err := s.store.List(ctx, ns, filter, 0)
@@ -121,7 +116,7 @@ func (s *Service) BackfillEmbeddings(ctx context.Context) (int, error) {
 			continue
 		}
 
-		delete(fresh.Metadata, "pending_embed")
+		delete(fresh.Metadata, memory.PendingEmbedKey)
 		fresh.Embedding = vec
 		fresh.UpdatedAt = s.now()
 		if err := s.store.Upsert(ctx, fresh); err != nil {
