@@ -233,6 +233,7 @@ func clientSettingsToAPI(s store.ClientSettings) ClientSettings {
 		InlineExtract:            s.InlineExtract,
 		AutoSave:                 s.AutoSave,
 		AutoSaveInterval:         s.AutoSaveInterval,
+		AutoSaveMinEvents:        s.AutoSaveMinEvents,
 		InjectBriefingPinned:     s.InjectBriefingPinned,
 		InjectBriefingFacts:      s.InjectBriefingFacts,
 		InjectBriefingProcedures: s.InjectBriefingProcedures,
@@ -249,6 +250,8 @@ func clientSettingsToAPI(s store.ClientSettings) ClientSettings {
 		InjectRecallMaxTok:       s.InjectRecallMaxTok,
 		InjectRecallMinScore:     float64PtrToFloat32(s.InjectRecallMinScore),
 		MinCaptureChars:          s.MinCaptureChars,
+		CaptureUserMaxChars:      s.CaptureUserMaxChars,
+		CaptureAssistantMaxChars: s.CaptureAssistantMaxChars,
 		NamespacePrefix:          s.NamespacePrefix,
 	}
 	if s.NamespaceScope != nil {
@@ -276,6 +279,7 @@ func clientSettingsFromAPI(s ClientSettings) store.ClientSettings {
 		InlineExtract:            s.InlineExtract,
 		AutoSave:                 s.AutoSave,
 		AutoSaveInterval:         s.AutoSaveInterval,
+		AutoSaveMinEvents:        s.AutoSaveMinEvents,
 		InjectBriefingPinned:     s.InjectBriefingPinned,
 		InjectBriefingFacts:      s.InjectBriefingFacts,
 		InjectBriefingProcedures: s.InjectBriefingProcedures,
@@ -292,6 +296,8 @@ func clientSettingsFromAPI(s ClientSettings) store.ClientSettings {
 		InjectRecallMaxTok:       s.InjectRecallMaxTok,
 		InjectRecallMinScore:     float32PtrToFloat64(s.InjectRecallMinScore),
 		MinCaptureChars:          s.MinCaptureChars,
+		CaptureUserMaxChars:      s.CaptureUserMaxChars,
+		CaptureAssistantMaxChars: s.CaptureAssistantMaxChars,
 		NamespacePrefix:          s.NamespacePrefix,
 	}
 	if s.NamespaceScope != nil {
