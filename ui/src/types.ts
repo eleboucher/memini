@@ -110,3 +110,29 @@ export type Pin = Schemas['Pin']
 export type PinListResponse = Schemas['PinListResponse']
 export type PinPutRequest = Schemas['PinPutRequest']
 export type PinDeleteRequest = Schemas['PinDeleteRequest']
+
+// ---- Verbose health (Task 7) --------------------------------------------
+
+// Hand-written: /healthz?verbose=1 is an infra endpoint whose 200 body has no
+// schema in api/openapi.yaml, so this shape is maintained by hand. Mirrors
+// internal/server/health.go (verboseHealth / depBlock / optionalDepBlock).
+export interface DepStatus {
+  ok: boolean
+  last_error?: string
+  last_success?: string
+}
+
+export interface OptionalDepStatus extends DepStatus {
+  configured: boolean
+}
+
+export interface VerboseHealth {
+  status: string
+  version: string
+  deps: {
+    store: DepStatus
+    embedder: DepStatus
+    llm: OptionalDepStatus
+    reranker: OptionalDepStatus
+  }
+}

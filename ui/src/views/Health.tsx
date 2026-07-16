@@ -1,9 +1,68 @@
+import { Fragment } from 'preact'
 import { useState } from 'preact/hooks'
 import { api } from '../api'
-import { namespace, refresh } from '../store'
-import type { DedupReport, FsckReport } from '../types'
-import { Empty, ErrorBanner } from '../components/States'
+import { useAsync } from '../hooks'
+import { namespace, refresh, refreshNonce } from '../store'
+import type { DedupReport, DepStatus, FsckReport } from '../types'
+import { Empty, ErrorBanner, Loading } from '../components/States'
+import { relTime } from '../util'
 import { IconRefresh, IconCheck } from '../icons'
+
+function depDot(d: DepStatus, configured = true): string {
+  if (!configured) return 'idle'
+  if (!d.ok) return 'bad'
+  return d.last_success ? 'ok' : 'idle' // ok-but-never-called reads as idle, not healthy
+}
+
+function depDetail(d: DepStatus, configured = true): string {
+  if (!configured) return 'not configured'
+  if (!d.ok) return d.last_error || 'failing'
+  return d.last_success ? `last success ${relTime(d.last_success)}` : 'no calls yet'
+}
+
+// Pipeline is a read-only dependency/backlog health panel. Unlike the mutating
+// fsck/dedup tools below it, it auto-loads (and refreshes on the global nonce).
+function Pipeline() {
+  const { data: health, error, loading } = useAsync(() => api.health(), [refreshNonce.value])
+  const { data: stats } = useAsync(() => api.stats(), [namespace.value, refreshNonce.value])
+
+  if (loading && !health) return <Loading />
+  if (error) return <ErrorBanner message={error} />
+  if (!health) return null
+
+  const rows = [
+    { name: 'store', dep: health.deps.store, configured: true },
+    { name: 'embedder', dep: health.deps.embedder, configured: true },
+    { name: 'llm', dep: health.deps.llm, configured: health.deps.llm.configured },
+    { name: 'reranker', dep: health.deps.reranker, configured: health.deps.reranker.configured },
+  ]
+  const pending = stats?.pending_embed ?? 0
+
+  return (
+    <div class="panel panel-pad" style={{ marginBottom: '20px' }}>
+      <div class="section-h">
+        <h2>Pipeline</h2>
+        <span class="hint">dependency health and embedding backlog — read-only</span>
+      </div>
+      <div class="kv" style={{ gridTemplateColumns: 'auto auto 1fr' }}>
+        {rows.map((r) => (
+          <Fragment key={r.name}>
+            <span class="key">{r.name}</span>
+            <span class={`status-dot ${depDot(r.dep, r.configured)}`} style={{ alignSelf: 'center' }} />
+            <span class="val">{depDetail(r.dep, r.configured)}</span>
+          </Fragment>
+        ))}
+        <span class="key">awaiting embed</span>
+        <span class={`status-dot ${pending > 0 ? 'bad' : 'ok'}`} style={{ alignSelf: 'center' }} />
+        <span class="val">
+          {pending > 0
+            ? `${pending} vectorless ${pending === 1 ? 'memory' : 'memories'} — backfill retries while the embedder is down`
+            : 'none'}
+        </span>
+      </div>
+    </div>
+  )
+}
 
 // Health runs the server-side fsck consistency sweep: purge expired, enforce
 // the short-term cap, and audit for duplicate clusters. It mutates state, so
@@ -31,6 +90,8 @@ export function Health() {
 
   return (
     <div class="view">
+      <Pipeline />
+
       <div class="panel panel-pad" style={{ marginBottom: '20px' }}>
         <div class="section-h">
           <h2>fsck</h2>

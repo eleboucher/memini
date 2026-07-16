@@ -32,6 +32,7 @@ import type {
   Stats,
   Tier,
   UpdateApiKeyBody,
+  VerboseHealth,
 } from './types'
 
 export class ApiError extends Error {
@@ -370,6 +371,10 @@ export const api = {
   // body; sending it in the URL keeps this a plain DELETE with no body.
   deleteLink: (dst: string, ns?: string) =>
     req<void>('DELETE', `/v1/links?dst=${encodeURIComponent(dst)}`, undefined, ns),
+
+  // Verbose liveness with dependency blocks. Out-of-spec infra endpoint; the
+  // req() bearer header satisfies the verbose gate when an API key is set.
+  health: () => req<VerboseHealth>('GET', '/healthz?verbose=1'),
 
   fsck: () => req<FsckReport>('POST', '/v1/fsck'),
 
