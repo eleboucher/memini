@@ -154,11 +154,11 @@ func TestDoctorFixBackfillsLegacyConfidence(t *testing.T) {
 func TestPrintWritePathSignals(t *testing.T) {
 	var buf strings.Builder
 	printWritePathSignals(&buf, []nsStat{
-		{namespace: "a", classified: 2, promoted: 1, corroborated: 3},
-		{namespace: "b", classified: 1},
+		{namespace: "a", classified: 2, promoted: 1, corroborated: 3, pendingEmbed: 2},
+		{namespace: "b", classified: 1, pendingEmbed: 1},
 	})
 	out := buf.String()
-	for _, want := range []string{"marker-classified durable writes:  3", "promotion-produced facts:          1", "corroborated durable memories:     3"} {
+	for _, want := range []string{"marker-classified durable writes:  3", "promotion-produced facts:          1", "corroborated durable memories:     3", "pending embed (vectorless, awaiting backfill):  3"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q:\n%s", want, out)
 		}
@@ -168,6 +168,45 @@ func TestPrintWritePathSignals(t *testing.T) {
 	printWritePathSignals(&buf, []nsStat{{namespace: "a"}})
 	if buf.Len() != 0 {
 		t.Fatalf("all-zero signals should print nothing, got:\n%s", buf.String())
+	}
+}
+
+// TestNamespaceStatsPendingEmbed: a memory carrying pending_embed="true"
+// metadata is counted toward the namespace's pendingEmbed backlog; a memory
+// without the flag is not.
+func TestNamespaceStatsPendingEmbed(t *testing.T) {
+	st := openTestStore(t)
+	now := time.Now().UTC()
+	flagged := &memory.Memory{
+		ID: "acme/vectorless", Namespace: "acme", Tier: memory.TierEpisodic,
+		Content: "degraded write awaiting backfill", CreatedAt: now, UpdatedAt: now, LastAccessedAt: now,
+		Embedding: []float32{1, 0, 0, 0},
+		Metadata:  map[string]any{"pending_embed": "true"},
+	}
+	if err := st.Upsert(context.Background(), flagged); err != nil {
+		t.Fatalf("upsert flagged: %v", err)
+	}
+	plain := &memory.Memory{
+		ID: "acme/embedded", Namespace: "acme", Tier: memory.TierEpisodic,
+		Content: "ordinary write", CreatedAt: now, UpdatedAt: now, LastAccessedAt: now,
+		Embedding: []float32{0, 1, 0, 0},
+	}
+	if err := st.Upsert(context.Background(), plain); err != nil {
+		t.Fatalf("upsert plain: %v", err)
+	}
+
+	stats := statsFor(t, st)
+	total, ok := 0, false
+	for _, s := range stats {
+		if s.namespace == "acme" {
+			total, ok = s.pendingEmbed, true
+		}
+	}
+	if !ok {
+		t.Fatalf("namespace acme missing from stats: %+v", stats)
+	}
+	if total != 1 {
+		t.Fatalf("pendingEmbed = %d, want 1 (only the flagged memory counts)", total)
 	}
 }
 

@@ -321,7 +321,15 @@ type nsStat struct {
 	classified   int // durable writes tiered by the marker classifier (tier_classified=marker)
 	promoted     int // durable facts produced by promotion (promoted_from set)
 	corroborated int // durable memories whose confidence grew past the fresh seed
+	pendingEmbed int // vectorless degraded writes (pending_embed="true") awaiting backfill
 }
+
+// pendingEmbedTrue is the Metadata["pending_embed"] sentinel marking a
+// vectorless degraded write awaiting embed backfill. It mirrors
+// internal/service's package-private pendingEmbedValue (unimportable from
+// cmd/memini) and is a named constant only to keep goconst quiet — matching the
+// tiersAll/labelUnset precedent, not exported semantics.
+const pendingEmbedTrue = "true"
 
 func namespaceStats(ctx context.Context, st store.Store) ([]nsStat, error) {
 	names, err := st.ListNamespaces(ctx)
@@ -355,6 +363,9 @@ func namespaceStats(ctx context.Context, st store.Store) ([]nsStat, error) {
 				}
 				if _, ok := m.Metadata["promoted_from"]; ok {
 					s.promoted++
+				}
+				if v, _ := m.Metadata["pending_embed"].(string); v == pendingEmbedTrue {
+					s.pendingEmbed++
 				}
 			}
 			if m.Tier.Term() == memory.LongTerm && m.Confidence != nil &&
@@ -411,13 +422,14 @@ func printStoreStats(out io.Writer, stats []nsStat, pluginNS string) int {
 // promoter produced, and durable memories whose confidence has grown past the
 // fresh seed (re-observed via corroboration or exact restatement).
 func printWritePathSignals(out io.Writer, stats []nsStat) {
-	var classified, promoted, corroborated int
+	var classified, promoted, corroborated, pendingEmbed int
 	for _, s := range stats {
 		classified += s.classified
 		promoted += s.promoted
 		corroborated += s.corroborated
+		pendingEmbed += s.pendingEmbed
 	}
-	if classified == 0 && promoted == 0 && corroborated == 0 {
+	if classified == 0 && promoted == 0 && corroborated == 0 && pendingEmbed == 0 {
 		return
 	}
 	fmt.Fprintln(out, "Write-path signals:")                                                       //nolint:errcheck
@@ -425,6 +437,7 @@ func printWritePathSignals(out io.Writer, stats []nsStat) {
 	fmt.Fprintf(out, "  promotion-produced facts:          %d\n", promoted)                        //nolint:errcheck
 	fmt.Fprintf(out, "  corroborated durable memories:     %d (confidence above the %.2f seed)\n", //nolint:errcheck
 		corroborated, memory.ConfidenceSeedFresh)
+	fmt.Fprintf(out, "  pending embed (vectorless, awaiting backfill):  %d\n", pendingEmbed) //nolint:errcheck
 }
 
 // nsStat is the per-namespace summary doctor reports.
