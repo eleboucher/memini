@@ -2,6 +2,8 @@ package service_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -188,7 +190,7 @@ func TestChunkingOffIsANoop(t *testing.T) {
 	if !ok {
 		t.Fatal("sqlitevec should implement ChunkStore")
 	}
-	un, err := cs.ListUnchunked(ctx, "alice", 1, 10)
+	un, err := cs.ListUnchunked(ctx, "alice", 1, "", 10)
 	if err != nil {
 		t.Fatalf("list unchunked: %v", err)
 	}
@@ -197,16 +199,138 @@ func TestChunkingOffIsANoop(t *testing.T) {
 	}
 }
 
+// docOnlyStore hides the ChunkStore capability: embedding the INTERFACE (not a
+// concrete driver) forwards every Store method while the wrapper type itself
+// never gains the chunk methods — which is exactly what a driver without the
+// capability looks like to WithChunkEmbed's type assertion.
+type docOnlyStore struct{ store.Store }
+
 // TestChunkEmbedWithoutCapableStoreDegrades pins that the option is advisory: a
-// driver without the capability keeps working rather than erroring at boot.
+// driver without the capability keeps working rather than erroring at boot, and
+// the backfill does nothing rather than panicking. The earlier version of this
+// test ran against sqlitevec — which implements ChunkStore — so the branch it
+// existed for was never taken.
 func TestChunkEmbedWithoutCapableStoreDegrades(t *testing.T) {
 	ctx := context.Background()
+	st := docOnlyStore{chunkTestStore(t)}
+	if _, ok := any(st).(store.ChunkStore); ok {
+		t.Fatal("setup: the wrapper must hide the ChunkStore capability")
+	}
+	svc := chunkService(t, st, service.WithChunkEmbed(testChunkCfg()))
+	mustRememberLong(t, svc, longMemoryWithBuriedPhrase("a buried detail"))
+
+	if n, err := svc.BackfillChunks(ctx); err != nil || n != 0 {
+		t.Fatalf("backfill on an incapable store = (%d, %v), want (0, nil)", n, err)
+	}
+	if _, err := svc.Recall(ctx, service.RecallInput{Namespace: "alice", Query: "buried detail", Limit: 5}); err != nil {
+		t.Fatalf("recall must keep working without the capability: %v", err)
+	}
+}
+
+// TestChunkBackfillPreservesTheDocumentVector pins the fix for the worst bug
+// this feature shipped with. The backfill's old Get-then-Upsert round-trip
+// could never carry the document vector — Get does not load it, and both
+// backends read an empty Embedding as clear-the-vector — so it destroyed the
+// vector of every memory it chunked. Silently: every other post-backfill
+// assertion in this file passes through the chunk or keyword leg. This one
+// asserts through the DOCUMENT leg, on the lead of the content, which the
+// (truncated) document vector must keep reaching after chunks are attached.
+func TestChunkBackfillPreservesTheDocumentVector(t *testing.T) {
+	ctx := context.Background()
+	const lead = "the omega deployment checklist for the gateway"
+	content := lead + ". " + longMemoryWithBuriedPhrase("a buried detail")
+
 	st := chunkTestStore(t)
-	svc := service.New(st, truncatingEmbedder(), service.WithChunkEmbed(testChunkCfg()))
-	// sqlitevec DOES implement it, so this asserts the happy path stays on;
-	// the negative side is covered by WithChunkEmbed's store type assertion.
-	if _, err := svc.BackfillChunks(ctx); err != nil {
+	svc := chunkService(t, st, service.WithChunkEmbed(testChunkCfg()))
+	mustRememberLong(t, svc, content)
+	if !hasVectorHit(t, st, "alice", lead) {
+		t.Fatal("precondition: the document vector must reach the memory's lead before the backfill")
+	}
+
+	if n, err := svc.BackfillChunks(ctx); err != nil || n != 1 {
+		t.Fatalf("backfill = (%d, %v), want (1, nil)", n, err)
+	}
+	if !hasVectorHit(t, st, "alice", lead) {
+		t.Fatal("the backfill destroyed the document vector while attaching chunks")
+	}
+}
+
+// failingEmbedder rejects any batch containing marker — every batch when marker
+// is empty — and passes the rest through. It models the two embed-backend
+// failures the backfill must tell apart: a poison input the backend rejects
+// deterministically (400/413) and an outage that rejects everything.
+type failingEmbedder struct {
+	inner  embed.Embedder
+	marker string
+}
+
+func (f *failingEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	for _, s := range texts {
+		if f.marker == "" || strings.Contains(s, f.marker) {
+			return nil, errors.New("embedder rejected the batch")
+		}
+	}
+	return f.inner.Embed(ctx, texts)
+}
+
+func (f *failingEmbedder) Dims() int { return f.inner.Dims() }
+
+// TestChunkBackfillSkipsAPoisonRow pins that one deterministically-failing row
+// cannot wedge the queue. The queue's order is deterministic (by id), so before
+// the run-length failure rule a poison row at the head aborted every tick at
+// "first row failed => embedder down" and nothing behind it was ever chunked.
+func TestChunkBackfillSkipsAPoisonRow(t *testing.T) {
+	ctx := context.Background()
+	st := chunkTestStore(t)
+	svc := service.New(st,
+		&failingEmbedder{inner: truncatingEmbedder(), marker: "poisoned"},
+		service.WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }),
+		service.WithSyncReinforce(),
+		// The production wiring: a write whose embed fails degrades to a
+		// vectorless pending_embed row instead of erroring.
+		service.WithWriteEmbedTimeout(time.Second),
+		service.WithChunkEmbed(testChunkCfg()))
+
+	// Every chunk of the poison memory carries the marker, so its batch fails
+	// every time. Its write-path embed fails too, which only degrades the
+	// write (stored without a vector) — the row lands in the queue either way.
+	mustRememberLong(t, svc, strings.Repeat("poisoned segment that the embed backend rejects. ", 12))
+	mustRememberLong(t, svc, longMemoryWithBuriedPhrase("a buried detail"))
+
+	n, err := svc.BackfillChunks(ctx)
+	if err != nil {
 		t.Fatalf("backfill: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("backfilled %d memories, want 1: the healthy row must be chunked past the poison one", n)
+	}
+	if left, err := svc.ChunkBacklog(ctx); err != nil || left != 1 {
+		t.Fatalf("backlog = (%d, %v), want the poison row alone", left, err)
+	}
+}
+
+// TestChunkBackfillDefersTickWhenEmbedderIsDown pins the other side of the
+// run-length rule: two different rows failing back to back is an outage, and
+// the tick defers (0, nil) rather than erroring — the ticker retries, and a
+// warn-per-tick is the right noise level for a down embedder.
+func TestChunkBackfillDefersTickWhenEmbedderIsDown(t *testing.T) {
+	ctx := context.Background()
+	st := chunkTestStore(t)
+	svc := service.New(st,
+		&failingEmbedder{inner: truncatingEmbedder()}, // no marker: rejects everything
+		service.WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }),
+		service.WithSyncReinforce(),
+		service.WithWriteEmbedTimeout(time.Second),
+		service.WithChunkEmbed(testChunkCfg()))
+
+	mustRememberLong(t, svc, longMemoryWithBuriedPhrase("first buried detail"))
+	mustRememberLong(t, svc, strings.Repeat("a second long memory about the gateway. ", 8))
+
+	if n, err := svc.BackfillChunks(ctx); err != nil || n != 0 {
+		t.Fatalf("backfill under an outage = (%d, %v), want (0, nil)", n, err)
+	}
+	if left, err := svc.ChunkBacklog(ctx); err != nil || left != 2 {
+		t.Fatalf("backlog = (%d, %v), want both rows still queued", left, err)
 	}
 }
 
@@ -276,27 +400,48 @@ type gaugeRecorder struct {
 
 func (g *gaugeRecorder) ChunkBackfillPending(n int) { g.last = n; g.calls++ }
 
-// TestChunkBackfillReportsItsBacklog pins the gauge. The batch is capped, so a
-// backlog that never reaches 0 is the signal that chunked recall is silently
-// not reaching those memories: without it the feature can be quietly doing
-// nothing and nobody would know, which is the same class of failure the whole
-// change exists to end.
+// TestChunkBackfillReportsItsBacklog pins the gauge, and specifically pins it
+// PAST the batch size. The gauge's first version was computed from the batch
+// (found - done), so it could never exceed 25 and read 0 after every healthy
+// tick regardless of queue depth — an operator watching it while a 10k-memory
+// backlog ground through at 25 a minute saw "done" from the first tick. Only a
+// queue deeper than one batch can catch that class of bug, which is why this
+// fixture writes 30 rows rather than 1.
 func TestChunkBackfillReportsItsBacklog(t *testing.T) {
 	ctx := context.Background()
 	st := chunkTestStore(t)
 	g := &gaugeRecorder{Metrics: service.NopMetrics()}
 	svc := chunkService(t, st, service.WithChunkEmbed(testChunkCfg()), service.WithMetrics(g))
 
-	mustRememberLong(t, svc, longMemoryWithBuriedPhrase("a buried detail"))
-	if _, err := svc.BackfillChunks(ctx); err != nil {
+	// 30 = chunkBackfillBatch + 5. Contents must differ structurally — not
+	// just by an index buried in identical filler — so write-dedup cannot
+	// coalesce them into fewer rows than the fixture counts on.
+	const rows = 30
+	for i := range rows {
+		mustRememberLong(t, svc, strings.Repeat(fmt.Sprintf("unique fact %d about subsystem u%dx. ", i, i), 6))
+	}
+
+	done, err := svc.BackfillChunks(ctx)
+	if err != nil {
 		t.Fatalf("backfill: %v", err)
+	}
+	if done != 25 {
+		t.Fatalf("first tick chunked %d memories, want the full batch of 25", done)
 	}
 	if g.calls == 0 {
 		t.Fatal("the chunk backfill never reported its backlog: an operator cannot see it stall")
 	}
-	// One memory found, one chunked, so nothing is left behind.
+	if g.last != rows-done {
+		t.Errorf("pending = %d after one tick over %d rows, want %d: the gauge must report the queue, not the batch",
+			g.last, rows, rows-done)
+	}
+
+	// The second tick drains the remainder and the gauge reaches 0.
+	if _, err := svc.BackfillChunks(ctx); err != nil {
+		t.Fatalf("second backfill: %v", err)
+	}
 	if g.last != 0 {
-		t.Errorf("pending = %d after chunking the only candidate, want 0", g.last)
+		t.Errorf("pending = %d after draining the queue, want 0", g.last)
 	}
 }
 
