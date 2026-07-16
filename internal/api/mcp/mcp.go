@@ -1131,76 +1131,39 @@ func (t *tools) history(ctx context.Context, _ *mcpsdk.CallToolRequest, in idArg
 
 type updateArgs struct {
 	ID         string         `json:"id" jsonschema:"the memory ID to update (from memory_recall/memory_list)"`
-	Content    string         `json:"content,omitempty" jsonschema:"replacement content; omit to keep"`
-	Summary    string         `json:"summary,omitempty" jsonschema:"replacement summary; omit to keep"`
-	Tier       string         `json:"tier,omitempty" jsonschema:"move to this tier; omit to keep"`
+	Content    *string        `json:"content,omitempty" jsonschema:"replacement content; omit to keep"`
+	Summary    *string        `json:"summary,omitempty" jsonschema:"replacement summary; omit to keep"`
+	Tier       *string        `json:"tier,omitempty" jsonschema:"move to this tier; omit to keep"`
 	Tags       []string       `json:"tags,omitempty" jsonschema:"replacement tag set; omit to keep"`
-	Metadata   map[string]any `json:"metadata,omitempty" jsonschema:"merged into existing metadata key-by-key"`
+	Metadata   map[string]any `json:"metadata,omitempty" jsonschema:"merged into existing metadata key-by-key; a null value deletes that key"`
 	Importance *float64       `json:"importance,omitempty" jsonschema:"0..1; omit to keep"`
 	Confidence *float64       `json:"confidence,omitempty" jsonschema:"0..1; omit to keep"`
 	Namespace  string         `json:"namespace,omitempty" jsonschema:"namespace; defaults to the server namespace"`
 }
 
-// update composes svc.Get + svc.Remember with the current ID (the documented
-// upsert path): it re-embeds content and re-runs the write-time lifecycle
-// (corroborate/contradict), so an update is not a bare field patch. Only
-// fields explicitly provided in in are changed; everything else carries over
-// from the current record. Metadata merges key-by-key rather than replacing
-// wholesale, so a caller enriching one key never has to resend the rest.
+// update edits an existing memory in place via service.Update, which REST's
+// PATCH /v1/memories/{id} shares: only fields explicitly provided are changed,
+// metadata merges key-by-key (a null value deletes that key), and the write-time
+// lifecycle still runs, so an update is not a bare field patch. Content is
+// re-embedded only when it actually changes.
 func (t *tools) update(ctx context.Context, _ *mcpsdk.CallToolRequest, in updateArgs) (*mcpsdk.CallToolResult, memoryItem, error) {
 	ns, err := t.ns(in.Namespace)
 	if err != nil {
 		return nil, memoryItem{}, err
 	}
-	cur, err := t.svc.Get(ctx, ns, in.ID)
+	upd := service.UpdateInput{
+		Namespace: ns, ID: in.ID, Home: t.defaultHome, Author: t.defaultAuthor,
+		Content: in.Content, Summary: in.Summary, Tags: in.Tags, Metadata: in.Metadata,
+		Importance: in.Importance, Confidence: in.Confidence,
+	}
+	if in.Tier != nil {
+		upd.Tier = new(memory.Tier(*in.Tier))
+	}
+	m, err := t.svc.Update(ctx, upd)
 	if err != nil {
+		// notFoundErr passes anything else through untouched; it only enriches
+		// the ErrNotFound case with where a valid ID comes from.
 		return nil, memoryItem{}, notFoundErr(in.ID, ns, err)
-	}
-	upd := service.RememberInput{
-		Namespace: ns, Home: t.defaultHome, Author: t.defaultAuthor, ID: cur.ID,
-		Content: cur.Content, Summary: cur.Summary, Tier: cur.Tier,
-		Tags: cur.Tags, Metadata: cur.Metadata, Importance: cur.Importance, Confidence: cur.Confidence,
-		Level: cur.Level, ValidFrom: cur.ValidFrom, ValidTo: cur.ValidTo,
-	}
-	if in.Content != "" {
-		upd.Content = in.Content
-	}
-	if in.Summary != "" {
-		upd.Summary = in.Summary
-	}
-	if in.Tier != "" {
-		tr := memory.Tier(in.Tier)
-		if !tr.Valid() {
-			return nil, memoryItem{}, fmt.Errorf("invalid tier %q: want working|episodic|semantic|procedural", in.Tier)
-		}
-		upd.Tier = tr
-	}
-	if in.Tags != nil {
-		upd.Tags = in.Tags
-	}
-	for k, v := range in.Metadata {
-		if upd.Metadata == nil {
-			upd.Metadata = map[string]any{}
-		}
-		upd.Metadata[k] = v
-	}
-	if in.Importance != nil {
-		upd.Importance = *in.Importance
-	}
-	if in.Confidence != nil {
-		upd.Confidence = in.Confidence
-	}
-	m, err := t.svc.Remember(ctx, upd)
-	if err != nil {
-		return nil, memoryItem{}, err
-	}
-	// The episodic value gate returns (nil, nil) when it drops a low-signal
-	// write. For memory_remember that is a stored=false result, but here the
-	// caller asked to change an existing memory and nothing changed — surface
-	// it as an error rather than dereferencing nil or claiming success.
-	if m == nil {
-		return nil, memoryItem{}, fmt.Errorf("update dropped: the new content is below the episodic value gate " +
-			"(too short/low-signal); provide more substantive content or set a durable tier")
 	}
 	return nil, toMemoryItem(m), nil
 }
