@@ -47,6 +47,15 @@ export function Dashboard() {
             {stats.low_confidence_durable} low-confidence
           </div>
         </div>
+        {stats.pending_embed > 0 && (
+          <div class="panel stat">
+            <div class="k">Awaiting embedding</div>
+            <div class="v">
+              <span style={{ color: 'var(--tier-semantic)' }}>{num(stats.pending_embed)}</span>
+            </div>
+            <div class="sub">vectorless — keyword search only until the backfill re-embeds</div>
+          </div>
+        )}
       </div>
 
       <div class="panel panel-pad strata">
