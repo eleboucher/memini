@@ -1278,7 +1278,10 @@ type Stats struct {
 	// LowConfidenceDurable Live durable memories whose decayed confidence is below the demote floor — reclaimable, uncorroborated debris.
 	LowConfidenceDurable int    `json:"low_confidence_durable"`
 	Namespace            string `json:"namespace"`
-	Superseded           int    `json:"superseded"`
+
+	// PendingEmbed Live memories saved without a vector because the embedder was unreachable at write time; the backfill loop re-embeds and unflags them, so a persistently nonzero value means the embedder is still down.
+	PendingEmbed int `json:"pending_embed"`
+	Superseded   int `json:"superseded"`
 
 	// Total Live memories (excludes expired/superseded)
 	Total         int `json:"total"`
