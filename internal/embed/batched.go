@@ -36,8 +36,11 @@ func (b *Batched) Embed(ctx context.Context, texts []string) ([][]float32, error
 			t := truncateRunes(texts[j], b.maxItemChars)
 			if len(t) < len(texts[j]) {
 				// The stored vector represents only this prefix; recall won't
-				// match content beyond it.
-				slog.DebugContext(ctx, "embed: truncating over-long text",
+				// match content beyond it. WARN because that is an operator
+				// problem, not a debugging detail: the fix is raising
+				// MEMINI_EMBED_MAX_ITEM_CHARS or turning on MEMINI_CHUNK_EMBED,
+				// and docs/operations/upgrading.md tells them to watch for this.
+				slog.WarnContext(ctx, "embed: truncating over-long text",
 					"chars", len(texts[j]), "max", b.maxItemChars)
 			}
 			if len(sub) > 0 && b.maxChars > 0 && chars+len(t) > b.maxChars {
