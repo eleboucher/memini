@@ -547,6 +547,35 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Memory" }
         "404": { $ref: "#/components/responses/Error" }
+    patch:
+      operationId: updateMemory
+      tags: [memory]
+      summary: Update a memory in place
+      description: >
+        Changes only the fields present in the body; anything omitted carries
+        over from the stored record. metadata merges into the existing metadata
+        key-by-key and an explicit null deletes that key — POST /v1/memories
+        with an id replaces metadata wholesale instead.
+
+
+        The write-time lifecycle still runs (validation, secret redaction,
+        content sanitization), so this is not a bare field write. Content is
+        re-embedded only when it actually changes, so a tags- or metadata-only
+        update costs no embedder call.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateMemoryRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Memory" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
     delete:
       operationId: forgetMemory
       tags: [memory]
@@ -1069,7 +1098,12 @@ components:
             (the default) — it only raises to semantic/procedural.
         summary: { type: string }
         tags: { type: array, items: { type: string } }
-        metadata: { type: object, additionalProperties: true }
+        metadata:
+          type: object
+          additionalProperties: true
+          description: >
+            Replaces the stored metadata wholesale when this write carries an id
+            (an upsert). Use PATCH /v1/memories/{id} to merge key-by-key instead.
         importance: { type: number, format: double, minimum: 0, maximum: 1 }
         level:
           allOf:
@@ -1115,6 +1149,52 @@ components:
             request namespace "acme/phoenix/api"), and the write lands there
             instead. Ignored for non-durable writes: an episodic/working memory
             always stays in the request namespace regardless of visibility.
+    UpdateMemoryRequest:
+      type: object
+      description: >
+        A partial edit: every property is optional and anything omitted keeps
+        its stored value. Sending an explicit value writes it, so summary: ""
+        clears the summary rather than being ignored.
+      properties:
+        content: { type: string }
+        summary: { type: string }
+        tier:
+          allOf:
+            - $ref: "#/components/schemas/Tier"
+          description: Move the memory to this tier. Omit to keep the stored tier.
+        level:
+          allOf:
+            - $ref: "#/components/schemas/Level"
+          description: Relabel derivation provenance. Omit to keep the stored level.
+        tags:
+          type: array
+          items: { type: string }
+          description: >
+            Replaces the stored tag set wholesale. Omit to keep it; send an
+            empty array to clear it.
+        metadata:
+          type: object
+          additionalProperties: true
+          description: >
+            Merges into the stored metadata key-by-key: listed keys are added or
+            overwritten, unlisted keys are untouched, and a key sent with a null
+            value is deleted. POST /v1/memories with an id replaces metadata
+            wholesale instead.
+        importance:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: >
+            Omit to keep the stored importance. Note that 0 is currently
+            indistinguishable from omitted and keeps the stored value.
+        confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: >
+            Omit to keep the stored confidence; ignored for short-term tiers.
     SupersedeRequest:
       type: object
       required: [by]

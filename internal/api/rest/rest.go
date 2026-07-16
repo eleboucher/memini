@@ -304,6 +304,54 @@ func (h *Server) GetMemory(w http.ResponseWriter, r *http.Request, boundID strin
 	httputil.JSON(w, http.StatusOK, apiMemory(m))
 }
 
+// UpdateMemory implements PATCH /v1/memories/{id}. It shares service.Update
+// with the MCP memory_update tool, so both surfaces apply the same omit-to-keep
+// and metadata-merge semantics. Contrast RememberMemory, where an id in the body
+// upserts by replacing the whole record.
+func (h *Server) UpdateMemory(w http.ResponseWriter, r *http.Request, boundID string, _ UpdateMemoryParams) {
+	id, ok := unescapeID(boundID)
+	if !ok {
+		httputil.Error(w, http.StatusNotFound, "memory not found")
+		return
+	}
+	var req UpdateMemoryRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	in := service.UpdateInput{
+		Namespace:  namespaceFromContext(r.Context()),
+		Home:       homeFromContext(r.Context()),
+		ID:         id,
+		Content:    req.Content,
+		Summary:    req.Summary,
+		Importance: req.Importance,
+		Confidence: req.Confidence,
+		Tags:       deref(req.Tags),
+		Metadata:   deref(req.Metadata),
+	}
+	// Attribution mirrors RememberMemory: a named key stamps its name, the
+	// admin key stamps none.
+	if p, ok := principalFromContext(r.Context()); ok {
+		in.Author = p.Name
+	}
+	if req.Tier != nil {
+		in.Tier = new(memory.Tier(*req.Tier))
+	}
+	if req.Level != nil {
+		in.Level = new(memory.Level(*req.Level))
+	}
+	m, err := h.svc.Update(r.Context(), in)
+	if errors.Is(err, store.ErrNotFound) {
+		httputil.Error(w, http.StatusNotFound, "memory not found")
+		return
+	}
+	if err != nil {
+		writeError(w, r, statusFor(err), err)
+		return
+	}
+	httputil.JSON(w, http.StatusOK, apiMemory(m))
+}
+
 // GetMemoryHistory implements GET /v1/memories/{id}/history.
 func (h *Server) GetMemoryHistory(w http.ResponseWriter, r *http.Request, boundID string, _ GetMemoryHistoryParams) {
 	id, ok := unescapeID(boundID)

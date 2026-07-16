@@ -1061,7 +1061,9 @@ type RememberRequest struct {
 	Importance *float64 `json:"importance,omitempty"`
 
 	// Level Label the derivation provenance (explicit vs deduced) at write time. Omit to leave unset (default, legacy rows, auto-tagged by service).
-	Level    *Level                  `json:"level,omitempty"`
+	Level *Level `json:"level,omitempty"`
+
+	// Metadata Replaces the stored metadata wholesale when this write carries an id (an upsert). Use PATCH /v1/memories/{id} to merge key-by-key instead.
 	Metadata *map[string]interface{} `json:"metadata,omitempty"`
 	Summary  *string                 `json:"summary,omitempty"`
 	Tags     *[]string               `json:"tags,omitempty"`
@@ -1312,6 +1314,29 @@ type UpdateApiKeyRequest struct {
 	Settings *ClientSettings `json:"settings,omitempty"`
 }
 
+// UpdateMemoryRequest A partial edit: every property is optional and anything omitted keeps its stored value. Sending an explicit value writes it, so summary: "" clears the summary rather than being ignored.
+type UpdateMemoryRequest struct {
+	// Confidence Omit to keep the stored confidence; ignored for short-term tiers.
+	Confidence *float64 `json:"confidence,omitempty"`
+	Content    *string  `json:"content,omitempty"`
+
+	// Importance Omit to keep the stored importance. Note that 0 is currently indistinguishable from omitted and keeps the stored value.
+	Importance *float64 `json:"importance,omitempty"`
+
+	// Level Relabel derivation provenance. Omit to keep the stored level.
+	Level *Level `json:"level,omitempty"`
+
+	// Metadata Merges into the stored metadata key-by-key: listed keys are added or overwritten, unlisted keys are untouched, and a key sent with a null value is deleted. POST /v1/memories with an id replaces metadata wholesale instead.
+	Metadata *map[string]interface{} `json:"metadata,omitempty"`
+	Summary  *string                 `json:"summary,omitempty"`
+
+	// Tags Replaces the stored tag set wholesale. Omit to keep it; send an empty array to clear it.
+	Tags *[]string `json:"tags,omitempty"`
+
+	// Tier Move the memory to this tier. Omit to keep the stored tier.
+	Tier *Tier `json:"tier,omitempty"`
+}
+
 // Namespace defines model for Namespace.
 type Namespace = string
 
@@ -1490,6 +1515,12 @@ type GetMemoryParams struct {
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
+// UpdateMemoryParams defines parameters for UpdateMemory.
+type UpdateMemoryParams struct {
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
+	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
+}
+
 // GetMemoryHistoryParams defines parameters for GetMemoryHistory.
 type GetMemoryHistoryParams struct {
 	// XMeminiNamespace Namespace for this request; falls back to the server default.
@@ -1622,6 +1653,9 @@ type PutLinkJSONRequestBody PutLinkJSONBody
 // RememberMemoryJSONRequestBody defines body for RememberMemory for application/json ContentType.
 type RememberMemoryJSONRequestBody = RememberRequest
 
+// UpdateMemoryJSONRequestBody defines body for UpdateMemory for application/json ContentType.
+type UpdateMemoryJSONRequestBody = UpdateMemoryRequest
+
 // ReassignMemoryJSONRequestBody defines body for ReassignMemory for application/json ContentType.
 type ReassignMemoryJSONRequestBody ReassignMemoryJSONBody
 
@@ -1705,6 +1739,9 @@ type ServerInterface interface {
 	// Fetch a memory by ID
 	// (GET /v1/memories/{id})
 	GetMemory(w http.ResponseWriter, r *http.Request, id string, params GetMemoryParams)
+	// Update a memory in place
+	// (PATCH /v1/memories/{id})
+	UpdateMemory(w http.ResponseWriter, r *http.Request, id string, params UpdateMemoryParams)
 	// The full version chain (supersession lineage) of a memory
 	// (GET /v1/memories/{id}/history)
 	GetMemoryHistory(w http.ResponseWriter, r *http.Request, id string, params GetMemoryHistoryParams)
@@ -1870,6 +1907,12 @@ func (_ Unimplemented) ForgetMemory(w http.ResponseWriter, r *http.Request, id s
 // Fetch a memory by ID
 // (GET /v1/memories/{id})
 func (_ Unimplemented) GetMemory(w http.ResponseWriter, r *http.Request, id string, params GetMemoryParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Update a memory in place
+// (PATCH /v1/memories/{id})
+func (_ Unimplemented) UpdateMemory(w http.ResponseWriter, r *http.Request, id string, params UpdateMemoryParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -3053,6 +3096,62 @@ func (siw *ServerInterfaceWrapper) GetMemory(w http.ResponseWriter, r *http.Requ
 	handler.ServeHTTP(w, r)
 }
 
+// UpdateMemory operation middleware
+func (siw *ServerInterfaceWrapper) UpdateMemory(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params UpdateMemoryParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Memini-Namespace" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Memini-Namespace")]; found {
+		var XMeminiNamespace Namespace
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Memini-Namespace", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Memini-Namespace", valueList[0], &XMeminiNamespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Memini-Namespace", Err: err})
+			return
+		}
+
+		params.XMeminiNamespace = &XMeminiNamespace
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateMemory(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetMemoryHistory operation middleware
 func (siw *ServerInterfaceWrapper) GetMemoryHistory(w http.ResponseWriter, r *http.Request) {
 
@@ -3980,6 +4079,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/memories/{id}", wrapper.GetMemory)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/v1/memories/{id}", wrapper.UpdateMemory)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/memories/{id}/history", wrapper.GetMemoryHistory)
