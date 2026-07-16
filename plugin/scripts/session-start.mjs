@@ -25,6 +25,7 @@ import {
   briefingUnchanged,
   cacheBriefingHash,
   deleteLastRecallState,
+  escapeMeminiTags,
   MEMORY_INSTRUCTION,
   COMPACT_RECOVERY_DIRECTIVE,
   DEBUG,
@@ -116,7 +117,11 @@ function warnRemovedVars(env) {
 // it is rendered as a trailing "(from …)" suffix independent of MEMINI_INJECT_LABELS,
 // because knowing a fact came from outside this namespace is context, not a label.
 function formatMemory(m, section, labels, from) {
-  const text = (m?.summary || m?.content || "").trim();
+  // Neutralize memini wrapper tags in the untrusted stored content BEFORE the
+  // 280-cap. An entity expansion (`<memini` → `&lt;memini`) slightly shifts the
+  // cap, which is accepted as the simpler, safe choice: sanitizing before the cap
+  // means a forged tag can never survive whole by hiding past the boundary.
+  const text = escapeMeminiTags((m?.summary || m?.content || "").trim());
   if (!text) return null;
   // Provenance is appended to whatever base line we build below, so an empty
   // `from` (the primary-namespace common case) yields no suffix.

@@ -476,6 +476,20 @@ export async function postSupersede(id, by, namespace) {
 }
 
 /**
+ * Neutralize memini wrapper tags inside untrusted stored content before it is
+ * rendered into an injected block. Memory-poisoning defense (Unit 42 / MINJA):
+ * a memory whose content carries `</memini-context>` or `<memini-memory-directive>`
+ * could otherwise break out of its wrapper and masquerade as a harness directive.
+ * We entity-escape only the leading "<" of any `<memini` / `</memini` sequence
+ * (case-insensitive); generic angle brackets stay as-is so real code snippets
+ * (e.g. `Promise<memory>`, `<div>`) render unmangled.
+ */
+export function escapeMeminiTags(content) {
+  if (typeof content !== "string") return content;
+  return content.replace(/<(\/?)memini/gi, "&lt;$1memini");
+}
+
+/**
  * Truncate to `max` bytes, suffix with a marker. Same shape as
  * agentmemory's truncate helper.
  */

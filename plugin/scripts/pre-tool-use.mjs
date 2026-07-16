@@ -24,6 +24,7 @@ import {
   readToolCall,
   fitByTokens,
   truncate,
+  escapeMeminiTags,
   readLastRecallState,
   writeLastRecallState,
   DEBUG,
@@ -53,7 +54,10 @@ function toolAllowed(toolName, allow) {
 }
 
 function formatHit(h, labels) {
-  const text = h?.content || h?.summary || "";
+  // Neutralize memini wrapper tags in the untrusted recalled content BEFORE the
+  // 240-char truncate, so a forged </memini-pretool> can't break out of the block
+  // (memory-poisoning defense — same rationale as formatMemory in session-start).
+  const text = escapeMeminiTags(h?.content || h?.summary || "");
   if (!text) return null;
   if (labels.size === 0) {
     return `- (${h.score.toFixed(2)}) ${truncate(text, 240)}`;
