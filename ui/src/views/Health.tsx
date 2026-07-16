@@ -8,16 +8,31 @@ import { Empty, ErrorBanner, Loading } from '../components/States'
 import { relTime } from '../util'
 import { IconRefresh, IconCheck } from '../icons'
 
-function depDot(d: DepStatus, configured = true): string {
-  if (!configured) return 'idle'
-  if (!d.ok) return 'bad'
-  return d.last_success ? 'ok' : 'idle' // ok-but-never-called reads as idle, not healthy
+// depState classifies one dep row of the healthz payload: 'unconfigured' (dep
+// not set up), 'down' (failing), 'ok' (healthy with a recorded success), or
+// 'quiet' (ok but never called — reads idle, not healthy). The status dot and
+// the detail text both derive from this one state.
+type DepState = 'unconfigured' | 'down' | 'ok' | 'quiet'
+
+function depState(d: DepStatus, configured: boolean): DepState {
+  if (!configured) return 'unconfigured'
+  if (!d.ok) return 'down'
+  return d.last_success ? 'ok' : 'quiet'
 }
 
-function depDetail(d: DepStatus, configured = true): string {
-  if (!configured) return 'not configured'
-  if (!d.ok) return d.last_error || 'failing'
-  return d.last_success ? `last success ${relTime(d.last_success)}` : 'no calls yet'
+const DEP_DOT: Record<DepState, string> = { unconfigured: 'idle', down: 'bad', ok: 'ok', quiet: 'idle' }
+
+function depDetail(state: DepState, d: DepStatus): string {
+  switch (state) {
+    case 'unconfigured':
+      return 'not configured'
+    case 'down':
+      return d.last_error || 'failing'
+    case 'ok':
+      return `last success ${relTime(d.last_success)}`
+    case 'quiet':
+      return 'no calls yet'
+  }
 }
 
 // Pipeline is a read-only dependency/backlog health panel. Unlike the mutating
@@ -49,13 +64,16 @@ function Pipeline() {
         <span class="hint">dependency health and embedding backlog — read-only</span>
       </div>
       <div class="kv" style={{ gridTemplateColumns: 'auto auto 1fr' }}>
-        {rows.map((r) => (
-          <Fragment key={r.name}>
-            <span class="key">{r.name}</span>
-            <span class={`status-dot ${depDot(r.dep, r.configured)}`} style={{ alignSelf: 'center' }} />
-            <span class="val">{depDetail(r.dep, r.configured)}</span>
-          </Fragment>
-        ))}
+        {rows.map((r) => {
+          const state = depState(r.dep, r.configured)
+          return (
+            <Fragment key={r.name}>
+              <span class="key">{r.name}</span>
+              <span class={`status-dot ${DEP_DOT[state]}`} style={{ alignSelf: 'center' }} />
+              <span class="val">{depDetail(state, r.dep)}</span>
+            </Fragment>
+          )
+        })}
         <span class="key">awaiting embed</span>
         <span
           class={`status-dot ${pending === null ? 'idle' : pending > 0 ? 'bad' : 'ok'}`}

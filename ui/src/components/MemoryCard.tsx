@@ -3,6 +3,7 @@ import { TierBadge } from './TierBadge'
 import { MemoryTypeBadge } from './MemoryTypeBadge'
 import {
   CONFIDENCE_SEED,
+  confidenceState,
   fromLabel,
   isAutoTiered,
   isPendingEmbed,
@@ -28,6 +29,7 @@ interface Props {
 }
 
 export function MemoryCard({ memory: m, score, onOpen, showNamespace, from, fromNs }: Props) {
+  const conf = m.confidence != null ? confidenceState(m.confidence) : null
   return (
     <button type="button" class={`mem panel ${m.tier}`} onClick={() => onOpen(m)}>
       <div class="mem-head">
@@ -79,10 +81,10 @@ export function MemoryCard({ memory: m, score, onOpen, showNamespace, from, from
           <span
             class="imp"
             title={
-              m.confidence === CONFIDENCE_SEED
-                ? 'confidence 0.40 — seeded default, not yet corroborated'
-                : m.confidence > CONFIDENCE_SEED
-                  ? `confidence ${m.confidence.toFixed(2)} — corroborated (grown from the 0.40 seed)`
+              conf === 'seed'
+                ? `confidence ${CONFIDENCE_SEED.toFixed(2)} — seeded default, not yet corroborated`
+                : conf === 'corroborated'
+                  ? `confidence ${m.confidence.toFixed(2)} — corroborated (grown from the ${CONFIDENCE_SEED.toFixed(2)} seed)`
                   : `confidence ${m.confidence.toFixed(2)} — grows each time the fact is re-observed`
             }
           >

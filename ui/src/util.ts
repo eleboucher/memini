@@ -83,6 +83,14 @@ export function isSeedImportance(m: Memory): boolean {
 // CONFIDENCE_SEED mirrors memory.ConfidenceSeedFresh (internal/memory/types.go).
 export const CONFIDENCE_SEED = 0.4
 
+// confidenceState classifies a confidence value against the fresh seed:
+// 'seed' = exactly the untouched seed, 'corroborated' = grown past it,
+// 'other' = below it (decayed, contradicted, or explicitly set).
+export function confidenceState(conf: number): 'seed' | 'corroborated' | 'other' {
+  if (conf === CONFIDENCE_SEED) return 'seed'
+  return conf > CONFIDENCE_SEED ? 'corroborated' : 'other'
+}
+
 // relTime renders a compact, human relative timestamp ("3h", "2d", "just now").
 export function relTime(iso?: string): string {
   if (!iso) return '—'

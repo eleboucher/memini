@@ -7,6 +7,7 @@ import { TierBadge } from './TierBadge'
 import { MemoryTypeBadge } from './MemoryTypeBadge'
 import {
   CONFIDENCE_SEED,
+  confidenceState,
   fmtDate,
   fromLabel,
   isAutoTiered,
@@ -42,6 +43,8 @@ export function MemoryDrawer({ memory: m, onClose, wide, from, fromNs }: Props) 
 
   const drawerRef = useRef<HTMLElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
+
+  const conf = m.confidence != null ? confidenceState(m.confidence) : null
 
   // Modal behavior: focus the drawer on open, trap Tab inside it, close on
   // Escape, and restore focus to whatever was focused before.
@@ -221,9 +224,12 @@ export function MemoryDrawer({ memory: m, onClose, wide, from, fromNs }: Props) 
             {m.confidence != null && (
               <>
                 <span class="key">confidence</span>
-                <span class="val" title="Seeded at 0.40; grows each time the fact is re-observed, decays when unused">
+                <span
+                  class="val"
+                  title={`Seeded at ${CONFIDENCE_SEED.toFixed(2)}; grows each time the fact is re-observed, decays when unused`}
+                >
                   {m.confidence.toFixed(2)}
-                  {m.confidence > CONFIDENCE_SEED ? ' · corroborated' : m.confidence === CONFIDENCE_SEED ? ' · seed' : ''}
+                  {conf === 'corroborated' ? ' · corroborated' : conf === 'seed' ? ' · seed' : ''}
                 </span>
               </>
             )}
