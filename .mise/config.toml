@@ -111,6 +111,30 @@ mise run build-client
 git diff --exit-code plugin/scripts/_client.gen.mjs
 '''
 
+[tasks.rest-check]
+description = "Fail if the generated REST server code is stale (CI gate)"
+run = '''
+go generate ./internal/api/rest
+git diff --exit-code internal/api/rest/api.gen.go
+'''
+
+[tasks.gen-api]
+description = "Regenerate the UI's settings catalog and API schema from api/openapi.yaml"
+dir = "ui"
+# --ignore-workspace: see the `ui` task.
+run = '''
+pnpm install --ignore-workspace --frozen-lockfile
+pnpm run gen-api
+'''
+
+[tasks.gen-api-check]
+description = "Fail if the generated UI API files are stale (CI gate)"
+dir = "ui"
+run = '''
+mise run gen-api
+git diff --exit-code src/settings-catalog.gen.ts src/api-schema.gen.ts
+'''
+
 [tasks.test-client]
 description = "Run the shared client core tests (packages/memini-client)"
 run = "pnpm --filter @memini/client test"

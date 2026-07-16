@@ -22,6 +22,24 @@ glob = "go.{mod,sum}"
 run = "go mod tidy"
 stage_fixed = true
 
+# Generated-code drift gates: regenerate and diff against the committed output,
+# glob-scoped to each generator's inputs so a commit that touches none is skipped.
+[pre-commit.commands.rest-gen]
+glob = ["api/openapi.yaml", "internal/api/rest/oapi-codegen.yaml"]
+run = "mise run rest-check"
+
+[pre-commit.commands.docs-gen]
+glob = ["internal/config/config.go", "api/openapi.yaml"]
+run = "mise run docs-check"
+
+[pre-commit.commands.client-bundle]
+glob = ["packages/memini-client/src/**/*.ts", "packages/memini-client/scripts/bundle.mjs"]
+run = "mise run client-check"
+
+[pre-commit.commands.gen-api]
+glob = ["api/openapi.yaml", "ui/scripts/gen-catalog.mjs"]
+run = "mise run gen-api-check"
+
 [pre-push.commands.test]
 run = "go test ./..."
 
