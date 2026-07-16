@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	sqlitevec "github.com/asg017/sqlite-vec-go-bindings/ncruces"
 
@@ -130,8 +131,14 @@ func reassignChunks(ctx context.Context, tx *sql.Tx, memRowID int64, toNS string
 // chunkOverFetch multiplies k for the chunk KNN. vec0's KNN is a fixed-k
 // operator with no notion of "k distinct memories", so a single long memory
 // whose chunks all match can otherwise take every slot and starve the rest.
-// Over-fetching gives the max-pool something to collapse. It stacks on the
-// overFetch that already covers post-filtering.
+// Over-fetching gives the max-pool something to collapse.
+//
+// It composes with overFetch below (k * overFetch * chunkOverFetch): the
+// filters run after the KNN here exactly as in VectorSearch, so the fixed k
+// must fund BOTH the GROUP BY collapsing one memory's many chunks AND the
+// tier/expiry filters dropping rows afterwards. A single 8x budget paying for
+// both let one 64-chunk memory sitting next to the query starve a filtered
+// k=5 search down to a single result.
 const chunkOverFetch = 8
 
 // ChunkVectorSearch implements store.ChunkStore.
@@ -169,7 +176,7 @@ func (s *Store) ChunkVectorSearch(ctx context.Context, namespace string, vec []f
 		ORDER BY distance
 		LIMIT ?`, prefixed(memoryColumns, "m"), chunkVecTable, where)
 
-	callArgs := append([]any{namespace, blob, k * chunkOverFetch}, args...)
+	callArgs := append([]any{namespace, blob, k * overFetch * chunkOverFetch}, args...)
 	callArgs = append(callArgs, k)
 	return s.queryScoredChunk(ctx, q, callArgs, distanceToScore)
 }
@@ -177,7 +184,7 @@ func (s *Store) ChunkVectorSearch(ctx context.Context, namespace string, vec []f
 // ListUnchunked implements store.ChunkStore. length() counts characters in
 // SQLite (not bytes, unlike its BLOB overload), which is what internal/chunk
 // bounds on, so the two agree.
-func (s *Store) ListUnchunked(ctx context.Context, namespace string, minRunes, limit int) ([]*memory.Memory, error) {
+func (s *Store) ListUnchunked(ctx context.Context, namespace string, minRunes int, afterID string, limit int) ([]*memory.Memory, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -189,7 +196,11 @@ func (s *Store) ListUnchunked(ctx context.Context, namespace string, minRunes, l
 		q += ` AND m.namespace = ?`
 		args = append(args, namespace)
 	}
-	q += ` ORDER BY m.rowid LIMIT ?`
+	if afterID != "" {
+		q += ` AND m.id > ?`
+		args = append(args, afterID)
+	}
+	q += ` ORDER BY m.id LIMIT ?`
 	args = append(args, limit)
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
@@ -206,6 +217,72 @@ func (s *Store) ListUnchunked(ctx context.Context, namespace string, minRunes, l
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// CountUnchunked implements store.ChunkStore: ListUnchunked's queue in full,
+// where the list shows one batch.
+func (s *Store) CountUnchunked(ctx context.Context, namespace string, minRunes int) (int, error) {
+	q := `SELECT count(*) FROM memories m
+		WHERE length(m.content) > ?
+		  AND NOT EXISTS (SELECT 1 FROM memory_chunks c WHERE c.memory_rowid = m.rowid)`
+	args := []any{minRunes}
+	if namespace != "" {
+		q += ` AND m.namespace = ?`
+		args = append(args, namespace)
+	}
+	var n int
+	err := s.db.QueryRowContext(ctx, q, args...).Scan(&n)
+	return n, err
+}
+
+// PutChunks implements store.ChunkStore. The updated_at guard and the chunk
+// write share the transaction, so nothing can change the row between them —
+// this is the write BackfillChunks uses precisely because a Get-then-Upsert
+// round-trip could neither carry the document vector nor close that window.
+func (s *Store) PutChunks(ctx context.Context, namespace, id string, updatedAt time.Time, chunks []memory.Chunk) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var rowID, storedUpdated int64
+	err = tx.QueryRowContext(ctx,
+		`SELECT rowid, updated_at FROM memories WHERE namespace=? AND id=?`, namespace, id).
+		Scan(&rowID, &storedUpdated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if storedUpdated != ms(updatedAt) {
+		return false, nil
+	}
+	if err := s.writeChunks(ctx, tx, rowID, namespace, chunks); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// CountChunks implements store.ChunkStore. It counts mapping rows rather than
+// vectors, attributing rows through the memories join; a row whose memory is
+// gone (an orphan — exactly what this method exists to make visible) belongs
+// to no namespace and is therefore included in every count.
+func (s *Store) CountChunks(ctx context.Context, namespace string) (int, error) {
+	q := `SELECT count(*) FROM memory_chunks c
+		LEFT JOIN memories m ON m.rowid = c.memory_rowid`
+	var args []any
+	if namespace != "" {
+		q += ` WHERE m.rowid IS NULL OR m.namespace = ?`
+		args = append(args, namespace)
+	}
+	var n int
+	err := s.db.QueryRowContext(ctx, q, args...).Scan(&n)
+	return n, err
 }
 
 // verifyChunkVecDims mirrors verifyVecDims for the chunk table: a store whose

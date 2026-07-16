@@ -22,13 +22,15 @@ func testChunks(t *testing.T, st store.Store, dims int) {
 	}
 	t.Run("SearchPoolsToBestChunk", func(t *testing.T) { testChunkPooling(t, st, cs, dims) })
 	t.Run("DocVectorStillFindsAChunkedMemory", func(t *testing.T) { testChunkNoRegression(t, st, cs, dims) })
-	t.Run("UpsertWithoutChunksClearsThem", func(t *testing.T) { testChunkWipeOnUpsert(t, st, cs, dims) })
+	t.Run("UpsertChunkContract", func(t *testing.T) { testChunkUpsertContract(t, st, cs, dims) })
+	t.Run("PutChunksGuardsOnUpdatedAt", func(t *testing.T) { testPutChunks(t, st, cs, dims) })
 	t.Run("DeleteCascades", func(t *testing.T) { testChunkDeleteCascade(t, st, cs, dims) })
 	t.Run("DeleteNamespaceCascades", func(t *testing.T) { testChunkDeleteNamespaceCascade(t, st, cs, dims) })
 	t.Run("ExpiryDeleteCascades", func(t *testing.T) { testChunkExpiryCascade(t, st, cs, dims) })
 	t.Run("ReassignMovesChunks", func(t *testing.T) { testChunkReassign(t, st, cs, dims) })
 	t.Run("FilterApplies", func(t *testing.T) { testChunkFilter(t, st, cs, dims) })
 	t.Run("ListUnchunked", func(t *testing.T) { testListUnchunked(t, st, cs, dims) })
+	t.Run("CountUnchunked", func(t *testing.T) { testCountUnchunked(t, st, cs, dims) })
 	t.Run("WrongDimsErrors", func(t *testing.T) { testChunkWrongDims(t, st, cs, dims) })
 	t.Run("SearchReturnsTheMatchedChunkText", func(t *testing.T) { testChunkMatchedText(t, st, cs, dims) })
 }
@@ -106,25 +108,84 @@ func testChunkNoRegression(t *testing.T, st store.Store, _ store.ChunkStore, dim
 	}
 }
 
-// testChunkWipeOnUpsert pins Memory.Chunks' contract. Missing chunks are
-// repaired by the backfill; stale chunks would make recall return a memory
-// whose content no longer holds the passage that matched.
-func testChunkWipeOnUpsert(t *testing.T, st store.Store, cs store.ChunkStore, dims int) {
+// testChunkUpsertContract pins Memory.Chunks' three-way contract on Upsert:
+// nil preserves the rows while the content is unchanged (a metadata stamp or
+// promotion must not wipe an index it never touched), nil clears them when the
+// content changed (stale chunks would make recall return a memory whose text
+// no longer holds the passage that matched), and an explicit empty slice
+// clears them regardless (reembed's model swap needs exactly that).
+func testChunkUpsertContract(t *testing.T, st store.Store, cs store.ChunkStore, dims int) {
 	ctx := context.Background()
 	ns := t.Name()
 	mustUpsert(t, st, chunked(ns, "m", "content", vec(dims, 0, 1), vec(dims, 1)))
-
 	if got, err := cs.ChunkVectorSearch(ctx, ns, vec(dims, 1), store.Filter{}, 10); err != nil || len(got) != 1 {
 		t.Fatalf("precondition: chunk search = %v (err %v), want 1 hit", ids(got), err)
 	}
-	// Re-upsert the same id with no chunks: the old ones must go.
-	mustUpsert(t, st, mem(ns, "m", "content rewritten", vec(dims, 0, 1)))
-	got, err := cs.ChunkVectorSearch(ctx, ns, vec(dims, 1), store.Filter{}, 10)
-	if err != nil {
-		t.Fatalf("chunk search: %v", err)
+
+	// Same content, nil chunks: preserved.
+	mustUpsert(t, st, mem(ns, "m", "content", vec(dims, 0, 1)))
+	if got, err := cs.ChunkVectorSearch(ctx, ns, vec(dims, 1), store.Filter{}, 10); err != nil || len(got) != 1 {
+		t.Fatalf("nil chunks with unchanged content cleared the rows: %v (err %v)", ids(got), err)
 	}
-	if len(got) != 0 {
-		t.Fatalf("chunk search = %v, want none: an upsert without chunks must clear them", ids(got))
+
+	// Same content, explicit empty slice: cleared anyway.
+	m := mem(ns, "m", "content", vec(dims, 0, 1))
+	m.Chunks = []memory.Chunk{}
+	mustUpsert(t, st, m)
+	assertNoChunks(t, cs, ns, "after an explicit empty-slice upsert")
+
+	// Changed content, nil chunks: cleared.
+	mustUpsert(t, st, chunked(ns, "m", "content", vec(dims, 0, 1), vec(dims, 1)))
+	mustUpsert(t, st, mem(ns, "m", "content rewritten", vec(dims, 0, 1)))
+	assertNoChunks(t, cs, ns, "after a content rewrite that did not recompute chunks")
+}
+
+// testPutChunks pins the backfill's write primitive: chunk rows only, guarded
+// by updated_at inside the store's own transaction. The document-vector
+// assertion is the heart of it — the bug this method replaced was a backfill
+// whose Get-then-Upsert round-trip could never carry the vector, and so
+// destroyed it for every memory it chunked.
+func testPutChunks(t *testing.T, st store.Store, cs store.ChunkStore, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+	mustUpsert(t, st, mem(ns, "m", "content", vec(dims, 0, 1)))
+	// The guard value must be the store's own round-tripped timestamp, exactly
+	// as the backfill sees it (ListUnchunked scans it from the row).
+	fresh, err := st.Get(ctx, ns, id(ns, "m"))
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+
+	ok, err := cs.PutChunks(ctx, ns, id(ns, "m"), fresh.UpdatedAt,
+		[]memory.Chunk{{Idx: 0, Text: "passage", Embedding: vec(dims, 1)}})
+	if err != nil || !ok {
+		t.Fatalf("PutChunks = %v (err %v), want a write under a matching updated_at", ok, err)
+	}
+	if got, err := cs.ChunkVectorSearch(ctx, ns, vec(dims, 1), store.Filter{}, 10); err != nil || len(got) != 1 {
+		t.Fatalf("chunk search after PutChunks = %v (err %v), want the chunk", ids(got), err)
+	}
+	if got, err := st.VectorSearch(ctx, ns, vec(dims, 0, 1), store.Filter{}, 10); err != nil || len(got) != 1 {
+		t.Fatalf("VectorSearch after PutChunks = %v (err %v): the document vector must survive untouched",
+			ids(got), err)
+	}
+
+	// A stale guard writes nothing and reports false rather than erroring: the
+	// row changed under the caller, and the rows it has (the current ones) stay.
+	ok, err = cs.PutChunks(ctx, ns, id(ns, "m"), fresh.UpdatedAt.Add(-time.Second),
+		[]memory.Chunk{{Idx: 0, Text: "stale", Embedding: vec(dims, 0, 0, 1)}})
+	if err != nil {
+		t.Fatalf("PutChunks (stale guard): %v", err)
+	}
+	if ok {
+		t.Fatal("PutChunks accepted a stale updated_at")
+	}
+	if got, _ := cs.ChunkVectorSearch(ctx, ns, vec(dims, 1), store.Filter{}, 10); len(got) != 1 || got[0].MatchedChunk != "passage" {
+		t.Fatalf("a refused PutChunks changed the rows: %v", ids(got))
+	}
+
+	// A missing row is false, not an error.
+	if ok, err := cs.PutChunks(ctx, ns, id(ns, "absent"), fresh.UpdatedAt, nil); err != nil || ok {
+		t.Fatalf("PutChunks(absent) = %v (err %v), want false, nil", ok, err)
 	}
 }
 
@@ -138,7 +199,7 @@ func testChunkDeleteCascade(t *testing.T, st store.Store, cs store.ChunkStore, d
 	// An orphaned chunk row would be a live vector pointing at a memory that no
 	// longer exists — a join miss at best, another memory's row at worst once
 	// the id is reused.
-	assertNoChunks(t, cs, ns, dims, "after Delete")
+	assertNoChunks(t, cs, ns, "after Delete")
 }
 
 func testChunkDeleteNamespaceCascade(t *testing.T, st store.Store, cs store.ChunkStore, dims int) {
@@ -148,7 +209,7 @@ func testChunkDeleteNamespaceCascade(t *testing.T, st store.Store, cs store.Chun
 	if _, err := st.DeleteNamespace(ctx, ns); err != nil {
 		t.Fatalf("delete namespace: %v", err)
 	}
-	assertNoChunks(t, cs, ns, dims, "after DeleteNamespace")
+	assertNoChunks(t, cs, ns, "after DeleteNamespace")
 }
 
 func testChunkExpiryCascade(t *testing.T, st store.Store, cs store.ChunkStore, dims int) {
@@ -161,7 +222,7 @@ func testChunkExpiryCascade(t *testing.T, st store.Store, cs store.ChunkStore, d
 	if err := st.DeleteIfExpiredBefore(ctx, ns, id(ns, "m"), time.Now()); err != nil {
 		t.Fatalf("delete if expired: %v", err)
 	}
-	assertNoChunks(t, cs, ns, dims, "after DeleteIfExpiredBefore")
+	assertNoChunks(t, cs, ns, "after DeleteIfExpiredBefore")
 }
 
 // testChunkReassign covers the one path a Postgres FK does not: the memory
@@ -242,11 +303,18 @@ func testListUnchunked(t *testing.T, st store.Store, cs store.ChunkStore, dims i
 	ns := t.Name()
 	long := strings.Repeat("x", 50)
 
+	// long-unchunked2 (below) is created and deliberately never chunked, so a
+	// second run against a store that kept the first run's data would find it
+	// already queued and miscount. State the precondition, as Reassign does.
+	if _, err := st.DeleteNamespace(ctx, ns); err != nil {
+		t.Fatalf("clear %s: %v", ns, err)
+	}
+
 	mustUpsert(t, st, mem(ns, "long-unchunked", long, vec(dims, 1)))
 	mustUpsert(t, st, mem(ns, "short", "tiny", vec(dims, 1)))
 	mustUpsert(t, st, chunked(ns, "long-chunked", long, vec(dims, 1), vec(dims, 1)))
 
-	got, err := cs.ListUnchunked(ctx, ns, 10, 100)
+	got, err := cs.ListUnchunked(ctx, ns, 10, "", 100)
 	if err != nil {
 		t.Fatalf("list unchunked: %v", err)
 	}
@@ -257,14 +325,47 @@ func testListUnchunked(t *testing.T, st store.Store, cs store.ChunkStore, dims i
 		t.Fatalf("ListUnchunked returned %q, want %q", got[0].ID, id(ns, "long-unchunked"))
 	}
 	// minRunes counts characters: a 50-rune memory is not "over 100".
-	if got, err := cs.ListUnchunked(ctx, ns, 100, 100); err != nil {
+	if got, err := cs.ListUnchunked(ctx, ns, 100, "", 100); err != nil {
 		t.Fatalf("list unchunked (high floor): %v", err)
 	} else if len(got) != 0 {
 		t.Fatalf("ListUnchunked with minRunes=100 = %v, want none", memIDs(got))
 	}
 	// limit <= 0 is not "unbounded" here — the backfill always bounds its batch.
-	if got, err := cs.ListUnchunked(ctx, ns, 10, 0); err != nil || len(got) != 0 {
+	if got, err := cs.ListUnchunked(ctx, ns, 10, "", 0); err != nil || len(got) != 0 {
 		t.Fatalf("ListUnchunked(limit=0) = %v (err %v), want none", memIDs(got), err)
+	}
+
+	// The cursor pages by id, so the backfill can move past a row it cannot
+	// process rather than re-listing it into every batch.
+	mustUpsert(t, st, mem(ns, "long-unchunked2", long, vec(dims, 1)))
+	first, err := cs.ListUnchunked(ctx, ns, 10, "", 1)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("ListUnchunked(limit=1) = %v (err %v), want one row", memIDs(first), err)
+	}
+	rest, err := cs.ListUnchunked(ctx, ns, 10, first[0].ID, 100)
+	if err != nil {
+		t.Fatalf("list unchunked (cursor): %v", err)
+	}
+	if len(rest) != 1 || rest[0].ID == first[0].ID {
+		t.Fatalf("ListUnchunked(after=%q) = %v, want only the other row", first[0].ID, memIDs(rest))
+	}
+}
+
+// testCountUnchunked pins the backlog measurement the pending gauge publishes:
+// the whole queue, not the batch ListUnchunked happens to show.
+func testCountUnchunked(t *testing.T, st store.Store, cs store.ChunkStore, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+	long := strings.Repeat("x", 50)
+	mustUpsert(t, st, mem(ns, "a", long, vec(dims, 1)))
+	mustUpsert(t, st, mem(ns, "b", long, vec(dims, 1)))
+	mustUpsert(t, st, chunked(ns, "c", long, vec(dims, 1), vec(dims, 1)))
+
+	if n, err := cs.CountUnchunked(ctx, ns, 10); err != nil || n != 2 {
+		t.Fatalf("CountUnchunked = %d (err %v), want 2", n, err)
+	}
+	if n, err := cs.CountUnchunked(ctx, ns, 100); err != nil || n != 0 {
+		t.Fatalf("CountUnchunked(high floor) = %d (err %v), want 0", n, err)
 	}
 }
 
@@ -281,15 +382,20 @@ func testChunkWrongDims(t *testing.T, st store.Store, cs store.ChunkStore, dims 
 	}
 }
 
-// assertNoChunks fails when any chunk row survives in the namespace.
-func assertNoChunks(t *testing.T, cs store.ChunkStore, ns string, dims int, when string) {
+// assertNoChunks fails when any chunk row survives in the namespace. It counts
+// rows rather than searching for them: ChunkVectorSearch joins back to
+// memories, so a probe through it is structurally blind to the exact failure
+// the cascade tests exist to catch — an orphaned row whose memory is gone can
+// never satisfy the join, and the old search-based assertion passed vacuously
+// over a backend that leaked on every expiry sweep.
+func assertNoChunks(t *testing.T, cs store.ChunkStore, ns, when string) {
 	t.Helper()
-	got, err := cs.ChunkVectorSearch(context.Background(), ns, vec(dims, 1), store.Filter{IncludeExpired: true, IncludeSuperseded: true}, 10)
+	n, err := cs.CountChunks(context.Background(), ns)
 	if err != nil {
-		t.Fatalf("chunk search %s: %v", when, err)
+		t.Fatalf("count chunks %s: %v", when, err)
 	}
-	if len(got) != 0 {
-		t.Fatalf("chunks survive %s: %v", when, ids(got))
+	if n != 0 {
+		t.Fatalf("%d chunk rows survive %s", n, when)
 	}
 }
 

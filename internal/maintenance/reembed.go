@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/eleboucher/memini/internal/embed"
+	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/store"
 )
 
@@ -70,15 +71,17 @@ func Reembed(
 			}
 			for i, m := range batch {
 				m.Embedding = vecs[i]
-				// m came from List, which does not load Chunks, so this Upsert
-				// clears any chunk vectors the row had. That is correct and not
-				// an oversight to repair: the model just changed, so the old
-				// chunk vectors live in a space incomparable to the new document
-				// vector, and keeping them would leave a chunk index silently
-				// mixing two models. Dropping them costs nothing lasting —
-				// BackfillChunks finds any long memory without chunks by query
-				// and rebuilds them under the new model, while the document
-				// vector written here keeps recall working throughout.
+				// The explicit empty slice is Memory.Chunks' clear-them signal,
+				// and this is the one caller that needs it: nil would preserve
+				// the rows (the content is unchanged), but the model just
+				// changed, so the old chunk vectors live in a space
+				// incomparable to the new document vector — keeping them would
+				// leave a chunk index silently mixing two models. Dropping
+				// them costs nothing lasting: BackfillChunks finds any long
+				// memory without chunks by query and rebuilds them under the
+				// new model, while the document vector written here keeps
+				// recall working throughout.
+				m.Chunks = []memory.Chunk{}
 				if err := st.Upsert(ctx, m); err != nil {
 					return rep, fmt.Errorf("reembed: upsert %q/%s: %w", ns, m.ID, err)
 				}

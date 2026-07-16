@@ -34,6 +34,14 @@ type Scored struct {
 	MatchedChunk string
 }
 
+// WithScore returns the hit with only its score changed. Score adjusters must
+// go through here rather than rebuilding the struct, so fields they do not
+// know about (MatchedChunk today) survive them.
+func (s Scored) WithScore(v float64) Scored {
+	s.Score = v
+	return s
+}
+
 // Filter narrows a search to a subset of memories. The zero value matches all
 // live (non-expired, non-superseded) memories in the namespace.
 type Filter struct {
@@ -262,14 +270,44 @@ type ChunkStore interface {
 	// filtered out never appear.
 	ChunkVectorSearch(ctx context.Context, namespace string, vec []float32, f Filter, k int) ([]Scored, error)
 
-	// ListUnchunked returns up to limit live memories in the namespace whose
+	// ListUnchunked returns up to limit memories in the namespace whose
 	// content exceeds minRunes but which have no chunk rows — the backfill's
-	// work queue. Namespace "" means every namespace.
+	// work queue — ordered by id, starting after afterID ("" starts from the
+	// beginning). The cursor lets the backfill page past rows it cannot
+	// process this tick (declined by the splitter, rejected by the embedder)
+	// instead of re-listing them into every batch until they starve it.
+	// Namespace "" means every namespace.
+	//
+	// Expired and superseded rows are returned too, deliberately: recall's
+	// AsOf and IncludeSuperseded modes flow through the chunk leg, and
+	// tombstones are retained precisely so time-travel queries can reach them.
 	//
 	// This is a query rather than a metadata flag because rows that predate
 	// chunking carry no flag to find them by, and adding one would mean
 	// rewriting every row before the feature could do anything.
-	ListUnchunked(ctx context.Context, namespace string, minRunes, limit int) ([]*memory.Memory, error)
+	ListUnchunked(ctx context.Context, namespace string, minRunes int, afterID string, limit int) ([]*memory.Memory, error)
+
+	// CountUnchunked reports the total size of ListUnchunked's queue — the
+	// real backlog, where ListUnchunked shows at most one batch of it.
+	CountUnchunked(ctx context.Context, namespace string, minRunes int) (int, error)
+
+	// PutChunks replaces the chunk rows of the memory identified by
+	// (namespace, id), guarded by updatedAt: the write happens only when the
+	// row still exists with exactly that updated_at, and reports false
+	// otherwise. Guard and write are one transaction, so a concurrent content
+	// change cannot slip between them — the check-then-act race a re-read
+	// outside the store can never close. Nothing else on the row is touched:
+	// not the document vector, not the FTS index, and not the columns a
+	// concurrent Reinforce may be bumping (Reinforce deliberately does not
+	// advance updated_at, and this guard must not punish it).
+	PutChunks(ctx context.Context, namespace, id string, updatedAt time.Time, chunks []memory.Chunk) (bool, error)
+
+	// CountChunks reports how many chunk rows exist in the namespace (""
+	// counts every namespace). It exists so tests and operators can see
+	// orphaned rows that ChunkVectorSearch's join back to memories
+	// structurally hides; on backends without referential cascades, orphans
+	// (which belong to no namespace) are included in every count.
+	CountChunks(ctx context.Context, namespace string) (int, error)
 }
 
 // NamespaceLink is a directed cross-namespace read link: recall scoped to Src

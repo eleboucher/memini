@@ -2,7 +2,9 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/pgvector/pgvector-go"
@@ -43,8 +45,17 @@ func (s *Store) writeChunks(ctx context.Context, tx pgx.Tx, m *memory.Memory) er
 // chunkOverFetch multiplies k before the max-pool. The LIMIT inside the CTE
 // applies to chunks, so one long memory whose every chunk matches could take
 // the whole budget and starve other memories; over-fetching leaves the pool
-// something to collapse. It stacks on the existing post-filter over-fetch.
+// something to collapse.
 const chunkOverFetch = 8
+
+// chunkFilterOverFetch funds the filters. VectorSearch needs no such thing on
+// this backend — its WHERE runs inside the index scan — but the chunk CTE can
+// filter only on namespace (tier, expiry, and supersession live on memories,
+// joined after the LIMIT has already spent the budget), so filtered-out
+// candidates consume slots here exactly as they do on sqlite, and the same 4x
+// covers them. The two multipliers compose: collapse and filtering both bite
+// out of one fixed budget.
+const chunkFilterOverFetch = 4
 
 // ChunkVectorSearch implements store.ChunkStore.
 //
@@ -63,7 +74,7 @@ func (s *Store) ChunkVectorSearch(ctx context.Context, namespace string, vec []f
 	b := &args{}
 	qv := b.add(pgvector.NewVector(vec))
 	ns := b.add(namespace)
-	poolK := b.add(k * chunkOverFetch)
+	poolK := b.add(k * chunkOverFetch * chunkFilterOverFetch)
 	// Aliased: memory_chunks carries namespace and embedding under the same
 	// names as memories, so an unqualified filter column would be ambiguous.
 	where := filterClauseOn(b, f, "m")
@@ -96,7 +107,7 @@ func (s *Store) ChunkVectorSearch(ctx context.Context, namespace string, vec []f
 
 // ListUnchunked implements store.ChunkStore. char_length counts characters, not
 // bytes, matching what internal/chunk bounds on.
-func (s *Store) ListUnchunked(ctx context.Context, namespace string, minRunes, limit int) ([]*memory.Memory, error) {
+func (s *Store) ListUnchunked(ctx context.Context, namespace string, minRunes int, afterID string, limit int) ([]*memory.Memory, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -106,6 +117,9 @@ func (s *Store) ListUnchunked(ctx context.Context, namespace string, minRunes, l
 		  AND NOT EXISTS (SELECT 1 FROM memory_chunks c WHERE c.memory_id = m.id)`
 	if namespace != "" {
 		q += ` AND m.namespace = ` + b.add(namespace)
+	}
+	if afterID != "" {
+		q += ` AND m.id > ` + b.add(afterID)
 	}
 	q += ` ORDER BY m.id LIMIT ` + b.add(limit)
 
@@ -123,4 +137,64 @@ func (s *Store) ListUnchunked(ctx context.Context, namespace string, minRunes, l
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// CountUnchunked implements store.ChunkStore: ListUnchunked's queue in full,
+// where the list shows one batch.
+func (s *Store) CountUnchunked(ctx context.Context, namespace string, minRunes int) (int, error) {
+	b := &args{}
+	q := `SELECT count(*) FROM memories m
+		WHERE char_length(m.content) > ` + b.add(minRunes) + `
+		  AND NOT EXISTS (SELECT 1 FROM memory_chunks c WHERE c.memory_id = m.id)`
+	if namespace != "" {
+		q += ` AND m.namespace = ` + b.add(namespace)
+	}
+	var n int
+	err := s.pool.QueryRow(ctx, q, b.vals...).Scan(&n)
+	return n, err
+}
+
+// PutChunks implements store.ChunkStore. FOR UPDATE holds the memories row
+// while the chunks are written, so the updated_at guard and the write are
+// atomic — the check-then-act window a service-level re-read cannot close.
+func (s *Store) PutChunks(ctx context.Context, namespace, id string, updatedAt time.Time, chunks []memory.Chunk) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var stored time.Time
+	err = tx.QueryRow(ctx,
+		`SELECT updated_at FROM memories WHERE namespace=$1 AND id=$2 FOR UPDATE`,
+		namespace, id).Scan(&stored)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !stored.Equal(updatedAt) {
+		return false, nil
+	}
+	if err := s.writeChunks(ctx, tx, &memory.Memory{ID: id, Namespace: namespace, Chunks: chunks}); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// CountChunks implements store.ChunkStore. The FK cascade means orphans cannot
+// exist here, so a plain count is the whole truth.
+func (s *Store) CountChunks(ctx context.Context, namespace string) (int, error) {
+	b := &args{}
+	q := `SELECT count(*) FROM memory_chunks`
+	if namespace != "" {
+		q += ` WHERE namespace = ` + b.add(namespace)
+	}
+	var n int
+	err := s.pool.QueryRow(ctx, q, b.vals...).Scan(&n)
+	return n, err
 }

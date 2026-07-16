@@ -149,14 +149,17 @@ type Memory struct {
 	// not reach. Optional: a store need not implement store.ChunkStore, and
 	// short content has none by design (see internal/chunk).
 	//
-	// It follows Embedding's contract — an Upsert with none clears whatever the
-	// row had. That is deliberate: content and chunks are written together, so
-	// a caller that changed the content and did not recompute chunks has stale
-	// ones, and stale chunks are worse than missing ones. Missing chunks are
-	// repaired by the backfill loop; stale chunks make recall return a memory
-	// whose text no longer contains the passage that matched it. Callers that
-	// change content without recomputing must stamp metadata pending_chunks so
-	// the backfill picks the row up.
+	// On Upsert, nil means the store decides: existing chunk rows are kept
+	// when the content is unchanged (same fingerprint) and cleared when it
+	// changed. That default fails safe in both directions — stale chunks make
+	// recall return a memory whose text no longer contains the passage that
+	// matched it, while missing ones are re-created by the backfill loop, so
+	// a caller that rewrites content without recomputing loses nothing
+	// durable, and a caller that merely stamps metadata cannot wipe an index
+	// it never touched. A non-nil slice replaces the rows exactly as given;
+	// an empty non-nil slice is an explicit clear, for callers whose chunks
+	// went stale without a content change (reembed: the model changed under
+	// them).
 	Chunks []Chunk `json:"-"`
 }
 

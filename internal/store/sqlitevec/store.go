@@ -135,6 +135,19 @@ func (s *Store) migrate(ctx context.Context) error {
 			namespace TEXT partition key,
 			embedding float[%d]
 		)`, s.dims),
+		// ListUnchunked/CountUnchunked filter on length(content) every backfill
+		// tick, forever; without this expression index each tick is a full-table
+		// scan computing the length of every content blob.
+		`CREATE INDEX IF NOT EXISTS idx_memories_content_len ON memories(length(content))`,
+		// Purge chunk rows orphaned by a binary whose expiry sweep predated the
+		// chunk cascade. Idempotent and cheap against a healthy store; without
+		// it an orphan could sit on a freed rowid until an insert reuses it.
+		// vec_chunks first: the mapping rows are the only way to reach its rows.
+		`DELETE FROM vec_chunks WHERE rowid IN (
+			SELECT c.rowid FROM memory_chunks c
+			LEFT JOIN memories m ON m.rowid = c.memory_rowid
+			WHERE m.rowid IS NULL)`,
+		`DELETE FROM memory_chunks WHERE memory_rowid NOT IN (SELECT rowid FROM memories)`,
 		// Key/value store for store-level metadata (e.g. the embedding model the
 		// vectors were produced with — see EmbedModel/SetEmbedModel).
 		`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
@@ -419,6 +432,8 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		}
 	}
 
+	fp := memory.Fingerprint(m.Content)
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -426,9 +441,10 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 	defer func() { _ = tx.Rollback() }()
 
 	var rowID int64
-	var existingNS string
+	var existingNS, existingFP string
 	var op string
-	err = tx.QueryRowContext(ctx, `SELECT rowid, namespace FROM memories WHERE id = ?`, m.ID).Scan(&rowID, &existingNS)
+	err = tx.QueryRowContext(ctx, `SELECT rowid, namespace, fingerprint FROM memories WHERE id = ?`, m.ID).
+		Scan(&rowID, &existingNS, &existingFP)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		op = "insert"
@@ -440,7 +456,7 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 			m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
 			m.Importance, ms(m.CreatedAt), ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
 			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), f64Ptr(m.Confidence),
-			memory.Fingerprint(m.Content), string(m.Level), string(linkedJSON))
+			fp, string(m.Level), string(linkedJSON))
 		if ierr != nil {
 			return fmt.Errorf("sqlitevec: insert memory: %w", ierr)
 		}
@@ -465,7 +481,7 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 			string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
 			m.Importance, ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
 			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), f64Ptr(m.Confidence),
-			memory.Fingerprint(m.Content), string(m.Level), string(linkedJSON), rowID); uerr != nil {
+			fp, string(m.Level), string(linkedJSON), rowID); uerr != nil {
 			return fmt.Errorf("sqlitevec: update memory: %w", uerr)
 		}
 	}
@@ -485,10 +501,15 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		}
 	}
 	// Chunks are rewritten in the same transaction as the row, so content and
-	// its chunk vectors can never be observed out of step. An upsert carrying
-	// none clears them — see Memory.Chunks.
-	if err := s.writeChunks(ctx, tx, rowID, m.Namespace, m.Chunks); err != nil {
-		return err
+	// its chunk vectors can never be observed out of step. Memory.Chunks'
+	// contract: non-nil replaces, nil preserves while the fingerprint is
+	// unchanged and clears when it is not. An insert always writes — a freed
+	// rowid may carry orphans left by an older binary, and writeChunks'
+	// unconditional DELETE is what keeps them from attaching to the new row.
+	if op == "insert" || m.Chunks != nil || existingFP != fp {
+		if err := s.writeChunks(ctx, tx, rowID, m.Namespace, m.Chunks); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM fts_memories WHERE rowid=?`, rowID); err != nil {
 		return fmt.Errorf("sqlitevec: clear fts: %w", err)
@@ -605,9 +626,6 @@ func (s *Store) Delete(ctx context.Context, namespace, id string) error {
 	if err := deleteChunksFor(ctx, tx, []int64{rowID}); err != nil {
 		return err
 	}
-	if err := deleteChunksFor(ctx, tx, []int64{rowID}); err != nil {
-		return err
-	}
 	for _, q := range []string{
 		`DELETE FROM memories WHERE rowid=?`,
 		`DELETE FROM vec_memories WHERE rowid=?`,
@@ -642,6 +660,12 @@ func (s *Store) DeleteIfExpiredBefore(ctx context.Context, namespace, id string,
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.ErrNotFound
 	} else if err != nil {
+		return err
+	}
+	// Chunks first, as everywhere a memory is removed: their mapping rows are
+	// the only way to reach the vec0 rows, so deleting the memory first would
+	// orphan them for SQLite to hand to whoever reuses the rowid.
+	if err := deleteChunksFor(ctx, tx, []int64{rowID}); err != nil {
 		return err
 	}
 	for _, q := range []string{

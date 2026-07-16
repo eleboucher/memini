@@ -122,6 +122,10 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_ns ON memory_chunks(namespace)`,
 		// Mirrors idx_memories_vec so the chunk KNN gets the same plan.
 		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_vec ON memory_chunks USING vchordrq (embedding vector_l2_ops)`,
+		// ListUnchunked/CountUnchunked filter on char_length(content) every
+		// backfill tick, forever; without this expression index each tick is a
+		// full-table scan computing the length of every content value.
+		`CREATE INDEX IF NOT EXISTS idx_memories_content_len ON memories ((char_length(content)))`,
 		// Backfill temporal-validity, confidence, fingerprint, and level columns on
 		// databases created before them.
 		`ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS text text NOT NULL DEFAULT ''`,
@@ -293,9 +297,11 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Lock the existing row (if any) and verify namespace ownership.
-	var existingNS string
+	fp := memory.Fingerprint(m.Content)
+	var existingNS, existingFP string
 	var op string
-	err = tx.QueryRow(ctx, `SELECT namespace FROM memories WHERE id=$1 FOR UPDATE`, m.ID).Scan(&existingNS)
+	err = tx.QueryRow(ctx, `SELECT namespace, fingerprint FROM memories WHERE id=$1 FOR UPDATE`, m.ID).
+		Scan(&existingNS, &existingFP)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		op = "insert"
@@ -332,7 +338,7 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		WHERE memories.namespace = EXCLUDED.namespace`,
 		m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, metaJSON, store.OrEmptySlice(m.Tags),
 		m.Importance, m.CreatedAt, m.UpdatedAt, m.LastAccessedAt, m.AccessCount,
-		m.ExpiresAt, m.SupersededBy, m.ValidFrom, m.ValidTo, m.Confidence, memory.Fingerprint(m.Content),
+		m.ExpiresAt, m.SupersededBy, m.ValidFrom, m.ValidTo, m.Confidence, fp,
 		string(m.Level), linkedJSON,
 		embArg)
 	if err != nil {
@@ -344,9 +350,14 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		return fmt.Errorf("postgres: id %q exists in another namespace: %w", m.ID, store.ErrConflict)
 	}
 	// Same transaction as the row, so content and its chunk vectors are never
-	// observed out of step. An upsert with no chunks clears them.
-	if err := s.writeChunks(ctx, tx, m); err != nil {
-		return err
+	// observed out of step. Memory.Chunks' contract: non-nil replaces, nil
+	// preserves while the fingerprint is unchanged and clears when it is not.
+	// Fresh rows have nothing to preserve or clear (the FK rules out orphans),
+	// so an insert with nil chunks skips the write entirely.
+	if m.Chunks != nil || (op == "update" && existingFP != fp) {
+		if err := s.writeChunks(ctx, tx, m); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
@@ -671,20 +682,32 @@ func (s *Store) Reassign(ctx context.Context, fromNS string, ids []string, toNS 
 	if len(ids) == 0 || fromNS == toNS {
 		return 0, nil
 	}
-	tag, err := s.pool.Exec(ctx,
+	// One transaction for both tables, exactly as DeleteNamespace does. Two
+	// autocommit statements would let a failure between them strand the chunk
+	// rows under the old namespace — invisible to the chunk KNN in either
+	// namespace, and never repaired, because a memory that has chunk rows is
+	// not re-listed by the backfill.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx,
 		`UPDATE memories SET namespace=$1 WHERE namespace=$2 AND id = ANY($3)`, toNS, fromNS, ids)
 	if err != nil {
 		return 0, err
 	}
 	// memory_chunks carries its own namespace (the chunk KNN filters on it
 	// before the join). The FK cascades deletes, not a namespace change, so the
-	// chunks must be moved explicitly — otherwise they stay filed under the old
-	// namespace: matched by a recall there, invisible to one where the memory
-	// now lives.
-	if _, err := s.pool.Exec(ctx,
+	// chunks must be moved explicitly.
+	if _, err := tx.Exec(ctx,
 		`UPDATE memory_chunks SET namespace=$1 WHERE namespace=$2 AND memory_id = ANY($3)`,
 		toNS, fromNS, ids); err != nil {
 		return 0, fmt.Errorf("postgres: reassign chunks: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
 	}
 	return tag.RowsAffected(), nil
 }
