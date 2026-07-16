@@ -224,6 +224,14 @@ Two things to know before enabling it:
   after anything rewrites that memory's content. Memories at or under
   `MEMINI_CHUNK_MIN_CONTENT` are skipped entirely and cost nothing.
 
+One limitation to know up front: `MEMINI_CHUNK_SIZE` and its siblings apply to
+memories chunked from that point on, not retroactively. A memory that already
+has chunks keeps the split it was built with, because the background loop looks
+for memories with no chunks rather than for memories chunked differently. Those
+chunks stay valid and keep serving recall at the old granularity, so retuning is
+safe, it just does not reach back. Plan on picking a size before a large corpus
+is chunked.
+
 Existing memories are picked up by the same background loop — there is no
 migration step and no downtime. Both storage backends gain a table; a rollback
 to an older binary ignores it.

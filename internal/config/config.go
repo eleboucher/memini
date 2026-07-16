@@ -207,6 +207,15 @@ type Config struct {
 	// context: a chunk over MEMINI_EMBED_MAX_ITEM_CHARS would itself be
 	// truncated, which is the failure chunking exists to remove. The default
 	// suits the 512-token local models (BGE, e5) as well as OpenAI's.
+	//
+	// It applies to memories chunked from here on, NOT retroactively. A memory
+	// that already has chunks keeps the split it was built with, because the
+	// background loop looks for memories with no chunks at all rather than for
+	// memories chunked differently. Its existing chunks stay valid and keep
+	// serving recall; they are simply at the old granularity. To re-split
+	// everything, turn MEMINI_CHUNK_EMBED off and on again is NOT enough — the
+	// rows persist. Today the honest answer is that re-splitting an existing
+	// corpus needs a rewrite of those memories.
 	ChunkSize int `env:"MEMINI_CHUNK_SIZE" envDefault:"1200"`
 	// ChunkOverlap is how many runes each chunk repeats from the previous one,
 	// so a fact spanning a boundary survives whole in one of them. Must be less
