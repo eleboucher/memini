@@ -52,7 +52,8 @@ func (s *Store) writeChunks(ctx context.Context, tx *sql.Tx, memRowID int64, nam
 			return err
 		}
 		res, err := tx.ExecContext(ctx,
-			`INSERT INTO memory_chunks(memory_rowid, chunk_idx) VALUES (?,?)`, memRowID, c.Idx)
+			`INSERT INTO memory_chunks(memory_rowid, chunk_idx, text) VALUES (?,?,?)`,
+			memRowID, c.Idx, c.Text)
 		if err != nil {
 			return fmt.Errorf("sqlitevec: insert chunk row: %w", err)
 		}
@@ -152,8 +153,13 @@ func (s *Store) ChunkVectorSearch(ctx context.Context, namespace string, vec []f
 		return nil, err
 	}
 	where, args := filterClause(f)
+	// SQLite's bare-column rule inside an aggregate query: with MIN(v.distance),
+	// the non-aggregated columns come from the row that produced the minimum. So
+	// c.text is the winning chunk's text, which is exactly what the reranker
+	// needs to judge. That is a documented SQLite guarantee for MIN/MAX, not an
+	// accident of the query plan.
 	q := fmt.Sprintf(`
-		SELECT %s, MIN(v.distance) AS distance
+		SELECT %s, MIN(v.distance) AS distance, c.text
 		FROM (SELECT rowid, distance FROM %s
 		      WHERE namespace = ? AND embedding MATCH ? AND k = ?) v
 		JOIN memory_chunks c ON c.rowid = v.rowid
@@ -165,7 +171,7 @@ func (s *Store) ChunkVectorSearch(ctx context.Context, namespace string, vec []f
 
 	callArgs := append([]any{namespace, blob, k * chunkOverFetch}, args...)
 	callArgs = append(callArgs, k)
-	return s.queryScored(ctx, q, callArgs, distanceToScore)
+	return s.queryScoredChunk(ctx, q, callArgs, distanceToScore)
 }
 
 // ListUnchunked implements store.ChunkStore. length() counts characters in

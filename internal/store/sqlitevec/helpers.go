@@ -18,11 +18,15 @@ type scanner interface {
 
 func scanMemory(s scanner) (*memory.Memory, error) { return scanRow(s, nil) }
 
-func scanMemoryWith(s scanner, metric *float64) (*memory.Memory, error) { return scanRow(s, metric) }
+func scanMemoryWith(s scanner, metric *float64, extra ...any) (*memory.Memory, error) {
+	return scanRow(s, metric, extra...)
+}
 
 // scanRow scans the canonical memoryColumns into a Memory, optionally followed
 // by a trailing numeric metric column (distance / bm25 rank).
-func scanRow(s scanner, metric *float64) (*memory.Memory, error) {
+// extra reads any trailing destinations the query selected after the metric,
+// in order. The chunk search uses it to carry the matched chunk's text.
+func scanRow(s scanner, metric *float64, extra ...any) (*memory.Memory, error) {
 	var (
 		m                          memory.Memory
 		tier, metaJSON, tagsJSON   string
@@ -42,6 +46,7 @@ func scanRow(s scanner, metric *float64) (*memory.Memory, error) {
 	if metric != nil {
 		dest = append(dest, metric)
 	}
+	dest = append(dest, extra...)
 	if err := s.Scan(dest...); err != nil {
 		return nil, err
 	}

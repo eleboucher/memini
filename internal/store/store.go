@@ -26,6 +26,12 @@ var ErrConflict = errors.New("id exists in a different namespace")
 type Scored struct {
 	Memory *memory.Memory
 	Score  float64
+	// MatchedChunk is the text of the chunk that produced this hit, set only by
+	// ChunkVectorSearch and empty for every other search. Callers that rerank
+	// should judge this rather than the whole memory when it is set: it is the
+	// passage that actually matched, and a reranker handed the whole memory sees
+	// only a prefix that need not contain it.
+	MatchedChunk string
 }
 
 // Filter narrows a search to a subset of memories. The zero value matches all

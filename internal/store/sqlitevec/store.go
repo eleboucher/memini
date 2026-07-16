@@ -127,6 +127,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			rowid        INTEGER PRIMARY KEY,
 			memory_rowid INTEGER NOT NULL,
 			chunk_idx    INTEGER NOT NULL,
+			text         TEXT NOT NULL DEFAULT '',
 			UNIQUE(memory_rowid, chunk_idx)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_memory ON memory_chunks(memory_rowid)`,
@@ -1340,6 +1341,31 @@ func (s *Store) Close() error { return s.db.Close() }
 // queryScored runs a query whose final selected column is a numeric metric and
 // returns scored memories, best-first. score converts the raw metric to a
 // higher-is-better score.
+// queryScoredChunk is queryScored for the chunk search, whose rows carry the
+// matched chunk's text after the distance so the reranker can judge the passage
+// that actually matched rather than the memory's prefix.
+func (s *Store) queryScoredChunk(ctx context.Context, q string, args []any, score func(float64) float64) ([]store.Scored, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []store.Scored
+	for rows.Next() {
+		var (
+			metric float64
+			text   string
+		)
+		m, err := scanMemoryWith(rows, &metric, &text)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, store.Scored{Memory: m, Score: score(metric), MatchedChunk: text})
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) queryScored(ctx context.Context, q string, args []any, score func(float64) float64) ([]store.Scored, error) {
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {

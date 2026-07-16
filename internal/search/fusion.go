@@ -58,7 +58,12 @@ func FuseScores(lists [][]store.Scored, weights []float64, k int) []store.Scored
 	fused := make([]store.Scored, 0, len(byID))
 	for _, id := range order {
 		a := byID[id]
-		fused = append(fused, store.Scored{Memory: a.mem.Memory, Score: a.score})
+		// Copy-and-overwrite rather than rebuild: this preserves every other
+		// field of the winning hit (MatchedChunk today) instead of silently
+		// dropping whatever the retrieval leg attached to it.
+		f := *a.mem
+		f.Score = a.score
+		fused = append(fused, f)
 	}
 	sort.SliceStable(fused, func(i, j int) bool {
 		if fused[i].Score != fused[j].Score {

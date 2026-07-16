@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,7 @@ func testChunks(t *testing.T, st store.Store, dims int) {
 	t.Run("FilterApplies", func(t *testing.T) { testChunkFilter(t, st, cs, dims) })
 	t.Run("ListUnchunked", func(t *testing.T) { testListUnchunked(t, st, cs, dims) })
 	t.Run("WrongDimsErrors", func(t *testing.T) { testChunkWrongDims(t, st, cs, dims) })
+	t.Run("SearchReturnsTheMatchedChunkText", func(t *testing.T) { testChunkMatchedText(t, st, cs, dims) })
 }
 
 // chunked builds a memory whose document vector points one way and whose chunks
@@ -36,9 +38,15 @@ func testChunks(t *testing.T, st store.Store, dims int) {
 func chunked(ns, short, content string, docVec []float32, chunkVecs ...[]float32) *memory.Memory {
 	m := mem(ns, short, content, docVec)
 	for i, v := range chunkVecs {
-		m.Chunks = append(m.Chunks, memory.Chunk{Idx: i, Embedding: v})
+		m.Chunks = append(m.Chunks, memory.Chunk{Idx: i, Text: chunkText(short, i), Embedding: v})
 	}
 	return m
+}
+
+// chunkText is a per-chunk marker, so a search result can be traced to the exact
+// chunk that produced it rather than merely to its memory.
+func chunkText(short string, idx int) string {
+	return fmt.Sprintf("passage %d of %s", idx, short)
 }
 
 // testChunkPooling is the core promise: a memory is returned once, scored by
@@ -291,4 +299,44 @@ func ids(s []store.Scored) []string {
 		out[i] = x.Memory.ID
 	}
 	return out
+}
+
+// testChunkMatchedText pins that a hit carries the text of the chunk that
+// actually won, not just its memory. Rerank judges a candidate on a truncated
+// view (300 bytes for the LLM backend, 2048 runes for the cross-encoder), so
+// without this it judges the memory's prefix, fails to see the passage that
+// retrieved it, and drops the memory chunked recall just found.
+func testChunkMatchedText(t *testing.T, st store.Store, cs store.ChunkStore, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+	// Chunk 1 sits on the query; chunk 0 is far away.
+	mustUpsert(t, st, chunked(ns, "m", "content", vec(dims, 0, 1),
+		vec(dims, 0, 0, 1),
+		vec(dims, 1),
+	))
+	got, err := cs.ChunkVectorSearch(ctx, ns, vec(dims, 1), store.Filter{}, 10)
+	if err != nil {
+		t.Fatalf("chunk search: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %v, want 1 result", ids(got))
+	}
+	// Specifically chunk 1's text: the pooled row must carry the WINNER's text,
+	// not an arbitrary chunk of the same memory.
+	if want := chunkText("m", 1); got[0].MatchedChunk != want {
+		t.Errorf("MatchedChunk = %q, want %q (the chunk that produced the best score)",
+			got[0].MatchedChunk, want)
+	}
+
+	// The document leg never sets it: an empty value is how a caller tells
+	// "matched on a passage" from "matched on the memory".
+	docs, err := st.VectorSearch(ctx, ns, vec(dims, 0, 1), store.Filter{}, 10)
+	if err != nil {
+		t.Fatalf("vector search: %v", err)
+	}
+	for _, d := range docs {
+		if d.MatchedChunk != "" {
+			t.Errorf("VectorSearch set MatchedChunk = %q, want empty", d.MatchedChunk)
+		}
+	}
 }

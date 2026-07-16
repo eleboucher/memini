@@ -32,8 +32,8 @@ func (s *Store) writeChunks(ctx context.Context, tx pgx.Tx, m *memory.Memory) er
 			return fmt.Errorf("postgres: chunk %d has %d dims, store expects %d", c.Idx, len(c.Embedding), s.dims)
 		}
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO memory_chunks (memory_id, chunk_idx, namespace, embedding) VALUES ($1,$2,$3,$4)`,
-			m.ID, c.Idx, m.Namespace, pgvector.NewVector(c.Embedding)); err != nil {
+			`INSERT INTO memory_chunks (memory_id, chunk_idx, namespace, text, embedding) VALUES ($1,$2,$3,$4,$5)`,
+			m.ID, c.Idx, m.Namespace, c.Text, pgvector.NewVector(c.Embedding)); err != nil {
 			return fmt.Errorf("postgres: insert chunk: %w", err)
 		}
 	}
@@ -69,15 +69,19 @@ func (s *Store) ChunkVectorSearch(ctx context.Context, namespace string, vec []f
 	where := filterClauseOn(b, f, "m")
 	q := fmt.Sprintf(`
 		WITH cand AS (
-			SELECT c.memory_id, c.embedding <-> %s AS distance
+			SELECT c.memory_id, c.text, c.embedding <-> %s AS distance
 			FROM memory_chunks c
 			WHERE c.namespace = %s
 			ORDER BY c.embedding <-> %s
 			LIMIT %s
 		), pooled AS (
-			SELECT memory_id, MIN(distance) AS distance FROM cand GROUP BY memory_id
+			-- DISTINCT ON keeps the row that produced the minimum, so the text
+			-- carried out is the chunk that actually won rather than an arbitrary
+			-- one of the memory's chunks. That is the point: the reranker judges it.
+			SELECT DISTINCT ON (memory_id) memory_id, text, distance
+			FROM cand ORDER BY memory_id, distance
 		)
-		SELECT %s, p.distance
+		SELECT %s, p.distance, p.text
 		FROM pooled p JOIN memories m ON m.id = p.memory_id
 		WHERE m.namespace = %s%s
 		ORDER BY p.distance
@@ -87,7 +91,7 @@ func (s *Store) ChunkVectorSearch(ctx context.Context, namespace string, vec []f
 
 	// Identical to VectorSearch's conversion, deliberately: the two legs are
 	// merged by score, and recall gates on absolute values.
-	return s.queryScored(ctx, q, b.vals, func(d float64) float64 { return 1 / (1 + d) })
+	return s.queryScoredChunk(ctx, q, b.vals, func(d float64) float64 { return 1 / (1 + d) })
 }
 
 // ListUnchunked implements store.ChunkStore. char_length counts characters, not

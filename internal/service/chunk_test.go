@@ -11,6 +11,7 @@ import (
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/embed/embedtest"
 	"github.com/eleboucher/memini/internal/memory"
+	"github.com/eleboucher/memini/internal/rerank"
 	"github.com/eleboucher/memini/internal/service"
 	"github.com/eleboucher/memini/internal/store"
 	"github.com/eleboucher/memini/internal/store/sqlitevec"
@@ -296,5 +297,89 @@ func TestChunkBackfillReportsItsBacklog(t *testing.T) {
 	// One memory found, one chunked, so nothing is left behind.
 	if g.last != 0 {
 		t.Errorf("pending = %d after chunking the only candidate, want 0", g.last)
+	}
+}
+
+// phraseReranker models a real reranker faithfully in the one way that matters
+// here: it judges each candidate on a TRUNCATED view of the content it is
+// handed, because that is what both shipped backends do. CrossEncoder cuts to
+// MEMINI_RERANK_MAX_DOC_CHARS (2048 runes) at crossencoder.go:111, and the LLM
+// reranker cuts to 300 bytes at llm.go:43. A candidate it cannot see the
+// evidence in is omitted, and per rerank.Reranker's contract an omitted
+// candidate is DROPPED from the results.
+type phraseReranker struct {
+	phrase   string
+	maxChars int               // mirrors the shipped rerankers' per-candidate cut
+	saw      map[string]string // id -> the text it actually got to judge
+}
+
+func (r *phraseReranker) Rerank(_ context.Context, _ string, cands []rerank.Candidate) ([]string, error) {
+	if r.saw == nil {
+		r.saw = map[string]string{}
+	}
+	var keep []string
+	for _, c := range cands {
+		view := c.Content
+		if n := []rune(view); len(n) > r.maxChars {
+			view = string(n[:r.maxChars])
+		}
+		r.saw[c.ID] = view
+		if strings.Contains(view, r.phrase) {
+			keep = append(keep, c.ID)
+		}
+	}
+	return keep, nil
+}
+
+// TestRerankSeesTheMatchedChunk pins the interaction between chunking and
+// reranking, which is the same bug as the original one layer up.
+//
+// Chunked recall surfaces a memory because of a passage deep in its content.
+// Rerank is then handed the whole memory and cuts it down to its own budget:
+// 300 bytes for the LLM reranker, 2048 runes for the cross-encoder. The passage
+// that caused the hit is not in that prefix, so the memory looks irrelevant, and
+// because rerank's pool is deliberately deeper than k it changes membership
+// rather than just order: the memory is dropped. Chunking pays the embedder to
+// find it and the next stage throws it away.
+//
+// Passing the matched chunk instead means rerank judges the text that actually
+// matched.
+func TestRerankSeesTheMatchedChunk(t *testing.T) {
+	ctx := context.Background()
+	const phrase = "zarquon calibration uses the tertiary flange"
+	content := longMemoryWithBuriedPhrase(phrase)
+
+	st := chunkTestStore(t)
+	// 300 is the LLM reranker's shipped per-candidate budget (rerank/llm.go).
+	rr := &phraseReranker{phrase: phrase, maxChars: 300}
+	svc := chunkService(t, st,
+		service.WithChunkEmbed(testChunkCfg()),
+		service.WithReranker(rr, "phrase-test"),
+	)
+	mustRememberLong(t, svc, content)
+	if _, err := svc.BackfillChunks(ctx); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	got, err := svc.Recall(ctx, service.RecallInput{Namespace: "alice", Query: phrase, Limit: 5})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+
+	var judged string
+	for _, v := range rr.saw {
+		judged = v
+	}
+	if judged == "" {
+		t.Fatal("the reranker was handed nothing to judge")
+	}
+	if !strings.Contains(judged, phrase) {
+		t.Errorf("rerank judged this memory on text that does not contain the passage that "+
+			"retrieved it, so it cannot tell the memory is relevant: it saw %d runes and the "+
+			"phrase was not among them", len([]rune(judged)))
+	}
+	if len(got) == 0 {
+		t.Fatal("rerank dropped the only memory containing the phrase: chunked recall found it, " +
+			"then rerank discarded it because it was shown the wrong text")
 	}
 }

@@ -2689,7 +2689,18 @@ func (s *Service) finalizeRecall(ctx context.Context, query string, ranked []sto
 	pool := search.Dedup(ranked, max(s.rerankPool, k))
 	cands := make([]rerank.Candidate, len(pool))
 	for i, r := range pool {
-		cands[i] = rerank.Candidate{ID: r.Memory.ID, Content: r.Memory.Content}
+		// Judge the passage that matched, when chunked recall found one. The
+		// rerankers cut a candidate to their own budget (300 bytes for the LLM
+		// backend, 2048 runes for the cross-encoder), so handing over a long
+		// memory means judging a prefix that need not contain the passage that
+		// retrieved it — and because the pool is deeper than k, rerank changes
+		// membership: it would DROP the memory chunked recall just surfaced. The
+		// whole memory stays the candidate whenever no chunk matched.
+		content := r.Memory.Content
+		if r.MatchedChunk != "" {
+			content = r.MatchedChunk
+		}
+		cands[i] = rerank.Candidate{ID: r.Memory.ID, Content: content}
 	}
 	// Bound the rerank by the configured timeout and, when the caller imposed a
 	// deadline, by the time left before it minus a response margin — whichever is

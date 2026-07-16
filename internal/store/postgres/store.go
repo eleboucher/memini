@@ -115,6 +115,7 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 			memory_id  text NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
 			chunk_idx  integer NOT NULL,
 			namespace  text NOT NULL,
+			text       text NOT NULL DEFAULT '',
 			embedding  vector(%d) NOT NULL,
 			PRIMARY KEY (memory_id, chunk_idx)
 		)`, dims),
@@ -123,6 +124,7 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_vec ON memory_chunks USING vchordrq (embedding vector_l2_ops)`,
 		// Backfill temporal-validity, confidence, fingerprint, and level columns on
 		// databases created before them.
+		`ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS text text NOT NULL DEFAULT ''`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS valid_from timestamptz`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS valid_to timestamptz`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS confidence double precision`,
@@ -1051,6 +1053,31 @@ func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 
 // Close releases the connection pool.
 func (s *Store) Close() error { s.pool.Close(); return nil }
+
+// queryScoredChunk is queryScored for the chunk search, whose rows carry the
+// matched chunk's text after the distance so the reranker can judge the passage
+// that actually matched rather than the memory's prefix.
+func (s *Store) queryScoredChunk(ctx context.Context, q string, vals []any, score func(float64) float64) ([]store.Scored, error) {
+	rows, err := s.pool.Query(ctx, q, vals...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []store.Scored
+	for rows.Next() {
+		var (
+			metric float64
+			text   string
+		)
+		m, err := scanRow(rows, &metric, &text)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, store.Scored{Memory: m, Score: score(metric), MatchedChunk: text})
+	}
+	return out, rows.Err()
+}
 
 func (s *Store) queryScored(ctx context.Context, q string, vals []any, score func(float64) float64) ([]store.Scored, error) {
 	rows, err := s.pool.Query(ctx, q, vals...)

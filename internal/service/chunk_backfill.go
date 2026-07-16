@@ -171,7 +171,7 @@ func (s *Service) embedChunks(ctx context.Context, texts []string) ([]memory.Chu
 	}
 	out := make([]memory.Chunk, len(keep))
 	for i := range keep {
-		out[i] = memory.Chunk{Idx: idx[i], Embedding: vecs[i]}
+		out[i] = memory.Chunk{Idx: idx[i], Text: keep[i], Embedding: vecs[i]}
 	}
 	return out, nil
 }

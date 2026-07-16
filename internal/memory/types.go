@@ -161,10 +161,18 @@ type Memory struct {
 }
 
 // Chunk is one embedded segment of a memory's content. Idx is its position in
-// the content, from 0; it exists so a row is stable across re-splits and so a
-// chunk can later be traced back to the text it covers.
+// the content, from 0, so a row is stable across re-splits.
+//
+// Text is the segment the Embedding was built from. It is stored rather than
+// recomputed because it is what the reranker must judge: rerank cuts a
+// candidate down to its own budget (300 bytes for the LLM backend, 2048 runes
+// for the cross-encoder), so handing it the whole memory means judging a prefix
+// that need not contain the passage that retrieved it, and dropping the memory
+// chunked recall just found. Recomputing it from content would be possible while
+// the split config is unchanged, and wrong the moment it is not.
 type Chunk struct {
 	Idx       int
+	Text      string
 	Embedding []float32
 }
 

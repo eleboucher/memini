@@ -138,7 +138,11 @@ func scanMemory(s rowScanner) (*memory.Memory, error) { return scanRow(s, nil) }
 
 func scanMemoryWith(s rowScanner, metric *float64) (*memory.Memory, error) { return scanRow(s, metric) }
 
-func scanRow(s rowScanner, metric *float64) (*memory.Memory, error) {
+// scanRow reads memoryColumns, then metric when non-nil, then any extra
+// trailing destinations in the order the query selected them. `extra` exists
+// for the chunk search, which carries the matched chunk's text alongside the
+// distance.
+func scanRow(s rowScanner, metric *float64, extra ...any) (*memory.Memory, error) {
 	var (
 		m                  memory.Memory
 		tier, level        string
@@ -157,6 +161,7 @@ func scanRow(s rowScanner, metric *float64) (*memory.Memory, error) {
 	if metric != nil {
 		dest = append(dest, metric)
 	}
+	dest = append(dest, extra...)
 	if err := s.Scan(dest...); err != nil {
 		return nil, err
 	}

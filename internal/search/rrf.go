@@ -55,7 +55,10 @@ func Fuse(lists [][]store.Scored, k int, rrfK float64) []store.Scored {
 	fused := make([]store.Scored, 0, len(byID))
 	for _, id := range order {
 		a := byID[id]
-		fused = append(fused, store.Scored{Memory: a.mem.Memory, Score: a.score})
+		// Copy-and-overwrite; see the same construction in fusion.go.
+		f := *a.mem
+		f.Score = a.score
+		fused = append(fused, f)
 	}
 	sort.SliceStable(fused, func(i, j int) bool {
 		if fused[i].Score != fused[j].Score {
