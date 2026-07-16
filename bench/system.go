@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eleboucher/memini/internal/chunk"
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/memory"
@@ -86,6 +87,14 @@ type SystemOpts struct {
 	// under once ingest completes (zero = benchClock). Ignored when Dated is false.
 	Dated     bool
 	RecallNow time.Time
+	// Chunk turns chunked embedding on (MEMINI_CHUNK_EMBED), so a run measures
+	// the union of the document and chunk vector legs rather than the document
+	// leg alone. ChunkScoreWeight scales the chunk leg (MEMINI_CHUNK_SCORE_WEIGHT,
+	// 0 means 1): max-pooling has a length bias, and this is the knob for it, so
+	// it is the one thing a benchmark is actually needed to settle.
+	Chunk            bool
+	ChunkCfg         chunk.Config
+	ChunkScoreWeight float64
 	// QueryRewrite enables LLM query expansion on the hybrid system's Recall
 	// path — the A/B lever for measuring read-path LLM value. Needs Answerer.
 	QueryRewrite bool
@@ -112,6 +121,7 @@ type meminiBackend struct {
 	recallNow time.Time
 	// queryRewrite enables LLM query expansion on the hybrid Recall path.
 	queryRewrite bool
+	chunk        bool
 	// alias maps stored memory ID -> the dataset item IDs that landed on it
 	// (write mode only; built once during ingest, read-only afterwards).
 	alias  map[string][]string
@@ -145,7 +155,7 @@ func newMeminiBackend(st store.Store, e embed.Embedder, o SystemOpts) *meminiBac
 	b := &meminiBackend{
 		store: st, embedder: e, queryPrefix: o.QueryPrefix, concurrency: o.Concurrency,
 		mode: o.Mode, distiller: o.Distiller, dated: o.Dated, recallNow: o.RecallNow,
-		queryRewrite: o.QueryRewrite,
+		queryRewrite: o.QueryRewrite, chunk: o.Chunk,
 	}
 	// When dated, the service reads a mutable clock: ingest advances it per item,
 	// then parks it at effectiveNow for the recall phase. Undated runs keep the
@@ -163,6 +173,17 @@ func newMeminiBackend(st store.Store, e embed.Embedder, o SystemOpts) *meminiBac
 	}
 	if o.Answerer != nil {
 		opts = append(opts, service.WithAnswerer(o.Answerer))
+	}
+	if o.Chunk {
+		cfg := o.ChunkCfg
+		if cfg.Size <= 0 {
+			cfg = chunk.DefaultConfig()
+		}
+		w := o.ChunkScoreWeight
+		if w <= 0 {
+			w = 1
+		}
+		opts = append(opts, service.WithChunkEmbed(cfg), service.WithChunkScoreWeight(w))
 	}
 	if o.Mode == IngestWrite {
 		// Mirror the shipped server's write-path wiring (cmd/memini/root.go):
@@ -191,15 +212,53 @@ func newMeminiBackend(st store.Store, e embed.Embedder, o SystemOpts) *meminiBac
 	return b
 }
 
+// drainChunks builds every pending chunk before the recall phase. The server
+// does this on a ticker; a benchmark has no ticker and must not measure a
+// half-built index, so it runs the loop to completion here. A no-op when
+// chunking is off, and on a corpus of short memories (every bench dataset today
+// tops out around 370 runes, well under the chunk floor) it finds nothing to do
+// — which is itself the "short memories are untouched" claim, checked against
+// real data rather than asserted.
+func (b *meminiBackend) drainChunks(ctx context.Context) {
+	if !b.chunk {
+		return
+	}
+	total := 0
+	for {
+		n, err := b.svc.BackfillChunks(ctx)
+		if err != nil {
+			b.ingErr = fmt.Errorf("chunk backfill: %w", err)
+			return
+		}
+		if n == 0 {
+			break
+		}
+		total += n
+	}
+	// BackfillChunks reports a deferred tick (embedder down) and a drained
+	// queue identically — (0, nil) — because the server's ticker retries
+	// either way. A one-shot drain cannot, so verify emptiness rather than
+	// trust the loop: measuring the chunk-union system against a half-built
+	// index would report the feature as worthless with a green run.
+	if left, err := b.svc.ChunkBacklog(ctx); err != nil {
+		b.ingErr = fmt.Errorf("chunk backlog: %w", err)
+	} else if left > 0 {
+		b.ingErr = fmt.Errorf("chunk backfill stalled with %d memories still unchunked (embedder down?)", left)
+	}
+	fmt.Fprintf(os.Stderr, "bench: chunked %d memories\n", total)
+}
+
 // ingest loads the corpus once: direct upserts (upsert mode) or the production
 // write path (write mode).
+
 func (b *meminiBackend) ingest(ctx context.Context, items []Item) error {
 	b.once.Do(func() {
 		if b.mode == IngestWrite {
 			b.ingestWrite(ctx, items)
-			return
+		} else {
+			b.ingestUpsert(ctx, items)
 		}
-		b.ingestUpsert(ctx, items)
+		b.drainChunks(ctx)
 	})
 	return b.ingErr
 }

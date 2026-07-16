@@ -54,6 +54,7 @@ func (m *countingMetrics) CorroborateResult(string)            {}
 func (m *countingMetrics) ContradictResult(string)             {}
 func (m *countingMetrics) TierClassified(string)               {}
 func (m *countingMetrics) EmbedBackfillPending(int)            {}
+func (m *countingMetrics) ChunkBackfillPending(int)            {}
 
 func newAsyncSvc(t *testing.T, fc llm.Consolidator, minScore float64, mx Metrics) (*Service, store.Store) {
 	t.Helper()

@@ -42,6 +42,10 @@ func Fuse(lists [][]store.Scored, k int, rrfK float64) []store.Scored {
 				a = &agg{mem: &scopy}
 				byID[id] = a
 				order = append(order, id)
+			} else if a.mem.MatchedChunk == "" && sc.MatchedChunk != "" {
+				// Backfill the matched chunk from any later leg; see the same
+				// construction in fusion.go.
+				a.mem.MatchedChunk = sc.MatchedChunk
 			}
 			a.score += 1.0 / (rrfK + float64(rank))
 		}
@@ -55,7 +59,9 @@ func Fuse(lists [][]store.Scored, k int, rrfK float64) []store.Scored {
 	fused := make([]store.Scored, 0, len(byID))
 	for _, id := range order {
 		a := byID[id]
-		fused = append(fused, store.Scored{Memory: a.mem.Memory, Score: a.score})
+		// First-seen struct with only the score replaced; see the same
+		// construction in fusion.go.
+		fused = append(fused, a.mem.WithScore(a.score))
 	}
 	sort.SliceStable(fused, func(i, j int) bool {
 		if fused[i].Score != fused[j].Score {

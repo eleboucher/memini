@@ -41,6 +41,23 @@ CLIENT_NAME = "openwebui-memini-filter"
 CLIENT_VERSION = "0.1.0"  # keep in sync with this file's `version:` frontmatter
 
 
+def truncate_for_capture(text: str, max_chars: int) -> str:
+    """Cut `text` to `max_chars` characters, marking the cut; <= 0 keeps it whole.
+
+    0 must mean "uncapped", not "" (`text[:0]` would store an empty turn), and a
+    cut must be marked: a captured turn is later recalled into a model's context,
+    where a silently half-cut sentence reads exactly like a complete one.
+    """
+    if not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars <= 0:
+        # Not a usable cap (None, a bool, a string from a server that disagrees
+        # with the schema) means "no cap". Failing open stores the text; the
+        # alternative is destroying it this close to the write.
+        return text
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n[...truncated]"
+
+
 def sanitize_namespace(value: str) -> str:
     """Keep the X-Memini-Namespace header value clean: alnum, dot, dash,
     underscore; collapse the rest to dashes and trim. The server sanitizes too,
@@ -290,6 +307,24 @@ class Filter:
             return str(hs["namespace"]), f"server:{hs.get('namespace_source', '')}"
         return valve, "valve"
 
+    async def _capture_bounds(self) -> tuple[int, int]:
+        """The turn-capture bounds, from the server's handshake settings.
+
+        How much of a turn is worth keeping depends on the server's store and
+        recall budget, so it is the server's call, not a valve's — these are the
+        only two settings this filter takes from the handshake (its other knobs
+        are Valves by design). Fail-soft like everything else here: no handshake,
+        no settings, or a non-integer value falls back to the built-in default.
+        """
+        hs = await self._get_handshake()
+        settings = (hs or {}).get("settings") or {}
+
+        def bound(key: str, default: int) -> int:
+            v = settings.get(key)
+            return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else default
+
+        return bound("capture_user_max_chars", 1000), bound("capture_assistant_max_chars", 3000)
+
     async def _namespace(self, __user__: Optional[dict]) -> str:
         ns, _ = await self._resolve_namespace()
         if self.valves.scope_by_user and __user__:
@@ -429,13 +464,14 @@ class Filter:
         key = f"{chat_id}:{hash(assistant_text)}"
         if key in self._captured:
             return body
+        user_max, assistant_max = await self._capture_bounds()
         metadata = {"source": "openwebui", "chat_id": chat_id, "format": "turn"}
         if last_assistant_failed(body.get("messages")):
             metadata["failed"] = True
         stored = await self._post_json(
             "/v1/memories",
             {
-                "content": f"{user_text[:1000]}\n\n{assistant_text[:3000]}",
+                "content": f"{truncate_for_capture(user_text, user_max)}\n\n{truncate_for_capture(assistant_text, assistant_max)}",
                 "tags": ["openwebui"],
                 "metadata": metadata,
             },

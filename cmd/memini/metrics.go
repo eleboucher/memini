@@ -37,6 +37,7 @@ type consolidateMetrics struct {
 	writeSanitized       *prometheus.CounterVec
 	opDuration           *prometheus.HistogramVec
 	embedBackfillPending prometheus.Gauge
+	chunkBackfillPending prometheus.Gauge
 
 	// store-level
 	storeUpsert     *prometheus.CounterVec
@@ -156,6 +157,11 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 		embedBackfillPending: factory.NewGauge(prometheus.GaugeOpts{
 			Name: "memini_embed_backfill_pending",
 			Help: "Memories still marked pending_embed (stored vectorless) after the most recent backfill tick.",
+		}),
+		chunkBackfillPending: factory.NewGauge(prometheus.GaugeOpts{
+			Name: "memini_chunk_backfill_pending",
+			Help: "Long memories still without chunk vectors after the most recent chunk-backfill tick. " +
+				"A number that never falls means chunked recall is not reaching those memories.",
 		}),
 		storeUpsert: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_store_upserts_total",
@@ -310,6 +316,10 @@ func (m *consolidateMetrics) TierClassified(tier string) {
 
 func (m *consolidateMetrics) EmbedBackfillPending(n int) {
 	m.embedBackfillPending.Set(float64(n))
+}
+
+func (m *consolidateMetrics) ChunkBackfillPending(n int) {
+	m.chunkBackfillPending.Set(float64(n))
 }
 
 func (m *consolidateMetrics) DedupTombstoned(n int) {

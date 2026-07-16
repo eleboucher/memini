@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -44,19 +45,21 @@ func TestDefaultClientSettings(t *testing.T) {
 		got  *int
 		want int
 	}{
-		"auto_save_interval":         {d.AutoSaveInterval, 10},
-		"auto_save_min_events":       {d.AutoSaveMinEvents, 3},
-		"inject_briefing_pinned":     {d.InjectBriefingPinned, 5},
-		"inject_briefing_facts":      {d.InjectBriefingFacts, 5},
-		"inject_briefing_procedures": {d.InjectBriefingProcedures, 5},
-		"inject_briefing_recent":     {d.InjectBriefingRecent, 3},
-		"inject_briefing_max_tok":    {d.InjectBriefingMaxTok, 0},
-		"inject_pretool_items":       {d.InjectPretoolItems, 3},
-		"inject_pretool_max_tok":     {d.InjectPretoolMaxTok, 0},
-		"recall_limit":               {d.RecallLimit, 3},
-		"inject_recall_max_tok":      {d.InjectRecallMaxTok, 0},
-		"min_capture_chars":          {d.MinCaptureChars, 0},
-		"request_timeout_ms":         {d.RequestTimeoutMs, 30000},
+		"auto_save_interval":          {d.AutoSaveInterval, 10},
+		"auto_save_min_events":        {d.AutoSaveMinEvents, 3},
+		"inject_briefing_pinned":      {d.InjectBriefingPinned, 5},
+		"inject_briefing_facts":       {d.InjectBriefingFacts, 5},
+		"inject_briefing_procedures":  {d.InjectBriefingProcedures, 5},
+		"inject_briefing_recent":      {d.InjectBriefingRecent, 3},
+		"inject_briefing_max_tok":     {d.InjectBriefingMaxTok, 0},
+		"inject_pretool_items":        {d.InjectPretoolItems, 3},
+		"inject_pretool_max_tok":      {d.InjectPretoolMaxTok, 0},
+		"recall_limit":                {d.RecallLimit, 3},
+		"inject_recall_max_tok":       {d.InjectRecallMaxTok, 0},
+		"min_capture_chars":           {d.MinCaptureChars, 0},
+		"capture_user_max_chars":      {d.CaptureUserMaxChars, 1000},
+		"capture_assistant_max_chars": {d.CaptureAssistantMaxChars, 3000},
+		"request_timeout_ms":          {d.RequestTimeoutMs, 30000},
 	}
 	for name, f := range intFields {
 		if f.got == nil || *f.got != f.want {
@@ -93,6 +96,35 @@ func TestDefaultClientSettings(t *testing.T) {
 
 	if err := d.Validate(); err != nil {
 		t.Errorf("default settings must validate cleanly: %v", err)
+	}
+}
+
+// TestDefaultClientSettingsCoversEveryField makes the promise above structural.
+// TestDefaultClientSettings checks a hand-written list, so a new ClientSettings
+// field whose default nobody wrote passes it silently — and a nil survives into
+// a "fully resolved" settings value, which ClientSettings' own doc says can
+// never happen and which every consumer of /v1/handshake dereferences. This
+// asserts the same thing by reflection, so the failure lands here, next to the
+// fix, rather than in a client.
+func TestDefaultClientSettingsCoversEveryField(t *testing.T) {
+	v := reflect.ValueOf(store.DefaultClientSettings())
+	for i, tp := 0, v.Type(); i < tp.NumField(); i++ {
+		f := tp.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		if v.Field(i).Kind() != reflect.Pointer {
+			t.Errorf("ClientSettings.%s is %s, want a pointer: nil is how the "+
+				"merge layers spell \"inherit\"", f.Name, f.Type)
+			continue
+		}
+		if v.Field(i).IsNil() {
+			t.Errorf("DefaultClientSettings leaves ClientSettings.%s (json %q) nil — "+
+				"every field needs a built-in default. TestDefaultClientSettingsMatchSchema "+
+				"separately checks that the value equals the field's `default:` in "+
+				"api/openapi.yaml.",
+				f.Name, strings.Split(f.Tag.Get("json"), ",")[0])
+		}
 	}
 }
 

@@ -143,6 +143,40 @@ type Memory struct {
 	// Embedding is the dense vector for similarity search. It is required when
 	// writing to the store and is omitted from API responses.
 	Embedding []float32 `json:"-"`
+
+	// Chunks are per-segment vectors covering content that runs past the
+	// per-item embed budget, so recall can match text the Embedding above does
+	// not reach. Optional: a store need not implement store.ChunkStore, and
+	// short content has none by design (see internal/chunk).
+	//
+	// On Upsert, nil means the store decides: existing chunk rows are kept
+	// when the content is unchanged (same fingerprint) and cleared when it
+	// changed. That default fails safe in both directions — stale chunks make
+	// recall return a memory whose text no longer contains the passage that
+	// matched it, while missing ones are re-created by the backfill loop, so
+	// a caller that rewrites content without recomputing loses nothing
+	// durable, and a caller that merely stamps metadata cannot wipe an index
+	// it never touched. A non-nil slice replaces the rows exactly as given;
+	// an empty non-nil slice is an explicit clear, for callers whose chunks
+	// went stale without a content change (reembed: the model changed under
+	// them).
+	Chunks []Chunk `json:"-"`
+}
+
+// Chunk is one embedded segment of a memory's content. Idx is its position in
+// the content, from 0, so a row is stable across re-splits.
+//
+// Text is the segment the Embedding was built from. It is stored rather than
+// recomputed because it is what the reranker must judge: rerank cuts a
+// candidate down to its own budget (300 bytes for the LLM backend, 2048 runes
+// for the cross-encoder), so handing it the whole memory means judging a prefix
+// that need not contain the passage that retrieved it, and dropping the memory
+// chunked recall just found. Recomputing it from content would be possible while
+// the split config is unchanged, and wrong the moment it is not.
+type Chunk struct {
+	Idx       int
+	Text      string
+	Embedding []float32
 }
 
 // Expired reports whether the memory has passed its TTL as of now.

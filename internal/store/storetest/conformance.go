@@ -61,6 +61,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("MemoryTypeFilter", func(t *testing.T) { testMemoryTypeFilter(t, st, dims) })
 	t.Run("ListRecencyWindow", func(t *testing.T) { testListRecencyWindow(t, st, dims) })
 	t.Run("EventLog", func(t *testing.T) { testEventLog(t, st, dims) })
+	t.Run("Chunks", func(t *testing.T) { testChunks(t, st, dims) })
 }
 
 // Fixture labels shared by the sort/filter subtests below. They are constants

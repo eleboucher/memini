@@ -327,15 +327,17 @@ client** — it wins over whatever the server resolved, without touching the
 server's stored value for anyone else. `/memini:status` shows each knob's
 actual source (`env-override` / `server (key|global|default)`).
 
-| Env var                       | Default | Description                                                                                                                                                                                        |
-| ----------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MEMINI_AUTO_SAVE`            | on      | periodic auto-save nudge on `Stop`.                                                                                                                                                                |
-| `MEMINI_AUTO_SAVE_INTERVAL`   | `10`    | user messages between auto-save nudges.                                                                                                                                                            |
-| `MEMINI_AUTO_SAVE_MIN_EVENTS` | `3`     | min buffered tool events before an auto-save nudge fires; below this it defers and fires a discussion-variant nudge at twice the interval; `0` disables the activity gate (interval-only cadence). |
-| `MEMINI_CAPTURE_TURNS`        | on      | auto-capture each user→assistant turn as episodic memory.                                                                                                                                          |
-| `MEMINI_SESSION_DIGEST`       | on      | record session digests (files edited, commands run); `0` to keep memory to durable facts only.                                                                                                     |
-| `MEMINI_INLINE_EXTRACT`       | on      | inject the memory-save directive (`memory_remember`) and scrape legacy `<memory>` blocks.                                                                                                          |
-| `MEMINI_TIMEOUT_MS`           | `30000` | per-request timeout (wire name `request_timeout_ms`); also read at the transport layer, so it bounds calls made before a handshake. Must exceed the server's `MEMINI_RERANK_TIMEOUT` — see above.  |
+| Env var                              | Default | Description                                                                                                                                                                                        |
+| ------------------------------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEMINI_AUTO_SAVE`                   | on      | periodic auto-save nudge on `Stop`.                                                                                                                                                                |
+| `MEMINI_AUTO_SAVE_INTERVAL`          | `10`    | user messages between auto-save nudges.                                                                                                                                                            |
+| `MEMINI_AUTO_SAVE_MIN_EVENTS`        | `3`     | min buffered tool events before an auto-save nudge fires; below this it defers and fires a discussion-variant nudge at twice the interval; `0` disables the activity gate (interval-only cadence). |
+| `MEMINI_CAPTURE_TURNS`               | on      | auto-capture each user→assistant turn as episodic memory.                                                                                                                                          |
+| `MEMINI_CAPTURE_USER_MAX_CHARS`      | `1000`  | truncate the user side of a captured turn to this many characters, marking the cut; `0` captures it whole. Server-resolved by default — the server knows its own store and recall budget.          |
+| `MEMINI_CAPTURE_ASSISTANT_MAX_CHARS` | `3000`  | same for the assistant side, which is larger because the answer usually carries the durable content.                                                                                               |
+| `MEMINI_SESSION_DIGEST`              | on      | record session digests (files edited, commands run); `0` to keep memory to durable facts only.                                                                                                     |
+| `MEMINI_INLINE_EXTRACT`              | on      | inject the memory-save directive (`memory_remember`) and scrape legacy `<memory>` blocks.                                                                                                          |
+| `MEMINI_TIMEOUT_MS`                  | `30000` | per-request timeout (wire name `request_timeout_ms`); also read at the transport layer, so it bounds calls made before a handshake. Must exceed the server's `MEMINI_RERANK_TIMEOUT` — see above.  |
 
 ### Removed variables
 

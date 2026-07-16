@@ -1,0 +1,95 @@
+{
+  "_comment": [
+    "Conformance vectors for the turn-capture truncation contract, replayed by",
+    "every implementation of it. Four exist and cannot be collapsed: the client",
+    "core (packages/memini-client/src/capture.ts) is the canonical one, but the",
+    "opencode plugin, hermes, and the Open WebUI filter all ship standalone with",
+    "no build step and so carry their own copies.",
+    "",
+    "This file is what keeps them the same function. Without it each copy's own",
+    "tests asserted its own behaviour and all four passed while disagreeing --",
+    "the client core destroyed the text on a NaN cap while the opencode copy",
+    "returned it whole, and nothing noticed. Modelled on derivation-vectors.json,",
+    "which pins deriveLocalNamespace the same way.",
+    "",
+    "Add a case here first, then make every implementation pass it.",
+    "",
+    "marker is appended verbatim on a cut; `null` for `max` stands in for any",
+    "non-numeric value a language can express (JS null/undefined, Python None)."
+  ],
+  "marker": "\n[...truncated]",
+  "cases": [
+    {
+      "name": "under the cap: untouched and unmarked",
+      "text": "short text",
+      "max": 100,
+      "expect": "short text"
+    },
+    {
+      "name": "exactly at the cap: untouched and unmarked",
+      "text": "abcd",
+      "max": 4,
+      "expect": "abcd"
+    },
+    {
+      "name": "one over the cap: cut and marked",
+      "text": "abcde",
+      "max": 4,
+      "expect": "abcd\n[...truncated]"
+    },
+    {
+      "name": "zero means uncapped, not empty",
+      "text": "keep every word of this",
+      "max": 0,
+      "expect": "keep every word of this"
+    },
+    {
+      "name": "negative means uncapped",
+      "text": "keep every word of this",
+      "max": -1,
+      "expect": "keep every word of this"
+    },
+    {
+      "name": "empty text stays empty and unmarked",
+      "text": "",
+      "max": 10,
+      "expect": ""
+    },
+    {
+      "name": "counts characters, not UTF-8 bytes: 3 CJK chars are 9 bytes",
+      "text": "这个部署",
+      "max": 3,
+      "expect": "这个部\n[...truncated]"
+    },
+    {
+      "name": "CJK under the cap by characters, over it by bytes",
+      "text": "这个部署",
+      "max": 4,
+      "expect": "这个部署"
+    },
+    {
+      "name": "astral characters are never split: 2 emoji are 4 UTF-16 code units",
+      "text": "👍👍👍👍",
+      "max": 2,
+      "expect": "👍👍\n[...truncated]"
+    },
+    {
+      "name": "a cap landing exactly on the emoji count does not cut",
+      "text": "👍👍",
+      "max": 2,
+      "expect": "👍👍"
+    },
+    {
+      "name": "mixed ascii and astral counts by character",
+      "text": "hi 👍 there",
+      "max": 4,
+      "expect": "hi 👍\n[...truncated]"
+    },
+    {
+      "name": "non-numeric cap fails open: store the text rather than destroy it",
+      "text": "the entire user turn, every word of it",
+      "max": null,
+      "expect": "the entire user turn, every word of it"
+    }
+  ]
+}

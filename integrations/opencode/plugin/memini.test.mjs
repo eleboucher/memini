@@ -1,13 +1,16 @@
 // Run: node --test (from this directory). Not shipped by install.sh.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import {
   MeminiPlugin,
   resolveConfig,
   effectiveConfig,
+  truncateForCapture,
+  buildTurnCapture,
   memoizeAsync,
   buildFacts,
   deriveNamespace,
@@ -267,6 +270,37 @@ test("effectiveConfig settings fallback chain: option > env > server > built-in 
     settings: { recall_limit: 2 },
   });
   assert.equal(optVsServer.recall_limit, 9);
+});
+
+test("effectiveConfig capture caps: env > server > built-in default", () => {
+  // An explicit env value beats the server's settings.
+  const envExplicit = resolveConfig(
+    { MEMINI_CAPTURE_USER_MAX_CHARS: "50000", MEMINI_CAPTURE_ASSISTANT_MAX_CHARS: "60000" },
+    undefined,
+    "/r",
+  );
+  const envVsServer = effectiveConfig(envExplicit, {
+    namespace: "r",
+    namespace_source: "cwd",
+    settings: { capture_user_max_chars: 1000, capture_assistant_max_chars: 3000 },
+  });
+  assert.equal(envVsServer.capture_user_max_chars, 50000);
+  assert.equal(envVsServer.capture_assistant_max_chars, 60000);
+
+  // Without the env var, the server's value fills in over the built-in default.
+  const bare = resolveConfig({}, undefined, "/r");
+  const serverOnly = effectiveConfig(bare, {
+    namespace: "r",
+    namespace_source: "cwd",
+    settings: { capture_user_max_chars: 1000, capture_assistant_max_chars: 4000 },
+  });
+  assert.equal(serverOnly.capture_user_max_chars, 1000);
+  assert.equal(serverOnly.capture_assistant_max_chars, 4000);
+
+  // With neither env nor server, the built-in defaults apply.
+  const withNothing = effectiveConfig(bare, { namespace: "r", namespace_source: "cwd", settings: {} });
+  assert.equal(withNothing.capture_user_max_chars, 1000);
+  assert.equal(withNothing.capture_assistant_max_chars, 3000);
 });
 
 test("effectiveConfig tolerates a handshake response with no settings/namespace fields", () => {
@@ -1195,4 +1229,42 @@ test("event never rejects, even when client.session.messages throws", async () =
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+// --- turn-capture truncation conformance ------------------------------------
+//
+// This plugin ships standalone (no build step), so it carries its own copy of
+// the client core's truncateForCapture. The copy is only useful if it IS the
+// same function, and it once was not: it and the core disagreed on a NaN cap
+// from birth, each passing its own tests. The shared fixture is what makes the
+// two the same function rather than two functions with the same name.
+const captureVectors = JSON.parse(
+  readFileSync(
+    join(
+      fileURLToPath(new URL(".", import.meta.url)),
+      "..",
+      "..",
+      "..",
+      "packages",
+      "memini-client",
+      "test",
+      "fixtures",
+      "capture-vectors.json",
+    ),
+    "utf8",
+  ),
+);
+
+for (const v of captureVectors.cases) {
+  test(`capture vector: ${v.name}`, () => {
+    assert.equal(truncateForCapture(v.text, v.max), v.expect);
+  });
+}
+
+test("capture vectors: the fixture's marker is this copy's marker", () => {
+  assert.equal(truncateForCapture("ab", 1), "a" + captureVectors.marker);
+});
+
+test("buildTurnCapture: 0 on a side captures it whole", () => {
+  assert.equal(buildTurnCapture("uuu", "aaa", 0, 2), "uuu\n\naa" + captureVectors.marker);
 });

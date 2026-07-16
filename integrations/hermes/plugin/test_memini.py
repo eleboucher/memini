@@ -914,5 +914,43 @@ class ReinforcedFlagTest(unittest.TestCase):
         self.assertNotIn("reinforced", out)
 
 
+_CAPTURE_VECTORS = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "..", "..",
+    "packages", "memini-client", "test", "fixtures", "capture-vectors.json",
+)
+
+
+class TurnCaptureVectorsTest(unittest.TestCase):
+    """Replays the shared truncation contract.
+
+    hermes ships standalone and so carries its own copy of the client core's
+    truncateForCapture. The copy is only worth having if it IS the same
+    function; the fixture is what enforces that. Add cases to the fixture, not
+    here -- a case added for any client is then enforced on all of them.
+    See packages/memini-client/test/fixtures/capture-vectors.json.
+    """
+
+    def test_vectors(self):
+        with open(_CAPTURE_VECTORS, encoding="utf-8") as fh:
+            fixture = json.load(fh)
+        for case in fixture["cases"]:
+            with self.subTest(case["name"]):
+                self.assertEqual(
+                    memini._truncate_for_capture(case["text"], case["max"]), case["expect"]
+                )
+
+    def test_marker_matches_the_fixture(self):
+        with open(_CAPTURE_VECTORS, encoding="utf-8") as fh:
+            marker = json.load(fh)["marker"]
+        self.assertEqual(memini._truncate_for_capture("ab", 1), "a" + marker)
+
+    def test_build_turn_capture_bounds_each_side_independently(self):
+        self.assertEqual(
+            memini._build_turn_capture("uuuuu", "aaaaa", 2, 0),
+            "uu\n[...truncated]\n\naaaaa",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

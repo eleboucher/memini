@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/eleboucher/memini/internal/chunk"
 	"github.com/eleboucher/memini/internal/contradict"
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/extract"
@@ -162,6 +163,10 @@ type Metrics interface {
 	// EmbedBackfillPending reports the number of memories still marked
 	// pending_embed after one backfill tick (0 once the queue is drained).
 	EmbedBackfillPending(n int)
+	// ChunkBackfillPending reports the number of long memories still without
+	// chunk vectors after one chunk-backfill tick (0 once the queue is
+	// drained). Only meaningful with MEMINI_CHUNK_EMBED on.
+	ChunkBackfillPending(n int)
 }
 
 type nopMetrics struct{}
@@ -186,6 +191,12 @@ func (nopMetrics) CorroborateResult(string)            {}
 func (nopMetrics) ContradictResult(string)             {}
 func (nopMetrics) TierClassified(string)               {}
 func (nopMetrics) EmbedBackfillPending(int)            {}
+func (nopMetrics) ChunkBackfillPending(int)            {}
+
+// NopMetrics is exported for tests, mirroring store.NopMetrics: it lets a test
+// outside this package embed a working sink and override only the one method it
+// cares about, rather than restating the whole interface.
+func NopMetrics() Metrics { return nopMetrics{} }
 
 // ErrInvalidInput marks errors caused by the caller's request (missing fields,
 // unknown tiers) as opposed to backend failures. API layers map it to 400;
@@ -296,6 +307,25 @@ type Service struct {
 	// episodic memories into durable semantic facts.
 	distiller        llm.Distiller
 	promoteMinAccess int
+	// classifyMaxChars bounds a write that picked no tier (runes); above it the
+	// content falls back to the working tier. See config.ClassifyMaxChars.
+	classifyMaxChars int
+	// promoteWholeMaxChars bounds LLM-less whole-content promotion (runes); a
+	// longer marker-less source is never promoted. See config.PromoteWholeMaxChars.
+	promoteWholeMaxChars int
+
+	// chunkEmbed turns chunked embedding on: the backfill loop builds chunks for
+	// long memories, and recall unions their vectors with the document ones.
+	// Off leaves every path byte-identical to before the feature existed.
+	chunkEmbed bool
+	// chunkStore is the store's optional ChunkStore capability, nil when the
+	// driver does not implement it.
+	chunkStore store.ChunkStore
+	// chunkCfg bounds the split. See internal/chunk.
+	chunkCfg chunk.Config
+	// chunkScoreWeight scales the chunk leg when merging it with the document
+	// leg; see mergeVectorLegs for why it exists.
+	chunkScoreWeight float64
 
 	metrics Metrics
 	// syncReinforce makes recall reinforcement synchronous (deterministic tests).
@@ -510,6 +540,39 @@ func WithWriteEmbedTimeout(d time.Duration) Option {
 // WithPromoteMinAccess sets the minimum access_count for an episodic memory to
 // be eligible for promotion.
 func WithPromoteMinAccess(n int) Option { return func(s *Service) { s.promoteMinAccess = n } }
+
+// WithClassifyMaxChars bounds a write that picked no tier, in runes. 0 declines
+// every classification, so untier'd writes take the working default.
+func WithClassifyMaxChars(n int) Option { return func(s *Service) { s.classifyMaxChars = n } }
+
+// WithPromoteWholeMaxChars bounds LLM-less whole-content promotion, in runes.
+// 0 leaves only marker extraction.
+func WithPromoteWholeMaxChars(n int) Option {
+	return func(s *Service) { s.promoteWholeMaxChars = n }
+}
+
+// WithChunkEmbed turns chunked embedding on under cfg. It is a no-op unless the
+// store implements store.ChunkStore — a driver without the capability simply
+// keeps the previous behaviour rather than erroring, matching how every other
+// optional capability degrades.
+func WithChunkEmbed(cfg chunk.Config) Option {
+	return func(s *Service) {
+		cs, ok := s.store.(store.ChunkStore)
+		if !ok {
+			slog.Warn("chunked embedding requested but the store does not support it; continuing without it")
+			return
+		}
+		s.chunkEmbed = true
+		s.chunkStore = cs
+		s.chunkCfg = cfg
+	}
+}
+
+// WithChunkScoreWeight scales chunk scores against document scores when the two
+// legs are merged. See mergeVectorLegs.
+func WithChunkScoreWeight(w float64) Option {
+	return func(s *Service) { s.chunkScoreWeight = w }
+}
 
 // WithMetrics installs an observability sink for consolidation events.
 func WithMetrics(m Metrics) Option { return func(s *Service) { s.metrics = m } }
@@ -773,6 +836,10 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 		consolidateMode:      ConsolidateAsync,
 		consolidateMinScore:  0.3,
 		promoteMinAccess:     3,
+		classifyMaxChars:     extract.ClassifyMaxChars,
+		promoteWholeMaxChars: DefaultPromoteWholeMaxChars,
+		chunkCfg:             chunk.DefaultConfig(),
+		chunkScoreWeight:     1,
 		rerankTimeout:        defaultRerankTimeout,
 		scoreFusionAlpha:     search.DefaultFusionAlpha, // convex score fusion by default; negative selects RRF
 		reservePromoteRatio:  defaultReservePromoteRatio,
@@ -948,7 +1015,9 @@ func (s *Service) sanitizeContent(ctx context.Context, in RememberInput, tier me
 // label the caller records. The returned RememberInput carries the resolved
 // Namespace only on success; an error return leaves it as given, which the
 // caller never uses since it discards in on that path.
-func validateRememberInput(in RememberInput) (RememberInput, memory.Tier, error) {
+// classifyMaxChars bounds the tier heuristic for a write that named no tier;
+// see Service.classifyMaxChars.
+func validateRememberInput(in RememberInput, classifyMaxChars int) (RememberInput, memory.Tier, error) {
 	if in.Namespace == "" {
 		return in, "", invalidInputf("remember: namespace is required")
 	}
@@ -958,7 +1027,7 @@ func validateRememberInput(in RememberInput) (RememberInput, memory.Tier, error)
 	tier := in.Tier
 	if tier == "" {
 		tier = memory.TierWorking
-		if kind, ok := extract.Classify(in.Content); ok {
+		if kind, ok := extract.ClassifyWith(in.Content, classifyMaxChars); ok {
 			tier = kind.Tier()
 		}
 	}
@@ -1074,7 +1143,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	defer func() {
 		s.metrics.OpDuration("remember", time.Since(start))
 	}()
-	in, tier, err := validateRememberInput(in)
+	in, tier, err := validateRememberInput(in, s.classifyMaxChars)
 	if err != nil {
 		s.metrics.RememberResult("error", string(tier))
 		return nil, err
@@ -2002,7 +2071,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		}
 		if vec != nil {
 			g2.Go(func() error {
-				v, err := s.store.VectorSearch(g2ctx, ns, vec, f, poolK)
+				v, err := s.vectorLeg(g2ctx, ns, vec, f, poolK)
 				if err != nil {
 					return fmt.Errorf("recall: vector search: %w", err)
 				}
@@ -2670,7 +2739,18 @@ func (s *Service) finalizeRecall(ctx context.Context, query string, ranked []sto
 	pool := search.Dedup(ranked, max(s.rerankPool, k))
 	cands := make([]rerank.Candidate, len(pool))
 	for i, r := range pool {
-		cands[i] = rerank.Candidate{ID: r.Memory.ID, Content: r.Memory.Content}
+		// Judge the passage that matched, when chunked recall found one. The
+		// rerankers cut a candidate to their own budget (300 bytes for the LLM
+		// backend, 2048 runes for the cross-encoder), so handing over a long
+		// memory means judging a prefix that need not contain the passage that
+		// retrieved it — and because the pool is deeper than k, rerank changes
+		// membership: it would DROP the memory chunked recall just surfaced. The
+		// whole memory stays the candidate whenever no chunk matched.
+		content := r.Memory.Content
+		if r.MatchedChunk != "" {
+			content = r.MatchedChunk
+		}
+		cands[i] = rerank.Candidate{ID: r.Memory.ID, Content: content}
 	}
 	// Bound the rerank by the configured timeout and, when the caller imposed a
 	// deadline, by the time left before it minus a response margin — whichever is

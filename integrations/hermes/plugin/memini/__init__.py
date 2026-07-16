@@ -486,6 +486,30 @@ def _list_path(args: dict) -> str:
 # score floor, a token ceiling, and label toggles.
 
 
+def _truncate_for_capture(text: str, max_chars: int) -> str:
+    """Cut `text` to `max_chars` characters, marking the cut; <= 0 keeps it whole.
+
+    Python slices by code point, so unlike the JS clients there is no risk of
+    splitting a character here — but the other two traps are shared: 0 must mean
+    "uncapped" rather than an empty string, and a cut must be marked. A captured
+    turn is recalled into a model's context later, where a silently half-cut
+    sentence is indistinguishable from a complete one.
+    """
+    if not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars <= 0:
+        # Not a usable cap (None, a bool, a float, a string from a server that
+        # disagrees with the schema) means "no cap". Failing open stores the
+        # text; the alternative is destroying it this close to the write.
+        return text
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n[...truncated]"
+
+
+def _build_turn_capture(user: str, assistant: str, user_max: int, assistant_max: int) -> str:
+    """Assemble a captured turn's body, each side under its own server-resolved bound."""
+    return f"{_truncate_for_capture(user, user_max)}\n\n{_truncate_for_capture(assistant, assistant_max)}"
+
+
 def _int_env(name: str, default: int | None) -> int | None:
     """Parse a non-negative int env var, or return `default` when unset,
     malformed, or negative. `default=None` (used when a server-resolved
@@ -839,6 +863,25 @@ class MeminiMemoryProvider(MemoryProvider):
             server_max_tok = settings.get("inject_recall_max_tok")
             self._recall_max_tokens = server_max_tok if isinstance(server_max_tok, int) else 0
 
+        # Capture bounds: how much of a turn is worth keeping is the server's
+        # call (its store and recall budget), so the handshake carries it; the
+        # env vars stay as a per-caller escape hatch, matching the knobs above.
+        for attr, env_name, wire_key, default in (
+            ("_capture_user_max_chars", "MEMINI_CAPTURE_USER_MAX_CHARS", "capture_user_max_chars", 1000),
+            (
+                "_capture_assistant_max_chars",
+                "MEMINI_CAPTURE_ASSISTANT_MAX_CHARS",
+                "capture_assistant_max_chars",
+                3000,
+            ),
+        ):
+            env_val = _int_env(env_name, None)
+            if env_val is not None:
+                setattr(self, attr, env_val)
+            else:
+                server_val = settings.get(wire_key)
+                setattr(self, attr, server_val if isinstance(server_val, int) and server_val >= 0 else default)
+
         # recall/capture: no local env toggle (see the module docstring) --
         # only the server's handshake settings can turn these off, else on.
         self._recall_enabled = (
@@ -1015,7 +1058,9 @@ class MeminiMemoryProvider(MemoryProvider):
         self._call_bg(
             "/v1/memories",
             {
-                "content": f"{user[:1000]}\n\n{assistant[:3000]}",
+                "content": _build_turn_capture(
+                    user, assistant, self._capture_user_max_chars, self._capture_assistant_max_chars
+                ),
                 "tags": ["hermes"],
                 "metadata": {"source": "hermes", "session_id": sid, "format": "turn"},
             },
@@ -1031,7 +1076,12 @@ class MeminiMemoryProvider(MemoryProvider):
         if not self._capture_enabled:
             return
         if action in ("add", "replace") and content.strip():
-            self._call_bg("/v1/memories", {"content": content.strip()[:4000]})
+            # Sent whole. This used to cut at 4000 characters, which had no
+            # counterpart anywhere: the server stores content as unbounded text,
+            # and the only real ceiling is its 4MB request body. Silently losing
+            # the tail of a memory the caller asked to store is worse than a
+            # large write.
+            self._call_bg("/v1/memories", {"content": content.strip()})
 
     def get_tool_schemas(self) -> list[dict]:
         return [

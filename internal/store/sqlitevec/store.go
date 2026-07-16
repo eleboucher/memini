@@ -120,6 +120,34 @@ func (s *Store) migrate(ctx context.Context) error {
 		)`, s.dims),
 		// Porter stemming so queries match morphological variants (move/moved/moving).
 		`CREATE VIRTUAL TABLE IF NOT EXISTS fts_memories USING fts5(content, summary, tags, tokenize='porter unicode61')`,
+		// Chunked embedding (see chunks.go): additive, so a store that never
+		// turns MEMINI_CHUNK_EMBED on simply carries two empty tables, and an
+		// older binary against this schema ignores them.
+		`CREATE TABLE IF NOT EXISTS memory_chunks (
+			rowid        INTEGER PRIMARY KEY,
+			memory_rowid INTEGER NOT NULL,
+			chunk_idx    INTEGER NOT NULL,
+			text         TEXT NOT NULL DEFAULT '',
+			UNIQUE(memory_rowid, chunk_idx)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_memory ON memory_chunks(memory_rowid)`,
+		fmt.Sprintf(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
+			namespace TEXT partition key,
+			embedding float[%d]
+		)`, s.dims),
+		// ListUnchunked/CountUnchunked filter on length(content) every backfill
+		// tick, forever; without this expression index each tick is a full-table
+		// scan computing the length of every content blob.
+		`CREATE INDEX IF NOT EXISTS idx_memories_content_len ON memories(length(content))`,
+		// Purge chunk rows orphaned by a binary whose expiry sweep predated the
+		// chunk cascade. Idempotent and cheap against a healthy store; without
+		// it an orphan could sit on a freed rowid until an insert reuses it.
+		// vec_chunks first: the mapping rows are the only way to reach its rows.
+		`DELETE FROM vec_chunks WHERE rowid IN (
+			SELECT c.rowid FROM memory_chunks c
+			LEFT JOIN memories m ON m.rowid = c.memory_rowid
+			WHERE m.rowid IS NULL)`,
+		`DELETE FROM memory_chunks WHERE memory_rowid NOT IN (SELECT rowid FROM memories)`,
 		// Key/value store for store-level metadata (e.g. the embedding model the
 		// vectors were produced with — see EmbedModel/SetEmbedModel).
 		`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
@@ -320,7 +348,9 @@ func (s *Store) verifyVecDims(ctx context.Context) error {
 		return fmt.Errorf("sqlitevec: store was created with %d embedding dims but is configured for %d; "+
 			"set MEMINI_EMBED_DIMS=%d to match the existing data, or migrate to a new database", got, s.dims, got)
 	}
-	return nil
+	// Chunk vectors are the same space and must be the same width; a mismatch
+	// there would return garbage from chunk recall just as silently.
+	return s.verifyChunkVecDims(ctx)
 }
 
 // parseVecDims extracts N from a vec0 "embedding float[N]" column declaration.
@@ -402,6 +432,8 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		}
 	}
 
+	fp := memory.Fingerprint(m.Content)
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -409,9 +441,10 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 	defer func() { _ = tx.Rollback() }()
 
 	var rowID int64
-	var existingNS string
+	var existingNS, existingFP string
 	var op string
-	err = tx.QueryRowContext(ctx, `SELECT rowid, namespace FROM memories WHERE id = ?`, m.ID).Scan(&rowID, &existingNS)
+	err = tx.QueryRowContext(ctx, `SELECT rowid, namespace, fingerprint FROM memories WHERE id = ?`, m.ID).
+		Scan(&rowID, &existingNS, &existingFP)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		op = "insert"
@@ -423,7 +456,7 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 			m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
 			m.Importance, ms(m.CreatedAt), ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
 			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), f64Ptr(m.Confidence),
-			memory.Fingerprint(m.Content), string(m.Level), string(linkedJSON))
+			fp, string(m.Level), string(linkedJSON))
 		if ierr != nil {
 			return fmt.Errorf("sqlitevec: insert memory: %w", ierr)
 		}
@@ -448,7 +481,7 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 			string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
 			m.Importance, ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
 			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), f64Ptr(m.Confidence),
-			memory.Fingerprint(m.Content), string(m.Level), string(linkedJSON), rowID); uerr != nil {
+			fp, string(m.Level), string(linkedJSON), rowID); uerr != nil {
 			return fmt.Errorf("sqlitevec: update memory: %w", uerr)
 		}
 	}
@@ -465,6 +498,17 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 			`INSERT INTO vec_memories(rowid, namespace, embedding) VALUES (?,?,?)`,
 			rowID, m.Namespace, vec); err != nil {
 			return fmt.Errorf("sqlitevec: insert vector: %w", err)
+		}
+	}
+	// Chunks are rewritten in the same transaction as the row, so content and
+	// its chunk vectors can never be observed out of step. Memory.Chunks'
+	// contract: non-nil replaces, nil preserves while the fingerprint is
+	// unchanged and clears when it is not. An insert always writes — a freed
+	// rowid may carry orphans left by an older binary, and writeChunks'
+	// unconditional DELETE is what keeps them from attaching to the new row.
+	if op == "insert" || m.Chunks != nil || existingFP != fp {
+		if err := s.writeChunks(ctx, tx, rowID, m.Namespace, m.Chunks); err != nil {
+			return err
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM fts_memories WHERE rowid=?`, rowID); err != nil {
@@ -602,6 +646,9 @@ func (s *Store) Delete(ctx context.Context, namespace, id string) error {
 	} else if err != nil {
 		return err
 	}
+	if err := deleteChunksFor(ctx, tx, []int64{rowID}); err != nil {
+		return err
+	}
 	for _, q := range []string{
 		`DELETE FROM memories WHERE rowid=?`,
 		`DELETE FROM vec_memories WHERE rowid=?`,
@@ -636,6 +683,12 @@ func (s *Store) DeleteIfExpiredBefore(ctx context.Context, namespace, id string,
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.ErrNotFound
 	} else if err != nil {
+		return err
+	}
+	// Chunks first, as everywhere a memory is removed: their mapping rows are
+	// the only way to reach the vec0 rows, so deleting the memory first would
+	// orphan them for SQLite to hand to whoever reuses the rowid.
+	if err := deleteChunksFor(ctx, tx, []int64{rowID}); err != nil {
 		return err
 	}
 	for _, q := range []string{
@@ -849,6 +902,11 @@ func (s *Store) DeleteNamespace(ctx context.Context, namespace string) (int64, e
 	}
 	if len(rowIDs) > 0 {
 		for _, q := range []string{
+			// Chunks first: their mapping rows are the only way to reach their
+			// vec0 rows, so dropping the memories first would orphan them.
+			`DELETE FROM vec_chunks WHERE rowid IN (SELECT rowid FROM memory_chunks
+				WHERE memory_rowid IN (SELECT rowid FROM memories WHERE namespace=?))`,
+			`DELETE FROM memory_chunks WHERE memory_rowid IN (SELECT rowid FROM memories WHERE namespace=?)`,
 			`DELETE FROM vec_memories WHERE rowid IN (SELECT rowid FROM memories WHERE namespace=?)`,
 			`DELETE FROM fts_memories WHERE rowid IN (SELECT rowid FROM memories WHERE namespace=?)`,
 			`DELETE FROM memories WHERE namespace=?`,
@@ -908,6 +966,13 @@ func (s *Store) Reassign(ctx context.Context, fromNS string, ids []string, toNS 
 				`INSERT INTO vec_memories(rowid, namespace, embedding) VALUES (?,?,?)`, rowID, toNS, emb); err != nil {
 				return 0, fmt.Errorf("sqlitevec: reassign insert vector: %w", err)
 			}
+		}
+		// vec_chunks.namespace is a partition key too, so the same rewrite is
+		// needed per chunk. Skipping it would leave the chunks partitioned under
+		// the old namespace: still reachable by a recall there, and invisible to
+		// one in the namespace the memory now lives in.
+		if err := reassignChunks(ctx, tx, rowID, toNS); err != nil {
+			return 0, err
 		}
 		moved++
 	}
@@ -1323,6 +1388,31 @@ func (s *Store) Close() error { return s.db.Close() }
 // queryScored runs a query whose final selected column is a numeric metric and
 // returns scored memories, best-first. score converts the raw metric to a
 // higher-is-better score.
+// queryScoredChunk is queryScored for the chunk search, whose rows carry the
+// matched chunk's text after the distance so the reranker can judge the passage
+// that actually matched rather than the memory's prefix.
+func (s *Store) queryScoredChunk(ctx context.Context, q string, args []any, score func(float64) float64) ([]store.Scored, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []store.Scored
+	for rows.Next() {
+		var (
+			metric float64
+			text   string
+		)
+		m, err := scanMemoryWith(rows, &metric, &text)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, store.Scored{Memory: m, Score: score(metric), MatchedChunk: text})
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) queryScored(ctx context.Context, q string, args []any, score func(float64) float64) ([]store.Scored, error) {
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {

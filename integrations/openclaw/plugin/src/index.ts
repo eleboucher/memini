@@ -55,6 +55,7 @@ import {
   readBootstrap,
   performHandshake,
   effectiveSetting,
+  buildTurnCapture,
   BEHAVIOR_KNOBS,
   HANDSHAKE_TTL_MS,
   normalizeNamespace,
@@ -311,6 +312,11 @@ export function resolveConfig(
     min_capture_chars: minCaptureCharsExplicit
       ? c.min_capture_chars
       : effectiveSetting<number>(knob("min_capture_chars"), undefined, env).value,
+    // The capture bounds carry no plugin-config layer (nothing has ever set
+    // them locally), so they resolve straight through env > server > default and
+    // need no `explicit` bookkeeping.
+    capture_user_max_chars: effectiveSetting<number>(knob("capture_user_max_chars"), undefined, env).value,
+    capture_assistant_max_chars: effectiveSetting<number>(knob("capture_assistant_max_chars"), undefined, env).value,
     namespace_prefix: c.namespace_prefix || "",
     // home: the caller's personal namespace, sent as X-Memini-Home. Config
     // wins over MEMINI_HOME env (same precedence style as base_url); no
@@ -388,6 +394,8 @@ export function effectiveConfig(
     min_capture_chars: explicit.min_capture_chars
       ? cfg.min_capture_chars
       : effectiveSetting<number>(knob("min_capture_chars"), server, env).value,
+    capture_user_max_chars: effectiveSetting<number>(knob("capture_user_max_chars"), server, env).value,
+    capture_assistant_max_chars: effectiveSetting<number>(knob("capture_assistant_max_chars"), server, env).value,
   };
 }
 
@@ -1893,7 +1901,7 @@ const plugin: {
       const metadata: any = { source: "openclaw", format: "turn", session_id: session };
       if (!event?.success) metadata.failed = true;
       const writeResult = await client.postJson("/v1/memories", {
-        content: `${captureUser.slice(0, 1000)}\n\n${assistantText.slice(0, 3000)}`,
+        content: buildTurnCapture(captureUser, assistantText, live.capture_user_max_chars, live.capture_assistant_max_chars),
         tags: ["openclaw"],
         metadata,
       }, ns);

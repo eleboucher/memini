@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/eleboucher/memini/internal/config"
 	"github.com/eleboucher/memini/internal/embed"
+	"github.com/eleboucher/memini/internal/extract"
 	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/rerank"
+	"github.com/eleboucher/memini/internal/service"
 	"github.com/spf13/cobra"
 )
 
@@ -320,5 +323,53 @@ func TestBuildRerankerEmptyURLErrors(t *testing.T) {
 	_, _, err := buildReranker(&config.Config{Rerank: ""}, nil, quietLog(), nil)
 	if err == nil || !strings.Contains(err.Error(), "base url is required") {
 		t.Fatalf("buildReranker error = %v, want base-url error", err)
+	}
+}
+
+// TestTruncationDefaultsMatchPackageConstants pins the contract that made these
+// five settings safe to introduce: each replaced a hardcoded constant, so its
+// env default must reproduce the old baked-in behaviour exactly. An `envDefault`
+// is a struct tag and cannot reference a constant, so three of these values
+// exist in two places at once — this test is the only thing keeping them equal.
+// Without it, a typo ("800" for "8000") silently cuts every memory's searchable
+// prefix tenfold with a green suite, which is the very failure this work exists
+// to eliminate.
+func TestTruncationDefaultsMatchPackageConstants(t *testing.T) {
+	for _, k := range []string{
+		"MEMINI_EMBED_MAX_ITEM_CHARS", "MEMINI_RERANK_MAX_DOC_CHARS",
+		"MEMINI_RERANK_LLM_MAX_DOC_CHARS", "MEMINI_CLASSIFY_MAX_CHARS",
+		"MEMINI_PROMOTE_WHOLE_MAX_CHARS", "MEMINI_EMBED_MAX_BATCH",
+		"MEMINI_EMBED_MAX_BATCH_CHARS", "MEMINI_RERANK_MAX_BATCH_CHARS",
+	} {
+		t.Setenv(k, "") // records the original for restoration
+		_ = os.Unsetenv(k)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		got  int
+		want int
+	}{
+		// cmd/bench and cmd/qa build embedders/rerankers from these exported
+		// constants rather than the server's Config, so a drift here means a
+		// benchmark measures budgets production does not use.
+		{"EmbedMaxItemChars", cfg.EmbedMaxItemChars, config.DefaultEmbedMaxItemChars},
+		{"RerankMaxDocChars", cfg.RerankMaxDocChars, config.DefaultRerankMaxDocChars},
+		{"EmbedMaxBatch", cfg.EmbedMaxBatch, config.DefaultEmbedMaxBatch},
+		{"EmbedMaxBatchChars", cfg.EmbedMaxBatchChars, config.DefaultEmbedMaxBatchChars},
+		{"RerankMaxBatchChars", cfg.RerankMaxBatchChars, config.DefaultRerankMaxBatchChars},
+		// Cross-checks: the package default still exists for callers that build
+		// these without the server's config, so the two must agree.
+		{"RerankLLMMaxDocChars", cfg.RerankLLMMaxDocChars, rerank.DefaultLLMMaxChars},
+		{"ClassifyMaxChars", cfg.ClassifyMaxChars, extract.ClassifyMaxChars},
+		{"PromoteWholeMaxChars", cfg.PromoteWholeMaxChars, service.DefaultPromoteWholeMaxChars},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s default = %d, want %d — the env default and the package "+
+				"constant have drifted apart", tc.name, tc.got, tc.want)
+		}
 	}
 }

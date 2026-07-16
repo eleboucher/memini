@@ -77,6 +77,13 @@ export const BEHAVIOR_KNOBS: BehaviorKnob[] = [
   { envName: "MEMINI_INJECT_RECALL_MAX_TOK", wireKey: "inject_recall_max_tok", kind: "int", default: 0 },
   { envName: "MEMINI_INJECT_RECALL_MIN_SCORE", wireKey: "inject_recall_min_score", kind: "float", default: 0 },
   { envName: "MEMINI_MIN_CAPTURE_CHARS", wireKey: "min_capture_chars", kind: "int", default: 0 },
+  { envName: "MEMINI_CAPTURE_USER_MAX_CHARS", wireKey: "capture_user_max_chars", kind: "int", default: 1000 },
+  {
+    envName: "MEMINI_CAPTURE_ASSISTANT_MAX_CHARS",
+    wireKey: "capture_assistant_max_chars",
+    kind: "int",
+    default: 3000,
+  },
   // Also read at the transport layer (bootstrap.ts's timeoutMs), because a
   // request timeout has to exist before the handshake that fetches settings.
   // Both spellings share DEFAULT_TIMEOUT_MS/MIN_TIMEOUT_MS, so there is exactly

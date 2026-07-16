@@ -499,5 +499,30 @@ class ToolsHandshakeTest(_AiohttpSessionPatchMixin, unittest.TestCase):
         self.assertNotIn("the namespace valve says", out)
 
 
+_CAPTURE_VECTORS = os.path.join(
+    HERE, "..", "..", "packages", "memini-client", "test", "fixtures", "capture-vectors.json"
+)
+
+
+@unittest.skipUnless(_HAVE_DEPS, "pydantic/aiohttp not installed")
+class TurnCaptureVectorsTest(unittest.TestCase):
+    """Replays the shared truncation contract.
+
+    This filter ships standalone and carries its own copy of the client core's
+    truncateForCapture. The fixture is what keeps the copy the same function
+    rather than a lookalike that drifts. Add cases to the fixture, not here.
+    See packages/memini-client/test/fixtures/capture-vectors.json.
+    """
+
+    def test_vectors(self):
+        with open(_CAPTURE_VECTORS, encoding="utf-8") as fh:
+            fixture = json.load(fh)
+        for case in fixture["cases"]:
+            with self.subTest(case["name"]):
+                self.assertEqual(
+                    flt.truncate_for_capture(case["text"], case["max"]), case["expect"]
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

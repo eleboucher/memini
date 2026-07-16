@@ -45,6 +45,11 @@ func FuseScores(lists [][]store.Scored, weights []float64, k int) []store.Scored
 				a = &agg{mem: &scopy}
 				byID[id] = a
 				order = append(order, id)
+			} else if a.mem.MatchedChunk == "" && sc.MatchedChunk != "" {
+				// The retained struct is the first-seen one per ID; backfill the
+				// matched chunk from whichever leg carries it so its survival does
+				// not depend on the chunk-vector leg being passed first.
+				a.mem.MatchedChunk = sc.MatchedChunk
 			}
 			a.score += w * norm
 		}
@@ -58,7 +63,10 @@ func FuseScores(lists [][]store.Scored, weights []float64, k int) []store.Scored
 	fused := make([]store.Scored, 0, len(byID))
 	for _, id := range order {
 		a := byID[id]
-		fused = append(fused, store.Scored{Memory: a.mem.Memory, Score: a.score})
+		// The retained struct is the first-seen hit for this ID, with
+		// MatchedChunk backfilled from any leg above; WithScore keeps its other
+		// fields instead of silently dropping what a retrieval leg attached.
+		fused = append(fused, a.mem.WithScore(a.score))
 	}
 	sort.SliceStable(fused, func(i, j int) bool {
 		if fused[i].Score != fused[j].Score {

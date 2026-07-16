@@ -26,6 +26,20 @@ var ErrConflict = errors.New("id exists in a different namespace")
 type Scored struct {
 	Memory *memory.Memory
 	Score  float64
+	// MatchedChunk is the text of the chunk that produced this hit, set only by
+	// ChunkVectorSearch and empty for every other search. Callers that rerank
+	// should judge this rather than the whole memory when it is set: it is the
+	// passage that actually matched, and a reranker handed the whole memory sees
+	// only a prefix that need not contain it.
+	MatchedChunk string
+}
+
+// WithScore returns the hit with only its score changed. Score adjusters must
+// go through here rather than rebuilding the struct, so fields they do not
+// know about (MatchedChunk today) survive them.
+func (s Scored) WithScore(v float64) Scored {
+	s.Score = v
+	return s
 }
 
 // Filter narrows a search to a subset of memories. The zero value matches all
@@ -240,6 +254,75 @@ type EmbedModelStore interface {
 	SetEmbedModel(ctx context.Context, model string) error
 }
 
+// ChunkStore is the optional chunked-embedding capability: per-segment vectors
+// for content that runs past the per-item embed budget, so recall can match
+// text the document vector does not cover.
+//
+// It is a SEPARATE capability rather than a change to VectorSearch, and that
+// separation is load-bearing. VectorSearch has six callers and three of them
+// destroy data: write-dedup (coalesce/supersede tombstones the loser),
+// contradiction routing (closes a fact's validity window), and the maintenance
+// dedup sweep (tombstones). Chunk similarity is max-pooled, which makes a long
+// memory a near-duplicate of anything matching any one of its paragraphs — so
+// pooling inside VectorSearch would have those three tombstone unrelated
+// memories. VectorSearch's semantics are therefore frozen, and recall unions
+// the two legs instead. Chunks are purely additive: they can only add hits,
+// never remove or rewrite a memory.
+//
+// Because the document vector stays authoritative, a store that implements this
+// needs no migration to be correct, and dropping back to a build without it
+// loses only the extra recall.
+type ChunkStore interface {
+	// ChunkVectorSearch returns the k memories whose best-matching chunk is
+	// nearest to vec, best-first, one row per memory (max-pooled over its
+	// chunks). Scores are in the same space as VectorSearch's, so a caller can
+	// compare the two legs directly — which matters because the recall gates
+	// (semantic floor, min-score) are absolute thresholds, not ranks.
+	//
+	// Filter applies to the memories, not the chunks. Rows whose memory is
+	// filtered out never appear.
+	ChunkVectorSearch(ctx context.Context, namespace string, vec []float32, f Filter, k int) ([]Scored, error)
+
+	// ListUnchunked returns up to limit memories in the namespace whose
+	// content exceeds minRunes but which have no chunk rows — the backfill's
+	// work queue — ordered by id, starting after afterID ("" starts from the
+	// beginning). The cursor lets the backfill page past rows it cannot
+	// process this tick (declined by the splitter, rejected by the embedder)
+	// instead of re-listing them into every batch until they starve it.
+	// Namespace "" means every namespace.
+	//
+	// Expired and superseded rows are returned too, deliberately: recall's
+	// AsOf and IncludeSuperseded modes flow through the chunk leg, and
+	// tombstones are retained precisely so time-travel queries can reach them.
+	//
+	// This is a query rather than a metadata flag because rows that predate
+	// chunking carry no flag to find them by, and adding one would mean
+	// rewriting every row before the feature could do anything.
+	ListUnchunked(ctx context.Context, namespace string, minRunes int, afterID string, limit int) ([]*memory.Memory, error)
+
+	// CountUnchunked reports the total size of ListUnchunked's queue — the
+	// real backlog, where ListUnchunked shows at most one batch of it.
+	CountUnchunked(ctx context.Context, namespace string, minRunes int) (int, error)
+
+	// PutChunks replaces the chunk rows of the memory identified by
+	// (namespace, id), guarded by updatedAt: the write happens only when the
+	// row still exists with exactly that updated_at, and reports false
+	// otherwise. Guard and write are one transaction, so a concurrent content
+	// change cannot slip between them — the check-then-act race a re-read
+	// outside the store can never close. Nothing else on the row is touched:
+	// not the document vector, not the FTS index, and not the columns a
+	// concurrent Reinforce may be bumping (Reinforce deliberately does not
+	// advance updated_at, and this guard must not punish it).
+	PutChunks(ctx context.Context, namespace, id string, updatedAt time.Time, chunks []memory.Chunk) (bool, error)
+
+	// CountChunks reports how many chunk rows exist in the namespace (""
+	// counts every namespace). It exists so tests and operators can see
+	// orphaned rows that ChunkVectorSearch's join back to memories
+	// structurally hides; on backends without referential cascades, orphans
+	// (which belong to no namespace) are included in every count.
+	CountChunks(ctx context.Context, namespace string) (int, error)
+}
+
 // NamespaceLink is a directed cross-namespace read link: recall scoped to Src
 // additionally reads durable memories from Dst. Tiers restricts which tiers
 // cross the boundary; nil means the service layer applies its durable-tier
@@ -379,6 +462,12 @@ type ClientSettings struct {
 
 	// MinCaptureChars is the minimum content length worth bothering to capture a turn.
 	MinCaptureChars *int `json:"min_capture_chars,omitempty"`
+	// CaptureUserMaxChars truncates the user side of a captured turn to this
+	// many characters, marking the cut; 0 captures it whole.
+	CaptureUserMaxChars *int `json:"capture_user_max_chars,omitempty"`
+	// CaptureAssistantMaxChars truncates the assistant side of a captured turn
+	// to this many characters, marking the cut; 0 captures it whole.
+	CaptureAssistantMaxChars *int `json:"capture_assistant_max_chars,omitempty"`
 	// RequestTimeoutMs is how long a client waits on one memini HTTP call before
 	// giving up; it must stay above the server's own RerankTimeout, or a slow
 	// reranker returns nothing at all instead of the composite-order fallback
@@ -429,6 +518,8 @@ func (s ClientSettings) Validate() error {
 		{"recall_limit", s.RecallLimit},
 		{"inject_recall_max_tok", s.InjectRecallMaxTok},
 		{"min_capture_chars", s.MinCaptureChars},
+		{"capture_user_max_chars", s.CaptureUserMaxChars},
+		{"capture_assistant_max_chars", s.CaptureAssistantMaxChars},
 	}
 	// request_timeout_ms is checked separately: its floor is 100, not 0.
 	for _, f := range nonNegativeInts {
@@ -523,7 +614,9 @@ func DefaultClientSettings() ClientSettings {
 		InjectRecallMaxTok:   new(0),
 		InjectRecallMinScore: new(float64(0)),
 
-		MinCaptureChars: new(0),
+		MinCaptureChars:          new(0),
+		CaptureUserMaxChars:      new(1000),
+		CaptureAssistantMaxChars: new(3000),
 		// Above the server's 10s default RerankTimeout, with room for the 250ms
 		// response margin, the query embed and HTTP overhead — and already what
 		// MEMINI_TIMEOUT_MS means in the pi/opencode integrations, so the knob
@@ -557,7 +650,7 @@ type SettingsLayer struct {
 // provenance the REST layer (a later phase) surfaces to callers.
 func MergeClientSettings(layers ...SettingsLayer) (ClientSettings, map[string]string) {
 	var out ClientSettings
-	sources := make(map[string]string, 24)
+	sources := make(map[string]string, 26)
 
 	for _, l := range layers {
 		s := l.S
@@ -629,6 +722,12 @@ func MergeClientSettings(layers ...SettingsLayer) (ClientSettings, map[string]st
 		}
 		if applyPtr(&out.MinCaptureChars, s.MinCaptureChars) {
 			sources["min_capture_chars"] = l.Source
+		}
+		if applyPtr(&out.CaptureUserMaxChars, s.CaptureUserMaxChars) {
+			sources["capture_user_max_chars"] = l.Source
+		}
+		if applyPtr(&out.CaptureAssistantMaxChars, s.CaptureAssistantMaxChars) {
+			sources["capture_assistant_max_chars"] = l.Source
 		}
 		if applyPtr(&out.RequestTimeoutMs, s.RequestTimeoutMs) {
 			sources["request_timeout_ms"] = l.Source

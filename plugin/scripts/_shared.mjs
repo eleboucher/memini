@@ -33,11 +33,13 @@ import {
   effectiveSetting,
   writeSessionCwd,
   deleteSessionCwd,
+  buildTurnCapture,
 } from "./_client.gen.mjs";
 
 export {
   writeSessionCwd,
   deleteSessionCwd,
+  buildTurnCapture,
   deleteCachedHandshake,
   invalidateAllHandshakes,
 };

@@ -19,15 +19,40 @@ func (a *args) add(v any) string {
 	return fmt.Sprintf("$%d", len(a.vals))
 }
 
-// filterClause appends the SQL conditions for f, registering any parameters on b.
+// prefixed qualifies each column in a comma-separated list with alias, for a
+// query that joins another table carrying the same column names. Mirrors
+// sqlitevec's helper of the same name.
+func prefixed(columns, alias string) string {
+	parts := strings.Split(columns, ",")
+	for i, p := range parts {
+		parts[i] = alias + "." + strings.TrimSpace(p)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// filterClause appends the SQL conditions for f, registering any parameters on
+// b, with every column left unqualified. Safe only in a single-table query.
 func filterClause(b *args, f store.Filter) string {
+	return filterClauseOn(b, f, "")
+}
+
+// filterClauseOn is filterClause with every column qualified by `alias` (pass
+// "" for none). A join needs this: memory_chunks carries `namespace` and
+// `embedding` just as memories does, so an unqualified reference is ambiguous
+// and Postgres rejects the query outright rather than picking a table.
+// sqlitevec's equivalent has always been aliased (see its `alias` const).
+func filterClauseOn(b *args, f store.Filter, alias string) string {
+	q := ""
+	if alias != "" {
+		q = alias + "."
+	}
 	clause := ""
 	if len(f.Tiers) > 0 {
 		tiers := make([]string, len(f.Tiers))
 		for i, t := range f.Tiers {
 			tiers[i] = string(t)
 		}
-		clause += " AND tier = ANY(" + b.add(tiers) + ")"
+		clause += " AND " + q + "tier = ANY(" + b.add(tiers) + ")"
 	}
 	// Level: mirror the tiers pattern — bind-safe parameter array for each level.
 	if len(f.Levels) > 0 {
@@ -35,11 +60,11 @@ func filterClause(b *args, f store.Filter) string {
 		for i, l := range f.Levels {
 			levels[i] = string(l)
 		}
-		clause += " AND level = ANY(" + b.add(levels) + ")"
+		clause += " AND " + q + "level = ANY(" + b.add(levels) + ")"
 	}
 	// Tags: the memory's text[] must contain every listed tag (@> = contains).
 	if len(f.Tags) > 0 {
-		clause += " AND tags @> " + b.add(f.Tags)
+		clause += " AND " + q + "tags @> " + b.add(f.Tags)
 	}
 	// Metadata: the jsonb must contain each listed key=value pair. json.Marshal
 	// of a map[string]string cannot fail, so the error is safe to drop. Pass the
@@ -47,7 +72,7 @@ func filterClause(b *args, f store.Filter) string {
 	// jsonb) so the text::jsonb cast parses it.
 	if len(f.Metadata) > 0 {
 		mj, _ := json.Marshal(f.Metadata) //nolint:errchkjson
-		clause += " AND metadata @> " + b.add(string(mj)) + "::jsonb"
+		clause += " AND " + q + "metadata @> " + b.add(string(mj)) + "::jsonb"
 	}
 	// ExcludeMetadata: drop rows carrying any of these key=value pairs (inverse of
 	// Metadata), e.g. excluding a session's own captures from its auto-recall.
@@ -55,25 +80,25 @@ func filterClause(b *args, f store.Filter) string {
 		var ex strings.Builder
 		for k, v := range f.ExcludeMetadata {
 			mj, _ := json.Marshal(map[string]string{k: v}) //nolint:errchkjson
-			ex.WriteString(" AND NOT (metadata @> " + b.add(string(mj)) + "::jsonb)")
+			ex.WriteString(" AND NOT (" + q + "metadata @> " + b.add(string(mj)) + "::jsonb)")
 		}
 		clause += ex.String()
 	}
 	// ExcludeIDs: drop the listed ids before ranking and the caller's limit, so
 	// an excluded hit never consumes a result slot.
 	if len(f.ExcludeIDs) > 0 {
-		clause += " AND NOT (id = ANY(" + b.add(f.ExcludeIDs) + "))"
+		clause += " AND NOT (" + q + "id = ANY(" + b.add(f.ExcludeIDs) + "))"
 	}
 	// MemoryTypes: metadata.memory_type matching ANY listed value (OR), unlike
 	// Metadata's AND-with-one-value-per-key.
 	if len(f.MemoryTypes) > 0 {
-		clause += " AND metadata->>'memory_type' = ANY(" + b.add(f.MemoryTypes) + ")"
+		clause += " AND " + q + "metadata->>'memory_type' = ANY(" + b.add(f.MemoryTypes) + ")"
 	}
 	if !f.CreatedAfter.IsZero() {
-		clause += " AND created_at >= " + b.add(f.CreatedAfter)
+		clause += " AND " + q + "created_at >= " + b.add(f.CreatedAfter)
 	}
 	if !f.AccessedAfter.IsZero() {
-		clause += " AND last_accessed_at >= " + b.add(f.AccessedAfter)
+		clause += " AND " + q + "last_accessed_at >= " + b.add(f.AccessedAfter)
 	}
 	// For a time-travel query, "live" means live at AsOf, not at the current
 	// wall clock — a memory that has since expired was still valid then.
@@ -85,21 +110,21 @@ func filterClause(b *args, f store.Filter) string {
 		ref = time.Now()
 	}
 	if !f.IncludeExpired {
-		clause += " AND (expires_at IS NULL OR expires_at > " + b.add(ref) + ")"
+		clause += " AND (" + q + "expires_at IS NULL OR " + q + "expires_at > " + b.add(ref) + ")"
 	}
 	if !f.AsOf.IsZero() {
 		// Time-travel: rows whose validity window contained AsOf, regardless of
 		// supersession (a then-true fact may since have been replaced).
 		p := b.add(f.AsOf)
-		clause += " AND (valid_from IS NULL OR valid_from <= " + p + ")"
-		clause += " AND (valid_to IS NULL OR valid_to > " + p + ")"
+		clause += " AND (" + q + "valid_from IS NULL OR " + q + "valid_from <= " + p + ")"
+		clause += " AND (" + q + "valid_to IS NULL OR " + q + "valid_to > " + p + ")"
 	} else if !f.IncludeSuperseded {
-		clause += " AND superseded_by IS NULL"
+		clause += " AND " + q + "superseded_by IS NULL"
 		// A fact whose validity window has closed (valid_to in the past) is no
 		// longer current: drop it from live recall while AsOf and
 		// IncludeSuperseded can still reach it. This is how a contradiction
 		// invalidates the superseded fact without deleting it.
-		clause += " AND (valid_to IS NULL OR valid_to > " + b.add(ref) + ")"
+		clause += " AND (" + q + "valid_to IS NULL OR " + q + "valid_to > " + b.add(ref) + ")"
 	}
 	return clause
 }
@@ -113,7 +138,11 @@ func scanMemory(s rowScanner) (*memory.Memory, error) { return scanRow(s, nil) }
 
 func scanMemoryWith(s rowScanner, metric *float64) (*memory.Memory, error) { return scanRow(s, metric) }
 
-func scanRow(s rowScanner, metric *float64) (*memory.Memory, error) {
+// scanRow reads memoryColumns, then metric when non-nil, then any extra
+// trailing destinations in the order the query selected them. `extra` exists
+// for the chunk search, which carries the matched chunk's text alongside the
+// distance.
+func scanRow(s rowScanner, metric *float64, extra ...any) (*memory.Memory, error) {
 	var (
 		m                  memory.Memory
 		tier, level        string
@@ -132,6 +161,7 @@ func scanRow(s rowScanner, metric *float64) (*memory.Memory, error) {
 	if metric != nil {
 		dest = append(dest, metric)
 	}
+	dest = append(dest, extra...)
 	if err := s.Scan(dest...); err != nil {
 		return nil, err
 	}

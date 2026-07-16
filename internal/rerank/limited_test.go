@@ -137,7 +137,7 @@ func TestRerankLimitedCallbackReportsInFlight(t *testing.T) {
 }
 
 func TestRerankLimitedZeroCapIsNoop(t *testing.T) {
-	inner := rerank.NewLLM(nil) // NewLimited ignores inner when cap<=0
+	inner := rerank.NewLLM(nil, rerank.DefaultLLMMaxChars) // NewLimited ignores inner when cap<=0
 	if got := rerank.NewLimited(inner, 0, nil); got != inner {
 		t.Fatal("NewLimited(inner, 0) should return inner unchanged")
 	}

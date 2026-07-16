@@ -18,6 +18,7 @@ import (
 	"github.com/eleboucher/memini/internal/api/rest"
 	"github.com/eleboucher/memini/internal/api/ui"
 	"github.com/eleboucher/memini/internal/apiauth"
+	"github.com/eleboucher/memini/internal/chunk"
 	"github.com/eleboucher/memini/internal/config"
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/llm"
@@ -339,6 +340,8 @@ func buildServiceStack(
 		service.WithRecallSemanticReserve(cfg.RecallSemanticReserve),
 		service.WithTurnEchoWindow(cfg.TurnEchoWindow),
 		service.WithEpisodicMinChars(cfg.EpisodicMinChars),
+		service.WithClassifyMaxChars(cfg.ClassifyMaxChars),
+		service.WithPromoteWholeMaxChars(cfg.PromoteWholeMaxChars),
 		service.WithEventLog(cfg.ActivityLog),
 		// Write-time fact building self-selects: distill (LLM) no-ops without a
 		// consolidator; extract (heuristic) only fires when no LLM is configured.
@@ -352,6 +355,18 @@ func buildServiceStack(
 	// memory.Quality — set it here from config rather than threading it through
 	// every recall call.
 	memory.StabilityK = cfg.StabilityK
+	if cfg.ChunkEmbed {
+		svcOpts = append(svcOpts, service.WithChunkEmbed(chunk.Config{
+			Size:       cfg.ChunkSize,
+			Overlap:    cfg.ChunkOverlap,
+			MinContent: cfg.ChunkMinContent,
+			MaxChunks:  cfg.ChunkMaxPerMemory,
+		}))
+		svcOpts = append(svcOpts, service.WithChunkScoreWeight(cfg.ChunkScoreWeight))
+		log.Info("chunked embedding on",
+			"size", cfg.ChunkSize, "overlap", cfg.ChunkOverlap,
+			"min_content", cfg.ChunkMinContent, "score_weight", cfg.ChunkScoreWeight)
+	}
 	svc := service.New(st, embedder, svcOpts...)
 
 	workerCtx, stopWorkers := context.WithCancel(ctx)
@@ -365,6 +380,10 @@ func buildServiceStack(
 	workers.Go(func() { svc.StartDistillBatcher(workerCtx) })
 	workers.Go(func() { svc.RunPromoter(workerCtx, cfg.PromoteInterval) })
 	workers.Go(func() { svc.RunEmbedBackfill(workerCtx, cfg.BackfillInterval) })
+	// Shares BackfillInterval with the embed backfill: both are the same kind of
+	// job (repair an index the write path could not finish) and there is no
+	// reason for an operator to tune them apart. No-op unless MEMINI_CHUNK_EMBED.
+	workers.Go(func() { svc.RunChunkBackfill(workerCtx, cfg.BackfillInterval) })
 	sweeper := maintenance.NewSweeper(st, log, maintenance.SweeperConfig{
 		Interval:          cfg.SweepInterval,
 		ShortTermCap:      cfg.ShortTermCap,
@@ -420,7 +439,7 @@ func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger, onInFl
 		}
 		log.Info("LLM recall reranking enabled (adds one LLM call per recall)",
 			"model", cfg.LLMModel)
-		return wrapRerank(rerank.NewLLM(chat), cfg.RerankMaxConcurrency, onInFlight, log, "llm"), "llm", nil
+		return wrapRerank(rerank.NewLLM(chat, cfg.RerankLLMMaxDocChars), cfg.RerankMaxConcurrency, onInFlight, log, "llm"), "llm", nil
 	}
 	if cfg.RerankModel == "" {
 		log.Warn("MEMINI_RERANK is set without MEMINI_RERANK_MODEL; the /rerank request omits the model field (backend-dependent behavior)")
@@ -429,7 +448,7 @@ func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger, onInFl
 		BaseURL:       cfg.Rerank,
 		Model:         cfg.RerankModel,
 		APIKey:        cfg.RerankAPIKey,
-		MaxDocChars:   rerankMaxDocChars,
+		MaxDocChars:   cfg.RerankMaxDocChars,
 		MaxBatchChars: cfg.RerankMaxBatchChars,
 	})
 	if err != nil {
@@ -574,20 +593,13 @@ func buildEmbedder(cfg *config.Config, log *slog.Logger, onInFlight func(n int64
 	if cfg.EmbedMaxConcurrency > 0 {
 		log.Info("embed concurrency cap", "max_in_flight", cfg.EmbedMaxConcurrency)
 	}
-	batched := embed.NewBatched(limited, cfg.EmbedMaxBatch, cfg.EmbedMaxBatchChars, embedMaxItemChars)
+	batched := embed.NewBatched(limited, cfg.EmbedMaxBatch, cfg.EmbedMaxBatchChars, cfg.EmbedMaxItemChars)
 	return embed.NewCached(batched, 4096)
 }
 
 // Fixed internal defaults (no env override). The benchmark harness overrides the
 // retrieval knobs via service.Option; production runs these baked values.
 const (
-	// embedMaxItemChars truncates any single text before embedding so one
-	// oversized memory can't blow the per-request budget. The per-request and
-	// per-batch budgets remain configurable.
-	embedMaxItemChars = 8000
-	// rerankMaxDocChars truncates each document sent to the cross-encoder.
-	// MEMINI_RERANK_MAX_BATCH_CHARS remains configurable.
-	rerankMaxDocChars = 2048
 	// Baked retrieval default (formerly MEMINI_TEMPORAL_BOOST). RecallMinScore
 	// and RecallSemanticReserve are configurable again (see internal/config).
 	defaultTemporalBoost = 0.40

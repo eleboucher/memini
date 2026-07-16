@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/eleboucher/memini/bench"
+	"github.com/eleboucher/memini/internal/chunk"
+	"github.com/eleboucher/memini/internal/config"
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/embed/embedtest"
 	"github.com/eleboucher/memini/internal/llm"
@@ -50,10 +52,21 @@ func run() error {
 	ceRerankURL := flag.String("rerank-url", "",
 		"rerank tier with a cross-encoder /rerank endpoint at this base URL (e.g. http://localhost:8002/v1)")
 	ceRerankModel := flag.String("rerank-model", "", "cross-encoder model name for -rerank-url")
-	ceMaxDocChars := flag.Int("rerank-max-doc-chars", 2048,
-		"cross-encoder: truncate each candidate to this many chars (production default 2048)")
-	ceMaxBatchChars := flag.Int("rerank-max-batch-chars", 6000,
-		"cross-encoder: cap total query+docs chars per request, splitting as needed (production default 6000)")
+	chunkEmbed := flag.Bool("chunk", false,
+		"embed long memories in overlapping chunks and union them into recall (MEMINI_CHUNK_EMBED)")
+	chunkSize := flag.Int("chunk-size", config.DefaultChunkSize, "runes per chunk (MEMINI_CHUNK_SIZE)")
+	chunkOverlap := flag.Int("chunk-overlap", config.DefaultChunkOverlap,
+		"runes each chunk repeats from the previous (MEMINI_CHUNK_OVERLAP)")
+	chunkMinContent := flag.Int("chunk-min-content", config.DefaultChunkMinContent,
+		"content at or under this many runes gets no chunks (MEMINI_CHUNK_MIN_CONTENT)")
+	chunkWeight := flag.Float64("chunk-score-weight", 1,
+		"scale chunk scores against document scores (MEMINI_CHUNK_SCORE_WEIGHT); "+
+			"this is the knob max-pool's length bias needs settled")
+	ceMaxDocChars := flag.Int("rerank-max-doc-chars", config.DefaultRerankMaxDocChars,
+		"cross-encoder: truncate each candidate to this many runes (defaults to the server's MEMINI_RERANK_MAX_DOC_CHARS default)")
+	ceMaxBatchChars := flag.Int("rerank-max-batch-chars", config.DefaultRerankMaxBatchChars,
+		"cross-encoder: cap total query+docs bytes per request, splitting as needed "+
+			"(defaults to the server's MEMINI_RERANK_MAX_BATCH_CHARS default)")
 	vecGate := flag.String("vec-gate", "",
 		"sweep the absolute vector-relevance gate over these thresholds "+
 			"(comma-separated, e.g. 0,0.2,0.3,0.4); positive recall vs foreign-namespace injection")
@@ -177,6 +190,16 @@ func run() error {
 		opts.Answerer = client
 		fmt.Fprintf(os.Stderr, "query-rewrite: model %s via %s\n",
 			os.Getenv("MEMINI_LLM_MODEL"), os.Getenv("MEMINI_LLM_BASE_URL"))
+	}
+	if *chunkEmbed {
+		opts.Chunk = true
+		opts.ChunkCfg = chunk.Config{
+			Size: *chunkSize, Overlap: *chunkOverlap,
+			MinContent: *chunkMinContent, MaxChunks: config.DefaultChunkMaxPerMemory,
+		}
+		opts.ChunkScoreWeight = *chunkWeight
+		fmt.Fprintf(os.Stderr, "chunked embedding: size=%d overlap=%d min_content=%d weight=%v\n",
+			*chunkSize, *chunkOverlap, *chunkMinContent, *chunkWeight)
 	}
 	systems := bench.MeminiSystemsOpts(st, embedder, opts)
 	for _, sys := range systems {
@@ -494,7 +517,9 @@ func buildEmbedder(localDims int) (embed.Embedder, int, func() error, error) {
 		// re-embedding across runs.
 		cachePath := filepath.Join(os.TempDir(),
 			fmt.Sprintf("memini-embcache-%s-%d.gob", strings.NewReplacer("/", "_", ":", "_").Replace(model), dims))
-		dc, err := embed.NewDiskCache(embed.NewBatched(c, 20, 24000, 8000), cachePath)
+		batched := embed.NewBatched(c, config.DefaultEmbedMaxBatch,
+			config.DefaultEmbedMaxBatchChars, config.DefaultEmbedMaxItemChars)
+		dc, err := embed.NewDiskCache(batched, cachePath)
 		if err != nil {
 			return nil, 0, noop, err
 		}
@@ -524,5 +549,5 @@ func buildReranker(ceURL, ceModel string, maxDocChars, maxBatchChars int) (reran
 	if err != nil {
 		return nil, err
 	}
-	return rerankpkg.NewLLM(client), nil
+	return rerankpkg.NewLLM(client, rerankpkg.DefaultLLMMaxChars), nil
 }

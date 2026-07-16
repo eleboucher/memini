@@ -165,6 +165,19 @@ func TestRerankStableForEqualScores(t *testing.T) {
 	}
 }
 
+func TestRerankPreservesMatchedChunk(t *testing.T) {
+	now := time.Now().UTC()
+	// The composite scorer rebuilds every score; the chunk that produced the
+	// hit must survive the re-scoring for downstream rerank candidate selection.
+	hit := scored("a", "x", 1.0, 0.5, now)
+	hit.MatchedChunk = "the matched passage"
+
+	out := Rerank([]store.Scored{hit, scored("b", "y", 0.9, 0.5, now)}, now)
+	if c := chunkOf(out, "a"); c != "the matched passage" {
+		t.Fatalf("composite re-scoring must not drop MatchedChunk, got %q", c)
+	}
+}
+
 func TestRerankEmpty(t *testing.T) {
 	if got := Rerank(nil, time.Now()); got != nil {
 		t.Fatalf("expected nil for empty input, got %v", got)

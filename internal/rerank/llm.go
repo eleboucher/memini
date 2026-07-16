@@ -21,10 +21,17 @@ type llmReranker struct {
 	maxChars int // per-candidate content cap, to bound prompt size
 }
 
-// NewLLM builds a reranker over a chat backend. The per-candidate content cap
-// keeps the prompt small — a deep candidate pool of long memories can
-// otherwise blow a RAM-limited local server's context/activation budget.
-func NewLLM(c Completer) Reranker { return &llmReranker{c: c, maxChars: 300} }
+// DefaultLLMMaxChars is the built-in per-candidate cap, sized for a RAM-limited
+// local chat server — the deployment that needs the bound.
+const DefaultLLMMaxChars = 300
+
+// NewLLM builds a reranker over a chat backend. maxChars caps each candidate's
+// content in the prompt — a deep candidate pool of long memories can otherwise
+// blow a RAM-limited local server's context/activation budget. 0 disables
+// truncation, matching CrossEncoder's MaxDocChars.
+func NewLLM(c Completer, maxChars int) Reranker {
+	return &llmReranker{c: c, maxChars: maxChars}
+}
 
 const llmSystem = "You re-rank candidate memories by how well each one helps answer the user's " +
 	"question. Output ONLY candidate numbers, most relevant first, comma-separated " +
@@ -73,9 +80,9 @@ func applyOrder(out string, candidates []Candidate) []string {
 	return ordered
 }
 
-// truncate caps s to max bytes on a rune boundary.
+// truncate caps s to max bytes on a rune boundary; max <= 0 disables.
 func truncate(s string, max int) string {
-	if len(s) <= max {
+	if max <= 0 || len(s) <= max {
 		return s
 	}
 	cut := max

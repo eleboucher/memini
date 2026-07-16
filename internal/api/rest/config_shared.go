@@ -250,6 +250,8 @@ func clientSettingsToAPI(s store.ClientSettings) ClientSettings {
 		InjectRecallMaxTok:       s.InjectRecallMaxTok,
 		InjectRecallMinScore:     float64PtrToFloat32(s.InjectRecallMinScore),
 		MinCaptureChars:          s.MinCaptureChars,
+		CaptureUserMaxChars:      s.CaptureUserMaxChars,
+		CaptureAssistantMaxChars: s.CaptureAssistantMaxChars,
 		RequestTimeoutMs:         s.RequestTimeoutMs,
 		NamespacePrefix:          s.NamespacePrefix,
 	}
@@ -295,6 +297,8 @@ func clientSettingsFromAPI(s ClientSettings) store.ClientSettings {
 		InjectRecallMaxTok:       s.InjectRecallMaxTok,
 		InjectRecallMinScore:     float32PtrToFloat64(s.InjectRecallMinScore),
 		MinCaptureChars:          s.MinCaptureChars,
+		CaptureUserMaxChars:      s.CaptureUserMaxChars,
+		CaptureAssistantMaxChars: s.CaptureAssistantMaxChars,
 		RequestTimeoutMs:         s.RequestTimeoutMs,
 		NamespacePrefix:          s.NamespacePrefix,
 	}

@@ -34,6 +34,12 @@ export {
 } from "./namespace-validate.js";
 
 export {
+  TRUNCATION_MARKER,
+  truncateForCapture,
+  buildTurnCapture,
+} from "./capture.js";
+
+export {
   OVERRIDES_VERSION,
   defaultOverridesPath,
   overrideKey,

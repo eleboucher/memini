@@ -35,6 +35,7 @@ import {
   extractAssistantText,
   extractLastTurn,
   readTranscript,
+  buildTurnCapture,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -114,7 +115,20 @@ async function captureTurn(payload, sessionId, project, ctx) {
     assistantId || crypto.createHash("sha256").update(`${userText}\n${assistantText}`).digest("hex").slice(0, 16);
   const state = readSaveState(sessionId) || {};
   if (state.lastCapturedTurn === dedupKey) return; // already captured this turn
-  const stored = await postRemember(`${userText.slice(0, 1000)}\n\n${assistantText.slice(0, 3000)}`, project, {
+  // The bounds are server-resolved (capture_user_max_chars /
+  // capture_assistant_max_chars), not baked in here: how much of a turn is
+  // worth keeping is a property of the deployment's store and recall budget,
+  // which the server knows and this hook does not. buildTurnCapture marks a cut
+  // and never splits a character — see @memini/client's capture.ts. Note the
+  // dedup key above is computed from the untruncated text, so changing a bound
+  // can't re-capture a turn already stored.
+  const body = buildTurnCapture(
+    userText,
+    assistantText,
+    ctx.setting("capture_user_max_chars").value,
+    ctx.setting("capture_assistant_max_chars").value,
+  );
+  const stored = await postRemember(body, project, {
     tier: "episodic",
     tags: ["turn-capture", project],
     metadata: { source: "turn_capture", session_id: sessionId, format: "turn" },

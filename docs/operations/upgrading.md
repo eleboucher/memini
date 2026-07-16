@@ -169,8 +169,6 @@ uses unconditionally.
 | `MEMINI_RECALL_MIN_SEMANTIC_SCORE` | `0` (off)                                                                                       |
 | `MEMINI_DEDUP_NEIGHBOURS`          | `20`                                                                                            |
 | `MEMINI_DEDUP_MIN_CLUSTER_SIZE`    | `2`                                                                                             |
-| `MEMINI_EMBED_MAX_ITEM_CHARS`      | `8000` (batch-char budgets stay configurable)                                                   |
-| `MEMINI_RERANK_MAX_DOC_CHARS`      | `2048` (`MEMINI_RERANK_MAX_BATCH_CHARS` remains configurable)                                   |
 | `MEMINI_CONSOLIDATE_QUEUE_CAP`     | `1024`                                                                                          |
 | `MEMINI_NAMESPACE_HEADER`          | `X-Memini-Namespace` (the header name is fixed; clients and plugins all send this exact header) |
 
@@ -200,6 +198,84 @@ on and you cannot turn it off.
 The full generated table lives in
 [configuration.md](../reference/configuration.md#removed-settings), which is
 generated from the code and is always current.
+
+## Long memories can now be searched past the embedding budget (opt-in)
+
+`MEMINI_EMBED_MAX_ITEM_CHARS` bounds what a memory's vector can represent, not
+what it stores. Past it, text is kept and returned whole but vector recall
+cannot match it. Raising the budget moves that ceiling; `MEMINI_CHUNK_EMBED=true`
+removes it, by additionally embedding long memories in overlapping segments and
+merging those hits into recall.
+
+It is off by default, and off is exactly the previous behaviour. On, it is
+purely additive: the whole-memory vector is unchanged and still searched, so
+enabling it can only add results — it never removes one, and never rewrites,
+merges, or tombstones a memory. Turning it back off restores the previous
+behaviour immediately, leaving unused rows behind.
+
+Two things to know before enabling it:
+
+- **Chunks are built in the background**, on `MEMINI_BACKFILL_INTERVAL`, not at
+  write time. A long memory is many embedder round-trips, and doing that inside
+  a write would blow `MEMINI_WRITE_EMBED_TIMEOUT` for exactly the writes this
+  helps. So a long memory becomes fully searchable shortly after it is written,
+  not instantly — its whole-memory vector works the entire time.
+- **It costs embedder calls and rows**, once per long memory, plus a re-run
+  after anything rewrites that memory's content. Memories at or under
+  `MEMINI_CHUNK_MIN_CONTENT` are skipped entirely and cost nothing.
+
+One limitation to know up front: `MEMINI_CHUNK_SIZE` and its siblings apply to
+memories chunked from that point on, not retroactively. A memory that already
+has chunks keeps the split it was built with, because the background loop looks
+for memories with no chunks rather than for memories chunked differently. Those
+chunks stay valid and keep serving recall at the old granularity, so retuning is
+safe, it just does not reach back. Plan on picking a size before a large corpus
+is chunked.
+
+Existing memories are picked up by the same background loop — there is no
+migration step and no downtime. Both storage backends gain a table; a rollback
+to an older binary ignores it.
+
+## Two truncation budgets are configurable again
+
+`MEMINI_EMBED_MAX_ITEM_CHARS` and `MEMINI_RERANK_MAX_DOC_CHARS` were listed above
+as removed, fixed internally at `8000` and `2048`. **Both are settings again**, at
+the same defaults, so an upgrade changes nothing until you set one.
+
+They came back because `MEMINI_EMBED_MAX_ITEM_CHARS` does not bound a payload —
+it bounds **what can be found**. Text past it is stored and returned whole, but
+the memory's vector covers only the prefix, so recall cannot match the rest. At a
+fixed `8000` that ceiling was unreachable, undiscoverable, and, on a backend with
+a larger context, pointless. If you store long memories, raise it toward your
+embedder's real window (`text-embedding-3-small` accepts 8191 tokens, roughly
+32000 characters) and watch for the `embed: truncating over-long text` warning,
+which is now logged at WARN rather than DEBUG.
+
+Do not set `MEMINI_EMBED_MAX_ITEM_CHARS=0` unless you are certain every memory
+fits your backend's context. It disables truncation entirely, and an oversized
+text is then rejected by the backend, stored without a vector, and retried by the
+backfill forever.
+
+## Non-ASCII content now classifies and promotes like ASCII
+
+Four length gates compared **bytes** while meaning characters. Because UTF-8
+spends up to three bytes per CJK character, non-ASCII prose hit them at roughly a
+third of the nominal length. They now count runes.
+
+If you write memories in a non-ASCII script, this fixes two silent losses:
+
+- **Tier classification** (`MEMINI_CLASSIFY_MAX_CHARS`, 400): content that
+  blew the ceiling on bytes fell back to the short-lived `working` tier and
+  expired. It can now earn `semantic` or `procedural`.
+- **Whole-content promotion** (`MEMINI_PROMOTE_WHOLE_MAX_CHARS`, 240): an
+  eligible memory over 240 _bytes_ was never promoted however often it was
+  recalled. The bound is now 240 characters.
+
+Expect durable-tier volume to rise on non-ASCII deployments — that is the bug
+being fixed, not a regression. It cuts the other way in one narrow case: the
+20-character floor was also byte-based, so a very short non-ASCII string that
+cleared 20 bytes but not 20 characters used to classify and no longer does. ASCII
+behaviour is unchanged at every boundary.
 
 ## Behaviour changes that are not variables
 

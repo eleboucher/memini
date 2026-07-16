@@ -108,8 +108,27 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		`CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_fts ON memories USING gin(fts)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_vec ON memories USING vchordrq (embedding vector_l2_ops)`,
+		// Chunked embedding (see chunks.go): additive and FK-cascaded, so a
+		// store that never enables it just carries an empty table, and an older
+		// binary against this schema ignores it entirely.
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS memory_chunks (
+			memory_id  text NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+			chunk_idx  integer NOT NULL,
+			namespace  text NOT NULL,
+			text       text NOT NULL DEFAULT '',
+			embedding  vector(%d) NOT NULL,
+			PRIMARY KEY (memory_id, chunk_idx)
+		)`, dims),
+		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_ns ON memory_chunks(namespace)`,
+		// Mirrors idx_memories_vec so the chunk KNN gets the same plan.
+		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_vec ON memory_chunks USING vchordrq (embedding vector_l2_ops)`,
+		// ListUnchunked/CountUnchunked filter on char_length(content) every
+		// backfill tick, forever; without this expression index each tick is a
+		// full-table scan computing the length of every content value.
+		`CREATE INDEX IF NOT EXISTS idx_memories_content_len ON memories ((char_length(content)))`,
 		// Backfill temporal-validity, confidence, fingerprint, and level columns on
 		// databases created before them.
+		`ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS text text NOT NULL DEFAULT ''`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS valid_from timestamptz`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS valid_to timestamptz`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS confidence double precision`,
@@ -278,9 +297,11 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Lock the existing row (if any) and verify namespace ownership.
-	var existingNS string
+	fp := memory.Fingerprint(m.Content)
+	var existingNS, existingFP string
 	var op string
-	err = tx.QueryRow(ctx, `SELECT namespace FROM memories WHERE id=$1 FOR UPDATE`, m.ID).Scan(&existingNS)
+	err = tx.QueryRow(ctx, `SELECT namespace, fingerprint FROM memories WHERE id=$1 FOR UPDATE`, m.ID).
+		Scan(&existingNS, &existingFP)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		op = "insert"
@@ -317,7 +338,7 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		WHERE memories.namespace = EXCLUDED.namespace`,
 		m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, metaJSON, store.OrEmptySlice(m.Tags),
 		m.Importance, m.CreatedAt, m.UpdatedAt, m.LastAccessedAt, m.AccessCount,
-		m.ExpiresAt, m.SupersededBy, m.ValidFrom, m.ValidTo, m.Confidence, memory.Fingerprint(m.Content),
+		m.ExpiresAt, m.SupersededBy, m.ValidFrom, m.ValidTo, m.Confidence, fp,
 		string(m.Level), linkedJSON,
 		embArg)
 	if err != nil {
@@ -327,6 +348,16 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		// Conflict on id but the existing row belongs to another namespace, so
 		// the guarded update matched nothing.
 		return fmt.Errorf("postgres: id %q exists in another namespace: %w", m.ID, store.ErrConflict)
+	}
+	// Same transaction as the row, so content and its chunk vectors are never
+	// observed out of step. Memory.Chunks' contract: non-nil replaces, nil
+	// preserves while the fingerprint is unchanged and clears when it is not.
+	// Fresh rows have nothing to preserve or clear (the FK rules out orphans),
+	// so an insert with nil chunks skips the write entirely.
+	if m.Chunks != nil || (op == "update" && existingFP != fp) {
+		if err := s.writeChunks(ctx, tx, m); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
@@ -672,9 +703,31 @@ func (s *Store) Reassign(ctx context.Context, fromNS string, ids []string, toNS 
 	if len(ids) == 0 || fromNS == toNS {
 		return 0, nil
 	}
-	tag, err := s.pool.Exec(ctx,
+	// One transaction for both tables, exactly as DeleteNamespace does. Two
+	// autocommit statements would let a failure between them strand the chunk
+	// rows under the old namespace — invisible to the chunk KNN in either
+	// namespace, and never repaired, because a memory that has chunk rows is
+	// not re-listed by the backfill.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx,
 		`UPDATE memories SET namespace=$1 WHERE namespace=$2 AND id = ANY($3)`, toNS, fromNS, ids)
 	if err != nil {
+		return 0, err
+	}
+	// memory_chunks carries its own namespace (the chunk KNN filters on it
+	// before the join). The FK cascades deletes, not a namespace change, so the
+	// chunks must be moved explicitly.
+	if _, err := tx.Exec(ctx,
+		`UPDATE memory_chunks SET namespace=$1 WHERE namespace=$2 AND memory_id = ANY($3)`,
+		toNS, fromNS, ids); err != nil {
+		return 0, fmt.Errorf("postgres: reassign chunks: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
@@ -1044,6 +1097,31 @@ func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 
 // Close releases the connection pool.
 func (s *Store) Close() error { s.pool.Close(); return nil }
+
+// queryScoredChunk is queryScored for the chunk search, whose rows carry the
+// matched chunk's text after the distance so the reranker can judge the passage
+// that actually matched rather than the memory's prefix.
+func (s *Store) queryScoredChunk(ctx context.Context, q string, vals []any, score func(float64) float64) ([]store.Scored, error) {
+	rows, err := s.pool.Query(ctx, q, vals...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []store.Scored
+	for rows.Next() {
+		var (
+			metric float64
+			text   string
+		)
+		m, err := scanRow(rows, &metric, &text)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, store.Scored{Memory: m, Score: score(metric), MatchedChunk: text})
+	}
+	return out, rows.Err()
+}
 
 func (s *Store) queryScored(ctx context.Context, q string, vals []any, score func(float64) float64) ([]store.Scored, error) {
 	rows, err := s.pool.Query(ctx, q, vals...)

@@ -107,6 +107,25 @@ func TestRerankTemporalDoesNotDisplaceRelevance(t *testing.T) {
 	}
 }
 
+func TestRerankTemporalPreservesMatchedChunk(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	// The query names a time ("3 weeks ago"), so the amplification loop
+	// rebuilds every score; MatchedChunk must ride through it. The chunk
+	// carrier is dated on-target so its score is actually amplified.
+	onDate := store.Scored{
+		Memory:       &memory.Memory{ID: "on-date", CreatedAt: now.AddDate(0, 0, -21)},
+		Score:        0.5,
+		MatchedChunk: "the matched passage",
+	}
+	fresh := store.Scored{Memory: &memory.Memory{ID: "fresh", CreatedAt: now.AddDate(0, 0, -1)}, Score: 0.5}
+
+	out := RerankTemporal([]store.Scored{fresh, onDate}, "what did I decide 3 weeks ago", now,
+		DefaultRerankWeights, RegexAnchorExtractor{}, DefaultTemporalBoost)
+	if c := chunkOf(out, "on-date"); c != "the matched passage" {
+		t.Fatalf("temporal amplification must not drop MatchedChunk, got %q", c)
+	}
+}
+
 func TestAbsoluteAnchorExplicitYear(t *testing.T) {
 	ex := RegexAnchorExtractor{}
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)

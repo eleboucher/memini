@@ -2,10 +2,12 @@ package config_test
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/eleboucher/memini/internal/chunk"
 	"github.com/eleboucher/memini/internal/config"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/store"
@@ -237,6 +239,75 @@ func TestLoadValidationErrors(t *testing.T) {
 			env:  map[string]string{"MEMINI_CONSOLIDATE_MODE": "eventually"},
 		},
 		{
+			name: "negative embed max item chars",
+			env:  map[string]string{"MEMINI_EMBED_MAX_ITEM_CHARS": "-1"},
+		},
+		{
+			name: "negative promote whole max chars",
+			env:  map[string]string{"MEMINI_PROMOTE_WHOLE_MAX_CHARS": "-1"},
+		},
+		{
+			name: "negative rerank llm max doc chars",
+			env:  map[string]string{"MEMINI_RERANK_LLM_MAX_DOC_CHARS": "-1"},
+		},
+		// A classify ceiling under the extractor's 20-rune floor admits nothing:
+		// it reads as a tight bound but silently acts as an off switch, so it is
+		// refused rather than accepted. 0 (plainly "off") stays legal, and is
+		// covered by TestLoadOverrides.
+		{
+			name: "classify max chars below the extractor floor",
+			env:  map[string]string{"MEMINI_CLASSIFY_MAX_CHARS": "19"},
+		},
+		{
+			name: "classify max chars just above zero",
+			env:  map[string]string{"MEMINI_CLASSIFY_MAX_CHARS": "1"},
+		},
+		// The chunk knobs are only checked when chunking is on; a stale value
+		// must not block a boot that never uses it (covered positively in
+		// TestChunkKnobsInertWhenOff).
+		{
+			name: "chunk overlap at the chunk size",
+			env:  map[string]string{"MEMINI_CHUNK_EMBED": "true", "MEMINI_CHUNK_SIZE": "100", "MEMINI_CHUNK_OVERLAP": "100"},
+		},
+		{
+			name: "chunk overlap past the chunk size",
+			env:  map[string]string{"MEMINI_CHUNK_EMBED": "true", "MEMINI_CHUNK_SIZE": "100", "MEMINI_CHUNK_OVERLAP": "500"},
+		},
+		{
+			name: "zero chunk size with chunking on",
+			env:  map[string]string{"MEMINI_CHUNK_EMBED": "true", "MEMINI_CHUNK_SIZE": "0"},
+		},
+		{
+			name: "zero chunks per memory",
+			env:  map[string]string{"MEMINI_CHUNK_EMBED": "true", "MEMINI_CHUNK_MAX_PER_MEMORY": "0"},
+		},
+		// A floor below the size makes every memory in (floor, size] a single
+		// whole-content chunk — a verbatim duplicate of its own document
+		// vector, corpus-wide, which is exactly the waste the floor prevents.
+		{
+			name: "chunk min content below the chunk size",
+			env:  map[string]string{"MEMINI_CHUNK_EMBED": "true", "MEMINI_CHUNK_MIN_CONTENT": "200"},
+		},
+		// 0 is not "off", it is "collect the rows, embed them, then score every
+		// result at zero". MEMINI_CHUNK_EMBED=false is how you turn it off.
+		{
+			name: "zero chunk score weight",
+			env:  map[string]string{"MEMINI_CHUNK_EMBED": "true", "MEMINI_CHUNK_SCORE_WEIGHT": "0"},
+		},
+		{
+			name: "negative chunk score weight",
+			env:  map[string]string{"MEMINI_CHUNK_EMBED": "true", "MEMINI_CHUNK_SCORE_WEIGHT": "-1"},
+		},
+		// A chunk over the per-item embed budget would itself be truncated,
+		// silently reintroducing the bug chunking removes.
+		{
+			name: "chunk size over the embed item budget",
+			env: map[string]string{
+				"MEMINI_CHUNK_EMBED": "true", "MEMINI_CHUNK_SIZE": "9000",
+				"MEMINI_EMBED_MAX_ITEM_CHARS": "8000",
+			},
+		},
+		{
 			name: "dedup similarity out of range",
 			env:  map[string]string{"MEMINI_DEDUP_SIMILARITY": "1.5"},
 		},
@@ -345,6 +416,10 @@ var meminiEnvKeys = []string{
 	"MEMINI_LLM_BASE_URL", "MEMINI_LLM_API_KEY", "MEMINI_LLM_MODEL",
 	"MEMINI_RERANK", "MEMINI_RERANK_MODEL", "MEMINI_RERANK_API_KEY",
 	"MEMINI_RERANK_TIMEOUT", "MEMINI_RERANK_MAX_BATCH_CHARS",
+	"MEMINI_EMBED_MAX_ITEM_CHARS", "MEMINI_RERANK_MAX_DOC_CHARS", "MEMINI_RERANK_LLM_MAX_DOC_CHARS",
+	"MEMINI_CLASSIFY_MAX_CHARS", "MEMINI_PROMOTE_WHOLE_MAX_CHARS",
+	"MEMINI_CHUNK_EMBED", "MEMINI_CHUNK_SIZE", "MEMINI_CHUNK_OVERLAP",
+	"MEMINI_CHUNK_MIN_CONTENT", "MEMINI_CHUNK_MAX_PER_MEMORY", "MEMINI_CHUNK_SCORE_WEIGHT",
 	"MEMINI_CONSOLIDATE_MODE", "MEMINI_CONSOLIDATE_MIN_SCORE",
 	"MEMINI_PROMOTE_INTERVAL", "MEMINI_PROMOTE_MIN_ACCESS", "MEMINI_BACKFILL_INTERVAL",
 	"MEMINI_SWEEP_INTERVAL", "MEMINI_SHORT_TERM_CAP", "MEMINI_UI_ENABLED",
@@ -356,6 +431,102 @@ var meminiEnvKeys = []string{
 	"MEMINI_GLOBAL_NAMESPACE", "MEMINI_TENANT_SHARED",
 	"MEMINI_HOME",
 	"MEMINI_CLIENT_DEFAULTS",
+}
+
+// TestUndeprecatedVarsAreLive pins that a variable which is read is never also
+// listed as removed. Both of these were once fixed internal defaults and are
+// configurable again; leaving the deprecation entry behind would warn that the
+// operator's setting is ignored while it silently took effect, and would render
+// the same name into both the settings table and the "Removed" table of the
+// generated reference.
+func TestUndeprecatedVarsAreLive(t *testing.T) {
+	for _, tc := range []struct {
+		env  string
+		want int
+		got  func(*config.Config) int
+	}{
+		{"MEMINI_EMBED_MAX_ITEM_CHARS", 12345, func(c *config.Config) int { return c.EmbedMaxItemChars }},
+		{"MEMINI_RERANK_MAX_DOC_CHARS", 4096, func(c *config.Config) int { return c.RerankMaxDocChars }},
+	} {
+		t.Run(tc.env, func(t *testing.T) {
+			clearMeminiEnv(t)
+			t.Setenv(tc.env, strconv.Itoa(tc.want))
+			for _, w := range config.DeprecationWarnings() {
+				if strings.Contains(w, tc.env) {
+					t.Fatalf("%s is read but still warns as deprecated: %q", tc.env, w)
+				}
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := tc.got(cfg); got != tc.want {
+				t.Fatalf("%s = %d, want %d", tc.env, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestChunkKnobsInertWhenOff pins that the chunk knobs are only validated when
+// chunking is on: a value left over from an experiment must not refuse a boot
+// that does not use it.
+func TestChunkKnobsInertWhenOff(t *testing.T) {
+	clearMeminiEnv(t)
+	t.Setenv("MEMINI_CHUNK_EMBED", "false")
+	t.Setenv("MEMINI_CHUNK_OVERLAP", "99999") // nonsense, and irrelevant while off
+	if _, err := config.Load(); err != nil {
+		t.Fatalf("Load refused a boot over an inert chunk knob: %v", err)
+	}
+}
+
+// TestChunkDefaultsAreCoherent pins the defaults against internal/chunk's own,
+// so the server and the splitter cannot drift apart.
+func TestChunkDefaultsAreCoherent(t *testing.T) {
+	clearMeminiEnv(t)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d := chunk.DefaultConfig()
+	for _, tc := range []struct {
+		name      string
+		got, want int
+	}{
+		{"MEMINI_CHUNK_SIZE", cfg.ChunkSize, d.Size},
+		{"MEMINI_CHUNK_OVERLAP", cfg.ChunkOverlap, d.Overlap},
+		{"MEMINI_CHUNK_MIN_CONTENT", cfg.ChunkMinContent, d.MinContent},
+		{"MEMINI_CHUNK_MAX_PER_MEMORY", cfg.ChunkMaxPerMemory, d.MaxChunks},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s default = %d, but chunk.DefaultConfig says %d", tc.name, tc.got, tc.want)
+		}
+	}
+	if cfg.ChunkEmbed {
+		t.Error("MEMINI_CHUNK_EMBED defaults on; it must be opt-in")
+	}
+	// 1 leaves the chunk and document legs directly comparable, which is the
+	// only default that does not silently retune recall the moment chunking is
+	// switched on.
+	if cfg.ChunkScoreWeight != 1 {
+		t.Errorf("MEMINI_CHUNK_SCORE_WEIGHT default = %v, want 1", cfg.ChunkScoreWeight)
+	}
+}
+
+// TestChunkScoreWeightOverride pins that the knob is reachable at all. It was
+// briefly not: the service option and the multiply existed, but no config field
+// and no wiring, so the remedy for max-pool's length bias was unreachable while
+// the bias itself was live.
+func TestChunkScoreWeightOverride(t *testing.T) {
+	clearMeminiEnv(t)
+	t.Setenv("MEMINI_CHUNK_EMBED", "true")
+	t.Setenv("MEMINI_CHUNK_SCORE_WEIGHT", "0.6")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ChunkScoreWeight != 0.6 {
+		t.Errorf("ChunkScoreWeight = %v, want 0.6", cfg.ChunkScoreWeight)
+	}
 }
 
 // TestFatalDeprecatedVarsUnset pins the clean-boot case: with neither deleted

@@ -1226,6 +1226,16 @@ export interface components {
              */
             min_capture_chars: number;
             /**
+             * @description Truncate the user side of a captured turn to this many characters. The cut is marked with "[...truncated]" so a later reader can tell a fragment from a whole turn. 0 captures the user text whole — the server still applies its own limits, and a very long turn costs episodic storage and recall context.
+             * @default 1000
+             */
+            capture_user_max_chars: number;
+            /**
+             * @description Truncate the assistant side of a captured turn to this many characters, marked like capture_user_max_chars. Larger than the user side because the answer usually carries the durable content. 0 captures the assistant text whole.
+             * @default 3000
+             */
+            capture_assistant_max_chars: number;
+            /**
              * @description How long a client waits on one memini HTTP call before giving up (MEMINI_TIMEOUT_MS locally). It must stay above the server's own MEMINI_RERANK_TIMEOUT (default 10s): the server bounds a slow reranker and degrades to composite order, but a client that hangs up first gets nothing at all instead of an unranked result. Raise it when a cross-encoder reranker, a deep MEMINI_RERANK_POOL, or a cold model pushes recall past the default. The handshake keeps its own short timeout and is not covered by this setting.
              * @default 30000
              */

@@ -52,6 +52,31 @@ func TestFuseScoresWeightingFavorsLeg(t *testing.T) {
 	}
 }
 
+func TestFuseScoresKeepsMatchedChunkFromFirstLeg(t *testing.T) {
+	// The chunk-carrying (vector) leg is fused first, so its struct is the one
+	// retained per ID; MatchedChunk must ride through to the reranker.
+	vector := []store.Scored{scChunk("a", 1.0, "the matched passage"), sc("b", 0.5)}
+	keyword := []store.Scored{sc("a", 0.9), sc("b", 0.8)}
+
+	got := FuseScores([][]store.Scored{vector, keyword}, []float64{0.5, 0.5}, 10)
+	if c := chunkOf(got, "a"); c != "the matched passage" {
+		t.Fatalf("MatchedChunk dropped when its leg is fused first, got %q", c)
+	}
+}
+
+func TestFuseScoresBackfillsMatchedChunkFromLaterLeg(t *testing.T) {
+	// Same fusion with the legs swapped: the chunk-less keyword struct is
+	// first-seen, so MatchedChunk must be backfilled from the vector leg —
+	// survival cannot depend on argument order.
+	keyword := []store.Scored{sc("a", 0.9), sc("b", 0.8)}
+	vector := []store.Scored{scChunk("a", 1.0, "the matched passage"), sc("b", 0.5)}
+
+	got := FuseScores([][]store.Scored{keyword, vector}, []float64{0.5, 0.5}, 10)
+	if c := chunkOf(got, "a"); c != "the matched passage" {
+		t.Fatalf("MatchedChunk not backfilled from the later leg, got %q", c)
+	}
+}
+
 func TestFuseScoresEqualLegCollapsesToWeight(t *testing.T) {
 	// A leg whose scores are all equal has zero span; every entry normalizes to
 	// 1 (equally strong) rather than dividing by zero.

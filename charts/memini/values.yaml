@@ -124,7 +124,24 @@ controllers:
           # MEMINI_CLIENT_DEFAULTS: '{"capture_turns":false,"recall_limit":5}'
   # --- Optional embeddings tuning ---
   # MEMINI_EMBED_MAX_BATCH: "20"          # max items per /embeddings request
-  # MEMINI_EMBED_MAX_BATCH_CHARS: "24000" # max total chars per request (0 disables)
+  # MEMINI_EMBED_MAX_BATCH_CHARS: "24000" # max total bytes per request (0 disables)
+  # MEMINI_EMBED_MAX_ITEM_CHARS: "8000"   # truncate one text to this many runes before
+  #                                       # embedding. This bounds what is FINDABLE: text
+  #                                       # past it is stored whole but its vector only
+  #                                       # covers the prefix. Raise toward your embedder's
+  #                                       # context window if you store long memories.
+
+  # --- Optional chunked embedding (off by default) ---
+  # Additionally embeds long memories in overlapping segments so recall reaches text past
+  # MEMINI_EMBED_MAX_ITEM_CHARS. Purely additive: the whole-memory vector is unchanged and
+  # still searched, so this can only add results. Chunks are built by the background loop
+  # on MEMINI_BACKFILL_INTERVAL, so a long memory becomes fully searchable shortly after
+  # it is written rather than instantly.
+  # MEMINI_CHUNK_EMBED: "true"
+  # MEMINI_CHUNK_SIZE: "1200"           # runes per chunk; must be <= MEMINI_EMBED_MAX_ITEM_CHARS
+  # MEMINI_CHUNK_OVERLAP: "200"         # runes each chunk repeats, so a fact spanning a cut survives
+  # MEMINI_CHUNK_MIN_CONTENT: "1200"    # at or below this a memory gets no chunks at all
+  # MEMINI_CHUNK_MAX_PER_MEMORY: "64"   # ceiling per memory; past it the tail is not chunk-searchable
 
   # --- Optional LLM consolidation (leave base URL empty to run headless) ---
   # MEMINI_LLM_BASE_URL: "http://llm:8080/v1"
