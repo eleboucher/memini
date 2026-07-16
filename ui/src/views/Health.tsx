@@ -1,9 +1,95 @@
+import { Fragment } from 'preact'
 import { useState } from 'preact/hooks'
 import { api } from '../api'
-import { namespace, refresh } from '../store'
-import type { DedupReport, FsckReport } from '../types'
-import { Empty, ErrorBanner } from '../components/States'
+import { useAsync } from '../hooks'
+import { namespace, refresh, refreshNonce } from '../store'
+import type { DedupReport, DepStatus, FsckReport } from '../types'
+import { Empty, ErrorBanner, Loading } from '../components/States'
+import { relTime } from '../util'
 import { IconRefresh, IconCheck } from '../icons'
+
+// depState classifies one dep row of the healthz payload: 'unconfigured' (dep
+// not set up), 'down' (failing), 'ok' (healthy with a recorded success), or
+// 'quiet' (ok but never called — reads idle, not healthy). The status dot and
+// the detail text both derive from this one state.
+type DepState = 'unconfigured' | 'down' | 'ok' | 'quiet'
+
+function depState(d: DepStatus, configured: boolean): DepState {
+  if (!configured) return 'unconfigured'
+  if (!d.ok) return 'down'
+  return d.last_success ? 'ok' : 'quiet'
+}
+
+const DEP_DOT: Record<DepState, string> = { unconfigured: 'idle', down: 'bad', ok: 'ok', quiet: 'idle' }
+
+function depDetail(state: DepState, d: DepStatus): string {
+  switch (state) {
+    case 'unconfigured':
+      return 'not configured'
+    case 'down':
+      return d.last_error || 'failing'
+    case 'ok':
+      return `last success ${relTime(d.last_success)}`
+    case 'quiet':
+      return 'no calls yet'
+  }
+}
+
+// Pipeline is a read-only dependency/backlog health panel. Unlike the mutating
+// fsck/dedup tools below it, it auto-loads (and refreshes on the global nonce).
+function Pipeline() {
+  const { data: health, error, loading } = useAsync(() => api.health(), [refreshNonce.value])
+  // Dropped error on purpose: dependency health is the priority signal here; the
+  // backlog row is best-effort tri-state, so if stats fails it reads as
+  // "unavailable" (idle) rather than failing the whole panel — never a
+  // false-healthy "none".
+  const { data: stats } = useAsync(() => api.stats(), [namespace.value, refreshNonce.value])
+
+  if (loading && !health) return <Loading />
+  if (error) return <ErrorBanner message={error} />
+  if (!health) return null
+
+  const rows: { name: string; dep: DepStatus; configured: boolean }[] = [
+    { name: 'store', dep: health.deps.store, configured: true },
+    { name: 'embedder', dep: health.deps.embedder, configured: true },
+    { name: 'llm', dep: health.deps.llm, configured: health.deps.llm.configured },
+    { name: 'reranker', dep: health.deps.reranker, configured: health.deps.reranker.configured },
+  ]
+  const pending = stats ? stats.pending_embed : null
+
+  return (
+    <div class="panel panel-pad" style={{ marginBottom: '20px' }}>
+      <div class="section-h">
+        <h2>Pipeline</h2>
+        <span class="hint">dependency health and embedding backlog — read-only</span>
+      </div>
+      <div class="kv" style={{ gridTemplateColumns: 'auto auto 1fr' }}>
+        {rows.map((r) => {
+          const state = depState(r.dep, r.configured)
+          return (
+            <Fragment key={r.name}>
+              <span class="key">{r.name}</span>
+              <span class={`status-dot ${DEP_DOT[state]}`} style={{ alignSelf: 'center' }} />
+              <span class="val">{depDetail(state, r.dep)}</span>
+            </Fragment>
+          )
+        })}
+        <span class="key">awaiting embed</span>
+        <span
+          class={`status-dot ${pending === null ? 'idle' : pending > 0 ? 'bad' : 'ok'}`}
+          style={{ alignSelf: 'center' }}
+        />
+        <span class="val">
+          {pending === null
+            ? 'unavailable'
+            : pending > 0
+              ? `${pending} vectorless ${pending === 1 ? 'memory' : 'memories'} — backfill retries while the embedder is down`
+              : 'none'}
+        </span>
+      </div>
+    </div>
+  )
+}
 
 // Health runs the server-side fsck consistency sweep: purge expired, enforce
 // the short-term cap, and audit for duplicate clusters. It mutates state, so
@@ -31,6 +117,8 @@ export function Health() {
 
   return (
     <div class="view">
+      <Pipeline />
+
       <div class="panel panel-pad" style={{ marginBottom: '20px' }}>
         <div class="section-h">
           <h2>fsck</h2>

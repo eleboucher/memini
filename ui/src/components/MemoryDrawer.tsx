@@ -5,7 +5,18 @@ import { api } from '../api'
 import { refresh } from '../store'
 import { TierBadge } from './TierBadge'
 import { MemoryTypeBadge } from './MemoryTypeBadge'
-import { fmtDate, fromLabel, isAutoTiered, memoryType, promotedFrom, relTime } from '../util'
+import {
+  CONFIDENCE_SEED,
+  confidenceState,
+  fmtDate,
+  fromLabel,
+  isAutoTiered,
+  isPendingEmbed,
+  isSeedImportance,
+  memoryType,
+  promotedFrom,
+  relTime,
+} from '../util'
 import { IconClose, IconCopy, IconCheck, IconTrash } from '../icons'
 
 interface Props {
@@ -32,6 +43,8 @@ export function MemoryDrawer({ memory: m, onClose, wide, from, fromNs }: Props) 
 
   const drawerRef = useRef<HTMLElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
+
+  const conf = m.confidence != null ? confidenceState(m.confidence) : null
 
   // Modal behavior: focus the drawer on open, trap Tab inside it, close on
   // Escape, and restore focus to whatever was focused before.
@@ -136,6 +149,11 @@ export function MemoryDrawer({ memory: m, onClose, wide, from, fromNs }: Props) 
               promoted
             </span>
           )}
+          {isPendingEmbed(m) && (
+            <span class="chip pending" title="Saved while the embedder was unreachable — keyword search only until the backfill re-embeds it">
+              awaiting embed
+            </span>
+          )}
           <span class="grow" />
           <button class="icon-btn" aria-label={copied ? 'Copied' : 'Copy ID'} onClick={copyId}>
             {copied ? <IconCheck /> : <IconCopy />}
@@ -196,13 +214,22 @@ export function MemoryDrawer({ memory: m, onClose, wide, from, fromNs }: Props) 
               </>
             )}
             <span class="key">importance</span>
-            <span class="val">{(m.importance ?? 0).toFixed(3)}</span>
+            <span
+              class="val"
+              title={isSeedImportance(m) ? `the ${m.tier}-tier default` : undefined}
+            >
+              {(m.importance ?? 0).toFixed(3)}
+              {isSeedImportance(m) ? ' · tier default' : ''}
+            </span>
             {m.confidence != null && (
               <>
                 <span class="key">confidence</span>
-                <span class="val" title="Seeded at 0.40; grows each time the fact is re-observed, decays when unused">
+                <span
+                  class="val"
+                  title={`Seeded at ${CONFIDENCE_SEED.toFixed(2)}; grows each time the fact is re-observed, decays when unused`}
+                >
                   {m.confidence.toFixed(2)}
-                  {m.confidence > 0.4 ? ' · corroborated' : ''}
+                  {conf === 'corroborated' ? ' · corroborated' : conf === 'seed' ? ' · seed' : ''}
                 </span>
               </>
             )}

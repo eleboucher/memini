@@ -57,6 +57,40 @@ export function promotedFrom(m: Memory): string | undefined {
   return typeof src === 'string' && src ? src : undefined
 }
 
+// isPendingEmbed reports a degraded write: the memory was saved without a
+// vector (embedder unreachable) and is keyword-searchable only until the
+// backfill loop re-embeds it and clears the flag.
+export function isPendingEmbed(m: Memory): boolean {
+  return (m.metadata as Record<string, unknown> | undefined)?.pending_embed === 'true'
+}
+
+// Tier importance seeds — mirror seedImportance in internal/service/service.go;
+// keep in sync if the server seeds change.
+const IMPORTANCE_SEED: Record<Tier, number> = {
+  working: 0.1,
+  episodic: 0.3,
+  semantic: 0.6,
+  procedural: 0.6,
+}
+
+// isSeedImportance reports that a memory's importance equals its tier's
+// default seed (phrased in tooltips as "the <tier>-tier default", which stays
+// factual even if the value was set explicitly).
+export function isSeedImportance(m: Memory): boolean {
+  return m.importance === IMPORTANCE_SEED[m.tier]
+}
+
+// CONFIDENCE_SEED mirrors memory.ConfidenceSeedFresh (internal/memory/types.go).
+export const CONFIDENCE_SEED = 0.4
+
+// confidenceState classifies a confidence value against the fresh seed:
+// 'seed' = exactly the untouched seed, 'corroborated' = grown past it,
+// 'other' = below it (decayed, contradicted, or explicitly set).
+export function confidenceState(conf: number): 'seed' | 'corroborated' | 'other' {
+  if (conf === CONFIDENCE_SEED) return 'seed'
+  return conf > CONFIDENCE_SEED ? 'corroborated' : 'other'
+}
+
 // relTime renders a compact, human relative timestamp ("3h", "2d", "just now").
 export function relTime(iso?: string): string {
   if (!iso) return '—'

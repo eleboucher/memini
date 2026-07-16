@@ -65,7 +65,7 @@ func (s *Service) BackfillEmbeddings(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
-	filter := store.Filter{Metadata: map[string]string{"pending_embed": "true"}, Now: s.now()}
+	filter := store.Filter{Metadata: map[string]string{memory.PendingEmbedKey: memory.PendingEmbedValue}, Now: s.now()}
 	var pending []*memory.Memory
 	for _, ns := range namespaces {
 		mems, err := s.store.List(ctx, ns, filter, 0)
@@ -116,7 +116,7 @@ func (s *Service) BackfillEmbeddings(ctx context.Context) (int, error) {
 			continue
 		}
 
-		delete(fresh.Metadata, "pending_embed")
+		delete(fresh.Metadata, memory.PendingEmbedKey)
 		fresh.Embedding = vec
 		fresh.UpdatedAt = s.now()
 		if err := s.store.Upsert(ctx, fresh); err != nil {

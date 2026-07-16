@@ -139,6 +139,7 @@ func newServer(
 	srv.SetReady(func(ctx context.Context) error { return st.Ping(ctx) })
 	srv.SetDeps(deps)
 	srv.SetLLMConfigured(cfg.LLMEnabled())
+	srv.SetRerankConfigured(cfg.RerankEnabled())
 
 	// keyStore is nil for a backing store that predates APIKeyStore (a driver
 	// that hasn't run the api_keys migration); both the REST and MCP surfaces
@@ -309,6 +310,9 @@ func buildServiceStack(
 			return nil, nil, nil, nil, nil, err
 		}
 		if reranker != nil {
+			// Outermost wrap: every recall-path Rerank call feeds the dependency
+			// tracker that verbose healthz reads under the "reranker" key.
+			reranker = recordingReranker{Reranker: reranker, deps: deps}
 			svcOpts = append(svcOpts,
 				service.WithReranker(reranker, name),
 				service.WithRerankTimeout(cfg.RerankTimeout),

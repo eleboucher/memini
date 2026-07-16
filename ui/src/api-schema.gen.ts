@@ -850,6 +850,8 @@ export interface components {
             superseded: number;
             /** @description Live durable memories whose decayed confidence is below the demote floor — reclaimable, uncorroborated debris. */
             low_confidence_durable: number;
+            /** @description Live memories saved without a vector because the embedder was unreachable at write time; the backfill loop re-embeds and unflags them, so a persistently nonzero value means the embedder is still down. */
+            pending_embed: number;
             total_accesses: number;
             /** Format: double */
             avg_importance: number;

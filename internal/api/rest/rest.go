@@ -909,6 +909,7 @@ func (h *Server) GetStats(w http.ResponseWriter, r *http.Request, params GetStat
 		Expired:              s.Expired,
 		Superseded:           s.Superseded,
 		LowConfidenceDurable: s.LowConfidenceDurable,
+		PendingEmbed:         s.PendingEmbed,
 		TotalAccesses:        s.TotalAccesses,
 		AvgImportance:        s.AvgImportance,
 		LastWriteAt:          s.LastWriteAt,

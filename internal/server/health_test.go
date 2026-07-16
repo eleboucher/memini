@@ -79,8 +79,9 @@ type verboseHealthBody struct {
 	Status string `json:"status"`
 	Deps   struct {
 		Store struct {
-			OK        bool   `json:"ok"`
-			LastError string `json:"last_error"`
+			OK          bool   `json:"ok"`
+			LastError   string `json:"last_error"`
+			LastSuccess string `json:"last_success"`
 		} `json:"store"`
 		Embedder struct {
 			OK          bool   `json:"ok"`
@@ -93,6 +94,12 @@ type verboseHealthBody struct {
 			LastError   string `json:"last_error"`
 			LastSuccess string `json:"last_success"`
 		} `json:"llm"`
+		Reranker struct {
+			Configured  bool   `json:"configured"`
+			OK          bool   `json:"ok"`
+			LastError   string `json:"last_error"`
+			LastSuccess string `json:"last_success"`
+		} `json:"reranker"`
 	} `json:"deps"`
 }
 
@@ -217,6 +224,51 @@ func TestHealthzVerboseLLMConfigured(t *testing.T) {
 	}
 }
 
+func TestHealthzVerboseRerankerNotConfigured(t *testing.T) {
+	srv := newTestServer(t)
+	srv.SetDeps(server.NewDepTracker())
+
+	_, body := getVerboseHealth(t, srv)
+	if body.Deps.Reranker.Configured {
+		t.Errorf("reranker.configured = true, want false")
+	}
+}
+
+func TestHealthzVerboseRerankerConfigured(t *testing.T) {
+	srv := newTestServer(t)
+	deps := server.NewDepTracker()
+	deps.Record("reranker", nil)
+	srv.SetDeps(deps)
+	srv.SetRerankConfigured(true)
+
+	_, body := getVerboseHealth(t, srv)
+	if !body.Deps.Reranker.Configured {
+		t.Errorf("reranker.configured = false, want true")
+	}
+	if !body.Deps.Reranker.OK {
+		t.Errorf("reranker.ok = false, want true")
+	}
+	if body.Deps.Reranker.LastSuccess == "" {
+		t.Errorf("reranker.last_success empty, want an RFC3339 timestamp")
+	}
+}
+
+func TestHealthzVerboseRerankerDown(t *testing.T) {
+	srv := newTestServer(t)
+	deps := server.NewDepTracker()
+	deps.Record("reranker", errors.New("rerank backend unreachable"))
+	srv.SetDeps(deps)
+	srv.SetRerankConfigured(true)
+
+	_, body := getVerboseHealth(t, srv)
+	if body.Deps.Reranker.OK {
+		t.Errorf("reranker.ok = true, want false")
+	}
+	if body.Deps.Reranker.LastError == "" {
+		t.Errorf("reranker.last_error empty, want the recorded error")
+	}
+}
+
 func TestHealthzVerboseLLMConfiguredButDown(t *testing.T) {
 	// The failure mode the endpoint exists to expose: an LLM that is
 	// configured but failing must render ok:false explicitly. Assert via a
@@ -271,8 +323,31 @@ func TestHealthzVerboseNoDepsTrackerInstalled(t *testing.T) {
 	if !body.Deps.Store.OK || !body.Deps.Embedder.OK {
 		t.Errorf("deps = %+v, want ok defaults with no tracker installed", body.Deps)
 	}
+	if body.Deps.Store.LastSuccess == "" {
+		t.Errorf("store.last_success empty, want the probe timestamp (RFC3339)")
+	}
 	if body.Deps.LLM.Configured {
 		t.Errorf("llm.configured = true, want false")
+	}
+}
+
+func TestHealthzVerboseStoreHealthy(t *testing.T) {
+	// A healthy on-demand store ping must stamp last_success: the block has to
+	// be self-describing, and consumers can't tell ok-freshly-probed from
+	// ok-never-called without it.
+	srv := newTestServer(t)
+	srv.SetReady(func(context.Context) error { return nil })
+
+	_, body := getVerboseHealth(t, srv)
+
+	if !body.Deps.Store.OK {
+		t.Fatalf("store.ok = false, want true")
+	}
+	if body.Deps.Store.LastSuccess == "" {
+		t.Fatalf("store.last_success empty, want the probe timestamp (RFC3339)")
+	}
+	if _, err := time.Parse(time.RFC3339, body.Deps.Store.LastSuccess); err != nil {
+		t.Errorf("store.last_success = %q, not RFC3339: %v", body.Deps.Store.LastSuccess, err)
 	}
 }
 

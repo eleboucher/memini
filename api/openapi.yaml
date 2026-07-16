@@ -1477,6 +1477,7 @@ components:
           expired,
           superseded,
           low_confidence_durable,
+          pending_embed,
           total_accesses,
           avg_importance,
         ]
@@ -1495,6 +1496,9 @@ components:
         low_confidence_durable:
           type: integer
           description: Live durable memories whose decayed confidence is below the demote floor — reclaimable, uncorroborated debris.
+        pending_embed:
+          type: integer
+          description: Live memories saved without a vector because the embedder was unreachable at write time; the backfill loop re-embeds and unflags them, so a persistently nonzero value means the embedder is still down.
         total_accesses: { type: integer }
         avg_importance: { type: number, format: double }
         last_write_at: { type: string, format: date-time, nullable: true }

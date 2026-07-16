@@ -1,7 +1,17 @@
 import type { Memory } from '../types'
 import { TierBadge } from './TierBadge'
 import { MemoryTypeBadge } from './MemoryTypeBadge'
-import { fromLabel, isAutoTiered, memoryType, promotedFrom, relTime } from '../util'
+import {
+  CONFIDENCE_SEED,
+  confidenceState,
+  fromLabel,
+  isAutoTiered,
+  isPendingEmbed,
+  isSeedImportance,
+  memoryType,
+  promotedFrom,
+  relTime,
+} from '../util'
 
 interface Props {
   memory: Memory
@@ -19,6 +29,7 @@ interface Props {
 }
 
 export function MemoryCard({ memory: m, score, onOpen, showNamespace, from, fromNs }: Props) {
+  const conf = m.confidence != null ? confidenceState(m.confidence) : null
   return (
     <button type="button" class={`mem panel ${m.tier}`} onClick={() => onOpen(m)}>
       <div class="mem-head">
@@ -42,13 +53,25 @@ export function MemoryCard({ memory: m, score, onOpen, showNamespace, from, from
             promoted
           </span>
         )}
+        {isPendingEmbed(m) && (
+          <span class="chip pending" title="Saved while the embedder was unreachable — keyword search only until the backfill re-embeds it">
+            awaiting embed
+          </span>
+        )}
         <span class="grow" />
         {score !== undefined && <span class="mem-score">{score.toFixed(3)}</span>}
         {m.superseded_by && <span class="chip" title="Superseded by a newer memory">superseded</span>}
       </div>
       <div class="mem-body clamp">{m.summary || m.content}</div>
       <div class="mem-meta">
-        <span class="imp" title={`importance ${m.importance.toFixed(2)}`}>
+        <span
+          class="imp"
+          title={
+            isSeedImportance(m)
+              ? `importance ${m.importance.toFixed(2)} — the ${m.tier}-tier default`
+              : `importance ${m.importance.toFixed(2)}`
+          }
+        >
           imp
           <span class="imp-bar">
             <i style={{ width: `${Math.round(Math.min(1, Math.max(0, m.importance)) * 100)}%` }} />
@@ -57,7 +80,13 @@ export function MemoryCard({ memory: m, score, onOpen, showNamespace, from, from
         {m.confidence != null && (
           <span
             class="imp"
-            title={`confidence ${m.confidence.toFixed(2)} — grows each time the fact is re-observed`}
+            title={
+              conf === 'seed'
+                ? `confidence ${CONFIDENCE_SEED.toFixed(2)} — seeded default, not yet corroborated`
+                : conf === 'corroborated'
+                  ? `confidence ${m.confidence.toFixed(2)} — corroborated (grown from the ${CONFIDENCE_SEED.toFixed(2)} seed)`
+                  : `confidence ${m.confidence.toFixed(2)} — grows each time the fact is re-observed`
+            }
           >
             conf
             <span class="imp-bar">

@@ -23,12 +23,14 @@ type depBlock struct {
 	LastSuccess string `json:"last_success,omitempty"`
 }
 
-// llmDepBlock adds Configured ahead of the shared depBlock fields. OK must
-// NOT be omitempty: false is the zero value, so omitempty would drop the
-// "ok" key exactly when the LLM is configured but down — the one signal
-// this block exists to report. An unconfigured LLM renders ok:false too;
-// consumers gate on configured first.
-type llmDepBlock struct {
+// optionalDepBlock adds Configured ahead of the shared depBlock fields. It
+// backs both the "llm" and "reranker" blocks — dependencies that are only
+// present when configured. OK must NOT be omitempty: false is the zero value,
+// so omitempty would drop the "ok" key exactly when the dependency is
+// configured but down — the one signal this block exists to report. An
+// unconfigured dependency renders ok:false too; consumers gate on configured
+// first.
+type optionalDepBlock struct {
 	Configured  bool   `json:"configured"`
 	OK          bool   `json:"ok"`
 	LastError   string `json:"last_error,omitempty"`
@@ -39,9 +41,10 @@ type verboseHealth struct {
 	Status  string `json:"status"`
 	Version string `json:"version"`
 	Deps    struct {
-		Store    depBlock    `json:"store"`
-		Embedder depBlock    `json:"embedder"`
-		LLM      llmDepBlock `json:"llm"`
+		Store    depBlock         `json:"store"`
+		Embedder depBlock         `json:"embedder"`
+		LLM      optionalDepBlock `json:"llm"`
+		Reranker optionalDepBlock `json:"reranker"`
 	} `json:"deps"`
 }
 
@@ -86,6 +89,14 @@ func (s *Server) verboseHealthz(ctx context.Context) verboseHealth {
 		resp.Deps.LLM.LastError = b.LastError
 		resp.Deps.LLM.LastSuccess = b.LastSuccess
 	}
+
+	resp.Deps.Reranker.Configured = s.rerankConfigured.Load()
+	if resp.Deps.Reranker.Configured {
+		b := s.depBlockFor("reranker")
+		resp.Deps.Reranker.OK = b.OK
+		resp.Deps.Reranker.LastError = b.LastError
+		resp.Deps.Reranker.LastSuccess = b.LastSuccess
+	}
 	return resp
 }
 
@@ -93,18 +104,21 @@ func (s *Server) verboseHealthz(ctx context.Context) verboseHealth {
 // rather than tracking it: the store is a single local check (no network
 // round trip worth avoiding), so there's nothing a tracker would add over
 // asking it right now, and this stays consistent with /readyz by
-// construction instead of needing to be kept in sync with it.
+// construction instead of needing to be kept in sync with it. A healthy
+// probe stamps LastSuccess with the current time (rendered exactly like
+// depBlockFor's tracker timestamps): the block must be self-describing —
+// without it a consumer can't tell ok-freshly-probed from ok-never-called.
 func (s *Server) storeDepBlock(ctx context.Context) depBlock {
 	fn := s.ready.Load()
 	if fn == nil {
-		return depBlock{OK: true}
+		return depBlock{OK: true, LastSuccess: time.Now().UTC().Format(time.RFC3339)}
 	}
 	pingCtx, cancel := context.WithTimeout(ctx, storePingTimeout)
 	defer cancel()
 	if err := (*fn)(pingCtx); err != nil {
 		return depBlock{OK: false, LastError: err.Error()}
 	}
-	return depBlock{OK: true}
+	return depBlock{OK: true, LastSuccess: time.Now().UTC().Format(time.RFC3339)}
 }
 
 // depBlockFor renders dep's tracker snapshot. A dep with no recorded events

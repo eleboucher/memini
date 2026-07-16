@@ -154,20 +154,91 @@ func TestDoctorFixBackfillsLegacyConfidence(t *testing.T) {
 func TestPrintWritePathSignals(t *testing.T) {
 	var buf strings.Builder
 	printWritePathSignals(&buf, []nsStat{
-		{namespace: "a", classified: 2, promoted: 1, corroborated: 3},
-		{namespace: "b", classified: 1},
+		{namespace: "a", classified: 2, promoted: 1, corroborated: 3, pendingEmbed: 2},
+		{namespace: "b", classified: 1, pendingEmbed: 1},
 	})
 	out := buf.String()
-	for _, want := range []string{"marker-classified durable writes:  3", "promotion-produced facts:          1", "corroborated durable memories:     3"} {
+	for _, want := range []string{"marker-classified durable writes:  3", "promotion-produced facts:          1", "corroborated durable memories:     3", "pending embed (vectorless, awaiting backfill):  3"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q:\n%s", want, out)
 		}
+	}
+
+	// The pending-embed backlog is the only nonzero signal: the section must
+	// still print (isolates the `&& pendingEmbed == 0` guard term).
+	buf.Reset()
+	printWritePathSignals(&buf, []nsStat{{namespace: "x", pendingEmbed: 1}})
+	if got := buf.String(); !strings.Contains(got, "pending embed (vectorless, awaiting backfill):  1") {
+		t.Fatalf("pending-embed-only signals should print the section, got:\n%s", got)
 	}
 
 	buf.Reset()
 	printWritePathSignals(&buf, []nsStat{{namespace: "a"}})
 	if buf.Len() != 0 {
 		t.Fatalf("all-zero signals should print nothing, got:\n%s", buf.String())
+	}
+}
+
+// TestNamespaceStatsPendingEmbed: a live memory carrying pending_embed="true"
+// metadata is counted toward the namespace's pendingEmbed backlog; a memory
+// without the flag is not, and neither is a flagged row that is no longer live
+// (superseded or expired) — /v1/stats and the backfill both ignore those, so
+// doctor must not report a backlog nothing will drain.
+func TestNamespaceStatsPendingEmbed(t *testing.T) {
+	st := openTestStore(t)
+	now := time.Now().UTC()
+	flagged := &memory.Memory{
+		ID: "acme/vectorless", Namespace: "acme", Tier: memory.TierEpisodic,
+		Content: "degraded write awaiting backfill", CreatedAt: now, UpdatedAt: now, LastAccessedAt: now,
+		Embedding: []float32{1, 0, 0, 0},
+		Metadata:  map[string]any{"pending_embed": "true"},
+	}
+	if err := st.Upsert(context.Background(), flagged); err != nil {
+		t.Fatalf("upsert flagged: %v", err)
+	}
+	plain := &memory.Memory{
+		ID: "acme/embedded", Namespace: "acme", Tier: memory.TierEpisodic,
+		Content: "ordinary write", CreatedAt: now, UpdatedAt: now, LastAccessedAt: now,
+		Embedding: []float32{0, 1, 0, 0},
+	}
+	if err := st.Upsert(context.Background(), plain); err != nil {
+		t.Fatalf("upsert plain: %v", err)
+	}
+	replacement := "acme/embedded"
+	superseded := &memory.Memory{
+		ID: "acme/superseded-vectorless", Namespace: "acme", Tier: memory.TierEpisodic,
+		Content: "flagged but tombstoned", CreatedAt: now, UpdatedAt: now, LastAccessedAt: now,
+		Embedding:    []float32{0, 0, 1, 0},
+		Metadata:     map[string]any{"pending_embed": "true"},
+		SupersededBy: &replacement,
+	}
+	if err := st.Upsert(context.Background(), superseded); err != nil {
+		t.Fatalf("upsert superseded: %v", err)
+	}
+	past := now.Add(-time.Hour)
+	expired := &memory.Memory{
+		ID: "acme/expired-vectorless", Namespace: "acme", Tier: memory.TierEpisodic,
+		Content: "flagged but past its TTL", CreatedAt: now, UpdatedAt: now, LastAccessedAt: now,
+		Embedding: []float32{0, 0, 0, 1},
+		Metadata:  map[string]any{"pending_embed": "true"},
+		ExpiresAt: &past,
+	}
+	if err := st.Upsert(context.Background(), expired); err != nil {
+		t.Fatalf("upsert expired: %v", err)
+	}
+
+	stats := statsFor(t, st)
+	total, ok := 0, false
+	for _, s := range stats {
+		if s.namespace == "acme" {
+			total, ok = s.pendingEmbed, true
+		}
+	}
+	if !ok {
+		t.Fatalf("namespace acme missing from stats: %+v", stats)
+	}
+	if total != 1 {
+		t.Fatalf("pendingEmbed = %d, want 1 (only the live flagged memory counts)", total)
 	}
 }
 
