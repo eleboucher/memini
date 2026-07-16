@@ -8,15 +8,21 @@ import { Empty, ErrorBanner, Loading } from '../components/States'
 import { relTime } from '../util'
 import { IconRefresh, IconCheck } from '../icons'
 
-function depDot(d: DepStatus, configured = true): string {
+// `live` deps (the store) are pinged on-demand by the server's storeDepBlock, so
+// `d.ok` already reflects a fresh probe and there is no last_success by design —
+// they read healthy straight off `d.ok`. Tracker-fed deps (embedder/llm/reranker)
+// carry no live probe, so ok-but-never-called stays idle until a real last_success.
+function depDot(d: DepStatus, configured = true, live = false): string {
   if (!configured) return 'idle'
   if (!d.ok) return 'bad'
+  if (live) return 'ok'
   return d.last_success ? 'ok' : 'idle' // ok-but-never-called reads as idle, not healthy
 }
 
-function depDetail(d: DepStatus, configured = true): string {
+function depDetail(d: DepStatus, configured = true, live = false): string {
   if (!configured) return 'not configured'
   if (!d.ok) return d.last_error || 'failing'
+  if (live) return 'responding' // pinged live for this response; no last_success to date from
   return d.last_success ? `last success ${relTime(d.last_success)}` : 'no calls yet'
 }
 
@@ -24,14 +30,19 @@ function depDetail(d: DepStatus, configured = true): string {
 // fsck/dedup tools below it, it auto-loads (and refreshes on the global nonce).
 function Pipeline() {
   const { data: health, error, loading } = useAsync(() => api.health(), [refreshNonce.value])
+  // Dropped error on purpose: dependency health is the priority signal here; the
+  // backlog row is best-effort, so if stats fails we fall back to "none" rather
+  // than failing the whole panel.
   const { data: stats } = useAsync(() => api.stats(), [namespace.value, refreshNonce.value])
 
   if (loading && !health) return <Loading />
   if (error) return <ErrorBanner message={error} />
   if (!health) return null
 
-  const rows = [
-    { name: 'store', dep: health.deps.store, configured: true },
+  const rows: { name: string; dep: DepStatus; configured: boolean; live?: boolean }[] = [
+    // store is a live on-demand ping (server storeDepBlock), not a tracker snapshot,
+    // so it never sets last_success — it must read off d.ok, hence live: true.
+    { name: 'store', dep: health.deps.store, configured: true, live: true },
     { name: 'embedder', dep: health.deps.embedder, configured: true },
     { name: 'llm', dep: health.deps.llm, configured: health.deps.llm.configured },
     { name: 'reranker', dep: health.deps.reranker, configured: health.deps.reranker.configured },
@@ -48,8 +59,8 @@ function Pipeline() {
         {rows.map((r) => (
           <Fragment key={r.name}>
             <span class="key">{r.name}</span>
-            <span class={`status-dot ${depDot(r.dep, r.configured)}`} style={{ alignSelf: 'center' }} />
-            <span class="val">{depDetail(r.dep, r.configured)}</span>
+            <span class={`status-dot ${depDot(r.dep, r.configured, r.live)}`} style={{ alignSelf: 'center' }} />
+            <span class="val">{depDetail(r.dep, r.configured, r.live)}</span>
           </Fragment>
         ))}
         <span class="key">awaiting embed</span>
