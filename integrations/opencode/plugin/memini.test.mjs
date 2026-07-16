@@ -272,6 +272,37 @@ test("effectiveConfig settings fallback chain: option > env > server > built-in 
   assert.equal(optVsServer.recall_limit, 9);
 });
 
+test("effectiveConfig capture caps: env > server > built-in default", () => {
+  // An explicit env value beats the server's settings.
+  const envExplicit = resolveConfig(
+    { MEMINI_CAPTURE_USER_MAX_CHARS: "50000", MEMINI_CAPTURE_ASSISTANT_MAX_CHARS: "60000" },
+    undefined,
+    "/r",
+  );
+  const envVsServer = effectiveConfig(envExplicit, {
+    namespace: "r",
+    namespace_source: "cwd",
+    settings: { capture_user_max_chars: 1000, capture_assistant_max_chars: 3000 },
+  });
+  assert.equal(envVsServer.capture_user_max_chars, 50000);
+  assert.equal(envVsServer.capture_assistant_max_chars, 60000);
+
+  // Without the env var, the server's value fills in over the built-in default.
+  const bare = resolveConfig({}, undefined, "/r");
+  const serverOnly = effectiveConfig(bare, {
+    namespace: "r",
+    namespace_source: "cwd",
+    settings: { capture_user_max_chars: 1000, capture_assistant_max_chars: 4000 },
+  });
+  assert.equal(serverOnly.capture_user_max_chars, 1000);
+  assert.equal(serverOnly.capture_assistant_max_chars, 4000);
+
+  // With neither env nor server, the built-in defaults apply.
+  const withNothing = effectiveConfig(bare, { namespace: "r", namespace_source: "cwd", settings: {} });
+  assert.equal(withNothing.capture_user_max_chars, 1000);
+  assert.equal(withNothing.capture_assistant_max_chars, 3000);
+});
+
 test("effectiveConfig tolerates a handshake response with no settings/namespace fields", () => {
   const cfg = resolveConfig({}, undefined, "/r");
   const merged = effectiveConfig(cfg, {});

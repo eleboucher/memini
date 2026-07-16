@@ -353,7 +353,8 @@ export function resolveConfig(env, options, worktree) {
         ? Number(o.recall_max_tokens) || 0
         : intEnv("MEMINI_INJECT_RECALL_MAX_TOK", 0),
     // Capture bounds: env override, else the built-in default; effectiveConfig
-    // layers the server's value on top once a handshake is in hand. This plugin
+    // fills in the server's value once a handshake is in hand, but only when
+    // the env var was not explicitly set (see `explicit` below). This plugin
     // ships standalone (no build step), so it carries its own copy of the
     // wire keys rather than importing @memini/client.
     capture_user_max_chars: intEnvFrom(e, "MEMINI_CAPTURE_USER_MAX_CHARS", 1000),
@@ -378,6 +379,8 @@ export function resolveConfig(env, options, worktree) {
       recall_limit: o.recall_limit !== undefined || isSet(e.MEMINI_RECALL_LIMIT),
       recall_max_tokens: o.recall_max_tokens !== undefined || isSet(process.env.MEMINI_INJECT_RECALL_MAX_TOK),
       recall_min_score: o.recall_min_score !== undefined || isSet(process.env.MEMINI_INJECT_RECALL_MIN_SCORE),
+      capture_user_max_chars: isSet(e.MEMINI_CAPTURE_USER_MAX_CHARS),
+      capture_assistant_max_chars: isSet(e.MEMINI_CAPTURE_ASSISTANT_MAX_CHARS),
     },
   };
 }
@@ -388,7 +391,8 @@ export function resolveConfig(env, options, worktree) {
 //   namespace: option/env (cfg.namespace_source already "option"/"env") beats
 //     the handshake's resolved namespace beats cfg's own local
 //     worktree/default fallback.
-//   recall/capture/recall_limit/recall_max_tokens/recall_min_score: option
+//   recall/capture/recall_limit/recall_max_tokens/recall_min_score/
+//   capture_user_max_chars/capture_assistant_max_chars: option
 //     beats env (both already baked into cfg, tracked by cfg.explicit) beats
 //     the handshake's `settings` (ClientSettings — api/openapi.yaml) beats
 //     the built-in default already baked into cfg.
@@ -423,12 +427,14 @@ export function effectiveConfig(cfg, hs) {
       explicit.recall_min_score || !Number.isFinite(s.inject_recall_min_score)
         ? cfg.recall_min_score
         : s.inject_recall_min_score,
-    capture_user_max_chars: Number.isFinite(s.capture_user_max_chars)
-      ? s.capture_user_max_chars
-      : cfg.capture_user_max_chars,
-    capture_assistant_max_chars: Number.isFinite(s.capture_assistant_max_chars)
-      ? s.capture_assistant_max_chars
-      : cfg.capture_assistant_max_chars,
+    capture_user_max_chars:
+      explicit.capture_user_max_chars || !Number.isFinite(s.capture_user_max_chars)
+        ? cfg.capture_user_max_chars
+        : s.capture_user_max_chars,
+    capture_assistant_max_chars:
+      explicit.capture_assistant_max_chars || !Number.isFinite(s.capture_assistant_max_chars)
+        ? cfg.capture_assistant_max_chars
+        : s.capture_assistant_max_chars,
   };
 }
 
