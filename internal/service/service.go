@@ -1018,7 +1018,7 @@ func (s *Service) embedForRemember(ctx context.Context, in *RememberInput) ([]fl
 	if in.Metadata == nil {
 		in.Metadata = map[string]any{}
 	}
-	in.Metadata["pending_embed"] = "true"
+	in.Metadata["pending_embed"] = pendingEmbedValue
 	return nil, nil
 }
 

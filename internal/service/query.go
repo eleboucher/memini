@@ -139,10 +139,13 @@ type Stats struct {
 	Superseded   int                 `json:"superseded"`               // contradiction-tombstoned
 	// uncorroborated durable debris (confidence below the demote floor); unbounded
 	// by short-term caps, so a growing value signals reclaimable bloat
-	LowConfidenceDurable int        `json:"low_confidence_durable"`
-	TotalAccesses        int        `json:"total_accesses"`
-	AvgImportance        float64    `json:"avg_importance"`
-	LastWriteAt          *time.Time `json:"last_write_at,omitempty"`
+	LowConfidenceDurable int `json:"low_confidence_durable"`
+	// vectorless degraded writes (metadata pending_embed="true") awaiting the
+	// backfill loop; a persistently nonzero value means the embedder is down
+	PendingEmbed  int        `json:"pending_embed"`
+	TotalAccesses int        `json:"total_accesses"`
+	AvgImportance float64    `json:"avg_importance"`
+	LastWriteAt   *time.Time `json:"last_write_at,omitempty"`
 }
 
 // Stats computes a per-namespace overview by scanning all of its memories
@@ -173,6 +176,9 @@ func (s *Service) Stats(ctx context.Context, namespace string) (Stats, error) {
 			}
 			if m.Tier.Term() == memory.LongTerm && m.EffectiveConfidence(now) < memory.ConfidenceDemoteFloor {
 				st.LowConfidenceDurable++
+			}
+			if v, _ := m.Metadata["pending_embed"].(string); v == pendingEmbedValue {
+				st.PendingEmbed++
 			}
 			st.TotalAccesses += m.AccessCount
 			importanceSum += m.Importance
@@ -206,6 +212,7 @@ func (s *Service) StatsAll(ctx context.Context) (Stats, error) {
 		merged.Expired += st.Expired
 		merged.Superseded += st.Superseded
 		merged.LowConfidenceDurable += st.LowConfidenceDurable
+		merged.PendingEmbed += st.PendingEmbed
 		merged.TotalAccesses += st.TotalAccesses
 		// Weight by live total so the merged average isn't skewed by empty or
 		// tombstone-only namespaces.

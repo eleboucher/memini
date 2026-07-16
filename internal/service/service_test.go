@@ -614,6 +614,34 @@ func TestStatsLowConfidenceDurable(t *testing.T) {
 	}
 }
 
+func TestStatsPendingEmbed(t *testing.T) {
+	// seedPendingEmbed (embed_backfill_test.go) writes memories through a failing
+	// embedder with a write-embed budget, so they land vectorless and flagged
+	// pending_embed="true" -- the same state a degraded write produces in
+	// production. It seeds into namespace "alice" and returns the ids.
+	st := openTestStore(t)
+	seedPendingEmbed(t, st, 2,
+		"the deploy key rotates every 90 days",
+		"the staging database lives in us-east-1")
+
+	// A healthy service on the same store: its write embeds cleanly and so must
+	// NOT be flagged pending, so it must not count.
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce())
+	if _, err := svc.Remember(context.Background(), service.RememberInput{
+		Namespace: "alice", Content: "healthy fact", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+
+	stats, err := svc.Stats(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if stats.PendingEmbed != 2 {
+		t.Fatalf("pending_embed = %d, want 2", stats.PendingEmbed)
+	}
+}
+
 func TestRecallNamespaceIsolation(t *testing.T) {
 	svc := newService(t)
 	ctx := context.Background()
@@ -675,6 +703,11 @@ func TestListAndStatsAllNamespaces(t *testing.T) {
 	}
 	if stats.Total != 6 {
 		t.Fatalf("aggregate stats total = %d, want 6", stats.Total)
+	}
+	// No degraded writes were seeded (every write used the healthy embedtest
+	// embedder), so the merged pending_embed accumulator stays 0.
+	if stats.PendingEmbed != 0 {
+		t.Fatalf("aggregate stats pending_embed = %d, want 0", stats.PendingEmbed)
 	}
 }
 
