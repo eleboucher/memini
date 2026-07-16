@@ -866,6 +866,58 @@ test("session-start.mjs: all items render empty → still emits the memory direc
   }
 });
 
+test("session-start.mjs: formatMemory truncates rune-safely with a '…' only when it cut", async () => {
+  // formatMemory caps a bullet's CONTENT at 280 code points (before any
+  // provenance suffix). The cap must be rune-based, mirroring childTitle
+  // (mcp.go): content over 280 code points renders 280 code points + "…";
+  // content of exactly 280 renders verbatim with no "…"; and an astral
+  // character straddling the boundary survives whole — never split into a lone
+  // surrogate half (which would surface as U+FFFD once written as UTF-8).
+  const over = "x".repeat(281); // 281 runes → cut to 280 + "…"
+  const exact = "y".repeat(280); // exactly 280 runes → unchanged, no "…"
+  // 279 ASCII + a single astral emoji lands that emoji as the 280th code point:
+  // .slice(0,280) (UTF-16 code units) would keep the high surrogate and drop the
+  // low one; Array.from (code points) keeps the emoji intact.
+  const astral = "a".repeat(279) + "😀" + "b".repeat(50);
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          namespace: "memini",
+          pinned: [],
+          facts: [
+            { memory: { content: over } },
+            { memory: { content: exact } },
+            { memory: { content: astral } },
+          ],
+          procedures: [],
+          recent: [],
+        }),
+      );
+    }),
+  );
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "trunc1", cwd: __dirname }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() },
+    );
+    // 281 → 280 runes + ellipsis; and never 281 uncut runes anywhere.
+    assert.match(stdout, /^- x{280}…$/m);
+    assert.doesNotMatch(stdout, /x{281}/);
+    // Exactly 280 → verbatim, no ellipsis.
+    assert.match(stdout, /^- y{280}$/m);
+    assert.doesNotMatch(stdout, /y{280}…/);
+    // The astral char survives whole (279 a's + emoji + ellipsis), with no
+    // U+FFFD replacement char betraying a broken surrogate half.
+    assert.ok(stdout.includes("- " + "a".repeat(279) + "😀" + "…"), "astral char must survive truncation intact");
+    assert.doesNotMatch(stdout, /�/);
+  } finally {
+    await close();
+  }
+});
+
 // ─── REST client (postJSON / getJSON / postRemember) ──────────────────────
 
 test("X-Memini-Home header: emitted on GET/POST when MEMINI_HOME is set, absent when unset", async () => {

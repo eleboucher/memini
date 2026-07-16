@@ -121,7 +121,14 @@ function formatMemory(m, section, labels, from) {
   // Provenance is appended to whatever base line we build below, so an empty
   // `from` (the primary-namespace common case) yields no suffix.
   const prov = from ? ` (from ${from})` : "";
-  const parts = [text.slice(0, 280)];
+  // Cap the CONTENT at 280 code points, rune-safe (mirrors childTitle in
+  // mcp.go): Array.from counts code points, so an astral character at the
+  // boundary is never split into a broken surrogate half, and "…" is appended
+  // only when truncation actually cut something — exactly-280 content renders
+  // verbatim with no ellipsis. The cap applies before the provenance suffix.
+  const runes = Array.from(text);
+  const capped = runes.length > 280 ? runes.slice(0, 280).join("") + "…" : text;
+  const parts = [capped];
   if (labels.size === 0) return parts[0] + prov;
   const tagParts = [];
   if (labels.has("tier") && m?.tier) tagParts.push(m.tier);
