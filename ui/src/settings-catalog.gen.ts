@@ -182,6 +182,13 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
     "min": 0
   },
   {
+    "key": "request_timeout_ms",
+    "type": "integer",
+    "default": 30000,
+    "description": "How long a client waits on one memini HTTP call before giving up (MEMINI_TIMEOUT_MS locally). It must stay above the server's own MEMINI_RERANK_TIMEOUT (default 10s): the server bounds a slow reranker and degrades to composite order, but a client that hangs up first gets nothing at all instead of an unranked result. Raise it when a cross-encoder reranker, a deep MEMINI_RERANK_POOL, or a cold model pushes recall past the default. The handshake keeps its own short timeout and is not covered by this setting.",
+    "min": 100
+  },
+  {
     "key": "namespace_scope",
     "type": "string",
     "default": "repo",

@@ -1192,6 +1192,11 @@ export interface components {
              */
             min_capture_chars: number;
             /**
+             * @description How long a client waits on one memini HTTP call before giving up (MEMINI_TIMEOUT_MS locally). It must stay above the server's own MEMINI_RERANK_TIMEOUT (default 10s): the server bounds a slow reranker and degrades to composite order, but a client that hangs up first gets nothing at all instead of an unranked result. Raise it when a cross-encoder reranker, a deep MEMINI_RERANK_POOL, or a cold model pushes recall past the default. The handshake keeps its own short timeout and is not covered by this setting.
+             * @default 30000
+             */
+            request_timeout_ms: number;
+            /**
              * @description "repo" derives the namespace from the bare repo name; "owner_repo" disambiguates same-named repos across owners with an owner-repo slug (owner + "-" + repo).
              * @default repo
              * @enum {string}

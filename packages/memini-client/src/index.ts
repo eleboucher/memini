@@ -70,6 +70,9 @@ export {
   assertBearerTransportSafe,
   isPlaintextBearerUnsafe,
   envEnabled,
+  envTimeoutMs,
+  DEFAULT_TIMEOUT_MS,
+  MIN_TIMEOUT_MS,
   type Bootstrap,
 } from "./bootstrap.js";
 

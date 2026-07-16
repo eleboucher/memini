@@ -100,6 +100,19 @@ is a far better way to blow
 to composite order, so a mis-sized batch cap presents as "the reranker does
 nothing".
 
+**Keep the client's timeout above the server's.** That composite-order fallback
+only reaches the caller if the caller is still listening. Clients bound each
+memini call by `MEMINI_TIMEOUT_MS` (the `request_timeout_ms` client setting,
+default `30000`); if that is _below_ `MEMINI_RERANK_TIMEOUT`, a slow rerank makes
+the client hang up first and recall returns **nothing at all** rather than an
+unranked result — the reranker presents as "memory is broken", not "memory is
+slow". Layered timeouts only degrade gracefully when the outermost one is the
+longest, so raise the client ceiling whenever you raise the server's rerank
+budget. A deployment can push the new value to every client at once by setting
+`request_timeout_ms` in the server's global client defaults (`PUT
+/v1/settings/defaults`, or the admin UI's Settings view) instead of asking each
+user to export the env var.
+
 **Reranking only helps where base recall has headroom.** From
 [the benchmarks](../../bench/README.md), on the same all-MiniLM-L6-v2 endpoint:
 

@@ -180,6 +180,50 @@ function resolveHarnessCwd(env = process.env, ppid = process.ppid) {
   return void 0;
 }
 
+// src/bootstrap.ts
+var DEFAULT_TIMEOUT_MS = 3e4;
+var MIN_TIMEOUT_MS = 100;
+var LOOPBACK_HOSTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "::1"]);
+function envTimeoutMs(raw, fallback = DEFAULT_TIMEOUT_MS) {
+  if (raw == null || raw.trim() === "") return fallback;
+  const n = Number(raw.trim());
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(MIN_TIMEOUT_MS, Math.trunc(n));
+}
+function envEnabled(raw, defaultOn) {
+  if (raw == null || raw === "") return defaultOn;
+  return !/^(0|false|no|off)$/i.test(raw.trim());
+}
+function readBootstrap(env = process.env) {
+  return {
+    baseUrl: env["MEMINI_BASE_URL"] || "http://localhost:8080",
+    apiKey: env["MEMINI_API_KEY"] || "",
+    requireHttps: envEnabled(env["MEMINI_REQUIRE_HTTPS"], false),
+    debug: envEnabled(env["MEMINI_DEBUG"], false),
+    agent: env["MEMINI_AGENT"] || "",
+    namespaceEnv: (env["MEMINI_NAMESPACE"] || "").trim(),
+    namespacePrefixEnv: (env["MEMINI_NAMESPACE_PREFIX"] || "").trim(),
+    homeEnv: (env["MEMINI_HOME"] || "").trim(),
+    timeoutMs: envTimeoutMs(env["MEMINI_TIMEOUT_MS"])
+  };
+}
+function isPlaintextBearerUnsafe(baseUrl, secret) {
+  if (!secret) return false;
+  try {
+    const u = new URL(baseUrl);
+    return u.protocol === "http:" && !LOOPBACK_HOSTS.has(u.hostname.replace(/^\[|\]$/g, "").toLowerCase());
+  } catch {
+    return false;
+  }
+}
+function assertBearerTransportSafe(baseUrl, secret, env = process.env) {
+  if (!isPlaintextBearerUnsafe(baseUrl, secret)) return;
+  if (!envEnabled(env["MEMINI_REQUIRE_HTTPS"], false)) return;
+  throw new Error(
+    `memini: a bearer token is configured for plaintext HTTP to ${baseUrl}. The token and memory payloads can be observed on the network; use HTTPS or an SSH tunnel.`
+  );
+}
+
 // src/settings.ts
 var BEHAVIOR_KNOBS = [
   { envName: "MEMINI_CAPTURE_TURNS", wireKey: "capture_turns", kind: "bool", default: true },
@@ -209,11 +253,23 @@ var BEHAVIOR_KNOBS = [
   { envName: "MEMINI_RECALL_LIMIT", wireKey: "recall_limit", kind: "int", default: 3 },
   { envName: "MEMINI_INJECT_RECALL_MAX_TOK", wireKey: "inject_recall_max_tok", kind: "int", default: 0 },
   { envName: "MEMINI_INJECT_RECALL_MIN_SCORE", wireKey: "inject_recall_min_score", kind: "float", default: 0 },
-  { envName: "MEMINI_MIN_CAPTURE_CHARS", wireKey: "min_capture_chars", kind: "int", default: 0 }
+  { envName: "MEMINI_MIN_CAPTURE_CHARS", wireKey: "min_capture_chars", kind: "int", default: 0 },
+  // Also read at the transport layer (bootstrap.ts's timeoutMs), because a
+  // request timeout has to exist before the handshake that fetches settings.
+  // Both spellings share DEFAULT_TIMEOUT_MS/MIN_TIMEOUT_MS, so there is exactly
+  // one number: raising it here (server-side) or in the env both work.
+  {
+    envName: "MEMINI_TIMEOUT_MS",
+    wireKey: "request_timeout_ms",
+    kind: "int",
+    default: DEFAULT_TIMEOUT_MS,
+    min: MIN_TIMEOUT_MS
+  }
 ];
-function parseIntKnob(raw, fallback) {
+function parseIntKnob(raw, fallback, min = 0) {
   const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.max(min, n);
 }
 function parseFloatKnob(raw, fallback) {
   const n = Number.parseFloat(raw);
@@ -231,7 +287,7 @@ function effectiveSetting(knob, server, env = process.env) {
         value = !/^(0|false|no|off)$/i.test(raw.trim());
         break;
       case "int":
-        value = parseIntKnob(raw, knob.default);
+        value = parseIntKnob(raw, knob.default, knob.min);
         break;
       case "float":
         value = parseFloatKnob(raw, knob.default);
@@ -246,41 +302,6 @@ function effectiveSetting(knob, server, env = process.env) {
     return { value: server[knob.wireKey], source: "server" };
   }
   return { value: knob.default, source: "default" };
-}
-
-// src/bootstrap.ts
-var LOOPBACK_HOSTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "::1"]);
-function envEnabled(raw, defaultOn) {
-  if (raw == null || raw === "") return defaultOn;
-  return !/^(0|false|no|off)$/i.test(raw.trim());
-}
-function readBootstrap(env = process.env) {
-  return {
-    baseUrl: env["MEMINI_BASE_URL"] || "http://localhost:8080",
-    apiKey: env["MEMINI_API_KEY"] || "",
-    requireHttps: envEnabled(env["MEMINI_REQUIRE_HTTPS"], false),
-    debug: envEnabled(env["MEMINI_DEBUG"], false),
-    agent: env["MEMINI_AGENT"] || "",
-    namespaceEnv: (env["MEMINI_NAMESPACE"] || "").trim(),
-    namespacePrefixEnv: (env["MEMINI_NAMESPACE_PREFIX"] || "").trim(),
-    homeEnv: (env["MEMINI_HOME"] || "").trim()
-  };
-}
-function isPlaintextBearerUnsafe(baseUrl, secret) {
-  if (!secret) return false;
-  try {
-    const u = new URL(baseUrl);
-    return u.protocol === "http:" && !LOOPBACK_HOSTS.has(u.hostname.replace(/^\[|\]$/g, "").toLowerCase());
-  } catch {
-    return false;
-  }
-}
-function assertBearerTransportSafe(baseUrl, secret, env = process.env) {
-  if (!isPlaintextBearerUnsafe(baseUrl, secret)) return;
-  if (!envEnabled(env["MEMINI_REQUIRE_HTTPS"], false)) return;
-  throw new Error(
-    `memini: a bearer token is configured for plaintext HTTP to ${baseUrl}. The token and memory payloads can be observed on the network; use HTTPS or an SSH tunnel.`
-  );
 }
 
 // src/facts.ts
@@ -493,8 +514,10 @@ function invalidateAllHandshakes(env = process.env) {
 }
 export {
   BEHAVIOR_KNOBS,
+  DEFAULT_TIMEOUT_MS,
   HANDSHAKE_TTL_MS,
   MAX_NAMESPACE_BYTES,
+  MIN_TIMEOUT_MS,
   OVERRIDES_VERSION,
   SESSION_CWD_TTL_MS,
   assertBearerTransportSafe,
@@ -505,6 +528,7 @@ export {
   deriveLocalNamespace,
   effectiveSetting,
   envEnabled,
+  envTimeoutMs,
   factsFingerprint,
   gatherFacts,
   handshakeCachePath,

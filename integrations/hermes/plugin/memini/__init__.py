@@ -31,6 +31,9 @@ Environment:
     MEMINI_INJECT_RECALL_MIN_SCORE  fused-score floor (>=) for auto-recall (default 0; beneath the server's setting)
     MEMINI_INJECT_RECALL_MAX_TOK    hard token ceiling on the recall block (0 = unbounded; beneath the server's setting)
     MEMINI_INJECT_LABELS            comma/pipe bullet labels: tier, confidence, age
+    MEMINI_TIMEOUT_MS               per-request timeout in ms (default 30000; beneath the server's setting).
+                                    Must exceed the server's MEMINI_RERANK_TIMEOUT, or a slow reranker
+                                    returns nothing instead of degrading to composite order.
 
 Each env var above beats the server's handshake-resolved settings, which beat
 the built-in default (recall_limit=3, no score floor, unbounded tokens).
@@ -96,7 +99,16 @@ except ImportError:  # allow import/testing outside a Hermes install
 
 
 DEFAULT_BASE_URL = "http://localhost:8080"
-TIMEOUT = 5
+# Seconds a single memini call may take. MEMINI_TIMEOUT_MS (milliseconds, the
+# name every other integration uses) overrides it; request_timeout_ms from the
+# handshake fills the gap when it is unset -- see _request_timeout().
+#
+# 30s, not the 5s this used to hardcode, because the ceiling must stay ABOVE the
+# server's MEMINI_RERANK_TIMEOUT (10s): the server bounds a slow reranker and
+# degrades to composite order, but a client that hangs up first receives nothing
+# at all rather than an unranked result.
+DEFAULT_TIMEOUT_MS = 30000
+MIN_TIMEOUT_MS = 100
 # The client identifies itself to /v1/handshake for logging/diagnostics only
 # (api/openapi.yaml's HandshakeRequest.client) -- a plain literal, mirroring
 # plugin.yaml's manually-maintained version rather than parsing YAML with no
@@ -343,7 +355,7 @@ def _api(
     namespace: str,
     secret: str,
     method: str = "POST",
-    timeout: float = TIMEOUT,
+    timeout: float | None = None,
 ) -> dict | None:
     if not _valid_url(base):
         return None
@@ -363,7 +375,7 @@ def _api(
     data = json.dumps(body).encode() if body is not None else None
     req = Request(f"{base}{path}", data=data, headers=headers, method=method)
     try:
-        with urlopen(req, timeout=timeout) as resp:
+        with urlopen(req, timeout=timeout if timeout is not None else _request_timeout()) as resp:
             raw = resp.read()
             return json.loads(raw) if raw else {}
     except (URLError, TimeoutError, ValueError) as e:
@@ -406,7 +418,7 @@ def _api_result(
             headers["X-Memini-Home"] = home
         data = json.dumps(body).encode() if body is not None else None
         req = Request(f"{base}{path}", data=data, headers=headers, method=method)
-        with urlopen(req, timeout=TIMEOUT) as resp:
+        with urlopen(req, timeout=_request_timeout()) as resp:
             raw = resp.read()
             return (json.loads(raw) if raw else {}), ""
     except HTTPError as e:
@@ -500,6 +512,37 @@ def _float_env(name: str, default: float | None) -> float | None:
     return n if n >= 0 else default
 
 
+# The per-request ceiling actually in force, in milliseconds. Module-level
+# because the urlopen call sites are plain functions, not methods on the
+# provider: resolved once from the env (so a call made before any handshake is
+# still bounded), then refreshed with the server's request_timeout_ms when a
+# handshake lands.
+_REQUEST_TIMEOUT_MS: int | None = None
+
+
+def _resolve_request_timeout(settings: dict) -> int:
+    """MEMINI_TIMEOUT_MS beats the handshake's request_timeout_ms beats the
+    built-in default. A below-floor value is raised to the floor rather than
+    swapped for the (much larger) default, so a deliberately tight timeout
+    stays tight."""
+    env_ms = _int_env("MEMINI_TIMEOUT_MS", None)
+    if env_ms is not None:
+        return max(MIN_TIMEOUT_MS, env_ms)
+    server_ms = settings.get("request_timeout_ms")
+    if isinstance(server_ms, int) and server_ms > 0:
+        return max(MIN_TIMEOUT_MS, server_ms)
+    return DEFAULT_TIMEOUT_MS
+
+
+def _request_timeout() -> float:
+    """The per-request ceiling in SECONDS -- urlopen takes seconds, every knob
+    in this repo is expressed in milliseconds."""
+    global _REQUEST_TIMEOUT_MS
+    if _REQUEST_TIMEOUT_MS is None:
+        _REQUEST_TIMEOUT_MS = _resolve_request_timeout({})
+    return _REQUEST_TIMEOUT_MS / 1000.0
+
+
 def _labels_env(name: str = "MEMINI_INJECT_LABELS") -> set[str]:
     """Parse MEMINI_INJECT_LABELS into a set of enabled labels (tier,
     confidence, age). Empty/unset returns an empty set — formatting then emits
@@ -583,6 +626,7 @@ CLIENT_KNOBS: tuple[tuple[str, str], ...] = (
     ("MEMINI_INJECT_RECALL_MIN_SCORE", "0"),
     ("MEMINI_INJECT_RECALL_MAX_TOK", "uncapped"),
     ("MEMINI_INJECT_LABELS", ""),
+    ("MEMINI_TIMEOUT_MS", str(DEFAULT_TIMEOUT_MS)),
 )
 
 
@@ -764,6 +808,11 @@ class MeminiMemoryProvider(MemoryProvider):
         # unbounded, both recall/capture on). There is no local "option" tier
         # here, unlike opencode/openwebui -- hermes has no config object.
         settings = (hs or {}).get("settings") or {}
+
+        # The request ceiling is global (the urlopen helpers are module-level),
+        # so refresh it here rather than storing it on the provider.
+        global _REQUEST_TIMEOUT_MS
+        _REQUEST_TIMEOUT_MS = _resolve_request_timeout(settings)
 
         env_limit = _int_env("MEMINI_RECALL_LIMIT", None)
         if env_limit is not None:

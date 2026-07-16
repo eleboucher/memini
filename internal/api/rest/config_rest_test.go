@@ -1055,3 +1055,60 @@ func TestSettingsDefaultsEnvManaged(t *testing.T) {
 		t.Errorf("recall_limit provenance = %q, want global", hs.SettingsSources["recall_limit"])
 	}
 }
+
+// TestSettingsRoundTripAcrossTheWire is a mapping-layer guard, not a merge test:
+// store.MergeClientSettings is already covered in internal/store, so what this
+// pins is the hand-written clientSettingsToAPI/clientSettingsFromAPI pair in
+// config_shared.go. Those functions are written by hand against a GENERATED wire
+// struct, so a field omitted from either direction fails silently — it compiles,
+// it round-trips as nil, and the setting simply never reaches the client.
+// auto_save_min_events shipped exactly that way. A setting that a deployment
+// cannot actually deliver to its clients is worse than no setting at all, so
+// every knob a server can push is asserted here to survive PUT -> handshake.
+func TestSettingsRoundTripAcrossTheWire(t *testing.T) {
+	h, _ := newConfigServer(t, "admin-secret", "", nil)
+
+	// A deployment behind a slow cross-encoder raises the client ceiling
+	// fleet-wide, rather than asking every user to export MEMINI_TIMEOUT_MS.
+	want := map[string]any{
+		"request_timeout_ms":   float64(30000),
+		"auto_save_min_events": float64(7),
+		"recall_limit":         float64(9),
+	}
+	rec := do(t, h, http.MethodPut, "/v1/settings/defaults", "", "admin-secret", want)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT defaults: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	rec = do(t, h, http.MethodPost, "/v1/handshake", "", "admin-secret",
+		handshakeBody(map[string]any{"cwd_basename": "app"}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("handshake: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+	var out handshakeRespDTO
+	mustJSON(t, rec, &out)
+
+	for k, v := range want {
+		if got := out.Settings[k]; got != v {
+			t.Errorf("handshake settings[%s] = %v, want %v (dropped by the wire mapping?)", k, got, v)
+		}
+		if src := out.SettingsSources[k]; src != "global" {
+			t.Errorf("handshake settings_sources[%s] = %q, want %q", k, src, "global")
+		}
+	}
+}
+
+// TestSettingsRejectsTimeoutBelowFloor pins that request_timeout_ms honors the
+// schema's minimum at the REST boundary. 0 is the tempting spelling of "no
+// timeout", but a client that never gives up hangs forever on a wedged server
+// instead of failing soft, so it is rejected rather than overloaded.
+func TestSettingsRejectsTimeoutBelowFloor(t *testing.T) {
+	h, _ := newConfigServer(t, "admin-secret", "", nil)
+	for _, bad := range []int{0, 99, -1} {
+		rec := do(t, h, http.MethodPut, "/v1/settings/defaults", "", "admin-secret",
+			map[string]any{"request_timeout_ms": bad})
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("PUT request_timeout_ms=%d: want 400, got %d (%s)", bad, rec.Code, rec.Body)
+		}
+	}
+}

@@ -54,19 +54,19 @@ Everything else is a [Valve](https://docs.openwebui.com/features/plugin/valves/)
 you set in the function's settings (the gear on the function), no code edit
 needed:
 
-| Valve               | Default                 | Purpose                                                                                        |
-| ------------------- | ----------------------- | ---------------------------------------------------------------------------------------------- |
-| `base_url`          | `http://localhost:8080` | memini REST base URL (default seeds from `MEMINI_BASE_URL` env)                                |
-| `namespace`         | `openwebui`             | project the memory is scoped to (`X-Memini-Namespace`; see Namespace resolution below)         |
-| `home`              | unset (`MEMINI_HOME`)   | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg                      |
-| `recall`            | on                      | recall memories before each turn                                                               |
-| `capture`           | on                      | capture the completed turn after each response                                                 |
-| `recall_limit`      | `3`                     | max memories injected per turn                                                                 |
-| `timeout_ms`        | `5000`                  | per-request timeout (for `/v1/search`/`/v1/memories`; the handshake has its own ~2.5s timeout) |
-| `fallback_on_error` | on                      | degrade silently on memini errors instead of surfacing them                                    |
-| `require_https`     | off                     | refuse to send the API key over plaintext HTTP to a remote                                     |
-| `scope_by_user`     | off                     | isolate memory per Open WebUI user (suffix namespace with id)                                  |
-| `priority`          | `0`                     | filter execution order                                                                         |
+| Valve               | Default                 | Purpose                                                                                                                                                                                                                      |
+| ------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `base_url`          | `http://localhost:8080` | memini REST base URL (default seeds from `MEMINI_BASE_URL` env)                                                                                                                                                              |
+| `namespace`         | `openwebui`             | project the memory is scoped to (`X-Memini-Namespace`; see Namespace resolution below)                                                                                                                                       |
+| `home`              | unset (`MEMINI_HOME`)   | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg                                                                                                                                                    |
+| `recall`            | on                      | recall memories before each turn                                                                                                                                                                                             |
+| `capture`           | on                      | capture the completed turn after each response                                                                                                                                                                               |
+| `recall_limit`      | `3`                     | max memories injected per turn                                                                                                                                                                                               |
+| `timeout_ms`        | `30000`                 | per-request timeout (for `/v1/search`/`/v1/memories`; the handshake has its own ~2.5s timeout). Must exceed the server's `MEMINI_RERANK_TIMEOUT`, or a slow reranker returns nothing instead of degrading to composite order |
+| `fallback_on_error` | on                      | degrade silently on memini errors instead of surfacing them                                                                                                                                                                  |
+| `require_https`     | off                     | refuse to send the API key over plaintext HTTP to a remote                                                                                                                                                                   |
+| `scope_by_user`     | off                     | isolate memory per Open WebUI user (suffix namespace with id)                                                                                                                                                                |
+| `priority`          | `0`                     | filter execution order                                                                                                                                                                                                       |
 
 Open WebUI is multi-user, unlike a local agent. Set the same `namespace` to pool
 one shared memory across your agents, or flip `scope_by_user` on to give each

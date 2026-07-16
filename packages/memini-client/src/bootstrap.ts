@@ -38,9 +38,63 @@ export interface Bootstrap {
   namespacePrefixEnv: string;
   /** MEMINI_HOME, trimmed — "" when unset. */
   homeEnv: string;
+  /**
+   * MEMINI_TIMEOUT_MS — how long one memini HTTP call may take before the
+   * client gives up. Defaults to DEFAULT_TIMEOUT_MS.
+   *
+   * A request timeout is transport, so it belongs here rather than only in
+   * settings.ts — and it has to work *before* a handshake, since the handshake
+   * is what fetches settings. The same knob is also a BEHAVIOR_KNOB
+   * (request_timeout_ms), so a server can push it to every client; this env var
+   * is the local override of that. Both name the same default, so there is
+   * exactly one number in the system.
+   */
+  timeoutMs: number;
 }
 
+/**
+ * The client's default per-request timeout, and the value MEMINI_TIMEOUT_MS
+ * already means in the pi and opencode integrations — this package adopts their
+ * number rather than minting a second one, so the knob means the same thing
+ * whichever client resolves it (the rule BEHAVIOR_KNOBS states in settings.ts).
+ *
+ * It must stay ABOVE the server's own MEMINI_RERANK_TIMEOUT (default 10s).
+ * Layered timeouts only degrade gracefully when the outermost one is the
+ * longest: the server bounds a slow reranker and falls back to composite order
+ * so recall never fails on the reranker's account, but a client that hangs up
+ * first never receives that fallback — it gets nothing at all. This was a real
+ * bug: the Claude/Codex hooks (and openclaw, openwebui, hermes) hardcoded 5s
+ * while the server would happily spend 10s reranking, so turning on a
+ * cross-encoder returned zero memories instead of unranked ones.
+ *
+ * It is a ceiling, not a target — the server degrades to composite order at its
+ * own deadline, so a healthy client never waits anywhere near this.
+ */
+export const DEFAULT_TIMEOUT_MS = 30000;
+
+/**
+ * The floor for a configured timeout, matching the ClientSettings schema's
+ * `minimum` for request_timeout_ms. 0 is deliberately not overloaded as "no
+ * timeout": a client that never gives up hangs forever on a wedged server
+ * instead of failing soft, which is the one outcome every hook is written to
+ * avoid.
+ */
+export const MIN_TIMEOUT_MS = 100;
+
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+
+/**
+ * A millisecond duration env var. Unset/empty/unparseable falls back to
+ * `fallback`; a value below MIN_TIMEOUT_MS is raised to it rather than silently
+ * becoming the (much larger) default, so a deliberately tight timeout stays
+ * tight instead of surprising the caller with 15s.
+ */
+export function envTimeoutMs(raw: string | undefined, fallback: number = DEFAULT_TIMEOUT_MS): number {
+  if (raw == null || raw.trim() === "") return fallback;
+  const n = Number(raw.trim());
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(MIN_TIMEOUT_MS, Math.trunc(n));
+}
 
 /**
  * A boolean env var with an explicit default. Unset/empty falls back to
@@ -65,6 +119,7 @@ export function readBootstrap(env: Record<string, string | undefined> = process.
     namespaceEnv: (env["MEMINI_NAMESPACE"] || "").trim(),
     namespacePrefixEnv: (env["MEMINI_NAMESPACE_PREFIX"] || "").trim(),
     homeEnv: (env["MEMINI_HOME"] || "").trim(),
+    timeoutMs: envTimeoutMs(env["MEMINI_TIMEOUT_MS"]),
   };
 }
 

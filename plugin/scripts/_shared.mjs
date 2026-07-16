@@ -111,6 +111,23 @@ export async function getSessionContext({ cwd, ppid, allowNetwork = "on-miss", t
   const resolved = resolveNamespace(boot, facts, hs);
   const serverSettings = hs?.settings;
 
+  const setting = (wireKey) => {
+    const knob = BEHAVIOR_KNOBS.find((k) => k.wireKey === wireKey);
+    if (!knob) throw new Error(`getSessionContext: unknown behavior knob "${wireKey}"`);
+    return effectiveSetting(knob, serverSettings, env);
+  };
+
+  // Install this process's REST timeout, so a server that pushes
+  // request_timeout_ms (e.g. a deployment running a slow cross-encoder reranker)
+  // actually widens the window postJSON/getJSON wait in. Module-level state is
+  // honest here rather than sneaky: a hook is a one-shot process with exactly
+  // one session context, and getSessionContext is the documented single entry
+  // point every hook calls before any REST call. The alternative — threading a
+  // timeout through four wrappers and every call site — is noise for no
+  // behavioral difference. Precedence is effectiveSetting's:
+  // MEMINI_TIMEOUT_MS > server > built-in default.
+  requestTimeoutMs = setting("request_timeout_ms").value;
+
   return {
     namespace: resolved.namespace,
     source: resolved.source,
@@ -118,11 +135,8 @@ export async function getSessionContext({ cwd, ppid, allowNetwork = "on-miss", t
     facts,
     handshake: hs,
     boot,
-    setting(wireKey) {
-      const knob = BEHAVIOR_KNOBS.find((k) => k.wireKey === wireKey);
-      if (!knob) throw new Error(`getSessionContext: unknown behavior knob "${wireKey}"`);
-      return effectiveSetting(knob, serverSettings, env);
-    },
+    timeoutMs: requestTimeoutMs,
+    setting,
   };
 }
 
@@ -152,6 +166,18 @@ export function parseJSON(s) {
 // accept-1/true/yes/on parsing of MEMINI_REQUIRE_HTTPS.
 const boot = readBootstrap();
 
+// How long postJSON/getJSON wait on one call. Seeded from the transport layer
+// (MEMINI_TIMEOUT_MS, else the built-in default) so a REST call made before any
+// handshake still has a sane bound, then re-resolved by getSessionContext once
+// the server's merged settings are known — see the note there.
+//
+// This MUST stay above the server's own MEMINI_RERANK_TIMEOUT. The server bounds
+// a slow reranker and degrades to composite order so recall never fails on the
+// reranker's account; a client that hangs up first never receives that fallback
+// and gets nothing at all. These hooks used to hardcode 5s against a server that
+// would happily spend 10s reranking, which is exactly that bug.
+let requestTimeoutMs = boot.timeoutMs;
+
 function authHeaders(extra) {
   const h = { "Content-Type": "application/json", ...(extra || {}) };
   if (boot.apiKey) h["Authorization"] = `Bearer ${boot.apiKey}`;
@@ -164,7 +190,7 @@ function authHeaders(extra) {
  * parsed JSON on 2xx, null otherwise. Never throws — hooks must not crash
  * the agent.
  */
-export async function postJSON(path, body, namespace, timeoutMs = 5000) {
+export async function postJSON(path, body, namespace, timeoutMs = requestTimeoutMs) {
   try {
     assertBearerTransportSafe(boot.baseUrl, boot.apiKey);
     const res = await fetch(`${boot.baseUrl}${path}`, {
@@ -229,7 +255,7 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude, 
  * GET JSON from memini. `namespace` is sent as X-Memini-Namespace. Returns
  * parsed JSON on 2xx, null otherwise. Never throws.
  */
-export async function getJSON(path, namespace, timeoutMs = 5000, opts = {}) {
+export async function getJSON(path, namespace, timeoutMs = requestTimeoutMs, opts = {}) {
   try {
     assertBearerTransportSafe(boot.baseUrl, boot.apiKey);
     const res = await fetch(`${boot.baseUrl}${path}`, {

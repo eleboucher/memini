@@ -170,7 +170,16 @@ function startMockServer(handler) {
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address();
       const url = `http://127.0.0.1:${port}`;
-      const close = () => new Promise((r) => server.close(() => r(undefined)));
+      // server.close() only stops NEW connections and then waits for the open
+      // ones to end. fetch (undici) keeps its socket alive for seconds after a
+      // response, and an aborted request can leave one lingering, so a bare
+      // close() can stall a test for the whole keep-alive window. Drop the
+      // sockets outright — the assertions are already done by then.
+      const close = () =>
+        new Promise((r) => {
+          server.closeAllConnections();
+          server.close(() => r(undefined));
+        });
       resolveProm({ url, close });
     });
   });
@@ -3268,4 +3277,80 @@ test("COMPACT_RECOVERY_DIRECTIVE: names the recovery tag and the save tool", asy
   assert.match(COMPACT_RECOVERY_DIRECTIVE, /<\/memini-compact-recovery>/);
   assert.match(COMPACT_RECOVERY_DIRECTIVE, /memory_remember/);
   assert.match(COMPACT_RECOVERY_DIRECTIVE, /Context was just compacted/);
+});
+
+// ─── request timeout (MEMINI_TIMEOUT_MS / request_timeout_ms) ─────────────
+
+test("postSearch: a recall slower than the timeout aborts; a wider timeout lets it through", async () => {
+  // The original bug, in miniature. The hooks hardcoded a 5s abort while the
+  // server would spend up to MEMINI_RERANK_TIMEOUT (10s) reranking, so enabling
+  // a cross-encoder made recall return NOTHING — the client hung up before the
+  // server's own fallback-to-composite-order could answer. The server delay here
+  // stands in for that slow rerank.
+  const DELAY_MS = 400;
+  const { url, close } = await startMockServer((req, res) => {
+    setTimeout(() => {
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ results: [{ score: 0.9, memory: { content: "slow but real" } }] }));
+    }, DELAY_MS);
+  });
+  const prevUrl = process.env.MEMINI_BASE_URL;
+  const prevTimeout = process.env.MEMINI_TIMEOUT_MS;
+  const realError = console.error;
+  console.error = () => {}; // the abort is logged; not what's under test
+  process.env.MEMINI_BASE_URL = url;
+  try {
+    // Too tight: the client gives up first and recall degrades to empty.
+    process.env.MEMINI_TIMEOUT_MS = "150";
+    const tight = await import("./_shared.mjs?cb=timeout-tight-" + Date.now());
+    assert.deepEqual(await tight.postSearch("q", "ns"), [], "a call slower than the timeout must abort, not hang");
+
+    // Wide enough: the same slow response now lands.
+    process.env.MEMINI_TIMEOUT_MS = "3000";
+    const wide = await import("./_shared.mjs?cb=timeout-wide-" + Date.now());
+    const hits = await wide.postSearch("q", "ns");
+    assert.equal(hits.length, 1, "a call within the timeout must return results");
+    assert.equal(hits[0].content, "slow but real");
+  } finally {
+    console.error = realError;
+    if (prevUrl === undefined) delete process.env.MEMINI_BASE_URL;
+    else process.env.MEMINI_BASE_URL = prevUrl;
+    if (prevTimeout === undefined) delete process.env.MEMINI_TIMEOUT_MS;
+    else process.env.MEMINI_TIMEOUT_MS = prevTimeout;
+    await close();
+  }
+});
+
+test("getSessionContext: a server-pushed request_timeout_ms widens the window; MEMINI_TIMEOUT_MS still wins", async () => {
+  const { getSessionContext } = await import("./_shared.mjs");
+  const { url, close } = await startMockServer((req, res) => {
+    if (req.url === "/v1/handshake") {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(mkHS({ settings: { request_timeout_ms: 30000 } })));
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+  try {
+    // The point of the server layer: an admin running a slow reranker raises the
+    // ceiling once, and every client that handshakes picks it up — no per-user env.
+    const env = { XDG_CACHE_HOME: freshCache(), MEMINI_BASE_URL: url };
+    const ctx = await getSessionContext({ cwd: __dirname, ppid: 8801, allowNetwork: "always", env });
+    assert.equal(ctx.timeoutMs, 30000);
+    assert.equal(ctx.setting("request_timeout_ms").source, "server");
+
+    // ...and a user can still override it locally.
+    const overridden = await getSessionContext({
+      cwd: __dirname,
+      ppid: 8802,
+      allowNetwork: "always",
+      env: { ...env, MEMINI_TIMEOUT_MS: "45000" },
+    });
+    assert.equal(overridden.timeoutMs, 45000);
+    assert.equal(overridden.setting("request_timeout_ms").source, "env-override");
+  } finally {
+    await close();
+  }
 });

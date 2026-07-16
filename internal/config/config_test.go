@@ -8,6 +8,7 @@ import (
 
 	"github.com/eleboucher/memini/internal/config"
 	"github.com/eleboucher/memini/internal/memory"
+	"github.com/eleboucher/memini/internal/store"
 )
 
 // clearMeminiEnv makes every memini env var absent for the duration of the
@@ -521,5 +522,37 @@ func TestLoadClientDefaultsFatal(t *testing.T) {
 				t.Errorf("error should name the variable, got: %v", err)
 			}
 		})
+	}
+}
+
+// TestClientTimeoutDefaultExceedsRerankTimeout pins the invariant this knob
+// exists to protect: the client's request ceiling must sit ABOVE the server's
+// own rerank budget.
+//
+// Layered timeouts only degrade gracefully when the outermost one is the
+// longest. Service.finalizeRecall bounds a slow reranker by RerankTimeout and
+// then falls back to composite order so recall never fails on the reranker's
+// account — but that fallback is unreachable if the client has already hung up.
+// When the client timeout was a hardcoded 5s and RerankTimeout defaulted to
+// 10s, enabling a cross-encoder returned NO memories instead of unranked ones.
+// If a future change lowers the client default or raises RerankTimeout past it,
+// this fails rather than silently reintroducing that inversion.
+func TestClientTimeoutDefaultExceedsRerankTimeout(t *testing.T) {
+	clearMeminiEnv(t)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d := store.DefaultClientSettings()
+	if d.RequestTimeoutMs == nil {
+		t.Fatal("request_timeout_ms default is nil, want a value")
+	}
+	clientTimeout := time.Duration(*d.RequestTimeoutMs) * time.Millisecond
+	if clientTimeout <= cfg.RerankTimeout {
+		t.Fatalf("client request_timeout_ms default (%v) must exceed the server's "+
+			"MEMINI_RERANK_TIMEOUT default (%v): a client that gives up before the "+
+			"server's own rerank deadline never receives the composite-order fallback, "+
+			"so a slow reranker returns nothing at all instead of unranked results",
+			clientTimeout, cfg.RerankTimeout)
 	}
 }

@@ -57,7 +57,7 @@ Claim the memory slot in `~/.openclaw/openclaw.json`:
           "namespace_per_agent": true,
           "namespace_template": "{namespace}-{agent}",
           "fallback_on_error": true,
-          "timeout_ms": 5000,
+          "timeout_ms": 30000,
           "expose_tools": true
         },
         "tools": {
