@@ -80,9 +80,7 @@ func RerankWith(results []store.Scored, now time.Time, w RerankWeights) []store.
 		}
 		composite := relevance*(w.Relevance+w.Quality*quality) +
 			w.Recency*recency + w.Importance*importance
-		sc := r
-		sc.Score = composite
-		out[i] = ranked{sc: sc, score: composite, pos: i}
+		out[i] = ranked{sc: r.WithScore(composite), score: composite, pos: i}
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {

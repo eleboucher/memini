@@ -210,9 +210,7 @@ func RerankTemporal(
 		// strong match on date alone — temporal targeting reorders among
 		// comparable candidates instead of displacing relevance.
 		val := r.Score * (1 + boost*temporalProximity(date, target, anchor.Tolerance))
-		sc := r
-		sc.Score = val
-		out[i] = ranked{sc: sc, val: val, pos: i}
+		out[i] = ranked{sc: r.WithScore(val), val: val, pos: i}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].val != out[j].val {
