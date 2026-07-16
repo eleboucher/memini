@@ -104,18 +104,21 @@ func (s *Server) verboseHealthz(ctx context.Context) verboseHealth {
 // rather than tracking it: the store is a single local check (no network
 // round trip worth avoiding), so there's nothing a tracker would add over
 // asking it right now, and this stays consistent with /readyz by
-// construction instead of needing to be kept in sync with it.
+// construction instead of needing to be kept in sync with it. A healthy
+// probe stamps LastSuccess with the current time (rendered exactly like
+// depBlockFor's tracker timestamps): the block must be self-describing —
+// without it a consumer can't tell ok-freshly-probed from ok-never-called.
 func (s *Server) storeDepBlock(ctx context.Context) depBlock {
 	fn := s.ready.Load()
 	if fn == nil {
-		return depBlock{OK: true}
+		return depBlock{OK: true, LastSuccess: time.Now().UTC().Format(time.RFC3339)}
 	}
 	pingCtx, cancel := context.WithTimeout(ctx, storePingTimeout)
 	defer cancel()
 	if err := (*fn)(pingCtx); err != nil {
 		return depBlock{OK: false, LastError: err.Error()}
 	}
-	return depBlock{OK: true}
+	return depBlock{OK: true, LastSuccess: time.Now().UTC().Format(time.RFC3339)}
 }
 
 // depBlockFor renders dep's tracker snapshot. A dep with no recorded events

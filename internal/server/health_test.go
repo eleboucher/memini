@@ -79,8 +79,9 @@ type verboseHealthBody struct {
 	Status string `json:"status"`
 	Deps   struct {
 		Store struct {
-			OK        bool   `json:"ok"`
-			LastError string `json:"last_error"`
+			OK          bool   `json:"ok"`
+			LastError   string `json:"last_error"`
+			LastSuccess string `json:"last_success"`
 		} `json:"store"`
 		Embedder struct {
 			OK          bool   `json:"ok"`
@@ -322,8 +323,31 @@ func TestHealthzVerboseNoDepsTrackerInstalled(t *testing.T) {
 	if !body.Deps.Store.OK || !body.Deps.Embedder.OK {
 		t.Errorf("deps = %+v, want ok defaults with no tracker installed", body.Deps)
 	}
+	if body.Deps.Store.LastSuccess == "" {
+		t.Errorf("store.last_success empty, want the probe timestamp (RFC3339)")
+	}
 	if body.Deps.LLM.Configured {
 		t.Errorf("llm.configured = true, want false")
+	}
+}
+
+func TestHealthzVerboseStoreHealthy(t *testing.T) {
+	// A healthy on-demand store ping must stamp last_success: the block has to
+	// be self-describing, and consumers can't tell ok-freshly-probed from
+	// ok-never-called without it.
+	srv := newTestServer(t)
+	srv.SetReady(func(context.Context) error { return nil })
+
+	_, body := getVerboseHealth(t, srv)
+
+	if !body.Deps.Store.OK {
+		t.Fatalf("store.ok = false, want true")
+	}
+	if body.Deps.Store.LastSuccess == "" {
+		t.Fatalf("store.last_success empty, want the probe timestamp (RFC3339)")
+	}
+	if _, err := time.Parse(time.RFC3339, body.Deps.Store.LastSuccess); err != nil {
+		t.Errorf("store.last_success = %q, not RFC3339: %v", body.Deps.Store.LastSuccess, err)
 	}
 }
 
