@@ -751,7 +751,7 @@ type ClientSettings struct {
 	// RecallLimit Max memories per recall call.
 	RecallLimit *int `json:"recall_limit,omitempty"`
 
-	// RequestTimeoutMs How long a client waits on one memini HTTP call before giving up. It must stay above the server's own MEMINI_RERANK_TIMEOUT (default 10s): the server bounds a slow reranker and degrades to composite order, but a client that hangs up first gets nothing at all instead of an unranked result. Raise it when a cross-encoder reranker, a deep MEMINI_RERANK_POOL, or a cold model pushes recall past the default. The handshake keeps its own short timeout and is not covered by this setting.
+	// RequestTimeoutMs How long a client waits on one memini HTTP call before giving up (MEMINI_TIMEOUT_MS locally). It must stay above the server's own MEMINI_RERANK_TIMEOUT (default 10s): the server bounds a slow reranker and degrades to composite order, but a client that hangs up first gets nothing at all instead of an unranked result. Raise it when a cross-encoder reranker, a deep MEMINI_RERANK_POOL, or a cold model pushes recall past the default. The handshake keeps its own short timeout and is not covered by this setting.
 	RequestTimeoutMs *int `json:"request_timeout_ms,omitempty"`
 
 	// SessionDigest Record a session-end/stop/pre-compact digest memory.
@@ -1269,7 +1269,7 @@ type SettingsDefaultsResponse struct {
 	// RecallLimit Max memories per recall call.
 	RecallLimit *int `json:"recall_limit,omitempty"`
 
-	// RequestTimeoutMs How long a client waits on one memini HTTP call before giving up. It must stay above the server's own MEMINI_RERANK_TIMEOUT (default 10s): the server bounds a slow reranker and degrades to composite order, but a client that hangs up first gets nothing at all instead of an unranked result. Raise it when a cross-encoder reranker, a deep MEMINI_RERANK_POOL, or a cold model pushes recall past the default. The handshake keeps its own short timeout and is not covered by this setting.
+	// RequestTimeoutMs How long a client waits on one memini HTTP call before giving up (MEMINI_TIMEOUT_MS locally). It must stay above the server's own MEMINI_RERANK_TIMEOUT (default 10s): the server bounds a slow reranker and degrades to composite order, but a client that hangs up first gets nothing at all instead of an unranked result. Raise it when a cross-encoder reranker, a deep MEMINI_RERANK_POOL, or a cold model pushes recall past the default. The handshake keeps its own short timeout and is not covered by this setting.
 	RequestTimeoutMs *int `json:"request_timeout_ms,omitempty"`
 
 	// SessionDigest Record a session-end/stop/pre-compact digest memory.
