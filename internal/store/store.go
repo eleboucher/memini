@@ -123,6 +123,19 @@ type Store interface {
 	// Get returns a memory by ID, or ErrNotFound.
 	Get(ctx context.Context, namespace, id string) (*memory.Memory, error)
 
+	// GetEmbedding returns the stored vector for a memory, for a write that must
+	// preserve a vector it is not recomputing (see service.Remember's reuse of
+	// the stored vector when an update leaves content unchanged). Returns
+	// (nil, nil) when the row exists but is vectorless — a degraded write
+	// awaiting backfill — and ErrNotFound when the memory is absent.
+	//
+	// Kept off Get deliberately: a vector is dims*4 bytes and Get/List/search run
+	// on every read path, so Memory.Embedding is left empty there (see
+	// memory.Memory.Embedding). That makes a Get-then-Upsert round trip lossy for
+	// the vector, which is why a write that skips embedding must read it back
+	// through here rather than off the Memory it just loaded.
+	GetEmbedding(ctx context.Context, namespace, id string) ([]float32, error)
+
 	// PredecessorIDs returns the IDs of memories in the namespace whose
 	// SupersededBy points at id — the versions id replaced. Empty when none.
 	// Used to walk a memory's supersession lineage backwards.

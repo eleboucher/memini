@@ -517,6 +517,29 @@ func (s *Store) Get(ctx context.Context, namespace, id string) (*memory.Memory, 
 	return m, err
 }
 
+// GetEmbedding returns the stored vector for a memory, or nil when the row is
+// vectorless. The lookup is a LEFT JOIN for the same reason Reassign's is: a
+// vectorless memory has no vec_memories row at all, and an inner join would
+// report it as ErrNotFound — indistinguishable from a memory that doesn't
+// exist, which the caller must tell apart (one falls back to embedding, the
+// other is an error).
+func (s *Store) GetEmbedding(ctx context.Context, namespace, id string) ([]float32, error) {
+	var emb []byte
+	err := s.db.QueryRowContext(ctx,
+		`SELECT v.embedding FROM memories m LEFT JOIN vec_memories v ON v.rowid = m.rowid
+		 WHERE m.id = ? AND m.namespace = ?`, id, namespace).Scan(&emb)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, store.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sqlitevec: get embedding %q: %w", id, err)
+	}
+	if emb == nil {
+		return nil, nil
+	}
+	return deserializeFloat32(emb)
+}
+
 // PredecessorIDs returns the IDs of memories in the namespace superseded by id.
 func (s *Store) PredecessorIDs(ctx context.Context, namespace, id string) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,

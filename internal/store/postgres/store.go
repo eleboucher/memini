@@ -345,6 +345,27 @@ func (s *Store) Get(ctx context.Context, namespace, id string) (*memory.Memory, 
 	return m, err
 }
 
+// GetEmbedding returns the stored vector for a memory, or nil when the row is
+// vectorless (embedding IS NULL — a degraded write awaiting backfill). Scanning
+// into a *pgvector.Vector rather than a value is what keeps those two cases
+// apart: pgx leaves the pointer nil for SQL NULL, where a value scan would
+// error.
+func (s *Store) GetEmbedding(ctx context.Context, namespace, id string) ([]float32, error) {
+	var emb *pgvector.Vector
+	err := s.pool.QueryRow(ctx,
+		`SELECT embedding FROM memories WHERE id=$1 AND namespace=$2`, id, namespace).Scan(&emb)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, store.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres: get embedding %q: %w", id, err)
+	}
+	if emb == nil {
+		return nil, nil
+	}
+	return emb.Slice(), nil
+}
+
 // PredecessorIDs returns the IDs of memories in the namespace superseded by id.
 func (s *Store) PredecessorIDs(ctx context.Context, namespace, id string) ([]string, error) {
 	rows, err := s.pool.Query(ctx,

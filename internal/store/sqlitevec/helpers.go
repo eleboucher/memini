@@ -1,7 +1,9 @@
 package sqlitevec
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -332,6 +334,22 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// deserializeFloat32 decodes a vec0 embedding blob back into a vector. The
+// bindings ship SerializeFloat32 but no inverse, and the blob is exactly
+// little-endian packed float32, so this mirrors it. A length that isn't a
+// multiple of 4 is not a blob this store wrote — surface it rather than
+// returning a silently truncated vector.
+func deserializeFloat32(b []byte) ([]float32, error) {
+	if len(b)%4 != 0 {
+		return nil, fmt.Errorf("sqlitevec: embedding blob is %d bytes, not a multiple of 4", len(b))
+	}
+	vec := make([]float32, len(b)/4)
+	if err := binary.Read(bytes.NewReader(b), binary.LittleEndian, vec); err != nil {
+		return nil, fmt.Errorf("sqlitevec: deserialize embedding: %w", err)
+	}
+	return vec, nil
 }
 
 func distanceToScore(d float64) float64 { return 1 / (1 + d) }
