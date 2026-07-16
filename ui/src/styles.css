@@ -1457,6 +1457,12 @@ pre.json {
   border-color: color-mix(in oklab, var(--tier-procedural) 50%, transparent);
   color: color-mix(in oklab, var(--tier-procedural) 80%, var(--text));
 }
+/* Degraded-write marker: amber (advisory), unlike .warn's ember (problem). */
+.chip.pending {
+  border-color: color-mix(in oklab, var(--tier-semantic) 55%, transparent);
+  background: color-mix(in oklab, var(--tier-semantic) 12%, transparent);
+  color: color-mix(in oklab, var(--tier-semantic) 82%, var(--text));
+}
 .chip.on {
   border-color: var(--line-strong);
   color: var(--text);
