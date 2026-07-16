@@ -158,6 +158,40 @@ func (s *Service) logRecallEvent(ctx context.Context, in RecallInput, results []
 	s.logEvents(ctx, events)
 }
 
+// briefingExplorationWindow bounds "recently shown" for the briefing's reserved
+// exploration slot: a durable item served in any briefing of the namespace
+// within this window yields its section's last slot to a staler one.
+const briefingExplorationWindow = 7 * 24 * time.Hour
+
+// recentlyServedIDs returns the set of memory IDs any briefing served in
+// namespace within briefingExplorationWindow of now — the input the reserved
+// exploration slot tests candidates against. Scoped to the primary namespace
+// because that is where a briefing's serves are logged (see logBriefingEvent).
+// It degrades like every other log-dependent path: a store with no event log
+// (or logging disabled), or a failed query, yields a nil set, and the briefing
+// then ranks by pure DurableScore exactly as before the slot existed.
+func (s *Service) recentlyServedIDs(ctx context.Context, namespace string, now time.Time) map[string]bool {
+	els, ok := s.eventLog()
+	if !ok {
+		return nil
+	}
+	rows, err := els.ListEvents(ctx, store.EventFilter{
+		Namespace: namespace,
+		Kinds:     []store.EventKind{store.EventBriefing},
+		Since:     now.Add(-briefingExplorationWindow),
+	})
+	if err != nil {
+		return nil
+	}
+	served := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		if r.MemoryID != "" {
+			served[r.MemoryID] = true
+		}
+	}
+	return served
+}
+
 // logBriefingEvent records the memories a session-start briefing served, tagged
 // with the section each appeared in. Unlike recall this does not reinforce:
 // see the note on Briefing's call site.
