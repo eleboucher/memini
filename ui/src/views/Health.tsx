@@ -25,8 +25,9 @@ function depDetail(d: DepStatus, configured = true): string {
 function Pipeline() {
   const { data: health, error, loading } = useAsync(() => api.health(), [refreshNonce.value])
   // Dropped error on purpose: dependency health is the priority signal here; the
-  // backlog row is best-effort, so if stats fails we fall back to "none" rather
-  // than failing the whole panel.
+  // backlog row is best-effort tri-state, so if stats fails it reads as
+  // "unavailable" (idle) rather than failing the whole panel — never a
+  // false-healthy "none".
   const { data: stats } = useAsync(() => api.stats(), [namespace.value, refreshNonce.value])
 
   if (loading && !health) return <Loading />
@@ -39,7 +40,7 @@ function Pipeline() {
     { name: 'llm', dep: health.deps.llm, configured: health.deps.llm.configured },
     { name: 'reranker', dep: health.deps.reranker, configured: health.deps.reranker.configured },
   ]
-  const pending = stats?.pending_embed ?? 0
+  const pending = stats ? stats.pending_embed : null
 
   return (
     <div class="panel panel-pad" style={{ marginBottom: '20px' }}>
@@ -56,11 +57,16 @@ function Pipeline() {
           </Fragment>
         ))}
         <span class="key">awaiting embed</span>
-        <span class={`status-dot ${pending > 0 ? 'bad' : 'ok'}`} style={{ alignSelf: 'center' }} />
+        <span
+          class={`status-dot ${pending === null ? 'idle' : pending > 0 ? 'bad' : 'ok'}`}
+          style={{ alignSelf: 'center' }}
+        />
         <span class="val">
-          {pending > 0
-            ? `${pending} vectorless ${pending === 1 ? 'memory' : 'memories'} — backfill retries while the embedder is down`
-            : 'none'}
+          {pending === null
+            ? 'unavailable'
+            : pending > 0
+              ? `${pending} vectorless ${pending === 1 ? 'memory' : 'memories'} — backfill retries while the embedder is down`
+              : 'none'}
         </span>
       </div>
     </div>
