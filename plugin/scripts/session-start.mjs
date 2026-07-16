@@ -111,11 +111,18 @@ function warnRemovedVars(env) {
 // the server doesn't tag memories with a reason. When MEMINI_INJECT_LABELS
 // is empty (the default), only the content is rendered, matching the prior
 // format exactly so existing snapshots / tests keep matching.
-function formatMemory(m, section, labels) {
+// `from` is the item's read-set provenance (an ancestor/personal namespace, or
+// a "link:"/"call:" prefixed origin — see BriefingItem.from in api/openapi.yaml);
+// it is rendered as a trailing "(from …)" suffix independent of MEMINI_INJECT_LABELS,
+// because knowing a fact came from outside this namespace is context, not a label.
+function formatMemory(m, section, labels, from) {
   const text = (m?.summary || m?.content || "").trim();
   if (!text) return null;
+  // Provenance is appended to whatever base line we build below, so an empty
+  // `from` (the primary-namespace common case) yields no suffix.
+  const prov = from ? ` (from ${from})` : "";
   const parts = [text.slice(0, 280)];
-  if (labels.size === 0) return parts[0];
+  if (labels.size === 0) return parts[0] + prov;
   const tagParts = [];
   if (labels.has("tier") && m?.tier) tagParts.push(m.tier);
   if (labels.has("confidence") && typeof m?.confidence === "number") {
@@ -129,8 +136,8 @@ function formatMemory(m, section, labels) {
     }
   }
   if (labels.has("reason")) tagParts.push(section.reason);
-  if (tagParts.length === 0) return parts[0];
-  return `[${tagParts.join(" · ")}] ${parts[0]}`;
+  if (tagParts.length === 0) return parts[0] + prov;
+  return `[${tagParts.join(" · ")}] ${parts[0]}${prov}`;
 }
 
 // readBriefingOpts pulls the per-section caps out of the resolved session
@@ -273,14 +280,25 @@ async function main() {
   for (const s of sections) {
     if (!Array.isArray(s.mems) || s.mems.length === 0) continue;
     const bullets = [];
-    for (const m of s.mems) {
-      const line = formatMemory(m, { reason: s.reason }, labels);
+    for (const item of s.mems) {
+      // T6 (commit 2271aa1) nests each section entry as {memory, from}; the
+      // `?? item` keeps rendering pre-T6 flat servers, where the item IS the memory.
+      const mem = item?.memory ?? item;
+      const from = item?.from ?? "";
+      const line = formatMemory(mem, { reason: s.reason }, labels, from);
       if (line) bullets.push(`- ${line}`);
     }
     if (bullets.length === 0) continue;
     blocks.push({ header: `${s.label}:`, bullets, dropped: 0 });
   }
-  if (blocks.length === 0) return;
+  // Every section rendered to nothing (all bullets empty). Parity with the
+  // empty- and unchanged-briefing paths above: the memory directive must still
+  // be emitted, or a session with only blank-content memories is silently told
+  // nothing to save.
+  if (blocks.length === 0) {
+    if (directive) process.stdout.write(directive);
+    return;
+  }
 
   if (maxTokens > 0) {
     const blockTokens = (b) =>

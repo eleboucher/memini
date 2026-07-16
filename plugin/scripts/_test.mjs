@@ -353,9 +353,9 @@ test("session-start.mjs: fetches the briefing under the HANDSHAKE-resolved names
           JSON.stringify({
             namespace: "team/app",
             pinned: [],
-            facts: [{ content: "convention: use tabs" }],
+            facts: [{ memory: { content: "convention: use tabs" } }],
             procedures: [],
-            recent: [{ content: "last session did X" }],
+            recent: [{ memory: { content: "last session did X" } }],
           }),
         );
       } else {
@@ -409,7 +409,7 @@ test("session-start.mjs: briefing survives an SPA catch-all serving HTML on ever
           JSON.stringify({
             namespace: "team/app",
             pinned: [],
-            facts: [{ content: "briefing served by the real route" }],
+            facts: [{ memory: { content: "briefing served by the real route" } }],
             procedures: [],
             recent: [],
           }),
@@ -449,7 +449,7 @@ test("session-start.mjs: emits the briefing Scope line the MCP tools tell the mo
           namespace: "memini",
           scope_header: "Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4)",
           pinned: [],
-          facts: [{ content: "convention: use tabs" }],
+          facts: [{ memory: { content: "convention: use tabs" } }],
           procedures: [],
           recent: [],
         }),
@@ -476,7 +476,7 @@ test("session-start.mjs: briefing caps honored from server settings; env overrid
       const u = new URL(req.url, "http://x");
       seen.push(u.searchParams.get("per_section_facts"));
       res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ namespace: "memini", pinned: [], facts: [{ content: "f1" }], procedures: [], recent: [] }));
+      res.end(JSON.stringify({ namespace: "memini", pinned: [], facts: [{ memory: { content: "f1" } }], procedures: [], recent: [] }));
     },
   );
 
@@ -506,6 +506,9 @@ test("session-start.mjs: briefing caps honored from server settings; env overrid
 });
 
 test("session-start.mjs: MEMINI_INJECT_BRIEFING_* caps per-section results", async () => {
+  // Fixtures here stay in the pre-T6 FLAT shape (bare Memory objects, no
+  // {memory,from} wrapper) on purpose: this pins the back-compat path where a
+  // section item IS the memory, which `item?.memory ?? item` must keep rendering.
   const hits = [];
   const { url, close } = await startMockServer(
     withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
@@ -603,7 +606,7 @@ test("session-start.mjs: MEMINI_INJECT_LABELS=tier renders tier annotations", as
         JSON.stringify({
           namespace: "memini",
           pinned: [],
-          facts: [{ content: "use tabs in this project", tier: "semantic" }],
+          facts: [{ memory: { content: "use tabs in this project", tier: "semantic" } }],
           procedures: [],
           recent: [],
         }),
@@ -640,9 +643,9 @@ test("session-start.mjs: source \"compact\" appends the compact-recovery directi
         JSON.stringify({
           namespace: "team/app",
           pinned: [],
-          facts: [{ content: "convention: use tabs" }],
+          facts: [{ memory: { content: "convention: use tabs" } }],
           procedures: [],
-          recent: [{ content: "last session did X" }],
+          recent: [{ memory: { content: "last session did X" } }],
         }),
       );
     }),
@@ -707,6 +710,80 @@ test("session-start.mjs: source \"startup\" emits the memory directive but NOT c
     );
     assert.match(stdout, /<memini-memory-directive>/, "startup still gets the save directive");
     assert.doesNotMatch(stdout, /<memini-compact-recovery>/, "a non-compact start must not emit the recovery directive");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: renders `from` provenance on nested briefing items, none for a primary item", async () => {
+  // T6 (commit 2271aa1) nests each section item as {memory, from}. When `from`
+  // is non-empty the bullet must carry a trailing "(from <ns>)" — verbatim,
+  // including the "link:" prefix — so the model can see a fact came from an
+  // ancestor / personal / a link. A primary-namespace item omits `from`, so its
+  // bullet gets no suffix.
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          namespace: "team/app",
+          pinned: [],
+          facts: [
+            { memory: { content: "inherited convention" }, from: "acme" },
+            { memory: { content: "user prefers tabs" }, from: "personal" },
+            { memory: { content: "linked how-to" }, from: "link:shared/golang" },
+            { memory: { content: "own convention" } },
+          ],
+          procedures: [],
+          recent: [],
+        }),
+      );
+    }),
+  );
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "prov1", cwd: __dirname }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() },
+    );
+    assert.match(stdout, /- inherited convention \(from acme\)/);
+    assert.match(stdout, /- user prefers tabs \(from personal\)/);
+    assert.match(stdout, /- linked how-to \(from link:shared\/golang\)/);
+    // The primary-namespace item renders bare — no provenance suffix.
+    assert.match(stdout, /- own convention$/m);
+    assert.doesNotMatch(stdout, /own convention \(from/);
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: all items render empty → still emits the memory directive", async () => {
+  // The nested-wire regression made every bullet render null, so `blocks` was
+  // empty and the early return dropped even the save directive. A non-empty
+  // section keeps the `empty` guard from firing, so control reaches the
+  // blocks.length===0 path — which must emit the directive like the other paths.
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          namespace: "memini",
+          pinned: [],
+          facts: [{ memory: { content: "" } }, { memory: { content: "   " } }],
+          procedures: [],
+          recent: [],
+        }),
+      );
+    }),
+  );
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "blankrender", cwd: __dirname }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() },
+    );
+    assert.doesNotMatch(stdout, /<memini-context/, "no renderable bullets → no context block");
+    assert.match(stdout, /<memini-memory-directive>/, "but the save directive must still be emitted");
   } finally {
     await close();
   }
