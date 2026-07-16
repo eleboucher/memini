@@ -164,6 +164,14 @@ func TestPrintWritePathSignals(t *testing.T) {
 		}
 	}
 
+	// The pending-embed backlog is the only nonzero signal: the section must
+	// still print (isolates the `&& pendingEmbed == 0` guard term).
+	buf.Reset()
+	printWritePathSignals(&buf, []nsStat{{namespace: "x", pendingEmbed: 1}})
+	if got := buf.String(); !strings.Contains(got, "pending embed (vectorless, awaiting backfill):  1") {
+		t.Fatalf("pending-embed-only signals should print the section, got:\n%s", got)
+	}
+
 	buf.Reset()
 	printWritePathSignals(&buf, []nsStat{{namespace: "a"}})
 	if buf.Len() != 0 {
