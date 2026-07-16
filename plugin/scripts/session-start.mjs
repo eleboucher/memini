@@ -290,17 +290,26 @@ async function main() {
     { label: "Pinned", reason: "pinned", mems: b.pinned },
     { label: "Decisions & conventions", reason: "durable fact", mems: b.facts },
     { label: "How-to", reason: "how-to", mems: b.procedures },
-    { label: "Recent activity", reason: "recent activity", mems: b.recent },
+    // Recent activity always date-stamps its items with the relative-age tag
+    // ([3d]/[today]), independent of inject_labels: temporal reasoning is an
+    // LLM's weakest memory skill (LongMemEval) and dated recency measurably
+    // helps, so recency is surfaced by default here. Other sections stay opt-in.
+    { label: "Recent activity", reason: "recent activity", mems: b.recent, alwaysAge: true },
   ];
   for (const s of sections) {
     if (!Array.isArray(s.mems) || s.mems.length === 0) continue;
+    // Effective label set for THIS section: the Recent section forces "age" on
+    // top of the configured labels via a fresh copy — never mutate the shared
+    // `labels` Set. If the user already enabled age, the add is a no-op, so
+    // there is no double tag; every other section renders with `labels` as-is.
+    const sectionLabels = s.alwaysAge ? new Set(labels).add("age") : labels;
     const bullets = [];
     for (const item of s.mems) {
       // T6 (commit 2271aa1) nests each section entry as {memory, from}; the
       // `?? item` keeps rendering pre-T6 flat servers, where the item IS the memory.
       const mem = item?.memory ?? item;
       const from = item?.from ?? "";
-      const line = formatMemory(mem, { reason: s.reason }, labels, from);
+      const line = formatMemory(mem, { reason: s.reason }, sectionLabels, from);
       if (line) bullets.push(`- ${line}`);
     }
     if (bullets.length === 0) continue;

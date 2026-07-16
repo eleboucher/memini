@@ -918,6 +918,82 @@ test("session-start.mjs: formatMemory truncates rune-safely with a '…' only wh
   }
 });
 
+test("session-start.mjs: Recent activity always carries the age tag; other sections stay opt-in", async () => {
+  // Recent items date-stamp themselves ([3d]/[today]) regardless of the
+  // configured inject_labels — temporal reasoning is the weakest LLM memory
+  // skill (LongMemEval), so recency is surfaced by default. A durable fact with
+  // the same created_at gets NO tag, because the default (empty) label set only
+  // gains "age" for the Recent section. A recent item missing created_at renders
+  // bare, per the existing age guard.
+  const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString();
+  const fiveDaysAgo = new Date(Date.now() - 5 * 86400000).toISOString();
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          namespace: "memini",
+          pinned: [],
+          facts: [{ memory: { content: "convention: use tabs", created_at: fiveDaysAgo } }],
+          procedures: [],
+          recent: [
+            { memory: { content: "reviewed the PR", created_at: threeDaysAgo } },
+            { memory: { content: "no timestamp here" } },
+          ],
+        }),
+      );
+    }),
+  );
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "age-default", cwd: __dirname }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() }, // no MEMINI_INJECT_LABELS → default empty
+    );
+    // Recent item gets [3d] even though labels are empty.
+    assert.match(stdout, /^- \[3d\] reviewed the PR$/m, "recent item must carry the age tag by default");
+    // A recent item without created_at falls through the guard → bare bullet.
+    assert.match(stdout, /^- no timestamp here$/m, "a recent item missing created_at renders without an age tag");
+    // The durable fact, same-shaped created_at, stays bare (age still opt-in there).
+    assert.match(stdout, /^- convention: use tabs$/m, "a fact must NOT get an age tag under default labels");
+    assert.doesNotMatch(stdout, /\[\d+d\] convention: use tabs/, "no age tag on the fact");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: inject_labels already including age → no duplicate tag on Recent", async () => {
+  // When the user opts age in globally, the Recent section's forced "age" is a
+  // no-op (a Set add of an existing member), so the tag appears exactly once —
+  // never "[2d · 2d]" or a second bracketed tag.
+  const twoDaysAgo = new Date(Date.now() - 2 * 86400000).toISOString();
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          namespace: "memini",
+          pinned: [],
+          facts: [],
+          procedures: [],
+          recent: [{ memory: { content: "recent thing", created_at: twoDaysAgo } }],
+        }),
+      );
+    }),
+  );
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "age-configured", cwd: __dirname }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache(), MEMINI_INJECT_LABELS: "age" },
+    );
+    assert.match(stdout, /^- \[2d\] recent thing$/m, "the age tag appears once");
+    assert.doesNotMatch(stdout, /\[2d · 2d\]/, "the age token must not be doubled inside one tag");
+  } finally {
+    await close();
+  }
+});
+
 // ─── REST client (postJSON / getJSON / postRemember) ──────────────────────
 
 test("X-Memini-Home header: emitted on GET/POST when MEMINI_HOME is set, absent when unset", async () => {
