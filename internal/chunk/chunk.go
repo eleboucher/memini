@@ -96,6 +96,7 @@ func Split(text string, cfg Config) Result {
 	}
 
 	var out []string
+	prevCut := 0
 	for start := 0; start < len(runes); {
 		if cfg.MaxChunks > 0 && len(out) >= cfg.MaxChunks {
 			return Result{Chunks: out, Truncated: true}
@@ -107,7 +108,7 @@ func Split(text string, cfg Config) Result {
 			}
 			break
 		}
-		cut := boundary(runes, start, end)
+		cut := boundary(runes, start, end, prevCut)
 		if s := strings.TrimSpace(string(runes[start:cut])); s != "" {
 			out = append(out, s)
 		}
@@ -118,14 +119,24 @@ func Split(text string, cfg Config) Result {
 			// which is strictly better than not terminating.
 			next = cut
 		}
+		prevCut = cut
 		start = next
 	}
 	return Result{Chunks: out}
 }
 
 // boundary picks where to cut a chunk that would otherwise end at `end`,
-// falling back to end itself (a hard cut) when the window holds no separator.
-// The returned index is always > start, so callers always make progress.
+// falling back to end itself (a hard cut) when the window holds no usable
+// separator. The returned index is always > start and > floor, so callers
+// always make progress AND always gain new text.
+//
+// floor is the previous chunk's cut. The overlap rewinds the window back
+// across that cut, so without the floor the backwards scan re-finds the very
+// separator it just consumed and returns the same cut — a chunk that is a
+// pure suffix of its predecessor, one burned MaxChunks slot per boundary, and
+// no overlap gained. A separator is therefore only eligible when cutting
+// after it lands strictly past the floor; the hard-cut fallback already does
+// (end = floor + Size - Overlap, and Overlap < Size).
 //
 // Each separator is searched over the whole window, backwards. Backwards is
 // what makes this pack rather than fragment: the LAST paragraph break before
@@ -134,10 +145,11 @@ func Split(text string, cfg Config) Result {
 // only way to get a short chunk is for the window to hold exactly one early
 // boundary and no later one of any strength — and cutting there is right
 // anyway, because it is the only structure the text offers.
-func boundary(runes []rune, start, end int) int {
+func boundary(runes []rune, start, end, floor int) int {
 	for _, sep := range separators {
 		sepRunes := []rune(sep)
-		for i := end - len(sepRunes); i > start; i-- {
+		lo := max(start, floor-len(sepRunes))
+		for i := end - len(sepRunes); i > lo; i-- {
 			if hasAt(runes, i, sepRunes) {
 				// Cut after the separator so it stays with the text it ends.
 				return i + len(sepRunes)

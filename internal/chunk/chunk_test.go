@@ -1,6 +1,7 @@
 package chunk
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -95,6 +96,47 @@ func TestChunksOverlap(t *testing.T) {
 	if !strings.Contains(got.Chunks[1], tail) {
 		t.Errorf("chunk 1 does not repeat chunk 0's tail %q:\n  [0]=%q\n  [1]=%q",
 			tail, got.Chunks[0], got.Chunks[1])
+	}
+}
+
+// TestNoChunkIsASuffixOfItsPredecessor pins the boundary floor. Without it,
+// the overlap rewind lets the backwards scan re-pick the separator the
+// previous chunk already cut at, emitting a chunk that is a pure suffix of
+// its predecessor: zero new coverage, one burned MaxChunks slot per section
+// boundary. On a real 46k-rune document that wasted half the 64-slot budget,
+// fired Truncated, and left the tail unsearchable — so this also asserts the
+// document fits without truncation and its final sentence is covered.
+func TestNoChunkIsASuffixOfItsPredecessor(t *testing.T) {
+	// The reproducing shape: a heading followed by sentence-only prose, so the
+	// window after a paragraph-break cut contains no later "\n\n".
+	sentence := "The deploy pipeline runs its tests across sixteen cores in parallel. "
+	var b strings.Builder
+	for section := 0; b.Len() < 46000; section++ {
+		fmt.Fprintf(&b, "Heading %d\n\n", section)
+		for b.Len() == 0 || !strings.HasSuffix(b.String(), "\n\n") {
+			b.WriteString(sentence)
+			if strings.Count(b.String(), sentence)%16 == 0 {
+				b.WriteString("\n\n")
+			}
+		}
+	}
+	sentinel := "The final sentence carries the distinctive tail marker."
+	text := b.String() + sentinel
+
+	got := Split(text, DefaultConfig())
+	if got.Truncated {
+		t.Fatalf("a %d-rune document truncated at %d chunks; the budget covers ~64k runes",
+			len([]rune(text)), len(got.Chunks))
+	}
+	for i := 1; i < len(got.Chunks); i++ {
+		if strings.Contains(got.Chunks[i-1], got.Chunks[i]) {
+			t.Fatalf("chunk %d is contained in chunk %d — no new coverage:\n [%d]=%q\n [%d]=%q",
+				i, i-1, i-1, got.Chunks[i-1], i, got.Chunks[i])
+		}
+	}
+	last := got.Chunks[len(got.Chunks)-1]
+	if !strings.Contains(last, sentinel) {
+		t.Fatalf("the document tail is not covered; last chunk=%q", lastRunes(last, 120))
 	}
 }
 
