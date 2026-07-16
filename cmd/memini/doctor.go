@@ -321,7 +321,7 @@ type nsStat struct {
 	classified   int // durable writes tiered by the marker classifier (tier_classified=marker)
 	promoted     int // durable facts produced by promotion (promoted_from set)
 	corroborated int // durable memories whose confidence grew past the fresh seed
-	pendingEmbed int // vectorless degraded writes (pending_embed="true") awaiting backfill
+	pendingEmbed int // live vectorless degraded writes (pending_embed="true") awaiting backfill
 }
 
 // pendingEmbedTrue is the Metadata["pending_embed"] sentinel marking a
@@ -364,7 +364,12 @@ func namespaceStats(ctx context.Context, st store.Store) ([]nsStat, error) {
 				if _, ok := m.Metadata["promoted_from"]; ok {
 					s.promoted++
 				}
-				if v, _ := m.Metadata["pending_embed"].(string); v == pendingEmbedTrue {
+				// Live rows only: /v1/stats counts the pending-embed backlog
+				// over live memories and the backfill never lists superseded or
+				// expired rows, so counting them here would report a backlog
+				// nothing will ever drain.
+				if v, _ := m.Metadata["pending_embed"].(string); v == pendingEmbedTrue &&
+					m.SupersededBy == nil && !m.Expired(now) {
 					s.pendingEmbed++
 				}
 			}

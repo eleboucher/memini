@@ -179,9 +179,11 @@ func TestPrintWritePathSignals(t *testing.T) {
 	}
 }
 
-// TestNamespaceStatsPendingEmbed: a memory carrying pending_embed="true"
+// TestNamespaceStatsPendingEmbed: a live memory carrying pending_embed="true"
 // metadata is counted toward the namespace's pendingEmbed backlog; a memory
-// without the flag is not.
+// without the flag is not, and neither is a flagged row that is no longer live
+// (superseded or expired) — /v1/stats and the backfill both ignore those, so
+// doctor must not report a backlog nothing will drain.
 func TestNamespaceStatsPendingEmbed(t *testing.T) {
 	st := openTestStore(t)
 	now := time.Now().UTC()
@@ -202,6 +204,28 @@ func TestNamespaceStatsPendingEmbed(t *testing.T) {
 	if err := st.Upsert(context.Background(), plain); err != nil {
 		t.Fatalf("upsert plain: %v", err)
 	}
+	replacement := "acme/embedded"
+	superseded := &memory.Memory{
+		ID: "acme/superseded-vectorless", Namespace: "acme", Tier: memory.TierEpisodic,
+		Content: "flagged but tombstoned", CreatedAt: now, UpdatedAt: now, LastAccessedAt: now,
+		Embedding:    []float32{0, 0, 1, 0},
+		Metadata:     map[string]any{"pending_embed": "true"},
+		SupersededBy: &replacement,
+	}
+	if err := st.Upsert(context.Background(), superseded); err != nil {
+		t.Fatalf("upsert superseded: %v", err)
+	}
+	past := now.Add(-time.Hour)
+	expired := &memory.Memory{
+		ID: "acme/expired-vectorless", Namespace: "acme", Tier: memory.TierEpisodic,
+		Content: "flagged but past its TTL", CreatedAt: now, UpdatedAt: now, LastAccessedAt: now,
+		Embedding: []float32{0, 0, 0, 1},
+		Metadata:  map[string]any{"pending_embed": "true"},
+		ExpiresAt: &past,
+	}
+	if err := st.Upsert(context.Background(), expired); err != nil {
+		t.Fatalf("upsert expired: %v", err)
+	}
 
 	stats := statsFor(t, st)
 	total, ok := 0, false
@@ -214,7 +238,7 @@ func TestNamespaceStatsPendingEmbed(t *testing.T) {
 		t.Fatalf("namespace acme missing from stats: %+v", stats)
 	}
 	if total != 1 {
-		t.Fatalf("pendingEmbed = %d, want 1 (only the flagged memory counts)", total)
+		t.Fatalf("pendingEmbed = %d, want 1 (only the live flagged memory counts)", total)
 	}
 }
 
