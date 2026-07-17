@@ -312,8 +312,9 @@ async function main() {
     const sectionLabels = s.alwaysAge ? new Set(labels).add("age") : labels;
     const bullets = [];
     for (const item of s.mems) {
-      // T6 (commit 2271aa1) nests each section entry as {memory, from}; the
-      // `?? item` keeps rendering pre-T6 flat servers, where the item IS the memory.
+      // T6 (commit 2271aa1) nests each section entry as {memory, from} — the
+      // BriefingItem schema in api/openapi.yaml; the `?? item` keeps rendering
+      // pre-T6 flat servers, where the item IS the memory.
       const mem = item?.memory ?? item;
       const from = item?.from ?? "";
       const line = formatMemory(mem, { reason: s.reason }, sectionLabels, from);
