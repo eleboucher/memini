@@ -157,11 +157,25 @@ Two constraints. It is cross-encoder-only — `MEMINI_RERANK=llm` returns an
 ordinal list with no scores, so combining it with the gate is a boot error
 rather than a gate that silently never fires. And the threshold is
 **model-specific**: score distributions differ between rerankers, so pick it
-from a sweep against your own corpus and backend (`bench.RerankGateSweep`
-measures positive recall@k vs. negative injection rate per threshold) rather
-than copying a number. A miscalibrated threshold silently empties recall — the
-default is `0` (off) for exactly that reason. The response `score` field is
-unaffected: it still carries the fused retrieval score, never the rerank score.
+from a sweep against your own backend rather than copying a number. The bench
+harness runs the sweep directly — per threshold it reports positive recall@k
+(gold answers that survive the gate) against the negative injection rate
+(foreign-namespace noise that sneaks through):
+
+```sh
+go run ./cmd/bench -suite longmemeval -data ./longmemeval_s.json \
+  -rerank-url http://reranker:8002/v1 -rerank-model your-reranker \
+  -rerank-gate "0.05,0.1,0.2,0.3,0.5" -rerank-gate-pool 20
+```
+
+(Dataset acquisition and the other suites are covered in
+[the bench README](../../bench/README.md).)
+
+Pick the highest threshold whose positive recall is still at your no-gate
+baseline; the negative injection column shows what you are buying. A
+miscalibrated threshold silently empties recall — the default is `0` (off) for
+exactly that reason. The response `score` field is unaffected: it still
+carries the fused retrieval score, never the rerank score.
 
 ---
 
