@@ -25,8 +25,9 @@ import {
   escapeMeminiTags,
   filterFreshTurnEchoes,
   formatRecallHit,
-  readPromptRecallState,
-  writePromptRecallState,
+  readInjectedState,
+  writeInjectedState,
+  injectedIdentity,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -82,25 +83,32 @@ async function main() {
   const labels = new Set(ctx.setting("inject_labels").value.map((s) => String(s).toLowerCase()));
 
   // Exclude what this session already carries: its own captured digests/turns
-  // (exclude_metadata) and every memory a previous prompt already injected
-  // (exclude_ids, from the per-session state) — so the top-k is spent on
-  // memories the context does NOT yet hold, instead of re-serving the same
-  // three facts prompt after prompt.
-  const injected = sessionId ? readPromptRecallState(sessionId) : [];
+  // (exclude_metadata) and every memory any surface (briefing, pretool, a
+  // previous prompt) already injected — excluded server-side so the top-k is
+  // spent on memories the context does NOT yet hold, instead of re-serving
+  // the same three facts prompt after prompt. Id-based by necessity (the
+  // server can't compare content it was told not to return), which trades
+  // away same-session resurfacing of updated memories on THIS surface;
+  // pretool's content-aware filter keeps updates reachable. Governed by the
+  // same inject_dedupe knob as every other injection-dedupe mechanism.
+  const dedupe = ctx.setting("inject_dedupe").value;
+  const injected = dedupe && sessionId ? readInjectedState(sessionId) : {};
   const exclude = sessionId ? { session_id: sessionId } : undefined;
   const { hits: rawHits, degraded, note } = await postSearch(trimmed.slice(0, MAX_PROMPT_QUERY_CHARS), project, {
     limit,
     exclude,
     minScore,
     source: "prompt",
-    excludeIds: injected,
+    excludeIds: Object.keys(injected),
   });
 
   // Belt-and-braces on both exclusions: fresh turn echoes whose session id
   // rolled (same reasoning as pre-tool-use), and already-injected ids in case
   // the server dropped exclude_ids (the 400-fallback for older servers).
-  const injectedSet = new Set(injected);
-  const hits = filterFreshTurnEchoes(rawHits).filter((h) => !injectedSet.has(h?.memory?.id));
+  const hits = filterFreshTurnEchoes(rawHits).filter((h) => {
+    const id = h?.memory?.id;
+    return !(typeof id === "string" && id in injected);
+  });
   if (hits.length === 0) return;
 
   const lines = hits.map((h) => formatRecallHit(h, labels)).filter(Boolean);
@@ -121,9 +129,16 @@ async function main() {
   // budget dropped: a budget-dropped hit was the lowest-ranked and would be
   // re-dropped next prompt anyway — recording it avoids recall churn. (With
   // the default unbounded budget nothing is ever dropped.)
-  if (sessionId) {
-    const ids = hits.map((h) => h?.memory?.id).filter((id) => typeof id === "string" && id);
-    if (ids.length) writePromptRecallState(sessionId, [...injected, ...ids]);
+  if (dedupe && sessionId) {
+    let recorded = false;
+    for (const h of hits) {
+      const id = h?.memory?.id;
+      if (typeof id === "string" && id) {
+        injected[id] = injectedIdentity(h);
+        recorded = true;
+      }
+    }
+    if (recorded) writeInjectedState(sessionId, injected);
   }
 
   process.stdout.write(

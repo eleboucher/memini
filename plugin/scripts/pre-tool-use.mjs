@@ -28,6 +28,9 @@ import {
   formatRecallHit,
   readLastRecallState,
   writeLastRecallState,
+  readInjectedState,
+  writeInjectedState,
+  injectedIdentity,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -110,6 +113,18 @@ async function main() {
   // describe the same embedder outage.
   let degradedNote = "";
 
+  // Cross-surface dedupe: memories the briefing or a prompt recall (or an
+  // earlier pretool block) already put into this session's context are
+  // filtered out CLIENT-side and content-aware — a memory whose content
+  // changed since injection hashes differently and passes, so in-place
+  // updates still resurface (deliberately NOT exclude_ids: a server-side id
+  // exclusion could never return the updated content). The map accumulates
+  // ACROSS the files of this one call, so file 2 doesn't repeat what file 1
+  // just injected. Shares the inject_dedupe knob with the per-file
+  // fingerprint below — off restores the prior always-inject behavior.
+  const injectedMap = dedupe && sessionId ? readInjectedState(sessionId) : {};
+  let injectedChanged = false;
+
   for (const f of files.slice(0, 3)) {
     const q = `${toolName} on ${f}`;
     // Exclude this session's own captured digests (Stop checkpoint / SessionEnd
@@ -131,7 +146,12 @@ async function main() {
     // and exclude_metadata is an exact match). A fresh turn capture is still
     // — or was minutes ago — part of this conversation's live context, so
     // drop it regardless of which session id it carries.
-    const hits = filterFreshTurnEchoes(rawHits);
+    const hits = filterFreshTurnEchoes(rawHits).filter((h) => {
+      const id = h?.memory?.id;
+      if (typeof id !== "string" || !(id in injectedMap)) return true;
+      // Already in context — unless its content changed since injection.
+      return injectedMap[id] !== injectedIdentity(h);
+    });
     if (hits.length === 0) continue;
 
     // Fingerprint the SEMANTIC content served for this file: the file path
@@ -169,7 +189,19 @@ async function main() {
     const fit = fitByTokens(lines, maxTokens);
     out.push(...fit.items);
     totalDropped += fit.dropped;
+    // This block's memories are now (about to be) in context: record them so
+    // this call's remaining files and every later recall surface skip them.
+    if (dedupe) {
+      for (const h of hits) {
+        const id = h?.memory?.id;
+        if (typeof id === "string" && id) {
+          injectedMap[id] = injectedIdentity(h);
+          injectedChanged = true;
+        }
+      }
+    }
   }
+  if (dedupe && sessionId && injectedChanged) writeInjectedState(sessionId, injectedMap);
   if (lastRecallChanged) writeLastRecallState(sessionId, lastRecall);
   if (!any) return;
   if (totalDropped > 0) out.push(`[... ${totalDropped} item(s) truncated by token budget]`);

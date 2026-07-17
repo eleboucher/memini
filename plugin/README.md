@@ -383,13 +383,22 @@ no change.
 | `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`      | Floor on the fused score; hits below are dropped server-side (and client-side, belt-and-braces). |
 
 Command-shaped prompts (`/`, `!`, `#` prefixes) and prompts too short to be a
-useful query are skipped. Memories already injected earlier in the session are
-excluded from later prompts' results (`exclude_ids`), so the top hits are spent
-on context the conversation doesn't yet carry; the exclusion state self-clears
-on `SessionStart`, `PreCompact`, and `SessionEnd`, when the context they were
-injected into is rebuilt. When the server reports a degraded (keyword-only)
+useful query are skipped. When the server reports a degraded (keyword-only)
 search, the block carries a `[memini: ...]` warning line so the model knows the
 results are incomplete rather than a confident negative.
+
+**Cross-surface injection dedupe.** The three injection surfaces — the
+`SessionStart` briefing, per-prompt recall, and per-file pretool recall —
+share one per-session record of which memories are already in context, so no
+surface re-injects what another already showed. The prompt hook excludes
+recorded ids server-side (`exclude_ids`), spending its top hits on memories
+the conversation doesn't yet carry; pretool filters client-side and
+**content-aware**, so a memory updated mid-session (its content changed since
+injection) still resurfaces. The state self-clears whenever the context is
+rebuilt (`SessionStart` on startup/clear/compact, `PreCompact`, `SessionEnd`)
+and survives a resume, whose context is intact. Governed by the same
+`inject_dedupe` knob as the per-file fingerprint below — `MEMINI_INJECT_DEDUPE=0`
+restores always-inject everywhere.
 
 **PreToolUse** (one search per file in `Edit|MultiEdit|Write|Read|Glob|Grep`):
 

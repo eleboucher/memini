@@ -13,7 +13,7 @@ import {
   readSessionEvents,
   buildSessionDigest,
   deleteLastRecallState,
-  deletePromptRecallState,
+  deleteInjectedState,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -30,7 +30,7 @@ async function main() {
   // context was rebuilt. Unconditional and independent of whether this
   // session buffered any events worth checkpointing below.
   deleteLastRecallState(sessionId);
-  deletePromptRecallState(sessionId);
+  deleteInjectedState(sessionId);
 
   const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "on-miss", timeoutMs: 2000 });
   const project = ctx.namespace;

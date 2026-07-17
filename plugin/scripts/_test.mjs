@@ -2402,7 +2402,12 @@ test("pre-tool-use.mjs: content changed only past the 240-char render cap still 
   }
 });
 
-test("pre-tool-use.mjs: different files with identical result sets both inject (per-file map)", async () => {
+test("pre-tool-use.mjs: a memory already injected for one file is not repeated for another (cross-surface state)", async () => {
+  // Historical behavior injected identical results once PER FILE (the
+  // fingerprint map is file-keyed). The cross-surface state supersedes that:
+  // the memory is already in context — which file put it there is irrelevant
+  // — so the second file's block is suppressed. MEMINI_INJECT_DEDUPE=0
+  // restores the old always-inject behavior (covered below).
   const cache = freshCache();
   await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
   const { url, close } = await startMockServer((req, res) => {
@@ -2417,7 +2422,7 @@ test("pre-tool-use.mjs: different files with identical result sets both inject (
     assert.match(a.stdout, /shared fact/, "file a must inject");
 
     const b = await runHook("pre-tool-use.mjs", mk("b.go"), { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
-    assert.match(b.stdout, /shared fact/, "a different file with the identical result set must ALSO inject");
+    assert.equal(b.stdout, "", "a different file must not re-inject a memory the context already carries");
   } finally {
     await close();
   }
@@ -2617,9 +2622,14 @@ test("session-start.mjs: deletes the last-recall state for its session at startu
 test("pre-tool-use.mjs: last-recall state is bounded, evicting the oldest entry (33 distinct files)", async () => {
   const cache = freshCache();
   await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  // Each file gets its own memory: a shared one would be filtered by the
+  // cross-surface state after the first injection, and this test needs every
+  // file to inject so the per-file fingerprint map actually grows to its cap.
+  let served = 0;
   const { url, close } = await startMockServer((req, res) => {
+    served++;
     res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify(searchBody([sm({ id: "shared", content: "shared memory" }, 0.9)])));
+    res.end(JSON.stringify(searchBody([sm({ id: `m-${served}`, content: `memory for file ${served}` }, 0.9)])));
   });
   try {
     const N = 33;
@@ -4291,6 +4301,239 @@ test("user-prompt-submit.mjs: fresh turn captures are dropped; stale ones inject
     const ctxText = JSON.parse(stdout).hookSpecificOutput.additionalContext;
     assert.doesNotMatch(ctxText, /just said this/, "a <30min turn echo is still live context");
     assert.match(ctxText, /from a previous sitting/, "a stale turn is fair game");
+  } finally {
+    await close();
+  }
+});
+
+// ─── cross-surface injection dedupe ────────────────────────────────────────
+//
+// Briefing, prompt recall, and pretool recall each inject memories into the
+// same context, so they share one per-session injected-id state: what any
+// surface has already injected, no other surface repeats — the top-k is spent
+// on memories the context does NOT yet carry. The state dies with the context
+// it describes (startup/clear/compact rebuild it; resume keeps it).
+
+test("cross-surface dedupe: briefing ids are excluded from later prompt recall", async () => {
+  const cache = freshCache();
+  const searches = [];
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res, body) => {
+      res.setHeader("Content-Type", "application/json");
+      if (req.url.startsWith("/v1/namespaces/briefing")) {
+        res.end(
+          JSON.stringify(
+            briefingBody({ facts: [bi({ id: "b1", content: "briefed: auth tokens rotate weekly" })] }),
+          ),
+        );
+        return;
+      }
+      searches.push(JSON.parse(body));
+      res.end(
+        JSON.stringify(
+          searchBody([
+            sm({ id: "b1", content: "briefed: auth tokens rotate weekly" }, 0.95),
+            sm({ id: "m2", content: "fresh: refresh flow lives in the middleware" }, 0.9),
+          ]),
+        ),
+      );
+    }),
+  );
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    await runHook("session-start.mjs", JSON.stringify({ session_id: "xs1", cwd: __dirname, source: "startup" }), env);
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "xs1", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      env,
+    );
+    assert.equal(searches.length, 1);
+    assert.ok((searches[0].exclude_ids || []).includes("b1"), "the briefing's ids ride in exclude_ids");
+    const ctxText = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(ctxText, /fresh: refresh flow/);
+    assert.doesNotMatch(ctxText, /briefed: auth tokens/, "a memory the briefing already injected is not repeated");
+  } finally {
+    await close();
+  }
+});
+
+test("cross-surface dedupe: pretool filters prompt-injected memories client-side and records its own", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const searches = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    searches.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    const n = searches.length;
+    if (n === 1) {
+      res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "prompt-injected fact" }, 0.9)])));
+    } else if (n === 2) {
+      res.end(
+        JSON.stringify(
+          searchBody([
+            sm({ id: "m1", content: "prompt-injected fact" }, 0.95),
+            sm({ id: "m2", content: "file-local convention" }, 0.9),
+          ]),
+        ),
+      );
+    } else {
+      res.end(JSON.stringify(searchBody([sm({ id: "m3", content: "third fact" }, 0.9)])));
+    }
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "xs2", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      env,
+    );
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xs2", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      env,
+    );
+    // Pretool's cross-surface filter is CLIENT-side and content-aware, never
+    // exclude_ids: a server-side id exclusion could not return a memory whose
+    // content changed since injection.
+    assert.equal(searches[1].exclude_ids, undefined, "pretool must not hard-exclude ids server-side");
+    const block = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(block, /file-local convention/);
+    assert.doesNotMatch(block, /prompt-injected fact/, "an unchanged already-injected memory is filtered");
+
+    await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "xs2", cwd: __dirname, prompt: "and what about the cookie settings" }),
+      env,
+    );
+    const last = searches[searches.length - 1];
+    assert.ok(last.exclude_ids.includes("m1") && last.exclude_ids.includes("m2"), "pretool's injection was recorded too");
+  } finally {
+    await close();
+  }
+});
+
+test("cross-surface dedupe: pretool filtering accumulates across files within one call", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const searches = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    searches.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    if (searches.length === 1) {
+      res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "first-file fact" }, 0.9)])));
+    } else {
+      res.end(
+        JSON.stringify(
+          searchBody([sm({ id: "m1", content: "first-file fact" }, 0.95), sm({ id: "m2", content: "second-file fact" }, 0.9)]),
+        ),
+      );
+    }
+  });
+  try {
+    // Grep carries both `pattern` and `path` → two per-file searches in one run.
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xs3", cwd: __dirname, tool_name: "Grep", tool_input: { pattern: "auth", path: "internal" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.equal(searches.length, 2);
+    const block = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(block, /first-file fact/, "file 1 injects its hit");
+    assert.match(block, /second-file fact/, "file 2 injects the new hit");
+    assert.equal((block.match(/first-file fact/g) || []).length, 1, "file 2 does not repeat what file 1 just injected");
+  } finally {
+    await close();
+  }
+});
+
+test("cross-surface dedupe: an updated memory resurfaces in pretool despite prior injection", async () => {
+  // The state records content identity, not just ids: a memory_update between
+  // the prompt injection and the file touch changes the hash, so the NEW
+  // content passes the filter — dedupe is a display budget, never identity.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const searches = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    searches.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    const content = searches.length === 1 ? "v1: rotate tokens weekly" : "v2: rotate tokens DAILY after the incident";
+    res.end(JSON.stringify(searchBody([sm({ id: "m1", content }, 0.9)])));
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "xs5", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      env,
+    );
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xs5", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      env,
+    );
+    const block = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(block, /rotate tokens DAILY/, "changed content re-injects");
+  } finally {
+    await close();
+  }
+});
+
+test("cross-surface dedupe: inject_dedupe=false disables the prompt hook's exclusion too", async () => {
+  // One escape hatch for all injection dedupe: with the knob off, nothing is
+  // excluded, nothing is recorded — the prior always-inject behavior.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ settings: { inject_dedupe: false } }));
+  const searches = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    searches.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "the same fact" }, 0.9)])));
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  const payload = (p) => JSON.stringify({ session_id: "xs6", cwd: __dirname, prompt: p });
+  try {
+    await runHook("user-prompt-submit.mjs", payload("what did we decide about auth tokens"), env);
+    const second = await runHook("user-prompt-submit.mjs", payload("what did we decide about auth tokens"), env);
+    assert.equal(searches[1].exclude_ids, undefined, "no exclusion with the knob off");
+    assert.match(JSON.parse(second.stdout).hookSpecificOutput.additionalContext, /the same fact/, "duplicates inject again");
+  } finally {
+    await close();
+  }
+});
+
+test("cross-surface dedupe: resume keeps the injected-id state, startup clears it", async () => {
+  const cache = freshCache();
+  const searches = [];
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res, body) => {
+      res.setHeader("Content-Type", "application/json");
+      if (req.url.startsWith("/v1/namespaces/briefing")) {
+        res.end(JSON.stringify(briefingBody()));
+        return;
+      }
+      searches.push(JSON.parse(body));
+      res.end(JSON.stringify(searchBody([sm({ id: `m${searches.length}`, content: `fact ${searches.length}` }, 0.9)])));
+    }),
+  );
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  const prompt = (p) => JSON.stringify({ session_id: "xs4", cwd: __dirname, prompt: p });
+  const start = (source) => JSON.stringify({ session_id: "xs4", cwd: __dirname, source });
+  try {
+    await runHook("session-start.mjs", start("startup"), env);
+    await runHook("user-prompt-submit.mjs", prompt("what did we decide about auth tokens"), env);
+    assert.equal(searches[0].exclude_ids, undefined);
+
+    // Resume rejoins an INTACT context: everything injected is still there,
+    // so the exclusion state must survive.
+    await runHook("session-start.mjs", start("resume"), env);
+    await runHook("user-prompt-submit.mjs", prompt("and what about session cookies here"), env);
+    assert.deepEqual(searches[1].exclude_ids, ["m1"], "resume keeps the state");
+
+    // A fresh startup rebuilt the context from nothing: stale exclusions would
+    // suppress the very first injections.
+    await runHook("session-start.mjs", start("startup"), env);
+    await runHook("user-prompt-submit.mjs", prompt("remind me about the auth decision"), env);
+    assert.equal(searches[2].exclude_ids, undefined, "startup clears the state");
   } finally {
     await close();
   }

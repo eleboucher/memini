@@ -15,6 +15,7 @@
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import fs from "node:fs";
+import crypto from "node:crypto";
 
 // The shared client core (packages/memini-client), bundled to a committed,
 // dependency-free ESM file so these hooks keep running under a bare `node` with
@@ -779,54 +780,80 @@ export function deleteLastRecallState(sessionId) {
   }
 }
 
-// ── per-session prompt-recall injected-id state ────────────────────────────
+// ── per-session cross-surface injected-memory state ────────────────────────
 //
-// UserPromptSubmit injects the top hits for each prompt. Consecutive related
-// prompts recall overlapping result sets, so without memory of what this
-// session already injected, the same memories re-enter context prompt after
-// prompt. The state is the ordered list of injected memory ids; the next
-// prompt's search excludes them server-side (exclude_ids), freeing the top-k
-// for memories the context does NOT already carry. Cleared whenever the
-// context is rebuilt (session start, compaction, session end) — "already in
-// context" is only true until then. Lives in bufferDir() so cleanStaleBuffers
-// GCs orphans.
+// Three surfaces inject memories into the same context: the SessionStart
+// briefing, per-prompt recall (UserPromptSubmit), and per-file recall
+// (PreToolUse). Without shared memory of what the session already carries,
+// each surface can re-inject what another just showed — the same fact once
+// per surface, plus once per related prompt. The state is an insertion-ordered
+// map of injected memory id → content-identity hash, shared by ALL surfaces
+// and gated by the same inject_dedupe knob as the per-file fingerprint:
+//   - the prompt hook excludes recorded ids SERVER-side (exclude_ids), freeing
+//     its top-k for memories the context does not already carry;
+//   - pretool filters CLIENT-side and content-aware — a memory whose content
+//     changed since injection (memory_update) hashes differently and passes,
+//     preserving the fingerprint doctrine that truncation/dedupe is a display
+//     budget, never identity.
+// Cleared whenever the context is rebuilt (startup/clear, compaction, session
+// end) and kept across a resume, whose context is intact — "already in
+// context" is exactly as durable as the context itself. Lives in bufferDir()
+// so cleanStaleBuffers GCs orphans.
 
 // Bounded to the server's exclude_ids cap: keeping more than we can send is
 // pure growth with no dedupe value.
-const MAX_PROMPT_RECALL_IDS = 512;
+const MAX_INJECTED_IDS = 512;
 
-/** Path of the per-session prompt-recall injected-id state file. */
-function promptRecallStatePath(sessionId) {
-  return join(bufferDir(), safeId(sessionId) + ".promptrecall.json");
+/** Path of the per-session cross-surface injected-memory state file. */
+function injectedStatePath(sessionId) {
+  return join(bufferDir(), safeId(sessionId) + ".injected.json");
 }
 
-/** Read the session's injected-id list (oldest first), or [] on any error. */
-export function readPromptRecallState(sessionId) {
+/**
+ * Content-identity hash for the injected-memory state: the UNTRUNCATED text a
+ * recall surface would render (content, falling back to summary) — the same
+ * doctrine as the pretool fingerprint, so an in-place update past any render
+ * cap still changes identity and re-injects.
+ */
+export function injectedIdentity(m) {
+  const text = m?.content || m?.summary || "";
+  return crypto.createHash("sha256").update(text).digest("hex").slice(0, 16);
+}
+
+/** Read the session's injected map (id → identity hash), or {} on any error. */
+export function readInjectedState(sessionId) {
   try {
-    const ids = parseJSON(fs.readFileSync(promptRecallStatePath(sessionId), "utf8"));
-    return Array.isArray(ids) ? ids.filter((x) => typeof x === "string" && x) : [];
+    const map = parseJSON(fs.readFileSync(injectedStatePath(sessionId), "utf8"));
+    if (!map || typeof map !== "object" || Array.isArray(map)) return {};
+    const out = {};
+    for (const [id, h] of Object.entries(map)) {
+      if (id && typeof h === "string") out[id] = h;
+    }
+    return out;
   } catch {
-    return [];
+    return {};
   }
 }
 
-/** Persist the injected-id list (best-effort), most-recent MAX kept. */
-export function writePromptRecallState(sessionId, ids) {
+/** Persist the injected map (best-effort), most recently added MAX kept. */
+export function writeInjectedState(sessionId, map) {
   try {
     fs.mkdirSync(bufferDir(), { recursive: true });
-    const deduped = [...new Set(ids)];
-    fs.writeFileSync(promptRecallStatePath(sessionId), JSON.stringify(deduped.slice(-MAX_PROMPT_RECALL_IDS)));
+    let bounded = map || {};
+    const entries = Object.entries(bounded);
+    if (entries.length > MAX_INJECTED_IDS) bounded = Object.fromEntries(entries.slice(-MAX_INJECTED_IDS));
+    fs.writeFileSync(injectedStatePath(sessionId), JSON.stringify(bounded));
   } catch (e) {
-    if (DEBUG) console.error("[memini] writePromptRecallState failed:", e?.message || e);
+    if (DEBUG) console.error("[memini] writeInjectedState failed:", e?.message || e);
   }
 }
 
-/** Delete the session's prompt-recall injected-id state (best-effort). */
-export function deletePromptRecallState(sessionId) {
+/** Delete the session's injected-id state (best-effort). */
+export function deleteInjectedState(sessionId) {
   try {
-    fs.rmSync(promptRecallStatePath(sessionId), { force: true });
+    fs.rmSync(injectedStatePath(sessionId), { force: true });
   } catch (e) {
-    if (DEBUG) console.error("[memini] deletePromptRecallState failed:", e?.message || e);
+    if (DEBUG) console.error("[memini] deleteInjectedState failed:", e?.message || e);
   }
 }
 

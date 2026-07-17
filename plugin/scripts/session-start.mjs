@@ -25,7 +25,10 @@ import {
   briefingUnchanged,
   cacheBriefingHash,
   deleteLastRecallState,
-  deletePromptRecallState,
+  deleteInjectedState,
+  readInjectedState,
+  writeInjectedState,
+  injectedIdentity,
   escapeMeminiTags,
   MEMORY_INSTRUCTION,
   COMPACT_RECOVERY_DIRECTIVE,
@@ -200,14 +203,15 @@ async function main() {
   // Hygiene: drop session buffers left behind by sessions that never ended.
   cleanStaleBuffers(STALE_BUFFER_MS);
 
-  // A new session's context is empty — nothing has been injected into it yet
-  // — so any last-recall fingerprints from a prior session reusing this
-  // session_id (or left behind by a crash) are stale and would wrongly
-  // suppress the very first injection. Clear them at startup so PreToolUse
-  // and the prompt-recall exclusion both start fresh.
-  if (sessionId) {
+  // A (re)built context is empty of injections — so last-recall fingerprints
+  // and injected-id state from a prior sitting (or a crash) are stale and
+  // would wrongly suppress the very first injections. Clear both so PreToolUse
+  // and the cross-surface exclusion start fresh. EXCEPT on resume: a resume
+  // rejoins an intact context where everything previously injected is still
+  // present, so the state is exactly as valid as the context it describes.
+  if (sessionId && payload.source !== "resume") {
     deleteLastRecallState(sessionId);
-    deletePromptRecallState(sessionId);
+    deleteInjectedState(sessionId);
   }
 
   // Auto-migrate: a successful handshake reporting no pin is the one signal
@@ -401,6 +405,32 @@ async function main() {
   // Record what we injected so a later SessionStart this session can skip an
   // unchanged re-injection (see the cache-stable guard above).
   if (sessionId) cacheBriefingHash(sessionId, contentHash);
+
+  // Feed the cross-surface injected-memory state: the briefing's memories are
+  // now in context, so the recall hooks (UserPromptSubmit, PreToolUse) must
+  // not spend their top-k re-serving them. Recorded from the server's
+  // sections rather than the rendered lines — a budget-dropped bullet was the
+  // lowest priority and re-offering it later mostly re-drops it (same
+  // over-record trade-off as the prompt hook). Merged, not overwritten: on a
+  // resume whose briefing CHANGED, the surviving state still describes the
+  // intact context. Rides the same inject_dedupe knob as the hooks that
+  // consume it.
+  if (sessionId && ctx.setting("inject_dedupe").value) {
+    const injected = readInjectedState(sessionId);
+    let recorded = false;
+    for (const arr of [b.pinned, b.facts, b.procedures, b.recent]) {
+      if (!Array.isArray(arr)) continue;
+      for (const item of arr) {
+        const mem = item?.memory ?? item;
+        const id = mem?.id;
+        if (typeof id === "string" && id) {
+          injected[id] = injectedIdentity(mem);
+          recorded = true;
+        }
+      }
+    }
+    if (recorded) writeInjectedState(sessionId, injected);
+  }
 
   // Both Claude Code and Codex interpret stdout as additional context.
   process.stdout.write(lines.join("\n"));
