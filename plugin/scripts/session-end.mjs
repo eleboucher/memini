@@ -17,6 +17,7 @@ import {
   deleteSessionCwd,
   deleteCachedHandshake,
   deleteLastRecallState,
+  deleteInjectedState,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -63,6 +64,7 @@ async function main() {
 
   deleteSessionBuffer(sessionId); // always, even when no digest was written
   deleteLastRecallState(sessionId); // one of the other per-session state files
+  deleteInjectedState(sessionId); // ditto — injected-id state dies with the session
 
   // Drop this session's recorded project dir AND its cached handshake. A pid is
   // not a durable identity — the OS recycles them, Windows especially fast — so

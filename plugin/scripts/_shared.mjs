@@ -5,7 +5,7 @@
 //     one, or local derivation when the server is unreachable).
 //   - readStdin:        drain stdin to a UTF-8 string
 //   - postJSON/getJSON: REST helpers with bearer-token + namespace headers
-//   - postSearch:       POST /v1/search and return result.memory[] of {content,score}
+//   - postSearch:       POST /v1/search and return {hits, degraded, note}
 //   - postRemember:     POST /v1/memories
 //   - postSupersede:    POST /v1/memories/{id}/supersede (tombstone)
 //   - debug:            gated by MEMINI_DEBUG=1
@@ -15,6 +15,7 @@
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import fs from "node:fs";
+import crypto from "node:crypto";
 
 // The shared client core (packages/memini-client), bundled to a committed,
 // dependency-free ESM file so these hooks keep running under a bare `node` with
@@ -188,11 +189,12 @@ function authHeaders(extra) {
 }
 
 /**
- * POST JSON to memini. `namespace` is sent as X-Memini-Namespace. Returns
- * parsed JSON on 2xx, null otherwise. Never throws — hooks must not crash
- * the agent.
+ * POST JSON to memini, reporting the HTTP status alongside the parsed body so
+ * a caller can tell "the server rejected this request shape" (a 400 — worth
+ * retrying without the offending field) from transport failure (status 0).
+ * `json` is null on any non-2xx or error. Never throws.
  */
-export async function postJSON(path, body, namespace, timeoutMs = requestTimeoutMs) {
+async function postJSONStatus(path, body, namespace, timeoutMs = requestTimeoutMs) {
   try {
     assertBearerTransportSafe(boot.baseUrl, boot.apiKey);
     const res = await fetch(`${boot.baseUrl}${path}`, {
@@ -207,18 +209,34 @@ export async function postJSON(path, body, namespace, timeoutMs = requestTimeout
       // body stays DEBUG-only.
       const t = DEBUG ? await res.text().catch(() => "") : "";
       console.error(`[memini] POST ${path} -> ${res.status}${t ? `: ${t.slice(0, 200)}` : ""}`);
-      return null;
+      return { status: res.status, json: null };
     }
-    return await res.json();
+    return { status: res.status, json: await res.json() };
   } catch (e) {
     console.error(`[memini] POST ${path} failed:`, e?.message || e);
-    return null;
+    return { status: 0, json: null };
   }
 }
 
 /**
- * POST /v1/search and return an array of {content, score, memory} objects.
- * Returns [] on failure.
+ * POST JSON to memini. `namespace` is sent as X-Memini-Namespace. Returns
+ * parsed JSON on 2xx, null otherwise. Never throws — hooks must not crash
+ * the agent.
+ */
+export async function postJSON(path, body, namespace, timeoutMs = requestTimeoutMs) {
+  return (await postJSONStatus(path, body, namespace, timeoutMs)).json;
+}
+
+/**
+ * POST /v1/search and return { hits, degraded, note }.
+ *
+ * `hits` is an array of {content, summary, score, memory, tier} ([] on
+ * failure). `degraded`/`note` pass through the server's degradation signal —
+ * "keyword_only" + a prose note when the query embed failed and results came
+ * from the keyword leg alone — so callers can tell the model the results are
+ * incomplete rather than a confident negative. Both are "" on a healthy
+ * search and on transport failure (an unreachable server proves nothing
+ * about the search pipeline).
  *
  * `minScore` (>= 0) sets a per-call relevance floor: candidates whose fused
  * score is below it are dropped server-side. 0 / unset falls back to the
@@ -226,8 +244,15 @@ export async function postJSON(path, body, namespace, timeoutMs = requestTimeout
  * the hook also filters client-side as a belt-and-braces guard against
  * score-fusion edge cases where the server's normalization disagrees with
  * what the caller wants.
+ *
+ * `excludeIds` drops specific memories server-side (e.g. ones already
+ * injected into this session's context), freeing the top-k for hits the
+ * context does not already carry. Trimmed to the server's 512-id cap,
+ * most-recent kept. An older server that doesn't know the field 400s the
+ * whole request — retried once without it, degrading to "no server-side
+ * dedupe" instead of "no recall at all".
  */
-export async function postSearch(query, namespace, { limit = 5, tiers, exclude, minScore, source } = {}) {
+export async function postSearch(query, namespace, { limit = 5, tiers, exclude, minScore, source, excludeIds } = {}) {
   const body = { query, limit };
   if (tiers) body.tiers = tiers;
   if (typeof minScore === "number" && minScore > 0) body.min_score = minScore;
@@ -239,10 +264,16 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude, 
   // {session_id} so a session's own captured digests aren't recalled back at it
   // while still in the live context.
   if (exclude && Object.keys(exclude).length) body.exclude_metadata = exclude;
-  const res = await postJSON("/v1/search", body, namespace);
-  if (!res || !Array.isArray(res.results)) return [];
+  if (Array.isArray(excludeIds) && excludeIds.length) body.exclude_ids = excludeIds.slice(-MAX_RECALL_EXCLUDE_IDS);
+  let res = await postJSONStatus("/v1/search", body, namespace);
+  if (res.status === 400 && body.exclude_ids) {
+    delete body.exclude_ids;
+    res = await postJSONStatus("/v1/search", body, namespace);
+  }
+  if (!res.json || !Array.isArray(res.json.results)) return { hits: [], degraded: "", note: "" };
+  const resBody = res.json;
   const floor = typeof minScore === "number" && minScore > 0 ? minScore : 0;
-  return res.results
+  const hits = resBody.results
     .map((r) => ({
       content: r?.memory?.content || "",
       summary: r?.memory?.summary || "",
@@ -251,6 +282,54 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude, 
       tier: r?.memory?.tier || "",
     }))
     .filter((r) => r.score >= floor);
+  return {
+    hits,
+    degraded: typeof resBody.degraded === "string" ? resBody.degraded : "",
+    note: typeof resBody.note === "string" ? resBody.note : "",
+  };
+}
+
+// Server-side cap on exclude_ids per search; a longer list is rejected, so
+// callers trim to the most recent before sending.
+const MAX_RECALL_EXCLUDE_IDS = 512;
+
+/**
+ * How fresh a turn capture must be to count as "still part of this
+ * conversation's live context" and be dropped from injection even when the
+ * session-id exclusion misses it (resume/clear/compact roll the session id,
+ * so old rows carry an id the exact-match exclusion can't name).
+ */
+export const TURN_ECHO_WINDOW_MS = 30 * 60 * 1000;
+
+/** Drop turn-format captures younger than the echo window from recall hits. */
+export function filterFreshTurnEchoes(hits, now = Date.now()) {
+  const freshCutoff = now - TURN_ECHO_WINDOW_MS;
+  return (hits || []).filter(
+    (h) => !(h?.memory?.metadata?.format === "turn" && Date.parse(h?.memory?.created_at || "") > freshCutoff),
+  );
+}
+
+/**
+ * Render one recall hit as a "- (score) [labels] text" bullet. Neutralizes
+ * memini wrapper tags in the untrusted recalled content BEFORE the 240-char
+ * truncate, so a forged closing tag can't break out of the enclosing
+ * injection block (memory-poisoning defense — same rationale as formatMemory
+ * in session-start). Returns null when the hit has no renderable text.
+ */
+export function formatRecallHit(h, labels) {
+  const text = escapeMeminiTags(h?.content || h?.summary || "");
+  if (!text) return null;
+  if (labels.size === 0) {
+    return `- (${h.score.toFixed(2)}) ${truncate(text, 240)}`;
+  }
+  const tagParts = [];
+  if (labels.has("tier") && h.tier) tagParts.push(h.tier);
+  if (labels.has("confidence") && typeof h.memory?.confidence === "number") {
+    tagParts.push(`conf=${h.memory.confidence.toFixed(2)}`);
+  }
+  if (labels.has("reason")) tagParts.push("relevant memory");
+  const prefix = tagParts.length ? `[${tagParts.join(" · ")}] ` : "";
+  return `- (${h.score.toFixed(2)}) ${prefix}${truncate(text, 240)}`;
 }
 
 /**
@@ -476,6 +555,20 @@ export async function postSupersede(id, by, namespace) {
 }
 
 /**
+ * Neutralize memini wrapper tags inside untrusted stored content before it is
+ * rendered into an injected block. Memory-poisoning defense (Unit 42 / MINJA):
+ * a memory whose content carries `</memini-context>` or `<memini-memory-directive>`
+ * could otherwise break out of its wrapper and masquerade as a harness directive.
+ * We entity-escape only the leading "<" of any `<memini` / `</memini` sequence
+ * (case-insensitive); generic angle brackets stay as-is so real code snippets
+ * (e.g. `Promise<memory>`, `<div>`) render unmangled.
+ */
+export function escapeMeminiTags(content) {
+  if (typeof content !== "string") return content;
+  return content.replace(/<(\/?)memini/gi, "&lt;$1memini");
+}
+
+/**
  * Truncate to `max` bytes, suffix with a marker. Same shape as
  * agentmemory's truncate helper.
  */
@@ -684,6 +777,83 @@ export function deleteLastRecallState(sessionId) {
     fs.rmSync(lastRecallStatePath(sessionId), { force: true });
   } catch (e) {
     if (DEBUG) console.error("[memini] deleteLastRecallState failed:", e?.message || e);
+  }
+}
+
+// ── per-session cross-surface injected-memory state ────────────────────────
+//
+// Three surfaces inject memories into the same context: the SessionStart
+// briefing, per-prompt recall (UserPromptSubmit), and per-file recall
+// (PreToolUse). Without shared memory of what the session already carries,
+// each surface can re-inject what another just showed — the same fact once
+// per surface, plus once per related prompt. The state is an insertion-ordered
+// map of injected memory id → content-identity hash, shared by ALL surfaces
+// and gated by the same inject_dedupe knob as the per-file fingerprint:
+//   - the prompt hook excludes recorded ids SERVER-side (exclude_ids), freeing
+//     its top-k for memories the context does not already carry;
+//   - pretool filters CLIENT-side and content-aware — a memory whose content
+//     changed since injection (memory_update) hashes differently and passes,
+//     preserving the fingerprint doctrine that truncation/dedupe is a display
+//     budget, never identity.
+// Cleared whenever the context is rebuilt (startup/clear, compaction, session
+// end) and kept across a resume, whose context is intact — "already in
+// context" is exactly as durable as the context itself. Lives in bufferDir()
+// so cleanStaleBuffers GCs orphans.
+
+// Bounded to the server's exclude_ids cap: keeping more than we can send is
+// pure growth with no dedupe value.
+const MAX_INJECTED_IDS = 512;
+
+/** Path of the per-session cross-surface injected-memory state file. */
+function injectedStatePath(sessionId) {
+  return join(bufferDir(), safeId(sessionId) + ".injected.json");
+}
+
+/**
+ * Content-identity hash for the injected-memory state: the UNTRUNCATED text a
+ * recall surface would render (content, falling back to summary) — the same
+ * doctrine as the pretool fingerprint, so an in-place update past any render
+ * cap still changes identity and re-injects.
+ */
+export function injectedIdentity(m) {
+  const text = m?.content || m?.summary || "";
+  return crypto.createHash("sha256").update(text).digest("hex").slice(0, 16);
+}
+
+/** Read the session's injected map (id → identity hash), or {} on any error. */
+export function readInjectedState(sessionId) {
+  try {
+    const map = parseJSON(fs.readFileSync(injectedStatePath(sessionId), "utf8"));
+    if (!map || typeof map !== "object" || Array.isArray(map)) return {};
+    const out = {};
+    for (const [id, h] of Object.entries(map)) {
+      if (id && typeof h === "string") out[id] = h;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Persist the injected map (best-effort), most recently added MAX kept. */
+export function writeInjectedState(sessionId, map) {
+  try {
+    fs.mkdirSync(bufferDir(), { recursive: true });
+    let bounded = map || {};
+    const entries = Object.entries(bounded);
+    if (entries.length > MAX_INJECTED_IDS) bounded = Object.fromEntries(entries.slice(-MAX_INJECTED_IDS));
+    fs.writeFileSync(injectedStatePath(sessionId), JSON.stringify(bounded));
+  } catch (e) {
+    if (DEBUG) console.error("[memini] writeInjectedState failed:", e?.message || e);
+  }
+}
+
+/** Delete the session's injected-id state (best-effort). */
+export function deleteInjectedState(sessionId) {
+  try {
+    fs.rmSync(injectedStatePath(sessionId), { force: true });
+  } catch (e) {
+    if (DEBUG) console.error("[memini] deleteInjectedState failed:", e?.message || e);
   }
 }
 

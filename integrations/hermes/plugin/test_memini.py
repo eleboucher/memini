@@ -952,5 +952,105 @@ class TurnCaptureVectorsTest(unittest.TestCase):
         )
 
 
+class InjectedDedupeTest(unittest.TestCase):
+    """The conversation-scoped injected-id state: prefetch spends the recall
+    limit on memories the context does not already carry — whether a prior
+    prefetch injected them or the model pulled them via the recall/briefing
+    tools — and pre-compress deliberately bypasses and resets it."""
+
+    @staticmethod
+    def _hit(mid, content, score=0.9):
+        return {"memory": {"id": mid, "content": content}, "score": score}
+
+    def test_prefetch_excludes_previously_injected(self):
+        bodies = []
+        hits = [[self._hit("m1", "fact one")], [self._hit("m2", "fact two")]]
+
+        def stub(path, body, method="POST"):
+            bodies.append(body)
+            return {"results": hits[len(bodies) - 1]}
+
+        p = make_provider(stub)
+        first = p.prefetch("what did we decide about auth")
+        self.assertIn("fact one", first)
+        self.assertNotIn("exclude_ids", bodies[0])
+        second = p.prefetch("and what about session cookies")
+        self.assertEqual(bodies[1].get("exclude_ids"), ["m1"])
+        self.assertIn("fact two", second)
+
+    def test_prefetch_client_filter_drops_already_injected(self):
+        # A server that ignores exclude_ids (or the old-server fallback that
+        # dropped the field) still must not produce repeats: the client-side
+        # filter is the belt-and-braces layer.
+        def stub(path, body, method="POST"):
+            return {"results": [self._hit("m1", "fact one")]}
+
+        p = make_provider(stub)
+        self.assertIn("fact one", p.prefetch("query one long enough"))
+        self.assertEqual(p.prefetch("query two long enough"), "")
+
+    def test_prefetch_400_fallback_retries_once_and_latches(self):
+        bodies = []
+
+        def stub(path, body, method="POST"):
+            bodies.append(body)
+            if body is not None and "exclude_ids" in body:
+                return None  # an old server 400s the unknown field; _call degrades to None
+            return {"results": [self._hit(f"m{len(bodies)}", f"fact {len(bodies)}")]}
+
+        p = make_provider(stub)
+        p.prefetch("query one long enough")  # injects m1, no exclusion yet
+        block = p.prefetch("query two long enough")
+        self.assertIn("exclude_ids", bodies[1])
+        self.assertNotIn("exclude_ids", bodies[2] or {})
+        self.assertIn("fact 3", block)  # the retry's hits still land
+        p.prefetch("query three long enough")
+        self.assertNotIn("exclude_ids", bodies[3] or {})  # latched off for the session
+
+    def test_pre_compress_bypasses_exclusion_and_resets(self):
+        bodies = []
+
+        def stub(path, body, method="POST"):
+            bodies.append(body)
+            return {"results": [self._hit("m1", "fact one")]}
+
+        p = make_provider(stub)
+        p.prefetch("query one long enough")  # m1 is now "in context"
+        block = p.on_pre_compress([{"role": "user", "content": "what about auth"}])
+        self.assertIn("fact one", block)  # re-injected despite being seen
+        self.assertNotIn("exclude_ids", bodies[1] or {})
+
+    def test_recall_tool_results_are_recorded(self):
+        bodies = []
+
+        def stub(path, body, method="POST"):
+            bodies.append(body)
+            return {"results": [self._hit("t1", "tool-fetched fact")]}
+
+        p = make_provider(stub)
+        out = p.handle_tool_call("memory_recall", {"query": "auth"})
+        self.assertIn("t1", out)  # the tool itself is never filtered
+        p.prefetch("what about auth tokens")
+        self.assertEqual(bodies[-1].get("exclude_ids"), ["t1"])
+
+    def test_briefing_tool_results_are_recorded(self):
+        calls = []
+
+        def stub(path, body, method="POST"):
+            calls.append((path, body))
+            if path.startswith("/v1/namespaces/briefing"):
+                return {
+                    "namespace": "x",
+                    "facts": [{"memory": {"id": "b1", "content": "briefed fact"}}],
+                    "recent": [{"memory": {"id": "b2", "content": "recent item"}}],
+                }
+            return {"results": []}
+
+        p = make_provider(stub)
+        p.handle_tool_call("memory_briefing", {})
+        p.prefetch("what about the briefed thing")
+        self.assertEqual(sorted(calls[-1][1].get("exclude_ids") or []), ["b1", "b2"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -132,6 +132,51 @@ production reranker: most of the lift, a fraction of the cost, and no chat model
 Before you reach for a reranker, ask whether your recall is at ceiling. If it is,
 the reranker will not save you, and the problem is upstream.
 
+### Gating on rerank score
+
+A reranker that only reorders still returns _something_ for every query — on a
+query with no real answer, that something is the least-irrelevant noise, ranked
+confidently. The fused retrieval score cannot cut this tail:
+[`MEMINI_RECALL_MIN_SCORE`](../reference/configuration.md#memini_recall_min_score)
+operates on min-max-normalized scores, so the best of a bad pool always
+normalizes into competitive territory. Cross-encoder scores are different: they
+are calibrated absolute relevance, and on a well-separated model a true hit
+scores ~0.9 while noise sits near zero.
+
+[`MEMINI_RERANK_MIN_SCORE`](../reference/configuration.md#memini_rerank_min_score)
+puts that separation to work: candidates scoring below the threshold are
+dropped, across the whole `MEMINI_RERANK_POOL` before the recall limit applies.
+When everything gates out, recall returns **empty** — "nothing relevant exists"
+— instead of falling back to the ungated composite order. Empty-by-gate is
+recorded as `rerank_result{result="empty"}` in the metrics, distinct from
+`ok`/`fallback`, so you can watch the gate's collapse rate; a rerank _failure_
+(timeout, dead backend) still falls back to composite order, because a dead
+reranker never rendered a verdict.
+
+Two constraints. It is cross-encoder-only — `MEMINI_RERANK=llm` returns an
+ordinal list with no scores, so combining it with the gate is a boot error
+rather than a gate that silently never fires. And the threshold is
+**model-specific**: score distributions differ between rerankers, so pick it
+from a sweep against your own backend rather than copying a number. The bench
+harness runs the sweep directly — per threshold it reports positive recall@k
+(gold answers that survive the gate) against the negative injection rate
+(foreign-namespace noise that sneaks through):
+
+```sh
+go run ./cmd/bench -suite longmemeval -data ./longmemeval_s.json \
+  -rerank-url http://reranker:8002/v1 -rerank-model your-reranker \
+  -rerank-gate "0.05,0.1,0.2,0.3,0.5" -rerank-gate-pool 20
+```
+
+(Dataset acquisition and the other suites are covered in
+[the bench README](../../bench/README.md).)
+
+Pick the highest threshold whose positive recall is still at your no-gate
+baseline; the negative injection column shows what you are buying. A
+miscalibrated threshold silently empties recall — the default is `0` (off) for
+exactly that reason. The response `score` field is unaffected: it still
+carries the fused retrieval score, never the rerank score.
+
 ---
 
 ## It misses queries that are worded semantically

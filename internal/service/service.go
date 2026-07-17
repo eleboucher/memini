@@ -240,6 +240,10 @@ type Service struct {
 	// rerankTimeout bounds the reranker call; past it, recall falls back to
 	// composite order instead of stalling on a slow backend.
 	rerankTimeout time.Duration
+	// rerankEmptyVerdict makes an empty rerank result final (the score-gate's
+	// "nothing relevant" verdict) instead of falling back to composite order.
+	// See WithRerankEmptyVerdict.
+	rerankEmptyVerdict bool
 	// rerankPool is how many composite-ranked candidates reach the reranker
 	// before the result is truncated to the caller's limit. 0 reranks only the
 	// limit itself, which reorders the result set but cannot rescue a candidate
@@ -486,6 +490,21 @@ func WithRerankPool(n int) Option {
 		if n > 0 {
 			s.rerankPool = n
 		}
+	}
+}
+
+// WithRerankEmptyVerdict makes an EMPTY rerank result final instead of falling
+// back to composite order. Set it when the reranker gates candidates on a
+// relevance-score threshold (rerank.Config.MinScore): a fully-gated pool means
+// "nothing relevant exists", and falling back would undo the gate exactly on
+// the queries it exists for. Without a gate, empty output is a backend
+// pathology (an LLM answering "none", a /rerank server omitting everything)
+// and the fallback stays the right call — so this is opt-in, wired only when
+// a gate is configured. Rerank FAILURES (error, timeout) keep the composite
+// fallback either way: a dead reranker never rendered a verdict to honor.
+func WithRerankEmptyVerdict() Option {
+	return func(s *Service) {
+		s.rerankEmptyVerdict = true
 	}
 }
 
@@ -2794,6 +2813,15 @@ func (s *Service) finalizeRecall(ctx context.Context, query string, ranked []sto
 		}
 	}
 	if len(out) == 0 {
+		if s.rerankEmptyVerdict {
+			// A score-gated reranker dropping the whole pool is a verdict —
+			// "nothing relevant exists" — not a failure to paper over with the
+			// ungated composite order. Recorded as "empty" (vs "ok"/"fallback")
+			// so operators can watch the gate's collapse rate.
+			slog.DebugContext(ctx, "recall: rerank gated out every candidate, returning empty", "backend", s.rerankName)
+			s.metrics.RerankResult(s.rerankName, "empty")
+			return out
+		}
 		slog.WarnContext(ctx, "recall: rerank matched no candidates, using composite order", "backend", s.rerankName)
 		s.metrics.RerankResult(s.rerankName, "fallback")
 		return search.Dedup(ranked, k)

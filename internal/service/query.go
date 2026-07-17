@@ -423,6 +423,15 @@ func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingO
 	}
 	byDurable(facts)
 	byDurable(procs)
+	// Reserve each durable section's last slot for something not shown lately,
+	// breaking the rich-get-richer loop where access-count reinforcement keeps
+	// the same top-N in every session. The served set is read once, from THIS
+	// namespace's own briefing log (the primary — where a briefing's serves are
+	// recorded); a store with no event log yields an empty set and pure
+	// DurableScore order, exactly today's behavior. See reserveExplorationSlot.
+	served := s.recentlyServedIDs(ctx, namespace, now)
+	facts = reserveExplorationSlot(facts, factsN, served)
+	procs = reserveExplorationSlot(procs, procsN, served)
 	sort.SliceStable(recent, func(i, j int) bool { return recent[i].CreatedAt.After(recent[j].CreatedAt) })
 
 	// Drop just-captured turns from the recent section: a turn still in the
@@ -633,6 +642,39 @@ func topN(ms []*memory.Memory, n int) []*memory.Memory {
 		return ms[:n]
 	}
 	return ms
+}
+
+// reserveExplorationSlot gives a durable section's last slot (slot n of n) to
+// the highest-DurableScore item not in served, so reinforcement cannot pin the
+// same top-n in every session. ms is already DurableScore-sorted, desc. The
+// swap applies ONLY when the top-n are ALL recently served AND an unserved
+// candidate sits below the cutoff; if an unserved item is already in the top-n,
+// none sits below it, or there are n-or-fewer candidates, ms is returned
+// untouched (pure DurableScore order, exactly today's behavior). The first n-1
+// slots never move — only the last slot rotates.
+func reserveExplorationSlot(ms []*memory.Memory, n int, served map[string]bool) []*memory.Memory {
+	if n <= 0 || len(ms) <= n {
+		return ms // section disabled, or n-or-fewer candidates: nothing to reserve
+	}
+	for _, m := range ms[:n] {
+		if !served[m.ID] {
+			return ms // an unserved item already surfaces in the top-n
+		}
+	}
+	// ms is DurableScore-sorted, so the first unserved item below the cutoff is
+	// the highest-scored one — the item to promote into the last slot.
+	for i := n; i < len(ms); i++ {
+		if served[ms[i].ID] {
+			continue
+		}
+		out := make([]*memory.Memory, 0, len(ms))
+		out = append(out, ms[:n-1]...)  // first n-1 slots unchanged
+		out = append(out, ms[i])        // last slot: the staler item
+		out = append(out, ms[n-1:i]...) // items it displaced slide down
+		out = append(out, ms[i+1:]...)
+		return out
+	}
+	return ms // every candidate was recently served: nothing staler to surface
 }
 
 // DeleteNamespace removes every memory in a namespace. Returns the number of

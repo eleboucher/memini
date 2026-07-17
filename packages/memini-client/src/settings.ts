@@ -67,7 +67,7 @@ export const BEHAVIOR_KNOBS: BehaviorKnob[] = [
     envName: "MEMINI_INJECT_PRETOOL_TOOLS",
     wireKey: "inject_pretool_tools",
     kind: "list",
-    default: ["Read", "Write", "Edit", "Glob", "Grep"],
+    default: ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep"],
   },
   { envName: "MEMINI_INJECT_DEDUPE", wireKey: "inject_dedupe", kind: "bool", default: true },
   { envName: "MEMINI_INJECT_LABELS", wireKey: "inject_labels", kind: "list", default: [] },

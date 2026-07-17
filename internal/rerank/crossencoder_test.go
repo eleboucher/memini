@@ -273,3 +273,96 @@ func TestCrossEncoderBatchErrorPropagates(t *testing.T) {
 		t.Fatal("want error when a batch fails, got nil")
 	}
 }
+
+func TestCrossEncoderMinScoreDropsBelowThreshold(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[
+			{"index":0,"relevance_score":0.05},
+			{"index":1,"relevance_score":0.95},
+			{"index":2,"relevance_score":0.9}
+		]}`))
+	}))
+	defer srv.Close()
+
+	ce, _ := New(Config{BaseURL: srv.URL, MinScore: 0.5})
+	got, err := ce.Rerank(context.Background(), "q", []Candidate{{ID: "a"}, {ID: "b"}, {ID: "c"}})
+	if err != nil {
+		t.Fatalf("rerank: %v", err)
+	}
+	if len(got) != 2 || got[0] != "b" || got[1] != "c" {
+		t.Fatalf("got %v, want [b c] (a gated out, order preserved)", got)
+	}
+}
+
+func TestCrossEncoderMinScoreAllBelowReturnsEmpty(t *testing.T) {
+	// The gate's whole point: when nothing in the pool is relevant, the verdict
+	// is "no results", not "the least-irrelevant noise, ranked".
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[
+			{"index":0,"relevance_score":0.02},
+			{"index":1,"relevance_score":0.001}
+		]}`))
+	}))
+	defer srv.Close()
+
+	ce, _ := New(Config{BaseURL: srv.URL, MinScore: 0.3})
+	got, err := ce.Rerank(context.Background(), "q", []Candidate{{ID: "a"}, {ID: "b"}})
+	if err != nil {
+		t.Fatalf("rerank: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %v, want empty (everything below the gate)", got)
+	}
+}
+
+func TestCrossEncoderMinScoreZeroDisablesGate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[{"index":0,"relevance_score":0.0001},{"index":1,"relevance_score":0.9}]}`))
+	}))
+	defer srv.Close()
+
+	ce, _ := New(Config{BaseURL: srv.URL})
+	got, err := ce.Rerank(context.Background(), "q", []Candidate{{ID: "a"}, {ID: "b"}})
+	if err != nil {
+		t.Fatalf("rerank: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %v, want both candidates (no gate configured)", got)
+	}
+}
+
+func TestCrossEncoderMinScoreSingleCandidateStillScored(t *testing.T) {
+	// Ungated, a single candidate short-circuits without a network call — there
+	// is nothing to reorder. Gated, that shortcut would bypass the gate exactly
+	// when the pool has collapsed to one candidate (limit=1 recalls), so the
+	// candidate must still be scored and droppable.
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(`{"results":[{"index":0,"relevance_score":0.01}]}`))
+	}))
+	defer srv.Close()
+
+	ce, _ := New(Config{BaseURL: srv.URL, MinScore: 0.5})
+	got, err := ce.Rerank(context.Background(), "q", []Candidate{{ID: "a"}})
+	if err != nil {
+		t.Fatalf("rerank: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("got %d HTTP calls, want 1 (the gate must see a real score)", calls)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %v, want empty (single candidate below the gate)", got)
+	}
+
+	// The ungated shortcut is load-bearing (zero-latency no-op) — pin it.
+	ungated, _ := New(Config{BaseURL: srv.URL})
+	before := calls
+	got, err = ungated.Rerank(context.Background(), "q", []Candidate{{ID: "a"}})
+	if err != nil || len(got) != 1 || got[0] != "a" {
+		t.Fatalf("ungated single candidate: got %v err %v, want [a] nil", got, err)
+	}
+	if calls != before {
+		t.Fatalf("ungated single candidate must not make a network call")
+	}
+}

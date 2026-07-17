@@ -118,6 +118,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
       "Read",
       "Write",
       "Edit",
+      "MultiEdit",
       "Glob",
       "Grep"
     ],

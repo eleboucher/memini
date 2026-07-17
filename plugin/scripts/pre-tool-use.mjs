@@ -23,19 +23,18 @@ import {
   postSearch,
   readToolCall,
   fitByTokens,
-  truncate,
+  escapeMeminiTags,
+  filterFreshTurnEchoes,
+  formatRecallHit,
   readLastRecallState,
   writeLastRecallState,
+  readInjectedState,
+  writeInjectedState,
+  injectedIdentity,
   DEBUG,
 } from "./_shared.mjs";
 
 const FILE_KEYS = ["filePath", "file_path", "path", "file", "pattern"];
-
-// How fresh a turn capture must be to count as "still part of this
-// conversation's live context" and be dropped from injection even when the
-// session-id exclusion misses it (resume/clear/compact roll the session id,
-// so old rows carry an id the exact-match exclusion can't name).
-const TURN_ECHO_WINDOW_MS = 30 * 60 * 1000;
 
 function extractFiles(args) {
   if (!args || typeof args !== "object") return [];
@@ -50,22 +49,6 @@ function extractFiles(args) {
 function toolAllowed(toolName, allow) {
   if (!Array.isArray(allow) || allow.length === 0) return true;
   return allow.includes(String(toolName || "").toLowerCase());
-}
-
-function formatHit(h, labels) {
-  const text = h?.content || h?.summary || "";
-  if (!text) return null;
-  if (labels.size === 0) {
-    return `- (${h.score.toFixed(2)}) ${truncate(text, 240)}`;
-  }
-  const tagParts = [];
-  if (labels.has("tier") && h.tier) tagParts.push(h.tier);
-  if (labels.has("confidence") && typeof h.memory?.confidence === "number") {
-    tagParts.push(`conf=${h.memory.confidence.toFixed(2)}`);
-  }
-  if (labels.has("reason")) tagParts.push("relevant memory");
-  const prefix = tagParts.length ? `[${tagParts.join(" · ")}] ` : "";
-  return `- (${h.score.toFixed(2)}) ${prefix}${truncate(text, 240)}`;
 }
 
 async function main() {
@@ -124,6 +107,24 @@ async function main() {
   const lastRecall = dedupe ? readLastRecallState(sessionId) : {};
   let lastRecallChanged = false;
 
+  // Degradation is per-block, not per-file: when any of the (up to 3) searches
+  // came back keyword-only, one warning line at the end of the block tells the
+  // model the results are incomplete. First non-empty note wins — they all
+  // describe the same embedder outage.
+  let degradedNote = "";
+
+  // Cross-surface dedupe: memories the briefing or a prompt recall (or an
+  // earlier pretool block) already put into this session's context are
+  // filtered out CLIENT-side and content-aware — a memory whose content
+  // changed since injection hashes differently and passes, so in-place
+  // updates still resurface (deliberately NOT exclude_ids: a server-side id
+  // exclusion could never return the updated content). The map accumulates
+  // ACROSS the files of this one call, so file 2 doesn't repeat what file 1
+  // just injected. Shares the inject_dedupe knob with the per-file
+  // fingerprint below — off restores the prior always-inject behavior.
+  const injectedMap = dedupe && sessionId ? readInjectedState(sessionId) : {};
+  let injectedChanged = false;
+
   for (const f of files.slice(0, 3)) {
     const q = `${toolName} on ${f}`;
     // Exclude this session's own captured digests (Stop checkpoint / SessionEnd
@@ -131,21 +132,29 @@ async function main() {
     // surfacing them just echoes what the agent already did this session. Prior
     // sessions' digests stay recallable.
     const exclude = sessionId ? { session_id: sessionId } : undefined;
-    let hits = await postSearch(q, project, {
+    const { hits: rawHits, degraded, note } = await postSearch(q, project, {
       limit: itemsPerFile,
       exclude,
       minScore,
       source: "pretool",
     });
+    if (degraded && !degradedNote) {
+      degradedNote = note || "semantic search unavailable — results are keyword-only and may be incomplete";
+    }
     // The session-id exclusion misses turn captures written before a
     // resume/clear/compact rolled the session id (old rows keep the old id,
     // and exclude_metadata is an exact match). A fresh turn capture is still
     // — or was minutes ago — part of this conversation's live context, so
     // drop it regardless of which session id it carries.
-    const freshCutoff = Date.now() - TURN_ECHO_WINDOW_MS;
-    hits = hits.filter(
-      (h) => !(h.memory?.metadata?.format === "turn" && Date.parse(h.memory?.created_at || "") > freshCutoff),
-    );
+    const hits = filterFreshTurnEchoes(rawHits).filter((h) => {
+      const id = h?.memory?.id;
+      if (typeof id !== "string" || !(id in injectedMap)) return true;
+      // A sentinel ("") marks a tool-read entry whose true content identity is
+      // unknowable (concise tool responses truncate) — suppress by id alone.
+      if (injectedMap[id] === "") return false;
+      // Already in context — unless its content changed since injection.
+      return injectedMap[id] !== injectedIdentity(h);
+    });
     if (hits.length === 0) continue;
 
     // Fingerprint the SEMANTIC content served for this file: the file path
@@ -179,14 +188,29 @@ async function main() {
     out.push(`File: ${f}`);
     // Render then trim by token budget (within a single file's block) so a
     // tight cap drops the lowest-scoring hits per file first.
-    const lines = hits.map((h) => formatHit(h, labels)).filter(Boolean);
+    const lines = hits.map((h) => formatRecallHit(h, labels)).filter(Boolean);
     const fit = fitByTokens(lines, maxTokens);
     out.push(...fit.items);
     totalDropped += fit.dropped;
+    // This block's memories are now (about to be) in context: record them so
+    // this call's remaining files and every later recall surface skip them.
+    if (dedupe) {
+      for (const h of hits) {
+        const id = h?.memory?.id;
+        if (typeof id === "string" && id) {
+          injectedMap[id] = injectedIdentity(h);
+          injectedChanged = true;
+        }
+      }
+    }
   }
+  if (dedupe && sessionId && injectedChanged) writeInjectedState(sessionId, injectedMap);
   if (lastRecallChanged) writeLastRecallState(sessionId, lastRecall);
   if (!any) return;
   if (totalDropped > 0) out.push(`[... ${totalDropped} item(s) truncated by token budget]`);
+  // The note is server-authored, but it transits the same untrusted rendering
+  // path as memory content — escape it so a forged tag can't break the wrapper.
+  if (degradedNote) out.push(`[memini: ${escapeMeminiTags(degradedNote)}]`);
   out.push("</memini-pretool>");
   // PreToolUse plain stdout is NOT shown to the model (it goes to the debug
   // log) — context must be returned as JSON additionalContext.

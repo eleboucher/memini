@@ -1322,6 +1322,15 @@ components:
             dropped server-side before re-ranking. 0 (or unset) falls back to
             the server's baked relevance floor (0.1). Only meaningful with score
             fusion (RRF scores are not comparable to this threshold).
+    # Results nest the memory ({memory, score, from}), they are not bare
+    # Memory objects. Hand-written consumers that must move in lockstep with
+    # any shape change here: plugin/scripts/_shared.mjs postSearch (feeds
+    # pre-tool-use.mjs; fixtures built by searchBody in plugin/scripts/
+    # _test.mjs), integrations/pi and integrations/openclaw recall tools.
+    # The Go server and admin UI are generated from this file and
+    # self-correct; the plugin hooks are not — a drifted hook silently
+    # injects nothing while its hand-written mock fixtures keep its tests
+    # green.
     ScoredMemory:
       type: object
       required: [memory, score]
@@ -1480,6 +1489,16 @@ components:
           type: string
           description: Pass as "before" to fetch the next page; absent on the last page.
         has_more: { type: boolean }
+    # The four sections carry BriefingItem wrappers ({memory, from}), not
+    # bare Memory objects. Hand-written consumers that must move in lockstep
+    # with any shape change here or in BriefingItem: plugin/scripts/
+    # session-start.mjs (render; fixtures built by briefingBody/bi in
+    # plugin/scripts/_test.mjs), integrations/pi and integrations/openclaw
+    # (unwrap item.memory), integrations/hermes (proxies raw JSON). The Go
+    # server (api.gen.go) and admin UI schema are generated from this file
+    # and self-correct; the plugin hook is not — when it drifted from this
+    # schema it silently injected nothing while its mock fixtures kept its
+    # tests green.
     Briefing:
       type: object
       required: [namespace]
@@ -2026,7 +2045,7 @@ components:
         inject_pretool_tools:
           type: array
           items: { type: string }
-          default: [Read, Write, Edit, Glob, Grep]
+          default: [Read, Write, Edit, MultiEdit, Glob, Grep]
           description: Tool-name allowlist that triggers a PreToolUse injection.
         inject_dedupe:
           type: boolean

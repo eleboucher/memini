@@ -12,6 +12,16 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/run.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/user-prompt-submit.mjs\""
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
@@ -44,7 +54,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|Read|Glob|Grep",
+        "matcher": "Edit|MultiEdit|Write|Read|Glob|Grep",
         "hooks": [
           {
             "type": "command",
@@ -55,7 +65,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Edit|MultiEdit|Write|Bash|NotebookEdit|Agent|Task|apply_patch",
+        "matcher": "Edit|MultiEdit|Write|Bash|NotebookEdit|Agent|Task|apply_patch|mcp__.*memini.*__memory_(recall|briefing|get)",
         "hooks": [
           {
             "type": "command",

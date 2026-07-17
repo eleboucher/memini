@@ -355,6 +355,20 @@ func TestLoadValidationErrors(t *testing.T) {
 			name: "negative stability k",
 			env:  map[string]string{"MEMINI_STABILITY_K": "-0.5"},
 		},
+		{
+			name: "negative rerank min score",
+			env:  map[string]string{"MEMINI_RERANK_MIN_SCORE": "-0.1"},
+		},
+		{
+			// The LLM reranker emits an ordinal list, not calibrated scores —
+			// a gate configured against it would silently never fire, which is
+			// worse than refusing to boot.
+			name: "rerank min score with llm reranker",
+			env: map[string]string{
+				"MEMINI_RERANK":           "llm",
+				"MEMINI_RERANK_MIN_SCORE": "0.3",
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

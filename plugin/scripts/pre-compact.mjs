@@ -13,6 +13,7 @@ import {
   readSessionEvents,
   buildSessionDigest,
   deleteLastRecallState,
+  deleteInjectedState,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -24,9 +25,12 @@ async function main() {
   // Compaction evicts earlier PreToolUse injections from context (that's the
   // whole point of compacting), so the last-recall fingerprints recorded
   // against them are now stale — the next recall for a file must re-inject
-  // even if the served memories are unchanged. Unconditional and independent
-  // of whether this session buffered any events worth checkpointing below.
+  // even if the served memories are unchanged. Same for the prompt-recall
+  // injected-id state: "already in context" stopped being true the moment the
+  // context was rebuilt. Unconditional and independent of whether this
+  // session buffered any events worth checkpointing below.
   deleteLastRecallState(sessionId);
+  deleteInjectedState(sessionId);
 
   const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "on-miss", timeoutMs: 2000 });
   const project = ctx.namespace;

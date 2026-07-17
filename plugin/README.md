@@ -7,14 +7,15 @@ the agent _when_ to use the memory tools.
 
 ## What it does
 
-| Hook event     | What memini does                                                                                                                                                                                   |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SessionStart` | Searches prior context, writes a short block to the agent's input                                                                                                                                  |
-| `PreToolUse`   | Before Edit/Write/Read/Glob/Grep, surfaces related memories                                                                                                                                        |
-| `PostToolUse`  | Buffers state-changing tool calls locally (no network, no per-call memory)                                                                                                                         |
-| `Stop`         | Distills the buffer into a working-tier checkpoint, captures the last turn as episodic memory, scrapes legacy inline `<memory>` blocks (back-compat), and periodically nudges an auto-save (below) |
-| `PreCompact`   | Before context compaction, distills the buffer into an episodic emergency checkpoint (Claude Code only)                                                                                            |
-| `SessionEnd`   | Distills the buffer into one durable episodic **session digest**                                                                                                                                   |
+| Hook event         | What memini does                                                                                                                                                                                   |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SessionStart`     | Searches prior context, writes a short block to the agent's input                                                                                                                                  |
+| `UserPromptSubmit` | Recalls memories relevant to what the user just asked (the prompt is the query) and injects the top hits                                                                                           |
+| `PreToolUse`       | Before Edit/MultiEdit/Write/Read/Glob/Grep, surfaces related memories                                                                                                                              |
+| `PostToolUse`      | Buffers state-changing tool calls locally (no network, no per-call memory)                                                                                                                         |
+| `Stop`             | Distills the buffer into a working-tier checkpoint, captures the last turn as episodic memory, scrapes legacy inline `<memory>` blocks (back-compat), and periodically nudges an auto-save (below) |
+| `PreCompact`       | Before context compaction, distills the buffer into an episodic emergency checkpoint (Claude Code only)                                                                                            |
+| `SessionEnd`       | Distills the buffer into one durable episodic **session digest**                                                                                                                                   |
 
 ### Auto-save (Stop)
 
@@ -179,7 +180,7 @@ machine-local offline override.
 
 ```
 Install the memini plugin for persistent memory: run `/plugin marketplace add eleboucher/memini`
-then `/plugin install memini`. The plugin registers 6 hooks + 3 skills + the memini MCP server
+then `/plugin install memini`. The plugin registers 7 hooks + 3 skills + the memini MCP server
 so the agent has memory_remember / memory_recall / memory_get / memory_update / memory_forget /
 memory_list / memory_briefing (plus memory_answer, when an LLM is configured) without extra
 config. Verify with `curl http://localhost:8080/healthz`.
@@ -372,15 +373,47 @@ no change.
 | `MEMINI_INJECT_BRIEFING_RECENT`     | `3`      | Max recent episodic entries. `0` disables.                                                           |
 | `MEMINI_INJECT_BRIEFING_MAX_TOK`    | uncapped | Hard ceiling on rendered tokens; drops tail blocks/bullets first. Pinned keeps priority over recent. |
 
-**PreToolUse** (one search per file in `Edit|Write|Read|Glob|Grep`):
+**UserPromptSubmit** (one search per user prompt — the prompt is the query):
 
-| Env var                           | Default                         | Description                                                                                 |
-| --------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------- |
-| `MEMINI_INJECT_PRETOOL_ITEMS`     | `3`                             | Max hits surfaced per file.                                                                 |
-| `MEMINI_INJECT_PRETOOL_MAX_TOK`   | uncapped                        | Hard ceiling on rendered tokens (per file).                                                 |
-| `MEMINI_INJECT_PRETOOL_MIN_SCORE` | `0`                             | Floor on the fused score; hits below are dropped server-side.                               |
-| `MEMINI_INJECT_PRETOOL_TOOLS`     | `Read\|Write\|Edit\|Glob\|Grep` | Pipe- or comma-separated tool allowlist override.                                           |
-| `MEMINI_INJECT_DEDUPE`            | on                              | Skip re-injecting an unchanged recall block for the same file (the recall call still runs). |
+| Env var                          | Default  | Description                                                                                      |
+| -------------------------------- | -------- | ------------------------------------------------------------------------------------------------ |
+| `MEMINI_RECALL`                  | on       | Master switch for per-prompt recall. `MEMINI_RECALL=0` disables the hook.                        |
+| `MEMINI_RECALL_LIMIT`            | `3`      | Max hits injected per prompt.                                                                    |
+| `MEMINI_INJECT_RECALL_MAX_TOK`   | uncapped | Hard ceiling on rendered tokens per prompt.                                                      |
+| `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`      | Floor on the fused score; hits below are dropped server-side (and client-side, belt-and-braces). |
+
+Command-shaped prompts (`/`, `!`, `#` prefixes) and prompts too short to be a
+useful query are skipped. When the server reports a degraded (keyword-only)
+search, the block carries a `[memini: ...]` warning line so the model knows the
+results are incomplete rather than a confident negative.
+
+**Cross-surface injection dedupe.** The three injection surfaces — the
+`SessionStart` briefing, per-prompt recall, and per-file pretool recall —
+share one per-session record of which memories are already in context, so no
+surface re-injects what another already showed. The prompt hook excludes
+recorded ids server-side (`exclude_ids`), spending its top hits on memories
+the conversation doesn't yet carry; pretool filters client-side and
+**content-aware**, so a memory updated mid-session (its content changed since
+injection) still resurfaces. Memories the model pulls itself via the memini
+MCP read tools (`memory_recall` / `memory_briefing` / `memory_get`) count too:
+`PostToolUse` records their ids, so auto-recall won't re-inject what a tool
+call already put in the transcript (by id — a concise tool response may
+truncate content, so identity can't be compared for those). The state
+self-clears whenever the context is rebuilt (`SessionStart` on
+startup/clear/compact, `PreCompact`, `SessionEnd`) and survives a resume,
+whose context is intact. Governed by the same `inject_dedupe` knob as the
+per-file fingerprint below — `MEMINI_INJECT_DEDUPE=0` restores always-inject
+everywhere.
+
+**PreToolUse** (one search per file in `Edit|MultiEdit|Write|Read|Glob|Grep`):
+
+| Env var                           | Default                                    | Description                                                                                 |
+| --------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| `MEMINI_INJECT_PRETOOL_ITEMS`     | `3`                                        | Max hits surfaced per file.                                                                 |
+| `MEMINI_INJECT_PRETOOL_MAX_TOK`   | uncapped                                   | Hard ceiling on rendered tokens (per file).                                                 |
+| `MEMINI_INJECT_PRETOOL_MIN_SCORE` | `0`                                        | Floor on the fused score; hits below are dropped server-side.                               |
+| `MEMINI_INJECT_PRETOOL_TOOLS`     | `Read\|Write\|Edit\|MultiEdit\|Glob\|Grep` | Pipe- or comma-separated tool allowlist override.                                           |
+| `MEMINI_INJECT_DEDUPE`            | on                                         | Skip re-injecting an unchanged recall block for the same file (the recall call still runs). |
 
 Repeated tool calls on the same file (e.g. several `Edit`s in a row, or a
 `Read` followed by an `Edit`) still make the recall call every time — results
