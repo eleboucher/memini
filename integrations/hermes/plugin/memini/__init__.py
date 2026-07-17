@@ -813,6 +813,17 @@ class MeminiMemoryProvider(MemoryProvider):
         self._base = _base_url().rstrip("/")
         self._secret = _secret()
         self._session_id = session_id
+        # Insertion-ordered set of memory ids already injected into this
+        # conversation's context — by prefetch or pulled explicitly through the
+        # recall/briefing tools. Later prefetches exclude them (server-side via
+        # exclude_ids, client-side as belt-and-braces) so the recall limit is
+        # spent on memories the context does not already carry. Instance-scoped:
+        # the provider lives exactly as long as the conversation it serves.
+        self._injected_ids: dict = {}
+        # Latched on the first successful retry-without-exclude_ids: an older
+        # server 400s the whole request on the unknown field, and "no dedupe"
+        # beats "no recall at all".
+        self._exclude_ids_unsupported = False
         # Hermes' initialize kwargs carry no project path (agent_workspace is a
         # label, not a dir), so the working directory is the only signal for the
         # default namespace; set MEMINI_NAMESPACE to scope explicitly. Order:
@@ -994,7 +1005,7 @@ class MeminiMemoryProvider(MemoryProvider):
             block += f"\n[memini: {note}]"
         return f"{header}\n{block}"
 
-    def _recall_body(self, query: str) -> dict:
+    def _recall_body(self, query: str, exclude_injected: bool = True) -> dict:
         # Exclude this session's own captured turns: they're still in the live
         # transcript, so recalling them just echoes the conversation back a turn
         # behind. Captures from other (past) sessions are still recalled.
@@ -1003,17 +1014,57 @@ class MeminiMemoryProvider(MemoryProvider):
             body["min_score"] = self._recall_min_score
         if self._session_id:
             body["exclude_metadata"] = {"session_id": self._session_id}
+        # And exclude what this conversation already carries — memories a prior
+        # prefetch injected or the model pulled via the recall/briefing tools —
+        # so the limit is spent on hits the context does not yet hold. Capped
+        # at the server's exclude_ids limit, most recent kept.
+        if exclude_injected and self._injected_ids and not self._exclude_ids_unsupported:
+            body["exclude_ids"] = list(self._injected_ids)[-512:]
         return body
+
+    def _record_injected(self, ids: Any) -> None:
+        """Mark memory ids as present in this conversation's context."""
+        for mid in ids:
+            if isinstance(mid, str) and mid:
+                self._injected_ids.pop(mid, None)
+                self._injected_ids[mid] = None
+        while len(self._injected_ids) > 512:
+            self._injected_ids.pop(next(iter(self._injected_ids)))
+
+    def _drop_injected(self, result: dict | None) -> dict | None:
+        """Belt-and-braces for the server-side exclude_ids (absent on the
+        old-server fallback path): drop hits already injected this session."""
+        if not result or not self._injected_ids:
+            return result
+        hits = result.get("results") or []
+        kept = [r for r in hits if (r.get("memory") or {}).get("id") not in self._injected_ids]
+        if len(kept) == len(hits):
+            return result
+        out = dict(result)
+        out["results"] = kept
+        return out
 
     def prefetch(self, query: str, **kwargs: Any) -> str:
         # recall is on by default; only a server-resolved handshake setting
         # can turn it off (see initialize) -- there is no local env toggle.
         if not self._recall_enabled or not query.strip():
             return ""
-        return self._recall_block(
-            self._call("/v1/search", self._recall_body(query)),
-            "Relevant memories (from memini):",
-        )
+        result = self._call("/v1/search", self._recall_body(query))
+        # An older server 400s the whole request on the unknown exclude_ids
+        # field, and _call degrades that to None — indistinguishable from a
+        # dead server here, so retry once without the field. If THAT lands,
+        # the field is the problem: latch it off for this conversation ("no
+        # dedupe" beats "no recall at all"); a dead server fails both calls
+        # and latches nothing.
+        if result is None and self._injected_ids and not self._exclude_ids_unsupported:
+            result = self._call("/v1/search", self._recall_body(query, exclude_injected=False))
+            if result is not None:
+                self._exclude_ids_unsupported = True
+        result = self._drop_injected(result)
+        block = self._recall_block(result, "Relevant memories (from memini):")
+        if block:
+            self._record_injected((r.get("memory") or {}).get("id", "") for r in (result or {}).get("results") or [])
+        return block
 
     def on_pre_compress(self, messages: list, **kwargs: Any) -> str:
         """Re-inject recalled context before history compaction."""
@@ -1032,10 +1083,16 @@ class MeminiMemoryProvider(MemoryProvider):
                 break
         if not query:
             return ""
-        return self._recall_block(
-            self._call("/v1/search", self._recall_body(query)),
-            "[memini context before compaction]",
-        )
+        # Compression rebuilds the context: everything previously injected is
+        # about to be summarized away, so this re-injection must NOT exclude
+        # what the conversation already saw — surfacing it again is the whole
+        # point — and the dedupe state resets with the context it described.
+        self._injected_ids.clear()
+        result = self._call("/v1/search", self._recall_body(query, exclude_injected=False))
+        block = self._recall_block(result, "[memini context before compaction]")
+        if block:
+            self._record_injected((r.get("memory") or {}).get("id", "") for r in (result or {}).get("results") or [])
+        return block
 
     def sync_turn(self, user: str, assistant: str, **kwargs: Any) -> None:
         # capture is on by default; only a server-resolved handshake setting
@@ -1321,6 +1378,10 @@ class MeminiMemoryProvider(MemoryProvider):
                 }
                 item.update(_provenance(mem, r.get("from")))
                 items.append(item)
+            # What the model just pulled explicitly is now in the transcript:
+            # record it so prefetch stops re-injecting it. (Tool results are
+            # never filtered — an explicit query shows everything it found.)
+            self._record_injected(i["id"] for i in items)
             # /v1/search already carries degraded/note on `result`; pass them
             # through rather than dropping them silently.
             out = {"results": items}
@@ -1346,6 +1407,10 @@ class MeminiMemoryProvider(MemoryProvider):
                     }
                     item.update(_provenance(mem, b.get("from")))
                     out.append(item)
+                # The briefing's memories are now in the transcript: record
+                # them so prefetch stops re-injecting what the model already
+                # oriented on.
+                self._record_injected(i["id"] for i in out)
                 return out
 
             return json.dumps(
