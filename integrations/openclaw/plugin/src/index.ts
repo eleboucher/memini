@@ -1519,14 +1519,27 @@ export function registerMeminiTools(api: any, client: MeminiClient, ctx: Session
             tier: b?.memory?.tier || "",
             ...provenance(b?.memory, b?.from),
           }));
-        return text({
+        const briefing = {
           namespace: res.namespace || "",
           scope_header: res.scope_header || "",
           pinned: section(res.pinned),
           facts: section(res.facts),
           procedures: section(res.procedures),
           recent: section(res.recent),
-        });
+        };
+        // The briefing's memories are now in the transcript: record them so
+        // recallHandler doesn't re-inject what the model already oriented on —
+        // the same tracking memory_recall above has always done.
+        if (echo) {
+          const session = sessionIdentity(toolCtx);
+          if (session) {
+            const ids = [...briefing.pinned, ...briefing.facts, ...briefing.procedures, ...briefing.recent]
+              .map((i: any) => i.id)
+              .filter(Boolean);
+            if (ids.length) echo.rememberInjected(session, ids);
+          }
+        }
+        return text(briefing);
       },
     },
     {

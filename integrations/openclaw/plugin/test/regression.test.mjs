@@ -111,12 +111,12 @@ function fakeClient() {
 // tools by invoking the registered factory with `ctx` — the per-agent
 // OpenClawPluginToolContext OpenClaw hands the factory. `hs` is what the
 // session's memo resolves to instantly (no real handshake network call).
-async function collectTools(client, pluginConfig, ctx = {}, hs = fakeHandshake()) {
+async function collectTools(client, pluginConfig, ctx = {}, hs = fakeHandshake(), echo = undefined) {
   const registered = [];
   const api = { logger: { warn() {} }, registerTool: (factory, opts) => registered.push({ factory, opts }) };
   const sessionCtx = createSessionContext(pluginConfig, process.env, tmpdir());
   sessionCtx.memo = { get: async () => hs, invalidate() {} };
-  await registerMeminiTools(api, client, sessionCtx);
+  await registerMeminiTools(api, client, sessionCtx, echo);
   const reg = registered[0];
   const tools = reg ? [].concat(reg.factory(ctx)) : [];
   return {
@@ -1358,6 +1358,25 @@ test("memory_briefing GETs the header-scoped briefing and keeps the Scope line",
   assert.equal(res.scope_header, "Scope: ns ← acme(4) ← personal(2)");
   assert.equal(res.pinned[0].id, "p1");
   assert.equal(res.facts[0].from, "acme");
+});
+
+test("memory_briefing records its items in the injected-id state (cross-surface dedupe)", async () => {
+  // The recall tool has always fed the echo guard's injected-id state; the
+  // briefing tool didn't, so a briefing's memories stayed fair game for the
+  // auto-recall path to re-inject. Both read tools now record what the model
+  // pulled into the transcript.
+  const client = fakeClient();
+  const recorded = [];
+  const echo = {
+    freshCaptured: () => new Set(),
+    injectedIds: () => new Set(),
+    rememberInjected: (session, ids) => recorded.push({ session, ids }),
+  };
+  const { byName } = await collectTools(client, { namespace_per_agent: false }, { sessionId: "sess-9" }, fakeHandshake(), echo);
+  await byName.memory_briefing.execute("id", {});
+  assert.equal(recorded.length, 1, "the briefing tool must record once");
+  assert.equal(recorded[0].session, "sess-9");
+  assert.deepEqual([...recorded[0].ids].sort(), ["f1", "p1"], "every section item's id is recorded");
 });
 
 test("memory_briefing answers rather than throwing when memini is unreachable", async () => {
