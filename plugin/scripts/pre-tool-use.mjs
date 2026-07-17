@@ -149,6 +149,9 @@ async function main() {
     const hits = filterFreshTurnEchoes(rawHits).filter((h) => {
       const id = h?.memory?.id;
       if (typeof id !== "string" || !(id in injectedMap)) return true;
+      // A sentinel ("") marks a tool-read entry whose true content identity is
+      // unknowable (concise tool responses truncate) — suppress by id alone.
+      if (injectedMap[id] === "") return false;
       // Already in context — unless its content changed since injection.
       return injectedMap[id] !== injectedIdentity(h);
     });

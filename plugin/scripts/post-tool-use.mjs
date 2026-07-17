@@ -17,11 +17,58 @@ import {
   readToolCall,
   appendSessionEvent,
   getSessionContext,
+  readInjectedState,
+  writeInjectedState,
   DEBUG,
 } from "./_shared.mjs";
 
 const FILE_KEYS = ["filePath", "file_path", "path", "file", "pattern"];
 const RECORDED = new Set(["edit", "multiedit", "write", "bash", "notebookedit", "agent", "task", "apply_patch"]);
+
+// memini's own MCP READ tools: what they return lands in the transcript like
+// any tool output, so their memory ids feed the cross-surface injected state
+// (see _shared.mjs) and the auto-recall surfaces stop re-injecting what the
+// model already pulled explicitly. Matches both MCP namings — a plain server
+// ("mcp__memini__memory_recall") and the plugin-scoped form
+// ("mcp__plugin_memini_memini__memory_recall"). Write tools (remember/update)
+// are not tracked: their results carry no content, and the content came from
+// the model, which already has it.
+const MEMORY_READ_TOOL = /^mcp__.*memini.*__memory_(recall|briefing|get)$/i;
+
+// parseToolResult digs the JSON payload out of the harness's tool_response:
+// MCP results arrive as {content:[{type:"text", text:"<json>"}]}, but a plain
+// JSON string or an already-parsed object are accepted too. Null on anything
+// unparseable — a malformed response is ignored, never a crash.
+function parseToolResult(res) {
+  if (typeof res === "string") return parseJSON(res);
+  if (!res || typeof res !== "object") return null;
+  if (Array.isArray(res.content)) {
+    for (const c of res.content) {
+      if (c && typeof c.text === "string") {
+        const parsed = parseJSON(c.text);
+        if (parsed) return parsed;
+      }
+    }
+    return null;
+  }
+  return res;
+}
+
+// collectMemoryIds walks a parsed tool result (depth-limited) collecting the
+// ids of memory-shaped objects — a string `id` next to content or summary.
+// One walker covers all three read shapes: recall's flat results[], briefing's
+// nested {memory, from} items, and get's single memory object.
+function collectMemoryIds(node, out, depth = 0) {
+  if (!node || typeof node !== "object" || depth > 6) return;
+  if (Array.isArray(node)) {
+    for (const item of node.slice(0, 200)) collectMemoryIds(item, out, depth + 1);
+    return;
+  }
+  if (typeof node.id === "string" && node.id && (typeof node.content === "string" || typeof node.summary === "string")) {
+    out.add(node.id);
+  }
+  for (const v of Object.values(node)) collectMemoryIds(v, out, depth + 1);
+}
 
 function firstFile(args) {
   if (!args || typeof args !== "object") return "";
@@ -62,6 +109,33 @@ async function main() {
   const payload = parseJSON(await readStdin()) || {};
   const { toolName, toolInput, sessionId, cwd } = readToolCall(payload);
   const toolKey = String(toolName || "").toLowerCase();
+
+  // memini memory READS route to the injected state, never the event buffer —
+  // a recall isn't session activity worth digesting. Recorded with a sentinel
+  // identity ("") because a concise tool response may carry truncated content:
+  // content identity is unknowable, so suppression for tool-sourced entries is
+  // by id alone (pre-tool-use honors the sentinel). An id a hook already
+  // recorded keeps its real hash — content-aware resurfacing survives.
+  if (MEMORY_READ_TOOL.test(String(toolName || ""))) {
+    if (!sessionId) return;
+    const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "never" });
+    if (!ctx.setting("inject_dedupe").value) return;
+    const ids = new Set();
+    collectMemoryIds(parseToolResult(payload.tool_response ?? payload.tool_output), ids);
+    if (ids.size === 0) return;
+    const injected = readInjectedState(sessionId);
+    let recorded = false;
+    for (const id of ids) {
+      if (!(id in injected)) {
+        injected[id] = "";
+        recorded = true;
+      }
+    }
+    if (recorded) writeInjectedState(sessionId, injected);
+    if (DEBUG) console.error(`[memini] PostToolUse recorded ${ids.size} tool-read id(s) tool=${toolName} session=${sessionId}`);
+    return;
+  }
+
   if (!toolName || !RECORDED.has(toolKey)) return;
 
   const args = toolInput && typeof toolInput === "object" ? toolInput : {};

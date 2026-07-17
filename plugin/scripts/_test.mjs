@@ -4539,6 +4539,191 @@ test("cross-surface dedupe: resume keeps the injected-id state, startup clears i
   }
 });
 
+// ─── tool-read tracking: MCP memory reads feed the injected state ──────────
+//
+// The model can pull memories into context itself via the memini MCP tools
+// (memory_recall / memory_briefing / memory_get). Those results land in the
+// transcript like any tool output, so the auto-recall surfaces must not
+// re-inject them. PostToolUse records their ids into the same cross-surface
+// state — with a sentinel identity, because a concise tool response may carry
+// truncated content, so content identity is unknowable and suppression is by
+// id alone for tool-sourced entries.
+
+test("tool-read tracking: a memory_recall tool result is excluded from later prompt recall", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const searches = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    searches.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify(
+        searchBody([sm({ id: "t1", content: "tool-fetched fact" }, 0.95), sm({ id: "t2", content: "never tool-fetched" }, 0.9)]),
+      ),
+    );
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    await runHook(
+      "post-tool-use.mjs",
+      JSON.stringify({
+        session_id: "tr1",
+        cwd: __dirname,
+        tool_name: "mcp__plugin_memini_memini__memory_recall",
+        tool_input: { query: "auth tokens" },
+        tool_response: {
+          content: [{ type: "text", text: JSON.stringify({ results: [{ id: "t1", content: "tool-fetched fact" }] }) }],
+        },
+      }),
+      env,
+    );
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "tr1", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      env,
+    );
+    assert.ok((searches[0].exclude_ids || []).includes("t1"), "the tool-read id rides in exclude_ids");
+    const ctxText = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(ctxText, /never tool-fetched/);
+    assert.doesNotMatch(ctxText, /tool-fetched fact/, "what the model already pulled is not re-injected");
+  } finally {
+    await close();
+  }
+});
+
+test("tool-read tracking: a memory_briefing tool result (nested items) also feeds the state", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const searches = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    searches.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "fresh", content: "not in the briefing" }, 0.9)])));
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    await runHook(
+      "post-tool-use.mjs",
+      JSON.stringify({
+        session_id: "tr2",
+        cwd: __dirname,
+        tool_name: "mcp__memini__memory_briefing",
+        tool_input: {},
+        tool_response: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                namespace: "memini",
+                facts: [{ memory: { id: "b7", content: "briefed via tool" }, from: "" }],
+                recent: [{ memory: { id: "b8", content: "recent via tool" } }],
+              }),
+            },
+          ],
+        },
+      }),
+      env,
+    );
+    await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "tr2", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      env,
+    );
+    const ids = searches[0].exclude_ids || [];
+    assert.ok(ids.includes("b7") && ids.includes("b8"), "nested briefing item ids are extracted");
+  } finally {
+    await close();
+  }
+});
+
+test("tool-read tracking: pretool suppresses a tool-read memory by id alone (sentinel identity)", async () => {
+  // A concise tool response may truncate content, so the recorded identity is
+  // a sentinel: for tool-sourced entries, suppression is by id even when the
+  // served content differs. (Hook-injected entries keep content-aware
+  // resurfacing — this pin is specifically about the tool path.)
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "g1", content: "the FULL untruncated content, changed since" }, 0.9)])));
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    await runHook(
+      "post-tool-use.mjs",
+      JSON.stringify({
+        session_id: "tr3",
+        cwd: __dirname,
+        tool_name: "mcp__memini__memory_get",
+        tool_input: { id: "g1" },
+        tool_response: { content: [{ type: "text", text: JSON.stringify({ id: "g1", content: "the FULL untr…" }) }] },
+      }),
+      env,
+    );
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "tr3", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      env,
+    );
+    assert.equal(stdout.trim(), "", "tool-read entries suppress by id alone");
+  } finally {
+    await close();
+  }
+});
+
+test("tool-read tracking: foreign MCP tools and malformed responses are ignored", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const env = { XDG_CACHE_HOME: cache, MEMINI_BASE_URL: DEAD_URL };
+  const statePath = join(cache, "memini", "sessions", "tr4.injected.json");
+  try {
+    await runHook(
+      "post-tool-use.mjs",
+      JSON.stringify({
+        session_id: "tr4",
+        cwd: __dirname,
+        tool_name: "mcp__github__search_issues",
+        tool_input: {},
+        tool_response: { content: [{ type: "text", text: JSON.stringify({ results: [{ id: "x", content: "y" }] }) }] },
+      }),
+      env,
+    );
+    assert.equal(existsSync(statePath), false, "a foreign MCP tool must not feed the state");
+    await runHook(
+      "post-tool-use.mjs",
+      JSON.stringify({
+        session_id: "tr4",
+        cwd: __dirname,
+        tool_name: "mcp__memini__memory_recall",
+        tool_input: {},
+        tool_response: { content: [{ type: "text", text: "not json at all {" }] },
+      }),
+      env,
+    );
+    assert.equal(existsSync(statePath), false, "a malformed response is ignored, never a crash");
+  } finally {
+    /* no server */
+  }
+});
+
+test("tool-read tracking: inject_dedupe=false disables recording", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ settings: { inject_dedupe: false } }));
+  const statePath = join(cache, "memini", "sessions", "tr5.injected.json");
+  await runHook(
+    "post-tool-use.mjs",
+    JSON.stringify({
+      session_id: "tr5",
+      cwd: __dirname,
+      tool_name: "mcp__memini__memory_recall",
+      tool_input: {},
+      tool_response: { content: [{ type: "text", text: JSON.stringify({ results: [{ id: "t9", content: "z" }] }) }] },
+    }),
+    { XDG_CACHE_HOME: cache, MEMINI_BASE_URL: DEAD_URL },
+  );
+  assert.equal(existsSync(statePath), false, "the knob gates tool-read recording too");
+});
+
 // ─── request timeout (MEMINI_TIMEOUT_MS / request_timeout_ms) ─────────────
 
 test("postSearch: a recall slower than the timeout aborts; a wider timeout lets it through", async () => {

@@ -394,11 +394,16 @@ surface re-injects what another already showed. The prompt hook excludes
 recorded ids server-side (`exclude_ids`), spending its top hits on memories
 the conversation doesn't yet carry; pretool filters client-side and
 **content-aware**, so a memory updated mid-session (its content changed since
-injection) still resurfaces. The state self-clears whenever the context is
-rebuilt (`SessionStart` on startup/clear/compact, `PreCompact`, `SessionEnd`)
-and survives a resume, whose context is intact. Governed by the same
-`inject_dedupe` knob as the per-file fingerprint below — `MEMINI_INJECT_DEDUPE=0`
-restores always-inject everywhere.
+injection) still resurfaces. Memories the model pulls itself via the memini
+MCP read tools (`memory_recall` / `memory_briefing` / `memory_get`) count too:
+`PostToolUse` records their ids, so auto-recall won't re-inject what a tool
+call already put in the transcript (by id — a concise tool response may
+truncate content, so identity can't be compared for those). The state
+self-clears whenever the context is rebuilt (`SessionStart` on
+startup/clear/compact, `PreCompact`, `SessionEnd`) and survives a resume,
+whose context is intact. Governed by the same `inject_dedupe` knob as the
+per-file fingerprint below — `MEMINI_INJECT_DEDUPE=0` restores always-inject
+everywhere.
 
 **PreToolUse** (one search per file in `Edit|MultiEdit|Write|Read|Glob|Grep`):
 

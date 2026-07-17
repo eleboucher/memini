@@ -65,7 +65,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Edit|MultiEdit|Write|Bash|NotebookEdit|Agent|Task|apply_patch",
+        "matcher": "Edit|MultiEdit|Write|Bash|NotebookEdit|Agent|Task|apply_patch|mcp__.*memini.*__memory_(recall|briefing|get)",
         "hooks": [
           {
             "type": "command",
