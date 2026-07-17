@@ -835,6 +835,105 @@ test("session-start.mjs: source \"startup\" emits the memory directive but NOT c
   }
 });
 
+test("session-start.mjs: source \"compact\" re-injects an unchanged briefing", async () => {
+  // Compaction rebuilt the context: the briefing block injected at startup was
+  // summarized away with everything else. The unchanged-guard's rationale
+  // (identical block already in context, don't bust the prompt prefix cache)
+  // is false on this path — the block is GONE and the cache is already busted
+  // — so compact must fall through to a full re-injection even when the
+  // briefing bytes are identical.
+  const cache = freshCache();
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify(
+          briefingBody({ namespace: "team/app", facts: [bi({ content: "convention: use tabs" })] }),
+        ),
+      );
+    }),
+  );
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    const first = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "guard1", cwd: __dirname, source: "startup" }),
+      env,
+    );
+    assert.match(first.stdout, /convention: use tabs/, "startup injects the briefing");
+
+    const second = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "guard1", cwd: __dirname, source: "compact" }),
+      env,
+    );
+    assert.match(second.stdout, /<memini-context/, "compact re-injects despite the unchanged hash");
+    assert.match(second.stdout, /convention: use tabs/, "the facts come back after compaction");
+    assert.match(second.stdout, /<memini-compact-recovery>/, "recovery directive rides along");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: source \"resume\" still skips an unchanged briefing but re-emits the directive", async () => {
+  // The guard's surviving purpose: on a resume the context is intact, so an
+  // identical briefing block is already in it — re-injecting is pure token
+  // waste. Only the directive (dropped by the context rebuild machinery on
+  // some clients) is re-emitted.
+  const cache = freshCache();
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify(
+          briefingBody({ namespace: "team/app", facts: [bi({ content: "convention: use tabs" })] }),
+        ),
+      );
+    }),
+  );
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    await runHook("session-start.mjs", JSON.stringify({ session_id: "guard2", cwd: __dirname, source: "startup" }), env);
+    const resumed = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "guard2", cwd: __dirname, source: "resume" }),
+      env,
+    );
+    assert.doesNotMatch(resumed.stdout, /<memini-context/, "an unchanged briefing is not re-injected on resume");
+    assert.match(resumed.stdout, /<memini-memory-directive>/, "the directive is re-emitted");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: a resume after a compact re-injection still skips (hash cache stays consistent)", async () => {
+  // The compact path re-caches the same hash it re-injected, so the guard's
+  // view of "what the context carries" stays true for the resume that follows.
+  const cache = freshCache();
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify(
+          briefingBody({ namespace: "team/app", facts: [bi({ content: "convention: use tabs" })] }),
+        ),
+      );
+    }),
+  );
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  const payload = (source) => JSON.stringify({ session_id: "guard3", cwd: __dirname, source });
+  try {
+    await runHook("session-start.mjs", payload("startup"), env);
+    const compacted = await runHook("session-start.mjs", payload("compact"), env);
+    assert.match(compacted.stdout, /<memini-context/, "compact re-injects");
+    const resumed = await runHook("session-start.mjs", payload("resume"), env);
+    assert.doesNotMatch(resumed.stdout, /<memini-context/, "the later resume still skips");
+    assert.match(resumed.stdout, /<memini-memory-directive>/);
+  } finally {
+    await close();
+  }
+});
+
 test("session-start.mjs: renders `from` provenance on nested briefing items, none for a primary item", async () => {
   // T6 (commit 2271aa1) nests each section item as {memory, from}. When `from`
   // is non-empty the bullet must carry a trailing "(from <ns>)" — verbatim,

@@ -281,8 +281,15 @@ async function main() {
   // (startup, then resume / clear / compact). When the briefing is byte-for-byte
   // unchanged since the last fire, re-injecting an identical block only spends
   // tokens and risks busting the prompt prefix cache — so skip it.
+  //
+  // EXCEPT after a compaction: compaction rebuilt the context, so the briefing
+  // block injected at startup was summarized away with everything else. The
+  // guard's premise ("the identical block is already in context") is false on
+  // this one path, and its cost argument is moot — the prefix cache was busted
+  // by the rebuild itself. Resume keeps the skip: its context is intact.
+  const compacted = payload.source === "compact";
   const contentHash = crypto.createHash("sha256").update(JSON.stringify(b)).digest("hex").slice(0, 16);
-  if (sessionId && briefingUnchanged(sessionId, contentHash)) {
+  if (sessionId && !compacted && briefingUnchanged(sessionId, contentHash)) {
     if (DEBUG) console.error("[memini] SessionStart: briefing unchanged this session, skipping re-injection");
     // A re-fire usually means the context was rebuilt (resume / clear / compact),
     // which drops the memory directive. Skip the unchanged briefing but re-emit

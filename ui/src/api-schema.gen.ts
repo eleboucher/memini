@@ -1180,6 +1180,7 @@ export interface components {
              *       "Read",
              *       "Write",
              *       "Edit",
+             *       "MultiEdit",
              *       "Glob",
              *       "Grep"
              *     ]

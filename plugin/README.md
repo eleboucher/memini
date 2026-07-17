@@ -11,7 +11,7 @@ the agent _when_ to use the memory tools.
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `SessionStart`     | Searches prior context, writes a short block to the agent's input                                                                                                                                  |
 | `UserPromptSubmit` | Recalls memories relevant to what the user just asked (the prompt is the query) and injects the top hits                                                                                           |
-| `PreToolUse`       | Before Edit/Write/Read/Glob/Grep, surfaces related memories                                                                                                                                        |
+| `PreToolUse`       | Before Edit/MultiEdit/Write/Read/Glob/Grep, surfaces related memories                                                                                                                              |
 | `PostToolUse`      | Buffers state-changing tool calls locally (no network, no per-call memory)                                                                                                                         |
 | `Stop`             | Distills the buffer into a working-tier checkpoint, captures the last turn as episodic memory, scrapes legacy inline `<memory>` blocks (back-compat), and periodically nudges an auto-save (below) |
 | `PreCompact`       | Before context compaction, distills the buffer into an episodic emergency checkpoint (Claude Code only)                                                                                            |
@@ -391,15 +391,15 @@ injected into is rebuilt. When the server reports a degraded (keyword-only)
 search, the block carries a `[memini: ...]` warning line so the model knows the
 results are incomplete rather than a confident negative.
 
-**PreToolUse** (one search per file in `Edit|Write|Read|Glob|Grep`):
+**PreToolUse** (one search per file in `Edit|MultiEdit|Write|Read|Glob|Grep`):
 
-| Env var                           | Default                         | Description                                                                                 |
-| --------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------- |
-| `MEMINI_INJECT_PRETOOL_ITEMS`     | `3`                             | Max hits surfaced per file.                                                                 |
-| `MEMINI_INJECT_PRETOOL_MAX_TOK`   | uncapped                        | Hard ceiling on rendered tokens (per file).                                                 |
-| `MEMINI_INJECT_PRETOOL_MIN_SCORE` | `0`                             | Floor on the fused score; hits below are dropped server-side.                               |
-| `MEMINI_INJECT_PRETOOL_TOOLS`     | `Read\|Write\|Edit\|Glob\|Grep` | Pipe- or comma-separated tool allowlist override.                                           |
-| `MEMINI_INJECT_DEDUPE`            | on                              | Skip re-injecting an unchanged recall block for the same file (the recall call still runs). |
+| Env var                           | Default                                    | Description                                                                                 |
+| --------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| `MEMINI_INJECT_PRETOOL_ITEMS`     | `3`                                        | Max hits surfaced per file.                                                                 |
+| `MEMINI_INJECT_PRETOOL_MAX_TOK`   | uncapped                                   | Hard ceiling on rendered tokens (per file).                                                 |
+| `MEMINI_INJECT_PRETOOL_MIN_SCORE` | `0`                                        | Floor on the fused score; hits below are dropped server-side.                               |
+| `MEMINI_INJECT_PRETOOL_TOOLS`     | `Read\|Write\|Edit\|MultiEdit\|Glob\|Grep` | Pipe- or comma-separated tool allowlist override.                                           |
+| `MEMINI_INJECT_DEDUPE`            | on                                         | Skip re-injecting an unchanged recall block for the same file (the recall call still runs). |
 
 Repeated tool calls on the same file (e.g. several `Edit`s in a row, or a
 `Read` followed by an `Edit`) still make the recall call every time — results

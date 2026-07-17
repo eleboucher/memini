@@ -80,7 +80,7 @@ func TestDefaultClientSettings(t *testing.T) {
 	if d.InjectPretoolTools == nil {
 		t.Fatal("inject_pretool_tools = nil, want the default tool list")
 	}
-	wantTools := []string{"Read", "Write", "Edit", "Glob", "Grep"}
+	wantTools := []string{"Read", "Write", "Edit", "MultiEdit", "Glob", "Grep"}
 	if !equalStrs(*d.InjectPretoolTools, wantTools) {
 		t.Errorf("inject_pretool_tools = %v, want %v", *d.InjectPretoolTools, wantTools)
 	}

@@ -2045,7 +2045,7 @@ components:
         inject_pretool_tools:
           type: array
           items: { type: string }
-          default: [Read, Write, Edit, Glob, Grep]
+          default: [Read, Write, Edit, MultiEdit, Glob, Grep]
           description: Tool-name allowlist that triggers a PreToolUse injection.
         inject_dedupe:
           type: boolean

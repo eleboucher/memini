@@ -602,7 +602,7 @@ func DefaultClientSettings() ClientSettings {
 		InjectPretoolItems:    new(3),
 		InjectPretoolMaxTok:   new(0),
 		InjectPretoolMinScore: new(float64(0)),
-		InjectPretoolTools:    &[]string{"Read", "Write", "Edit", "Glob", "Grep"},
+		InjectPretoolTools:    &[]string{"Read", "Write", "Edit", "MultiEdit", "Glob", "Grep"},
 		InjectDedupe:          new(true),
 
 		InjectLabels: &[]string{},
