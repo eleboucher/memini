@@ -254,3 +254,43 @@ func TestRecallRerankPoolDefaultsToLimit(t *testing.T) {
 		t.Fatalf("reranker saw %d candidates with no pool configured, want the limit %d", rr.seen, limit)
 	}
 }
+
+func TestRecallRerankEmptyVerdictReturnsEmpty(t *testing.T) {
+	// With a rerank-score gate configured (WithRerankEmptyVerdict), an empty
+	// rerank result is the gate's verdict — "nothing in the pool is relevant" —
+	// and must NOT fall back to the ungated composite order, which would undo
+	// the gate exactly on the queries it exists for.
+	st := openTestStore(t)
+	rr := &emptyReranker{}
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(),
+		service.WithReranker(rr, "test"), service.WithRerankEmptyVerdict())
+	ingestTwo(t, svc)
+	got := recallIDs(t, svc)
+	if !rr.called {
+		t.Fatal("reranker not invoked")
+	}
+	if len(got) != 0 {
+		t.Fatalf("gated-empty verdict must return no results, got %v", got)
+	}
+}
+
+func TestRecallRerankEmptyVerdictErrorStillFallsBack(t *testing.T) {
+	// The empty-verdict flag changes ONLY the empty-result branch: a rerank
+	// FAILURE (error/timeout) still falls back to composite order, because a
+	// dead reranker never rendered any verdict to honor.
+	st := openTestStore(t)
+	base := service.New(st, embedtest.New(dims), service.WithSyncReinforce())
+	ingestTwo(t, base)
+	baseIDs := recallIDs(t, base)
+
+	rr := &errReranker{}
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(),
+		service.WithReranker(rr, "test"), service.WithRerankEmptyVerdict())
+	got := recallIDs(t, svc)
+	if !rr.called {
+		t.Fatal("reranker not invoked")
+	}
+	if len(got) != len(baseIDs) || got[0] != baseIDs[0] {
+		t.Fatalf("a rerank error must keep composite order even with the flag: base=%v got=%v", baseIDs, got)
+	}
+}

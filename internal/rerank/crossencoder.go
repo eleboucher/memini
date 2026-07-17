@@ -47,7 +47,14 @@ type Config struct {
 	// in characters (≈ n_ctx × chars-per-token × (1 − template reserve);
 	// ~4000 for a 1024-token model). 0 disables proactive batching.
 	MaxBatchChars int
-	HTTPClient    *http.Client
+	// MinScore drops candidates whose relevance score falls below it (a
+	// per-candidate gate over the whole pool). Cross-encoders emit calibrated
+	// absolute relevance — unlike bi-encoder cosine or fused scores — so an
+	// absolute threshold is meaningful here: on a query with no real answer,
+	// everything gates out and Rerank returns empty, which the caller must
+	// treat as a verdict rather than a failure. 0 disables the gate.
+	MinScore   float64
+	HTTPClient *http.Client
 }
 
 // CrossEncoder reranks candidates with a dedicated ranking model served
@@ -59,6 +66,7 @@ type CrossEncoder struct {
 	apiKey        string
 	maxDocChars   int
 	maxBatchChars int
+	minScore      float64
 	client        *http.Client
 }
 
@@ -76,6 +84,7 @@ func New(cfg Config) (*CrossEncoder, error) {
 		apiKey:        cfg.APIKey,
 		maxDocChars:   cfg.MaxDocChars,
 		maxBatchChars: cfg.MaxBatchChars,
+		minScore:      cfg.MinScore,
 		client:        c,
 	}, nil
 }
@@ -99,11 +108,17 @@ type rerankResponse struct {
 }
 
 // Rerank scores every candidate against the query and returns candidate IDs
-// most-relevant-first. Candidates the server omits are dropped. When the
-// payload exceeds MaxBatchChars, candidates are split across multiple
-// requests and merged by score.
+// most-relevant-first. Candidates the server omits are dropped, and with
+// MinScore configured so are candidates scoring below it — a fully-gated pool
+// returns empty, which is a verdict ("nothing relevant exists"), not an error.
+// When the payload exceeds MaxBatchChars, candidates are split across
+// multiple requests and merged by score.
 func (c *CrossEncoder) Rerank(ctx context.Context, query string, candidates []Candidate) ([]string, error) {
-	if len(candidates) <= 1 {
+	// A single candidate has nothing to reorder, so ungated it short-circuits
+	// without a network call. With a gate configured the shortcut would bypass
+	// the gate exactly when the pool collapsed to one candidate (limit=1
+	// recalls), so the candidate must still be scored — and droppable.
+	if len(candidates) == 0 || (len(candidates) == 1 && c.minScore <= 0) {
 		return idsOf(candidates), nil
 	}
 	maxPerDoc := c.maxDocChars
@@ -141,6 +156,12 @@ func (c *CrossEncoder) Rerank(ctx context.Context, query string, candidates []Ca
 	seen := make(map[string]struct{}, len(all))
 	for _, s := range all {
 		if _, dup := seen[s.id]; dup {
+			continue
+		}
+		if c.minScore > 0 && s.score < c.minScore {
+			// `all` is sorted best-first, so everything from here on is also
+			// below the gate — but keep scanning cheaply for clarity; the loop
+			// is tiny relative to the network call that fed it.
 			continue
 		}
 		seen[s.id] = struct{}{}

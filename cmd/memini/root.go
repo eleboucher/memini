@@ -319,6 +319,14 @@ func buildServiceStack(
 				service.WithRerankTimeout(cfg.RerankTimeout),
 				service.WithRerankPool(cfg.RerankPool),
 			)
+			// With the score gate on, an empty rerank result is the gate's
+			// verdict ("nothing relevant"), not a backend pathology — recall
+			// must return empty instead of falling back to ungated composite
+			// order. config.validate() already refused RerankMinScore on the
+			// LLM backend, so this is cross-encoder-only by construction.
+			if cfg.RerankMinScore > 0 {
+				svcOpts = append(svcOpts, service.WithRerankEmptyVerdict())
+			}
 		}
 	}
 	svcOpts = append(svcOpts,
@@ -450,12 +458,13 @@ func buildReranker(cfg *config.Config, chat llm.Client, log *slog.Logger, onInFl
 		APIKey:        cfg.RerankAPIKey,
 		MaxDocChars:   cfg.RerankMaxDocChars,
 		MaxBatchChars: cfg.RerankMaxBatchChars,
+		MinScore:      cfg.RerankMinScore,
 	})
 	if err != nil {
 		return nil, "", err
 	}
 	log.Info("cross-encoder recall reranking enabled (adds one reranker call per recall)",
-		"base_url", cfg.Rerank, "model", cfg.RerankModel)
+		"base_url", cfg.Rerank, "model", cfg.RerankModel, "min_score", cfg.RerankMinScore)
 	return wrapRerank(ce, cfg.RerankMaxConcurrency, onInFlight, log, "cross_encoder"), "cross_encoder", nil
 }
 

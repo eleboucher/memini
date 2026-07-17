@@ -345,6 +345,21 @@ type Config struct {
 	// more). Cost is linear — one model forward pass per candidate — so a deep
 	// pool trades recall latency for accuracy.
 	RerankPool int `env:"MEMINI_RERANK_POOL" envDefault:"0"`
+	// RerankMinScore drops rerank candidates whose cross-encoder relevance
+	// score falls below it, across the whole RerankPool before the recall
+	// limit is applied. Cross-encoders emit calibrated absolute relevance
+	// (unlike the fused retrieval score, whose min-max normalization inflates
+	// the best of a bad pool), so an absolute floor here is what cuts the
+	// noise tail on queries with no real answer: when everything gates out,
+	// recall returns EMPTY rather than the least-irrelevant leftovers. The
+	// response `score` field still carries the fused score — rerank scores are
+	// never exposed on the wire. Cross-encoder only: the LLM reranker returns
+	// an ordinal list with no scores, so combining it with this knob is a boot
+	// error rather than a gate that silently never fires. 0 (the default)
+	// disables the gate; no upper bound is enforced because some /rerank
+	// servers emit unbounded logits. Pick a threshold with the rerank-gate
+	// bench sweep (bench.RerankGateSweep) against your own reranker.
+	RerankMinScore float64 `env:"MEMINI_RERANK_MIN_SCORE" envDefault:"0"`
 	// RerankMaxBatchChars caps the total characters across the query and all
 	// documents in a single /rerank request. This is an HTTP payload guard, not
 	// a context-window guard: a Cohere-style /rerank server scores each
@@ -928,6 +943,27 @@ func (c *Config) validateChunking() error {
 	return nil
 }
 
+// validateRecallScores checks the two recall-path score floors. The fused
+// floor is a [0,1] range check; the rerank gate additionally rejects a
+// configuration the runtime could never honor — the LLM backend returns an
+// ordinal list with no scores, so accepting the combination would configure a
+// gate that silently never fires, which reads as "the gate is broken" with
+// nothing to debug.
+func (c *Config) validateRecallScores() error {
+	if c.RecallMinScore < 0 || c.RecallMinScore > 1 {
+		return fmt.Errorf("MEMINI_RECALL_MIN_SCORE must be in [0,1], got %v", c.RecallMinScore)
+	}
+	if c.RerankMinScore < 0 {
+		return fmt.Errorf("MEMINI_RERANK_MIN_SCORE must be >= 0, got %v", c.RerankMinScore)
+	}
+	if c.RerankMinScore > 0 && c.RerankIsLLM() {
+		return fmt.Errorf("MEMINI_RERANK_MIN_SCORE requires a cross-encoder reranker: " +
+			"the LLM reranker returns an ordinal list with no scores, so the gate would " +
+			"silently never fire (unset it, or point MEMINI_RERANK at a /rerank endpoint)")
+	}
+	return nil
+}
+
 func (c *Config) validate() error {
 	switch c.Backend {
 	case BackendSQLite:
@@ -968,8 +1004,8 @@ func (c *Config) validate() error {
 	if c.WriteDedupScore < 0 || c.WriteDedupScore > 1 {
 		return fmt.Errorf("MEMINI_WRITE_DEDUP_SCORE must be in [0,1], got %v", c.WriteDedupScore)
 	}
-	if c.RecallMinScore < 0 || c.RecallMinScore > 1 {
-		return fmt.Errorf("MEMINI_RECALL_MIN_SCORE must be in [0,1], got %v", c.RecallMinScore)
+	if err := c.validateRecallScores(); err != nil {
+		return err
 	}
 	if c.ConsolidateMinScore < 0 || c.ConsolidateMinScore > 1 {
 		return fmt.Errorf("MEMINI_CONSOLIDATE_MIN_SCORE must be in [0,1], got %v", c.ConsolidateMinScore)

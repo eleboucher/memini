@@ -159,6 +159,11 @@ controllers:
   # (query, document) pair separately. Too low and a deep RERANK_POOL shards into
   # many *serial* requests and blows MEMINI_RERANK_TIMEOUT. Per-doc cap is 2048.
   # MEMINI_RERANK_MAX_BATCH_CHARS: "120000"
+  # Drop candidates the cross-encoder scores below this (0 = off). Cuts the
+  # noise tail on no-answer queries: a fully-gated pool returns EMPTY recall.
+  # Threshold is model-specific — pick it with the rerank-gate bench sweep, do
+  # not copy a number. Cross-encoder only (boot error with MEMINI_RERANK=llm).
+  # MEMINI_RERANK_MIN_SCORE: "0.3"
 
   # --- postgres backend connection (required when MEMINI_BACKEND=postgres) ---
   # MEMINI_POSTGRES_DSN:
