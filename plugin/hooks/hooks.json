@@ -12,6 +12,16 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/run.sh\" \"${CLAUDE_PLUGIN_ROOT}/scripts/user-prompt-submit.mjs\""
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

@@ -23,20 +23,15 @@ import {
   postSearch,
   readToolCall,
   fitByTokens,
-  truncate,
   escapeMeminiTags,
+  filterFreshTurnEchoes,
+  formatRecallHit,
   readLastRecallState,
   writeLastRecallState,
   DEBUG,
 } from "./_shared.mjs";
 
 const FILE_KEYS = ["filePath", "file_path", "path", "file", "pattern"];
-
-// How fresh a turn capture must be to count as "still part of this
-// conversation's live context" and be dropped from injection even when the
-// session-id exclusion misses it (resume/clear/compact roll the session id,
-// so old rows carry an id the exact-match exclusion can't name).
-const TURN_ECHO_WINDOW_MS = 30 * 60 * 1000;
 
 function extractFiles(args) {
   if (!args || typeof args !== "object") return [];
@@ -51,25 +46,6 @@ function extractFiles(args) {
 function toolAllowed(toolName, allow) {
   if (!Array.isArray(allow) || allow.length === 0) return true;
   return allow.includes(String(toolName || "").toLowerCase());
-}
-
-function formatHit(h, labels) {
-  // Neutralize memini wrapper tags in the untrusted recalled content BEFORE the
-  // 240-char truncate, so a forged </memini-pretool> can't break out of the block
-  // (memory-poisoning defense — same rationale as formatMemory in session-start).
-  const text = escapeMeminiTags(h?.content || h?.summary || "");
-  if (!text) return null;
-  if (labels.size === 0) {
-    return `- (${h.score.toFixed(2)}) ${truncate(text, 240)}`;
-  }
-  const tagParts = [];
-  if (labels.has("tier") && h.tier) tagParts.push(h.tier);
-  if (labels.has("confidence") && typeof h.memory?.confidence === "number") {
-    tagParts.push(`conf=${h.memory.confidence.toFixed(2)}`);
-  }
-  if (labels.has("reason")) tagParts.push("relevant memory");
-  const prefix = tagParts.length ? `[${tagParts.join(" · ")}] ` : "";
-  return `- (${h.score.toFixed(2)}) ${prefix}${truncate(text, 240)}`;
 }
 
 async function main() {
@@ -150,16 +126,12 @@ async function main() {
     if (degraded && !degradedNote) {
       degradedNote = note || "semantic search unavailable — results are keyword-only and may be incomplete";
     }
-    let hits = rawHits;
     // The session-id exclusion misses turn captures written before a
     // resume/clear/compact rolled the session id (old rows keep the old id,
     // and exclude_metadata is an exact match). A fresh turn capture is still
     // — or was minutes ago — part of this conversation's live context, so
     // drop it regardless of which session id it carries.
-    const freshCutoff = Date.now() - TURN_ECHO_WINDOW_MS;
-    hits = hits.filter(
-      (h) => !(h.memory?.metadata?.format === "turn" && Date.parse(h.memory?.created_at || "") > freshCutoff),
-    );
+    const hits = filterFreshTurnEchoes(rawHits);
     if (hits.length === 0) continue;
 
     // Fingerprint the SEMANTIC content served for this file: the file path
@@ -193,7 +165,7 @@ async function main() {
     out.push(`File: ${f}`);
     // Render then trim by token budget (within a single file's block) so a
     // tight cap drops the lowest-scoring hits per file first.
-    const lines = hits.map((h) => formatHit(h, labels)).filter(Boolean);
+    const lines = hits.map((h) => formatRecallHit(h, labels)).filter(Boolean);
     const fit = fitByTokens(lines, maxTokens);
     out.push(...fit.items);
     totalDropped += fit.dropped;

@@ -188,11 +188,12 @@ function authHeaders(extra) {
 }
 
 /**
- * POST JSON to memini. `namespace` is sent as X-Memini-Namespace. Returns
- * parsed JSON on 2xx, null otherwise. Never throws — hooks must not crash
- * the agent.
+ * POST JSON to memini, reporting the HTTP status alongside the parsed body so
+ * a caller can tell "the server rejected this request shape" (a 400 — worth
+ * retrying without the offending field) from transport failure (status 0).
+ * `json` is null on any non-2xx or error. Never throws.
  */
-export async function postJSON(path, body, namespace, timeoutMs = requestTimeoutMs) {
+async function postJSONStatus(path, body, namespace, timeoutMs = requestTimeoutMs) {
   try {
     assertBearerTransportSafe(boot.baseUrl, boot.apiKey);
     const res = await fetch(`${boot.baseUrl}${path}`, {
@@ -207,13 +208,22 @@ export async function postJSON(path, body, namespace, timeoutMs = requestTimeout
       // body stays DEBUG-only.
       const t = DEBUG ? await res.text().catch(() => "") : "";
       console.error(`[memini] POST ${path} -> ${res.status}${t ? `: ${t.slice(0, 200)}` : ""}`);
-      return null;
+      return { status: res.status, json: null };
     }
-    return await res.json();
+    return { status: res.status, json: await res.json() };
   } catch (e) {
     console.error(`[memini] POST ${path} failed:`, e?.message || e);
-    return null;
+    return { status: 0, json: null };
   }
+}
+
+/**
+ * POST JSON to memini. `namespace` is sent as X-Memini-Namespace. Returns
+ * parsed JSON on 2xx, null otherwise. Never throws — hooks must not crash
+ * the agent.
+ */
+export async function postJSON(path, body, namespace, timeoutMs = requestTimeoutMs) {
+  return (await postJSONStatus(path, body, namespace, timeoutMs)).json;
 }
 
 /**
@@ -233,8 +243,15 @@ export async function postJSON(path, body, namespace, timeoutMs = requestTimeout
  * the hook also filters client-side as a belt-and-braces guard against
  * score-fusion edge cases where the server's normalization disagrees with
  * what the caller wants.
+ *
+ * `excludeIds` drops specific memories server-side (e.g. ones already
+ * injected into this session's context), freeing the top-k for hits the
+ * context does not already carry. Trimmed to the server's 512-id cap,
+ * most-recent kept. An older server that doesn't know the field 400s the
+ * whole request — retried once without it, degrading to "no server-side
+ * dedupe" instead of "no recall at all".
  */
-export async function postSearch(query, namespace, { limit = 5, tiers, exclude, minScore, source } = {}) {
+export async function postSearch(query, namespace, { limit = 5, tiers, exclude, minScore, source, excludeIds } = {}) {
   const body = { query, limit };
   if (tiers) body.tiers = tiers;
   if (typeof minScore === "number" && minScore > 0) body.min_score = minScore;
@@ -246,10 +263,16 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude, 
   // {session_id} so a session's own captured digests aren't recalled back at it
   // while still in the live context.
   if (exclude && Object.keys(exclude).length) body.exclude_metadata = exclude;
-  const res = await postJSON("/v1/search", body, namespace);
-  if (!res || !Array.isArray(res.results)) return { hits: [], degraded: "", note: "" };
+  if (Array.isArray(excludeIds) && excludeIds.length) body.exclude_ids = excludeIds.slice(-MAX_RECALL_EXCLUDE_IDS);
+  let res = await postJSONStatus("/v1/search", body, namespace);
+  if (res.status === 400 && body.exclude_ids) {
+    delete body.exclude_ids;
+    res = await postJSONStatus("/v1/search", body, namespace);
+  }
+  if (!res.json || !Array.isArray(res.json.results)) return { hits: [], degraded: "", note: "" };
+  const resBody = res.json;
   const floor = typeof minScore === "number" && minScore > 0 ? minScore : 0;
-  const hits = res.results
+  const hits = resBody.results
     .map((r) => ({
       content: r?.memory?.content || "",
       summary: r?.memory?.summary || "",
@@ -260,9 +283,52 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude, 
     .filter((r) => r.score >= floor);
   return {
     hits,
-    degraded: typeof res.degraded === "string" ? res.degraded : "",
-    note: typeof res.note === "string" ? res.note : "",
+    degraded: typeof resBody.degraded === "string" ? resBody.degraded : "",
+    note: typeof resBody.note === "string" ? resBody.note : "",
   };
+}
+
+// Server-side cap on exclude_ids per search; a longer list is rejected, so
+// callers trim to the most recent before sending.
+const MAX_RECALL_EXCLUDE_IDS = 512;
+
+/**
+ * How fresh a turn capture must be to count as "still part of this
+ * conversation's live context" and be dropped from injection even when the
+ * session-id exclusion misses it (resume/clear/compact roll the session id,
+ * so old rows carry an id the exact-match exclusion can't name).
+ */
+export const TURN_ECHO_WINDOW_MS = 30 * 60 * 1000;
+
+/** Drop turn-format captures younger than the echo window from recall hits. */
+export function filterFreshTurnEchoes(hits, now = Date.now()) {
+  const freshCutoff = now - TURN_ECHO_WINDOW_MS;
+  return (hits || []).filter(
+    (h) => !(h?.memory?.metadata?.format === "turn" && Date.parse(h?.memory?.created_at || "") > freshCutoff),
+  );
+}
+
+/**
+ * Render one recall hit as a "- (score) [labels] text" bullet. Neutralizes
+ * memini wrapper tags in the untrusted recalled content BEFORE the 240-char
+ * truncate, so a forged closing tag can't break out of the enclosing
+ * injection block (memory-poisoning defense — same rationale as formatMemory
+ * in session-start). Returns null when the hit has no renderable text.
+ */
+export function formatRecallHit(h, labels) {
+  const text = escapeMeminiTags(h?.content || h?.summary || "");
+  if (!text) return null;
+  if (labels.size === 0) {
+    return `- (${h.score.toFixed(2)}) ${truncate(text, 240)}`;
+  }
+  const tagParts = [];
+  if (labels.has("tier") && h.tier) tagParts.push(h.tier);
+  if (labels.has("confidence") && typeof h.memory?.confidence === "number") {
+    tagParts.push(`conf=${h.memory.confidence.toFixed(2)}`);
+  }
+  if (labels.has("reason")) tagParts.push("relevant memory");
+  const prefix = tagParts.length ? `[${tagParts.join(" · ")}] ` : "";
+  return `- (${h.score.toFixed(2)}) ${prefix}${truncate(text, 240)}`;
 }
 
 /**
@@ -710,6 +776,57 @@ export function deleteLastRecallState(sessionId) {
     fs.rmSync(lastRecallStatePath(sessionId), { force: true });
   } catch (e) {
     if (DEBUG) console.error("[memini] deleteLastRecallState failed:", e?.message || e);
+  }
+}
+
+// ── per-session prompt-recall injected-id state ────────────────────────────
+//
+// UserPromptSubmit injects the top hits for each prompt. Consecutive related
+// prompts recall overlapping result sets, so without memory of what this
+// session already injected, the same memories re-enter context prompt after
+// prompt. The state is the ordered list of injected memory ids; the next
+// prompt's search excludes them server-side (exclude_ids), freeing the top-k
+// for memories the context does NOT already carry. Cleared whenever the
+// context is rebuilt (session start, compaction, session end) — "already in
+// context" is only true until then. Lives in bufferDir() so cleanStaleBuffers
+// GCs orphans.
+
+// Bounded to the server's exclude_ids cap: keeping more than we can send is
+// pure growth with no dedupe value.
+const MAX_PROMPT_RECALL_IDS = 512;
+
+/** Path of the per-session prompt-recall injected-id state file. */
+function promptRecallStatePath(sessionId) {
+  return join(bufferDir(), safeId(sessionId) + ".promptrecall.json");
+}
+
+/** Read the session's injected-id list (oldest first), or [] on any error. */
+export function readPromptRecallState(sessionId) {
+  try {
+    const ids = parseJSON(fs.readFileSync(promptRecallStatePath(sessionId), "utf8"));
+    return Array.isArray(ids) ? ids.filter((x) => typeof x === "string" && x) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Persist the injected-id list (best-effort), most-recent MAX kept. */
+export function writePromptRecallState(sessionId, ids) {
+  try {
+    fs.mkdirSync(bufferDir(), { recursive: true });
+    const deduped = [...new Set(ids)];
+    fs.writeFileSync(promptRecallStatePath(sessionId), JSON.stringify(deduped.slice(-MAX_PROMPT_RECALL_IDS)));
+  } catch (e) {
+    if (DEBUG) console.error("[memini] writePromptRecallState failed:", e?.message || e);
+  }
+}
+
+/** Delete the session's prompt-recall injected-id state (best-effort). */
+export function deletePromptRecallState(sessionId) {
+  try {
+    fs.rmSync(promptRecallStatePath(sessionId), { force: true });
+  } catch (e) {
+    if (DEBUG) console.error("[memini] deletePromptRecallState failed:", e?.message || e);
   }
 }
 

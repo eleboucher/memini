@@ -25,6 +25,7 @@ import {
   briefingUnchanged,
   cacheBriefingHash,
   deleteLastRecallState,
+  deletePromptRecallState,
   escapeMeminiTags,
   MEMORY_INSTRUCTION,
   COMPACT_RECOVERY_DIRECTIVE,
@@ -203,8 +204,11 @@ async function main() {
   // — so any last-recall fingerprints from a prior session reusing this
   // session_id (or left behind by a crash) are stale and would wrongly
   // suppress the very first injection. Clear them at startup so PreToolUse
-  // starts fresh.
-  if (sessionId) deleteLastRecallState(sessionId);
+  // and the prompt-recall exclusion both start fresh.
+  if (sessionId) {
+    deleteLastRecallState(sessionId);
+    deletePromptRecallState(sessionId);
+  }
 
   // Auto-migrate: a successful handshake reporting no pin is the one signal
   // that both proves the server is reachable AND that this project hasn't
