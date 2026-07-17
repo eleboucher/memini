@@ -5,7 +5,7 @@
 //     one, or local derivation when the server is unreachable).
 //   - readStdin:        drain stdin to a UTF-8 string
 //   - postJSON/getJSON: REST helpers with bearer-token + namespace headers
-//   - postSearch:       POST /v1/search and return result.memory[] of {content,score}
+//   - postSearch:       POST /v1/search and return {hits, degraded, note}
 //   - postRemember:     POST /v1/memories
 //   - postSupersede:    POST /v1/memories/{id}/supersede (tombstone)
 //   - debug:            gated by MEMINI_DEBUG=1
@@ -217,8 +217,15 @@ export async function postJSON(path, body, namespace, timeoutMs = requestTimeout
 }
 
 /**
- * POST /v1/search and return an array of {content, score, memory} objects.
- * Returns [] on failure.
+ * POST /v1/search and return { hits, degraded, note }.
+ *
+ * `hits` is an array of {content, summary, score, memory, tier} ([] on
+ * failure). `degraded`/`note` pass through the server's degradation signal —
+ * "keyword_only" + a prose note when the query embed failed and results came
+ * from the keyword leg alone — so callers can tell the model the results are
+ * incomplete rather than a confident negative. Both are "" on a healthy
+ * search and on transport failure (an unreachable server proves nothing
+ * about the search pipeline).
  *
  * `minScore` (>= 0) sets a per-call relevance floor: candidates whose fused
  * score is below it are dropped server-side. 0 / unset falls back to the
@@ -240,9 +247,9 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude, 
   // while still in the live context.
   if (exclude && Object.keys(exclude).length) body.exclude_metadata = exclude;
   const res = await postJSON("/v1/search", body, namespace);
-  if (!res || !Array.isArray(res.results)) return [];
+  if (!res || !Array.isArray(res.results)) return { hits: [], degraded: "", note: "" };
   const floor = typeof minScore === "number" && minScore > 0 ? minScore : 0;
-  return res.results
+  const hits = res.results
     .map((r) => ({
       content: r?.memory?.content || "",
       summary: r?.memory?.summary || "",
@@ -251,6 +258,11 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude, 
       tier: r?.memory?.tier || "",
     }))
     .filter((r) => r.score >= floor);
+  return {
+    hits,
+    degraded: typeof res.degraded === "string" ? res.degraded : "",
+    note: typeof res.note === "string" ? res.note : "",
+  };
 }
 
 /**

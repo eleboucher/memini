@@ -128,6 +128,12 @@ async function main() {
   const lastRecall = dedupe ? readLastRecallState(sessionId) : {};
   let lastRecallChanged = false;
 
+  // Degradation is per-block, not per-file: when any of the (up to 3) searches
+  // came back keyword-only, one warning line at the end of the block tells the
+  // model the results are incomplete. First non-empty note wins — they all
+  // describe the same embedder outage.
+  let degradedNote = "";
+
   for (const f of files.slice(0, 3)) {
     const q = `${toolName} on ${f}`;
     // Exclude this session's own captured digests (Stop checkpoint / SessionEnd
@@ -135,12 +141,16 @@ async function main() {
     // surfacing them just echoes what the agent already did this session. Prior
     // sessions' digests stay recallable.
     const exclude = sessionId ? { session_id: sessionId } : undefined;
-    let hits = await postSearch(q, project, {
+    const { hits: rawHits, degraded, note } = await postSearch(q, project, {
       limit: itemsPerFile,
       exclude,
       minScore,
       source: "pretool",
     });
+    if (degraded && !degradedNote) {
+      degradedNote = note || "semantic search unavailable — results are keyword-only and may be incomplete";
+    }
+    let hits = rawHits;
     // The session-id exclusion misses turn captures written before a
     // resume/clear/compact rolled the session id (old rows keep the old id,
     // and exclude_metadata is an exact match). A fresh turn capture is still
@@ -191,6 +201,9 @@ async function main() {
   if (lastRecallChanged) writeLastRecallState(sessionId, lastRecall);
   if (!any) return;
   if (totalDropped > 0) out.push(`[... ${totalDropped} item(s) truncated by token budget]`);
+  // The note is server-authored, but it transits the same untrusted rendering
+  // path as memory content — escape it so a forged tag can't break the wrapper.
+  if (degradedNote) out.push(`[memini: ${escapeMeminiTags(degradedNote)}]`);
   out.push("</memini-pretool>");
   // PreToolUse plain stdout is NOT shown to the model (it goes to the debug
   // log) — context must be returned as JSON additionalContext.
