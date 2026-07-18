@@ -405,8 +405,9 @@ of being hidden for the whole session. The two dimensions do different jobs: the
 time window covers tool-burst context growth (many `PreToolUse` reads with no
 new prompt), the prompt window counts literal user turns. The prompt counter
 advances on **every** `UserPromptSubmit` — a short steering turn, a slash
-command, and even a `MEMINI_RECALL=0` turn all count — so a window that measures
-prompts can't silently freeze. Set **both** knobs to `0` to restore the old
+command, and even a `MEMINI_RECALL=0` turn all count (except a degraded turn with
+no resolved namespace, which skips recall entirely and so doesn't bump) — so a
+window that measures prompts can't silently freeze. Set **both** knobs to `0` to restore the old
 suppress-for-the-whole-session behavior; `MEMINI_INJECT_DEDUPE=0` disables dedupe
 entirely and restores always-inject everywhere.
 

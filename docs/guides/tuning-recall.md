@@ -373,9 +373,12 @@ stays suppressed while it is inside _either_ window, and re-surfaces only once
 _both_ have lapsed — so a fact comes back after the conversation has genuinely
 moved on, not five seconds later and not never. Set both cooldown knobs to `0`
 and the cooldown collapses to "suppress for the rest of the session", the
-pre-cooldown behavior. One thing always bypasses the windows: an in-place edit
-to a memory's content (`memory_update`) re-injects it immediately, because its
-content changed and the model should see the new version.
+pre-cooldown behavior. One thing bypasses the windows on the plugin's per-file
+(PreToolUse) surface: an in-place edit to a memory's content (`memory_update`)
+re-injects it immediately there, because its content changed and the model should
+see the new version. That is the only surface that carries a content identity to
+compare; the plugin's prompt-recall path and the id-only surfaces (hermes, pi,
+openclaw) re-admit an updated memory only once the windows lapse.
 
 **The gate's tradeoff is real.** The pretool call gate saves the round-trip on a
 file being edited repeatedly, but it also means a memory you just saved about
