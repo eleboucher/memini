@@ -103,9 +103,10 @@ jobs:
       # resolves it against /tmp rather than the workspace. The `&&` chains make
       # a failed cd abort the step instead of node --test passing on 0 tests.
 
-      # Install workspace deps (OpenClaw, Pi).
+      # Install workspace deps (OpenClaw, Pi). Frozen mode makes package.json /
+      # pnpm-lock.yaml drift a hard failure instead of rewriting the lock in CI.
       - name: Install workspace dependencies
-        run: pnpm install --config.minimumReleaseAge=0
+        run: pnpm install --frozen-lockfile --config.minimumReleaseAge=0
 
       # Shared client core: namespace override, settings introspection, and the
       # project-dir recovery the MCP headersHelper depends on.
@@ -156,13 +157,14 @@ jobs:
           pnpm run build
           pnpm run test
 
-      # Pi extension. Same bundling as OpenClaw: @memini/client is inlined into
-      # dist/ so the npm package installs with only typebox as a runtime dep.
+      # Pi extension. Its standard test path type-checks against the pinned Pi
+      # API, builds the bundle, runs focused tests, then packs, installs, and
+      # imports the publication artifact. @memini/client is inlined; Pi's core
+      # modules remain peers supplied by the host.
       - name: Test Pi plugin
         run: |
           cd integrations/pi/plugin
           pnpm install
-          pnpm run build
           pnpm run test
 
       # Hermes memory provider (stdlib unittest, uses the inline-ABC fallback).
