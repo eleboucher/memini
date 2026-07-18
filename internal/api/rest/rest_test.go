@@ -330,6 +330,69 @@ func TestSearchMinScoreFilters(t *testing.T) {
 	}
 }
 
+func TestSearchMinRankScoreFilters(t *testing.T) {
+	// Synchronous reinforce so the served hit's background reinforce cannot land
+	// after the store closes at cleanup (the last scoring search is near the end).
+	h := newServerWithAnswerer(t, service.WithSyncReinforce())
+	// Same shape as TestSearchMinScoreFilters, but the floor is on the final
+	// ranked (composite) score, not the raw fused score. The strong hit
+	// normalizes to the top composite; the weak, off-topic one sinks well below.
+	strong := "the kubernetes pod scheduler assigns nodes to containers"
+	weak := "the bakery has fresh croissants every morning"
+	remember := func(content, tier string) {
+		rec := do(t, h, http.MethodPost, "/v1/memories", "ns", apiKey, map[string]any{
+			"content": content, "tier": tier,
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("remember %q: %d", content, rec.Code)
+		}
+	}
+	remember(strong, "semantic")
+	remember(weak, "semantic")
+
+	search := func(body map[string]any) []string {
+		rec := do(t, h, http.MethodPost, "/v1/search", "ns", apiKey, body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("search: %d (%s)", rec.Code, rec.Body)
+		}
+		var sr struct {
+			Results []struct {
+				Memory struct{ Content string } `json:"memory"`
+			} `json:"results"`
+		}
+		mustJSON(t, rec, &sr)
+		contents := make([]string, 0, len(sr.Results))
+		for _, r := range sr.Results {
+			contents = append(contents, r.Memory.Content)
+		}
+		return contents
+	}
+
+	// No floor: both appear, strong first.
+	both := search(map[string]any{"query": "kubernetes scheduler", "limit": 5})
+	if len(both) != 2 {
+		t.Fatalf("baseline recall should return both, got %d (%v)", len(both), both)
+	}
+
+	// A composite floor high enough to drop the weak hit but not the strong,
+	// proving min_rank_score is wired through to the post-rerank floor.
+	strongOnly := search(map[string]any{
+		"query": "kubernetes scheduler", "limit": 5, "min_rank_score": 0.5,
+	})
+	if len(strongOnly) != 1 || strongOnly[0] != strong {
+		t.Fatalf("min_rank_score=0.5 should keep only the strong match, got %v", strongOnly)
+	}
+
+	// min_rank_score is a half-open [0,1) floor: 1.0 would gate out even a
+	// perfect match, so it is rejected as invalid input (400).
+	rec := do(t, h, http.MethodPost, "/v1/search", "ns", apiKey, map[string]any{
+		"query": "kubernetes scheduler", "limit": 5, "min_rank_score": 1.0,
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("min_rank_score=1.0 should be rejected with 400, got %d (%s)", rec.Code, rec.Body)
+	}
+}
+
 func TestRememberSearchForgetRoundTrip(t *testing.T) {
 	h := newServer(t)
 

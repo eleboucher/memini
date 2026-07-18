@@ -695,6 +695,8 @@ type recallArgs struct {
 	QueryRewrite      bool `json:"query_rewrite,omitempty" jsonschema:"rewrite query into 2-3 variants and fuse via RRF"`
 	Limit             int  `json:"limit,omitempty" jsonschema:"max results (default 10)"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
+	MinRankScore float64 `json:"min_rank_score,omitempty" jsonschema:"drop results whose final ranked score is below this ([0,1)); rarely needed — the server already gates relevance"`
+	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
 	Scope string `json:"scope,omitempty" jsonschema:"how wide to read: 'project' = just this project's own memories; 'full' (default) = project plus inherited context (ancestors, your personal namespace, links); 'everywhere' = full plus nested sub-projects"`
 	AsOf  string `json:"as_of,omitempty" jsonschema:"RFC3339 time for time-travel recall (facts true then)"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
@@ -806,6 +808,7 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 		IncludeFreshTurns: in.IncludeFreshTurns,
 		QueryRewrite:      in.QueryRewrite,
 		Limit:             in.Limit,
+		MinRankScore:      in.MinRankScore,
 		// Scope carries the LLM's semantic choice ("project"/"full"/
 		// "everywhere") straight through — service.Recall validates it via
 		// the shared parseScope, so an old "exact"/"subtree" value (or any

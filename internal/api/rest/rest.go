@@ -493,6 +493,9 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 	if req.MinScore != nil {
 		in.MinScore = *req.MinScore
 	}
+	if req.MinRankScore != nil {
+		in.MinRankScore = *req.MinRankScore
+	}
 	var degraded string
 	in.Degraded = &degraded
 	var readset []service.ReadSetEntry

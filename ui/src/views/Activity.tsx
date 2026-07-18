@@ -31,8 +31,12 @@ function loadHiddenKinds(): EventKind[] {
 function headline(ev: ActivityEvent): string {
   const n = ev.memories?.length ?? 0
   switch (ev.kind) {
-    case 'recall':
-      return n === 0 ? 'found nothing' : `served ${n} ${n === 1 ? 'memory' : 'memories'}`
+    case 'recall': {
+      // "Served" counts only what the recall returned — floored hits are logged
+      // for visibility (rendered dimmed below) but were never served.
+      const served = ev.memories?.filter((m) => !m.filtered).length ?? 0
+      return served === 0 ? 'found nothing' : `served ${served} ${served === 1 ? 'memory' : 'memories'}`
+    }
     case 'briefing':
       return `session briefing · ${n} ${n === 1 ? 'memory' : 'memories'}`
     case 'get':
@@ -84,6 +88,15 @@ function detailChips(ev: ActivityEvent): { label: string; title?: string; warn?:
     // it is left off — a chip on every direct search would be noise.
     const source = str(d.source)
     if (source && source !== 'api') chips.push({ label: source, title: 'What triggered this recall' })
+    // How many candidates a cooldown pass held back (exclude_ids): surfaces that
+    // already injected a memory this session ask the server to drop it.
+    const excluded = typeof d.excluded_count === 'number' ? d.excluded_count : 0
+    if (excluded > 0) {
+      chips.push({
+        label: `${excluded} excluded · already injected`,
+        title: 'Candidates dropped because a surface already injected them this session',
+      })
+    }
   }
 
   if (ev.kind === 'remember' || ev.kind === 'update') {
@@ -342,7 +355,7 @@ export function Activity() {
                       <button
                         key={m.id}
                         type="button"
-                        class="act-mem"
+                        class={`act-mem${m.filtered ? ' floored' : ''}`}
                         onClick={() => openMemory(m.id, m.namespace)}
                       >
                         {m.rank ? <span class="act-rank mono">#{m.rank}</span> : <span class="act-rank" />}
@@ -354,6 +367,16 @@ export function Activity() {
                         {typeof m.score === 'number' && (
                           <span class="chip mono" title="Relevance score for this query">
                             {m.score.toFixed(2)}
+                          </span>
+                        )}
+                        {/* Floored: below the request's min_rank_score, so logged
+                            for visibility but never returned. */}
+                        {m.filtered === 'rank_floor' && (
+                          <span
+                            class="chip floored-badge"
+                            title="Below this recall's min_rank_score floor — logged but not served"
+                          >
+                            floored
                           </span>
                         )}
                         {showNs && m.namespace !== ev.namespace && (

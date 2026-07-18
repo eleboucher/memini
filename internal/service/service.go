@@ -1895,6 +1895,18 @@ type RecallInput struct {
 	// hits). 0 (the zero value) falls back to the server-wide gate. Only
 	// meaningful with score fusion; RRF scores are not comparable to [0,1].
 	MinScore float64
+	// MinRankScore, when > 0, floors the FINAL ranked (composite) score — the
+	// scale the response Score field and the activity feed show — applied after
+	// re-ranking, so it changes only which hits reach the response, never the
+	// candidate pool the reranker judged or its ordering. It is a distinct floor
+	// from the two above: MinScore gates the raw fused (vector+keyword) score
+	// pre-rank, the reranker's own MEMINI_RERANK_MIN_SCORE gates the absolute
+	// cross-encoder score (never on the wire), and this gates the composite that
+	// finalizeRecall re-attaches. Hits it drops are still logged to the activity
+	// feed marked as filtered; results added by include_linked expansion are
+	// exempt (the floor runs before expansion). Valid range is [0,1); 0 (the
+	// zero value) disables it.
+	MinRankScore float64
 	// MinSemanticScore, when > 0, overrides the server's default
 	// recallMinSemanticScore (the absolute vector-relevance gate) for this call.
 	// 0 falls back to the server-wide gate.
@@ -1959,6 +1971,13 @@ func (s *Service) reportRecallDegraded(ctx context.Context, embedErr error, degr
 	}
 }
 
+// validMinRankScore reports whether a per-call composite floor is in the valid
+// half-open [0,1) range. 0 is valid (the disabled state); 1.0 would gate out
+// even a perfect match, so it and anything above are rejected.
+func validMinRankScore(v float64) bool {
+	return v >= 0 && v < 1
+}
+
 // clampRecallLimit resolves a caller's limit to [1, maxRecallLimit], with the
 // default of 10 for the zero value.
 func clampRecallLimit(limit int) int {
@@ -1996,6 +2015,12 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		s.metrics.RecallResult("error", tf, "0")
 		return nil, invalidInputf("recall: %d exclude_ids exceeds the %d entry cap",
 			len(in.ExcludeIDs), maxRecallExcludeIDs)
+	}
+	// The composite floor lives on the [0,1] final-score scale; 1.0 would gate
+	// out even a perfect match, so the range is half-open. 0 disables it.
+	if !validMinRankScore(in.MinRankScore) {
+		s.metrics.RecallResult("error", tf, "0")
+		return nil, invalidInputf("recall: min_rank_score %v is outside [0,1)", in.MinRankScore)
 	}
 	filter := store.Filter{
 		Tiers:             in.Tiers,
@@ -2171,13 +2196,22 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	// consolidated facts/rules; the pool is already relevance-filtered upstream.
 	ranked = reserveDurableTiers(ranked, k, s.resolveSemanticReserve(in), s.reservePromoteRatio, s.reserveTopAnchor, s.reserveGatePercentile)
 	ranked = s.applyTurnEchoGuard(in, ranked)
-	results := s.finalizeRecall(ctx, in.Query, ranked, k)
-	results = s.maybeExpandLinked(ctx, in, results, k)
+	finalized := s.finalizeRecall(ctx, in.Query, ranked, k)
+	// Composite floor: split the finalized (post-rerank) list into served +
+	// floored on the final [0,1] score. Placed BEFORE maybeExpandLinked on
+	// purpose — linked hits carry a synthetic 0.5×min-direct score a
+	// post-expansion floor would nullify, so include_linked stays exempt. Floored
+	// hits flow to event logging only; everything downstream (expansion,
+	// reinforcement, the "served N" metric) sees the kept set alone. finalized is
+	// kept intact as the pre-floor rank space the activity log ranks against.
+	kept, floored := applyMinRankScore(finalized, in.MinRankScore)
+	results := s.maybeExpandLinked(ctx, in, kept, k)
 	s.reinforceResults(ctx, results)
 	// Reinforcement rolls usage up into per-memory counters; the activity log
 	// keeps the detail those counters throw away — which query served this
-	// memory, at what rank, with what score.
-	s.logRecallEvent(ctx, in, results)
+	// memory, at what rank, with what score. Floored hits are logged too (marked),
+	// but never reinforced.
+	s.logRecallEvent(ctx, in, finalized, results, floored)
 	s.metrics.RecallResult("ok", tf, hitsBucket(len(results)))
 	return results, nil
 }
@@ -2294,6 +2328,11 @@ func (s *Service) resolveTurnEchoWindow(in RecallInput) time.Duration {
 // instead gets its own local slot; once every variant has joined, the
 // coordinating goroutine (this one, after g.Wait()) aggregates them into the
 // caller's Degraded exactly once.
+//
+// MinRankScore rides through unchanged via `sub := in`, so each variant's own
+// recall applies the composite floor to its result list; the RRF fusion below
+// must NOT be re-floored — its scores are rank-reciprocal, a different scale the
+// [0,1] floor is not comparable to.
 func (s *Service) tryQueryRewrite(ctx context.Context, in RecallInput) ([]store.Scored, bool) {
 	if !in.QueryRewrite || s.answerer == nil {
 		return nil, false
@@ -2658,6 +2697,30 @@ func gateSemantic(vres, kres [][]store.Scored, floor float64) {
 		}
 		kres[i] = keptKW
 	}
+}
+
+// applyMinRankScore partitions a finalized (re-ranked) result list on the final
+// composite score: hits at or above floor are kept, the rest are floored. Both
+// slices preserve the input order. A floor of 0 (or below) is a no-op that keeps
+// everything — the disabled state. The score compared is the composite that
+// finalizeRecall re-attached, the same value the response and activity feed show.
+//
+// Callers must run this BEFORE any include_linked expansion: expandLinked assigns
+// linked hits a synthetic score (0.5 × the min direct score) that a floor applied
+// afterward would wrongly drop, silently defeating include_linked. Keeping the
+// floor upstream of expansion is what makes linked hits exempt.
+func applyMinRankScore(results []store.Scored, floor float64) (kept, floored []store.Scored) {
+	if floor <= 0 {
+		return results, nil
+	}
+	for _, r := range results {
+		if r.Score >= floor {
+			kept = append(kept, r)
+		} else {
+			floored = append(floored, r)
+		}
+	}
+	return kept, floored
 }
 
 // maybeExpandLinked conditionally expands results to include linked memories.

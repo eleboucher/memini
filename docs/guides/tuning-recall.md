@@ -175,7 +175,31 @@ Pick the highest threshold whose positive recall is still at your no-gate
 baseline; the negative injection column shows what you are buying. A
 miscalibrated threshold silently empties recall — the default is `0` (off) for
 exactly that reason. The response `score` field is unaffected: it still
-carries the fused retrieval score, never the rerank score.
+carries the composite ranked score, never the rerank score.
+
+### The three relevance floors
+
+Recall has three score scales, and each has its own floor — do not confuse them:
+
+- **Fused retrieval score** (vector + keyword, min-max-normalized): floored by
+  [`MEMINI_RECALL_MIN_SCORE`](../reference/configuration.md#memini_recall_min_score)
+  (default `0.1`) or a per-call `min_score`. Applied _before_ ranking, so it
+  trims the candidate pool the reranker and composite ranker ever see.
+- **Cross-encoder rerank score** (calibrated absolute relevance): floored by
+  [`MEMINI_RERANK_MIN_SCORE`](../reference/configuration.md#memini_rerank_min_score)
+  (default `0`, off). Never leaves the server — it decides ordering and the
+  empty verdict, but is not on the wire.
+- **Composite ranked score** (the relevance-normalized fused score blended with
+  quality — the value the response `score` field and the activity feed show):
+  floored by the per-call **`min_rank_score`** on the search request. Applied
+  _after_ re-ranking, so it changes only which hits reach the response, never the
+  pool or the ordering. It is server-authoritative and visible: floored hits are
+  still written to the activity feed, marked as filtered (dimmed, with a badge in
+  the admin UI), so you can see _what_ was dropped and why. Hits added by
+  `include_linked` expansion are exempt, and `0` (or unset) disables it. Valid
+  range is `[0,1)` — `1.0` would gate out even a perfect match and is rejected.
+  Reach for it only when a client needs a stricter response-side cut than the
+  server's baked floors already give; the two floors above usually suffice.
 
 ---
 

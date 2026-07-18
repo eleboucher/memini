@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"sort"
 	"time"
 
@@ -118,10 +119,18 @@ func (s *Service) logEvents(ctx context.Context, events []store.Event) {
 // carry — a counter says a memory was used, the log says which question it
 // answered and how well it scored against it.
 //
-// A recall that returned nothing is still recorded, as a single row with no
-// memory: "this query found nothing" is exactly the kind of thing you go to an
-// activity feed to discover.
-func (s *Service) logRecallEvent(ctx context.Context, in RecallInput, results []store.Scored) {
+// finalized is the post-rerank, PRE-floor result list — the single rank space
+// every logged row is numbered against. served are the rows the recall returned;
+// floored are hits the composite floor (min_rank_score) dropped from the
+// response. Floored hits are still logged — visible, not silent — each marked in
+// its row detail with {"filtered":"rank_floor"} and carrying its true composite
+// score, so the feed shows WHAT was filtered and why. Only the response omitted
+// them.
+//
+// A recall that returned nothing AND floored nothing is still recorded, as a
+// single row with no memory: "this query found nothing" is exactly the kind of
+// thing you go to an activity feed to discover.
+func (s *Service) logRecallEvent(ctx context.Context, in RecallInput, finalized, served, floored []store.Scored) {
 	if _, ok := s.eventLog(); !ok {
 		return
 	}
@@ -150,19 +159,61 @@ func (s *Service) logRecallEvent(ctx context.Context, in RecallInput, results []
 		Detail:    detail,
 		CreatedAt: s.now(),
 	}
-	if len(results) == 0 {
+	if len(served) == 0 && len(floored) == 0 {
 		s.logEvents(ctx, []store.Event{base})
 		return
 	}
-	events := make([]store.Event, 0, len(results))
-	for i, r := range results {
+	// One rank space per event: every row's rank is its 1-based position in the
+	// finalized pre-floor list. Served and floored rows share it, so a floored
+	// hit keeps the exact rank it held and the served ranks show the holes it was
+	// dropped from — the feed then shows precisely where the floor bit. With no
+	// floor this is identical to the old contiguous 1..N over the response.
+	rankByID := make(map[string]int, len(finalized))
+	for i, r := range finalized {
+		rankByID[r.Memory.ID] = i + 1
+	}
+	// include_linked rows are not in the finalized list; they follow it, ranked
+	// past its end in the order they were served (their score-sorted response
+	// position). This matches their no-floor behavior of trailing the direct set.
+	nextLinkedRank := len(finalized)
+	events := make([]store.Event, 0, len(served)+len(floored))
+	// Floored rows are appended first so the highest-id row of the batch — the
+	// one groupEvents reads the operation-level detail from — is a served row
+	// carrying the clean base detail, never a per-row "filtered" marker.
+	for i := range floored {
+		r := floored[i]
 		e := base
-		e.Rank = i + 1
-		e.Score = &r.Score
+		e.Rank = rankByID[r.Memory.ID]
+		e.Score = &floored[i].Score
+		e.Detail = filteredDetail(detail)
+		applyMemory(&e, r.Memory)
+		events = append(events, e)
+	}
+	for i := range served {
+		r := served[i]
+		e := base
+		if rank, ok := rankByID[r.Memory.ID]; ok {
+			e.Rank = rank
+		} else {
+			nextLinkedRank++
+			e.Rank = nextLinkedRank
+		}
+		e.Score = &served[i].Score
 		applyMemory(&e, r.Memory)
 		events = append(events, e)
 	}
 	s.logEvents(ctx, events)
+}
+
+// filteredDetail clones an event's operation-level detail and stamps the row as
+// dropped by the composite rank floor. A per-row copy — not a mutation of the
+// shared base map — keeps the marker off the served rows, which reference base
+// by value but share its Detail map by pointer.
+func filteredDetail(base map[string]any) map[string]any {
+	d := make(map[string]any, len(base)+1)
+	maps.Copy(d, base)
+	d["filtered"] = "rank_floor"
+	return d
 }
 
 // briefingExplorationWindow bounds "recently shown" for the briefing's reserved
@@ -369,6 +420,10 @@ type ActivityMemory struct {
 	Rank      int
 	Score     *float64
 	Section   string // briefing only
+	// Filtered marks a hit the recall dropped from its response but still logged:
+	// "rank_floor" when the composite floor (min_rank_score) cut it. Empty for a
+	// served hit. Lets the feed dim what was filtered instead of hiding it.
+	Filtered string
 }
 
 // ActivityEvent is one logical operation: what happened, when, against which
@@ -537,6 +592,9 @@ func groupEvents(rows []store.Event) []ActivityEvent {
 			}
 			if sec, ok := r.Detail["section"].(string); ok {
 				am.Section = sec
+			}
+			if f, ok := r.Detail["filtered"].(string); ok {
+				am.Filtered = f
 			}
 			ev.Memories = append(ev.Memories, am)
 		}

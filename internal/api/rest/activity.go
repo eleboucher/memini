@@ -136,6 +136,10 @@ func apiActivityEvent(ev service.ActivityEvent) ActivityEvent {
 				sec := m.Section
 				am.Section = &sec
 			}
+			if m.Filtered != "" {
+				f := ActivityMemoryFiltered(m.Filtered)
+				am.Filtered = &f
+			}
 			mems[i] = am
 		}
 		out.Memories = &mems

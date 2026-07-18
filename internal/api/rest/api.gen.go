@@ -39,6 +39,21 @@ func (e ActivityEventActorKind) Valid() bool {
 	}
 }
 
+// Defines values for ActivityMemoryFiltered.
+const (
+	RankFloor ActivityMemoryFiltered = "rank_floor"
+)
+
+// Valid indicates whether the value is a known member of the ActivityMemoryFiltered enum.
+func (e ActivityMemoryFiltered) Valid() bool {
+	switch e {
+	case RankFloor:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AnswerRequestScope.
 const (
 	AnswerRequestScopeEverywhere AnswerRequestScope = "everywhere"
@@ -505,7 +520,9 @@ type ActivityEventActorKind string
 
 // ActivityMemory One memory as it appeared in an event — a snapshot taken at serve time, so a forgotten memory still renders — plus why it was there.
 type ActivityMemory struct {
-	Id string `json:"id"`
+	// Filtered Present when the recall dropped this hit from its response but still logged it — "rank_floor" when the per-call min_rank_score composite floor cut it. Absent on a served hit. Lets the feed dim what was filtered instead of hiding it; recall only.
+	Filtered *ActivityMemoryFiltered `json:"filtered,omitempty"`
+	Id       string                  `json:"id"`
 
 	// Namespace The memory's own namespace, which for a cascading recall may differ from the event's.
 	Namespace string `json:"namespace"`
@@ -521,6 +538,9 @@ type ActivityMemory struct {
 	Summary string  `json:"summary"`
 	Tier    Tier    `json:"tier"`
 }
+
+// ActivityMemoryFiltered Present when the recall dropped this hit from its response but still logged it — "rank_floor" when the per-call min_rank_score composite floor cut it. Absent on a served hit. Lets the feed dim what was filtered instead of hiding it; recall only.
+type ActivityMemoryFiltered string
 
 // ActivityResponse defines model for ActivityResponse.
 type ActivityResponse struct {
@@ -1145,6 +1165,9 @@ type SearchRequest struct {
 
 	// Metadata A memory's top-level metadata must contain every listed key=value pair (AND).
 	Metadata *map[string]string `json:"metadata,omitempty"`
+
+	// MinRankScore Per-call floor on the final ranked (composite) score — the same score the response `score` field and the activity feed show. Applied AFTER re-ranking, so it changes membership of the final list only, never the candidate pool the reranker judged nor its ordering. Floored hits are still logged to the activity feed, marked as filtered, so what was dropped stays visible. 0 (or unset) disables it. Results added by `include_linked` expansion are exempt (the floor runs before expansion). With `query_rewrite` it applies per query variant, before the RRF fusion of variants. Distinct from `min_score`, which floors the raw fused score before re-ranking.
+	MinRankScore *float64 `json:"min_rank_score,omitempty"`
 
 	// MinScore Per-call relevance floor on the fused score. Candidates below it are dropped server-side before re-ranking. 0 (or unset) falls back to the server's baked relevance floor (0.1). Only meaningful with score fusion (RRF scores are not comparable to this threshold).
 	MinScore *float64 `json:"min_score,omitempty"`

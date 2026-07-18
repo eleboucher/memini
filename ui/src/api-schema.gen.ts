@@ -744,6 +744,11 @@ export interface components {
              * @description Per-call relevance floor on the fused score. Candidates below it are dropped server-side before re-ranking. 0 (or unset) falls back to the server's baked relevance floor (0.1). Only meaningful with score fusion (RRF scores are not comparable to this threshold).
              */
             min_score?: number;
+            /**
+             * Format: double
+             * @description Per-call floor on the final ranked (composite) score — the same score the response `score` field and the activity feed show. Applied AFTER re-ranking, so it changes membership of the final list only, never the candidate pool the reranker judged nor its ordering. Floored hits are still logged to the activity feed, marked as filtered, so what was dropped stays visible. 0 (or unset) disables it. Results added by `include_linked` expansion are exempt (the floor runs before expansion). With `query_rewrite` it applies per query variant, before the RRF fusion of variants. Distinct from `min_score`, which floors the raw fused score before re-ranking.
+             */
+            min_rank_score?: number;
         };
         ScoredMemory: {
             memory: components["schemas"]["Memory"];
@@ -809,6 +814,11 @@ export interface components {
             score?: number;
             /** @description Which briefing section it appeared under; briefing only. */
             section?: string;
+            /**
+             * @description Present when the recall dropped this hit from its response but still logged it — "rank_floor" when the per-call min_rank_score composite floor cut it. Absent on a served hit. Lets the feed dim what was filtered instead of hiding it; recall only.
+             * @enum {string}
+             */
+            filtered?: "rank_floor";
         };
         /** @description One logical operation, with the memories it served or wrote. */
         ActivityEvent: {

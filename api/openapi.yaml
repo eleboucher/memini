@@ -1322,6 +1322,23 @@ components:
             dropped server-side before re-ranking. 0 (or unset) falls back to
             the server's baked relevance floor (0.1). Only meaningful with score
             fusion (RRF scores are not comparable to this threshold).
+        min_rank_score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          exclusiveMaximum: true
+          description: >
+            Per-call floor on the final ranked (composite) score — the same
+            score the response `score` field and the activity feed show. Applied
+            AFTER re-ranking, so it changes membership of the final list only,
+            never the candidate pool the reranker judged nor its ordering.
+            Floored hits are still logged to the activity feed, marked as
+            filtered, so what was dropped stays visible. 0 (or unset) disables
+            it. Results added by `include_linked` expansion are exempt (the floor
+            runs before expansion). With `query_rewrite` it applies per query
+            variant, before the RRF fusion of variants. Distinct from `min_score`,
+            which floors the raw fused score before re-ranking.
     # Results nest the memory ({memory, score, from}), they are not bare
     # Memory objects. Hand-written consumers that must move in lockstep with
     # any shape change here: plugin/scripts/_shared.mjs postSearch (feeds
@@ -1442,6 +1459,14 @@ components:
         section:
           type: string
           description: Which briefing section it appeared under; briefing only.
+        filtered:
+          type: string
+          enum: [rank_floor]
+          description: >
+            Present when the recall dropped this hit from its response but still
+            logged it — "rank_floor" when the per-call min_rank_score composite
+            floor cut it. Absent on a served hit. Lets the feed dim what was
+            filtered instead of hiding it; recall only.
     ActivityEvent:
       type: object
       description: One logical operation, with the memories it served or wrote.
