@@ -2305,6 +2305,264 @@ test("writeLastRecallState/readLastRecallState: bounds to 32 most-recent entries
   }
 });
 
+// ─── injected-state v2: migration, eviction, merge-on-write, predicate ────
+//
+// Unit-style tests that import _shared.mjs directly (like the bounds test
+// above). They exercise the state layer + shared cooldown predicate that the
+// recall hooks build on — independent of any spawned hook script.
+
+const INJ_STATE = (cache, id) => join(cache, "memini", "sessions", id + ".injected.json");
+
+test("readInjectedState: v1 flat file migrates to v2 in-memory, round-trips as v2 on write", async () => {
+  const { readInjectedState, writeInjectedState } = await import("./_shared.mjs");
+  const cache = freshCache();
+  const prevXdg = process.env.XDG_CACHE_HOME;
+  process.env.XDG_CACHE_HOME = cache;
+  try {
+    // A legacy v1 file: id → identity-hash string, plus a junk (non-string)
+    // value that migration must skip without crashing.
+    mkdirSync(join(cache, "memini", "sessions"), { recursive: true });
+    writeFileSync(INJ_STATE(cache, "mig1"), JSON.stringify({ a: "hash-a", b: "hash-b", junk: 123 }));
+
+    const before = Date.now();
+    const state = readInjectedState("mig1");
+    assert.equal(state.n, 0, "v1 file has no counter → n defaults to 0");
+    assert.deepEqual(Object.keys(state.ids).sort(), ["a", "b"], "junk (non-string) values are skipped");
+    assert.equal(state.ids.a.h, "hash-a");
+    assert.equal(state.ids.a.n, 0, "migrated entries seed n=0");
+    assert.ok(state.ids.a.at >= before, "migrated entries seed at=now()");
+
+    // Writing the migrated state persists the v2 shape on disk.
+    writeInjectedState("mig1", state);
+    const raw = JSON.parse(readFileSync(INJ_STATE(cache, "mig1"), "utf8"));
+    assert.equal(raw.v, 2, "file is v2 after write");
+    assert.equal(raw.ids.a.h, "hash-a");
+    assert.equal(typeof raw.ids.a.at, "number");
+  } finally {
+    if (prevXdg === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = prevXdg;
+  }
+});
+
+test("readInjectedState: a v2 file reads back verbatim; garbage entries are dropped", async () => {
+  const { readInjectedState } = await import("./_shared.mjs");
+  const cache = freshCache();
+  const prevXdg = process.env.XDG_CACHE_HOME;
+  process.env.XDG_CACHE_HOME = cache;
+  try {
+    mkdirSync(join(cache, "memini", "sessions"), { recursive: true });
+    writeFileSync(
+      INJ_STATE(cache, "v2read"),
+      JSON.stringify({
+        v: 2,
+        n: 7,
+        ids: {
+          good: { h: "abc", at: 1000, n: 3 },
+          sentinel: { h: "", at: 2000, n: 4 },
+          noH: { at: 3000, n: 5 }, // missing hash → skipped
+          notObj: "nope", // not an object → skipped
+        },
+      }),
+    );
+    const state = readInjectedState("v2read");
+    assert.equal(state.n, 7);
+    assert.deepEqual(Object.keys(state.ids).sort(), ["good", "sentinel"], "malformed entries dropped, never a crash");
+    assert.deepEqual(state.ids.good, { h: "abc", at: 1000, n: 3 });
+    assert.equal(state.ids.sentinel.h, "");
+  } finally {
+    if (prevXdg === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = prevXdg;
+  }
+});
+
+test("writeInjectedState: bounds ids to 512, evicting oldest by `at`", async () => {
+  const { readInjectedState, writeInjectedState } = await import("./_shared.mjs");
+  const cache = freshCache();
+  const prevXdg = process.env.XDG_CACHE_HOME;
+  process.env.XDG_CACHE_HOME = cache;
+  try {
+    const state = { n: 0, ids: {} };
+    for (let i = 0; i < 600; i++) {
+      state.ids[`id-${i}`] = { h: `h-${i}`, at: i, n: 0 }; // ascending `at` — id-0 oldest
+    }
+    writeInjectedState("evict", state);
+    const after = readInjectedState("evict");
+    const keys = Object.keys(after.ids);
+    assert.equal(keys.length, 512, "ids bounded to 512");
+    assert.ok(!("id-0" in after.ids), "oldest (lowest `at`) evicted");
+    assert.ok("id-599" in after.ids, "newest (highest `at`) kept");
+    assert.ok(!("id-87" in after.ids), "an id below the 512-newest cutoff is evicted");
+    assert.ok("id-88" in after.ids, "the 512th-newest id (600-512=88) is kept");
+  } finally {
+    if (prevXdg === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = prevXdg;
+  }
+});
+
+test("writeInjectedState: merge-on-write keeps larger `n` and the larger-`at` entry per id", async () => {
+  const { readInjectedState, writeInjectedState } = await import("./_shared.mjs");
+  const cache = freshCache();
+  const prevXdg = process.env.XDG_CACHE_HOME;
+  process.env.XDG_CACHE_HOME = cache;
+  try {
+    mkdirSync(join(cache, "memini", "sessions"), { recursive: true });
+    // Simulate a concurrent process having already written a fresher file:
+    // higher counter, id "a" newer on disk, id "b" newer in our memory.
+    writeFileSync(
+      INJ_STATE(cache, "merge"),
+      JSON.stringify({
+        v: 2,
+        n: 5,
+        ids: {
+          a: { h: "file-a", at: 100, n: 1 }, // disk newer for "a"
+          b: { h: "file-b", at: 10, n: 1 }, // disk older for "b"
+        },
+      }),
+    );
+    const mem = {
+      n: 3, // lower than disk's 5
+      ids: {
+        a: { h: "mem-a", at: 50, n: 2 }, // older → disk's "a" wins
+        b: { h: "mem-b", at: 200, n: 2 }, // newer → mem's "b" wins
+        c: { h: "mem-c", at: 30, n: 2 }, // only in memory → kept
+      },
+    };
+    writeInjectedState("merge", mem);
+    const raw = JSON.parse(readFileSync(INJ_STATE(cache, "merge"), "utf8"));
+    assert.equal(raw.n, 5, "n = max(file.n=5, mem.n=3)");
+    assert.deepEqual(raw.ids.a, { h: "file-a", at: 100, n: 1 }, "larger-`at` (disk) entry wins for a");
+    assert.deepEqual(raw.ids.b, { h: "mem-b", at: 200, n: 2 }, "larger-`at` (mem) entry wins for b");
+    assert.deepEqual(raw.ids.c, { h: "mem-c", at: 30, n: 2 }, "mem-only id survives the merge");
+    // Round-trip once more through the reader.
+    const state = readInjectedState("merge");
+    assert.deepEqual(Object.keys(state.ids).sort(), ["a", "b", "c"]);
+  } finally {
+    if (prevXdg === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = prevXdg;
+  }
+});
+
+test("recordInjected: sets {h, at, n} with n = state's current counter", async () => {
+  const { recordInjected } = await import("./_shared.mjs");
+  const state = { n: 12, ids: {} };
+  recordInjected(state, "m1", "hash-1", 1752770000000);
+  assert.deepEqual(state.ids.m1, { h: "hash-1", at: 1752770000000, n: 12 });
+  recordInjected(state, "m2", ""); // sentinel, default now
+  assert.equal(state.ids.m2.h, "");
+  assert.equal(state.ids.m2.n, 12);
+  assert.equal(typeof state.ids.m2.at, "number");
+});
+
+test("injectedSuppressed: predicate truth table", async () => {
+  const { injectedSuppressed } = await import("./_shared.mjs");
+  const NOW = 1_000_000;
+  const S = (entry, identity, opts) => injectedSuppressed(entry, identity, { now: NOW, ...opts });
+
+  // forever (both windows zero) → suppressed, exact #134 behavior
+  assert.equal(
+    S({ h: "abc", at: 0, n: 0 }, "abc", { counter: 100, cooldownMs: 0, cooldownPrompts: 0 }),
+    true,
+    "both-zero → forever suppress",
+  );
+
+  // time-only dimension (prompts disabled)
+  const timeOnly = { counter: 999, cooldownMs: 1000, cooldownPrompts: 0 };
+  assert.equal(S({ h: "abc", at: NOW - 500, n: 0 }, "abc", timeOnly), true, "within time window → suppressed");
+  assert.equal(S({ h: "abc", at: NOW - 2000, n: 0 }, "abc", timeOnly), false, "past time window → re-admit");
+
+  // prompts-only dimension (time disabled)
+  const promptOnly = { counter: 12, cooldownMs: 0, cooldownPrompts: 3 };
+  assert.equal(S({ h: "abc", at: 0, n: 10 }, "abc", promptOnly), true, "within prompt window (Δ=2<3) → suppressed");
+  assert.equal(S({ h: "abc", at: 0, n: 8 }, "abc", promptOnly), false, "past prompt window (Δ=4≥3) → re-admit");
+
+  // hybrid: OR-suppress, AND-readmit
+  const both = { cooldownMs: 1000, cooldownPrompts: 3 };
+  assert.equal(
+    S({ h: "abc", at: NOW - 500, n: 0 }, "abc", { counter: 999, ...both }),
+    true,
+    "within time only → OR suppresses",
+  );
+  assert.equal(
+    S({ h: "abc", at: NOW - 9999, n: 11 }, "abc", { counter: 12, ...both }),
+    true,
+    "within prompts only → OR suppresses",
+  );
+  assert.equal(
+    S({ h: "abc", at: NOW - 9999, n: 0 }, "abc", { counter: 999, ...both }),
+    false,
+    "both lapsed → AND re-admits",
+  );
+  assert.equal(
+    S({ h: "abc", at: NOW - 100, n: 11 }, "abc", { counter: 12, ...both }),
+    true,
+    "both within → suppressed",
+  );
+
+  // hash-change bypass: content changed → re-inject, even under forever config
+  assert.equal(
+    S({ h: "abc", at: 0, n: 0 }, "xyz", { counter: 1, cooldownMs: 0, cooldownPrompts: 0 }),
+    false,
+    "identity changed → bypass (re-inject)",
+  );
+  assert.equal(
+    S({ h: "abc", at: 0, n: 0 }, "abc", { counter: 1, cooldownMs: 0, cooldownPrompts: 0 }),
+    true,
+    "identity unchanged → forever suppress",
+  );
+
+  // sentinel (tool-read) → forever suppress regardless of identity/windows
+  assert.equal(
+    S({ h: "", at: 0, n: 0 }, "anything", { counter: 999, cooldownMs: 1000, cooldownPrompts: 3 }),
+    true,
+    "sentinel suppresses even with both windows lapsed",
+  );
+  assert.equal(S({ h: "", at: 0, n: 0 }, null, { counter: 999, cooldownMs: 1000, cooldownPrompts: 3 }), true);
+
+  // counter==0 → prompt dimension inert (host never fires UserPromptSubmit),
+  // degrades to time-only rather than suppress-forever.
+  assert.equal(
+    S({ h: "abc", at: 0, n: 0 }, "abc", { counter: 0, cooldownMs: 0, cooldownPrompts: 5 }),
+    false,
+    "counter==0 + prompts-only → NOT suppressed (inert, not forever)",
+  );
+  assert.equal(
+    S({ h: "abc", at: NOW - 100, n: 0 }, "abc", { counter: 0, cooldownMs: 1000, cooldownPrompts: 5 }),
+    true,
+    "counter==0 still honors the time window",
+  );
+
+  // negative deltas clamp to suppressed (clock skew / counter regression)
+  assert.equal(
+    S({ h: "abc", at: NOW + 5000, n: 0 }, "abc", { counter: 999, cooldownMs: 1000, cooldownPrompts: 0 }),
+    true,
+    "future `at` (negative time delta) → suppressed",
+  );
+  assert.equal(
+    S({ h: "abc", at: 0, n: 20 }, "abc", { counter: 5, cooldownMs: 0, cooldownPrompts: 3 }),
+    true,
+    "counter < entry.n (negative prompt delta) → suppressed",
+  );
+});
+
+test("cooldownIds: lists in-cooldown ids (identity=null, sentinels always in cooldown)", async () => {
+  const { cooldownIds } = await import("./_shared.mjs");
+  const NOW = 1_000_000;
+  const state = {
+    n: 10,
+    ids: {
+      fresh: { h: "hf", at: NOW, n: 9 }, // within time window
+      stale: { h: "hs", at: NOW - 10000, n: 2 }, // both windows lapsed
+      sentinel: { h: "", at: 0, n: 0 }, // tool-read → always
+    },
+  };
+  const ids = cooldownIds(state, { now: NOW, cooldownMs: 5000, cooldownPrompts: 3 });
+  assert.deepEqual(ids.sort(), ["fresh", "sentinel"], "in-cooldown = fresh + sentinel; stale re-admitted");
+
+  // forever config → every recorded id is in cooldown
+  const forever = cooldownIds(state, { now: NOW, cooldownMs: 0, cooldownPrompts: 0 });
+  assert.deepEqual(forever.sort(), ["fresh", "sentinel", "stale"], "both-zero → all ids in cooldown");
+});
+
 test("pre-tool-use.mjs: identical recall for the same file is suppressed on the second call", async () => {
   const cache = freshCache();
   await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));

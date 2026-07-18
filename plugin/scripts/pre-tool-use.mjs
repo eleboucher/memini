@@ -30,6 +30,7 @@ import {
   writeLastRecallState,
   readInjectedState,
   writeInjectedState,
+  recordInjected,
   injectedIdentity,
   DEBUG,
 } from "./_shared.mjs";
@@ -122,7 +123,10 @@ async function main() {
   // ACROSS the files of this one call, so file 2 doesn't repeat what file 1
   // just injected. Shares the inject_dedupe knob with the per-file
   // fingerprint below — off restores the prior always-inject behavior.
-  const injectedMap = dedupe && sessionId ? readInjectedState(sessionId) : {};
+  // v2 state { n, ids }. This task keeps the CURRENT forever-dedupe behavior:
+  // the windowed predicate (injectedSuppressed/cooldownIds) is not consulted
+  // here yet — a later task wires the cooldown knobs into this hook.
+  const injectedState = dedupe && sessionId ? readInjectedState(sessionId) : { n: 0, ids: {} };
   let injectedChanged = false;
 
   for (const f of files.slice(0, 3)) {
@@ -148,12 +152,12 @@ async function main() {
     // drop it regardless of which session id it carries.
     const hits = filterFreshTurnEchoes(rawHits).filter((h) => {
       const id = h?.memory?.id;
-      if (typeof id !== "string" || !(id in injectedMap)) return true;
+      if (typeof id !== "string" || !(id in injectedState.ids)) return true;
       // A sentinel ("") marks a tool-read entry whose true content identity is
       // unknowable (concise tool responses truncate) — suppress by id alone.
-      if (injectedMap[id] === "") return false;
+      if (injectedState.ids[id].h === "") return false;
       // Already in context — unless its content changed since injection.
-      return injectedMap[id] !== injectedIdentity(h);
+      return injectedState.ids[id].h !== injectedIdentity(h);
     });
     if (hits.length === 0) continue;
 
@@ -198,13 +202,13 @@ async function main() {
       for (const h of hits) {
         const id = h?.memory?.id;
         if (typeof id === "string" && id) {
-          injectedMap[id] = injectedIdentity(h);
+          recordInjected(injectedState, id, injectedIdentity(h));
           injectedChanged = true;
         }
       }
     }
   }
-  if (dedupe && sessionId && injectedChanged) writeInjectedState(sessionId, injectedMap);
+  if (dedupe && sessionId && injectedChanged) writeInjectedState(sessionId, injectedState);
   if (lastRecallChanged) writeLastRecallState(sessionId, lastRecall);
   if (!any) return;
   if (totalDropped > 0) out.push(`[... ${totalDropped} item(s) truncated by token budget]`);

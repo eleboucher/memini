@@ -27,6 +27,7 @@ import {
   formatRecallHit,
   readInjectedState,
   writeInjectedState,
+  recordInjected,
   injectedIdentity,
   DEBUG,
 } from "./_shared.mjs";
@@ -92,14 +93,17 @@ async function main() {
   // pretool's content-aware filter keeps updates reachable. Governed by the
   // same inject_dedupe knob as every other injection-dedupe mechanism.
   const dedupe = ctx.setting("inject_dedupe").value;
-  const injected = dedupe && sessionId ? readInjectedState(sessionId) : {};
+  // v2 state { n, ids }. This task preserves the CURRENT forever-dedupe: every
+  // recorded id is still excluded (Object.keys(state.ids)). A later task swaps
+  // this for cooldownIds so only in-cooldown ids are excluded.
+  const injectedState = dedupe && sessionId ? readInjectedState(sessionId) : { n: 0, ids: {} };
   const exclude = sessionId ? { session_id: sessionId } : undefined;
   const { hits: rawHits, degraded, note } = await postSearch(trimmed.slice(0, MAX_PROMPT_QUERY_CHARS), project, {
     limit,
     exclude,
     minScore,
     source: "prompt",
-    excludeIds: Object.keys(injected),
+    excludeIds: Object.keys(injectedState.ids),
   });
 
   // Belt-and-braces on both exclusions: fresh turn echoes whose session id
@@ -107,7 +111,7 @@ async function main() {
   // the server dropped exclude_ids (the 400-fallback for older servers).
   const hits = filterFreshTurnEchoes(rawHits).filter((h) => {
     const id = h?.memory?.id;
-    return !(typeof id === "string" && id in injected);
+    return !(typeof id === "string" && id in injectedState.ids);
   });
   if (hits.length === 0) return;
 
@@ -134,11 +138,11 @@ async function main() {
     for (const h of hits) {
       const id = h?.memory?.id;
       if (typeof id === "string" && id) {
-        injected[id] = injectedIdentity(h);
+        recordInjected(injectedState, id, injectedIdentity(h));
         recorded = true;
       }
     }
-    if (recorded) writeInjectedState(sessionId, injected);
+    if (recorded) writeInjectedState(sessionId, injectedState);
   }
 
   process.stdout.write(

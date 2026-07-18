@@ -19,6 +19,7 @@ import {
   getSessionContext,
   readInjectedState,
   writeInjectedState,
+  recordInjected,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -123,15 +124,15 @@ async function main() {
     const ids = new Set();
     collectMemoryIds(parseToolResult(payload.tool_response ?? payload.tool_output), ids);
     if (ids.size === 0) return;
-    const injected = readInjectedState(sessionId);
+    const injectedState = readInjectedState(sessionId);
     let recorded = false;
     for (const id of ids) {
-      if (!(id in injected)) {
-        injected[id] = "";
+      if (!(id in injectedState.ids)) {
+        recordInjected(injectedState, id, ""); // sentinel: content identity unknowable
         recorded = true;
       }
     }
-    if (recorded) writeInjectedState(sessionId, injected);
+    if (recorded) writeInjectedState(sessionId, injectedState);
     if (DEBUG) console.error(`[memini] PostToolUse recorded ${ids.size} tool-read id(s) tool=${toolName} session=${sessionId}`);
     return;
   }
