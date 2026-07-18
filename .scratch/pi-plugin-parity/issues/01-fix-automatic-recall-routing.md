@@ -10,10 +10,10 @@ Automatic prompt recall must use the same server-authoritative project namespace
 
 ## Acceptance criteria
 
-- [ ] Every automatic search attempt carries the resolved namespace, including the `exclude_ids` retry path.
-- [ ] Server-side exclusion is disabled only when the server specifically rejects the unsupported field, not after timeouts or unrelated 5xx responses.
-- [ ] Regression tests assert the namespace header and transient-failure behavior.
-- [ ] Typechecking passes and is capable of catching a future missing-namespace call.
+- [x] Every automatic search attempt carries the resolved namespace, including the `exclude_ids` retry path.
+- [x] Server-side exclusion is disabled only when the server specifically rejects the unsupported field, not after timeouts or unrelated 5xx responses.
+- [x] Regression tests assert the namespace header and transient-failure behavior.
+- [x] Typechecking passes and is capable of catching a future missing-namespace call.
 
 ## Comments
 

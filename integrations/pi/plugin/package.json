@@ -2,17 +2,24 @@
   "name": "@eleboucher/pi-memini",
   "version": "0.7.4",
   "description": "Shared cross-session memory for the Pi coding agent, backed by a memini service.",
+  "keywords": [
+    "memini",
+    "memory",
+    "pi-extension",
+    "pi-package"
+  ],
   "files": [
     "dist"
   ],
   "type": "module",
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --external:typebox --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-tui --alias:@memini/client=../../../packages/memini-client/src/index.ts --outfile=dist/index.js",
-    "test": "node --test test/bundle.test.mjs && npx tsx --test test/helpers.test.ts",
+    "build": "npm run clean && esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --external:typebox --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-tui --alias:@memini/client=../../../packages/memini-client/src/index.ts --outfile=dist/index.js",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "prepack": "npm run typecheck && npm run build",
+    "test": "npm run typecheck && npm run build && npm run test:unit && npm run test:package",
+    "test:unit": "node --test test/bundle.test.mjs && tsx --test test/helpers.test.ts",
+    "test:package": "node --test test/package-install.test.mjs",
     "typecheck": "tsc -p tsconfig.test.json"
-  },
-  "dependencies": {
-    "typebox": "^1.1.38"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.80.6",
@@ -20,11 +27,16 @@
     "@types/node": "^24.0.0",
     "esbuild": "^0.28.1",
     "tsx": "^4.20.0",
+    "typebox": "1.3.4",
     "typescript": "^5.9.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.80.6",
-    "@earendil-works/pi-tui": ">=0.80.6"
+    "@earendil-works/pi-tui": ">=0.80.6",
+    "typebox": ">=1.1.38"
+  },
+  "engines": {
+    "node": ">=22.19.0"
   },
   "pi": {
     "extensions": [

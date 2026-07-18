@@ -1,50 +1,24 @@
 # memini + Pi
 
 [Pi](https://pi.dev) is an open-source coding agent with a first-class
-[extension API](https://pi.dev/docs/latest/extensions). Pi has **no built-in
-MCP** — capabilities are added through extensions — so memini ships a native
-extension in [`plugin/`](plugin/) that makes memory both automatic and
-tool-callable, with no MCP layer required.
+[extension API](https://pi.dev/docs/latest/extensions). Pi has no built-in MCP
+client, so memini ships a native Pi package in [`plugin/`](plugin/). It adds
+automatic session memory, native `memory_*` tools, lifecycle persistence, and
+compact transcript rendering without an MCP adapter.
 
-## Recommended: the memory extension
+## Install
 
-What it wires:
+The package is published as
+[`@eleboucher/pi-memini`](https://www.npmjs.com/package/@eleboucher/pi-memini)
+and requires Pi 0.80.6 or newer (Node.js 22.19 or newer):
 
-- **`before_agent_start`** — searches memini for the user's prompt and injects
-  the matches as a persistent context message before the agent runs. It excludes
-  this session's own captured turns (already in live context), so they aren't
-  echoed back a turn behind; past sessions still recall.
-- **`agent_settled`** — once retries, compaction recovery, and queued
-  continuations are finished, stores the completed user/assistant turn back
-  into memini (episodic, tagged `pi`, with the session id) so it can be recalled
-  later.
-- **Session lifecycle** — injects a bounded briefing at startup, writes bounded
-  pre-compaction/session checkpoints, restores branch-local suppression state,
-  and re-briefs after compaction without flooding the transcript.
-- **Explicit tools** — registered natively via `pi.registerTool`, with complete
-  model-facing JSON and compact TUI rendering: `memory_briefing`,
-  `memory_recall`, `memory_list`, `memory_remember`, `memory_get`,
-  `memory_history`, `memory_update`, and `memory_forget`. `memory_answer` is
-  added dynamically only when authenticated `GET /healthz?verbose=1` literally
-  reports `deps.llm.configured: true`; false or unavailable capability evidence
-  leaves it unadvertised.
+```sh
+pi install npm:@eleboucher/pi-memini
+```
 
-The REST-backed `memory_answer` intentionally does not expose MCP's
-`reasoning_level` yet because the current `/v1/answer` OpenAPI request does not
-accept that field. Likewise, REST briefing does not expose the service's
-truncated-child count, so Pi returns every child rollup REST supplied but does
-not fabricate MCP's `children_note`. These limitations are evidence-based and
-fail closed rather than guessing server support.
-
-### Install
-
-The extension is published to npm as
-[`@eleboucher/pi-memini`](https://www.npmjs.com/package/@eleboucher/pi-memini).
-Pi has no `init`/scaffold command — extensions are just discovered from known
-locations or declared in config. Pick one:
-
-**Project / global settings** — add the package to `settings.json`
-(`.pi/settings.json` for one project, or `~/.pi/agent/settings.json` globally):
+Use `-l` for a project-local install. Pi records global packages in
+`~/.pi/agent/settings.json` and project packages in `.pi/settings.json`.
+Equivalent manual configuration is:
 
 ```json
 {
@@ -52,108 +26,205 @@ locations or declared in config. Pick one:
 }
 ```
 
-**Discovery folder** — Pi auto-discovers and hot-reloads extensions in
-`~/.pi/agent/extensions/` (global) or `.pi/extensions/` (project-local). Drop
-the built `dist/index.js` (or the `src/index.ts` source) there.
+Project-local packages load only after the project is trusted. Run `pi config`
+to enable or disable installed resources.
 
-**Quick test** — point Pi at a local checkout for one run:
+For development, load the built extension for one run:
 
 ```sh
+npm --prefix integrations/pi/plugin run build
 pi -e ./integrations/pi/plugin/dist/index.js
 ```
 
-### Configure
+Pi also auto-discovers source extensions placed in
+`~/.pi/agent/extensions/` or `.pi/extensions/`; those locations can be
+hot-reloaded with `/reload`.
 
-All config is via environment variables in the shell that launches Pi (secrets
-stay out of any file):
+## What the extension does
 
-| Env var                          | Default                          | Purpose                                                                                                                                            |
-| -------------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MEMINI_BASE_URL`                | `http://localhost:8080`          | memini REST base URL                                                                                                                               |
-| `MEMINI_NAMESPACE`               | unset (server handshake decides) | machine-local namespace override; the offline escape hatch when the server is unreachable                                                          |
-| `MEMINI_HOME`                    | unset                            | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg                                                                          |
-| `MEMINI_RECALL`                  | on                               | `0`/`false` disables recall-before-turn                                                                                                            |
-| `MEMINI_CAPTURE`                 | on                               | `0`/`false` disables capture-after-turn                                                                                                            |
-| `MEMINI_RECALL_LIMIT`            | `3`                              | max memories injected per turn                                                                                                                     |
-| `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                              | hard ceiling on recall-block tokens (`0` = unbounded); the tail is dropped with a footer                                                           |
-| `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                              | fused-score floor (>=) sent as `min_score` to `/v1/search`                                                                                         |
-| `MEMINI_INJECT_COOLDOWN_MS`      | `1800000`                        | repeat-injection cooldown, **time** window (ms) before an already-injected memory may re-inject; `0` disables the time dimension                   |
-| `MEMINI_INJECT_COOLDOWN_PROMPTS` | `3`                              | repeat-injection cooldown, **prompt** window (per user turn); `0` disables the prompt dimension; both cooldown vars `0` = suppress for the session |
-| `MEMINI_INJECT_LABELS`           | —                                | comma-separated bullet labels: `tier`, `confidence`, `age`                                                                                         |
-| `MEMINI_TIMEOUT_MS`              | `30000`                          | per-request timeout                                                                                                                                |
-| `MEMINI_FALLBACK`                | on                               | `0`/`false` surfaces errors instead of degrading silently                                                                                          |
-| `MEMINI_API_KEY`                 | —                                | bearer token, if memini needs auth (sent as `Authorization: Bearer …`)                                                                             |
-| `MEMINI_REQUIRE_HTTPS`           | —                                | `1` refuses to send the token over plaintext HTTP                                                                                                  |
+### Automatic memory and lifecycle
 
-The two `MEMINI_INJECT_COOLDOWN_*` vars are the windowed **repeat-injection
-cooldown**: an already-injected memory is excluded from recall (server-side via
-`exclude_ids`, with a client-side backstop) while it is inside _either_ window,
-and re-served only once _both_ have lapsed. Pi's `before_agent_start` fires once
-per user prompt, so it advances both the clock and the prompt counter — both
-dimensions apply here. Both vars `0` restores the prior suppress-for-the-session
-behavior.
+- **`session_start` / `session_tree`** reconstruct branch-local suppression and
+  capture state, then inject one bounded layered briefing when the active model
+  context does not already contain it. Startup, resume, fork, and reload do not
+  duplicate an intact briefing.
+- **`before_agent_start`** searches for the submitted prompt and injects useful
+  matches as untrusted, read-only context. Blank text, command-shaped prompts,
+  and steering text shorter than 12 characters are skipped; search queries are
+  capped at 2,000 characters.
+- **`agent_settled`** captures the final successful user/assistant turn only
+  after retries, overflow compaction, and queued continuations have settled.
+  Repeated settled events for the same assistant entry are idempotent.
+- **`session_before_compact` / `session_compact`** optionally checkpoint bounded
+  state-changing activity, clear context-coupled suppression, and queue a fresh
+  briefing without starting an extra turn.
+- **`session_shutdown`** optionally records a bounded activity digest for real
+  shutdown/switch/fork events. Reload is skipped because the session continues.
+- **Branch-aware dedupe** persists in Pi custom entries. Automatic briefing,
+  prompt recall, and explicit recall/briefing/list/get results share one cooldown
+  state; successful updates, deletes, and ID upserts make corrected content eligible immediately.
+  Set `MEMINI_INJECT_DEDUPE=0` to disable exclusions, filtering, and recording
+  together.
 
-The namespace itself is resolved by the memini **server**, not this extension:
-at the first turn the extension performs the config handshake
-(`POST /v1/handshake`), sending the project's facts (git remote, toplevel,
-cwd basename) and using whatever the server resolves — a pin recorded for this
-project, `MEMINI_NAMESPACE` if exported, or derivation from the facts (repo
-name, then toplevel basename, then cwd basename). The result is memoized in
-memory for ten minutes. When the server is unreachable, the extension degrades
-to the same chain locally: `MEMINI_NAMESPACE`, else git/cwd derivation — which
-is why the env var is best thought of as the offline escape hatch, not the
-primary lever.
+The server-authoritative namespace from `POST /v1/handshake` scopes automatic
+and explicit requests through `X-Memini-Namespace`. A compatibility retry drops
+`exclude_ids` only after a server explicitly rejects that field with HTTP 400;
+timeouts, throttling, and unrelated failures do not disable it.
 
-### Commands
+### Native tools
 
-| Command            | What it does                                                                    |
-| ------------------ | ------------------------------------------------------------------------------- |
-| `memini:status`    | Effective settings, the resolved namespace **and where it came from**, warnings |
-| `memini:namespace` | Show, set, or clear the server-side namespace pin for this project              |
+Pi registers these tools directly with `pi.registerTool`:
 
-`memini:status` exists because a list of values is not enough to debug a namespace
-problem. It shows provenance (`<- env` vs `<- server` vs `(default)`), so a
-`MEMINI_NAMESPACE` exported once from a shell profile — which pins _every_ repo on
-the machine to one namespace — shows up as a warning rather than as a mystery.
-Secrets are redacted.
+| Tool              | Purpose                                                                                      |
+| ----------------- | -------------------------------------------------------------------------------------------- |
+| `memory_briefing` | Read pinned context, durable facts, procedures, recent work, and nested-project rollups.     |
+| `memory_recall`   | Hybrid semantic/keyword recall with filters, time travel, scope, exclusions, and provenance. |
+| `memory_list`     | Browse and page newest-first memories without a search query.                                |
+| `memory_remember` | Store or upsert an atomic memory, including validity, confidence, metadata, and visibility.  |
+| `memory_get`      | Fetch one complete memory DTO.                                                               |
+| `memory_history`  | Read a memory's supersession history oldest-first.                                           |
+| `memory_update`   | Partially correct content, summary, tier, level, tags, metadata, importance, or confidence.  |
+| `memory_forget`   | Permanently delete a memory.                                                                 |
 
-### The namespace pin
+`memory_answer` is added dynamically only when authenticated
+`GET /healthz?verbose=1` returns the literal boolean
+`deps.llm.configured: true`. Missing, malformed, false, unreachable, or
+unrouted capability evidence leaves the tool unadvertised.
 
-```
-memini:namespace              # show the namespace and where it came from
-memini:namespace acme/api     # pin this project to acme/api
-memini:namespace --clear      # back to automatic resolution
-```
+The REST-backed answer tool intentionally omits MCP's `reasoning_level` because
+the current `/v1/answer` REST request does not accept it. REST briefing also
+does not expose the service's truncated-child count, so Pi preserves every
+returned child rollup but does not fabricate `children_note`.
 
-The pin lives on the **memini server** (`PUT`/`DELETE /v1/pins`), keyed by the
-project's git remote and/or toplevel path — so it follows you across machines,
-and every client that handshakes for this project (Claude Code, this extension,
-`memini doctor`) resolves the same value.
+Read results include namespace/provenance evidence. For inherited or personal
+memories, copy the returned `namespace` verbatim into get/history/update/forget;
+do not invent namespace paths. Writes choose semantic `visibility` instead.
 
-A pin beats `MEMINI_NAMESPACE` at handshake time, deliberately: a globally
-exported `MEMINI_NAMESPACE` is exactly the problem a pin exists to solve, so if
-the environment won, the command would silently do nothing on the machines that
-need it. Setting or clearing a pin takes effect on the next turn — the write
-drops the extension's in-memory handshake memo, so there is no restart or
-ten-minute wait.
+### Compact rendering
 
-Because pins are server-side, setting one needs the server reachable. For an
-offline, machine-local override, export `MEMINI_NAMESPACE` instead.
+All explicit tools keep their complete structured JSON in the tool result sent
+to the model and stored in the session. Their TUI renderer shows a concise
+single line when collapsed and, with Pi's tool-expansion key (`Ctrl+O` by
+default), a bounded human-readable view of at most eight items with useful
+tier, score, provenance, and summary fields.
 
-### Build & test
+Automatic briefing and recall messages likewise remain persistent model
+context while registered message renderers keep the normal transcript to one
+line. Rendering never truncates or rewrites the model-facing payload.
+
+## Configure
+
+The extension has two configuration layers:
+
+1. **Transport and identity** come from the environment of the Pi process.
+2. **Behavior settings** resolve as **environment override → handshake server
+   setting → built-in default**. This lets one server set team defaults while a
+   local environment can override a specific knob.
+
+### Transport and identity environment
+
+| Environment variable      | Default                 | Effect                                                                                                   |
+| ------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------- |
+| `MEMINI_BASE_URL`         | `http://localhost:8080` | memini REST base URL.                                                                                    |
+| `MEMINI_API_KEY`          | unset                   | Bearer token.                                                                                            |
+| `MEMINI_REQUIRE_HTTPS`    | off                     | Set to `1` to refuse a bearer token over non-loopback plaintext HTTP.                                    |
+| `MEMINI_HOME`             | unset                   | Personal namespace sent as `X-Memini-Home`; unset means no personal read leg.                            |
+| `MEMINI_NAMESPACE`        | unset                   | Declared namespace fact and offline machine-local fallback; a server pin still wins.                     |
+| `MEMINI_NAMESPACE_PREFIX` | unset                   | Prefix applied only to derived namespaces, online and in degraded fallback.                              |
+| `MEMINI_AGENT`            | unset                   | Optional per-agent namespace suffix fact.                                                                |
+| `MEMINI_TIMEOUT_MS`       | `30000`                 | Per-request timeout in milliseconds.                                                                     |
+| `MEMINI_FALLBACK`         | on                      | `0`/`false` makes automatic lifecycle transport failures surface instead of degrading to warnings/no-op. |
+
+The initial handshake sends git remote, repository root, cwd basename, and the
+identity facts above. The server resolves pins and other server-side policy and
+returns the authoritative namespace. The result is memoized for ten minutes;
+setting or clearing a pin invalidates it immediately. If the handshake is
+unreachable, Pi falls back to `MEMINI_NAMESPACE`, then local git/cwd derivation,
+and marks the result degraded.
+
+### Behavior settings used by Pi
+
+| Environment override                 | Built-in default | Effect                                                                                        |
+| ------------------------------------ | ---------------- | --------------------------------------------------------------------------------------------- |
+| `MEMINI_RECALL`                      | on               | Automatic prompt recall.                                                                      |
+| `MEMINI_CAPTURE`                     | on               | Settled-turn capture.                                                                         |
+| `MEMINI_RECALL_LIMIT`                | `3`              | Maximum automatic recall hits.                                                                |
+| `MEMINI_INJECT_RECALL_MAX_TOK`       | `0`              | Recall injection token ceiling; `0` is unbounded.                                             |
+| `MEMINI_INJECT_RECALL_MIN_SCORE`     | `0`              | Minimum automatic recall score.                                                               |
+| `MEMINI_INJECT_DEDUPE`               | on               | Shared cross-surface suppression state.                                                       |
+| `MEMINI_INJECT_COOLDOWN_MS`          | `1800000`        | Time cooldown for repeated injection; `0` disables this dimension.                            |
+| `MEMINI_INJECT_COOLDOWN_PROMPTS`     | `3`              | Prompt cooldown; `0` disables this dimension. Both cooldowns at `0` suppress for the session. |
+| `MEMINI_INJECT_LABELS`               | empty            | Comma/pipe-separated automatic bullet labels: `tier`, `confidence`, `age`.                    |
+| `MEMINI_INJECT_BRIEFING_PINNED`      | `5`              | Startup pinned-memory cap.                                                                    |
+| `MEMINI_INJECT_BRIEFING_FACTS`       | `5`              | Startup durable-fact cap.                                                                     |
+| `MEMINI_INJECT_BRIEFING_PROCEDURES`  | `5`              | Startup procedure cap.                                                                        |
+| `MEMINI_INJECT_BRIEFING_RECENT`      | `3`              | Startup recent-memory cap.                                                                    |
+| `MEMINI_INJECT_BRIEFING_MAX_TOK`     | `0`              | Whole briefing token ceiling; `0` is unbounded.                                               |
+| `MEMINI_SESSION_DIGEST`              | on               | Pre-compaction and shutdown activity checkpoints.                                             |
+| `MEMINI_MIN_CAPTURE_CHARS`           | `0`              | Minimum settled user-text length required for capture.                                        |
+| `MEMINI_CAPTURE_USER_MAX_CHARS`      | `1000`           | Per-turn captured user-text cap; `0` is unbounded.                                            |
+| `MEMINI_CAPTURE_ASSISTANT_MAX_CHARS` | `3000`           | Per-turn captured assistant-text cap; `0` is unbounded.                                       |
+
+An already injected memory stays suppressed while **either** configured
+cooldown still holds and may return only after both lapse. Explicit read tools
+use conservative suppression until a correction evicts the stale entry.
+
+## Slash commands
+
+Type commands with the leading `/` in Pi's editor:
+
+| Command                         | Effect                                                                                                                |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `/memini:status`                | Show effective settings and provenance, resolved namespace, connection status, read set, redacted auth, and warnings. |
+| `/memini:namespace`             | Show the current server-resolved namespace and pin provenance.                                                        |
+| `/memini:namespace <namespace>` | Set this project's server-side namespace pin.                                                                         |
+| `/memini:namespace --clear`     | Clear the server-side pin and return to automatic resolution.                                                         |
+
+Pins are stored by the memini server (`PUT`/`DELETE /v1/pins`) and keyed by the
+project's git remote and/or repository root. They follow the project across
+machines and beat `MEMINI_NAMESPACE` deliberately. Pin writes require a
+reachable server; `MEMINI_NAMESPACE` remains the offline local override.
+
+## Build and verify
+
+From the package directory:
 
 ```sh
 cd integrations/pi/plugin
-npm install
-npm run build      # esbuild bundle -> dist/index.js
-npm test           # bundle test (node --test) + pure-helper unit tests (tsx --test)
+npm ci
+npm test
+```
+
+`npm test` is the standard verification path. It type-checks source and tests
+against Pi 0.80.6, builds `dist/index.js`, runs bundle and helper/lifecycle/tool
+contract tests, packs the publication artifact, installs it into a clean
+consumer, and imports the installed ESM with only Pi-provided peer modules.
+
+Useful focused commands:
+
+```sh
+npm run typecheck
+npm run build
+npm run test:unit
+npm run test:package
+npm pack --dry-run
+```
+
+The package's `prepack` hook repeats typecheck and build so a direct `npm pack`
+or publish cannot ship stale source. `@memini/client` is bundled into the
+single extension file; `typebox`, `@earendil-works/pi-coding-agent`, and
+`@earendil-works/pi-tui` remain host-provided peers as required for Pi packages.
+
+Relevant cross-integration parity checks from the repository root are:
+
+```sh
+pnpm --filter @memini/client test
+node --test plugin/scripts/_test.mjs
 ```
 
 ## Alternative: MCP wire
 
-Pi can also reach memini's `memory_*` tools over MCP, but — unlike Claude Code
-or Codex — Pi has no native MCP client, so you first need an MCP extension for
-Pi (e.g. the one prewired in the [`my-pi`](https://github.com/spences10/my-pi)
-distribution), then point it at memini's server: `http://<host>:8080/mcp`
-(remote) or `memini mcp` (stdio). The native extension above is simpler and adds
-the automatic recall/capture loop on top of the tools, so prefer it.
+Pi can reach memini's `memory_*` tools through a third-party MCP extension, then
+connect to `http://<host>:8080/mcp` or `memini mcp` (stdio). The native package
+above is preferred because it also provides automatic recall/capture, lifecycle
+state, capability gating, and compact rendering.

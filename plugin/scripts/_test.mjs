@@ -3781,12 +3781,13 @@ test("namespace.mjs --migrate: an already-pinned entry is skipped; a failed entr
   const configHome = freshConfigHome();
   await writeOverrideEntry(repoA, "team/a-ns", configHome);
   await writeOverrideEntry(repoB, "team/b-ns", configHome);
+  const { overrideKey } = await import("./_client.gen.mjs");
 
   const puts = [];
   const { url, close } = await startMockServer((req, res, body) => {
     if (req.method === "GET" && req.url === "/v1/pins") {
       res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ entries: [{ key: "path:" + repoA, namespace: "team/a-ns", created_at: "t", updated_at: "t" }] }));
+      res.end(JSON.stringify({ entries: [{ key: "path:" + overrideKey(repoA), namespace: "team/a-ns", created_at: "t", updated_at: "t" }] }));
       return;
     }
     if (req.method === "PUT" && req.url === "/v1/pins") {

@@ -1,12 +1,10 @@
-// Run: node --test (from this directory), after `pnpm run build`.
+// Run through `npm test`, which type-checks and builds before this file.
 //
-// Guards against the class of packaging bug where a plugin ships a runtime
-// dependency on an unpublished workspace package (see issue #34): the extension
-// is installed with a plain `npm install` under whatever package manager the
-// host runtime uses, so any `workspace:`/`file:`/`link:` spec — or any
-// `@memini/*` package that only exists inside this monorepo — makes the whole
-// plugin uninstallable. The build bundles those internal packages into
-// dist/index.js instead; these tests fail loudly if that ever regresses.
+// Guards against the class of packaging bug where a plugin ships a dependency
+// on an unpublished workspace package (see issue #34). Pi installs packages
+// with npm, so workspace/file/link specs — or an @memini/* package that exists
+// only in this monorepo — make the extension uninstallable. The build bundles
+// internal packages into dist/index.js while Pi core modules remain peers.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
@@ -14,7 +12,21 @@ import { existsSync, readFileSync } from "node:fs";
 const pkg = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 );
+const lock = JSON.parse(
+  readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"),
+);
 const distUrl = new URL("../dist/index.js", import.meta.url);
+
+test("package metadata and npm lockfile root stay synchronized", () => {
+  const root = lock.packages?.[""];
+  assert.equal(lock.name, pkg.name);
+  assert.equal(lock.version, pkg.version);
+  assert.equal(root?.name, pkg.name);
+  assert.equal(root?.version, pkg.version);
+  for (const field of ["dependencies", "devDependencies", "peerDependencies", "engines"]) {
+    assert.deepEqual(root?.[field] ?? {}, pkg[field] ?? {}, `package-lock root ${field} drifted`);
+  }
+});
 
 test("package.json declares only installable, published specs", () => {
   for (const field of ["dependencies", "devDependencies", "peerDependencies"]) {
