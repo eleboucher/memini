@@ -10,12 +10,13 @@
  *         inject them as a persistent context message before the agent runs.
  *       - agent_settled: capture the final completed user/assistant turn into
  *         memini as episodic memory after retries and continuations settle.
- *   - Explicit tools (the model calls them on demand), modeled on the tool set
- *     Claude Code gets from memini's MCP server: memory_recall, memory_list,
- *     memory_remember, memory_forget.
+ *   - Explicit tools (the model calls them on demand), modeled on memini's MCP
+ *     contract: briefing, recall, list, remember, get, history, update, forget,
+ *     plus grounded answer only when the server safely advertises LLM support.
  *
- * Talks to memini over REST (/v1/search, /v1/memories), scoped by the
- * X-Memini-Namespace header. Namespace and behavioral settings come from the
+ * Talks to memini over REST (search, briefing, memory CRUD/history, and the
+ * capability-gated answer endpoint), scoped by X-Memini-Namespace. Namespace
+ * and behavioral settings come from the
  * config-handshake redesign (POST /v1/handshake, api/openapi.yaml): pi imports
  * @memini/client directly (unlike the standalone opencode/hermes/openwebui
  * plugins, which ship a wire-shape copy) and composes gatherFacts +
@@ -58,7 +59,10 @@ import {
 const DEFAULT_BASE_URL = "http://localhost:8080";
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_RECALL_LIMIT = 3;
+const DEFAULT_TOOL_RECALL_LIMIT = 10;
+const DEFAULT_TOOL_LIST_LIMIT = 20;
 const LIFECYCLE_TIMEOUT_MS = 3000;
+const ANSWER_CAPABILITY_TIMEOUT_MS = 2000;
 const MAX_SERVER_EXCLUDE_IDS = 512;
 const MAX_RENDER_ITEMS = 8;
 const MAX_RENDER_SUMMARY_CHARS = 160;
@@ -421,10 +425,12 @@ interface RequestResult {
 interface MeminiClient {
   postJson: (path: string, payload: any, namespace: string, timeoutMs?: number) => Promise<any>;
   getJson: (path: string, namespace: string, timeoutMs?: number) => Promise<any>;
-  deleteJson: (path: string, namespace: string, timeoutMs?: number) => Promise<any>;
-  // Status-preserving requests let callers distinguish an explicit compatibility
-  // rejection from authentication, throttling, server, timeout, and abort errors.
+  // Status-preserving requests let explicit tools distinguish validation,
+  // addressing, authentication, throttling, server, timeout, and abort errors.
   postJsonResult: (path: string, payload: any, namespace: string, timeoutMs?: number) => Promise<RequestResult>;
+  getJsonResult: (path: string, namespace: string, timeoutMs?: number) => Promise<RequestResult>;
+  patchJsonResult: (path: string, payload: any, namespace: string, timeoutMs?: number) => Promise<RequestResult>;
+  deleteJsonResult: (path: string, namespace: string, timeoutMs?: number) => Promise<RequestResult>;
 }
 
 function createClient(staticCfg: StaticConfig, boot: Bootstrap, warn: (m: string) => void): MeminiClient {
@@ -495,7 +501,15 @@ function createClient(staticCfg: StaticConfig, boot: Bootstrap, warn: (m: string
       if (!res.ok) {
         const detail = (await res.text().catch(() => "")).trim();
         warn(`memini ${method} ${path} failed: ${res.status} ${detail}`);
-        return { ok: false, status: res.status, error: detail || `HTTP ${res.status}` };
+        let message = detail;
+        try {
+          const parsed = JSON.parse(detail);
+          if (typeof parsed?.error === "string") message = parsed.error;
+          else if (typeof parsed?.message === "string") message = parsed.message;
+        } catch {
+          // Plain-text error bodies are already useful.
+        }
+        return { ok: false, status: res.status, error: message || `HTTP ${res.status}` };
       }
       return { ok: true, status: res.status, data: await res.json().catch(() => ({})) };
     } catch (error) {
@@ -507,23 +521,91 @@ function createClient(staticCfg: StaticConfig, boot: Bootstrap, warn: (m: string
   return {
     postJson: (path, payload, namespace, timeoutMs) => request("POST", path, namespace, payload, timeoutMs),
     getJson: (path, namespace, timeoutMs) => request("GET", path, namespace, undefined, timeoutMs),
-    deleteJson: (path, namespace, timeoutMs) => request("DELETE", path, namespace, undefined, timeoutMs),
     postJsonResult: (path, payload, namespace, timeoutMs) =>
       requestResult("POST", path, namespace, payload, timeoutMs),
+    getJsonResult: (path, namespace, timeoutMs) =>
+      requestResult("GET", path, namespace, undefined, timeoutMs),
+    patchJsonResult: (path, payload, namespace, timeoutMs) =>
+      requestResult("PATCH", path, namespace, payload, timeoutMs),
+    deleteJsonResult: (path, namespace, timeoutMs) =>
+      requestResult("DELETE", path, namespace, undefined, timeoutMs),
   };
 }
 
+const hasOwn = (value: unknown, key: string): boolean =>
+  value != null && Object.prototype.hasOwnProperty.call(value, key);
+
 // meminiListPath builds the GET /v1/memories query string for memory_list:
-// repeatable tier/tag params plus meta=key=value pairs. Exported for testing.
+// repeatable tier/level/tag params plus meta=key=value pairs. REST has no
+// offset, so callers pass limit+offset here and slice the response afterward.
 export function meminiListPath(args: any): string {
   const parts: string[] = [];
   for (const t of args?.tiers || []) parts.push(`tier=${encodeURIComponent(String(t))}`);
+  for (const level of args?.levels || []) parts.push(`level=${encodeURIComponent(String(level))}`);
   for (const tag of args?.tags || []) parts.push(`tag=${encodeURIComponent(String(tag))}`);
   for (const [k, v] of Object.entries(args?.metadata || {})) {
     parts.push(`meta=${encodeURIComponent(`${k}=${v}`)}`);
   }
   if (Number.isInteger(args?.limit) && args.limit > 0) parts.push(`limit=${args.limit}`);
   return parts.length ? `/v1/memories?${parts.join("&")}` : "/v1/memories";
+}
+
+const MEMORY_FIELDS = [
+  "id", "namespace", "tier", "level", "content", "summary", "metadata", "tags",
+  "importance", "created_at", "updated_at", "last_accessed_at", "access_count",
+  "expires_at", "superseded_by", "valid_from", "valid_to", "confidence",
+] as const;
+
+/** Preserve the complete REST Memory DTO, including explicit null values. */
+export function normalizeMemory(raw: any): Record<string, any> {
+  const memory = raw?.memory ?? raw ?? {};
+  const out: Record<string, any> = {};
+  for (const field of MEMORY_FIELDS) {
+    if (hasOwn(memory, field)) out[field] = memory[field];
+  }
+  return out;
+}
+
+function unicodePrefix(value: unknown, max: number): string {
+  const chars = Array.from(String(value ?? ""));
+  return chars.length > max ? `${chars.slice(0, max).join("")}…` : chars.join("");
+}
+
+/** Convert REST {memory,score,from} into the MCP recall/source item shape. */
+export function normalizeScoredMemory(raw: any, responseFormat = "detailed"): Record<string, any> {
+  const memory = normalizeMemory(raw);
+  const sourceMemory = raw?.memory ?? raw ?? {};
+  const content = responseFormat === "concise"
+    ? (sourceMemory.summary || unicodePrefix(sourceMemory.content, 240))
+    : sourceMemory.content;
+  const out: Record<string, any> = {
+    id: memory.id ?? "",
+    content: content ?? "",
+    tier: memory.tier ?? "",
+    namespace: memory.namespace ?? "",
+    score: typeof raw?.score === "number" ? raw.score : 0,
+    created_at: memory.created_at ?? "",
+    tags: Array.isArray(memory.tags) ? memory.tags : [],
+  };
+  if (memory.level) out.level = memory.level;
+  if (hasOwn(memory, "confidence") && memory.confidence != null) out.confidence = memory.confidence;
+  if (hasOwn(raw, "from") && raw.from) out.from = raw.from;
+  return out;
+}
+
+/** Address an existing memory without normalizing or inventing a namespace. */
+export function addressedNamespace(args: any, fallback: string): { namespace?: string; error?: string } {
+  if (!hasOwn(args, "namespace") || args.namespace === "") return { namespace: fallback };
+  const namespace = String(args.namespace);
+  const invalid = validateNamespace(namespace);
+  if (invalid) return { error: `invalid namespace ${JSON.stringify(namespace)}: ${invalid}` };
+  return { namespace };
+}
+
+/** Literal capability evidence only: missing deps is unknown, never a positive. */
+export function answerCapabilityFromHealth(health: any): boolean | undefined {
+  const configured = health?.deps?.llm?.configured;
+  return typeof configured === "boolean" ? configured : undefined;
 }
 
 // --- turn capture helpers ----------------------------------------------------
@@ -634,6 +716,7 @@ async function statusGet(
   path: string,
   warn: (m: string) => void,
   quiet = false,
+  timeoutMs = STATUS_TIMEOUT_MS,
 ): Promise<any> {
   const baseUrl = String(boot.baseUrl).replace(/\/+$/, "");
   const headers: Record<string, string> = { "X-Memini-Namespace": namespace };
@@ -643,7 +726,7 @@ async function statusGet(
     const res = await fetch(`${baseUrl}${path}`, {
       method: "GET",
       headers,
-      signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) {
       if (!quiet) warn(`GET ${path} -> ${res.status}`);
@@ -654,6 +737,23 @@ async function statusGet(
     if (!quiet) warn(`GET ${path} failed: ${String(error)}`);
     return null;
   }
+}
+
+/** Probe only the server's literal verbose-health capability bit. */
+export async function probeAnswerCapability(
+  boot: Bootstrap,
+  namespace: string,
+  warn: (m: string) => void = () => {},
+): Promise<boolean | undefined> {
+  const health = await statusGet(
+    boot,
+    namespace,
+    "/healthz?verbose=1",
+    warn,
+    true,
+    ANSWER_CAPABILITY_TIMEOUT_MS,
+  );
+  return answerCapabilityFromHealth(health);
 }
 
 interface ServerReport {
@@ -1002,8 +1102,13 @@ export function registerMeminiCommands(
   });
 }
 
-const TOOL_NAMES = ["memory_recall", "memory_briefing", "memory_list", "memory_remember", "memory_forget"];
+export const ALWAYS_TOOL_NAMES = [
+  "memory_recall", "memory_briefing", "memory_list", "memory_remember",
+  "memory_get", "memory_history", "memory_update", "memory_forget",
+] as const;
 const VALID_TIERS = ["working", "episodic", "semantic", "procedural"];
+const VALID_LEVELS = ["explicit", "deduced"];
+const VALID_RESPONSE_FORMATS = ["concise", "detailed"];
 // The LLM-facing semantic scope vocabulary, identical to the MCP server's
 // (internal/api/mcp: scopeEnum). The deprecated REST aliases "exact"/"subtree"
 // are deliberately NOT offered: the model makes a semantic choice, it does not
@@ -1014,10 +1119,16 @@ const VALID_SCOPES = ["project", "full", "everywhere"];
 // is header-scoped (X-Memini-Namespace), so there is no namespace in the path —
 // the model never names one. Exported for testing.
 export function briefingPath(args: any): string {
-  const scope = String(args?.scope || "").trim();
-  return VALID_SCOPES.includes(scope)
-    ? `/v1/namespaces/briefing?scope=${encodeURIComponent(scope)}`
-    : "/v1/namespaces/briefing";
+  const query = new URLSearchParams();
+  for (const key of [
+    "per_section", "per_section_pinned", "per_section_facts",
+    "per_section_procedures", "per_section_recent",
+  ]) {
+    if (hasOwn(args, key) && Number.isInteger(args[key])) query.set(key, String(args[key]));
+  }
+  if (VALID_SCOPES.includes(args?.scope)) query.set("scope", args.scope);
+  const encoded = query.toString();
+  return encoded ? `/v1/namespaces/briefing?${encoded}` : "/v1/namespaces/briefing";
 }
 
 // sessionIdOf resolves Pi's session id from the read-only session manager on the
@@ -1032,7 +1143,7 @@ function sessionIdOf(ctx: any): string {
 }
 
 export interface MemoryRenderDetails {
-  kind: "recall" | "briefing" | "list" | "remember" | "forget";
+  kind: "recall" | "briefing" | "answer" | "list" | "get" | "history" | "remember" | "update" | "forget";
   data: any;
   count?: number;
   items?: any[];
@@ -1048,6 +1159,7 @@ function oneLine(value: unknown, max = MAX_RENDER_SUMMARY_CHARS): string {
 
 function memoryItems(data: any): any[] {
   if (Array.isArray(data?.results)) return data.results;
+  if (Array.isArray(data?.sources)) return data.sources;
   if (Array.isArray(data?.memories)) return data.memories;
   const out: any[] = [];
   for (const key of ["pinned", "facts", "procedures", "recent"]) {
@@ -1057,7 +1169,8 @@ function memoryItems(data: any): any[] {
 }
 
 export function memoryResultDetails(kind: MemoryRenderDetails["kind"], data: any): MemoryRenderDetails {
-  const items = memoryItems(data);
+  let items = memoryItems(data);
+  if ((kind === "get" || kind === "update") && data && !data.error) items = [data];
   const error = typeof data?.error === "string" ? data.error : undefined;
   return {
     kind,
@@ -1086,15 +1199,19 @@ export function renderMemoryResult(result: any, { expanded, isPartial }: any, th
   switch (details.kind) {
     case "recall": summary = `${details.count ?? 0} ${details.count === 1 ? "memory" : "memories"} recalled`; break;
     case "briefing": summary = `${details.count ?? 0} ${details.count === 1 ? "memory" : "memories"} in briefing`; break;
+    case "answer": summary = `Grounded answer from ${details.count ?? 0} ${details.count === 1 ? "source" : "sources"}`; break;
     case "list": summary = `${details.count ?? 0} ${details.count === 1 ? "memory" : "memories"} listed`; break;
+    case "get": summary = "Memory fetched"; break;
+    case "history": summary = `${details.count ?? 0} history ${details.count === 1 ? "version" : "versions"}`; break;
     case "remember":
-      summary = details.data?.success === false
-        ? `Memory not stored: ${oneLine(details.data?.error || "unknown error")}`
+      summary = details.data?.stored === false
+        ? `Memory not stored: ${oneLine(details.data?.reason || "low signal")}`
         : details.data?.reinforced ? "Existing memory reinforced" : "Memory stored";
       break;
-    case "forget": summary = details.data?.forgotten ? "Memory forgotten" : "Memory was not forgotten"; break;
+    case "update": summary = "Memory updated"; break;
+    case "forget": summary = details.data?.deleted ? "Memory forgotten" : "Memory was not forgotten"; break;
   }
-  if (details.degraded) summary += " (keyword-only)";
+  if (details.degraded) summary += details.degraded === "keyword_only" ? " (keyword-only)" : ` (${oneLine(details.degraded)})`;
   let text = theme.fg(details.degraded ? "warning" : "success", `✓ ${summary}`);
   if (!expanded) return new Text(text, 0, 0);
 
@@ -1108,8 +1225,10 @@ export function renderMemoryResult(result: any, { expanded, isPartial }: any, th
     const score = typeof (raw?.score ?? item?.score) === "number" ? ` score=${(raw?.score ?? item?.score).toFixed(2)}` : "";
     const provenance = oneLine(raw?.from || item?.from || item?.namespace || "", 48);
     const prov = provenance ? ` from=${provenance}` : "";
+    const timestamp = oneLine(item?.created_at || item?.updated_at || "", 32);
+    const at = timestamp ? ` at=${timestamp}` : "";
     const summaryText = oneLine(item?.summary || item?.content || item?.id || "(empty)");
-    text += `\n${theme.fg("dim", `• [${tier}]${score}${prov} ${summaryText}`)}`;
+    text += `\n${theme.fg("dim", `• [${tier}]${score}${prov}${at} ${summaryText}`)}`;
   }
   const remaining = Math.max(0, (details.items?.length || 0) - items.length);
   if (remaining) text += `\n${theme.fg("dim", `… ${remaining} more`)}`;
@@ -1367,6 +1486,11 @@ export default function meminiExtension(pi: ExtensionAPI): void {
       renderMemoryResult({ details: message.details }, options, theme));
   }
 
+  // Assigned after the tool schemas are built below; session_start runs only
+  // after this factory returns, so capability discovery still completes before
+  // the first user turn without delaying extension registration itself.
+  let ensureAnswerTool: () => Promise<void> = async () => {};
+
   const hasActiveBriefing = (ctx: any): boolean =>
     (ctx?.sessionManager?.buildContextEntries?.() || []).some(
       (entry: any) => entry?.type === "custom_message" && entry.customType === "memini-briefing",
@@ -1393,6 +1517,7 @@ export default function meminiExtension(pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, ctx) => {
     reconstructState(ctx);
     await injectBriefing(ctx);
+    await ensureAnswerTool();
   });
   pi.on("session_tree", async (_event, ctx) => {
     reconstructState(ctx);
@@ -1523,19 +1648,30 @@ export default function meminiExtension(pi: ExtensionAPI): void {
     content: [{ type: "text" as const, text: JSON.stringify(obj) }],
     details: memoryResultDetails(kind, obj),
   });
+  const failure = (kind: MemoryRenderDetails["kind"], result: RequestResult, fallback: string) =>
+    text(kind, {
+      error: result.error || fallback,
+      ...(result.status !== undefined ? { status: result.status } : {}),
+    });
+
+  const Tier = Type.String({ enum: VALID_TIERS });
+  const Level = Type.String({ enum: VALID_LEVELS });
+  const Tiers = Type.Optional(Type.Array(Tier, { description: "Restrict to tiers; empty means all." }));
+  const Levels = Type.Optional(Type.Array(Level, { description: "Restrict to levels; empty means all." }));
   const Tags = Type.Optional(
     Type.Array(Type.String(), { description: "Match only memories carrying every listed tag (AND)." }),
   );
-  const Metadata = Type.Optional(
+  const MetadataFilter = Type.Optional(
     Type.Record(Type.String(), Type.String(), {
       description:
         'Match memories whose top-level metadata contains each key=value pair, e.g. {"category":"bug_fixes"}.',
     }),
   );
-  // scope / visibility are the two semantic levers the model gets over
-  // namespaces — it never constructs a raw namespace path. Wording tracks the
-  // MCP server's tool schemas (internal/api/mcp) so the story is the same on
-  // every harness.
+  const Metadata = Type.Optional(
+    Type.Record(Type.String(), Type.Unknown(), {
+      description: "Structured metadata; values may be strings, numbers, booleans, arrays, objects, or null.",
+    }),
+  );
   const Scope = Type.Optional(
     Type.String({
       enum: VALID_SCOPES,
@@ -1545,59 +1681,70 @@ export default function meminiExtension(pi: ExtensionAPI): void {
         "sub-projects.",
     }),
   );
+  const AddressingNamespace = Type.Optional(
+    Type.String({
+      description:
+        "Addressing only: copy this verbatim from a memory_recall/memory_list result's namespace; never invent one.",
+    }),
+  );
+  const RFC3339 = (description: string) => Type.String({ format: "date-time", description });
+  const Probability = (description: string) => Type.Number({ minimum: 0, maximum: 1, description });
 
   pi.registerTool({
     name: "memory_recall",
     label: "Recall memory",
     description:
-      "Search prior context in long-term memory (memini) via hybrid (semantic + keyword) retrieval, ranked " +
-      "by relevance, recency, and corroboration. Call BEFORE starting work that may have history: editing " +
-      "an unfamiliar file, debugging a recurring issue, making a non-obvious decision, or when asked what's " +
-      "known about something. Prefer a short descriptive query ('JWT auth setup'). scope picks how wide to " +
-      "read: 'project' (just this project), 'full' (default: project plus inherited ancestor/personal/link " +
-      "context), or 'everywhere' (full plus nested sub-projects). Each result's namespace/from fields are " +
-      "provenance, not a choice — an absent 'from' means this project's own memory, otherwise it names the " +
-      "ancestor or personal namespace the memory came from; read them to learn where knowledge lives, never " +
-      "construct a namespace path. Empty results mean nothing is known — proceed from first principles, " +
-      "never invent a remembered fact. A degraded:\"keyword_only\" field in the result means semantic " +
-      "search was unavailable and results came from keyword matching alone — treat as incomplete, not " +
-      "exhaustive.",
+      "Search prior context via hybrid semantic + keyword retrieval. Call before work that may have history. " +
+      "Results retain timestamps, scores, confidence, tags, namespace, and read-set provenance. namespace/from " +
+      "are evidence, not choices: copy namespace verbatim into addressing tools and never construct one. Empty " +
+      "results mean nothing is known; degraded=keyword_only means the result is incomplete.",
     parameters: Type.Object({
-      query: Type.String({ description: "What to search for" }),
-      limit: Type.Optional(Type.Number({ description: "Max results (default 3)" })),
+      query: Type.String({ description: "Natural-language search text; short and descriptive works best." }),
+      tiers: Tiers,
+      levels: Levels,
       tags: Tags,
-      metadata: Metadata,
+      metadata: MetadataFilter,
+      exclude_metadata: Type.Optional(Type.Record(Type.String(), Type.String(), {
+        description: "Drop memories carrying any listed key=value pair.",
+      })),
+      exclude_ids: Type.Optional(Type.Array(Type.String(), {
+        maxItems: MAX_SERVER_EXCLUDE_IDS,
+        description: "Drop these memory ids before ranking and limit.",
+      })),
+      include_fresh_turns: Type.Optional(Type.Boolean({
+        description: "Include just-captured turns normally hidden by the temporal echo guard.",
+      })),
+      query_rewrite: Type.Optional(Type.Boolean({ description: "Rewrite into variants and fuse via RRF." })),
+      limit: Type.Optional(Type.Integer({ description: "Max results (default 10)." })),
       scope: Scope,
+      as_of: Type.Optional(RFC3339("RFC3339 time for time-travel recall.")),
+      response_format: Type.Optional(Type.String({
+        enum: VALID_RESPONSE_FORMATS,
+        description: "concise returns summary or 240 Unicode code points; detailed (default) returns full content.",
+      })),
     }),
     async execute(_toolCallId: string, params: any) {
       const live = await sessionLive(sessionCtx);
-      const body: any = { query: params.query, limit: params.limit || DEFAULT_RECALL_LIMIT };
-      if (params.tags?.length) body.tags = params.tags;
-      if (params.metadata && Object.keys(params.metadata).length) body.metadata = params.metadata;
-      // An unrecognized scope is dropped rather than forwarded: /v1/search 400s
-      // on one, and a hallucinated value must not turn a recall into an error.
+      const body: Record<string, any> = {
+        query: params.query,
+        source: "pi",
+        limit: Number.isInteger(params.limit) ? params.limit : DEFAULT_TOOL_RECALL_LIMIT,
+      };
+      for (const key of [
+        "tiers", "levels", "tags", "metadata", "exclude_metadata", "exclude_ids",
+        "include_fresh_turns", "query_rewrite", "as_of",
+      ]) {
+        if (hasOwn(params, key)) body[key] = params[key];
+      }
       if (VALID_SCOPES.includes(params.scope)) body.scope = params.scope;
-      const res = await client.postJson("/v1/search", body, live.namespace);
-      if (!res) return text("recall", { results: [], error: "memini unavailable" });
-      const results = (res.results || []).map((r: any) => {
-        const mem = r?.memory || {};
-        const out: any = {
-          id: mem.id || "",
-          content: mem.content || "",
-          summary: mem.summary || "",
-          tier: mem.tier || "",
-          score: typeof r?.score === "number" ? r.score : 0,
-        };
-        // Read provenance: which namespace the hit lives in, and (for a hit off
-        // an ancestor/home/link leg) which leg it came from. Omitted when empty
-        // so a project-only recall carries no "from" noise at all.
-        if (mem.namespace) out.namespace = mem.namespace;
-        if (r?.from) out.from = r.from;
-        return out;
-      });
-      // /v1/search already carries `degraded`/`note` on `res`; pass them through
-      // rather than dropping them silently.
-      const out = res?.degraded ? { results, degraded: res.degraded, note: res.note } : { results };
+      const result = await client.postJsonResult("/v1/search", body, live.namespace);
+      if (!result.ok) return failure("recall", result, "memini unavailable");
+      const format = VALID_RESPONSE_FORMATS.includes(params.response_format) ? params.response_format : "detailed";
+      const results = (Array.isArray(result.data?.results) ? result.data.results : [])
+        .map((item: any) => normalizeScoredMemory(item, format));
+      const out: Record<string, any> = { results };
+      if (hasOwn(result.data, "degraded")) out.degraded = result.data.degraded;
+      if (hasOwn(result.data, "note")) out.note = result.data.note;
       if (live.inject_dedupe) rememberInjected(results.map((item: any) => item.id).filter(Boolean));
       return text("recall", out);
     },
@@ -1609,34 +1756,41 @@ export default function meminiExtension(pi: ExtensionAPI): void {
     name: "memory_briefing",
     label: "Session briefing",
     description:
-      "Layered session-start briefing for this project from long-term memory (memini) — pinned context, " +
-      "durable facts, how-to procedures, and recent activity — in one query-less call. Call it when a " +
-      "session opens to orient yourself; prefer it over broad recall queries at session start. The " +
-      "scope_header line ('Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2)') spells out " +
-      "the ancestor chain you inherit from — read it instead of guessing namespace paths, and name one of " +
-      "those ancestors as memory_remember's visibility to share a fact up that chain. scope='everywhere' " +
-      "also briefs nested sub-projects.",
-    parameters: Type.Object({ scope: Scope }),
+      "Layered session-start briefing: pinned context, durable facts, procedures, recent activity, scope " +
+      "provenance, and compact nested-project rollups. Read scope_header instead of guessing namespace paths.",
+    parameters: Type.Object({
+      per_section: Type.Optional(Type.Integer({ description: "Default section cap when a dedicated cap is unset (default 5)." })),
+      per_section_pinned: Type.Optional(Type.Integer({ description: "Max pinned memories; 0 disables." })),
+      per_section_facts: Type.Optional(Type.Integer({ description: "Max durable facts; 0 disables." })),
+      per_section_procedures: Type.Optional(Type.Integer({ description: "Max procedures; 0 disables." })),
+      per_section_recent: Type.Optional(Type.Integer({ description: "Max recent entries; 0 disables." })),
+      scope: Scope,
+    }),
     async execute(_toolCallId: string, params: any) {
       const live = await sessionLive(sessionCtx);
-      const res = await client.getJson(briefingPath(params), live.namespace);
-      if (!res) return text("briefing", { briefing: null, error: "memini unavailable" });
-      const section = (items: any[]) =>
-        (items || []).map((b: any) => {
-          const mem = b?.memory || {};
-          const out: any = { id: mem.id || "", content: mem.content || "", tier: mem.tier || "" };
-          if (mem.namespace) out.namespace = mem.namespace;
-          if (b?.from) out.from = b.from;
-          return out;
-        });
-      const out = {
-        namespace: res.namespace || "",
-        scope_header: res.scope_header || "",
-        pinned: section(res.pinned),
-        facts: section(res.facts),
-        procedures: section(res.procedures),
-        recent: section(res.recent),
+      const result = await client.getJsonResult(briefingPath(params), live.namespace);
+      if (!result.ok) return failure("briefing", result, "memini unavailable");
+      const section = (items: any) => (Array.isArray(items) ? items : [])
+        .map((item: any) => normalizeScoredMemory(item));
+      const childTitle = (memory: any) => memory?.summary || unicodePrefix(memory?.content, 60);
+      const children = (Array.isArray(result.data?.children) ? result.data.children : []).map((child: any) => ({
+        namespace: child.namespace ?? "",
+        total: Number.isInteger(child.total) ? child.total : 0,
+        pinned: (Array.isArray(child.pinned) ? child.pinned : []).map(childTitle),
+        recent: (Array.isArray(child.recent) ? child.recent : []).map(childTitle),
+      }));
+      const out: Record<string, any> = {
+        namespace: result.data?.namespace ?? live.namespace,
+        scope_header: result.data?.scope_header ?? "",
+        pinned: section(result.data?.pinned),
+        facts: section(result.data?.facts),
+        procedures: section(result.data?.procedures),
+        recent: section(result.data?.recent),
+        children,
       };
+      // Current REST does not expose the service's truncated-child count. Only
+      // preserve children_note if a future server provides literal evidence.
+      if (hasOwn(result.data, "children_note")) out.children_note = result.data.children_note;
       if (live.inject_dedupe) rememberInjected(memoryItems(out).map((item: any) => item.id).filter(Boolean));
       return text("briefing", out);
     },
@@ -1648,29 +1802,28 @@ export default function meminiExtension(pi: ExtensionAPI): void {
     name: "memory_list",
     label: "List memory",
     description:
-      "Browse long-term memory (memini) without a query — filter by tier, tags, or metadata " +
-      "category (e.g. all procedural memories or everything categorized bug_fixes). Newest first.",
+      "Browse memories newest-first without a query. Page with offset. namespace is addressing-only and must " +
+      "be copied verbatim from returned provenance, never invented.",
     parameters: Type.Object({
-      tiers: Type.Optional(
-        Type.Array(Type.String(), { description: "Restrict to these tiers; empty means all." }),
-      ),
+      tiers: Tiers,
+      levels: Levels,
       tags: Tags,
-      metadata: Metadata,
-      limit: Type.Optional(Type.Number({ description: "Max results (0 = all, default 20)" })),
+      metadata: MetadataFilter,
+      limit: Type.Optional(Type.Integer({ description: "Max results (non-positive or omitted = 20)." })),
+      offset: Type.Optional(Type.Integer({ minimum: 0, description: "Skip this many results for paging." })),
+      namespace: AddressingNamespace,
     }),
     async execute(_toolCallId: string, params: any) {
       const live = await sessionLive(sessionCtx);
-      const args = { ...params, limit: params.limit ?? 20 };
-      const res = await client.getJson(meminiListPath(args), live.namespace);
-      if (!res) return text("list", { memories: [], error: "memini unavailable" });
-      const memories = (res.memories || []).map((m: any) => ({
-        id: m.id || "",
-        content: m.content || "",
-        summary: m.summary || "",
-        tier: m.tier || "",
-        tags: m.tags || [],
-        metadata: m.metadata || {},
-      }));
+      const addressed = addressedNamespace(params, live.namespace);
+      if (addressed.error) return text("list", { error: addressed.error });
+      const limit = Number.isInteger(params.limit) && params.limit > 0 ? params.limit : DEFAULT_TOOL_LIST_LIMIT;
+      const offset = Number.isInteger(params.offset) && params.offset >= 0 ? params.offset : 0;
+      const path = meminiListPath({ ...params, limit: limit + offset });
+      const result = await client.getJsonResult(path, addressed.namespace!);
+      if (!result.ok) return failure("list", result, "memini unavailable");
+      const all = (Array.isArray(result.data?.memories) ? result.data.memories : []).map(normalizeMemory);
+      const memories = all.slice(offset, offset + limit);
       if (live.inject_dedupe) rememberInjected(memories.map((item: any) => item.id).filter(Boolean));
       return text("list", { memories });
     },
@@ -1681,87 +1834,145 @@ export default function meminiExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_remember",
     label: "Remember",
-    // Save-policy invariants are canonical in internal/api/mcp/mcp.go serverInstructions.
     description:
-      "Store a fact, decision, preference, or event for later recall. Do not wait to be asked — call " +
-      "this the moment you learn: a decision and why it was made, a bug's root cause, a project " +
-      "convention, a stated user preference, a correction from the user (a correction IS a durable " +
-      "preference), an environment or tool quirk, or a non-obvious command/workflow. When the user " +
-      "says 'remember this', 'note that', 'don't forget', 'going forward...', or corrects you, call " +
-      "this tool FIRST, then acknowledge — and on an explicit request save unconditionally, even if it " +
-      "seems trivial or already stored; secrets and credentials are the one exception. Keep " +
-      "memories atomic — one self-contained fact per call; " +
-      "search works better on small records. Do NOT store secrets or credentials, transient session " +
-      "state, task progress, or facts already in project docs/CLAUDE.md or trivially recoverable from " +
-      "code. To correct an existing memory, pass its id — the write updates it in place. If a stored " +
-      "memory proves wrong or outdated, fix it immediately: re-save the corrected fact with the " +
-      "existing id, or delete it with memory_forget if it should not exist — never leave a " +
-      "known-incorrect memory in place. visibility decides who should know: 'project' (default) keeps " +
-      "it here; 'personal' follows the user everywhere; or name an ancestor from the memory_briefing " +
-      "Scope line to share it up that chain. reinforced=true in the result means the fact was ALREADY " +
-      "KNOWN: no new memory was created, the existing one was strengthened, and `id` names that " +
-      "pre-existing memory rather than anything you just wrote — do not report it to the user as a new save.",
+      "Store one atomic fact, decision, preference, procedure, or event. Do not store secrets, transient task " +
+      "progress, or facts already documented in the project. visibility is the only write-scope choice: project, " +
+      "personal, or an ancestor copied from the briefing Scope line. stored=false is a low-signal drop; " +
+      "reinforced means an existing memory was strengthened; merge_hint identifies a near-duplicate to correct.",
     parameters: Type.Object({
-      content: Type.String({ description: "The fact to remember — atomic and self-contained." }),
-      id: Type.Optional(
-        Type.String({
-          description: "Existing memory id (from memory_recall / memory_list) to correct in place instead of writing a new memory.",
-        }),
-      ),
-      tier: Type.Optional(
-        Type.String({
-          description:
-            "semantic=durable knowledge, procedural=how-to, episodic=what happened, working=transient " +
-            "(omit to let the server classify from the content)",
-        }),
-      ),
-      tags: Type.Optional(
-        Type.Array(Type.String(), {
-          description: "Topic keywords for later search/filtering; tag a critical always-relevant fact 'pinned'.",
-        }),
-      ),
-      category: Type.Optional(
-        Type.String({
-          description:
-            "Optional topic bucket stored as metadata.category (e.g. bug_fixes, architecture_decisions) for browsing by subject later.",
-        }),
-      ),
-      visibility: Type.Optional(
-        Type.String({
-          description:
-            "Who should remember this: 'project' (default, this project only), 'personal' (about the user, " +
-            "follows them everywhere), or an ancestor namespace name read off the memory_briefing Scope line " +
-            "(e.g. the team or org level) to share it up that chain. On a durable write an unrecognized name " +
-            "errors listing the valid options. Episodic/working writes always stay in the project regardless.",
-        }),
-      ),
+      content: Type.String({ description: "Atomic, self-contained content readable without this conversation." }),
+      tier: Type.Optional(Tier),
+      level: Type.Optional(Level),
+      summary: Type.Optional(Type.String({ description: "Optional one-line summary." })),
+      tags: Type.Optional(Type.Array(Type.String(), { description: "Topic labels; use pinned for critical context." })),
+      metadata: Metadata,
+      importance: Type.Optional(Probability("Ranking and retention bias.")),
+      ttl_seconds: Type.Optional(Type.Integer({ description: "Tier TTL override; negative means never expire." })),
+      id: Type.Optional(Type.String({ description: "Upsert an existing memory when provided." })),
+      confidence: Type.Optional(Probability("Seed corroboration for a durable fact.")),
+      valid_from: Type.Optional(RFC3339("Start of the fact's validity interval.")),
+      valid_to: Type.Optional(RFC3339("End of the fact's validity interval.")),
+      visibility: Type.Optional(Type.String({
+        description: "project, personal, or an ancestor name copied from memory_briefing's Scope line.",
+      })),
     }),
+    prepareArguments(args: any) {
+      if (!args || typeof args !== "object" || !hasOwn(args, "category")) return args;
+      const { category, ...current } = args;
+      const metadata = current.metadata && typeof current.metadata === "object" ? { ...current.metadata } : {};
+      if (!hasOwn(metadata, "category") && typeof category === "string") metadata.category = category;
+      return { ...current, metadata };
+    },
     async execute(_toolCallId: string, params: any) {
       const live = await sessionLive(sessionCtx);
-      // No client-side tier default: an omitted (or invalid) tier lets the
-      // server classify the content and apply its own default.
-      const body: any = { content: params.content };
-      if (params.id) body.id = params.id; // POST /v1/memories upserts by id
-      if (params.tier && VALID_TIERS.includes(params.tier)) body.tier = params.tier;
-      if (params.tags?.length) body.tags = params.tags;
-      if (params.category) body.metadata = { category: params.category };
-      // visibility is NOT validated client-side beyond trimming: 'project' and
-      // 'personal' are fixed, but any other value names an ancestor of THIS
-      // namespace, which only the server can resolve — and its error enumerates
-      // the valid chain, which is how the model learns the topology. Swallowing
-      // an unknown name here would silently write to the wrong place instead.
-      const visibility = String(params.visibility || "").trim();
-      if (visibility) body.visibility = visibility;
-      const res = await client.postJsonResult("/v1/memories", body, live.namespace);
-      if (!res.ok) return text("remember", { id: null, success: false, error: res.error });
-      const out: any = { id: res.data?.id || null, success: true };
-      // reinforced: the fact was already known, nothing new was written, and id
-      // names the pre-existing memory. Dropping the flag here would let the model
-      // report a no-op as a fresh save.
-      if (res.data?.reinforced) out.reinforced = true;
+      const body: Record<string, any> = { content: params.content };
+      for (const key of [
+        "tier", "level", "summary", "tags", "metadata", "importance", "ttl_seconds",
+        "id", "confidence", "valid_from", "valid_to", "visibility",
+      ]) {
+        if (hasOwn(params, key)) body[key] = params[key];
+      }
+      const result = await client.postJsonResult("/v1/memories", body, live.namespace);
+      if (!result.ok) return failure("remember", result, "memini unavailable");
+      const data = result.data ?? {};
+      const stored = data.stored !== false;
+      const out: Record<string, any> = {
+        id: data.id ?? "",
+        tier: data.tier ?? body.tier ?? "",
+        stored,
+      };
+      for (const key of ["reason", "merge_hint", "auto_superseded", "reinforced", "degraded", "note"]) {
+        if (hasOwn(data, key)) out[key] = data[key];
+      }
+      if (!out.degraded && data?.metadata?.pending_embed === "true") {
+        out.degraded = "pending_embed";
+        out.note = "embeddings unavailable; stored keyword-searchable only, vector will be backfilled automatically";
+      }
       return text("remember", out);
     },
     renderCall(args, theme) { return renderMemoryCall(args, theme, "memory_remember"); },
+    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme); },
+  });
+
+  const idParameters = () => ({
+    id: Type.String({ description: "Memory id from memory_recall or memory_list." }),
+    namespace: AddressingNamespace,
+  });
+
+  pi.registerTool({
+    name: "memory_get",
+    label: "Get memory",
+    description:
+      "Fetch one memory with complete metadata, tags, timestamps, validity, confidence, and supersession fields. " +
+      "Copy namespace verbatim from recall/list provenance when addressing inherited or personal memory.",
+    parameters: Type.Object(idParameters()),
+    async execute(_toolCallId: string, params: any) {
+      const live = await sessionLive(sessionCtx);
+      const addressed = addressedNamespace(params, live.namespace);
+      if (addressed.error) return text("get", { error: addressed.error });
+      const result = await client.getJsonResult(`/v1/memories/${encodeURIComponent(params.id)}`, addressed.namespace!);
+      if (!result.ok) return failure("get", result, "memini unavailable");
+      return text("get", normalizeMemory(result.data));
+    },
+    renderCall(args, theme) { return renderMemoryCall(args, theme, "memory_get"); },
+    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme); },
+  });
+
+  pi.registerTool({
+    name: "memory_history",
+    label: "Memory history",
+    description:
+      "Trace a memory's complete supersession lineage oldest-first, including tombstoned versions and validity windows.",
+    parameters: Type.Object(idParameters()),
+    async execute(_toolCallId: string, params: any) {
+      const live = await sessionLive(sessionCtx);
+      const addressed = addressedNamespace(params, live.namespace);
+      if (addressed.error) return text("history", { error: addressed.error });
+      const path = `/v1/memories/${encodeURIComponent(params.id)}/history`;
+      const result = await client.getJsonResult(path, addressed.namespace!);
+      if (!result.ok) return failure("history", result, "memini unavailable");
+      const memories = (Array.isArray(result.data?.memories) ? result.data.memories : []).map(normalizeMemory);
+      return text("history", { memories });
+    },
+    renderCall(args, theme) { return renderMemoryCall(args, theme, "memory_history"); },
+    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme); },
+  });
+
+  pi.registerTool({
+    name: "memory_update",
+    label: "Update memory",
+    description:
+      "Partially correct or enrich an existing memory. Only present fields change; tags replaces the set; metadata " +
+      "merges key-by-key and null deletes a key. Prefer this over a near-duplicate write so history stays correct.",
+    parameters: Type.Object({
+      id: Type.String({ description: "Memory id from memory_recall or memory_list." }),
+      namespace: AddressingNamespace,
+      content: Type.Optional(Type.String({ description: "Replacement content; omit to keep." })),
+      summary: Type.Optional(Type.String({ description: "Replacement summary; empty string clears it." })),
+      tier: Type.Optional(Tier),
+      level: Type.Optional(Level),
+      tags: Type.Optional(Type.Array(Type.String(), { description: "Replacement tag set; empty clears it." })),
+      metadata: Metadata,
+      importance: Type.Optional(Probability("Replacement importance; omit to keep.")),
+      confidence: Type.Optional(Probability("Replacement confidence; omit to keep.")),
+    }),
+    async execute(_toolCallId: string, params: any) {
+      const live = await sessionLive(sessionCtx);
+      const addressed = addressedNamespace(params, live.namespace);
+      if (addressed.error) return text("update", { error: addressed.error });
+      const body: Record<string, any> = {};
+      for (const key of ["content", "summary", "tier", "level", "tags", "metadata", "importance", "confidence"]) {
+        if (hasOwn(params, key)) body[key] = params[key];
+      }
+      const result = await client.patchJsonResult(
+        `/v1/memories/${encodeURIComponent(params.id)}`,
+        body,
+        addressed.namespace!,
+      );
+      if (!result.ok) return failure("update", result, "memini unavailable");
+      return text("update", normalizeMemory(result.data));
+    },
+    renderCall(args, theme) { return renderMemoryCall(args, theme, "memory_update"); },
     renderResult(result, options, theme) { return renderMemoryResult(result, options, theme); },
   });
 
@@ -1769,23 +1980,68 @@ export default function meminiExtension(pi: ExtensionAPI): void {
     name: "memory_forget",
     label: "Forget",
     description:
-      "Permanently delete a memory from long-term memory (memini) by its id — use when a recalled memory " +
-      "is wrong, outdated, or poisoned. Get the id from memory_recall or memory_list. To correct a fact " +
-      "instead, call memory_remember with the existing id (it updates in place, preserving history); " +
-      "forget only memories that should not exist at all.",
-    parameters: Type.Object({
-      id: Type.String({ description: "The id of the memory to forget (from memory_recall / memory_list)." }),
-    }),
+      "Permanently delete a wrong, outdated, or unwanted memory. Prefer memory_update for corrections so history " +
+      "is preserved. Copy namespace verbatim from returned provenance when addressing inherited/personal memory.",
+    parameters: Type.Object(idParameters()),
     async execute(_toolCallId: string, params: any) {
       const live = await sessionLive(sessionCtx);
-      if (!params.id) return text("forget", { forgotten: false, error: "id is required" });
-      const res = await client.deleteJson(`/v1/memories/${encodeURIComponent(params.id)}`, live.namespace);
-      if (res == null) return text("forget", { forgotten: false, error: "memini unavailable" });
-      return text("forget", { forgotten: true });
+      const addressed = addressedNamespace(params, live.namespace);
+      if (addressed.error) return text("forget", { error: addressed.error });
+      const result = await client.deleteJsonResult(`/v1/memories/${encodeURIComponent(params.id)}`, addressed.namespace!);
+      if (!result.ok) return failure("forget", result, "memini unavailable");
+      return text("forget", { deleted: true });
     },
     renderCall(args, theme) { return renderMemoryCall(args, theme, "memory_forget"); },
     renderResult(result, options, theme) { return renderMemoryResult(result, options, theme); },
   });
 
-  void TOOL_NAMES;
+  let answerRegistered = false;
+  const registerAnswerTool = () => {
+    if (answerRegistered) return;
+    answerRegistered = true;
+    pi.registerTool({
+      name: "memory_answer",
+      label: "Answer from memory",
+      description:
+        "Answer a question grounded in recalled memories, with complete scored provenance sources. This REST-backed " +
+        "Pi tool is registered only when authenticated verbose health literally reports deps.llm.configured=true. " +
+        "The current REST /v1/answer contract has no reasoning_level field, so Pi does not advertise or guess one.",
+      parameters: Type.Object({
+        query: Type.String({ description: "Question to answer from memory." }),
+        tiers: Tiers,
+        levels: Levels,
+        tags: Tags,
+        metadata: MetadataFilter,
+        limit: Type.Optional(Type.Integer({ description: "Max grounding memories (default 10)." })),
+        scope: Scope,
+      }),
+      async execute(_toolCallId: string, params: any) {
+        const live = await sessionLive(sessionCtx);
+        const body: Record<string, any> = {
+          query: params.query,
+          limit: Number.isInteger(params.limit) ? params.limit : DEFAULT_TOOL_RECALL_LIMIT,
+        };
+        for (const key of ["tiers", "levels", "tags", "metadata"]) {
+          if (hasOwn(params, key)) body[key] = params[key];
+        }
+        if (VALID_SCOPES.includes(params.scope)) body.scope = params.scope;
+        const result = await client.postJsonResult("/v1/answer", body, live.namespace);
+        if (!result.ok) return failure("answer", result, "memini unavailable");
+        return text("answer", {
+          answer: result.data?.answer ?? "",
+          sources: (Array.isArray(result.data?.sources) ? result.data.sources : []).map((item: any) =>
+            normalizeScoredMemory(item)),
+        });
+      },
+      renderCall(args, theme) { return renderMemoryCall(args, theme, "memory_answer"); },
+      renderResult(result, options, theme) { return renderMemoryResult(result, options, theme); },
+    });
+  };
+
+  ensureAnswerTool = async () => {
+    if (answerRegistered) return;
+    const live = await sessionLive(sessionCtx);
+    const supported = await probeAnswerCapability(sessionCtx.boot, live.namespace, warn);
+    if (supported === true) registerAnswerTool();
+  };
 }

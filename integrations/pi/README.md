@@ -14,13 +14,27 @@ What it wires:
   the matches as a persistent context message before the agent runs. It excludes
   this session's own captured turns (already in live context), so they aren't
   echoed back a turn behind; past sessions still recall.
-- **`agent_end`** — once the agent finishes a prompt, stores the completed
-  user/assistant turn back into memini (episodic, tagged `pi`, with the session
-  id) so it can be recalled later.
-- **Explicit tools** — modeled on the tool set Claude Code gets from memini's
-  MCP server, registered natively via `pi.registerTool`: `memory_recall`, `memory_list`,
-  `memory_remember`, `memory_forget`. The model can call them on demand even
-  though the automatic loop already runs.
+- **`agent_settled`** — once retries, compaction recovery, and queued
+  continuations are finished, stores the completed user/assistant turn back
+  into memini (episodic, tagged `pi`, with the session id) so it can be recalled
+  later.
+- **Session lifecycle** — injects a bounded briefing at startup, writes bounded
+  pre-compaction/session checkpoints, restores branch-local suppression state,
+  and re-briefs after compaction without flooding the transcript.
+- **Explicit tools** — registered natively via `pi.registerTool`, with complete
+  model-facing JSON and compact TUI rendering: `memory_briefing`,
+  `memory_recall`, `memory_list`, `memory_remember`, `memory_get`,
+  `memory_history`, `memory_update`, and `memory_forget`. `memory_answer` is
+  added dynamically only when authenticated `GET /healthz?verbose=1` literally
+  reports `deps.llm.configured: true`; false or unavailable capability evidence
+  leaves it unadvertised.
+
+The REST-backed `memory_answer` intentionally does not expose MCP's
+`reasoning_level` yet because the current `/v1/answer` OpenAPI request does not
+accept that field. Likewise, REST briefing does not expose the service's
+truncated-child count, so Pi returns every child rollup REST supplied but does
+not fabricate MCP's `children_note`. These limitations are evidence-based and
+fail closed rather than guessing server support.
 
 ### Install
 
