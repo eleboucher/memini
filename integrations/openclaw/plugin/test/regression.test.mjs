@@ -724,6 +724,102 @@ test("recall sends exclude_ids and falls back when the server rejects them", asy
   }
 });
 
+// The injection dedupe is windowed (inject_cooldown_ms), not forever: a shown id
+// is excluded on the wire and dropped client-side WHILE inside the window, but
+// once the window lapses it is re-served (not in exclude_ids, not dropped) and
+// re-shown, and its last-shown timestamp refreshes so it suppresses again.
+// openclaw's before_prompt_build fires per agent STEP, so inject_cooldown_prompts
+// is inert here — the time dimension is the only lever.
+test("windowed injection cooldown: a shown id lapses and is re-served after the window", async () => {
+  const hooks = {};
+  const searches = [];
+  const realFetch = globalThis.fetch;
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow.call(Date) + skew;
+  globalThis.fetch = withHandshakeFailure(async (url, init) => {
+    if (String(url).endsWith("/v1/search")) searches.push(init && init.body ? JSON.parse(init.body) : {});
+    return {
+      ok: true,
+      async json() {
+        return { results: [{ memory: { id: "m1", summary: "alpha", tier: "semantic" }, score: 0.9 }] };
+      },
+      async text() { return ""; },
+    };
+  });
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    const ctx = { sessionId: "s1" };
+    // First step: injected, no exclude_ids yet.
+    const first = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.match(first.prependContext, /alpha/);
+    assert.equal(searches[0].exclude_ids, undefined);
+    // Within the 30-min default window: excluded on the wire AND dropped -> no re-injection.
+    const within = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.equal(within, undefined, "an id inside the cooldown window must stay suppressed");
+    assert.deepEqual(searches[1].exclude_ids, ["m1"], "an in-window id rides along as exclude_ids");
+    // Skew Date.now past the 30-min window: the id lapses.
+    skew = 31 * 60_000;
+    const after = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.ok(after, "a lapsed id must be re-served");
+    assert.match(after.prependContext, /alpha/);
+    assert.equal(searches[2].exclude_ids, undefined, "a lapsed id is NOT sent in exclude_ids");
+    // The re-show refreshed its timestamp, so it is suppressed again inside the fresh window.
+    const again = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.equal(again, undefined, "the re-shown id's timestamp refreshed, so it suppresses again");
+    assert.deepEqual(searches[3].exclude_ids, ["m1"], "the refreshed id rides along as exclude_ids again");
+  } finally {
+    globalThis.fetch = realFetch;
+    Date.now = realNow;
+  }
+});
+
+// Both knobs at zero is the legacy #134 "suppress forever" behavior: no window
+// ever lapses, so a shown id never re-serves no matter how much time passes.
+test("windowed injection cooldown: both knobs at zero restores forever suppression", async () => {
+  process.env.MEMINI_INJECT_COOLDOWN_MS = "0";
+  process.env.MEMINI_INJECT_COOLDOWN_PROMPTS = "0";
+  const hooks = {};
+  const realFetch = globalThis.fetch;
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow.call(Date) + skew;
+  globalThis.fetch = withHandshakeFailure(async () => ({
+    ok: true,
+    async json() {
+      return { results: [{ memory: { id: "m1", summary: "alpha", tier: "semantic" }, score: 0.9 }] };
+    },
+    async text() { return ""; },
+  }));
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    const ctx = { sessionId: "s1" };
+    const first = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.match(first.prependContext, /alpha/);
+    // Even a day later, a both-zero config suppresses forever.
+    skew = 24 * 60 * 60_000;
+    const after = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.equal(after, undefined, "both knobs at zero must suppress forever (legacy #134)");
+  } finally {
+    globalThis.fetch = realFetch;
+    Date.now = realNow;
+    delete process.env.MEMINI_INJECT_COOLDOWN_MS;
+    delete process.env.MEMINI_INJECT_COOLDOWN_PROMPTS;
+  }
+});
+
 // The capture echo guard is time-based: a fresh burst wider than any count cap
 // is fully suppressed, and captures age back into recall by time.
 test("capture echo guard suppresses a fresh burst and ages out by time", async () => {

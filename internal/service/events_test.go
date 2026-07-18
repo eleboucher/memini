@@ -288,6 +288,106 @@ func TestRecallSourceLandsInDetail(t *testing.T) {
 	}
 }
 
+// TestRecallExcludedCountLandsInDetail covers the observability signal for the
+// inject-cooldown work: when a recall carries exclude_ids (the in-cooldown ids a
+// surface asked the server to drop), the count lands in the event detail on
+// every row — including the zero-hit sentinel — so the feed can show how many
+// candidates a dedupe pass suppressed. A recall with no exclude_ids omits the
+// key entirely.
+func TestRecallExcludedCountLandsInDetail(t *testing.T) {
+	ctx := context.Background()
+	svc := newEventSvc(t)
+
+	for _, c := range []string{"the database is postgres", "the cache is redis"} {
+		if _, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: "n", Content: c, Tier: memory.TierSemantic,
+		}); err != nil {
+			t.Fatalf("remember %q: %v", c, err)
+		}
+	}
+	// A multi-hit recall that excludes ids: the count is len(ExcludeIDs) — it is
+	// recorded whether or not those ids happened to match, and it must ride every
+	// served row (checked via the grouped detail, shared across the op's rows).
+	if _, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "n", Query: "database", Limit: 5,
+		ExcludeIDs: []string{"ghost-a", "ghost-b", "ghost-c"},
+	}); err != nil {
+		t.Fatalf("recall with excludes: %v", err)
+	}
+	// A zero-hit recall that excludes ids: the sentinel row still carries the count.
+	if _, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "empty", Query: "nothing here", Limit: 5,
+		ExcludeIDs: []string{"ghost-x"},
+	}); err != nil {
+		t.Fatalf("zero-hit recall with excludes: %v", err)
+	}
+	// A recall with no excludes: the key is absent, not zero.
+	if _, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "n", Query: "cache", Limit: 5,
+	}); err != nil {
+		t.Fatalf("recall without excludes: %v", err)
+	}
+
+	hits, err := svc.Events(ctx, service.EventsInput{
+		Namespace: "n", Kinds: []store.EventKind{store.EventRecall},
+	})
+	if err != nil {
+		t.Fatalf("events n: %v", err)
+	}
+	var withExcl, withoutExcl *service.ActivityEvent
+	for i := range hits.Events {
+		ev := &hits.Events[i]
+		switch ev.Query {
+		case "database":
+			withExcl = ev
+		case "cache":
+			withoutExcl = ev
+		}
+	}
+	if withExcl == nil || withoutExcl == nil {
+		t.Fatalf("expected both a 'database' and a 'cache' recall event, got %+v", hits.Events)
+	}
+	if len(withExcl.Memories) == 0 {
+		t.Fatal("the excluding recall served no memories — cannot prove the count rides a served row")
+	}
+	if got := withExcl.Detail["excluded_count"]; !eqInt(got, 3) {
+		t.Errorf("excluding recall detail excluded_count = %v (%T), want 3", got, got)
+	}
+	if got, ok := withoutExcl.Detail["excluded_count"]; ok {
+		t.Errorf("non-excluding recall carries excluded_count = %v, want the key absent", got)
+	}
+
+	sentinel, err := svc.Events(ctx, service.EventsInput{Namespace: "empty"})
+	if err != nil {
+		t.Fatalf("events empty: %v", err)
+	}
+	if len(sentinel.Events) != 1 {
+		t.Fatalf("got %d events for the zero-hit recall, want 1 sentinel", len(sentinel.Events))
+	}
+	if len(sentinel.Events[0].Memories) != 0 {
+		t.Fatalf("zero-hit recall listed memories, want none: %+v", sentinel.Events[0])
+	}
+	if got := sentinel.Events[0].Detail["excluded_count"]; !eqInt(got, 1) {
+		t.Errorf("zero-hit sentinel detail excluded_count = %v (%T), want 1", got, got)
+	}
+}
+
+// eqInt compares a detail value to an int tolerantly: an int written into a
+// free-form map[string]any may round-trip through JSON as a float64, so accept
+// either numeric shape.
+func eqInt(got any, want int) bool {
+	switch v := got.(type) {
+	case int:
+		return v == want
+	case int64:
+		return v == int64(want)
+	case float64:
+		return v == float64(want)
+	default:
+		return false
+	}
+}
+
 // TestActorThreadsThroughEveryKind is the point of attribution: the actor
 // stamped on the request context (service.WithActor) must land on every event
 // kind — recall, remember, forget, briefing, and a config event — since they

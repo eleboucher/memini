@@ -28,6 +28,7 @@ import {
   deleteInjectedState,
   readInjectedState,
   writeInjectedState,
+  recordInjected,
   injectedIdentity,
   escapeMeminiTags,
   MEMORY_INSTRUCTION,
@@ -416,7 +417,7 @@ async function main() {
   // intact context. Rides the same inject_dedupe knob as the hooks that
   // consume it.
   if (sessionId && ctx.setting("inject_dedupe").value) {
-    const injected = readInjectedState(sessionId);
+    const injectedState = readInjectedState(sessionId);
     let recorded = false;
     for (const arr of [b.pinned, b.facts, b.procedures, b.recent]) {
       if (!Array.isArray(arr)) continue;
@@ -424,12 +425,18 @@ async function main() {
         const mem = item?.memory ?? item;
         const id = mem?.id;
         if (typeof id === "string" && id) {
-          injected[id] = injectedIdentity(mem);
+          // Real content hash when the item carries content/summary — so an
+          // in-place update (memory_update) hashes differently and re-injects,
+          // the same content-aware doctrine the other surfaces use. The sentinel
+          // "" only when the item is id-only: with no text to hash, suppression
+          // is by id alone rather than admitting on a hash-of-empty mismatch.
+          const h = mem?.content || mem?.summary ? injectedIdentity(mem) : "";
+          recordInjected(injectedState, id, h);
           recorded = true;
         }
       }
     }
-    if (recorded) writeInjectedState(sessionId, injected);
+    if (recorded) writeInjectedState(sessionId, injectedState);
   }
 
   // Both Claude Code and Codex interpret stdout as additional context.

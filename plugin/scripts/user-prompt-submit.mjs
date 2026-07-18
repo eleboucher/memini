@@ -27,7 +27,10 @@ import {
   formatRecallHit,
   readInjectedState,
   writeInjectedState,
+  recordInjected,
   injectedIdentity,
+  injectedSuppressed,
+  cooldownIds,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -52,14 +55,13 @@ async function main() {
   const sessionId = typeof payload.session_id === "string" ? payload.session_id : "";
   const cwd = typeof payload.cwd === "string" && payload.cwd ? payload.cwd : process.cwd();
 
-  const trimmed = prompt.trim();
-  if (!trimmed) return;
-  if (COMMAND_PREFIXES.some((p) => trimmed.startsWith(p))) return;
-  if (trimmed.length < MIN_PROMPT_QUERY_CHARS) return;
-
   // Hot path: resolve the namespace + settings from the per-session handshake
   // cache ONLY — this hook fires on every prompt, so a live handshake here
   // would tax every turn and reintroduce the PR-#111 cross-session race.
+  // Resolved ABOVE the shape gates now (it used to sit below them): the prompt
+  // counter below must advance on EVERY prompt, and it lives behind the
+  // settings ctx resolves. The "never" posture keeps this free — still zero
+  // network on a short/command prompt, exactly as before.
   const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "never" });
   const project = ctx.namespace;
 
@@ -69,12 +71,43 @@ async function main() {
   // guess, not the server's authority — recalling against a possibly-wrong
   // namespace is the "recall looks where writes don't land" hazard, so skip
   // recall entirely and stay network-free. Stop refreshes the cache each turn,
-  // so this self-heals. Same policy as pre-tool-use.
+  // so this self-heals. Same policy as pre-tool-use. (Also skips the counter
+  // bump: a degraded turn we never act on shouldn't advance the window.)
   if (ctx.degraded) return;
+
+  // Same inject_dedupe knob as every other injection-dedupe mechanism (env
+  // override > server > default true); off restores the prior always-inject
+  // behavior and never touches the state file.
+  const dedupe = ctx.setting("inject_dedupe").value;
+
+  // Bump the per-session prompt counter FIRST — above the shape gates AND the
+  // recall gate — and persist it unconditionally. The counter's unit is literal
+  // user prompts, so a "yes"/"continue" steering turn (too short to recall on),
+  // a slash command, and a MEMINI_RECALL=0 turn must all still advance the
+  // prompt window; gating the bump behind those checks would freeze the window
+  // and silently collapse the windowed cooldown back to forever-dedupe (design
+  // Gap-1: pretool recall staying on while MEMINI_RECALL=0 must not do that).
+  // writeInjectedState is merge-on-write (n = max(disk, mem)), so this bump-write
+  // and the record-write at the end can't lose each other's changes. Skipped
+  // only when dedupe is off or there's no session to key the state on. The
+  // read+bump also persists the v1→v2 migration within this one prompt.
+  const injectedState = dedupe && sessionId ? readInjectedState(sessionId) : { n: 0, ids: {} };
+  if (dedupe && sessionId) {
+    injectedState.n = (Number.isFinite(injectedState.n) ? injectedState.n : 0) + 1;
+    writeInjectedState(sessionId, injectedState);
+  }
+
+  // Shape gates (BELOW the bump): prompts that are conversational steering,
+  // harness commands, or too short to be a useful semantic query never recall —
+  // but have already advanced the counter above.
+  const trimmed = prompt.trim();
+  if (!trimmed) return;
+  if (COMMAND_PREFIXES.some((p) => trimmed.startsWith(p))) return;
+  if (trimmed.length < MIN_PROMPT_QUERY_CHARS) return;
 
   // The master per-prompt recall switch (MEMINI_RECALL env > server > default
   // true) — the same knob the standalone integrations gate their per-prompt
-  // recall on.
+  // recall on. Gated BELOW the counter bump on purpose (Gap-1).
   if (!ctx.setting("recall").value) return;
 
   const limit = ctx.setting("recall_limit").value;
@@ -82,32 +115,36 @@ async function main() {
   const minScore = ctx.setting("inject_recall_min_score").value;
   const labels = new Set(ctx.setting("inject_labels").value.map((s) => String(s).toLowerCase()));
 
-  // Exclude what this session already carries: its own captured digests/turns
-  // (exclude_metadata) and every memory any surface (briefing, pretool, a
-  // previous prompt) already injected — excluded server-side so the top-k is
-  // spent on memories the context does NOT yet hold, instead of re-serving
-  // the same three facts prompt after prompt. Id-based by necessity (the
-  // server can't compare content it was told not to return), which trades
-  // away same-session resurfacing of updated memories on THIS surface;
-  // pretool's content-aware filter keeps updates reachable. Governed by the
-  // same inject_dedupe knob as every other injection-dedupe mechanism.
-  const dedupe = ctx.setting("inject_dedupe").value;
-  const injected = dedupe && sessionId ? readInjectedState(sessionId) : {};
+  // Windowed cross-surface dedupe. Exclude what this session already carries:
+  // its own captured digests/turns (exclude_metadata) and every memory any
+  // surface (briefing, pretool, a previous prompt) injected that is STILL IN
+  // COOLDOWN — excluded server-side so the top-k is spent on memories the
+  // context does NOT yet hold. Unlike the old forever-dedupe (every recorded
+  // id), only in-cooldown ids ride exclude_ids: a memory whose time AND prompt
+  // windows have both lapsed is re-admitted so a fact can resurface once the
+  // conversation has moved on. The predicate's counter is the POST-bump state.n.
+  const cooldownMs = ctx.setting("inject_cooldown_ms").value;
+  const cooldownPrompts = ctx.setting("inject_cooldown_prompts").value;
+  const now = Date.now();
   const exclude = sessionId ? { session_id: sessionId } : undefined;
   const { hits: rawHits, degraded, note } = await postSearch(trimmed.slice(0, MAX_PROMPT_QUERY_CHARS), project, {
     limit,
     exclude,
     minScore,
     source: "prompt",
-    excludeIds: Object.keys(injected),
+    excludeIds: cooldownIds(injectedState, { now, cooldownMs, cooldownPrompts }),
   });
 
   // Belt-and-braces on both exclusions: fresh turn echoes whose session id
-  // rolled (same reasoning as pre-tool-use), and already-injected ids in case
-  // the server dropped exclude_ids (the 400-fallback for older servers).
+  // rolled (same reasoning as pre-tool-use), and still-in-cooldown ids in case
+  // the server dropped exclude_ids (the 400-fallback for older servers). The
+  // id-only check (identity=null) mirrors cooldownIds: a lapsed id the server
+  // re-serves must PASS THROUGH here, while a sentinel tool-read stays
+  // suppressed and an in-cooldown id is dropped.
   const hits = filterFreshTurnEchoes(rawHits).filter((h) => {
     const id = h?.memory?.id;
-    return !(typeof id === "string" && id in injected);
+    const entry = typeof id === "string" ? injectedState.ids[id] : undefined;
+    return !injectedSuppressed(entry, null, { now, counter: injectedState.n, cooldownMs, cooldownPrompts });
   });
   if (hits.length === 0) return;
 
@@ -128,17 +165,21 @@ async function main() {
   // Record everything we RENDERED as injected, including bullets the token
   // budget dropped: a budget-dropped hit was the lowest-ranked and would be
   // re-dropped next prompt anyway — recording it avoids recall churn. (With
-  // the default unbounded budget nothing is ever dropped.)
+  // the default unbounded budget nothing is ever dropped.) recordInjected
+  // overwrites the entry with fresh {at, n}, so a re-admitted (lapsed) memory
+  // restarts BOTH windows. This second write lands on top of the bump above;
+  // writeInjectedState's merge keeps n = max(disk, mem), so neither loses the
+  // other.
   if (dedupe && sessionId) {
     let recorded = false;
     for (const h of hits) {
       const id = h?.memory?.id;
       if (typeof id === "string" && id) {
-        injected[id] = injectedIdentity(h);
+        recordInjected(injectedState, id, injectedIdentity(h));
         recorded = true;
       }
     }
-    if (recorded) writeInjectedState(sessionId, injected);
+    if (recorded) writeInjectedState(sessionId, injectedState);
   }
 
   process.stdout.write(

@@ -438,11 +438,26 @@ type ClientSettings struct {
 	InjectPretoolMinScore *float64 `json:"inject_pretool_min_score,omitempty"`
 	// InjectPretoolTools is the tool-name allowlist that triggers a PreToolUse injection.
 	InjectPretoolTools *[]string `json:"inject_pretool_tools,omitempty"`
+	// InjectPretoolGateMs skips the PreToolUse recall server call entirely for
+	// a file whose last call was younger than this many milliseconds; 0 always
+	// calls. Must be >= 0.
+	InjectPretoolGateMs *int `json:"inject_pretool_gate_ms,omitempty"`
 
-	// InjectDedupe suppresses re-injecting an unchanged PreToolUse recall
-	// block for a file already injected this session; the recall call still
-	// runs, only the duplicate injection is skipped.
+	// InjectDedupe suppresses re-injecting a recalled memory still within its
+	// injection cooldown window (InjectCooldownMs / InjectCooldownPrompts);
+	// with both windows 0 an unchanged memory stays suppressed for the rest of
+	// the session. It gates the injection; whether the PreToolUse recall call
+	// runs follows InjectPretoolGateMs, but turning InjectDedupe off also
+	// disables that call gate, because the gate's clock lives in the dedupe
+	// state.
 	InjectDedupe *bool `json:"inject_dedupe,omitempty"`
+	// InjectCooldownMs is the time window (ms) within which an already-injected
+	// memory is not re-injected; 0 disables the time dimension. Must be >= 0.
+	InjectCooldownMs *int `json:"inject_cooldown_ms,omitempty"`
+	// InjectCooldownPrompts is the prompt-count window within which an
+	// already-injected memory is not re-injected; 0 disables the prompt
+	// dimension. Must be >= 0.
+	InjectCooldownPrompts *int `json:"inject_cooldown_prompts,omitempty"`
 
 	// InjectLabels selects which annotation labels to render alongside an
 	// injected memory; each must be one of tier, confidence, age, reason.
@@ -515,6 +530,9 @@ func (s ClientSettings) Validate() error {
 		{"inject_briefing_max_tok", s.InjectBriefingMaxTok},
 		{"inject_pretool_items", s.InjectPretoolItems},
 		{"inject_pretool_max_tok", s.InjectPretoolMaxTok},
+		{"inject_pretool_gate_ms", s.InjectPretoolGateMs},
+		{"inject_cooldown_ms", s.InjectCooldownMs},
+		{"inject_cooldown_prompts", s.InjectCooldownPrompts},
 		{"recall_limit", s.RecallLimit},
 		{"inject_recall_max_tok", s.InjectRecallMaxTok},
 		{"min_capture_chars", s.MinCaptureChars},
@@ -603,7 +621,10 @@ func DefaultClientSettings() ClientSettings {
 		InjectPretoolMaxTok:   new(0),
 		InjectPretoolMinScore: new(float64(0)),
 		InjectPretoolTools:    &[]string{"Read", "Write", "Edit", "MultiEdit", "Glob", "Grep"},
+		InjectPretoolGateMs:   new(90000),
 		InjectDedupe:          new(true),
+		InjectCooldownMs:      new(1800000),
+		InjectCooldownPrompts: new(3),
 
 		InjectLabels: &[]string{},
 
@@ -648,9 +669,12 @@ type SettingsLayer struct {
 // The second return maps each wire-key (the JSON tag) to the Source label of
 // whichever layer's value it took, for the /v1/self settings_sources
 // provenance the REST layer (a later phase) surfaces to callers.
-func MergeClientSettings(layers ...SettingsLayer) (ClientSettings, map[string]string) {
+//
+// gocyclo is silenced: the body is a flat per-field applyPtr enumeration
+// (one branch per ClientSettings field), not genuinely complex control flow.
+func MergeClientSettings(layers ...SettingsLayer) (ClientSettings, map[string]string) { //nolint:gocyclo
 	var out ClientSettings
-	sources := make(map[string]string, 26)
+	sources := make(map[string]string, 29)
 
 	for _, l := range layers {
 		s := l.S
@@ -699,8 +723,17 @@ func MergeClientSettings(layers ...SettingsLayer) (ClientSettings, map[string]st
 		if applyPtr(&out.InjectPretoolTools, s.InjectPretoolTools) {
 			sources["inject_pretool_tools"] = l.Source
 		}
+		if applyPtr(&out.InjectPretoolGateMs, s.InjectPretoolGateMs) {
+			sources["inject_pretool_gate_ms"] = l.Source
+		}
 		if applyPtr(&out.InjectDedupe, s.InjectDedupe) {
 			sources["inject_dedupe"] = l.Source
+		}
+		if applyPtr(&out.InjectCooldownMs, s.InjectCooldownMs) {
+			sources["inject_cooldown_ms"] = l.Source
+		}
+		if applyPtr(&out.InjectCooldownPrompts, s.InjectCooldownPrompts) {
+			sources["inject_cooldown_prompts"] = l.Source
 		}
 		if applyPtr(&out.InjectLabels, s.InjectLabels) {
 			sources["inject_labels"] = l.Source

@@ -819,7 +819,15 @@ class MeminiMemoryProvider(MemoryProvider):
         # exclude_ids, client-side as belt-and-braces) so the recall limit is
         # spent on memories the context does not already carry. Instance-scoped:
         # the provider lives exactly as long as the conversation it serves.
+        # Values are {"at": epoch_seconds, "n": prefetch_counter} stamped at
+        # each (re-)injection: the windowed cooldown predicate (_suppressed)
+        # uses them to decide whether an id is still fresh enough to exclude or
+        # has lapsed and may be re-served.
         self._injected_ids: dict = {}
+        # Per-user-turn counter: bumped once at the top of every prefetch()
+        # (the per-turn unit here), it drives the cooldown's prompt dimension.
+        # Reset with _injected_ids on pre-compress.
+        self._prefetch_n = 0
         # Latched on the first successful retry-without-exclude_ids: an older
         # server 400s the whole request on the unknown field, and "no dedupe"
         # beats "no recall at all".
@@ -873,6 +881,32 @@ class MeminiMemoryProvider(MemoryProvider):
         else:
             server_max_tok = settings.get("inject_recall_max_tok")
             self._recall_max_tokens = server_max_tok if isinstance(server_max_tok, int) else 0
+
+        # Windowed injection cooldown (env > handshake > default, kind int,
+        # min 0). ms is the time window; prompts the per-turn window. Either
+        # dimension is disabled by setting it to 0; BOTH zero == the legacy
+        # "suppress forever" behavior. See _suppressed for the predicate.
+        env_cooldown_ms = _int_env("MEMINI_INJECT_COOLDOWN_MS", None)
+        if env_cooldown_ms is not None:
+            self._inject_cooldown_ms = env_cooldown_ms
+        else:
+            server_cooldown_ms = settings.get("inject_cooldown_ms")
+            self._inject_cooldown_ms = (
+                server_cooldown_ms
+                if isinstance(server_cooldown_ms, int) and server_cooldown_ms >= 0
+                else 1800000
+            )
+
+        env_cooldown_prompts = _int_env("MEMINI_INJECT_COOLDOWN_PROMPTS", None)
+        if env_cooldown_prompts is not None:
+            self._inject_cooldown_prompts = env_cooldown_prompts
+        else:
+            server_cooldown_prompts = settings.get("inject_cooldown_prompts")
+            self._inject_cooldown_prompts = (
+                server_cooldown_prompts
+                if isinstance(server_cooldown_prompts, int) and server_cooldown_prompts >= 0
+                else 3
+            )
 
         # Capture bounds: how much of a turn is worth keeping is the server's
         # call (its store and recall budget), so the handshake carries it; the
@@ -1016,28 +1050,75 @@ class MeminiMemoryProvider(MemoryProvider):
             body["exclude_metadata"] = {"session_id": self._session_id}
         # And exclude what this conversation already carries — memories a prior
         # prefetch injected or the model pulled via the recall/briefing tools —
-        # so the limit is spent on hits the context does not yet hold. Capped
-        # at the server's exclude_ids limit, most recent kept.
+        # so the limit is spent on hits the context does not yet hold. Only
+        # IN-COOLDOWN ids are sent: a lapsed id is intentionally re-servable.
+        # Capped at the server's exclude_ids limit, most recent kept.
         if exclude_injected and self._injected_ids and not self._exclude_ids_unsupported:
-            body["exclude_ids"] = list(self._injected_ids)[-512:]
+            now = time.time()
+            ids = [mid for mid, e in self._injected_ids.items() if self._suppressed(e, now)]
+            if ids:
+                body["exclude_ids"] = ids[-512:]
         return body
 
     def _record_injected(self, ids: Any) -> None:
-        """Mark memory ids as present in this conversation's context."""
+        """Mark memory ids as present in this conversation's context, stamping
+        each with the wall-clock time and prompt counter at injection so the
+        windowed cooldown (_suppressed) can later decide re-admission. A
+        re-record refreshes the stamp (and, via pop/re-insert, the LRU spot)."""
+        now = time.time()
         for mid in ids:
             if isinstance(mid, str) and mid:
-                self._injected_ids.pop(mid, None)
-                self._injected_ids[mid] = None
+                self._injected_ids.pop(mid, None)  # refresh LRU position
+                self._injected_ids[mid] = {"at": now, "n": self._prefetch_n}
         while len(self._injected_ids) > 512:
             self._injected_ids.pop(next(iter(self._injected_ids)))
 
+    def _suppressed(self, entry: dict, now: float) -> bool:
+        """The shared windowed-cooldown predicate, hermes variant: an id is
+        suppressed (excluded from recall and dropped from results) while within
+        EITHER window, and re-admits only once BOTH have lapsed.
+
+        Deviation from the plugin's shared predicate: hermes never tracked
+        content hashes, so there is no per-entry `h` here — and therefore no
+        sentinel-forever rule and no hash-change bypass. hermes entries are
+        ALWAYS windowed (they lapse), which is the parity goal; the design's
+        sentinel-forever rule governs the plugin's MCP tool-read entries
+        specifically and must NOT make hermes entries immortal. Both knobs at 0
+        reproduces the legacy #134 "suppress forever" behavior."""
+        cooldown_ms = self._inject_cooldown_ms
+        cooldown_prompts = self._inject_cooldown_prompts
+        if cooldown_ms == 0 and cooldown_prompts == 0:
+            return True  # forever — exact pre-cooldown behavior
+        # counter==0 makes the prompt dimension inert. It is unreachable on the
+        # prefetch path (prefetch bumps _prefetch_n before this runs), so the
+        # >0 guard is belt-and-braces parity with the plugin's doctrine for
+        # hosts that never advance a counter; cooldown_prompts=0 degrades to
+        # time-only the same way. Negative deltas (clock skew / stale counter)
+        # compare as < window and so clamp to suppressed.
+        prompt_dim = (
+            cooldown_prompts > 0
+            and self._prefetch_n > 0
+            and self._prefetch_n - entry.get("n", 0) < cooldown_prompts
+        )
+        time_dim = cooldown_ms > 0 and (now - entry.get("at", 0.0)) < cooldown_ms / 1000.0
+        return prompt_dim or time_dim
+
     def _drop_injected(self, result: dict | None) -> dict | None:
         """Belt-and-braces for the server-side exclude_ids (absent on the
-        old-server fallback path): drop hits already injected this session."""
+        old-server fallback path): drop hits that are still IN COOLDOWN. A
+        lapsed id is NOT dropped — it passes through so prefetch re-serves and
+        re-records it. (Gap-5: dropping every known id would make windowed
+        re-admission dead on hermes.)"""
         if not result or not self._injected_ids:
             return result
         hits = result.get("results") or []
-        kept = [r for r in hits if (r.get("memory") or {}).get("id") not in self._injected_ids]
+        now = time.time()
+        suppressed = {
+            mid for mid, e in self._injected_ids.items() if self._suppressed(e, now)
+        }
+        if not suppressed:
+            return result
+        kept = [r for r in hits if (r.get("memory") or {}).get("id") not in suppressed]
         if len(kept) == len(hits):
             return result
         out = dict(result)
@@ -1045,18 +1126,29 @@ class MeminiMemoryProvider(MemoryProvider):
         return out
 
     def prefetch(self, query: str, **kwargs: Any) -> str:
+        # Advance the per-user-turn counter before any gate (shape or recall):
+        # each prefetch() is one turn, and the cooldown's prompt dimension
+        # measures turns-since-injection even on turns that inject nothing —
+        # mirrors the plugin's UserPromptSubmit counter.
+        self._prefetch_n += 1
         # recall is on by default; only a server-resolved handshake setting
         # can turn it off (see initialize) -- there is no local env toggle.
         if not self._recall_enabled or not query.strip():
             return ""
-        result = self._call("/v1/search", self._recall_body(query))
+        body = self._recall_body(query)
+        result = self._call("/v1/search", body)
         # An older server 400s the whole request on the unknown exclude_ids
         # field, and _call degrades that to None — indistinguishable from a
         # dead server here, so retry once without the field. If THAT lands,
         # the field is the problem: latch it off for this conversation ("no
         # dedupe" beats "no recall at all"); a dead server fails both calls
-        # and latches nothing.
-        if result is None and self._injected_ids and not self._exclude_ids_unsupported:
+        # and latches nothing. Gate strictly on whether THIS request actually
+        # carried exclude_ids: since the windowed cooldown lands, a non-empty
+        # _injected_ids no longer implies the field was sent (all ids may have
+        # lapsed → _recall_body omitted it). Retrying an all-lapsed body sends
+        # a byte-identical request, so a transient failure recovered by that
+        # retry would latch _exclude_ids_unsupported spuriously and forever.
+        if result is None and "exclude_ids" in body and not self._exclude_ids_unsupported:
             result = self._call("/v1/search", self._recall_body(query, exclude_injected=False))
             if result is not None:
                 self._exclude_ids_unsupported = True
@@ -1086,8 +1178,10 @@ class MeminiMemoryProvider(MemoryProvider):
         # Compression rebuilds the context: everything previously injected is
         # about to be summarized away, so this re-injection must NOT exclude
         # what the conversation already saw — surfacing it again is the whole
-        # point — and the dedupe state resets with the context it described.
+        # point — and the dedupe state (ids AND the prompt counter they were
+        # stamped against) resets with the context it described.
         self._injected_ids.clear()
+        self._prefetch_n = 0
         result = self._call("/v1/search", self._recall_body(query, exclude_injected=False))
         block = self._recall_block(result, "[memini context before compaction]")
         if block:

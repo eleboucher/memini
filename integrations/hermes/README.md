@@ -58,17 +58,27 @@ memory:
 
 Point it at your memini (environment, or the Hermes onboarding prompts):
 
-| Variable                         | Default                 | Purpose                                                                                                        |
-| -------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `MEMINI_BASE_URL`                | `http://localhost:8080` | memini service endpoint                                                                                        |
-| `MEMINI_NAMESPACE`               | server handshake        | project the memory is scoped to (see Namespace resolution below)                                               |
-| `MEMINI_HOME`                    | (none)                  | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg                                      |
-| `MEMINI_API_KEY`                 | (none)                  | bearer token, if memini requires auth                                                                          |
-| `MEMINI_REQUIRE_HTTPS`           | (off)                   | set `1` to refuse sending a token over plaintext HTTP                                                          |
-| `MEMINI_RECALL_LIMIT`            | `3`                     | max memories recalled per turn (beneath the server's `recall_limit` setting)                                   |
-| `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                     | fused-score floor (>=) for auto-recall, sent as `min_score` (beneath the server's setting)                     |
-| `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                     | hard token ceiling on the recall block (`0` = unbounded; tail dropped w/ footer; beneath the server's setting) |
-| `MEMINI_INJECT_LABELS`           | (none)                  | per-bullet tag prefix toggles: `tier`, `confidence`, `age`                                                     |
+| Variable                         | Default                 | Purpose                                                                                                                                                                |
+| -------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEMINI_BASE_URL`                | `http://localhost:8080` | memini service endpoint                                                                                                                                                |
+| `MEMINI_NAMESPACE`               | server handshake        | project the memory is scoped to (see Namespace resolution below)                                                                                                       |
+| `MEMINI_HOME`                    | (none)                  | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg                                                                                              |
+| `MEMINI_API_KEY`                 | (none)                  | bearer token, if memini requires auth                                                                                                                                  |
+| `MEMINI_REQUIRE_HTTPS`           | (off)                   | set `1` to refuse sending a token over plaintext HTTP                                                                                                                  |
+| `MEMINI_RECALL_LIMIT`            | `3`                     | max memories recalled per turn (beneath the server's `recall_limit` setting)                                                                                           |
+| `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                     | fused-score floor (>=) for auto-recall, sent as `min_score` (beneath the server's setting)                                                                             |
+| `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                     | hard token ceiling on the recall block (`0` = unbounded; tail dropped w/ footer; beneath the server's setting)                                                         |
+| `MEMINI_INJECT_COOLDOWN_MS`      | `1800000`               | repeat-injection cooldown, **time** window (ms): an already-injected memory is held back this long before it may re-serve; `0` disables the time dimension             |
+| `MEMINI_INJECT_COOLDOWN_PROMPTS` | `3`                     | repeat-injection cooldown, **prompt** window (counted per prefetch / turn); `0` disables the prompt dimension; both cooldown vars `0` = suppress for the whole session |
+| `MEMINI_INJECT_LABELS`           | (none)                  | per-bullet tag prefix toggles: `tier`, `confidence`, `age`                                                                                                             |
+
+The two `MEMINI_INJECT_COOLDOWN_*` vars are the windowed **repeat-injection
+cooldown**: an already-injected memory is excluded from prefetch (server-side via
+`exclude_ids`, with a client-side backstop) while it is inside _either_ window,
+and re-served only once _both_ have lapsed. hermes tracks ids only, so unlike the
+Claude Code plugin there is no content-hash bypass and no forever-suppressed
+tool-read entry — every hermes entry lapses. Both vars `0` restores the prior
+suppress-for-the-session behavior.
 
 ### Namespace resolution
 

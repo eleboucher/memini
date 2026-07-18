@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from urllib.error import URLError
 
@@ -1007,6 +1008,31 @@ class InjectedDedupeTest(unittest.TestCase):
         p.prefetch("query three long enough")
         self.assertNotIn("exclude_ids", bodies[3] or {})  # latched off for the session
 
+    def test_prefetch_transient_failure_does_not_latch_when_no_exclude_ids_sent(self):
+        # Windowed-cooldown regression: once every injected id has lapsed,
+        # _recall_body omits exclude_ids, so the request is byte-identical with
+        # or without the field. A transient/dead-server failure on that call
+        # must NOT trigger the old-server retry (there is no exclude_ids to
+        # blame for a 400) and must therefore NOT latch _exclude_ids_unsupported
+        # -- otherwise a single flake kills dedupe for the whole conversation.
+        bodies = []
+
+        def stub(path, body, method="POST"):
+            bodies.append(body)
+            if len(bodies) == 2:  # the failing call, after m1 has lapsed
+                return None  # transient/dead server -- not a 400 on exclude_ids
+            return {"results": [self._hit(f"m{len(bodies)}", f"fact {len(bodies)}")]}
+
+        p = make_provider(stub)
+        p.prefetch("query one long enough")  # records m1 at n=1
+        # Lapse m1 on BOTH windows: backdated stamp + counter far past.
+        p._injected_ids["m1"] = {"at": time.time() - 10_000, "n": -100}
+        p._prefetch_n = 100
+        p.prefetch("query two long enough")  # single call fails transiently
+        self.assertNotIn("exclude_ids", bodies[1] or {})  # lapsed -> field omitted
+        self.assertEqual(len(bodies), 2)  # no spurious retry: only one call made
+        self.assertFalse(p._exclude_ids_unsupported)  # not latched on a flake
+
     def test_pre_compress_bypasses_exclusion_and_resets(self):
         bodies = []
 
@@ -1050,6 +1076,109 @@ class InjectedDedupeTest(unittest.TestCase):
         p.handle_tool_call("memory_briefing", {})
         p.prefetch("what about the briefed thing")
         self.assertEqual(sorted(calls[-1][1].get("exclude_ids") or []), ["b1", "b2"])
+
+
+class InjectedCooldownTest(unittest.TestCase):
+    """The windowed injection cooldown (hermes parity for the plugin's
+    inject-cooldown work): an injected id is suppressed while within EITHER
+    window and re-admitted only once BOTH lapse. hermes tracks no content
+    hash, so its entries are always windowed (no sentinel-forever rule); the
+    both-zero knob reproduces the legacy forever behavior."""
+
+    @staticmethod
+    def _hit(mid, content, score=0.9):
+        return {"memory": {"id": mid, "content": content}, "score": score}
+
+    def test_cooldown_knobs_default_when_unset(self):
+        # 30-min / 3-prompt defaults when neither env nor handshake resolves.
+        p = make_provider(lambda path, body, method="POST": {"results": []})
+        self.assertEqual(p._inject_cooldown_ms, 1800000)
+        self.assertEqual(p._inject_cooldown_prompts, 3)
+
+    def test_cooldown_knobs_resolve_from_env(self):
+        os.environ["MEMINI_INJECT_COOLDOWN_MS"] = "5000"
+        os.environ["MEMINI_INJECT_COOLDOWN_PROMPTS"] = "0"
+        try:
+            p = make_provider(lambda path, body, method="POST": {"results": []})
+            self.assertEqual(p._inject_cooldown_ms, 5000)
+            self.assertEqual(p._inject_cooldown_prompts, 0)  # explicit 0 respected
+        finally:
+            del os.environ["MEMINI_INJECT_COOLDOWN_MS"]
+            del os.environ["MEMINI_INJECT_COOLDOWN_PROMPTS"]
+
+    def test_prefetch_bumps_counter_before_gates(self):
+        # The per-user-turn counter advances on every prefetch, including turns
+        # gated out (empty query) -- it measures turns, not injections.
+        p = make_provider(lambda path, body, method="POST": {"results": []})
+        self.assertEqual(p._prefetch_n, 0)
+        p.prefetch("   ")  # gated: empty query, still a turn
+        self.assertEqual(p._prefetch_n, 1)
+        p.prefetch("a real query long enough")
+        self.assertEqual(p._prefetch_n, 2)
+
+    def test_in_cooldown_entry_excluded_and_dropped(self):
+        # Freshly injected under the defaults -> in cooldown on both windows:
+        # excluded from the next recall and dropped from any server echo.
+        def stub(path, body, method="POST"):
+            return {"results": [self._hit("m1", "fact one")]}
+
+        p = make_provider(stub)
+        p.prefetch("query one long enough")  # records m1 at n=1
+        self.assertEqual(p._recall_body("second query").get("exclude_ids"), ["m1"])
+        kept = p._drop_injected({"results": [self._hit("m1", "fact one")]})
+        self.assertEqual(kept["results"], [])
+
+    def test_lapsed_entry_re_admitted_and_re_recorded(self):
+        # Both windows lapsed (patched at/n, counter advanced far past): the id
+        # leaves exclude_ids, passes _drop_injected, and a real prefetch
+        # re-serves and re-records it with a fresh stamp (Gap-5).
+        def stub(path, body, method="POST"):
+            return {"results": [self._hit("m1", "fact one")]}
+
+        p = make_provider(stub)
+        p.prefetch("query one long enough")  # records m1
+        p._injected_ids["m1"] = {"at": time.time() - 10_000, "n": -100}
+        p._prefetch_n = 100
+        self.assertNotIn("exclude_ids", p._recall_body("another query"))
+        kept = p._drop_injected({"results": [self._hit("m1", "fact one")]})
+        self.assertEqual([h["memory"]["id"] for h in kept["results"]], ["m1"])
+        block = p.prefetch("re-serve the lapsed memory now")
+        self.assertIn("fact one", block)
+        self.assertEqual(p._injected_ids["m1"]["n"], 101)  # re-recorded at bumped n
+        self.assertGreater(p._injected_ids["m1"]["at"], time.time() - 5)
+
+    def test_both_zero_knobs_suppress_forever(self):
+        # 0ms + 0prompts == legacy #134 forever: even a wildly lapsed entry
+        # stays excluded and dropped.
+        def stub(path, body, method="POST"):
+            return {"results": [self._hit("m1", "fact one")]}
+
+        p = make_provider(stub)
+        p._inject_cooldown_ms = 0
+        p._inject_cooldown_prompts = 0
+        p.prefetch("query one long enough")
+        p._injected_ids["m1"] = {"at": 0.0, "n": -10_000}
+        p._prefetch_n = 10_000
+        self.assertEqual(p._recall_body("q").get("exclude_ids"), ["m1"])
+        kept = p._drop_injected({"results": [self._hit("m1", "fact one")]})
+        self.assertEqual(kept["results"], [])
+
+    def test_cooldown_prompts_zero_is_time_only(self):
+        # cooldown_prompts=0 makes the prompt dimension inert (the counter==0
+        # promptDim-inert case, exercised via a live time window instead since
+        # prefetch always bumps the counter before the predicate runs): only
+        # the time window governs.
+        def stub(path, body, method="POST"):
+            return {"results": [self._hit("m1", "fact one")]}
+
+        p = make_provider(stub)
+        p._inject_cooldown_ms = 1800000
+        p._inject_cooldown_prompts = 0
+        p.prefetch("query one long enough")  # records m1, time window fresh
+        p._prefetch_n = 10_000  # counter far past any prompt window
+        self.assertEqual(p._recall_body("q").get("exclude_ids"), ["m1"])
+        p._injected_ids["m1"]["at"] = time.time() - 10_000  # lapse time too
+        self.assertNotIn("exclude_ids", p._recall_body("q"))
 
 
 if __name__ == "__main__":

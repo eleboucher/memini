@@ -236,6 +236,11 @@ export interface LiveConfig {
   recall_limit: number;
   recall_max_tokens: number;
   recall_min_score: number;
+  // Windowed injection-cooldown knobs (both dimensions — pi's before_agent_start
+  // is per user prompt, so it can drive the prompt counter as well as the clock).
+  // 0 disables that dimension; BOTH zero == legacy "suppress forever" (#134).
+  inject_cooldown_ms: number;
+  inject_cooldown_prompts: number;
   capture_user_max_chars: number;
   capture_assistant_max_chars: number;
 }
@@ -272,6 +277,8 @@ export function resolveLiveConfig(
     recall_limit: effectiveSetting<number>(knob("recall_limit"), server, env).value,
     recall_max_tokens: effectiveSetting<number>(knob("inject_recall_max_tok"), server, env).value,
     recall_min_score: effectiveSetting<number>(knob("inject_recall_min_score"), server, env).value,
+    inject_cooldown_ms: effectiveSetting<number>(knob("inject_cooldown_ms"), server, env).value,
+    inject_cooldown_prompts: effectiveSetting<number>(knob("inject_cooldown_prompts"), server, env).value,
     capture_user_max_chars: effectiveSetting<number>(knob("capture_user_max_chars"), server, env).value,
     capture_assistant_max_chars: effectiveSetting<number>(knob("capture_assistant_max_chars"), server, env).value,
   };
@@ -1050,14 +1057,33 @@ export default function meminiExtension(pi: ExtensionAPI): void {
   // Memory ids each session has already been shown (mirrors the openclaw
   // plugin): the recall injection is a persistent context message, so
   // re-injecting an unchanged match every turn stacks identical blocks in the
-  // prompt. The inner cap keeps a stable session — which never ages out of
-  // the outer map — from growing its Set for the process lifetime.
-  const injectedBySession = new Map<string, Set<string>>();
+  // prompt. Each entry is stamped with the wall-clock time AND the per-session
+  // prompt counter at injection ({at, n}); the windowed cooldown predicate
+  // (suppressed) uses them to keep re-serving a still-fresh match out while
+  // re-admitting one both windows have moved past. The inner cap keeps a stable
+  // session — which never ages out of the outer map — from growing for the
+  // process lifetime.
+  const injectedBySession = new Map<string, Map<string, { at: number; n: number }>>();
   const MAX_INJECTED_PER_SESSION = 200;
+  // Per-session user-prompt counter, bumped once per before_agent_start (pi's
+  // per-user-message hook) before any gate — it drives the cooldown's prompt
+  // dimension and advances even on turns that inject nothing. Bounded like the
+  // maps above so a churn of one-shot sessions can't grow it unbounded.
+  const promptCountBySession = new Map<string, number>();
+  const bumpPromptCount = (session: string): number => {
+    const n = (promptCountBySession.get(session) ?? 0) + 1;
+    promptCountBySession.set(session, n);
+    while (promptCountBySession.size > MAX_TRACKED_SESSIONS) {
+      const oldest = promptCountBySession.keys().next().value;
+      if (oldest === undefined) break;
+      promptCountBySession.delete(oldest);
+    }
+    return n;
+  };
   const rememberInjected = (session: string, ids: string[]) => {
     let seen = injectedBySession.get(session);
     if (!seen) {
-      seen = new Set<string>();
+      seen = new Map<string, { at: number; n: number }>();
       injectedBySession.set(session, seen);
       while (injectedBySession.size > MAX_TRACKED_SESSIONS) {
         const oldest = injectedBySession.keys().next().value;
@@ -1065,12 +1091,60 @@ export default function meminiExtension(pi: ExtensionAPI): void {
         injectedBySession.delete(oldest);
       }
     }
-    for (const id of ids) if (id) seen.add(id);
+    const now = Date.now();
+    const n = promptCountBySession.get(session) ?? 0;
+    for (const id of ids) {
+      if (!id) continue;
+      // delete+set refreshes the {at, n} stamp (a re-served id restarts both
+      // windows) and the insertion order (newest last, so the cap evicts the
+      // least-recently-shown id first).
+      seen.delete(id);
+      seen.set(id, { at: now, n });
+    }
     while (seen.size > MAX_INJECTED_PER_SESSION) {
-      const oldest = seen.values().next().value;
+      const oldest = seen.keys().next().value;
       if (oldest === undefined) break;
       seen.delete(oldest);
     }
+  };
+  // The shared windowed-cooldown predicate (design-context.md): an id is
+  // suppressed (excluded from recall AND dropped from results) while inside
+  // EITHER window, and re-admits only once BOTH have lapsed. Both knobs at 0
+  // reproduces the legacy #134 "suppress forever" behavior. counter==0 makes the
+  // prompt dimension inert (a host that never advances a counter degrades to
+  // time-only rather than "forever"); negative deltas (clock skew / stale
+  // counter) compare as inside-window and clamp to suppressed.
+  const suppressed = (
+    entry: { at: number; n: number },
+    now: number,
+    counter: number,
+    cooldownMs: number,
+    cooldownPrompts: number,
+  ): boolean => {
+    if (cooldownMs === 0 && cooldownPrompts === 0) return true;
+    const promptDim = cooldownPrompts > 0 && counter > 0 && counter - entry.n < cooldownPrompts;
+    const timeDim = cooldownMs > 0 && now - entry.at < cooldownMs;
+    return promptDim || timeDim;
+  };
+  // The set of a session's already-shown ids still inside the cooldown — the view
+  // both exclude_ids and the client-side drop-filter use. Prunes lapsed entries
+  // as it reads so a lapsed id is neither excluded nor dropped: it re-serves and
+  // its stamp refreshes on the next show.
+  const injectedInWindow = (
+    session: string,
+    counter: number,
+    cooldownMs: number,
+    cooldownPrompts: number,
+  ): Set<string> => {
+    const inWindow = new Set<string>();
+    const seen = injectedBySession.get(session);
+    if (!seen) return inWindow;
+    const now = Date.now();
+    for (const [id, entry] of seen) {
+      if (suppressed(entry, now, counter, cooldownMs, cooldownPrompts)) inWindow.add(id);
+      else seen.delete(id);
+    }
+    return inWindow;
   };
   // /v1/search drops exclude_ids before ranking and the limit, so an
   // already-shown hit frees its slot for the next-best match. Older servers
@@ -1101,6 +1175,12 @@ export default function meminiExtension(pi: ExtensionAPI): void {
     const sid = sessionIdOf(ctx);
     const query = String(event?.prompt || "").trim();
     if (query && sid) rememberPendingUser(sid, query);
+    // Advance the per-session prompt counter once per user turn, BEFORE any gate
+    // (the recall-setting gate and the shape gates below), so the cooldown's
+    // prompt dimension measures turns-since-injection even on turns that inject
+    // nothing. before_agent_start is per user prompt on pi, so this is the
+    // literal "X messages" unit.
+    const counter = sid ? bumpPromptCount(sid) : 0;
 
     const live = await sessionLive(sessionCtx);
     if (!live.recall || !query) return;
@@ -1111,18 +1191,20 @@ export default function meminiExtension(pi: ExtensionAPI): void {
     if (sid) body.exclude_metadata = { session_id: sid };
     if (live.recall_min_score > 0) body.min_score = live.recall_min_score;
 
-    // Already-shown ids go along as exclude_ids so a suppressed hit doesn't
-    // waste a recall_limit slot.
-    const excludeIds = sid ? [...(injectedBySession.get(sid) ?? [])] : [];
+    // Only ids still inside the injection cooldown go along as exclude_ids, so a
+    // suppressed hit doesn't waste a recall_limit slot; a LAPSED id is absent so
+    // it re-serves. Computed once and reused for the client-side drop below.
+    const inWindow = sid
+      ? injectedInWindow(sid, counter, live.inject_cooldown_ms, live.inject_cooldown_prompts)
+      : new Set<string>();
+    const excludeIds = [...inWindow];
     const result = await searchExcluding(body, excludeIds);
     const floor = live.recall_min_score > 0 ? live.recall_min_score : 0;
     let rawHits = Array.isArray(result?.results) ? result.results : [];
-    // Suppress memories this session has already been shown — the injected
-    // message persists in context, so a repeat adds nothing but noise.
-    if (sid) {
-      const seen = injectedBySession.get(sid);
-      if (seen?.size) rawHits = rawHits.filter((r: any) => !seen.has(r?.memory?.id));
-    }
+    // Suppress memories still inside this session's cooldown — the injected
+    // message persists in context, so a repeat adds nothing but noise. A lapsed
+    // id is not in inWindow, so it passes through, re-serves, and re-stamps.
+    if (inWindow.size) rawHits = rawHits.filter((r: any) => !inWindow.has(r?.memory?.id));
     const filtered =
       floor > 0
         ? rawHits.filter((r: any) => (typeof r?.score === "number" ? r.score : 0) >= floor)

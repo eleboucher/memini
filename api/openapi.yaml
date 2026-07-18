@@ -2047,13 +2047,38 @@ components:
           items: { type: string }
           default: [Read, Write, Edit, MultiEdit, Glob, Grep]
           description: Tool-name allowlist that triggers a PreToolUse injection.
+        inject_pretool_gate_ms:
+          type: integer
+          minimum: 0
+          default: 90000
+          description: >
+            Skip the PreToolUse recall server call entirely for a file whose
+            last call was younger than this many milliseconds. 0 always calls.
         inject_dedupe:
           type: boolean
           default: true
           description: >
-            Suppress re-injecting an unchanged PreToolUse recall block for a
-            file already injected this session. The recall call still runs;
-            only the duplicate injection is skipped.
+            Suppress re-injecting a recalled memory that is still within its
+            injection cooldown window (inject_cooldown_ms /
+            inject_cooldown_prompts); with both windows 0, an unchanged memory
+            stays suppressed for the rest of the session. This gates the
+            injection; whether the PreToolUse recall call runs at all follows
+            inject_pretool_gate_ms, but turning inject_dedupe off also disables
+            that call gate, because the gate's clock lives in the dedupe state.
+        inject_cooldown_ms:
+          type: integer
+          minimum: 0
+          default: 1800000
+          description: >
+            Time window (milliseconds) within which an already-injected memory
+            is not re-injected; 0 disables the time dimension.
+        inject_cooldown_prompts:
+          type: integer
+          minimum: 0
+          default: 3
+          description: >
+            Prompt-count window within which an already-injected memory is not
+            re-injected; 0 disables the prompt dimension.
         inject_labels:
           type: array
           default: []

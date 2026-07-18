@@ -125,10 +125,31 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
     "description": "Tool-name allowlist that triggers a PreToolUse injection."
   },
   {
+    "key": "inject_pretool_gate_ms",
+    "type": "integer",
+    "default": 90000,
+    "description": "Skip the PreToolUse recall server call entirely for a file whose last call was younger than this many milliseconds. 0 always calls.",
+    "min": 0
+  },
+  {
     "key": "inject_dedupe",
     "type": "boolean",
     "default": true,
-    "description": "Suppress re-injecting an unchanged PreToolUse recall block for a file already injected this session. The recall call still runs; only the duplicate injection is skipped."
+    "description": "Suppress re-injecting a recalled memory that is still within its injection cooldown window (inject_cooldown_ms / inject_cooldown_prompts); with both windows 0, an unchanged memory stays suppressed for the rest of the session. This gates the injection; whether the PreToolUse recall call runs at all follows inject_pretool_gate_ms, but turning inject_dedupe off also disables that call gate, because the gate's clock lives in the dedupe state."
+  },
+  {
+    "key": "inject_cooldown_ms",
+    "type": "integer",
+    "default": 1800000,
+    "description": "Time window (milliseconds) within which an already-injected memory is not re-injected; 0 disables the time dimension.",
+    "min": 0
+  },
+  {
+    "key": "inject_cooldown_prompts",
+    "type": "integer",
+    "default": 3,
+    "description": "Prompt-count window within which an already-injected memory is not re-injected; 0 disables the prompt dimension.",
+    "min": 0
   },
   {
     "key": "inject_labels",

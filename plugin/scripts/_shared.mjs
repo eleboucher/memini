@@ -780,25 +780,52 @@ export function deleteLastRecallState(sessionId) {
   }
 }
 
-// ── per-session cross-surface injected-memory state ────────────────────────
+// ── per-session cross-surface injected-memory state (v2) ───────────────────
 //
 // Three surfaces inject memories into the same context: the SessionStart
 // briefing, per-prompt recall (UserPromptSubmit), and per-file recall
 // (PreToolUse). Without shared memory of what the session already carries,
 // each surface can re-inject what another just showed — the same fact once
-// per surface, plus once per related prompt. The state is an insertion-ordered
-// map of injected memory id → content-identity hash, shared by ALL surfaces
-// and gated by the same inject_dedupe knob as the per-file fingerprint:
-//   - the prompt hook excludes recorded ids SERVER-side (exclude_ids), freeing
-//     its top-k for memories the context does not already carry;
+// per surface, plus once per related prompt. All three share ONE per-session
+// state file, gated by the same inject_dedupe knob as the per-file
+// fingerprint.
+//
+// State v2 shape (`<sessionId>.injected.json`):
+//   { "v": 2, "n": <prompt-counter>, "ids": { "<memId>": { "h", "at", "n" } } }
+//   - top-level `n`: a monotonic per-session prompt counter (bumped once per
+//     UserPromptSubmit by the prompt hook). Persisted even when nothing is
+//     injected, so the counter can't slide.
+//   - per-entry: `h` = content-identity hash (sentinel "" for MCP tool-reads,
+//     whose concise responses may truncate — content identity is unknowable),
+//     `at` = last-injected epoch ms, `n` = the counter value at injection.
+//
+// Suppression is WINDOWED, not forever (see injectedSuppressed): an entry stays
+// suppressed while within EITHER the time window (cooldownMs) OR the prompt
+// window (cooldownPrompts), and is re-admitted only once BOTH have lapsed —
+// so a fact re-surfaces after the conversation has moved on, instead of being
+// hidden for the whole session. Two dimensions with distinct jobs: the time
+// window covers tool-burst context growth (many PreToolUse reads, no new
+// prompt); the prompt window counts literal user turns. With BOTH knobs 0 the
+// predicate collapses to legacy forever-dedupe (exact #134 behavior); a host
+// that never fires UserPromptSubmit (counter stays 0) degrades the prompt
+// dimension to inert and rides the time window alone.
+//   - the prompt hook excludes IN-COOLDOWN ids SERVER-side (exclude_ids via
+//     cooldownIds), freeing its top-k for memories the context does not
+//     already carry;
 //   - pretool filters CLIENT-side and content-aware — a memory whose content
 //     changed since injection (memory_update) hashes differently and passes,
 //     preserving the fingerprint doctrine that truncation/dedupe is a display
 //     budget, never identity.
+//
 // Cleared whenever the context is rebuilt (startup/clear, compaction, session
 // end) and kept across a resume, whose context is intact — "already in
 // context" is exactly as durable as the context itself. Lives in bufferDir()
 // so cleanStaleBuffers GCs orphans.
+//
+// v1 compat: a legacy flat file (`{ "<memId>": "<hash>" }`) is migrated on read
+// to v2 entries `{ h, at: now, n: 0 }`; conversely an OLD plugin reading a v2
+// file sees only `v`/`n`/`ids` keys, none a string hash, and its filter yields
+// `{}` — no crash, it just re-derives dedupe from scratch.
 
 // Bounded to the server's exclude_ids cap: keeping more than we can send is
 // pure growth with no dedupe value.
@@ -820,32 +847,141 @@ export function injectedIdentity(m) {
   return crypto.createHash("sha256").update(text).digest("hex").slice(0, 16);
 }
 
-/** Read the session's injected map (id → identity hash), or {} on any error. */
+/** Coerce a raw v2 ids-map entry into a well-formed { h, at, n } or null. */
+function normInjectedEntry(e, fallbackAt) {
+  if (!e || typeof e !== "object" || Array.isArray(e) || typeof e.h !== "string") return null;
+  return {
+    h: e.h,
+    at: Number.isFinite(e.at) ? e.at : fallbackAt,
+    n: Number.isFinite(e.n) ? e.n : 0,
+  };
+}
+
+/**
+ * Read the session's injected state as { n, ids } where ids maps memory id →
+ * { h, at, n }. Migrates a legacy v1 flat file (id → hash string) in-memory to
+ * { h, at: now, n: 0 } entries. Junk values are skipped; any error yields an
+ * empty state — never a crash.
+ */
 export function readInjectedState(sessionId) {
+  const empty = { n: 0, ids: {} };
   try {
-    const map = parseJSON(fs.readFileSync(injectedStatePath(sessionId), "utf8"));
-    if (!map || typeof map !== "object" || Array.isArray(map)) return {};
-    const out = {};
-    for (const [id, h] of Object.entries(map)) {
-      if (id && typeof h === "string") out[id] = h;
+    const raw = parseJSON(fs.readFileSync(injectedStatePath(sessionId), "utf8"));
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return empty;
+    const now = Date.now();
+    const ids = {};
+    if (raw.v === 2) {
+      const rawIds = raw.ids && typeof raw.ids === "object" && !Array.isArray(raw.ids) ? raw.ids : {};
+      for (const [id, e] of Object.entries(rawIds)) {
+        const norm = normInjectedEntry(e, now);
+        if (id && norm) ids[id] = norm;
+      }
+      return { n: Number.isFinite(raw.n) ? raw.n : 0, ids };
     }
-    return out;
+    // v1 flat migration: { id: "hash" } → { h, at: now, n: 0 }.
+    for (const [id, h] of Object.entries(raw)) {
+      if (id && typeof h === "string") ids[id] = { h, at: now, n: 0 };
+    }
+    return { n: 0, ids };
   } catch {
-    return {};
+    return empty;
   }
 }
 
-/** Persist the injected map (best-effort), most recently added MAX kept. */
-export function writeInjectedState(sessionId, map) {
+/**
+ * Record an injection into an in-memory state: ids[id] = { h, at: now, n } with
+ * n stamped from the state's current prompt counter. Mutates and returns state.
+ */
+export function recordInjected(state, id, h, now = Date.now()) {
+  if (!state.ids) state.ids = {};
+  state.ids[id] = { h, at: now, n: Number.isFinite(state.n) ? state.n : 0 };
+  return state;
+}
+
+/**
+ * Persist the injected state (best-effort) as v2. Bounds ids to MAX by NEWEST
+ * `at` (evict oldest). Merge-on-write for concurrent RMW safety: re-read the
+ * file and take n = max(file.n, mem.n) and, per id, keep the entry with the
+ * larger `at` (residual last-write-wins on ties is accepted — bounded to one
+ * extra suppression or injection).
+ */
+export function writeInjectedState(sessionId, state) {
   try {
     fs.mkdirSync(bufferDir(), { recursive: true });
-    let bounded = map || {};
-    const entries = Object.entries(bounded);
-    if (entries.length > MAX_INJECTED_IDS) bounded = Object.fromEntries(entries.slice(-MAX_INJECTED_IDS));
-    fs.writeFileSync(injectedStatePath(sessionId), JSON.stringify(bounded));
+    const mem = state && typeof state === "object" ? state : {};
+    const memIds = mem.ids && typeof mem.ids === "object" ? mem.ids : {};
+    const memN = Number.isFinite(mem.n) ? mem.n : 0;
+
+    // Best-effort merge with whatever is on disk now (a parallel Pre/PostToolUse
+    // process may have written between our read and this write).
+    const disk = readInjectedState(sessionId);
+    const merged = { ...disk.ids };
+    for (const [id, e] of Object.entries(memIds)) {
+      const norm = normInjectedEntry(e, Date.now());
+      if (!id || !norm) continue;
+      const prev = merged[id];
+      if (!prev || norm.at >= prev.at) merged[id] = norm;
+    }
+    const n = Math.max(memN, disk.n);
+
+    let entries = Object.entries(merged);
+    if (entries.length > MAX_INJECTED_IDS) {
+      entries.sort((a, b) => (b[1]?.at || 0) - (a[1]?.at || 0));
+      entries = entries.slice(0, MAX_INJECTED_IDS);
+    }
+    fs.writeFileSync(injectedStatePath(sessionId), JSON.stringify({ v: 2, n, ids: Object.fromEntries(entries) }));
   } catch (e) {
     if (DEBUG) console.error("[memini] writeInjectedState failed:", e?.message || e);
   }
+}
+
+/**
+ * Shared cooldown predicate: is this recorded entry still suppressed?
+ *
+ *   suppressed(entry, identity, { now, counter, cooldownMs, cooldownPrompts }):
+ *     entry.h === ""                       → true   sentinel/tool-read: FOREVER
+ *                                                   (the model pulled it; hooks
+ *                                                   never re-push it)
+ *     identity && entry.h !== identity     → false  content changed → re-inject
+ *     cooldownMs == 0 && prompts == 0      → true   legacy forever-dedupe (#134)
+ *     promptDim = prompts > 0 && counter > 0 && counter - entry.n < prompts
+ *                  (counter == 0 ⇒ prompt dimension inert: a host that never
+ *                   fires UserPromptSubmit degrades to time-only, not forever)
+ *     timeDim   = cooldownMs > 0 && now - entry.at < cooldownMs
+ *                  (negative deltas — clock skew / counter regression — clamp
+ *                   to suppressed)
+ *     → promptDim || timeDim                        suppress within EITHER
+ *                                                   window; re-admit once BOTH
+ *                                                   lapse
+ *
+ * `identity` null means "id-only check" (used by cooldownIds): the content-
+ * change bypass is skipped, so a real-hash entry is judged on the windows
+ * alone and a sentinel stays suppressed.
+ */
+export function injectedSuppressed(entry, identity, { now, counter, cooldownMs, cooldownPrompts }) {
+  if (!entry || typeof entry !== "object") return false;
+  if (entry.h === "") return true; // sentinel / tool-read: forever
+  if (identity && entry.h !== identity) return false; // content changed: re-inject
+  if (cooldownMs === 0 && cooldownPrompts === 0) return true; // legacy forever-dedupe
+  const promptDim = cooldownPrompts > 0 && counter > 0 && counter - entry.n < cooldownPrompts;
+  const timeDim = cooldownMs > 0 && now - entry.at < cooldownMs;
+  return promptDim || timeDim;
+}
+
+/**
+ * The ids currently in cooldown for exclude_ids senders: every recorded entry
+ * the predicate suppresses judged by id alone (identity=null) against the
+ * state's own counter. Sentinel entries are always in cooldown; real-hash
+ * entries ride the time/prompt windows.
+ */
+export function cooldownIds(state, { now, cooldownMs, cooldownPrompts }) {
+  const ids = state && state.ids && typeof state.ids === "object" ? state.ids : {};
+  const counter = Number.isFinite(state?.n) ? state.n : 0;
+  const out = [];
+  for (const [id, entry] of Object.entries(ids)) {
+    if (injectedSuppressed(entry, null, { now, counter, cooldownMs, cooldownPrompts })) out.push(id);
+  }
+  return out;
 }
 
 /** Delete the session's injected-id state (best-effort). */

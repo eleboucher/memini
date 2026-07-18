@@ -3038,7 +3038,10 @@ func testClientSettingsGlobalRoundTrip(t *testing.T, cs store.ClientSettingsStor
 // are persisted" rule: storing a settings value with a single field set must
 // read back with every other field nil, never coalesced to a default or a
 // zero value.
-func testClientSettingsOnlySetPersisted(t *testing.T, cs store.ClientSettingsStore) {
+//
+// gocyclo is silenced: the assertion is a flat per-field nil enumeration, not
+// genuinely complex control flow.
+func testClientSettingsOnlySetPersisted(t *testing.T, cs store.ClientSettingsStore) { //nolint:gocyclo
 	ctx := context.Background()
 	autoSave := false
 	if err := cs.SetGlobalClientSettings(ctx, store.ClientSettings{AutoSave: &autoSave}); err != nil {
@@ -3055,7 +3058,9 @@ func testClientSettingsOnlySetPersisted(t *testing.T, cs store.ClientSettingsSto
 		got.AutoSaveInterval != nil || got.InjectBriefingPinned != nil || got.InjectBriefingFacts != nil ||
 		got.InjectBriefingProcedures != nil || got.InjectBriefingRecent != nil || got.InjectBriefingMaxTok != nil ||
 		got.InjectPretoolItems != nil || got.InjectPretoolMaxTok != nil || got.InjectPretoolMinScore != nil ||
-		got.InjectPretoolTools != nil || got.InjectDedupe != nil || got.InjectLabels != nil || got.Recall != nil || got.Capture != nil ||
+		got.InjectPretoolTools != nil || got.InjectPretoolGateMs != nil || got.InjectDedupe != nil ||
+		got.InjectCooldownMs != nil || got.InjectCooldownPrompts != nil ||
+		got.InjectLabels != nil || got.Recall != nil || got.Capture != nil ||
 		got.RecallLimit != nil || got.InjectRecallMaxTok != nil || got.InjectRecallMinScore != nil ||
 		got.MinCaptureChars != nil || got.RequestTimeoutMs != nil ||
 		got.NamespaceScope != nil || got.NamespacePrefix != nil {

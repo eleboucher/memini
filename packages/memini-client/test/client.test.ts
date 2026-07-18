@@ -203,8 +203,8 @@ test("resolveHarnessCwd reads the real parent process cwd", () => {
 
 // ─── behavior knobs / effectiveSetting ──────────────────────────────
 
-test("BEHAVIOR_KNOBS covers exactly the 26 behavioral ClientSettings fields, excluding namespace_scope/namespace_prefix", () => {
-  assert.equal(BEHAVIOR_KNOBS.length, 26);
+test("BEHAVIOR_KNOBS covers exactly the 29 behavioral ClientSettings fields, excluding namespace_scope/namespace_prefix", () => {
+  assert.equal(BEHAVIOR_KNOBS.length, 29);
   const wireKeys = BEHAVIOR_KNOBS.map((k) => k.wireKey);
   assert.equal(new Set(wireKeys).size, wireKeys.length, "wireKey must be unique per knob");
   assert.equal(wireKeys.includes("namespace_scope"), false);
@@ -226,6 +226,45 @@ test("inject_dedupe knob: bool, default true, MEMINI_INJECT_DEDUPE=0 overrides a
   assert.deepEqual(effectiveSetting(k!, undefined, {}), { value: true, source: "default" });
   assert.deepEqual(effectiveSetting(k!, { inject_dedupe: true }, { MEMINI_INJECT_DEDUPE: "0" }), {
     value: false,
+    source: "env-override",
+  });
+});
+
+test("inject_cooldown_ms knob: int, default 1800000, MEMINI_INJECT_COOLDOWN_MS overrides a server value", () => {
+  const k = BEHAVIOR_KNOBS.find((k) => k.wireKey === "inject_cooldown_ms");
+  assert.ok(k, "inject_cooldown_ms must be a behavior knob");
+  assert.equal(k!.envName, "MEMINI_INJECT_COOLDOWN_MS");
+  assert.equal(k!.kind, "int");
+  assert.equal(k!.default, 1800000);
+  assert.deepEqual(effectiveSetting(k!, undefined, {}), { value: 1800000, source: "default" });
+  assert.deepEqual(effectiveSetting(k!, { inject_cooldown_ms: 600000 }, { MEMINI_INJECT_COOLDOWN_MS: "0" }), {
+    value: 0,
+    source: "env-override",
+  });
+});
+
+test("inject_cooldown_prompts knob: int, default 3, MEMINI_INJECT_COOLDOWN_PROMPTS overrides a server value", () => {
+  const k = BEHAVIOR_KNOBS.find((k) => k.wireKey === "inject_cooldown_prompts");
+  assert.ok(k, "inject_cooldown_prompts must be a behavior knob");
+  assert.equal(k!.envName, "MEMINI_INJECT_COOLDOWN_PROMPTS");
+  assert.equal(k!.kind, "int");
+  assert.equal(k!.default, 3);
+  assert.deepEqual(effectiveSetting(k!, undefined, {}), { value: 3, source: "default" });
+  assert.deepEqual(effectiveSetting(k!, { inject_cooldown_prompts: 3 }, { MEMINI_INJECT_COOLDOWN_PROMPTS: "1" }), {
+    value: 1,
+    source: "env-override",
+  });
+});
+
+test("inject_pretool_gate_ms knob: int, default 90000, MEMINI_INJECT_PRETOOL_GATE_MS overrides a server value", () => {
+  const k = BEHAVIOR_KNOBS.find((k) => k.wireKey === "inject_pretool_gate_ms");
+  assert.ok(k, "inject_pretool_gate_ms must be a behavior knob");
+  assert.equal(k!.envName, "MEMINI_INJECT_PRETOOL_GATE_MS");
+  assert.equal(k!.kind, "int");
+  assert.equal(k!.default, 90000);
+  assert.deepEqual(effectiveSetting(k!, undefined, {}), { value: 90000, source: "default" });
+  assert.deepEqual(effectiveSetting(k!, { inject_pretool_gate_ms: 90000 }, { MEMINI_INJECT_PRETOOL_GATE_MS: "0" }), {
+    value: 0,
     source: "env-override",
   });
 });

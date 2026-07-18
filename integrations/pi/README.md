@@ -53,21 +53,31 @@ pi -e ./integrations/pi/plugin/dist/index.js
 All config is via environment variables in the shell that launches Pi (secrets
 stay out of any file):
 
-| Env var                          | Default                          | Purpose                                                                                   |
-| -------------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------- |
-| `MEMINI_BASE_URL`                | `http://localhost:8080`          | memini REST base URL                                                                      |
-| `MEMINI_NAMESPACE`               | unset (server handshake decides) | machine-local namespace override; the offline escape hatch when the server is unreachable |
-| `MEMINI_HOME`                    | unset                            | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg                 |
-| `MEMINI_RECALL`                  | on                               | `0`/`false` disables recall-before-turn                                                   |
-| `MEMINI_CAPTURE`                 | on                               | `0`/`false` disables capture-after-turn                                                   |
-| `MEMINI_RECALL_LIMIT`            | `3`                              | max memories injected per turn                                                            |
-| `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                              | hard ceiling on recall-block tokens (`0` = unbounded); the tail is dropped with a footer  |
-| `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                              | fused-score floor (>=) sent as `min_score` to `/v1/search`                                |
-| `MEMINI_INJECT_LABELS`           | —                                | comma-separated bullet labels: `tier`, `confidence`, `age`                                |
-| `MEMINI_TIMEOUT_MS`              | `30000`                          | per-request timeout                                                                       |
-| `MEMINI_FALLBACK`                | on                               | `0`/`false` surfaces errors instead of degrading silently                                 |
-| `MEMINI_API_KEY`                 | —                                | bearer token, if memini needs auth (sent as `Authorization: Bearer …`)                    |
-| `MEMINI_REQUIRE_HTTPS`           | —                                | `1` refuses to send the token over plaintext HTTP                                         |
+| Env var                          | Default                          | Purpose                                                                                                                                            |
+| -------------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEMINI_BASE_URL`                | `http://localhost:8080`          | memini REST base URL                                                                                                                               |
+| `MEMINI_NAMESPACE`               | unset (server handshake decides) | machine-local namespace override; the offline escape hatch when the server is unreachable                                                          |
+| `MEMINI_HOME`                    | unset                            | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg                                                                          |
+| `MEMINI_RECALL`                  | on                               | `0`/`false` disables recall-before-turn                                                                                                            |
+| `MEMINI_CAPTURE`                 | on                               | `0`/`false` disables capture-after-turn                                                                                                            |
+| `MEMINI_RECALL_LIMIT`            | `3`                              | max memories injected per turn                                                                                                                     |
+| `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                              | hard ceiling on recall-block tokens (`0` = unbounded); the tail is dropped with a footer                                                           |
+| `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                              | fused-score floor (>=) sent as `min_score` to `/v1/search`                                                                                         |
+| `MEMINI_INJECT_COOLDOWN_MS`      | `1800000`                        | repeat-injection cooldown, **time** window (ms) before an already-injected memory may re-inject; `0` disables the time dimension                   |
+| `MEMINI_INJECT_COOLDOWN_PROMPTS` | `3`                              | repeat-injection cooldown, **prompt** window (per user turn); `0` disables the prompt dimension; both cooldown vars `0` = suppress for the session |
+| `MEMINI_INJECT_LABELS`           | —                                | comma-separated bullet labels: `tier`, `confidence`, `age`                                                                                         |
+| `MEMINI_TIMEOUT_MS`              | `30000`                          | per-request timeout                                                                                                                                |
+| `MEMINI_FALLBACK`                | on                               | `0`/`false` surfaces errors instead of degrading silently                                                                                          |
+| `MEMINI_API_KEY`                 | —                                | bearer token, if memini needs auth (sent as `Authorization: Bearer …`)                                                                             |
+| `MEMINI_REQUIRE_HTTPS`           | —                                | `1` refuses to send the token over plaintext HTTP                                                                                                  |
+
+The two `MEMINI_INJECT_COOLDOWN_*` vars are the windowed **repeat-injection
+cooldown**: an already-injected memory is excluded from recall (server-side via
+`exclude_ids`, with a client-side backstop) while it is inside _either_ window,
+and re-served only once _both_ have lapsed. Pi's `before_agent_start` fires once
+per user prompt, so it advances both the clock and the prompt counter — both
+dimensions apply here. Both vars `0` restores the prior suppress-for-the-session
+behavior.
 
 The namespace itself is resolved by the memini **server**, not this extension:
 at the first turn the extension performs the config handshake

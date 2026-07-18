@@ -709,11 +709,20 @@ type ClientSettings struct {
 	// InjectBriefingRecent Max recent episodic entries in the session-start briefing.
 	InjectBriefingRecent *int `json:"inject_briefing_recent,omitempty"`
 
-	// InjectDedupe Suppress re-injecting an unchanged PreToolUse recall block for a file already injected this session. The recall call still runs; only the duplicate injection is skipped.
+	// InjectCooldownMs Time window (milliseconds) within which an already-injected memory is not re-injected; 0 disables the time dimension.
+	InjectCooldownMs *int `json:"inject_cooldown_ms,omitempty"`
+
+	// InjectCooldownPrompts Prompt-count window within which an already-injected memory is not re-injected; 0 disables the prompt dimension.
+	InjectCooldownPrompts *int `json:"inject_cooldown_prompts,omitempty"`
+
+	// InjectDedupe Suppress re-injecting a recalled memory that is still within its injection cooldown window (inject_cooldown_ms / inject_cooldown_prompts); with both windows 0, an unchanged memory stays suppressed for the rest of the session. This gates the injection; whether the PreToolUse recall call runs at all follows inject_pretool_gate_ms, but turning inject_dedupe off also disables that call gate, because the gate's clock lives in the dedupe state.
 	InjectDedupe *bool `json:"inject_dedupe,omitempty"`
 
 	// InjectLabels Which annotation labels to render alongside an injected memory.
 	InjectLabels *[]ClientSettingsInjectLabels `json:"inject_labels,omitempty"`
+
+	// InjectPretoolGateMs Skip the PreToolUse recall server call entirely for a file whose last call was younger than this many milliseconds. 0 always calls.
+	InjectPretoolGateMs *int `json:"inject_pretool_gate_ms,omitempty"`
 
 	// InjectPretoolItems Max recalled items injected per file on PreToolUse.
 	InjectPretoolItems *int `json:"inject_pretool_items,omitempty"`
@@ -1224,11 +1233,20 @@ type SettingsDefaultsResponse struct {
 	// InjectBriefingRecent Max recent episodic entries in the session-start briefing.
 	InjectBriefingRecent *int `json:"inject_briefing_recent,omitempty"`
 
-	// InjectDedupe Suppress re-injecting an unchanged PreToolUse recall block for a file already injected this session. The recall call still runs; only the duplicate injection is skipped.
+	// InjectCooldownMs Time window (milliseconds) within which an already-injected memory is not re-injected; 0 disables the time dimension.
+	InjectCooldownMs *int `json:"inject_cooldown_ms,omitempty"`
+
+	// InjectCooldownPrompts Prompt-count window within which an already-injected memory is not re-injected; 0 disables the prompt dimension.
+	InjectCooldownPrompts *int `json:"inject_cooldown_prompts,omitempty"`
+
+	// InjectDedupe Suppress re-injecting a recalled memory that is still within its injection cooldown window (inject_cooldown_ms / inject_cooldown_prompts); with both windows 0, an unchanged memory stays suppressed for the rest of the session. This gates the injection; whether the PreToolUse recall call runs at all follows inject_pretool_gate_ms, but turning inject_dedupe off also disables that call gate, because the gate's clock lives in the dedupe state.
 	InjectDedupe *bool `json:"inject_dedupe,omitempty"`
 
 	// InjectLabels Which annotation labels to render alongside an injected memory.
 	InjectLabels *[]SettingsDefaultsResponseInjectLabels `json:"inject_labels,omitempty"`
+
+	// InjectPretoolGateMs Skip the PreToolUse recall server call entirely for a file whose last call was younger than this many milliseconds. 0 always calls.
+	InjectPretoolGateMs *int `json:"inject_pretool_gate_ms,omitempty"`
 
 	// InjectPretoolItems Max recalled items injected per file on PreToolUse.
 	InjectPretoolItems *int `json:"inject_pretool_items,omitempty"`
