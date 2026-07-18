@@ -717,6 +717,89 @@ test("recall sends exclude_ids and falls back when the server rejects them", asy
   }
 });
 
+// pi's before_agent_start is per user prompt, so it drives BOTH cooldown
+// dimensions: a per-session prompt counter (inject_cooldown_prompts) and the
+// wall-clock window (inject_cooldown_ms). With the time dimension disabled, an
+// id re-serves purely on the prompt counter once it advances past the window,
+// and re-showing it refreshes the counter it was stamped against.
+test("windowed injection cooldown: an id lapses by prompt count and is re-served", async () => {
+  process.env.MEMINI_INJECT_COOLDOWN_MS = "0"; // isolate the prompt dimension (default window is 3 prompts)
+  const { default: meminiExtension } = await import("../src/index.ts?cb=cooldown-prompts-" + Date.now());
+  const hooks: Record<string, any> = {};
+  const realFetch = globalThis.fetch;
+  mockRecallFetch(); // /v1/search always returns m1 ("prior note")
+  try {
+    meminiExtension({ on(name: string, h: any) { hooks[name] = h; }, registerTool() {} } as any);
+    const ctx = { sessionManager: { getSessionId: () => "sess-p", getLeafId: () => "leaf-1" } };
+    // #1 counter=1: injected, stamped n=1.
+    const first = await hooks.before_agent_start({ prompt: "q1" }, ctx);
+    assert.match(first.message.content, /prior note/);
+    // #2 counter=2: 2-1=1 < 3 -> suppressed.
+    assert.equal(await hooks.before_agent_start({ prompt: "q2" }, ctx), undefined);
+    // #3 counter=3: 3-1=2 < 3 -> suppressed.
+    assert.equal(await hooks.before_agent_start({ prompt: "q3" }, ctx), undefined);
+    // #4 counter=4: 4-1=3, no longer < 3 -> lapsed, re-served and re-stamped n=4.
+    const revived = await hooks.before_agent_start({ prompt: "q4" }, ctx);
+    assert.ok(revived, "an id past the prompt window must be re-served");
+    assert.match(revived.message.content, /prior note/);
+    // #5 counter=5: 5-4=1 < 3 -> suppressed again (the re-show refreshed the counter).
+    assert.equal(
+      await hooks.before_agent_start({ prompt: "q5" }, ctx),
+      undefined,
+      "the re-shown id's counter refreshed, so it suppresses again",
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.MEMINI_INJECT_COOLDOWN_MS;
+  }
+});
+
+// The hybrid window suppresses while EITHER dimension holds and re-admits only
+// when BOTH lapse: advancing the prompt counter past its window is not enough
+// while the time window still holds; only skewing the clock past it too re-serves.
+test("windowed injection cooldown: suppressed while EITHER window holds; re-served when both lapse", async () => {
+  const { default: meminiExtension } = await import("../src/index.ts?cb=cooldown-time-" + Date.now());
+  const hooks: Record<string, any> = {};
+  const realFetch = globalThis.fetch;
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow.call(Date) + skew;
+  const searches: any[] = [];
+  globalThis.fetch = (async (url: any, init: any) => {
+    const u = String(url);
+    if (u.endsWith("/v1/handshake")) {
+      return { ok: false, status: 500, async json() { return {}; }, async text() { return ""; } };
+    }
+    if (u.endsWith("/v1/search")) searches.push(init?.body ? JSON.parse(init.body) : {});
+    const res = u.endsWith("/v1/search")
+      ? { results: [{ memory: { id: "m1", summary: "prior note", tier: "semantic" }, score: 0.9 }] }
+      : { id: "w1" };
+    return { ok: true, status: 200, async json() { return res; }, async text() { return JSON.stringify(res); } };
+  }) as any;
+  try {
+    meminiExtension({ on(name: string, h: any) { hooks[name] = h; }, registerTool() {} } as any);
+    const ctx = { sessionManager: { getSessionId: () => "sess-t", getLeafId: () => "leaf-1" } };
+    // #1 counter=1, t=0: injected, stamped {at: now, n: 1}.
+    assert.match((await hooks.before_agent_start({ prompt: "q1" }, ctx)).message.content, /prior note/);
+    // Advance the prompt counter past its window (>=3) but keep time within the window.
+    await hooks.before_agent_start({ prompt: "q2" }, ctx); // counter=2
+    await hooks.before_agent_start({ prompt: "q3" }, ctx); // counter=3
+    // #4 counter=4: prompt window lapsed (4-1=3) but time window still holds -> suppressed.
+    const promptLapsedTimeHeld = await hooks.before_agent_start({ prompt: "q4" }, ctx);
+    assert.equal(promptLapsedTimeHeld, undefined, "the time window still holds even though the prompt window lapsed");
+    assert.deepEqual(searches[3].exclude_ids, ["m1"], "an id still in the time window rides along as exclude_ids");
+    // Now also skew past the 30-min time window: BOTH lapsed -> re-served.
+    skew = 31 * 60_000;
+    const revived = await hooks.before_agent_start({ prompt: "q5" }, ctx); // counter=5
+    assert.ok(revived, "both windows lapsed -> the id is re-served");
+    assert.match(revived.message.content, /prior note/);
+    assert.equal(searches[4].exclude_ids, undefined, "a fully lapsed id is NOT sent in exclude_ids");
+  } finally {
+    globalThis.fetch = realFetch;
+    Date.now = realNow;
+  }
+});
+
 // Same bound for the captured dedup keys.
 test("captured dedup-key window is bounded (an aged-out turn can re-capture)", async () => {
   const { default: meminiExtension } = await import("../src/index.ts");
