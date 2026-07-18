@@ -4298,6 +4298,9 @@ test("user-prompt-submit.mjs: server recall:false disables the hook; MEMINI_RECA
     );
     assert.equal(calls.length, 0, "server recall:false must skip the search");
     assert.equal(off.stdout.trim(), "");
+    // The recall gate is skipped, but the counter bump sits ABOVE it (Gap-1): a
+    // recall:false turn must still advance the prompt window.
+    assert.equal(JSON.parse(readFileSync(INJ_STATE(offCache, "p3"), "utf8")).n, 1, "recall:false still bumps the counter");
 
     // Env override beats the server-merged value (standard knob precedence).
     const onCache = freshCache();
@@ -4559,6 +4562,181 @@ test("user-prompt-submit.mjs: fresh turn captures are dropped; stale ones inject
     const ctxText = JSON.parse(stdout).hookSpecificOutput.additionalContext;
     assert.doesNotMatch(ctxText, /just said this/, "a <30min turn echo is still live context");
     assert.match(ctxText, /from a previous sitting/, "a stale turn is fair game");
+  } finally {
+    await close();
+  }
+});
+
+// ─── windowed injection cooldown: counter bump + cooldownIds ───────────────
+//
+// The prompt hook owns the per-session prompt counter (state.n): it bumps once
+// per UserPromptSubmit, ABOVE every gate, and persists it unconditionally — so a
+// short steering turn, a slash command, or a recall-disabled turn still advances
+// the prompt window (design Gap-1). exclude_ids then carries only the ids still
+// IN COOLDOWN (cooldownIds), not every id ever injected, and the belt-and-braces
+// client filter is the windowed predicate too, so a both-windows-lapsed memory
+// the server re-serves passes through and re-injects.
+
+test("user-prompt-submit.mjs: the prompt counter bumps on short and command-shaped prompts, without recalling", async () => {
+  // Gap-1: the windowed cooldown counts LITERAL user prompts, so a "yes"/
+  // "continue" steering turn or a slash command — neither of which recalls —
+  // must still advance state.n. Otherwise the prompt window freezes and the
+  // cooldown silently reverts to forever-dedupe.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  const calls = [];
+  const { url, close } = await startMockServer((req, res) => {
+    calls.push(req.url);
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m", content: "noise" }, 0.9)])));
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  const nOf = () => JSON.parse(readFileSync(INJ_STATE(cache, "bump1"), "utf8")).n;
+  const prompt = (p) => JSON.stringify({ session_id: "bump1", cwd: __dirname, prompt: p });
+  try {
+    await runHook("user-prompt-submit.mjs", prompt("yes"), env);
+    assert.equal(nOf(), 1, "a too-short steering prompt bumps the counter");
+    await runHook("user-prompt-submit.mjs", prompt("/compact now please"), env);
+    assert.equal(nOf(), 2, "a slash command bumps the counter");
+    await runHook("user-prompt-submit.mjs", prompt("# note this thing"), env);
+    assert.equal(nOf(), 3, "a memory-shortcut command bumps the counter");
+    assert.equal(calls.length, 0, "none of the skipped-shape prompts reached the server");
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: the prompt counter bumps even when recall is disabled", async () => {
+  // The bump sits ABOVE the recall gate: a server recall:false or MEMINI_RECALL=0
+  // must not freeze the prompt window (Gap-1) — otherwise pretool recall staying
+  // on would silently revert the whole cooldown to forever-dedupe.
+  const calls = [];
+  const { url, close } = await startMockServer((req, res) => {
+    calls.push(req.url);
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m", content: "noise" }, 0.9)])));
+  });
+  const payload = (sid) => JSON.stringify({ session_id: sid, cwd: __dirname, prompt: "what did we decide about auth tokens" });
+  try {
+    const srvCache = freshCache();
+    await primeCache(srvCache, __dirname, mkHS({ settings: { recall: false } }));
+    await runHook("user-prompt-submit.mjs", payload("rf1"), { MEMINI_BASE_URL: url, XDG_CACHE_HOME: srvCache });
+    assert.equal(JSON.parse(readFileSync(INJ_STATE(srvCache, "rf1"), "utf8")).n, 1, "server recall:false still bumps");
+
+    const envCache = freshCache();
+    await primeCache(envCache, __dirname, mkHS());
+    await runHook("user-prompt-submit.mjs", payload("rf2"), { MEMINI_BASE_URL: url, XDG_CACHE_HOME: envCache, MEMINI_RECALL: "0" });
+    assert.equal(JSON.parse(readFileSync(INJ_STATE(envCache, "rf2"), "utf8")).n, 1, "MEMINI_RECALL=0 still bumps");
+
+    assert.equal(calls.length, 0, "recall disabled → no search calls, but the counter still advanced");
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: a lapsed injected entry drops out of exclude_ids and re-injects, refreshing {at,n}", async () => {
+  // Windowed re-admission: an entry whose TIME window (>30min default) AND prompt
+  // window (>=3 prompts default) have BOTH lapsed is no longer suppressed — the
+  // server may re-serve it and the client filter lets it through, so a fact
+  // resurfaces after the conversation moved on. The re-injection refreshes
+  // {at,n}, restarting both windows.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  mkdirSync(join(cache, "memini", "sessions"), { recursive: true });
+  const OLD = Date.now() - 31 * 60 * 1000; // past the 30-min default time window
+  writeFileSync(
+    INJ_STATE(cache, "lap1"),
+    JSON.stringify({ v: 2, n: 10, ids: { "m-lapsed": { h: "0123456789abcdef", at: OLD, n: 6 } } }),
+  );
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    bodies.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m-lapsed", content: "the lapsed fact, re-served" }, 0.9)])));
+  });
+  try {
+    const before = Date.now();
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "lap1", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    // counter 10 → 11; entry.n=6 ⇒ Δ=5 ≥ 3 (prompt lapsed); at is 31min old (time lapsed).
+    assert.equal(bodies[0].exclude_ids, undefined, "a both-windows-lapsed id is NOT excluded server-side");
+    assert.match(
+      JSON.parse(stdout).hookSpecificOutput.additionalContext,
+      /lapsed fact, re-served/,
+      "the re-admitted memory injects again",
+    );
+    const after = JSON.parse(readFileSync(INJ_STATE(cache, "lap1"), "utf8"));
+    assert.equal(after.n, 11, "the counter bumped 10 → 11");
+    assert.equal(after.ids["m-lapsed"].n, 11, "re-injection refreshes the entry's counter stamp");
+    assert.ok(after.ids["m-lapsed"].at >= before, "re-injection refreshes the entry's `at`");
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: an in-cooldown injected entry stays in exclude_ids and is filtered client-side", async () => {
+  // The complement of the lapsed case: a recently-injected entry (both windows
+  // still open) is excluded server-side AND, if an older server re-serves it
+  // anyway (one that dropped exclude_ids), filtered out client-side by the same
+  // windowed predicate.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  mkdirSync(join(cache, "memini", "sessions"), { recursive: true });
+  writeFileSync(
+    INJ_STATE(cache, "hot1"),
+    JSON.stringify({ v: 2, n: 10, ids: { "m-hot": { h: "0123456789abcdef", at: Date.now(), n: 10 } } }),
+  );
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    bodies.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify(
+        searchBody([sm({ id: "m-hot", content: "the hot fact" }, 0.95), sm({ id: "m-new", content: "a fresh fact" }, 0.9)]),
+      ),
+    );
+  });
+  try {
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "hot1", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.deepEqual(bodies[0].exclude_ids, ["m-hot"], "the in-cooldown id is excluded server-side");
+    const ctxText = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.doesNotMatch(ctxText, /the hot fact/, "even if re-served, the in-cooldown memory is filtered client-side");
+    assert.match(ctxText, /a fresh fact/, "a never-injected memory still injects");
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: a v1 state file is persisted as v2 by the counter bump within one prompt", async () => {
+  // Carry-forward from the state migration: the unconditional bump-write is what
+  // makes the v1→v2 migration durable — one prompt through the hook rewrites the
+  // legacy flat file as v2, so the migrated at=now can't slide on every read.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  mkdirSync(join(cache, "memini", "sessions"), { recursive: true });
+  writeFileSync(INJ_STATE(cache, "v1p"), JSON.stringify({ "m-old": "0123456789abcdef" })); // legacy v1 flat shape
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m-new", content: "a brand new fact here" }, 0.9)])));
+  });
+  try {
+    await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "v1p", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    const raw = JSON.parse(readFileSync(INJ_STATE(cache, "v1p"), "utf8"));
+    assert.equal(raw.v, 2, "the file is v2 after one prompt");
+    assert.equal(raw.n, 1, "the migrated counter (0) bumped to 1");
+    assert.ok(raw.ids["m-old"] && typeof raw.ids["m-old"] === "object", "the legacy id migrated to a v2 entry");
+    assert.equal(raw.ids["m-old"].h, "0123456789abcdef", "the legacy identity hash is preserved");
   } finally {
     await close();
   }
