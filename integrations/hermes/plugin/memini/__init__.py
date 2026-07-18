@@ -1135,14 +1135,20 @@ class MeminiMemoryProvider(MemoryProvider):
         # can turn it off (see initialize) -- there is no local env toggle.
         if not self._recall_enabled or not query.strip():
             return ""
-        result = self._call("/v1/search", self._recall_body(query))
+        body = self._recall_body(query)
+        result = self._call("/v1/search", body)
         # An older server 400s the whole request on the unknown exclude_ids
         # field, and _call degrades that to None — indistinguishable from a
         # dead server here, so retry once without the field. If THAT lands,
         # the field is the problem: latch it off for this conversation ("no
         # dedupe" beats "no recall at all"); a dead server fails both calls
-        # and latches nothing.
-        if result is None and self._injected_ids and not self._exclude_ids_unsupported:
+        # and latches nothing. Gate strictly on whether THIS request actually
+        # carried exclude_ids: since the windowed cooldown lands, a non-empty
+        # _injected_ids no longer implies the field was sent (all ids may have
+        # lapsed → _recall_body omitted it). Retrying an all-lapsed body sends
+        # a byte-identical request, so a transient failure recovered by that
+        # retry would latch _exclude_ids_unsupported spuriously and forever.
+        if result is None and "exclude_ids" in body and not self._exclude_ids_unsupported:
             result = self._call("/v1/search", self._recall_body(query, exclude_injected=False))
             if result is not None:
                 self._exclude_ids_unsupported = True

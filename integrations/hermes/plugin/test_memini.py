@@ -1008,6 +1008,31 @@ class InjectedDedupeTest(unittest.TestCase):
         p.prefetch("query three long enough")
         self.assertNotIn("exclude_ids", bodies[3] or {})  # latched off for the session
 
+    def test_prefetch_transient_failure_does_not_latch_when_no_exclude_ids_sent(self):
+        # Windowed-cooldown regression: once every injected id has lapsed,
+        # _recall_body omits exclude_ids, so the request is byte-identical with
+        # or without the field. A transient/dead-server failure on that call
+        # must NOT trigger the old-server retry (there is no exclude_ids to
+        # blame for a 400) and must therefore NOT latch _exclude_ids_unsupported
+        # -- otherwise a single flake kills dedupe for the whole conversation.
+        bodies = []
+
+        def stub(path, body, method="POST"):
+            bodies.append(body)
+            if len(bodies) == 2:  # the failing call, after m1 has lapsed
+                return None  # transient/dead server -- not a 400 on exclude_ids
+            return {"results": [self._hit(f"m{len(bodies)}", f"fact {len(bodies)}")]}
+
+        p = make_provider(stub)
+        p.prefetch("query one long enough")  # records m1 at n=1
+        # Lapse m1 on BOTH windows: backdated stamp + counter far past.
+        p._injected_ids["m1"] = {"at": time.time() - 10_000, "n": -100}
+        p._prefetch_n = 100
+        p.prefetch("query two long enough")  # single call fails transiently
+        self.assertNotIn("exclude_ids", bodies[1] or {})  # lapsed -> field omitted
+        self.assertEqual(len(bodies), 2)  # no spurious retry: only one call made
+        self.assertFalse(p._exclude_ids_unsupported)  # not latched on a flake
+
     def test_pre_compress_bypasses_exclusion_and_resets(self):
         bodies = []
 
