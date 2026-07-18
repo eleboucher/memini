@@ -58,18 +58,49 @@ test("the packed Pi package installs and loads without monorepo files", async ()
     const manifest = JSON.parse(await readFile(join(installedDir, "package.json"), "utf8"));
     assert.deepEqual(manifest.pi?.extensions, ["./dist/index.js"]);
     assert.deepEqual(manifest.dependencies ?? {}, {}, "Pi-provided modules must stay peers, not runtime copies");
-    assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=0.80.6");
-    assert.equal(manifest.peerDependencies?.["@earendil-works/pi-tui"], ">=0.80.6");
-    assert.equal(manifest.peerDependencies?.typebox, ">=1.1.38");
+    assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], "*");
+    assert.equal(manifest.peerDependencies?.["@earendil-works/pi-tui"], "*");
+    assert.equal(manifest.peerDependencies?.typebox, "*");
 
     const bundle = await readFile(join(installedDir, "dist", "index.js"), "utf8");
     assert.doesNotMatch(bundle, /["']@memini\//, "workspace packages must be bundled into dist");
 
-    // Pi provides these core modules. Minimal host stubs prove the packed ESM
-    // links only against the declared peers and no checkout-relative imports.
-    await writePeerStub(consumerDir, "typebox", "export const Type = {};\n");
-    await writePeerStub(consumerDir, "@earendil-works/pi-tui", "export class Text {}\n");
-    await import(pathToFileURL(join(installedDir, "dist", "index.js")).href);
+    // Pi provides these core modules. Functional host stubs prove both that the
+    // packed ESM links and that Pi can invoke its factory to register schemas,
+    // tools, renderers, commands, and lifecycle handlers.
+    await writePeerStub(consumerDir, "typebox", `
+const make = (kind, args) => ({ kind, args });
+export const Type = new Proxy({}, { get: (_target, kind) => (...args) => make(String(kind), args) });
+`);
+    await writePeerStub(consumerDir, "@earendil-works/pi-tui", `
+export class Text {
+  constructor(text = "") { this.text = text; }
+  render() { return [this.text]; }
+  invalidate() {}
+}
+`);
+    const extension = await import(pathToFileURL(join(installedDir, "dist", "index.js")).href);
+    const tools = [];
+    const events = [];
+    const commands = [];
+    extension.default({
+      on(name) { events.push(name); },
+      registerTool(tool) { tools.push(tool.name); },
+      registerCommand(name) { commands.push(name); },
+      registerMessageRenderer() {},
+      registerEntryRenderer() {},
+      appendEntry() {},
+      sendMessage() {},
+    });
+    assert.deepEqual(tools.sort(), [
+      "memory_briefing", "memory_forget", "memory_get", "memory_history",
+      "memory_list", "memory_recall", "memory_remember", "memory_update",
+    ]);
+    for (const event of [
+      "session_start", "session_tree", "session_before_compact", "session_compact",
+      "session_shutdown", "before_agent_start", "agent_settled", "message_end",
+    ]) assert.ok(events.includes(event), `missing lifecycle handler ${event}`);
+    assert.deepEqual(commands.sort(), ["memini:namespace", "memini:status"]);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

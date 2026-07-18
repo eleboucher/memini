@@ -49,3 +49,9 @@ Implementation evidence:
   briefing/tool-to-prompt suppression, content changes and correction eviction,
   prompt guards/query provenance, empty degraded search, setting precedence,
   minimum capture, and poisoning-shaped content.
+
+Final integration evidence:
+
+- Per-memory mutation generations prevent late parallel reads from reinstating stale suppression after successful update, delete, or ID upsert; all three interleavings are tested.
+- Prompt counters persist separately from finalized read transitions, and explicit history/answer reads now participate in cross-surface dedupe.
+- Status/namespace diagnostics moved to bounded TUI-only custom entries, so hostile server notes are absent from `buildSessionContext()`.

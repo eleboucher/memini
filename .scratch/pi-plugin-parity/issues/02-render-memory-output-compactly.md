@@ -26,3 +26,8 @@ Validation evidence:
 - Automatic `memini-recall` and `memini-briefing` messages use registered compact message renderers.
 - Tool `content[0].text` remains the complete JSON payload; renderer tests assert content is byte-for-byte unchanged after collapsed and expanded rendering.
 - Large, degraded, unavailable, and explicit error results are covered by focused tests; `npm test`, `npm run typecheck`, and `npm run build` pass.
+
+Final integration evidence:
+
+- Expanded rendering now includes bounded answer text, remember flags/merge hints, update/forget acknowledgements, and briefing child rollups.
+- The default rendering test confirms raw memory JSON is absent from the collapsed human view while the complete model-facing JSON remains byte-for-byte unchanged.

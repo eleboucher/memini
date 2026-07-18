@@ -44,3 +44,8 @@ Contract evidence and deliberate limitations:
 
 Validation: focused helper contract suite, build, typecheck, full package tests,
 pack dry-run, and diff checks pass on the implementation commit.
+
+Final integration evidence:
+
+- Contract tests now parse every generated `docs/reference/mcp-tools.md` parameter, required field, and enum, with explicit OpenAPI-backed differences for REST `update.level` and omitted answer `reasoning_level`.
+- Final explicit history and grounded-answer sources feed the same finalized read-state path as every other memory surface.

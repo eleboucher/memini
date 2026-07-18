@@ -25,3 +25,8 @@ Validation evidence:
 - Compatibility downgrade occurs only after an explicit HTTP 400 unsupported/unknown `exclude_ids` response and a successful same-namespace fallback; timeout, 429, 500, and unrelated 400 tests prove no retry or sticky downgrade.
 - `npm run typecheck` passes against Pi 0.80.6, so missing namespace arguments remain compile-time failures.
 - `npm test` passes, including namespace-header and transient-failure regressions.
+
+Final integration evidence:
+
+- Active-`exclude_ids` regressions now prove `MEMINI_FALLBACK=0` throws for timeout, 429, 500, unrelated 400, and a failed compatibility retry.
+- Explicit tools and lifecycle digests retry authority once and never send a request under a locally derived namespace after handshake failure.

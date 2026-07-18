@@ -60,16 +60,20 @@ hot-reloaded with `/reload`.
   briefing without starting an extra turn.
 - **`session_shutdown`** optionally records a bounded activity digest for real
   shutdown/switch/fork events. Reload is skipped because the session continues.
-- **Branch-aware dedupe** persists in Pi custom entries. Automatic briefing,
-  prompt recall, and explicit recall/briefing/list/get results share one cooldown
-  state; successful updates, deletes, and ID upserts make corrected content eligible immediately.
+- **Branch-aware dedupe** persists in Pi custom entries only after the matching
+  recall/tool-result message is finalized. Automatic briefing and prompt recall,
+  plus explicit recall/briefing/list/get/history/answer results, share one cooldown
+  state; successful updates, deletes, and ID upserts make corrected content eligible immediately,
+  even when sibling tools complete concurrently.
   Set `MEMINI_INJECT_DEDUPE=0` to disable exclusions, filtering, and recording
   together.
 
 The server-authoritative namespace from `POST /v1/handshake` scopes automatic
-and explicit requests through `X-Memini-Namespace`. A compatibility retry drops
-`exclude_ids` only after a server explicitly rejects that field with HTTP 400;
-timeouts, throttling, and unrelated failures do not disable it.
+and explicit requests through `X-Memini-Namespace`. Automatic lifecycle work
+no-ops while authority is unavailable; explicit tools retry the handshake once
+and then return an actionable error rather than request a locally guessed partition.
+A compatibility retry drops `exclude_ids` only after a server explicitly rejects
+that field with HTTP 400; timeouts, throttling, and unrelated failures do not disable it.
 
 ### Native tools
 
@@ -105,8 +109,8 @@ do not invent namespace paths. Writes choose semantic `visibility` instead.
 All explicit tools keep their complete structured JSON in the tool result sent
 to the model and stored in the session. Their TUI renderer shows a concise
 single line when collapsed and, with Pi's tool-expansion key (`Ctrl+O` by
-default), a bounded human-readable view of at most eight items with useful
-tier, score, provenance, and summary fields.
+default), a bounded human-readable view with at most eight memory/source items
+plus kind-specific answer, acknowledgement, merge, and child-rollup details.
 
 Automatic briefing and recall messages likewise remain persistent model
 context while registered message renderers keep the normal transcript to one
@@ -139,8 +143,9 @@ The initial handshake sends git remote, repository root, cwd basename, and the
 identity facts above. The server resolves pins and other server-side policy and
 returns the authoritative namespace. The result is memoized for ten minutes;
 setting or clearing a pin invalidates it immediately. If the handshake is
-unreachable, Pi falls back to `MEMINI_NAMESPACE`, then local git/cwd derivation,
-and marks the result degraded.
+unreachable, Pi derives a namespace only for diagnostics and marks it degraded;
+automatic memory traffic pauses and explicit tools refuse to route until server
+authority is restored.
 
 ### Behavior settings used by Pi
 
@@ -179,6 +184,9 @@ Type commands with the leading `/` in Pi's editor:
 | `/memini:namespace`             | Show the current server-resolved namespace and pin provenance.                                                        |
 | `/memini:namespace <namespace>` | Set this project's server-side namespace pin.                                                                         |
 | `/memini:namespace --clear`     | Clear the server-side pin and return to automatic resolution.                                                         |
+
+Command diagnostics are persisted as TUI-only custom entries and never enter
+the model context, including server-authored pin notes and read-set labels.
 
 Pins are stored by the memini server (`PUT`/`DELETE /v1/pins`) and keyed by the
 project's git remote and/or repository root. They follow the project across

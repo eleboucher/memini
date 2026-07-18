@@ -29,3 +29,8 @@ Validation evidence:
 - Turn capture moved from `agent_end` to `agent_settled`, extracts the final successful assistant prose from the active branch, deduplicates by assistant entry ID, and records success only after the write lands.
 - Pre-compaction and non-reload shutdown hooks write bounded state-changing-tool digests only when enabled, non-empty, and session-identified.
 - Focused lifecycle tests cover startup, resume, reload, tree reconstruction, compaction/overflow retry, settled capture, duplicate settling, checkpoint gates, and shutdown; `npm test`, `npm run typecheck`, and `npm run build` pass.
+
+Final integration evidence:
+
+- Injection/read state is now committed from `message_end`, after the matching recall, briefing, or tool-result entry exists; branching before that entry no longer restores suppression for absent context.
+- Settled capture accepts only terminal `stop` responses; terminating `toolUse` preambles and length-truncated responses are covered and rejected.
