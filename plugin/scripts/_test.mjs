@@ -5348,6 +5348,140 @@ test("tool-read tracking: inject_dedupe=false disables recording", async () => {
   assert.equal(existsSync(statePath), false, "the knob gates tool-read recording too");
 });
 
+// ─── Task 5: PostToolUse re-read refresh + SessionStart briefing stamps ─────
+//
+// A tool re-read freshly re-puts the memory in the model's context, so its
+// cooldown clock restarts: PostToolUse now refreshes {at, n} for EVERY collected
+// id (not only first-seen ones) while preserving an existing real hash — it never
+// downgrades a hook-injected content hash to the sentinel. A first-seen tool-read
+// id is still recorded with the sentinel "", which suppresses forever. And
+// SessionStart's briefing recording stamps proper {h, at, n} entries carrying the
+// real content hash (the sentinel only when a briefing item is id-only).
+
+test("tool-read tracking: re-reading a hook-injected id refreshes {at,n} but preserves its real hash", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const injPath = INJ_STATE(cache, "trr1");
+  mkdirSync(join(cache, "memini", "sessions"), { recursive: true });
+  // A hook (briefing/prompt/pretool) already injected m1 content-aware: a REAL
+  // 16-hex identity hash, an old `at`, and n=2 stamped under a counter of 5.
+  const REAL_HASH = "0123456789abcdef";
+  const OLD_AT = Date.now() - 5 * 60 * 1000;
+  writeFileSync(injPath, JSON.stringify({ v: 2, n: 5, ids: { m1: { h: REAL_HASH, at: OLD_AT, n: 2 } } }));
+
+  const before = Date.now();
+  await runHook(
+    "post-tool-use.mjs",
+    JSON.stringify({
+      session_id: "trr1",
+      cwd: __dirname,
+      tool_name: "mcp__memini__memory_recall",
+      tool_input: { query: "auth" },
+      tool_response: {
+        content: [{ type: "text", text: JSON.stringify({ results: [{ id: "m1", content: "re-read via tool" }] }) }],
+      },
+    }),
+    { XDG_CACHE_HOME: cache, MEMINI_BASE_URL: DEAD_URL },
+  );
+
+  const after = JSON.parse(readFileSync(injPath, "utf8"));
+  assert.equal(after.ids.m1.h, REAL_HASH, "a real hook hash is preserved, never downgraded to the sentinel");
+  assert.ok(after.ids.m1.at >= before, "the re-read restarts the cooldown clock (at ~now)");
+  assert.equal(after.ids.m1.n, 5, "the entry's counter stamp refreshes to the state's current counter");
+});
+
+test("tool-read tracking: a first-seen tool-read id records the sentinel and suppresses forever despite lapsed windows", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const injPath = INJ_STATE(cache, "trs1");
+  // PostToolUse records a NEVER-seen id from a memory_recall → sentinel "".
+  await runHook(
+    "post-tool-use.mjs",
+    JSON.stringify({
+      session_id: "trs1",
+      cwd: __dirname,
+      tool_name: "mcp__memini__memory_recall",
+      tool_input: { query: "x" },
+      tool_response: {
+        content: [{ type: "text", text: JSON.stringify({ results: [{ id: "s1", content: "tool-pulled fact" }] }) }],
+      },
+    }),
+    { XDG_CACHE_HOME: cache, MEMINI_BASE_URL: DEAD_URL },
+  );
+  assert.equal(JSON.parse(readFileSync(injPath, "utf8")).ids.s1.h, "", "a first-seen tool-read id is recorded with the sentinel");
+
+  // Backdate its `at`/`n` past BOTH cooldown windows; only the sentinel rule
+  // (h==="") can still suppress it. counter (21 after the bump) − 0 = 21 ≥ 3
+  // (prompt lapsed); `at` an hour old (time lapsed).
+  writeFileSync(injPath, JSON.stringify({ v: 2, n: 20, ids: { s1: { h: "", at: Date.now() - 60 * 60 * 1000, n: 0 } } }));
+
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    bodies.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify(
+        searchBody([
+          sm({ id: "s1", content: "tool-pulled fact" }, 0.95),
+          sm({ id: "fresh", content: "a brand new fact" }, 0.9),
+        ]),
+      ),
+    );
+  });
+  try {
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "trs1", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.ok((bodies[0].exclude_ids || []).includes("s1"), "the sentinel id is excluded server-side despite lapsed windows");
+    const ctxText = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.doesNotMatch(ctxText, /tool-pulled fact/, "even if re-served, the sentinel entry is filtered client-side");
+    assert.match(ctxText, /a brand new fact/, "a never-injected memory still injects");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: briefing recording stamps injected entries with {h, at, n} (real hash from content, sentinel for id-only)", async () => {
+  const cache = freshCache();
+  const before = Date.now();
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      if (req.url.startsWith("/v1/namespaces/briefing")) {
+        res.end(
+          JSON.stringify(
+            briefingBody({
+              // bf1 carries content (→ real hash); bf2 is id-only (→ sentinel).
+              facts: [bi({ id: "bf1", content: "briefed: tokens rotate weekly" }), bi({ id: "bf2" })],
+            }),
+          ),
+        );
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    }),
+  );
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    await runHook("session-start.mjs", JSON.stringify({ session_id: "brec1", cwd: __dirname, source: "startup" }), env);
+    const raw = JSON.parse(readFileSync(INJ_STATE(cache, "brec1"), "utf8"));
+    assert.equal(raw.v, 2, "the state file is v2");
+    const { injectedIdentity } = await import("./_shared.mjs");
+    const e1 = raw.ids.bf1;
+    assert.ok(e1, "the content-carrying briefing id is recorded");
+    assert.equal(e1.h, injectedIdentity({ content: "briefed: tokens rotate weekly" }), "a content-carrying item gets its real hash");
+    assert.equal(typeof e1.at, "number");
+    assert.ok(e1.at >= before, "the entry is stamped with `at` ~now");
+    assert.equal(typeof e1.n, "number", "the entry carries an `n` counter stamp");
+    assert.equal(raw.ids.bf2?.h, "", "an id-only briefing item is recorded with the sentinel, not a hash of empty content");
+  } finally {
+    await close();
+  }
+});
+
 // ─── request timeout (MEMINI_TIMEOUT_MS / request_timeout_ms) ─────────────
 
 test("postSearch: a recall slower than the timeout aborts; a wider timeout lets it through", async () => {

@@ -425,7 +425,13 @@ async function main() {
         const mem = item?.memory ?? item;
         const id = mem?.id;
         if (typeof id === "string" && id) {
-          recordInjected(injectedState, id, injectedIdentity(mem));
+          // Real content hash when the item carries content/summary — so an
+          // in-place update (memory_update) hashes differently and re-injects,
+          // the same content-aware doctrine the other surfaces use. The sentinel
+          // "" only when the item is id-only: with no text to hash, suppression
+          // is by id alone rather than admitting on a hash-of-empty mismatch.
+          const h = mem?.content || mem?.summary ? injectedIdentity(mem) : "";
+          recordInjected(injectedState, id, h);
           recorded = true;
         }
       }

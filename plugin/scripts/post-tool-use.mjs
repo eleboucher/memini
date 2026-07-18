@@ -112,11 +112,15 @@ async function main() {
   const toolKey = String(toolName || "").toLowerCase();
 
   // memini memory READS route to the injected state, never the event buffer —
-  // a recall isn't session activity worth digesting. Recorded with a sentinel
-  // identity ("") because a concise tool response may carry truncated content:
-  // content identity is unknowable, so suppression for tool-sourced entries is
-  // by id alone (pre-tool-use honors the sentinel). An id a hook already
-  // recorded keeps its real hash — content-aware resurfacing survives.
+  // a recall isn't session activity worth digesting. A re-read freshly re-puts
+  // the memory in the model's context, so EVERY collected id has its cooldown
+  // clock restarted: refresh {at, n} for ids already present and record the
+  // sentinel identity ("") for ids seen for the first time here. The sentinel is
+  // used because a concise tool response may carry truncated content — content
+  // identity is unknowable, so suppression for a tool-sourced entry is by id
+  // alone (pre-tool-use honors the sentinel). An id a hook already recorded keeps
+  // its real hash: we refresh {at, n} but never downgrade a content-aware entry
+  // to the sentinel, so content-aware resurfacing survives.
   if (MEMORY_READ_TOOL.test(String(toolName || ""))) {
     if (!sessionId) return;
     const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "never" });
@@ -125,14 +129,18 @@ async function main() {
     collectMemoryIds(parseToolResult(payload.tool_response ?? payload.tool_output), ids);
     if (ids.size === 0) return;
     const injectedState = readInjectedState(sessionId);
-    let recorded = false;
+    const now = Date.now();
     for (const id of ids) {
-      if (!(id in injectedState.ids)) {
-        recordInjected(injectedState, id, ""); // sentinel: content identity unknowable
-        recorded = true;
+      const prev = injectedState.ids[id];
+      if (prev) {
+        // Restart the cooldown clock; keep the recorded identity (a real hook
+        // hash stays real, a sentinel stays a sentinel).
+        injectedState.ids[id] = { ...prev, at: now, n: injectedState.n };
+      } else {
+        recordInjected(injectedState, id, "", now); // sentinel: content identity unknowable
       }
     }
-    if (recorded) writeInjectedState(sessionId, injectedState);
+    writeInjectedState(sessionId, injectedState);
     if (DEBUG) console.error(`[memini] PostToolUse recorded ${ids.size} tool-read id(s) tool=${toolName} session=${sessionId}`);
     return;
   }
