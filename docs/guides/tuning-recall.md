@@ -338,6 +338,65 @@ thirty seconds ago.
 
 ---
 
+## The same memory keeps getting injected
+
+A memory that is already in context keeps coming back: the session-start
+briefing surfaces it, the next prompt's recall surfaces it again, then a burst
+of `Edit`s on one file surfaces it a third time. It is the right memory; it is
+just being restated into context it already occupies.
+
+This is what the **repeat-injection cooldown** is for, and the case for it is
+measured. On one production namespace, 68% of the memories a recall served had
+already been served to the same session within the previous minute, and a
+30-minute window covers 89% of the observed re-serves. Left unchecked, that is
+context budget spent repeating what the model can already see.
+
+Three client behavior settings shape it. Like every behavior setting they are
+server-resolved: set them globally (`PUT /v1/settings/defaults`), per key
+(`PUT /v1/self/settings`), or as a per-client debug override in the env.
+
+- **`inject_cooldown_ms`** (`MEMINI_INJECT_COOLDOWN_MS`, default `1800000`, 30
+  minutes) is the **time** window: an injected memory is held back until this
+  long after its last injection. `0` disables the time dimension.
+- **`inject_cooldown_prompts`** (`MEMINI_INJECT_COOLDOWN_PROMPTS`, default `3`)
+  is the **prompt** window, counted in user turns. `0` disables the prompt
+  dimension. Some harnesses have no user-prompt boundary — a gateway that runs
+  per agent step, for one — and there the prompt dimension is inert and the time
+  window carries re-admission alone.
+- **`inject_pretool_gate_ms`** (`MEMINI_INJECT_PRETOOL_GATE_MS`, default `90000`,
+  90 seconds) is a separate lever on the pretool hook: it skips the recall
+  **server call** for a file whose last call was younger than the gate. `0`
+  always calls.
+
+**The re-admission rule is suppress-on-either, re-admit-on-both.** A memory
+stays suppressed while it is inside _either_ window, and re-surfaces only once
+_both_ have lapsed — so a fact comes back after the conversation has genuinely
+moved on, not five seconds later and not never. Set both cooldown knobs to `0`
+and the cooldown collapses to "suppress for the rest of the session", the
+pre-cooldown behavior. One thing always bypasses the windows: an in-place edit
+to a memory's content (`memory_update`) re-injects it immediately, because its
+content changed and the model should see the new version.
+
+**The gate's tradeoff is real.** The pretool call gate saves the round-trip on a
+file being edited repeatedly, but it also means a memory you just saved about
+that file can be invisible on it for up to `inject_pretool_gate_ms` — no call is
+made, so nothing finds it. Shorten the gate if same-session save-then-see matters
+more than the saved calls; lengthen it on a slow server or a heavy-edit workflow.
+
+To confirm the cooldown is working, read the activity log: a recall event that
+applied the exclusion carries `detail.excluded_count`, the number of in-cooldown
+ids the client asked the server to skip.
+
+```sh
+curl "$MEMINI_URL/v1/activity?kind=recall&limit=20" -H "X-Memini-Namespace: acme/phoenix"
+```
+
+The re-serve fraction — a memory served to a session it was already served to
+minutes ago — should sit near zero with the defaults in place, where before it
+was most of the traffic.
+
+---
+
 ## Do not reach for these
 
 Three settings that a stale blog post, an old README, or a confident LLM will tell

@@ -390,42 +390,80 @@ results are incomplete rather than a confident negative.
 **Cross-surface injection dedupe.** The three injection surfaces — the
 `SessionStart` briefing, per-prompt recall, and per-file pretool recall —
 share one per-session record of which memories are already in context, so no
-surface re-injects what another already showed. The prompt hook excludes
-recorded ids server-side (`exclude_ids`), spending its top hits on memories
+surface re-injects what another already showed. The prompt hook excludes the
+in-cooldown ids server-side (`exclude_ids`), spending its top hits on memories
 the conversation doesn't yet carry; pretool filters client-side and
 **content-aware**, so a memory updated mid-session (its content changed since
-injection) still resurfaces. Memories the model pulls itself via the memini
-MCP read tools (`memory_recall` / `memory_briefing` / `memory_get`) count too:
-`PostToolUse` records their ids, so auto-recall won't re-inject what a tool
-call already put in the transcript (by id — a concise tool response may
-truncate content, so identity can't be compared for those). The state
-self-clears whenever the context is rebuilt (`SessionStart` on
-startup/clear/compact, `PreCompact`, `SessionEnd`) and survives a resume,
-whose context is intact. Governed by the same `inject_dedupe` knob as the
-per-file fingerprint below — `MEMINI_INJECT_DEDUPE=0` restores always-inject
-everywhere.
+injection) resurfaces immediately.
+
+Suppression is **windowed, not forever.** An already-injected memory is held
+back only while it is within EITHER the time window (`MEMINI_INJECT_COOLDOWN_MS`,
+default 30 min) OR the prompt window (`MEMINI_INJECT_COOLDOWN_PROMPTS`, default
+3 user prompts) of its last injection, and is re-admitted once **both** windows
+have lapsed — so a fact re-surfaces after the conversation has moved on instead
+of being hidden for the whole session. The two dimensions do different jobs: the
+time window covers tool-burst context growth (many `PreToolUse` reads with no
+new prompt), the prompt window counts literal user turns. The prompt counter
+advances on **every** `UserPromptSubmit` — a short steering turn, a slash
+command, and even a `MEMINI_RECALL=0` turn all count — so a window that measures
+prompts can't silently freeze. Set **both** knobs to `0` to restore the old
+suppress-for-the-whole-session behavior; `MEMINI_INJECT_DEDUPE=0` disables dedupe
+entirely and restores always-inject everywhere.
+
+Memories the model pulls itself via the memini MCP read tools (`memory_recall` /
+`memory_briefing` / `memory_get`) are the one exception to the windows:
+`PostToolUse` records their ids and they stay suppressed **forever**, never
+re-pushed by a hook. The model asked for them explicitly, and a concise tool
+response may truncate content, so their identity can't be compared to re-admit
+them the way an injected memory's can.
+
+A second, independent knob gates the pretool **server call** itself.
+`MEMINI_INJECT_PRETOOL_GATE_MS` (default 90 s) skips the `PreToolUse` recall call
+entirely for a file whose last call was younger than the gate, so an unbroken run
+of edits on one file no longer makes a recall round-trip every time. It is
+separate from injection dedupe (which decides whether to render a block once
+results are back): the tradeoff is that a memory saved about a file mid-session
+can be invisible on that file for up to the gate window, because no call is made
+to find it. `0` restores the legacy always-call behavior.
+
+The state self-clears whenever the context is rebuilt (`SessionStart` on
+startup/clear/compact, `PreCompact`, `SessionEnd`) and survives a resume, whose
+context is intact.
+
+**Codex.** Codex fires neither `UserPromptSubmit` nor `PreToolUse` — its tool
+matchers don't include `Read`/`Glob`/etc. — so the prompt window is inert there
+(the counter stays `0`, and the predicate degrades to the time window alone) and
+the pretool call gate never applies. Under Codex the dedupe surfaces are the
+`SessionStart` briefing and MCP tool-read tracking only.
 
 **PreToolUse** (one search per file in `Edit|MultiEdit|Write|Read|Glob|Grep`):
 
-| Env var                           | Default                                    | Description                                                                                 |
-| --------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------- |
-| `MEMINI_INJECT_PRETOOL_ITEMS`     | `3`                                        | Max hits surfaced per file.                                                                 |
-| `MEMINI_INJECT_PRETOOL_MAX_TOK`   | uncapped                                   | Hard ceiling on rendered tokens (per file).                                                 |
-| `MEMINI_INJECT_PRETOOL_MIN_SCORE` | `0`                                        | Floor on the fused score; hits below are dropped server-side.                               |
-| `MEMINI_INJECT_PRETOOL_TOOLS`     | `Read\|Write\|Edit\|MultiEdit\|Glob\|Grep` | Pipe- or comma-separated tool allowlist override.                                           |
-| `MEMINI_INJECT_DEDUPE`            | on                                         | Skip re-injecting an unchanged recall block for the same file (the recall call still runs). |
+| Env var                           | Default                                    | Description                                                                                                                             |
+| --------------------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEMINI_INJECT_PRETOOL_ITEMS`     | `3`                                        | Max hits surfaced per file.                                                                                                             |
+| `MEMINI_INJECT_PRETOOL_MAX_TOK`   | uncapped                                   | Hard ceiling on rendered tokens (per file).                                                                                             |
+| `MEMINI_INJECT_PRETOOL_MIN_SCORE` | `0`                                        | Floor on the fused score; hits below are dropped server-side.                                                                           |
+| `MEMINI_INJECT_PRETOOL_TOOLS`     | `Read\|Write\|Edit\|MultiEdit\|Glob\|Grep` | Pipe- or comma-separated tool allowlist override.                                                                                       |
+| `MEMINI_INJECT_PRETOOL_GATE_MS`   | `90000`                                    | Skip the per-file recall **server call** when the file's last call was younger than this many ms. `0` always calls.                     |
+| `MEMINI_INJECT_DEDUPE`            | on                                         | Master switch for the cross-surface injection dedupe above (and the per-file fingerprint below). `0` restores always-inject everywhere. |
+| `MEMINI_INJECT_COOLDOWN_MS`       | `1800000`                                  | Time window (ms) an injected memory is suppressed before it may re-inject. `0` disables the time dimension.                             |
+| `MEMINI_INJECT_COOLDOWN_PROMPTS`  | `3`                                        | Prompt-count window an injected memory is suppressed before it may re-inject. `0` disables the prompt dimension.                        |
 
 Repeated tool calls on the same file (e.g. several `Edit`s in a row, or a
-`Read` followed by an `Edit`) still make the recall call every time — results
-can change between calls — but the hook only re-injects a file's block when
-the served memories actually changed since the last time that file was
-injected THIS session. The fingerprint is keyed by file path and is
-tool-agnostic (a `Read` then an `Edit` on the same file with identical results
-counts as a duplicate), so an unbroken sequence of edits doesn't repeat the
-identical memory block into context on every call. Governed by the
-`inject_dedupe` behavior setting (on by default; `MEMINI_INJECT_DEDUPE=0` is
-the local debug override, like every knob above), and the suppression state
-self-clears on `SessionStart`, `PreCompact`, and `SessionEnd`.
+`Read` followed by an `Edit`) are bounded two ways. The **call gate**
+(`MEMINI_INJECT_PRETOOL_GATE_MS`, default 90 s) skips the recall call for a file
+touched again within the gate window; once it lapses the next touch calls again,
+and results can change between calls. When the call does run, a per-file
+**fingerprint** suppresses the injection if the served memories are exactly what
+that file was last injected with THIS session. The fingerprint is keyed by file
+path and the served (id, content) pairs, and is tool-agnostic (a `Read` then an
+`Edit` on the same file with identical results counts as a duplicate), so an
+unbroken sequence of edits doesn't repeat the identical memory block into context
+on every call. Both layers, plus the windowed cross-surface dedupe above, are
+governed by the `inject_dedupe` behavior setting (on by default;
+`MEMINI_INJECT_DEDUPE=0` is the local debug override, like every knob above), and
+the suppression state self-clears on `SessionStart`, `PreCompact`, and
+`SessionEnd`.
 
 **Output labels** (both hooks):
 

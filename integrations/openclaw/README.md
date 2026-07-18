@@ -136,6 +136,18 @@ dropped with a truncation footer). `recall_max_tokens` also reads
 `MEMINI_INJECT_RECALL_MAX_TOK`, and `MEMINI_INJECT_LABELS` (`tier`, `confidence`,
 `age`) toggles the per-bullet tag prefix.
 
+The **repeat-injection cooldown** keeps an already-injected memory from being
+re-served on every step. `inject_cooldown_ms` (config; also
+`MEMINI_INJECT_COOLDOWN_MS`, default **1800000** = 30 min, `0` disables it) is the
+time window an injected id is held back before it may re-serve, and it is
+re-served once the window lapses; `inject_cooldown_ms: 0` restores the prior
+suppress-forever behavior. **Only the time dimension applies here —
+`inject_cooldown_prompts` is inert and deliberately not wired.** OpenClaw's
+`before_prompt_build` fires per agent _step_, not per user message, so there is
+no user-prompt boundary for a prompt window to count; the time window is the sole
+re-admission lever (the other memini integrations, which run per user turn, also
+count prompts).
+
 Capture filtering: cron/heartbeat turns are skipped by default (`skip_system_turns`),
 runtime `(untrusted metadata)` preambles are stripped, and turns beginning with a
 `[cron:` / `[Subagent Context]` marker (even behind a `User:` label) are dropped.
