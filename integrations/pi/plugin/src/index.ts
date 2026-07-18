@@ -1242,13 +1242,47 @@ export function renderMemoryCall(args: any, theme: any, label = "memory"): Text 
   return new Text(text, 0, 0);
 }
 
-export function renderMemoryResult(result: any, { expanded, isPartial }: any, theme: any): Text {
+export function renderMemoryResult(
+  result: any,
+  { expanded, isPartial }: any,
+  theme: any,
+  fallbackKind?: MemoryRenderDetails["kind"],
+): Text {
   if (isPartial) return new Text(theme.fg("warning", "Memini is working…"), 0, 0);
-  const details = result?.details as MemoryRenderDetails | undefined;
-  if (!details) return new Text(theme.fg("warning", "Memini returned no display details"), 0, 0);
+
+  const serialized = Array.isArray(result?.content)
+    ? result.content.find((part: any) => part?.type === "text" && typeof part.text === "string")?.text
+    : undefined;
+  // When execute throws (for example because no authoritative namespace can be
+  // resolved), Pi creates the error result rather than the extension. Such a
+  // result has no MemoryRenderDetails and must be rendered before compatibility
+  // recovery tries to interpret its plain-text error as model-facing JSON.
+  if (result?.isError) {
+    return new Text(theme.fg("error", `Memini error: ${oneLine(serialized || "tool execution failed")}`), 0, 0);
+  }
+
+  // Tool results written by pi-memini <=0.5.x used details: {}. Pi keeps those
+  // results in the session and re-renders them after /reload, so recover their
+  // display data from the still-complete model-facing JSON instead of showing
+  // "undefined" for a missing kind.
+  let details = result?.details as MemoryRenderDetails | undefined;
+  if (!details?.kind && fallbackKind) {
+    if (serialized) {
+      try {
+        const data = JSON.parse(serialized);
+        if (fallbackKind === "forget" && data?.deleted === undefined && typeof data?.forgotten === "boolean") {
+          data.deleted = data.forgotten;
+        }
+        details = memoryResultDetails(fallbackKind, data);
+      } catch {
+        // Fall through to the bounded compatibility warning below.
+      }
+    }
+  }
+  if (!details?.kind) return new Text(theme.fg("warning", "Memini result cannot be displayed compactly"), 0, 0);
   if (details.error) return new Text(theme.fg("error", `Memini error: ${oneLine(details.error)}`), 0, 0);
 
-  let summary: string;
+  let summary = "Memini result";
   switch (details.kind) {
     case "recall": summary = `${details.count ?? 0} ${details.count === 1 ? "memory" : "memories"} recalled`; break;
     case "briefing": summary = `${details.count ?? 0} ${details.count === 1 ? "memory" : "memories"} in briefing`; break;
@@ -1988,7 +2022,7 @@ export default function meminiExtension(pi: ExtensionAPI): void {
         : undefined);
     },
     renderCall(args, theme) { return renderMemoryCall(args, theme, "memory_recall"); },
-    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme); },
+    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme, "recall"); },
   });
 
   pi.registerTool({
@@ -2039,7 +2073,7 @@ export default function meminiExtension(pi: ExtensionAPI): void {
         : undefined);
     },
     renderCall(args, theme) { return renderMemoryCall(args, theme, "memory_briefing"); },
-    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme); },
+    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme, "briefing"); },
   });
 
   pi.registerTool({
@@ -2075,7 +2109,7 @@ export default function meminiExtension(pi: ExtensionAPI): void {
         : undefined);
     },
     renderCall(args, theme) { return renderMemoryCall(args, theme, "memory_list"); },
-    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme); },
+    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme, "list"); },
   });
 
   pi.registerTool({
@@ -2141,7 +2175,7 @@ export default function meminiExtension(pi: ExtensionAPI): void {
       return text("remember", out);
     },
     renderCall(args, theme) { return renderMemoryCall(args, theme, "memory_remember"); },
-    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme); },
+    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme, "remember"); },
   });
 
   const idParameters = () => ({
@@ -2171,7 +2205,7 @@ export default function meminiExtension(pi: ExtensionAPI): void {
         : undefined);
     },
     renderCall(args, theme) { return renderMemoryCall(args, theme, "memory_get"); },
-    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme); },
+    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme, "get"); },
   });
 
   pi.registerTool({
@@ -2196,7 +2230,7 @@ export default function meminiExtension(pi: ExtensionAPI): void {
         : undefined);
     },
     renderCall(args, theme) { return renderMemoryCall(args, theme, "memory_history"); },
-    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme); },
+    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme, "history"); },
   });
 
   pi.registerTool({
@@ -2237,7 +2271,7 @@ export default function meminiExtension(pi: ExtensionAPI): void {
       return text("update", updated);
     },
     renderCall(args, theme) { return renderMemoryCall(args, theme, "memory_update"); },
-    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme); },
+    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme, "update"); },
   });
 
   pi.registerTool({
@@ -2257,7 +2291,7 @@ export default function meminiExtension(pi: ExtensionAPI): void {
       return text("forget", { id: params.id, deleted: true });
     },
     renderCall(args, theme) { return renderMemoryCall(args, theme, "memory_forget"); },
-    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme); },
+    renderResult(result, options, theme) { return renderMemoryResult(result, options, theme, "forget"); },
   });
 
   let answerRegistered = false;
@@ -2304,7 +2338,7 @@ export default function meminiExtension(pi: ExtensionAPI): void {
           : undefined);
       },
       renderCall(args, theme) { return renderMemoryCall(args, theme, "memory_answer"); },
-      renderResult(result, options, theme) { return renderMemoryResult(result, options, theme); },
+      renderResult(result, options, theme) { return renderMemoryResult(result, options, theme, "answer"); },
     });
   };
 

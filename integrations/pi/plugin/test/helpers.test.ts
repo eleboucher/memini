@@ -813,6 +813,47 @@ test("compact result rendering is one line collapsed, bounded expanded, and expl
   assert.match(error[0], /^Memini error: memini unavailable\s*$/);
 });
 
+test("compact result rendering recovers pre-0.7 session results after reload", () => {
+  const legacyResult = {
+    content: [{
+      type: "text",
+      text: JSON.stringify({ results: [{ id: "m1", content: "legacy memory", tier: "semantic", score: 0.9 }] }),
+    }],
+    details: {},
+  };
+  const recalled = renderedLines(renderMemoryResult(
+    legacyResult,
+    { expanded: false },
+    plainTheme,
+    "recall",
+  ));
+  assert.equal(recalled.length, 1);
+  assert.match(recalled[0], /1 memory recalled/);
+  assert.doesNotMatch(recalled[0], /undefined|\{"results"/);
+
+  const hostError = renderedLines(renderMemoryResult(
+    {
+      content: [{ type: "text", text: "memini authoritative namespace unavailable" }],
+      details: {},
+      isError: true,
+    },
+    { expanded: false },
+    plainTheme,
+    "recall",
+  ));
+  assert.match(hostError[0], /^Memini error: memini authoritative namespace unavailable/);
+  assert.doesNotMatch(hostError[0], /undefined/);
+
+  const malformed = renderedLines(renderMemoryResult(
+    { content: [{ type: "text", text: "not json" }], details: {} },
+    { expanded: false },
+    plainTheme,
+    "recall",
+  ));
+  assert.match(malformed[0], /cannot be displayed compactly/);
+  assert.doesNotMatch(malformed[0], /undefined/);
+});
+
 test("expanded rendering includes kind-specific answer, acknowledgement, and child-rollup details", () => {
   const answer = renderedLines(renderMemoryResult(
     { details: memoryResultDetails("answer", { answer: "Use the complete model-facing answer.", sources: [fullMemory()] }) },
