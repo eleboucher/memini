@@ -32,6 +32,7 @@ import {
   writeInjectedState,
   recordInjected,
   injectedIdentity,
+  injectedSuppressed,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -94,17 +95,27 @@ async function main() {
   let any = false;
   let totalDropped = 0;
 
-  // Duplicate-injection suppression: the recall call always still runs (results
-  // can change between calls — correctness beats saving one request), but when
-  // the served memories for a file are identical to what was last injected for
-  // that file THIS session, re-injecting them is pure token waste since the
-  // context already carries them. `lastRecall` is a per-session, per-file map
-  // of {hash, at} read once up front and (if anything changed) written once at
-  // the end — one small JSON file, no extra network. Gated by the
-  // inject_dedupe behavior setting (MEMINI_INJECT_DEDUPE env override beats
-  // the server-merged value beats the default true); off restores the prior
-  // always-inject behavior and never touches the state file.
+  // Duplicate-injection suppression + a per-file recall-call gate. `lastRecall`
+  // is a per-session, per-file map of {hash, at}, read once up front and (if
+  // anything changed) written once at the end — one small JSON file, no extra
+  // network. TWO jobs now share it:
+  //   - the per-file CALL GATE (inject_pretool_gate_ms): if this file's last
+  //     server call is younger than the gate, skip the call ENTIRELY — the file
+  //     was just recalled, so a fresh network round-trip on every tool touch in
+  //     a burst is waste. `at` is therefore the last-CALL timestamp (refreshed
+  //     on every actual server call below), not the last-inject timestamp;
+  //   - the per-file FINGERPRINT (`hash`): when the served memories for a file
+  //     are byte-identical to what was last INJECTED for it, re-injecting is
+  //     pure token waste since the context already carries them, so `hash` is
+  //     written only on injection.
+  // All of this is gated by inject_dedupe (MEMINI_INJECT_DEDUPE env override
+  // beats the server-merged value beats the default true); off restores the
+  // prior always-inject behavior and never touches the state file.
   const dedupe = ctx.setting("inject_dedupe").value;
+  const gateMs = ctx.setting("inject_pretool_gate_ms").value;
+  const cooldownMs = ctx.setting("inject_cooldown_ms").value;
+  const cooldownPrompts = ctx.setting("inject_cooldown_prompts").value;
+  const now = Date.now();
   const lastRecall = dedupe ? readLastRecallState(sessionId) : {};
   let lastRecallChanged = false;
 
@@ -123,13 +134,26 @@ async function main() {
   // ACROSS the files of this one call, so file 2 doesn't repeat what file 1
   // just injected. Shares the inject_dedupe knob with the per-file
   // fingerprint below — off restores the prior always-inject behavior.
-  // v2 state { n, ids }. This task keeps the CURRENT forever-dedupe behavior:
-  // the windowed predicate (injectedSuppressed/cooldownIds) is not consulted
-  // here yet — a later task wires the cooldown knobs into this hook.
+  // v2 state { n, ids }. Suppression is WINDOWED (injectedSuppressed): an entry
+  // is skipped only while within the time OR prompt cooldown window, so a fact
+  // re-surfaces once the conversation has moved on. The counter is READ-ONLY
+  // here — PreToolUse never bumps `n` (only UserPromptSubmit does); pretool
+  // rides whatever prompt count the prompt hook has recorded.
   const injectedState = dedupe && sessionId ? readInjectedState(sessionId) : { n: 0, ids: {} };
   let injectedChanged = false;
 
   for (const f of files.slice(0, 3)) {
+    // Per-file call gate: if we called the server for this file more recently
+    // than the gate, skip the network round-trip entirely — the file was just
+    // recalled and its memories are already in context. Only when dedupe is on
+    // and the gate is enabled (gateMs > 0; 0 = legacy always-call). A gated
+    // skip does NOT refresh `at`, so a file can't be starved: once the gate
+    // lapses the next touch calls again.
+    if (dedupe && gateMs > 0 && lastRecall[f]?.at && now - lastRecall[f].at < gateMs) {
+      if (DEBUG) console.error(`[memini] PreToolUse: ${f} recalled ${now - lastRecall[f].at}ms ago < gate ${gateMs}ms, skipping call`);
+      continue;
+    }
+
     const q = `${toolName} on ${f}`;
     // Exclude this session's own captured digests (Stop checkpoint / SessionEnd
     // digest, both tagged session_id): they're still in the live context, so
@@ -142,6 +166,16 @@ async function main() {
       minScore,
       source: "pretool",
     });
+    // An actual server call just happened for this file: refresh `at` (the
+    // gate's clock) NOW, before any early-out. It refreshes on EVERY real call
+    // — even when the served set is unchanged and injection is suppressed, or
+    // when every hit is filtered out — so the gate reflects the last call, not
+    // the last inject. `hash` is preserved (written only on injection below).
+    // Inside the `if (dedupe)` guard: dedupe off must write no state.
+    if (dedupe) {
+      lastRecall[f] = { hash: lastRecall[f]?.hash, at: now };
+      lastRecallChanged = true;
+    }
     if (degraded && !degradedNote) {
       degradedNote = note || "semantic search unavailable — results are keyword-only and may be incomplete";
     }
@@ -152,12 +186,18 @@ async function main() {
     // drop it regardless of which session id it carries.
     const hits = filterFreshTurnEchoes(rawHits).filter((h) => {
       const id = h?.memory?.id;
-      if (typeof id !== "string" || !(id in injectedState.ids)) return true;
-      // A sentinel ("") marks a tool-read entry whose true content identity is
-      // unknowable (concise tool responses truncate) — suppress by id alone.
-      if (injectedState.ids[id].h === "") return false;
-      // Already in context — unless its content changed since injection.
-      return injectedState.ids[id].h !== injectedIdentity(h);
+      const entry = typeof id === "string" ? injectedState.ids[id] : undefined;
+      // Windowed, content-aware suppression (injectedSuppressed): an entry
+      // whose content changed since injection re-injects; a sentinel tool-read
+      // stays suppressed; otherwise it rides the time/prompt cooldown windows
+      // and is re-admitted once BOTH have lapsed. The counter is the read-only
+      // prompt count the prompt hook recorded (PreToolUse never bumps it).
+      return !injectedSuppressed(entry, injectedIdentity(h), {
+        now,
+        counter: injectedState.n,
+        cooldownMs,
+        cooldownPrompts,
+      });
     });
     if (hits.length === 0) continue;
 
@@ -181,10 +221,14 @@ async function main() {
       });
       const hash = crypto.createHash("sha256").update(fingerprintInput).digest("hex");
       if (lastRecall[f]?.hash === hash) {
+        // Same served set as last injection — suppress the duplicate. `at` was
+        // already refreshed above (this WAS an actual server call), so the gate
+        // still sees a fresh call; only the injection is skipped.
         if (DEBUG) console.error(`[memini] PreToolUse: unchanged recall for ${f}, suppressing duplicate injection`);
         continue;
       }
-      lastRecall[f] = { hash, at: Date.now() };
+      // Injecting: stamp the new fingerprint (and keep `at` at this call's time).
+      lastRecall[f] = { hash, at: now };
       lastRecallChanged = true;
     }
 

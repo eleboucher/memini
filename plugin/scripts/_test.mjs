@@ -2579,11 +2579,14 @@ test("pre-tool-use.mjs: identical recall for the same file is suppressed on the 
       tool_name: "Read",
       tool_input: { file_path: "internal/auth.go" },
     });
-    const first = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    // gate=0 pins legacy always-call: the default 90s gate would skip the
+    // second same-file server call and break the calls===2 assertion below.
+    const gate0 = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_GATE_MS: "0" };
+    const first = await runHook("pre-tool-use.mjs", payload, gate0);
     assert.match(first.stdout, /<memini-pretool[^>]*>/, "first call must inject");
     assert.match(first.stdout, /auth decision/);
 
-    const second = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    const second = await runHook("pre-tool-use.mjs", payload, gate0);
     assert.equal(second.stdout, "", "second identical call must produce NO injection");
     assert.equal(calls, 2, "the recall call itself must still happen both times");
 
@@ -2613,10 +2616,13 @@ test("pre-tool-use.mjs: changed recall results re-inject even for the same file"
       tool_name: "Read",
       tool_input: { file_path: "internal/auth.go" },
     });
-    const first = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    // gate=0 pins legacy always-call: the default 90s gate would skip the
+    // second same-file server call, so the changed content could never re-inject.
+    const gate0 = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_GATE_MS: "0" };
+    const first = await runHook("pre-tool-use.mjs", payload, gate0);
     assert.match(first.stdout, /first version of the fact/);
 
-    const second = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    const second = await runHook("pre-tool-use.mjs", payload, gate0);
     assert.notEqual(second.stdout, "", "changed results must re-inject");
     assert.match(second.stdout, /second, updated version of the fact/);
   } finally {
@@ -2646,10 +2652,13 @@ test("pre-tool-use.mjs: content changed only past the 240-char render cap still 
       tool_name: "Read",
       tool_input: { file_path: "internal/auth.go" },
     });
-    const first = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    // gate=0 pins legacy always-call: the default 90s gate would skip the
+    // second same-file server call, so the tail change could never re-inject.
+    const gate0 = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_GATE_MS: "0" };
+    const first = await runHook("pre-tool-use.mjs", payload, gate0);
     assert.match(first.stdout, /<memini-pretool[^>]*>/, "first call must inject");
 
-    const second = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    const second = await runHook("pre-tool-use.mjs", payload, gate0);
     assert.match(
       second.stdout,
       /<memini-pretool[^>]*>/,
@@ -2694,17 +2703,20 @@ test("pre-tool-use.mjs: Read then Edit on the same file with identical results �
     res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "pipeline behavior" }, 0.92)])));
   });
   try {
+    // gate=0 pins legacy always-call: the default 90s gate would skip the Edit
+    // server call, so the tool-agnostic fingerprint path wouldn't be exercised.
+    const gate0 = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_GATE_MS: "0" };
     const readCall = await runHook(
       "pre-tool-use.mjs",
       JSON.stringify({ session_id: "dedupe4", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "pipeline.py" } }),
-      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+      gate0,
     );
     assert.match(readCall.stdout, /pipeline behavior/, "Read must inject");
 
     const editCall = await runHook(
       "pre-tool-use.mjs",
       JSON.stringify({ session_id: "dedupe4", cwd: __dirname, tool_name: "Edit", tool_input: { file_path: "pipeline.py" } }),
-      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+      gate0,
     );
     assert.equal(
       editCall.stdout,
@@ -2727,12 +2739,16 @@ test("pre-tool-use.mjs: two different session_ids do not share last-recall state
     const mk = (sid) =>
       JSON.stringify({ session_id: sid, cwd: __dirname, tool_name: "Read", tool_input: { file_path: "shared.go" } });
 
-    const a1 = await runHook("pre-tool-use.mjs", mk("sess-a"), { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    // gate=0 pins legacy always-call: the default 90s gate would skip session
+    // A's second same-file call, masking that per-session FINGERPRINT state (not
+    // the gate) is what suppresses it.
+    const gate0 = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_GATE_MS: "0" };
+    const a1 = await runHook("pre-tool-use.mjs", mk("sess-a"), gate0);
     assert.match(a1.stdout, /cross-session fact/);
-    const a2 = await runHook("pre-tool-use.mjs", mk("sess-a"), { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    const a2 = await runHook("pre-tool-use.mjs", mk("sess-a"), gate0);
     assert.equal(a2.stdout, "", "second call in session A must be suppressed");
 
-    const b1 = await runHook("pre-tool-use.mjs", mk("sess-b"), { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    const b1 = await runHook("pre-tool-use.mjs", mk("sess-b"), gate0);
     assert.match(b1.stdout, /cross-session fact/, "a fresh session_id must NOT inherit session A's suppression state");
   } finally {
     await close();
@@ -2805,10 +2821,13 @@ test("pre-compact.mjs: clears the last-recall state so an identical recall re-in
       tool_name: "Read",
       tool_input: { file_path: "auth.go" },
     });
-    const first = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    // gate=0 pins legacy always-call so the third call (after pre-compact
+    // clears state) re-runs the server call; the default 90s gate would skip it.
+    const gate0 = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_GATE_MS: "0" };
+    const first = await runHook("pre-tool-use.mjs", payload, gate0);
     assert.match(first.stdout, /compaction-surviving fact/, "first call must inject");
 
-    const second = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    const second = await runHook("pre-tool-use.mjs", payload, gate0);
     assert.equal(second.stdout, "", "sanity check: repeat call is suppressed before compaction");
 
     await runHook(
@@ -2817,7 +2836,7 @@ test("pre-compact.mjs: clears the last-recall state so an identical recall re-in
       { MEMINI_BASE_URL: DEAD_URL, XDG_CACHE_HOME: cache },
     );
 
-    const third = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    const third = await runHook("pre-tool-use.mjs", payload, gate0);
     assert.match(third.stdout, /compaction-surviving fact/, "after pre-compact clears state, the identical recall must re-inject");
   } finally {
     await close();
@@ -2905,6 +2924,175 @@ test("pre-tool-use.mjs: last-recall state is bounded, evicting the oldest entry 
     assert.ok(keys.length <= 32, `expected state to stay bounded, got ${keys.length} entries`);
     assert.ok(!("/tmp/file-0" in state), "the oldest entry should have been evicted");
     assert.ok("/tmp/file-32" in state, "the most recent entry should be present");
+  } finally {
+    await close();
+  }
+});
+
+// ─── PreToolUse: per-file recall-call gate (inject_pretool_gate_ms) ────────
+
+test("pre-tool-use.mjs: a second call for the same file within the gate makes NO server call and no injection", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  let calls = 0;
+  const { url, close } = await startMockServer((req, res) => {
+    calls++;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "gated fact" }, 0.95)])));
+  });
+  try {
+    const payload = JSON.stringify({
+      session_id: "gate1",
+      cwd: __dirname,
+      tool_name: "Read",
+      tool_input: { file_path: "internal/auth.go" },
+    });
+    // Default gate (90s): the two hook runs fire a few ms apart, well inside it.
+    const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+    const first = await runHook("pre-tool-use.mjs", payload, env);
+    assert.match(first.stdout, /gated fact/, "first call injects");
+    assert.equal(calls, 1, "first call hits the server");
+
+    const second = await runHook("pre-tool-use.mjs", payload, env);
+    assert.equal(second.stdout, "", "within-gate second call injects nothing");
+    assert.equal(calls, 1, "within-gate second call makes NO server request");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: backdating lastRecall `at` past the gate re-enables the server call", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  let calls = 0;
+  const { url, close } = await startMockServer((req, res) => {
+    calls++;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "gate-reopen fact" }, 0.95)])));
+  });
+  try {
+    const payload = JSON.stringify({
+      session_id: "gate2",
+      cwd: __dirname,
+      tool_name: "Read",
+      tool_input: { file_path: "internal/auth.go" },
+    });
+    const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+    await runHook("pre-tool-use.mjs", payload, env);
+    assert.equal(calls, 1, "first call hits the server");
+
+    // Push the file's last-call timestamp well past the default 90s gate.
+    const statePath = join(cache, "memini", "sessions", "gate2.lastrecall.json");
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    assert.ok(state["internal/auth.go"]?.at, "precondition: first call recorded `at`");
+    state["internal/auth.go"].at = Date.now() - 200000; // 200s ago > 90s gate
+    writeFileSync(statePath, JSON.stringify(state));
+
+    await runHook("pre-tool-use.mjs", payload, env);
+    assert.equal(calls, 2, "with `at` older than the gate, the server call fires again");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: gate=0 restores legacy always-call — both same-file calls fire", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  let calls = 0;
+  const { url, close } = await startMockServer((req, res) => {
+    calls++;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "legacy fact" }, 0.95)])));
+  });
+  try {
+    const payload = JSON.stringify({
+      session_id: "gate3",
+      cwd: __dirname,
+      tool_name: "Read",
+      tool_input: { file_path: "internal/auth.go" },
+    });
+    const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_GATE_MS: "0" };
+    await runHook("pre-tool-use.mjs", payload, env);
+    await runHook("pre-tool-use.mjs", payload, env);
+    assert.equal(calls, 2, "gate=0 makes the server call fire on every tool touch");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: a lapsed injected memory re-injects on pretool and its entry refreshes", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const content = "long-lapsed decision";
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m1", content }, 0.95)])));
+  });
+  try {
+    // Seed injected.json with m1 backdated past BOTH cooldown windows: `at`
+    // older than the 30-min time window AND `n` far enough below the counter
+    // (10-3 = 7 ≥ the 3-prompt window) → the windowed predicate re-admits it.
+    const { injectedIdentity } = await import("./_shared.mjs");
+    mkdirSync(join(cache, "memini", "sessions"), { recursive: true });
+    const injPath = INJ_STATE(cache, "lapse1");
+    const backAt = Date.now() - 2_000_000; // > 1.8e6 ms (30 min) → time window lapsed
+    writeFileSync(
+      injPath,
+      JSON.stringify({ v: 2, n: 10, ids: { m1: { h: injectedIdentity({ content }), at: backAt, n: 3 } } }),
+    );
+
+    const payload = JSON.stringify({
+      session_id: "lapse1",
+      cwd: __dirname,
+      tool_name: "Read",
+      tool_input: { file_path: "internal/auth.go" },
+    });
+    const res1 = await runHook("pre-tool-use.mjs", payload, { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache });
+    assert.match(res1.stdout, /long-lapsed decision/, "both windows lapsed → the memory re-injects");
+
+    const after = JSON.parse(readFileSync(injPath, "utf8"));
+    assert.ok(after.ids.m1.at > backAt, "the re-injected entry's `at` refreshes to ~now");
+    assert.equal(after.ids.m1.n, 10, "the entry's `n` refreshes to the read-only session counter (pretool never bumps it)");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: an unchanged-hash suppressed injection still refreshes lastRecall `at` (every actual call)", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "steady fact" }, 0.95)])));
+  });
+  try {
+    const payload = JSON.stringify({
+      session_id: "refresh1",
+      cwd: __dirname,
+      tool_name: "Read",
+      tool_input: { file_path: "internal/auth.go" },
+    });
+    // gate=0 so the second call actually hits the server (the point is that an
+    // actual call refreshes `at` even though the injection is suppressed).
+    const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_GATE_MS: "0" };
+    await runHook("pre-tool-use.mjs", payload, env);
+
+    // Backdate `at` to a tiny value while KEEPING the fingerprint hash, so the
+    // second call's every-call refresh is unmistakably visible as a jump.
+    const statePath = join(cache, "memini", "sessions", "refresh1.lastrecall.json");
+    const s1 = JSON.parse(readFileSync(statePath, "utf8"));
+    assert.ok(s1["internal/auth.go"]?.hash, "precondition: first call recorded the fingerprint");
+    s1["internal/auth.go"].at = 1000;
+    writeFileSync(statePath, JSON.stringify(s1));
+
+    // m1 is already in context (in cooldown) so this call injects nothing — but
+    // it IS an actual server call, so `at` must refresh regardless.
+    const second = await runHook("pre-tool-use.mjs", payload, env);
+    assert.equal(second.stdout, "", "the in-cooldown memory stays suppressed");
+
+    const s2 = JSON.parse(readFileSync(statePath, "utf8"));
+    assert.ok(s2["internal/auth.go"].at > 1000, "an actual server call refreshes `at` even when injection is suppressed");
+    assert.equal(s2["internal/auth.go"].hash, s1["internal/auth.go"].hash, "the fingerprint hash is preserved (written only on injection)");
   } finally {
     await close();
   }
