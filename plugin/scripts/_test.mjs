@@ -2371,7 +2371,7 @@ test("readInjectedState: a v2 file reads back verbatim; garbage entries are drop
     const state = readInjectedState("v2read");
     assert.equal(state.n, 7);
     assert.deepEqual(Object.keys(state.ids).sort(), ["good", "sentinel"], "malformed entries dropped, never a crash");
-    assert.deepEqual(state.ids.good, { h: "abc", at: 1000, n: 3 });
+    assert.deepEqual(state.ids.good, { h: "abc", at: 1000, n: 3, r: 0 }, "a pre-`r` entry reads back with r defaulted to 0");
     assert.equal(state.ids.sentinel.h, "");
   } finally {
     if (prevXdg === undefined) delete process.env.XDG_CACHE_HOME;
@@ -2434,9 +2434,9 @@ test("writeInjectedState: merge-on-write keeps larger `n` and the larger-`at` en
     writeInjectedState("merge", mem);
     const raw = JSON.parse(readFileSync(INJ_STATE(cache, "merge"), "utf8"));
     assert.equal(raw.n, 5, "n = max(file.n=5, mem.n=3)");
-    assert.deepEqual(raw.ids.a, { h: "file-a", at: 100, n: 1 }, "larger-`at` (disk) entry wins for a");
-    assert.deepEqual(raw.ids.b, { h: "mem-b", at: 200, n: 2 }, "larger-`at` (mem) entry wins for b");
-    assert.deepEqual(raw.ids.c, { h: "mem-c", at: 30, n: 2 }, "mem-only id survives the merge");
+    assert.deepEqual(raw.ids.a, { h: "file-a", at: 100, n: 1, r: 0 }, "larger-`at` (disk) entry wins for a");
+    assert.deepEqual(raw.ids.b, { h: "mem-b", at: 200, n: 2, r: 0 }, "larger-`at` (mem) entry wins for b");
+    assert.deepEqual(raw.ids.c, { h: "mem-c", at: 30, n: 2, r: 0 }, "mem-only id survives the merge");
     // Round-trip once more through the reader.
     const state = readInjectedState("merge");
     assert.deepEqual(Object.keys(state.ids).sort(), ["a", "b", "c"]);
@@ -2450,7 +2450,7 @@ test("recordInjected: sets {h, at, n} with n = state's current counter", async (
   const { recordInjected } = await import("./_shared.mjs");
   const state = { n: 12, ids: {} };
   recordInjected(state, "m1", "hash-1", 1752770000000);
-  assert.deepEqual(state.ids.m1, { h: "hash-1", at: 1752770000000, n: 12 });
+  assert.deepEqual(state.ids.m1, { h: "hash-1", at: 1752770000000, n: 12, r: 0 });
   recordInjected(state, "m2", ""); // sentinel, default now
   assert.equal(state.ids.m2.h, "");
   assert.equal(state.ids.m2.n, 12);
@@ -2565,6 +2565,72 @@ test("cooldownIds: lists in-cooldown ids (identity=null, sentinels always in coo
   // forever config → every recorded id is in cooldown
   const forever = cooldownIds(state, { now: NOW, cooldownMs: 0, cooldownPrompts: 0 });
   assert.deepEqual(forever.sort(), ["fresh", "sentinel", "stale"], "both-zero → all ids in cooldown");
+});
+
+test("pretoolExcludeIds: latch (r>=1) or sentinel while in-window; r=0 and lapsed ride free", async () => {
+  const { pretoolExcludeIds } = await import("./_shared.mjs");
+  const NOW = 1_000_000;
+  const state = {
+    n: 10,
+    ids: {
+      fresh0: { h: "h0", at: NOW, n: 9, r: 0 }, // in-window, never re-served unchanged → allowed
+      latched1: { h: "h1", at: NOW, n: 9, r: 1 }, // in-window, one unchanged re-serve → excluded
+      latched3: { h: "h3", at: NOW, n: 9, r: 3 }, // in-window, higher latch → excluded
+      sentinel: { h: "", at: 0, n: 0 }, // tool-read → excluded with no latch needed
+      lapsed: { h: "h2", at: NOW - 10_000, n: 2, r: 1 }, // latched but BOTH windows lapsed → not excluded
+    },
+  };
+  const w = { now: NOW, cooldownMs: 5000, cooldownPrompts: 3 };
+  assert.deepEqual(
+    pretoolExcludeIds(state, w).sort(),
+    ["latched1", "latched3", "sentinel"],
+    "only in-window latched/sentinel ids ride exclude_ids",
+  );
+
+  // A missing `r` reads as 0 (an old plugin's normInjectedEntry drops the field).
+  const noR = { n: 1, ids: { a: { h: "ha", at: NOW, n: 0 } } };
+  assert.deepEqual(pretoolExcludeIds(noR, w), [], "an entry without `r` is treated as r=0 (not latched)");
+
+  // Window logic mirrors cooldownIds: forever config latches every non-fresh id.
+  const forever = pretoolExcludeIds(state, { now: NOW, cooldownMs: 0, cooldownPrompts: 0 });
+  assert.deepEqual(forever.sort(), ["lapsed", "latched1", "latched3", "sentinel"], "forever config → all latched/sentinel ids");
+});
+
+test("writeInjectedState: an `r` bump survives the disk merge (equal-`at` in-memory wins)", async () => {
+  const { readInjectedState, writeInjectedState } = await import("./_shared.mjs");
+  const cache = freshCache();
+  const prevXdg = process.env.XDG_CACHE_HOME;
+  process.env.XDG_CACHE_HOME = cache;
+  try {
+    mkdirSync(join(cache, "memini", "sessions"), { recursive: true });
+    // Disk holds the pre-bump entries (r=0). Memory holds `keep` with the SAME
+    // `at` but r bumped to 1 (a client-side latch keeps the entry's `at`), and
+    // `reset` with an OLDER `at` than disk (simulating a concurrent re-injection
+    // that already landed on disk with a newer `at`).
+    const AT = 1_000_000;
+    writeFileSync(
+      INJ_STATE(cache, "rmerge"),
+      JSON.stringify({
+        v: 2,
+        n: 4,
+        ids: { keep: { h: "hk", at: AT, n: 1, r: 0 }, reset: { h: "hr", at: AT + 500, n: 1, r: 0 } },
+      }),
+    );
+    const mem = {
+      n: 4,
+      ids: {
+        keep: { h: "hk", at: AT, n: 1, r: 1 }, // same `at`, bumped → in-memory wins, latch persists
+        reset: { h: "hr", at: AT, n: 1, r: 2 }, // older `at` than disk → disk (r=0) wins, latch resets
+      },
+    };
+    writeInjectedState("rmerge", mem);
+    const state = readInjectedState("rmerge");
+    assert.equal(state.ids.keep.r, 1, "an equal-`at` bump persists through the merge (normInjectedEntry carries `r`)");
+    assert.equal(state.ids.reset.r, 0, "a genuinely newer disk re-injection wins and resets the latch");
+  } finally {
+    if (prevXdg === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = prevXdg;
+  }
 });
 
 test("pre-tool-use.mjs: identical recall for the same file is suppressed on the second call", async () => {
@@ -5054,7 +5120,7 @@ test("cross-surface dedupe: briefing ids are excluded from later prompt recall",
   }
 });
 
-test("cross-surface dedupe: pretool filters prompt-injected memories client-side and records its own", async () => {
+test("cross-surface dedupe: pretool latches an unchanged re-serve into exclude_ids after one pass", async () => {
   const cache = freshCache();
   await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
   const searches = [];
@@ -5079,31 +5145,207 @@ test("cross-surface dedupe: pretool filters prompt-injected memories client-side
   });
   const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
   try {
+    // Prompt injects m1.
     await runHook(
       "user-prompt-submit.mjs",
       JSON.stringify({ session_id: "xs2", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
       env,
     );
+    // Pretool call 1 re-serves m1 UNCHANGED (plus a fresh m2). The FIRST re-serve
+    // is deliberately NOT excluded server-side, so the content-aware hash check
+    // can still catch a memory_update; m1 is suppressed CLIENT-side and its
+    // re-serve count latches to 1.
     const { stdout } = await runHook(
       "pre-tool-use.mjs",
       JSON.stringify({ session_id: "xs2", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
       env,
     );
-    // Pretool's cross-surface filter is CLIENT-side and content-aware, never
-    // exclude_ids: a server-side id exclusion could not return a memory whose
-    // content changed since injection.
-    assert.equal(searches[1].exclude_ids, undefined, "pretool must not hard-exclude ids server-side");
+    assert.ok(!(searches[1].exclude_ids || []).includes("m1"), "the first re-serve is not excluded server-side");
     const block = JSON.parse(stdout).hookSpecificOutput.additionalContext;
     assert.match(block, /file-local convention/);
-    assert.doesNotMatch(block, /prompt-injected fact/, "an unchanged already-injected memory is filtered");
+    assert.doesNotMatch(block, /prompt-injected fact/, "an unchanged already-injected memory is filtered client-side");
+    const stateAfter1 = JSON.parse(readFileSync(INJ_STATE(cache, "xs2"), "utf8"));
+    assert.equal(stateAfter1.ids.m1.r, 1, "an unchanged re-serve latches the id (r = 1)");
+    assert.equal(stateAfter1.ids.m2.r ?? 0, 0, "a freshly injected memory is not latched (r = 0)");
 
+    // Pretool call 2 on a DIFFERENT file (past the per-file gate) now excludes
+    // the latched m1 server-side; m2, injected only once, is not yet latched.
     await runHook(
-      "user-prompt-submit.mjs",
-      JSON.stringify({ session_id: "xs2", cwd: __dirname, prompt: "and what about the cookie settings" }),
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xs2", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/db.go" } }),
       env,
     );
-    const last = searches[searches.length - 1];
-    assert.ok(last.exclude_ids.includes("m1") && last.exclude_ids.includes("m2"), "pretool's injection was recorded too");
+    assert.ok((searches[2].exclude_ids || []).includes("m1"), "a latched id rides exclude_ids on the next call");
+    assert.ok(!(searches[2].exclude_ids || []).includes("m2"), "a once-injected id is not yet latched");
+  } finally {
+    await close();
+  }
+});
+
+test("cross-surface dedupe: a content-updated re-serve re-injects and is never latched", async () => {
+  // A memory_update between injections changes the content hash, so the re-serve
+  // is NOT suppressed: it re-injects, recordInjected resets `r` to 0, and the id
+  // never latches into exclude_ids.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const searches = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    searches.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    const content = searches.length === 1 ? "v1: rotate tokens weekly" : "v2: rotate tokens DAILY after the incident";
+    res.end(JSON.stringify(searchBody([sm({ id: "m1", content }, 0.9)])));
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "xsu", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      env,
+    );
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xsu", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      env,
+    );
+    assert.match(JSON.parse(stdout).hookSpecificOutput.additionalContext, /rotate tokens DAILY/, "changed content re-injects");
+    const state = JSON.parse(readFileSync(INJ_STATE(cache, "xsu"), "utf8"));
+    assert.equal(state.ids.m1.r ?? 0, 0, "a content-changed re-injection stays unlatched");
+
+    await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xsu", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/db.go" } }),
+      env,
+    );
+    assert.ok(!(searches[2].exclude_ids || []).includes("m1"), "an unlatched (re-injected) id is not excluded server-side");
+  } finally {
+    await close();
+  }
+});
+
+test("cross-surface dedupe: a sentinel tool-read id rides pretool exclude_ids immediately", async () => {
+  // A tool-read entry (sentinel h==="") has no content identity to protect, so
+  // pretool excludes it server-side on the very first opportunity — no unchanged
+  // re-serve needed to latch (the analog of the prompt-hook sentinel exclusion).
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  // PostToolUse records s1 from a memory_recall tool result → sentinel "".
+  await runHook(
+    "post-tool-use.mjs",
+    JSON.stringify({
+      session_id: "xsen",
+      cwd: __dirname,
+      tool_name: "mcp__memini__memory_recall",
+      tool_input: { query: "auth" },
+      tool_response: {
+        content: [{ type: "text", text: JSON.stringify({ results: [{ id: "s1", content: "tool-pulled fact" }] }) }],
+      },
+    }),
+    { XDG_CACHE_HOME: cache, MEMINI_BASE_URL: DEAD_URL },
+  );
+  const searches = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    searches.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify(
+        searchBody([sm({ id: "s1", content: "tool-pulled fact" }, 0.95), sm({ id: "fresh", content: "a brand new fact" }, 0.9)]),
+      ),
+    );
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xsen", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      env,
+    );
+    assert.ok((searches[0].exclude_ids || []).includes("s1"), "the sentinel id is excluded server-side on the first pretool call");
+    const block = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(block, /a brand new fact/, "a never-injected memory still injects");
+    assert.doesNotMatch(block, /tool-pulled fact/, "the sentinel entry is filtered client-side too");
+  } finally {
+    await close();
+  }
+});
+
+test("cross-surface dedupe: a latched id whose windows lapsed drops out of pretool exclude_ids", async () => {
+  // The latch does not outlive the cooldown: once BOTH windows lapse the id is
+  // re-admitted, re-served, hash-checked, and (unchanged) re-injected — which
+  // resets `r`, so the latch has to be re-earned.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const content = "long-lapsed but latched decision";
+  const searches = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    searches.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m1", content }, 0.95)])));
+  });
+  try {
+    const { injectedIdentity } = await import("./_shared.mjs");
+    mkdirSync(join(cache, "memini", "sessions"), { recursive: true });
+    const injPath = INJ_STATE(cache, "xslapse");
+    const backAt = Date.now() - 2_000_000; // > 1.8e6 ms (30 min) → time window lapsed
+    // A LATCHED entry (r=1) backdated past BOTH windows (counter 10 − n 3 = 7 ≥ 3).
+    writeFileSync(
+      injPath,
+      JSON.stringify({ v: 2, n: 10, ids: { m1: { h: injectedIdentity({ content }), at: backAt, n: 3, r: 1 } } }),
+    );
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xslapse", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.ok(!(searches[0].exclude_ids || []).includes("m1"), "a both-windows-lapsed latched id is NOT excluded server-side");
+    assert.match(stdout, /long-lapsed but latched decision/, "and it re-injects once re-admitted");
+    const after = JSON.parse(readFileSync(injPath, "utf8"));
+    assert.equal(after.ids.m1.r, 0, "re-injection resets the latch");
+  } finally {
+    await close();
+  }
+});
+
+test("cross-surface dedupe: pretool 400 on exclude_ids retries without it; client-side still suppresses", async () => {
+  // An older server rejects exclude_ids. postSearch retries once with it (and
+  // min_rank_score) stripped, so the server re-serves the latched memory — but
+  // the client-side windowed filter still drops it, so nothing re-injects.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    const parsed = JSON.parse(body);
+    bodies.push(parsed);
+    res.setHeader("Content-Type", "application/json");
+    if (parsed.exclude_ids) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ error: "unknown field exclude_ids" }));
+      return;
+    }
+    res.end(
+      JSON.stringify(
+        searchBody([sm({ id: "m1", content: "already in context" }, 0.95), sm({ id: "m2", content: "a genuinely new fact" }, 0.9)]),
+      ),
+    );
+  });
+  try {
+    const { injectedIdentity } = await import("./_shared.mjs");
+    mkdirSync(join(cache, "memini", "sessions"), { recursive: true });
+    // A latched, in-window m1 → pretool sends it in exclude_ids.
+    writeFileSync(
+      INJ_STATE(cache, "xs400"),
+      JSON.stringify({ v: 2, n: 1, ids: { m1: { h: injectedIdentity({ content: "already in context" }), at: Date.now(), n: 1, r: 1 } } }),
+    );
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xs400", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.equal(bodies.length, 2, "one 400 on the excluded attempt, then one retry");
+    assert.ok(bodies[0].exclude_ids.includes("m1"), "the first attempt carried the latched id");
+    assert.equal(bodies[1].exclude_ids, undefined, "the retry stripped exclude_ids");
+    const block = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(block, /a genuinely new fact/, "recall still lands after the retry");
+    assert.doesNotMatch(block, /already in context/, "the re-served latched memory is still filtered client-side");
   } finally {
     await close();
   }

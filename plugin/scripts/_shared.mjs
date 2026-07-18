@@ -812,13 +812,16 @@ export function deleteLastRecallState(sessionId) {
 // fingerprint.
 //
 // State v2 shape (`<sessionId>.injected.json`):
-//   { "v": 2, "n": <prompt-counter>, "ids": { "<memId>": { "h", "at", "n" } } }
+//   { "v": 2, "n": <prompt-counter>, "ids": { "<memId>": { "h", "at", "n", "r" } } }
 //   - top-level `n`: a monotonic per-session prompt counter (bumped once per
 //     UserPromptSubmit by the prompt hook). Persisted even when nothing is
 //     injected, so the counter can't slide.
 //   - per-entry: `h` = content-identity hash (sentinel "" for MCP tool-reads,
 //     whose concise responses may truncate — content identity is unknowable),
-//     `at` = last-injected epoch ms, `n` = the counter value at injection.
+//     `at` = last-injected epoch ms, `n` = the counter value at injection,
+//     `r` = the pretool re-serve-with-unchanged-hash latch count (0 on any real
+//     (re-)injection; bumped by the pretool client filter). `r` is additive —
+//     an old plugin's normInjectedEntry drops it and degrades to no-latch.
 //
 // Suppression is WINDOWED, not forever (see injectedSuppressed): an entry stays
 // suppressed while within EITHER the time window (cooldownMs) OR the prompt
@@ -833,10 +836,17 @@ export function deleteLastRecallState(sessionId) {
 //   - the prompt hook excludes IN-COOLDOWN ids SERVER-side (exclude_ids via
 //     cooldownIds), freeing its top-k for memories the context does not
 //     already carry;
-//   - pretool filters CLIENT-side and content-aware — a memory whose content
-//     changed since injection (memory_update) hashes differently and passes,
-//     preserving the fingerprint doctrine that truncation/dedupe is a display
-//     budget, never identity.
+//   - pretool ALSO sends exclude_ids, but LATCHED (pretoolExcludeIds): a
+//     real-hash id is excluded only after it has been re-served ONCE with
+//     unchanged content (per-entry `r` >= 1). The first re-serve stays allowed
+//     so the CLIENT-side content-aware filter can catch a memory_update and
+//     resurface it (truncation/dedupe is a display budget, never identity);
+//     only an unchanged re-serve latches the id into server-side exclusion,
+//     which then holds until the cooldown windows lapse and the id is served
+//     and hash-checked again. A sentinel tool-read (`h === ""`) has no content
+//     identity to protect and latches immediately. Trade-off: a content update
+//     of a latched id stays invisible until its windows lapse (bounded by
+//     inject_cooldown_ms / inject_cooldown_prompts).
 //
 // Cleared whenever the context is rebuilt (startup/clear, compaction, session
 // end) and kept across a resume, whose context is intact — "already in
@@ -868,13 +878,14 @@ export function injectedIdentity(m) {
   return crypto.createHash("sha256").update(text).digest("hex").slice(0, 16);
 }
 
-/** Coerce a raw v2 ids-map entry into a well-formed { h, at, n } or null. */
+/** Coerce a raw v2 ids-map entry into a well-formed { h, at, n, r } or null. */
 function normInjectedEntry(e, fallbackAt) {
   if (!e || typeof e !== "object" || Array.isArray(e) || typeof e.h !== "string") return null;
   return {
     h: e.h,
     at: Number.isFinite(e.at) ? e.at : fallbackAt,
     n: Number.isFinite(e.n) ? e.n : 0,
+    r: Number.isFinite(e.r) ? e.r : 0,
   };
 }
 
@@ -910,12 +921,15 @@ export function readInjectedState(sessionId) {
 }
 
 /**
- * Record an injection into an in-memory state: ids[id] = { h, at: now, n } with
- * n stamped from the state's current prompt counter. Mutates and returns state.
+ * Record an injection into an in-memory state: ids[id] = { h, at: now, n, r: 0 }
+ * with n stamped from the state's current prompt counter. `r` (the pretool
+ * re-serve-with-unchanged-hash latch count) resets to 0 on any real
+ * (re-)injection: a fresh push means the content is back in context under its
+ * current identity, so the latch must be re-earned. Mutates and returns state.
  */
 export function recordInjected(state, id, h, now = Date.now()) {
   if (!state.ids) state.ids = {};
-  state.ids[id] = { h, at: now, n: Number.isFinite(state.n) ? state.n : 0 };
+  state.ids[id] = { h, at: now, n: Number.isFinite(state.n) ? state.n : 0, r: 0 };
   return state;
 }
 
@@ -1001,6 +1015,28 @@ export function cooldownIds(state, { now, cooldownMs, cooldownPrompts }) {
   const out = [];
   for (const [id, entry] of Object.entries(ids)) {
     if (injectedSuppressed(entry, null, { now, counter, cooldownMs, cooldownPrompts })) out.push(id);
+  }
+  return out;
+}
+
+/**
+ * The ids pretool sends as exclude_ids: the LATCHED subset of the in-cooldown
+ * ids. An entry rides exclude_ids only when the same window predicate as
+ * cooldownIds holds (reused verbatim, so the two never drift) AND it has earned
+ * the latch — either it is a sentinel tool-read (`h === ""`, no content identity
+ * to protect) or it has already been re-served once with unchanged content
+ * (`r >= 1`). The FIRST unchanged re-serve of a real-hash entry stays OFF this
+ * list so pretool's content-aware client filter can still catch a memory_update
+ * and resurface it; only after that pass does the id latch into server-side
+ * exclusion (until its windows lapse and it is re-served, hash-checked again).
+ */
+export function pretoolExcludeIds(state, { now, cooldownMs, cooldownPrompts }) {
+  const ids = state && state.ids && typeof state.ids === "object" ? state.ids : {};
+  const counter = Number.isFinite(state?.n) ? state.n : 0;
+  const out = [];
+  for (const [id, entry] of Object.entries(ids)) {
+    if (!injectedSuppressed(entry, null, { now, counter, cooldownMs, cooldownPrompts })) continue;
+    if (entry.h === "" || (entry.r || 0) >= 1) out.push(id);
   }
   return out;
 }
