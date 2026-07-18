@@ -5182,6 +5182,67 @@ test("cross-surface dedupe: pretool latches an unchanged re-serve into exclude_i
   }
 });
 
+test("cross-surface dedupe: a pretool-latched (and pretool-injected) id rides the prompt hook's exclude_ids", async () => {
+  // The injected-id ledger is shared across hook surfaces, so an id handled on
+  // the PRETOOL surface also rides the PROMPT hook's server-side exclude_ids on
+  // the next UserPromptSubmit: both the pretool-latched m1 and m2 (injected only
+  // by pretool). One ledger feeds both hooks, not two independent ones. (The old
+  // pre-branch cross-surface test asserted this path directly; the latch rewrite
+  // left it only transitively covered.)
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const searches = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    searches.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    const n = searches.length;
+    if (n === 1) {
+      res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "prompt-injected fact" }, 0.9)])));
+    } else if (n === 2) {
+      res.end(
+        JSON.stringify(
+          searchBody([
+            sm({ id: "m1", content: "prompt-injected fact" }, 0.95),
+            sm({ id: "m2", content: "file-local convention" }, 0.9),
+          ]),
+        ),
+      );
+    } else {
+      res.end(JSON.stringify(searchBody([sm({ id: "m3", content: "third fact" }, 0.9)])));
+    }
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    // Prompt injects m1; the pretool pass re-serves m1 UNCHANGED (latching it)
+    // and injects a fresh m2.
+    await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "xs3", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      env,
+    );
+    await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xs3", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      env,
+    );
+    const state = JSON.parse(readFileSync(INJ_STATE(cache, "xs3"), "utf8"));
+    assert.equal(state.ids.m1.r, 1, "the re-served m1 is latched on the pretool surface");
+
+    // The next UserPromptSubmit excludes BOTH server-side: the pretool-latched
+    // m1 and the pretool-only-injected m2.
+    await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "xs3", cwd: __dirname, prompt: "and what about session refresh flows here" }),
+      env,
+    );
+    const promptExclude = searches[2].exclude_ids || [];
+    assert.ok(promptExclude.includes("m1"), "the pretool-latched id rides the prompt hook's exclude_ids");
+    assert.ok(promptExclude.includes("m2"), "the pretool-injected id rides the prompt hook's exclude_ids");
+  } finally {
+    await close();
+  }
+});
+
 test("cross-surface dedupe: a content-updated re-serve re-injects and is never latched", async () => {
   // A memory_update between injections changes the content hash, so the re-serve
   // is NOT suppressed: it re-injects, recordInjected resets `r` to 0, and the id

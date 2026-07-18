@@ -108,7 +108,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
     "key": "inject_pretool_min_score",
     "type": "number",
     "default": 0,
-    "description": "Floor on the final ranked (composite) score (>=) for a PreToolUse injection; enforced server-side via min_rank_score.",
+    "description": "Floor on the final ranked (composite) score — the score shown in the activity feed — for a PreToolUse injection. The Claude Code plugin enforces it server-side via min_rank_score (floored hits appear in the feed marked as filtered); other integrations may still apply it as a pre-rank fused-score floor.",
     "min": 0
   },
   {
@@ -193,7 +193,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
     "key": "inject_recall_min_score",
     "type": "number",
     "default": 0,
-    "description": "Floor on the final ranked (composite) score (>=) for a recall injection; enforced server-side via min_rank_score.",
+    "description": "Floor on the final ranked (composite) score — the score shown in the activity feed — for a recall injection. The Claude Code plugin enforces it server-side via min_rank_score (floored hits appear in the feed marked as filtered); other integrations may still apply it as a pre-rank fused-score floor.",
     "min": 0
   },
   {

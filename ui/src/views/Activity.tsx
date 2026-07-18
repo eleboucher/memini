@@ -35,7 +35,13 @@ function headline(ev: ActivityEvent): string {
       // "Served" counts only what the recall returned — floored hits are logged
       // for visibility (rendered dimmed below) but were never served.
       const served = ev.memories?.filter((m) => !m.filtered).length ?? 0
-      return served === 0 ? 'found nothing' : `served ${served} ${served === 1 ? 'memory' : 'memories'}`
+      if (served === 0) {
+        // With floored rows dimmed below, "found nothing" would contradict
+        // them; surface the floored count instead of an empty verdict.
+        const floored = ev.memories?.filter((m) => m.filtered).length ?? 0
+        return floored > 0 ? `served 0 · ${floored} floored` : 'found nothing'
+      }
+      return `served ${served} ${served === 1 ? 'memory' : 'memories'}`
     }
     case 'briefing':
       return `session briefing · ${n} ${n === 1 ? 'memory' : 'memories'}`

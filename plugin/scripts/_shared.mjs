@@ -431,7 +431,7 @@ export async function getBriefing(namespace, opts = {}) {
 //   MEMINI_INJECT_BRIEFING_MAX_TOK  hard ceiling on briefing injection tokens
 //   MEMINI_INJECT_PRETOOL_ITEMS     max items per file in PreToolUse
 //   MEMINI_INJECT_PRETOOL_MAX_TOK   hard ceiling on per-tool injection tokens
-//   MEMINI_INJECT_PRETOOL_MIN_SCORE floor on the fused score (>=)
+//   MEMINI_INJECT_PRETOOL_MIN_SCORE floor on the final ranked composite score
 //   MEMINI_INJECT_PRETOOL_TOOLS     pipe-separated tool allowlist
 //   MEMINI_INJECT_LABELS            comma-separated label toggles: tier,
 //                                   confidence, age, reason
@@ -463,7 +463,7 @@ export function envEnabled(name, defaultOn, env = process.env) {
 
 /**
  * floatEnv parses a non-negative float env var and returns `default` when
- * unset or malformed. Used for min_score.
+ * unset or malformed. A generic parser (rank-score floors, etc.).
  */
 export function floatEnv(name, defaultValue) {
   const raw = process.env[name];
