@@ -1180,7 +1180,7 @@ export interface components {
              */
             inject_pretool_max_tok: number;
             /**
-             * @description Floor on the fused score (>=) for a PreToolUse injection.
+             * @description Floor on the final ranked (composite) score (>=) for a PreToolUse injection; enforced server-side via min_rank_score.
              * @default 0
              */
             inject_pretool_min_score: number;
@@ -1242,7 +1242,7 @@ export interface components {
              */
             inject_recall_max_tok: number;
             /**
-             * @description Floor on the fused score (>=) for a recall injection.
+             * @description Floor on the final ranked (composite) score (>=) for a recall injection; enforced server-side via min_rank_score.
              * @default 0
              */
             inject_recall_min_score: number;

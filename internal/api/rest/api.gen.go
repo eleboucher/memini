@@ -750,7 +750,7 @@ type ClientSettings struct {
 	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped.
 	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
 
-	// InjectPretoolMinScore Floor on the fused score (>=) for a PreToolUse injection.
+	// InjectPretoolMinScore Floor on the final ranked (composite) score (>=) for a PreToolUse injection; enforced server-side via min_rank_score.
 	InjectPretoolMinScore *float32 `json:"inject_pretool_min_score,omitempty"`
 
 	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection.
@@ -759,7 +759,7 @@ type ClientSettings struct {
 	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped.
 	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
 
-	// InjectRecallMinScore Floor on the fused score (>=) for a recall injection.
+	// InjectRecallMinScore Floor on the final ranked (composite) score (>=) for a recall injection; enforced server-side via min_rank_score.
 	InjectRecallMinScore *float32 `json:"inject_recall_min_score,omitempty"`
 
 	// InlineExtract Inject the directive asking the agent to save durable facts via memory_remember.
@@ -1277,7 +1277,7 @@ type SettingsDefaultsResponse struct {
 	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped.
 	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
 
-	// InjectPretoolMinScore Floor on the fused score (>=) for a PreToolUse injection.
+	// InjectPretoolMinScore Floor on the final ranked (composite) score (>=) for a PreToolUse injection; enforced server-side via min_rank_score.
 	InjectPretoolMinScore *float32 `json:"inject_pretool_min_score,omitempty"`
 
 	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection.
@@ -1286,7 +1286,7 @@ type SettingsDefaultsResponse struct {
 	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped.
 	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
 
-	// InjectRecallMinScore Floor on the fused score (>=) for a recall injection.
+	// InjectRecallMinScore Floor on the final ranked (composite) score (>=) for a recall injection; enforced server-side via min_rank_score.
 	InjectRecallMinScore *float32 `json:"inject_recall_min_score,omitempty"`
 
 	// InlineExtract Inject the directive asking the agent to save durable facts via memory_remember.

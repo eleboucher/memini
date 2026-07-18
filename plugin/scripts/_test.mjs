@@ -2218,10 +2218,12 @@ test("pre-tool-use.mjs: MEMINI_INJECT_PRETOOL_ITEMS caps items per file", async 
   }
 });
 
-test("pre-tool-use.mjs: MEMINI_INJECT_PRETOOL_MIN_SCORE drops low-scored hits", async () => {
+test("pre-tool-use.mjs: MEMINI_INJECT_PRETOOL_MIN_SCORE forwards the composite floor server-side", async () => {
   const cache = freshCache();
   await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
-  const { url, close } = await startMockServer((req, res) => {
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    bodies.push(JSON.parse(body));
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify(searchBody([sm({ content: "strong" }, 0.9), sm({ content: "weak" }, 0.3)])));
   });
@@ -2231,9 +2233,11 @@ test("pre-tool-use.mjs: MEMINI_INJECT_PRETOOL_MIN_SCORE drops low-scored hits", 
       JSON.stringify({ session_id: "s1", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "/tmp/foo" } }),
       { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_MIN_SCORE: "0.5" },
     );
+    assert.equal(bodies[0].min_rank_score, 0.5, "composite-scale floor forwarded server-side");
+    assert.equal(bodies[0].min_score, undefined, "the fused-scale floor is no longer sent");
     const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
     assert.match(ctx, /strong/);
-    assert.doesNotMatch(ctx, /weak/);
+    assert.match(ctx, /weak/, "the server enforces the floor; an in-range response is not re-filtered client-side");
   } finally {
     await close();
   }
@@ -4556,10 +4560,11 @@ test("user-prompt-submit.mjs: MEMINI_RECALL_LIMIT and MEMINI_INJECT_RECALL_MIN_S
     );
     const body = JSON.parse(calls[0]);
     assert.equal(body.limit, 1);
-    assert.equal(body.min_score, 0.5, "floor forwarded server-side");
+    assert.equal(body.min_rank_score, 0.5, "composite-scale floor forwarded server-side");
+    assert.equal(body.min_score, undefined, "the fused-scale floor is no longer sent");
     const ctxText = JSON.parse(stdout).hookSpecificOutput.additionalContext;
     assert.match(ctxText, /high scorer/);
-    assert.doesNotMatch(ctxText, /low scorer/, "client-side floor drops the low hit even if the server returned it");
+    assert.match(ctxText, /low scorer/, "the server enforces the floor; an in-range response is not re-filtered client-side");
   } finally {
     await close();
   }
@@ -4718,6 +4723,73 @@ test("user-prompt-submit.mjs: a server that 400s exclude_ids gets one retry with
     assert.equal(bodies[2].exclude_ids, undefined, "the retry dropped the field");
     const ctxText = JSON.parse(second.stdout).hookSpecificOutput.additionalContext;
     assert.match(ctxText, /fact number 3/, "recall still lands after the retry");
+  } finally {
+    await close();
+  }
+});
+
+test("postSearch: a server that 400s min_rank_score gets one retry without it", async () => {
+  // Older servers (DisallowUnknownFields) reject min_rank_score the same way
+  // they reject exclude_ids. The generalized retry strips every newer-than-server
+  // optional field and re-POSTs once; the composite floor then degrades to the
+  // client-side fallback for that old server.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    const parsed = JSON.parse(body);
+    bodies.push(parsed);
+    res.setHeader("Content-Type", "application/json");
+    if (parsed.min_rank_score !== undefined) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ error: "unknown field min_rank_score" }));
+      return;
+    }
+    res.end(JSON.stringify(searchBody([sm({ id: "hi", content: "high scorer" }, 0.9), sm({ id: "lo", content: "low scorer" }, 0.3)])));
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_RECALL_MIN_SCORE: "0.5" };
+  try {
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "p400rank", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      env,
+    );
+    assert.equal(bodies.length, 2, "400 on the floored attempt, then one retry");
+    assert.equal(bodies[0].min_rank_score, 0.5, "the first attempt carried the composite floor");
+    assert.equal(bodies[1].min_rank_score, undefined, "the retry stripped min_rank_score");
+    assert.equal(bodies[1].exclude_ids, undefined, "the retry stripped exclude_ids too");
+    const ctxText = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(ctxText, /high scorer/, "recall still lands after the retry");
+    assert.doesNotMatch(ctxText, /low scorer/, "the client-side fallback floor drops the sub-floor hit for the old server");
+  } finally {
+    await close();
+  }
+});
+
+test("postSearch: a min_rank_score >= 1 knob sends no floor and filters client-side", async () => {
+  // The server rejects a composite floor of >= 1 as out of range, and
+  // ClientSettings.validate only enforces >= 0, so a mis-set knob must not 400
+  // every search: clamp to a client-only floor (send nothing, filter below).
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    bodies.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "hi", content: "high scorer" }, 1), sm({ id: "lo", content: "low scorer" }, 0.5)])));
+  });
+  try {
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "p1floor", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_RECALL_MIN_SCORE: "1" },
+    );
+    assert.equal(bodies.length, 1, "no server-side floor, so no 400 and no retry");
+    assert.equal(bodies[0].min_rank_score, undefined, "a >= 1 floor is never sent server-side");
+    assert.equal(bodies[0].min_score, undefined, "the fused-scale floor is no longer sent");
+    const ctxText = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(ctxText, /high scorer/, "a score at the floor passes");
+    assert.doesNotMatch(ctxText, /low scorer/, "a sub-floor hit is dropped client-side");
   } finally {
     await close();
   }
