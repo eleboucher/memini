@@ -135,6 +135,13 @@ func (s *Service) logRecallEvent(ctx context.Context, in RecallInput, results []
 	if in.Source != "" {
 		detail["source"] = in.Source
 	}
+	// How many candidates a dedupe pass suppressed: exclude_ids carries the
+	// in-cooldown ids a surface asked the server to drop. Recorded on every row
+	// (including the sentinel) so the feed can show what a cooldown pass held
+	// back. Absent, not zero, when the caller sent none.
+	if len(in.ExcludeIDs) > 0 {
+		detail["excluded_count"] = len(in.ExcludeIDs)
+	}
 	base := store.Event{
 		OpID:      s.newID(),
 		Kind:      store.EventRecall,
