@@ -54,6 +54,9 @@ func TestDefaultClientSettings(t *testing.T) {
 		"inject_briefing_max_tok":     {d.InjectBriefingMaxTok, 0},
 		"inject_pretool_items":        {d.InjectPretoolItems, 3},
 		"inject_pretool_max_tok":      {d.InjectPretoolMaxTok, 0},
+		"inject_pretool_gate_ms":      {d.InjectPretoolGateMs, 90000},
+		"inject_cooldown_ms":          {d.InjectCooldownMs, 1800000},
+		"inject_cooldown_prompts":     {d.InjectCooldownPrompts, 3},
 		"recall_limit":                {d.RecallLimit, 3},
 		"inject_recall_max_tok":       {d.InjectRecallMaxTok, 0},
 		"min_capture_chars":           {d.MinCaptureChars, 0},
@@ -161,6 +164,12 @@ func TestClientSettingsValidate(t *testing.T) {
 		{"inject_briefing_max_tok negative is invalid", store.ClientSettings{InjectBriefingMaxTok: new(-1)}, true},
 		{"inject_pretool_items negative is invalid", store.ClientSettings{InjectPretoolItems: new(-1)}, true},
 		{"inject_pretool_max_tok negative is invalid", store.ClientSettings{InjectPretoolMaxTok: new(-1)}, true},
+		{"inject_pretool_gate_ms = 0 is valid (boundary)", store.ClientSettings{InjectPretoolGateMs: new(0)}, false},
+		{"inject_pretool_gate_ms negative is invalid", store.ClientSettings{InjectPretoolGateMs: new(-1)}, true},
+		{"inject_cooldown_ms = 0 is valid (boundary)", store.ClientSettings{InjectCooldownMs: new(0)}, false},
+		{"inject_cooldown_ms negative is invalid", store.ClientSettings{InjectCooldownMs: new(-1)}, true},
+		{"inject_cooldown_prompts = 0 is valid (boundary)", store.ClientSettings{InjectCooldownPrompts: new(0)}, false},
+		{"inject_cooldown_prompts negative is invalid", store.ClientSettings{InjectCooldownPrompts: new(-1)}, true},
 		{"recall_limit negative is invalid", store.ClientSettings{RecallLimit: new(-1)}, true},
 		{"inject_recall_max_tok negative is invalid", store.ClientSettings{InjectRecallMaxTok: new(-1)}, true},
 		{"min_capture_chars negative is invalid", store.ClientSettings{MinCaptureChars: new(-1)}, true},
@@ -296,6 +305,41 @@ func TestMergeClientSettings(t *testing.T) {
 		}
 		if sources["request_timeout_ms"] != "key:batch" {
 			t.Fatalf("sources[request_timeout_ms] = %q, want %q", sources["request_timeout_ms"], "key:batch")
+		}
+	})
+
+	// The injection-cooldown knobs are ordinary int fields and must layer like
+	// any other: a global default, a per-key override on top, and the built-in
+	// default when neither touches them.
+	t.Run("injection-cooldown knobs layer global-then-key like any other field", func(t *testing.T) {
+		global := store.SettingsLayer{Source: "global", S: store.ClientSettings{
+			InjectCooldownMs:    new(600000), // the fleet shortens the time window
+			InjectPretoolGateMs: new(30000),  // untouched by key, must survive from global
+		}}
+		key := store.SettingsLayer{Source: "key:bot", S: store.ClientSettings{
+			InjectCooldownMs:      new(120000), // overrides global
+			InjectCooldownPrompts: new(1),      // set only by key
+		}}
+		got, sources := store.MergeClientSettings(defaults, global, key)
+
+		if got.InjectCooldownMs == nil || *got.InjectCooldownMs != 120000 {
+			t.Fatalf("inject_cooldown_ms = %v, want 120000 (the last layer to set it)", got.InjectCooldownMs)
+		}
+		if sources["inject_cooldown_ms"] != "key:bot" {
+			t.Fatalf("sources[inject_cooldown_ms] = %q, want %q", sources["inject_cooldown_ms"], "key:bot")
+		}
+		if got.InjectCooldownPrompts == nil || *got.InjectCooldownPrompts != 1 {
+			t.Fatalf("inject_cooldown_prompts = %v, want 1 (set only by key)", got.InjectCooldownPrompts)
+		}
+		if sources["inject_cooldown_prompts"] != "key:bot" {
+			t.Fatalf("sources[inject_cooldown_prompts] = %q, want %q", sources["inject_cooldown_prompts"], "key:bot")
+		}
+		// Set only by global; the key layer left it nil, so global must win.
+		if got.InjectPretoolGateMs == nil || *got.InjectPretoolGateMs != 30000 {
+			t.Fatalf("inject_pretool_gate_ms = %v, want 30000 (global's value, untouched by key)", got.InjectPretoolGateMs)
+		}
+		if sources["inject_pretool_gate_ms"] != "global" {
+			t.Fatalf("sources[inject_pretool_gate_ms] = %q, want %q", sources["inject_pretool_gate_ms"], "global")
 		}
 	})
 

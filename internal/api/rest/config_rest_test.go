@@ -1071,9 +1071,12 @@ func TestSettingsRoundTripAcrossTheWire(t *testing.T) {
 	// A deployment behind a slow cross-encoder raises the client ceiling
 	// fleet-wide, rather than asking every user to export MEMINI_TIMEOUT_MS.
 	want := map[string]any{
-		"request_timeout_ms":   float64(30000),
-		"auto_save_min_events": float64(7),
-		"recall_limit":         float64(9),
+		"request_timeout_ms":      float64(30000),
+		"auto_save_min_events":    float64(7),
+		"recall_limit":            float64(9),
+		"inject_pretool_gate_ms":  float64(45000),
+		"inject_cooldown_ms":      float64(600000),
+		"inject_cooldown_prompts": float64(5),
 	}
 	rec := do(t, h, http.MethodPut, "/v1/settings/defaults", "", "admin-secret", want)
 	if rec.Code != http.StatusOK {

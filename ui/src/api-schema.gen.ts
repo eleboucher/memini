@@ -1187,10 +1187,25 @@ export interface components {
              */
             inject_pretool_tools: string[];
             /**
-             * @description Suppress re-injecting an unchanged PreToolUse recall block for a file already injected this session. The recall call still runs; only the duplicate injection is skipped.
+             * @description Skip the PreToolUse recall server call entirely for a file whose last call was younger than this many milliseconds. 0 always calls.
+             * @default 90000
+             */
+            inject_pretool_gate_ms: number;
+            /**
+             * @description Suppress re-injecting a recalled memory that is still within its injection cooldown window (inject_cooldown_ms / inject_cooldown_prompts); with both windows 0, an unchanged memory stays suppressed for the rest of the session. This gates the injection only — whether the PreToolUse recall call runs at all is governed separately by inject_pretool_gate_ms.
              * @default true
              */
             inject_dedupe: boolean;
+            /**
+             * @description Time window (milliseconds) within which an already-injected memory is not re-injected; 0 disables the time dimension.
+             * @default 1800000
+             */
+            inject_cooldown_ms: number;
+            /**
+             * @description Prompt-count window within which an already-injected memory is not re-injected; 0 disables the prompt dimension.
+             * @default 3
+             */
+            inject_cooldown_prompts: number;
             /**
              * @description Which annotation labels to render alongside an injected memory.
              * @default []

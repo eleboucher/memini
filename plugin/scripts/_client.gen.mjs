@@ -265,7 +265,10 @@ var BEHAVIOR_KNOBS = [
     kind: "list",
     default: ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep"]
   },
+  { envName: "MEMINI_INJECT_PRETOOL_GATE_MS", wireKey: "inject_pretool_gate_ms", kind: "int", default: 9e4 },
   { envName: "MEMINI_INJECT_DEDUPE", wireKey: "inject_dedupe", kind: "bool", default: true },
+  { envName: "MEMINI_INJECT_COOLDOWN_MS", wireKey: "inject_cooldown_ms", kind: "int", default: 18e5 },
+  { envName: "MEMINI_INJECT_COOLDOWN_PROMPTS", wireKey: "inject_cooldown_prompts", kind: "int", default: 3 },
   { envName: "MEMINI_INJECT_LABELS", wireKey: "inject_labels", kind: "list", default: [] },
   { envName: "MEMINI_RECALL", wireKey: "recall", kind: "bool", default: true },
   { envName: "MEMINI_CAPTURE", wireKey: "capture", kind: "bool", default: true },
