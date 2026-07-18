@@ -343,6 +343,60 @@ test("memoizeAsync calls the underlying fn again immediately after first use exp
   assert.equal(await memo(), 2);
 });
 
+test("memoizeAsync dedupes concurrent in-flight callers", async () => {
+  let calls = 0;
+  let time = 0;
+  let resolveFn;
+  const memo = memoizeAsync(
+    () => {
+      calls++;
+      return new Promise((resolve) => {
+        resolveFn = resolve;
+      });
+    },
+    100,
+    () => time,
+  );
+
+  const pending = [memo(), memo(), memo(), memo(), memo()];
+  assert.equal(calls, 1, "only one in-flight call");
+
+  resolveFn(42);
+  assert.deepEqual(await Promise.all(pending), [42, 42, 42, 42, 42]);
+
+  time = 150;
+  const nextCall = memo();
+  assert.equal(calls, 2, "refreshed after TTL");
+  resolveFn(99);
+  assert.equal(await nextCall, 99);
+});
+
+test("memoizeAsync clears the cache on rejection", async () => {
+  let calls = 0;
+  let time = 0;
+  let rejectFn;
+  const memo = memoizeAsync(
+    () => {
+      calls++;
+      return new Promise((_, reject) => {
+        rejectFn = reject;
+      });
+    },
+    100,
+    () => time,
+  );
+
+  const first = memo();
+  assert.equal(calls, 1);
+  rejectFn(new Error("boom"));
+  await assert.rejects(first, /boom/);
+
+  const second = memo();
+  assert.equal(calls, 2, "rejected promise did not poison the cache");
+  rejectFn(new Error("still down"));
+  await assert.rejects(second, /still down/);
+});
+
 test("extractPartsText skips synthetic and ignored parts", () => {
   const parts = [
     { type: "text", text: "real question", synthetic: false },

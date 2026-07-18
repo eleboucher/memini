@@ -443,15 +443,25 @@ export function effectiveConfig(cfg, hs) {
 // shape MeminiPlugin uses to memoize the handshake per session. `now` is
 // injectable so tests can drive expiry without a real 10-minute sleep.
 // Exported for testing.
+//
+// Caches the promise, not the resolved value, so concurrent callers share
+// one in-flight call. Clears on rejection so a transient failure doesn't
+// poison the TTL window.
 export function memoizeAsync(fn, ttlMs, now = Date.now) {
-  let cached = null; // { value, expiresAt }
+  let cached = null; // { promise, expiresAt }
   return async () => {
     const t = now();
     if (!cached || t >= cached.expiresAt) {
-      const value = await fn();
-      cached = { value, expiresAt: t + ttlMs };
+      const promise = fn();
+      cached = { promise, expiresAt: t + ttlMs };
+      promise.then(
+        () => {},
+        () => {
+          if (cached && cached.promise === promise) cached = null;
+        },
+      );
     }
-    return cached.value;
+    return cached.promise;
   };
 }
 
