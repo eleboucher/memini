@@ -25,6 +25,7 @@ export {
   mergeInjectedStates,
   injectedSuppressed,
   cooldownIds,
+  pretoolExcludeIds,
   type InjectedEntry,
   type InjectedState,
   type InjectedStateV2,

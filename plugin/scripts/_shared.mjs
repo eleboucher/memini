@@ -52,6 +52,7 @@ import {
   mergeInjectedStates,
   injectedSuppressed,
   cooldownIds,
+  pretoolExcludeIds,
   // enforce/ — budget
   approxTokens,
   fitByTokens,
@@ -81,6 +82,7 @@ export {
   recordInjected,
   injectedSuppressed,
   cooldownIds,
+  pretoolExcludeIds,
   approxTokens,
   fitByTokens,
   RECALL_DETAIL_HEADER,
@@ -871,13 +873,16 @@ export function deleteLastRecallState(sessionId) {
 // fingerprint.
 //
 // State v2 shape (`<sessionId>.injected.json`):
-//   { "v": 2, "n": <prompt-counter>, "ids": { "<memId>": { "h", "at", "n" } } }
+//   { "v": 2, "n": <prompt-counter>, "ids": { "<memId>": { "h", "at", "n", "r" } } }
 //   - top-level `n`: a monotonic per-session prompt counter (bumped once per
 //     UserPromptSubmit by the prompt hook). Persisted even when nothing is
 //     injected, so the counter can't slide.
 //   - per-entry: `h` = content-identity hash (sentinel "" for MCP tool-reads,
 //     whose concise responses may truncate — content identity is unknowable),
-//     `at` = last-injected epoch ms, `n` = the counter value at injection.
+//     `at` = last-injected epoch ms, `n` = the counter value at injection,
+//     `r` = the pretool re-serve-with-unchanged-hash latch count (0 on any real
+//     (re-)injection; bumped by the pretool client filter). `r` is additive —
+//     an old plugin's normInjectedEntry drops it and degrades to no-latch.
 //
 // Suppression is WINDOWED, not forever (see injectedSuppressed): an entry stays
 // suppressed while within EITHER the time window (cooldownMs) OR the prompt
@@ -892,10 +897,17 @@ export function deleteLastRecallState(sessionId) {
 //   - the prompt hook excludes IN-COOLDOWN ids SERVER-side (exclude_ids via
 //     cooldownIds), freeing its top-k for memories the context does not
 //     already carry;
-//   - pretool filters CLIENT-side and content-aware — a memory whose content
-//     changed since injection (memory_update) hashes differently and passes,
-//     preserving the fingerprint doctrine that truncation/dedupe is a display
-//     budget, never identity.
+//   - pretool ALSO sends exclude_ids, but LATCHED (pretoolExcludeIds): a
+//     real-hash id is excluded only after it has been re-served ONCE with
+//     unchanged content (per-entry `r` >= 1). The first re-serve stays allowed
+//     so the CLIENT-side content-aware filter can catch a memory_update and
+//     resurface it (truncation/dedupe is a display budget, never identity);
+//     only an unchanged re-serve latches the id into server-side exclusion,
+//     which then holds until the cooldown windows lapse and the id is served
+//     and hash-checked again. A sentinel tool-read (`h === ""`) has no content
+//     identity to protect and latches immediately. Trade-off: a content update
+//     of a latched id stays invisible until its windows lapse (bounded by
+//     inject_cooldown_ms / inject_cooldown_prompts).
 //
 // Cleared whenever the context is rebuilt (startup/clear, compaction, session
 // end) and kept across a resume, whose context is intact — "already in

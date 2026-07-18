@@ -39,6 +39,7 @@ import {
   postInjected,
   injectedReport,
   approxTokens,
+  pretoolExcludeIds,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -136,16 +137,26 @@ async function main() {
   let degradedNote = "";
 
   // Cross-surface dedupe: memories the briefing or a prompt recall (or an
-  // earlier pretool block) already put into this session's context are
-  // filtered out CLIENT-side and content-aware — a memory whose content
-  // changed since injection hashes differently and passes, so in-place
-  // updates still resurface (deliberately NOT exclude_ids: a server-side id
-  // exclusion could never return the updated content). The map accumulates
-  // ACROSS the files of this one call, so file 2 doesn't repeat what file 1
-  // just injected. Shares the inject_dedupe knob with the per-file
-  // fingerprint below — off restores the prior always-inject behavior.
-  // v2 state { n, ids }. Suppression is WINDOWED (injectedSuppressed): an entry
-  // is skipped only while within the time OR prompt cooldown window, so a fact
+  // earlier pretool block) already put into this session's context should not
+  // be re-injected. TWO layers, both gated by inject_dedupe (off restores the
+  // prior always-inject behavior and never touches the state file):
+  //   - SERVER-side, LATCHED: excludeIds = pretoolExcludeIds(state) below tells
+  //     the server to drop ids already re-served once with unchanged content
+  //     (per-entry `r` >= 1) or recorded as a sentinel tool-read (`h === ""`).
+  //     The FIRST unchanged re-serve of a real-hash id is deliberately NOT
+  //     excluded so the CLIENT-side content-aware filter can still catch a
+  //     memory_update and resurface it; only that unchanged pass latches the id
+  //     (bumps `r`) into server-side exclusion, freeing a result slot and
+  //     stopping the repeat activity-feed log. Trade-off: a content update of a
+  //     latched id stays invisible until its cooldown windows lapse.
+  //   - CLIENT-side, content-aware (injectedSuppressed): the belt-and-braces
+  //     filter over whatever the server returns — a hit whose content changed
+  //     since injection hashes differently and passes (in-place updates still
+  //     resurface); an UNCHANGED suppressed hit gets its `r` bumped here, which
+  //     is what arms the server-side latch above on the next call.
+  // The state accumulates ACROSS the files of this one call, so file 2 doesn't
+  // repeat what file 1 just injected. Suppression is WINDOWED: an entry is
+  // skipped only while within the time OR prompt cooldown window, so a fact
   // re-surfaces once the conversation has moved on. The counter is READ-ONLY
   // here — PreToolUse never bumps `n` (only UserPromptSubmit does); pretool
   // rides whatever prompt count the prompt hook has recorded.
@@ -188,6 +199,11 @@ async function main() {
       minRankScore,
       source: "pretool",
       maxTokens,
+      // Latched server-side dedupe: exclude ids already re-served once unchanged
+      // (or sentinel tool-reads). Recomputed per file — file 1's injections may
+      // have latched an id the loop then excludes for file 2. On an old server
+      // postSearch strips this on a 400 and the client filter still covers it.
+      excludeIds: pretoolExcludeIds(injectedState, { now, cooldownMs, cooldownPrompts }),
     });
     // An actual server call just happened for this file: refresh `at` (the
     // gate's clock) NOW, before any early-out. It refreshes on EVERY real call
@@ -211,17 +227,24 @@ async function main() {
     const hits = fresh.filter((h) => {
       const id = h?.memory?.id;
       const entry = typeof id === "string" ? injectedState.ids[id] : undefined;
+      const identity = injectedIdentity(h);
       // Windowed, content-aware suppression (injectedSuppressed): an entry
       // whose content changed since injection re-injects; a sentinel tool-read
       // stays suppressed; otherwise it rides the time/prompt cooldown windows
       // and is re-admitted once BOTH have lapsed. The counter is the read-only
       // prompt count the prompt hook recorded (PreToolUse never bumps it).
-      return !injectedSuppressed(entry, injectedIdentity(h), {
-        now,
-        counter: injectedState.n,
-        cooldownMs,
-        cooldownPrompts,
-      });
+      if (!injectedSuppressed(entry, identity, { now, counter: injectedState.n, cooldownMs, cooldownPrompts })) return true;
+      // Suppressing an UNCHANGED-content re-serve (not a sentinel, not a content
+      // update) latches the id: bump `r` so the NEXT call excludes it
+      // server-side via pretoolExcludeIds. Capped at 9 — it's a "has re-served"
+      // flag, not a running total. Content-changed re-serves aren't suppressed
+      // here (they re-inject and recordInjected resets `r`); sentinels already
+      // ride exclude_ids and have no content identity to protect.
+      if (entry && entry.h !== "" && entry.h === identity) {
+        entry.r = Math.min((entry.r || 0) + 1, 9);
+        injectedChanged = true;
+      }
+      return false;
     });
     // Only the filter's own drops count as `seen` — turn-echo drops are
     // capture hygiene, not suppression.

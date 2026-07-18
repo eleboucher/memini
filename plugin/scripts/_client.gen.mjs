@@ -572,7 +572,8 @@ function normInjectedEntry(e, fallbackAt) {
   return {
     h: e.h,
     at: Number.isFinite(e.at) ? e.at : fallbackAt,
-    n: Number.isFinite(e.n) ? e.n : 0
+    n: Number.isFinite(e.n) ? e.n : 0,
+    ...Number.isFinite(e.r) ? { r: e.r } : {}
   };
 }
 function normalizeInjectedState(raw, now = Date.now()) {
@@ -594,7 +595,7 @@ function normalizeInjectedState(raw, now = Date.now()) {
 }
 function recordInjected(state, id, h, now = Date.now()) {
   if (!state.ids) state.ids = {};
-  state.ids[id] = { h, at: now, n: Number.isFinite(state.n) ? state.n : 0 };
+  state.ids[id] = { h, at: now, n: Number.isFinite(state.n) ? state.n : 0, r: 0 };
   return state;
 }
 function mergeInjectedStates(disk, mem, now = Date.now()) {
@@ -631,6 +632,16 @@ function cooldownIds(state, { now, cooldownMs, cooldownPrompts }) {
   const out = [];
   for (const [id, entry] of Object.entries(ids)) {
     if (injectedSuppressed(entry, null, { now, counter, cooldownMs, cooldownPrompts })) out.push(id);
+  }
+  return out;
+}
+function pretoolExcludeIds(state, { now, cooldownMs, cooldownPrompts }) {
+  const ids = state && state.ids && typeof state.ids === "object" ? state.ids : {};
+  const counter = Number.isFinite(state?.n) ? state.n : 0;
+  const out = [];
+  for (const [id, entry] of Object.entries(ids)) {
+    if (!injectedSuppressed(entry, null, { now, counter, cooldownMs, cooldownPrompts })) continue;
+    if (entry.h === "" || (entry.r || 0) >= 1) out.push(id);
   }
   return out;
 }
@@ -798,6 +809,7 @@ export {
   normalizeNamespace,
   overrideKey,
   performHandshake,
+  pretoolExcludeIds,
   pretoolFingerprint,
   processCwd,
   readBootstrap,

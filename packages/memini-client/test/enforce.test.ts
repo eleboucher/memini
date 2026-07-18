@@ -16,6 +16,7 @@ import {
   mergeInjectedStates,
   injectedSuppressed,
   cooldownIds,
+  pretoolExcludeIds,
 } from "../src/enforce/seen.js";
 import { approxTokens, fitByTokens } from "../src/enforce/budget.js";
 import {
@@ -109,14 +110,36 @@ test("normalizeInjectedState: v2 reads verbatim (junk skipped), v1 flat file mig
   }
 });
 
-test("recordInjected stamps {h, at, n} from the state's counter and mutates in place", () => {
+test("recordInjected stamps {h, at, n, r: 0} from the state's counter and mutates in place", () => {
   const state: any = { n: 4, ids: {} };
   assert.equal(recordInjected(state, "m1", "hash-1", 1234), state);
-  assert.deepEqual(state.ids.m1, { h: "hash-1", at: 1234, n: 4 });
+  assert.deepEqual(state.ids.m1, { h: "hash-1", at: 1234, n: 4, r: 0 });
   // A state without ids (or a finite n) still records.
   const bare: any = {};
   recordInjected(bare, "m2", "", 99);
-  assert.deepEqual(bare.ids.m2, { h: "", at: 99, n: 0 });
+  assert.deepEqual(bare.ids.m2, { h: "", at: 99, n: 0, r: 0 });
+  // Re-recording resets an earned latch: the content is back in context.
+  state.ids.m1.r = 2;
+  recordInjected(state, "m1", "hash-1", 2345);
+  assert.deepEqual(state.ids.m1, { h: "hash-1", at: 2345, n: 4, r: 0 });
+});
+
+test("pretoolExcludeIds: only latched (r>=1) or sentinel in-cooldown ids ride exclude_ids", () => {
+  const now = 1_000_000;
+  const win = { now, cooldownMs: 60_000, cooldownPrompts: 0 };
+  const state: any = {
+    n: 3,
+    ids: {
+      latched: { h: "aa", at: now - 1_000, n: 3, r: 1 }, // in window, latch earned
+      firstServe: { h: "bb", at: now - 1_000, n: 3, r: 0 }, // in window, latch NOT earned
+      preLatch: { h: "cc", at: now - 1_000, n: 3 }, // pre-latch entry: absent r reads as 0
+      sentinel: { h: "", at: now - 1_000, n: 3 }, // tool-read: latches immediately
+      lapsed: { h: "dd", at: now - 120_000, n: 0, r: 5 }, // out of window: never sent
+    },
+  };
+  assert.deepEqual(pretoolExcludeIds(state, win).sort(), ["latched", "sentinel"]);
+  // Everything in-window is still in cooldown for the prompt surface's list.
+  assert.deepEqual(cooldownIds(state, win).sort(), ["firstServe", "latched", "preLatch", "sentinel"]);
 });
 
 test("mergeInjectedStates: per-id larger-at wins, n maxes, cap evicts oldest", () => {
