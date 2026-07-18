@@ -847,7 +847,7 @@ type ClientSettings struct {
 	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped. Sent to the server as each per-file search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
 
-	// InjectPretoolMinScore Floor on the final ranked (composite) score (>=) for a PreToolUse injection; enforced server-side via min_rank_score.
+	// InjectPretoolMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a PreToolUse injection. The Claude Code plugin enforces it server-side via min_rank_score (floored hits appear in the feed marked as filtered); other integrations may still apply it as a pre-rank fused-score floor.
 	InjectPretoolMinScore *float32 `json:"inject_pretool_min_score,omitempty"`
 
 	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection.
@@ -856,7 +856,7 @@ type ClientSettings struct {
 	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped. Sent to the server as the prompt search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
 
-	// InjectRecallMinScore Floor on the final ranked (composite) score (>=) for a recall injection; enforced server-side via min_rank_score.
+	// InjectRecallMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a recall injection. The Claude Code plugin enforces it server-side via min_rank_score (floored hits appear in the feed marked as filtered); other integrations may still apply it as a pre-rank fused-score floor.
 	InjectRecallMinScore *float32 `json:"inject_recall_min_score,omitempty"`
 
 	// InjectTelemetry Report what each hook actually injected vs suppressed back to the server (POST /v1/activity/injected) so the activity feed and metrics reflect what reached model context instead of pre-suppression serves. Best-effort and bounded (the beacon never blocks or fails a hook); off disables reporting entirely.
@@ -1440,7 +1440,7 @@ type SettingsDefaultsResponse struct {
 	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped. Sent to the server as each per-file search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
 
-	// InjectPretoolMinScore Floor on the final ranked (composite) score (>=) for a PreToolUse injection; enforced server-side via min_rank_score.
+	// InjectPretoolMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a PreToolUse injection. The Claude Code plugin enforces it server-side via min_rank_score (floored hits appear in the feed marked as filtered); other integrations may still apply it as a pre-rank fused-score floor.
 	InjectPretoolMinScore *float32 `json:"inject_pretool_min_score,omitempty"`
 
 	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection.
@@ -1449,7 +1449,7 @@ type SettingsDefaultsResponse struct {
 	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped. Sent to the server as the prompt search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
 
-	// InjectRecallMinScore Floor on the final ranked (composite) score (>=) for a recall injection; enforced server-side via min_rank_score.
+	// InjectRecallMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a recall injection. The Claude Code plugin enforces it server-side via min_rank_score (floored hits appear in the feed marked as filtered); other integrations may still apply it as a pre-rank fused-score floor.
 	InjectRecallMinScore *float32 `json:"inject_recall_min_score,omitempty"`
 
 	// InjectTelemetry Report what each hook actually injected vs suppressed back to the server (POST /v1/activity/injected) so the activity feed and metrics reflect what reached model context instead of pre-suppression serves. Best-effort and bounded (the beacon never blocks or fails a hook); off disables reporting entirely.

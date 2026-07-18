@@ -36,7 +36,12 @@ function headline(ev: ActivityEvent): string {
       // for visibility (rendered dimmed below) but were never served.
       const servedMems = (ev.memories ?? []).filter((m) => !m.filtered)
       const served = servedMems.length
-      if (served === 0) return 'found nothing'
+      if (served === 0) {
+        // With floored rows dimmed below, "found nothing" would contradict
+        // them; surface the floored count instead of an empty verdict.
+        const floored = ev.memories?.filter((m) => m.filtered).length ?? 0
+        return floored > 0 ? `served 0 · ${floored} floored` : 'found nothing'
+      }
       // When an injection-telemetry report covered this serve, say what
       // actually reached model context; a serve nothing reported on keeps the
       // old wording — absent means unknown, not zero. Floored rows are outside
