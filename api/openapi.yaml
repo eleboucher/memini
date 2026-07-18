@@ -2310,7 +2310,7 @@ components:
           type: number
           minimum: 0
           default: 0
-          description: Floor on the fused score (>=) for a PreToolUse injection.
+          description: Floor on the final ranked (composite) score (>=) for a PreToolUse injection; enforced server-side via min_rank_score.
         inject_pretool_tools:
           type: array
           items: { type: string }
@@ -2394,7 +2394,7 @@ components:
           type: number
           minimum: 0
           default: 0
-          description: Floor on the fused score (>=) for a recall injection.
+          description: Floor on the final ranked (composite) score (>=) for a recall injection; enforced server-side via min_rank_score.
         min_capture_chars:
           type: integer
           minimum: 0

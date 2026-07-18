@@ -118,7 +118,7 @@ async function main() {
 
   const limit = ctx.setting("recall_limit").value;
   const maxTokens = ctx.setting("inject_recall_max_tok").value;
-  const minScore = ctx.setting("inject_recall_min_score").value;
+  const minRankScore = ctx.setting("inject_recall_min_score").value;
   const labels = new Set(ctx.setting("inject_labels").value.map((s) => String(s).toLowerCase()));
 
   // Windowed cross-surface dedupe. Exclude what this session already carries:
@@ -143,7 +143,7 @@ async function main() {
     {
       limit,
       exclude,
-      minScore,
+      minRankScore,
       source: "prompt",
       excludeIds: cooldownIds(injectedState, { now, cooldownMs, cooldownPrompts }),
       maxTokens,

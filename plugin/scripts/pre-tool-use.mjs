@@ -92,7 +92,7 @@ async function main() {
 
   const itemsPerFile = ctx.setting("inject_pretool_items").value;
   const maxTokens = ctx.setting("inject_pretool_max_tok").value;
-  const minScore = ctx.setting("inject_pretool_min_score").value;
+  const minRankScore = ctx.setting("inject_pretool_min_score").value;
   const labels = new Set(ctx.setting("inject_labels").value.map((s) => String(s).toLowerCase()));
 
   // One short query per file is the sweet spot. memini's hybrid retrieval
@@ -185,7 +185,7 @@ async function main() {
     const { hits: rawHits, degraded, note, omitted } = await postSearch(q, project, {
       limit: itemsPerFile,
       exclude,
-      minScore,
+      minRankScore,
       source: "pretool",
       maxTokens,
     });
@@ -328,7 +328,7 @@ async function main() {
   if (DEBUG) {
     console.error(
       `[memini] PreToolUse injected ${out.length - 2} lines for ${files.slice(0, 3).length} file(s) ` +
-        `(itemsPerFile=${itemsPerFile}, minScore=${minScore}, maxTokens=${maxTokens || "∞"}, dropped=${totalDropped})`,
+        `(itemsPerFile=${itemsPerFile}, minRankScore=${minRankScore}, maxTokens=${maxTokens || "∞"}, dropped=${totalDropped})`,
     );
   }
 

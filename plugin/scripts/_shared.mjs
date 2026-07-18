@@ -287,18 +287,21 @@ export async function postJSON(path, body, namespace, timeoutMs = requestTimeout
  * search and on transport failure (an unreachable server proves nothing
  * about the search pipeline).
  *
- * `minScore` (>= 0) sets a per-call relevance floor: candidates whose fused
- * score is below it are dropped server-side. 0 / unset falls back to the
- * server's baked relevance floor (0.1). When `minScore` is set,
- * the hook also filters client-side as a belt-and-braces guard against
- * score-fusion edge cases where the server's normalization disagrees with
- * what the caller wants.
+ * `minRankScore` (>= 0) sets a per-call floor on the FINAL composite score —
+ * the score the response `score` field and the activity feed carry, and the one
+ * the knob user sees in the UI. It is enforced SERVER-side via `min_rank_score`
+ * (floored hits stay in the activity feed marked as filtered), so a server that
+ * accepts it is authoritative and its result set is NOT re-filtered here. 0 /
+ * unset disables it. A knob >= 1 is out of the server's valid range, so it is
+ * clamped to a client-only floor (sent as nothing, filtered client-side). The
+ * client-side filter is otherwise a compatibility fallback ONLY — it runs when
+ * an older server 400s the `min_rank_score` field and the retry strips it.
  *
  * `excludeIds` drops specific memories server-side (e.g. ones already
  * injected into this session's context), freeing the top-k for hits the
  * context does not already carry. Trimmed to the server's 512-id cap,
  * most-recent kept. An older server that doesn't know the field 400s the
- * whole request — retried once without it, degrading to "no server-side
+ * whole request — retried without it, degrading to "no server-side
  * dedupe" instead of "no recall at all".
  *
  * Every search asks for `response_format: "concise"` (progressive
@@ -314,14 +317,21 @@ export async function postJSON(path, body, namespace, timeoutMs = requestTimeout
  * guard — same knob, two layers.
  *
  * Old servers reject unknown body fields with a 400. The fallback chain
- * strips ONE field per retry, newest field first — max_tokens, then
- * exclude_ids, then response_format — degrading a search to progressively
- * older wire shapes instead of "no recall at all".
+ * strips ONE field per retry, newest field first — min_rank_score, then
+ * max_tokens, then exclude_ids, then response_format — degrading a search
+ * to progressively older wire shapes instead of "no recall at all". A
+ * stripped min_rank_score falls back to the client-side composite floor
+ * below.
  */
-export async function postSearch(query, namespace, { limit = 5, tiers, exclude, minScore, source, excludeIds, maxTokens } = {}) {
+export async function postSearch(query, namespace, { limit = 5, tiers, exclude, minRankScore, source, excludeIds, maxTokens } = {}) {
   const body = { query, limit, response_format: "concise" };
   if (tiers) body.tiers = tiers;
-  if (typeof minScore === "number" && minScore > 0) body.min_score = minScore;
+  // min_rank_score floors the FINAL composite score server-side. The server
+  // rejects >= 1 as out of range, and store.ClientSettings.validate only
+  // enforces >= 0, so a mis-set knob reaches here: clamp to client-only rather
+  // than 400 every search.
+  const rankFloorInRange = typeof minRankScore === "number" && minRankScore > 0 && minRankScore < 1;
+  if (rankFloorInRange) body.min_rank_score = minRankScore;
   // source is the recall's "why" — recorded on the activity event so the feed
   // can show which integration asked. Passed through verbatim; the server never
   // validates it, so a future caller's unknown value is logged, not rejected.
@@ -333,6 +343,16 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude, 
   if (Array.isArray(excludeIds) && excludeIds.length) body.exclude_ids = excludeIds.slice(-MAX_RECALL_EXCLUDE_IDS);
   if (Number.isFinite(maxTokens) && maxTokens > 0) body.max_tokens = maxTokens;
   let res = await postJSONStatus("/v1/search", body, namespace);
+  // Newer-than-server optional fields: an older server's DisallowUnknownFields
+  // decoder 400s any request carrying one, so the chain above (doc comment)
+  // strips one field per retry. A stripped min_rank_score is remembered so the
+  // client-side composite floor below takes over for that response.
+  let rankFloorStripped = false;
+  if (res.status === 400 && body.min_rank_score !== undefined) {
+    rankFloorStripped = true;
+    delete body.min_rank_score;
+    res = await postJSONStatus("/v1/search", body, namespace);
+  }
   if (res.status === 400 && body.max_tokens) {
     delete body.max_tokens;
     res = await postJSONStatus("/v1/search", body, namespace);
@@ -347,7 +367,12 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude, 
   }
   if (!res.json || !Array.isArray(res.json.results)) return { hits: [], degraded: "", note: "", omitted: 0 };
   const resBody = res.json;
-  const floor = typeof minScore === "number" && minScore > 0 ? minScore : 0;
+  // Composite-scale floor. The server enforces it when min_rank_score was sent
+  // and accepted; the client re-filters ONLY as a fallback — the knob was
+  // clamped to client-only (>= 1), or the retry stripped the field for an old
+  // server. A server that enforced the floor is authoritative and not re-filtered.
+  const serverEnforcedFloor = rankFloorInRange && !rankFloorStripped;
+  const floor = typeof minRankScore === "number" && minRankScore > 0 && !serverEnforcedFloor ? minRankScore : 0;
   const hits = resBody.results
     .map((r) => ({
       content: r?.memory?.content || "",
