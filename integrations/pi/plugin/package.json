@@ -7,7 +7,7 @@
   ],
   "type": "module",
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --external:typebox --external:@earendil-works/pi-coding-agent --alias:@memini/client=../../../packages/memini-client/src/index.ts --outfile=dist/index.js",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --external:typebox --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-tui --alias:@memini/client=../../../packages/memini-client/src/index.ts --outfile=dist/index.js",
     "test": "node --test test/bundle.test.mjs && npx tsx --test test/helpers.test.ts",
     "typecheck": "tsc -p tsconfig.test.json"
   },
@@ -15,14 +15,16 @@
     "typebox": "^1.1.38"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "latest",
+    "@earendil-works/pi-coding-agent": "0.80.6",
+    "@earendil-works/pi-tui": "0.80.6",
     "@types/node": "^24.0.0",
     "esbuild": "^0.28.1",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": ">=0.80.6",
+    "@earendil-works/pi-tui": ">=0.80.6"
   },
   "pi": {
     "extensions": [

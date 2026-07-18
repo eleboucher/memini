@@ -1,6 +1,6 @@
 # Handle Pi session lifecycle and compaction
 
-Status: ready-for-agent
+Status: resolved
 Type: feature
 Blocked by: 01
 
@@ -18,3 +18,14 @@ Memini context should be present when a Pi session starts, remain coherent throu
 - [ ] Lifecycle tests cover startup, resume, reload, compaction, retry, and shutdown behavior.
 
 ## Comments
+
+Resolved on `fix/pi-plugin-parity`.
+
+Validation evidence:
+
+- `session_start` injects one query-less, per-section/global-token-bounded briefing and skips duplication when an intact briefing remains on startup, resume, or reload; missing context is restored.
+- Branch-aware `memini-state` entries persist/reconstruct prompt counters, injected IDs, reset generations, and settled-capture IDs across reload/resume/tree navigation; explicit read tools feed the same suppression state.
+- `session_compact` clears context-coupled suppression, persists the generation reset, and queues a forced fresh briefing via steer with `triggerTurn:false`, including overflow retry coverage.
+- Turn capture moved from `agent_end` to `agent_settled`, extracts the final successful assistant prose from the active branch, deduplicates by assistant entry ID, and records success only after the write lands.
+- Pre-compaction and non-reload shutdown hooks write bounded state-changing-tool digests only when enabled, non-empty, and session-identified.
+- Focused lifecycle tests cover startup, resume, reload, tree reconstruction, compaction/overflow retry, settled capture, duplicate settling, checkpoint gates, and shutdown; `npm test`, `npm run typecheck`, and `npm run build` pass.

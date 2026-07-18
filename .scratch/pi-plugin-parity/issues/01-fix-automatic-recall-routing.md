@@ -1,6 +1,6 @@
 # Fix automatic recall routing and compatibility fallback
 
-Status: ready-for-agent
+Status: resolved
 Type: bug
 Blocked by: None
 
@@ -16,3 +16,12 @@ Automatic prompt recall must use the same server-authoritative project namespace
 - [ ] Typechecking passes and is capable of catching a future missing-namespace call.
 
 ## Comments
+
+Resolved on `fix/pi-plugin-parity`.
+
+Validation evidence:
+
+- Automatic search now requires the resolved namespace on the initial request and compatibility retry, with `exclude_ids` capped before transport.
+- Compatibility downgrade occurs only after an explicit HTTP 400 unsupported/unknown `exclude_ids` response and a successful same-namespace fallback; timeout, 429, 500, and unrelated 400 tests prove no retry or sticky downgrade.
+- `npm run typecheck` passes against Pi 0.80.6, so missing namespace arguments remain compile-time failures.
+- `npm test` passes, including namespace-header and transient-failure regressions.

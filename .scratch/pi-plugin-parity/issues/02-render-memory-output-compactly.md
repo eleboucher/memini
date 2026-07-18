@@ -1,6 +1,6 @@
 # Render memory output compactly in Pi
 
-Status: ready-for-agent
+Status: resolved
 Type: feature
 Blocked by: None
 
@@ -17,3 +17,12 @@ Memini should remain fully informative to the model without dumping raw JSON or 
 - [ ] Renderer tests cover large recall payloads and error/degraded results.
 
 ## Comments
+
+Resolved on `fix/pi-plugin-parity`.
+
+Validation evidence:
+
+- All native memory tools now share compact `renderCall`/`renderResult` functions backed by typed renderer details; collapsed output is one line and expanded output is capped at eight items with tier, score, provenance, and short summaries.
+- Automatic `memini-recall` and `memini-briefing` messages use registered compact message renderers.
+- Tool `content[0].text` remains the complete JSON payload; renderer tests assert content is byte-for-byte unchanged after collapsed and expanded rendering.
+- Large, degraded, unavailable, and explicit error results are covered by focused tests; `npm test`, `npm run typecheck`, and `npm run build` pass.

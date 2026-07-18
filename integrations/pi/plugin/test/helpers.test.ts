@@ -18,11 +18,22 @@ import {
   extractMessageText,
   extractLastAssistantText,
   buildTurnContent,
+  extractSettledTurn,
+  buildActivityDigest,
+  memoryResultDetails,
+  renderMemoryResult,
+  isExplicitExcludeIdsRejection,
 } from "../src/index.ts";
 import { execSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+const plainTheme = {
+  fg: (_color: string, text: string) => text,
+  bold: (text: string) => text,
+};
+const renderedLines = (component: any, width = 240): string[] => component.render(width);
 
 // A developer shell may export the real memini config; clear it so the
 // resolution tests see the documented defaults (an exported MEMINI_NAMESPACE —
@@ -560,13 +571,95 @@ test("briefingPath only forwards a known scope; a hallucinated one is dropped", 
   assert.equal(briefingPath({ scope: "subtree" }), "/v1/namespaces/briefing");
 });
 
+test("exclude_ids compatibility detection is limited to explicit unsupported-field 400s", () => {
+  assert.equal(isExplicitExcludeIdsRejection({ ok: false, status: 400, error: 'unknown field "exclude_ids"' }), true);
+  assert.equal(isExplicitExcludeIdsRejection({ ok: false, status: 400, error: "invalid query" }), false);
+  assert.equal(isExplicitExcludeIdsRejection({ ok: false, status: 429, error: "unsupported exclude_ids" }), false);
+  assert.equal(isExplicitExcludeIdsRejection({ ok: false, status: 500, error: "unknown exclude_ids" }), false);
+  assert.equal(isExplicitExcludeIdsRejection({ ok: false, error: "AbortError: timeout exclude_ids" }), false);
+});
+
+test("extractSettledTurn selects the newest real user and final successful assistant prose", () => {
+  const entries: any[] = [
+    { type: "message", id: "u1", message: { role: "user", content: "first" } },
+    { type: "message", id: "a1", message: { role: "assistant", content: [{ type: "text", text: "old" }], stopReason: "stop" } },
+    { type: "custom_message", id: "m1", customType: "memini-recall", content: "memory", display: true },
+    { type: "message", id: "u2", message: { role: "user", content: "queued continuation" } },
+    { type: "message", id: "a2", message: { role: "assistant", content: [{ type: "text", text: "partial" }], stopReason: "aborted" } },
+    { type: "message", id: "a3", message: { role: "assistant", content: [{ type: "toolCall", name: "read", arguments: {} }], stopReason: "toolUse" } },
+    { type: "message", id: "a4", message: { role: "assistant", content: [{ type: "text", text: "final answer" }], stopReason: "stop" } },
+  ];
+  assert.deepEqual(extractSettledTurn(entries), {
+    userText: "queued continuation",
+    assistantText: "final answer",
+    assistantId: "a4",
+  });
+  assert.equal(extractSettledTurn(entries.slice(0, 5)), null, "an aborted-only final turn is not captured");
+});
+
+test("buildActivityDigest ignores reads and bounds state-changing activity", () => {
+  const entries: any[] = [{
+    type: "message",
+    id: "a1",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "toolCall", name: "read", arguments: { path: "ignored.ts" } },
+        { type: "toolCall", name: "edit", arguments: { path: "src/a.ts" } },
+        { type: "toolCall", name: "bash", arguments: { command: "npm test" } },
+      ],
+    },
+  }];
+  const digest = buildActivityDigest(entries, "acme/widget")!;
+  assert.equal(digest.count, 2);
+  assert.deepEqual(digest.files, ["src/a.ts"]);
+  assert.deepEqual(digest.commands, ["npm test"]);
+  assert.equal(buildActivityDigest([], "acme/widget"), null);
+});
+
+test("compact result rendering is one line collapsed, bounded expanded, and explicit about degraded/errors", () => {
+  const data = {
+    results: Array.from({ length: 30 }, (_, i) => ({
+      id: `m${i}`,
+      tier: i % 2 ? "episodic" : "semantic",
+      score: 0.9 - i / 100,
+      from: "personal/me",
+      content: `memory ${i} ${"x".repeat(300)}`,
+    })),
+    degraded: "keyword_only",
+    note: "embedder unavailable",
+  };
+  const details = memoryResultDetails("recall", data);
+  const collapsed = renderedLines(renderMemoryResult({ details }, { expanded: false }, plainTheme));
+  assert.equal(collapsed.length, 1);
+  assert.doesNotMatch(collapsed[0], /\\"|\{"results"/);
+  assert.match(collapsed[0], /30 memories recalled.*keyword-only/);
+  const expanded = renderedLines(renderMemoryResult({ details }, { expanded: true }, plainTheme));
+  assert.ok(expanded.length <= 11, `expanded output must stay bounded, got ${expanded.length} lines`);
+  assert.match(expanded.join("\n"), /semantic.*score=0\.90.*from=personal\/me/);
+  assert.match(expanded.join("\n"), /degraded=keyword_only/);
+
+  const error = renderedLines(renderMemoryResult(
+    { details: memoryResultDetails("briefing", { error: "memini unavailable" }) },
+    { expanded: false },
+    plainTheme,
+  ));
+  assert.equal(error.length, 1);
+  assert.match(error[0], /^Memini error: memini unavailable\s*$/);
+});
+
 // --- recall / capture / tools (via the default extension export) -------------
 
 function mockRecallFetch() {
   globalThis.fetch = (async (url: any) => {
     const u = String(url);
     if (u.endsWith("/v1/handshake")) {
-      return { ok: false, status: 500, async json() { return {}; }, async text() { return ""; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() { return fakeHandshake({ namespace: "acme/widget" }); },
+        async text() { return ""; },
+      };
     }
     const body = u.endsWith("/v1/search")
       ? { results: [{ memory: { id: "m1", summary: "prior note", tier: "semantic" }, score: 0.9 }] }
@@ -659,8 +752,12 @@ test("recall sends exclude_ids and falls back when the server rejects them", asy
   const requests: any[] = [];
   let rejectExcludeIds = false;
   globalThis.fetch = (async (url: any, init: any) => {
+    const u = String(url);
+    if (u.endsWith("/v1/handshake")) {
+      return { ok: true, status: 200, async json() { return fakeHandshake({ namespace: "server/project" }); }, async text() { return ""; } };
+    }
     const body = init?.body ? JSON.parse(init.body) : {};
-    requests.push({ url: String(url), body });
+    requests.push({ url: u, body, headers: init?.headers });
     if (rejectExcludeIds && body.exclude_ids) {
       return {
         ok: false,
@@ -709,11 +806,63 @@ test("recall sends exclude_ids and falls back when the server rejects them", asy
     const [, , withField, retry] = searches();
     assert.deepEqual(withField.body.exclude_ids, ["m1"], "first attempt still carries exclude_ids");
     assert.equal(retry.body.exclude_ids, undefined, "the retry must drop exclude_ids");
+    assert.equal(withField.headers["X-Memini-Namespace"], "server/project");
+    assert.equal(retry.headers["X-Memini-Namespace"], "server/project");
     await hooks.before_agent_start({ prompt: "q4" }, ctx);
     assert.equal(searches().length, 5, "after the fallback each recall is a single request");
     assert.equal(searches()[4].body.exclude_ids, undefined, "exclude_ids is never sent again");
   } finally {
     globalThis.fetch = realFetch;
+  }
+});
+
+test("transient and unrelated search failures neither retry nor disable exclude_ids", async (t) => {
+  const cases = [
+    { name: "timeout", status: 0, error: "timeout" },
+    { name: "rate limit", status: 429, error: "slow down" },
+    { name: "server error", status: 500, error: "boom" },
+    { name: "unrelated 400", status: 400, error: "invalid query" },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const { default: meminiExtension } = await import(`../src/index.ts?cb=transient-${scenario.name}-${Date.now()}`);
+      const hooks: Record<string, any> = {};
+      const realFetch = globalThis.fetch;
+      const realError = console.error;
+      const searches: any[] = [];
+      let failNextExclude = false;
+      console.error = () => {};
+      globalThis.fetch = (async (url: any, init: any) => {
+        const u = String(url);
+        if (u.endsWith("/v1/handshake")) {
+          return { ok: true, status: 200, async json() { return fakeHandshake({ namespace: "server/project" }); }, async text() { return ""; } };
+        }
+        const body = init?.body ? JSON.parse(init.body) : {};
+        searches.push({ body, headers: init?.headers });
+        if (failNextExclude && body.exclude_ids) {
+          failNextExclude = false;
+          if (scenario.status === 0) throw new Error(scenario.error);
+          return { ok: false, status: scenario.status, async json() { return {}; }, async text() { return scenario.error; } };
+        }
+        const result = { results: [{ memory: { id: "m1", summary: "prior", tier: "semantic" }, score: 0.9 }] };
+        return { ok: true, status: 200, async json() { return result; }, async text() { return JSON.stringify(result); } };
+      }) as any;
+      try {
+        meminiExtension({ on(name: string, handler: any) { hooks[name] = handler; }, registerTool() {} } as any);
+        const ctx = { sessionManager: { getSessionId: () => "sess-transient" } };
+        await hooks.before_agent_start({ prompt: "first" }, ctx);
+        failNextExclude = true;
+        const beforeFailure = searches.length;
+        assert.equal(await hooks.before_agent_start({ prompt: "second" }, ctx), undefined);
+        assert.equal(searches.length, beforeFailure + 1, "failure must not trigger a compatibility retry");
+        await hooks.before_agent_start({ prompt: "third" }, ctx);
+        assert.deepEqual(searches.at(-1).body.exclude_ids, ["m1"], "capability must remain enabled");
+        assert.equal(searches.at(-1).headers["X-Memini-Namespace"], "server/project");
+      } finally {
+        globalThis.fetch = realFetch;
+        console.error = realError;
+      }
+    });
   }
 });
 
@@ -768,7 +917,7 @@ test("windowed injection cooldown: suppressed while EITHER window holds; re-serv
   globalThis.fetch = (async (url: any, init: any) => {
     const u = String(url);
     if (u.endsWith("/v1/handshake")) {
-      return { ok: false, status: 500, async json() { return {}; }, async text() { return ""; } };
+      return { ok: true, status: 200, async json() { return fakeHandshake(); }, async text() { return ""; } };
     }
     if (u.endsWith("/v1/search")) searches.push(init?.body ? JSON.parse(init.body) : {});
     const res = u.endsWith("/v1/search")
@@ -800,58 +949,40 @@ test("windowed injection cooldown: suppressed while EITHER window holds; re-serv
   }
 });
 
-// Same bound for the captured dedup keys.
-test("captured dedup-key window is bounded (an aged-out turn can re-capture)", async () => {
-  const { default: meminiExtension } = await import("../src/index.ts");
+// Same bound for settled assistant-entry dedupe keys.
+test("captured settled-turn window is bounded (an aged-out assistant entry can re-capture)", async () => {
+  const { default: meminiExtension } = await import("../src/index.ts?cb=settled-cap-" + Date.now());
   const hooks: Record<string, any> = {};
   const realFetch = globalThis.fetch;
   const posts: any[] = [];
   globalThis.fetch = (async (url: any, init: any) => {
-    if (String(url).endsWith("/v1/memories")) posts.push(JSON.parse(init.body));
-    const body = String(url).endsWith("/v1/search") ? { results: [] } : { id: "w1" };
-    return {
-      ok: true,
-      status: 200,
-      async json() {
-        return body;
-      },
-      async text() {
-        return JSON.stringify(body);
-      },
-    };
+    const u = String(url);
+    if (u.endsWith("/v1/handshake")) {
+      return { ok: true, status: 200, async json() { return fakeHandshake(); }, async text() { return ""; } };
+    }
+    if (u.endsWith("/v1/memories")) posts.push(JSON.parse(init.body));
+    return { ok: true, status: 200, async json() { return { id: "w1" }; }, async text() { return ""; } };
   }) as any;
   try {
-    meminiExtension({
-      on(name: string, h: any) {
-        hooks[name] = h;
-      },
-      registerTool() {},
-    } as any);
-    let leaf = "leaf-0";
-    const ctx = { sessionManager: { getSessionId: () => "sess-c", getLeafId: () => leaf } };
-    const endEvent = { messages: [{ role: "assistant", content: "reply" }] };
-    // Each turn: before_agent_start buffers the prompt, agent_end captures it.
-    const runTurn = async () => {
-      await hooks.before_agent_start({ prompt: "hello" }, ctx);
-      await hooks.agent_end(endEvent, ctx);
-    };
-    await runTurn();
-    assert.equal(posts.length, 1, "first agent_end captures the turn");
-    // A re-fired agent_end for the same leaf is still deduped (pendingUser was
-    // consumed, so re-buffer the prompt to isolate the dedup-key check).
-    await hooks.before_agent_start({ prompt: "hello" }, ctx);
-    await hooks.agent_end(endEvent, ctx);
-    assert.equal(posts.length, 1, "same turn must not capture twice");
-    // Push 200 more distinct dedup keys through the window (cap is 200).
+    meminiExtension({ on(name: string, h: any) { hooks[name] = h; }, registerTool() {} } as any);
+    let assistantId = "assistant-0";
+    const branch = () => [
+      { type: "message", id: `user-${assistantId}`, message: { role: "user", content: "hello" } },
+      { type: "message", id: assistantId, message: { role: "assistant", content: [{ type: "text", text: "reply" }], stopReason: "stop" } },
+    ];
+    const ctx = { sessionManager: { getSessionId: () => "sess-c", getBranch: branch } };
+    await hooks.agent_settled({}, ctx);
+    assert.equal(posts.length, 1);
+    await hooks.agent_settled({}, ctx);
+    assert.equal(posts.length, 1, "duplicate agent_settled must be idempotent");
     for (let i = 1; i <= 200; i++) {
-      leaf = `leaf-${i}`;
-      await runTurn();
+      assistantId = `assistant-${i}`;
+      await hooks.agent_settled({}, ctx);
     }
     assert.equal(posts.length, 201);
-    // leaf-0 has aged out of the window: a re-fired agent_end captures again.
-    leaf = "leaf-0";
-    await runTurn();
-    assert.equal(posts.length, 202, "a key evicted from the window is re-capturable");
+    assistantId = "assistant-0";
+    await hooks.agent_settled({}, ctx);
+    assert.equal(posts.length, 202, "an aged-out assistant entry is re-capturable");
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -869,7 +1000,7 @@ test("an HTTP error on recall is logged even when fallback_on_error degrades it"
   console.error = (m: any) => logged.push(String(m));
   globalThis.fetch = (async (url: any) => {
     const u = String(url);
-    if (u.endsWith("/v1/handshake")) return { ok: false, status: 500, async json() { return {}; }, async text() { return ""; } };
+    if (u.endsWith("/v1/handshake")) return { ok: true, status: 200, async json() { return fakeHandshake(); }, async text() { return ""; } };
     return { ok: false, status: 500, async json() { return {}; }, async text() { return "boom"; } };
   }) as any;
   try {
@@ -896,7 +1027,7 @@ test("requests carry X-Memini-Home when MEMINI_HOME is set, omit it otherwise", 
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (url: any, init: any) => {
     const u = String(url);
-    if (u.endsWith("/v1/handshake")) return { ok: false, status: 500, async json() { return {}; }, async text() { return ""; } };
+    if (u.endsWith("/v1/handshake")) return { ok: true, status: 200, async json() { return fakeHandshake(); }, async text() { return ""; } };
     requests.push({ url: u, headers: init?.headers });
     return { ok: true, status: 200, async json() { return { results: [] }; }, async text() { return ""; } };
   }) as any;
@@ -1080,6 +1211,243 @@ test("memory_remember surfaces reinforced so a no-op write is not reported as a 
     reply({ id: "new-1" });
     out = await byName.memory_remember.execute("id", { content: "novel fact" });
     assert.equal("reinforced" in JSON.parse(out.content[0].text), false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("failed explicit reads render an error instead of a green empty success", async () => {
+  const realFetch = globalThis.fetch;
+  const realError = console.error;
+  console.error = () => {};
+  try {
+    const { byName } = await collectTools();
+    globalThis.fetch = (async () => { throw new Error("ECONNREFUSED"); }) as any;
+    for (const [name, params] of [
+      ["memory_recall", { query: "auth" }],
+      ["memory_list", {}],
+      ["memory_forget", { id: "m1" }],
+    ] as const) {
+      const result = await byName[name].execute("id", params);
+      assert.equal(JSON.parse(result.content[0].text).error, "memini unavailable");
+      const rendered = renderedLines(byName[name].renderResult(result, { expanded: false }, plainTheme, {}));
+      assert.match(rendered[0], /^Memini error:/);
+    }
+  } finally {
+    globalThis.fetch = realFetch;
+    console.error = realError;
+  }
+});
+
+test("explicit tool renderers never alter complete model-facing JSON", async () => {
+  const realFetch = globalThis.fetch;
+  try {
+    const { byName, reply } = await collectTools();
+    reply({
+      degraded: "keyword_only",
+      note: "embedder unavailable",
+      results: Array.from({ length: 20 }, (_, i) => ({
+        memory: { id: `m${i}`, content: `full memory ${i} ${"z".repeat(400)}`, tier: "semantic", namespace: "acme/widget" },
+        score: 0.99 - i / 100,
+        from: i ? "personal/me" : "",
+      })),
+    });
+    const result = await byName.memory_recall.execute("id", { query: "large recall", limit: 20 });
+    const fullBeforeRender = result.content[0].text;
+    assert.equal(JSON.parse(fullBeforeRender).results.length, 20);
+    const collapsed = renderedLines(byName.memory_recall.renderResult(result, { expanded: false }, plainTheme, {}));
+    assert.equal(collapsed.length, 1);
+    assert.doesNotMatch(collapsed[0], /full memory|\\"/);
+    const expanded = renderedLines(byName.memory_recall.renderResult(result, { expanded: true }, plainTheme, {}));
+    assert.ok(expanded.length <= 11);
+    assert.match(expanded.join("\n"), /semantic.*score=0\.99.*acme\/widget/);
+    assert.equal(result.content[0].text, fullBeforeRender, "rendering must not rewrite model/session content");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+async function lifecycleHarness(settings: Record<string, any> = {}) {
+  const { default: meminiExtension } = await import(`../src/index.ts?cb=lifecycle-${Math.random()}`);
+  const hooks: Record<string, any> = {};
+  const renderers: Record<string, any> = {};
+  const tools: Record<string, any> = {};
+  const sent: Array<{ message: any; options: any }> = [];
+  const calls: Array<{ url: string; method: string; body: any; headers: any }> = [];
+  const branch: any[] = [];
+  let seq = 0;
+  let sid = "session-life";
+  const briefing = {
+    namespace: "server/project",
+    scope_header: "Scope: server/project ← server(2)",
+    pinned: [{ memory: { id: "p1", content: "Pinned convention", tier: "semantic", namespace: "server/project" } }],
+    facts: [{ memory: { id: "f1", summary: "Durable fact", tier: "semantic", namespace: "server" }, from: "server" }],
+    procedures: [{ memory: { id: "h1", content: "Run npm test", tier: "procedural" } }],
+    recent: [{ memory: { id: "e1", content: "Recent work", tier: "episodic" } }],
+  };
+  globalThis.fetch = (async (url: any, init: any) => {
+    const u = String(url);
+    if (u.endsWith("/v1/handshake")) {
+      return {
+        ok: true,
+        status: 200,
+        async json() { return fakeHandshake({ namespace: "server/project", settings }); },
+        async text() { return ""; },
+      };
+    }
+    const body = init?.body ? JSON.parse(init.body) : undefined;
+    calls.push({ url: u, method: init?.method || "GET", body, headers: init?.headers });
+    const response = u.includes("/v1/namespaces/briefing")
+      ? briefing
+      : u.endsWith("/v1/search")
+        ? { results: [{ memory: { id: "m1", summary: "Recall me", tier: "semantic" }, score: 0.95 }] }
+        : { id: body?.id || "stored" };
+    return {
+      ok: true,
+      status: 200,
+      async json() { return response; },
+      async text() { return JSON.stringify(response); },
+    };
+  }) as any;
+  const pi = {
+    on(name: string, handler: any) { hooks[name] = handler; },
+    registerTool(tool: any) { tools[tool.name] = tool; },
+    registerMessageRenderer(name: string, renderer: any) { renderers[name] = renderer; },
+    appendEntry(customType: string, data: any) {
+      branch.push({ type: "custom", id: `entry-${++seq}`, customType, data });
+    },
+    sendMessage(message: any, options?: any) {
+      sent.push({ message, options });
+      branch.push({ type: "custom_message", id: `message-${++seq}`, ...message });
+    },
+  };
+  meminiExtension(pi as any);
+  const sessionManager = {
+    getSessionId: () => sid,
+    getBranch: () => branch,
+    buildContextEntries: () => branch,
+  };
+  const ctx = { sessionManager };
+  return {
+    hooks, renderers, tools, sent, calls, branch, ctx, briefing,
+    setSessionId(value: string) { sid = value; },
+    appendHookMessage(result: any) {
+      if (result?.message) branch.push({ type: "custom_message", id: `hook-${++seq}`, ...result.message });
+    },
+  };
+}
+
+test("session lifecycle injects one briefing, restores missing context, reconstructs branch state, and rebriefs compaction", async () => {
+  const realFetch = globalThis.fetch;
+  try {
+    const h = await lifecycleHarness({
+      inject_briefing_pinned: 2,
+      inject_briefing_facts: 1,
+      inject_briefing_procedures: 1,
+      inject_briefing_recent: 1,
+      inject_briefing_max_tok: 80,
+    });
+    await h.hooks.session_start({ reason: "startup" }, h.ctx);
+    assert.equal(h.sent.length, 1);
+    assert.equal(h.sent[0].message.customType, "memini-briefing");
+    assert.match(h.sent[0].message.content, /Pinned convention/);
+    const briefingCall = h.calls.find((call) => call.url.includes("/v1/namespaces/briefing"))!;
+    assert.match(briefingCall.url, /per_section_pinned=2/);
+    assert.equal(briefingCall.headers["X-Memini-Namespace"], "server/project");
+    const rendered = renderedLines(h.renderers["memini-briefing"](h.sent[0].message, { expanded: false }, plainTheme));
+    assert.equal(rendered.length, 1);
+    assert.doesNotMatch(rendered[0], /Pinned convention|<memini-context/);
+
+    await h.hooks.session_start({ reason: "reload" }, h.ctx);
+    await h.hooks.session_start({ reason: "resume" }, h.ctx);
+    assert.equal(h.sent.length, 1, "intact reload/resume must not duplicate a briefing");
+    const baseline = structuredClone(h.branch);
+
+    const firstRecall = await h.hooks.before_agent_start({ prompt: "what was decided?" }, h.ctx);
+    assert.ok(firstRecall);
+    h.appendHookMessage(firstRecall);
+    assert.equal(await h.hooks.before_agent_start({ prompt: "repeat it" }, h.ctx), undefined);
+
+    h.branch.splice(0, h.branch.length, ...structuredClone(baseline));
+    await h.hooks.session_tree({}, h.ctx);
+    assert.ok(await h.hooks.before_agent_start({ prompt: "on another branch" }, h.ctx), "tree reconstruction follows active branch state");
+
+    h.branch.splice(0, h.branch.length, ...h.branch.filter((entry) => entry.customType !== "memini-briefing"));
+    await h.hooks.session_start({ reason: "reload" }, h.ctx);
+    assert.equal(h.sent.length, 2, "missing/compacted briefing is restored on reload");
+
+    await h.hooks.before_agent_start({ prompt: "inject before compact" }, h.ctx);
+    await h.hooks.session_compact({ reason: "overflow", willRetry: true }, h.ctx);
+    assert.equal(h.sent.length, 3);
+    assert.deepEqual(h.sent.at(-1)!.options, { deliverAs: "steer", triggerTurn: false });
+    assert.ok(await h.hooks.before_agent_start({ prompt: "inject after compact" }, h.ctx), "compaction clears context-coupled recall suppression");
+    const states = h.branch.filter((entry) => entry.customType === "memini-state");
+    assert.equal(states.at(-1).data.generation, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("precompact and shutdown checkpoints are bounded, gated, and skip reload/empty/unknown sessions", async () => {
+  const realFetch = globalThis.fetch;
+  try {
+    const h = await lifecycleHarness();
+    const activity: any[] = [{
+      type: "message",
+      id: "assistant-tools",
+      message: { role: "assistant", content: [
+        { type: "toolCall", name: "read", arguments: { path: "ignored.ts" } },
+        { type: "toolCall", name: "edit", arguments: { path: "src/a.ts" } },
+        { type: "toolCall", name: "bash", arguments: { command: "npm test" } },
+      ] },
+    }];
+    h.branch.push(...activity);
+    await h.hooks.session_before_compact({ branchEntries: activity, reason: "overflow", willRetry: true }, h.ctx);
+    let writes = h.calls.filter((call) => call.url.endsWith("/v1/memories"));
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].body.id, "precompact:session-life");
+    assert.match(writes[0].body.content, /src\/a\.ts/);
+    assert.doesNotMatch(writes[0].body.content, /ignored\.ts/);
+
+    await h.hooks.session_shutdown({ reason: "reload" }, h.ctx);
+    assert.equal(h.calls.filter((call) => call.url.endsWith("/v1/memories")).length, 1);
+    await h.hooks.session_shutdown({ reason: "quit" }, h.ctx);
+    writes = h.calls.filter((call) => call.url.endsWith("/v1/memories"));
+    assert.equal(writes.length, 2);
+    assert.equal(writes[1].body.id, "session-end:session-life");
+
+    h.setSessionId("");
+    await h.hooks.session_before_compact({ branchEntries: activity, reason: "manual", willRetry: false }, h.ctx);
+    await h.hooks.session_before_compact({ branchEntries: [], reason: "manual", willRetry: false }, h.ctx);
+    assert.equal(h.calls.filter((call) => call.url.endsWith("/v1/memories")).length, 2);
+
+    const disabled = await lifecycleHarness({ session_digest: false });
+    disabled.branch.push(...activity);
+    await disabled.hooks.session_before_compact({ branchEntries: activity, reason: "manual", willRetry: false }, disabled.ctx);
+    await disabled.hooks.session_shutdown({ reason: "quit" }, disabled.ctx);
+    assert.equal(disabled.calls.filter((call) => call.url.endsWith("/v1/memories")).length, 0);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("multiple low-level endings and overflow retries capture only the final settled turn", async () => {
+  const realFetch = globalThis.fetch;
+  try {
+    const h = await lifecycleHarness();
+    assert.equal(h.hooks.agent_end, undefined, "capture must not run from agent_end");
+    h.branch.push(
+      { type: "message", id: "u1", message: { role: "user", content: "question" } },
+      { type: "message", id: "a-abort", message: { role: "assistant", content: [{ type: "text", text: "partial" }], stopReason: "aborted" } },
+      { type: "compaction", id: "compact", summary: "retry", firstKeptEntryId: "u1", tokensBefore: 100 },
+      { type: "message", id: "a-final", message: { role: "assistant", content: [{ type: "text", text: "final" }], stopReason: "stop" } },
+    );
+    await h.hooks.agent_settled({}, h.ctx);
+    await h.hooks.agent_settled({}, h.ctx);
+    const captures = h.calls.filter((call) => call.url.endsWith("/v1/memories"));
+    assert.equal(captures.length, 1);
+    assert.match(captures[0].body.content, /question\n\nfinal/);
+    assert.deepEqual(captures[0].body.metadata, { source: "pi", format: "turn", session_id: "session-life" });
   } finally {
     globalThis.fetch = realFetch;
   }
