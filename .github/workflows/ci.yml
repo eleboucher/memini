@@ -1,0 +1,265 @@
+---
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: ghcr.io/tensorchord/vchord-postgres:pg18-v1.1.1
+        env:
+          POSTGRES_PASSWORD: memini
+          POSTGRES_DB: memini
+        # The job runs on the host (not in a container), so reach Postgres over
+        # a published port on localhost rather than the service hostname.
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Check go.mod tidiness
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      # The REST server is generated from api/openapi.yaml (oapi-codegen);
+      # fail if the committed code drifted from the spec.
+      - name: Check generated REST code is current
+        run: |
+          go generate ./internal/api/rest
+          git diff --exit-code internal/api/rest/api.gen.go
+
+      # The configuration reference is generated from the env tags and doc
+      # comments on config.Config; fail if the committed page drifted from the
+      # code. This is what stops a new setting from shipping undocumented.
+      - name: Check generated docs are current
+        run: |
+          go generate ./internal/config
+          go run -tags gendocs ./cmd/memini gen-docs --out docs/reference/cli.md
+          git diff --exit-code docs/reference/
+
+      - name: Run tests
+        run: CGO_ENABLED=1 go test -race -count=1 -timeout 300s ./...
+
+      # The shared store conformance suite against a real Postgres+VectorChord;
+      # without this the postgres backend never runs in CI.
+      - name: Run Postgres conformance tests
+        env:
+          MEMINI_TEST_POSTGRES_DSN: postgres://postgres:memini@localhost:5432/memini?sslmode=disable
+        run: CGO_ENABLED=1 go test -race -count=1 -timeout 300s -tags integration ./internal/store/postgres/
+
+      # End-to-end tests that boot the full server stack (store + embedder +
+      # workers + REST/MCP) and drive it over HTTP. The DSN also exercises the
+      # Postgres backend; SQLite always runs.
+      - name: Run end-to-end integration tests
+        env:
+          MEMINI_TEST_POSTGRES_DSN: postgres://postgres:memini@localhost:5432/memini?sslmode=disable
+        run: CGO_ENABLED=1 go test -race -count=1 -timeout 300s -tags integration ./cmd/memini/
+
+      # The bench eval harnesses live behind the `bench` tag so they stay out of
+      # the default `go test ./...` (they need a live embedder and take minutes).
+      # Compile them here and let them skip without an embedder, so they can't rot.
+      - name: Compile-check bench harnesses
+        run: CGO_ENABLED=1 go test -race -count=1 -timeout 120s -run=^$ -tags bench ./bench/
+
+  plugins:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Setup pnpm
+        run: npm install -g pnpm@11
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # Steps cd with relative paths from the checkout root. The `&&` chains make
+      # a failed cd abort the step instead of node --test passing on 0 tests.
+
+      # Install workspace deps (OpenClaw, Pi).
+      - name: Install workspace dependencies
+        run: pnpm install --config.minimumReleaseAge=0
+
+      # Shared client core: namespace override, settings introspection, and the
+      # project-dir recovery the MCP headersHelper depends on.
+      - name: Test shared client core
+        run: pnpm --filter @memini/client test
+
+      # plugin/scripts/_client.gen.mjs is generated from packages/memini-client
+      # and committed, because the plugin ships as raw files with no
+      # install-time build step. Fail the build if it drifts from its source —
+      # same gate as docs-check.
+      - name: Check generated plugin client bundle is current
+        run: |
+          pnpm --filter @memini/client run bundle
+          git diff --exit-code plugin/scripts/_client.gen.mjs
+
+      # The UI's settings catalog and API schema are generated from
+      # api/openapi.yaml (gen-catalog.mjs + openapi-typescript); fail if the
+      # committed files drifted from the spec — the same gate as the REST, docs,
+      # and plugin-bundle checks, and what makes the "help text can't drift from
+      # the contract" guarantee real. Also type-check the UI, which nothing else
+      # in CI does. The UI is a standalone pnpm project (its own lockfile, not a
+      # workspace member), so --ignore-workspace; --config.minimumReleaseAge=0
+      # matches the workspace install above.
+      - name: Check generated UI files are current and UI type-checks
+        run: |
+          cd ui
+          pnpm install --ignore-workspace --config.minimumReleaseAge=0
+          pnpm run gen-api
+          git diff --exit-code src/settings-catalog.gen.ts src/api-schema.gen.ts
+          pnpm run typecheck
+
+      # Claude Code / Codex hook scripts (pure node, no deps).
+      - name: Test Claude Code + Codex plugin scripts
+        run: node --test plugin/scripts/_test.mjs
+
+      # opencode plugin (standalone JS, no deps — ships from npm).
+      - name: Test opencode plugin
+        run: cd integrations/opencode/plugin && node --test
+
+      # OpenClaw plugin. The build (esbuild) bundles @memini/client into dist/
+      # so the published clawpack is self-contained; typebox stays an external
+      # npm dependency. `test` runs the bundle guard (issue #34) too.
+      - name: Test OpenClaw plugin
+        run: |
+          cd integrations/openclaw/plugin
+          pnpm install
+          pnpm run build
+          pnpm run test
+
+      # Pi extension. Same bundling as OpenClaw: @memini/client is inlined into
+      # dist/ so the npm package installs with only typebox as a runtime dep.
+      - name: Test Pi plugin
+        run: |
+          cd integrations/pi/plugin
+          pnpm install
+          pnpm run build
+          pnpm run test
+
+      # Hermes memory provider (stdlib unittest, uses the inline-ABC fallback).
+      - name: Test Hermes plugin
+        run: cd integrations/hermes/plugin && python3 -m unittest -v
+
+      # Open WebUI filter + tools. The suite self-skips (exit 0, 19 skips)
+      # when pydantic/aiohttp are missing, so a bare unittest run can go green
+      # while testing nothing — install the deps and import-check them first
+      # so a broken install fails the step instead of skipping the suite.
+      - name: Test Open WebUI plugin
+        run: |
+          python3 -m pip install pydantic aiohttp
+          cd integrations/openwebui && python3 -c "import pydantic, aiohttp" && python3 -m unittest -v
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run linter
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
+  helm:
+    runs-on: ubuntu-latest
+    env:
+      # renovate: datasource=github-releases depName=helm/helm
+      HELM_VERSION: "4.2.0"
+      # renovate: datasource=github-releases depName=norwoodj/helm-docs
+      HELM_DOCS_VERSION: "1.14.2"
+      # renovate: datasource=github-releases depName=dadav/helm-schema
+      HELM_SCHEMA_VERSION: "0.23.4"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Install helm
+        run: |
+          set -euo pipefail
+          TARBALL="helm-v${HELM_VERSION}-linux-amd64.tar.gz"
+          BASE="https://get.helm.sh"
+          curl -fsSL -o "${TARBALL}" "${BASE}/${TARBALL}"
+          curl -fsSL "${BASE}/${TARBALL}.sha256sum" | sha256sum -c -
+          tar -xzf "${TARBALL}" linux-amd64/helm
+          sudo install -m 0755 linux-amd64/helm /usr/local/bin/helm
+          rm -rf "${TARBALL}" linux-amd64
+
+      - name: Install helm-docs and helm-schema
+        run: |
+          set -euo pipefail
+          install_release() {
+            local archive="$1" url="$2" checksums="$3" bin="$4"
+            curl -fsSL -o "${archive}" "${url}/${archive}"
+            curl -fsSL "${url}/${checksums}" | grep "[[:space:]]${archive}\$" | sha256sum -c -
+            tar -xzf "${archive}" "${bin}"
+            sudo install -m 0755 "${bin}" /usr/local/bin/
+            rm -f "${archive}" "${bin}"
+          }
+          install_release "helm-docs_${HELM_DOCS_VERSION}_Linux_x86_64.tar.gz" \
+            "https://github.com/norwoodj/helm-docs/releases/download/v${HELM_DOCS_VERSION}" \
+            checksums.txt helm-docs
+          install_release "helm-schema_${HELM_SCHEMA_VERSION}_Linux_x86_64.tar.gz" \
+            "https://github.com/dadav/helm-schema/releases/download/${HELM_SCHEMA_VERSION}" \
+            checksums.txt helm-schema
+
+      - name: Build chart dependencies
+        run: |
+          set -euo pipefail
+          helm repo add bjw-s https://bjw-s-labs.github.io/helm-charts
+          for chart in charts/*/; do
+            [ -f "${chart}Chart.lock" ] && helm dependency build "$chart"
+          done
+
+      - name: Lint charts
+        run: |
+          set -euo pipefail
+          for chart in charts/*/; do
+            helm lint "$chart"
+          done
+
+      - name: Check chart docs are current
+        run: |
+          set -euo pipefail
+          helm-docs --chart-search-root=charts --log-level=warn
+          helm-schema --chart-search-root charts --skip-auto-generation required,additionalProperties --append-newline
+          git diff --exit-code charts/*/README.md charts/*/values.schema.json
