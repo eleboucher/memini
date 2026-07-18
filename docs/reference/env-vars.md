@@ -249,7 +249,7 @@ It is easy to confuse with the knobs next to it, so:
 | `MEMINI_INJECT_DEDUPE`           | The cross-surface injection dedupe entirely (off means every surface re-injects every time, even unchanged)                                                                                                               |
 | `MEMINI_INJECT_COOLDOWN_MS`      | The **time** dimension of injection dedupe: an injected memory is held back this many ms before it may re-inject. `0` disables the time window; both cooldown knobs `0` restores suppress-for-the-session                 |
 | `MEMINI_INJECT_COOLDOWN_PROMPTS` | The **prompt** dimension of injection dedupe: an injected memory is held back this many user prompts before it may re-inject. `0` disables the prompt window                                                              |
-| `MEMINI_INJECT_PRETOOL_GATE_MS`  | The per-file `PreToolUse` recall **call** (distinct from the injection dedupe above): skipped for a file whose last call was younger than this many ms. `0` always calls                                                  |
+| `MEMINI_INJECT_PRETOOL_GATE_MS`  | The per-file `PreToolUse` recall **call**: skipped for a file whose last call was younger than this many ms. `0` always calls; `MEMINI_INJECT_DEDUPE=0` disables this gate too, since its clock lives in the dedupe state |
 | `MEMINI_AUTO_SAVE_MIN_EVENTS`    | The activity gate on the `Stop` auto-save nudge — below this the nudge defers, then fires as a discussion-variant prompt at twice the interval; `0` nudges on the message interval alone, regardless of buffered activity |
 
 They are independent. Turning digests off leaves the agent saving decisions

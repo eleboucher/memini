@@ -715,7 +715,7 @@ type ClientSettings struct {
 	// InjectCooldownPrompts Prompt-count window within which an already-injected memory is not re-injected; 0 disables the prompt dimension.
 	InjectCooldownPrompts *int `json:"inject_cooldown_prompts,omitempty"`
 
-	// InjectDedupe Suppress re-injecting a recalled memory that is still within its injection cooldown window (inject_cooldown_ms / inject_cooldown_prompts); with both windows 0, an unchanged memory stays suppressed for the rest of the session. This gates the injection only — whether the PreToolUse recall call runs at all is governed separately by inject_pretool_gate_ms.
+	// InjectDedupe Suppress re-injecting a recalled memory that is still within its injection cooldown window (inject_cooldown_ms / inject_cooldown_prompts); with both windows 0, an unchanged memory stays suppressed for the rest of the session. This gates the injection; whether the PreToolUse recall call runs at all follows inject_pretool_gate_ms, but turning inject_dedupe off also disables that call gate, because the gate's clock lives in the dedupe state.
 	InjectDedupe *bool `json:"inject_dedupe,omitempty"`
 
 	// InjectLabels Which annotation labels to render alongside an injected memory.
@@ -1239,7 +1239,7 @@ type SettingsDefaultsResponse struct {
 	// InjectCooldownPrompts Prompt-count window within which an already-injected memory is not re-injected; 0 disables the prompt dimension.
 	InjectCooldownPrompts *int `json:"inject_cooldown_prompts,omitempty"`
 
-	// InjectDedupe Suppress re-injecting a recalled memory that is still within its injection cooldown window (inject_cooldown_ms / inject_cooldown_prompts); with both windows 0, an unchanged memory stays suppressed for the rest of the session. This gates the injection only — whether the PreToolUse recall call runs at all is governed separately by inject_pretool_gate_ms.
+	// InjectDedupe Suppress re-injecting a recalled memory that is still within its injection cooldown window (inject_cooldown_ms / inject_cooldown_prompts); with both windows 0, an unchanged memory stays suppressed for the rest of the session. This gates the injection; whether the PreToolUse recall call runs at all follows inject_pretool_gate_ms, but turning inject_dedupe off also disables that call gate, because the gate's clock lives in the dedupe state.
 	InjectDedupe *bool `json:"inject_dedupe,omitempty"`
 
 	// InjectLabels Which annotation labels to render alongside an injected memory.

@@ -135,7 +135,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
     "key": "inject_dedupe",
     "type": "boolean",
     "default": true,
-    "description": "Suppress re-injecting a recalled memory that is still within its injection cooldown window (inject_cooldown_ms / inject_cooldown_prompts); with both windows 0, an unchanged memory stays suppressed for the rest of the session. This gates the injection only — whether the PreToolUse recall call runs at all is governed separately by inject_pretool_gate_ms."
+    "description": "Suppress re-injecting a recalled memory that is still within its injection cooldown window (inject_cooldown_ms / inject_cooldown_prompts); with both windows 0, an unchanged memory stays suppressed for the rest of the session. This gates the injection; whether the PreToolUse recall call runs at all follows inject_pretool_gate_ms, but turning inject_dedupe off also disables that call gate, because the gate's clock lives in the dedupe state."
   },
   {
     "key": "inject_cooldown_ms",

@@ -446,8 +446,10 @@ type ClientSettings struct {
 	// InjectDedupe suppresses re-injecting a recalled memory still within its
 	// injection cooldown window (InjectCooldownMs / InjectCooldownPrompts);
 	// with both windows 0 an unchanged memory stays suppressed for the rest of
-	// the session. It gates the injection only — whether the PreToolUse recall
-	// call runs is governed separately by InjectPretoolGateMs.
+	// the session. It gates the injection; whether the PreToolUse recall call
+	// runs follows InjectPretoolGateMs, but turning InjectDedupe off also
+	// disables that call gate, because the gate's clock lives in the dedupe
+	// state.
 	InjectDedupe *bool `json:"inject_dedupe,omitempty"`
 	// InjectCooldownMs is the time window (ms) within which an already-injected
 	// memory is not re-injected; 0 disables the time dimension. Must be >= 0.
