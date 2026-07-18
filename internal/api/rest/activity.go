@@ -190,6 +190,10 @@ func apiActivityEvent(ev service.ActivityEvent) ActivityEvent {
 				injected := *m.Injected
 				am.Injected = &injected
 			}
+			if m.Filtered != "" {
+				f := ActivityMemoryFiltered(m.Filtered)
+				am.Filtered = &f
+			}
 			mems[i] = am
 		}
 		out.Memories = &mems
