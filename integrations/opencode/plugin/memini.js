@@ -1016,6 +1016,49 @@ export function createClient(cfg, log) {
   return { postJson, handshake, baseUrl };
 }
 
+/**
+ * POST /v1/search carrying the newer-than-server optional fields, retrying ONCE
+ * with min_rank_score (and any exclude_ids) stripped when the first attempt
+ * fails. An older server 400s an unknown field (returned as null under
+ * fail-soft, or a throw with fallback_on_error off), so this degrades to the
+ * client-side composite floor fallback instead of losing recall entirely.
+ *
+ * Returns {data, rankFloorStripped}. rankFloorStripped is true only when the
+ * floor was sent and then dropped on the retry — the signal the caller uses to
+ * decide whether to re-apply the composite floor client-side. A server that
+ * accepted the floor is authoritative and its result set is NOT re-filtered.
+ * exclude_ids rides only the first attempt and is stripped alongside the floor
+ * on retry (matching _shared.mjs's combined strip); onExcludeIdsUnsupported,
+ * when given, latches it off for the session. Unlike the Claude plugin's
+ * pretool latch, the floor itself is never latched off: this integration tracks
+ * no content hash, so a stateless per-call strip is the faithful port.
+ */
+export async function postSearchWithFloor(postJson, body, namespace, opts = {}) {
+  const { excludeIds = [], onExcludeIdsUnsupported } = opts;
+  const rankFloorInBody = body.min_rank_score !== undefined;
+  const withExcludeIds = excludeIds.length > 0;
+  if (!rankFloorInBody && !withExcludeIds) {
+    return { data: await postJson("/v1/search", body, namespace), rankFloorStripped: false };
+  }
+  try {
+    const first = await postJson(
+      "/v1/search",
+      withExcludeIds ? { ...body, exclude_ids: excludeIds } : body,
+      namespace,
+    );
+    if (first !== null) return { data: first, rankFloorStripped: false };
+  } catch {
+    // With fallback_on_error=false the 400 arrives as a throw, not null.
+  }
+  const stripped = { ...body };
+  delete stripped.min_rank_score;
+  const retry = await postJson("/v1/search", stripped, namespace);
+  if (retry !== null && withExcludeIds && typeof onExcludeIdsUnsupported === "function") {
+    onExcludeIdsUnsupported();
+  }
+  return { data: retry, rankFloorStripped: rankFloorInBody };
+}
+
 // extractLastTurn returns the latest user and assistant text from the message
 // list returned by client.session.messages ([{info, parts}, ...]), plus the id
 // of the assistant message (for dedup). Iterates in reverse to short-circuit.
@@ -1160,23 +1203,18 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
   // 400 on the unknown field: when a request carrying it fails and the retry
   // without it succeeds, stop sending it. The client-side filter stays.
   let serverExcludeIds = true;
-  const searchExcluding = async (body, excludeIds, namespace) => {
-    if (!serverExcludeIds || excludeIds.length === 0) {
-      return rest.postJson("/v1/search", body, namespace);
-    }
-    try {
-      const result = await rest.postJson("/v1/search", { ...body, exclude_ids: excludeIds }, namespace);
-      if (result !== null) return result;
-    } catch {
-      // With fallback_on_error=false the 400 arrives as a throw, not null.
-    }
-    const retry = await rest.postJson("/v1/search", body, namespace);
-    if (retry !== null) {
-      serverExcludeIds = false;
-      log.warn("memini: server does not accept exclude_ids; using client-side dedupe only");
-    }
-    return retry;
-  };
+  // Delegate the search + one-shot compat retry to postSearchWithFloor, which
+  // strips BOTH min_rank_score and exclude_ids on an older server's 400. Keep
+  // the exclude_ids latch here (a closure the callback flips off); the floor is
+  // not latched. Returns {data, rankFloorStripped}.
+  const searchExcluding = (body, excludeIds, namespace) =>
+    postSearchWithFloor(rest.postJson, body, namespace, {
+      excludeIds: serverExcludeIds ? excludeIds : [],
+      onExcludeIdsUnsupported: () => {
+        serverExcludeIds = false;
+        log.warn("memini: server does not accept exclude_ids; using client-side dedupe only");
+      },
+    });
 
   // opencode runs chat.message via an unguarded Effect.promise (a throw aborts the
   // turn) and dispatches event hooks fire-and-forget, so a hook must never reject:
@@ -1264,10 +1302,12 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       // context, so recalling them just echoes the conversation back a turn
       // behind. Captures from other (past) sessions are still recalled.
       if (sessionID) body.exclude_metadata = { session_id: sessionID };
-      // min_score (fused-score floor) is optional and matches the wire knob
-      // the Claude Code plugin's pre-tool-use hook uses; client-side re-filter
-      // is a belt-and-braces guard against score-normalization edge cases.
-      if (live.recall_min_score > 0) body.min_score = live.recall_min_score;
+      // inject_recall_min_score floors the FINAL composite score server-side
+      // via min_rank_score (not the fused-scale min_score), matching the Claude
+      // Code plugin. A knob >= 1 is out of the server's range, so it clamps to a
+      // client-only floor rather than 400ing every search.
+      const rankFloorInRange = live.recall_min_score > 0 && live.recall_min_score < 1;
+      if (rankFloorInRange) body.min_rank_score = live.recall_min_score;
       // Ids still IN COOLDOWN go along as exclude_ids so a suppressed hit
       // doesn't waste a recall_limit slot (id-only judgment — the wire cannot
       // know what content the server would serve); a LAPSED id is
@@ -1307,7 +1347,7 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
           );
           if (sessionID) {
             settled.then((late) => {
-              const hits = Array.isArray(late && late.results) ? late.results : [];
+              const hits = Array.isArray(late && late.data && late.data.results) ? late.data.results : [];
               if (hits.length) boundedPut(pendingBySession, sessionID, hits);
             });
           }
@@ -1316,12 +1356,14 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       } else {
         result = await settled;
       }
-      // Client-side score floor: filter the raw hit list before formatting so
-      // the bullet array only contains hits the operator asked for. Without
-      // this, the server's default floor could leak low-quality hits in
-      // regardless of live.recall_min_score.
-      const floor = live.recall_min_score > 0 ? live.recall_min_score : 0;
-      let rawHits = Array.isArray(result && result.results) ? result.results : [];
+      const searchData = result && result.data ? result.data : null;
+      // Client composite floor is a fallback ONLY: it runs when the knob was
+      // clamped to client-only (>= 1) or the retry stripped min_rank_score for
+      // an old server. A server that enforced the floor is authoritative and
+      // its result set is not re-filtered here.
+      const serverEnforcedFloor = rankFloorInRange && !(result && result.rankFloorStripped);
+      const floor = live.recall_min_score > 0 && !serverEnforcedFloor ? live.recall_min_score : 0;
+      let rawHits = Array.isArray(searchData && searchData.results) ? searchData.results : [];
       // Merge in results that arrived late on a previous turn: fresh hits
       // first (they answer the current query), deduped by memory id.
       if (sessionID) {
@@ -1369,8 +1411,8 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       // /v1/search sets `degraded: "keyword_only"` (plus a `note`) when the
       // query embed was unavailable and it fell back to keyword-only matching;
       // both are already on `result`, so surfacing them is a one-line addition.
-      if (result && result.degraded) {
-        lines.push(`[memini: ${result.note || "semantic search unavailable — results are keyword-only and may be incomplete"}]`);
+      if (searchData && searchData.degraded) {
+        lines.push(`[memini: ${searchData.note || "semantic search unavailable — results are keyword-only and may be incomplete"}]`);
       }
       if (fit.dropped > 0) lines.push(`[... ${fit.dropped} item(s) truncated by token budget]`);
       // opencode's part schema requires ids to start with `prt`.

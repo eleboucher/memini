@@ -47,6 +47,7 @@ import {
   createClient,
   injectedIdentity,
   injectedSuppressed,
+  postSearchWithFloor,
 } from "./memini.js";
 
 const INJECT_PREAMBLE =
@@ -246,14 +247,29 @@ export async function setup(ctx) {
         // context, so recalling them just echoes the conversation back a turn
         // behind. Past sessions still recall.
         if (sessionID) body.exclude_metadata = { session_id: sessionID };
-        if (live.recall_min_score > 0) body.min_score = live.recall_min_score;
+        // inject_recall_min_score floors the FINAL composite score server-side
+        // via min_rank_score (not the fused-scale min_score), matching the
+        // Claude Code plugin. A knob >= 1 is out of the server's range, so it
+        // clamps to a client-only floor rather than 400ing every search.
+        const rankFloorInRange = live.recall_min_score > 0 && live.recall_min_score < 1;
+        if (rankFloorInRange) body.min_rank_score = live.recall_min_score;
 
         // Blocking, like v1's chat.message: opencode awaits this hook before
-        // dispatch. postJson is bounded by cfg.timeout_ms and fail-soft, so a
-        // slow/unreachable memini degrades to no memory this turn, never a throw.
-        const result = await rest.postJson("/v1/search", body, live.namespace);
+        // dispatch. postSearchWithFloor is bounded by cfg.timeout_ms and
+        // fail-soft, and on an older server's 400 it retries once with
+        // min_rank_score stripped (v2 sends no exclude_ids), so a slow or
+        // out-of-date memini degrades to no memory this turn, never a throw.
+        const { data: result, rankFloorStripped } = await postSearchWithFloor(
+          rest.postJson,
+          body,
+          live.namespace,
+        );
 
-        const floor = live.recall_min_score > 0 ? live.recall_min_score : 0;
+        // Client composite floor is a fallback ONLY: it runs when the knob was
+        // clamped to client-only (>= 1) or the retry stripped min_rank_score. A
+        // server that enforced the floor is authoritative and not re-filtered.
+        const serverEnforcedFloor = rankFloorInRange && !rankFloorStripped;
+        const floor = live.recall_min_score > 0 && !serverEnforcedFloor ? live.recall_min_score : 0;
         let rawHits = Array.isArray(result && result.results) ? result.results : [];
         // Windowed cooldown, judged PER HIT against its content identity: an
         // in-window unchanged hit is dropped, a lapsed one re-serves, and an
