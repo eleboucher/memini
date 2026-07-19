@@ -569,7 +569,7 @@ export function intEnvFrom(env, name, defaultValue) {
 
 /**
  * floatEnv parses a non-negative float env var and returns `default` when
- * unset or malformed. Used for min_score.
+ * unset or malformed.
  */
 export function floatEnv(name, defaultValue) {
   const raw = process.env[name];
