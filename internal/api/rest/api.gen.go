@@ -750,7 +750,7 @@ type ClientSettings struct {
 	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped.
 	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
 
-	// InjectPretoolMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a PreToolUse injection. The Claude Code plugin enforces it server-side via min_rank_score (floored hits appear in the feed marked as filtered); other integrations may still apply it as a pre-rank fused-score floor.
+	// InjectPretoolMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a PreToolUse injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor.
 	InjectPretoolMinScore *float32 `json:"inject_pretool_min_score,omitempty"`
 
 	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection.
@@ -759,7 +759,7 @@ type ClientSettings struct {
 	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped.
 	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
 
-	// InjectRecallMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a recall injection. The Claude Code plugin enforces it server-side via min_rank_score (floored hits appear in the feed marked as filtered); other integrations may still apply it as a pre-rank fused-score floor.
+	// InjectRecallMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a recall injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor.
 	InjectRecallMinScore *float32 `json:"inject_recall_min_score,omitempty"`
 
 	// InlineExtract Inject the directive asking the agent to save durable facts via memory_remember.
@@ -1277,7 +1277,7 @@ type SettingsDefaultsResponse struct {
 	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped.
 	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
 
-	// InjectPretoolMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a PreToolUse injection. The Claude Code plugin enforces it server-side via min_rank_score (floored hits appear in the feed marked as filtered); other integrations may still apply it as a pre-rank fused-score floor.
+	// InjectPretoolMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a PreToolUse injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor.
 	InjectPretoolMinScore *float32 `json:"inject_pretool_min_score,omitempty"`
 
 	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection.
@@ -1286,7 +1286,7 @@ type SettingsDefaultsResponse struct {
 	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped.
 	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
 
-	// InjectRecallMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a recall injection. The Claude Code plugin enforces it server-side via min_rank_score (floored hits appear in the feed marked as filtered); other integrations may still apply it as a pre-rank fused-score floor.
+	// InjectRecallMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a recall injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor.
 	InjectRecallMinScore *float32 `json:"inject_recall_min_score,omitempty"`
 
 	// InlineExtract Inject the directive asking the agent to save durable facts via memory_remember.

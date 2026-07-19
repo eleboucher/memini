@@ -119,6 +119,7 @@ const typeboxConfigSchema = Type.Object(
     timeout_ms: Type.Optional(Type.Number()),
     expose_tools: Type.Optional(Type.Boolean()),
     recall_limit: Type.Optional(Type.Number()),
+    recall_min_score: Type.Optional(Type.Number()),
     inject_cooldown_ms: Type.Optional(Type.Number()),
     recall_max_tokens: Type.Optional(Type.Number()),
     min_capture_chars: Type.Optional(Type.Number()),
@@ -261,6 +262,7 @@ export function resolveConfig(
   const base = resolveBaseNamespace(c, env);
 
   const recallLimitExplicit = Number.isFinite(c.recall_limit) && c.recall_limit > 0;
+  const recallMinScoreExplicit = Number.isFinite(c.recall_min_score) && c.recall_min_score > 0;
   const recallMaxTokensExplicit = Number.isFinite(c.recall_max_tokens) && c.recall_max_tokens > 0;
   const minCaptureCharsExplicit = Number.isFinite(c.min_capture_chars) && c.min_capture_chars > 0;
   // Unlike the counts above, 0 is a MEANINGFUL value for the cooldown window (it
@@ -311,6 +313,12 @@ export function resolveConfig(
     // are available yet here, so this is env-or-default only; effectiveConfig
     // recomputes these three once a handshake is in hand.
     recall_limit: recallLimitExplicit ? c.recall_limit : effectiveSetting<number>(knob("recall_limit"), undefined, env).value,
+    // inject_recall_min_score floors the FINAL composite score. Resolves like
+    // recall_limit: config wins outright when explicitly set, else env-override >
+    // (later) server > built-in default (0 / no floor).
+    recall_min_score: recallMinScoreExplicit
+      ? c.recall_min_score
+      : effectiveSetting<number>(knob("inject_recall_min_score"), undefined, env).value,
     // Windowed injection-cooldown time window (ms). Resolves like recall_limit:
     // config wins outright when explicitly set, else env-override > (later) server
     // > built-in default (1800000 / 30 min). 0 disables the time dimension; since
@@ -342,6 +350,7 @@ export function resolveConfig(
     // a live handshake's server settings.
     explicit: {
       recall_limit: recallLimitExplicit,
+      recall_min_score: recallMinScoreExplicit,
       inject_cooldown_ms: injectCooldownMsExplicit,
       recall_max_tokens: recallMaxTokensExplicit,
       min_capture_chars: minCaptureCharsExplicit,
@@ -404,6 +413,9 @@ export function effectiveConfig(
     namespace_source,
     degraded,
     recall_limit: explicit.recall_limit ? cfg.recall_limit : effectiveSetting<number>(knob("recall_limit"), server, env).value,
+    recall_min_score: explicit.recall_min_score
+      ? cfg.recall_min_score
+      : effectiveSetting<number>(knob("inject_recall_min_score"), server, env).value,
     inject_cooldown_ms: explicit.inject_cooldown_ms
       ? cfg.inject_cooldown_ms
       : effectiveSetting<number>(knob("inject_cooldown_ms"), server, env).value,
@@ -1172,7 +1184,7 @@ export function renderStatus(
 
   // Behavior knobs relevant to this plugin, with provenance.
   L.push(`SETTINGS`);
-  for (const wireKey of ["recall_limit", "inject_cooldown_ms", "inject_recall_max_tok", "min_capture_chars"]) {
+  for (const wireKey of ["recall_limit", "inject_recall_min_score", "inject_cooldown_ms", "inject_recall_max_tok", "min_capture_chars"]) {
     const k = knob(wireKey);
     const { value, source } = effectiveSetting(k, hs?.settings, process.env as Record<string, string | undefined>);
     const origin = source === "env-override" ? "<- env" : source === "server" ? "<- server" : "(default)";
@@ -1866,22 +1878,38 @@ const plugin: {
     // 400 on the unknown field: when a request carrying it fails and the retry
     // without it succeeds, stop sending it. The client-side filters stay.
     let serverExcludeIds = true;
-    const searchExcluding = async (ns: string, body: any, excludeIds: string[]) => {
-      if (!serverExcludeIds || excludeIds.length === 0) {
-        return client.postJson("/v1/search", body, ns);
+    const searchExcluding = async (
+      ns: string,
+      body: any,
+      excludeIds: string[],
+    ): Promise<{ data: any; rankFloorStripped: boolean }> => {
+      const rankFloorInBody = body.min_rank_score !== undefined;
+      const withExcludeIds = serverExcludeIds && excludeIds.length > 0;
+      if (!rankFloorInBody && !withExcludeIds) {
+        return { data: await client.postJson("/v1/search", body, ns), rankFloorStripped: false };
       }
       try {
-        const result = await client.postJson("/v1/search", { ...body, exclude_ids: excludeIds }, ns);
-        if (result !== null) return result;
+        const result = await client.postJson(
+          "/v1/search",
+          withExcludeIds ? { ...body, exclude_ids: excludeIds } : body,
+          ns,
+        );
+        if (result !== null) return { data: result, rankFloorStripped: false };
       } catch {
         // With fallback_on_error=false the 400 arrives as a throw, not null.
       }
-      const retry = await client.postJson("/v1/search", body, ns);
-      if (retry !== null) {
+      // Retry ONCE with BOTH newer-than-server fields stripped (min_rank_score +
+      // exclude_ids), degrading to the client-side floor fallback below.
+      // exclude_ids latches off; the floor does not latch (this integration
+      // tracks no content hash, so a per-call strip matches _shared.mjs).
+      const stripped = { ...body };
+      delete stripped.min_rank_score;
+      const retry = await client.postJson("/v1/search", stripped, ns);
+      if (retry !== null && withExcludeIds) {
         serverExcludeIds = false;
         api.logger.warn?.("memini: server does not accept exclude_ids; using client-side dedupe only");
       }
-      return retry;
+      return { data: retry, rankFloorStripped: rankFloorInBody };
     };
 
     const recallHandler = async (event: any, hookCtx: any) => {
@@ -1893,6 +1921,12 @@ const plugin: {
       const ns = effectiveNamespace(live, hookCtx);
       if (ns == null) return;
       const body: any = { query: prompt, limit: live.recall_limit };
+      // inject_recall_min_score floors the FINAL composite score server-side via
+      // min_rank_score (not the fused-scale min_score), matching the Claude Code
+      // plugin. A knob >= 1 is out of the server's range, so it clamps to a
+      // client-only floor rather than 400ing every search.
+      const rankFloorInRange = live.recall_min_score > 0 && live.recall_min_score < 1;
+      if (rankFloorInRange) body.min_rank_score = live.recall_min_score;
       // Exclude this session's own just-captured turns: they're still in the
       // live transcript, so recalling them echoes the conversation back as
       // "long-term memory". agent_end tags each capture with session_id.
@@ -1907,8 +1941,16 @@ const plugin: {
       const captured = freshCaptured(ns);
       const inWindow = session ? injectedInWindow(session, live.inject_cooldown_ms) : new Set<string>();
       const excludeIds = [...inWindow, ...captured];
-      const result = await searchExcluding(ns, body, excludeIds);
+      const searchResult = await searchExcluding(ns, body, excludeIds);
+      const result = searchResult.data;
       let results = Array.isArray(result?.results) ? result.results : [];
+      // Client composite floor is a fallback ONLY: it runs when the knob was
+      // clamped to client-only (>= 1) or the retry stripped min_rank_score for an
+      // old server. A server that enforced the floor is authoritative and its
+      // result set is not re-filtered here.
+      const serverEnforcedFloor = rankFloorInRange && !searchResult.rankFloorStripped;
+      const floor = live.recall_min_score > 0 && !serverEnforcedFloor ? live.recall_min_score : 0;
+      if (floor > 0) results = results.filter((r: any) => (typeof r?.score === "number" ? r.score : 0) >= floor);
       // Drop just-captured turns: they're live context, not long-term memory.
       // Survives session-id asymmetry (keyed by stable namespace).
       if (captured.size) results = results.filter((r: any) => !captured.has(r?.memory?.id));
