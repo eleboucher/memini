@@ -707,6 +707,30 @@ test("effectiveConfig: behavior knobs — config explicit wins, else env-overrid
   assert.equal(liveEnvOverride.recall_limit, 1);
 });
 
+test("resolveConfig: inject_cooldown_prompts defaults to 3; explicit 0 survives; env overrides", () => {
+  assert.equal(resolveConfig({}, {}).inject_cooldown_prompts, 3);
+  // 0 is meaningful (disables the prompt dimension), so explicit-0 must NOT
+  // fall through to env/default — same rule as inject_cooldown_ms.
+  assert.equal(resolveConfig({ inject_cooldown_prompts: 0 }, {}).inject_cooldown_prompts, 0);
+  assert.equal(resolveConfig({}, { MEMINI_INJECT_COOLDOWN_PROMPTS: "7" }).inject_cooldown_prompts, 7);
+  assert.equal(resolveConfig({ inject_cooldown_prompts: Number.NaN }, {}).inject_cooldown_prompts, 3);
+});
+
+test("effectiveConfig: inject_cooldown_prompts — config explicit wins, else env beats server beats default", () => {
+  const cfg = resolveConfig({}, {});
+  const hs = fakeHandshake({ settings: { inject_cooldown_prompts: 9 } });
+  assert.equal(effectiveConfig(cfg, hs, {}).inject_cooldown_prompts, 9);
+
+  const cfgExplicit = resolveConfig({ inject_cooldown_prompts: 1 }, {});
+  assert.equal(effectiveConfig(cfgExplicit, hs, {}).inject_cooldown_prompts, 1);
+
+  assert.equal(
+    effectiveConfig(cfg, hs, { MEMINI_INJECT_COOLDOWN_PROMPTS: "2" }).inject_cooldown_prompts,
+    2,
+  );
+  assert.equal(effectiveConfig(cfg, undefined, {}).inject_cooldown_prompts, 3);
+});
+
 test("prefix / per-agent template still apply on top of a resolved namespace", () => {
   const env = { MEMINI_NAMESPACE: "team" };
   const cfg = resolveConfig({ namespace_prefix: "work", namespace_template: "{namespace}-{agent}" }, env);

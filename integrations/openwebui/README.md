@@ -26,7 +26,9 @@ What it wires (two methods on the `Filter` class):
 - **`inlet`** — searches memini for the latest user message and inserts the
   matches as a system message before the turn runs. It excludes this chat's own
   captured turns (already in the live transcript), so they aren't echoed back as
-  memory a turn behind; other chats still recall.
+  memory a turn behind; other chats still recall. What a chat has already been
+  shown is deduped by the **windowed repeat-injection cooldown** (below), so an
+  unchanged match isn't re-served turn after turn.
 - **`outlet`** — once the response completes, stores the user/assistant turn
   back into memini (episodic, tagged with the chat id) so it can be recalled
   later.
@@ -71,6 +73,28 @@ needed:
 Open WebUI is multi-user, unlike a local agent. Set the same `namespace` to pool
 one shared memory across your agents, or flip `scope_by_user` on to give each
 Open WebUI account its own private memory.
+
+### Repeat-injection cooldown
+
+The filter keeps a per-chat map of what it already injected (bounded; keyed by
+the chat id) and applies the **windowed repeat-injection cooldown** shared with
+the Claude Code / opencode / hermes / openclaw integrations: an
+already-injected memory is excluded from recall (server-side via `exclude_ids`,
+with a client-side backstop for older servers) while it is inside _either_
+window — the **time** window (`inject_cooldown_ms`) or the **prompt** window
+(`inject_cooldown_prompts`, one prompt = one `inlet` call) — and is re-served
+once **both** have lapsed. A memory whose content was updated in place
+re-injects immediately (the content-hash bypass), so a correction is never
+withheld for the window.
+
+There is no valve for these two knobs: like the capture bounds, the cooldown
+policy is the server's call and arrives via the handshake's `ClientSettings`
+(`inject_cooldown_ms` / `inject_cooldown_prompts` — configure them server-side
+or per-key). When the handshake is unavailable the filter falls back to the
+same built-in defaults the server ships: **30 min / 3 prompts**. Setting both
+to `0` server-side suppresses a shown memory for the chat's whole lifetime
+(the legacy behavior). Chats without a chat id (rare) have no key to dedupe by
+and stay un-deduped, mirroring the capture path's chat-id rule.
 
 ### Namespace resolution
 
