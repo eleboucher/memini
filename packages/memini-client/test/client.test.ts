@@ -369,7 +369,7 @@ test("effectiveSetting: list — pipe/comma separated, trimmed and lowercased, l
     source: "env-override",
   });
   assert.deepEqual(effectiveSetting(k, undefined, {}), {
-    value: ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep"],
+    value: ["Read", "Write", "Edit", "MultiEdit"],
     source: "default",
   });
 });

@@ -382,6 +382,100 @@ func TestRecallMinRankScoreLogsFlooredButExcludesFromResponse(t *testing.T) {
 	}
 }
 
+// TestRecallMinRankScoreFlooredCountVisible pins the floored-count visibility
+// contract: what the composite floor drops must be countable without scanning
+// the marked rows. The recall event's operation-level detail carries
+// floored=N, and the memini_recall_floored_total counter (RecallFloored)
+// advances by the same N — absent/untouched when the floor bit nothing.
+func TestRecallMinRankScoreFlooredCountVisible(t *testing.T) {
+	ctx := context.Background()
+	strong := "the production postgres database runs on port 5432"
+	weak := "the office kitchen has fresh coffee every morning"
+	query := "postgres database"
+
+	// Probe a throwaway store for the composite split (same pattern as
+	// TestRecallMinRankScoreLogsFlooredButExcludesFromResponse).
+	probe := service.New(openTestStore(t), embedtest.New(dims), service.WithSyncReinforce())
+	for _, c := range []string{strong, weak} {
+		if _, err := probe.Remember(ctx, service.RememberInput{Namespace: "n", Content: c, Tier: memory.TierSemantic}); err != nil {
+			t.Fatalf("probe remember: %v", err)
+		}
+	}
+	base, err := probe.Recall(ctx, service.RecallInput{Namespace: "n", Query: query, Limit: 5})
+	if err != nil {
+		t.Fatalf("probe recall: %v", err)
+	}
+	if len(base) != 2 || base[0].Score <= base[1].Score {
+		t.Fatalf("probe should return both, best-first with distinct scores, got %+v", base)
+	}
+	floor := (base[0].Score + base[1].Score) / 2
+
+	m := &countingMetrics{}
+	svc := service.New(openTestStore(t), embedtest.New(dims),
+		service.WithSyncReinforce(), service.WithEventLog(true), service.WithSyncEventLog(),
+		service.WithMetrics(m))
+	for _, c := range []string{strong, weak} {
+		if _, err := svc.Remember(ctx, service.RememberInput{Namespace: "n", Content: c, Tier: memory.TierSemantic}); err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+	}
+
+	// A floor-free recall must record NO floored count — absent, not zero.
+	if _, err := svc.Recall(ctx, service.RecallInput{Namespace: "n", Query: query, Limit: 5}); err != nil {
+		t.Fatalf("floor-free recall: %v", err)
+	}
+	if len(m.floored) != 0 {
+		t.Fatalf("floor-free recall must not report RecallFloored, got %v", m.floored)
+	}
+
+	got, err := svc.Recall(ctx, service.RecallInput{Namespace: "n", Query: query, Limit: 5, MinRankScore: floor})
+	if err != nil {
+		t.Fatalf("floored recall: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("floor should keep exactly one hit, got %d", len(got))
+	}
+	if m.floored["all"] != 1 {
+		t.Fatalf("RecallFloored(all) = %d, want 1", m.floored["all"])
+	}
+
+	page, err := svc.Events(ctx, service.EventsInput{Namespace: "n", Kinds: []store.EventKind{store.EventRecall}})
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if len(page.Events) != 2 {
+		t.Fatalf("want 2 recall events, got %d", len(page.Events))
+	}
+	// Newest first: page.Events[0] is the floored recall, [1] the floor-free one.
+	if got := detailInt(t, page.Events[0].Detail, "floored"); got != 1 {
+		t.Errorf("floored recall event detail floored = %d, want 1 (detail: %v)", got, page.Events[0].Detail)
+	}
+	if _, ok := page.Events[1].Detail["floored"]; ok {
+		t.Errorf("floor-free recall event must not carry a floored count, got %v", page.Events[1].Detail)
+	}
+}
+
+// detailInt reads an integer out of an event detail map, bridging the numeric
+// types a JSON round-trip through the store may produce.
+func detailInt(t *testing.T, detail map[string]any, key string) int {
+	t.Helper()
+	v, ok := detail[key]
+	if !ok {
+		t.Fatalf("detail has no %q: %v", key, detail)
+	}
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	default:
+		t.Fatalf("detail[%q] has unexpected type %T (%v)", key, v, v)
+		return 0
+	}
+}
+
 // TestRecallMinRankScoreFlooredRowKeepsTrueRank pins the reviewer's concrete
 // case: the finalized (pre-floor) list is [weak, strong] — the recording
 // reranker reverses composite order — so weak sits at rank 1 and strong at

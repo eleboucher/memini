@@ -750,16 +750,16 @@ type ClientSettings struct {
 	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped.
 	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
 
-	// InjectPretoolMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a PreToolUse injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor.
+	// InjectPretoolMinScore Floor on the composite post-rerank score — the final [0,1) scale the response score field and the activity feed show — for a PreToolUse injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor. 0 disables the floor.
 	InjectPretoolMinScore *float32 `json:"inject_pretool_min_score,omitempty"`
 
-	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection.
+	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection. Glob and Grep are deliberately not in the default: pattern-derived queries ("Grep on <pattern>") are near-zero-signal and each ungated call costs a server embed+rerank — list them here to restore the old behavior.
 	InjectPretoolTools *[]string `json:"inject_pretool_tools,omitempty"`
 
 	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped.
 	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
 
-	// InjectRecallMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a recall injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor.
+	// InjectRecallMinScore Floor on the composite post-rerank score — the final [0,1) scale the response score field and the activity feed show — for a recall injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor. 0 disables the floor.
 	InjectRecallMinScore *float32 `json:"inject_recall_min_score,omitempty"`
 
 	// InlineExtract Inject the directive asking the agent to save durable facts via memory_remember.
@@ -1277,16 +1277,16 @@ type SettingsDefaultsResponse struct {
 	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped.
 	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
 
-	// InjectPretoolMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a PreToolUse injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor.
+	// InjectPretoolMinScore Floor on the composite post-rerank score — the final [0,1) scale the response score field and the activity feed show — for a PreToolUse injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor. 0 disables the floor.
 	InjectPretoolMinScore *float32 `json:"inject_pretool_min_score,omitempty"`
 
-	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection.
+	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection. Glob and Grep are deliberately not in the default: pattern-derived queries ("Grep on <pattern>") are near-zero-signal and each ungated call costs a server embed+rerank — list them here to restore the old behavior.
 	InjectPretoolTools *[]string `json:"inject_pretool_tools,omitempty"`
 
 	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped.
 	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
 
-	// InjectRecallMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a recall injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor.
+	// InjectRecallMinScore Floor on the composite post-rerank score — the final [0,1) scale the response score field and the activity feed show — for a recall injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor. 0 disables the floor.
 	InjectRecallMinScore *float32 `json:"inject_recall_min_score,omitempty"`
 
 	// InlineExtract Inject the directive asking the agent to save durable facts via memory_remember.

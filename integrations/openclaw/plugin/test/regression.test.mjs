@@ -465,7 +465,7 @@ test("resolveConfig falls back when recall_limit is zero/negative", () => {
   assert.equal(resolveConfig({ recall_limit: -1 }).recall_limit, 3, "negative falls back to default");
 });
 
-test("recall sends recall_limit and no min_score on /v1/search", async () => {
+test("recall sends recall_limit, no min_score, and the default 0.5 min_rank_score on /v1/search", async () => {
   const hooks = {};
   const requests = [];
   const realFetch = globalThis.fetch;
@@ -495,7 +495,7 @@ test("recall sends recall_limit and no min_score on /v1/search", async () => {
     const search = JSON.parse(requests.find((r) => r.url.endsWith("/v1/search")).init.body);
     assert.equal(search.limit, 2);
     assert.equal(search.min_score, undefined, "the fused-scale min_score is never sent");
-    assert.equal(search.min_rank_score, undefined, "no floor knob set, so no min_rank_score either");
+    assert.equal(search.min_rank_score, 0.5, "no floor knob set → the 0.5 default composite floor still rides the request");
     assert.equal(search.exclude_turns_younger_than, undefined, "server-side guard is on by default; plugin does not opt in");
   } finally {
     globalThis.fetch = realFetch;

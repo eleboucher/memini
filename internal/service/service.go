@@ -132,6 +132,11 @@ type Metrics interface {
 	// because the query embed failed or timed out. reason is "embed_timeout" or
 	// "embed_error".
 	RecallDegraded(reason string)
+	// RecallFloored records the candidates one recall's composite floor
+	// (min_rank_score) dropped from the response. Called once per recall that
+	// floored anything, with the drop count; tierFilter matches RecallResult's
+	// label.
+	RecallFloored(tierFilter string, n int)
 	// RememberDegraded records one write that stored without a vector (embedding
 	// omitted, keyword-searchable only, marked pending_embed) because the content
 	// embed failed or timed out. reason is "embed_timeout" or "embed_error".
@@ -183,6 +188,7 @@ func (nopMetrics) OpDuration(string, time.Duration)    {}
 func (nopMetrics) AnswerResult(string)                 {}
 func (nopMetrics) RerankResult(string, string)         {}
 func (nopMetrics) RecallDegraded(string)               {}
+func (nopMetrics) RecallFloored(string, int)           {}
 func (nopMetrics) RememberDegraded(string)             {}
 func (nopMetrics) WriteSanitized(string)               {}
 func (nopMetrics) ReinforceResult(string)              {}
@@ -1971,6 +1977,17 @@ func (s *Service) reportRecallDegraded(ctx context.Context, embedErr error, degr
 	}
 }
 
+// reportRecallFloored records candidates the composite floor (min_rank_score)
+// dropped from one recall's response, to memini_recall_floored_total. A no-op
+// when the floor bit nothing — absent, not zero, matching the event detail. A
+// helper so the branch stays out of Recall's cyclomatic budget (at the limit).
+func (s *Service) reportRecallFloored(tierFilter string, floored []store.Scored) {
+	if len(floored) == 0 {
+		return
+	}
+	s.metrics.RecallFloored(tierFilter, len(floored))
+}
+
 // validMinRankScore reports whether a per-call composite floor is in the valid
 // half-open [0,1) range. 0 is valid (the disabled state); 1.0 would gate out
 // even a perfect match, so it and anything above are rejected.
@@ -2205,6 +2222,10 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	// reinforcement, the "served N" metric) sees the kept set alone. finalized is
 	// kept intact as the pre-floor rank space the activity log ranks against.
 	kept, floored := applyMinRankScore(finalized, in.MinRankScore)
+	// Floored candidates must be visible, not silent: the count rides the
+	// activity event (logRecallEvent stamps floored=N on the operation detail)
+	// and the memini_recall_floored_total counter.
+	s.reportRecallFloored(tf, floored)
 	results := s.maybeExpandLinked(ctx, in, kept, k)
 	s.reinforceResults(ctx, results)
 	// Reinforcement rolls usage up into per-memory counters; the activity log

@@ -78,7 +78,17 @@ async function main() {
   // stay network-free. Stop refreshes the cache each turn, so this self-heals.
   if (ctx.degraded) return;
 
-  // Tool allowlist (env override > server setting > the built-in 5-tool set).
+  // The master recall switch (MEMINI_RECALL env > server > default true) — the
+  // same knob user-prompt-submit and the standalone integrations gate their
+  // recall on; PreToolUse recall is recall too. Sits ABOVE every state write
+  // and server call, so a disabled turn costs nothing. Unlike the prompt hook
+  // there is no counter bump to keep above this gate: PreToolUse only READS
+  // the per-session prompt counter (UserPromptSubmit owns the bump, above its
+  // own recall gate), so a plain early exit cannot freeze the cooldown window
+  // (design Gap-1).
+  if (!ctx.setting("recall").value) return;
+
+  // Tool allowlist (env override > server setting > the built-in default set).
   const allow = ctx.setting("inject_pretool_tools").value.map((s) => String(s).toLowerCase());
   if (!toolAllowed(toolName, allow)) return;
 

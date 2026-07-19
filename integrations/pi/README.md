@@ -155,7 +155,7 @@ authority is restored.
 | `MEMINI_CAPTURE`                     | on               | Settled-turn capture.                                                                         |
 | `MEMINI_RECALL_LIMIT`                | `3`              | Maximum automatic recall hits.                                                                |
 | `MEMINI_INJECT_RECALL_MAX_TOK`       | `0`              | Recall injection token ceiling; `0` is unbounded.                                             |
-| `MEMINI_INJECT_RECALL_MIN_SCORE`     | `0`              | Minimum automatic recall score.                                                               |
+| `MEMINI_INJECT_RECALL_MIN_SCORE`     | `0.5`            | Minimum automatic recall score (composite post-rerank scale); `0` disables the floor.         |
 | `MEMINI_INJECT_DEDUPE`               | on               | Shared cross-surface suppression state.                                                       |
 | `MEMINI_INJECT_COOLDOWN_MS`          | `1800000`        | Time cooldown for repeated injection; `0` disables this dimension.                            |
 | `MEMINI_INJECT_COOLDOWN_PROMPTS`     | `3`              | Prompt cooldown; `0` disables this dimension. Both cooldowns at `0` suppress for the session. |

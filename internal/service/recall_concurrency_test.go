@@ -74,13 +74,14 @@ func (e errEmbedder) Embed(context.Context, []string) ([][]float32, error) {
 }
 func (e errEmbedder) Dims() int { return e.dims }
 
-// countingMetrics counts recall error and keyword-only-degrade events;
-// everything else is a no-op. Safe for concurrent use.
+// countingMetrics counts recall error, keyword-only-degrade, and rank-floor
+// events; everything else is a no-op. Safe for concurrent use.
 type countingMetrics struct {
 	mu                   sync.Mutex
 	recallErr            int
 	degraded             map[string]int
 	rememberDegraded     map[string]int
+	floored              map[string]int
 	embedBackfillPending int
 	embedBackfillCalls   int
 }
@@ -106,6 +107,14 @@ func (m *countingMetrics) RememberDegraded(reason string) {
 		m.rememberDegraded = map[string]int{}
 	}
 	m.rememberDegraded[reason]++
+	m.mu.Unlock()
+}
+func (m *countingMetrics) RecallFloored(tierFilter string, n int) {
+	m.mu.Lock()
+	if m.floored == nil {
+		m.floored = map[string]int{}
+	}
+	m.floored[tierFilter] += n
 	m.mu.Unlock()
 }
 func (m *countingMetrics) WriteSanitized(string)            {}

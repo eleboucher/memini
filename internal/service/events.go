@@ -151,6 +151,13 @@ func (s *Service) logRecallEvent(ctx context.Context, in RecallInput, finalized,
 	if len(in.ExcludeIDs) > 0 {
 		detail["excluded_count"] = len(in.ExcludeIDs)
 	}
+	// How many candidates the composite floor (min_rank_score) dropped from
+	// the response. Operation-level like excluded_count — the marked per-row
+	// rows carry the WHICH, this carries the HOW MANY, so the feed can say
+	// "floored=N" without counting rows. Absent, not zero, when nothing fell.
+	if len(floored) > 0 {
+		detail["floored"] = len(floored)
+	}
 	base := store.Event{
 		OpID:      s.newID(),
 		Kind:      store.EventRecall,

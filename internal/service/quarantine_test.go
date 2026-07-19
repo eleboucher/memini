@@ -32,6 +32,7 @@ func (*sanitizeRecorder) OpDuration(string, time.Duration)    {}
 func (*sanitizeRecorder) AnswerResult(string)                 {}
 func (*sanitizeRecorder) RerankResult(string, string)         {}
 func (*sanitizeRecorder) RecallDegraded(string)               {}
+func (*sanitizeRecorder) RecallFloored(string, int)           {}
 func (*sanitizeRecorder) RememberDegraded(string)             {}
 func (*sanitizeRecorder) ReinforceResult(string)              {}
 func (*sanitizeRecorder) DedupTombstoned(int)                 {}
