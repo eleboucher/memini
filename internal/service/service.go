@@ -1183,11 +1183,14 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		return nil, err
 	}
 
-	// Episodic value gate: drop low-signal per-turn chatter ("keep going", "ok")
-	// before it embeds and lands in episodic memory for 90 days. Only episodic is
-	// gated, so durable writes and promotion are unaffected. A drop returns
-	// (nil, nil) — accepted, not stored.
-	if s.dropsLowSignalEpisodic(tier, in.Content) {
+	// Turn-capture hygiene + episodic value gate: strip harness boilerplate
+	// from an auto-captured conversation turn (mutates in.Content — see
+	// dropsAsCaptureOrLowSignal), then drop low-signal per-turn chatter ("keep
+	// going", "ok") before it embeds and lands in episodic memory for 90 days.
+	// Only captures are stripped and only episodic is gated, so durable writes
+	// and promotion are unaffected. A drop returns (nil, nil) — accepted, not
+	// stored.
+	if s.dropsAsCaptureOrLowSignal(tier, &in) {
 		s.metrics.RememberResult("dropped", string(tier))
 		return nil, nil
 	}
