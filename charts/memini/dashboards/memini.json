@@ -1179,7 +1179,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 16,
         "x": 0,
         "y": 73
       },
@@ -1215,6 +1215,65 @@
           "expr": "histogram_quantile(0.95, sum by (op, le) (rate(memini_op_duration_seconds_bucket[5m])))",
           "legendFormat": "{{op}}",
           "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "type": "timeseries",
+      "title": "HTTP response size by route (p50/p90)",
+      "description": "Body bytes shipped per response. The recall/briefing routes are what hooks inject from — watch these when tuning context-injection volume.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 73
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "showPoints": "never"
+          },
+          "unit": "bytes"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": ["mean", "max"]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.90, sum by (route, le) (rate(memini_http_response_bytes_bucket{route=~\"/v1/search|/v1/namespaces/briefing\"}[5m])))",
+          "legendFormat": "p90 {{route}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.50, sum by (route, le) (rate(memini_http_response_bytes_bucket{route=~\"/v1/search|/v1/namespaces/briefing\"}[5m])))",
+          "legendFormat": "p50 {{route}}",
+          "refId": "B"
         }
       ]
     },
