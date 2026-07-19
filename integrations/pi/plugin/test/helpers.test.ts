@@ -1077,6 +1077,117 @@ test("recall sends exclude_ids and falls back when the server rejects them", asy
   }
 });
 
+// The inject_recall_min_score knob floors the FINAL composite score. It must
+// ride the wire as min_rank_score (server-enforced), never the fused-scale
+// min_score, and a server that accepts it is authoritative: no client re-filter.
+test("recall floors on min_rank_score (never min_score) and trusts a server that enforces it", async () => {
+  const { default: meminiExtension } = await import("../src/index.ts?cb=rankfloor-server-" + Date.now());
+  const hooks: Record<string, any> = {};
+  const realFetch = globalThis.fetch;
+  const searches: any[] = [];
+  globalThis.fetch = (async (url: any, init: any) => {
+    const u = String(url);
+    if (u.endsWith("/v1/handshake")) {
+      return { ok: true, status: 200, async json() { return fakeHandshake({ namespace: "server/project", settings: { inject_recall_min_score: 0.5 } }); }, async text() { return ""; } };
+    }
+    if (u.endsWith("/v1/search")) searches.push(init?.body ? JSON.parse(init.body) : {});
+    // Server "enforces" the floor by returning 200; it may still hand back a hit
+    // below the floor (e.g. rounding), which an authoritative caller keeps.
+    const res = u.endsWith("/v1/search")
+      ? { results: [
+          { memory: { id: "hi", summary: "high relevance note", tier: "semantic" }, score: 0.9 },
+          { memory: { id: "lo", summary: "low relevance note", tier: "semantic" }, score: 0.3 },
+        ] }
+      : { id: "w1" };
+    return { ok: true, status: 200, async json() { return res; }, async text() { return JSON.stringify(res); } };
+  }) as any;
+  try {
+    meminiExtension({ on(name: string, h: any) { hooks[name] = h; }, registerTool() {} } as any);
+    const ctx = { sessionManager: { getSessionId: () => "sess-rankfloor-1", getLeafId: () => "leaf-1" } };
+    const out = await hooks.before_agent_start({ prompt: "what did we decide about the floor" }, ctx);
+    assert.equal(searches[0].min_rank_score, 0.5, "the knob rides as min_rank_score");
+    assert.equal(searches[0].min_score, undefined, "the fused-scale min_score is never sent");
+    assert.match(out.message.content, /high relevance note/);
+    assert.match(out.message.content, /low relevance note/, "server enforced the floor, so the client does not re-filter its result set");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// >= 1 is out of the server's valid range, so the knob clamps to a client-only
+// floor: nothing is sent to the server and the client filters below the floor.
+test("recall clamps an out-of-range floor (>= 1) to a client-only filter", async () => {
+  const { default: meminiExtension } = await import("../src/index.ts?cb=rankfloor-clamp-" + Date.now());
+  const hooks: Record<string, any> = {};
+  const realFetch = globalThis.fetch;
+  const searches: any[] = [];
+  globalThis.fetch = (async (url: any, init: any) => {
+    const u = String(url);
+    if (u.endsWith("/v1/handshake")) {
+      return { ok: true, status: 200, async json() { return fakeHandshake({ namespace: "server/project", settings: { inject_recall_min_score: 1.5 } }); }, async text() { return ""; } };
+    }
+    if (u.endsWith("/v1/search")) searches.push(init?.body ? JSON.parse(init.body) : {});
+    const res = u.endsWith("/v1/search")
+      ? { results: [
+          { memory: { id: "hi", summary: "high relevance note", tier: "semantic" }, score: 2 },
+          { memory: { id: "lo", summary: "low relevance note", tier: "semantic" }, score: 0.9 },
+        ] }
+      : { id: "w1" };
+    return { ok: true, status: 200, async json() { return res; }, async text() { return JSON.stringify(res); } };
+  }) as any;
+  try {
+    meminiExtension({ on(name: string, h: any) { hooks[name] = h; }, registerTool() {} } as any);
+    const ctx = { sessionManager: { getSessionId: () => "sess-rankfloor-clamp", getLeafId: () => "leaf-1" } };
+    const out = await hooks.before_agent_start({ prompt: "what did we decide about the clamp" }, ctx);
+    assert.equal(searches[0].min_rank_score, undefined, "an out-of-range floor is not sent to the server");
+    assert.equal(searches[0].min_score, undefined);
+    assert.match(out.message.content, /high relevance note/);
+    assert.doesNotMatch(out.message.content, /low relevance note/, "the client-only clamp filters below the floor");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// An older server rejects min_rank_score outright. One retry strips it (and
+// exclude_ids), and the client applies the composite floor as a fallback.
+test("recall retries without min_rank_score on an old server and applies the floor client-side", async () => {
+  const { default: meminiExtension } = await import("../src/index.ts?cb=rankfloor-retry-" + Date.now());
+  const hooks: Record<string, any> = {};
+  const realFetch = globalThis.fetch;
+  const searches: any[] = [];
+  globalThis.fetch = (async (url: any, init: any) => {
+    const u = String(url);
+    if (u.endsWith("/v1/handshake")) {
+      return { ok: true, status: 200, async json() { return fakeHandshake({ namespace: "server/project", settings: { inject_recall_min_score: 0.5 } }); }, async text() { return ""; } };
+    }
+    const body = init?.body ? JSON.parse(init.body) : {};
+    if (u.endsWith("/v1/search")) searches.push(body);
+    if (u.endsWith("/v1/search") && body.min_rank_score !== undefined) {
+      return { ok: false, status: 400, async json() { return {}; }, async text() { return 'unknown field "min_rank_score"'; } };
+    }
+    const res = u.endsWith("/v1/search")
+      ? { results: [
+          { memory: { id: "hi", summary: "high relevance note", tier: "semantic" }, score: 0.9 },
+          { memory: { id: "lo", summary: "low relevance note", tier: "semantic" }, score: 0.3 },
+        ] }
+      : { id: "w1" };
+    return { ok: true, status: 200, async json() { return res; }, async text() { return JSON.stringify(res); } };
+  }) as any;
+  try {
+    meminiExtension({ on(name: string, h: any) { hooks[name] = h; }, registerTool() {} } as any);
+    const ctx = { sessionManager: { getSessionId: () => "sess-rankfloor-retry", getLeafId: () => "leaf-1" } };
+    const out = await hooks.before_agent_start({ prompt: "what did we decide when the server is old" }, ctx);
+    assert.equal(searches.length, 2, "one strip-and-retry, then it stops");
+    assert.equal(searches[0].min_rank_score, 0.5, "the first attempt carries the floor");
+    assert.equal(searches[1].min_rank_score, undefined, "the retry strips min_rank_score");
+    assert.equal(searches[1].min_score, undefined, "the retry never resurrects min_score");
+    assert.match(out.message.content, /high relevance note/);
+    assert.doesNotMatch(out.message.content, /low relevance note/, "the stripped floor is enforced client-side as a fallback");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("transient and unrelated search failures neither retry nor disable exclude_ids", async (t) => {
   const cases = [
     { name: "timeout", status: 0, error: "timeout" },
