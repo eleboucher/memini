@@ -15,7 +15,6 @@
 // context injected per tool call. Defaults match the prior hardcoded values
 // so existing installs see identical behavior until they opt in.
 
-import crypto from "node:crypto";
 import {
   readStdin,
   parseJSON,
@@ -28,6 +27,7 @@ import {
   formatRecallHit,
   recallHitTruncated,
   RECALL_DETAIL_HEADER,
+  recallDropFooter,
   readLastRecallState,
   writeLastRecallState,
   readInjectedState,
@@ -35,6 +35,7 @@ import {
   recordInjected,
   injectedIdentity,
   injectedSuppressed,
+  pretoolFingerprint,
   postInjected,
   injectedReport,
   approxTokens,
@@ -237,19 +238,16 @@ async function main() {
     // rendered bullet text or the outer <memini-pretool tool="..."> wrapper —
     // so it can't drift when the tool name or the display template changes.
     if (dedupe) {
-      // Per-item identity, not rendered text: injectedIdentity prefers the
-      // server's content_hash (hashed over FULL content even when the served
-      // form is concise), falling back to a local hash of the untruncated
-      // content/summary on old servers. Either way, in-place updates
-      // (memory_update) change the hash past any render cap, so a
-      // genuinely-changed injection is never suppressed — while the same
-      // memory served full vs concise fingerprints identically. Truncation
-      // is a display budget, not identity.
-      const fingerprintInput = JSON.stringify({
-        file: f,
-        items: hits.map((h) => ({ id: h.memory?.id || null, h: injectedIdentity(h) })),
-      });
-      const hash = crypto.createHash("sha256").update(fingerprintInput).digest("hex");
+      // Per-item identity, not rendered text: pretoolFingerprint hashes the
+      // ordered (id, injectedIdentity) pairs — the server's content_hash when
+      // present (hashed over FULL content even when the served form is
+      // concise), a local hash of the untruncated content/summary on old
+      // servers. Either way, in-place updates (memory_update) change the hash
+      // past any render cap, so a genuinely-changed injection is never
+      // suppressed — while the same memory served full vs concise
+      // fingerprints identically. Truncation is a display budget, not
+      // identity.
+      const hash = pretoolFingerprint(f, hits);
       if (lastRecall[f]?.hash === hash) {
         // Same served set as last injection — suppress the duplicate. `at` was
         // already refreshed above (this WAS an actual server call), so the gate
@@ -314,7 +312,7 @@ async function main() {
   // instruction precedes the summaries it qualifies. Byte-identical across
   // blocks and surfaces (see RECALL_DETAIL_HEADER).
   if (anyTruncated || totalDropped > 0) out.splice(2, 0, RECALL_DETAIL_HEADER);
-  if (totalDropped > 0) out.push(`[+${totalDropped} more — memory_recall for detail]`);
+  if (totalDropped > 0) out.push(recallDropFooter(totalDropped));
   // The note is server-authored, but it transits the same untrusted rendering
   // path as memory content — escape it so a forged tag can't break the wrapper.
   if (degradedNote) out.push(`[memini: ${escapeMeminiTags(degradedNote)}]`);

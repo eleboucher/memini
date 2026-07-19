@@ -36,7 +36,6 @@ import type {
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { readFileSync } from "node:fs";
-import { createHash } from "node:crypto";
 import {
   readBootstrap,
   gatherFacts,
@@ -52,6 +51,15 @@ import {
   redactValue,
   assertBearerTransportSafe,
   isPlaintextBearerUnsafe,
+  // The shared injection-enforcement core (packages/memini-client/src/enforce/),
+  // pinned by packages/memini-client/vectors/enforcement.json — pi consumes the
+  // same primitives the Claude Code hooks do instead of hand-rolled copies.
+  approxTokens,
+  fitByTokens,
+  truncate,
+  escapeMeminiTags,
+  injectedSuppressed,
+  injectedIdentity as coreInjectedIdentity,
   type Bootstrap,
   type ProjectFacts,
   type HandshakeResult,
@@ -331,67 +339,31 @@ export async function sessionLive(
   return resolveLiveConfig(ctx.boot, ctx.facts, hs, env as Record<string, string | undefined>);
 }
 
-// --- token budget (copied from the opencode plugin; both ship standalone) ----
-
-/** approxTokens: ~0.75 tokens/word, floor of 1 for any non-empty line. */
-export function approxTokens(text: string): number {
-  if (!text) return 0;
-  const words = String(text).trim().split(/\s+/).filter(Boolean).length;
-  return Math.max(1, Math.ceil((words * 4) / 3));
-}
-
-/**
- * fitByTokens trims a list of pre-formatted strings under `maxTokens`, keeping
- * the head (most relevant first). maxTokens<=0 means unbounded.
- */
-export function fitByTokens(
-  items: string[],
-  maxTokens: number,
-): { items: string[]; tokens: number; dropped: number } {
-  if (!Array.isArray(items) || items.length === 0) return { items: [], tokens: 0, dropped: 0 };
-  if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
-    const tokens = items.reduce((sum, s) => sum + approxTokens(s), 0);
-    return { items: items.slice(), tokens, dropped: 0 };
-  }
-  const out: string[] = [];
-  let used = 0;
-  let dropped = 0;
-  for (const s of items) {
-    const t = approxTokens(s);
-    if (used + t > maxTokens) {
-      dropped++;
-      continue;
-    }
-    out.push(s);
-    used += t;
-  }
-  return { items: out, tokens: used, dropped };
-}
-
-/** truncate to `max` chars with a marker. */
-export function truncate(value: string, max: number): string {
-  return value.length > max ? value.slice(0, max) + "\n[...truncated]" : value;
-}
-
-/**
- * Neutralize only Memini-shaped wrapper tags. Stored memory is untrusted data:
- * it may contain ordinary source-code angle brackets, but it must not be able
- * to close or forge one of the extension's trusted context boundaries.
- */
-export function escapeMeminiTags(value: unknown): string {
-  return String(value ?? "").replace(/<(\/?)memini/gi, (_match, slash) => `&lt;${slash}memini`);
-}
+// --- token budget + rendering (shared enforcement core: @memini/client) -----
+//
+// approxTokens / fitByTokens / truncate / escapeMeminiTags are the shared
+// implementations, re-exported so tests (and any embedder) keep their import
+// path. fitByTokens carries the core's partial-fit behavior: an item that
+// partially fits a remaining budget of >5 tokens is head-trimmed at a newline
+// boundary and marked "[...truncated]" instead of dropped whole.
+export { approxTokens, fitByTokens, truncate, escapeMeminiTags };
 
 function boundedInjectedText(value: unknown, max: number): string {
-  const escaped = escapeMeminiTags(value).replace(/\s+/g, " ").trim();
+  // Coerce before escaping: the shared escapeMeminiTags passes non-strings
+  // through untouched, and pi's render paths feed it raw wire values.
+  const escaped = escapeMeminiTags(String(value ?? "")).replace(/\s+/g, " ").trim();
   return unicodePrefix(escaped, max);
 }
 
-/** Content identity used by automatic briefing and prompt-recall surfaces. */
+/**
+ * Content identity used by automatic briefing and prompt-recall surfaces.
+ * pi's surfaces pass raw wire shapes — a {memory, score} recall hit, a
+ * {memory, from} briefing item, or the memory itself — so unwrap before the
+ * shared identity (server-minted content_hash preferred when present and
+ * well-formed; sha256/16 of content-or-summary otherwise).
+ */
 export function injectedIdentity(raw: any): string {
-  const memory = raw?.memory ?? raw ?? {};
-  const content = String(memory?.content || memory?.summary || "");
-  return createHash("sha256").update(content).digest("hex").slice(0, 16);
+  return coreInjectedIdentity(raw?.memory ?? raw);
 }
 
 // formatResults renders search hits to bullet lines. Empty labels -> "- (tier)
@@ -1648,20 +1620,17 @@ export default function meminiExtension(pi: ExtensionAPI): void {
     });
     rememberInjected(eligible, transition.explicit);
   };
+  // The shared windowed predicate (@memini/client injectedSuppressed), with
+  // pi's live prompt counter as the prompt dimension. `identity` undefined is
+  // the id-only check — the content-change bypass is skipped.
   const suppressed = (
     entry: InjectedEntry,
     now: number,
     cooldownMs: number,
     cooldownPrompts: number,
     identity?: string,
-  ): boolean => {
-    if (entry.h === "") return true;
-    if (identity && entry.h !== identity) return false;
-    if (cooldownMs === 0 && cooldownPrompts === 0) return true;
-    const promptDim = cooldownPrompts > 0 && promptCount > 0 && promptCount - entry.n < cooldownPrompts;
-    const timeDim = cooldownMs > 0 && now - entry.at < cooldownMs;
-    return promptDim || timeDim;
-  };
+  ): boolean =>
+    injectedSuppressed(entry, identity ?? null, { now, counter: promptCount, cooldownMs, cooldownPrompts });
   const injectedInWindow = (live: LiveConfig): Map<string, InjectedEntry> => {
     const inWindow = new Map<string, InjectedEntry>();
     if (!live.inject_dedupe) return inWindow;

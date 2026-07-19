@@ -542,18 +542,234 @@ function invalidateAllHandshakes(env = process.env) {
     }
   }
 }
+
+// src/enforce/identity.ts
+import crypto2 from "node:crypto";
+function isContentHash(s) {
+  return typeof s === "string" && /^[0-9a-f]{16}$/.test(s);
+}
+function injectedIdentity(m) {
+  const ch = m?.content_hash ?? m?.memory?.content_hash;
+  if (isContentHash(ch)) return ch;
+  const text = m?.content || m?.summary || "";
+  return crypto2.createHash("sha256").update(text).digest("hex").slice(0, 16);
+}
+function pretoolFingerprint(file, hits) {
+  const fingerprintInput = JSON.stringify({
+    file,
+    items: hits.map((h) => ({ id: h.memory?.id || null, h: injectedIdentity(h) }))
+  });
+  return crypto2.createHash("sha256").update(fingerprintInput).digest("hex");
+}
+function briefingContentHash(briefing) {
+  return crypto2.createHash("sha256").update(JSON.stringify(briefing)).digest("hex").slice(0, 16);
+}
+
+// src/enforce/seen.ts
+var MAX_INJECTED_IDS = 512;
+function normInjectedEntry(e, fallbackAt) {
+  if (!e || typeof e !== "object" || Array.isArray(e) || typeof e.h !== "string") return null;
+  return {
+    h: e.h,
+    at: Number.isFinite(e.at) ? e.at : fallbackAt,
+    n: Number.isFinite(e.n) ? e.n : 0
+  };
+}
+function normalizeInjectedState(raw, now = Date.now()) {
+  const empty = { n: 0, ids: {} };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return empty;
+  const ids = {};
+  if (raw.v === 2) {
+    const rawIds = raw.ids && typeof raw.ids === "object" && !Array.isArray(raw.ids) ? raw.ids : {};
+    for (const [id, e] of Object.entries(rawIds)) {
+      const norm = normInjectedEntry(e, now);
+      if (id && norm) ids[id] = norm;
+    }
+    return { n: Number.isFinite(raw.n) ? raw.n : 0, ids };
+  }
+  for (const [id, h] of Object.entries(raw)) {
+    if (id && typeof h === "string") ids[id] = { h, at: now, n: 0 };
+  }
+  return { n: 0, ids };
+}
+function recordInjected(state, id, h, now = Date.now()) {
+  if (!state.ids) state.ids = {};
+  state.ids[id] = { h, at: now, n: Number.isFinite(state.n) ? state.n : 0 };
+  return state;
+}
+function mergeInjectedStates(disk, mem, now = Date.now()) {
+  const m = mem && typeof mem === "object" ? mem : {};
+  const memIds = m.ids && typeof m.ids === "object" ? m.ids : {};
+  const memN = Number.isFinite(m.n) ? m.n : 0;
+  const merged = { ...disk.ids };
+  for (const [id, e] of Object.entries(memIds)) {
+    const norm = normInjectedEntry(e, now);
+    if (!id || !norm) continue;
+    const prev = merged[id];
+    if (!prev || norm.at >= prev.at) merged[id] = norm;
+  }
+  const n = Math.max(memN, disk.n);
+  let entries = Object.entries(merged);
+  if (entries.length > MAX_INJECTED_IDS) {
+    entries.sort((a, b) => (b[1]?.at || 0) - (a[1]?.at || 0));
+    entries = entries.slice(0, MAX_INJECTED_IDS);
+  }
+  return { v: 2, n, ids: Object.fromEntries(entries) };
+}
+function injectedSuppressed(entry, identity, { now, counter, cooldownMs, cooldownPrompts }) {
+  if (!entry || typeof entry !== "object") return false;
+  if (entry.h === "") return true;
+  if (identity && entry.h !== identity) return false;
+  if (cooldownMs === 0 && cooldownPrompts === 0) return true;
+  const promptDim = cooldownPrompts > 0 && counter > 0 && counter - entry.n < cooldownPrompts;
+  const timeDim = cooldownMs > 0 && now - entry.at < cooldownMs;
+  return promptDim || timeDim;
+}
+function cooldownIds(state, { now, cooldownMs, cooldownPrompts }) {
+  const ids = state && state.ids && typeof state.ids === "object" ? state.ids : {};
+  const counter = Number.isFinite(state?.n) ? state.n : 0;
+  const out = [];
+  for (const [id, entry] of Object.entries(ids)) {
+    if (injectedSuppressed(entry, null, { now, counter, cooldownMs, cooldownPrompts })) out.push(id);
+  }
+  return out;
+}
+
+// src/enforce/budget.ts
+function approxTokens(text) {
+  if (!text) return 0;
+  const words = String(text).trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.ceil(words * 4 / 3));
+}
+function fitByTokens(items, maxTokens) {
+  if (!Array.isArray(items) || items.length === 0) return { items: [], tokens: 0, dropped: 0 };
+  if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
+    const tokens = items.reduce((sum, s) => sum + approxTokens(s), 0);
+    return { items: items.slice(), tokens, dropped: 0 };
+  }
+  const out = [];
+  let used = 0;
+  let dropped = 0;
+  for (const s of items) {
+    const t = approxTokens(s);
+    if (used + t > maxTokens) {
+      const charBudget = (maxTokens - used) * 4;
+      if (charBudget > 20) {
+        let cut = s.slice(0, charBudget);
+        const lastNL = cut.lastIndexOf("\n");
+        if (lastNL > 20) cut = cut.slice(0, lastNL);
+        if (cut.length > 20) {
+          out.push(cut + "\n[...truncated]");
+          used += approxTokens(cut);
+          continue;
+        }
+      }
+      dropped++;
+      continue;
+    }
+    out.push(s);
+    used += t;
+  }
+  return { items: out, tokens: used, dropped };
+}
+
+// src/enforce/render.ts
+var RECALL_DETAIL_HEADER = "<!-- summaries; full text: memory_get with the id from [m:\u2026] -->";
+function escapeMeminiTags(content) {
+  if (typeof content !== "string") return content;
+  return content.replace(/<(\/?)memini/gi, "&lt;$1memini");
+}
+function truncate(value, max) {
+  if (typeof value === "string") {
+    return value.length > max ? value.slice(0, max) + "\n[...truncated]" : value;
+  }
+  if (value && typeof value === "object") {
+    let str;
+    try {
+      str = JSON.stringify(value);
+    } catch {
+      return value;
+    }
+    return str.length > max ? str.slice(0, max) + "...[truncated]" : str;
+  }
+  return value;
+}
+function memoryHandle(id) {
+  return typeof id === "string" && id ? `[m:${id.slice(0, 8)}]` : "";
+}
+function formatRecallHit(h, labels) {
+  const text = escapeMeminiTags(h?.content || h?.summary || "");
+  if (!text) return null;
+  const h8 = memoryHandle(h?.memory?.id);
+  const handle = h8 ? ` ${h8}` : "";
+  if (labels.size === 0) {
+    return `- (${h.score.toFixed(2)}) ${truncate(text, 240)}${handle}`;
+  }
+  const tagParts = [];
+  if (labels.has("tier") && h.tier) tagParts.push(h.tier);
+  if (labels.has("confidence") && typeof h.memory?.confidence === "number") {
+    tagParts.push(`conf=${h.memory.confidence.toFixed(2)}`);
+  }
+  if (labels.has("reason")) tagParts.push("relevant memory");
+  const prefix = tagParts.length ? `[${tagParts.join(" \xB7 ")}] ` : "";
+  return `- (${h.score.toFixed(2)}) ${prefix}${truncate(text, 240)}${handle}`;
+}
+function recallHitTruncated(h) {
+  if (h?.content_truncated === true || h?.memory?.content_truncated === true) return true;
+  const text = escapeMeminiTags(h?.content || h?.summary || "");
+  return typeof text === "string" && text.length > 240;
+}
+function recallDropFooter(dropped) {
+  return `[+${dropped} more \u2014 memory_recall for detail]`;
+}
+function briefingDropFooter(dropped) {
+  return `[... ${dropped} item(s) truncated by token budget]`;
+}
+
+// src/enforce/telemetry.ts
+var SUPPRESSED_KEYS = ["seen", "cooldown", "budget", "unchanged", "score"];
+function injectedReport({
+  surface,
+  sessionId,
+  ids,
+  tokens,
+  chars,
+  suppressed
+} = {}) {
+  const body = {
+    session_id: sessionId || "",
+    surface,
+    source: "claude-code",
+    injected_ids: Array.isArray(ids) ? ids.filter((id) => typeof id === "string" && id) : []
+  };
+  if (Number.isFinite(tokens) && tokens > 0) body.injected_tokens_est = tokens;
+  if (Number.isFinite(chars) && chars > 0) body.injected_chars = chars;
+  const sup = {};
+  for (const k of SUPPRESSED_KEYS) {
+    const v = suppressed?.[k];
+    if (Number.isFinite(v) && v > 0) sup[k] = v;
+  }
+  if (Object.keys(sup).length > 0) body.suppressed = sup;
+  return body;
+}
 export {
   BEHAVIOR_KNOBS,
   DEFAULT_TIMEOUT_MS,
   HANDSHAKE_TTL_MS,
+  MAX_INJECTED_IDS,
   MAX_NAMESPACE_BYTES,
   MIN_TIMEOUT_MS,
   OVERRIDES_VERSION,
+  RECALL_DETAIL_HEADER,
   SESSION_CWD_TTL_MS,
   TRUNCATION_MARKER,
+  approxTokens,
   assertBearerTransportSafe,
+  briefingContentHash,
+  briefingDropFooter,
   buildTurnCapture,
   cacheDir,
+  cooldownIds,
   defaultOverridesPath,
   deleteCachedHandshake,
   deleteSessionCwd,
@@ -561,22 +777,37 @@ export {
   effectiveSetting,
   envEnabled,
   envTimeoutMs,
+  escapeMeminiTags,
   factsFingerprint,
+  fitByTokens,
+  formatRecallHit,
   gatherFacts,
   handshakeCachePath,
+  injectedIdentity,
+  injectedReport,
+  injectedSuppressed,
   invalidateAllHandshakes,
+  isContentHash,
   isPlaintextBearerUnsafe,
   isSensitive,
   looksLikePluginRoot,
+  memoryHandle,
+  mergeInjectedStates,
+  normInjectedEntry,
+  normalizeInjectedState,
   normalizeNamespace,
   overrideKey,
   performHandshake,
+  pretoolFingerprint,
   processCwd,
   readBootstrap,
   readCachedHandshake,
   readOverride,
   readOverrides,
   readSessionCwd,
+  recallDropFooter,
+  recallHitTruncated,
+  recordInjected,
   redactByName,
   redactValue,
   repoNameFromRemote,
@@ -584,6 +815,7 @@ export {
   resolveHarnessCwd,
   resolveNamespace,
   sessionCwdPath,
+  truncate,
   truncateForCapture,
   validateNamespace,
   writeCachedHandshake,

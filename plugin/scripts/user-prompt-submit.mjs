@@ -27,6 +27,7 @@ import {
   formatRecallHit,
   recallHitTruncated,
   RECALL_DETAIL_HEADER,
+  recallDropFooter,
   readInjectedState,
   writeInjectedState,
   recordInjected,
@@ -204,7 +205,7 @@ async function main() {
   // surfaces (see RECALL_DETAIL_HEADER).
   if (hits.some((h) => recallHitTruncated(h)) || dropped > 0) out.push(RECALL_DETAIL_HEADER);
   out.push(...fit.items);
-  if (dropped > 0) out.push(`[+${dropped} more — memory_recall for detail]`);
+  if (dropped > 0) out.push(recallDropFooter(dropped));
   // The note is server-authored, but it transits the same untrusted rendering
   // path as memory content — escape it so a forged tag can't break the wrapper.
   if (degraded) {

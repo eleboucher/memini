@@ -31,6 +31,8 @@ import {
   recordInjected,
   injectedIdentity,
   isContentHash,
+  briefingContentHash,
+  briefingDropFooter,
   postInjected,
   injectedReport,
   escapeMeminiTags,
@@ -39,7 +41,6 @@ import {
   DEBUG,
 } from "./_shared.mjs";
 import { readOverride, assertBearerTransportSafe } from "./_client.gen.mjs";
-import crypto from "node:crypto";
 
 // Buffers older than this are abandoned (crashed/killed sessions) and removed.
 const STALE_BUFFER_MS = 7 * 24 * 60 * 60 * 1000;
@@ -317,7 +318,7 @@ async function main() {
   // this one path, and its cost argument is moot — the prefix cache was busted
   // by the rebuild itself. Resume keeps the skip: its context is intact.
   const compacted = payload.source === "compact";
-  const contentHash = crypto.createHash("sha256").update(JSON.stringify(b)).digest("hex").slice(0, 16);
+  const contentHash = briefingContentHash(b);
   if (sessionId && !compacted && briefingUnchanged(sessionId, contentHash)) {
     if (DEBUG) console.error("[memini] SessionStart: briefing unchanged this session, skipping re-injection");
     // Skip the unchanged briefing; the directive var already encodes what this
@@ -429,7 +430,7 @@ async function main() {
     lines.push(b.header);
     lines.push(...b.bullets);
     if (b.dropped > 0) {
-      lines.push(`[... ${b.dropped} item(s) truncated by token budget]`);
+      lines.push(briefingDropFooter(b.dropped));
       totalDropped += b.dropped;
     }
   }
@@ -439,7 +440,7 @@ async function main() {
   // design: a trimmed briefing must say so, whichever layer trimmed it.
   const serverOmitted = Number.isInteger(b.omitted) && b.omitted > 0 ? b.omitted : 0;
   if (serverOmitted > 0) {
-    lines.push(`[... ${serverOmitted} item(s) truncated by token budget]`);
+    lines.push(briefingDropFooter(serverOmitted));
     totalDropped += serverOmitted;
   }
   lines.push("</memini-context>");
