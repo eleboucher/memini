@@ -28,7 +28,7 @@ Environment:
     MEMINI_API_KEY                  bearer token, if memini requires auth
     MEMINI_REQUIRE_HTTPS            =1 to refuse sending a token over plaintext HTTP
     MEMINI_RECALL_LIMIT             max memories recalled per turn (default 3; beneath the server's setting)
-    MEMINI_INJECT_RECALL_MIN_SCORE  fused-score floor (>=) for auto-recall (default 0; beneath the server's setting)
+    MEMINI_INJECT_RECALL_MIN_SCORE  floor (>=) on the final ranked (composite) score for auto-recall (default 0; beneath the server's setting)
     MEMINI_INJECT_RECALL_MAX_TOK    hard token ceiling on the recall block (0 = unbounded; beneath the server's setting)
     MEMINI_INJECT_LABELS            comma/pipe bullet labels: tier, confidence, age
     MEMINI_TIMEOUT_MS               per-request timeout in ms (default 30000; beneath the server's setting).
@@ -832,6 +832,10 @@ class MeminiMemoryProvider(MemoryProvider):
         # server 400s the whole request on the unknown field, and "no dedupe"
         # beats "no recall at all".
         self._exclude_ids_unsupported = False
+        # Same latch for the composite floor: an older server 400s min_rank_score
+        # too, so once a retry-without-it lands, apply the floor client-side for
+        # the rest of the conversation ("no server floor" beats "no recall").
+        self._min_rank_score_unsupported = False
         # Hermes' initialize kwargs carry no project path (agent_workspace is a
         # label, not a dir), so the working directory is the only signal for the
         # default namespace; set MEMINI_NAMESPACE to scope explicitly. Order:
@@ -990,11 +994,14 @@ class MeminiMemoryProvider(MemoryProvider):
         if not result:
             return []
         labels = self._labels
-        floor = self._recall_min_score
+        # Client composite floor is a fallback ONLY: it applies when the knob was
+        # clamped to client-only (>= 1) or an older server latched min_rank_score
+        # off — not when the server enforced the floor (its result set is then
+        # authoritative and is NOT re-filtered here).
+        server_enforced = 0 < self._recall_min_score < 1 and not self._min_rank_score_unsupported
+        floor = self._recall_min_score if self._recall_min_score > 0 and not server_enforced else 0
         lines: list[str] = []
         for r in (result.get("results") or [])[: self._recall_limit]:
-            # Belt-and-braces client floor: drop sub-threshold hits the server
-            # may still return under score-normalization edge cases.
             if floor > 0 and (r.get("score") or 0) < floor:
                 continue
             mem = r.get("memory") or {}
@@ -1044,8 +1051,13 @@ class MeminiMemoryProvider(MemoryProvider):
         # transcript, so recalling them just echoes the conversation back a turn
         # behind. Captures from other (past) sessions are still recalled.
         body: dict = {"query": query, "limit": self._recall_limit}
-        if self._recall_min_score > 0:
-            body["min_score"] = self._recall_min_score
+        # inject_recall_min_score floors the FINAL composite score server-side
+        # via min_rank_score (not the fused-scale min_score), matching the Claude
+        # Code plugin. The server rejects >= 1 as out of range, so a mis-set knob
+        # clamps to a client-only floor; and once an older server 400s the field
+        # it latches off and the floor is applied client-side (_format_lines).
+        if 0 < self._recall_min_score < 1 and not self._min_rank_score_unsupported:
+            body["min_rank_score"] = self._recall_min_score
         if self._session_id:
             body["exclude_metadata"] = {"session_id": self._session_id}
         # And exclude what this conversation already carries — memories a prior
@@ -1137,21 +1149,27 @@ class MeminiMemoryProvider(MemoryProvider):
             return ""
         body = self._recall_body(query)
         result = self._call("/v1/search", body)
-        # An older server 400s the whole request on the unknown exclude_ids
-        # field, and _call degrades that to None — indistinguishable from a
-        # dead server here, so retry once without the field. If THAT lands,
-        # the field is the problem: latch it off for this conversation ("no
-        # dedupe" beats "no recall at all"); a dead server fails both calls
-        # and latches nothing. Gate strictly on whether THIS request actually
-        # carried exclude_ids: since the windowed cooldown lands, a non-empty
-        # _injected_ids no longer implies the field was sent (all ids may have
-        # lapsed → _recall_body omitted it). Retrying an all-lapsed body sends
-        # a byte-identical request, so a transient failure recovered by that
-        # retry would latch _exclude_ids_unsupported spuriously and forever.
-        if result is None and "exclude_ids" in body and not self._exclude_ids_unsupported:
-            result = self._call("/v1/search", self._recall_body(query, exclude_injected=False))
+        # Newer-than-server optional fields (min_rank_score, exclude_ids): an
+        # older server 400s the whole request on the unknown field, and _call
+        # degrades that to None — indistinguishable from a dead server here, so
+        # retry ONCE with BOTH fields stripped (matching _shared.mjs's combined
+        # strip). If THAT lands, a newer field was the problem: latch each field
+        # that this request actually carried ("no floor / no dedupe" beats "no
+        # recall at all"); a dead server fails both calls and latches nothing.
+        # Gate strictly on what THIS body carried: the windowed cooldown means a
+        # non-empty _injected_ids no longer implies exclude_ids was sent (lapsed
+        # ids omit it), and a clamped/latched floor omits min_rank_score, so a
+        # byte-identical retry would latch spuriously and forever.
+        sent_exclude_ids = "exclude_ids" in body
+        sent_rank_floor = "min_rank_score" in body
+        if result is None and (sent_exclude_ids or sent_rank_floor):
+            retry_body = {k: v for k, v in body.items() if k not in ("min_rank_score", "exclude_ids")}
+            result = self._call("/v1/search", retry_body)
             if result is not None:
-                self._exclude_ids_unsupported = True
+                if sent_exclude_ids:
+                    self._exclude_ids_unsupported = True
+                if sent_rank_floor:
+                    self._min_rank_score_unsupported = True
         result = self._drop_injected(result)
         block = self._recall_block(result, "Relevant memories (from memini):")
         if block:

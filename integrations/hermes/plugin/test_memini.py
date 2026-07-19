@@ -521,19 +521,37 @@ class RecallShapingTest(unittest.TestCase):
 
         return stub
 
-    def test_body_uses_configured_limit_and_min_score(self):
+    def test_body_uses_configured_limit_and_min_rank_score(self):
+        # The floor rides as min_rank_score (a server-enforced floor on the FINAL
+        # composite score), never the fused-scale min_score.
         os.environ["MEMINI_RECALL_LIMIT"] = "8"
         os.environ["MEMINI_INJECT_RECALL_MIN_SCORE"] = "0.3"
         stub = self._hits()
         make_provider(stub).prefetch("q")
         self.assertEqual(stub.body["limit"], 8)
-        self.assertEqual(stub.body["min_score"], 0.3)
+        self.assertEqual(stub.body["min_rank_score"], 0.3)
+        self.assertNotIn("min_score", stub.body)
 
-    def test_default_body_omits_min_score_and_defaults_limit_3(self):
+    def test_default_body_omits_min_rank_score_and_defaults_limit_3(self):
         stub = self._hits()
         make_provider(stub).prefetch("q")
         self.assertEqual(stub.body["limit"], 3)
+        self.assertNotIn("min_rank_score", stub.body)
         self.assertNotIn("min_score", stub.body)
+
+    def test_out_of_range_floor_clamps_to_client_only(self):
+        # A knob >= 1 is out of the server's valid range, so it is not sent and
+        # the floor is applied client-side.
+        os.environ["MEMINI_INJECT_RECALL_MIN_SCORE"] = "1.5"
+        stub = self._hits(
+            {"memory": {"summary": "above two"}, "score": 2.0},
+            {"memory": {"summary": "below the clamp"}, "score": 0.9},
+        )
+        out = make_provider(stub).prefetch("q")
+        self.assertNotIn("min_rank_score", stub.body)
+        self.assertNotIn("min_score", stub.body)
+        self.assertIn("above two", out)
+        self.assertNotIn("below the clamp", out)
 
     def test_default_renders_plain_bullet(self):
         stub = self._hits({"memory": {"summary": "note A", "tier": "semantic"}, "score": 0.9})
@@ -547,15 +565,46 @@ class RecallShapingTest(unittest.TestCase):
         out = make_provider(stub).prefetch("q")
         self.assertIn("- [semantic] note A", out)
 
-    def test_client_side_min_score_filter_drops_low_hits(self):
+    def test_server_enforced_floor_is_not_refiltered(self):
+        # When the server accepts min_rank_score (no 400) it enforced the floor,
+        # so its result set is authoritative: the client does not re-filter it,
+        # even a hit the client would otherwise have dropped.
         os.environ["MEMINI_INJECT_RECALL_MIN_SCORE"] = "0.5"
         stub = self._hits(
             {"memory": {"summary": "keep me"}, "score": 0.8},
-            {"memory": {"summary": "drop me"}, "score": 0.2},
+            {"memory": {"summary": "server says keep"}, "score": 0.2},
         )
         out = make_provider(stub).prefetch("q")
+        self.assertEqual(stub.body["min_rank_score"], 0.5)
+        self.assertNotIn("min_score", stub.body)
+        self.assertIn("keep me", out)
+        self.assertIn("server says keep", out)
+
+    def test_client_side_min_score_filter_is_fallback_only(self):
+        # Fallback only: an older server 400s min_rank_score (degraded to None),
+        # the retry strips it, and only THEN does the client apply the composite
+        # floor. This is the sole path on which sub-threshold hits are dropped.
+        os.environ["MEMINI_INJECT_RECALL_MIN_SCORE"] = "0.5"
+        hits = [
+            {"memory": {"summary": "keep me"}, "score": 0.8},
+            {"memory": {"summary": "drop me"}, "score": 0.2},
+        ]
+        bodies = []
+
+        def stub(path, body, method="POST"):
+            bodies.append(body)
+            if body is not None and "min_rank_score" in body:
+                return None  # an old server 400s the unknown field
+            return {"results": list(hits)}
+
+        p = make_provider(stub)
+        out = p.prefetch("q")
+        self.assertEqual(bodies[0]["min_rank_score"], 0.5)
+        self.assertNotIn("min_rank_score", bodies[1])
+        self.assertNotIn("min_score", bodies[1])
         self.assertIn("keep me", out)
         self.assertNotIn("drop me", out)
+        self.assertTrue(p._min_rank_score_unsupported)
 
     def test_token_budget_truncates_tail_with_footer(self):
         # "- alpha beta gamma" ≈ 6 tokens, so a 6-token cap keeps only the first.
@@ -1007,6 +1056,29 @@ class InjectedDedupeTest(unittest.TestCase):
         self.assertIn("fact 3", block)  # the retry's hits still land
         p.prefetch("query three long enough")
         self.assertNotIn("exclude_ids", bodies[3] or {})  # latched off for the session
+
+    def test_prefetch_400_on_min_rank_score_retries_and_latches(self):
+        # Mirrors the exclude_ids latch for the composite floor: an older server
+        # 400s min_rank_score (degraded to None), so retry once with BOTH newer
+        # fields stripped and latch min_rank_score off for the conversation.
+        os.environ["MEMINI_INJECT_RECALL_MIN_SCORE"] = "0.5"
+        self.addCleanup(lambda: os.environ.pop("MEMINI_INJECT_RECALL_MIN_SCORE", None))
+        bodies = []
+
+        def stub(path, body, method="POST"):
+            bodies.append(body)
+            if body is not None and "min_rank_score" in body:
+                return None  # an old server 400s the unknown field
+            return {"results": [self._hit(f"m{len(bodies)}", f"fact {len(bodies)}")]}
+
+        p = make_provider(stub)
+        block = p.prefetch("query one long enough")
+        self.assertIn("min_rank_score", bodies[0])  # first attempt carries the floor
+        self.assertNotIn("min_rank_score", bodies[1])  # the retry strips it
+        self.assertIn("fact 2", block)  # the retry's hits still land
+        self.assertTrue(p._min_rank_score_unsupported)  # latched
+        p.prefetch("query two long enough")
+        self.assertNotIn("min_rank_score", bodies[2])  # never sent again this session
 
     def test_prefetch_transient_failure_does_not_latch_when_no_exclude_ids_sent(self):
         # Windowed-cooldown regression: once every injected id has lapsed,
