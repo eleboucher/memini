@@ -56,6 +56,7 @@ import {
   performHandshake,
   effectiveSetting,
   buildTurnCapture,
+  injectedSuppressed,
   BEHAVIOR_KNOBS,
   HANDSHAKE_TTL_MS,
   normalizeNamespace,
@@ -120,6 +121,7 @@ const typeboxConfigSchema = Type.Object(
     expose_tools: Type.Optional(Type.Boolean()),
     recall_limit: Type.Optional(Type.Number()),
     inject_cooldown_ms: Type.Optional(Type.Number()),
+    inject_cooldown_prompts: Type.Optional(Type.Number()),
     recall_max_tokens: Type.Optional(Type.Number()),
     min_capture_chars: Type.Optional(Type.Number()),
     namespace_prefix: Type.Optional(Type.String()),
@@ -263,10 +265,13 @@ export function resolveConfig(
   const recallLimitExplicit = Number.isFinite(c.recall_limit) && c.recall_limit > 0;
   const recallMaxTokensExplicit = Number.isFinite(c.recall_max_tokens) && c.recall_max_tokens > 0;
   const minCaptureCharsExplicit = Number.isFinite(c.min_capture_chars) && c.min_capture_chars > 0;
-  // Unlike the counts above, 0 is a MEANINGFUL value for the cooldown window (it
-  // disables the time dimension / restores forever suppression), so the explicit
-  // test is >= 0, not > 0 — an explicit 0 must not fall through to env/default.
+  // Unlike the counts above, 0 is a MEANINGFUL value for the cooldown windows
+  // (it disables that dimension; both 0 restores forever suppression), so the
+  // explicit test is >= 0, not > 0 — an explicit 0 must not fall through to
+  // env/default.
   const injectCooldownMsExplicit = Number.isFinite(c.inject_cooldown_ms) && c.inject_cooldown_ms >= 0;
+  const injectCooldownPromptsExplicit =
+    Number.isFinite(c.inject_cooldown_prompts) && c.inject_cooldown_prompts >= 0;
 
   return {
     enabled: c.enabled !== false,
@@ -311,16 +316,19 @@ export function resolveConfig(
     // are available yet here, so this is env-or-default only; effectiveConfig
     // recomputes these three once a handshake is in hand.
     recall_limit: recallLimitExplicit ? c.recall_limit : effectiveSetting<number>(knob("recall_limit"), undefined, env).value,
-    // Windowed injection-cooldown time window (ms). Resolves like recall_limit:
-    // config wins outright when explicitly set, else env-override > (later) server
-    // > built-in default (1800000 / 30 min). 0 disables the time dimension; since
-    // openclaw's before_prompt_build fires per agent STEP (not per user message),
-    // inject_cooldown_prompts is INERT here and is deliberately not wired — the
-    // time dimension is the only re-admission lever, and cooldown_ms=0 therefore
-    // degrades to the legacy #134 "suppress forever" behavior.
+    // Windowed injection-cooldown knobs. Each resolves like recall_limit:
+    // config wins outright when explicitly set, else env-override > (later)
+    // server > built-in default (1800000 ms / 3 prompts). 0 disables that
+    // dimension; both 0 restores the legacy #134 "suppress forever" behavior.
+    // The prompt dimension's counter is the per-session count of COMPLETED
+    // agent turns (agent_end) — before_prompt_build fires per step, so steps
+    // never advance the window; see the recall wiring below.
     inject_cooldown_ms: injectCooldownMsExplicit
       ? c.inject_cooldown_ms
       : effectiveSetting<number>(knob("inject_cooldown_ms"), undefined, env).value,
+    inject_cooldown_prompts: injectCooldownPromptsExplicit
+      ? c.inject_cooldown_prompts
+      : effectiveSetting<number>(knob("inject_cooldown_prompts"), undefined, env).value,
     recall_max_tokens: recallMaxTokensExplicit
       ? c.recall_max_tokens
       : effectiveSetting<number>(knob("inject_recall_max_tok"), undefined, env).value,
@@ -343,6 +351,7 @@ export function resolveConfig(
     explicit: {
       recall_limit: recallLimitExplicit,
       inject_cooldown_ms: injectCooldownMsExplicit,
+      inject_cooldown_prompts: injectCooldownPromptsExplicit,
       recall_max_tokens: recallMaxTokensExplicit,
       min_capture_chars: minCaptureCharsExplicit,
     },
@@ -407,6 +416,9 @@ export function effectiveConfig(
     inject_cooldown_ms: explicit.inject_cooldown_ms
       ? cfg.inject_cooldown_ms
       : effectiveSetting<number>(knob("inject_cooldown_ms"), server, env).value,
+    inject_cooldown_prompts: explicit.inject_cooldown_prompts
+      ? cfg.inject_cooldown_prompts
+      : effectiveSetting<number>(knob("inject_cooldown_prompts"), server, env).value,
     recall_max_tokens: explicit.recall_max_tokens
       ? cfg.recall_max_tokens
       : effectiveSetting<number>(knob("inject_recall_max_tok"), server, env).value,
@@ -1107,7 +1119,7 @@ export function buildWarnings(boot: Bootstrap, live: ResolvedConfig, hs: Handsha
     warnings.push({
       level: "warn",
       code: "degraded-mode",
-      message: `could not reach the memini server at ${boot.baseUrl}: recall_limit/inject_cooldown_ms/recall_max_tokens/min_capture_chars fall back to config/env/built-in defaults, not the server's.`,
+      message: `could not reach the memini server at ${boot.baseUrl}: recall_limit/inject_cooldown_ms/inject_cooldown_prompts/recall_max_tokens/min_capture_chars fall back to config/env/built-in defaults, not the server's.`,
       fix: "Check base_url/MEMINI_BASE_URL and that the server is running.",
     });
   }
@@ -1172,7 +1184,7 @@ export function renderStatus(
 
   // Behavior knobs relevant to this plugin, with provenance.
   L.push(`SETTINGS`);
-  for (const wireKey of ["recall_limit", "inject_cooldown_ms", "inject_recall_max_tok", "min_capture_chars"]) {
+  for (const wireKey of ["recall_limit", "inject_cooldown_ms", "inject_cooldown_prompts", "inject_recall_max_tok", "min_capture_chars"]) {
     const k = knob(wireKey);
     const { value, source } = effectiveSetting(k, hs?.settings, process.env as Record<string, string | undefined>);
     const origin = source === "env-override" ? "<- env" : source === "server" ? "<- server" : "(default)";
@@ -1390,10 +1402,11 @@ const TOOL_NAMES = ["memory_recall", "memory_briefing", "memory_list", "memory_r
 // already filters.
 export interface EchoGuard {
   freshCaptured: (ns: string) => Set<string>;
-  // The IN-WINDOW view of a session's already-shown ids: only those still inside
-  // the injection cooldown (inject_cooldown_ms) are returned, so a lapsed id is
-  // NOT filtered out and can be re-served. cooldownMs is the caller's live value.
-  injectedIds: (session: string, cooldownMs: number) => Set<string>;
+  // The IN-WINDOW view of a session's already-shown ids: only those still
+  // inside the injection cooldown (inject_cooldown_ms / inject_cooldown_prompts
+  // — suppressed within EITHER window) are returned, so a lapsed id is NOT
+  // filtered out and can be re-served. Both knobs are the caller's live values.
+  injectedIds: (session: string, cooldownMs: number, cooldownPrompts: number) => Set<string>;
   rememberInjected: (session: string, ids: string[]) => void;
 }
 
@@ -1506,7 +1519,7 @@ export function registerMeminiTools(api: any, client: MeminiClient, ctx: Session
           if (session) {
             // In-window ids only: a lapsed id is re-servable, so it must not be
             // filtered here either (parity with recallHandler's cooldown view).
-            const seen = echo.injectedIds(session, live.inject_cooldown_ms);
+            const seen = echo.injectedIds(session, live.inject_cooldown_ms, live.inject_cooldown_prompts);
             if (seen.size) results = results.filter((r: any) => !seen.has(r.id));
           }
         }
@@ -1753,18 +1766,37 @@ const plugin: {
     // OpenClaw fires before_prompt_build on every step of a turn (each tool
     // call), and an unchanged query recalls the same top memories — so the same
     // "long-term memory" block is re-injected on every step, drowning the prompt
-    // (eleboucher/memini#21). Track what each session has been shown AND WHEN
-    // (last-shown ms), so a repeat is suppressed only while inside the injection
-    // cooldown window (inject_cooldown_ms) and re-served once it lapses — a
-    // memory becomes worth re-surfacing after enough of the conversation has
-    // moved on. The map is a per-session Map<id, atMs>; entries prune on read
+    // (eleboucher/memini#21). Track what each session has been shown AND WHEN,
+    // so a repeat is suppressed only while inside the injection cooldown
+    // windows (inject_cooldown_ms / inject_cooldown_prompts) and re-served once
+    // BOTH lapse — a memory becomes worth re-surfacing after enough of the
+    // conversation has moved on. Entries are the enforce core's { at, n } stamps
+    // judged by @memini/client's injectedSuppressed; they prune on read
     // (injectedInWindow). Bounded so it can't grow without limit across
-    // long-lived gateways. TIME DIMENSION ONLY: before_prompt_build fires per
-    // agent step, not per user message, so a prompt counter would advance many
-    // times per turn — inject_cooldown_prompts is therefore INERT here and not
-    // tracked; cooldown_ms=0 degrades to the legacy #134 "suppress forever".
-    const injectedBySession = new Map<string, Map<string, number>>();
+    // long-lived gateways.
+    //
+    // The PROMPT dimension's counter is the per-session count of COMPLETED
+    // agent turns: before_prompt_build fires per step (steps are not prompts),
+    // and agent_end is the once-per-turn signal this host can honestly count —
+    // captureHandler bumps it below. Until the first turn completes the counter
+    // is 0 and the core's counter==0 rule leaves the prompt dimension inert
+    // (time-only), which also covers hosts where agent_end never fires.
+    // cooldown_ms=0 with prompts=0 degrades to the legacy #134 "suppress
+    // forever".
+    const injectedBySession = new Map<string, Map<string, { at: number; n: number }>>();
+    const promptCounts = new Map<string, number>();
     const MAX_TRACKED_SESSIONS = 200;
+    const bumpPromptCounter = (session: string) => {
+      if (!session) return;
+      const next = (promptCounts.get(session) || 0) + 1;
+      promptCounts.delete(session); // refresh insertion order for the bound
+      promptCounts.set(session, next);
+      while (promptCounts.size > MAX_TRACKED_SESSIONS) {
+        const oldest = promptCounts.keys().next().value;
+        if (oldest === undefined) break;
+        promptCounts.delete(oldest);
+      }
+    };
     // Scale the per-session dedupe cap with recall_limit so a high limit
     // doesn't collapse the dedupe window: recall_limit=50 with 5 steps/turn
     // injects 250 ids/turn, evicting 200 of them from a fixed cap=50 — the
@@ -1774,7 +1806,7 @@ const plugin: {
     const rememberInjected = (session: string, ids: string[]) => {
       let seen = injectedBySession.get(session);
       if (!seen) {
-        seen = new Map<string, number>();
+        seen = new Map<string, { at: number; n: number }>();
         injectedBySession.set(session, seen);
         while (injectedBySession.size > MAX_TRACKED_SESSIONS) {
           const oldest = injectedBySession.keys().next().value;
@@ -1783,13 +1815,14 @@ const plugin: {
         }
       }
       const now = Date.now();
+      const n = promptCounts.get(session) || 0;
       for (const id of ids) {
         if (!id) continue;
-        // delete+set refreshes both the last-shown stamp (so a re-served id
-        // starts a fresh cooldown) and the insertion order (newest last, so the
-        // size cap below evicts the least-recently-shown id first).
+        // delete+set refreshes both the stamps (so a re-served id starts a
+        // fresh cooldown on both dimensions) and the insertion order (newest
+        // last, so the size cap below evicts the least-recently-shown first).
         seen.delete(id);
-        seen.set(id, now);
+        seen.set(id, { at: now, n });
       }
       while (seen.size > MAX_INJECTED_PER_SESSION) {
         const oldest = seen.keys().next().value;
@@ -1797,24 +1830,32 @@ const plugin: {
         seen.delete(oldest);
       }
     };
+    // openclaw tracks no content identity (its hits are judged by id alone),
+    // so entries carry this placeholder in the core predicate's `h` slot: any
+    // non-empty value selects the documented id-only mode (identity=null skips
+    // the content-change bypass; "" would mean the sentinel-forever rule).
+    const NO_IDENTITY_H = "-";
     // The set of a session's already-shown ids that are still inside the
     // injection cooldown — the view both exclude_ids and the client-side
-    // drop-filter use. Prunes lapsed entries as it reads (mirrors freshCaptured):
-    // a lapsed id is dropped here so it is NOT excluded/filtered, re-serves, and
-    // has its stamp refreshed on the next show. cooldownMs <= 0 is the legacy
-    // forever rule — every shown id stays suppressed (the time dimension is
-    // openclaw's only lever, so disabling it means "never re-serve", not
-    // "always re-serve"). Negative deltas (clock skew) compare as in-window and
-    // clamp to suppressed.
-    const injectedInWindow = (session: string, cooldownMs: number): Set<string> => {
+    // drop-filter use, judged by the shared core predicate (suppressed within
+    // EITHER window; re-admitted once BOTH lapse; ms=0 AND prompts=0 is the
+    // legacy forever rule; negative deltas clamp to suppressed). Prunes lapsed
+    // entries as it reads (mirrors freshCaptured): a lapsed id is dropped here
+    // so it is NOT excluded/filtered, re-serves, and has its stamps refreshed
+    // on the next show.
+    const injectedInWindow = (session: string, cooldownMs: number, cooldownPrompts: number): Set<string> => {
       const inWindow = new Set<string>();
       const seen = injectedBySession.get(session);
       if (!seen) return inWindow;
-      const forever = cooldownMs <= 0;
-      const cutoff = Date.now() - cooldownMs;
-      for (const [id, at] of seen) {
-        if (!forever && at < cutoff) seen.delete(id);
-        else inWindow.add(id);
+      const opts = {
+        now: Date.now(),
+        counter: promptCounts.get(session) || 0,
+        cooldownMs: cooldownMs > 0 ? cooldownMs : 0,
+        cooldownPrompts: cooldownPrompts > 0 ? cooldownPrompts : 0,
+      };
+      for (const [id, e] of seen) {
+        if (injectedSuppressed({ h: NO_IDENTITY_H, at: e.at, n: e.n }, null, opts)) inWindow.add(id);
+        else seen.delete(id);
       }
       return inWindow;
     };
@@ -1905,7 +1946,9 @@ const plugin: {
       // along as exclude_ids so a suppressed hit doesn't waste a recall_limit
       // slot; a LAPSED id is intentionally absent so it is re-served.
       const captured = freshCaptured(ns);
-      const inWindow = session ? injectedInWindow(session, live.inject_cooldown_ms) : new Set<string>();
+      const inWindow = session
+        ? injectedInWindow(session, live.inject_cooldown_ms, live.inject_cooldown_prompts)
+        : new Set<string>();
       const excludeIds = [...inWindow, ...captured];
       const result = await searchExcluding(ns, body, excludeIds);
       let results = Array.isArray(result?.results) ? result.results : [];
@@ -1955,6 +1998,13 @@ const plugin: {
       const assistantText = lastTextByRole(event.messages, "assistant");
       if (!userText || !assistantText) return;
       if (shouldSkipSystemTurn(live, hookCtx)) return;
+      const session = sessionIdentity(hookCtx);
+      // One completed (non-system) agent turn == one "prompt" for the
+      // injection cooldown's prompt dimension: agent_end is the once-per-turn
+      // signal this host can count (before_prompt_build fires per step).
+      // Bumped before the capture-quality gates below — a turn too short or
+      // too noisy to capture is still a turn the conversation moved through.
+      bumpPromptCounter(session);
       // Drop OpenClaw runtime plumbing from the captured turn: untrusted-metadata
       // preambles, and subagent task delegations (framing, not conversation).
       const captureUser = stripRuntimePreambles(userText);
@@ -1962,7 +2012,6 @@ const plugin: {
       if (captureUser.length < live.min_capture_chars) return;
       const ns = effectiveNamespace(live, hookCtx);
       if (ns == null) return;
-      const session = sessionIdentity(hookCtx);
       // A capture without a session_id can never be excluded by the pre-turn
       // recall guard (the server's exclude_metadata is exact key=value), so it
       // would echo this session's own turns back as "long-term memory" forever.
@@ -1986,7 +2035,8 @@ const plugin: {
       try {
         registerMeminiTools(api, client, sessionCtx, {
           freshCaptured,
-          injectedIds: (session: string, cooldownMs: number) => injectedInWindow(session, cooldownMs),
+          injectedIds: (session: string, cooldownMs: number, cooldownPrompts: number) =>
+            injectedInWindow(session, cooldownMs, cooldownPrompts),
           rememberInjected,
         });
       } catch (e) {

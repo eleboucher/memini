@@ -137,16 +137,23 @@ dropped with a truncation footer). `recall_max_tokens` also reads
 `age`) toggles the per-bullet tag prefix.
 
 The **repeat-injection cooldown** keeps an already-injected memory from being
-re-served on every step. `inject_cooldown_ms` (config; also
-`MEMINI_INJECT_COOLDOWN_MS`, default **1800000** = 30 min, `0` disables it) is the
-time window an injected id is held back before it may re-serve, and it is
-re-served once the window lapses; `inject_cooldown_ms: 0` restores the prior
-suppress-forever behavior. **Only the time dimension applies here —
-`inject_cooldown_prompts` is inert and deliberately not wired.** OpenClaw's
-`before_prompt_build` fires per agent _step_, not per user message, so there is
-no user-prompt boundary for a prompt window to count; the time window is the sole
-re-admission lever (the other memini integrations, which run per user turn, also
-count prompts).
+re-served on every step. It is windowed on two dimensions, and an injected id
+is suppressed while inside _either_ window and re-served once **both** lapse:
+
+- `inject_cooldown_ms` (config; also `MEMINI_INJECT_COOLDOWN_MS`, default
+  **1800000** = 30 min, `0` disables it) — the **time** window an injected id
+  is held back before it may re-serve.
+- `inject_cooldown_prompts` (config; also `MEMINI_INJECT_COOLDOWN_PROMPTS`,
+  default **3**, `0` disables it) — the **prompt** window. OpenClaw's
+  `before_prompt_build` fires per agent _step_, not per user message, so this
+  window **counts completed agent turns** (`agent_end`, which fires once per
+  turn) — the closest thing to "user prompts" this host can honestly count.
+  Steps within a turn never advance it, and until the session's first turn
+  completes the prompt dimension is inert (time-only), so a host that never
+  fires `agent_end` degrades to the time window rather than to
+  suppress-forever.
+
+Setting **both** knobs to `0` restores the prior suppress-forever behavior.
 
 Capture filtering: cron/heartbeat turns are skipped by default (`skip_system_turns`),
 runtime `(untrusted metadata)` preambles are stripped, and turns beginning with a

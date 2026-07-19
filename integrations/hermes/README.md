@@ -75,10 +75,16 @@ Point it at your memini (environment, or the Hermes onboarding prompts):
 The two `MEMINI_INJECT_COOLDOWN_*` vars are the windowed **repeat-injection
 cooldown**: an already-injected memory is excluded from prefetch (server-side via
 `exclude_ids`, with a client-side backstop) while it is inside _either_ window,
-and re-served only once _both_ have lapsed. hermes tracks ids only, so unlike the
-Claude Code plugin there is no content-hash bypass and no forever-suppressed
-tool-read entry — every hermes entry lapses. Both vars `0` restores the prior
-suppress-for-the-session behavior.
+and re-served only once _both_ have lapsed. Entries carry a **content-identity
+hash** (the server-minted `content_hash` when present, else
+`sha256(content‖summary)[:16]` — the same recipe as the Claude Code plugin), so
+a memory that was **updated in place re-injects immediately** instead of staying
+withheld for the window; unlike that plugin there is still no forever-suppressed
+tool-read entry — hermes tool results carry full content, so every hermes entry
+lapses. Both vars `0` restores the prior suppress-for-the-session behavior. The
+predicate and hash are verified against the shared golden vectors
+(`packages/memini-client/vectors/enforcement.json`) by
+`plugin/test_enforcement_vectors.py`.
 
 ### Namespace resolution
 

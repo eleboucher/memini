@@ -208,6 +208,103 @@ test("capture writes the completed turn on session.idle", async () => {
   }
 });
 
+test("request hook re-serves a suppressed memory once the cooldown windows lapse", async () => {
+  BASE_ENV();
+  const { restore } = installFetch({
+    search: [{ memory: { id: "m1", content: "one time fact", tier: "semantic" }, score: 0.9 }],
+  });
+  try {
+    // Time window off, prompt window 2: each request-hook fire is one prompt.
+    const { ctx, state } = makeCtx({
+      options: { namespace: "test-ns", inject_cooldown_ms: 0, inject_cooldown_prompts: 2 },
+    });
+    await setup(ctx);
+    const mk = () => ({ sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] });
+
+    const first = mk();
+    await state.requestHook(first);
+    assert.equal(first.system.length, 1, "prompt 1 injects (n=1)");
+
+    const second = mk();
+    await state.requestHook(second);
+    assert.equal(second.system.length, 0, "prompt 2: delta 1 < 2, suppressed");
+
+    const third = mk();
+    await state.requestHook(third);
+    assert.equal(third.system.length, 1, "prompt 3: delta 2 >= 2, re-served");
+
+    const fourth = mk();
+    await state.requestHook(fourth);
+    assert.equal(fourth.system.length, 0, "the re-record restarts the window");
+  } finally {
+    restore();
+  }
+});
+
+test("request hook re-injects an updated memory inside the window (content-change bypass)", async () => {
+  BASE_ENV();
+  const posts = [];
+  const original = globalThis.fetch;
+  let searches = 0;
+  globalThis.fetch = async (url, init) => {
+    const path = new URL(url).pathname;
+    const json = (body, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    if (path.endsWith("/healthz")) return new Response("ok", { status: 200 });
+    if (path.endsWith("/v1/handshake")) return json({});
+    if (path.endsWith("/v1/search")) {
+      searches++;
+      const content = searches <= 1 ? "version one" : "version two — updated";
+      return json({ results: [{ memory: { id: "m1", content, tier: "semantic" }, score: 0.9 }] });
+    }
+    if (path.endsWith("/v1/memories")) {
+      posts.push(JSON.parse(init.body));
+      return json({ id: "mem_test" });
+    }
+    return json({}, 404);
+  };
+  try {
+    const { ctx, state } = makeCtx({ options: { namespace: "test-ns" } });
+    await setup(ctx);
+    const mk = () => ({ sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] });
+
+    const first = mk();
+    await state.requestHook(first);
+    assert.match(first.system[0], /version one/);
+
+    const second = mk();
+    await state.requestHook(second);
+    assert.equal(second.system.length, 1, "an updated memory must re-inject inside the window");
+    assert.match(second.system[0], /version two/);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("request hook: both cooldown knobs at zero suppresses for the whole session", async () => {
+  BASE_ENV();
+  const { restore } = installFetch({
+    search: [{ memory: { id: "m1", content: "one time fact", tier: "semantic" }, score: 0.9 }],
+  });
+  try {
+    const { ctx, state } = makeCtx({
+      options: { namespace: "test-ns", inject_cooldown_ms: 0, inject_cooldown_prompts: 0 },
+    });
+    await setup(ctx);
+    const mk = () => ({ sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] });
+    const first = mk();
+    await state.requestHook(first);
+    assert.equal(first.system.length, 1);
+    for (let i = 0; i < 5; i++) {
+      const again = mk();
+      await state.requestHook(again);
+      assert.equal(again.system.length, 0, "legacy forever-dedupe: never re-served");
+    }
+  } finally {
+    restore();
+  }
+});
+
 test("setup degrades gracefully when ctx lacks session/tool/event", async () => {
   BASE_ENV();
   const { restore } = installFetch();

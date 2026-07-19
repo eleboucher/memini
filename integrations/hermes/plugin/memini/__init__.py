@@ -47,6 +47,7 @@ consistent across integrations. Network errors are swallowed.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -618,6 +619,88 @@ def _fit_by_tokens(items: list[str], max_tokens: int) -> tuple[list[str], int]:
     return out, dropped
 
 
+# --- Injection-enforcement core (hermes copies) ---------------------------
+#
+# Ported from @memini/client's enforce core (packages/memini-client/src/
+# enforce/identity.ts + seen.ts); semantics are pinned by the shared golden
+# vectors (packages/memini-client/vectors/enforcement.json), replayed here by
+# test_enforcement_vectors.py. hermes ships stdlib-only, so these stay copies,
+# not imports -- the vector runner is what keeps them the same functions.
+
+_CONTENT_HASH_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+def _is_content_hash(s: Any) -> bool:
+    """True for a well-formed server-minted content hash: 16 lowercase hex
+    chars (the server's sha256(content||summary)[:16] -- the same recipe as
+    the local fallback in _injected_identity, so the two are
+    interchangeable)."""
+    return isinstance(s, str) and bool(_CONTENT_HASH_RE.match(s))
+
+
+def _injected_identity(m: Any) -> str:
+    """Content-identity hash for the injected-memory state. Prefers the
+    server-minted content_hash when present and well-formed -- read off the
+    object itself or its nested `memory` (the core's
+    `m?.content_hash ?? m?.memory?.content_hash`), because the server hashes
+    the FULL content even when it serves a concise form. Falls back to hashing
+    the text a recall surface would render (content, falling back to summary)
+    for old servers, so an in-place update past any render cap still changes
+    identity and re-injects."""
+    m = m if isinstance(m, dict) else {}
+    ch = m.get("content_hash")
+    if ch is None:
+        mem = m.get("memory")
+        ch = mem.get("content_hash") if isinstance(mem, dict) else None
+    if _is_content_hash(ch):
+        return ch
+    text = m.get("content") or m.get("summary") or ""
+    return hashlib.sha256(str(text).encode("utf-8")).hexdigest()[:16]
+
+
+def _injected_suppressed(
+    entry: Any,
+    identity: str | None,
+    *,
+    now: float,
+    counter: int,
+    cooldown_ms: int,
+    cooldown_prompts: int,
+) -> bool:
+    """The shared windowed-cooldown predicate, core-exact (enforce/seen.ts):
+
+        h == ""                        -> True   sentinel/tool-read: forever
+                                                 (hermes never records one --
+                                                 kept for vector parity)
+        identity and h != identity     -> False  content changed: re-inject
+        ms == 0 and prompts == 0       -> True   legacy forever-dedupe (#134)
+        else suppressed within EITHER window; re-admit once BOTH lapse.
+        counter == 0 leaves the prompt dimension inert (a host that never
+        advances a counter degrades to time-only, not forever); negative
+        deltas (clock skew / counter regression) clamp to suppressed.
+
+    identity=None is the id-only check (the exclude_ids view): the content-
+    change bypass is skipped, so a real-hash entry is judged on the windows
+    alone. `now`/`at` are epoch MILLISECONDS, matching the core and the golden
+    vectors."""
+    if not isinstance(entry, dict):
+        return False
+    h = entry.get("h")
+    if h == "":
+        return True
+    if identity and h != identity:
+        return False
+    if cooldown_ms == 0 and cooldown_prompts == 0:
+        return True
+    prompt_dim = (
+        cooldown_prompts > 0
+        and counter > 0
+        and counter - entry.get("n", 0) < cooldown_prompts
+    )
+    time_dim = cooldown_ms > 0 and now - entry.get("at", 0) < cooldown_ms
+    return prompt_dim or time_dim
+
+
 # --- Effective settings ---------------------------------------------------
 #
 # "What is this provider actually doing right now?" A list of values would not
@@ -819,10 +902,12 @@ class MeminiMemoryProvider(MemoryProvider):
         # exclude_ids, client-side as belt-and-braces) so the recall limit is
         # spent on memories the context does not already carry. Instance-scoped:
         # the provider lives exactly as long as the conversation it serves.
-        # Values are {"at": epoch_seconds, "n": prefetch_counter} stamped at
-        # each (re-)injection: the windowed cooldown predicate (_suppressed)
-        # uses them to decide whether an id is still fresh enough to exclude or
-        # has lapsed and may be re-served.
+        # Values are the enforce core's {"h": content-identity hash, "at":
+        # epoch_ms, "n": prefetch_counter} entries stamped at each
+        # (re-)injection: the windowed cooldown predicate (_suppressed) uses
+        # them to decide whether an id is still fresh enough to exclude, has
+        # lapsed and may be re-served, or was UPDATED in place (h mismatch)
+        # and must re-inject immediately.
         self._injected_ids: dict = {}
         # Per-user-turn counter: bumped once at the top of every prefetch()
         # (the per-turn unit here), it drives the cooldown's prompt dimension.
@@ -1054,71 +1139,72 @@ class MeminiMemoryProvider(MemoryProvider):
         # IN-COOLDOWN ids are sent: a lapsed id is intentionally re-servable.
         # Capped at the server's exclude_ids limit, most recent kept.
         if exclude_injected and self._injected_ids and not self._exclude_ids_unsupported:
-            now = time.time()
+            now = time.time() * 1000.0
             ids = [mid for mid, e in self._injected_ids.items() if self._suppressed(e, now)]
             if ids:
                 body["exclude_ids"] = ids[-512:]
         return body
 
-    def _record_injected(self, ids: Any) -> None:
-        """Mark memory ids as present in this conversation's context, stamping
-        each with the wall-clock time and prompt counter at injection so the
-        windowed cooldown (_suppressed) can later decide re-admission. A
-        re-record refreshes the stamp (and, via pop/re-insert, the LRU spot)."""
-        now = time.time()
-        for mid in ids:
+    def _record_injected(self, mems: Any) -> None:
+        """Mark memories as present in this conversation's context, stamping
+        each id with its content identity (_injected_identity), the wall-clock
+        ms, and the prompt counter at injection so the windowed cooldown
+        (_suppressed) can later decide re-admission -- and so an in-place
+        update (h mismatch) can bypass it. `mems` is an iterable of wire
+        memory dicts (each carrying at least an id). A re-record refreshes the
+        stamp (and, via pop/re-insert, the LRU spot)."""
+        now = time.time() * 1000.0
+        for mem in mems:
+            if not isinstance(mem, dict):
+                continue
+            mid = mem.get("id")
             if isinstance(mid, str) and mid:
                 self._injected_ids.pop(mid, None)  # refresh LRU position
-                self._injected_ids[mid] = {"at": now, "n": self._prefetch_n}
+                self._injected_ids[mid] = {
+                    "h": _injected_identity(mem),
+                    "at": now,
+                    "n": self._prefetch_n,
+                }
         while len(self._injected_ids) > 512:
             self._injected_ids.pop(next(iter(self._injected_ids)))
 
-    def _suppressed(self, entry: dict, now: float) -> bool:
-        """The shared windowed-cooldown predicate, hermes variant: an id is
-        suppressed (excluded from recall and dropped from results) while within
-        EITHER window, and re-admits only once BOTH have lapsed.
+    def _suppressed(self, entry: dict, now: float, identity: str | None = None) -> bool:
+        """_injected_suppressed (the core-exact module predicate) bound to this
+        provider's live knobs and prompt counter. `now` is epoch MILLISECONDS.
 
-        Deviation from the plugin's shared predicate: hermes never tracked
-        content hashes, so there is no per-entry `h` here — and therefore no
-        sentinel-forever rule and no hash-change bypass. hermes entries are
-        ALWAYS windowed (they lapse), which is the parity goal; the design's
-        sentinel-forever rule governs the plugin's MCP tool-read entries
-        specifically and must NOT make hermes entries immortal. Both knobs at 0
-        reproduces the legacy #134 "suppress forever" behavior."""
-        cooldown_ms = self._inject_cooldown_ms
-        cooldown_prompts = self._inject_cooldown_prompts
-        if cooldown_ms == 0 and cooldown_prompts == 0:
-            return True  # forever — exact pre-cooldown behavior
-        # counter==0 makes the prompt dimension inert. It is unreachable on the
-        # prefetch path (prefetch bumps _prefetch_n before this runs), so the
-        # >0 guard is belt-and-braces parity with the plugin's doctrine for
-        # hosts that never advance a counter; cooldown_prompts=0 degrades to
-        # time-only the same way. Negative deltas (clock skew / stale counter)
-        # compare as < window and so clamp to suppressed.
-        prompt_dim = (
-            cooldown_prompts > 0
-            and self._prefetch_n > 0
-            and self._prefetch_n - entry.get("n", 0) < cooldown_prompts
+        identity=None is the id-only view used for exclude_ids (the wire
+        cannot know what content the server would serve); the per-hit drop
+        filter (_drop_injected) passes each hit's real identity so an
+        in-place UPDATE bypasses the window and re-injects. hermes never
+        records a sentinel (h="") entry -- tool results here carry full
+        content, so identity is always knowable and nothing is immortal."""
+        return _injected_suppressed(
+            entry,
+            identity,
+            now=now,
+            counter=self._prefetch_n,
+            cooldown_ms=self._inject_cooldown_ms,
+            cooldown_prompts=self._inject_cooldown_prompts,
         )
-        time_dim = cooldown_ms > 0 and (now - entry.get("at", 0.0)) < cooldown_ms / 1000.0
-        return prompt_dim or time_dim
 
     def _drop_injected(self, result: dict | None) -> dict | None:
         """Belt-and-braces for the server-side exclude_ids (absent on the
-        old-server fallback path): drop hits that are still IN COOLDOWN. A
-        lapsed id is NOT dropped — it passes through so prefetch re-serves and
-        re-records it. (Gap-5: dropping every known id would make windowed
-        re-admission dead on hermes.)"""
+        old-server fallback path): drop hits that are still IN COOLDOWN,
+        judged per hit against its content identity. A lapsed id is NOT
+        dropped — it passes through so prefetch re-serves and re-records it
+        (Gap-5) — and neither is a hit whose content CHANGED since injection
+        (h mismatch): the fresh content re-injects immediately."""
         if not result or not self._injected_ids:
             return result
         hits = result.get("results") or []
-        now = time.time()
-        suppressed = {
-            mid for mid, e in self._injected_ids.items() if self._suppressed(e, now)
-        }
-        if not suppressed:
-            return result
-        kept = [r for r in hits if (r.get("memory") or {}).get("id") not in suppressed]
+        now = time.time() * 1000.0
+        kept = []
+        for r in hits:
+            mem = (r or {}).get("memory") or {}
+            entry = self._injected_ids.get(mem.get("id"))
+            if entry and self._suppressed(entry, now, _injected_identity(mem)):
+                continue
+            kept.append(r)
         if len(kept) == len(hits):
             return result
         out = dict(result)
@@ -1155,7 +1241,7 @@ class MeminiMemoryProvider(MemoryProvider):
         result = self._drop_injected(result)
         block = self._recall_block(result, "Relevant memories (from memini):")
         if block:
-            self._record_injected((r.get("memory") or {}).get("id", "") for r in (result or {}).get("results") or [])
+            self._record_injected(r.get("memory") or {} for r in (result or {}).get("results") or [])
         return block
 
     def on_pre_compress(self, messages: list, **kwargs: Any) -> str:
@@ -1185,7 +1271,7 @@ class MeminiMemoryProvider(MemoryProvider):
         result = self._call("/v1/search", self._recall_body(query, exclude_injected=False))
         block = self._recall_block(result, "[memini context before compaction]")
         if block:
-            self._record_injected((r.get("memory") or {}).get("id", "") for r in (result or {}).get("results") or [])
+            self._record_injected(r.get("memory") or {} for r in (result or {}).get("results") or [])
         return block
 
     def sync_turn(self, user: str, assistant: str, **kwargs: Any) -> None:
@@ -1461,8 +1547,10 @@ class MeminiMemoryProvider(MemoryProvider):
                 body["scope"] = args["scope"]
             result = self._call("/v1/search", body)
             items = []
+            raw_mems = []
             for r in (result or {}).get("results", []):
                 mem = r.get("memory") or {}
+                raw_mems.append(mem)
                 item = {
                     "id": mem.get("id", ""),
                     "content": mem.get("content", ""),
@@ -1473,9 +1561,11 @@ class MeminiMemoryProvider(MemoryProvider):
                 item.update(_provenance(mem, r.get("from")))
                 items.append(item)
             # What the model just pulled explicitly is now in the transcript:
-            # record it so prefetch stops re-injecting it. (Tool results are
-            # never filtered — an explicit query shows everything it found.)
-            self._record_injected(i["id"] for i in items)
+            # record it (with real content identity — tool results carry full
+            # content, never a truncation sentinel) so prefetch stops
+            # re-injecting it. (Tool results are never filtered — an explicit
+            # query shows everything it found.)
+            self._record_injected(raw_mems)
             # /v1/search already carries degraded/note on `result`; pass them
             # through rather than dropping them silently.
             out = {"results": items}
@@ -1492,8 +1582,10 @@ class MeminiMemoryProvider(MemoryProvider):
 
             def section(items: list | None) -> list:
                 out = []
+                raw_mems = []
                 for b in items or []:
                     mem = b.get("memory") or {}
+                    raw_mems.append(mem)
                     item = {
                         "id": mem.get("id", ""),
                         "content": mem.get("content", ""),
@@ -1502,9 +1594,9 @@ class MeminiMemoryProvider(MemoryProvider):
                     item.update(_provenance(mem, b.get("from")))
                     out.append(item)
                 # The briefing's memories are now in the transcript: record
-                # them so prefetch stops re-injecting what the model already
-                # oriented on.
-                self._record_injected(i["id"] for i in out)
+                # them (with real content identity) so prefetch stops
+                # re-injecting what the model already oriented on.
+                self._record_injected(raw_mems)
                 return out
 
             return json.dumps(

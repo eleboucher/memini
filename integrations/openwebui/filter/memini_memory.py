@@ -3,10 +3,10 @@ title: Memini Memory
 author: memini
 author_url: https://github.com/eleboucher/memini
 funding_url: https://github.com/eleboucher/memini
-version: 0.1.0
+version: 0.2.0
 license: MIT
 required_open_webui_version: 0.5.0
-description: Automatic cross-session memory via memini — recall relevant memories before each turn (inlet) and capture the completed turn after (outlet). No tool calls required from the model.
+description: Automatic cross-session memory via memini — recall relevant memories before each turn (inlet), suppress re-serving what a chat was already shown (windowed injection cooldown), and capture the completed turn after (outlet). No tool calls required from the model.
 """
 
 # Talks to memini over REST (POST /v1/search, POST /v1/memories), scoped by the
@@ -22,7 +22,9 @@ description: Automatic cross-session memory via memini — recall relevant memor
 # the valve value alone — see _handshake/_get_handshake) and memoized on this
 # Filter instance with a 10-minute TTL.
 
+import hashlib
 import os
+import re
 import time
 from typing import Optional
 from urllib.parse import urlparse
@@ -38,7 +40,19 @@ LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 HANDSHAKE_TTL_S = 600.0
 HANDSHAKE_TIMEOUT_S = 2.5
 CLIENT_NAME = "openwebui-memini-filter"
-CLIENT_VERSION = "0.1.0"  # keep in sync with this file's `version:` frontmatter
+CLIENT_VERSION = "0.2.0"  # keep in sync with this file's `version:` frontmatter
+# Windowed injection-cooldown fallbacks, used when the handshake is
+# unavailable. The live values come from the server's handshake settings
+# (inject_cooldown_ms / inject_cooldown_prompts — see Filter._inject_knobs),
+# matching the capture bounds' resolution; these constants mirror the server's
+# own defaults (internal/store ClientSettings: 30 min / 3 prompts).
+INJECT_COOLDOWN_MS_DEFAULT = 1800000
+INJECT_COOLDOWN_PROMPTS_DEFAULT = 3
+# Bounds for the per-chat seen-map: chats tracked (a long-lived Open WebUI
+# process serves many), and injected ids per chat (the server's exclude_ids
+# cap — keeping more than can be sent is pure growth with no dedupe value).
+MAX_SEEN_CHATS = 200
+MAX_INJECTED_PER_CHAT = 512
 
 
 def truncate_for_capture(text: str, max_chars: int) -> str:
@@ -161,6 +175,68 @@ def degraded_note(result: Optional[dict]) -> str:
     return f"[memini: {note}]"
 
 
+# --- Injection-enforcement core (Open WebUI copies) -----------------------
+#
+# Ported from @memini/client's enforce core (packages/memini-client/src/
+# enforce/identity.ts + seen.ts); semantics are pinned by the shared golden
+# vectors (packages/memini-client/vectors/enforcement.json). This filter ships
+# as a single-file Open WebUI upload, so these stay copies, not imports.
+
+_CONTENT_HASH_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+def is_content_hash(s) -> bool:
+    """True for a well-formed server-minted content hash: 16 lowercase hex
+    chars (sha256(content||summary)[:16] — the same recipe as the local
+    fallback in injected_identity, so the two are interchangeable)."""
+    return isinstance(s, str) and bool(_CONTENT_HASH_RE.match(s))
+
+
+def injected_identity(m) -> str:
+    """Content-identity hash for the injected-memory state: prefer the
+    server-minted content_hash (read off the object itself or its nested
+    `memory`), else hash the text a recall surface would render (content,
+    falling back to summary) — so an in-place update still changes identity
+    and re-injects even on servers without content_hash."""
+    m = m if isinstance(m, dict) else {}
+    ch = m.get("content_hash")
+    if ch is None:
+        mem = m.get("memory")
+        ch = mem.get("content_hash") if isinstance(mem, dict) else None
+    if is_content_hash(ch):
+        return ch
+    text = m.get("content") or m.get("summary") or ""
+    return hashlib.sha256(str(text).encode("utf-8")).hexdigest()[:16]
+
+
+def injected_suppressed(
+    entry, identity, *, now: float, counter: int, cooldown_ms: int, cooldown_prompts: int
+) -> bool:
+    """The shared windowed-cooldown predicate, core-exact (enforce/seen.ts):
+    sentinel (h == "") suppresses forever; a content change (identity given
+    and != h) re-injects; both knobs 0 is the legacy forever-dedupe; otherwise
+    suppressed within EITHER window, re-admitted once BOTH lapse. counter == 0
+    leaves the prompt dimension inert; negative deltas clamp to suppressed.
+    identity=None is the id-only view used for exclude_ids. `now`/`at` are
+    epoch milliseconds."""
+    if not isinstance(entry, dict):
+        return False
+    h = entry.get("h")
+    if h == "":
+        return True
+    if identity and h != identity:
+        return False
+    if cooldown_ms == 0 and cooldown_prompts == 0:
+        return True
+    prompt_dim = (
+        cooldown_prompts > 0
+        and counter > 0
+        and counter - entry.get("n", 0) < cooldown_prompts
+    )
+    time_dim = cooldown_ms > 0 and now - entry.get("at", 0) < cooldown_ms
+    return prompt_dim or time_dim
+
+
 def uses_plaintext_bearer(base_url: str, secret: str) -> bool:
     """True when a bearer token would cross plaintext HTTP to a non-loopback host."""
     if not secret:
@@ -232,6 +308,16 @@ class Filter:
         # Per-instance (Open WebUI holds one Filter instance for a good while), TTL
         # 10 minutes — see _get_handshake.
         self._handshake_cache = None
+        # Per-chat injected-memory state, keyed by chat id (the filter instance
+        # is long-lived and serves every chat): {"n": prompt counter bumped once
+        # per inlet, "ids": {memory_id: {"h", "at", "n"}}} — the enforce core's
+        # windowed-cooldown shape (at in epoch ms). Bounded on both axes
+        # (MAX_SEEN_CHATS / MAX_INJECTED_PER_CHAT); see _seen_state.
+        self._seen = {}
+        # Latched on the first successful retry-without-exclude_ids: an older
+        # server 400s the whole request on the unknown field, and "no dedupe on
+        # the wire" beats "no recall at all".
+        self._exclude_ids_unsupported = False
 
     def _facts(self) -> dict:
         """Assemble HandshakeRequest.project (api/openapi.yaml). Open WebUI is a
@@ -325,6 +411,55 @@ class Filter:
 
         return bound("capture_user_max_chars", 1000), bound("capture_assistant_max_chars", 3000)
 
+    async def _inject_knobs(self) -> tuple[int, int]:
+        """(inject_cooldown_ms, inject_cooldown_prompts), from the server's
+        handshake settings — the same resolution as the capture bounds: the
+        injection-cooldown policy ships with the server's ClientSettings, so
+        the handshake carries it; a failed handshake or a malformed value
+        falls back to the built-in defaults (30 min / 3 prompts). 0 disables
+        a dimension; both 0 restores the legacy suppress-forever behavior."""
+        hs = await self._get_handshake()
+        settings = (hs or {}).get("settings") or {}
+
+        def bound(key: str, default: int) -> int:
+            v = settings.get(key)
+            return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else default
+
+        return (
+            bound("inject_cooldown_ms", INJECT_COOLDOWN_MS_DEFAULT),
+            bound("inject_cooldown_prompts", INJECT_COOLDOWN_PROMPTS_DEFAULT),
+        )
+
+    def _seen_state(self, chat_id: str) -> dict:
+        """Get-or-create the per-chat injected state {"n": 0, "ids": {}},
+        evicting the oldest-tracked chat past MAX_SEEN_CHATS (dict preserves
+        insertion order, so the first key is the longest-untouched chat)."""
+        state = self._seen.get(chat_id)
+        if state is None:
+            state = {"n": 0, "ids": {}}
+            self._seen[chat_id] = state
+            while len(self._seen) > MAX_SEEN_CHATS:
+                self._seen.pop(next(iter(self._seen)))
+        return state
+
+    def _record_injected(self, state: dict, results: list, now: float) -> None:
+        """Stamp the rendered hits into the chat's seen-map as {h, at, n}
+        entries (content identity, epoch ms, prompt counter) so the windowed
+        cooldown can judge re-admission later. A re-record refreshes the stamp
+        and the LRU spot; ids are bounded to MAX_INJECTED_PER_CHAT."""
+        for r in results:
+            mem = (r or {}).get("memory") or {}
+            mid = mem.get("id")
+            if isinstance(mid, str) and mid:
+                state["ids"].pop(mid, None)  # refresh LRU position
+                state["ids"][mid] = {
+                    "h": injected_identity(mem),
+                    "at": now,
+                    "n": state["n"],
+                }
+        while len(state["ids"]) > MAX_INJECTED_PER_CHAT:
+            state["ids"].pop(next(iter(state["ids"])))
+
     async def _namespace(self, __user__: Optional[dict]) -> str:
         ns, _ = await self._resolve_namespace()
         if self.valves.scope_by_user and __user__:
@@ -409,14 +544,77 @@ class Filter:
         )
         if chat_id:
             payload["exclude_metadata"] = {"chat_id": chat_id}
-        result = await self._post_json(
-            "/v1/search",
-            payload,
-            await self._namespace(__user__),
-        )
-        block = format_results((result or {}).get("results"), self.valves.recall_limit)
+        # Windowed injection cooldown (enforce-core parity): each inlet is one
+        # user prompt, so bump the chat's prompt counter before recall runs —
+        # the cooldown's prompt dimension measures prompts-since-injection even
+        # on turns that end up injecting nothing. No chat id → no key to scope
+        # by → no dedupe state (mirrors the capture path's chat-id rule).
+        seen = self._seen_state(chat_id) if chat_id else None
+        if seen is not None:
+            seen["n"] += 1
+        cooldown_ms, cooldown_prompts = await self._inject_knobs()
+        now = time.time() * 1000.0
+        # Ids still IN COOLDOWN ride along as exclude_ids (id-only judgment —
+        # the wire cannot know what content the server would serve) so a
+        # suppressed hit doesn't waste a recall_limit slot; a lapsed id is
+        # intentionally absent so the server may re-serve it.
+        if seen and seen["ids"] and not self._exclude_ids_unsupported:
+            in_cooldown = [
+                mid
+                for mid, e in seen["ids"].items()
+                if injected_suppressed(
+                    e,
+                    None,
+                    now=now,
+                    counter=seen["n"],
+                    cooldown_ms=cooldown_ms,
+                    cooldown_prompts=cooldown_prompts,
+                )
+            ]
+            if in_cooldown:
+                payload["exclude_ids"] = in_cooldown[-MAX_INJECTED_PER_CHAT:]
+        namespace = await self._namespace(__user__)
+        result = await self._post_json("/v1/search", payload, namespace)
+        # An older server 400s the whole request on the unknown exclude_ids
+        # field, degraded to None above — indistinguishable from a dead server,
+        # so retry once without the field. If THAT lands, the field was the
+        # problem: latch it off for this filter instance. Gate strictly on
+        # whether THIS request carried exclude_ids, so a transient failure on
+        # an exclude-less request can't latch spuriously.
+        if result is None and "exclude_ids" in payload and not self._exclude_ids_unsupported:
+            retry_payload = {k: v for k, v in payload.items() if k != "exclude_ids"}
+            result = await self._post_json("/v1/search", retry_payload, namespace)
+            if result is not None:
+                self._exclude_ids_unsupported = True
+        results = (result or {}).get("results") or []
+        # Belt-and-braces client-side drop (the only layer on the old-server
+        # fallback path), judged PER HIT against its content identity: an
+        # in-cooldown unchanged hit is dropped; a lapsed one passes through and
+        # re-serves; an UPDATED one (h mismatch) bypasses the window and
+        # re-injects immediately.
+        if seen and seen["ids"]:
+            results = [
+                r
+                for r in results
+                if not (
+                    (entry := seen["ids"].get(((r or {}).get("memory") or {}).get("id")))
+                    and injected_suppressed(
+                        entry,
+                        injected_identity((r or {}).get("memory") or {}),
+                        now=now,
+                        counter=seen["n"],
+                        cooldown_ms=cooldown_ms,
+                        cooldown_prompts=cooldown_prompts,
+                    )
+                )
+            ]
+        block = format_results(results, self.valves.recall_limit)
         if not block:
             return body
+        if seen is not None:
+            # Record only the slice format_results actually renders: marking
+            # unshown hits as seen would suppress what was never injected.
+            self._record_injected(seen, results[: max(self.valves.recall_limit, 0)], now)
         note = degraded_note(result)
         if note:
             block += "\n" + note

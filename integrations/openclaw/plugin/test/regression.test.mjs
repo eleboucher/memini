@@ -820,6 +820,134 @@ test("windowed injection cooldown: both knobs at zero restores forever suppressi
   }
 });
 
+// The prompt dimension is LIVE, and its counter is the per-session count of
+// completed agent turns (agent_end fires once per turn): before_prompt_build
+// fires per STEP, so steps within a turn never advance the window — only
+// finished turns do. With the time window disabled (ms=0), a shown id is
+// suppressed for inject_cooldown_prompts turns and re-served after.
+test("windowed injection cooldown: the prompt window counts completed agent turns, not steps", async () => {
+  process.env.MEMINI_INJECT_COOLDOWN_MS = "0";
+  process.env.MEMINI_INJECT_COOLDOWN_PROMPTS = "2";
+  const hooks = {};
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = withHandshakeFailure(async (url) => ({
+    ok: true,
+    async json() {
+      return String(url).endsWith("/v1/search")
+        ? { results: [{ memory: { id: "m1", summary: "alpha", tier: "semantic" }, score: 0.9 }] }
+        : { id: "cap-x" };
+    },
+    async text() { return ""; },
+  }));
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    const ctx = { sessionId: "s1" };
+    const endTurn = () =>
+      hooks.agent_end(
+        {
+          success: true,
+          messages: [
+            { role: "user", content: "a real user question" },
+            { role: "assistant", content: "an answer" },
+          ],
+        },
+        ctx,
+      );
+    // Turn 1 completes before anything is injected, so the counter is live
+    // (the enforce core's counter==0 rule would otherwise leave the prompt
+    // dimension inert for the very first turn).
+    await endTurn();
+    // Turn 2, step 1: injected (stamped at counter 1).
+    const first = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.match(first.prependContext, /alpha/);
+    // Turn 2, later steps: the counter has NOT advanced (steps are not
+    // prompts), delta 0 < 2 -> suppressed on every step of the same turn.
+    for (let step = 0; step < 3; step++) {
+      const within = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+      assert.equal(within, undefined, "steps within the injection turn stay suppressed");
+    }
+    await endTurn(); // turn 2 completes: counter 2, delta 1 < 2
+    const nextTurn = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.equal(nextTurn, undefined, "1 completed turn since injection: still suppressed");
+    await endTurn(); // turn 3 completes: counter 3, delta 2 >= 2 -> lapsed
+    const after = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.ok(after, "the prompt window lapsed: the id must be re-served");
+    assert.match(after.prependContext, /alpha/);
+    // The re-show re-stamped the entry at the current counter: suppressed again.
+    const again = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.equal(again, undefined, "the re-shown id starts a fresh prompt window");
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.MEMINI_INJECT_COOLDOWN_MS;
+    delete process.env.MEMINI_INJECT_COOLDOWN_PROMPTS;
+  }
+});
+
+// Suppress within EITHER window: with both dimensions configured, a lapsed
+// time window alone must not re-admit while the prompt window still holds.
+test("windowed injection cooldown: either window suppresses; both must lapse to re-admit", async () => {
+  process.env.MEMINI_INJECT_COOLDOWN_MS = "1000";
+  process.env.MEMINI_INJECT_COOLDOWN_PROMPTS = "2";
+  const hooks = {};
+  const realFetch = globalThis.fetch;
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow.call(Date) + skew;
+  globalThis.fetch = withHandshakeFailure(async (url) => ({
+    ok: true,
+    async json() {
+      return String(url).endsWith("/v1/search")
+        ? { results: [{ memory: { id: "m1", summary: "alpha", tier: "semantic" }, score: 0.9 }] }
+        : { id: "cap-x" };
+    },
+    async text() { return ""; },
+  }));
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    const ctx = { sessionId: "s1" };
+    const endTurn = () =>
+      hooks.agent_end(
+        {
+          success: true,
+          messages: [
+            { role: "user", content: "a real user question" },
+            { role: "assistant", content: "an answer" },
+          ],
+        },
+        ctx,
+      );
+    await endTurn(); // counter live at 1
+    const first = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.match(first.prependContext, /alpha/);
+    // Time window lapsed, but only one turn completed since injection: the
+    // prompt window still holds.
+    skew = 5000;
+    await endTurn(); // counter 2, delta 1 < 2
+    const timeLapsed = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.equal(timeLapsed, undefined, "prompt window alone must keep suppressing");
+    await endTurn(); // counter 3, delta 2 >= 2 — and time already lapsed
+    const both = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.ok(both, "once BOTH windows lapse the id re-serves");
+  } finally {
+    globalThis.fetch = realFetch;
+    Date.now = realNow;
+    delete process.env.MEMINI_INJECT_COOLDOWN_MS;
+    delete process.env.MEMINI_INJECT_COOLDOWN_PROMPTS;
+  }
+});
+
 // The capture echo guard is time-based: a fresh burst wider than any count cap
 // is fully suppressed, and captures age back into recall by time.
 test("capture echo guard suppresses a fresh burst and ages out by time", async () => {

@@ -1025,8 +1025,8 @@ class InjectedDedupeTest(unittest.TestCase):
 
         p = make_provider(stub)
         p.prefetch("query one long enough")  # records m1 at n=1
-        # Lapse m1 on BOTH windows: backdated stamp + counter far past.
-        p._injected_ids["m1"] = {"at": time.time() - 10_000, "n": -100}
+        # Lapse m1 on BOTH windows: backdated stamp (ms) + counter far past.
+        p._injected_ids["m1"].update(at=0, n=-100)
         p._prefetch_n = 100
         p.prefetch("query two long enough")  # single call fails transiently
         self.assertNotIn("exclude_ids", bodies[1] or {})  # lapsed -> field omitted
@@ -1081,9 +1081,10 @@ class InjectedDedupeTest(unittest.TestCase):
 class InjectedCooldownTest(unittest.TestCase):
     """The windowed injection cooldown (hermes parity for the plugin's
     inject-cooldown work): an injected id is suppressed while within EITHER
-    window and re-admitted only once BOTH lapse. hermes tracks no content
-    hash, so its entries are always windowed (no sentinel-forever rule); the
-    both-zero knob reproduces the legacy forever behavior."""
+    window and re-admitted only once BOTH lapse. Entries carry the enforce
+    core's {h, at, n} shape (at in epoch ms); hermes never records a sentinel
+    (h="") entry, so nothing here is immortal, and the both-zero knob
+    reproduces the legacy forever behavior."""
 
     @staticmethod
     def _hit(mid, content, score=0.9):
@@ -1137,7 +1138,7 @@ class InjectedCooldownTest(unittest.TestCase):
 
         p = make_provider(stub)
         p.prefetch("query one long enough")  # records m1
-        p._injected_ids["m1"] = {"at": time.time() - 10_000, "n": -100}
+        p._injected_ids["m1"].update(at=0, n=-100)  # backdate past both windows
         p._prefetch_n = 100
         self.assertNotIn("exclude_ids", p._recall_body("another query"))
         kept = p._drop_injected({"results": [self._hit("m1", "fact one")]})
@@ -1145,7 +1146,7 @@ class InjectedCooldownTest(unittest.TestCase):
         block = p.prefetch("re-serve the lapsed memory now")
         self.assertIn("fact one", block)
         self.assertEqual(p._injected_ids["m1"]["n"], 101)  # re-recorded at bumped n
-        self.assertGreater(p._injected_ids["m1"]["at"], time.time() - 5)
+        self.assertGreater(p._injected_ids["m1"]["at"], (time.time() - 5) * 1000)
 
     def test_both_zero_knobs_suppress_forever(self):
         # 0ms + 0prompts == legacy #134 forever: even a wildly lapsed entry
@@ -1157,7 +1158,7 @@ class InjectedCooldownTest(unittest.TestCase):
         p._inject_cooldown_ms = 0
         p._inject_cooldown_prompts = 0
         p.prefetch("query one long enough")
-        p._injected_ids["m1"] = {"at": 0.0, "n": -10_000}
+        p._injected_ids["m1"].update(at=0, n=-10_000)
         p._prefetch_n = 10_000
         self.assertEqual(p._recall_body("q").get("exclude_ids"), ["m1"])
         kept = p._drop_injected({"results": [self._hit("m1", "fact one")]})
@@ -1177,8 +1178,93 @@ class InjectedCooldownTest(unittest.TestCase):
         p.prefetch("query one long enough")  # records m1, time window fresh
         p._prefetch_n = 10_000  # counter far past any prompt window
         self.assertEqual(p._recall_body("q").get("exclude_ids"), ["m1"])
-        p._injected_ids["m1"]["at"] = time.time() - 10_000  # lapse time too
+        p._injected_ids["m1"]["at"] = 0  # lapse time too (ms)
         self.assertNotIn("exclude_ids", p._recall_body("q"))
+
+
+class InjectedIdentityTest(unittest.TestCase):
+    """Content-hash identity on injected entries (enforce-core parity): the
+    recorded `h` prefers the server-minted content_hash (16 lowercase hex),
+    falls back to the local sha256(content||summary)[:16] recipe, and an
+    h-mismatch (the memory was updated in place) bypasses the cooldown so the
+    fresh content re-injects instead of staying withheld for the window."""
+
+    @staticmethod
+    def _hit(mid, content, score=0.9, content_hash=None):
+        mem = {"id": mid, "content": content}
+        if content_hash:
+            mem["content_hash"] = content_hash
+        return {"memory": mem, "score": score}
+
+    def test_recorded_entry_prefers_the_servers_content_hash(self):
+        p = make_provider(
+            lambda path, body, method="POST": {
+                "results": [self._hit("m1", "x", content_hash="aaaabbbbccccdddd")]
+            }
+        )
+        p.prefetch("query one long enough")
+        self.assertEqual(p._injected_ids["m1"]["h"], "aaaabbbbccccdddd")
+
+    def test_recorded_entry_falls_back_to_the_local_recipe(self):
+        import hashlib
+
+        p = make_provider(
+            lambda path, body, method="POST": {"results": [self._hit("m1", "the fact")]}
+        )
+        p.prefetch("query one long enough")
+        self.assertEqual(
+            p._injected_ids["m1"]["h"], hashlib.sha256(b"the fact").hexdigest()[:16]
+        )
+
+    def test_content_change_bypasses_the_cooldown(self):
+        # m1 is freshly injected (in-window on both dimensions), then the server
+        # serves it again with UPDATED content: the h-mismatch bypasses the
+        # client-side drop, prefetch re-serves it, and the entry is re-recorded
+        # under the fresh hash. (The wire exclude_ids still carries the id --
+        # exclusion is id-only, so this path exercises a server that re-serves
+        # anyway, e.g. one without exclude_ids support.)
+        calls = []
+
+        def stub(path, body, method="POST"):
+            calls.append(body)
+            content = "version one" if len(calls) == 1 else "version two -- updated"
+            return {"results": [self._hit("m1", content)]}
+
+        p = make_provider(stub)
+        p.prefetch("query one long enough")
+        h1 = p._injected_ids["m1"]["h"]
+        block = p.prefetch("query two long enough")
+        self.assertIn("version two", block)
+        self.assertNotEqual(p._injected_ids["m1"]["h"], h1)
+
+    def test_unchanged_content_stays_suppressed(self):
+        p = make_provider(
+            lambda path, body, method="POST": {"results": [self._hit("m1", "same fact")]}
+        )
+        self.assertIn("same fact", p.prefetch("query one long enough"))
+        self.assertEqual(p.prefetch("query two long enough"), "")
+
+    def test_exclude_ids_view_is_id_only(self):
+        # The wire exclusion cannot know what content the server WOULD serve,
+        # so an in-window id stays in exclude_ids even though its content may
+        # have changed server-side (core cooldownIds doctrine: identity=null).
+        p = make_provider(
+            lambda path, body, method="POST": {"results": [self._hit("m1", "v1")]}
+        )
+        p.prefetch("query one long enough")
+        self.assertEqual(p._recall_body("q").get("exclude_ids"), ["m1"])
+
+    def test_tool_recorded_entries_carry_content_identity(self):
+        # Memories the model pulls explicitly (recall tool) are recorded with
+        # their real content hash -- NOT a sentinel: hermes tool results carry
+        # full content, so identity is knowable and the entry stays windowed.
+        p = make_provider(
+            lambda path, body, method="POST": {
+                "results": [self._hit("t1", "tool fact", content_hash="aaaabbbbccccdddd")]
+            }
+        )
+        p.handle_tool_call("memory_recall", {"query": "auth"})
+        self.assertEqual(p._injected_ids["t1"]["h"], "aaaabbbbccccdddd")
 
 
 if __name__ == "__main__":
