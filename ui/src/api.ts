@@ -48,8 +48,13 @@ export class ApiError extends Error {
 function headers(extra?: Record<string, string>, ns?: string): Record<string, string> {
   const h: Record<string, string> = { ...extra }
   // An explicit ns overrides the active namespace (used to scope a request to a
-  // specific namespace without switching the global selection).
-  const effective = ns ?? namespace.value
+  // specific namespace without switching the global selection). `||`, not `??`:
+  // an empty string means "the caller had no namespace to give" — an activity
+  // row with no recorded namespace — and must fall back to the active one
+  // rather than sending the request unscoped. No caller passes '' to mean "omit
+  // the header"; All-namespaces mode is expressed by namespace.value itself
+  // being '', where the two operators agree.
+  const effective = ns || namespace.value
   if (effective) h[namespaceHeader.value] = effective
   // The server bearer-gates /v1, /mcp and /metrics when MEMINI_API_KEY is set;
   // send the configured token so the dashboard works against that setup.

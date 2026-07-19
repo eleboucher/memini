@@ -157,6 +157,56 @@ func (s *Store) ListEvents(ctx context.Context, f store.EventFilter) ([]store.Ev
 	return out, rows.Err()
 }
 
+// ServedSnapshots returns the newest serve-row snapshot per memory ID. The
+// inner MAX(id) picks one row per memory — ids are monotonic, so the greatest is
+// the newest — and the outer select reads that row's columns; grouping and
+// projecting in one statement would leave the non-aggregated columns ambiguous.
+func (s *Store) ServedSnapshots(
+	ctx context.Context, namespace string, ids []string, since time.Time,
+) (map[string]store.MemorySnapshot, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var b strings.Builder
+	args := []any{namespace}
+	b.WriteString(`SELECT memory_id, memory_ns, memory_tier, memory_summary
+		FROM memory_events WHERE id IN (
+			SELECT MAX(id) FROM memory_events
+			WHERE namespace = ? AND memory_ns <> '' AND kind IN (?,?) AND memory_id IN (`)
+	args = append(args, string(store.EventRecall), string(store.EventBriefing))
+	for i, id := range ids {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString("?")
+		args = append(args, id)
+	}
+	b.WriteString(")")
+	if !since.IsZero() {
+		b.WriteString(" AND created_at >= ?")
+		args = append(args, ms(since))
+	}
+	b.WriteString(" GROUP BY memory_id)")
+
+	rows, err := s.db.QueryContext(ctx, b.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitevec: lookup served snapshots: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make(map[string]store.MemorySnapshot, len(ids))
+	for rows.Next() {
+		var id, tier string
+		var snap store.MemorySnapshot
+		if err := rows.Scan(&id, &snap.Namespace, &tier, &snap.Summary); err != nil {
+			return nil, fmt.Errorf("sqlitevec: scan served snapshot: %w", err)
+		}
+		snap.Tier = memory.Tier(tier)
+		out[id] = snap
+	}
+	return out, rows.Err()
+}
+
 // PruneEvents trims the log by age and by row cap.
 func (s *Store) PruneEvents(ctx context.Context, olderThan time.Time, keepMax int) (int64, error) {
 	var deleted int64

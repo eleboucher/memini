@@ -979,6 +979,17 @@ func ValidEventKind(k EventKind) bool {
 	return false
 }
 
+// MemorySnapshot is the denormalized (namespace, tier, summary) triple an event
+// row carries for the memory it touched. Looked up by memory ID so a writer that
+// knows only an ID can record the same snapshot an earlier serve already took —
+// see EventLogStore.ServedSnapshots and the injection beacon, whose client sends
+// bare IDs and nothing else.
+type MemorySnapshot struct {
+	Namespace string
+	Tier      memory.Tier
+	Summary   string
+}
+
 // Event is one (operation, memory) row of the activity log: what was served or
 // written, when, and — for a recall — the query that pulled it and where it
 // ranked. Memories served by one operation share an OpID, so a recall that
@@ -1081,6 +1092,23 @@ type EventLogStore interface {
 	// none by age) and, when keepMax > 0, the oldest rows beyond the newest
 	// keepMax. Returns the number of rows deleted.
 	PruneEvents(ctx context.Context, olderThan time.Time, keepMax int) (int64, error)
+	// ServedSnapshots returns, per ID, the newest memory snapshot a SERVE row
+	// (recall or briefing) recorded for it against namespace, ignoring rows
+	// older than since and rows that carry no snapshot. An ID with no covering
+	// serve is absent from the map — never an error.
+	//
+	// It backs the inject event's hydration: an injection beacon carries bare
+	// IDs, so the snapshot is borrowed from the serve that produced them. That
+	// also makes it the SAFE source. Injected IDs are taken on faith and never
+	// authorized, so resolving them against the memories table would let a
+	// buggy or hostile client read back summaries of memories it was never
+	// served; scoping to serves already logged against the caller's namespace
+	// bounds what a report can learn to what it was already shown.
+	//
+	// Borrowing rather than re-reading is also what recovers the memory's own
+	// namespace, which for a cascading recall differs from the request
+	// namespace (see Event.Namespace) and is recorded nowhere else.
+	ServedSnapshots(ctx context.Context, namespace string, ids []string, since time.Time) (map[string]MemorySnapshot, error)
 }
 
 // OrEmptyMap returns m, or an empty map when m is nil, so drivers persist an

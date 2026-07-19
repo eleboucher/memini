@@ -685,6 +685,187 @@ func TestRecordInjectedWritesEvent(t *testing.T) {
 	}
 }
 
+// TestRecordInjectedHydratesServedSnapshot is the regression for inject rows
+// rendering blank in the activity feed. The client beacon carries bare ids, so
+// before hydration every inject row landed with an empty namespace, tier and
+// summary: the UI drew an empty line, the tier and text filters never matched
+// it, and clicking it 404'd because there was no namespace to fetch with.
+//
+// The assertion that matters is that the inject row carries the SAME snapshot
+// the recall row does — the injection is a view of that serve, not an
+// independent lookup.
+func TestRecordInjectedHydratesServedSnapshot(t *testing.T) {
+	ctx := context.Background()
+	svc := newEventSvc(t)
+
+	m, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "n", Content: "the primary database is postgres", Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	if _, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "n", Query: "database", Limit: 5,
+	}); err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	svc.RecordInjected(ctx, "n", service.InjectedReport{
+		SessionID: "s1", Surface: "pretool", InjectedIDs: []string{m.ID},
+	})
+
+	page, err := svc.Events(ctx, service.EventsInput{
+		Namespace: "n", Kinds: []store.EventKind{store.EventRecall, store.EventInject},
+	})
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	var injectRow, recallRow *service.ActivityMemory
+	for i := range page.Events {
+		for j := range page.Events[i].Memories {
+			if page.Events[i].Memories[j].ID != m.ID {
+				continue
+			}
+			switch page.Events[i].Kind {
+			case store.EventInject:
+				injectRow = &page.Events[i].Memories[j]
+			case store.EventRecall:
+				recallRow = &page.Events[i].Memories[j]
+			}
+		}
+	}
+	if injectRow == nil || recallRow == nil {
+		t.Fatalf("missing rows: inject=%v recall=%v", injectRow, recallRow)
+	}
+	if injectRow.Namespace != "n" || injectRow.Tier != memory.TierSemantic || injectRow.Summary == "" {
+		t.Errorf("inject row = {ns:%q tier:%q summary:%q}, want a populated snapshot",
+			injectRow.Namespace, injectRow.Tier, injectRow.Summary)
+	}
+	if injectRow.Namespace != recallRow.Namespace ||
+		injectRow.Tier != recallRow.Tier ||
+		injectRow.Summary != recallRow.Summary {
+		t.Errorf("inject snapshot %+v does not match the serve it reports on %+v", injectRow, recallRow)
+	}
+	// The serve's composite score belongs to the recall that computed it — two
+	// events must not claim the same number.
+	if injectRow.Score != nil {
+		t.Errorf("inject row carries score %v, want none", *injectRow.Score)
+	}
+}
+
+// TestRecordInjectedHydratesAncestorNamespace is the case that distinguishes
+// borrowing the serve's snapshot from simply stamping the request namespace.
+//
+// Recall cascades into ancestor namespaces, so a memory served to "acme/dev"
+// may well live in "acme". The serve row is the only place that fact is ever
+// recorded — the beacon does not send it and store.Get is strict namespace
+// equality — so stamping the request namespace would write a plausible lie and
+// the UI's click-through would still 404.
+func TestRecordInjectedHydratesAncestorNamespace(t *testing.T) {
+	ctx := context.Background()
+	svc := newEventSvc(t)
+
+	parent, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "acme", Content: "deploys go out on fridays", Tier: memory.TierProcedural,
+	})
+	if err != nil {
+		t.Fatalf("remember parent: %v", err)
+	}
+	res, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "acme/dev", Query: "deploys fridays", Limit: 5,
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	var served bool
+	for _, r := range res {
+		if r.Memory.ID == parent.ID {
+			served = true
+		}
+	}
+	if !served {
+		t.Fatalf("ancestor memory was not served to the child namespace; got %d hits", len(res))
+	}
+
+	svc.RecordInjected(ctx, "acme/dev", service.InjectedReport{
+		SessionID: "s1", Surface: "pretool", InjectedIDs: []string{parent.ID},
+	})
+
+	page, err := svc.Events(ctx, service.EventsInput{
+		Namespace: "acme/dev", Kinds: []store.EventKind{store.EventInject},
+	})
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if len(page.Events) != 1 || len(page.Events[0].Memories) != 1 {
+		t.Fatalf("inject events = %+v, want one event with one memory", page.Events)
+	}
+	got := page.Events[0].Memories[0]
+	if got.Namespace != "acme" {
+		t.Errorf("inject row namespace = %q, want %q (the memory's own namespace, not the request's)",
+			got.Namespace, "acme")
+	}
+	if got.Tier != memory.TierProcedural || got.Summary == "" {
+		t.Errorf("inject row = {tier:%q summary:%q}, want the ancestor serve's snapshot", got.Tier, got.Summary)
+	}
+	// The event itself is still recorded against the requesting namespace.
+	if page.Events[0].Namespace != "acme/dev" {
+		t.Errorf("event namespace = %q, want acme/dev", page.Events[0].Namespace)
+	}
+}
+
+// TestRecordInjectedLeavesUnservedIDsBare is the containment test. Injected ids
+// are taken on faith and never authorized, so hydration must not become a way
+// to read memories the caller was never served: an id that exists but was only
+// served to ANOTHER namespace, and an id that was written but never served,
+// both stay bare.
+func TestRecordInjectedLeavesUnservedIDsBare(t *testing.T) {
+	ctx := context.Background()
+	svc := newEventSvc(t)
+
+	secret, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "victim", Content: "the vault combination is written down", Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("remember secret: %v", err)
+	}
+	// Served — but to the victim's namespace, not the attacker's.
+	if _, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "victim", Query: "vault combination", Limit: 5,
+	}); err != nil {
+		t.Fatalf("recall victim: %v", err)
+	}
+	written, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "attacker", Content: "never served to anyone", Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("remember written: %v", err)
+	}
+
+	svc.RecordInjected(ctx, "attacker", service.InjectedReport{
+		SessionID: "s1", Surface: "pretool",
+		InjectedIDs: []string{secret.ID, written.ID, "no-such-id"},
+	})
+
+	page, err := svc.Events(ctx, service.EventsInput{
+		Namespace: "attacker", Kinds: []store.EventKind{store.EventInject},
+	})
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if len(page.Events) != 1 {
+		t.Fatalf("inject events = %d, want 1", len(page.Events))
+	}
+	if n := len(page.Events[0].Memories); n != 3 {
+		t.Fatalf("inject event carries %d refs, want 3 (unknown ids are still recorded)", n)
+	}
+	for _, m := range page.Events[0].Memories {
+		if m.Namespace != "" || m.Tier != "" || m.Summary != "" {
+			t.Errorf("ref %s leaked a snapshot it was never served: {ns:%q tier:%q summary:%q}",
+				m.ID, m.Namespace, m.Tier, m.Summary)
+		}
+	}
+}
+
 // TestEventsAnnotatesInjectedMemories is the served→injected join: a recall
 // event's memory is marked injected=true when a later inject report names it,
 // injected=false when a report exists but omits it (the client suppressed it),

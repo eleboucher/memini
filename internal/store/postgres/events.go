@@ -133,6 +133,47 @@ func (s *Store) ListEvents(ctx context.Context, f store.EventFilter) ([]store.Ev
 	return out, rs.Err()
 }
 
+// ServedSnapshots returns the newest serve-row snapshot per memory ID. DISTINCT
+// ON keeps the first row of each memory_id group, and the matching ORDER BY
+// makes that the newest — ids are monotonic, so the greatest is the latest.
+func (s *Store) ServedSnapshots(
+	ctx context.Context, namespace string, ids []string, since time.Time,
+) (map[string]store.MemorySnapshot, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	b := &args{}
+	var q strings.Builder
+	q.WriteString(`SELECT DISTINCT ON (memory_id) memory_id, memory_ns, memory_tier, memory_summary
+		FROM memory_events
+		WHERE namespace = ` + b.add(namespace) + `
+		  AND memory_ns <> ''
+		  AND kind = ANY(` + b.add([]string{string(store.EventRecall), string(store.EventBriefing)}) + `)
+		  AND memory_id = ANY(` + b.add(ids) + `)`)
+	if !since.IsZero() {
+		q.WriteString(" AND created_at >= " + b.add(since))
+	}
+	q.WriteString(" ORDER BY memory_id, id DESC")
+
+	rs, err := s.pool.Query(ctx, q.String(), b.vals...)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: lookup served snapshots: %w", err)
+	}
+	defer rs.Close()
+
+	out := make(map[string]store.MemorySnapshot, len(ids))
+	for rs.Next() {
+		var id, tier string
+		var snap store.MemorySnapshot
+		if err := rs.Scan(&id, &snap.Namespace, &tier, &snap.Summary); err != nil {
+			return nil, fmt.Errorf("postgres: scan served snapshot: %w", err)
+		}
+		snap.Tier = memory.Tier(tier)
+		out[id] = snap
+	}
+	return out, rs.Err()
+}
+
 // PruneEvents trims the log by age and by row cap.
 func (s *Store) PruneEvents(ctx context.Context, olderThan time.Time, keepMax int) (int64, error) {
 	var deleted int64
