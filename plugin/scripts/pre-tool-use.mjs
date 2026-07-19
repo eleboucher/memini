@@ -178,11 +178,15 @@ async function main() {
     // surfacing them just echoes what the agent already did this session. Prior
     // sessions' digests stay recallable.
     const exclude = sessionId ? { session_id: sessionId } : undefined;
-    const { hits: rawHits, degraded, note } = await postSearch(q, project, {
+    // maxTokens is the per-file budget, sent as the wire's max_tokens (PR-F):
+    // the server drops the tail authoritatively and reports `omitted`; the
+    // fitByTokens trim below stays as the old-server / render-skeleton guard.
+    const { hits: rawHits, degraded, note, omitted } = await postSearch(q, project, {
       limit: itemsPerFile,
       exclude,
       minScore,
       source: "pretool",
+      maxTokens,
     });
     // An actual server call just happened for this file: refresh `at` (the
     // gate's clock) NOW, before any early-out. It refreshes on EVERY real call
@@ -271,7 +275,12 @@ async function main() {
     const lines = hits.map((h) => formatRecallHit(h, labels)).filter(Boolean);
     const fit = fitByTokens(lines, maxTokens);
     out.push(...fit.items);
-    totalDropped += fit.dropped;
+    // The footer sums both budget layers for the files that RENDER: the
+    // server's max_tokens drops (omitted) and the client fallback's
+    // (fit.dropped). A file whose whole block was suppressed above
+    // contributes neither — its server drops describe a block the model
+    // never saw.
+    totalDropped += fit.dropped + omitted;
     // This block's memories are now (about to be) in context: record them so
     // this call's remaining files and every later recall surface skip them.
     if (dedupe) {

@@ -1934,6 +1934,26 @@ type RecallInput struct {
 	// any result via LinkedMemoryIDs (1-hop expansion). Linked memories that
 	// are superseded are skipped. Default (false) is no expansion.
 	IncludeLinked bool
+	// MaxTokens, when > 0, is a server-enforced token budget over the final
+	// ranked results: they fill in rank order until the estimated cost
+	// (render.ApproxTokens over the shipped content + render.ItemOverheadTokens
+	// per item) would exceed it, and the tail is dropped whole — except the
+	// first result, which always ships (a non-empty recall never becomes
+	// empty by budget). 0 is unbounded. See applyRecallBudget.
+	MaxTokens int
+	// EstimateConcise makes MaxTokens estimate over the CONCISE projection of
+	// each result (summary-or-boundary-cut, render.SearchMax) instead of the
+	// full content — set by callers whose response will ship the concise form
+	// (REST response_format=concise), so the budget prices what actually goes
+	// on the wire. It does NOT change what content ships; the response
+	// projection stays the transport layer's job. Meaningless without
+	// MaxTokens.
+	EstimateConcise bool
+	// Omitted (output-only) receives the number of results MaxTokens dropped
+	// (0 without a budget or when everything fit). Same out-param pattern as
+	// Degraded/ReadSet; nil disables reporting. The count also lands in the
+	// recall activity event's detail as budget_omitted.
+	Omitted *int
 }
 
 // durableTiers restricts a requested tier set to the durable tiers (semantic,
@@ -2023,6 +2043,12 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	}
 
 	if results, ok := s.tryQueryRewrite(ctx, in); ok {
+		// The budget applies to the FUSED result — the variant sub-recalls run
+		// unbudgeted (see tryQueryRewrite) so no variant pre-trims what fusion
+		// might rank differently. This early-return path logs per-variant
+		// events only, so budget_omitted rides the Omitted out-param alone
+		// (written by applyRecallBudget).
+		results, _ = applyRecallBudget(in, results)
 		return results, nil
 	}
 
@@ -2185,11 +2211,17 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	ranked = s.applyTurnEchoGuard(in, ranked)
 	results := s.finalizeRecall(ctx, in.Query, ranked, k)
 	results = s.maybeExpandLinked(ctx, in, results, k)
+	// The token budget trims BEFORE reinforcement and logging: a result the
+	// budget dropped never reached the caller, so it must neither count as
+	// used nor appear as served — the event instead records the drop count
+	// (budget_omitted), keeping the omission visible. The Omitted out-param
+	// is written inside applyRecallBudget.
+	results, budgetOmitted := applyRecallBudget(in, results)
 	s.reinforceResults(ctx, results)
 	// Reinforcement rolls usage up into per-memory counters; the activity log
 	// keeps the detail those counters throw away — which query served this
 	// memory, at what rank, with what score.
-	s.logRecallEvent(ctx, in, results)
+	s.logRecallEvent(ctx, in, results, budgetOmitted)
 	s.metrics.RecallResult("ok", tf, hitsBucket(len(results)))
 	return results, nil
 }
@@ -2324,6 +2356,14 @@ func (s *Service) tryQueryRewrite(ctx context.Context, in RecallInput) ([]store.
 			sub.Query = q
 			sub.QueryRewrite = false // prevent recursion into tryQueryRewrite
 			sub.Degraded = &degradedReasons[i]
+			// The token budget belongs to the FUSED result the caller receives,
+			// not to any one variant: a per-variant trim would starve fusion of
+			// candidates another variant ranked lower but the fused order ranks
+			// higher. Recall applies the budget once, after this path returns.
+			// Omitted is nil'd for the same reason ReadSet is below — a shared
+			// out-param pointer across variant goroutines would race.
+			sub.MaxTokens = 0
+			sub.Omitted = nil
 			if i != 0 {
 				// RecallInput.ReadSet is a *[]ReadSetEntry out-param: handing every
 				// variant goroutine the SAME pointer would race the moment more

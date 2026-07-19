@@ -121,7 +121,7 @@ func (s *Service) logEvents(ctx context.Context, events []store.Event) {
 // A recall that returned nothing is still recorded, as a single row with no
 // memory: "this query found nothing" is exactly the kind of thing you go to an
 // activity feed to discover.
-func (s *Service) logRecallEvent(ctx context.Context, in RecallInput, results []store.Scored) {
+func (s *Service) logRecallEvent(ctx context.Context, in RecallInput, results []store.Scored, budgetOmitted int) {
 	if _, ok := s.eventLog(); !ok {
 		return
 	}
@@ -141,6 +141,14 @@ func (s *Service) logRecallEvent(ctx context.Context, in RecallInput, results []
 	// back. Absent, not zero, when the caller sent none.
 	if len(in.ExcludeIDs) > 0 {
 		detail["excluded_count"] = len(in.ExcludeIDs)
+	}
+	// How many ranked results the caller's max_tokens budget dropped
+	// (applyRecallBudget): the server-side visibility for a server-enforced
+	// trim — the served rows below are the post-trim set, so without this
+	// count the feed could not tell "found 2" from "found 5, budget kept 2".
+	// Absent, not zero, when no budget was set or everything fit.
+	if budgetOmitted > 0 {
+		detail["budget_omitted"] = budgetOmitted
 	}
 	base := store.Event{
 		OpID:      s.newID(),

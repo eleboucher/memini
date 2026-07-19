@@ -279,8 +279,12 @@ async function main() {
 
   // A single query-less briefing call returns a layered view: pinned identity,
   // durable facts/procedures, and recent activity — server-side ranked, so the
-  // hook injects useful context without N searches.
-  const b = await getBriefing(project, opts);
+  // hook injects useful context without N searches. The SAME token knob feeds
+  // both budget layers (PR-F): the server's authoritative ?max_tokens trim
+  // (whole items, pinned fills first, recent starves first, drop count in
+  // b.omitted) and the client-side block trim below, which guards old servers
+  // and the render skeleton the server can't see.
+  const b = await getBriefing(project, { ...opts, max_tokens: maxTokens });
 
   // No briefing (a brand-new project with no memories yet, or an unreachable
   // server) still needs the memory directive. Returning early here used to drop
@@ -428,6 +432,15 @@ async function main() {
       lines.push(`[... ${b.dropped} item(s) truncated by token budget]`);
       totalDropped += b.dropped;
     }
+  }
+  // The SERVER's budget drops (b.omitted — items max_tokens starved before
+  // they ever reached this render) fold into the same truncation footer the
+  // client-side trim uses, appended after the sections it starved. Visible by
+  // design: a trimmed briefing must say so, whichever layer trimmed it.
+  const serverOmitted = Number.isInteger(b.omitted) && b.omitted > 0 ? b.omitted : 0;
+  if (serverOmitted > 0) {
+    lines.push(`[... ${serverOmitted} item(s) truncated by token budget]`);
+    totalDropped += serverOmitted;
   }
   lines.push("</memini-context>");
 

@@ -709,6 +709,9 @@ type Briefing struct {
 	Facts     *[]BriefingItem `json:"facts,omitempty"`
 	Namespace string          `json:"namespace"`
 
+	// Omitted Total items dropped across the four sections by the request's `max_tokens` budget. Absent — never an explicit 0 — when no budget was set or everything fit.
+	Omitted *int `json:"omitted,omitempty"`
+
 	// Pinned Pinned memories (any tier).
 	Pinned *[]BriefingItem `json:"pinned,omitempty"`
 
@@ -791,7 +794,7 @@ type ClientSettings struct {
 	// InjectBriefingFacts Max durable semantic facts in the session-start briefing.
 	InjectBriefingFacts *int `json:"inject_briefing_facts,omitempty"`
 
-	// InjectBriefingMaxTok Hard ceiling on briefing injection tokens; 0 is uncapped.
+	// InjectBriefingMaxTok Hard ceiling on briefing injection tokens; 0 is uncapped. Sent to the server as the briefing's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectBriefingMaxTok *int `json:"inject_briefing_max_tok,omitempty"`
 
 	// InjectBriefingPinned Max pinned memories in the session-start briefing.
@@ -821,7 +824,7 @@ type ClientSettings struct {
 	// InjectPretoolItems Max recalled items injected per file on PreToolUse.
 	InjectPretoolItems *int `json:"inject_pretool_items,omitempty"`
 
-	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped.
+	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped. Sent to the server as each per-file search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
 
 	// InjectPretoolMinScore Floor on the fused score (>=) for a PreToolUse injection.
@@ -830,7 +833,7 @@ type ClientSettings struct {
 	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection.
 	InjectPretoolTools *[]string `json:"inject_pretool_tools,omitempty"`
 
-	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped.
+	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped. Sent to the server as the prompt search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
 
 	// InjectRecallMinScore Floor on the fused score (>=) for a recall injection.
@@ -1291,6 +1294,9 @@ type SearchRequest struct {
 	Levels            *[]Level `json:"levels,omitempty"`
 	Limit             *int     `json:"limit,omitempty"`
 
+	// MaxTokens Server-enforced token budget over the results. The server fills results in final rank order until the estimated cost — a cheap word-count estimate (ceil(words*4/3), the client hooks' own approxTokens recipe) over the content each result ships (the concise text under response_format=concise) plus a 10-token per-item render overhead — would exceed the budget, drops the whole tail, and reports the drop count in the response's `omitted`. The first result always ships even when it alone exceeds the budget: a non-empty recall never becomes empty by budget. An estimate, not a tokenizer — treat the bound as approximate. 0 (or absent) is unbounded. The drop count is also recorded server-side as `budget_omitted` on the recall activity event.
+	MaxTokens *int `json:"max_tokens,omitempty"`
+
 	// Metadata A memory's top-level metadata must contain every listed key=value pair (AND).
 	Metadata *map[string]string `json:"metadata,omitempty"`
 
@@ -1330,7 +1336,10 @@ type SearchResponse struct {
 	Degraded *string `json:"degraded,omitempty"`
 
 	// Note Human-readable explanation of `degraded`; omitted alongside it on a healthy search.
-	Note    *string        `json:"note,omitempty"`
+	Note *string `json:"note,omitempty"`
+
+	// Omitted Results dropped by the request's `max_tokens` budget. Absent — never an explicit 0 — when no budget was set or everything fit, so its presence always means the server trimmed the tail.
+	Omitted *int           `json:"omitted,omitempty"`
 	Results []ScoredMemory `json:"results"`
 }
 
@@ -1375,7 +1384,7 @@ type SettingsDefaultsResponse struct {
 	// InjectBriefingFacts Max durable semantic facts in the session-start briefing.
 	InjectBriefingFacts *int `json:"inject_briefing_facts,omitempty"`
 
-	// InjectBriefingMaxTok Hard ceiling on briefing injection tokens; 0 is uncapped.
+	// InjectBriefingMaxTok Hard ceiling on briefing injection tokens; 0 is uncapped. Sent to the server as the briefing's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectBriefingMaxTok *int `json:"inject_briefing_max_tok,omitempty"`
 
 	// InjectBriefingPinned Max pinned memories in the session-start briefing.
@@ -1405,7 +1414,7 @@ type SettingsDefaultsResponse struct {
 	// InjectPretoolItems Max recalled items injected per file on PreToolUse.
 	InjectPretoolItems *int `json:"inject_pretool_items,omitempty"`
 
-	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped.
+	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped. Sent to the server as each per-file search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
 
 	// InjectPretoolMinScore Floor on the fused score (>=) for a PreToolUse injection.
@@ -1414,7 +1423,7 @@ type SettingsDefaultsResponse struct {
 	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection.
 	InjectPretoolTools *[]string `json:"inject_pretool_tools,omitempty"`
 
-	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped.
+	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped. Sent to the server as the prompt search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
 
 	// InjectRecallMinScore Floor on the fused score (>=) for a recall injection.
@@ -1781,6 +1790,9 @@ type GetBriefingParams struct {
 
 	// Children How to render the direct-child rollup: "full" (default) carries complete memory objects per child (the admin UI consumes these); "summary" ships titles/counts only per child — namespace, total, and compact pinned/recent title lines (pinned_titles/ recent_titles), the same isolation surface the MCP briefing renders; "none" omits the rollup entirely.
 	Children *GetBriefingParamsChildren `form:"children,omitempty" json:"children,omitempty"`
+
+	// MaxTokens Server-enforced token budget across the whole briefing, filled in section order pinned → facts → procedures → recent — fill order IS priority order, so pinned fills first and recent starves first. Whole tail items are dropped, never split, and the total drop count lands in the response's `omitted`. The estimate is the same recipe as search's max_tokens (word-count over the shipped content — the concise text under format=concise — plus a 10-token per-item overhead), and the first item overall always ships. The child rollup is neither counted nor trimmed. 0 (or absent) is unbounded.
+	MaxTokens *int `form:"max_tokens,omitempty" json:"max_tokens,omitempty"`
 
 	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
@@ -3788,6 +3800,19 @@ func (siw *ServerInterfaceWrapper) GetBriefing(w http.ResponseWriter, r *http.Re
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "children"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "children", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "max_tokens" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "max_tokens", r.URL.Query(), &params.MaxTokens, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "max_tokens"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "max_tokens", Err: err})
 		}
 		return
 	}

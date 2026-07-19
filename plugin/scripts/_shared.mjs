@@ -255,11 +255,21 @@ export async function postJSON(path, body, namespace, timeoutMs = requestTimeout
  * Every search asks for `response_format: "concise"` (progressive
  * disclosure): the server serves summary-or-boundary-cut content plus
  * `content_truncated` on cut memories, and the model pulls full text on
- * demand via memory_get using the rendered [m:id] handle. An old server that
- * rejects the field 400s — the same one-retry-without-it degradation as
- * exclude_ids applies, stripping exclude_ids (the newer field) first.
+ * demand via memory_get using the rendered [m:id] handle.
+ *
+ * `maxTokens` (> 0) is the SERVER-enforced token budget (PR-F): sent as the
+ * body's max_tokens, the server fills results in rank order until the
+ * estimated cost would exceed it, drops the tail, and reports the count in
+ * the response's `omitted` (returned here; 0 when absent). The caller keeps
+ * its own fitByTokens trim as the old-server fallback and render-skeleton
+ * guard — same knob, two layers.
+ *
+ * Old servers reject unknown body fields with a 400. The fallback chain
+ * strips ONE field per retry, newest field first — max_tokens, then
+ * exclude_ids, then response_format — degrading a search to progressively
+ * older wire shapes instead of "no recall at all".
  */
-export async function postSearch(query, namespace, { limit = 5, tiers, exclude, minScore, source, excludeIds } = {}) {
+export async function postSearch(query, namespace, { limit = 5, tiers, exclude, minScore, source, excludeIds, maxTokens } = {}) {
   const body = { query, limit, response_format: "concise" };
   if (tiers) body.tiers = tiers;
   if (typeof minScore === "number" && minScore > 0) body.min_score = minScore;
@@ -272,7 +282,12 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude, 
   // while still in the live context.
   if (exclude && Object.keys(exclude).length) body.exclude_metadata = exclude;
   if (Array.isArray(excludeIds) && excludeIds.length) body.exclude_ids = excludeIds.slice(-MAX_RECALL_EXCLUDE_IDS);
+  if (Number.isFinite(maxTokens) && maxTokens > 0) body.max_tokens = maxTokens;
   let res = await postJSONStatus("/v1/search", body, namespace);
+  if (res.status === 400 && body.max_tokens) {
+    delete body.max_tokens;
+    res = await postJSONStatus("/v1/search", body, namespace);
+  }
   if (res.status === 400 && body.exclude_ids) {
     delete body.exclude_ids;
     res = await postJSONStatus("/v1/search", body, namespace);
@@ -281,7 +296,7 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude, 
     delete body.response_format;
     res = await postJSONStatus("/v1/search", body, namespace);
   }
-  if (!res.json || !Array.isArray(res.json.results)) return { hits: [], degraded: "", note: "" };
+  if (!res.json || !Array.isArray(res.json.results)) return { hits: [], degraded: "", note: "", omitted: 0 };
   const resBody = res.json;
   const floor = typeof minScore === "number" && minScore > 0 ? minScore : 0;
   const hits = resBody.results
@@ -301,6 +316,12 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude, 
     hits,
     degraded: typeof resBody.degraded === "string" ? resBody.degraded : "",
     note: typeof resBody.note === "string" ? resBody.note : "",
+    // How many ranked results the server's max_tokens budget dropped — the
+    // count the hooks fold into their "[+N more]" drop footer (summed with
+    // any client-side fitByTokens drops). 0 when absent: an old server (or an
+    // unbudgeted call) reports nothing, and the wire omits the field when
+    // everything fit.
+    omitted: Number.isInteger(resBody.omitted) && resBody.omitted > 0 ? resBody.omitted : 0,
   };
 }
 
@@ -422,6 +443,13 @@ export async function getJSON(path, namespace, timeoutMs = requestTimeoutMs, opt
  * `opts` controls per-section caps. Each field is an int; omit (or 0) to use
  * the server default (5). Pass an explicit 0 to disable that section (REST
  * only — MCP can't distinguish omitted from zero).
+ *
+ * `opts.max_tokens` (> 0) is the SERVER-enforced briefing budget (PR-F),
+ * sent as the ?max_tokens query param: the server fills whole items in
+ * section order pinned → facts → procedures → recent, drops the tail, and
+ * reports the count in the response's `omitted`. Old servers ignore unknown
+ * query params (no fallback needed) and the caller's own token trim remains
+ * the guard for them.
  */
 export async function getBriefing(namespace, opts = {}) {
   const params = new URLSearchParams();
@@ -448,6 +476,8 @@ export async function getBriefing(namespace, opts = {}) {
   setIf("per_section_facts", opts.per_section_facts ?? opts.facts);
   setIf("per_section_procedures", opts.per_section_procedures ?? opts.procedures);
   setIf("per_section_recent", opts.per_section_recent ?? opts.recent);
+  const maxTokens = opts.max_tokens ?? opts.maxTokens;
+  if (Number.isInteger(maxTokens) && maxTokens > 0) params.set("max_tokens", String(maxTokens));
   return getJSON(`/v1/namespaces/briefing?${params.toString()}`, namespace);
 }
 

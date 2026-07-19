@@ -86,8 +86,8 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   {
     "key": "inject_briefing_max_tok",
     "type": "integer",
-    "default": 0,
-    "description": "Hard ceiling on briefing injection tokens; 0 is uncapped.",
+    "default": 600,
+    "description": "Hard ceiling on briefing injection tokens; 0 is uncapped. Sent to the server as the briefing's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.",
     "min": 0
   },
   {
@@ -100,8 +100,8 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   {
     "key": "inject_pretool_max_tok",
     "type": "integer",
-    "default": 0,
-    "description": "Hard ceiling on per-tool injection tokens; 0 is uncapped.",
+    "default": 200,
+    "description": "Hard ceiling on per-tool injection tokens; 0 is uncapped. Sent to the server as each per-file search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.",
     "min": 0
   },
   {
@@ -191,8 +191,8 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   {
     "key": "inject_recall_max_tok",
     "type": "integer",
-    "default": 0,
-    "description": "Hard ceiling on recall injection tokens; 0 is uncapped.",
+    "default": 250,
+    "description": "Hard ceiling on recall injection tokens; 0 is uncapped. Sent to the server as the prompt search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.",
     "min": 0
   },
   {

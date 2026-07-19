@@ -773,6 +773,11 @@ export interface components {
              * @enum {string}
              */
             response_format: "concise" | "detailed";
+            /**
+             * @description Server-enforced token budget over the results. The server fills results in final rank order until the estimated cost — a cheap word-count estimate (ceil(words*4/3), the client hooks' own approxTokens recipe) over the content each result ships (the concise text under response_format=concise) plus a 10-token per-item render overhead — would exceed the budget, drops the whole tail, and reports the drop count in the response's `omitted`. The first result always ships even when it alone exceeds the budget: a non-empty recall never becomes empty by budget. An estimate, not a tokenizer — treat the bound as approximate. 0 (or absent) is unbounded. The drop count is also recorded server-side as `budget_omitted` on the recall activity event.
+             * @default 0
+             */
+            max_tokens: number;
         };
         ScoredMemory: {
             memory: components["schemas"]["Memory"];
@@ -787,6 +792,8 @@ export interface components {
             degraded?: string;
             /** @description Human-readable explanation of `degraded`; omitted alongside it on a healthy search. */
             note?: string;
+            /** @description Results dropped by the request's `max_tokens` budget. Absent — never an explicit 0 — when no budget was set or everything fit, so its presence always means the server trimmed the tail. */
+            omitted?: number;
         };
         AnswerRequest: {
             query: string;
@@ -917,6 +924,8 @@ export interface components {
             pinned?: components["schemas"]["BriefingItem"][];
             /** @description Direct-child namespace rollups (one segment deeper than the briefed namespace), each aggregating its whole subtree: all-tier live total plus up to 3 pinned and 3 recent-durable highlight memories. Ordered by most-recent write, capped at 10 children; omitted at a leaf namespace. */
             children?: components["schemas"]["BriefingChild"][] | null;
+            /** @description Total items dropped across the four sections by the request's `max_tokens` budget. Absent — never an explicit 0 — when no budget was set or everything fit. */
+            omitted?: number;
         };
         BriefingItem: {
             memory: components["schemas"]["Memory"];
@@ -1228,8 +1237,8 @@ export interface components {
              */
             inject_briefing_recent: number;
             /**
-             * @description Hard ceiling on briefing injection tokens; 0 is uncapped.
-             * @default 0
+             * @description Hard ceiling on briefing injection tokens; 0 is uncapped. Sent to the server as the briefing's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
+             * @default 600
              */
             inject_briefing_max_tok: number;
             /**
@@ -1238,8 +1247,8 @@ export interface components {
              */
             inject_pretool_items: number;
             /**
-             * @description Hard ceiling on per-tool injection tokens; 0 is uncapped.
-             * @default 0
+             * @description Hard ceiling on per-tool injection tokens; 0 is uncapped. Sent to the server as each per-file search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
+             * @default 200
              */
             inject_pretool_max_tok: number;
             /**
@@ -1305,8 +1314,8 @@ export interface components {
              */
             recall_limit: number;
             /**
-             * @description Hard ceiling on recall injection tokens; 0 is uncapped.
-             * @default 0
+             * @description Hard ceiling on recall injection tokens; 0 is uncapped. Sent to the server as the prompt search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
+             * @default 250
              */
             inject_recall_max_tok: number;
             /**
@@ -1791,6 +1800,8 @@ export interface operations {
                 format?: "concise" | "detailed";
                 /** @description How to render the direct-child rollup: "full" (default) carries complete memory objects per child (the admin UI consumes these); "summary" ships titles/counts only per child — namespace, total, and compact pinned/recent title lines (pinned_titles/ recent_titles), the same isolation surface the MCP briefing renders; "none" omits the rollup entirely. */
                 children?: "summary" | "full" | "none";
+                /** @description Server-enforced token budget across the whole briefing, filled in section order pinned → facts → procedures → recent — fill order IS priority order, so pinned fills first and recent starves first. Whole tail items are dropped, never split, and the total drop count lands in the response's `omitted`. The estimate is the same recipe as search's max_tokens (word-count over the shipped content — the concise text under format=concise — plus a 10-token per-item overhead), and the first item overall always ships. The child rollup is neither counted nor trimmed. 0 (or absent) is unbounded. */
+                max_tokens?: number;
             };
             header?: {
                 /** @description Namespace for this request; falls back to the server default. */

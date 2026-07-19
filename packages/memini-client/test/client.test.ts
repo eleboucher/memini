@@ -203,8 +203,10 @@ test("resolveHarnessCwd reads the real parent process cwd", () => {
 
 // ─── behavior knobs / effectiveSetting ──────────────────────────────
 
-test("BEHAVIOR_KNOBS covers exactly the 29 behavioral ClientSettings fields, excluding namespace_scope/namespace_prefix", () => {
-  assert.equal(BEHAVIOR_KNOBS.length, 29);
+test("BEHAVIOR_KNOBS covers exactly the 30 behavioral ClientSettings fields, excluding namespace_scope/namespace_prefix", () => {
+  // 30 = the original 29 + inject_telemetry (the injection-telemetry beacon
+  // gate) — the count moves in lockstep with the ClientSettings schema.
+  assert.equal(BEHAVIOR_KNOBS.length, 30);
   const wireKeys = BEHAVIOR_KNOBS.map((k) => k.wireKey);
   assert.equal(new Set(wireKeys).size, wireKeys.length, "wireKey must be unique per knob");
   assert.equal(wireKeys.includes("namespace_scope"), false);

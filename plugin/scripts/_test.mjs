@@ -4803,11 +4803,16 @@ test("user-prompt-submit.mjs: a server that 400s exclude_ids gets one retry with
   try {
     await runHook("user-prompt-submit.mjs", payload("what did we decide about auth tokens"), env);
     const second = await runHook("user-prompt-submit.mjs", payload("and what about session cookies here"), env);
-    assert.equal(bodies.length, 3, "first prompt: one call; second prompt: 400 then retry");
+    // The strip chain removes ONE field per retry, newest first: the first
+    // retry drops max_tokens (blind — this server only rejects exclude_ids),
+    // the second drops exclude_ids and lands.
+    assert.equal(bodies.length, 4, "first prompt: one call; second prompt: 400, 400, then success");
     assert.ok(bodies[1].exclude_ids, "the retryable attempt carried exclude_ids");
-    assert.equal(bodies[2].exclude_ids, undefined, "the retry dropped the field");
+    assert.equal(bodies[2].max_tokens, undefined, "the first retry strips max_tokens (newest field)");
+    assert.ok(bodies[2].exclude_ids, "exclude_ids survives the first strip");
+    assert.equal(bodies[3].exclude_ids, undefined, "the second retry dropped the field");
     const ctxText = JSON.parse(second.stdout).hookSpecificOutput.additionalContext;
-    assert.match(ctxText, /fact number 3/, "recall still lands after the retry");
+    assert.match(ctxText, /fact number 4/, "recall still lands after the retries");
   } finally {
     await close();
   }
@@ -5600,7 +5605,7 @@ test("postSearch: a recall slower than the timeout aborts; a wider timeout lets 
     const tight = await import("./_shared.mjs?cb=timeout-tight-" + Date.now());
     assert.deepEqual(
       await tight.postSearch("q", "ns"),
-      { hits: [], degraded: "", note: "" },
+      { hits: [], degraded: "", note: "", omitted: 0 },
       "a call slower than the timeout must abort, not hang",
     );
 
@@ -5978,7 +5983,8 @@ test("injectedIdentity: prefers a valid content_hash; rejects malformed; cross-f
 test("user-prompt-submit.mjs: search asks response_format concise; a 400 on it retries once without (old servers)", async () => {
   // Mirrors the exclude_ids 400-retry: an old server that rejects unknown body
   // fields must degrade to full-content recall, never to NO recall. Strip
-  // order is exclude_ids first (the newer field), then response_format.
+  // order is newest field first: max_tokens, then exclude_ids, then
+  // response_format.
   const cache = freshCache();
   await primeCache(cache, __dirname, mkHS());
   const bodies = [];
@@ -5999,19 +6005,24 @@ test("user-prompt-submit.mjs: search asks response_format concise; a 400 on it r
   try {
     const first = await runHook("user-prompt-submit.mjs", payload("what did we decide about auth tokens"), env);
     assert.equal(bodies[0].response_format, "concise", "the first attempt asks for concise content");
-    assert.equal(bodies[1].response_format, undefined, "the retry drops response_format");
-    assert.match(JSON.parse(first.stdout).hookSpecificOutput.additionalContext, /fact number 2/, "recall lands after the retry");
+    assert.equal(bodies[1].max_tokens, undefined, "the first retry strips max_tokens (newest field, blind)");
+    assert.equal(bodies[1].response_format, "concise", "response_format survives that strip");
+    assert.equal(bodies[2].response_format, undefined, "the second retry drops response_format");
+    assert.match(JSON.parse(first.stdout).hookSpecificOutput.additionalContext, /fact number 3/, "recall lands after the retries");
 
-    // Second prompt carries exclude_ids too: worst-case old server 400s both
-    // fields → strip exclude_ids, still 400 → strip response_format, then 200.
+    // Second prompt carries exclude_ids too: worst-case old server 400s every
+    // new field → strip max_tokens, still 400 → strip exclude_ids, still 400
+    // → strip response_format, then 200.
     const second = await runHook("user-prompt-submit.mjs", payload("and what about session cookies here"), env);
-    assert.equal(bodies.length, 5, "second prompt: 400, 400, then success");
-    assert.ok(bodies[2].exclude_ids, "attempt 1 carried exclude_ids");
-    assert.equal(bodies[2].response_format, "concise");
-    assert.equal(bodies[3].exclude_ids, undefined, "exclude_ids is stripped first");
+    assert.equal(bodies.length, 7, "second prompt: 400, 400, 400, then success");
+    assert.ok(bodies[3].exclude_ids, "attempt 1 carried exclude_ids");
     assert.equal(bodies[3].response_format, "concise");
-    assert.equal(bodies[4].response_format, undefined, "then response_format");
-    assert.match(JSON.parse(second.stdout).hookSpecificOutput.additionalContext, /fact number 5/);
+    assert.equal(bodies[4].max_tokens, undefined, "max_tokens is stripped first");
+    assert.ok(bodies[4].exclude_ids, "exclude_ids survives the max_tokens strip");
+    assert.equal(bodies[5].exclude_ids, undefined, "then exclude_ids");
+    assert.equal(bodies[5].response_format, "concise");
+    assert.equal(bodies[6].response_format, undefined, "then response_format");
+    assert.match(JSON.parse(second.stdout).hookSpecificOutput.additionalContext, /fact number 7/);
   } finally {
     await close();
   }
@@ -6231,6 +6242,260 @@ test("cross-format dedupe: a briefing's full item suppresses its concise pretool
       env,
     );
     assert.equal(stdout, "", "the concise re-serve of a briefed memory is filtered — same content_hash, same memory");
+  } finally {
+    await close();
+  }
+});
+
+// ─── server-enforced token budgets (PR-F): max_tokens on the wire ──────────
+//
+// The server — not the client — decides what fits a token budget and reports
+// what it omitted: postSearch sends the hooks' *_MAX_TOK knobs as the search
+// body's `max_tokens` (prompt recall passes inject_recall_max_tok, pretool
+// passes inject_pretool_max_tok per file), getBriefing sends
+// inject_briefing_max_tok as the ?max_tokens query param, and a response
+// `omitted` count folds into the existing drop footers. The client-side
+// fitByTokens trim stays wired verbatim as the old-server fallback and the
+// render-skeleton guard. Defaults flip in lockstep: 250 / 200 / 600.
+
+test("user-prompt-submit.mjs: sends inject_recall_max_tok as the search max_tokens", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    bodies.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "a budgeted fact" }, 0.9)])));
+  });
+  try {
+    await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "bud-p1", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_RECALL_MAX_TOK: "77" },
+    );
+    assert.equal(bodies.length, 1);
+    assert.equal(bodies[0].max_tokens, 77, "the recall budget rides the wire as max_tokens");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: sends inject_pretool_max_tok as max_tokens on each per-file search", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    bodies.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "a budgeted pretool fact" }, 0.9)])));
+  });
+  try {
+    await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "bud-t1", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_MAX_TOK: "88" },
+    );
+    assert.equal(bodies.length, 1);
+    assert.equal(bodies[0].max_tokens, 88, "the per-file budget rides the wire as max_tokens");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: briefing carries inject_briefing_max_tok as the max_tokens query param", async () => {
+  const urls = [];
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
+      urls.push(req.url);
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(briefingBody({ facts: [bi({ id: "bf1", content: "a briefing fact" })] })));
+    }),
+  );
+  try {
+    await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "bud-b1", cwd: __dirname, source: "startup" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache(), MEMINI_INJECT_BRIEFING_MAX_TOK: "99" },
+    );
+    const briefingUrl = urls.find((u) => u.startsWith("/v1/namespaces/briefing"));
+    assert.ok(briefingUrl, "the briefing call happened");
+    assert.equal(new URL(briefingUrl, "http://x").searchParams.get("max_tokens"), "99", "the briefing budget rides the query string");
+  } finally {
+    await close();
+  }
+});
+
+test("new defaults flow: no env/server override sends 250 (recall) / 200 (pretool) / 600 (briefing)", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const searches = [];
+  const urls = [];
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res, body) => {
+      urls.push(req.url);
+      res.setHeader("Content-Type", "application/json");
+      if (req.url.startsWith("/v1/namespaces/briefing")) {
+        res.end(JSON.stringify(briefingBody({ facts: [bi({ id: "bf1", content: "a default-budget fact" })] })));
+        return;
+      }
+      searches.push(JSON.parse(body));
+      res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "a default-budget fact" }, 0.9)])));
+    }),
+  );
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "bud-d1", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      env,
+    );
+    assert.equal(searches[0].max_tokens, 250, "prompt recall's built-in default budget is 250");
+
+    await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "bud-d1", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/other.go" } }),
+      env,
+    );
+    assert.equal(searches[1].max_tokens, 200, "pretool recall's built-in default budget is 200");
+
+    await runHook("session-start.mjs", JSON.stringify({ session_id: "bud-d2", cwd: __dirname, source: "startup" }), env);
+    const briefingUrl = urls.find((u) => u.startsWith("/v1/namespaces/briefing"));
+    assert.equal(new URL(briefingUrl, "http://x").searchParams.get("max_tokens"), "600", "briefing's built-in default budget is 600");
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: a server-side omitted count renders the drop footer and sums with client drops", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  const long = (n) => Array.from({ length: 30 }, (_, i) => `word${n}-${i}`).join(" ");
+  let respond = () => ({ ...searchBody([sm({ id: "m1", content: "a short budgeted fact" }, 0.9)]), omitted: 2 });
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(respond()));
+  });
+  try {
+    // Server-only drops: the footer carries the SERVER's count.
+    const serverOnly = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "bud-o1", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    const ctx1 = JSON.parse(serverOnly.stdout).hookSpecificOutput.additionalContext;
+    assert.match(ctx1, /\[\+2 more — memory_recall for detail\]/, "the footer carries the server's omitted count");
+    assert.match(ctx1, /summaries; full text/, "a server-trimmed block teaches memory_get");
+
+    // Mixed old/new drops: the server omitted 2 AND the client's fallback trim
+    // drops 2 of 3 long hits under a 10-token budget — the footer sums both.
+    respond = () => ({
+      ...searchBody([sm({ id: "a", content: long(1) }, 0.9), sm({ id: "b", content: long(2) }, 0.8), sm({ id: "c", content: long(3) }, 0.7)]),
+      omitted: 2,
+    });
+    const summed = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "bud-o2", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_RECALL_MAX_TOK: "10" },
+    );
+    const ctx2 = JSON.parse(summed.stdout).hookSpecificOutput.additionalContext;
+    const m = ctx2.match(/\[\+(\d+) more — memory_recall for detail\]/);
+    assert.ok(m, "the drop footer renders");
+    assert.equal(Number(m[1]), 4, "server (2) and client fitByTokens (2) drops sum in the footer");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: a server-side omitted count on a per-file search lands in the block footer", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ ...searchBody([sm({ id: "m1", content: "the surviving pretool fact" }, 0.9)]), omitted: 3 }));
+  });
+  try {
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "bud-o3", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(ctx, /surviving pretool fact/);
+    assert.match(ctx, /\[\+3 more — memory_recall for detail\]/, "the footer carries the server's omitted count");
+    assert.match(ctx, /summaries; full text/, "a server-trimmed block teaches memory_get");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: a server-side briefing omitted count renders the truncation footer", async () => {
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          ...briefingBody({ pinned: [bi({ id: "p1", content: "the one pinned fact that fit" })] }),
+          omitted: 4,
+        }),
+      );
+    }),
+  );
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "bud-o4", cwd: __dirname, source: "startup" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() },
+    );
+    assert.match(stdout, /the one pinned fact that fit/);
+    assert.match(stdout, /\[\.\.\. 4 item\(s\) truncated by token budget\]/, "the server's omitted count folds into the briefing footer");
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: a 400 on max_tokens strips it FIRST (newest field), then exclude_ids, then response_format", async () => {
+  // The one-strip-per-retry chain, newest field first: max_tokens →
+  // exclude_ids → response_format. An old server that rejects every new field
+  // degrades to a bare search, never to NO recall.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    const parsed = JSON.parse(body);
+    bodies.push(parsed);
+    res.setHeader("Content-Type", "application/json");
+    if (parsed.max_tokens || parsed.exclude_ids || parsed.response_format) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ error: "unknown field" }));
+      return;
+    }
+    const n = bodies.length;
+    res.end(JSON.stringify(searchBody([sm({ id: `m${n}`, content: `fact number ${n}` }, 0.9)])));
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  const payload = (p) => JSON.stringify({ session_id: "bud-400", cwd: __dirname, prompt: p });
+  try {
+    // First prompt (no exclude_ids yet): max_tokens stripped first, then
+    // response_format — three attempts.
+    const first = await runHook("user-prompt-submit.mjs", payload("what did we decide about auth tokens"), env);
+    assert.equal(bodies.length, 3, "first prompt: 400, 400, then success");
+    assert.ok(bodies[0].max_tokens > 0, "attempt 1 carried max_tokens (the default budget)");
+    assert.equal(bodies[1].max_tokens, undefined, "max_tokens is stripped first (newest field)");
+    assert.equal(bodies[1].response_format, "concise", "response_format survives the first strip");
+    assert.equal(bodies[2].response_format, undefined, "then response_format");
+    assert.match(JSON.parse(first.stdout).hookSpecificOutput.additionalContext, /fact number 3/, "recall lands after the retries");
+
+    // Second prompt adds exclude_ids: worst case is four attempts, stripping
+    // max_tokens → exclude_ids → response_format in that order.
+    const second = await runHook("user-prompt-submit.mjs", payload("and what about session cookies here"), env);
+    assert.equal(bodies.length, 7, "second prompt: 400, 400, 400, then success");
+    assert.ok(bodies[3].max_tokens > 0 && bodies[3].exclude_ids && bodies[3].response_format, "attempt 1 carried all three");
+    assert.equal(bodies[4].max_tokens, undefined, "max_tokens first");
+    assert.ok(bodies[4].exclude_ids, "exclude_ids survives the max_tokens strip");
+    assert.equal(bodies[5].exclude_ids, undefined, "exclude_ids second");
+    assert.equal(bodies[5].response_format, "concise");
+    assert.equal(bodies[6].response_format, undefined, "response_format last");
+    assert.match(JSON.parse(second.stdout).hookSpecificOutput.additionalContext, /fact number 7/);
   } finally {
     await close();
   }

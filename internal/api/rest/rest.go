@@ -514,10 +514,21 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 			format = formatConcise
 		}
 	}
+	// Server-enforced token budget: the service trims the ranked tail to
+	// max_tokens (negative values are treated as 0/unbounded, matching the
+	// spec's minimum) and reports the drop. EstimateConcise aligns the
+	// estimate with what THIS response ships — the concise projection —
+	// without handing the format to ranking (see the doctrine above).
+	if mt := deref(req.MaxTokens); mt > 0 {
+		in.MaxTokens = mt
+		in.EstimateConcise = format == formatConcise
+	}
 	var degraded string
 	in.Degraded = &degraded
 	var readset []service.ReadSetEntry
 	in.ReadSet = &readset
+	var omitted int
+	in.Omitted = &omitted
 
 	res, err := h.svc.Recall(r.Context(), in)
 	if err != nil {
@@ -530,6 +541,10 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 		note := "semantic search unavailable (" + degraded + "); results are keyword-only and may be incomplete"
 		out.Degraded = &keywordOnly
 		out.Note = &note
+	}
+	// Absent when 0: presence always means the budget dropped something.
+	if omitted > 0 {
+		out.Omitted = &omitted
 	}
 	httputil.JSON(w, http.StatusOK, out)
 }
@@ -882,6 +897,15 @@ func (h *Server) GetBriefing(w http.ResponseWriter, r *http.Request, params GetB
 		}
 		children = *params.Children
 	}
+	// Server-enforced token budget across the sections (negative treated as
+	// 0/unbounded, matching the spec's minimum). Unlike format/children this
+	// IS handed to the service: the trim must happen before the briefing's
+	// activity log records what was served. EstimateConcise mirrors
+	// SearchMemories — price what this response will ship.
+	if mt := deref(params.MaxTokens); mt > 0 {
+		opts.MaxTokens = mt
+		opts.EstimateConcise = format == formatConcise
+	}
 	var readset []service.ReadSetEntry
 	opts.ReadSet = &readset
 	b, err := h.svc.Briefing(r.Context(), name, opts)
@@ -907,6 +931,10 @@ func (h *Server) GetBriefing(w http.ResponseWriter, r *http.Request, params GetB
 	}
 	if b.ScopeHeader != "" {
 		resp.ScopeHeader = &b.ScopeHeader
+	}
+	// Absent when 0, like search's omitted: presence means the budget trimmed.
+	if b.Omitted > 0 {
+		resp.Omitted = &b.Omitted
 	}
 	// b.ChildrenTruncated has no field in the T6 wire shape; REST returns
 	// just the capped children array (MCP surfaces the count as a note).

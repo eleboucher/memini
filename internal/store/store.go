@@ -628,10 +628,10 @@ func DefaultClientSettings() ClientSettings {
 		InjectBriefingFacts:      new(5),
 		InjectBriefingProcedures: new(5),
 		InjectBriefingRecent:     new(3),
-		InjectBriefingMaxTok:     new(0),
+		InjectBriefingMaxTok:     new(600),
 
 		InjectPretoolItems:    new(3),
-		InjectPretoolMaxTok:   new(0),
+		InjectPretoolMaxTok:   new(200),
 		InjectPretoolMinScore: new(float64(0)),
 		InjectPretoolTools:    &[]string{"Read", "Write", "Edit", "MultiEdit", "Glob", "Grep"},
 		InjectPretoolGateMs:   new(90000),
@@ -646,7 +646,7 @@ func DefaultClientSettings() ClientSettings {
 		Capture:     new(true),
 		RecallLimit: new(3),
 
-		InjectRecallMaxTok:   new(0),
+		InjectRecallMaxTok:   new(250),
 		InjectRecallMinScore: new(float64(0)),
 
 		MinCaptureChars:          new(0),
