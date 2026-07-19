@@ -750,10 +750,11 @@ test("MEMORY_INSTRUCTION tells the agent about visibility, not just tier", async
   assert.match(MEMORY_INSTRUCTION, /personal/);
 });
 
-test("session-start.mjs: source \"compact\" appends the compact-recovery directive (fresh briefing)", async () => {
-  // After a compaction the context was rebuilt and durable facts learned before
-  // it may no longer be visible — so the fresh-briefing path must emit BOTH the
-  // save directive AND the compact-recovery directive.
+test("session-start.mjs: source \"compact\" emits the compact-recovery directive alone (fresh briefing)", async () => {
+  // After a compaction the context was rebuilt, so the briefing re-injects and
+  // the recovery nudge fires — but NOT the save directive: the MCP server's
+  // instructions (the canonical copy of the save policy) persist in the system
+  // prompt across compaction, so re-sending the directive is pure duplication.
   const { url, close } = await startMockServer(
     withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
       res.setHeader("Content-Type", "application/json");
@@ -774,16 +775,17 @@ test("session-start.mjs: source \"compact\" appends the compact-recovery directi
       JSON.stringify({ session_id: "compact-fresh", cwd: __dirname, source: "compact" }),
       { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() },
     );
-    assert.match(stdout, /<memini-memory-directive>/, "the save directive must still be emitted");
-    assert.match(stdout, /<memini-compact-recovery>/, "post-compaction must also emit the recovery directive");
+    assert.doesNotMatch(stdout, /<memini-memory-directive>/, "the save directive is NOT re-sent after compaction (MCP instructions persist)");
+    assert.match(stdout, /<memini-compact-recovery>/, "post-compaction must emit the recovery directive");
   } finally {
     await close();
   }
 });
 
-test("session-start.mjs: source \"compact\" appends the compact-recovery directive (empty briefing)", async () => {
+test("session-start.mjs: source \"compact\" emits the compact-recovery directive alone (empty briefing)", async () => {
   // The empty-briefing path is one of the three emission sites; a post-compaction
-  // fire with no memories yet must still carry both directives.
+  // fire with no memories yet still carries the recovery nudge, but not the
+  // save directive (see the fresh-briefing compact test).
   const { url, close } = await startMockServer(
     withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
       res.setHeader("Content-Type", "application/json");
@@ -796,8 +798,8 @@ test("session-start.mjs: source \"compact\" appends the compact-recovery directi
       JSON.stringify({ session_id: "compact-empty", cwd: __dirname, source: "compact" }),
       { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() },
     );
-    assert.match(stdout, /<memini-memory-directive>/, "the save directive must still be emitted on an empty briefing");
-    assert.match(stdout, /<memini-compact-recovery>/, "post-compaction must also emit the recovery directive on an empty briefing");
+    assert.doesNotMatch(stdout, /<memini-memory-directive>/, "the save directive is NOT re-sent after compaction, even on an empty briefing");
+    assert.match(stdout, /<memini-compact-recovery>/, "post-compaction must emit the recovery directive on an empty briefing");
     // The reachable-but-empty note precedes both directives.
     assert.match(
       stdout,
@@ -830,6 +832,70 @@ test("session-start.mjs: source \"startup\" emits the memory directive but NOT c
     );
     assert.match(stdout, /<memini-memory-directive>/, "startup still gets the save directive");
     assert.doesNotMatch(stdout, /<memini-compact-recovery>/, "a non-compact start must not emit the recovery directive");
+    // The directive is the abridged trigger, not the full policy — the canonical
+    // save policy lives in the MCP server instructions. Keep it slim.
+    const directive = stdout.slice(stdout.indexOf("<memini-memory-directive>"), stdout.indexOf("</memini-memory-directive>"));
+    assert.ok(directive.length > 0 && directive.length < 900, `directive must stay abridged (<900 chars), got ${directive.length}`);
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: source \"clear\" emits the memory directive (fresh conversation)", async () => {
+  // /clear starts a fresh conversation: nothing is in context, so the directive
+  // must come back exactly as on startup.
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify(
+          briefingBody({ namespace: "team/app", facts: [bi({ content: "convention: use tabs" })] }),
+        ),
+      );
+    }),
+  );
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "clear1", cwd: __dirname, source: "clear" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() },
+    );
+    assert.match(stdout, /<memini-memory-directive>/, "clear rebuilds context, so the directive is emitted");
+    assert.doesNotMatch(stdout, /<memini-compact-recovery>/);
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: source \"resume\" with a CHANGED briefing injects the briefing but no directive", async () => {
+  // A changed briefing must reach the context on resume — but the directive is
+  // still in the replayed transcript, so it stays out.
+  const cache = freshCache();
+  let calls = 0;
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
+      calls++;
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify(
+          briefingBody({
+            namespace: "team/app",
+            facts: [bi({ content: calls === 1 ? "convention: use tabs" : "convention: use spaces now" })],
+          }),
+        ),
+      );
+    }),
+  );
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    await runHook("session-start.mjs", JSON.stringify({ session_id: "resume-changed", cwd: __dirname, source: "startup" }), env);
+    const resumed = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "resume-changed", cwd: __dirname, source: "resume" }),
+      env,
+    );
+    assert.match(resumed.stdout, /use spaces now/, "a changed briefing is injected on resume");
+    assert.doesNotMatch(resumed.stdout, /<memini-memory-directive>/, "the directive stays out — it is already in the replayed transcript");
   } finally {
     await close();
   }
@@ -875,11 +941,11 @@ test("session-start.mjs: source \"compact\" re-injects an unchanged briefing", a
   }
 });
 
-test("session-start.mjs: source \"resume\" still skips an unchanged briefing but re-emits the directive", async () => {
-  // The guard's surviving purpose: on a resume the context is intact, so an
-  // identical briefing block is already in it — re-injecting is pure token
-  // waste. Only the directive (dropped by the context rebuild machinery on
-  // some clients) is re-emitted.
+test("session-start.mjs: source \"resume\" with an unchanged briefing emits nothing at all", async () => {
+  // On a resume the context is intact AND Claude Code replays previously
+  // injected hook text for past turns — so both the briefing block and the
+  // directive are already in the transcript. Re-emitting either is pure
+  // duplication; an unchanged resume must be completely silent.
   const cache = freshCache();
   const { url, close } = await startMockServer(
     withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
@@ -900,7 +966,7 @@ test("session-start.mjs: source \"resume\" still skips an unchanged briefing but
       env,
     );
     assert.doesNotMatch(resumed.stdout, /<memini-context/, "an unchanged briefing is not re-injected on resume");
-    assert.match(resumed.stdout, /<memini-memory-directive>/, "the directive is re-emitted");
+    assert.equal(resumed.stdout, "", "resume replays prior injections — nothing to emit, not even the directive");
   } finally {
     await close();
   }
@@ -928,7 +994,7 @@ test("session-start.mjs: a resume after a compact re-injection still skips (hash
     assert.match(compacted.stdout, /<memini-context/, "compact re-injects");
     const resumed = await runHook("session-start.mjs", payload("resume"), env);
     assert.doesNotMatch(resumed.stdout, /<memini-context/, "the later resume still skips");
-    assert.match(resumed.stdout, /<memini-memory-directive>/);
+    assert.equal(resumed.stdout, "", "a resume after compact is silent too — the compact fire's output is in the transcript");
   } finally {
     await close();
   }

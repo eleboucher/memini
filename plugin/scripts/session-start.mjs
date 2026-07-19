@@ -249,13 +249,23 @@ async function main() {
 
   // The single memory directive emitted by all three paths below (empty briefing,
   // unchanged briefing, fresh briefing) — computed once so they cannot drift.
-  // Claude Code sets payload.source to "startup" | "resume" | "clear" | "compact";
-  // after a compaction the context was rebuilt and durable facts learned before
-  // it may have fallen out of view, so append the compact-recovery prompt to nudge
-  // the model to flush anything not yet persisted. Empty when inline_extract is off.
-  const directive = inlineExtract
-    ? MEMORY_INSTRUCTION + (payload.source === "compact" ? COMPACT_RECOVERY_DIRECTIVE : "")
-    : "";
+  // Claude Code sets payload.source to "startup" | "resume" | "clear" | "compact",
+  // and what to emit depends on what the context already carries:
+  //   startup/clear (and hosts that send no source, e.g. Codex) — fresh context,
+  //     emit the directive.
+  //   resume — Claude Code REPLAYS previously injected hook text for past turns,
+  //     so the startup directive is already in the transcript; emit nothing.
+  //   compact — the context was rebuilt, but MCP server instructions (the
+  //     canonical save policy) persist in the system prompt; only the
+  //     compaction-specific "flush unsaved facts" nudge is emitted.
+  // Empty when inline_extract is off.
+  const directive = !inlineExtract
+    ? ""
+    : payload.source === "resume"
+      ? ""
+      : payload.source === "compact"
+        ? COMPACT_RECOVERY_DIRECTIVE
+        : MEMORY_INSTRUCTION;
 
   // A single query-less briefing call returns a layered view: pinned identity,
   // durable facts/procedures, and recent activity — server-side ranked, so the
@@ -296,9 +306,9 @@ async function main() {
   const contentHash = crypto.createHash("sha256").update(JSON.stringify(b)).digest("hex").slice(0, 16);
   if (sessionId && !compacted && briefingUnchanged(sessionId, contentHash)) {
     if (DEBUG) console.error("[memini] SessionStart: briefing unchanged this session, skipping re-injection");
-    // A re-fire usually means the context was rebuilt (resume / clear / compact),
-    // which drops the memory directive. Skip the unchanged briefing but re-emit
-    // the directive so the agent keeps saving durable facts via memory_remember.
+    // Skip the unchanged briefing; the directive var already encodes what this
+    // fire source owes the context (nothing on resume — the transcript replay
+    // carries the original injection — a fresh directive on clear).
     if (directive) process.stdout.write(directive);
     return;
   }

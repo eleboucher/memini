@@ -1257,49 +1257,25 @@ export function readToolCall(payload) {
 // keeps a legacy scraper (parseMemoryBlocks) as a back-compat fallback for
 // sessions still emitting inline <memory> blocks under the old instruction.
 //
-// The save-policy invariants below (what is durable, visibility, correction
-// hygiene) are canonical in internal/api/mcp/mcp.go serverInstructions; keep
-// the two phrasings in sync.
+// This is deliberately the ABRIDGED trigger, not the full save policy. The
+// canonical policy (what is durable, visibility rules, correction hygiene)
+// lives in internal/api/mcp/mcp.go serverInstructions, which MCP-capable
+// hosts carry in the system prompt every turn — the directive only has to
+// re-arm the habit, so keep it under ~700 chars and let the server text be
+// the single source of truth.
 
 export const MEMORY_INSTRUCTION = `
 
 <memini-memory-directive>
-You have persistent cross-session memory via the memini memory_remember MCP
-tool. Saving is your job — do not wait for the user to ask. Save one memory
-per durable fact when you learn:
-- a decision and the reason it was made
-- a bug's root cause, or a gotcha worth flagging next time
-- a project convention (layout, style, test/deploy commands)
-- a stated user preference, or a correction the user gives you — a
-  correction IS a preference
-- an environment or tool quirk, or a non-obvious command/workflow
-
-When the user says "remember this" or corrects you, call memory_remember
-first, then acknowledge — and save an explicit request unconditionally, even
-if it seems trivial or already stored; secrets and credentials are the one
-exception. Before ending a turn in which you
-learned something durable, make sure it was saved.
-
-Rules:
-- Each memory must be self-contained, readable without this conversation's
-  context. State facts, not commands: "User prefers concise replies" (good),
-  "Always reply concisely" (bad).
-- visibility: "personal" for anything true of the USER wherever they go
-  (their preferences, habits, how they like to work); "project" (the
-  default) for anything specific to this codebase. Getting this wrong is
-  the common failure: a preference saved as "project" is stranded here and
-  will not follow them to their next repo.
-- Omit tier to let the server classify. Tag a critical, always-relevant
-  fact "pinned" so it surfaces in every session briefing.
-- Never save secrets or credentials, transient session state, task
-  progress, or facts already in CLAUDE.md or project docs.
-- If a stored memory turns out to be wrong or outdated, fix it immediately:
-  correct it in place with the memory_update MCP tool, or delete it with
-  memory_forget if it should not exist. Never leave a memory you know is
-  incorrect in place.
-- Never print memory markup or JSON memory payloads in your reply text.
-  Memories are saved only through the MCP tools. If the tools are
-  unavailable, do nothing.
+You have persistent cross-session memory via the memini MCP tools. Saving is
+your job — proactively call memory_remember (one self-contained fact per
+call) when you learn: a decision and its reason, a bug's root cause, a
+project convention, a stated user preference or correction (a correction IS
+a preference), an environment quirk or non-obvious workflow. "Remember this"
+→ save first, then acknowledge. visibility: "personal" for facts about the
+user anywhere, "project" (default) for this codebase. Never save secrets,
+credentials, or transient session state. Fix a wrong memory immediately via
+memory_update or memory_forget. Never print memory markup in reply text.
 </memini-memory-directive>`;
 
 // Injected by SessionStart after a compaction (wired by a later task): durable
