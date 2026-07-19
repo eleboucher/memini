@@ -1262,19 +1262,17 @@ export interface components {
              */
             inject_pretool_max_tok: number;
             /**
-             * @description Floor on the final ranked (composite) score — the score shown in the activity feed — for a PreToolUse injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor.
-             * @default 0
+             * @description Floor on the composite post-rerank score — the final [0,1) scale the response score field and the activity feed show — for a PreToolUse injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor. 0 disables the floor.
+             * @default 0.5
              */
             inject_pretool_min_score: number;
             /**
-             * @description Tool-name allowlist that triggers a PreToolUse injection.
+             * @description Tool-name allowlist that triggers a PreToolUse injection. Glob and Grep are deliberately not in the default: pattern-derived queries ("Grep on <pattern>") are near-zero-signal and each ungated call costs a server embed+rerank — list them here to restore the old behavior.
              * @default [
              *       "Read",
              *       "Write",
              *       "Edit",
-             *       "MultiEdit",
-             *       "Glob",
-             *       "Grep"
+             *       "MultiEdit"
              *     ]
              */
             inject_pretool_tools: string[];
@@ -1329,8 +1327,8 @@ export interface components {
              */
             inject_recall_max_tok: number;
             /**
-             * @description Floor on the final ranked (composite) score — the score shown in the activity feed — for a recall injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor.
-             * @default 0
+             * @description Floor on the composite post-rerank score — the final [0,1) scale the response score field and the activity feed show — for a recall injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor. 0 disables the floor.
+             * @default 0.5
              */
             inject_recall_min_score: number;
             /**

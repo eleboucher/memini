@@ -258,12 +258,16 @@ var BEHAVIOR_KNOBS = [
   { envName: "MEMINI_INJECT_BRIEFING_MAX_TOK", wireKey: "inject_briefing_max_tok", kind: "int", default: 600 },
   { envName: "MEMINI_INJECT_PRETOOL_ITEMS", wireKey: "inject_pretool_items", kind: "int", default: 3 },
   { envName: "MEMINI_INJECT_PRETOOL_MAX_TOK", wireKey: "inject_pretool_max_tok", kind: "int", default: 200 },
-  { envName: "MEMINI_INJECT_PRETOOL_MIN_SCORE", wireKey: "inject_pretool_min_score", kind: "float", default: 0 },
+  { envName: "MEMINI_INJECT_PRETOOL_MIN_SCORE", wireKey: "inject_pretool_min_score", kind: "float", default: 0.5 },
+  // Glob and Grep are deliberately not in the default allowlist:
+  // pattern-derived queries ("Grep on <pattern>") are near-zero-signal and
+  // each ungated call costs a server embed+rerank — list them to restore the
+  // old behavior.
   {
     envName: "MEMINI_INJECT_PRETOOL_TOOLS",
     wireKey: "inject_pretool_tools",
     kind: "list",
-    default: ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep"]
+    default: ["Read", "Write", "Edit", "MultiEdit"]
   },
   { envName: "MEMINI_INJECT_PRETOOL_GATE_MS", wireKey: "inject_pretool_gate_ms", kind: "int", default: 9e4 },
   { envName: "MEMINI_INJECT_DEDUPE", wireKey: "inject_dedupe", kind: "bool", default: true },
@@ -275,7 +279,7 @@ var BEHAVIOR_KNOBS = [
   { envName: "MEMINI_CAPTURE", wireKey: "capture", kind: "bool", default: true },
   { envName: "MEMINI_RECALL_LIMIT", wireKey: "recall_limit", kind: "int", default: 3 },
   { envName: "MEMINI_INJECT_RECALL_MAX_TOK", wireKey: "inject_recall_max_tok", kind: "int", default: 250 },
-  { envName: "MEMINI_INJECT_RECALL_MIN_SCORE", wireKey: "inject_recall_min_score", kind: "float", default: 0 },
+  { envName: "MEMINI_INJECT_RECALL_MIN_SCORE", wireKey: "inject_recall_min_score", kind: "float", default: 0.5 },
   { envName: "MEMINI_MIN_CAPTURE_CHARS", wireKey: "min_capture_chars", kind: "int", default: 0 },
   { envName: "MEMINI_CAPTURE_USER_MAX_CHARS", wireKey: "capture_user_max_chars", kind: "int", default: 1e3 },
   {

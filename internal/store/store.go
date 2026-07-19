@@ -442,13 +442,17 @@ type ClientSettings struct {
 	InjectPretoolItems *int `json:"inject_pretool_items,omitempty"`
 	// InjectPretoolMaxTok is a hard ceiling on per-tool injection tokens; 0 is uncapped.
 	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
-	// InjectPretoolMinScore floors the final ranked (composite) score for a
-	// PreToolUse injection — the score shown in the activity feed. All bundled
-	// integrations enforce it server-side via min_rank_score (floored hits
-	// appear in the feed marked as filtered); a custom or older caller may
-	// still apply it as a pre-rank fused-score floor.
+	// InjectPretoolMinScore floors the composite post-rerank score — the final
+	// [0,1) scale the response score field and the activity feed show — for a
+	// PreToolUse injection. All bundled integrations enforce it server-side
+	// via min_rank_score (floored hits appear in the feed marked as filtered);
+	// a custom or older caller may still apply it as a pre-rank fused-score
+	// floor. 0 disables the floor.
 	InjectPretoolMinScore *float64 `json:"inject_pretool_min_score,omitempty"`
-	// InjectPretoolTools is the tool-name allowlist that triggers a PreToolUse injection.
+	// InjectPretoolTools is the tool-name allowlist that triggers a PreToolUse
+	// injection. Glob and Grep are deliberately not in the default:
+	// pattern-derived queries are near-zero-signal and each ungated call costs
+	// a server embed+rerank — listing them restores the old behavior.
 	InjectPretoolTools *[]string `json:"inject_pretool_tools,omitempty"`
 	// InjectPretoolGateMs skips the PreToolUse recall server call entirely for
 	// a file whose last call was younger than this many milliseconds; 0 always
@@ -489,11 +493,12 @@ type ClientSettings struct {
 
 	// InjectRecallMaxTok is a hard ceiling on recall injection tokens; 0 is uncapped.
 	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
-	// InjectRecallMinScore floors the final ranked (composite) score for a
-	// recall injection — the score shown in the activity feed. All bundled
-	// integrations enforce it server-side via min_rank_score (floored hits
-	// appear in the feed marked as filtered); a custom or older caller may
-	// still apply it as a pre-rank fused-score floor.
+	// InjectRecallMinScore floors the composite post-rerank score — the final
+	// [0,1) scale the response score field and the activity feed show — for a
+	// recall injection. All bundled integrations enforce it server-side via
+	// min_rank_score (floored hits appear in the feed marked as filtered); a
+	// custom or older caller may still apply it as a pre-rank fused-score
+	// floor. 0 disables the floor.
 	InjectRecallMinScore *float64 `json:"inject_recall_min_score,omitempty"`
 
 	// MinCaptureChars is the minimum content length worth bothering to capture a turn.
@@ -640,8 +645,8 @@ func DefaultClientSettings() ClientSettings {
 
 		InjectPretoolItems:    new(3),
 		InjectPretoolMaxTok:   new(200),
-		InjectPretoolMinScore: new(float64(0)),
-		InjectPretoolTools:    &[]string{"Read", "Write", "Edit", "MultiEdit", "Glob", "Grep"},
+		InjectPretoolMinScore: new(0.5),
+		InjectPretoolTools:    &[]string{"Read", "Write", "Edit", "MultiEdit"},
 		InjectPretoolGateMs:   new(90000),
 		InjectDedupe:          new(true),
 		InjectTelemetry:       new(true),
@@ -655,7 +660,7 @@ func DefaultClientSettings() ClientSettings {
 		RecallLimit: new(3),
 
 		InjectRecallMaxTok:   new(250),
-		InjectRecallMinScore: new(float64(0)),
+		InjectRecallMinScore: new(0.5),
 
 		MinCaptureChars:          new(0),
 		CaptureUserMaxChars:      new(1000),

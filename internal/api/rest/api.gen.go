@@ -847,16 +847,16 @@ type ClientSettings struct {
 	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped. Sent to the server as each per-file search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
 
-	// InjectPretoolMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a PreToolUse injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor.
+	// InjectPretoolMinScore Floor on the composite post-rerank score — the final [0,1) scale the response score field and the activity feed show — for a PreToolUse injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor. 0 disables the floor.
 	InjectPretoolMinScore *float32 `json:"inject_pretool_min_score,omitempty"`
 
-	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection.
+	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection. Glob and Grep are deliberately not in the default: pattern-derived queries ("Grep on <pattern>") are near-zero-signal and each ungated call costs a server embed+rerank — list them here to restore the old behavior.
 	InjectPretoolTools *[]string `json:"inject_pretool_tools,omitempty"`
 
 	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped. Sent to the server as the prompt search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
 
-	// InjectRecallMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a recall injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor.
+	// InjectRecallMinScore Floor on the composite post-rerank score — the final [0,1) scale the response score field and the activity feed show — for a recall injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor. 0 disables the floor.
 	InjectRecallMinScore *float32 `json:"inject_recall_min_score,omitempty"`
 
 	// InjectTelemetry Report what each hook actually injected vs suppressed back to the server (POST /v1/activity/injected) so the activity feed and metrics reflect what reached model context instead of pre-suppression serves. Best-effort and bounded (the beacon never blocks or fails a hook); off disables reporting entirely.
@@ -1440,16 +1440,16 @@ type SettingsDefaultsResponse struct {
 	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped. Sent to the server as each per-file search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
 
-	// InjectPretoolMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a PreToolUse injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor.
+	// InjectPretoolMinScore Floor on the composite post-rerank score — the final [0,1) scale the response score field and the activity feed show — for a PreToolUse injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor. 0 disables the floor.
 	InjectPretoolMinScore *float32 `json:"inject_pretool_min_score,omitempty"`
 
-	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection.
+	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection. Glob and Grep are deliberately not in the default: pattern-derived queries ("Grep on <pattern>") are near-zero-signal and each ungated call costs a server embed+rerank — list them here to restore the old behavior.
 	InjectPretoolTools *[]string `json:"inject_pretool_tools,omitempty"`
 
 	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped. Sent to the server as the prompt search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
 
-	// InjectRecallMinScore Floor on the final ranked (composite) score — the score shown in the activity feed — for a recall injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor.
+	// InjectRecallMinScore Floor on the composite post-rerank score — the final [0,1) scale the response score field and the activity feed show — for a recall injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor. 0 disables the floor.
 	InjectRecallMinScore *float32 `json:"inject_recall_min_score,omitempty"`
 
 	// InjectTelemetry Report what each hook actually injected vs suppressed back to the server (POST /v1/activity/injected) so the activity feed and metrics reflect what reached model context instead of pre-suppression serves. Best-effort and bounded (the beacon never blocks or fails a hook); off disables reporting entirely.
