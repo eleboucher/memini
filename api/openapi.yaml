@@ -2312,10 +2312,10 @@ components:
           default: 0
           description: >
             Floor on the final ranked (composite) score — the score shown in the
-            activity feed — for a PreToolUse injection. The Claude Code plugin
-            enforces it server-side via min_rank_score (floored hits appear in
-            the feed marked as filtered); other integrations may still apply it
-            as a pre-rank fused-score floor.
+            activity feed — for a PreToolUse injection. All bundled integrations
+            enforce it server-side via min_rank_score (floored hits appear in
+            the feed marked as filtered); a custom or older caller may still
+            apply it as a pre-rank fused-score floor.
         inject_pretool_tools:
           type: array
           items: { type: string }
@@ -2401,10 +2401,10 @@ components:
           default: 0
           description: >
             Floor on the final ranked (composite) score — the score shown in the
-            activity feed — for a recall injection. The Claude Code plugin
-            enforces it server-side via min_rank_score (floored hits appear in
-            the feed marked as filtered); other integrations may still apply it
-            as a pre-rank fused-score floor.
+            activity feed — for a recall injection. All bundled integrations
+            enforce it server-side via min_rank_score (floored hits appear in
+            the feed marked as filtered); a custom or older caller may still
+            apply it as a pre-rank fused-score floor.
         min_capture_chars:
           type: integer
           minimum: 0

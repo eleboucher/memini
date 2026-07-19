@@ -443,10 +443,10 @@ type ClientSettings struct {
 	// InjectPretoolMaxTok is a hard ceiling on per-tool injection tokens; 0 is uncapped.
 	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
 	// InjectPretoolMinScore floors the final ranked (composite) score for a
-	// PreToolUse injection — the score shown in the activity feed. The Claude
-	// Code plugin enforces it server-side via min_rank_score (floored hits
-	// appear in the feed marked as filtered); other integrations may still
-	// apply it as a pre-rank fused-score floor.
+	// PreToolUse injection — the score shown in the activity feed. All bundled
+	// integrations enforce it server-side via min_rank_score (floored hits
+	// appear in the feed marked as filtered); a custom or older caller may
+	// still apply it as a pre-rank fused-score floor.
 	InjectPretoolMinScore *float64 `json:"inject_pretool_min_score,omitempty"`
 	// InjectPretoolTools is the tool-name allowlist that triggers a PreToolUse injection.
 	InjectPretoolTools *[]string `json:"inject_pretool_tools,omitempty"`
@@ -490,10 +490,10 @@ type ClientSettings struct {
 	// InjectRecallMaxTok is a hard ceiling on recall injection tokens; 0 is uncapped.
 	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
 	// InjectRecallMinScore floors the final ranked (composite) score for a
-	// recall injection — the score shown in the activity feed. The Claude Code
-	// plugin enforces it server-side via min_rank_score (floored hits appear in
-	// the feed marked as filtered); other integrations may still apply it as a
-	// pre-rank fused-score floor.
+	// recall injection — the score shown in the activity feed. All bundled
+	// integrations enforce it server-side via min_rank_score (floored hits
+	// appear in the feed marked as filtered); a custom or older caller may
+	// still apply it as a pre-rank fused-score floor.
 	InjectRecallMinScore *float64 `json:"inject_recall_min_score,omitempty"`
 
 	// MinCaptureChars is the minimum content length worth bothering to capture a turn.

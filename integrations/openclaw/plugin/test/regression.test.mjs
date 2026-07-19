@@ -494,7 +494,8 @@ test("recall sends recall_limit and no min_score on /v1/search", async () => {
     await hooks.before_prompt_build({ prompt: "q" }, {});
     const search = JSON.parse(requests.find((r) => r.url.endsWith("/v1/search")).init.body);
     assert.equal(search.limit, 2);
-    assert.equal(search.min_score, undefined, "the plugin no longer sends a relevance-score floor");
+    assert.equal(search.min_score, undefined, "the fused-scale min_score is never sent");
+    assert.equal(search.min_rank_score, undefined, "no floor knob set, so no min_rank_score either");
     assert.equal(search.exclude_turns_younger_than, undefined, "server-side guard is on by default; plugin does not opt in");
   } finally {
     globalThis.fetch = realFetch;
@@ -719,6 +720,88 @@ test("recall sends exclude_ids and falls back when the server rejects them", asy
     await hooks.before_prompt_build({ prompt: "q" }, ctx);
     assert.equal(searches().length, 5, "after the fallback each recall is a single request");
     assert.equal(searches()[4].body.exclude_ids, undefined, "exclude_ids is never sent again");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// The inject_recall_min_score knob floors the FINAL composite score. It rides
+// the wire as min_rank_score (server-enforced), never the fused-scale min_score,
+// and a server that accepts it is authoritative: its result set is NOT
+// re-filtered client-side.
+test("recall floors on min_rank_score (never min_score) and trusts an enforcing server", async () => {
+  const hooks = {};
+  const searches = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = withHandshakeFailure(async (url, init) => {
+    if (String(url).endsWith("/v1/search")) searches.push(init && init.body ? JSON.parse(init.body) : {});
+    return {
+      ok: true,
+      async json() {
+        return { results: [
+          { memory: { id: "hi", summary: "high relevance note", tier: "semantic" }, score: 0.9 },
+          { memory: { id: "lo", summary: "low relevance kept", tier: "episodic" }, score: 0.1 },
+        ] };
+      },
+      async text() { return ""; },
+    };
+  });
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false, recall_min_score: 0.4 },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    const out = await hooks.before_prompt_build({ prompt: "q" }, { sessionId: "s1" });
+    assert.equal(searches[0].min_rank_score, 0.4, "the knob rides as min_rank_score");
+    assert.equal(searches[0].min_score, undefined, "the fused-scale min_score is never sent");
+    assert.match(out.prependContext, /high relevance note/);
+    assert.match(out.prependContext, /low relevance kept/, "an enforcing server's result set is authoritative");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// Older server: it 400s min_rank_score, so one retry strips BOTH newer fields
+// and the client applies the composite floor as a fallback.
+test("recall retries without min_rank_score on an old server and applies the floor client-side", async () => {
+  const hooks = {};
+  const searches = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = withHandshakeFailure(async (url, init) => {
+    const body = init && init.body ? JSON.parse(init.body) : {};
+    if (String(url).endsWith("/v1/search")) searches.push(body);
+    if (String(url).endsWith("/v1/search") && body.min_rank_score !== undefined) {
+      return { ok: false, status: 400, async json() { return {}; }, async text() { return 'unknown field "min_rank_score"'; } };
+    }
+    return {
+      ok: true,
+      async json() {
+        return { results: [
+          { memory: { id: "hi", summary: "high relevance note", tier: "semantic" }, score: 0.9 },
+          { memory: { id: "lo", summary: "low should be filtered", tier: "episodic" }, score: 0.1 },
+        ] };
+      },
+      async text() { return ""; },
+    };
+  });
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false, recall_min_score: 0.4 },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    const out = await hooks.before_prompt_build({ prompt: "q" }, { sessionId: "s1" });
+    assert.equal(searches.length, 2, "one strip-and-retry, then it stops");
+    assert.equal(searches[0].min_rank_score, 0.4, "the first attempt carries the floor");
+    assert.equal(searches[1].min_rank_score, undefined, "the retry strips min_rank_score");
+    assert.equal(searches[1].min_score, undefined, "the retry never resurrects min_score");
+    assert.match(out.prependContext, /high relevance note/);
+    assert.doesNotMatch(out.prependContext, /low should be filtered/, "the stripped floor is enforced client-side");
   } finally {
     globalThis.fetch = realFetch;
   }
