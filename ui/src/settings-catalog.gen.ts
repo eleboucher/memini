@@ -138,6 +138,12 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
     "description": "Suppress re-injecting a recalled memory that is still within its injection cooldown window (inject_cooldown_ms / inject_cooldown_prompts); with both windows 0, an unchanged memory stays suppressed for the rest of the session. This gates the injection; whether the PreToolUse recall call runs at all follows inject_pretool_gate_ms, but turning inject_dedupe off also disables that call gate, because the gate's clock lives in the dedupe state."
   },
   {
+    "key": "inject_telemetry",
+    "type": "boolean",
+    "default": true,
+    "description": "Report what each hook actually injected vs suppressed back to the server (POST /v1/activity/injected) so the activity feed and metrics reflect what reached model context instead of pre-suppression serves. Best-effort and bounded (the beacon never blocks or fails a hook); off disables reporting entirely."
+  },
+  {
     "key": "inject_cooldown_ms",
     "type": "integer",
     "default": 1800000,

@@ -131,6 +131,7 @@ const (
 	EventKindBriefing  EventKind = "briefing"
 	EventKindForget    EventKind = "forget"
 	EventKindGet       EventKind = "get"
+	EventKindInject    EventKind = "inject"
 	EventKindPin       EventKind = "pin"
 	EventKindRecall    EventKind = "recall"
 	EventKindRemember  EventKind = "remember"
@@ -148,6 +149,8 @@ func (e EventKind) Valid() bool {
 	case EventKindForget:
 		return true
 	case EventKindGet:
+		return true
+	case EventKindInject:
 		return true
 	case EventKindPin:
 		return true
@@ -219,6 +222,27 @@ func (e HandshakeResponseSettingsSources) Valid() bool {
 	case HandshakeResponseSettingsSourcesGlobal:
 		return true
 	case HandshakeResponseSettingsSourcesKey:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for InjectedReportSurface.
+const (
+	InjectSurfaceBriefing InjectedReportSurface = "briefing"
+	InjectSurfacePretool  InjectedReportSurface = "pretool"
+	InjectSurfacePrompt   InjectedReportSurface = "prompt"
+)
+
+// Valid indicates whether the value is a known member of the InjectedReportSurface enum.
+func (e InjectedReportSurface) Valid() bool {
+	switch e {
+	case InjectSurfaceBriefing:
+		return true
+	case InjectSurfacePretool:
+		return true
+	case InjectSurfacePrompt:
 		return true
 	default:
 		return false
@@ -485,7 +509,7 @@ type ActivityEvent struct {
 	// Detail Kind-specific context — a recall's degraded mode, a supersession's replacement id.
 	Detail *map[string]interface{} `json:"detail,omitempty"`
 
-	// Kind The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede, pin, unpin, settings.
+	// Kind The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede, pin, unpin, settings. Client telemetry: inject (a POST /v1/activity/injected report).
 	Kind EventKind `json:"kind"`
 
 	// Memories Empty for a recall that matched nothing.
@@ -506,6 +530,9 @@ type ActivityEventActorKind string
 // ActivityMemory One memory as it appeared in an event — a snapshot taken at serve time, so a forgotten memory still renders — plus why it was there.
 type ActivityMemory struct {
 	Id string `json:"id"`
+
+	// Injected The served→injected join's verdict, on a recall event's memories: true when a client injection-telemetry report (POST /v1/activity/injected) named this memory as actually reaching model context, false when a report covered the recall but omitted it (the client suppressed it). ABSENT when no report covered the serve — absent means unknown, so old data and non-reporting integrations render unchanged; only a report ever yields false.
+	Injected *bool `json:"injected,omitempty"`
 
 	// Namespace The memory's own namespace, which for a cascading recall may differ from the event's.
 	Namespace string `json:"namespace"`
@@ -742,6 +769,9 @@ type ClientSettings struct {
 	// InjectRecallMinScore Floor on the fused score (>=) for a recall injection.
 	InjectRecallMinScore *float32 `json:"inject_recall_min_score,omitempty"`
 
+	// InjectTelemetry Report what each hook actually injected vs suppressed back to the server (POST /v1/activity/injected) so the activity feed and metrics reflect what reached model context instead of pre-suppression serves. Best-effort and bounded (the beacon never blocks or fails a hook); off disables reporting entirely.
+	InjectTelemetry *bool `json:"inject_telemetry,omitempty"`
+
 	// InlineExtract Inject the directive asking the agent to save durable facts via memory_remember.
 	InlineExtract *bool `json:"inline_extract,omitempty"`
 
@@ -844,7 +874,7 @@ type DeleteNamespaceResponse struct {
 	Deleted int `json:"deleted"`
 }
 
-// EventKind The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede, pin, unpin, settings.
+// EventKind The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede, pin, unpin, settings. Client telemetry: inject (a POST /v1/activity/injected report).
 type EventKind string
 
 // FsckReport defines model for FsckReport.
@@ -930,6 +960,51 @@ type HandshakeResponseNamespaceSource string
 
 // HandshakeResponseSettingsSources defines model for HandshakeResponse.SettingsSources.
 type HandshakeResponseSettingsSources string
+
+// InjectedReport One injection-telemetry beacon (POST /v1/activity/injected): what a hook actually injected into model context and what its local gates suppressed, reported after the serve. Memory ids are taken on faith — an unknown id is recorded as-is, never rejected.
+type InjectedReport struct {
+	// InjectedChars Characters actually injected.
+	InjectedChars *int `json:"injected_chars,omitempty"`
+
+	// InjectedIds Memory ids actually injected, in injection order. May be empty — a suppression-only report still records.
+	InjectedIds *[]string `json:"injected_ids,omitempty"`
+
+	// InjectedTokensEst Client-side estimate of the tokens the injections consumed.
+	InjectedTokensEst *int `json:"injected_tokens_est,omitempty"`
+
+	// SessionId The client session the injection happened in.
+	SessionId *string `json:"session_id,omitempty"`
+
+	// Source Free-form client name (e.g. "claude-code").
+	Source *string `json:"source,omitempty"`
+
+	// Suppressed Per-reason counts of served memories the client's local gates held back from injection. Omitted reasons mean "none reported".
+	Suppressed *InjectedSuppressed `json:"suppressed,omitempty"`
+
+	// Surface Which hook surface is reporting.
+	Surface InjectedReportSurface `json:"surface"`
+}
+
+// InjectedReportSurface Which hook surface is reporting.
+type InjectedReportSurface string
+
+// InjectedSuppressed Per-reason counts of served memories the client's local gates held back from injection. Omitted reasons mean "none reported".
+type InjectedSuppressed struct {
+	// Budget Over the token/char budget for the surface.
+	Budget *int `json:"budget,omitempty"`
+
+	// Cooldown Inside the injection cooldown window.
+	Cooldown *int `json:"cooldown,omitempty"`
+
+	// Score Below the client's score floor.
+	Score *int `json:"score,omitempty"`
+
+	// Seen Already injected this session (dedupe).
+	Seen *int `json:"seen,omitempty"`
+
+	// Unchanged Byte-identical to what was already injected.
+	Unchanged *int `json:"unchanged,omitempty"`
+}
 
 // Level defines model for Level.
 type Level string
@@ -1266,6 +1341,9 @@ type SettingsDefaultsResponse struct {
 	// InjectRecallMinScore Floor on the fused score (>=) for a recall injection.
 	InjectRecallMinScore *float32 `json:"inject_recall_min_score,omitempty"`
 
+	// InjectTelemetry Report what each hook actually injected vs suppressed back to the server (POST /v1/activity/injected) so the activity feed and metrics reflect what reached model context instead of pre-suppression serves. Best-effort and bounded (the beacon never blocks or fails a hook); off disables reporting entirely.
+	InjectTelemetry *bool `json:"inject_telemetry,omitempty"`
+
 	// InlineExtract Inject the directive asking the agent to save durable facts via memory_remember.
 	InlineExtract *bool `json:"inline_extract,omitempty"`
 
@@ -1416,6 +1494,12 @@ type ListActivityParams struct {
 	// AllNamespaces Aggregate across every namespace, ignoring the namespace header.
 	AllNamespaces *bool `form:"all_namespaces,omitempty" json:"all_namespaces,omitempty"`
 
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
+	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
+}
+
+// ReportInjectedParams defines parameters for ReportInjected.
+type ReportInjectedParams struct {
 	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
@@ -1668,6 +1752,9 @@ type GetStatsParams struct {
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
+// ReportInjectedJSONRequestBody defines body for ReportInjected for application/json ContentType.
+type ReportInjectedJSONRequestBody = InjectedReport
+
 // AnswerQuestionJSONRequestBody defines body for AnswerQuestion for application/json ContentType.
 type AnswerQuestionJSONRequestBody = AnswerRequest
 
@@ -1727,6 +1814,9 @@ type ServerInterface interface {
 	// Recent memory activity — what was served or written, and why
 	// (GET /v1/activity)
 	ListActivity(w http.ResponseWriter, r *http.Request, params ListActivityParams)
+	// Report what a client hook actually injected vs suppressed
+	// (POST /v1/activity/injected)
+	ReportInjected(w http.ResponseWriter, r *http.Request, params ReportInjectedParams)
 	// Recall memories and answer a question grounded on them (requires an LLM)
 	// (POST /v1/answer)
 	AnswerQuestion(w http.ResponseWriter, r *http.Request, params AnswerQuestionParams)
@@ -1844,6 +1934,12 @@ type Unimplemented struct{}
 // Recent memory activity — what was served or written, and why
 // (GET /v1/activity)
 func (_ Unimplemented) ListActivity(w http.ResponseWriter, r *http.Request, params ListActivityParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Report what a client hook actually injected vs suppressed
+// (POST /v1/activity/injected)
+func (_ Unimplemented) ReportInjected(w http.ResponseWriter, r *http.Request, params ReportInjectedParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2227,6 +2323,53 @@ func (siw *ServerInterfaceWrapper) ListActivity(w http.ResponseWriter, r *http.R
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListActivity(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReportInjected operation middleware
+func (siw *ServerInterfaceWrapper) ReportInjected(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ReportInjectedParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Memini-Namespace" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Memini-Namespace")]; found {
+		var XMeminiNamespace Namespace
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Memini-Namespace", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Memini-Namespace", valueList[0], &XMeminiNamespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Memini-Namespace", Err: err})
+			return
+		}
+
+		params.XMeminiNamespace = &XMeminiNamespace
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReportInjected(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4067,6 +4210,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/activity", wrapper.ListActivity)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/activity/injected", wrapper.ReportInjected)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/answer", wrapper.AnswerQuestion)

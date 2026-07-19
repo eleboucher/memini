@@ -871,6 +871,36 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "501": { $ref: "#/components/responses/Error" }
+  /v1/activity/injected:
+    post:
+      operationId: reportInjected
+      tags: [memory]
+      summary: Report what a client hook actually injected vs suppressed
+      description: >
+        The injection-telemetry beacon: after the server serves memories (a
+        recall or a session briefing), the reporting hook says which of them
+        actually reached model context and what its local gates held back
+        (seen/cooldown/budget/unchanged/score), so the activity feed and the
+        server metrics reflect injected reality rather than pre-suppression
+        serves. Recorded as a single "inject" activity event whose memory
+        refs are the injected ids; a nearby recall event's memories are then
+        annotated with the injected flag (see ActivityMemory.injected).
+        Best-effort by design: unknown memory ids are accepted verbatim
+        (never a 404), and namespace comes from the X-Memini-Namespace
+        header exactly like the other activity routes. No-op (still 204)
+        when the storage backend has no activity log — metrics still count.
+      parameters:
+        - { $ref: "#/components/parameters/Namespace" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InjectedReport" }
+      responses:
+        "204":
+          description: Report recorded (best-effort).
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
   /v1/handshake:
     post:
       operationId: handshake
@@ -1418,7 +1448,9 @@ components:
       description: >
         The operation an activity event records. Reads: recall, get, briefing.
         Writes: remember, update, forget, supersede, pin, unpin, settings.
-      enum: [recall, get, briefing, remember, update, forget, supersede, pin, unpin, settings]
+        Client telemetry: inject (a POST /v1/activity/injected report).
+      enum:
+        [recall, get, briefing, remember, update, forget, supersede, pin, unpin, settings, inject]
     ActivityMemory:
       type: object
       description: >
@@ -1442,6 +1474,16 @@ components:
         section:
           type: string
           description: Which briefing section it appeared under; briefing only.
+        injected:
+          type: boolean
+          description: >
+            The served→injected join's verdict, on a recall event's memories:
+            true when a client injection-telemetry report (POST
+            /v1/activity/injected) named this memory as actually reaching
+            model context, false when a report covered the recall but omitted
+            it (the client suppressed it). ABSENT when no report covered the
+            serve — absent means unknown, so old data and non-reporting
+            integrations render unchanged; only a report ever yields false.
     ActivityEvent:
       type: object
       description: One logical operation, with the memories it served or wrote.
@@ -1489,6 +1531,70 @@ components:
           type: string
           description: Pass as "before" to fetch the next page; absent on the last page.
         has_more: { type: boolean }
+    InjectedReport:
+      type: object
+      description: >
+        One injection-telemetry beacon (POST /v1/activity/injected): what a
+        hook actually injected into model context and what its local gates
+        suppressed, reported after the serve. Memory ids are taken on faith —
+        an unknown id is recorded as-is, never rejected.
+      required: [surface]
+      properties:
+        session_id:
+          type: string
+          description: The client session the injection happened in.
+        surface:
+          type: string
+          enum: [briefing, prompt, pretool]
+          # Codegen metadata only (no wire effect): without explicit names,
+          # oapi-codegen would mint a bare `Briefing` constant for the
+          # "briefing" value, colliding with the Briefing schema's type.
+          x-enum-varnames: [InjectSurfaceBriefing, InjectSurfacePrompt, InjectSurfacePretool]
+          description: Which hook surface is reporting.
+        source:
+          type: string
+          description: Free-form client name (e.g. "claude-code").
+        injected_ids:
+          type: array
+          items: { type: string }
+          description: >
+            Memory ids actually injected, in injection order. May be empty —
+            a suppression-only report still records.
+        injected_tokens_est:
+          type: integer
+          minimum: 0
+          description: Client-side estimate of the tokens the injections consumed.
+        injected_chars:
+          type: integer
+          minimum: 0
+          description: Characters actually injected.
+        suppressed: { $ref: "#/components/schemas/InjectedSuppressed" }
+    InjectedSuppressed:
+      type: object
+      description: >
+        Per-reason counts of served memories the client's local gates held
+        back from injection. Omitted reasons mean "none reported".
+      properties:
+        seen:
+          type: integer
+          minimum: 0
+          description: Already injected this session (dedupe).
+        cooldown:
+          type: integer
+          minimum: 0
+          description: Inside the injection cooldown window.
+        budget:
+          type: integer
+          minimum: 0
+          description: Over the token/char budget for the surface.
+        unchanged:
+          type: integer
+          minimum: 0
+          description: Byte-identical to what was already injected.
+        score:
+          type: integer
+          minimum: 0
+          description: Below the client's score floor.
     # The four sections carry BriefingItem wrappers ({memory, from}), not
     # bare Memory objects. Hand-written consumers that must move in lockstep
     # with any shape change here or in BriefingItem: plugin/scripts/
@@ -2065,6 +2171,15 @@ components:
             injection; whether the PreToolUse recall call runs at all follows
             inject_pretool_gate_ms, but turning inject_dedupe off also disables
             that call gate, because the gate's clock lives in the dedupe state.
+        inject_telemetry:
+          type: boolean
+          default: true
+          description: >
+            Report what each hook actually injected vs suppressed back to the
+            server (POST /v1/activity/injected) so the activity feed and
+            metrics reflect what reached model context instead of
+            pre-suppression serves. Best-effort and bounded (the beacon never
+            blocks or fails a hook); off disables reporting entirely.
         inject_cooldown_ms:
           type: integer
           minimum: 0

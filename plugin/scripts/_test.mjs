@@ -193,12 +193,34 @@ function runCommand(script, argv, env = {}, cwd = process.cwd()) {
   });
 }
 
-function startMockServer(handler) {
+// `beacon` option: the injection-telemetry beacon (POST /v1/activity/injected)
+// is served automatically by default — 204, recorded into the returned
+// `beacons` array ({ns, body}), NOT passed to the inner handler — the same
+// doctrine as withHandshake: existing tests keep counting exactly the
+// briefing/search/capture calls they always did, while beacon tests read
+// `beacons`. Pass { beacon: "manual" } to route it to the handler instead
+// (hang/500 fault-injection tests).
+function startMockServer(handler, { beacon = "auto" } = {}) {
+  const beacons = [];
   return new Promise((resolveProm) => {
     const server = http.createServer((req, res) => {
       let body = "";
       req.on("data", (c) => (body += c));
-      req.on("end", () => handler(req, res, body));
+      req.on("end", () => {
+        if (beacon === "auto" && req.method === "POST" && req.url === "/v1/activity/injected") {
+          let parsed;
+          try {
+            parsed = JSON.parse(body);
+          } catch {
+            parsed = body;
+          }
+          beacons.push({ ns: req.headers["x-memini-namespace"], body: parsed });
+          res.statusCode = 204;
+          res.end();
+          return;
+        }
+        handler(req, res, body);
+      });
     });
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address();
@@ -213,7 +235,7 @@ function startMockServer(handler) {
           server.closeAllConnections();
           server.close(() => r(undefined));
         });
-      resolveProm({ url, close });
+      resolveProm({ url, close, beacons });
     });
   });
 }
@@ -5624,6 +5646,271 @@ test("getSessionContext: a server-pushed request_timeout_ms widens the window; M
     });
     assert.equal(overridden.timeoutMs, 45000);
     assert.equal(overridden.setting("request_timeout_ms").source, "env-override");
+  } finally {
+    await close();
+  }
+});
+
+// ─── injection-telemetry beacon (POST /v1/activity/injected) ──────────────
+//
+// Every injection surface reports what it served — and what it withheld — in
+// ONE best-effort beacon per hook invocation, sent AFTER the hook's stdout
+// payload is fully written. The harness's startMockServer intercepts the
+// beacon route by default (recording into `beacons`, replying 204) so these
+// tests read the wire body directly; fault-injection tests opt out with
+// { beacon: "manual" }.
+
+test("session-start.mjs: a fresh briefing beacons its injected ids with token/char estimates", async () => {
+  const cache = freshCache();
+  const { url, close, beacons } = await startMockServer(
+    withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify(
+          briefingBody({
+            namespace: "team/app",
+            pinned: [bi({ id: "b-pin", content: "pinned identity" })],
+            facts: [bi({ id: "b-fact", content: "convention: use tabs" })],
+          }),
+        ),
+      );
+    }),
+  );
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "tel-b1", cwd: __dirname, source: "startup" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.match(stdout, /convention: use tabs/, "the briefing still injects");
+    assert.equal(beacons.length, 1, "exactly one beacon per hook invocation");
+    const rep = beacons[0].body;
+    assert.equal(rep.surface, "briefing");
+    assert.equal(rep.session_id, "tel-b1");
+    assert.equal(rep.source, "claude-code");
+    assert.deepEqual([...rep.injected_ids].sort(), ["b-fact", "b-pin"], "the briefing's memory ids are reported");
+    assert.ok(rep.injected_tokens_est > 0, "tokens estimated over the emitted block");
+    assert.ok(rep.injected_chars > 0, "chars = emitted length");
+    assert.equal(rep.suppressed, undefined, "nothing suppressed on a fresh injection — all-zero counts are omitted");
+    assert.equal(beacons[0].ns, "team/app", "the beacon rides the same namespace header as postSearch");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: an unchanged-briefing skip beacons suppressed.unchanged and no injected ids", async () => {
+  const cache = freshCache();
+  const { url, close, beacons } = await startMockServer(
+    withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify(
+          briefingBody({
+            namespace: "team/app",
+            facts: [bi({ id: "bu1", content: "convention: use tabs" }), bi({ id: "bu2", content: "tokens rotate weekly" })],
+          }),
+        ),
+      );
+    }),
+  );
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    await runHook("session-start.mjs", JSON.stringify({ session_id: "tel-b2", cwd: __dirname, source: "startup" }), env);
+    assert.equal(beacons.length, 1, "the startup fire beacons its fresh injection");
+
+    const resumed = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "tel-b2", cwd: __dirname, source: "resume" }),
+      env,
+    );
+    assert.equal(resumed.stdout, "", "an unchanged resume stays silent on stdout");
+    assert.equal(beacons.length, 2, "the unchanged skip still beacons what it withheld");
+    const rep = beacons[1].body;
+    assert.equal(rep.surface, "briefing");
+    assert.deepEqual(rep.injected_ids, [], "nothing was injected on the skip path");
+    assert.deepEqual(rep.suppressed, { unchanged: 2 }, "every withheld briefing item is counted as unchanged");
+    assert.equal(rep.injected_tokens_est, undefined, "zero token estimate is omitted");
+    assert.equal(rep.injected_chars, undefined, "zero char count is omitted");
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: prompt recall beacons surface=prompt with the hit ids; MEMINI_INJECT_TELEMETRY=0 sends none", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "srv/app" }));
+  const { url, close, beacons } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify(
+        searchBody([sm({ id: "mp1", content: "auth decision: rotate weekly" }, 0.95), sm({ id: "mp2", content: "tokens live in vault" }, 0.9)]),
+      ),
+    );
+  });
+  try {
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "tel-p1", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.match(JSON.parse(stdout).hookSpecificOutput.additionalContext, /rotate weekly/);
+    assert.equal(beacons.length, 1, "one beacon per prompt hook invocation");
+    const rep = beacons[0].body;
+    assert.equal(rep.surface, "prompt");
+    assert.equal(rep.session_id, "tel-p1");
+    assert.equal(rep.source, "claude-code");
+    assert.deepEqual(rep.injected_ids, ["mp1", "mp2"], "the rendered hits' ids are reported");
+    assert.ok(rep.injected_tokens_est > 0);
+    assert.ok(rep.injected_chars > 0);
+    assert.equal(beacons[0].ns, "srv/app");
+
+    // Opt-out: the knob off means NO beacon request at all — not an empty one.
+    const second = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "tel-p2", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_TELEMETRY: "0" },
+    );
+    assert.match(JSON.parse(second.stdout).hookSpecificOutput.additionalContext, /rotate weekly/, "the injection itself is unaffected");
+    assert.equal(beacons.length, 1, "MEMINI_INJECT_TELEMETRY=0 must send no beacon");
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: every hit client-filtered → a suppression-only beacon (seen), no stdout", async () => {
+  // An in-cooldown injected entry re-served by an older server (one that
+  // ignores exclude_ids) is dropped by the belt-and-braces filter; with no
+  // hits left the hook injects nothing but still reports the suppression.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  mkdirSync(join(cache, "memini", "sessions"), { recursive: true });
+  writeFileSync(
+    INJ_STATE(cache, "tel-p3"),
+    JSON.stringify({ v: 2, n: 10, ids: { "m-hot": { h: "0123456789abcdef", at: Date.now(), n: 10 } } }),
+  );
+  const { url, close, beacons } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m-hot", content: "the hot fact" }, 0.95)])));
+  });
+  try {
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "tel-p3", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.equal(stdout.trim(), "", "nothing injected — every hit was filtered");
+    assert.equal(beacons.length, 1, "the suppression-only report is still sent");
+    const rep = beacons[0].body;
+    assert.equal(rep.surface, "prompt");
+    assert.deepEqual(rep.injected_ids, [], "required field stays present as an empty array");
+    assert.deepEqual(rep.suppressed, { seen: 1 }, "the client-side seen-filter drop is counted");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: one aggregated beacon per call; a fingerprint-duplicate re-serve beacons suppressed.unchanged", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const { url, close, beacons } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "auth decision" }, 0.95)])));
+  });
+  try {
+    const payload = JSON.stringify({
+      session_id: "tel-t1",
+      cwd: __dirname,
+      tool_name: "Read",
+      tool_input: { file_path: "internal/auth.go" },
+    });
+    // gate=0 pins legacy always-call so the second run reaches the server.
+    const gate0 = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_GATE_MS: "0" };
+    const first = await runHook("pre-tool-use.mjs", payload, gate0);
+    assert.match(first.stdout, /auth decision/, "first call injects");
+    assert.equal(beacons.length, 1, "one aggregated beacon for the whole invocation");
+    assert.equal(beacons[0].body.surface, "pretool");
+    assert.equal(beacons[0].body.session_id, "tel-t1");
+    assert.deepEqual(beacons[0].body.injected_ids, ["m1"]);
+    assert.ok(beacons[0].body.injected_tokens_est > 0);
+    assert.equal(beacons[0].body.suppressed, undefined, "a clean inject reports no suppression");
+
+    // Lapse the cross-surface cooldown (backdate {at, n} like the lapsed-entry
+    // tests) so the re-served hit passes the seen filter and reaches the
+    // per-file FINGERPRINT, which still matches — a suppressed duplicate.
+    const injPath = INJ_STATE(cache, "tel-t1");
+    const st = JSON.parse(readFileSync(injPath, "utf8"));
+    st.ids.m1.at = Date.now() - 7200000;
+    st.ids.m1.n = 0;
+    writeFileSync(injPath, JSON.stringify(st));
+
+    const second = await runHook("pre-tool-use.mjs", payload, gate0);
+    assert.equal(second.stdout, "", "the duplicate injection is suppressed");
+    assert.equal(beacons.length, 2, "the suppression still beacons");
+    const rep = beacons[1].body;
+    assert.deepEqual(rep.injected_ids, [], "nothing injected on the duplicate run");
+    assert.deepEqual(rep.suppressed, { unchanged: 1 }, "the withheld duplicate's items are counted as unchanged");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: a hanging beacon endpoint neither delays the hook past the abort bound nor fails it", async () => {
+  // Structural best-effort guarantee: the beacon is sent AFTER stdout is fully
+  // composed and written, bounded by its own 500ms abort — so a beacon
+  // endpoint that never answers cannot corrupt the payload, fail the hook
+  // (runHook rejects on a non-zero exit), or stall it beyond ~the bound.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const { url, close } = await startMockServer(
+    (req, res) => {
+      if (req.method === "POST" && req.url === "/v1/activity/injected") return; // hang: never respond
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "auth decision" }, 0.9)])));
+    },
+    { beacon: "manual" },
+  );
+  try {
+    const started = Date.now();
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "tel-t2", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    const elapsed = Date.now() - started;
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.hookSpecificOutput.hookEventName, "PreToolUse");
+    assert.match(parsed.hookSpecificOutput.additionalContext, /auth decision/, "stdout payload intact despite the hanging beacon");
+    assert.ok(elapsed < 2000, `hook took ${elapsed}ms; the 500ms beacon abort must bound it`);
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: a beacon endpoint returning 500 never fails the hook — exit 0, stdout intact", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  let beaconHits = 0;
+  const { url, close } = await startMockServer(
+    (req, res) => {
+      if (req.method === "POST" && req.url === "/v1/activity/injected") {
+        beaconHits++;
+        res.statusCode = 500;
+        res.end("boom");
+        return;
+      }
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "a durable fact" }, 0.9)])));
+    },
+    { beacon: "manual" },
+  );
+  try {
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "tel-p4", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.match(JSON.parse(stdout).hookSpecificOutput.additionalContext, /a durable fact/, "stdout payload intact despite the 500");
+    assert.equal(beaconHits, 1, "the beacon was attempted and its failure swallowed");
   } finally {
     await close();
   }

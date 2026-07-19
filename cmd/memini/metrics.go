@@ -32,6 +32,8 @@ type consolidateMetrics struct {
 	corroborateResults   *prometheus.CounterVec
 	contradictResults    *prometheus.CounterVec
 	tierClassified       *prometheus.CounterVec
+	injectedMemories     *prometheus.CounterVec
+	injectedTokens       *prometheus.CounterVec
 	promoteFacts         prometheus.Counter
 	reinforceResults     *prometheus.CounterVec
 	writeSanitized       *prometheus.CounterVec
@@ -64,6 +66,7 @@ const (
 	labelOp         = "op"
 	labelReason     = "reason"
 	labelResult     = "result"
+	labelSurface    = "surface"
 	labelTier       = "tier"
 	labelTierFilter = "tier_filter"
 )
@@ -137,6 +140,16 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 			Name: "memini_tier_classified_total",
 			Help: "Omitted-tier writes the marker classifier routed to a durable tier, by tier.",
 		}, []string{labelTier}),
+		injectedMemories: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "memini_injected_memories_total",
+			Help: "Client injection-telemetry reports (POST /v1/activity/injected) by hook surface " +
+				"(briefing, prompt, pretool) and result (injected, suppressed_seen, suppressed_cooldown, " +
+				"suppressed_budget, suppressed_unchanged, suppressed_score), counted in memories.",
+		}, []string{labelSurface, labelResult}),
+		injectedTokens: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "memini_injected_tokens_total",
+			Help: "Client-side estimate of tokens actually injected into model context, by hook surface.",
+		}, []string{labelSurface}),
 		promoteFacts: factory.NewCounter(prometheus.CounterOpts{
 			Name: "memini_promote_facts_total",
 			Help: "Durable facts written by the promotion pass (LLM distiller or marker extractor).",
@@ -312,6 +325,18 @@ func (m *consolidateMetrics) ContradictResult(result string) {
 
 func (m *consolidateMetrics) TierClassified(tier string) {
 	m.tierClassified.WithLabelValues(tier).Inc()
+}
+
+func (m *consolidateMetrics) InjectedResult(surface, result string, n int) {
+	if n > 0 {
+		m.injectedMemories.WithLabelValues(surface, result).Add(float64(n))
+	}
+}
+
+func (m *consolidateMetrics) InjectedTokens(surface string, tokens int) {
+	if tokens > 0 {
+		m.injectedTokens.WithLabelValues(surface).Add(float64(tokens))
+	}
 }
 
 func (m *consolidateMetrics) EmbedBackfillPending(n int) {

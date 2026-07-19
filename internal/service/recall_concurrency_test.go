@@ -108,22 +108,24 @@ func (m *countingMetrics) RememberDegraded(reason string) {
 	m.rememberDegraded[reason]++
 	m.mu.Unlock()
 }
-func (m *countingMetrics) WriteSanitized(string)            {}
-func (m *countingMetrics) ConsolidateResult(string)         {}
-func (m *countingMetrics) ConsolidateQueueDepth(int)        {}
-func (m *countingMetrics) RememberResult(string, string)    {}
-func (m *countingMetrics) ForgetResult(string)              {}
-func (m *countingMetrics) SupersedeResult(string)           {}
-func (m *countingMetrics) PromoteResult(string, int)        {}
-func (m *countingMetrics) FsckResult(string)                {}
-func (m *countingMetrics) OpDuration(string, time.Duration) {}
-func (m *countingMetrics) AnswerResult(string)              {}
-func (m *countingMetrics) RerankResult(string, string)      {}
-func (m *countingMetrics) ReinforceResult(string)           {}
-func (m *countingMetrics) DedupTombstoned(int)              {}
-func (m *countingMetrics) CorroborateResult(string)         {}
-func (m *countingMetrics) ContradictResult(string)          {}
-func (m *countingMetrics) TierClassified(string)            {}
+func (m *countingMetrics) WriteSanitized(string)              {}
+func (m *countingMetrics) ConsolidateResult(string)           {}
+func (m *countingMetrics) ConsolidateQueueDepth(int)          {}
+func (m *countingMetrics) RememberResult(string, string)      {}
+func (m *countingMetrics) ForgetResult(string)                {}
+func (m *countingMetrics) SupersedeResult(string)             {}
+func (m *countingMetrics) PromoteResult(string, int)          {}
+func (m *countingMetrics) FsckResult(string)                  {}
+func (m *countingMetrics) OpDuration(string, time.Duration)   {}
+func (m *countingMetrics) AnswerResult(string)                {}
+func (m *countingMetrics) RerankResult(string, string)        {}
+func (m *countingMetrics) ReinforceResult(string)             {}
+func (m *countingMetrics) DedupTombstoned(int)                {}
+func (m *countingMetrics) CorroborateResult(string)           {}
+func (m *countingMetrics) ContradictResult(string)            {}
+func (m *countingMetrics) TierClassified(string)              {}
+func (m *countingMetrics) InjectedResult(string, string, int) {}
+func (m *countingMetrics) InjectedTokens(string, int)         {}
 func (m *countingMetrics) EmbedBackfillPending(n int) {
 	m.mu.Lock()
 	m.embedBackfillPending = n

@@ -33,6 +33,9 @@ import {
   recordInjected,
   injectedIdentity,
   injectedSuppressed,
+  postInjected,
+  injectedReport,
+  approxTokens,
   DEBUG,
 } from "./_shared.mjs";
 
@@ -142,6 +145,15 @@ async function main() {
   const injectedState = dedupe && sessionId ? readInjectedState(sessionId) : { n: 0, ids: {} };
   let injectedChanged = false;
 
+  // Telemetry: ONE best-effort beacon per hook invocation, aggregated across
+  // the (up to 3) files below — the ids actually injected, plus what the
+  // client itself saw and dropped: `seen` = the cross-surface cooldown filter,
+  // `unchanged` = the per-file fingerprint's suppressed duplicates. Files
+  // skipped by the call gate contribute nothing (no server call happened).
+  // Sent AFTER the stdout payload at the bottom; awaited before exit.
+  const injectedIds = [];
+  const suppressedCounts = { seen: 0, unchanged: 0 };
+
   for (const f of files.slice(0, 3)) {
     // Per-file call gate: if we called the server for this file more recently
     // than the gate, skip the network round-trip entirely — the file was just
@@ -184,7 +196,8 @@ async function main() {
     // and exclude_metadata is an exact match). A fresh turn capture is still
     // — or was minutes ago — part of this conversation's live context, so
     // drop it regardless of which session id it carries.
-    const hits = filterFreshTurnEchoes(rawHits).filter((h) => {
+    const fresh = filterFreshTurnEchoes(rawHits);
+    const hits = fresh.filter((h) => {
       const id = h?.memory?.id;
       const entry = typeof id === "string" ? injectedState.ids[id] : undefined;
       // Windowed, content-aware suppression (injectedSuppressed): an entry
@@ -199,6 +212,9 @@ async function main() {
         cooldownPrompts,
       });
     });
+    // Only the filter's own drops count as `seen` — turn-echo drops are
+    // capture hygiene, not suppression.
+    suppressedCounts.seen += fresh.length - hits.length;
     if (hits.length === 0) continue;
 
     // Fingerprint the SEMANTIC content served for this file: the file path
@@ -225,6 +241,7 @@ async function main() {
         // already refreshed above (this WAS an actual server call), so the gate
         // still sees a fresh call; only the injection is skipped.
         if (DEBUG) console.error(`[memini] PreToolUse: unchanged recall for ${f}, suppressing duplicate injection`);
+        suppressedCounts.unchanged += hits.length;
         continue;
       }
       // Injecting: stamp the new fingerprint (and keep `at` at this call's time).
@@ -234,6 +251,10 @@ async function main() {
 
     any = true;
     out.push(`File: ${f}`);
+    for (const h of hits) {
+      const id = h?.memory?.id;
+      if (typeof id === "string" && id) injectedIds.push(id);
+    }
     // Render then trim by token budget (within a single file's block) so a
     // tight cap drops the lowest-scoring hits per file first.
     const lines = hits.map((h) => formatRecallHit(h, labels)).filter(Boolean);
@@ -254,7 +275,20 @@ async function main() {
   }
   if (dedupe && sessionId && injectedChanged) writeInjectedState(sessionId, injectedState);
   if (lastRecallChanged) writeLastRecallState(sessionId, lastRecall);
-  if (!any) return;
+  // readToolCall coins "unknown" for a payload with no session id — that is
+  // not a session the beacon can report on, so it counts as "no session id".
+  const telemetry =
+    Boolean(payload.session_id || payload.sessionId) && ctx.setting("inject_telemetry").value;
+  if (!any) {
+    // Nothing injected — the aggregated suppressions are still worth
+    // reporting (postInjected skips the request when they're all zero too).
+    if (telemetry) {
+      await postInjected(injectedReport({ surface: "pretool", sessionId, suppressed: suppressedCounts }), {
+        namespace: project,
+      });
+    }
+    return;
+  }
   if (totalDropped > 0) out.push(`[... ${totalDropped} item(s) truncated by token budget]`);
   // The note is server-authored, but it transits the same untrusted rendering
   // path as memory content — escape it so a forged tag can't break the wrapper.
@@ -262,15 +296,32 @@ async function main() {
   out.push("</memini-pretool>");
   // PreToolUse plain stdout is NOT shown to the model (it goes to the debug
   // log) — context must be returned as JSON additionalContext.
+  const context = out.join("\n");
   process.stdout.write(
     JSON.stringify({
-      hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: out.join("\n") },
+      hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: context },
     }),
   );
   if (DEBUG) {
     console.error(
       `[memini] PreToolUse injected ${out.length - 2} lines for ${files.slice(0, 3).length} file(s) ` +
         `(itemsPerFile=${itemsPerFile}, minScore=${minScore}, maxTokens=${maxTokens || "∞"}, dropped=${totalDropped})`,
+    );
+  }
+
+  // Beacon LAST, after the stdout payload is fully written, so telemetry can
+  // never add latency to the injection itself. Awaited before exit.
+  if (telemetry) {
+    await postInjected(
+      injectedReport({
+        surface: "pretool",
+        sessionId,
+        ids: injectedIds,
+        tokens: approxTokens(context),
+        chars: context.length,
+        suppressed: suppressedCounts,
+      }),
+      { namespace: project },
     );
   }
 }

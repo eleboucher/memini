@@ -494,6 +494,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/activity/injected": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Report what a client hook actually injected vs suppressed
+         * @description The injection-telemetry beacon: after the server serves memories (a recall or a session briefing), the reporting hook says which of them actually reached model context and what its local gates held back (seen/cooldown/budget/unchanged/score), so the activity feed and the server metrics reflect injected reality rather than pre-suppression serves. Recorded as a single "inject" activity event whose memory refs are the injected ids; a nearby recall event's memories are then annotated with the injected flag (see ActivityMemory.injected). Best-effort by design: unknown memory ids are accepted verbatim (never a 404), and namespace comes from the X-Memini-Namespace header exactly like the other activity routes. No-op (still 204) when the storage backend has no activity log — metrics still count.
+         */
+        post: operations["reportInjected"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/handshake": {
         parameters: {
             query?: never;
@@ -789,10 +809,10 @@ export interface components {
             memories: components["schemas"]["Memory"][];
         };
         /**
-         * @description The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede, pin, unpin, settings.
+         * @description The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede, pin, unpin, settings. Client telemetry: inject (a POST /v1/activity/injected report).
          * @enum {string}
          */
-        EventKind: "recall" | "get" | "briefing" | "remember" | "update" | "forget" | "supersede" | "pin" | "unpin" | "settings";
+        EventKind: "recall" | "get" | "briefing" | "remember" | "update" | "forget" | "supersede" | "pin" | "unpin" | "settings" | "inject";
         /** @description One memory as it appeared in an event — a snapshot taken at serve time, so a forgotten memory still renders — plus why it was there. */
         ActivityMemory: {
             id: string;
@@ -809,6 +829,8 @@ export interface components {
             score?: number;
             /** @description Which briefing section it appeared under; briefing only. */
             section?: string;
+            /** @description The served→injected join's verdict, on a recall event's memories: true when a client injection-telemetry report (POST /v1/activity/injected) named this memory as actually reaching model context, false when a report covered the recall but omitted it (the client suppressed it). ABSENT when no report covered the serve — absent means unknown, so old data and non-reporting integrations render unchanged; only a report ever yields false. */
+            injected?: boolean;
         };
         /** @description One logical operation, with the memories it served or wrote. */
         ActivityEvent: {
@@ -839,6 +861,38 @@ export interface components {
             /** @description Pass as "before" to fetch the next page; absent on the last page. */
             next_cursor?: string;
             has_more: boolean;
+        };
+        /** @description One injection-telemetry beacon (POST /v1/activity/injected): what a hook actually injected into model context and what its local gates suppressed, reported after the serve. Memory ids are taken on faith — an unknown id is recorded as-is, never rejected. */
+        InjectedReport: {
+            /** @description The client session the injection happened in. */
+            session_id?: string;
+            /**
+             * @description Which hook surface is reporting.
+             * @enum {string}
+             */
+            surface: "briefing" | "prompt" | "pretool";
+            /** @description Free-form client name (e.g. "claude-code"). */
+            source?: string;
+            /** @description Memory ids actually injected, in injection order. May be empty — a suppression-only report still records. */
+            injected_ids?: string[];
+            /** @description Client-side estimate of the tokens the injections consumed. */
+            injected_tokens_est?: number;
+            /** @description Characters actually injected. */
+            injected_chars?: number;
+            suppressed?: components["schemas"]["InjectedSuppressed"];
+        };
+        /** @description Per-reason counts of served memories the client's local gates held back from injection. Omitted reasons mean "none reported". */
+        InjectedSuppressed: {
+            /** @description Already injected this session (dedupe). */
+            seen?: number;
+            /** @description Inside the injection cooldown window. */
+            cooldown?: number;
+            /** @description Over the token/char budget for the surface. */
+            budget?: number;
+            /** @description Byte-identical to what was already injected. */
+            unchanged?: number;
+            /** @description Below the client's score floor. */
+            score?: number;
         };
         Briefing: {
             namespace: string;
@@ -1196,6 +1250,11 @@ export interface components {
              * @default true
              */
             inject_dedupe: boolean;
+            /**
+             * @description Report what each hook actually injected vs suppressed back to the server (POST /v1/activity/injected) so the activity feed and metrics reflect what reached model context instead of pre-suppression serves. Best-effort and bounded (the beacon never blocks or fails a hook); off disables reporting entirely.
+             * @default true
+             */
+            inject_telemetry: boolean;
             /**
              * @description Time window (milliseconds) within which an already-injected memory is not re-injected; 0 disables the time dimension.
              * @default 1800000
@@ -2323,6 +2382,33 @@ export interface operations {
             400: components["responses"]["Error"];
             401: components["responses"]["Error"];
             501: components["responses"]["Error"];
+        };
+    };
+    reportInjected: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Namespace for this request; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InjectedReport"];
+            };
+        };
+        responses: {
+            /** @description Report recorded (best-effort). */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
         };
     };
     handshake: {

@@ -69,6 +69,7 @@ Run the hygiene passes on demand rather than waiting for the background schedule
 | Endpoint | Does |
 | --- | --- |
 | `GET /v1/activity` | Recent memory activity — what was served or written, and why |
+| `POST /v1/activity/injected` | Report what a client hook actually injected vs suppressed |
 | `POST /v1/dedup` | Collapse near-duplicate memories (vector cluster) — tombstone the lower-scored members of each cluster |
 | `POST /v1/fsck` | Run a consistency sweep (purge expired, enforce short-term cap, audit duplicates) |
 | `GET /v1/stats` | Per-namespace overview (counts by tier, accesses, importance) |

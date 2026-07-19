@@ -53,6 +53,8 @@ func (m *countingMetrics) DedupTombstoned(int)                 {}
 func (m *countingMetrics) CorroborateResult(string)            {}
 func (m *countingMetrics) ContradictResult(string)             {}
 func (m *countingMetrics) TierClassified(string)               {}
+func (m *countingMetrics) InjectedResult(string, string, int)  {}
+func (m *countingMetrics) InjectedTokens(string, int)          {}
 func (m *countingMetrics) EmbedBackfillPending(int)            {}
 func (m *countingMetrics) ChunkBackfillPending(int)            {}
 

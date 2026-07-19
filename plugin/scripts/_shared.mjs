@@ -400,6 +400,84 @@ export async function getBriefing(namespace, opts = {}) {
   return getJSON(`/v1/namespaces/briefing?${params.toString()}`, namespace);
 }
 
+// --- Injection telemetry (POST /v1/activity/injected) ---------------------
+//
+// Each injection surface (briefing / prompt / pretool) reports what it served
+// — and what it withheld — so the server's activity feed can show injection
+// volume next to recall volume. Best-effort BY DESIGN: the beacon is bounded
+// by its own tight abort, every failure is swallowed (a DEBUG-only stderr
+// note), and it never writes to stdout — a telemetry hiccup must never crash,
+// fail, or slow a hook beyond the bound, nor corrupt the hook's context
+// payload. Hooks send it AFTER their stdout payload is fully composed and
+// written, and AWAIT it before exiting: a hook is a short-lived process, so a
+// true fire-and-forget request would die with it.
+
+/**
+ * The beacon's abort bound. Deliberately far below requestTimeoutMs: the
+ * beacon rides after the hook's real work, so this window is the only latency
+ * telemetry may ever add to a hook.
+ */
+export const INJECTED_BEACON_TIMEOUT_MS = 500;
+
+/** The suppression counters the wire contract knows. */
+const SUPPRESSED_KEYS = ["seen", "cooldown", "budget", "unchanged", "score"];
+
+/**
+ * Build the wire body for POST /v1/activity/injected. Pure. The endpoint's
+ * required fields are always present — session_id, surface, source (always
+ * "claude-code"), injected_ids ([] is allowed when only suppressions are
+ * reported) — while zero/empty optionals are omitted: injected_tokens_est,
+ * injected_chars, each zero count inside `suppressed`, and the whole
+ * `suppressed` object when every count is zero.
+ */
+export function injectedReport({ surface, sessionId, ids, tokens, chars, suppressed } = {}) {
+  const body = {
+    session_id: sessionId || "",
+    surface,
+    source: "claude-code",
+    injected_ids: Array.isArray(ids) ? ids.filter((id) => typeof id === "string" && id) : [],
+  };
+  if (Number.isFinite(tokens) && tokens > 0) body.injected_tokens_est = tokens;
+  if (Number.isFinite(chars) && chars > 0) body.injected_chars = chars;
+  const sup = {};
+  for (const k of SUPPRESSED_KEYS) {
+    const v = suppressed?.[k];
+    if (Number.isFinite(v) && v > 0) sup[k] = v;
+  }
+  if (Object.keys(sup).length > 0) body.suppressed = sup;
+  return body;
+}
+
+/**
+ * POST an injection report (see injectedReport) to /v1/activity/injected —
+ * same base-url/API-key resolution and header building as every other REST
+ * helper here; the server replies 204. Skips silently (no request) when the
+ * report names no session or has nothing to report (no injected ids AND no
+ * suppressed counts); callers gate on the inject_telemetry setting themselves,
+ * since only they hold a session ctx. Never throws, never writes stdout.
+ * Callers MUST await it before the hook process exits.
+ */
+export async function postInjected(report, { namespace, timeoutMs = INJECTED_BEACON_TIMEOUT_MS } = {}) {
+  if (!report || !report.session_id) return;
+  const suppressedAny =
+    report.suppressed && Object.values(report.suppressed).some((v) => Number.isFinite(v) && v > 0);
+  if ((!Array.isArray(report.injected_ids) || report.injected_ids.length === 0) && !suppressedAny) return;
+  try {
+    assertBearerTransportSafe(boot.baseUrl, boot.apiKey);
+    const res = await fetch(`${boot.baseUrl}/v1/activity/injected`, {
+      method: "POST",
+      headers: authHeaders({ "X-Memini-Namespace": namespace }),
+      body: JSON.stringify(report),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    // 204 expected, body ignored. Unlike postJSONStatus, a non-2xx here is
+    // DEBUG-only noise: telemetry must never make a sound recall wouldn't.
+    if (!res.ok && DEBUG) console.error(`[memini] POST /v1/activity/injected -> ${res.status}`);
+  } catch (e) {
+    if (DEBUG) console.error(`[memini] POST /v1/activity/injected failed:`, e?.message || e);
+  }
+}
+
 // --- Injection budget ----------------------------------------------------
 //
 // Per-hook env knobs let an operator shrink auto-injected context without

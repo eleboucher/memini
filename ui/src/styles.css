@@ -1432,7 +1432,8 @@ pre.json {
 }
 .evkind.recall,
 .evkind.briefing,
-.evkind.get {
+.evkind.get,
+.evkind.inject {
   --kc: var(--tier-episodic);
 }
 .evkind.remember,

@@ -91,6 +91,54 @@ func (h *Server) ListActivity(w http.ResponseWriter, r *http.Request, params Lis
 	httputil.JSON(w, http.StatusOK, out)
 }
 
+// ReportInjected implements POST /v1/activity/injected: the client-side
+// injection-telemetry beacon. Validation is deliberately thin — the surface
+// must be a known enum member and every count non-negative; memory ids are
+// taken on faith (an unknown id is recorded, never a 404) because the report
+// is best-effort observability, not a write to the memories. Past validation
+// the answer is always 204: RecordInjected never fails the request path, and
+// a backend with no activity log still counts the metrics.
+func (h *Server) ReportInjected(w http.ResponseWriter, r *http.Request, _ ReportInjectedParams) {
+	var req InjectedReport
+	if !decode(w, r, &req) {
+		return
+	}
+	// The generated binding does not enforce the spec enum, so an unknown — or
+	// missing, decoded as the zero value — surface must be rejected here
+	// (mirrors SearchMemories' scope handling).
+	if !req.Surface.Valid() {
+		httputil.Error(w, http.StatusBadRequest,
+			fmt.Sprintf("invalid surface %q: want briefing, prompt, or pretool", string(req.Surface)))
+		return
+	}
+	sup := deref(req.Suppressed)
+	for _, n := range []*int{
+		req.InjectedTokensEst, req.InjectedChars,
+		sup.Seen, sup.Cooldown, sup.Budget, sup.Unchanged, sup.Score,
+	} {
+		if n != nil && *n < 0 {
+			httputil.Error(w, http.StatusBadRequest, "counts must be >= 0")
+			return
+		}
+	}
+	h.svc.RecordInjected(r.Context(), namespaceFromContext(r.Context()), service.InjectedReport{
+		SessionID:   strings.TrimSpace(deref(req.SessionId)),
+		Surface:     string(req.Surface),
+		Source:      strings.TrimSpace(deref(req.Source)),
+		InjectedIDs: deref(req.InjectedIds),
+		TokensEst:   req.InjectedTokensEst,
+		Chars:       req.InjectedChars,
+		Suppressed: service.InjectedSuppressed{
+			Seen:      deref(sup.Seen),
+			Cooldown:  deref(sup.Cooldown),
+			Budget:    deref(sup.Budget),
+			Unchanged: deref(sup.Unchanged),
+			Score:     deref(sup.Score),
+		},
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // apiActivityEvent maps a service event onto the wire shape.
 func apiActivityEvent(ev service.ActivityEvent) ActivityEvent {
 	out := ActivityEvent{
@@ -135,6 +183,12 @@ func apiActivityEvent(ev service.ActivityEvent) ActivityEvent {
 			if m.Section != "" {
 				sec := m.Section
 				am.Section = &sec
+			}
+			// Absent-vs-false is the contract: only a report ever sets the
+			// pointer, so an uncovered serve omits the key entirely.
+			if m.Injected != nil {
+				injected := *m.Injected
+				am.Injected = &injected
 			}
 			mems[i] = am
 		}

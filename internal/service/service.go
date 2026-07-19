@@ -160,6 +160,16 @@ type Metrics interface {
 	// TierClassified records an omitted-tier write the marker classifier
 	// routed to a durable tier; tier is "semantic" or "procedural".
 	TierClassified(tier string)
+	// InjectedResult records one bucket of a client injection-telemetry
+	// report (RecordInjected): surface is the reporting hook surface
+	// ("briefing"|"prompt"|"pretool"); result is "injected" or a suppression
+	// reason ("suppressed_seen"|"suppressed_cooldown"|"suppressed_budget"|
+	// "suppressed_unchanged"|"suppressed_score"); n is how many memories fell
+	// in that bucket. Zero buckets are not reported.
+	InjectedResult(surface, result string, n int)
+	// InjectedTokens adds a report's client-side estimate of the tokens its
+	// injections consumed, by surface.
+	InjectedTokens(surface string, tokens int)
 	// EmbedBackfillPending reports the number of memories still marked
 	// pending_embed after one backfill tick (0 once the queue is drained).
 	EmbedBackfillPending(n int)
@@ -190,6 +200,8 @@ func (nopMetrics) DedupTombstoned(int)                 {}
 func (nopMetrics) CorroborateResult(string)            {}
 func (nopMetrics) ContradictResult(string)             {}
 func (nopMetrics) TierClassified(string)               {}
+func (nopMetrics) InjectedResult(string, string, int)  {}
+func (nopMetrics) InjectedTokens(string, int)          {}
 func (nopMetrics) EmbedBackfillPending(int)            {}
 func (nopMetrics) ChunkBackfillPending(int)            {}
 

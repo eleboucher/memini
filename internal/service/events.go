@@ -165,6 +165,123 @@ func (s *Service) logRecallEvent(ctx context.Context, in RecallInput, results []
 	s.logEvents(ctx, events)
 }
 
+// InjectedReport is one client injection-telemetry beacon (POST
+// /v1/activity/injected): after the server served memories (a recall or a
+// briefing), the client hook reports which of them actually reached model
+// context and what its local gates held back. Memory ids are taken on faith —
+// an unknown id is recorded as-is, never resolved or rejected — because the
+// report is best-effort observability, not a write to the memories themselves.
+type InjectedReport struct {
+	// SessionID is the client session the injection happened in; "" when the
+	// client did not say.
+	SessionID string
+	// Surface is the hook surface that reported: "briefing", "prompt" or
+	// "pretool". The transport layer validates it; it is recorded verbatim.
+	Surface string
+	// Source is the free-form client name (e.g. "claude-code"); "" omits it
+	// from the event detail, mirroring RecallInput.Source.
+	Source string
+	// InjectedIDs are the memory ids actually injected, in injection order.
+	// May be empty: a suppression-only report still records (as a single
+	// memory-less event, the zero-hit recall's precedent).
+	InjectedIDs []string
+	// TokensEst and Chars are the client's size estimates for what it
+	// injected; nil means unreported (the detail key is then absent, not 0).
+	TokensEst *int
+	Chars     *int
+	// Suppressed counts what the client's local gates held back, by reason.
+	Suppressed InjectedSuppressed
+}
+
+// InjectedSuppressed counts client-side injection suppressions by reason. A
+// zero count means "none reported" for that reason and is omitted from the
+// event detail (absent, not 0), like every other optional detail key.
+type InjectedSuppressed struct {
+	Seen, Cooldown, Budget, Unchanged, Score int
+}
+
+// suppressedBucket pairs a suppression reason with its count for iteration.
+type suppressedBucket struct {
+	reason string
+	n      int
+}
+
+// buckets returns the (reason, count) pairs in a stable order, so the metrics
+// labels and the detail map are built from one vocabulary.
+func (s InjectedSuppressed) buckets() []suppressedBucket {
+	return []suppressedBucket{
+		{"seen", s.Seen}, {"cooldown", s.Cooldown}, {"budget", s.Budget},
+		{"unchanged", s.Unchanged}, {"score", s.Score},
+	}
+}
+
+// RecordInjected records one injection-telemetry report as a single inject
+// activity event: the session/surface/source and size estimates ride the
+// event detail (the way recall stores its source), the injected ids become
+// the event's memory refs, and the suppression counts land under detail
+// "suppressed" with zero reasons omitted. Metrics are incremented per report
+// regardless of the event log's availability. Best-effort like every other
+// event writer: nothing here can fail the request path — the report IS the
+// request, so a lost row costs an audit line, never a client error — and it
+// degrades to metrics-only against a backend with no activity log.
+func (s *Service) RecordInjected(ctx context.Context, namespace string, r InjectedReport) {
+	if n := len(r.InjectedIDs); n > 0 {
+		s.metrics.InjectedResult(r.Surface, "injected", n)
+	}
+	for _, b := range r.Suppressed.buckets() {
+		if b.n > 0 {
+			s.metrics.InjectedResult(r.Surface, "suppressed_"+b.reason, b.n)
+		}
+	}
+	if r.TokensEst != nil && *r.TokensEst > 0 {
+		s.metrics.InjectedTokens(r.Surface, *r.TokensEst)
+	}
+	if _, ok := s.eventLog(); !ok {
+		return
+	}
+	detail := map[string]any{"surface": r.Surface}
+	if r.SessionID != "" {
+		detail["session_id"] = r.SessionID
+	}
+	if r.Source != "" {
+		detail["source"] = r.Source
+	}
+	if r.TokensEst != nil {
+		detail["injected_tokens_est"] = *r.TokensEst
+	}
+	if r.Chars != nil {
+		detail["injected_chars"] = *r.Chars
+	}
+	suppressed := map[string]any{}
+	for _, b := range r.Suppressed.buckets() {
+		if b.n > 0 {
+			suppressed[b.reason] = b.n
+		}
+	}
+	if len(suppressed) > 0 {
+		detail["suppressed"] = suppressed
+	}
+	base := store.Event{
+		OpID:      s.newID(),
+		Kind:      store.EventInject,
+		Namespace: namespace,
+		Detail:    detail,
+		CreatedAt: s.now(),
+	}
+	if len(r.InjectedIDs) == 0 {
+		s.logEvents(ctx, []store.Event{base})
+		return
+	}
+	events := make([]store.Event, 0, len(r.InjectedIDs))
+	for i, id := range r.InjectedIDs {
+		e := base
+		e.MemoryID = id
+		e.Rank = i + 1
+		events = append(events, e)
+	}
+	s.logEvents(ctx, events)
+}
+
 // briefingExplorationWindow bounds "recently shown" for the briefing's reserved
 // exploration slot: a durable item served in any briefing of the namespace
 // within this window yields its section's last slot to a staler one.
@@ -369,6 +486,13 @@ type ActivityMemory struct {
 	Rank      int
 	Score     *float64
 	Section   string // briefing only
+	// Injected is the served→injected join's verdict for a recall event's
+	// memory: true when a nearby inject report named it as actually reaching
+	// model context, false when a report existed but omitted it (the client
+	// suppressed it). nil when no report covered the serve — absent means
+	// unknown, so old data and non-reporting integrations render unchanged,
+	// while false means reported-suppressed. See annotateInjected.
+	Injected *bool
 }
 
 // ActivityEvent is one logical operation: what happened, when, against which
@@ -546,7 +670,73 @@ func groupEvents(rows []store.Event) []ActivityEvent {
 		out = append(out, ev)
 		i = j
 	}
+	annotateInjected(out)
 	return out
+}
+
+// injectAnnotateWindow bounds the served→injected join: an inject report only
+// annotates a recall event that happened at or before it, within this window.
+// Wide enough that a hook's post-serve beacon (seconds later) always lands,
+// tight enough that an unrelated later session rarely does.
+const injectAnnotateWindow = 5 * time.Minute
+
+// injectReportView is one inject event as the join consumes it: when and
+// against which namespace it was reported, and the ids it names as injected.
+type injectReportView struct {
+	ns  string
+	at  time.Time
+	ids map[string]bool
+}
+
+// annotateInjected stamps the served→injected flag onto recall events from
+// the inject reports in the same fetched page — a pure regrouping-pass join,
+// no extra store round-trips (activity queries are bounded). A recall memory
+// gets true when a covering report names it, false when covering reports
+// exist but none does, and stays nil (unknown) when no report covers the
+// recall at all. "Covering" is namespace + time proximity (at or after the
+// recall, within injectAnnotateWindow): recall events carry no session id, so
+// the report's session_id cannot narrow the match further. A recall whose
+// report landed on a newer page than the rows fetched here stays unannotated
+// — acceptable for a best-effort feed decoration.
+func annotateInjected(events []ActivityEvent) {
+	var reports []injectReportView
+	for _, ev := range events {
+		if ev.Kind != store.EventInject {
+			continue
+		}
+		ids := make(map[string]bool, len(ev.Memories))
+		for _, m := range ev.Memories {
+			ids[m.ID] = true
+		}
+		reports = append(reports, injectReportView{ns: ev.Namespace, at: ev.Time, ids: ids})
+	}
+	if len(reports) == 0 {
+		return
+	}
+	for i := range events {
+		ev := &events[i]
+		if ev.Kind != store.EventRecall || len(ev.Memories) == 0 {
+			continue
+		}
+		covered := false
+		injected := map[string]bool{}
+		for _, rep := range reports {
+			if rep.ns != ev.Namespace || rep.at.Before(ev.Time) || rep.at.Sub(ev.Time) > injectAnnotateWindow {
+				continue
+			}
+			covered = true
+			for id := range rep.ids {
+				injected[id] = true
+			}
+		}
+		if !covered {
+			continue
+		}
+		for j := range ev.Memories {
+			v := injected[ev.Memories[j].ID]
+			ev.Memories[j].Injected = &v
+		}
+	}
 }
 
 // PruneEvents trims the activity log to the configured retention window and row

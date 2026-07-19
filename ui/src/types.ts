@@ -46,6 +46,7 @@ export const EVENT_KINDS: EventKind[] = [
   'recall',
   'briefing',
   'get',
+  'inject',
   'remember',
   'update',
   'forget',

@@ -30,6 +30,8 @@ import {
   writeInjectedState,
   recordInjected,
   injectedIdentity,
+  postInjected,
+  injectedReport,
   escapeMeminiTags,
   MEMORY_INSTRUCTION,
   COMPACT_RECOVERY_DIRECTIVE,
@@ -310,6 +312,19 @@ async function main() {
     // fire source owes the context (nothing on resume — the transcript replay
     // carries the original injection — a fresh directive on clear).
     if (directive) process.stdout.write(directive);
+    // Telemetry beacon AFTER the stdout payload: the whole briefing was
+    // withheld as unchanged, so report the item count and no injected ids.
+    // Best-effort and awaited — see postInjected.
+    if (ctx.setting("inject_telemetry").value) {
+      const withheld = [b.pinned, b.facts, b.procedures, b.recent].reduce(
+        (sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0),
+        0,
+      );
+      await postInjected(
+        injectedReport({ surface: "briefing", sessionId, suppressed: { unchanged: withheld } }),
+        { namespace: project },
+      );
+    }
     return;
   }
 
@@ -417,6 +432,18 @@ async function main() {
   // unchanged re-injection (see the cache-stable guard above).
   if (sessionId) cacheBriefingHash(sessionId, contentHash);
 
+  // The briefing's id-carrying memories, collected once from the server's
+  // sections: fed to the cross-surface injected-state below AND reported by
+  // the telemetry beacon after the stdout write, so the two can't drift.
+  const injectedMems = [];
+  for (const arr of [b.pinned, b.facts, b.procedures, b.recent]) {
+    if (!Array.isArray(arr)) continue;
+    for (const item of arr) {
+      const mem = item?.memory ?? item;
+      if (typeof mem?.id === "string" && mem.id) injectedMems.push(mem);
+    }
+  }
+
   // Feed the cross-surface injected-memory state: the briefing's memories are
   // now in context, so the recall hooks (UserPromptSubmit, PreToolUse) must
   // not spend their top-k re-serving them. Recorded from the server's
@@ -426,35 +453,46 @@ async function main() {
   // resume whose briefing CHANGED, the surviving state still describes the
   // intact context. Rides the same inject_dedupe knob as the hooks that
   // consume it.
-  if (sessionId && ctx.setting("inject_dedupe").value) {
+  if (sessionId && ctx.setting("inject_dedupe").value && injectedMems.length > 0) {
     const injectedState = readInjectedState(sessionId);
-    let recorded = false;
-    for (const arr of [b.pinned, b.facts, b.procedures, b.recent]) {
-      if (!Array.isArray(arr)) continue;
-      for (const item of arr) {
-        const mem = item?.memory ?? item;
-        const id = mem?.id;
-        if (typeof id === "string" && id) {
-          // Real content hash when the item carries content/summary — so an
-          // in-place update (memory_update) hashes differently and re-injects,
-          // the same content-aware doctrine the other surfaces use. The sentinel
-          // "" only when the item is id-only: with no text to hash, suppression
-          // is by id alone rather than admitting on a hash-of-empty mismatch.
-          const h = mem?.content || mem?.summary ? injectedIdentity(mem) : "";
-          recordInjected(injectedState, id, h);
-          recorded = true;
-        }
-      }
+    for (const mem of injectedMems) {
+      // Real content hash when the item carries content/summary — so an
+      // in-place update (memory_update) hashes differently and re-injects,
+      // the same content-aware doctrine the other surfaces use. The sentinel
+      // "" only when the item is id-only: with no text to hash, suppression
+      // is by id alone rather than admitting on a hash-of-empty mismatch.
+      const h = mem?.content || mem?.summary ? injectedIdentity(mem) : "";
+      recordInjected(injectedState, mem.id, h);
     }
-    if (recorded) writeInjectedState(sessionId, injectedState);
+    writeInjectedState(sessionId, injectedState);
   }
 
   // Both Claude Code and Codex interpret stdout as additional context.
-  process.stdout.write(lines.join("\n"));
+  const emitted = lines.join("\n");
+  process.stdout.write(emitted);
   if (DEBUG) {
     console.error(
       `[memini] SessionStart injected ${lines.length - 2} lines ` +
         `(budget=${maxTokens || "∞"}, dropped=${totalDropped})`,
+    );
+  }
+
+  // Telemetry beacon LAST — after the context payload is fully composed and
+  // written, so it can never add latency to the injection itself. Awaited:
+  // a hook is a short-lived process, and a fire-and-forget request would die
+  // with it. Best-effort throughout (see postInjected); skipped by
+  // injectedReport/postInjected when there is nothing to report (e.g. a
+  // briefing whose items carry no ids).
+  if (sessionId && ctx.setting("inject_telemetry").value) {
+    await postInjected(
+      injectedReport({
+        surface: "briefing",
+        sessionId,
+        ids: injectedMems.map((m) => m.id),
+        tokens: approxTokens(emitted),
+        chars: emitted.length,
+      }),
+      { namespace: project },
     );
   }
 }

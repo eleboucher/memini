@@ -451,6 +451,11 @@ type ClientSettings struct {
 	// disables that call gate, because the gate's clock lives in the dedupe
 	// state.
 	InjectDedupe *bool `json:"inject_dedupe,omitempty"`
+	// InjectTelemetry reports what each hook actually injected vs suppressed
+	// back to the server (POST /v1/activity/injected) so the activity feed and
+	// metrics reflect reality instead of pre-suppression serves. Best-effort
+	// and bounded; off disables the beacon entirely.
+	InjectTelemetry *bool `json:"inject_telemetry,omitempty"`
 	// InjectCooldownMs is the time window (ms) within which an already-injected
 	// memory is not re-injected; 0 disables the time dimension. Must be >= 0.
 	InjectCooldownMs *int `json:"inject_cooldown_ms,omitempty"`
@@ -623,6 +628,7 @@ func DefaultClientSettings() ClientSettings {
 		InjectPretoolTools:    &[]string{"Read", "Write", "Edit", "MultiEdit", "Glob", "Grep"},
 		InjectPretoolGateMs:   new(90000),
 		InjectDedupe:          new(true),
+		InjectTelemetry:       new(true),
 		InjectCooldownMs:      new(1800000),
 		InjectCooldownPrompts: new(3),
 
@@ -725,6 +731,9 @@ func MergeClientSettings(layers ...SettingsLayer) (ClientSettings, map[string]st
 		}
 		if applyPtr(&out.InjectPretoolGateMs, s.InjectPretoolGateMs) {
 			sources["inject_pretool_gate_ms"] = l.Source
+		}
+		if applyPtr(&out.InjectTelemetry, s.InjectTelemetry) {
+			sources["inject_telemetry"] = l.Source
 		}
 		if applyPtr(&out.InjectDedupe, s.InjectDedupe) {
 			sources["inject_dedupe"] = l.Source
@@ -932,6 +941,10 @@ const (
 	EventPin       EventKind = "pin"
 	EventUnpin     EventKind = "unpin"
 	EventSettings  EventKind = "settings"
+	// EventInject is a client injection-telemetry report (POST
+	// /v1/activity/injected): which served memories a hook actually injected
+	// into model context, and what its local gates suppressed.
+	EventInject EventKind = "inject"
 )
 
 // ValidEventKind reports whether k is one of the recorded kinds, so the REST
@@ -939,7 +952,7 @@ const (
 func ValidEventKind(k EventKind) bool {
 	switch k {
 	case EventRecall, EventGet, EventBriefing, EventRemember, EventUpdate, EventForget, EventSupersede,
-		EventPin, EventUnpin, EventSettings:
+		EventPin, EventUnpin, EventSettings, EventInject:
 		return true
 	}
 	return false
