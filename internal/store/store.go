@@ -137,6 +137,14 @@ type Store interface {
 	// Get returns a memory by ID, or ErrNotFound.
 	Get(ctx context.Context, namespace, id string) (*memory.Memory, error)
 
+	// IDsByPrefix returns the IDs in the namespace that begin with prefix,
+	// ordered ascending and bounded at limit rows — an indexed prefix scan
+	// backing short-id resolution (service.Get accepts an 8+ hex-char id
+	// prefix). LIKE/glob metacharacters in prefix match literally, never as
+	// wildcards. An empty prefix or non-positive limit returns no rows: the
+	// caller is resolving a specific handle, never enumerating a namespace.
+	IDsByPrefix(ctx context.Context, namespace, prefix string, limit int) ([]string, error)
+
 	// GetEmbedding returns the stored vector for a memory, for a write that must
 	// preserve a vector it is not recomputing (see service.Remember's reuse of
 	// the stored vector when an update leaves content unchanged). Returns

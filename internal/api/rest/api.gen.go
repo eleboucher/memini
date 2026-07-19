@@ -294,6 +294,24 @@ func (e ReadSetOrigin) Valid() bool {
 	}
 }
 
+// Defines values for SearchRequestResponseFormat.
+const (
+	SearchRequestResponseFormatConcise  SearchRequestResponseFormat = "concise"
+	SearchRequestResponseFormatDetailed SearchRequestResponseFormat = "detailed"
+)
+
+// Valid indicates whether the value is a known member of the SearchRequestResponseFormat enum.
+func (e SearchRequestResponseFormat) Valid() bool {
+	switch e {
+	case SearchRequestResponseFormatConcise:
+		return true
+	case SearchRequestResponseFormatDetailed:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SearchRequestScope.
 const (
 	SearchRequestScopeEverywhere SearchRequestScope = "everywhere"
@@ -473,25 +491,64 @@ func (e ListMemoriesParamsOrder) Valid() bool {
 
 // Defines values for GetBriefingParamsScope.
 const (
-	Everywhere GetBriefingParamsScope = "everywhere"
-	Exact      GetBriefingParamsScope = "exact"
-	Full       GetBriefingParamsScope = "full"
-	Project    GetBriefingParamsScope = "project"
-	Subtree    GetBriefingParamsScope = "subtree"
+	GetBriefingParamsScopeEverywhere GetBriefingParamsScope = "everywhere"
+	GetBriefingParamsScopeExact      GetBriefingParamsScope = "exact"
+	GetBriefingParamsScopeFull       GetBriefingParamsScope = "full"
+	GetBriefingParamsScopeProject    GetBriefingParamsScope = "project"
+	GetBriefingParamsScopeSubtree    GetBriefingParamsScope = "subtree"
 )
 
 // Valid indicates whether the value is a known member of the GetBriefingParamsScope enum.
 func (e GetBriefingParamsScope) Valid() bool {
 	switch e {
-	case Everywhere:
+	case GetBriefingParamsScopeEverywhere:
 		return true
-	case Exact:
+	case GetBriefingParamsScopeExact:
 		return true
-	case Full:
+	case GetBriefingParamsScopeFull:
 		return true
-	case Project:
+	case GetBriefingParamsScopeProject:
 		return true
-	case Subtree:
+	case GetBriefingParamsScopeSubtree:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetBriefingParamsFormat.
+const (
+	GetBriefingParamsFormatConcise  GetBriefingParamsFormat = "concise"
+	GetBriefingParamsFormatDetailed GetBriefingParamsFormat = "detailed"
+)
+
+// Valid indicates whether the value is a known member of the GetBriefingParamsFormat enum.
+func (e GetBriefingParamsFormat) Valid() bool {
+	switch e {
+	case GetBriefingParamsFormatConcise:
+		return true
+	case GetBriefingParamsFormatDetailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetBriefingParamsChildren.
+const (
+	GetBriefingParamsChildrenFull    GetBriefingParamsChildren = "full"
+	GetBriefingParamsChildrenNone    GetBriefingParamsChildren = "none"
+	GetBriefingParamsChildrenSummary GetBriefingParamsChildren = "summary"
+)
+
+// Valid indicates whether the value is a known member of the GetBriefingParamsChildren enum.
+func (e GetBriefingParamsChildren) Valid() bool {
+	switch e {
+	case GetBriefingParamsChildrenFull:
+		return true
+	case GetBriefingParamsChildrenNone:
+		return true
+	case GetBriefingParamsChildrenSummary:
 		return true
 	default:
 		return false
@@ -667,9 +724,19 @@ type Briefing struct {
 
 // BriefingChild defines model for BriefingChild.
 type BriefingChild struct {
-	Namespace string    `json:"namespace"`
-	Pinned    *[]Memory `json:"pinned,omitempty"`
-	Recent    *[]Memory `json:"recent,omitempty"`
+	Namespace string `json:"namespace"`
+
+	// Pinned Full pinned highlight memories; only with children=full (the default).
+	Pinned *[]Memory `json:"pinned,omitempty"`
+
+	// PinnedTitles Compact display titles (summary, else a ≤60-rune boundary cut of content) of the pinned highlights; only with children=summary, which ships titles/counts and no memory objects.
+	PinnedTitles *[]string `json:"pinned_titles,omitempty"`
+
+	// Recent Full recent-durable highlight memories; only with children=full (the default).
+	Recent *[]Memory `json:"recent,omitempty"`
+
+	// RecentTitles Compact display titles of the recent-durable highlights; only with children=summary.
+	RecentTitles *[]string `json:"recent_titles,omitempty"`
 
 	// Total Live memory count in this child namespace.
 	Total int `json:"total"`
@@ -1022,13 +1089,19 @@ type Memory struct {
 	AutoSuperseded *bool `json:"auto_superseded,omitempty"`
 
 	// Confidence Corroboration of a durable fact in [0,1]; null when not tracked.
-	Confidence     *float64   `json:"confidence,omitempty"`
-	Content        string     `json:"content"`
-	CreatedAt      time.Time  `json:"created_at"`
-	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
-	Id             string     `json:"id"`
-	Importance     float64    `json:"importance"`
-	LastAccessedAt time.Time  `json:"last_accessed_at"`
+	Confidence *float64 `json:"confidence,omitempty"`
+	Content    string   `json:"content"`
+
+	// ContentHash Content-identity hash for injection dedupe: the first 16 hex chars of sha256 over the FULL stored content, falling back to the summary only when content is empty — the same recipe as the plugin client's injectedIdentity, so client and server derive identical identities. Always computed over the stored text (never a concise projection), so it is stable across response formats. Present on search and briefing responses; omitted elsewhere.
+	ContentHash *string `json:"content_hash,omitempty"`
+
+	// ContentTruncated Present (true) only in concise-format responses (response_format=concise on /v1/search, format=concise on /v1/namespaces/briefing) when this memory's content was replaced by a boundary cut of the stored content. Absent when the concise text is a stored summary or content short enough to pass through verbatim — and always absent in detailed responses.
+	ContentTruncated *bool      `json:"content_truncated,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+	Id               string     `json:"id"`
+	Importance       float64    `json:"importance"`
+	LastAccessedAt   time.Time  `json:"last_accessed_at"`
 
 	// Level Derivation provenance: explicit (user-stated / heuristic) vs deduced (LLM-distilled). Null/omitted when the row predates the tag or when unset.
 	Level *Level `json:"level,omitempty"`
@@ -1231,6 +1304,9 @@ type SearchRequest struct {
 	// QueryRewrite When true and an LLM is configured, rewrite the query into 2-3 diverse variants before recall and fuse results via RRF. Cheapest read-path LLM lever; opt-in per call.
 	QueryRewrite *bool `json:"query_rewrite,omitempty"`
 
+	// ResponseFormat "detailed" (default, and the behavior when absent) returns each result's full stored content. "concise" replaces each result's memory.content with its compact form — the summary when one exists, else the content cut at a word/sentence boundary to at most 240 runes with a "…" suffix — and sets memory.content_truncated on results whose concise text is such a cut. A projection at response mapping only: ranking, filters, and scores are identical across formats, and memory.content_hash is always computed over the full stored content. Fetch full text with GET /v1/memories/{id}.
+	ResponseFormat *SearchRequestResponseFormat `json:"response_format,omitempty"`
+
 	// Scope "full" (default) searches the request namespace plus its ancestor/home/link cascade; "project" searches only the request namespace (no cascade); "everywhere" is "full" plus the request namespace's subtree, for the multi-agent read-shared-plus-private pattern. "exact" and "subtree" are deprecated aliases kept for back-compat: "exact" behaves as "project" (its original, pre-cascade meaning — the request namespace only) and "subtree" behaves as "everywhere". Any other value is rejected with 400.
 	Scope *SearchRequestScope `json:"scope,omitempty"`
 
@@ -1241,6 +1317,9 @@ type SearchRequest struct {
 	Tags  *[]string `json:"tags,omitempty"`
 	Tiers *[]Tier   `json:"tiers,omitempty"`
 }
+
+// SearchRequestResponseFormat "detailed" (default, and the behavior when absent) returns each result's full stored content. "concise" replaces each result's memory.content with its compact form — the summary when one exists, else the content cut at a word/sentence boundary to at most 240 runes with a "…" suffix — and sets memory.content_truncated on results whose concise text is such a cut. A projection at response mapping only: ranking, filters, and scores are identical across formats, and memory.content_hash is always computed over the full stored content. Fetch full text with GET /v1/memories/{id}.
+type SearchRequestResponseFormat string
 
 // SearchRequestScope "full" (default) searches the request namespace plus its ancestor/home/link cascade; "project" searches only the request namespace (no cascade); "everywhere" is "full" plus the request namespace's subtree, for the multi-agent read-shared-plus-private pattern. "exact" and "subtree" are deprecated aliases kept for back-compat: "exact" behaves as "project" (its original, pre-cascade meaning — the request namespace only) and "subtree" behaves as "everywhere". Any other value is rejected with 400.
 type SearchRequestScope string
@@ -1697,12 +1776,24 @@ type GetBriefingParams struct {
 	// Namespaces Repeatable. Brief exactly these namespaces instead of the default read set (the namespace, its subtree, and the global namespace). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected.
 	Namespaces *[]string `form:"namespaces,omitempty" json:"namespaces,omitempty"`
 
+	// Format "detailed" (default) carries each item's full stored content. "concise" replaces each item's memory.content with its compact form — the summary when one exists, else the content cut at a word/sentence boundary to at most 280 runes (the client's briefing render cap) with a "…" suffix — and sets memory.content_truncated on items whose concise text is such a cut. Section selection and ordering are identical across formats, and memory.content_hash is always computed over the full stored content.
+	Format *GetBriefingParamsFormat `form:"format,omitempty" json:"format,omitempty"`
+
+	// Children How to render the direct-child rollup: "full" (default) carries complete memory objects per child (the admin UI consumes these); "summary" ships titles/counts only per child — namespace, total, and compact pinned/recent title lines (pinned_titles/ recent_titles), the same isolation surface the MCP briefing renders; "none" omits the rollup entirely.
+	Children *GetBriefingParamsChildren `form:"children,omitempty" json:"children,omitempty"`
+
 	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
 // GetBriefingParamsScope defines parameters for GetBriefing.
 type GetBriefingParamsScope string
+
+// GetBriefingParamsFormat defines parameters for GetBriefing.
+type GetBriefingParamsFormat string
+
+// GetBriefingParamsChildren defines parameters for GetBriefing.
+type GetBriefingParamsChildren string
 
 // MoveNamespaceJSONBody defines parameters for MoveNamespace.
 type MoveNamespaceJSONBody struct {
@@ -1865,7 +1956,7 @@ type ServerInterface interface {
 	// Forget (delete) a memory
 	// (DELETE /v1/memories/{id})
 	ForgetMemory(w http.ResponseWriter, r *http.Request, id string, params ForgetMemoryParams)
-	// Fetch a memory by ID
+	// Fetch a memory by ID (or unique id prefix)
 	// (GET /v1/memories/{id})
 	GetMemory(w http.ResponseWriter, r *http.Request, id string, params GetMemoryParams)
 	// Update a memory in place
@@ -2039,7 +2130,7 @@ func (_ Unimplemented) ForgetMemory(w http.ResponseWriter, r *http.Request, id s
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Fetch a memory by ID
+// Fetch a memory by ID (or unique id prefix)
 // (GET /v1/memories/{id})
 func (_ Unimplemented) GetMemory(w http.ResponseWriter, r *http.Request, id string, params GetMemoryParams) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -3671,6 +3762,32 @@ func (siw *ServerInterfaceWrapper) GetBriefing(w http.ResponseWriter, r *http.Re
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "namespaces"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "namespaces", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "format" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "format", r.URL.Query(), &params.Format, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "format"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "format", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "children" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "children", r.URL.Query(), &params.Children, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "children"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "children", Err: err})
 		}
 		return
 	}

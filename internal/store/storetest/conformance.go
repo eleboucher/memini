@@ -62,6 +62,84 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("ListRecencyWindow", func(t *testing.T) { testListRecencyWindow(t, st, dims) })
 	t.Run("EventLog", func(t *testing.T) { testEventLog(t, st, dims) })
 	t.Run("Chunks", func(t *testing.T) { testChunks(t, st, dims) })
+	t.Run("IDsByPrefix", func(t *testing.T) { testIDsByPrefix(t, st, dims) })
+}
+
+// testIDsByPrefix pins the indexed id-prefix scan backing short-id
+// resolution: ascending order, the limit bound, literal (never wildcard)
+// matching of LIKE metacharacters, and namespace scoping.
+func testIDsByPrefix(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+	other := ns + "-other"
+	// IDs are stored verbatim (no id() scoping): the scan matches on the
+	// leading bytes, so the fixture controls them exactly. UUID-shaped so the
+	// fixture mirrors production ids.
+	const (
+		twinA  = "aabbccdd-1111-4000-8000-000000000001"
+		twinB  = "aabbccdd-2222-4000-8000-000000000002"
+		unique = "aabbccff-3333-4000-8000-000000000003"
+	)
+	for _, memID := range []string{twinA, twinB, unique} {
+		m := mem(ns, "x", "prefix fixture "+memID, vec(dims, 1))
+		m.ID = memID
+		mustUpsert(t, st, m)
+	}
+	foreign := mem(other, "x", "same prefix, different namespace", vec(dims, 1))
+	foreign.ID = "aabbccdd-9999-4000-8000-000000000009"
+	mustUpsert(t, st, foreign)
+
+	// A prefix unique in the namespace resolves to exactly its row.
+	got, err := st.IDsByPrefix(ctx, ns, "aabbccff", 2)
+	if err != nil {
+		t.Fatalf("unique prefix: %v", err)
+	}
+	if want := []string{unique}; !slices.Equal(got, want) {
+		t.Fatalf("unique prefix = %v, want %v", got, want)
+	}
+
+	// An ambiguous prefix returns every collision up to the bound, ascending —
+	// the foreign namespace's aabbccdd row must NOT leak in.
+	got, err = st.IDsByPrefix(ctx, ns, "aabbccdd", 5)
+	if err != nil {
+		t.Fatalf("ambiguous prefix: %v", err)
+	}
+	if want := []string{twinA, twinB}; !slices.Equal(got, want) {
+		t.Fatalf("ambiguous prefix = %v, want %v", got, want)
+	}
+
+	// The limit bounds the scan (the resolver asks for 2: enough to tell
+	// "unique" from "ambiguous" without walking every collision).
+	if got, err = st.IDsByPrefix(ctx, ns, "aabbcc", 1); err != nil || len(got) != 1 {
+		t.Fatalf("limit 1 = (%v, %v), want exactly 1 row", got, err)
+	}
+
+	// No match is an empty result, not an error.
+	if got, err = st.IDsByPrefix(ctx, ns, "ffffffff", 2); err != nil || len(got) != 0 {
+		t.Fatalf("no match = (%v, %v), want empty", got, err)
+	}
+
+	// A full id is its own prefix.
+	if got, err = st.IDsByPrefix(ctx, ns, twinA, 2); err != nil || !slices.Equal(got, []string{twinA}) {
+		t.Fatalf("full id = (%v, %v), want itself", got, err)
+	}
+
+	// LIKE metacharacters match literally: "aabbcc%" is not a wildcard and
+	// matches nothing here; same for "_" and a lone "%".
+	for _, hostile := range []string{"aabbcc%", "aabbcc_d", "%", "_"} {
+		if got, err = st.IDsByPrefix(ctx, ns, hostile, 5); err != nil || len(got) != 0 {
+			t.Fatalf("hostile prefix %q = (%v, %v), want empty", hostile, got, err)
+		}
+	}
+
+	// Empty prefix and non-positive limit return nothing — the scan resolves
+	// handles, it does not enumerate.
+	if got, err = st.IDsByPrefix(ctx, ns, "", 2); err != nil || len(got) != 0 {
+		t.Fatalf("empty prefix = (%v, %v), want empty", got, err)
+	}
+	if got, err = st.IDsByPrefix(ctx, ns, "aabbcc", 0); err != nil || len(got) != 0 {
+		t.Fatalf("limit 0 = (%v, %v), want empty", got, err)
+	}
 }
 
 // Fixture labels shared by the sort/filter subtests below. They are constants

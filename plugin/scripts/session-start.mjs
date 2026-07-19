@@ -30,6 +30,7 @@ import {
   writeInjectedState,
   recordInjected,
   injectedIdentity,
+  isContentHash,
   postInjected,
   injectedReport,
   escapeMeminiTags,
@@ -123,6 +124,9 @@ function warnRemovedVars(env) {
 // a "link:"/"call:" prefixed origin — see BriefingItem.from in api/openapi.yaml);
 // it is rendered as a trailing "(from …)" suffix independent of MEMINI_INJECT_LABELS,
 // because knowing a fact came from outside this namespace is context, not a label.
+// An id-carrying item gains a trailing [m:<first 8 id chars>] handle — the id
+// memory_get resolves (the server accepts prefixes >= 8 hex chars); ids are
+// server-minted hex/uuid, safe to render verbatim.
 function formatMemory(m, section, labels, from) {
   // Neutralize memini wrapper tags in the untrusted stored content BEFORE the
   // 280-cap. An entity expansion (`<memini` → `&lt;memini`) slightly shifts the
@@ -135,15 +139,19 @@ function formatMemory(m, section, labels, from) {
   // namespace/origin name — namespace validation allows "<", so escape it like
   // stored content, or a hostile directory name could smuggle a `<memini` tag in.
   const prov = from ? ` (from ${escapeMeminiTags(from)})` : "";
-  // Cap the CONTENT at 280 code points, rune-safe (mirrors childTitle in
+  const handle = typeof m?.id === "string" && m.id ? ` [m:${m.id.slice(0, 8)}]` : "";
+  // Cap the CONTENT at the section's cap (default 280 code points; the Recent
+  // section's index mode tightens it to 120), rune-safe (mirrors childTitle in
   // mcp.go): Array.from counts code points, so an astral character at the
   // boundary is never split into a broken surrogate half, and "…" is appended
-  // only when truncation actually cut something — exactly-280 content renders
-  // verbatim with no ellipsis. The cap applies before the provenance suffix.
+  // only when truncation actually cut something — exactly-at-cap content
+  // renders verbatim with no ellipsis. The cap applies before the provenance
+  // suffix and the [m:id] handle.
+  const cap = section.cap ?? 280;
   const runes = Array.from(text);
-  const capped = runes.length > 280 ? runes.slice(0, 280).join("") + "…" : text;
+  const capped = runes.length > cap ? runes.slice(0, cap).join("") + "…" : text;
   const parts = [capped];
-  if (labels.size === 0) return parts[0] + prov;
+  if (labels.size === 0) return parts[0] + prov + handle;
   const tagParts = [];
   if (labels.has("tier") && m?.tier) tagParts.push(m.tier);
   if (labels.has("confidence") && typeof m?.confidence === "number") {
@@ -157,8 +165,8 @@ function formatMemory(m, section, labels, from) {
     }
   }
   if (labels.has("reason")) tagParts.push(section.reason);
-  if (tagParts.length === 0) return parts[0] + prov;
-  return `[${tagParts.join(" · ")}] ${parts[0]}${prov}`;
+  if (tagParts.length === 0) return parts[0] + prov + handle;
+  return `[${tagParts.join(" · ")}] ${parts[0]}${prov}${handle}`;
 }
 
 // readBriefingOpts pulls the per-section caps out of the resolved session
@@ -342,7 +350,11 @@ async function main() {
     // ([3d]/[today]), independent of inject_labels: temporal reasoning is an
     // LLM's weakest memory skill (LongMemEval) and dated recency measurably
     // helps, so recency is surfaced by default here. Other sections stay opt-in.
-    { label: "Recent activity", reason: "recent activity", mems: b.recent, alwaysAge: true },
+    // It also renders in INDEX mode — a tighter 120-code-point cap per item —
+    // because recent episodics are pointers back into past sessions, not
+    // context to reason over: age + a scent line + the [m:id] handle is enough
+    // to pull the full record via memory_get when it matters.
+    { label: "Recent activity", reason: "recent activity", mems: b.recent, alwaysAge: true, cap: 120 },
   ];
   for (const s of sections) {
     if (!Array.isArray(s.mems) || s.mems.length === 0) continue;
@@ -358,7 +370,7 @@ async function main() {
       // pre-T6 flat servers, where the item IS the memory.
       const mem = item?.memory ?? item;
       const from = item?.from ?? "";
-      const line = formatMemory(mem, { reason: s.reason }, sectionLabels, from);
+      const line = formatMemory(mem, { reason: s.reason, cap: s.cap }, sectionLabels, from);
       if (line) bullets.push(`- ${line}`);
     }
     if (bullets.length === 0) continue;
@@ -456,12 +468,14 @@ async function main() {
   if (sessionId && ctx.setting("inject_dedupe").value && injectedMems.length > 0) {
     const injectedState = readInjectedState(sessionId);
     for (const mem of injectedMems) {
-      // Real content hash when the item carries content/summary — so an
+      // Real content hash when the item carries content/summary — or a valid
+      // server-minted content_hash, which injectedIdentity prefers — so an
       // in-place update (memory_update) hashes differently and re-injects,
       // the same content-aware doctrine the other surfaces use. The sentinel
-      // "" only when the item is id-only: with no text to hash, suppression
-      // is by id alone rather than admitting on a hash-of-empty mismatch.
-      const h = mem?.content || mem?.summary ? injectedIdentity(mem) : "";
+      // "" only when the item is truly id-only: with nothing to hash,
+      // suppression is by id alone rather than admitting on a hash-of-empty
+      // mismatch.
+      const h = mem?.content || mem?.summary || isContentHash(mem?.content_hash) ? injectedIdentity(mem) : "";
       recordInjected(injectedState, mem.id, h);
     }
     writeInjectedState(sessionId, injectedState);

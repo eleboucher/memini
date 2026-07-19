@@ -24,7 +24,7 @@ The core read and write surface. `POST /v1/search` is the REST equivalent of the
 | `GET /v1/memories` | List memories in a namespace (backs the admin UI browser) |
 | `POST /v1/memories` | Remember (store) a memory |
 | `DELETE /v1/memories/{id}` | Forget (delete) a memory |
-| `GET /v1/memories/{id}` | Fetch a memory by ID |
+| `GET /v1/memories/{id}` | Fetch a memory by ID (or unique id prefix) |
 | `PATCH /v1/memories/{id}` | Update a memory in place |
 | `GET /v1/memories/{id}/history` | The full version chain (supersession lineage) of a memory |
 | `POST /v1/memories/{id}/reassign` | Move a single memory to a different namespace |

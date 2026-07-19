@@ -2363,7 +2363,9 @@ test("pre-tool-use.mjs: MEMINI_INJECT_PRETOOL_MAX_TOK truncates per-file block",
       { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_ITEMS: "4", MEMINI_INJECT_PRETOOL_MAX_TOK: "10" },
     );
     const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
-    assert.match(ctx, /\[...\s+\d+ item\(s\) truncated/);
+    // PR-E renamed the recall-path drop footer to name the tool that recovers
+    // the tail (the briefing keeps the old "[... N item(s) truncated]" form).
+    assert.match(ctx, /\[\+\d+ more — memory_recall for detail\]/);
   } finally {
     await close();
   }
@@ -5911,6 +5913,324 @@ test("user-prompt-submit.mjs: a beacon endpoint returning 500 never fails the ho
     );
     assert.match(JSON.parse(stdout).hookSpecificOutput.additionalContext, /a durable fact/, "stdout payload intact despite the 500");
     assert.equal(beaconHits, 1, "the beacon was attempted and its failure swallowed");
+  } finally {
+    await close();
+  }
+});
+
+// ─── progressive disclosure (PR-E): concise wire + [m:id] handles ──────────
+//
+// The hooks ask the server for CONCISE payloads (search `response_format:
+// "concise"`, briefing `format=concise`), render an `[m:<id8>]` handle on
+// every id-carrying bullet, and teach the model — once per recall/pretool
+// block that truncated anything — to pull full text with memory_get. Identity
+// moves to the server-minted content_hash when present, so a concise hit and
+// its full-form sibling dedupe as the SAME memory. On the wire, content_hash
+// / content_truncated ride ON THE MEMORY object (bi/sm take the memory whole,
+// so the new fields flow through the shared constructors).
+
+const TEACH = "<!-- summaries; full text: memory_get with the id from [m:…] -->";
+
+test("formatRecallHit: renders an [m:<id8>] handle when the hit has an id; none without", async () => {
+  const { formatRecallHit } = await import("./_shared.mjs");
+  const none = new Set();
+  assert.equal(
+    formatRecallHit({ content: "auth decision", score: 0.95, memory: { id: "0123456789abcdef0123" } }, none),
+    "- (0.95) auth decision [m:01234567]",
+  );
+  // ids shorter than 8 chars render verbatim — slice never pads.
+  assert.equal(formatRecallHit({ content: "x", score: 0.5, memory: { id: "m1" } }, none), "- (0.50) x [m:m1]");
+  // no id → no handle (both the empty-memory and missing-memory shapes).
+  assert.equal(formatRecallHit({ content: "auth decision", score: 0.95, memory: {} }, none), "- (0.95) auth decision");
+  assert.equal(formatRecallHit({ content: "auth decision", score: 0.95 }, none), "- (0.95) auth decision");
+  // labels keep the handle at the tail.
+  assert.equal(
+    formatRecallHit({ content: "auth decision", score: 0.9, tier: "semantic", memory: { id: "abcd1234ef" } }, new Set(["tier"])),
+    "- (0.90) [semantic] auth decision [m:abcd1234]",
+  );
+});
+
+test("injectedIdentity: prefers a valid content_hash; rejects malformed; cross-format stable", async () => {
+  const { injectedIdentity } = await import("./_shared.mjs");
+  const local = injectedIdentity({ content: "the full fact text, well past any render cap" });
+  assert.match(local, /^[0-9a-f]{16}$/);
+  // A valid server-minted hash wins — read off the memory itself (briefing
+  // shape) or off the hit's nested memory (recall shape).
+  assert.equal(injectedIdentity({ content: "anything", content_hash: "aaaabbbbccccdddd" }), "aaaabbbbccccdddd");
+  assert.equal(
+    injectedIdentity({ content: "concise cut…", memory: { id: "m1", content_hash: "aaaabbbbccccdddd", content_truncated: true } }),
+    "aaaabbbbccccdddd",
+  );
+  // Malformed hashes (wrong case, wrong length, junk, empty) fall back to the
+  // local recipe rather than poisoning identity.
+  for (const bad of ["AAAABBBBCCCCDDDD", "aaaabbbbccccddd", "aaaabbbbccccdddd0", "not-hex-not-real", 42, ""]) {
+    assert.equal(injectedIdentity({ content: "the full fact text, well past any render cap", content_hash: bad }), local);
+  }
+  // The regression that motivated content_hash: a briefing item (FULL content)
+  // and a concise recall hit (truncated content) of the same memory hashed
+  // DIFFERENTLY under the local recipe, so the seen-filter re-injected what the
+  // context already carried. With the shared server hash they are the same.
+  const briefed = { id: "m9", content: "the full fact text, well past any render cap", content_hash: "0123456789abcdef" };
+  const concise = { content: "the full fact te…", memory: { id: "m9", content_hash: "0123456789abcdef", content_truncated: true } };
+  assert.equal(injectedIdentity(briefed), injectedIdentity(concise));
+});
+
+test("user-prompt-submit.mjs: search asks response_format concise; a 400 on it retries once without (old servers)", async () => {
+  // Mirrors the exclude_ids 400-retry: an old server that rejects unknown body
+  // fields must degrade to full-content recall, never to NO recall. Strip
+  // order is exclude_ids first (the newer field), then response_format.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    const parsed = JSON.parse(body);
+    bodies.push(parsed);
+    res.setHeader("Content-Type", "application/json");
+    if (parsed.exclude_ids || parsed.response_format) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ error: "unknown field" }));
+      return;
+    }
+    const n = bodies.length;
+    res.end(JSON.stringify(searchBody([sm({ id: `m${n}`, content: `fact number ${n}` }, 0.9)])));
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  const payload = (p) => JSON.stringify({ session_id: "p400rf", cwd: __dirname, prompt: p });
+  try {
+    const first = await runHook("user-prompt-submit.mjs", payload("what did we decide about auth tokens"), env);
+    assert.equal(bodies[0].response_format, "concise", "the first attempt asks for concise content");
+    assert.equal(bodies[1].response_format, undefined, "the retry drops response_format");
+    assert.match(JSON.parse(first.stdout).hookSpecificOutput.additionalContext, /fact number 2/, "recall lands after the retry");
+
+    // Second prompt carries exclude_ids too: worst-case old server 400s both
+    // fields → strip exclude_ids, still 400 → strip response_format, then 200.
+    const second = await runHook("user-prompt-submit.mjs", payload("and what about session cookies here"), env);
+    assert.equal(bodies.length, 5, "second prompt: 400, 400, then success");
+    assert.ok(bodies[2].exclude_ids, "attempt 1 carried exclude_ids");
+    assert.equal(bodies[2].response_format, "concise");
+    assert.equal(bodies[3].exclude_ids, undefined, "exclude_ids is stripped first");
+    assert.equal(bodies[3].response_format, "concise");
+    assert.equal(bodies[4].response_format, undefined, "then response_format");
+    assert.match(JSON.parse(second.stdout).hookSpecificOutput.additionalContext, /fact number 5/);
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: fingerprint rides content_hash — a concise re-serve is suppressed; a changed hash re-injects", async () => {
+  // The per-file fingerprint hashes {id, h} pairs, where h prefers the
+  // server's content_hash: the same memory served FULL then CONCISE (same
+  // hash) must fingerprint identically — truncation is display, not identity
+  // — and the fingerprint stays tool-agnostic (Read then Edit). A genuinely
+  // changed memory (new content_hash) still re-injects.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const searches = [];
+  const full = "the auth decision in full detail, way past any concise boundary";
+  const responses = [
+    sm({ id: "m1", content: full, content_hash: "aaaabbbbccccdddd" }, 0.95),
+    sm({ id: "m1", content: "the auth decision in full…", content_truncated: true, content_hash: "aaaabbbbccccdddd" }, 0.95),
+    sm({ id: "m1", content: "the auth decision, amended…", content_truncated: true, content_hash: "1111222233334444" }, 0.95),
+  ];
+  const { url, close } = await startMockServer((req, res, body) => {
+    searches.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([responses[searches.length - 1]])));
+  });
+  const gate0 = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_GATE_MS: "0" };
+  const mk = (tool) =>
+    JSON.stringify({ session_id: "fp-hash", cwd: __dirname, tool_name: tool, tool_input: { file_path: "internal/auth.go" } });
+  const lapse = () => {
+    // Backdate the cross-surface cooldown so the re-serve reaches the per-file
+    // fingerprint (the same maneuver as the beacon suppressed.unchanged test).
+    const p = INJ_STATE(cache, "fp-hash");
+    const st = JSON.parse(readFileSync(p, "utf8"));
+    st.ids.m1.at = Date.now() - 7200000;
+    st.ids.m1.n = 0;
+    writeFileSync(p, JSON.stringify(st));
+  };
+  try {
+    const first = await runHook("pre-tool-use.mjs", mk("Read"), gate0);
+    assert.match(first.stdout, /auth decision in full/, "the full form injects");
+    assert.equal(searches[0].response_format, "concise", "pretool recall asks for concise content");
+
+    lapse();
+    const second = await runHook("pre-tool-use.mjs", mk("Edit"), gate0);
+    assert.equal(second.stdout, "", "the concise re-serve (same content_hash, different tool) is suppressed");
+
+    const third = await runHook("pre-tool-use.mjs", mk("Read"), gate0);
+    assert.match(third.stdout, /amended/, "a changed content_hash is a REAL change and re-injects");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: a wire-truncated hit teaches memory_get exactly once; an untruncated block never does", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  let mode = "truncated";
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    const hit =
+      mode === "truncated"
+        ? sm({ id: "m1", content: "concise summary of the fact…", content_truncated: true, content_hash: "aaaabbbbccccdddd" }, 0.9)
+        : sm({ id: "m2", content: "short and complete" }, 0.9);
+    res.end(JSON.stringify(searchBody([hit])));
+  });
+  try {
+    const cut = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "teach1", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "a.go" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    const ctx = JSON.parse(cut.stdout).hookSpecificOutput.additionalContext;
+    assert.equal((ctx.match(/summaries; full text/g) || []).length, 1, "the teach line appears exactly once");
+    assert.ok(ctx.includes(TEACH), "byte-exact teach line (prompt-cache friendly)");
+    assert.ok(
+      ctx.indexOf("Related memories") < ctx.indexOf(TEACH) && ctx.indexOf(TEACH) < ctx.indexOf("File:"),
+      "the teach line sits after the opening comment, before the hits",
+    );
+    assert.match(ctx, /\[m:m1\]/, "the handle the teach line points at is rendered");
+
+    mode = "plain";
+    const plain = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "teach2", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "b.go" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    const plainCtx = JSON.parse(plain.stdout).hookSpecificOutput.additionalContext;
+    assert.match(plainCtx, /short and complete/);
+    assert.doesNotMatch(plainCtx, /summaries; full text/, "nothing truncated → no teach line");
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: the client-side 240-char cap also teaches memory_get (old servers, full content)", async () => {
+  // An old server ignores response_format and serves full content; the
+  // client's own 240-char render cap is then the truncation that warrants the
+  // teach line.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "0123456789abcdef", content: "c".repeat(300) }, 0.9)])));
+  });
+  try {
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "teach3", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.equal((ctx.match(/summaries; full text/g) || []).length, 1, "the client cap fires the teach line, once");
+    assert.ok(ctx.includes(TEACH), "byte-identical to the pretool teach line");
+    assert.match(ctx, /\[m:01234567\]/, "the handle memory_get resolves is rendered");
+    assert.equal((ctx.match(/<\/memini-recall>/g) || []).length, 1, "wrapper structure intact");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: briefing asks format=concise; Recent renders index-mode; facts keep the 280 cap + handle", async () => {
+  const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString();
+  const urls = [];
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
+      urls.push(req.url);
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify(
+          briefingBody({
+            facts: [bi({ id: "1111222233334444", content: "f".repeat(300) })],
+            recent: [bi({ id: "abcdef1234567890", content: "r".repeat(150), created_at: threeDaysAgo })],
+          }),
+        ),
+      );
+    }),
+  );
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "pd-brief", cwd: __dirname, source: "startup" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() },
+    );
+    const briefingUrl = urls.find((u) => u.startsWith("/v1/namespaces/briefing"));
+    assert.ok(briefingUrl, "the briefing call happened");
+    assert.equal(new URL(briefingUrl, "http://x").searchParams.get("format"), "concise", "briefing asks for concise items");
+    // Recent is an index now: age label + 120-code-point cap + [m:id8] handle.
+    assert.match(stdout, new RegExp(`^- \\[3d\\] r{120}… \\[m:abcdef12\\]$`, "m"), "recent renders age + 120cp cap + handle");
+    assert.doesNotMatch(stdout, /r{121}/, "recent content is capped at 120 code points");
+    // Facts keep the 280-cap and gain the handle.
+    assert.match(stdout, new RegExp(`^- f{280}… \\[m:11112222\\]$`, "m"), "facts keep the 280cp cap and gain the handle");
+    assert.doesNotMatch(stdout, /f{281}/);
+    // The teach line is a recall-surface instrument, never the briefing's.
+    assert.doesNotMatch(stdout, /summaries; full text/, "no teach line on the briefing");
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: fitByTokens drops render a [+N more — memory_recall for detail] final line", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  const long = (n) => Array.from({ length: 30 }, (_, i) => `word${n}-${i}`).join(" ");
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify(
+        searchBody([sm({ id: "a", content: long(1) }, 0.9), sm({ id: "b", content: long(2) }, 0.8), sm({ id: "c", content: long(3) }, 0.7)]),
+      ),
+    );
+  });
+  try {
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "pd-drop", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_RECALL_MAX_TOK: "10" },
+    );
+    const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(ctx, /\[\+\d+ more — memory_recall for detail\]/, "the drop footer names the recovery tool");
+    assert.doesNotMatch(ctx, /item\(s\) truncated by token budget/, "the old anonymous footer is gone from recall paths");
+    const lines = ctx.split("\n");
+    assert.equal(lines[lines.length - 1], "</memini-recall>");
+    assert.match(lines[lines.length - 2], /^\[\+\d+ more — memory_recall for detail\]$/, "the footer is the block's final line");
+  } finally {
+    await close();
+  }
+});
+
+test("cross-format dedupe: a briefing's full item suppresses its concise pretool re-serve (same content_hash)", async () => {
+  // End-to-end form of the regression: the briefing records the memory from
+  // FULL content; a later pretool recall serves it CONCISE. Under the local
+  // hash those differ and the hook would re-inject a fact the context already
+  // carries; the shared content_hash makes them the same memory.
+  const cache = freshCache();
+  const full = "briefed in full: rotate the auth tokens weekly, and here is the entire rationale in detail";
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      if (req.url.startsWith("/v1/namespaces/briefing")) {
+        res.end(JSON.stringify(briefingBody({ facts: [bi({ id: "bf1", content: full, content_hash: "fedcba9876543210" })] })));
+        return;
+      }
+      res.end(
+        JSON.stringify(
+          searchBody([sm({ id: "bf1", content: "briefed in full: rotate the auth…", content_truncated: true, content_hash: "fedcba9876543210" }, 0.95)]),
+        ),
+      );
+    }),
+  );
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    const start = await runHook("session-start.mjs", JSON.stringify({ session_id: "xfmt1", cwd: __dirname, source: "startup" }), env);
+    assert.match(start.stdout, /briefed in full/, "the briefing injects the full form");
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xfmt1", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      env,
+    );
+    assert.equal(stdout, "", "the concise re-serve of a briefed memory is filtered — same content_hash, same memory");
   } finally {
     await close();
   }

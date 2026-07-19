@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/eleboucher/memini/internal/api/render"
 	"github.com/eleboucher/memini/internal/apiauth"
 	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/httputil"
@@ -285,7 +286,11 @@ func unescapeID(bound string) (string, bool) {
 	return id, err == nil
 }
 
-// GetMemory implements GET /v1/memories/{id}.
+// GetMemory implements GET /v1/memories/{id}. The id may be a unique prefix
+// of at least 8 hex chars (service.Get resolves it; exact match wins); an
+// ambiguous prefix surfaces as a 409 whose error body lists the colliding
+// full ids via statusFor's ErrConflict mapping. Mutations
+// (PATCH/DELETE/supersede) never resolve prefixes.
 func (h *Server) GetMemory(w http.ResponseWriter, r *http.Request, boundID string, _ GetMemoryParams) {
 	id, ok := unescapeID(boundID)
 	if !ok {
@@ -298,7 +303,7 @@ func (h *Server) GetMemory(w http.ResponseWriter, r *http.Request, boundID strin
 		return
 	}
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, err)
+		writeError(w, r, statusFor(err), err)
 		return
 	}
 	httputil.JSON(w, http.StatusOK, apiMemory(m))
@@ -493,6 +498,22 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 	if req.MinScore != nil {
 		in.MinScore = *req.MinScore
 	}
+	// response_format is a response projection only — it is resolved before
+	// the recall runs but never handed to it, so ranking, floors, and
+	// exclusions are identical across formats. The generated binding does not
+	// enforce the spec enum, so an unknown value must be rejected rather than
+	// silently rendered detailed (mirrors scope).
+	format := formatDetailed
+	if req.ResponseFormat != nil {
+		if !req.ResponseFormat.Valid() {
+			httputil.Error(w, http.StatusBadRequest,
+				fmt.Sprintf("invalid response_format %q: want concise or detailed", string(*req.ResponseFormat)))
+			return
+		}
+		if *req.ResponseFormat == SearchRequestResponseFormatConcise {
+			format = formatConcise
+		}
+	}
 	var degraded string
 	in.Degraded = &degraded
 	var readset []service.ReadSetEntry
@@ -503,7 +524,7 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 		writeError(w, r, statusFor(err), err)
 		return
 	}
-	out := SearchResponse{Results: apiScored(res, service.OriginMap(readset))}
+	out := SearchResponse{Results: apiScored(res, service.OriginMap(readset), format)}
 	if degraded != "" {
 		keywordOnly := "keyword_only"
 		note := "semantic search unavailable (" + degraded + "); results are keyword-only and may be incomplete"
@@ -558,7 +579,7 @@ func (h *Server) AnswerQuestion(w http.ResponseWriter, r *http.Request, _ Answer
 		return
 	}
 	httputil.JSON(w, http.StatusOK, AnswerResponse{
-		Answer: res.Answer, Sources: apiScored(res.Sources, service.OriginMap(readset)),
+		Answer: res.Answer, Sources: apiScored(res.Sources, service.OriginMap(readset), formatPlain),
 	})
 }
 
@@ -837,6 +858,30 @@ func (h *Server) GetBriefing(w http.ResponseWriter, r *http.Request, params GetB
 		}
 		opts.Scope = restScopeAlias(string(*params.Scope))
 	}
+	// format and children are response projections only — resolved before the
+	// briefing runs, never handed to it, so section selection and ordering
+	// are identical across renderings. Unknown values are rejected like an
+	// unknown scope (the generated binding does not enforce spec enums).
+	format := formatDetailed
+	if params.Format != nil {
+		if !params.Format.Valid() {
+			httputil.Error(w, http.StatusBadRequest,
+				fmt.Sprintf("invalid format %q: want concise or detailed", string(*params.Format)))
+			return
+		}
+		if *params.Format == GetBriefingParamsFormatConcise {
+			format = formatConcise
+		}
+	}
+	children := GetBriefingParamsChildrenFull
+	if params.Children != nil {
+		if !params.Children.Valid() {
+			httputil.Error(w, http.StatusBadRequest,
+				fmt.Sprintf("invalid children %q: want summary, full, or none", string(*params.Children)))
+			return
+		}
+		children = *params.Children
+	}
 	var readset []service.ReadSetEntry
 	opts.ReadSet = &readset
 	b, err := h.svc.Briefing(r.Context(), name, opts)
@@ -847,11 +892,18 @@ func (h *Server) GetBriefing(w http.ResponseWriter, r *http.Request, params GetB
 	origins := service.OriginMap(readset)
 	resp := Briefing{
 		Namespace:  b.Namespace,
-		Facts:      apiBriefingItems(b.Facts, origins),
-		Procedures: apiBriefingItems(b.Procedures, origins),
-		Recent:     apiBriefingItems(b.Recent, origins),
-		Pinned:     apiBriefingItems(b.Pinned, origins),
-		Children:   apiBriefingChildren(b.Children),
+		Facts:      apiBriefingItems(b.Facts, origins, format),
+		Procedures: apiBriefingItems(b.Procedures, origins, format),
+		Recent:     apiBriefingItems(b.Recent, origins, format),
+		Pinned:     apiBriefingItems(b.Pinned, origins, format),
+	}
+	switch children {
+	case GetBriefingParamsChildrenNone:
+		// The rollup is omitted entirely.
+	case GetBriefingParamsChildrenSummary:
+		resp.Children = apiBriefingChildSummaries(b.Children)
+	default:
+		resp.Children = apiBriefingChildren(b.Children, format)
 	}
 	if b.ScopeHeader != "" {
 		resp.ScopeHeader = &b.ScopeHeader
@@ -862,10 +914,12 @@ func (h *Server) GetBriefing(w http.ResponseWriter, r *http.Request, params GetB
 }
 
 // apiBriefingChildren maps the service's direct-child rollup to the
-// spec-generated BriefingChild shape — full memory objects (unlike MCP's
-// title-only rendering), since the admin UI consumes them. nil for an empty
-// rollup so the field is omitted at a leaf namespace.
-func apiBriefingChildren(children []service.ChildSummary) *[]BriefingChild {
+// spec-generated BriefingChild shape with full memory objects (children=full,
+// the default — the admin UI consumes them). The briefing's disclosure
+// format applies to the highlight memories too ("same concise semantics per
+// item"), and they carry content_hash like every other briefing item. nil
+// for an empty rollup so the field is omitted at a leaf namespace.
+func apiBriefingChildren(children []service.ChildSummary, format contentFormat) *[]BriefingChild {
 	if len(children) == 0 {
 		return nil
 	}
@@ -874,22 +928,53 @@ func apiBriefingChildren(children []service.ChildSummary) *[]BriefingChild {
 		out[i] = BriefingChild{
 			Namespace: c.NS,
 			Total:     c.Total,
-			Pinned:    apiMemories(c.Pinned),
-			Recent:    apiMemories(c.Recent),
+			Pinned:    apiMemories(c.Pinned, format),
+			Recent:    apiMemories(c.Recent, format),
 		}
 	}
 	return &out
 }
 
-// apiMemories maps a memory slice to the generated wire shape, nil-for-empty
-// so optional fields are omitted.
-func apiMemories(mems []*memory.Memory) *[]Memory {
+// apiBriefingChildSummaries renders the children=summary rollup: per child
+// only {namespace, total, pinned_titles, recent_titles} — the titles/counts
+// isolation surface (docs/scopes.md), matching what the MCP briefing renders
+// — and never full memory objects.
+func apiBriefingChildSummaries(children []service.ChildSummary) *[]BriefingChild {
+	if len(children) == 0 {
+		return nil
+	}
+	titles := func(mems []*memory.Memory) *[]string {
+		if len(mems) == 0 {
+			return nil
+		}
+		out := make([]string, len(mems))
+		for i, m := range mems {
+			out[i] = render.Title(m.Content, m.Summary)
+		}
+		return &out
+	}
+	out := make([]BriefingChild, len(children))
+	for i, c := range children {
+		out[i] = BriefingChild{
+			Namespace:    c.NS,
+			Total:        c.Total,
+			PinnedTitles: titles(c.Pinned),
+			RecentTitles: titles(c.Recent),
+		}
+	}
+	return &out
+}
+
+// apiMemories maps a memory slice to the generated wire shape under the
+// given disclosure format, nil-for-empty so optional fields are omitted.
+func apiMemories(mems []*memory.Memory, format contentFormat) *[]Memory {
 	if len(mems) == 0 {
 		return nil
 	}
 	out := make([]Memory, len(mems))
 	for i, m := range mems {
 		out[i] = apiMemory(m)
+		projectMemory(&out[i], m, format, render.BriefingMax)
 	}
 	return &out
 }
@@ -899,13 +984,17 @@ func apiMemories(mems []*memory.Memory) *[]Memory {
 // empty slice so the field is omitted from the response. origins is built
 // once per request via service.OriginMap from the Briefing call's ReadSet
 // out-param; see service.ReadSetFrom for the provenance rendering rules.
-func apiBriefingItems(mems []*memory.Memory, origins map[string]string) *[]BriefingItem {
+// format is the briefing's disclosure projection (?format=): concise uses
+// the 280-rune briefing cap so server-side concise text is never
+// re-truncated by the client's briefing render.
+func apiBriefingItems(mems []*memory.Memory, origins map[string]string, format contentFormat) *[]BriefingItem {
 	if len(mems) == 0 {
 		return nil
 	}
 	out := make([]BriefingItem, len(mems))
 	for i, m := range mems {
 		item := BriefingItem{Memory: apiMemory(m)}
+		projectMemory(&item.Memory, m, format, render.BriefingMax)
 		if from := service.ReadSetFrom(origins, m.Namespace); from != "" {
 			item.From = &from
 		}
@@ -1122,6 +1211,45 @@ func (h *Server) ReassignMemory(w http.ResponseWriter, r *http.Request, id strin
 	httputil.JSON(w, http.StatusOK, map[string]int{"moved": int(n)})
 }
 
+// contentFormat selects the projection applied to memory content on the
+// surfaces that carry progressive disclosure (search results and briefing
+// items). It is strictly a response-mapping concern: ranking, filtering, and
+// scoring never see it.
+type contentFormat int
+
+const (
+	// formatPlain is the legacy mapping — full content, no content_hash —
+	// used by surfaces outside the disclosure contract (answer sources,
+	// list/get/history responses).
+	formatPlain contentFormat = iota
+	// formatDetailed carries full content plus content_hash.
+	formatDetailed
+	// formatConcise replaces content with its compact form (summary, else a
+	// boundary cut) and marks content_truncated on cuts, plus content_hash.
+	formatConcise
+)
+
+// projectMemory applies a disclosure format to an already-mapped wire Memory:
+// content_hash is stamped for both disclosure formats (always over the FULL
+// stored text, so identity is stable across formats), and concise mode
+// swaps content for its compact form, marking content_truncated only when
+// that form is a truncating cut (never for a summary or short content).
+func projectMemory(out *Memory, m *memory.Memory, format contentFormat, conciseMax int) {
+	if format == formatPlain {
+		return
+	}
+	hash := render.ContentHash(m.Content, m.Summary)
+	out.ContentHash = &hash
+	if format != formatConcise {
+		return
+	}
+	text, truncated := render.Concise(m.Content, m.Summary, conciseMax)
+	out.Content = text
+	if truncated {
+		out.ContentTruncated = &truncated
+	}
+}
+
 // apiMemory maps the domain memory onto the spec model. Optional fields are
 // emitted only when set, preserving the wire format clients already rely on.
 func apiMemory(m *memory.Memory) Memory {
@@ -1162,11 +1290,14 @@ func apiMemory(m *memory.Memory) Memory {
 // via service.OriginMap from the call's ReadSet out-param; see
 // service.ReadSetFrom for the provenance rendering rules. A nil/empty origins
 // map (the caller didn't wire a ReadSet out-param) renders every item's from
-// as "".
-func apiScored(res []store.Scored, origins map[string]string) []ScoredMemory {
+// as "". format is the disclosure projection: search passes
+// formatDetailed/formatConcise (with the search rune cap), answer passes
+// formatPlain — its sources are outside the disclosure contract.
+func apiScored(res []store.Scored, origins map[string]string, format contentFormat) []ScoredMemory {
 	out := make([]ScoredMemory, len(res))
 	for i, s := range res {
 		sm := ScoredMemory{Memory: apiMemory(s.Memory), Score: s.Score}
+		projectMemory(&sm.Memory, s.Memory, format, render.SearchMax)
 		if from := service.ReadSetFrom(origins, s.Memory.Namespace); from != "" {
 			sm.From = &from
 		}

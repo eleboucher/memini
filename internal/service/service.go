@@ -2991,7 +2991,56 @@ func metaSeconds(v any) (int64, bool) {
 	}
 }
 
-// Get returns a single memory by ID.
+// idPrefixMinLen is the minimum number of leading hex chars for an id prefix
+// Get will resolve. Shorter (or non-hex) misses keep their plain not-found
+// error: below 8 chars collisions get likely and the intent ambiguous, so the
+// caller is told the id doesn't exist rather than guessed at.
+const idPrefixMinLen = 8
+
+// idPrefixEligible reports whether id is shaped like a resolvable memory-id
+// prefix: at least idPrefixMinLen leading hex chars, then only hex chars and
+// hyphens (the UUID alphabet). Custom ids with other characters (e.g.
+// imported "openclaw:main:<uuid>") are never prefix-resolved — they can only
+// be addressed verbatim.
+func idPrefixEligible(id string) bool {
+	if len(id) < idPrefixMinLen {
+		return false
+	}
+	for i, r := range id {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
+		case r == '-' && i >= idPrefixMinLen:
+			// Hyphens only past the leading hex run, per the UUID shape.
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// AmbiguousIDError is returned by Get when an id prefix matches more than one
+// memory in the namespace. It lists the colliding full ids so the caller can
+// retry with a longer prefix (or the full id), and matches store.ErrConflict
+// under errors.Is so the REST layer maps it to 409.
+type AmbiguousIDError struct {
+	Prefix string
+	IDs    []string
+}
+
+func (e *AmbiguousIDError) Error() string {
+	return fmt.Sprintf("ambiguous memory id prefix %q: matches %s; retry with a longer prefix or the full id",
+		e.Prefix, strings.Join(e.IDs, ", "))
+}
+
+// Is makes the conflict classifiable without a dedicated sentinel:
+// errors.Is(err, store.ErrConflict) holds, which statusFor in the REST layer
+// already maps to http.StatusConflict.
+func (e *AmbiguousIDError) Is(target error) bool { return target == store.ErrConflict }
+
+// Get returns a single memory by ID. The id may also be a unique prefix of at
+// least idPrefixMinLen hex chars (exact match always wins; see
+// getByIDPrefix): recall surfaces render short ids, so the model can address
+// a memory without echoing the full UUID.
 //
 // A get is logged to the activity feed but deliberately does not reinforce:
 // reinforcement is a relevance signal (it slides TTLs and gates promotion), and
@@ -2999,11 +3048,52 @@ func metaSeconds(v any) (int64, bool) {
 // about whether it answered a question.
 func (s *Service) Get(ctx context.Context, namespace, id string) (*memory.Memory, error) {
 	m, err := s.store.Get(ctx, namespace, id)
+	if errors.Is(err, store.ErrNotFound) {
+		m, err = s.getByIDPrefix(ctx, namespace, id, err)
+	}
 	if err != nil {
 		return nil, err
 	}
 	s.logMemoryEvent(ctx, store.EventGet, namespace, m, nil)
 	return m, nil
+}
+
+// getVerbatim is Get without prefix resolution — the read half of mutations
+// (Update composes it with Remember), which must only ever address a memory
+// by its exact full id so a short handle can never write to a memory the
+// caller didn't name.
+func (s *Service) getVerbatim(ctx context.Context, namespace, id string) (*memory.Memory, error) {
+	m, err := s.store.Get(ctx, namespace, id)
+	if err != nil {
+		return nil, err
+	}
+	s.logMemoryEvent(ctx, store.EventGet, namespace, m, nil)
+	return m, nil
+}
+
+// getByIDPrefix resolves id as a memory-id prefix after an exact miss:
+// exactly one match in the namespace returns that memory, zero returns the
+// original not-found error, and two or more return an *AmbiguousIDError
+// listing the collisions. The store scan is bounded at 2 rows — enough to
+// tell unique from ambiguous. Only Get resolves prefixes; mutations
+// (update/forget/supersede) stay verbatim-full-id-only so a short handle can
+// never write to a memory the caller didn't name exactly.
+func (s *Service) getByIDPrefix(ctx context.Context, namespace, id string, notFound error) (*memory.Memory, error) {
+	if !idPrefixEligible(id) {
+		return nil, notFound
+	}
+	ids, err := s.store.IDsByPrefix(ctx, namespace, id, 2)
+	if err != nil {
+		return nil, err
+	}
+	switch len(ids) {
+	case 0:
+		return nil, notFound
+	case 1:
+		return s.store.Get(ctx, namespace, ids[0])
+	default:
+		return nil, &AmbiguousIDError{Prefix: id, IDs: ids}
+	}
 }
 
 // History returns the full supersession lineage of a memory: the memory itself,

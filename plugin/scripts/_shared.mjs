@@ -251,9 +251,16 @@ export async function postJSON(path, body, namespace, timeoutMs = requestTimeout
  * most-recent kept. An older server that doesn't know the field 400s the
  * whole request — retried once without it, degrading to "no server-side
  * dedupe" instead of "no recall at all".
+ *
+ * Every search asks for `response_format: "concise"` (progressive
+ * disclosure): the server serves summary-or-boundary-cut content plus
+ * `content_truncated` on cut memories, and the model pulls full text on
+ * demand via memory_get using the rendered [m:id] handle. An old server that
+ * rejects the field 400s — the same one-retry-without-it degradation as
+ * exclude_ids applies, stripping exclude_ids (the newer field) first.
  */
 export async function postSearch(query, namespace, { limit = 5, tiers, exclude, minScore, source, excludeIds } = {}) {
-  const body = { query, limit };
+  const body = { query, limit, response_format: "concise" };
   if (tiers) body.tiers = tiers;
   if (typeof minScore === "number" && minScore > 0) body.min_score = minScore;
   // source is the recall's "why" — recorded on the activity event so the feed
@@ -270,6 +277,10 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude, 
     delete body.exclude_ids;
     res = await postJSONStatus("/v1/search", body, namespace);
   }
+  if (res.status === 400 && body.response_format) {
+    delete body.response_format;
+    res = await postJSONStatus("/v1/search", body, namespace);
+  }
   if (!res.json || !Array.isArray(res.json.results)) return { hits: [], degraded: "", note: "" };
   const resBody = res.json;
   const floor = typeof minScore === "number" && minScore > 0 ? minScore : 0;
@@ -280,6 +291,10 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude, 
       score: typeof r?.score === "number" ? r.score : 0,
       memory: r?.memory || null,
       tier: r?.memory?.tier || "",
+      // Concise-wire markers, normalized onto the hit whether the server put
+      // them on the memory (canonical) or the result wrapper (tolerated).
+      content_truncated: r?.memory?.content_truncated === true || r?.content_truncated === true,
+      ...(typeof r?.content_hash === "string" && r.content_hash ? { content_hash: r.content_hash } : {}),
     }))
     .filter((r) => r.score >= floor);
   return {
@@ -310,17 +325,22 @@ export function filterFreshTurnEchoes(hits, now = Date.now()) {
 }
 
 /**
- * Render one recall hit as a "- (score) [labels] text" bullet. Neutralizes
- * memini wrapper tags in the untrusted recalled content BEFORE the 240-char
- * truncate, so a forged closing tag can't break out of the enclosing
- * injection block (memory-poisoning defense — same rationale as formatMemory
- * in session-start). Returns null when the hit has no renderable text.
+ * Render one recall hit as a "- (score) [labels] text [m:id8]" bullet.
+ * Neutralizes memini wrapper tags in the untrusted recalled content BEFORE
+ * the 240-char truncate, so a forged closing tag can't break out of the
+ * enclosing injection block (memory-poisoning defense — same rationale as
+ * formatMemory in session-start). The trailing [m:<first 8 id chars>] handle
+ * (only when the hit carries an id) is what the block header's memory_get
+ * teaching points at; ids are server-minted hex/uuid, safe to render
+ * verbatim. Returns null when the hit has no renderable text.
  */
 export function formatRecallHit(h, labels) {
   const text = escapeMeminiTags(h?.content || h?.summary || "");
   if (!text) return null;
+  const id = h?.memory?.id;
+  const handle = typeof id === "string" && id ? ` [m:${id.slice(0, 8)}]` : "";
   if (labels.size === 0) {
-    return `- (${h.score.toFixed(2)}) ${truncate(text, 240)}`;
+    return `- (${h.score.toFixed(2)}) ${truncate(text, 240)}${handle}`;
   }
   const tagParts = [];
   if (labels.has("tier") && h.tier) tagParts.push(h.tier);
@@ -329,7 +349,33 @@ export function formatRecallHit(h, labels) {
   }
   if (labels.has("reason")) tagParts.push("relevant memory");
   const prefix = tagParts.length ? `[${tagParts.join(" · ")}] ` : "";
-  return `- (${h.score.toFixed(2)}) ${prefix}${truncate(text, 240)}`;
+  return `- (${h.score.toFixed(2)}) ${prefix}${truncate(text, 240)}${handle}`;
+}
+
+/**
+ * The one comment line a recall/pretool block adds — after its opening
+ * comment — when anything in it was truncated (server-concise or the client's
+ * 240-char cap) or dropped by the token budget: it teaches the model that the
+ * bullets are summaries and memory_get with an [m:…] id recovers full text.
+ * ONE shared byte-identical constant across both surfaces, deliberately: any
+ * per-block variation would bust the prompt prefix cache for zero information.
+ * Never emitted on the briefing — its ~21 fires/day don't earn the
+ * instruction cost; truncation lives on the recall surfaces.
+ */
+export const RECALL_DETAIL_HEADER = "<!-- summaries; full text: memory_get with the id from [m:…] -->";
+
+/**
+ * Did this hit's rendered text lose content? True when the server says so
+ * (content_truncated — set only when its concise form actually cut), or when
+ * the client's own 240-char render cap in formatRecallHit fires (an old
+ * server serves full content; the cap is then the truncation). Checked
+ * against the same escaped text formatRecallHit renders, so the two can't
+ * disagree about where the cap lands.
+ */
+export function recallHitTruncated(h) {
+  if (h?.content_truncated === true || h?.memory?.content_truncated === true) return true;
+  const text = escapeMeminiTags(h?.content || h?.summary || "");
+  return typeof text === "string" && text.length > 240;
 }
 
 /**
@@ -379,6 +425,11 @@ export async function getJSON(path, namespace, timeoutMs = requestTimeoutMs, opt
  */
 export async function getBriefing(namespace, opts = {}) {
   const params = new URLSearchParams();
+  // Progressive disclosure: ask for concise items (280-rune summaries with
+  // content_hash identity); the model recovers full text via memory_get with
+  // the rendered [m:id] handles. An old server ignores the unknown query
+  // param and serves full content — no fallback needed.
+  params.set("format", "concise");
   // A "per_section_default" opt acts as the catch-all; per-section fields
   // win when set. This matches the REST contract exactly.
   const fallback = opts.per_section_default ?? opts.perSection ?? 5;
@@ -915,12 +966,29 @@ function injectedStatePath(sessionId) {
 }
 
 /**
- * Content-identity hash for the injected-memory state: the UNTRUNCATED text a
- * recall surface would render (content, falling back to summary) — the same
+ * True for a well-formed server-minted content hash: 16 lowercase hex chars
+ * (the server's sha256(content||summary).slice(0,16) — the same recipe as the
+ * local fallback in injectedIdentity, so the two are interchangeable).
+ */
+export function isContentHash(s) {
+  return typeof s === "string" && /^[0-9a-f]{16}$/.test(s);
+}
+
+/**
+ * Content-identity hash for the injected-memory state. Prefers the
+ * server-minted `content_hash` when present and well-formed — read off the
+ * object itself (a briefing memory) or its nested `memory` (a recall hit) —
+ * because the server hashes the FULL content even when it serves a concise
+ * form: a briefing's full item and a concise recall hit of the same memory
+ * must be the SAME identity, or the seen-filter re-injects what the context
+ * already carries. Falls back to hashing the text a recall surface would
+ * render (content, falling back to summary) for old servers — the same
  * doctrine as the pretool fingerprint, so an in-place update past any render
  * cap still changes identity and re-injects.
  */
 export function injectedIdentity(m) {
+  const ch = m?.content_hash ?? m?.memory?.content_hash;
+  if (isContentHash(ch)) return ch;
   const text = m?.content || m?.summary || "";
   return crypto.createHash("sha256").update(text).digest("hex").slice(0, 16);
 }
