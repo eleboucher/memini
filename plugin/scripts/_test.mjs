@@ -2194,7 +2194,9 @@ test("pre-tool-use.mjs: degraded recall renders ONE [memini: ...] note line insi
         tool_name: "Grep",
         tool_input: { pattern: "auth", path: "internal" },
       }),
-      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+      // Grep left the default allowlist; the env knob opts it back in, which is
+      // exactly the documented escape hatch.
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_TOOLS: "Grep" },
     );
     const ctxText = JSON.parse(stdout).hookSpecificOutput.additionalContext;
     assert.match(ctxText, /\[memini: [^\]]*keyword-only[^\]]*\]/, "degraded note line renders");
@@ -2306,10 +2308,12 @@ test("pre-tool-use.mjs: MEMINI_INJECT_PRETOOL_ITEMS caps items per file", async 
   }
 });
 
-test("pre-tool-use.mjs: MEMINI_INJECT_PRETOOL_MIN_SCORE drops low-scored hits", async () => {
+test("pre-tool-use.mjs: MEMINI_INJECT_PRETOOL_MIN_SCORE forwards the composite floor server-side", async () => {
   const cache = freshCache();
   await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
-  const { url, close } = await startMockServer((req, res) => {
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    bodies.push(JSON.parse(body));
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify(searchBody([sm({ content: "strong" }, 0.9), sm({ content: "weak" }, 0.3)])));
   });
@@ -2319,9 +2323,11 @@ test("pre-tool-use.mjs: MEMINI_INJECT_PRETOOL_MIN_SCORE drops low-scored hits", 
       JSON.stringify({ session_id: "s1", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "/tmp/foo" } }),
       { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_MIN_SCORE: "0.5" },
     );
+    assert.equal(bodies[0].min_rank_score, 0.5, "composite-scale floor forwarded server-side");
+    assert.equal(bodies[0].min_score, undefined, "the fused-scale floor is no longer sent");
     const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
     assert.match(ctx, /strong/);
-    assert.doesNotMatch(ctx, /weak/);
+    assert.match(ctx, /weak/, "the server enforces the floor; an in-range response is not re-filtered client-side");
   } finally {
     await close();
   }
@@ -2366,6 +2372,114 @@ test("pre-tool-use.mjs: MEMINI_INJECT_PRETOOL_MAX_TOK truncates per-file block",
     // PR-E renamed the recall-path drop footer to name the tool that recovers
     // the tail (the briefing keeps the old "[... N item(s) truncated]" form).
     assert.match(ctx, /\[\+\d+ more — memory_recall for detail\]/);
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: recall disabled (server or MEMINI_RECALL=0) → zero search calls, no output, no state", async () => {
+  // The master recall switch gates PreToolUse recall too, mirroring
+  // user-prompt-submit. Unlike the prompt hook there is no counter bump to
+  // preserve: PreToolUse only READS the prompt counter, so the gate is a plain
+  // early exit — before any server call and before any state file is written.
+  const searches = [];
+  const { url, close } = await startMockServer((req, res) => {
+    searches.push(req.url);
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m", content: "should never be served" }, 0.9)])));
+  });
+  const payload = (sid) =>
+    JSON.stringify({ session_id: sid, cwd: __dirname, tool_name: "Read", tool_input: { file_path: "/tmp/foo" } });
+  const stateFiles = (cache, sid) => [
+    join(cache, "memini", "sessions", sid + ".lastrecall.json"),
+    join(cache, "memini", "sessions", sid + ".injected.json"),
+  ];
+  try {
+    // Server-side: handshake settings carry recall:false.
+    const srvCache = freshCache();
+    await primeCache(srvCache, __dirname, mkHS({ settings: { recall: false } }));
+    const srv = await runHook("pre-tool-use.mjs", payload("prg1"), { MEMINI_BASE_URL: url, XDG_CACHE_HOME: srvCache });
+    assert.equal(srv.stdout, "", "server recall:false must produce no context");
+    for (const f of stateFiles(srvCache, "prg1")) assert.equal(existsSync(f), false, `no state write: ${basename(f)}`);
+
+    // Env override: MEMINI_RECALL=0 beats a server recall:true.
+    const envCache = freshCache();
+    await primeCache(envCache, __dirname, mkHS());
+    const env = await runHook("pre-tool-use.mjs", payload("prg2"), {
+      MEMINI_BASE_URL: url,
+      XDG_CACHE_HOME: envCache,
+      MEMINI_RECALL: "0",
+    });
+    assert.equal(env.stdout, "", "MEMINI_RECALL=0 must produce no context");
+    for (const f of stateFiles(envCache, "prg2")) assert.equal(existsSync(f), false, `no state write: ${basename(f)}`);
+
+    assert.equal(searches.length, 0, "recall disabled → the hook must make zero server calls");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: the default allowlist excludes Grep and Glob; Read still recalls", async () => {
+  // Pattern-derived queries ("Grep on <pattern>") are near-zero-signal and each
+  // ungated call costs a server embed+rerank, so Glob/Grep are out of the
+  // DEFAULT allowlist. The hooks.json matcher still fires for them, so setting
+  // MEMINI_INJECT_PRETOOL_TOOLS (or the server knob) restores the old behavior.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const searches = [];
+  const { url, close } = await startMockServer((req, res) => {
+    searches.push(req.url);
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ content: "a related fact" }, 0.9)])));
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    for (const [tool, input] of [
+      ["Grep", { pattern: "auth", path: "internal" }],
+      ["Glob", { pattern: "**/*.go" }],
+    ]) {
+      const { stdout } = await runHook(
+        "pre-tool-use.mjs",
+        JSON.stringify({ session_id: "defallow", cwd: __dirname, tool_name: tool, tool_input: input }),
+        env,
+      );
+      assert.equal(stdout, "", `${tool} is outside the default allowlist and must inject nothing`);
+    }
+    assert.equal(searches.length, 0, "Grep/Glob must not reach the server by default");
+
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "defallow", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "/tmp/foo" } }),
+      env,
+    );
+    assert.equal(searches.length, 1, "Read stays in the default allowlist");
+    assert.match(JSON.parse(stdout).hookSpecificOutput.additionalContext, /a related fact/);
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: the default composite floor (0.5) rides the search request as min_rank_score", async () => {
+  // The 0.5 default lives in the settings path (BEHAVIOR_KNOBS →
+  // inject_pretool_min_score), not in the hook: with NO env override and NO
+  // server override, the wire request must carry min_rank_score 0.5, enforced
+  // server-side on the composite post-rerank scale.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    bodies.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ content: "floored by default" }, 0.9)])));
+  });
+  try {
+    await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "deffloor", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "/tmp/foo" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.equal(bodies[0].min_rank_score, 0.5, "the default 0.5 composite floor is sent server-side");
+    assert.equal(bodies[0].min_score, undefined, "the fused-scale floor is never sent");
   } finally {
     await close();
   }
@@ -2457,7 +2571,7 @@ test("readInjectedState: a v2 file reads back verbatim; garbage entries are drop
     const state = readInjectedState("v2read");
     assert.equal(state.n, 7);
     assert.deepEqual(Object.keys(state.ids).sort(), ["good", "sentinel"], "malformed entries dropped, never a crash");
-    assert.deepEqual(state.ids.good, { h: "abc", at: 1000, n: 3 });
+    assert.deepEqual(state.ids.good, { h: "abc", at: 1000, n: 3 }, "a pre-`r` entry reads back verbatim — no backfilled r (consumers read absent as 0)");
     assert.equal(state.ids.sentinel.h, "");
   } finally {
     if (prevXdg === undefined) delete process.env.XDG_CACHE_HOME;
@@ -2536,7 +2650,7 @@ test("recordInjected: sets {h, at, n} with n = state's current counter", async (
   const { recordInjected } = await import("./_shared.mjs");
   const state = { n: 12, ids: {} };
   recordInjected(state, "m1", "hash-1", 1752770000000);
-  assert.deepEqual(state.ids.m1, { h: "hash-1", at: 1752770000000, n: 12 });
+  assert.deepEqual(state.ids.m1, { h: "hash-1", at: 1752770000000, n: 12, r: 0 });
   recordInjected(state, "m2", ""); // sentinel, default now
   assert.equal(state.ids.m2.h, "");
   assert.equal(state.ids.m2.n, 12);
@@ -2651,6 +2765,72 @@ test("cooldownIds: lists in-cooldown ids (identity=null, sentinels always in coo
   // forever config → every recorded id is in cooldown
   const forever = cooldownIds(state, { now: NOW, cooldownMs: 0, cooldownPrompts: 0 });
   assert.deepEqual(forever.sort(), ["fresh", "sentinel", "stale"], "both-zero → all ids in cooldown");
+});
+
+test("pretoolExcludeIds: latch (r>=1) or sentinel while in-window; r=0 and lapsed ride free", async () => {
+  const { pretoolExcludeIds } = await import("./_shared.mjs");
+  const NOW = 1_000_000;
+  const state = {
+    n: 10,
+    ids: {
+      fresh0: { h: "h0", at: NOW, n: 9, r: 0 }, // in-window, never re-served unchanged → allowed
+      latched1: { h: "h1", at: NOW, n: 9, r: 1 }, // in-window, one unchanged re-serve → excluded
+      latched3: { h: "h3", at: NOW, n: 9, r: 3 }, // in-window, higher latch → excluded
+      sentinel: { h: "", at: 0, n: 0 }, // tool-read → excluded with no latch needed
+      lapsed: { h: "h2", at: NOW - 10_000, n: 2, r: 1 }, // latched but BOTH windows lapsed → not excluded
+    },
+  };
+  const w = { now: NOW, cooldownMs: 5000, cooldownPrompts: 3 };
+  assert.deepEqual(
+    pretoolExcludeIds(state, w).sort(),
+    ["latched1", "latched3", "sentinel"],
+    "only in-window latched/sentinel ids ride exclude_ids",
+  );
+
+  // A missing `r` reads as 0 (an old plugin's normInjectedEntry drops the field).
+  const noR = { n: 1, ids: { a: { h: "ha", at: NOW, n: 0 } } };
+  assert.deepEqual(pretoolExcludeIds(noR, w), [], "an entry without `r` is treated as r=0 (not latched)");
+
+  // Window logic mirrors cooldownIds: forever config latches every non-fresh id.
+  const forever = pretoolExcludeIds(state, { now: NOW, cooldownMs: 0, cooldownPrompts: 0 });
+  assert.deepEqual(forever.sort(), ["lapsed", "latched1", "latched3", "sentinel"], "forever config → all latched/sentinel ids");
+});
+
+test("writeInjectedState: an `r` bump survives the disk merge (equal-`at` in-memory wins)", async () => {
+  const { readInjectedState, writeInjectedState } = await import("./_shared.mjs");
+  const cache = freshCache();
+  const prevXdg = process.env.XDG_CACHE_HOME;
+  process.env.XDG_CACHE_HOME = cache;
+  try {
+    mkdirSync(join(cache, "memini", "sessions"), { recursive: true });
+    // Disk holds the pre-bump entries (r=0). Memory holds `keep` with the SAME
+    // `at` but r bumped to 1 (a client-side latch keeps the entry's `at`), and
+    // `reset` with an OLDER `at` than disk (simulating a concurrent re-injection
+    // that already landed on disk with a newer `at`).
+    const AT = 1_000_000;
+    writeFileSync(
+      INJ_STATE(cache, "rmerge"),
+      JSON.stringify({
+        v: 2,
+        n: 4,
+        ids: { keep: { h: "hk", at: AT, n: 1, r: 0 }, reset: { h: "hr", at: AT + 500, n: 1, r: 0 } },
+      }),
+    );
+    const mem = {
+      n: 4,
+      ids: {
+        keep: { h: "hk", at: AT, n: 1, r: 1 }, // same `at`, bumped → in-memory wins, latch persists
+        reset: { h: "hr", at: AT, n: 1, r: 2 }, // older `at` than disk → disk (r=0) wins, latch resets
+      },
+    };
+    writeInjectedState("rmerge", mem);
+    const state = readInjectedState("rmerge");
+    assert.equal(state.ids.keep.r, 1, "an equal-`at` bump persists through the merge (normInjectedEntry carries `r`)");
+    assert.equal(state.ids.reset.r, 0, "a genuinely newer disk re-injection wins and resets the latch");
+  } finally {
+    if (prevXdg === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = prevXdg;
+  }
 });
 
 test("pre-tool-use.mjs: identical recall for the same file is suppressed on the second call", async () => {
@@ -4646,10 +4826,37 @@ test("user-prompt-submit.mjs: MEMINI_RECALL_LIMIT and MEMINI_INJECT_RECALL_MIN_S
     );
     const body = JSON.parse(calls[0]);
     assert.equal(body.limit, 1);
-    assert.equal(body.min_score, 0.5, "floor forwarded server-side");
+    assert.equal(body.min_rank_score, 0.5, "composite-scale floor forwarded server-side");
+    assert.equal(body.min_score, undefined, "the fused-scale floor is no longer sent");
     const ctxText = JSON.parse(stdout).hookSpecificOutput.additionalContext;
     assert.match(ctxText, /high scorer/);
-    assert.doesNotMatch(ctxText, /low scorer/, "client-side floor drops the low hit even if the server returned it");
+    assert.match(ctxText, /low scorer/, "the server enforces the floor; an in-range response is not re-filtered client-side");
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: the default composite floor (0.5) rides the search request as min_rank_score", async () => {
+  // Same contract as the pretool default-floor test: with NO env override and
+  // NO server override, the 0.5 default resolved from the settings path
+  // (BEHAVIOR_KNOBS → inject_recall_min_score) must reach the wire, enforced
+  // server-side on the composite post-rerank scale.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    bodies.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ content: "floored by default" }, 0.9)])));
+  });
+  try {
+    await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "pdeffloor", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.equal(bodies[0].min_rank_score, 0.5, "the default 0.5 composite floor is sent server-side");
+    assert.equal(bodies[0].min_score, undefined, "the fused-scale floor is never sent");
   } finally {
     await close();
   }
@@ -4803,16 +5010,85 @@ test("user-prompt-submit.mjs: a server that 400s exclude_ids gets one retry with
   try {
     await runHook("user-prompt-submit.mjs", payload("what did we decide about auth tokens"), env);
     const second = await runHook("user-prompt-submit.mjs", payload("and what about session cookies here"), env);
-    // The strip chain removes ONE field per retry, newest first: the first
-    // retry drops max_tokens (blind — this server only rejects exclude_ids),
-    // the second drops exclude_ids and lands.
-    assert.equal(bodies.length, 4, "first prompt: one call; second prompt: 400, 400, then success");
+    // The strip chain removes ONE field per retry, newest first: min_rank_score
+    // (the default 0.5 floor rides every search), then max_tokens (both blind —
+    // this server only rejects exclude_ids), then exclude_ids, which lands.
+    assert.equal(bodies.length, 5, "first prompt: one call; second prompt: 400, 400, 400, then success");
     assert.ok(bodies[1].exclude_ids, "the retryable attempt carried exclude_ids");
-    assert.equal(bodies[2].max_tokens, undefined, "the first retry strips max_tokens (newest field)");
+    assert.equal(bodies[2].min_rank_score, undefined, "the first retry strips min_rank_score (newest field)");
     assert.ok(bodies[2].exclude_ids, "exclude_ids survives the first strip");
-    assert.equal(bodies[3].exclude_ids, undefined, "the second retry dropped the field");
+    assert.equal(bodies[3].max_tokens, undefined, "the second retry strips max_tokens");
+    assert.ok(bodies[3].exclude_ids, "exclude_ids survives the second strip");
+    assert.equal(bodies[4].exclude_ids, undefined, "the third retry dropped the field");
     const ctxText = JSON.parse(second.stdout).hookSpecificOutput.additionalContext;
-    assert.match(ctxText, /fact number 4/, "recall still lands after the retries");
+    assert.match(ctxText, /fact number 5/, "recall still lands after the retries");
+  } finally {
+    await close();
+  }
+});
+
+test("postSearch: a server that 400s min_rank_score gets one retry without it", async () => {
+  // Older servers (DisallowUnknownFields) reject min_rank_score the same way
+  // they reject exclude_ids. The generalized retry strips every newer-than-server
+  // optional field and re-POSTs once; the composite floor then degrades to the
+  // client-side fallback for that old server.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    const parsed = JSON.parse(body);
+    bodies.push(parsed);
+    res.setHeader("Content-Type", "application/json");
+    if (parsed.min_rank_score !== undefined) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ error: "unknown field min_rank_score" }));
+      return;
+    }
+    res.end(JSON.stringify(searchBody([sm({ id: "hi", content: "high scorer" }, 0.9), sm({ id: "lo", content: "low scorer" }, 0.3)])));
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_RECALL_MIN_SCORE: "0.5" };
+  try {
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "p400rank", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      env,
+    );
+    assert.equal(bodies.length, 2, "400 on the floored attempt, then one retry");
+    assert.equal(bodies[0].min_rank_score, 0.5, "the first attempt carried the composite floor");
+    assert.equal(bodies[1].min_rank_score, undefined, "the retry stripped min_rank_score");
+    assert.equal(bodies[1].exclude_ids, undefined, "the retry stripped exclude_ids too");
+    const ctxText = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(ctxText, /high scorer/, "recall still lands after the retry");
+    assert.doesNotMatch(ctxText, /low scorer/, "the client-side fallback floor drops the sub-floor hit for the old server");
+  } finally {
+    await close();
+  }
+});
+
+test("postSearch: a min_rank_score >= 1 knob sends no floor and filters client-side", async () => {
+  // The server rejects a composite floor of >= 1 as out of range, and
+  // ClientSettings.validate only enforces >= 0, so a mis-set knob must not 400
+  // every search: clamp to a client-only floor (send nothing, filter below).
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    bodies.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "hi", content: "high scorer" }, 1), sm({ id: "lo", content: "low scorer" }, 0.5)])));
+  });
+  try {
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "p1floor", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_RECALL_MIN_SCORE: "1" },
+    );
+    assert.equal(bodies.length, 1, "no server-side floor, so no 400 and no retry");
+    assert.equal(bodies[0].min_rank_score, undefined, "a >= 1 floor is never sent server-side");
+    assert.equal(bodies[0].min_score, undefined, "the fused-scale floor is no longer sent");
+    const ctxText = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(ctxText, /high scorer/, "a score at the floor passes");
+    assert.doesNotMatch(ctxText, /low scorer/, "a sub-floor hit is dropped client-side");
   } finally {
     await close();
   }
@@ -5077,7 +5353,7 @@ test("cross-surface dedupe: briefing ids are excluded from later prompt recall",
   }
 });
 
-test("cross-surface dedupe: pretool filters prompt-injected memories client-side and records its own", async () => {
+test("cross-surface dedupe: pretool latches an unchanged re-serve into exclude_ids after one pass", async () => {
   const cache = freshCache();
   await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
   const searches = [];
@@ -5102,31 +5378,273 @@ test("cross-surface dedupe: pretool filters prompt-injected memories client-side
   });
   const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
   try {
+    // Prompt injects m1.
     await runHook(
       "user-prompt-submit.mjs",
       JSON.stringify({ session_id: "xs2", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
       env,
     );
+    // Pretool call 1 re-serves m1 UNCHANGED (plus a fresh m2). The FIRST re-serve
+    // is deliberately NOT excluded server-side, so the content-aware hash check
+    // can still catch a memory_update; m1 is suppressed CLIENT-side and its
+    // re-serve count latches to 1.
     const { stdout } = await runHook(
       "pre-tool-use.mjs",
       JSON.stringify({ session_id: "xs2", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
       env,
     );
-    // Pretool's cross-surface filter is CLIENT-side and content-aware, never
-    // exclude_ids: a server-side id exclusion could not return a memory whose
-    // content changed since injection.
-    assert.equal(searches[1].exclude_ids, undefined, "pretool must not hard-exclude ids server-side");
+    assert.ok(!(searches[1].exclude_ids || []).includes("m1"), "the first re-serve is not excluded server-side");
     const block = JSON.parse(stdout).hookSpecificOutput.additionalContext;
     assert.match(block, /file-local convention/);
-    assert.doesNotMatch(block, /prompt-injected fact/, "an unchanged already-injected memory is filtered");
+    assert.doesNotMatch(block, /prompt-injected fact/, "an unchanged already-injected memory is filtered client-side");
+    const stateAfter1 = JSON.parse(readFileSync(INJ_STATE(cache, "xs2"), "utf8"));
+    assert.equal(stateAfter1.ids.m1.r, 1, "an unchanged re-serve latches the id (r = 1)");
+    assert.equal(stateAfter1.ids.m2.r ?? 0, 0, "a freshly injected memory is not latched (r = 0)");
 
+    // Pretool call 2 on a DIFFERENT file (past the per-file gate) now excludes
+    // the latched m1 server-side; m2, injected only once, is not yet latched.
     await runHook(
-      "user-prompt-submit.mjs",
-      JSON.stringify({ session_id: "xs2", cwd: __dirname, prompt: "and what about the cookie settings" }),
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xs2", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/db.go" } }),
       env,
     );
-    const last = searches[searches.length - 1];
-    assert.ok(last.exclude_ids.includes("m1") && last.exclude_ids.includes("m2"), "pretool's injection was recorded too");
+    assert.ok((searches[2].exclude_ids || []).includes("m1"), "a latched id rides exclude_ids on the next call");
+    assert.ok(!(searches[2].exclude_ids || []).includes("m2"), "a once-injected id is not yet latched");
+  } finally {
+    await close();
+  }
+});
+
+test("cross-surface dedupe: a pretool-latched (and pretool-injected) id rides the prompt hook's exclude_ids", async () => {
+  // The injected-id ledger is shared across hook surfaces, so an id handled on
+  // the PRETOOL surface also rides the PROMPT hook's server-side exclude_ids on
+  // the next UserPromptSubmit: both the pretool-latched m1 and m2 (injected only
+  // by pretool). One ledger feeds both hooks, not two independent ones. (The old
+  // pre-branch cross-surface test asserted this path directly; the latch rewrite
+  // left it only transitively covered.)
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const searches = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    searches.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    const n = searches.length;
+    if (n === 1) {
+      res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "prompt-injected fact" }, 0.9)])));
+    } else if (n === 2) {
+      res.end(
+        JSON.stringify(
+          searchBody([
+            sm({ id: "m1", content: "prompt-injected fact" }, 0.95),
+            sm({ id: "m2", content: "file-local convention" }, 0.9),
+          ]),
+        ),
+      );
+    } else {
+      res.end(JSON.stringify(searchBody([sm({ id: "m3", content: "third fact" }, 0.9)])));
+    }
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    // Prompt injects m1; the pretool pass re-serves m1 UNCHANGED (latching it)
+    // and injects a fresh m2.
+    await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "xs3", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      env,
+    );
+    await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xs3", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      env,
+    );
+    const state = JSON.parse(readFileSync(INJ_STATE(cache, "xs3"), "utf8"));
+    assert.equal(state.ids.m1.r, 1, "the re-served m1 is latched on the pretool surface");
+
+    // The next UserPromptSubmit excludes BOTH server-side: the pretool-latched
+    // m1 and the pretool-only-injected m2.
+    await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "xs3", cwd: __dirname, prompt: "and what about session refresh flows here" }),
+      env,
+    );
+    const promptExclude = searches[2].exclude_ids || [];
+    assert.ok(promptExclude.includes("m1"), "the pretool-latched id rides the prompt hook's exclude_ids");
+    assert.ok(promptExclude.includes("m2"), "the pretool-injected id rides the prompt hook's exclude_ids");
+  } finally {
+    await close();
+  }
+});
+
+test("cross-surface dedupe: a content-updated re-serve re-injects and is never latched", async () => {
+  // A memory_update between injections changes the content hash, so the re-serve
+  // is NOT suppressed: it re-injects, recordInjected resets `r` to 0, and the id
+  // never latches into exclude_ids.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const searches = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    searches.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    const content = searches.length === 1 ? "v1: rotate tokens weekly" : "v2: rotate tokens DAILY after the incident";
+    res.end(JSON.stringify(searchBody([sm({ id: "m1", content }, 0.9)])));
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "xsu", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      env,
+    );
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xsu", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      env,
+    );
+    assert.match(JSON.parse(stdout).hookSpecificOutput.additionalContext, /rotate tokens DAILY/, "changed content re-injects");
+    const state = JSON.parse(readFileSync(INJ_STATE(cache, "xsu"), "utf8"));
+    assert.equal(state.ids.m1.r ?? 0, 0, "a content-changed re-injection stays unlatched");
+
+    await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xsu", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/db.go" } }),
+      env,
+    );
+    assert.ok(!(searches[2].exclude_ids || []).includes("m1"), "an unlatched (re-injected) id is not excluded server-side");
+  } finally {
+    await close();
+  }
+});
+
+test("cross-surface dedupe: a sentinel tool-read id rides pretool exclude_ids immediately", async () => {
+  // A tool-read entry (sentinel h==="") has no content identity to protect, so
+  // pretool excludes it server-side on the very first opportunity — no unchanged
+  // re-serve needed to latch (the analog of the prompt-hook sentinel exclusion).
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  // PostToolUse records s1 from a memory_recall tool result → sentinel "".
+  await runHook(
+    "post-tool-use.mjs",
+    JSON.stringify({
+      session_id: "xsen",
+      cwd: __dirname,
+      tool_name: "mcp__memini__memory_recall",
+      tool_input: { query: "auth" },
+      tool_response: {
+        content: [{ type: "text", text: JSON.stringify({ results: [{ id: "s1", content: "tool-pulled fact" }] }) }],
+      },
+    }),
+    { XDG_CACHE_HOME: cache, MEMINI_BASE_URL: DEAD_URL },
+  );
+  const searches = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    searches.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify(
+        searchBody([sm({ id: "s1", content: "tool-pulled fact" }, 0.95), sm({ id: "fresh", content: "a brand new fact" }, 0.9)]),
+      ),
+    );
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xsen", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      env,
+    );
+    assert.ok((searches[0].exclude_ids || []).includes("s1"), "the sentinel id is excluded server-side on the first pretool call");
+    const block = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(block, /a brand new fact/, "a never-injected memory still injects");
+    assert.doesNotMatch(block, /tool-pulled fact/, "the sentinel entry is filtered client-side too");
+  } finally {
+    await close();
+  }
+});
+
+test("cross-surface dedupe: a latched id whose windows lapsed drops out of pretool exclude_ids", async () => {
+  // The latch does not outlive the cooldown: once BOTH windows lapse the id is
+  // re-admitted, re-served, hash-checked, and (unchanged) re-injected — which
+  // resets `r`, so the latch has to be re-earned.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const content = "long-lapsed but latched decision";
+  const searches = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    searches.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m1", content }, 0.95)])));
+  });
+  try {
+    const { injectedIdentity } = await import("./_shared.mjs");
+    mkdirSync(join(cache, "memini", "sessions"), { recursive: true });
+    const injPath = INJ_STATE(cache, "xslapse");
+    const backAt = Date.now() - 2_000_000; // > 1.8e6 ms (30 min) → time window lapsed
+    // A LATCHED entry (r=1) backdated past BOTH windows (counter 10 − n 3 = 7 ≥ 3).
+    writeFileSync(
+      injPath,
+      JSON.stringify({ v: 2, n: 10, ids: { m1: { h: injectedIdentity({ content }), at: backAt, n: 3, r: 1 } } }),
+    );
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xslapse", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.ok(!(searches[0].exclude_ids || []).includes("m1"), "a both-windows-lapsed latched id is NOT excluded server-side");
+    assert.match(stdout, /long-lapsed but latched decision/, "and it re-injects once re-admitted");
+    const after = JSON.parse(readFileSync(injPath, "utf8"));
+    assert.equal(after.ids.m1.r, 0, "re-injection resets the latch");
+  } finally {
+    await close();
+  }
+});
+
+test("cross-surface dedupe: pretool 400 on exclude_ids retries without it; client-side still suppresses", async () => {
+  // An older server rejects exclude_ids. postSearch walks its strip-one-field
+  // retry chain (min_rank_score, then max_tokens, then exclude_ids), so the
+  // server re-serves the latched memory — but the client-side windowed filter
+  // still drops it, so nothing re-injects.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    const parsed = JSON.parse(body);
+    bodies.push(parsed);
+    res.setHeader("Content-Type", "application/json");
+    if (parsed.exclude_ids) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ error: "unknown field exclude_ids" }));
+      return;
+    }
+    res.end(
+      JSON.stringify(
+        searchBody([sm({ id: "m1", content: "already in context" }, 0.95), sm({ id: "m2", content: "a genuinely new fact" }, 0.9)]),
+      ),
+    );
+  });
+  try {
+    const { injectedIdentity } = await import("./_shared.mjs");
+    mkdirSync(join(cache, "memini", "sessions"), { recursive: true });
+    // A latched, in-window m1 → pretool sends it in exclude_ids.
+    writeFileSync(
+      INJ_STATE(cache, "xs400"),
+      JSON.stringify({ v: 2, n: 1, ids: { m1: { h: injectedIdentity({ content: "already in context" }), at: Date.now(), n: 1, r: 1 } } }),
+    );
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xs400", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.equal(bodies.length, 4, "the strip-one-field chain: min_rank_score, max_tokens, then exclude_ids");
+    assert.ok(bodies[0].exclude_ids.includes("m1"), "the first attempt carried the latched id");
+    assert.equal(bodies[1].min_rank_score, undefined, "the first retry stripped min_rank_score");
+    assert.ok(bodies[1].exclude_ids.includes("m1"), "exclude_ids survives the min_rank_score strip");
+    assert.equal(bodies[2].max_tokens, undefined, "the second retry stripped max_tokens");
+    assert.ok(bodies[2].exclude_ids.includes("m1"), "exclude_ids survives the max_tokens strip");
+    assert.equal(bodies[3].exclude_ids, undefined, "the third retry stripped exclude_ids");
+    const block = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(block, /a genuinely new fact/, "recall still lands after the retry");
+    assert.doesNotMatch(block, /already in context/, "the re-served latched memory is still filtered client-side");
   } finally {
     await close();
   }
@@ -5150,11 +5668,12 @@ test("cross-surface dedupe: pretool filtering accumulates across files within on
     }
   });
   try {
-    // Grep carries both `pattern` and `path` → two per-file searches in one run.
+    // Grep carries both `pattern` and `path` → two per-file searches in one
+    // run. Grep left the default allowlist, so the env knob opts it back in.
     const { stdout } = await runHook(
       "pre-tool-use.mjs",
       JSON.stringify({ session_id: "xs3", cwd: __dirname, tool_name: "Grep", tool_input: { pattern: "auth", path: "internal" } }),
-      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_TOOLS: "Grep" },
     );
     assert.equal(searches.length, 2);
     const block = JSON.parse(stdout).hookSpecificOutput.additionalContext;
@@ -5983,8 +6502,8 @@ test("injectedIdentity: prefers a valid content_hash; rejects malformed; cross-f
 test("user-prompt-submit.mjs: search asks response_format concise; a 400 on it retries once without (old servers)", async () => {
   // Mirrors the exclude_ids 400-retry: an old server that rejects unknown body
   // fields must degrade to full-content recall, never to NO recall. Strip
-  // order is newest field first: max_tokens, then exclude_ids, then
-  // response_format.
+  // order is newest field first: min_rank_score (the default 0.5 floor rides
+  // every search), then max_tokens, then exclude_ids, then response_format.
   const cache = freshCache();
   await primeCache(cache, __dirname, mkHS());
   const bodies = [];
@@ -6005,24 +6524,28 @@ test("user-prompt-submit.mjs: search asks response_format concise; a 400 on it r
   try {
     const first = await runHook("user-prompt-submit.mjs", payload("what did we decide about auth tokens"), env);
     assert.equal(bodies[0].response_format, "concise", "the first attempt asks for concise content");
-    assert.equal(bodies[1].max_tokens, undefined, "the first retry strips max_tokens (newest field, blind)");
+    assert.equal(bodies[1].min_rank_score, undefined, "the first retry strips min_rank_score (newest field, blind)");
     assert.equal(bodies[1].response_format, "concise", "response_format survives that strip");
-    assert.equal(bodies[2].response_format, undefined, "the second retry drops response_format");
-    assert.match(JSON.parse(first.stdout).hookSpecificOutput.additionalContext, /fact number 3/, "recall lands after the retries");
+    assert.equal(bodies[2].max_tokens, undefined, "the second retry strips max_tokens (blind)");
+    assert.equal(bodies[2].response_format, "concise", "response_format survives that strip too");
+    assert.equal(bodies[3].response_format, undefined, "the third retry drops response_format");
+    assert.match(JSON.parse(first.stdout).hookSpecificOutput.additionalContext, /fact number 4/, "recall lands after the retries");
 
     // Second prompt carries exclude_ids too: worst-case old server 400s every
-    // new field → strip max_tokens, still 400 → strip exclude_ids, still 400
-    // → strip response_format, then 200.
+    // new field → strip min_rank_score, still 400 → strip max_tokens, still
+    // 400 → strip exclude_ids, still 400 → strip response_format, then 200.
     const second = await runHook("user-prompt-submit.mjs", payload("and what about session cookies here"), env);
-    assert.equal(bodies.length, 7, "second prompt: 400, 400, 400, then success");
-    assert.ok(bodies[3].exclude_ids, "attempt 1 carried exclude_ids");
-    assert.equal(bodies[3].response_format, "concise");
-    assert.equal(bodies[4].max_tokens, undefined, "max_tokens is stripped first");
-    assert.ok(bodies[4].exclude_ids, "exclude_ids survives the max_tokens strip");
-    assert.equal(bodies[5].exclude_ids, undefined, "then exclude_ids");
-    assert.equal(bodies[5].response_format, "concise");
-    assert.equal(bodies[6].response_format, undefined, "then response_format");
-    assert.match(JSON.parse(second.stdout).hookSpecificOutput.additionalContext, /fact number 7/);
+    assert.equal(bodies.length, 9, "second prompt: 400, 400, 400, 400, then success");
+    assert.ok(bodies[4].exclude_ids, "attempt 1 carried exclude_ids");
+    assert.equal(bodies[4].response_format, "concise");
+    assert.equal(bodies[5].min_rank_score, undefined, "min_rank_score is stripped first");
+    assert.ok(bodies[5].exclude_ids, "exclude_ids survives the min_rank_score strip");
+    assert.equal(bodies[6].max_tokens, undefined, "then max_tokens");
+    assert.ok(bodies[6].exclude_ids, "exclude_ids survives the max_tokens strip");
+    assert.equal(bodies[7].exclude_ids, undefined, "then exclude_ids");
+    assert.equal(bodies[7].response_format, "concise");
+    assert.equal(bodies[8].response_format, undefined, "then response_format");
+    assert.match(JSON.parse(second.stdout).hookSpecificOutput.additionalContext, /fact number 9/);
   } finally {
     await close();
   }
@@ -6475,27 +6998,34 @@ test("user-prompt-submit.mjs: a 400 on max_tokens strips it FIRST (newest field)
   const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
   const payload = (p) => JSON.stringify({ session_id: "bud-400", cwd: __dirname, prompt: p });
   try {
-    // First prompt (no exclude_ids yet): max_tokens stripped first, then
-    // response_format — three attempts.
+    // First prompt (no exclude_ids yet): min_rank_score stripped first (the
+    // default 0.5 floor rides every search, and this server 400s on the OTHER
+    // fields, so that strip is blind), then max_tokens, then response_format —
+    // four attempts.
     const first = await runHook("user-prompt-submit.mjs", payload("what did we decide about auth tokens"), env);
-    assert.equal(bodies.length, 3, "first prompt: 400, 400, then success");
+    assert.equal(bodies.length, 4, "first prompt: 400, 400, 400, then success");
     assert.ok(bodies[0].max_tokens > 0, "attempt 1 carried max_tokens (the default budget)");
-    assert.equal(bodies[1].max_tokens, undefined, "max_tokens is stripped first (newest field)");
-    assert.equal(bodies[1].response_format, "concise", "response_format survives the first strip");
-    assert.equal(bodies[2].response_format, undefined, "then response_format");
-    assert.match(JSON.parse(first.stdout).hookSpecificOutput.additionalContext, /fact number 3/, "recall lands after the retries");
+    assert.ok(bodies[0].min_rank_score > 0, "attempt 1 carried min_rank_score (the default floor)");
+    assert.equal(bodies[1].min_rank_score, undefined, "min_rank_score is stripped first (newest field)");
+    assert.ok(bodies[1].max_tokens > 0, "max_tokens survives the first strip");
+    assert.equal(bodies[2].max_tokens, undefined, "then max_tokens");
+    assert.equal(bodies[2].response_format, "concise", "response_format survives that strip");
+    assert.equal(bodies[3].response_format, undefined, "then response_format");
+    assert.match(JSON.parse(first.stdout).hookSpecificOutput.additionalContext, /fact number 4/, "recall lands after the retries");
 
-    // Second prompt adds exclude_ids: worst case is four attempts, stripping
-    // max_tokens → exclude_ids → response_format in that order.
+    // Second prompt adds exclude_ids: worst case is five attempts, stripping
+    // min_rank_score → max_tokens → exclude_ids → response_format in order.
     const second = await runHook("user-prompt-submit.mjs", payload("and what about session cookies here"), env);
-    assert.equal(bodies.length, 7, "second prompt: 400, 400, 400, then success");
-    assert.ok(bodies[3].max_tokens > 0 && bodies[3].exclude_ids && bodies[3].response_format, "attempt 1 carried all three");
-    assert.equal(bodies[4].max_tokens, undefined, "max_tokens first");
-    assert.ok(bodies[4].exclude_ids, "exclude_ids survives the max_tokens strip");
-    assert.equal(bodies[5].exclude_ids, undefined, "exclude_ids second");
-    assert.equal(bodies[5].response_format, "concise");
-    assert.equal(bodies[6].response_format, undefined, "response_format last");
-    assert.match(JSON.parse(second.stdout).hookSpecificOutput.additionalContext, /fact number 7/);
+    assert.equal(bodies.length, 9, "second prompt: 400, 400, 400, 400, then success");
+    assert.ok(bodies[4].max_tokens > 0 && bodies[4].exclude_ids && bodies[4].response_format, "attempt 1 carried them all");
+    assert.equal(bodies[5].min_rank_score, undefined, "min_rank_score first");
+    assert.ok(bodies[5].max_tokens > 0, "max_tokens survives the min_rank_score strip");
+    assert.equal(bodies[6].max_tokens, undefined, "max_tokens second");
+    assert.ok(bodies[6].exclude_ids, "exclude_ids survives the max_tokens strip");
+    assert.equal(bodies[7].exclude_ids, undefined, "exclude_ids third");
+    assert.equal(bodies[7].response_format, "concise");
+    assert.equal(bodies[8].response_format, undefined, "response_format last");
+    assert.match(JSON.parse(second.stdout).hookSpecificOutput.additionalContext, /fact number 9/);
   } finally {
     await close();
   }

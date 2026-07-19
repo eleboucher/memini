@@ -27,6 +27,7 @@ import {
   formatRecallHit,
   recallHitTruncated,
   RECALL_DETAIL_HEADER,
+  recallDropFooter,
   readInjectedState,
   writeInjectedState,
   recordInjected,
@@ -117,7 +118,7 @@ async function main() {
 
   const limit = ctx.setting("recall_limit").value;
   const maxTokens = ctx.setting("inject_recall_max_tok").value;
-  const minScore = ctx.setting("inject_recall_min_score").value;
+  const minRankScore = ctx.setting("inject_recall_min_score").value;
   const labels = new Set(ctx.setting("inject_labels").value.map((s) => String(s).toLowerCase()));
 
   // Windowed cross-surface dedupe. Exclude what this session already carries:
@@ -142,7 +143,7 @@ async function main() {
     {
       limit,
       exclude,
-      minScore,
+      minRankScore,
       source: "prompt",
       excludeIds: cooldownIds(injectedState, { now, cooldownMs, cooldownPrompts }),
       maxTokens,
@@ -204,7 +205,7 @@ async function main() {
   // surfaces (see RECALL_DETAIL_HEADER).
   if (hits.some((h) => recallHitTruncated(h)) || dropped > 0) out.push(RECALL_DETAIL_HEADER);
   out.push(...fit.items);
-  if (dropped > 0) out.push(`[+${dropped} more — memory_recall for detail]`);
+  if (dropped > 0) out.push(recallDropFooter(dropped));
   // The note is server-authored, but it transits the same untrusted rendering
   // path as memory content — escape it so a forged tag can't break the wrapper.
   if (degraded) {

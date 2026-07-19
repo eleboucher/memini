@@ -499,6 +499,190 @@ class ToolsHandshakeTest(_AiohttpSessionPatchMixin, unittest.TestCase):
         self.assertNotIn("the namespace valve says", out)
 
 
+@unittest.skipUnless(_HAVE_DEPS, "pydantic/aiohttp not installed")
+class FilterInjectionCooldown(unittest.TestCase):
+    """The windowed injection cooldown (enforce-core parity, eleboucher/memini
+    #134 family): the filter keeps a per-chat seen-map of {h, at, n} entries,
+    suppresses an already-injected memory while within EITHER window (time /
+    prompt), re-admits it once BOTH lapse, bypasses the window when the
+    memory's content changed (h mismatch), and sends the in-cooldown ids as
+    exclude_ids so a suppressed hit doesn't waste a recall slot."""
+
+    @staticmethod
+    def _hit(mid, content, content_hash=None):
+        mem = {"id": mid, "content": content}
+        if content_hash:
+            mem["content_hash"] = content_hash
+        return {"memory": mem}
+
+    def _filter(self, calls, results_fn, settings=None):
+        f = flt.Filter()
+        if settings is None:
+            f._handshake = _no_handshake
+        else:
+
+            async def _hs():
+                return {"settings": settings}
+
+            f._handshake = _hs
+
+        async def fake_post(path, payload, namespace):
+            calls.append((path, payload, namespace))
+            if path == "/v1/search":
+                return {"results": results_fn(payload)}
+            return {"id": "mem_1"}
+
+        f._post_json = fake_post
+        return f
+
+    @staticmethod
+    def _body():
+        return {"messages": [{"role": "user", "content": "what did we decide?"}]}
+
+    @staticmethod
+    def _injected(out):
+        """Whether inlet added a memini system message to this body."""
+        return any(
+            m.get("role") == "system" and "memini" in str(m.get("content"))
+            for m in out["messages"]
+        )
+
+    def test_second_inlet_suppresses_an_already_injected_memory(self):
+        calls = []
+        f = self._filter(calls, lambda payload: [self._hit("m1", "prior note")])
+        first = asyncio.run(f.inlet(self._body(), __chat_id__="c1"))
+        self.assertTrue(self._injected(first))
+        second = asyncio.run(f.inlet(self._body(), __chat_id__="c1"))
+        self.assertFalse(self._injected(second), "in-window repeat must not re-inject")
+
+    def test_in_cooldown_ids_ride_as_exclude_ids(self):
+        calls = []
+        f = self._filter(calls, lambda payload: [self._hit("m1", "prior note")])
+        asyncio.run(f.inlet(self._body(), __chat_id__="c1"))
+        self.assertNotIn("exclude_ids", calls[0][1])
+        asyncio.run(f.inlet(self._body(), __chat_id__="c1"))
+        self.assertEqual(calls[1][1].get("exclude_ids"), ["m1"])
+
+    def test_exclude_ids_rejection_retries_once_and_latches(self):
+        # An older server 400s the whole request on the unknown field; the
+        # filter's fallback_on_error degrades that to None. Retry once without
+        # the field and latch it off — "no dedupe on the wire" beats "no
+        # recall at all". The client-side drop filter stays.
+        calls = []
+        f = flt.Filter()
+        f._handshake = _no_handshake
+
+        async def fake_post(path, payload, namespace):
+            calls.append((path, payload, namespace))
+            if "exclude_ids" in payload:
+                return None
+            return {"results": [self._hit(f"m{len(calls)}", f"fact {len(calls)}")]}
+
+        f._post_json = fake_post
+        asyncio.run(f.inlet(self._body(), __chat_id__="c1"))  # injects m1
+        out = asyncio.run(f.inlet(self._body(), __chat_id__="c1"))
+        self.assertIn("exclude_ids", calls[1][1])
+        self.assertNotIn("exclude_ids", calls[2][1])
+        self.assertTrue(self._injected(out), "the retry's hits still land")
+        asyncio.run(f.inlet(self._body(), __chat_id__="c1"))
+        self.assertNotIn("exclude_ids", calls[3][1])  # latched off
+        self.assertEqual(len(calls), 4)
+
+    def test_lapsed_entry_reinjects_and_rerecords(self):
+        calls = []
+        f = self._filter(calls, lambda payload: [self._hit("m1", "prior note")])
+        asyncio.run(f.inlet(self._body(), __chat_id__="c1"))
+        # Lapse BOTH windows: backdated stamp (ms) + counter far past.
+        f._seen["c1"]["ids"]["m1"].update(at=0, n=-100)
+        f._seen["c1"]["n"] = 100
+        out = asyncio.run(f.inlet(self._body(), __chat_id__="c1"))
+        self.assertTrue(self._injected(out), "a lapsed id must be re-served")
+        self.assertEqual(f._seen["c1"]["ids"]["m1"]["n"], 101)  # re-stamped
+        self.assertGreater(f._seen["c1"]["ids"]["m1"]["at"], 0)
+
+    def test_content_change_bypasses_the_cooldown(self):
+        calls = []
+
+        def results(payload):
+            content = "version one" if len(calls) <= 1 else "version two -- updated"
+            return [self._hit("m1", content)]
+
+        f = self._filter(calls, results)
+        asyncio.run(f.inlet(self._body(), __chat_id__="c1"))
+        h1 = f._seen["c1"]["ids"]["m1"]["h"]
+        out = asyncio.run(f.inlet(self._body(), __chat_id__="c1"))
+        self.assertTrue(self._injected(out), "an updated memory must re-inject")
+        self.assertNotEqual(f._seen["c1"]["ids"]["m1"]["h"], h1)
+
+    def test_zero_zero_knobs_suppress_forever(self):
+        calls = []
+        f = self._filter(
+            calls,
+            lambda payload: [self._hit("m1", "prior note")],
+            settings={"inject_cooldown_ms": 0, "inject_cooldown_prompts": 0},
+        )
+        asyncio.run(f.inlet(self._body(), __chat_id__="c1"))
+        f._seen["c1"]["ids"]["m1"].update(at=0, n=-10_000)  # wildly lapsed
+        f._seen["c1"]["n"] = 10_000
+        out = asyncio.run(f.inlet(self._body(), __chat_id__="c1"))
+        self.assertFalse(self._injected(out), "both-zero knobs = legacy forever")
+
+    def test_prompt_window_governs_when_time_window_disabled(self):
+        calls = []
+        f = self._filter(
+            calls,
+            lambda payload: [self._hit("m1", "prior note")],
+            settings={"inject_cooldown_ms": 0, "inject_cooldown_prompts": 2},
+        )
+        self.assertTrue(self._injected(asyncio.run(f.inlet(self._body(), __chat_id__="c1"))))
+        second = asyncio.run(f.inlet(self._body(), __chat_id__="c1"))
+        self.assertFalse(self._injected(second), "1 prompt since injection: suppressed")
+        third = asyncio.run(f.inlet(self._body(), __chat_id__="c1"))
+        self.assertTrue(self._injected(third), "2 prompts since injection: re-admitted")
+
+    def test_knobs_resolve_from_the_handshake_with_built_in_defaults(self):
+        f = flt.Filter()
+        f._handshake = _no_handshake
+        self.assertEqual(asyncio.run(f._inject_knobs()), (1800000, 3))
+
+        g = flt.Filter()
+
+        async def _hs():
+            return {"settings": {"inject_cooldown_ms": 5000, "inject_cooldown_prompts": 7}}
+
+        g._handshake = _hs
+        self.assertEqual(asyncio.run(g._inject_knobs()), (5000, 7))
+
+    def test_chats_do_not_share_suppression(self):
+        calls = []
+        f = self._filter(calls, lambda payload: [self._hit("m1", "prior note")])
+        asyncio.run(f.inlet(self._body(), __chat_id__="c1"))
+        other = asyncio.run(f.inlet(self._body(), __chat_id__="c2"))
+        self.assertTrue(self._injected(other), "another chat has not seen m1 yet")
+
+    def test_without_a_chat_id_no_seen_state_accumulates(self):
+        # No chat id -> no key to scope the seen-map by; recall stays unscoped
+        # (and un-deduped), exactly like the capture path's chat-id rule.
+        calls = []
+        f = self._filter(calls, lambda payload: [self._hit("m1", "prior note")])
+        self.assertTrue(self._injected(asyncio.run(f.inlet(self._body()))))
+        self.assertTrue(self._injected(asyncio.run(f.inlet(self._body()))))
+        self.assertEqual(f._seen, {})
+
+    def test_seen_state_is_bounded(self):
+        calls = []
+        n = {"i": 0}
+
+        def results(payload):
+            n["i"] += 1
+            return [self._hit(f"m{n['i']}", f"fact {n['i']}")]
+
+        f = self._filter(calls, results)
+        for i in range(flt.MAX_SEEN_CHATS + 5):
+            asyncio.run(f.inlet(self._body(), __chat_id__=f"chat-{i}"))
+        self.assertLessEqual(len(f._seen), flt.MAX_SEEN_CHATS)
+
+
 _CAPTURE_VECTORS = os.path.join(
     HERE, "..", "..", "packages", "memini-client", "test", "fixtures", "capture-vectors.json"
 )

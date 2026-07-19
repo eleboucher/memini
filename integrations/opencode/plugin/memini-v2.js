@@ -45,6 +45,9 @@ import {
   describeSettings,
   renderStatus,
   createClient,
+  injectedIdentity,
+  injectedSuppressed,
+  postSearchWithFloor,
 } from "./memini.js";
 
 const INJECT_PREAMBLE =
@@ -164,23 +167,45 @@ export async function setup(ctx) {
   const currentConfig = async () => effectiveConfig(cfg, await getHandshake());
 
   // Assistant ids already captured, so repeated idle events for one turn don't
-  // write duplicates. Memory ids already injected per session, so an unchanged
-  // match isn't re-injected turn after turn. Both bounded for a long-lived host.
+  // write duplicates. Memory ids already injected per session — the enforce
+  // core's { n, ids } shape (n = prompt counter, bumped once per request-hook
+  // fire; ids maps memory id → { h, at, n }), judged by injectedSuppressed
+  // against the inject_cooldown_ms / inject_cooldown_prompts windows: an
+  // unchanged match is suppressed while inside EITHER window, re-served once
+  // BOTH lapse, and re-served immediately when its content changed (h
+  // mismatch). Both maps bounded for a long-lived host.
   const captured = new Set();
-  const injectedBySession = new Map();
+  const injectedBySession = new Map(); // session -> { n, ids: Map<id, {h, at, n}> }
   const MAX_TRACKED_SESSIONS = 200;
-  const rememberInjected = (session, ids) => {
-    let seen = injectedBySession.get(session);
-    if (!seen) {
-      seen = new Set();
-      injectedBySession.set(session, seen);
+  const MAX_INJECTED_PER_SESSION = 200;
+  const sessionSeen = (session) => {
+    let state = injectedBySession.get(session);
+    if (!state) {
+      state = { n: 0, ids: new Map() };
+      injectedBySession.set(session, state);
       while (injectedBySession.size > MAX_TRACKED_SESSIONS) {
         const oldest = injectedBySession.keys().next().value;
         if (oldest === undefined) break;
         injectedBySession.delete(oldest);
       }
     }
-    for (const id of ids) if (id) seen.add(id);
+    return state;
+  };
+  const rememberInjected = (state, hits) => {
+    const now = Date.now();
+    for (const r of hits) {
+      const id = r?.memory?.id;
+      if (!id) continue;
+      // delete+set refreshes the stamp and the insertion order, so the size
+      // cap evicts the least-recently-shown id first.
+      state.ids.delete(id);
+      state.ids.set(id, { h: injectedIdentity(r?.memory), at: now, n: state.n });
+    }
+    while (state.ids.size > MAX_INJECTED_PER_SESSION) {
+      const oldest = state.ids.keys().next().value;
+      if (oldest === undefined) break;
+      state.ids.delete(oldest);
+    }
   };
 
   const cleanups = [];
@@ -204,24 +229,57 @@ export async function setup(ctx) {
         const query = extractQueryFromRequest(event);
         if (!query) return;
         const sessionID = event.sessionID || event.sessionId || (event.session && event.session.id) || "";
+        // One request-hook fire == one prompt for the cooldown's prompt
+        // dimension (the v2 beta's closest per-turn signal): bump before any
+        // gate, so the window measures prompts-since-injection even on turns
+        // that inject nothing.
+        const seen = sessionID ? sessionSeen(sessionID) : null;
+        if (seen) seen.n += 1;
+        const cooldownOpts = () => ({
+          now: Date.now(),
+          counter: seen ? seen.n : 0,
+          cooldownMs: live.inject_cooldown_ms,
+          cooldownPrompts: live.inject_cooldown_prompts,
+        });
 
         const body = { query, limit: live.recall_limit };
         // Exclude this session's own captured turns: they're still in the live
         // context, so recalling them just echoes the conversation back a turn
         // behind. Past sessions still recall.
         if (sessionID) body.exclude_metadata = { session_id: sessionID };
-        if (live.recall_min_score > 0) body.min_score = live.recall_min_score;
+        // inject_recall_min_score floors the FINAL composite score server-side
+        // via min_rank_score (not the fused-scale min_score), matching the
+        // Claude Code plugin. A knob >= 1 is out of the server's range, so it
+        // clamps to a client-only floor rather than 400ing every search.
+        const rankFloorInRange = live.recall_min_score > 0 && live.recall_min_score < 1;
+        if (rankFloorInRange) body.min_rank_score = live.recall_min_score;
 
         // Blocking, like v1's chat.message: opencode awaits this hook before
-        // dispatch. postJson is bounded by cfg.timeout_ms and fail-soft, so a
-        // slow/unreachable memini degrades to no memory this turn, never a throw.
-        const result = await rest.postJson("/v1/search", body, live.namespace);
+        // dispatch. postSearchWithFloor is bounded by cfg.timeout_ms and
+        // fail-soft, and on an older server's 400 it retries once with
+        // min_rank_score stripped (v2 sends no exclude_ids), so a slow or
+        // out-of-date memini degrades to no memory this turn, never a throw.
+        const { data: result, rankFloorStripped } = await postSearchWithFloor(
+          rest.postJson,
+          body,
+          live.namespace,
+        );
 
-        const floor = live.recall_min_score > 0 ? live.recall_min_score : 0;
+        // Client composite floor is a fallback ONLY: it runs when the knob was
+        // clamped to client-only (>= 1) or the retry stripped min_rank_score. A
+        // server that enforced the floor is authoritative and not re-filtered.
+        const serverEnforcedFloor = rankFloorInRange && !rankFloorStripped;
+        const floor = live.recall_min_score > 0 && !serverEnforcedFloor ? live.recall_min_score : 0;
         let rawHits = Array.isArray(result && result.results) ? result.results : [];
-        if (sessionID) {
-          const seen = injectedBySession.get(sessionID);
-          if (seen && seen.size) rawHits = rawHits.filter((r) => !seen.has(r && r.memory && r.memory.id));
+        // Windowed cooldown, judged PER HIT against its content identity: an
+        // in-window unchanged hit is dropped, a lapsed one re-serves, and an
+        // UPDATED one (h mismatch) bypasses the window and re-injects.
+        if (seen && seen.ids.size) {
+          const opts = cooldownOpts();
+          rawHits = rawHits.filter((r) => {
+            const entry = seen.ids.get(r && r.memory && r.memory.id);
+            return !(entry && injectedSuppressed(entry, injectedIdentity(r && r.memory), opts));
+          });
         }
         const filtered =
           floor > 0
@@ -240,11 +298,10 @@ export async function setup(ctx) {
         }
         if (fit.dropped > 0) lines.push(`[... ${fit.dropped} item(s) truncated by token budget]`);
 
-        if (injectContext(event, lines.join("\n")) && sessionID) {
-          rememberInjected(
-            sessionID,
-            filtered.map((r) => r && r.memory && r.memory.id).filter(Boolean),
-          );
+        if (injectContext(event, lines.join("\n")) && seen) {
+          // Record only the slice formatResults actually renders, stamped with
+          // {h, at, n} so the windowed cooldown can judge re-admission later.
+          rememberInjected(seen, filtered.slice(0, live.recall_limit || 3));
         }
       } catch (error) {
         log.warn(`request hook failed: ${String(error)}`);

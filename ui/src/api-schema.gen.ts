@@ -778,6 +778,11 @@ export interface components {
              * @default 0
              */
             max_tokens: number;
+            /**
+             * Format: double
+             * @description Per-call floor on the final ranked (composite) score — the same score the response `score` field and the activity feed show. Applied AFTER re-ranking, so it changes membership of the final list only, never the candidate pool the reranker judged nor its ordering. Floored hits are still logged to the activity feed, marked as filtered, so what was dropped stays visible. 0 (or unset) disables it. Results added by `include_linked` expansion are exempt (the floor runs before expansion). With `query_rewrite` it applies per query variant, before the RRF fusion of variants. Distinct from `min_score`, which floors the raw fused score before re-ranking.
+             */
+            min_rank_score?: number;
         };
         ScoredMemory: {
             memory: components["schemas"]["Memory"];
@@ -847,6 +852,11 @@ export interface components {
             section?: string;
             /** @description The served→injected join's verdict, on a recall event's memories: true when a client injection-telemetry report (POST /v1/activity/injected) named this memory as actually reaching model context, false when a report covered the recall but omitted it (the client suppressed it). ABSENT when no report covered the serve — absent means unknown, so old data and non-reporting integrations render unchanged; only a report ever yields false. */
             injected?: boolean;
+            /**
+             * @description Present when the recall dropped this hit from its response but still logged it — "rank_floor" when the per-call min_rank_score composite floor cut it. Absent on a served hit. Lets the feed dim what was filtered instead of hiding it; recall only.
+             * @enum {string}
+             */
+            filtered?: "rank_floor";
         };
         /** @description One logical operation, with the memories it served or wrote. */
         ActivityEvent: {
@@ -1252,19 +1262,17 @@ export interface components {
              */
             inject_pretool_max_tok: number;
             /**
-             * @description Floor on the fused score (>=) for a PreToolUse injection.
-             * @default 0
+             * @description Floor on the composite post-rerank score — the final [0,1) scale the response score field and the activity feed show — for a PreToolUse injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor. 0 disables the floor.
+             * @default 0.5
              */
             inject_pretool_min_score: number;
             /**
-             * @description Tool-name allowlist that triggers a PreToolUse injection.
+             * @description Tool-name allowlist that triggers a PreToolUse injection. Glob and Grep are deliberately not in the default: pattern-derived queries ("Grep on <pattern>") are near-zero-signal and each ungated call costs a server embed+rerank — list them here to restore the old behavior.
              * @default [
              *       "Read",
              *       "Write",
              *       "Edit",
-             *       "MultiEdit",
-             *       "Glob",
-             *       "Grep"
+             *       "MultiEdit"
              *     ]
              */
             inject_pretool_tools: string[];
@@ -1319,8 +1327,8 @@ export interface components {
              */
             inject_recall_max_tok: number;
             /**
-             * @description Floor on the fused score (>=) for a recall injection.
-             * @default 0
+             * @description Floor on the composite post-rerank score — the final [0,1) scale the response score field and the activity feed show — for a recall injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor. 0 disables the floor.
+             * @default 0.5
              */
             inject_recall_min_score: number;
             /**

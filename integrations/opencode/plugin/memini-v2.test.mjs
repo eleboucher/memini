@@ -129,6 +129,81 @@ test("request hook injects a recalled memory into event.system", async () => {
   }
 });
 
+// The floor rides the wire as min_rank_score (server-enforced final composite
+// score), never the fused-scale min_score. A server that accepts it is
+// authoritative: its result set is NOT re-filtered client-side.
+test("request hook floors on min_rank_score (never min_score) and trusts an enforcing server", async () => {
+  BASE_ENV();
+  const searches = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const path = new URL(url).pathname;
+    const json = (b, status = 200) => new Response(JSON.stringify(b), { status, headers: { "content-type": "application/json" } });
+    if (path.endsWith("/healthz")) return new Response("ok", { status: 200 });
+    if (path.endsWith("/v1/handshake")) return json({});
+    if (path.endsWith("/v1/search")) {
+      searches.push(init && init.body ? JSON.parse(init.body) : {});
+      return json({ results: [
+        { memory: { id: "hi", content: "high relevance fact", tier: "semantic" }, score: 0.9 },
+        { memory: { id: "lo", content: "low relevance kept", tier: "episodic" }, score: 0.1 },
+      ] });
+    }
+    return json({}, 404);
+  };
+  try {
+    const { ctx, state } = makeCtx({ options: { namespace: "test-ns", recall_min_score: 0.4 } });
+    await setup(ctx);
+    const event = { sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] };
+    await state.requestHook(event);
+    assert.equal(searches[0].min_rank_score, 0.4, "the knob rides as min_rank_score");
+    assert.equal(searches[0].min_score, undefined, "the fused-scale min_score is never sent");
+    assert.equal(event.system.length, 1);
+    assert.match(event.system[0], /high relevance fact/);
+    assert.match(event.system[0], /low relevance kept/, "an enforcing server's result set is authoritative");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+// Older server: it 400s min_rank_score, so one retry strips it and the client
+// applies the composite floor as a fallback.
+test("request hook retries without min_rank_score on an old server and applies the floor client-side", async () => {
+  BASE_ENV();
+  const searches = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const path = new URL(url).pathname;
+    const json = (b, status = 200) => new Response(JSON.stringify(b), { status, headers: { "content-type": "application/json" } });
+    if (path.endsWith("/healthz")) return new Response("ok", { status: 200 });
+    if (path.endsWith("/v1/handshake")) return json({});
+    if (path.endsWith("/v1/search")) {
+      const body = init && init.body ? JSON.parse(init.body) : {};
+      searches.push(body);
+      if (body.min_rank_score !== undefined) return json({ error: 'unknown field "min_rank_score"' }, 400);
+      return json({ results: [
+        { memory: { id: "hi", content: "high relevance fact", tier: "semantic" }, score: 0.9 },
+        { memory: { id: "lo", content: "low should be filtered", tier: "episodic" }, score: 0.1 },
+      ] });
+    }
+    return json({}, 404);
+  };
+  try {
+    const { ctx, state } = makeCtx({ options: { namespace: "test-ns", recall_min_score: 0.4 } });
+    await setup(ctx);
+    const event = { sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] };
+    await state.requestHook(event);
+    assert.equal(searches.length, 2, "one strip-and-retry, then it stops");
+    assert.equal(searches[0].min_rank_score, 0.4, "the first attempt carries the floor");
+    assert.equal(searches[1].min_rank_score, undefined, "the retry strips min_rank_score");
+    assert.equal(searches[1].min_score, undefined, "the retry never resurrects min_score");
+    assert.equal(event.system.length, 1);
+    assert.match(event.system[0], /high relevance fact/);
+    assert.doesNotMatch(event.system[0], /low should be filtered/, "the stripped floor is enforced client-side");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("request hook suppresses a memory already injected this session", async () => {
   BASE_ENV();
   const { restore } = installFetch({
@@ -203,6 +278,103 @@ test("capture writes the completed turn on session.idle", async () => {
     assert.equal(posts[0].metadata.session_id, "s1");
     assert.deepEqual(posts[0].tags, ["opencode"]);
     await cleanup();
+  } finally {
+    restore();
+  }
+});
+
+test("request hook re-serves a suppressed memory once the cooldown windows lapse", async () => {
+  BASE_ENV();
+  const { restore } = installFetch({
+    search: [{ memory: { id: "m1", content: "one time fact", tier: "semantic" }, score: 0.9 }],
+  });
+  try {
+    // Time window off, prompt window 2: each request-hook fire is one prompt.
+    const { ctx, state } = makeCtx({
+      options: { namespace: "test-ns", inject_cooldown_ms: 0, inject_cooldown_prompts: 2 },
+    });
+    await setup(ctx);
+    const mk = () => ({ sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] });
+
+    const first = mk();
+    await state.requestHook(first);
+    assert.equal(first.system.length, 1, "prompt 1 injects (n=1)");
+
+    const second = mk();
+    await state.requestHook(second);
+    assert.equal(second.system.length, 0, "prompt 2: delta 1 < 2, suppressed");
+
+    const third = mk();
+    await state.requestHook(third);
+    assert.equal(third.system.length, 1, "prompt 3: delta 2 >= 2, re-served");
+
+    const fourth = mk();
+    await state.requestHook(fourth);
+    assert.equal(fourth.system.length, 0, "the re-record restarts the window");
+  } finally {
+    restore();
+  }
+});
+
+test("request hook re-injects an updated memory inside the window (content-change bypass)", async () => {
+  BASE_ENV();
+  const posts = [];
+  const original = globalThis.fetch;
+  let searches = 0;
+  globalThis.fetch = async (url, init) => {
+    const path = new URL(url).pathname;
+    const json = (body, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    if (path.endsWith("/healthz")) return new Response("ok", { status: 200 });
+    if (path.endsWith("/v1/handshake")) return json({});
+    if (path.endsWith("/v1/search")) {
+      searches++;
+      const content = searches <= 1 ? "version one" : "version two — updated";
+      return json({ results: [{ memory: { id: "m1", content, tier: "semantic" }, score: 0.9 }] });
+    }
+    if (path.endsWith("/v1/memories")) {
+      posts.push(JSON.parse(init.body));
+      return json({ id: "mem_test" });
+    }
+    return json({}, 404);
+  };
+  try {
+    const { ctx, state } = makeCtx({ options: { namespace: "test-ns" } });
+    await setup(ctx);
+    const mk = () => ({ sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] });
+
+    const first = mk();
+    await state.requestHook(first);
+    assert.match(first.system[0], /version one/);
+
+    const second = mk();
+    await state.requestHook(second);
+    assert.equal(second.system.length, 1, "an updated memory must re-inject inside the window");
+    assert.match(second.system[0], /version two/);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("request hook: both cooldown knobs at zero suppresses for the whole session", async () => {
+  BASE_ENV();
+  const { restore } = installFetch({
+    search: [{ memory: { id: "m1", content: "one time fact", tier: "semantic" }, score: 0.9 }],
+  });
+  try {
+    const { ctx, state } = makeCtx({
+      options: { namespace: "test-ns", inject_cooldown_ms: 0, inject_cooldown_prompts: 0 },
+    });
+    await setup(ctx);
+    const mk = () => ({ sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] });
+    const first = mk();
+    await state.requestHook(first);
+    assert.equal(first.system.length, 1);
+    for (let i = 0; i < 5; i++) {
+      const again = mk();
+      await state.requestHook(again);
+      assert.equal(again.system.length, 0, "legacy forever-dedupe: never re-served");
+    }
   } finally {
     restore();
   }

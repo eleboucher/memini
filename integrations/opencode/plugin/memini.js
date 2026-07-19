@@ -20,6 +20,7 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, existsSync, rmSync, writeFileSync, statSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { homedir } from "node:os";
@@ -337,6 +338,17 @@ export function resolveConfig(env, options, worktree) {
   const homeRaw = o.home !== undefined ? o.home : e.MEMINI_HOME;
   const home = homeRaw && String(homeRaw).trim() ? String(homeRaw).trim() : undefined;
 
+  // Windowed injection-cooldown knobs. 0 is MEANINGFUL (it disables that
+  // dimension; both 0 restores the legacy suppress-forever behavior), so a
+  // malformed option falls through to env/default rather than collapsing to 0.
+  const cooldownKnob = (optVal, envName, def) => {
+    if (optVal !== undefined) {
+      const n = Number(optVal);
+      if (Number.isFinite(n) && n >= 0) return n;
+    }
+    return intEnvFrom(e, envName, def);
+  };
+
   return {
     base_url: o.base_url || e.MEMINI_BASE_URL || DEFAULT_BASE_URL,
     // namespace is already resolved above (explicit raw-trimmed, or the
@@ -363,6 +375,11 @@ export function resolveConfig(env, options, worktree) {
       o.recall_min_score !== undefined
         ? Number(o.recall_min_score) || 0
         : floatEnv("MEMINI_INJECT_RECALL_MIN_SCORE", 0),
+    // Windowed injection cooldown (option > env > server settings via
+    // effectiveConfig > built-in default, mirroring the server's own
+    // ClientSettings defaults: 30 min / 3 prompts). See injectedSuppressed.
+    inject_cooldown_ms: cooldownKnob(o.inject_cooldown_ms, "MEMINI_INJECT_COOLDOWN_MS", 1800000),
+    inject_cooldown_prompts: cooldownKnob(o.inject_cooldown_prompts, "MEMINI_INJECT_COOLDOWN_PROMPTS", 3),
     recall_budget_ms,
     timeout_ms: Number(o.timeout_ms || e.MEMINI_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
     fallback_on_error:
@@ -379,6 +396,8 @@ export function resolveConfig(env, options, worktree) {
       recall_limit: o.recall_limit !== undefined || isSet(e.MEMINI_RECALL_LIMIT),
       recall_max_tokens: o.recall_max_tokens !== undefined || isSet(process.env.MEMINI_INJECT_RECALL_MAX_TOK),
       recall_min_score: o.recall_min_score !== undefined || isSet(process.env.MEMINI_INJECT_RECALL_MIN_SCORE),
+      inject_cooldown_ms: o.inject_cooldown_ms !== undefined || isSet(e.MEMINI_INJECT_COOLDOWN_MS),
+      inject_cooldown_prompts: o.inject_cooldown_prompts !== undefined || isSet(e.MEMINI_INJECT_COOLDOWN_PROMPTS),
       capture_user_max_chars: isSet(e.MEMINI_CAPTURE_USER_MAX_CHARS),
       capture_assistant_max_chars: isSet(e.MEMINI_CAPTURE_ASSISTANT_MAX_CHARS),
     },
@@ -427,6 +446,14 @@ export function effectiveConfig(cfg, hs) {
       explicit.recall_min_score || !Number.isFinite(s.inject_recall_min_score)
         ? cfg.recall_min_score
         : s.inject_recall_min_score,
+    inject_cooldown_ms:
+      explicit.inject_cooldown_ms || !Number.isFinite(s.inject_cooldown_ms)
+        ? cfg.inject_cooldown_ms
+        : s.inject_cooldown_ms,
+    inject_cooldown_prompts:
+      explicit.inject_cooldown_prompts || !Number.isFinite(s.inject_cooldown_prompts)
+        ? cfg.inject_cooldown_prompts
+        : s.inject_cooldown_prompts,
     capture_user_max_chars:
       explicit.capture_user_max_chars || !Number.isFinite(s.capture_user_max_chars)
         ? cfg.capture_user_max_chars
@@ -579,7 +606,7 @@ export function intEnvFrom(env, name, defaultValue) {
 
 /**
  * floatEnv parses a non-negative float env var and returns `default` when
- * unset or malformed. Used for min_score.
+ * unset or malformed.
  */
 export function floatEnv(name, defaultValue) {
   const raw = process.env[name];
@@ -640,6 +667,62 @@ export function fitByTokens(items, maxTokens) {
     used += t;
   }
   return { items: out, tokens: used, dropped };
+}
+
+// --- Injection-enforcement core (opencode copies) ---------------------------
+//
+// Ported from @memini/client's enforce core (packages/memini-client/src/
+// enforce/identity.ts + seen.ts); semantics are pinned by the shared golden
+// vectors (packages/memini-client/vectors/enforcement.json), replayed by
+// memini.test.mjs. This plugin ships standalone (no build step), so these
+// stay copies, not imports — the vector replay is what keeps them the same
+// functions.
+
+/**
+ * True for a well-formed server-minted content hash: 16 lowercase hex chars
+ * (the server's sha256(content||summary).slice(0,16) — the same recipe as the
+ * local fallback in injectedIdentity, so the two are interchangeable).
+ */
+export function isContentHash(s) {
+  return typeof s === "string" && /^[0-9a-f]{16}$/.test(s);
+}
+
+/**
+ * Content-identity hash for the injected-memory state: prefer the server-
+ * minted content_hash (read off the object itself or its nested `memory`),
+ * else hash the text a recall surface would render (content, falling back to
+ * summary) — so an in-place update still changes identity and re-injects even
+ * on servers without content_hash.
+ */
+export function injectedIdentity(m) {
+  const ch = m?.content_hash ?? m?.memory?.content_hash;
+  if (isContentHash(ch)) return ch;
+  const text = m?.content || m?.summary || "";
+  return createHash("sha256").update(text).digest("hex").slice(0, 16);
+}
+
+/**
+ * The shared windowed-cooldown predicate (enforce/seen.ts, core-exact):
+ *
+ *   entry.h === ""                   → true   sentinel/tool-read: forever
+ *   identity && entry.h !== identity → false  content changed: re-inject
+ *   cooldownMs == 0 && prompts == 0  → true   legacy forever-dedupe (#134)
+ *   else suppressed within EITHER window; re-admit once BOTH lapse.
+ *   counter == 0 leaves the prompt dimension inert (a host that never
+ *   advances a counter degrades to time-only, not forever); negative deltas
+ *   (clock skew / counter regression) clamp to suppressed.
+ *
+ * `identity` null is the id-only check (the exclude_ids view): the content-
+ * change bypass is skipped, so an entry is judged on the windows alone.
+ */
+export function injectedSuppressed(entry, identity, { now, counter, cooldownMs, cooldownPrompts }) {
+  if (!entry || typeof entry !== "object") return false;
+  if (entry.h === "") return true; // sentinel / tool-read: forever
+  if (identity && entry.h !== identity) return false; // content changed: re-inject
+  if (cooldownMs === 0 && cooldownPrompts === 0) return true; // legacy forever-dedupe
+  const promptDim = cooldownPrompts > 0 && counter > 0 && counter - entry.n < cooldownPrompts;
+  const timeDim = cooldownMs > 0 && now - entry.at < cooldownMs;
+  return promptDim || timeDim;
 }
 
 /**
@@ -933,6 +1016,49 @@ export function createClient(cfg, log) {
   return { postJson, handshake, baseUrl };
 }
 
+/**
+ * POST /v1/search carrying the newer-than-server optional fields, retrying ONCE
+ * with min_rank_score (and any exclude_ids) stripped when the first attempt
+ * fails. An older server 400s an unknown field (returned as null under
+ * fail-soft, or a throw with fallback_on_error off), so this degrades to the
+ * client-side composite floor fallback instead of losing recall entirely.
+ *
+ * Returns {data, rankFloorStripped}. rankFloorStripped is true only when the
+ * floor was sent and then dropped on the retry — the signal the caller uses to
+ * decide whether to re-apply the composite floor client-side. A server that
+ * accepted the floor is authoritative and its result set is NOT re-filtered.
+ * exclude_ids rides only the first attempt and is stripped alongside the floor
+ * on retry (matching _shared.mjs's combined strip); onExcludeIdsUnsupported,
+ * when given, latches it off for the session. Unlike the Claude plugin's
+ * pretool latch, the floor itself is never latched off: this integration tracks
+ * no content hash, so a stateless per-call strip is the faithful port.
+ */
+export async function postSearchWithFloor(postJson, body, namespace, opts = {}) {
+  const { excludeIds = [], onExcludeIdsUnsupported } = opts;
+  const rankFloorInBody = body.min_rank_score !== undefined;
+  const withExcludeIds = excludeIds.length > 0;
+  if (!rankFloorInBody && !withExcludeIds) {
+    return { data: await postJson("/v1/search", body, namespace), rankFloorStripped: false };
+  }
+  try {
+    const first = await postJson(
+      "/v1/search",
+      withExcludeIds ? { ...body, exclude_ids: excludeIds } : body,
+      namespace,
+    );
+    if (first !== null) return { data: first, rankFloorStripped: false };
+  } catch {
+    // With fallback_on_error=false the 400 arrives as a throw, not null.
+  }
+  const stripped = { ...body };
+  delete stripped.min_rank_score;
+  const retry = await postJson("/v1/search", stripped, namespace);
+  if (retry !== null && withExcludeIds && typeof onExcludeIdsUnsupported === "function") {
+    onExcludeIdsUnsupported();
+  }
+  return { data: retry, rankFloorStripped: rankFloorInBody };
+}
+
 // extractLastTurn returns the latest user and assistant text from the message
 // list returned by client.session.messages ([{info, parts}, ...]), plus the id
 // of the assistant message (for dedup). Iterates in reverse to short-circuit.
@@ -1034,21 +1160,38 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
   // Memory ids each session has already been shown (mirrors the pi plugin):
   // the injected synthetic part is persisted into the session, so re-injecting
   // an unchanged match every turn stacks identical blocks in the context.
-  // The inner cap keeps a stable session — which never ages out of the outer
-  // map — from growing its Set for the process lifetime.
-  const injectedBySession = new Map();
+  // Per session: the enforce core's { n, ids } shape — n is the prompt counter
+  // (bumped once per chat.message) and ids maps memory id → { h, at, n }
+  // (content identity, last-injected ms, counter at injection), judged by
+  // injectedSuppressed against the inject_cooldown_ms / inject_cooldown_prompts
+  // windows: suppressed within EITHER window, re-served once BOTH lapse, and
+  // re-served immediately when the content changed (h mismatch). The inner cap
+  // keeps a stable session — which never ages out of the outer map — from
+  // growing its map for the process lifetime.
+  const injectedBySession = new Map(); // session -> { n, ids: Map<id, {h, at, n}> }
   const MAX_INJECTED_PER_SESSION = 200;
-  const rememberInjected = (session, ids) => {
-    let seen = injectedBySession.get(session);
-    if (!seen) {
-      seen = new Set();
-      boundedPut(injectedBySession, session, seen);
+  const sessionSeen = (session) => {
+    let state = injectedBySession.get(session);
+    if (!state) {
+      state = { n: 0, ids: new Map() };
+      boundedPut(injectedBySession, session, state);
     }
-    for (const id of ids) if (id) seen.add(id);
-    while (seen.size > MAX_INJECTED_PER_SESSION) {
-      const oldest = seen.values().next().value;
+    return state;
+  };
+  const rememberInjected = (state, hits) => {
+    const now = Date.now();
+    for (const r of hits) {
+      const id = r?.memory?.id;
+      if (!id) continue;
+      // delete+set refreshes both the stamp and the insertion order, so the
+      // size cap below evicts the least-recently-shown id first.
+      state.ids.delete(id);
+      state.ids.set(id, { h: injectedIdentity(r?.memory), at: now, n: state.n });
+    }
+    while (state.ids.size > MAX_INJECTED_PER_SESSION) {
+      const oldest = state.ids.keys().next().value;
       if (oldest === undefined) break;
-      seen.delete(oldest);
+      state.ids.delete(oldest);
     }
   };
   // Recall results that arrived after the injection budget expired, keyed by
@@ -1060,23 +1203,18 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
   // 400 on the unknown field: when a request carrying it fails and the retry
   // without it succeeds, stop sending it. The client-side filter stays.
   let serverExcludeIds = true;
-  const searchExcluding = async (body, excludeIds, namespace) => {
-    if (!serverExcludeIds || excludeIds.length === 0) {
-      return rest.postJson("/v1/search", body, namespace);
-    }
-    try {
-      const result = await rest.postJson("/v1/search", { ...body, exclude_ids: excludeIds }, namespace);
-      if (result !== null) return result;
-    } catch {
-      // With fallback_on_error=false the 400 arrives as a throw, not null.
-    }
-    const retry = await rest.postJson("/v1/search", body, namespace);
-    if (retry !== null) {
-      serverExcludeIds = false;
-      log.warn("memini: server does not accept exclude_ids; using client-side dedupe only");
-    }
-    return retry;
-  };
+  // Delegate the search + one-shot compat retry to postSearchWithFloor, which
+  // strips BOTH min_rank_score and exclude_ids on an older server's 400. Keep
+  // the exclude_ids latch here (a closure the callback flips off); the floor is
+  // not latched. Returns {data, rankFloorStripped}.
+  const searchExcluding = (body, excludeIds, namespace) =>
+    postSearchWithFloor(rest.postJson, body, namespace, {
+      excludeIds: serverExcludeIds ? excludeIds : [],
+      onExcludeIdsUnsupported: () => {
+        serverExcludeIds = false;
+        log.warn("memini: server does not accept exclude_ids; using client-side dedupe only");
+      },
+    });
 
   // opencode runs chat.message via an unguarded Effect.promise (a throw aborts the
   // turn) and dispatches event hooks fire-and-forget, so a hook must never reject:
@@ -1148,18 +1286,40 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       const sibling = output.parts.find((p) => p && p.type === "text") || {};
       const sessionID = input.sessionID || sibling.sessionID;
       const messageID = input.messageID || sibling.messageID;
+      // One chat.message == one user prompt: bump the session's prompt counter
+      // before any recall — the cooldown's prompt dimension measures prompts-
+      // since-injection even on turns that inject nothing.
+      const seen = sessionID ? sessionSeen(sessionID) : null;
+      if (seen) seen.n += 1;
+      const cooldownOpts = () => ({
+        now: Date.now(),
+        counter: seen ? seen.n : 0,
+        cooldownMs: live.inject_cooldown_ms,
+        cooldownPrompts: live.inject_cooldown_prompts,
+      });
       const body = { query, limit: live.recall_limit };
       // Exclude this session's own captured turns: they're still in the live
       // context, so recalling them just echoes the conversation back a turn
       // behind. Captures from other (past) sessions are still recalled.
       if (sessionID) body.exclude_metadata = { session_id: sessionID };
-      // min_score (fused-score floor) is optional and matches the wire knob
-      // the Claude Code plugin's pre-tool-use hook uses; client-side re-filter
-      // is a belt-and-braces guard against score-normalization edge cases.
-      if (live.recall_min_score > 0) body.min_score = live.recall_min_score;
-      // Already-shown ids go along as exclude_ids so a suppressed hit doesn't
-      // waste a recall_limit slot.
-      const excludeIds = sessionID ? [...(injectedBySession.get(sessionID) ?? [])] : [];
+      // inject_recall_min_score floors the FINAL composite score server-side
+      // via min_rank_score (not the fused-scale min_score), matching the Claude
+      // Code plugin. A knob >= 1 is out of the server's range, so it clamps to a
+      // client-only floor rather than 400ing every search.
+      const rankFloorInRange = live.recall_min_score > 0 && live.recall_min_score < 1;
+      if (rankFloorInRange) body.min_rank_score = live.recall_min_score;
+      // Ids still IN COOLDOWN go along as exclude_ids so a suppressed hit
+      // doesn't waste a recall_limit slot (id-only judgment — the wire cannot
+      // know what content the server would serve); a LAPSED id is
+      // intentionally absent so the server may re-serve it.
+      const excludeIds = seen
+        ? (() => {
+            const opts = cooldownOpts();
+            return [...seen.ids.entries()]
+              .filter(([, e]) => injectedSuppressed(e, null, opts))
+              .map(([id]) => id);
+          })()
+        : [];
       // opencode awaits this hook before the model sees the message, so the
       // turn only waits live.recall_budget_ms for the search; the fetch itself keeps
       // cfg.timeout_ms as its bound and runs on in the background. A slow or
@@ -1187,7 +1347,7 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
           );
           if (sessionID) {
             settled.then((late) => {
-              const hits = Array.isArray(late && late.results) ? late.results : [];
+              const hits = Array.isArray(late && late.data && late.data.results) ? late.data.results : [];
               if (hits.length) boundedPut(pendingBySession, sessionID, hits);
             });
           }
@@ -1196,12 +1356,14 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       } else {
         result = await settled;
       }
-      // Client-side score floor: filter the raw hit list before formatting so
-      // the bullet array only contains hits the operator asked for. Without
-      // this, the server's default floor could leak low-quality hits in
-      // regardless of live.recall_min_score.
-      const floor = live.recall_min_score > 0 ? live.recall_min_score : 0;
-      let rawHits = Array.isArray(result && result.results) ? result.results : [];
+      const searchData = result && result.data ? result.data : null;
+      // Client composite floor is a fallback ONLY: it runs when the knob was
+      // clamped to client-only (>= 1) or the retry stripped min_rank_score for
+      // an old server. A server that enforced the floor is authoritative and
+      // its result set is not re-filtered here.
+      const serverEnforcedFloor = rankFloorInRange && !(result && result.rankFloorStripped);
+      const floor = live.recall_min_score > 0 && !serverEnforcedFloor ? live.recall_min_score : 0;
+      let rawHits = Array.isArray(searchData && searchData.results) ? searchData.results : [];
       // Merge in results that arrived late on a previous turn: fresh hits
       // first (they answer the current query), deduped by memory id.
       if (sessionID) {
@@ -1212,11 +1374,17 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
           rawHits = rawHits.concat(pending.filter((r) => !fresh.has(r?.memory?.id)));
         }
       }
-      // Suppress memories this session has already been shown — the injected
-      // part persists in the session, so a repeat adds nothing but noise.
-      if (sessionID) {
-        const seen = injectedBySession.get(sessionID);
-        if (seen && seen.size) rawHits = rawHits.filter((r) => !seen.has(r?.memory?.id));
+      // Suppress memories this session was already shown and that are still in
+      // cooldown — judged PER HIT against its content identity, so an
+      // in-window unchanged hit is dropped, a lapsed one passes through and
+      // re-serves, and an UPDATED one (h mismatch) bypasses the window and
+      // re-injects immediately.
+      if (seen && seen.ids.size) {
+        const opts = cooldownOpts();
+        rawHits = rawHits.filter((r) => {
+          const entry = seen.ids.get(r?.memory?.id);
+          return !(entry && injectedSuppressed(entry, injectedIdentity(r?.memory), opts));
+        });
       }
       const filtered = floor > 0
         ? rawHits.filter((r) => (typeof r?.score === "number" ? r.score : 0) >= floor)
@@ -1229,17 +1397,11 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       // behaviour matches the prior "no cap" code path for existing installs.
       const fit = fitByTokens(hits, live.recall_max_tokens);
       if (fit.items.length === 0) return;
-      if (sessionID) {
+      if (seen) {
         // Mark only the slice formatResults actually renders: with carryover
         // merged in, `filtered` can exceed recall_limit, and marking unshown
-        // hits as seen would suppress them forever.
-        rememberInjected(
-          sessionID,
-          filtered
-            .slice(0, live.recall_limit || DEFAULT_RECALL_LIMIT)
-            .map((r) => r?.memory?.id)
-            .filter(Boolean),
-        );
+        // hits as seen would suppress what was never injected.
+        rememberInjected(seen, filtered.slice(0, live.recall_limit || DEFAULT_RECALL_LIMIT));
       }
       const lines = [
         `Relevant long-term memory from memini (background context — prefer ` +
@@ -1249,8 +1411,8 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       // /v1/search sets `degraded: "keyword_only"` (plus a `note`) when the
       // query embed was unavailable and it fell back to keyword-only matching;
       // both are already on `result`, so surfacing them is a one-line addition.
-      if (result && result.degraded) {
-        lines.push(`[memini: ${result.note || "semantic search unavailable — results are keyword-only and may be incomplete"}]`);
+      if (searchData && searchData.degraded) {
+        lines.push(`[memini: ${searchData.note || "semantic search unavailable — results are keyword-only and may be incomplete"}]`);
       }
       if (fit.dropped > 0) lines.push(`[... ${fit.dropped} item(s) truncated by token budget]`);
       // opencode's part schema requires ids to start with `prt`.

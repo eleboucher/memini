@@ -70,23 +70,25 @@ Pass options inline via the `[name, options]` form:
 }
 ```
 
-| Option              | Env var                          | Default                 | Purpose                                                                                                                                |
-| ------------------- | -------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `base_url`          | `MEMINI_BASE_URL`                | `http://localhost:8080` | memini REST base URL                                                                                                                   |
-| `namespace`         | `MEMINI_NAMESPACE`               | server handshake        | project the memory is scoped to (`X-Memini-Namespace`)                                                                                 |
-| `home`              | `MEMINI_HOME`                    | unset                   | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg                                                              |
-| `recall`            | `MEMINI_RECALL`                  | on                      | `false` disables recall-before-turn                                                                                                    |
-| `capture`           | `MEMINI_CAPTURE`                 | on                      | `false` disables capture-after-turn                                                                                                    |
-| `recall_limit`      | `MEMINI_RECALL_LIMIT`            | `3`                     | max memories injected per turn                                                                                                         |
-| `recall_max_tokens` | `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                     | hard ceiling on the recall-block tokens (`0` = unbounded); the tail is dropped with a `[… N item(s) truncated by token budget]` footer |
-| `recall_min_score`  | `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                     | fused-score floor (>=) sent as `min_score` to `/v1/search`                                                                             |
-| `recall_budget_ms`  | `MEMINI_RECALL_BUDGET_MS`        | `2000`                  | how long a turn waits for recall before proceeding without it (`0` = wait for the full `timeout_ms`)                                   |
-| `timeout_ms`        | `MEMINI_TIMEOUT_MS`              | `30000`                 | per-request timeout (recall past its budget keeps running in the background under this bound)                                          |
-| `fallback_on_error` | `MEMINI_FALLBACK`                | on                      | `false` surfaces errors instead of degrading silently                                                                                  |
-| `auto_update`       | `MEMINI_AUTO_UPDATE`             | on                      | `false` disables npm auto-update checks (opencode never re-fetches cached plugins otherwise)                                           |
-| —                   | `MEMINI_INJECT_LABELS`           | —                       | comma-separated label toggles for each bullet: `tier`, `confidence`, `age`, `reason`                                                   |
-| —                   | `MEMINI_API_KEY`                 | —                       | bearer token, if memini needs auth (env only — secret)                                                                                 |
-| —                   | `MEMINI_REQUIRE_HTTPS`           | —                       | `1` refuses to send the token over plaintext HTTP                                                                                      |
+| Option                    | Env var                          | Default                 | Purpose                                                                                                                                                              |
+| ------------------------- | -------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `base_url`                | `MEMINI_BASE_URL`                | `http://localhost:8080` | memini REST base URL                                                                                                                                                 |
+| `namespace`               | `MEMINI_NAMESPACE`               | server handshake        | project the memory is scoped to (`X-Memini-Namespace`)                                                                                                               |
+| `home`                    | `MEMINI_HOME`                    | unset                   | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg                                                                                            |
+| `recall`                  | `MEMINI_RECALL`                  | on                      | `false` disables recall-before-turn                                                                                                                                  |
+| `capture`                 | `MEMINI_CAPTURE`                 | on                      | `false` disables capture-after-turn                                                                                                                                  |
+| `recall_limit`            | `MEMINI_RECALL_LIMIT`            | `3`                     | max memories injected per turn                                                                                                                                       |
+| `recall_max_tokens`       | `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                     | hard ceiling on the recall-block tokens (`0` = unbounded); the tail is dropped with a `[… N item(s) truncated by token budget]` footer                               |
+| `recall_min_score`        | `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                     | fused-score floor (>=) sent as `min_score` to `/v1/search`                                                                                                           |
+| `inject_cooldown_ms`      | `MEMINI_INJECT_COOLDOWN_MS`      | `1800000`               | repeat-injection cooldown, **time** window (ms): an already-injected memory is held back this long before it may re-serve; `0` disables the time dimension           |
+| `inject_cooldown_prompts` | `MEMINI_INJECT_COOLDOWN_PROMPTS` | `3`                     | repeat-injection cooldown, **prompt** window (counted per user message); `0` disables the prompt dimension; both cooldown knobs `0` = suppress for the whole session |
+| `recall_budget_ms`        | `MEMINI_RECALL_BUDGET_MS`        | `2000`                  | how long a turn waits for recall before proceeding without it (`0` = wait for the full `timeout_ms`)                                                                 |
+| `timeout_ms`              | `MEMINI_TIMEOUT_MS`              | `30000`                 | per-request timeout (recall past its budget keeps running in the background under this bound)                                                                        |
+| `fallback_on_error`       | `MEMINI_FALLBACK`                | on                      | `false` surfaces errors instead of degrading silently                                                                                                                |
+| `auto_update`             | `MEMINI_AUTO_UPDATE`             | on                      | `false` disables npm auto-update checks (opencode never re-fetches cached plugins otherwise)                                                                         |
+| —                         | `MEMINI_INJECT_LABELS`           | —                       | comma-separated label toggles for each bullet: `tier`, `confidence`, `age`, `reason`                                                                                 |
+| —                         | `MEMINI_API_KEY`                 | —                       | bearer token, if memini needs auth (env only — secret)                                                                                                               |
+| —                         | `MEMINI_REQUIRE_HTTPS`           | —                       | `1` refuses to send the token over plaintext HTTP                                                                                                                    |
 
 opencode awaits `chat.message` before the model sees the message, so a slow or
 unreachable memini would otherwise freeze the turn for the full `timeout_ms`.
@@ -97,6 +99,24 @@ message instead of being dropped. The plugin also pings `/healthz` once at
 startup to warm the connection, so the first recall doesn't pay the
 DNS/TLS cold-start. Set `recall_budget_ms: 0` to restore fully blocking
 same-turn injection.
+
+### Repeat-injection cooldown
+
+The two `inject_cooldown_*` knobs are the windowed **repeat-injection
+cooldown** (shared with the Claude Code / hermes / openclaw integrations): an
+already-injected memory is excluded from recall (server-side via
+`exclude_ids`, with a client-side backstop) while it is inside _either_ window
+— the time window (`inject_cooldown_ms`) or the prompt window
+(`inject_cooldown_prompts`, one prompt = one user message; in the v2 plugin,
+one `request`-hook fire) — and is **re-served once both have lapsed**. A
+memory whose content was updated in place re-injects immediately (the
+content-hash bypass), so a correction is never withheld for the window.
+
+> **Behavior change (was: suppress forever).** Earlier versions suppressed an
+> injected memory for the whole session. With the default windows (30 min /
+> 3 prompts) a long session is now **re-reminded** of a still-relevant memory
+> once enough of the conversation has moved past it. Set both knobs to `0` to
+> restore the old suppress-for-the-whole-session behavior.
 
 Inline options win over the env vars. Secrets stay in the environment: set
 `MEMINI_API_KEY` (sent as `Authorization: Bearer …`), and optionally

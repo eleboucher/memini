@@ -75,15 +75,17 @@ func TestDefaultClientSettings(t *testing.T) {
 		"inject_recall_min_score":  d.InjectRecallMinScore,
 	}
 	for name, v := range floatFields {
-		if v == nil || *v != 0 {
-			t.Errorf("%s = %v, want 0", name, v)
+		if v == nil || *v != 0.5 {
+			t.Errorf("%s = %v, want 0.5", name, v)
 		}
 	}
 
 	if d.InjectPretoolTools == nil {
 		t.Fatal("inject_pretool_tools = nil, want the default tool list")
 	}
-	wantTools := []string{"Read", "Write", "Edit", "MultiEdit", "Glob", "Grep"}
+	// Glob and Grep are deliberately absent: pattern-derived queries are
+	// near-zero-signal and each ungated call costs a server embed+rerank.
+	wantTools := []string{"Read", "Write", "Edit", "MultiEdit"}
 	if !equalStrs(*d.InjectPretoolTools, wantTools) {
 		t.Errorf("inject_pretool_tools = %v, want %v", *d.InjectPretoolTools, wantTools)
 	}

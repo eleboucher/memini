@@ -81,6 +81,7 @@ Search prior context via hybrid (semantic + keyword) retrieval, ranked by releva
 | `levels` | string[] |  | restrict to levels (explicit/deduced); empty means all. One of `explicit`, `deduced`. |
 | `limit` | integer |  | max results (default 10) |
 | `metadata` | object |  | only memories whose metadata has each key=value pair (AND) |
+| `min_rank_score` | number |  | drop results whose final ranked score is below this ([0,1)); rarely needed — the server already gates relevance |
 | `query_rewrite` | boolean |  | rewrite query into 2-3 variants and fuse via RRF |
 | `response_format` | string |  | 'concise' returns summary-or-truncated content (~1 line each; fetch full text with memory_get); 'detailed' (default) returns full content. One of `concise`, `detailed`. |
 | `scope` | string |  | how wide to read: 'project' = just this project's own memories; 'full' (default) = project plus inherited context (ancestors, your personal namespace, links); 'everywhere' = full plus nested sub-projects. One of `project`, `full`, `everywhere`. |

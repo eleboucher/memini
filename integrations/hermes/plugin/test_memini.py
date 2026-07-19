@@ -521,19 +521,37 @@ class RecallShapingTest(unittest.TestCase):
 
         return stub
 
-    def test_body_uses_configured_limit_and_min_score(self):
+    def test_body_uses_configured_limit_and_min_rank_score(self):
+        # The floor rides as min_rank_score (a server-enforced floor on the FINAL
+        # composite score), never the fused-scale min_score.
         os.environ["MEMINI_RECALL_LIMIT"] = "8"
         os.environ["MEMINI_INJECT_RECALL_MIN_SCORE"] = "0.3"
         stub = self._hits()
         make_provider(stub).prefetch("q")
         self.assertEqual(stub.body["limit"], 8)
-        self.assertEqual(stub.body["min_score"], 0.3)
+        self.assertEqual(stub.body["min_rank_score"], 0.3)
+        self.assertNotIn("min_score", stub.body)
 
-    def test_default_body_omits_min_score_and_defaults_limit_3(self):
+    def test_default_body_omits_min_rank_score_and_defaults_limit_3(self):
         stub = self._hits()
         make_provider(stub).prefetch("q")
         self.assertEqual(stub.body["limit"], 3)
+        self.assertNotIn("min_rank_score", stub.body)
         self.assertNotIn("min_score", stub.body)
+
+    def test_out_of_range_floor_clamps_to_client_only(self):
+        # A knob >= 1 is out of the server's valid range, so it is not sent and
+        # the floor is applied client-side.
+        os.environ["MEMINI_INJECT_RECALL_MIN_SCORE"] = "1.5"
+        stub = self._hits(
+            {"memory": {"summary": "above two"}, "score": 2.0},
+            {"memory": {"summary": "below the clamp"}, "score": 0.9},
+        )
+        out = make_provider(stub).prefetch("q")
+        self.assertNotIn("min_rank_score", stub.body)
+        self.assertNotIn("min_score", stub.body)
+        self.assertIn("above two", out)
+        self.assertNotIn("below the clamp", out)
 
     def test_default_renders_plain_bullet(self):
         stub = self._hits({"memory": {"summary": "note A", "tier": "semantic"}, "score": 0.9})
@@ -547,15 +565,46 @@ class RecallShapingTest(unittest.TestCase):
         out = make_provider(stub).prefetch("q")
         self.assertIn("- [semantic] note A", out)
 
-    def test_client_side_min_score_filter_drops_low_hits(self):
+    def test_server_enforced_floor_is_not_refiltered(self):
+        # When the server accepts min_rank_score (no 400) it enforced the floor,
+        # so its result set is authoritative: the client does not re-filter it,
+        # even a hit the client would otherwise have dropped.
         os.environ["MEMINI_INJECT_RECALL_MIN_SCORE"] = "0.5"
         stub = self._hits(
             {"memory": {"summary": "keep me"}, "score": 0.8},
-            {"memory": {"summary": "drop me"}, "score": 0.2},
+            {"memory": {"summary": "server says keep"}, "score": 0.2},
         )
         out = make_provider(stub).prefetch("q")
+        self.assertEqual(stub.body["min_rank_score"], 0.5)
+        self.assertNotIn("min_score", stub.body)
+        self.assertIn("keep me", out)
+        self.assertIn("server says keep", out)
+
+    def test_client_side_min_score_filter_is_fallback_only(self):
+        # Fallback only: an older server 400s min_rank_score (degraded to None),
+        # the retry strips it, and only THEN does the client apply the composite
+        # floor. This is the sole path on which sub-threshold hits are dropped.
+        os.environ["MEMINI_INJECT_RECALL_MIN_SCORE"] = "0.5"
+        hits = [
+            {"memory": {"summary": "keep me"}, "score": 0.8},
+            {"memory": {"summary": "drop me"}, "score": 0.2},
+        ]
+        bodies = []
+
+        def stub(path, body, method="POST"):
+            bodies.append(body)
+            if body is not None and "min_rank_score" in body:
+                return None  # an old server 400s the unknown field
+            return {"results": list(hits)}
+
+        p = make_provider(stub)
+        out = p.prefetch("q")
+        self.assertEqual(bodies[0]["min_rank_score"], 0.5)
+        self.assertNotIn("min_rank_score", bodies[1])
+        self.assertNotIn("min_score", bodies[1])
         self.assertIn("keep me", out)
         self.assertNotIn("drop me", out)
+        self.assertTrue(p._min_rank_score_unsupported)
 
     def test_token_budget_truncates_tail_with_footer(self):
         # "- alpha beta gamma" ≈ 6 tokens, so a 6-token cap keeps only the first.
@@ -1008,6 +1057,29 @@ class InjectedDedupeTest(unittest.TestCase):
         p.prefetch("query three long enough")
         self.assertNotIn("exclude_ids", bodies[3] or {})  # latched off for the session
 
+    def test_prefetch_400_on_min_rank_score_retries_and_latches(self):
+        # Mirrors the exclude_ids latch for the composite floor: an older server
+        # 400s min_rank_score (degraded to None), so retry once with BOTH newer
+        # fields stripped and latch min_rank_score off for the conversation.
+        os.environ["MEMINI_INJECT_RECALL_MIN_SCORE"] = "0.5"
+        self.addCleanup(lambda: os.environ.pop("MEMINI_INJECT_RECALL_MIN_SCORE", None))
+        bodies = []
+
+        def stub(path, body, method="POST"):
+            bodies.append(body)
+            if body is not None and "min_rank_score" in body:
+                return None  # an old server 400s the unknown field
+            return {"results": [self._hit(f"m{len(bodies)}", f"fact {len(bodies)}")]}
+
+        p = make_provider(stub)
+        block = p.prefetch("query one long enough")
+        self.assertIn("min_rank_score", bodies[0])  # first attempt carries the floor
+        self.assertNotIn("min_rank_score", bodies[1])  # the retry strips it
+        self.assertIn("fact 2", block)  # the retry's hits still land
+        self.assertTrue(p._min_rank_score_unsupported)  # latched
+        p.prefetch("query two long enough")
+        self.assertNotIn("min_rank_score", bodies[2])  # never sent again this session
+
     def test_prefetch_transient_failure_does_not_latch_when_no_exclude_ids_sent(self):
         # Windowed-cooldown regression: once every injected id has lapsed,
         # _recall_body omits exclude_ids, so the request is byte-identical with
@@ -1025,8 +1097,8 @@ class InjectedDedupeTest(unittest.TestCase):
 
         p = make_provider(stub)
         p.prefetch("query one long enough")  # records m1 at n=1
-        # Lapse m1 on BOTH windows: backdated stamp + counter far past.
-        p._injected_ids["m1"] = {"at": time.time() - 10_000, "n": -100}
+        # Lapse m1 on BOTH windows: backdated stamp (ms) + counter far past.
+        p._injected_ids["m1"].update(at=0, n=-100)
         p._prefetch_n = 100
         p.prefetch("query two long enough")  # single call fails transiently
         self.assertNotIn("exclude_ids", bodies[1] or {})  # lapsed -> field omitted
@@ -1081,9 +1153,10 @@ class InjectedDedupeTest(unittest.TestCase):
 class InjectedCooldownTest(unittest.TestCase):
     """The windowed injection cooldown (hermes parity for the plugin's
     inject-cooldown work): an injected id is suppressed while within EITHER
-    window and re-admitted only once BOTH lapse. hermes tracks no content
-    hash, so its entries are always windowed (no sentinel-forever rule); the
-    both-zero knob reproduces the legacy forever behavior."""
+    window and re-admitted only once BOTH lapse. Entries carry the enforce
+    core's {h, at, n} shape (at in epoch ms); hermes never records a sentinel
+    (h="") entry, so nothing here is immortal, and the both-zero knob
+    reproduces the legacy forever behavior."""
 
     @staticmethod
     def _hit(mid, content, score=0.9):
@@ -1137,7 +1210,7 @@ class InjectedCooldownTest(unittest.TestCase):
 
         p = make_provider(stub)
         p.prefetch("query one long enough")  # records m1
-        p._injected_ids["m1"] = {"at": time.time() - 10_000, "n": -100}
+        p._injected_ids["m1"].update(at=0, n=-100)  # backdate past both windows
         p._prefetch_n = 100
         self.assertNotIn("exclude_ids", p._recall_body("another query"))
         kept = p._drop_injected({"results": [self._hit("m1", "fact one")]})
@@ -1145,7 +1218,7 @@ class InjectedCooldownTest(unittest.TestCase):
         block = p.prefetch("re-serve the lapsed memory now")
         self.assertIn("fact one", block)
         self.assertEqual(p._injected_ids["m1"]["n"], 101)  # re-recorded at bumped n
-        self.assertGreater(p._injected_ids["m1"]["at"], time.time() - 5)
+        self.assertGreater(p._injected_ids["m1"]["at"], (time.time() - 5) * 1000)
 
     def test_both_zero_knobs_suppress_forever(self):
         # 0ms + 0prompts == legacy #134 forever: even a wildly lapsed entry
@@ -1157,7 +1230,7 @@ class InjectedCooldownTest(unittest.TestCase):
         p._inject_cooldown_ms = 0
         p._inject_cooldown_prompts = 0
         p.prefetch("query one long enough")
-        p._injected_ids["m1"] = {"at": 0.0, "n": -10_000}
+        p._injected_ids["m1"].update(at=0, n=-10_000)
         p._prefetch_n = 10_000
         self.assertEqual(p._recall_body("q").get("exclude_ids"), ["m1"])
         kept = p._drop_injected({"results": [self._hit("m1", "fact one")]})
@@ -1177,8 +1250,93 @@ class InjectedCooldownTest(unittest.TestCase):
         p.prefetch("query one long enough")  # records m1, time window fresh
         p._prefetch_n = 10_000  # counter far past any prompt window
         self.assertEqual(p._recall_body("q").get("exclude_ids"), ["m1"])
-        p._injected_ids["m1"]["at"] = time.time() - 10_000  # lapse time too
+        p._injected_ids["m1"]["at"] = 0  # lapse time too (ms)
         self.assertNotIn("exclude_ids", p._recall_body("q"))
+
+
+class InjectedIdentityTest(unittest.TestCase):
+    """Content-hash identity on injected entries (enforce-core parity): the
+    recorded `h` prefers the server-minted content_hash (16 lowercase hex),
+    falls back to the local sha256(content||summary)[:16] recipe, and an
+    h-mismatch (the memory was updated in place) bypasses the cooldown so the
+    fresh content re-injects instead of staying withheld for the window."""
+
+    @staticmethod
+    def _hit(mid, content, score=0.9, content_hash=None):
+        mem = {"id": mid, "content": content}
+        if content_hash:
+            mem["content_hash"] = content_hash
+        return {"memory": mem, "score": score}
+
+    def test_recorded_entry_prefers_the_servers_content_hash(self):
+        p = make_provider(
+            lambda path, body, method="POST": {
+                "results": [self._hit("m1", "x", content_hash="aaaabbbbccccdddd")]
+            }
+        )
+        p.prefetch("query one long enough")
+        self.assertEqual(p._injected_ids["m1"]["h"], "aaaabbbbccccdddd")
+
+    def test_recorded_entry_falls_back_to_the_local_recipe(self):
+        import hashlib
+
+        p = make_provider(
+            lambda path, body, method="POST": {"results": [self._hit("m1", "the fact")]}
+        )
+        p.prefetch("query one long enough")
+        self.assertEqual(
+            p._injected_ids["m1"]["h"], hashlib.sha256(b"the fact").hexdigest()[:16]
+        )
+
+    def test_content_change_bypasses_the_cooldown(self):
+        # m1 is freshly injected (in-window on both dimensions), then the server
+        # serves it again with UPDATED content: the h-mismatch bypasses the
+        # client-side drop, prefetch re-serves it, and the entry is re-recorded
+        # under the fresh hash. (The wire exclude_ids still carries the id --
+        # exclusion is id-only, so this path exercises a server that re-serves
+        # anyway, e.g. one without exclude_ids support.)
+        calls = []
+
+        def stub(path, body, method="POST"):
+            calls.append(body)
+            content = "version one" if len(calls) == 1 else "version two -- updated"
+            return {"results": [self._hit("m1", content)]}
+
+        p = make_provider(stub)
+        p.prefetch("query one long enough")
+        h1 = p._injected_ids["m1"]["h"]
+        block = p.prefetch("query two long enough")
+        self.assertIn("version two", block)
+        self.assertNotEqual(p._injected_ids["m1"]["h"], h1)
+
+    def test_unchanged_content_stays_suppressed(self):
+        p = make_provider(
+            lambda path, body, method="POST": {"results": [self._hit("m1", "same fact")]}
+        )
+        self.assertIn("same fact", p.prefetch("query one long enough"))
+        self.assertEqual(p.prefetch("query two long enough"), "")
+
+    def test_exclude_ids_view_is_id_only(self):
+        # The wire exclusion cannot know what content the server WOULD serve,
+        # so an in-window id stays in exclude_ids even though its content may
+        # have changed server-side (core cooldownIds doctrine: identity=null).
+        p = make_provider(
+            lambda path, body, method="POST": {"results": [self._hit("m1", "v1")]}
+        )
+        p.prefetch("query one long enough")
+        self.assertEqual(p._recall_body("q").get("exclude_ids"), ["m1"])
+
+    def test_tool_recorded_entries_carry_content_identity(self):
+        # Memories the model pulls explicitly (recall tool) are recorded with
+        # their real content hash -- NOT a sentinel: hermes tool results carry
+        # full content, so identity is knowable and the entry stays windowed.
+        p = make_provider(
+            lambda path, body, method="POST": {
+                "results": [self._hit("t1", "tool fact", content_hash="aaaabbbbccccdddd")]
+            }
+        )
+        p.handle_tool_call("memory_recall", {"query": "auth"})
+        self.assertEqual(p._injected_ids["t1"]["h"], "aaaabbbbccccdddd")
 
 
 if __name__ == "__main__":

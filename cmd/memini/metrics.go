@@ -28,6 +28,7 @@ type consolidateMetrics struct {
 	answerResults        *prometheus.CounterVec
 	rerankResults        *prometheus.CounterVec
 	recallDegraded       *prometheus.CounterVec
+	recallFloored        *prometheus.CounterVec
 	rememberDegraded     *prometheus.CounterVec
 	corroborateResults   *prometheus.CounterVec
 	contradictResults    *prometheus.CounterVec
@@ -124,6 +125,10 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 			Name: "memini_recall_degraded_total",
 			Help: "Recalls that fell back to keyword-only search by reason (embed_timeout, embed_error).",
 		}, []string{labelReason}),
+		recallFloored: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "memini_recall_floored_total",
+			Help: "Recall candidates dropped from the response by the min_rank_score composite floor, by tier filter.",
+		}, []string{labelTierFilter}),
 		rememberDegraded: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "memini_remember_degraded_total",
 			Help: "Writes that stored without a vector (keyword-searchable only, pending_embed) by reason (embed_timeout, embed_error).",
@@ -279,6 +284,12 @@ func (m *consolidateMetrics) RerankResult(backend, result string) {
 
 func (m *consolidateMetrics) RecallDegraded(reason string) {
 	m.recallDegraded.WithLabelValues(reason).Inc()
+}
+
+func (m *consolidateMetrics) RecallFloored(tierFilter string, n int) {
+	if n > 0 {
+		m.recallFloored.WithLabelValues(tierFilter).Add(float64(n))
+	}
 }
 
 func (m *consolidateMetrics) RememberDegraded(reason string) {

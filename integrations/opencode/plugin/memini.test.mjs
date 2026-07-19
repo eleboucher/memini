@@ -29,6 +29,8 @@ import {
   redactSecret,
   parseVersion,
   compareVersions,
+  injectedSuppressed,
+  injectedIdentity,
 } from "./memini.js";
 
 test("namespace derives from the git worktree basename", () => {
@@ -919,20 +921,26 @@ test("chat.message caps the recall block by MEMINI_INJECT_RECALL_MAX_TOK", async
   }
 });
 
-test("chat.message drops hits below MEMINI_INJECT_RECALL_MIN_SCORE", async () => {
+// The floor rides the wire as min_rank_score (a server-enforced floor on the
+// FINAL composite score), never the fused-scale min_score. A server that
+// accepts it is authoritative: its result set is NOT re-filtered client-side.
+test("chat.message floors on min_rank_score (never min_score) and trusts an enforcing server", async () => {
   const realFetch = globalThis.fetch;
-  globalThis.fetch = async (url) => {
+  const searches = [];
+  globalThis.fetch = async (url, init) => {
     if (String(url).endsWith("/v1/handshake")) {
       return { ok: true, async json() { return {}; }, async text() { return ""; } };
     }
+    if (String(url).endsWith("/v1/search")) searches.push(init && init.body ? JSON.parse(init.body) : {});
     return {
       ok: true,
       async json() {
+        // A hit below the floor: a server that enforced the floor would have
+        // dropped it, so its presence proves the client does not re-filter.
         return {
           results: [
-            { score: 0.9, memory: { tier: "semantic", summary: "high" } },
-            { score: 0.1, memory: { tier: "episodic", summary: "low — should be filtered" } },
-            { score: 0.5, memory: { tier: "procedural", summary: "mid" } },
+            { score: 0.9, memory: { tier: "semantic", summary: "high relevance" } },
+            { score: 0.1, memory: { tier: "episodic", summary: "low relevance kept" } },
           ],
         };
       },
@@ -944,13 +952,59 @@ test("chat.message drops hits below MEMINI_INJECT_RECALL_MIN_SCORE", async () =>
       { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
       { base_url: "http://localhost:8080", recall_min_score: 0.4 },
     );
-    const output = {
-      parts: [{ type: "text", text: "user prompt", sessionID: "s1", messageID: "m1" }],
-    };
+    const output = { parts: [{ type: "text", text: "user prompt", sessionID: "s1", messageID: "m1" }] };
     await hooks["chat.message"]({ sessionID: "s1" }, output);
-    if (output.parts.length === 1) return; // no hits passed the floor
+    assert.equal(searches[0].min_rank_score, 0.4, "the knob rides as min_rank_score");
+    assert.equal(searches[0].min_score, undefined, "the fused-scale min_score is never sent");
     const injected = output.parts[0];
-    assert.ok(!injected.text.includes("low — should be filtered"));
+    assert.ok(injected.text.includes("high relevance"));
+    assert.ok(injected.text.includes("low relevance kept"), "an enforcing server's result set is authoritative");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// Older server: it 400s min_rank_score, so one retry strips it and the client
+// applies the composite floor as a fallback.
+test("chat.message applies the floor client-side only as a fallback when the server rejects min_rank_score", async () => {
+  const realFetch = globalThis.fetch;
+  const searches = [];
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith("/v1/handshake")) {
+      return { ok: true, async json() { return {}; }, async text() { return ""; } };
+    }
+    const body = init && init.body ? JSON.parse(init.body) : {};
+    if (String(url).endsWith("/v1/search")) searches.push(body);
+    if (String(url).endsWith("/v1/search") && body.min_rank_score !== undefined) {
+      return { ok: false, status: 400, async json() { return {}; }, async text() { return 'unknown field "min_rank_score"'; } };
+    }
+    return {
+      ok: true,
+      async json() {
+        return {
+          results: [
+            { score: 0.9, memory: { tier: "semantic", summary: "high relevance" } },
+            { score: 0.1, memory: { tier: "episodic", summary: "low — should be filtered" } },
+          ],
+        };
+      },
+      async text() { return ""; },
+    };
+  };
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080", recall_min_score: 0.4 },
+    );
+    const output = { parts: [{ type: "text", text: "user prompt", sessionID: "s1", messageID: "m1" }] };
+    await hooks["chat.message"]({ sessionID: "s1" }, output);
+    assert.equal(searches.length, 2, "one strip-and-retry, then it stops");
+    assert.equal(searches[0].min_rank_score, 0.4, "the first attempt carries the floor");
+    assert.equal(searches[1].min_rank_score, undefined, "the retry strips min_rank_score");
+    assert.equal(searches[1].min_score, undefined, "the retry never resurrects min_score");
+    const injected = output.parts[0];
+    assert.ok(injected.text.includes("high relevance"));
+    assert.ok(!injected.text.includes("low — should be filtered"), "the stripped floor is enforced client-side");
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -1161,8 +1215,14 @@ test("carried-over hits still respect the seen-dedup and the score floor", async
   const gate = new Promise((r) => { release = r; });
   let searchCalls = 0;
   const seenHit = { score: 0.9, memory: { id: "m1", tier: "semantic", summary: "already shown" } };
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = async (url, init) => {
     if (!String(url).endsWith("/v1/search")) return okJson({});
+    const body = init && init.body ? JSON.parse(init.body) : {};
+    // Old server rejects the composite floor, so the client applies it as a
+    // fallback — which is exactly what keeps the low carryover hit out below.
+    if (body.min_rank_score !== undefined) {
+      return { ok: false, status: 400, async json() { return {}; }, async text() { return 'unknown field "min_rank_score"'; } };
+    }
     searchCalls++;
     if (searchCalls === 1) return okJson({ results: [seenHit] });
     if (searchCalls === 2) {
@@ -1321,4 +1381,230 @@ test("capture vectors: the fixture's marker is this copy's marker", () => {
 
 test("buildTurnCapture: 0 on a side captures it whole", () => {
   assert.equal(buildTurnCapture("uuu", "aaa", 0, 2), "uuu\n\naa" + captureVectors.marker);
+});
+
+// --- windowed injection cooldown (enforce-core parity) ----------------------
+//
+// This plugin ships standalone, so it carries copies of the enforcement core's
+// injectedSuppressed / injectedIdentity (packages/memini-client/src/enforce/).
+// The shared golden vectors are what keep the copies the same functions —
+// replayed here for the two functions this plugin implements.
+const enforcementVectors = JSON.parse(
+  readFileSync(
+    join(
+      fileURLToPath(new URL(".", import.meta.url)),
+      "..",
+      "..",
+      "..",
+      "packages",
+      "memini-client",
+      "vectors",
+      "enforcement.json",
+    ),
+    "utf8",
+  ),
+);
+
+for (const v of enforcementVectors.filter((c) => c.fn === "injectedSuppressed")) {
+  test(`enforcement vector: injectedSuppressed / ${v.name}`, () => {
+    assert.equal(injectedSuppressed(v.input.entry, v.input.identity, v.input.opts), v.expected);
+  });
+}
+
+for (const v of enforcementVectors.filter((c) => c.fn === "injectedIdentity")) {
+  test(`enforcement vector: injectedIdentity / ${v.name}`, () => {
+    assert.equal(injectedIdentity(v.input.m), v.expected);
+  });
+}
+
+test("resolveConfig resolves the inject cooldown knobs: option > env > default, explicit 0 respected", () => {
+  const defaults = resolveConfig({}, undefined, "/repo");
+  assert.equal(defaults.inject_cooldown_ms, 1800000);
+  assert.equal(defaults.inject_cooldown_prompts, 3);
+  assert.equal(defaults.explicit.inject_cooldown_ms, false);
+  assert.equal(defaults.explicit.inject_cooldown_prompts, false);
+
+  const env = { MEMINI_INJECT_COOLDOWN_MS: "5000", MEMINI_INJECT_COOLDOWN_PROMPTS: "0" };
+  const fromEnv = resolveConfig(env, undefined, "/repo");
+  assert.equal(fromEnv.inject_cooldown_ms, 5000);
+  assert.equal(fromEnv.inject_cooldown_prompts, 0, "an explicit 0 must be respected");
+  assert.equal(fromEnv.explicit.inject_cooldown_ms, true);
+  assert.equal(fromEnv.explicit.inject_cooldown_prompts, true);
+
+  const fromOpts = resolveConfig(env, { inject_cooldown_ms: 0, inject_cooldown_prompts: 9 }, "/repo");
+  assert.equal(fromOpts.inject_cooldown_ms, 0, "option 0 beats env");
+  assert.equal(fromOpts.inject_cooldown_prompts, 9);
+});
+
+test("effectiveConfig fills the cooldown knobs from the handshake settings unless explicitly set", () => {
+  const cfg = resolveConfig({}, undefined, "/repo");
+  const hs = { settings: { inject_cooldown_ms: 60000, inject_cooldown_prompts: 5 } };
+  const live = effectiveConfig(cfg, hs);
+  assert.equal(live.inject_cooldown_ms, 60000);
+  assert.equal(live.inject_cooldown_prompts, 5);
+
+  const pinned = resolveConfig({ MEMINI_INJECT_COOLDOWN_MS: "1000" }, { inject_cooldown_prompts: 1 }, "/repo");
+  const still = effectiveConfig(pinned, hs);
+  assert.equal(still.inject_cooldown_ms, 1000, "env beats the server");
+  assert.equal(still.inject_cooldown_prompts, 1, "option beats the server");
+
+  assert.equal(effectiveConfig(cfg, null).inject_cooldown_ms, 1800000, "no handshake -> built-in default");
+});
+
+// chat.message flow: suppressed while inside EITHER window, re-served (and
+// re-recorded) once BOTH lapse. Time is skewed via Date.now; the prompt
+// counter advances once per chat.message.
+test("windowed cooldown: a shown memory re-serves only after BOTH windows lapse", async () => {
+  const realFetch = globalThis.fetch;
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow.call(Date) + skew;
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith("/v1/handshake")) throw new Error("no handshake");
+    return {
+      ok: true,
+      async json() {
+        return { results: [{ score: 0.9, memory: { id: "m1", tier: "semantic", summary: "prior note" } }] };
+      },
+      async text() { return ""; },
+    };
+  };
+  const msg = (id) => ({ parts: [{ type: "text", text: "query", sessionID: "s1", messageID: id }] });
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080" },
+    );
+    const first = msg("m1");
+    await hooks["chat.message"]({ sessionID: "s1" }, first);
+    assert.equal(first.parts.length, 2, "first message injects");
+    // In both windows: suppressed.
+    const second = msg("m2");
+    await hooks["chat.message"]({ sessionID: "s1" }, second);
+    assert.equal(second.parts.length, 1, "in-window repeat suppresses");
+    // Time lapses (31 min > the 30-min default) but the prompt window has not
+    // (this is prompt 3 since injection at prompt 1: delta 2 < 3): still suppressed.
+    skew = 31 * 60_000;
+    const third = msg("m3");
+    await hooks["chat.message"]({ sessionID: "s1" }, third);
+    assert.equal(third.parts.length, 1, "time lapsed but prompt window holds: suppressed");
+    // Prompt 4: delta 3 >= 3 — both windows lapsed, re-served and re-recorded.
+    const fourth = msg("m4");
+    await hooks["chat.message"]({ sessionID: "s1" }, fourth);
+    assert.equal(fourth.parts.length, 2, "both windows lapsed: re-served");
+    // The re-record restarts both windows: suppressed again.
+    const fifth = msg("m5");
+    await hooks["chat.message"]({ sessionID: "s1" }, fifth);
+    assert.equal(fifth.parts.length, 1, "the re-shown memory suppresses again");
+  } finally {
+    globalThis.fetch = realFetch;
+    Date.now = realNow;
+  }
+});
+
+test("windowed cooldown: prompt dimension alone governs when the time window is 0", async () => {
+  process.env.MEMINI_INJECT_COOLDOWN_MS = "0";
+  process.env.MEMINI_INJECT_COOLDOWN_PROMPTS = "2";
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith("/v1/handshake")) throw new Error("no handshake");
+    return {
+      ok: true,
+      async json() {
+        return { results: [{ score: 0.9, memory: { id: "m1", tier: "semantic", summary: "prior note" } }] };
+      },
+      async text() { return ""; },
+    };
+  };
+  const msg = (id) => ({ parts: [{ type: "text", text: "query", sessionID: "s1", messageID: id }] });
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080" },
+    );
+    const first = msg("m1");
+    await hooks["chat.message"]({ sessionID: "s1" }, first);
+    assert.equal(first.parts.length, 2, "prompt 1 injects (n=1)");
+    const second = msg("m2");
+    await hooks["chat.message"]({ sessionID: "s1" }, second);
+    assert.equal(second.parts.length, 1, "prompt 2: delta 1 < 2, suppressed");
+    const third = msg("m3");
+    await hooks["chat.message"]({ sessionID: "s1" }, third);
+    assert.equal(third.parts.length, 2, "prompt 3: delta 2 >= 2, re-served");
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.MEMINI_INJECT_COOLDOWN_MS;
+    delete process.env.MEMINI_INJECT_COOLDOWN_PROMPTS;
+  }
+});
+
+test("windowed cooldown: a content change bypasses the window and re-injects", async () => {
+  const realFetch = globalThis.fetch;
+  let searchCalls = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith("/v1/handshake")) throw new Error("no handshake");
+    if (String(url).endsWith("/v1/search")) searchCalls++;
+    const content = searchCalls <= 1 ? "version one" : "version two — updated";
+    return {
+      ok: true,
+      async json() {
+        return { results: [{ score: 0.9, memory: { id: "m1", tier: "semantic", summary: content } }] };
+      },
+      async text() { return ""; },
+    };
+  };
+  const msg = (id) => ({ parts: [{ type: "text", text: "query", sessionID: "s1", messageID: id }] });
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080" },
+    );
+    const first = msg("m1");
+    await hooks["chat.message"]({ sessionID: "s1" }, first);
+    assert.match(first.parts[0].text, /version one/);
+    const second = msg("m2");
+    await hooks["chat.message"]({ sessionID: "s1" }, second);
+    assert.equal(second.parts.length, 2, "an updated memory must re-inject inside the window");
+    assert.match(second.parts[0].text, /version two/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("windowed cooldown: both knobs at zero restores forever suppression (legacy #134)", async () => {
+  process.env.MEMINI_INJECT_COOLDOWN_MS = "0";
+  process.env.MEMINI_INJECT_COOLDOWN_PROMPTS = "0";
+  const realFetch = globalThis.fetch;
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow.call(Date) + skew;
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith("/v1/handshake")) throw new Error("no handshake");
+    return {
+      ok: true,
+      async json() {
+        return { results: [{ score: 0.9, memory: { id: "m1", tier: "semantic", summary: "prior note" } }] };
+      },
+      async text() { return ""; },
+    };
+  };
+  const msg = (id) => ({ parts: [{ type: "text", text: "query", sessionID: "s1", messageID: id }] });
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080" },
+    );
+    const first = msg("m1");
+    await hooks["chat.message"]({ sessionID: "s1" }, first);
+    assert.equal(first.parts.length, 2);
+    skew = 24 * 60 * 60_000; // even a day later
+    const later = msg("m2");
+    await hooks["chat.message"]({ sessionID: "s1" }, later);
+    assert.equal(later.parts.length, 1, "both knobs at zero must suppress forever");
+  } finally {
+    globalThis.fetch = realFetch;
+    Date.now = realNow;
+    delete process.env.MEMINI_INJECT_COOLDOWN_MS;
+    delete process.env.MEMINI_INJECT_COOLDOWN_PROMPTS;
+  }
 });

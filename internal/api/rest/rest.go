@@ -523,6 +523,9 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 		in.MaxTokens = mt
 		in.EstimateConcise = format == formatConcise
 	}
+	if req.MinRankScore != nil {
+		in.MinRankScore = *req.MinRankScore
+	}
 	var degraded string
 	in.Degraded = &degraded
 	var readset []service.ReadSetEntry

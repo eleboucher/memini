@@ -32,16 +32,26 @@ function headline(ev: ActivityEvent): string {
   const n = ev.memories?.length ?? 0
   switch (ev.kind) {
     case 'recall': {
-      if (n === 0) return 'found nothing'
+      // "Served" counts only what the recall returned — floored hits are logged
+      // for visibility (rendered dimmed below) but were never served.
+      const servedMems = (ev.memories ?? []).filter((m) => !m.filtered)
+      const served = servedMems.length
+      if (served === 0) {
+        // With floored rows dimmed below, "found nothing" would contradict
+        // them; surface the floored count instead of an empty verdict.
+        const floored = ev.memories?.filter((m) => m.filtered).length ?? 0
+        return floored > 0 ? `served 0 · ${floored} floored` : 'found nothing'
+      }
       // When an injection-telemetry report covered this serve, say what
       // actually reached model context; a serve nothing reported on keeps the
-      // old wording — absent means unknown, not zero.
-      const known = (ev.memories ?? []).filter((m) => typeof m.injected === 'boolean')
+      // old wording — absent means unknown, not zero. Floored rows are outside
+      // the join: they were never served, so a report cannot cover them.
+      const known = servedMems.filter((m) => typeof m.injected === 'boolean')
       if (known.length > 0) {
         const inj = known.filter((m) => m.injected).length
-        return `served ${n} → injected ${inj}`
+        return `served ${served} → injected ${inj}`
       }
-      return `served ${n} ${n === 1 ? 'memory' : 'memories'}`
+      return `served ${served} ${served === 1 ? 'memory' : 'memories'}`
     }
     case 'inject':
       return n === 0 ? 'reported suppressed injections' : `injected ${n} ${n === 1 ? 'memory' : 'memories'}`
@@ -96,6 +106,15 @@ function detailChips(ev: ActivityEvent): { label: string; title?: string; warn?:
     // it is left off — a chip on every direct search would be noise.
     const source = str(d.source)
     if (source && source !== 'api') chips.push({ label: source, title: 'What triggered this recall' })
+    // How many candidates a cooldown pass held back (exclude_ids): surfaces that
+    // already injected a memory this session ask the server to drop it.
+    const excluded = typeof d.excluded_count === 'number' ? d.excluded_count : 0
+    if (excluded > 0) {
+      chips.push({
+        label: `${excluded} excluded · already injected`,
+        title: 'Candidates dropped because a surface already injected them this session',
+      })
+    }
   }
 
   if (ev.kind === 'inject') {
@@ -370,7 +389,7 @@ export function Activity() {
                       <button
                         key={m.id}
                         type="button"
-                        class="act-mem"
+                        class={`act-mem${m.filtered ? ' floored' : ''}`}
                         onClick={() => openMemory(m.id, m.namespace)}
                       >
                         {m.rank ? <span class="act-rank mono">#{m.rank}</span> : <span class="act-rank" />}
@@ -390,6 +409,16 @@ export function Activity() {
                         {m.injected === false && (
                           <span class="chip warn" title="Served by the server but suppressed client-side before reaching model context">
                             not injected
+                          </span>
+                        )}
+                        {/* Floored: below the request's min_rank_score, so logged
+                            for visibility but never returned. */}
+                        {m.filtered === 'rank_floor' && (
+                          <span
+                            class="chip floored-badge"
+                            title="Below this recall's min_rank_score floor — logged but not served"
+                          >
+                            floored
                           </span>
                         )}
                         {showNs && m.namespace !== ev.namespace && (

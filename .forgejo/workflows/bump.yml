@@ -83,6 +83,16 @@ jobs:
             # Keep the commit honest: the file must still be valid JSON.
             jq -e . "$f" >/dev/null
           done
+          # Pi ships an npm lockfile whose root version must track package.json,
+          # or its "package metadata and npm lockfile root stay synchronized"
+          # test breaks on the next release. sed cannot target it safely (the
+          # nested dependency entries carry their own "version" lines), so patch
+          # the two root fields with jq instead.
+          LOCK=integrations/pi/plugin/package-lock.json
+          jq --arg v "${NEXT}" '.version = $v | .packages[""].version = $v' "$LOCK" >"${LOCK}.tmp"
+          mv "${LOCK}.tmp" "$LOCK"
+          grep -q "\"version\": \"${NEXT}\"" "$LOCK" || { echo "failed to set version in $LOCK" >&2; exit 1; }
+          jq -e . "$LOCK" >/dev/null
           # The OpenClaw and Hermes plugin manifests are YAML, so sync those separately.
           for y in integrations/openclaw/plugin/plugin.yaml \
                    integrations/hermes/plugin/memini/plugin.yaml; do
@@ -102,6 +112,7 @@ jobs:
             integrations/openclaw/plugin/plugin.yaml \
             integrations/opencode/plugin/package.json \
             integrations/pi/plugin/package.json \
+            integrations/pi/plugin/package-lock.json \
             integrations/hermes/plugin/memini/plugin.yaml
           # A no-op bump (auto found no conventional commits since the last
           # tag, or an explicit version equal to the current one) stages

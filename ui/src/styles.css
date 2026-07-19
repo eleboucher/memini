@@ -1540,6 +1540,17 @@ pre.json {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A hit the recall floored (below its min_rank_score): logged for visibility
+   but never served, so it reads as dimmed with a badge. */
+.act-mem.floored {
+  opacity: 0.5;
+}
+.chip.floored-badge {
+  border-color: var(--line-strong);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
 .act-more {
   display: flex;
   justify-content: center;

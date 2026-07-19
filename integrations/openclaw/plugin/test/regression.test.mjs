@@ -465,7 +465,7 @@ test("resolveConfig falls back when recall_limit is zero/negative", () => {
   assert.equal(resolveConfig({ recall_limit: -1 }).recall_limit, 3, "negative falls back to default");
 });
 
-test("recall sends recall_limit and no min_score on /v1/search", async () => {
+test("recall sends recall_limit, no min_score, and the default 0.5 min_rank_score on /v1/search", async () => {
   const hooks = {};
   const requests = [];
   const realFetch = globalThis.fetch;
@@ -494,7 +494,8 @@ test("recall sends recall_limit and no min_score on /v1/search", async () => {
     await hooks.before_prompt_build({ prompt: "q" }, {});
     const search = JSON.parse(requests.find((r) => r.url.endsWith("/v1/search")).init.body);
     assert.equal(search.limit, 2);
-    assert.equal(search.min_score, undefined, "the plugin no longer sends a relevance-score floor");
+    assert.equal(search.min_score, undefined, "the fused-scale min_score is never sent");
+    assert.equal(search.min_rank_score, 0.5, "no floor knob set → the 0.5 default composite floor still rides the request");
     assert.equal(search.exclude_turns_younger_than, undefined, "server-side guard is on by default; plugin does not opt in");
   } finally {
     globalThis.fetch = realFetch;
@@ -724,6 +725,88 @@ test("recall sends exclude_ids and falls back when the server rejects them", asy
   }
 });
 
+// The inject_recall_min_score knob floors the FINAL composite score. It rides
+// the wire as min_rank_score (server-enforced), never the fused-scale min_score,
+// and a server that accepts it is authoritative: its result set is NOT
+// re-filtered client-side.
+test("recall floors on min_rank_score (never min_score) and trusts an enforcing server", async () => {
+  const hooks = {};
+  const searches = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = withHandshakeFailure(async (url, init) => {
+    if (String(url).endsWith("/v1/search")) searches.push(init && init.body ? JSON.parse(init.body) : {});
+    return {
+      ok: true,
+      async json() {
+        return { results: [
+          { memory: { id: "hi", summary: "high relevance note", tier: "semantic" }, score: 0.9 },
+          { memory: { id: "lo", summary: "low relevance kept", tier: "episodic" }, score: 0.1 },
+        ] };
+      },
+      async text() { return ""; },
+    };
+  });
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false, recall_min_score: 0.4 },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    const out = await hooks.before_prompt_build({ prompt: "q" }, { sessionId: "s1" });
+    assert.equal(searches[0].min_rank_score, 0.4, "the knob rides as min_rank_score");
+    assert.equal(searches[0].min_score, undefined, "the fused-scale min_score is never sent");
+    assert.match(out.prependContext, /high relevance note/);
+    assert.match(out.prependContext, /low relevance kept/, "an enforcing server's result set is authoritative");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// Older server: it 400s min_rank_score, so one retry strips BOTH newer fields
+// and the client applies the composite floor as a fallback.
+test("recall retries without min_rank_score on an old server and applies the floor client-side", async () => {
+  const hooks = {};
+  const searches = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = withHandshakeFailure(async (url, init) => {
+    const body = init && init.body ? JSON.parse(init.body) : {};
+    if (String(url).endsWith("/v1/search")) searches.push(body);
+    if (String(url).endsWith("/v1/search") && body.min_rank_score !== undefined) {
+      return { ok: false, status: 400, async json() { return {}; }, async text() { return 'unknown field "min_rank_score"'; } };
+    }
+    return {
+      ok: true,
+      async json() {
+        return { results: [
+          { memory: { id: "hi", summary: "high relevance note", tier: "semantic" }, score: 0.9 },
+          { memory: { id: "lo", summary: "low should be filtered", tier: "episodic" }, score: 0.1 },
+        ] };
+      },
+      async text() { return ""; },
+    };
+  });
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false, recall_min_score: 0.4 },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    const out = await hooks.before_prompt_build({ prompt: "q" }, { sessionId: "s1" });
+    assert.equal(searches.length, 2, "one strip-and-retry, then it stops");
+    assert.equal(searches[0].min_rank_score, 0.4, "the first attempt carries the floor");
+    assert.equal(searches[1].min_rank_score, undefined, "the retry strips min_rank_score");
+    assert.equal(searches[1].min_score, undefined, "the retry never resurrects min_score");
+    assert.match(out.prependContext, /high relevance note/);
+    assert.doesNotMatch(out.prependContext, /low should be filtered/, "the stripped floor is enforced client-side");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 // The injection dedupe is windowed (inject_cooldown_ms), not forever: a shown id
 // is excluded on the wire and dropped client-side WHILE inside the window, but
 // once the window lapses it is re-served (not in exclude_ids, not dropped) and
@@ -812,6 +895,134 @@ test("windowed injection cooldown: both knobs at zero restores forever suppressi
     skew = 24 * 60 * 60_000;
     const after = await hooks.before_prompt_build({ prompt: "q" }, ctx);
     assert.equal(after, undefined, "both knobs at zero must suppress forever (legacy #134)");
+  } finally {
+    globalThis.fetch = realFetch;
+    Date.now = realNow;
+    delete process.env.MEMINI_INJECT_COOLDOWN_MS;
+    delete process.env.MEMINI_INJECT_COOLDOWN_PROMPTS;
+  }
+});
+
+// The prompt dimension is LIVE, and its counter is the per-session count of
+// completed agent turns (agent_end fires once per turn): before_prompt_build
+// fires per STEP, so steps within a turn never advance the window — only
+// finished turns do. With the time window disabled (ms=0), a shown id is
+// suppressed for inject_cooldown_prompts turns and re-served after.
+test("windowed injection cooldown: the prompt window counts completed agent turns, not steps", async () => {
+  process.env.MEMINI_INJECT_COOLDOWN_MS = "0";
+  process.env.MEMINI_INJECT_COOLDOWN_PROMPTS = "2";
+  const hooks = {};
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = withHandshakeFailure(async (url) => ({
+    ok: true,
+    async json() {
+      return String(url).endsWith("/v1/search")
+        ? { results: [{ memory: { id: "m1", summary: "alpha", tier: "semantic" }, score: 0.9 }] }
+        : { id: "cap-x" };
+    },
+    async text() { return ""; },
+  }));
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    const ctx = { sessionId: "s1" };
+    const endTurn = () =>
+      hooks.agent_end(
+        {
+          success: true,
+          messages: [
+            { role: "user", content: "a real user question" },
+            { role: "assistant", content: "an answer" },
+          ],
+        },
+        ctx,
+      );
+    // Turn 1 completes before anything is injected, so the counter is live
+    // (the enforce core's counter==0 rule would otherwise leave the prompt
+    // dimension inert for the very first turn).
+    await endTurn();
+    // Turn 2, step 1: injected (stamped at counter 1).
+    const first = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.match(first.prependContext, /alpha/);
+    // Turn 2, later steps: the counter has NOT advanced (steps are not
+    // prompts), delta 0 < 2 -> suppressed on every step of the same turn.
+    for (let step = 0; step < 3; step++) {
+      const within = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+      assert.equal(within, undefined, "steps within the injection turn stay suppressed");
+    }
+    await endTurn(); // turn 2 completes: counter 2, delta 1 < 2
+    const nextTurn = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.equal(nextTurn, undefined, "1 completed turn since injection: still suppressed");
+    await endTurn(); // turn 3 completes: counter 3, delta 2 >= 2 -> lapsed
+    const after = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.ok(after, "the prompt window lapsed: the id must be re-served");
+    assert.match(after.prependContext, /alpha/);
+    // The re-show re-stamped the entry at the current counter: suppressed again.
+    const again = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.equal(again, undefined, "the re-shown id starts a fresh prompt window");
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.MEMINI_INJECT_COOLDOWN_MS;
+    delete process.env.MEMINI_INJECT_COOLDOWN_PROMPTS;
+  }
+});
+
+// Suppress within EITHER window: with both dimensions configured, a lapsed
+// time window alone must not re-admit while the prompt window still holds.
+test("windowed injection cooldown: either window suppresses; both must lapse to re-admit", async () => {
+  process.env.MEMINI_INJECT_COOLDOWN_MS = "1000";
+  process.env.MEMINI_INJECT_COOLDOWN_PROMPTS = "2";
+  const hooks = {};
+  const realFetch = globalThis.fetch;
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow.call(Date) + skew;
+  globalThis.fetch = withHandshakeFailure(async (url) => ({
+    ok: true,
+    async json() {
+      return String(url).endsWith("/v1/search")
+        ? { results: [{ memory: { id: "m1", summary: "alpha", tier: "semantic" }, score: 0.9 }] }
+        : { id: "cap-x" };
+    },
+    async text() { return ""; },
+  }));
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    const ctx = { sessionId: "s1" };
+    const endTurn = () =>
+      hooks.agent_end(
+        {
+          success: true,
+          messages: [
+            { role: "user", content: "a real user question" },
+            { role: "assistant", content: "an answer" },
+          ],
+        },
+        ctx,
+      );
+    await endTurn(); // counter live at 1
+    const first = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.match(first.prependContext, /alpha/);
+    // Time window lapsed, but only one turn completed since injection: the
+    // prompt window still holds.
+    skew = 5000;
+    await endTurn(); // counter 2, delta 1 < 2
+    const timeLapsed = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.equal(timeLapsed, undefined, "prompt window alone must keep suppressing");
+    await endTurn(); // counter 3, delta 2 >= 2 — and time already lapsed
+    const both = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.ok(both, "once BOTH windows lapse the id re-serves");
   } finally {
     globalThis.fetch = realFetch;
     Date.now = realNow;

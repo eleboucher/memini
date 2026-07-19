@@ -39,6 +39,21 @@ func (e ActivityEventActorKind) Valid() bool {
 	}
 }
 
+// Defines values for ActivityMemoryFiltered.
+const (
+	RankFloor ActivityMemoryFiltered = "rank_floor"
+)
+
+// Valid indicates whether the value is a known member of the ActivityMemoryFiltered enum.
+func (e ActivityMemoryFiltered) Valid() bool {
+	switch e {
+	case RankFloor:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AnswerRequestScope.
 const (
 	AnswerRequestScopeEverywhere AnswerRequestScope = "everywhere"
@@ -586,7 +601,9 @@ type ActivityEventActorKind string
 
 // ActivityMemory One memory as it appeared in an event — a snapshot taken at serve time, so a forgotten memory still renders — plus why it was there.
 type ActivityMemory struct {
-	Id string `json:"id"`
+	// Filtered Present when the recall dropped this hit from its response but still logged it — "rank_floor" when the per-call min_rank_score composite floor cut it. Absent on a served hit. Lets the feed dim what was filtered instead of hiding it; recall only.
+	Filtered *ActivityMemoryFiltered `json:"filtered,omitempty"`
+	Id       string                  `json:"id"`
 
 	// Injected The served→injected join's verdict, on a recall event's memories: true when a client injection-telemetry report (POST /v1/activity/injected) named this memory as actually reaching model context, false when a report covered the recall but omitted it (the client suppressed it). ABSENT when no report covered the serve — absent means unknown, so old data and non-reporting integrations render unchanged; only a report ever yields false.
 	Injected *bool `json:"injected,omitempty"`
@@ -605,6 +622,9 @@ type ActivityMemory struct {
 	Summary string  `json:"summary"`
 	Tier    Tier    `json:"tier"`
 }
+
+// ActivityMemoryFiltered Present when the recall dropped this hit from its response but still logged it — "rank_floor" when the per-call min_rank_score composite floor cut it. Absent on a served hit. Lets the feed dim what was filtered instead of hiding it; recall only.
+type ActivityMemoryFiltered string
 
 // ActivityResponse defines model for ActivityResponse.
 type ActivityResponse struct {
@@ -827,16 +847,16 @@ type ClientSettings struct {
 	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped. Sent to the server as each per-file search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
 
-	// InjectPretoolMinScore Floor on the fused score (>=) for a PreToolUse injection.
+	// InjectPretoolMinScore Floor on the composite post-rerank score — the final [0,1) scale the response score field and the activity feed show — for a PreToolUse injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor. 0 disables the floor.
 	InjectPretoolMinScore *float32 `json:"inject_pretool_min_score,omitempty"`
 
-	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection.
+	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection. Glob and Grep are deliberately not in the default: pattern-derived queries ("Grep on <pattern>") are near-zero-signal and each ungated call costs a server embed+rerank — list them here to restore the old behavior.
 	InjectPretoolTools *[]string `json:"inject_pretool_tools,omitempty"`
 
 	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped. Sent to the server as the prompt search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
 
-	// InjectRecallMinScore Floor on the fused score (>=) for a recall injection.
+	// InjectRecallMinScore Floor on the composite post-rerank score — the final [0,1) scale the response score field and the activity feed show — for a recall injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor. 0 disables the floor.
 	InjectRecallMinScore *float32 `json:"inject_recall_min_score,omitempty"`
 
 	// InjectTelemetry Report what each hook actually injected vs suppressed back to the server (POST /v1/activity/injected) so the activity feed and metrics reflect what reached model context instead of pre-suppression serves. Best-effort and bounded (the beacon never blocks or fails a hook); off disables reporting entirely.
@@ -1300,6 +1320,9 @@ type SearchRequest struct {
 	// Metadata A memory's top-level metadata must contain every listed key=value pair (AND).
 	Metadata *map[string]string `json:"metadata,omitempty"`
 
+	// MinRankScore Per-call floor on the final ranked (composite) score — the same score the response `score` field and the activity feed show. Applied AFTER re-ranking, so it changes membership of the final list only, never the candidate pool the reranker judged nor its ordering. Floored hits are still logged to the activity feed, marked as filtered, so what was dropped stays visible. 0 (or unset) disables it. Results added by `include_linked` expansion are exempt (the floor runs before expansion). With `query_rewrite` it applies per query variant, before the RRF fusion of variants. Distinct from `min_score`, which floors the raw fused score before re-ranking.
+	MinRankScore *float64 `json:"min_rank_score,omitempty"`
+
 	// MinScore Per-call relevance floor on the fused score. Candidates below it are dropped server-side before re-ranking. 0 (or unset) falls back to the server's baked relevance floor (0.1). Only meaningful with score fusion (RRF scores are not comparable to this threshold).
 	MinScore *float64 `json:"min_score,omitempty"`
 
@@ -1417,16 +1440,16 @@ type SettingsDefaultsResponse struct {
 	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped. Sent to the server as each per-file search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
 
-	// InjectPretoolMinScore Floor on the fused score (>=) for a PreToolUse injection.
+	// InjectPretoolMinScore Floor on the composite post-rerank score — the final [0,1) scale the response score field and the activity feed show — for a PreToolUse injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor. 0 disables the floor.
 	InjectPretoolMinScore *float32 `json:"inject_pretool_min_score,omitempty"`
 
-	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection.
+	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection. Glob and Grep are deliberately not in the default: pattern-derived queries ("Grep on <pattern>") are near-zero-signal and each ungated call costs a server embed+rerank — list them here to restore the old behavior.
 	InjectPretoolTools *[]string `json:"inject_pretool_tools,omitempty"`
 
 	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped. Sent to the server as the prompt search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
 
-	// InjectRecallMinScore Floor on the fused score (>=) for a recall injection.
+	// InjectRecallMinScore Floor on the composite post-rerank score — the final [0,1) scale the response score field and the activity feed show — for a recall injection. All bundled integrations enforce it server-side via min_rank_score (floored hits appear in the feed marked as filtered); a custom or older caller may still apply it as a pre-rank fused-score floor. 0 disables the floor.
 	InjectRecallMinScore *float32 `json:"inject_recall_min_score,omitempty"`
 
 	// InjectTelemetry Report what each hook actually injected vs suppressed back to the server (POST /v1/activity/injected) so the activity feed and metrics reflect what reached model context instead of pre-suppression serves. Best-effort and bounded (the beacon never blocks or fails a hook); off disables reporting entirely.

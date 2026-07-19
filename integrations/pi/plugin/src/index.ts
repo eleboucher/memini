@@ -36,7 +36,6 @@ import type {
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { readFileSync } from "node:fs";
-import { createHash } from "node:crypto";
 import {
   readBootstrap,
   gatherFacts,
@@ -52,6 +51,15 @@ import {
   redactValue,
   assertBearerTransportSafe,
   isPlaintextBearerUnsafe,
+  // The shared injection-enforcement core (packages/memini-client/src/enforce/),
+  // pinned by packages/memini-client/vectors/enforcement.json — pi consumes the
+  // same primitives the Claude Code hooks do instead of hand-rolled copies.
+  approxTokens,
+  fitByTokens,
+  truncate,
+  escapeMeminiTags,
+  injectedSuppressed,
+  injectedIdentity as coreInjectedIdentity,
   type Bootstrap,
   type ProjectFacts,
   type HandshakeResult,
@@ -331,67 +339,31 @@ export async function sessionLive(
   return resolveLiveConfig(ctx.boot, ctx.facts, hs, env as Record<string, string | undefined>);
 }
 
-// --- token budget (copied from the opencode plugin; both ship standalone) ----
-
-/** approxTokens: ~0.75 tokens/word, floor of 1 for any non-empty line. */
-export function approxTokens(text: string): number {
-  if (!text) return 0;
-  const words = String(text).trim().split(/\s+/).filter(Boolean).length;
-  return Math.max(1, Math.ceil((words * 4) / 3));
-}
-
-/**
- * fitByTokens trims a list of pre-formatted strings under `maxTokens`, keeping
- * the head (most relevant first). maxTokens<=0 means unbounded.
- */
-export function fitByTokens(
-  items: string[],
-  maxTokens: number,
-): { items: string[]; tokens: number; dropped: number } {
-  if (!Array.isArray(items) || items.length === 0) return { items: [], tokens: 0, dropped: 0 };
-  if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
-    const tokens = items.reduce((sum, s) => sum + approxTokens(s), 0);
-    return { items: items.slice(), tokens, dropped: 0 };
-  }
-  const out: string[] = [];
-  let used = 0;
-  let dropped = 0;
-  for (const s of items) {
-    const t = approxTokens(s);
-    if (used + t > maxTokens) {
-      dropped++;
-      continue;
-    }
-    out.push(s);
-    used += t;
-  }
-  return { items: out, tokens: used, dropped };
-}
-
-/** truncate to `max` chars with a marker. */
-export function truncate(value: string, max: number): string {
-  return value.length > max ? value.slice(0, max) + "\n[...truncated]" : value;
-}
-
-/**
- * Neutralize only Memini-shaped wrapper tags. Stored memory is untrusted data:
- * it may contain ordinary source-code angle brackets, but it must not be able
- * to close or forge one of the extension's trusted context boundaries.
- */
-export function escapeMeminiTags(value: unknown): string {
-  return String(value ?? "").replace(/<(\/?)memini/gi, (_match, slash) => `&lt;${slash}memini`);
-}
+// --- token budget + rendering (shared enforcement core: @memini/client) -----
+//
+// approxTokens / fitByTokens / truncate / escapeMeminiTags are the shared
+// implementations, re-exported so tests (and any embedder) keep their import
+// path. fitByTokens carries the core's partial-fit behavior: an item that
+// partially fits a remaining budget of >5 tokens is head-trimmed at a newline
+// boundary and marked "[...truncated]" instead of dropped whole.
+export { approxTokens, fitByTokens, truncate, escapeMeminiTags };
 
 function boundedInjectedText(value: unknown, max: number): string {
-  const escaped = escapeMeminiTags(value).replace(/\s+/g, " ").trim();
+  // Coerce before escaping: the shared escapeMeminiTags passes non-strings
+  // through untouched, and pi's render paths feed it raw wire values.
+  const escaped = escapeMeminiTags(String(value ?? "")).replace(/\s+/g, " ").trim();
   return unicodePrefix(escaped, max);
 }
 
-/** Content identity used by automatic briefing and prompt-recall surfaces. */
+/**
+ * Content identity used by automatic briefing and prompt-recall surfaces.
+ * pi's surfaces pass raw wire shapes — a {memory, score} recall hit, a
+ * {memory, from} briefing item, or the memory itself — so unwrap before the
+ * shared identity (server-minted content_hash preferred when present and
+ * well-formed; sha256/16 of content-or-summary otherwise).
+ */
 export function injectedIdentity(raw: any): string {
-  const memory = raw?.memory ?? raw ?? {};
-  const content = String(memory?.content || memory?.summary || "");
-  return createHash("sha256").update(content).digest("hex").slice(0, 16);
+  return coreInjectedIdentity(raw?.memory ?? raw);
 }
 
 // formatResults renders search hits to bullet lines. Empty labels -> "- (tier)
@@ -1358,6 +1330,11 @@ export function isExplicitExcludeIdsRejection(result: RequestResult): boolean {
   return /(unknown|unsupported|unrecognized|unexpected|not allowed|additional propert)/i.test(result.error);
 }
 
+export function isExplicitMinRankScoreRejection(result: RequestResult): boolean {
+  if (result.status !== 400 || !result.error || !/min_rank_score/i.test(result.error)) return false;
+  return /(unknown|unsupported|unrecognized|unexpected|not allowed|additional propert)/i.test(result.error);
+}
+
 export interface SettledTurn {
   userText: string;
   assistantText: string;
@@ -1648,20 +1625,17 @@ export default function meminiExtension(pi: ExtensionAPI): void {
     });
     rememberInjected(eligible, transition.explicit);
   };
+  // The shared windowed predicate (@memini/client injectedSuppressed), with
+  // pi's live prompt counter as the prompt dimension. `identity` undefined is
+  // the id-only check — the content-change bypass is skipped.
   const suppressed = (
     entry: InjectedEntry,
     now: number,
     cooldownMs: number,
     cooldownPrompts: number,
     identity?: string,
-  ): boolean => {
-    if (entry.h === "") return true;
-    if (identity && entry.h !== identity) return false;
-    if (cooldownMs === 0 && cooldownPrompts === 0) return true;
-    const promptDim = cooldownPrompts > 0 && promptCount > 0 && promptCount - entry.n < cooldownPrompts;
-    const timeDim = cooldownMs > 0 && now - entry.at < cooldownMs;
-    return promptDim || timeDim;
-  };
+  ): boolean =>
+    injectedSuppressed(entry, identity ?? null, { now, counter: promptCount, cooldownMs, cooldownPrompts });
   const injectedInWindow = (live: LiveConfig): Map<string, InjectedEntry> => {
     const inWindow = new Map<string, InjectedEntry>();
     if (!live.inject_dedupe) return inWindow;
@@ -1811,19 +1785,38 @@ export default function meminiExtension(pi: ExtensionAPI): void {
     }
     return null;
   };
-  const searchExcluding = async (body: any, excludeIds: string[], namespace: string) => {
+  const searchExcluding = async (
+    body: any,
+    excludeIds: string[],
+    namespace: string,
+  ): Promise<{ data: any; rankFloorStripped: boolean }> => {
+    const rankFloorInBody = body.min_rank_score !== undefined;
     const capped = excludeIds.slice(0, MAX_SERVER_EXCLUDE_IDS);
-    if (!serverExcludeIds || capped.length === 0) return client.postJson("/v1/search", body, namespace);
-    const first = await client.postJsonResult("/v1/search", { ...body, exclude_ids: capped }, namespace);
-    if (first.ok) return first.data;
-    if (!isExplicitExcludeIdsRejection(first)) return searchFailure(first);
-    const retry = await client.postJsonResult("/v1/search", body, namespace);
-    if (retry.ok) {
+    const withExcludeIds = serverExcludeIds && capped.length > 0;
+    const first = await client.postJsonResult(
+      "/v1/search",
+      withExcludeIds ? { ...body, exclude_ids: capped } : body,
+      namespace,
+    );
+    if (first.ok) return { data: first.data, rankFloorStripped: false };
+    // Newer-than-server optional fields (min_rank_score, exclude_ids): an older
+    // server's strict decoder 400s any request carrying one. Retry ONCE with
+    // BOTH stripped, degrading to the client-side floor fallback below. Unlike
+    // the plugin's pretool latch, min_rank_score is not latched off here: this
+    // integration tracks no content hash, so a stateless per-call strip matches
+    // _shared.mjs and never weakens the exclude_ids dedupe.
+    const excludeIdsRejected = withExcludeIds && isExplicitExcludeIdsRejection(first);
+    const rankFloorRejected = rankFloorInBody && isExplicitMinRankScoreRejection(first);
+    if (!excludeIdsRejected && !rankFloorRejected) return { data: searchFailure(first), rankFloorStripped: false };
+    if (excludeIdsRejected) {
       serverExcludeIds = false;
       warn("memini: server does not accept exclude_ids; using client-side dedupe only");
-      return retry.data;
     }
-    return searchFailure(retry);
+    const stripped = { ...body };
+    delete stripped.min_rank_score;
+    const retry = await client.postJsonResult("/v1/search", stripped, namespace);
+    if (retry.ok) return { data: retry.data, rankFloorStripped: rankFloorInBody };
+    return { data: searchFailure(retry), rankFloorStripped: false };
   };
 
   pi.on("before_agent_start", async (event, ctx) => {
@@ -1847,12 +1840,23 @@ export default function meminiExtension(pi: ExtensionAPI): void {
       limit: live.recall_limit,
     };
     if (live.inject_dedupe && sid) body.exclude_metadata = { session_id: sid };
-    if (live.recall_min_score > 0) body.min_score = live.recall_min_score;
+    // inject_recall_min_score floors the FINAL composite score server-side via
+    // min_rank_score (not the fused-scale min_score). The server rejects >= 1 as
+    // out of range, so a mis-set knob clamps to a client-only floor rather than
+    // 400ing every search.
+    const rankFloor = live.recall_min_score;
+    const rankFloorInRange = rankFloor > 0 && rankFloor < 1;
+    if (rankFloorInRange) body.min_rank_score = rankFloor;
     const inWindow = injectedInWindow(live);
     const readVersion = mutationClock;
     const readEpoch = stateEpoch;
-    const result = await searchExcluding(body, live.inject_dedupe ? [...inWindow.keys()] : [], live.namespace);
-    const floor = live.recall_min_score > 0 ? live.recall_min_score : 0;
+    const searchResult = await searchExcluding(body, live.inject_dedupe ? [...inWindow.keys()] : [], live.namespace);
+    const result = searchResult.data;
+    // The client composite floor is a fallback ONLY: it runs when the knob was
+    // clamped to client-only (>= 1) or the retry stripped min_rank_score for an
+    // old server. A server that enforced the floor is authoritative, not re-filtered.
+    const serverEnforcedFloor = rankFloorInRange && !searchResult.rankFloorStripped;
+    const floor = rankFloor > 0 && !serverEnforcedFloor ? rankFloor : 0;
     let rawHits = Array.isArray(result?.results) ? result.results : [];
     if (live.inject_dedupe && inWindow.size) {
       rawHits = rawHits.filter((raw: any) => {
@@ -1985,6 +1989,9 @@ export default function meminiExtension(pi: ExtensionAPI): void {
         maxItems: MAX_SERVER_EXCLUDE_IDS,
         description: "Drop these memory ids before ranking and limit.",
       })),
+      min_rank_score: Type.Optional(Type.Number({
+        description: "drop results whose final ranked score is below this ([0,1)); rarely needed — the server already gates relevance",
+      })),
       include_fresh_turns: Type.Optional(Type.Boolean({
         description: "Include just-captured turns normally hidden by the temporal echo guard.",
       })),
@@ -2008,7 +2015,7 @@ export default function meminiExtension(pi: ExtensionAPI): void {
       };
       for (const key of [
         "tiers", "levels", "tags", "metadata", "exclude_metadata", "exclude_ids",
-        "include_fresh_turns", "query_rewrite", "as_of",
+        "min_rank_score", "include_fresh_turns", "query_rewrite", "as_of",
       ]) {
         if (hasOwn(params, key)) body[key] = params[key];
       }
