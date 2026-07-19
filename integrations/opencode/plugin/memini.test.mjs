@@ -865,20 +865,26 @@ test("chat.message caps the recall block by MEMINI_INJECT_RECALL_MAX_TOK", async
   }
 });
 
-test("chat.message drops hits below MEMINI_INJECT_RECALL_MIN_SCORE", async () => {
+// The floor rides the wire as min_rank_score (a server-enforced floor on the
+// FINAL composite score), never the fused-scale min_score. A server that
+// accepts it is authoritative: its result set is NOT re-filtered client-side.
+test("chat.message floors on min_rank_score (never min_score) and trusts an enforcing server", async () => {
   const realFetch = globalThis.fetch;
-  globalThis.fetch = async (url) => {
+  const searches = [];
+  globalThis.fetch = async (url, init) => {
     if (String(url).endsWith("/v1/handshake")) {
       return { ok: true, async json() { return {}; }, async text() { return ""; } };
     }
+    if (String(url).endsWith("/v1/search")) searches.push(init && init.body ? JSON.parse(init.body) : {});
     return {
       ok: true,
       async json() {
+        // A hit below the floor: a server that enforced the floor would have
+        // dropped it, so its presence proves the client does not re-filter.
         return {
           results: [
-            { score: 0.9, memory: { tier: "semantic", summary: "high" } },
-            { score: 0.1, memory: { tier: "episodic", summary: "low — should be filtered" } },
-            { score: 0.5, memory: { tier: "procedural", summary: "mid" } },
+            { score: 0.9, memory: { tier: "semantic", summary: "high relevance" } },
+            { score: 0.1, memory: { tier: "episodic", summary: "low relevance kept" } },
           ],
         };
       },
@@ -890,13 +896,59 @@ test("chat.message drops hits below MEMINI_INJECT_RECALL_MIN_SCORE", async () =>
       { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
       { base_url: "http://localhost:8080", recall_min_score: 0.4 },
     );
-    const output = {
-      parts: [{ type: "text", text: "user prompt", sessionID: "s1", messageID: "m1" }],
-    };
+    const output = { parts: [{ type: "text", text: "user prompt", sessionID: "s1", messageID: "m1" }] };
     await hooks["chat.message"]({ sessionID: "s1" }, output);
-    if (output.parts.length === 1) return; // no hits passed the floor
+    assert.equal(searches[0].min_rank_score, 0.4, "the knob rides as min_rank_score");
+    assert.equal(searches[0].min_score, undefined, "the fused-scale min_score is never sent");
     const injected = output.parts[0];
-    assert.ok(!injected.text.includes("low — should be filtered"));
+    assert.ok(injected.text.includes("high relevance"));
+    assert.ok(injected.text.includes("low relevance kept"), "an enforcing server's result set is authoritative");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// Older server: it 400s min_rank_score, so one retry strips it and the client
+// applies the composite floor as a fallback.
+test("chat.message applies the floor client-side only as a fallback when the server rejects min_rank_score", async () => {
+  const realFetch = globalThis.fetch;
+  const searches = [];
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith("/v1/handshake")) {
+      return { ok: true, async json() { return {}; }, async text() { return ""; } };
+    }
+    const body = init && init.body ? JSON.parse(init.body) : {};
+    if (String(url).endsWith("/v1/search")) searches.push(body);
+    if (String(url).endsWith("/v1/search") && body.min_rank_score !== undefined) {
+      return { ok: false, status: 400, async json() { return {}; }, async text() { return 'unknown field "min_rank_score"'; } };
+    }
+    return {
+      ok: true,
+      async json() {
+        return {
+          results: [
+            { score: 0.9, memory: { tier: "semantic", summary: "high relevance" } },
+            { score: 0.1, memory: { tier: "episodic", summary: "low — should be filtered" } },
+          ],
+        };
+      },
+      async text() { return ""; },
+    };
+  };
+  try {
+    const hooks = await MeminiPlugin(
+      { client: {}, worktree: "/tmp/proj", directory: "/tmp/proj" },
+      { base_url: "http://localhost:8080", recall_min_score: 0.4 },
+    );
+    const output = { parts: [{ type: "text", text: "user prompt", sessionID: "s1", messageID: "m1" }] };
+    await hooks["chat.message"]({ sessionID: "s1" }, output);
+    assert.equal(searches.length, 2, "one strip-and-retry, then it stops");
+    assert.equal(searches[0].min_rank_score, 0.4, "the first attempt carries the floor");
+    assert.equal(searches[1].min_rank_score, undefined, "the retry strips min_rank_score");
+    assert.equal(searches[1].min_score, undefined, "the retry never resurrects min_score");
+    const injected = output.parts[0];
+    assert.ok(injected.text.includes("high relevance"));
+    assert.ok(!injected.text.includes("low — should be filtered"), "the stripped floor is enforced client-side");
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -1107,8 +1159,14 @@ test("carried-over hits still respect the seen-dedup and the score floor", async
   const gate = new Promise((r) => { release = r; });
   let searchCalls = 0;
   const seenHit = { score: 0.9, memory: { id: "m1", tier: "semantic", summary: "already shown" } };
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = async (url, init) => {
     if (!String(url).endsWith("/v1/search")) return okJson({});
+    const body = init && init.body ? JSON.parse(init.body) : {};
+    // Old server rejects the composite floor, so the client applies it as a
+    // fallback — which is exactly what keeps the low carryover hit out below.
+    if (body.min_rank_score !== undefined) {
+      return { ok: false, status: 400, async json() { return {}; }, async text() { return 'unknown field "min_rank_score"'; } };
+    }
     searchCalls++;
     if (searchCalls === 1) return okJson({ results: [seenHit] });
     if (searchCalls === 2) {

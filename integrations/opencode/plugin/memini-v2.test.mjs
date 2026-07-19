@@ -129,6 +129,81 @@ test("request hook injects a recalled memory into event.system", async () => {
   }
 });
 
+// The floor rides the wire as min_rank_score (server-enforced final composite
+// score), never the fused-scale min_score. A server that accepts it is
+// authoritative: its result set is NOT re-filtered client-side.
+test("request hook floors on min_rank_score (never min_score) and trusts an enforcing server", async () => {
+  BASE_ENV();
+  const searches = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const path = new URL(url).pathname;
+    const json = (b, status = 200) => new Response(JSON.stringify(b), { status, headers: { "content-type": "application/json" } });
+    if (path.endsWith("/healthz")) return new Response("ok", { status: 200 });
+    if (path.endsWith("/v1/handshake")) return json({});
+    if (path.endsWith("/v1/search")) {
+      searches.push(init && init.body ? JSON.parse(init.body) : {});
+      return json({ results: [
+        { memory: { id: "hi", content: "high relevance fact", tier: "semantic" }, score: 0.9 },
+        { memory: { id: "lo", content: "low relevance kept", tier: "episodic" }, score: 0.1 },
+      ] });
+    }
+    return json({}, 404);
+  };
+  try {
+    const { ctx, state } = makeCtx({ options: { namespace: "test-ns", recall_min_score: 0.4 } });
+    await setup(ctx);
+    const event = { sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] };
+    await state.requestHook(event);
+    assert.equal(searches[0].min_rank_score, 0.4, "the knob rides as min_rank_score");
+    assert.equal(searches[0].min_score, undefined, "the fused-scale min_score is never sent");
+    assert.equal(event.system.length, 1);
+    assert.match(event.system[0], /high relevance fact/);
+    assert.match(event.system[0], /low relevance kept/, "an enforcing server's result set is authoritative");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+// Older server: it 400s min_rank_score, so one retry strips it and the client
+// applies the composite floor as a fallback.
+test("request hook retries without min_rank_score on an old server and applies the floor client-side", async () => {
+  BASE_ENV();
+  const searches = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const path = new URL(url).pathname;
+    const json = (b, status = 200) => new Response(JSON.stringify(b), { status, headers: { "content-type": "application/json" } });
+    if (path.endsWith("/healthz")) return new Response("ok", { status: 200 });
+    if (path.endsWith("/v1/handshake")) return json({});
+    if (path.endsWith("/v1/search")) {
+      const body = init && init.body ? JSON.parse(init.body) : {};
+      searches.push(body);
+      if (body.min_rank_score !== undefined) return json({ error: 'unknown field "min_rank_score"' }, 400);
+      return json({ results: [
+        { memory: { id: "hi", content: "high relevance fact", tier: "semantic" }, score: 0.9 },
+        { memory: { id: "lo", content: "low should be filtered", tier: "episodic" }, score: 0.1 },
+      ] });
+    }
+    return json({}, 404);
+  };
+  try {
+    const { ctx, state } = makeCtx({ options: { namespace: "test-ns", recall_min_score: 0.4 } });
+    await setup(ctx);
+    const event = { sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] };
+    await state.requestHook(event);
+    assert.equal(searches.length, 2, "one strip-and-retry, then it stops");
+    assert.equal(searches[0].min_rank_score, 0.4, "the first attempt carries the floor");
+    assert.equal(searches[1].min_rank_score, undefined, "the retry strips min_rank_score");
+    assert.equal(searches[1].min_score, undefined, "the retry never resurrects min_score");
+    assert.equal(event.system.length, 1);
+    assert.match(event.system[0], /high relevance fact/);
+    assert.doesNotMatch(event.system[0], /low should be filtered/, "the stripped floor is enforced client-side");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("request hook suppresses a memory already injected this session", async () => {
   BASE_ENV();
   const { restore } = installFetch({
