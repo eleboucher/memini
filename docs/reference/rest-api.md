@@ -24,7 +24,7 @@ The core read and write surface. `POST /v1/search` is the REST equivalent of the
 | `GET /v1/memories` | List memories in a namespace (backs the admin UI browser) |
 | `POST /v1/memories` | Remember (store) a memory |
 | `DELETE /v1/memories/{id}` | Forget (delete) a memory |
-| `GET /v1/memories/{id}` | Fetch a memory by ID |
+| `GET /v1/memories/{id}` | Fetch a memory by ID (or unique id prefix) |
 | `PATCH /v1/memories/{id}` | Update a memory in place |
 | `GET /v1/memories/{id}/history` | The full version chain (supersession lineage) of a memory |
 | `POST /v1/memories/{id}/reassign` | Move a single memory to a different namespace |
@@ -69,6 +69,7 @@ Run the hygiene passes on demand rather than waiting for the background schedule
 | Endpoint | Does |
 | --- | --- |
 | `GET /v1/activity` | Recent memory activity — what was served or written, and why |
+| `POST /v1/activity/injected` | Report what a client hook actually injected vs suppressed |
 | `POST /v1/dedup` | Collapse near-duplicate memories (vector cluster) — tombstone the lower-scored members of each cluster |
 | `POST /v1/fsck` | Run a consistency sweep (purge expired, enforce short-term cap, audit duplicates) |
 | `GET /v1/stats` | Per-namespace overview (counts by tier, accesses, importance) |

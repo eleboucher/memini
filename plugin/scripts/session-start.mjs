@@ -30,6 +30,9 @@ import {
   writeInjectedState,
   recordInjected,
   injectedIdentity,
+  isContentHash,
+  postInjected,
+  injectedReport,
   escapeMeminiTags,
   MEMORY_INSTRUCTION,
   COMPACT_RECOVERY_DIRECTIVE,
@@ -121,6 +124,9 @@ function warnRemovedVars(env) {
 // a "link:"/"call:" prefixed origin — see BriefingItem.from in api/openapi.yaml);
 // it is rendered as a trailing "(from …)" suffix independent of MEMINI_INJECT_LABELS,
 // because knowing a fact came from outside this namespace is context, not a label.
+// An id-carrying item gains a trailing [m:<first 8 id chars>] handle — the id
+// memory_get resolves (the server accepts prefixes >= 8 hex chars); ids are
+// server-minted hex/uuid, safe to render verbatim.
 function formatMemory(m, section, labels, from) {
   // Neutralize memini wrapper tags in the untrusted stored content BEFORE the
   // 280-cap. An entity expansion (`<memini` → `&lt;memini`) slightly shifts the
@@ -133,15 +139,19 @@ function formatMemory(m, section, labels, from) {
   // namespace/origin name — namespace validation allows "<", so escape it like
   // stored content, or a hostile directory name could smuggle a `<memini` tag in.
   const prov = from ? ` (from ${escapeMeminiTags(from)})` : "";
-  // Cap the CONTENT at 280 code points, rune-safe (mirrors childTitle in
+  const handle = typeof m?.id === "string" && m.id ? ` [m:${m.id.slice(0, 8)}]` : "";
+  // Cap the CONTENT at the section's cap (default 280 code points; the Recent
+  // section's index mode tightens it to 120), rune-safe (mirrors childTitle in
   // mcp.go): Array.from counts code points, so an astral character at the
   // boundary is never split into a broken surrogate half, and "…" is appended
-  // only when truncation actually cut something — exactly-280 content renders
-  // verbatim with no ellipsis. The cap applies before the provenance suffix.
+  // only when truncation actually cut something — exactly-at-cap content
+  // renders verbatim with no ellipsis. The cap applies before the provenance
+  // suffix and the [m:id] handle.
+  const cap = section.cap ?? 280;
   const runes = Array.from(text);
-  const capped = runes.length > 280 ? runes.slice(0, 280).join("") + "…" : text;
+  const capped = runes.length > cap ? runes.slice(0, cap).join("") + "…" : text;
   const parts = [capped];
-  if (labels.size === 0) return parts[0] + prov;
+  if (labels.size === 0) return parts[0] + prov + handle;
   const tagParts = [];
   if (labels.has("tier") && m?.tier) tagParts.push(m.tier);
   if (labels.has("confidence") && typeof m?.confidence === "number") {
@@ -155,8 +165,8 @@ function formatMemory(m, section, labels, from) {
     }
   }
   if (labels.has("reason")) tagParts.push(section.reason);
-  if (tagParts.length === 0) return parts[0] + prov;
-  return `[${tagParts.join(" · ")}] ${parts[0]}${prov}`;
+  if (tagParts.length === 0) return parts[0] + prov + handle;
+  return `[${tagParts.join(" · ")}] ${parts[0]}${prov}${handle}`;
 }
 
 // readBriefingOpts pulls the per-section caps out of the resolved session
@@ -249,18 +259,32 @@ async function main() {
 
   // The single memory directive emitted by all three paths below (empty briefing,
   // unchanged briefing, fresh briefing) — computed once so they cannot drift.
-  // Claude Code sets payload.source to "startup" | "resume" | "clear" | "compact";
-  // after a compaction the context was rebuilt and durable facts learned before
-  // it may have fallen out of view, so append the compact-recovery prompt to nudge
-  // the model to flush anything not yet persisted. Empty when inline_extract is off.
-  const directive = inlineExtract
-    ? MEMORY_INSTRUCTION + (payload.source === "compact" ? COMPACT_RECOVERY_DIRECTIVE : "")
-    : "";
+  // Claude Code sets payload.source to "startup" | "resume" | "clear" | "compact",
+  // and what to emit depends on what the context already carries:
+  //   startup/clear (and hosts that send no source, e.g. Codex) — fresh context,
+  //     emit the directive.
+  //   resume — Claude Code REPLAYS previously injected hook text for past turns,
+  //     so the startup directive is already in the transcript; emit nothing.
+  //   compact — the context was rebuilt, but MCP server instructions (the
+  //     canonical save policy) persist in the system prompt; only the
+  //     compaction-specific "flush unsaved facts" nudge is emitted.
+  // Empty when inline_extract is off.
+  const directive = !inlineExtract
+    ? ""
+    : payload.source === "resume"
+      ? ""
+      : payload.source === "compact"
+        ? COMPACT_RECOVERY_DIRECTIVE
+        : MEMORY_INSTRUCTION;
 
   // A single query-less briefing call returns a layered view: pinned identity,
   // durable facts/procedures, and recent activity — server-side ranked, so the
-  // hook injects useful context without N searches.
-  const b = await getBriefing(project, opts);
+  // hook injects useful context without N searches. The SAME token knob feeds
+  // both budget layers (PR-F): the server's authoritative ?max_tokens trim
+  // (whole items, pinned fills first, recent starves first, drop count in
+  // b.omitted) and the client-side block trim below, which guards old servers
+  // and the render skeleton the server can't see.
+  const b = await getBriefing(project, { ...opts, max_tokens: maxTokens });
 
   // No briefing (a brand-new project with no memories yet, or an unreachable
   // server) still needs the memory directive. Returning early here used to drop
@@ -296,10 +320,23 @@ async function main() {
   const contentHash = crypto.createHash("sha256").update(JSON.stringify(b)).digest("hex").slice(0, 16);
   if (sessionId && !compacted && briefingUnchanged(sessionId, contentHash)) {
     if (DEBUG) console.error("[memini] SessionStart: briefing unchanged this session, skipping re-injection");
-    // A re-fire usually means the context was rebuilt (resume / clear / compact),
-    // which drops the memory directive. Skip the unchanged briefing but re-emit
-    // the directive so the agent keeps saving durable facts via memory_remember.
+    // Skip the unchanged briefing; the directive var already encodes what this
+    // fire source owes the context (nothing on resume — the transcript replay
+    // carries the original injection — a fresh directive on clear).
     if (directive) process.stdout.write(directive);
+    // Telemetry beacon AFTER the stdout payload: the whole briefing was
+    // withheld as unchanged, so report the item count and no injected ids.
+    // Best-effort and awaited — see postInjected.
+    if (ctx.setting("inject_telemetry").value) {
+      const withheld = [b.pinned, b.facts, b.procedures, b.recent].reduce(
+        (sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0),
+        0,
+      );
+      await postInjected(
+        injectedReport({ surface: "briefing", sessionId, suppressed: { unchanged: withheld } }),
+        { namespace: project },
+      );
+    }
     return;
   }
 
@@ -317,7 +354,11 @@ async function main() {
     // ([3d]/[today]), independent of inject_labels: temporal reasoning is an
     // LLM's weakest memory skill (LongMemEval) and dated recency measurably
     // helps, so recency is surfaced by default here. Other sections stay opt-in.
-    { label: "Recent activity", reason: "recent activity", mems: b.recent, alwaysAge: true },
+    // It also renders in INDEX mode — a tighter 120-code-point cap per item —
+    // because recent episodics are pointers back into past sessions, not
+    // context to reason over: age + a scent line + the [m:id] handle is enough
+    // to pull the full record via memory_get when it matters.
+    { label: "Recent activity", reason: "recent activity", mems: b.recent, alwaysAge: true, cap: 120 },
   ];
   for (const s of sections) {
     if (!Array.isArray(s.mems) || s.mems.length === 0) continue;
@@ -333,7 +374,7 @@ async function main() {
       // pre-T6 flat servers, where the item IS the memory.
       const mem = item?.memory ?? item;
       const from = item?.from ?? "";
-      const line = formatMemory(mem, { reason: s.reason }, sectionLabels, from);
+      const line = formatMemory(mem, { reason: s.reason, cap: s.cap }, sectionLabels, from);
       if (line) bullets.push(`- ${line}`);
     }
     if (bullets.length === 0) continue;
@@ -392,6 +433,15 @@ async function main() {
       totalDropped += b.dropped;
     }
   }
+  // The SERVER's budget drops (b.omitted — items max_tokens starved before
+  // they ever reached this render) fold into the same truncation footer the
+  // client-side trim uses, appended after the sections it starved. Visible by
+  // design: a trimmed briefing must say so, whichever layer trimmed it.
+  const serverOmitted = Number.isInteger(b.omitted) && b.omitted > 0 ? b.omitted : 0;
+  if (serverOmitted > 0) {
+    lines.push(`[... ${serverOmitted} item(s) truncated by token budget]`);
+    totalDropped += serverOmitted;
+  }
   lines.push("</memini-context>");
 
   // Memory directive: when MEMINI_INLINE_EXTRACT=1 (default), append the
@@ -407,6 +457,18 @@ async function main() {
   // unchanged re-injection (see the cache-stable guard above).
   if (sessionId) cacheBriefingHash(sessionId, contentHash);
 
+  // The briefing's id-carrying memories, collected once from the server's
+  // sections: fed to the cross-surface injected-state below AND reported by
+  // the telemetry beacon after the stdout write, so the two can't drift.
+  const injectedMems = [];
+  for (const arr of [b.pinned, b.facts, b.procedures, b.recent]) {
+    if (!Array.isArray(arr)) continue;
+    for (const item of arr) {
+      const mem = item?.memory ?? item;
+      if (typeof mem?.id === "string" && mem.id) injectedMems.push(mem);
+    }
+  }
+
   // Feed the cross-surface injected-memory state: the briefing's memories are
   // now in context, so the recall hooks (UserPromptSubmit, PreToolUse) must
   // not spend their top-k re-serving them. Recorded from the server's
@@ -416,35 +478,48 @@ async function main() {
   // resume whose briefing CHANGED, the surviving state still describes the
   // intact context. Rides the same inject_dedupe knob as the hooks that
   // consume it.
-  if (sessionId && ctx.setting("inject_dedupe").value) {
+  if (sessionId && ctx.setting("inject_dedupe").value && injectedMems.length > 0) {
     const injectedState = readInjectedState(sessionId);
-    let recorded = false;
-    for (const arr of [b.pinned, b.facts, b.procedures, b.recent]) {
-      if (!Array.isArray(arr)) continue;
-      for (const item of arr) {
-        const mem = item?.memory ?? item;
-        const id = mem?.id;
-        if (typeof id === "string" && id) {
-          // Real content hash when the item carries content/summary — so an
-          // in-place update (memory_update) hashes differently and re-injects,
-          // the same content-aware doctrine the other surfaces use. The sentinel
-          // "" only when the item is id-only: with no text to hash, suppression
-          // is by id alone rather than admitting on a hash-of-empty mismatch.
-          const h = mem?.content || mem?.summary ? injectedIdentity(mem) : "";
-          recordInjected(injectedState, id, h);
-          recorded = true;
-        }
-      }
+    for (const mem of injectedMems) {
+      // Real content hash when the item carries content/summary — or a valid
+      // server-minted content_hash, which injectedIdentity prefers — so an
+      // in-place update (memory_update) hashes differently and re-injects,
+      // the same content-aware doctrine the other surfaces use. The sentinel
+      // "" only when the item is truly id-only: with nothing to hash,
+      // suppression is by id alone rather than admitting on a hash-of-empty
+      // mismatch.
+      const h = mem?.content || mem?.summary || isContentHash(mem?.content_hash) ? injectedIdentity(mem) : "";
+      recordInjected(injectedState, mem.id, h);
     }
-    if (recorded) writeInjectedState(sessionId, injectedState);
+    writeInjectedState(sessionId, injectedState);
   }
 
   // Both Claude Code and Codex interpret stdout as additional context.
-  process.stdout.write(lines.join("\n"));
+  const emitted = lines.join("\n");
+  process.stdout.write(emitted);
   if (DEBUG) {
     console.error(
       `[memini] SessionStart injected ${lines.length - 2} lines ` +
         `(budget=${maxTokens || "∞"}, dropped=${totalDropped})`,
+    );
+  }
+
+  // Telemetry beacon LAST — after the context payload is fully composed and
+  // written, so it can never add latency to the injection itself. Awaited:
+  // a hook is a short-lived process, and a fire-and-forget request would die
+  // with it. Best-effort throughout (see postInjected); skipped by
+  // injectedReport/postInjected when there is nothing to report (e.g. a
+  // briefing whose items carry no ids).
+  if (sessionId && ctx.setting("inject_telemetry").value) {
+    await postInjected(
+      injectedReport({
+        surface: "briefing",
+        sessionId,
+        ids: injectedMems.map((m) => m.id),
+        tokens: approxTokens(emitted),
+        chars: emitted.length,
+      }),
+      { namespace: project },
     );
   }
 }

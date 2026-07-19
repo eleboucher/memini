@@ -365,22 +365,22 @@ no change.
 
 **SessionStart** (one briefing call → pinned / facts / procedures / recent):
 
-| Env var                             | Default  | Description                                                                                          |
-| ----------------------------------- | -------- | ---------------------------------------------------------------------------------------------------- |
-| `MEMINI_INJECT_BRIEFING_PINNED`     | `5`      | Max pinned memories. `0` disables the section.                                                       |
-| `MEMINI_INJECT_BRIEFING_FACTS`      | `5`      | Max durable semantic facts. `0` disables.                                                            |
-| `MEMINI_INJECT_BRIEFING_PROCEDURES` | `5`      | Max procedural how-tos. `0` disables.                                                                |
-| `MEMINI_INJECT_BRIEFING_RECENT`     | `3`      | Max recent episodic entries. `0` disables.                                                           |
-| `MEMINI_INJECT_BRIEFING_MAX_TOK`    | uncapped | Hard ceiling on rendered tokens; drops tail blocks/bullets first. Pinned keeps priority over recent. |
+| Env var                             | Default | Description                                                                                                                                                                                                                          |
+| ----------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `MEMINI_INJECT_BRIEFING_PINNED`     | `5`     | Max pinned memories. `0` disables the section.                                                                                                                                                                                       |
+| `MEMINI_INJECT_BRIEFING_FACTS`      | `5`     | Max durable semantic facts. `0` disables.                                                                                                                                                                                            |
+| `MEMINI_INJECT_BRIEFING_PROCEDURES` | `5`     | Max procedural how-tos. `0` disables.                                                                                                                                                                                                |
+| `MEMINI_INJECT_BRIEFING_RECENT`     | `3`     | Max recent episodic entries. `0` disables.                                                                                                                                                                                           |
+| `MEMINI_INJECT_BRIEFING_MAX_TOK`    | `600`   | Token budget, enforced server-side (`max_tokens` on the briefing call — pinned fills first, recent starves first, the drop count folds into the truncation footer) with the client trim kept as the old-server fallback. `0` uncaps. |
 
 **UserPromptSubmit** (one search per user prompt — the prompt is the query):
 
-| Env var                          | Default  | Description                                                                                      |
-| -------------------------------- | -------- | ------------------------------------------------------------------------------------------------ |
-| `MEMINI_RECALL`                  | on       | Master switch for per-prompt recall. `MEMINI_RECALL=0` disables the hook.                        |
-| `MEMINI_RECALL_LIMIT`            | `3`      | Max hits injected per prompt.                                                                    |
-| `MEMINI_INJECT_RECALL_MAX_TOK`   | uncapped | Hard ceiling on rendered tokens per prompt.                                                      |
-| `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`      | Floor on the fused score; hits below are dropped server-side (and client-side, belt-and-braces). |
+| Env var                          | Default | Description                                                                                                                                                                                                       |
+| -------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEMINI_RECALL`                  | on      | Master switch for per-prompt recall. `MEMINI_RECALL=0` disables the hook.                                                                                                                                         |
+| `MEMINI_RECALL_LIMIT`            | `3`     | Max hits injected per prompt.                                                                                                                                                                                     |
+| `MEMINI_INJECT_RECALL_MAX_TOK`   | `250`   | Token budget per prompt, enforced server-side (`max_tokens` on the search — the server drops the tail and reports it in the `[+N more]` footer) with the client trim kept as the old-server fallback. `0` uncaps. |
+| `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`     | Floor on the fused score; hits below are dropped server-side (and client-side, belt-and-braces).                                                                                                                  |
 
 Command-shaped prompts (`/`, `!`, `#` prefixes) and prompts too short to be a
 useful query are skipped. When the server reports a degraded (keyword-only)
@@ -439,16 +439,16 @@ the pretool call gate never applies. Under Codex the dedupe surfaces are the
 
 **PreToolUse** (one search per file in `Edit|MultiEdit|Write|Read|Glob|Grep`):
 
-| Env var                           | Default                                    | Description                                                                                                                             |
-| --------------------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `MEMINI_INJECT_PRETOOL_ITEMS`     | `3`                                        | Max hits surfaced per file.                                                                                                             |
-| `MEMINI_INJECT_PRETOOL_MAX_TOK`   | uncapped                                   | Hard ceiling on rendered tokens (per file).                                                                                             |
-| `MEMINI_INJECT_PRETOOL_MIN_SCORE` | `0`                                        | Floor on the fused score; hits below are dropped server-side.                                                                           |
-| `MEMINI_INJECT_PRETOOL_TOOLS`     | `Read\|Write\|Edit\|MultiEdit\|Glob\|Grep` | Pipe- or comma-separated tool allowlist override.                                                                                       |
-| `MEMINI_INJECT_PRETOOL_GATE_MS`   | `90000`                                    | Skip the per-file recall **server call** when the file's last call was younger than this many ms. `0` always calls.                     |
-| `MEMINI_INJECT_DEDUPE`            | on                                         | Master switch for the cross-surface injection dedupe above (and the per-file fingerprint below). `0` restores always-inject everywhere. |
-| `MEMINI_INJECT_COOLDOWN_MS`       | `1800000`                                  | Time window (ms) an injected memory is suppressed before it may re-inject. `0` disables the time dimension.                             |
-| `MEMINI_INJECT_COOLDOWN_PROMPTS`  | `3`                                        | Prompt-count window an injected memory is suppressed before it may re-inject. `0` disables the prompt dimension.                        |
+| Env var                           | Default                                    | Description                                                                                                                                 |
+| --------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEMINI_INJECT_PRETOOL_ITEMS`     | `3`                                        | Max hits surfaced per file.                                                                                                                 |
+| `MEMINI_INJECT_PRETOOL_MAX_TOK`   | `200`                                      | Token budget per file, enforced server-side (`max_tokens` on each search) with the client trim kept as the old-server fallback. `0` uncaps. |
+| `MEMINI_INJECT_PRETOOL_MIN_SCORE` | `0`                                        | Floor on the fused score; hits below are dropped server-side.                                                                               |
+| `MEMINI_INJECT_PRETOOL_TOOLS`     | `Read\|Write\|Edit\|MultiEdit\|Glob\|Grep` | Pipe- or comma-separated tool allowlist override.                                                                                           |
+| `MEMINI_INJECT_PRETOOL_GATE_MS`   | `90000`                                    | Skip the per-file recall **server call** when the file's last call was younger than this many ms. `0` always calls.                         |
+| `MEMINI_INJECT_DEDUPE`            | on                                         | Master switch for the cross-surface injection dedupe above (and the per-file fingerprint below). `0` restores always-inject everywhere.     |
+| `MEMINI_INJECT_COOLDOWN_MS`       | `1800000`                                  | Time window (ms) an injected memory is suppressed before it may re-inject. `0` disables the time dimension.                                 |
+| `MEMINI_INJECT_COOLDOWN_PROMPTS`  | `3`                                        | Prompt-count window an injected memory is suppressed before it may re-inject. `0` disables the prompt dimension.                            |
 
 Repeated tool calls on the same file (e.g. several `Edit`s in a row, or a
 `Read` followed by an `Edit`) are bounded two ways. The **call gate**

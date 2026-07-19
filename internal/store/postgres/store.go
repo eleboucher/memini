@@ -376,6 +376,34 @@ func (s *Store) Get(ctx context.Context, namespace, id string) (*memory.Memory, 
 	return m, err
 }
 
+// IDsByPrefix returns the IDs in the namespace beginning with prefix,
+// ascending, bounded at limit rows — an indexed prefix scan (LIKE has
+// byte-wise prefix semantics on Postgres regardless of the database
+// collation, and is case-sensitive). Metacharacters are escaped so prefix
+// always matches literally.
+func (s *Store) IDsByPrefix(ctx context.Context, namespace, prefix string, limit int) ([]string, error) {
+	if prefix == "" || limit <= 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT id FROM memories WHERE namespace = $1 AND id LIKE $2 ESCAPE '\'
+		 ORDER BY id LIMIT $3`,
+		namespace, escapeLike(prefix)+"%", limit)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: ids by prefix %q: %w", prefix, err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // GetEmbedding returns the stored vector for a memory, or nil when the row is
 // vectorless (embedding IS NULL — a degraded write awaiting backfill). Scanning
 // into a *pgvector.Vector rather than a value is what keeps those two cases

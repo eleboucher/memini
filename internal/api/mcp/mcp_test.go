@@ -2828,9 +2828,12 @@ func TestBriefingScopeHeaderAndChildrenViaMCP(t *testing.T) {
 	if c.Namespace != "acme/phoenix" || c.Total != 2 {
 		t.Errorf("child = %s total=%d, want acme/phoenix total=2", c.Namespace, c.Total)
 	}
-	wantTitle := string([]rune(longContent)[:60]) + "…"
+	// The title cut is word-boundary aware (render.Title): at most 60 runes,
+	// retreating to the last space so it never lands mid-word — here the
+	// trailing "desi" fragment of the naive 60-rune cut is dropped.
+	wantTitle := "phoenix design decision phoenix design decision phoenix…"
 	if len(c.Pinned) != 1 || c.Pinned[0] != wantTitle {
-		t.Errorf("child pinned = %q, want [%q] (title truncated to ~60 runes)", c.Pinned, wantTitle)
+		t.Errorf("child pinned = %q, want [%q] (word-boundary title cut ≤60 runes)", c.Pinned, wantTitle)
 	}
 	foundSummary := false
 	for _, title := range c.Recent {

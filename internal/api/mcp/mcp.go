@@ -15,6 +15,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/eleboucher/memini/internal/api/render"
 	"github.com/eleboucher/memini/internal/apiauth"
 	"github.com/eleboucher/memini/internal/httputil"
 	"github.com/eleboucher/memini/internal/memory"
@@ -291,7 +292,9 @@ func NewServer(svc *service.Service, defaultNS, home, author, authorKind string)
 		Name:  "memory_get",
 		Title: "Get a memory",
 		Description: "Fetch one memory with full metadata, tags, and timestamps by ID (ids come " +
-			"from memory_recall / memory_list results).",
+			"from memory_recall / memory_list results). A unique id prefix of at least 8 hex " +
+			"chars also works; an ambiguous prefix errors listing the colliding full ids — " +
+			"retry with a longer prefix.",
 		Annotations: readOnly,
 	}, h.get)
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
@@ -704,8 +707,18 @@ type recallArgs struct {
 type recallItem struct {
 	ID      string `json:"id"`
 	Content string `json:"content"`
-	Tier    string `json:"tier"`
-	Level   string `json:"level,omitempty"`
+	// ContentHash is the content-identity hash (render.ContentHash: first 16
+	// hex chars of sha256 over the full stored content, summary only when
+	// content is empty) — stable across response formats, so a client can
+	// dedupe injected memories without comparing (possibly concise) text.
+	ContentHash string `json:"content_hash,omitempty"`
+	// ContentTruncated marks a concise rendering whose content is a
+	// truncating cut of the stored content; absent when the concise text is
+	// a stored summary or short content, and always absent in detailed
+	// responses.
+	ContentTruncated bool   `json:"content_truncated,omitempty"`
+	Tier             string `json:"tier"`
+	Level            string `json:"level,omitempty"`
 	// Namespace is read provenance: the namespace the memory lives in. With a
 	// multi-namespace read set (namespaces/scope=subtree) it tells the caller
 	// which partition each hit came from.
@@ -732,36 +745,22 @@ var (
 	originMapFrom = service.OriginMap
 )
 
-// conciseContentMax is the rune limit for concise content (before truncation).
-const conciseContentMax = 240
-
-// conciseContent returns a concise representation of memory content: the summary
-// if present, or the first 240 runes with a "…" suffix if no summary. Both the
-// truncation decision and the cut are in runes — deciding on bytes would append
-// a spurious "…" to multi-byte content under the rune limit, and cutting on
-// bytes could split a UTF-8 sequence. Used when response_format="concise".
-func conciseContent(m *memory.Memory) string {
-	if m.Summary != "" {
-		return m.Summary
-	}
-	runes := []rune(m.Content)
-	if len(runes) <= conciseContentMax {
-		return m.Content
-	}
-	return string(runes[:conciseContentMax]) + "…"
-}
-
 // scoredItem is the single funnel from a store.Scored hit to the MCP wire
 // shape, shared by memory_recall's results and memory_answer's sources (T5) —
 // origins, built once per call via originMapFrom, is how both get read-set
-// provenance without duplicating the rendering logic.
+// provenance without duplicating the rendering logic. The concise projection
+// (summary, else a word/sentence-boundary cut at render.SearchMax runes) and
+// the content_hash identity live in internal/api/render, shared with REST so
+// both surfaces agree byte-for-byte.
 func scoredItem(s store.Scored, responseFormat string, origins map[string]string) recallItem {
 	content := s.Memory.Content
+	truncated := false
 	if responseFormat == "concise" {
-		content = conciseContent(s.Memory)
+		content, truncated = render.Concise(s.Memory.Content, s.Memory.Summary, render.SearchMax)
 	}
 	return recallItem{
-		ID: s.Memory.ID, Content: content, Tier: string(s.Memory.Tier),
+		ID: s.Memory.ID, Content: content, ContentHash: render.ContentHash(s.Memory.Content, s.Memory.Summary),
+		ContentTruncated: truncated, Tier: string(s.Memory.Tier),
 		Level: string(s.Memory.Level), Namespace: s.Memory.Namespace,
 		Score: s.Score, Confidence: s.Memory.Confidence,
 		CreatedAt: s.Memory.CreatedAt.Format(time.RFC3339), Tags: s.Memory.Tags,
@@ -878,35 +877,18 @@ type briefingChild struct {
 	Recent    []string `json:"recent,omitempty"`
 }
 
-// childTitleMax is the rune limit for a child-rollup display title when the
-// memory has no summary — shorter than conciseContentMax because the rollup
-// is an index of what's under a namespace, not the content itself.
-const childTitleMax = 60
-
-// childTitle derives a child rollup entry's compact display title: the
-// summary when present, else the first childTitleMax runes of content with an
-// ellipsis (rune-based like conciseContent, so multi-byte content is neither
-// mis-truncated nor spuriously suffixed).
-func childTitle(m *memory.Memory) string {
-	if m.Summary != "" {
-		return m.Summary
-	}
-	runes := []rune(m.Content)
-	if len(runes) <= childTitleMax {
-		return m.Content
-	}
-	return string(runes[:childTitleMax]) + "…"
-}
-
-// childTitles maps a rollup highlight set to display titles, nil-for-empty so
-// the JSON field is omitted.
+// childTitles maps a rollup highlight set to display titles (render.Title:
+// the summary, else a word/sentence-boundary cut at render.TitleMax runes —
+// shorter than the concise caps because the rollup is an index of what's
+// under a namespace, not the content itself), nil-for-empty so the JSON
+// field is omitted.
 func childTitles(mems []*memory.Memory) []string {
 	if len(mems) == 0 {
 		return nil
 	}
 	out := make([]string, len(mems))
 	for i, m := range mems {
-		out[i] = childTitle(m)
+		out[i] = render.Title(m.Content, m.Summary)
 	}
 	return out
 }
@@ -915,7 +897,8 @@ func briefingItems(mems []*memory.Memory, origins map[string]string) []recallIte
 	out := make([]recallItem, len(mems))
 	for i, m := range mems {
 		out[i] = recallItem{
-			ID: m.ID, Content: m.Content, Tier: string(m.Tier), Namespace: m.Namespace,
+			ID: m.ID, Content: m.Content, ContentHash: render.ContentHash(m.Content, m.Summary),
+			Tier: string(m.Tier), Namespace: m.Namespace,
 			Confidence: m.Confidence,
 			CreatedAt:  m.CreatedAt.Format(time.RFC3339), Tags: m.Tags,
 			From: readSetFrom(origins, m.Namespace),

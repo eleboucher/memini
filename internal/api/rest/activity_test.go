@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -25,12 +26,13 @@ type activityEvent struct {
 	Query     string         `json:"query"`
 	Detail    map[string]any `json:"detail"`
 	Memories  []struct {
-		ID      string   `json:"id"`
-		Summary string   `json:"summary"`
-		Tier    string   `json:"tier"`
-		Rank    int      `json:"rank"`
-		Score   *float64 `json:"score"`
-		Section string   `json:"section"`
+		ID       string   `json:"id"`
+		Summary  string   `json:"summary"`
+		Tier     string   `json:"tier"`
+		Rank     int      `json:"rank"`
+		Score    *float64 `json:"score"`
+		Section  string   `json:"section"`
+		Injected *bool    `json:"injected"`
 	} `json:"memories"`
 }
 
@@ -182,6 +184,182 @@ func TestListActivity(t *testing.T) {
 		rec := do(t, h, http.MethodGet, "/v1/activity?before=nonsense", "acme", apiKey, nil)
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("want 400 for a malformed cursor, got %d (%s)", rec.Code, rec.Body)
+		}
+	})
+}
+
+// TestReportInjected covers POST /v1/activity/injected: a valid report is a
+// 204 whose inject event lands in the feed and annotates the matching recall's
+// memories (true for a named id, false for an omitted one — and the flag is
+// ABSENT, not false, on a recall no report covered); a missing or unknown
+// surface, an unknown body field, and a negative count are all 400s.
+func TestReportInjected(t *testing.T) {
+	h := newActivityServer(t)
+
+	seed := func(content string) string {
+		t.Helper()
+		rec := do(t, h, http.MethodPost, "/v1/memories", "acme", apiKey, map[string]any{
+			"content": content, "tier": string(memory.TierSemantic),
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("seed: want 201, got %d (%s)", rec.Code, rec.Body)
+		}
+		var out struct {
+			ID string `json:"id"`
+		}
+		mustJSON(t, rec, &out)
+		return out.ID
+	}
+	injectedID := seed("the primary database is postgres")
+	suppressedID := seed("the backup database is mysql")
+
+	rec := do(t, h, http.MethodPost, "/v1/search", "acme", apiKey, map[string]any{
+		"query": "database", "limit": 5,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search: want 200, got %d (%s)", rec.Code, rec.Body)
+	}
+
+	t.Run("valid report is a 204", func(t *testing.T) {
+		rec := do(t, h, http.MethodPost, "/v1/activity/injected", "acme", apiKey, map[string]any{
+			"session_id":          "s1",
+			"surface":             "prompt",
+			"source":              "claude-code",
+			"injected_ids":        []string{injectedID, "unknown-id-is-fine"},
+			"injected_tokens_est": 412,
+			"injected_chars":      1650,
+			"suppressed":          map[string]int{"seen": 2, "cooldown": 1, "score": 3},
+		})
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("want 204, got %d (%s)", rec.Code, rec.Body)
+		}
+	})
+
+	t.Run("inject event lands in the feed", func(t *testing.T) {
+		rec := do(t, h, http.MethodGet, "/v1/activity?kind=inject", "acme", apiKey, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d (%s)", rec.Code, rec.Body)
+		}
+		var out activityResponse
+		mustJSON(t, rec, &out)
+		if len(out.Events) != 1 {
+			t.Fatalf("got %d inject events, want 1", len(out.Events))
+		}
+		ev := out.Events[0]
+		if ev.Kind != "inject" || ev.Detail["surface"] != "prompt" || ev.Detail["session_id"] != "s1" {
+			t.Fatalf("event = %+v, want an inject with surface=prompt session_id=s1", ev)
+		}
+		if len(ev.Memories) != 2 {
+			t.Fatalf("inject event carries %d memory refs, want 2 (unknown ids kept)", len(ev.Memories))
+		}
+	})
+
+	t.Run("recall memories annotated true/false", func(t *testing.T) {
+		rec := do(t, h, http.MethodGet, "/v1/activity?kind=recall,inject", "acme", apiKey, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d (%s)", rec.Code, rec.Body)
+		}
+		var out activityResponse
+		mustJSON(t, rec, &out)
+		var recall *activityEvent
+		for i := range out.Events {
+			if out.Events[i].Kind == "recall" {
+				recall = &out.Events[i]
+			}
+		}
+		if recall == nil || len(recall.Memories) < 2 {
+			t.Fatalf("no recall event serving both memories in %+v", out.Events)
+		}
+		flags := map[string]*bool{}
+		for _, m := range recall.Memories {
+			flags[m.ID] = m.Injected
+		}
+		if got := flags[injectedID]; got == nil || !*got {
+			t.Errorf("injected memory flag = %v, want true", got)
+		}
+		if got := flags[suppressedID]; got == nil || *got {
+			t.Errorf("suppressed memory flag = %v, want false", got)
+		}
+	})
+
+	t.Run("uncovered recall omits the flag entirely", func(t *testing.T) {
+		// A recall in another namespace with no report: the wire must OMIT the
+		// injected key (absent means unknown), never emit false.
+		rec := do(t, h, http.MethodPost, "/v1/memories", "quiet", apiKey, map[string]any{
+			"content": "the cache is redis", "tier": string(memory.TierSemantic),
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("seed quiet: %d (%s)", rec.Code, rec.Body)
+		}
+		rec = do(t, h, http.MethodPost, "/v1/search", "quiet", apiKey, map[string]any{
+			"query": "cache", "limit": 5,
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("quiet search: %d (%s)", rec.Code, rec.Body)
+		}
+		rec = do(t, h, http.MethodGet, "/v1/activity?kind=recall", "quiet", apiKey, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d (%s)", rec.Code, rec.Body)
+		}
+		// Assert on the raw JSON: a decoded *bool cannot distinguish a
+		// deliberate "injected": false from an omitted key.
+		if strings.Contains(rec.Body.String(), `"injected"`) {
+			t.Fatalf("uncovered recall carries an injected key: %s", rec.Body)
+		}
+		var out activityResponse
+		mustJSON(t, rec, &out)
+		if len(out.Events) != 1 || len(out.Events[0].Memories) == 0 {
+			t.Fatalf("quiet feed = %+v, want one recall with memories", out.Events)
+		}
+	})
+
+	t.Run("suppression-only report is a 204", func(t *testing.T) {
+		rec := do(t, h, http.MethodPost, "/v1/activity/injected", "acme", apiKey, map[string]any{
+			"session_id": "s1", "surface": "pretool",
+			"suppressed": map[string]int{"budget": 4},
+		})
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("want 204, got %d (%s)", rec.Code, rec.Body)
+		}
+	})
+
+	t.Run("missing surface is a 400", func(t *testing.T) {
+		rec := do(t, h, http.MethodPost, "/v1/activity/injected", "acme", apiKey, map[string]any{
+			"session_id": "s1", "injected_ids": []string{injectedID},
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("want 400, got %d (%s)", rec.Code, rec.Body)
+		}
+	})
+
+	t.Run("unknown surface is a 400", func(t *testing.T) {
+		rec := do(t, h, http.MethodPost, "/v1/activity/injected", "acme", apiKey, map[string]any{
+			"session_id": "s1", "surface": "bogus",
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("want 400, got %d (%s)", rec.Code, rec.Body)
+		}
+	})
+
+	t.Run("malformed body is a 400", func(t *testing.T) {
+		rec := do(t, h, http.MethodPost, "/v1/activity/injected", "acme", apiKey, map[string]any{
+			"surface": "prompt", "not_a_field": true,
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("unknown field: want 400, got %d (%s)", rec.Code, rec.Body)
+		}
+		rec = do(t, h, http.MethodPost, "/v1/activity/injected", "acme", apiKey, map[string]any{
+			"surface": "prompt", "injected_tokens_est": -1,
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("negative count: want 400, got %d (%s)", rec.Code, rec.Body)
+		}
+	})
+
+	t.Run("kind=inject filter is accepted", func(t *testing.T) {
+		rec := do(t, h, http.MethodGet, "/v1/activity?kind=inject", "acme", apiKey, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d (%s)", rec.Code, rec.Body)
 		}
 	})
 }

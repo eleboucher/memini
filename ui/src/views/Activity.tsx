@@ -31,8 +31,20 @@ function loadHiddenKinds(): EventKind[] {
 function headline(ev: ActivityEvent): string {
   const n = ev.memories?.length ?? 0
   switch (ev.kind) {
-    case 'recall':
-      return n === 0 ? 'found nothing' : `served ${n} ${n === 1 ? 'memory' : 'memories'}`
+    case 'recall': {
+      if (n === 0) return 'found nothing'
+      // When an injection-telemetry report covered this serve, say what
+      // actually reached model context; a serve nothing reported on keeps the
+      // old wording — absent means unknown, not zero.
+      const known = (ev.memories ?? []).filter((m) => typeof m.injected === 'boolean')
+      if (known.length > 0) {
+        const inj = known.filter((m) => m.injected).length
+        return `served ${n} → injected ${inj}`
+      }
+      return `served ${n} ${n === 1 ? 'memory' : 'memories'}`
+    }
+    case 'inject':
+      return n === 0 ? 'reported suppressed injections' : `injected ${n} ${n === 1 ? 'memory' : 'memories'}`
     case 'briefing':
       return `session briefing · ${n} ${n === 1 ? 'memory' : 'memories'}`
     case 'get':
@@ -84,6 +96,22 @@ function detailChips(ev: ActivityEvent): { label: string; title?: string; warn?:
     // it is left off — a chip on every direct search would be noise.
     const source = str(d.source)
     if (source && source !== 'api') chips.push({ label: source, title: 'What triggered this recall' })
+  }
+
+  if (ev.kind === 'inject') {
+    // The beacon's "what": which hook surface reported, what its local gates
+    // held back, and the client's own token estimate.
+    const surface = str(d.surface)
+    if (surface) chips.push({ label: surface, title: 'Hook surface that reported this injection' })
+    const sup = (d.suppressed ?? {}) as Record<string, unknown>
+    for (const [reason, count] of Object.entries(sup)) {
+      if (typeof count === 'number' && count > 0) {
+        chips.push({ label: `−${count} ${reason}`, title: `Held back client-side: ${reason}` })
+      }
+    }
+    if (typeof d.injected_tokens_est === 'number' && d.injected_tokens_est > 0) {
+      chips.push({ label: `~${d.injected_tokens_est} tok`, title: 'Client-estimated tokens injected into context' })
+    }
   }
 
   if (ev.kind === 'remember' || ev.kind === 'update') {
@@ -354,6 +382,14 @@ export function Activity() {
                         {typeof m.score === 'number' && (
                           <span class="chip mono" title="Relevance score for this query">
                             {m.score.toFixed(2)}
+                          </span>
+                        )}
+                        {/* Served but never injected: the client's gates held
+                            it back. Only reported suppression renders — an
+                            absent flag means no telemetry covered this serve. */}
+                        {m.injected === false && (
+                          <span class="chip warn" title="Served by the server but suppressed client-side before reaching model context">
+                            not injected
                           </span>
                         )}
                         {showNs && m.namespace !== ev.namespace && (

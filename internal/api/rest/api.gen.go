@@ -131,6 +131,7 @@ const (
 	EventKindBriefing  EventKind = "briefing"
 	EventKindForget    EventKind = "forget"
 	EventKindGet       EventKind = "get"
+	EventKindInject    EventKind = "inject"
 	EventKindPin       EventKind = "pin"
 	EventKindRecall    EventKind = "recall"
 	EventKindRemember  EventKind = "remember"
@@ -148,6 +149,8 @@ func (e EventKind) Valid() bool {
 	case EventKindForget:
 		return true
 	case EventKindGet:
+		return true
+	case EventKindInject:
 		return true
 	case EventKindPin:
 		return true
@@ -225,6 +228,27 @@ func (e HandshakeResponseSettingsSources) Valid() bool {
 	}
 }
 
+// Defines values for InjectedReportSurface.
+const (
+	InjectSurfaceBriefing InjectedReportSurface = "briefing"
+	InjectSurfacePretool  InjectedReportSurface = "pretool"
+	InjectSurfacePrompt   InjectedReportSurface = "prompt"
+)
+
+// Valid indicates whether the value is a known member of the InjectedReportSurface enum.
+func (e InjectedReportSurface) Valid() bool {
+	switch e {
+	case InjectSurfaceBriefing:
+		return true
+	case InjectSurfacePretool:
+		return true
+	case InjectSurfacePrompt:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Level.
 const (
 	Deduced  Level = "deduced"
@@ -264,6 +288,24 @@ func (e ReadSetOrigin) Valid() bool {
 	case Link:
 		return true
 	case Primary:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SearchRequestResponseFormat.
+const (
+	SearchRequestResponseFormatConcise  SearchRequestResponseFormat = "concise"
+	SearchRequestResponseFormatDetailed SearchRequestResponseFormat = "detailed"
+)
+
+// Valid indicates whether the value is a known member of the SearchRequestResponseFormat enum.
+func (e SearchRequestResponseFormat) Valid() bool {
+	switch e {
+	case SearchRequestResponseFormatConcise:
+		return true
+	case SearchRequestResponseFormatDetailed:
 		return true
 	default:
 		return false
@@ -449,25 +491,64 @@ func (e ListMemoriesParamsOrder) Valid() bool {
 
 // Defines values for GetBriefingParamsScope.
 const (
-	Everywhere GetBriefingParamsScope = "everywhere"
-	Exact      GetBriefingParamsScope = "exact"
-	Full       GetBriefingParamsScope = "full"
-	Project    GetBriefingParamsScope = "project"
-	Subtree    GetBriefingParamsScope = "subtree"
+	GetBriefingParamsScopeEverywhere GetBriefingParamsScope = "everywhere"
+	GetBriefingParamsScopeExact      GetBriefingParamsScope = "exact"
+	GetBriefingParamsScopeFull       GetBriefingParamsScope = "full"
+	GetBriefingParamsScopeProject    GetBriefingParamsScope = "project"
+	GetBriefingParamsScopeSubtree    GetBriefingParamsScope = "subtree"
 )
 
 // Valid indicates whether the value is a known member of the GetBriefingParamsScope enum.
 func (e GetBriefingParamsScope) Valid() bool {
 	switch e {
-	case Everywhere:
+	case GetBriefingParamsScopeEverywhere:
 		return true
-	case Exact:
+	case GetBriefingParamsScopeExact:
 		return true
-	case Full:
+	case GetBriefingParamsScopeFull:
 		return true
-	case Project:
+	case GetBriefingParamsScopeProject:
 		return true
-	case Subtree:
+	case GetBriefingParamsScopeSubtree:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetBriefingParamsFormat.
+const (
+	GetBriefingParamsFormatConcise  GetBriefingParamsFormat = "concise"
+	GetBriefingParamsFormatDetailed GetBriefingParamsFormat = "detailed"
+)
+
+// Valid indicates whether the value is a known member of the GetBriefingParamsFormat enum.
+func (e GetBriefingParamsFormat) Valid() bool {
+	switch e {
+	case GetBriefingParamsFormatConcise:
+		return true
+	case GetBriefingParamsFormatDetailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetBriefingParamsChildren.
+const (
+	GetBriefingParamsChildrenFull    GetBriefingParamsChildren = "full"
+	GetBriefingParamsChildrenNone    GetBriefingParamsChildren = "none"
+	GetBriefingParamsChildrenSummary GetBriefingParamsChildren = "summary"
+)
+
+// Valid indicates whether the value is a known member of the GetBriefingParamsChildren enum.
+func (e GetBriefingParamsChildren) Valid() bool {
+	switch e {
+	case GetBriefingParamsChildrenFull:
+		return true
+	case GetBriefingParamsChildrenNone:
+		return true
+	case GetBriefingParamsChildrenSummary:
 		return true
 	default:
 		return false
@@ -485,7 +566,7 @@ type ActivityEvent struct {
 	// Detail Kind-specific context — a recall's degraded mode, a supersession's replacement id.
 	Detail *map[string]interface{} `json:"detail,omitempty"`
 
-	// Kind The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede, pin, unpin, settings.
+	// Kind The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede, pin, unpin, settings. Client telemetry: inject (a POST /v1/activity/injected report).
 	Kind EventKind `json:"kind"`
 
 	// Memories Empty for a recall that matched nothing.
@@ -506,6 +587,9 @@ type ActivityEventActorKind string
 // ActivityMemory One memory as it appeared in an event — a snapshot taken at serve time, so a forgotten memory still renders — plus why it was there.
 type ActivityMemory struct {
 	Id string `json:"id"`
+
+	// Injected The served→injected join's verdict, on a recall event's memories: true when a client injection-telemetry report (POST /v1/activity/injected) named this memory as actually reaching model context, false when a report covered the recall but omitted it (the client suppressed it). ABSENT when no report covered the serve — absent means unknown, so old data and non-reporting integrations render unchanged; only a report ever yields false.
+	Injected *bool `json:"injected,omitempty"`
 
 	// Namespace The memory's own namespace, which for a cascading recall may differ from the event's.
 	Namespace string `json:"namespace"`
@@ -625,6 +709,9 @@ type Briefing struct {
 	Facts     *[]BriefingItem `json:"facts,omitempty"`
 	Namespace string          `json:"namespace"`
 
+	// Omitted Total items dropped across the four sections by the request's `max_tokens` budget. Absent — never an explicit 0 — when no budget was set or everything fit.
+	Omitted *int `json:"omitted,omitempty"`
+
 	// Pinned Pinned memories (any tier).
 	Pinned *[]BriefingItem `json:"pinned,omitempty"`
 
@@ -640,9 +727,19 @@ type Briefing struct {
 
 // BriefingChild defines model for BriefingChild.
 type BriefingChild struct {
-	Namespace string    `json:"namespace"`
-	Pinned    *[]Memory `json:"pinned,omitempty"`
-	Recent    *[]Memory `json:"recent,omitempty"`
+	Namespace string `json:"namespace"`
+
+	// Pinned Full pinned highlight memories; only with children=full (the default).
+	Pinned *[]Memory `json:"pinned,omitempty"`
+
+	// PinnedTitles Compact display titles (summary, else a ≤60-rune boundary cut of content) of the pinned highlights; only with children=summary, which ships titles/counts and no memory objects.
+	PinnedTitles *[]string `json:"pinned_titles,omitempty"`
+
+	// Recent Full recent-durable highlight memories; only with children=full (the default).
+	Recent *[]Memory `json:"recent,omitempty"`
+
+	// RecentTitles Compact display titles of the recent-durable highlights; only with children=summary.
+	RecentTitles *[]string `json:"recent_titles,omitempty"`
 
 	// Total Live memory count in this child namespace.
 	Total int `json:"total"`
@@ -697,7 +794,7 @@ type ClientSettings struct {
 	// InjectBriefingFacts Max durable semantic facts in the session-start briefing.
 	InjectBriefingFacts *int `json:"inject_briefing_facts,omitempty"`
 
-	// InjectBriefingMaxTok Hard ceiling on briefing injection tokens; 0 is uncapped.
+	// InjectBriefingMaxTok Hard ceiling on briefing injection tokens; 0 is uncapped. Sent to the server as the briefing's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectBriefingMaxTok *int `json:"inject_briefing_max_tok,omitempty"`
 
 	// InjectBriefingPinned Max pinned memories in the session-start briefing.
@@ -727,7 +824,7 @@ type ClientSettings struct {
 	// InjectPretoolItems Max recalled items injected per file on PreToolUse.
 	InjectPretoolItems *int `json:"inject_pretool_items,omitempty"`
 
-	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped.
+	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped. Sent to the server as each per-file search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
 
 	// InjectPretoolMinScore Floor on the fused score (>=) for a PreToolUse injection.
@@ -736,11 +833,14 @@ type ClientSettings struct {
 	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection.
 	InjectPretoolTools *[]string `json:"inject_pretool_tools,omitempty"`
 
-	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped.
+	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped. Sent to the server as the prompt search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
 
 	// InjectRecallMinScore Floor on the fused score (>=) for a recall injection.
 	InjectRecallMinScore *float32 `json:"inject_recall_min_score,omitempty"`
+
+	// InjectTelemetry Report what each hook actually injected vs suppressed back to the server (POST /v1/activity/injected) so the activity feed and metrics reflect what reached model context instead of pre-suppression serves. Best-effort and bounded (the beacon never blocks or fails a hook); off disables reporting entirely.
+	InjectTelemetry *bool `json:"inject_telemetry,omitempty"`
 
 	// InlineExtract Inject the directive asking the agent to save durable facts via memory_remember.
 	InlineExtract *bool `json:"inline_extract,omitempty"`
@@ -844,7 +944,7 @@ type DeleteNamespaceResponse struct {
 	Deleted int `json:"deleted"`
 }
 
-// EventKind The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede, pin, unpin, settings.
+// EventKind The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede, pin, unpin, settings. Client telemetry: inject (a POST /v1/activity/injected report).
 type EventKind string
 
 // FsckReport defines model for FsckReport.
@@ -931,6 +1031,51 @@ type HandshakeResponseNamespaceSource string
 // HandshakeResponseSettingsSources defines model for HandshakeResponse.SettingsSources.
 type HandshakeResponseSettingsSources string
 
+// InjectedReport One injection-telemetry beacon (POST /v1/activity/injected): what a hook actually injected into model context and what its local gates suppressed, reported after the serve. Memory ids are taken on faith — an unknown id is recorded as-is, never rejected.
+type InjectedReport struct {
+	// InjectedChars Characters actually injected.
+	InjectedChars *int `json:"injected_chars,omitempty"`
+
+	// InjectedIds Memory ids actually injected, in injection order. May be empty — a suppression-only report still records.
+	InjectedIds *[]string `json:"injected_ids,omitempty"`
+
+	// InjectedTokensEst Client-side estimate of the tokens the injections consumed.
+	InjectedTokensEst *int `json:"injected_tokens_est,omitempty"`
+
+	// SessionId The client session the injection happened in.
+	SessionId *string `json:"session_id,omitempty"`
+
+	// Source Free-form client name (e.g. "claude-code").
+	Source *string `json:"source,omitempty"`
+
+	// Suppressed Per-reason counts of served memories the client's local gates held back from injection. Omitted reasons mean "none reported".
+	Suppressed *InjectedSuppressed `json:"suppressed,omitempty"`
+
+	// Surface Which hook surface is reporting.
+	Surface InjectedReportSurface `json:"surface"`
+}
+
+// InjectedReportSurface Which hook surface is reporting.
+type InjectedReportSurface string
+
+// InjectedSuppressed Per-reason counts of served memories the client's local gates held back from injection. Omitted reasons mean "none reported".
+type InjectedSuppressed struct {
+	// Budget Over the token/char budget for the surface.
+	Budget *int `json:"budget,omitempty"`
+
+	// Cooldown Inside the injection cooldown window.
+	Cooldown *int `json:"cooldown,omitempty"`
+
+	// Score Below the client's score floor.
+	Score *int `json:"score,omitempty"`
+
+	// Seen Already injected this session (dedupe).
+	Seen *int `json:"seen,omitempty"`
+
+	// Unchanged Byte-identical to what was already injected.
+	Unchanged *int `json:"unchanged,omitempty"`
+}
+
 // Level defines model for Level.
 type Level string
 
@@ -947,13 +1092,19 @@ type Memory struct {
 	AutoSuperseded *bool `json:"auto_superseded,omitempty"`
 
 	// Confidence Corroboration of a durable fact in [0,1]; null when not tracked.
-	Confidence     *float64   `json:"confidence,omitempty"`
-	Content        string     `json:"content"`
-	CreatedAt      time.Time  `json:"created_at"`
-	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
-	Id             string     `json:"id"`
-	Importance     float64    `json:"importance"`
-	LastAccessedAt time.Time  `json:"last_accessed_at"`
+	Confidence *float64 `json:"confidence,omitempty"`
+	Content    string   `json:"content"`
+
+	// ContentHash Content-identity hash for injection dedupe: the first 16 hex chars of sha256 over the FULL stored content, falling back to the summary only when content is empty — the same recipe as the plugin client's injectedIdentity, so client and server derive identical identities. Always computed over the stored text (never a concise projection), so it is stable across response formats. Present on search and briefing responses; omitted elsewhere.
+	ContentHash *string `json:"content_hash,omitempty"`
+
+	// ContentTruncated Present (true) only in concise-format responses (response_format=concise on /v1/search, format=concise on /v1/namespaces/briefing) when this memory's content was replaced by a boundary cut of the stored content. Absent when the concise text is a stored summary or content short enough to pass through verbatim — and always absent in detailed responses.
+	ContentTruncated *bool      `json:"content_truncated,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+	Id               string     `json:"id"`
+	Importance       float64    `json:"importance"`
+	LastAccessedAt   time.Time  `json:"last_accessed_at"`
 
 	// Level Derivation provenance: explicit (user-stated / heuristic) vs deduced (LLM-distilled). Null/omitted when the row predates the tag or when unset.
 	Level *Level `json:"level,omitempty"`
@@ -1143,6 +1294,9 @@ type SearchRequest struct {
 	Levels            *[]Level `json:"levels,omitempty"`
 	Limit             *int     `json:"limit,omitempty"`
 
+	// MaxTokens Server-enforced token budget over the results. The server fills results in final rank order until the estimated cost — a cheap word-count estimate (ceil(words*4/3), the client hooks' own approxTokens recipe) over the content each result ships (the concise text under response_format=concise) plus a 10-token per-item render overhead — would exceed the budget, drops the whole tail, and reports the drop count in the response's `omitted`. The first result always ships even when it alone exceeds the budget: a non-empty recall never becomes empty by budget. An estimate, not a tokenizer — treat the bound as approximate. 0 (or absent) is unbounded. The drop count is also recorded server-side as `budget_omitted` on the recall activity event.
+	MaxTokens *int `json:"max_tokens,omitempty"`
+
 	// Metadata A memory's top-level metadata must contain every listed key=value pair (AND).
 	Metadata *map[string]string `json:"metadata,omitempty"`
 
@@ -1156,6 +1310,9 @@ type SearchRequest struct {
 	// QueryRewrite When true and an LLM is configured, rewrite the query into 2-3 diverse variants before recall and fuse results via RRF. Cheapest read-path LLM lever; opt-in per call.
 	QueryRewrite *bool `json:"query_rewrite,omitempty"`
 
+	// ResponseFormat "detailed" (default, and the behavior when absent) returns each result's full stored content. "concise" replaces each result's memory.content with its compact form — the summary when one exists, else the content cut at a word/sentence boundary to at most 240 runes with a "…" suffix — and sets memory.content_truncated on results whose concise text is such a cut. A projection at response mapping only: ranking, filters, and scores are identical across formats, and memory.content_hash is always computed over the full stored content. Fetch full text with GET /v1/memories/{id}.
+	ResponseFormat *SearchRequestResponseFormat `json:"response_format,omitempty"`
+
 	// Scope "full" (default) searches the request namespace plus its ancestor/home/link cascade; "project" searches only the request namespace (no cascade); "everywhere" is "full" plus the request namespace's subtree, for the multi-agent read-shared-plus-private pattern. "exact" and "subtree" are deprecated aliases kept for back-compat: "exact" behaves as "project" (its original, pre-cascade meaning — the request namespace only) and "subtree" behaves as "everywhere". Any other value is rejected with 400.
 	Scope *SearchRequestScope `json:"scope,omitempty"`
 
@@ -1167,6 +1324,9 @@ type SearchRequest struct {
 	Tiers *[]Tier   `json:"tiers,omitempty"`
 }
 
+// SearchRequestResponseFormat "detailed" (default, and the behavior when absent) returns each result's full stored content. "concise" replaces each result's memory.content with its compact form — the summary when one exists, else the content cut at a word/sentence boundary to at most 240 runes with a "…" suffix — and sets memory.content_truncated on results whose concise text is such a cut. A projection at response mapping only: ranking, filters, and scores are identical across formats, and memory.content_hash is always computed over the full stored content. Fetch full text with GET /v1/memories/{id}.
+type SearchRequestResponseFormat string
+
 // SearchRequestScope "full" (default) searches the request namespace plus its ancestor/home/link cascade; "project" searches only the request namespace (no cascade); "everywhere" is "full" plus the request namespace's subtree, for the multi-agent read-shared-plus-private pattern. "exact" and "subtree" are deprecated aliases kept for back-compat: "exact" behaves as "project" (its original, pre-cascade meaning — the request namespace only) and "subtree" behaves as "everywhere". Any other value is rejected with 400.
 type SearchRequestScope string
 
@@ -1176,7 +1336,10 @@ type SearchResponse struct {
 	Degraded *string `json:"degraded,omitempty"`
 
 	// Note Human-readable explanation of `degraded`; omitted alongside it on a healthy search.
-	Note    *string        `json:"note,omitempty"`
+	Note *string `json:"note,omitempty"`
+
+	// Omitted Results dropped by the request's `max_tokens` budget. Absent — never an explicit 0 — when no budget was set or everything fit, so its presence always means the server trimmed the tail.
+	Omitted *int           `json:"omitted,omitempty"`
 	Results []ScoredMemory `json:"results"`
 }
 
@@ -1221,7 +1384,7 @@ type SettingsDefaultsResponse struct {
 	// InjectBriefingFacts Max durable semantic facts in the session-start briefing.
 	InjectBriefingFacts *int `json:"inject_briefing_facts,omitempty"`
 
-	// InjectBriefingMaxTok Hard ceiling on briefing injection tokens; 0 is uncapped.
+	// InjectBriefingMaxTok Hard ceiling on briefing injection tokens; 0 is uncapped. Sent to the server as the briefing's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectBriefingMaxTok *int `json:"inject_briefing_max_tok,omitempty"`
 
 	// InjectBriefingPinned Max pinned memories in the session-start briefing.
@@ -1251,7 +1414,7 @@ type SettingsDefaultsResponse struct {
 	// InjectPretoolItems Max recalled items injected per file on PreToolUse.
 	InjectPretoolItems *int `json:"inject_pretool_items,omitempty"`
 
-	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped.
+	// InjectPretoolMaxTok Hard ceiling on per-tool injection tokens; 0 is uncapped. Sent to the server as each per-file search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectPretoolMaxTok *int `json:"inject_pretool_max_tok,omitempty"`
 
 	// InjectPretoolMinScore Floor on the fused score (>=) for a PreToolUse injection.
@@ -1260,11 +1423,14 @@ type SettingsDefaultsResponse struct {
 	// InjectPretoolTools Tool-name allowlist that triggers a PreToolUse injection.
 	InjectPretoolTools *[]string `json:"inject_pretool_tools,omitempty"`
 
-	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped.
+	// InjectRecallMaxTok Hard ceiling on recall injection tokens; 0 is uncapped. Sent to the server as the prompt search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
 	InjectRecallMaxTok *int `json:"inject_recall_max_tok,omitempty"`
 
 	// InjectRecallMinScore Floor on the fused score (>=) for a recall injection.
 	InjectRecallMinScore *float32 `json:"inject_recall_min_score,omitempty"`
+
+	// InjectTelemetry Report what each hook actually injected vs suppressed back to the server (POST /v1/activity/injected) so the activity feed and metrics reflect what reached model context instead of pre-suppression serves. Best-effort and bounded (the beacon never blocks or fails a hook); off disables reporting entirely.
+	InjectTelemetry *bool `json:"inject_telemetry,omitempty"`
 
 	// InlineExtract Inject the directive asking the agent to save durable facts via memory_remember.
 	InlineExtract *bool `json:"inline_extract,omitempty"`
@@ -1416,6 +1582,12 @@ type ListActivityParams struct {
 	// AllNamespaces Aggregate across every namespace, ignoring the namespace header.
 	AllNamespaces *bool `form:"all_namespaces,omitempty" json:"all_namespaces,omitempty"`
 
+	// XMeminiNamespace Namespace for this request; falls back to the server default.
+	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
+}
+
+// ReportInjectedParams defines parameters for ReportInjected.
+type ReportInjectedParams struct {
 	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
@@ -1613,12 +1785,27 @@ type GetBriefingParams struct {
 	// Namespaces Repeatable. Brief exactly these namespaces instead of the default read set (the namespace, its subtree, and the global namespace). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected.
 	Namespaces *[]string `form:"namespaces,omitempty" json:"namespaces,omitempty"`
 
+	// Format "detailed" (default) carries each item's full stored content. "concise" replaces each item's memory.content with its compact form — the summary when one exists, else the content cut at a word/sentence boundary to at most 280 runes (the client's briefing render cap) with a "…" suffix — and sets memory.content_truncated on items whose concise text is such a cut. Section selection and ordering are identical across formats, and memory.content_hash is always computed over the full stored content.
+	Format *GetBriefingParamsFormat `form:"format,omitempty" json:"format,omitempty"`
+
+	// Children How to render the direct-child rollup: "full" (default) carries complete memory objects per child (the admin UI consumes these); "summary" ships titles/counts only per child — namespace, total, and compact pinned/recent title lines (pinned_titles/ recent_titles), the same isolation surface the MCP briefing renders; "none" omits the rollup entirely.
+	Children *GetBriefingParamsChildren `form:"children,omitempty" json:"children,omitempty"`
+
+	// MaxTokens Server-enforced token budget across the whole briefing, filled in section order pinned → facts → procedures → recent — fill order IS priority order, so pinned fills first and recent starves first. Whole tail items are dropped, never split, and the total drop count lands in the response's `omitted`. The estimate is the same recipe as search's max_tokens (word-count over the shipped content — the concise text under format=concise — plus a 10-token per-item overhead), and the first item overall always ships. The child rollup is neither counted nor trimmed. 0 (or absent) is unbounded.
+	MaxTokens *int `form:"max_tokens,omitempty" json:"max_tokens,omitempty"`
+
 	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
 
 // GetBriefingParamsScope defines parameters for GetBriefing.
 type GetBriefingParamsScope string
+
+// GetBriefingParamsFormat defines parameters for GetBriefing.
+type GetBriefingParamsFormat string
+
+// GetBriefingParamsChildren defines parameters for GetBriefing.
+type GetBriefingParamsChildren string
 
 // MoveNamespaceJSONBody defines parameters for MoveNamespace.
 type MoveNamespaceJSONBody struct {
@@ -1667,6 +1854,9 @@ type GetStatsParams struct {
 	// XMeminiNamespace Namespace for this request; falls back to the server default.
 	XMeminiNamespace *Namespace `json:"X-Memini-Namespace,omitempty"`
 }
+
+// ReportInjectedJSONRequestBody defines body for ReportInjected for application/json ContentType.
+type ReportInjectedJSONRequestBody = InjectedReport
 
 // AnswerQuestionJSONRequestBody defines body for AnswerQuestion for application/json ContentType.
 type AnswerQuestionJSONRequestBody = AnswerRequest
@@ -1727,6 +1917,9 @@ type ServerInterface interface {
 	// Recent memory activity — what was served or written, and why
 	// (GET /v1/activity)
 	ListActivity(w http.ResponseWriter, r *http.Request, params ListActivityParams)
+	// Report what a client hook actually injected vs suppressed
+	// (POST /v1/activity/injected)
+	ReportInjected(w http.ResponseWriter, r *http.Request, params ReportInjectedParams)
 	// Recall memories and answer a question grounded on them (requires an LLM)
 	// (POST /v1/answer)
 	AnswerQuestion(w http.ResponseWriter, r *http.Request, params AnswerQuestionParams)
@@ -1775,7 +1968,7 @@ type ServerInterface interface {
 	// Forget (delete) a memory
 	// (DELETE /v1/memories/{id})
 	ForgetMemory(w http.ResponseWriter, r *http.Request, id string, params ForgetMemoryParams)
-	// Fetch a memory by ID
+	// Fetch a memory by ID (or unique id prefix)
 	// (GET /v1/memories/{id})
 	GetMemory(w http.ResponseWriter, r *http.Request, id string, params GetMemoryParams)
 	// Update a memory in place
@@ -1844,6 +2037,12 @@ type Unimplemented struct{}
 // Recent memory activity — what was served or written, and why
 // (GET /v1/activity)
 func (_ Unimplemented) ListActivity(w http.ResponseWriter, r *http.Request, params ListActivityParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Report what a client hook actually injected vs suppressed
+// (POST /v1/activity/injected)
+func (_ Unimplemented) ReportInjected(w http.ResponseWriter, r *http.Request, params ReportInjectedParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1943,7 +2142,7 @@ func (_ Unimplemented) ForgetMemory(w http.ResponseWriter, r *http.Request, id s
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Fetch a memory by ID
+// Fetch a memory by ID (or unique id prefix)
 // (GET /v1/memories/{id})
 func (_ Unimplemented) GetMemory(w http.ResponseWriter, r *http.Request, id string, params GetMemoryParams) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -2227,6 +2426,53 @@ func (siw *ServerInterfaceWrapper) ListActivity(w http.ResponseWriter, r *http.R
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListActivity(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReportInjected operation middleware
+func (siw *ServerInterfaceWrapper) ReportInjected(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ReportInjectedParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Memini-Namespace" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Memini-Namespace")]; found {
+		var XMeminiNamespace Namespace
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Memini-Namespace", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Memini-Namespace", valueList[0], &XMeminiNamespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Memini-Namespace", Err: err})
+			return
+		}
+
+		params.XMeminiNamespace = &XMeminiNamespace
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReportInjected(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3532,6 +3778,45 @@ func (siw *ServerInterfaceWrapper) GetBriefing(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// ------------- Optional query parameter "format" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "format", r.URL.Query(), &params.Format, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "format"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "format", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "children" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "children", r.URL.Query(), &params.Children, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "children"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "children", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "max_tokens" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "max_tokens", r.URL.Query(), &params.MaxTokens, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "max_tokens"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "max_tokens", Err: err})
+		}
+		return
+	}
+
 	headers := r.Header
 
 	// ------------- Optional header parameter "X-Memini-Namespace" -------------
@@ -4067,6 +4352,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/activity", wrapper.ListActivity)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/activity/injected", wrapper.ReportInjected)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/answer", wrapper.AnswerQuestion)

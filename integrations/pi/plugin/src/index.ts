@@ -587,6 +587,10 @@ const MEMORY_FIELDS = [
   "id", "namespace", "tier", "level", "content", "summary", "metadata", "tags",
   "importance", "created_at", "updated_at", "last_accessed_at", "access_count",
   "expires_at", "superseded_by", "valid_from", "valid_to", "confidence",
+  // Progressive-disclosure fields: content_hash (16-hex identity over the
+  // full stored content, stable across response formats) and
+  // content_truncated (set on concise projections that actually cut).
+  "content_hash", "content_truncated",
 ] as const;
 
 /** Preserve the complete REST Memory DTO, including explicit null values. */

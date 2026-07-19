@@ -160,6 +160,16 @@ type Metrics interface {
 	// TierClassified records an omitted-tier write the marker classifier
 	// routed to a durable tier; tier is "semantic" or "procedural".
 	TierClassified(tier string)
+	// InjectedResult records one bucket of a client injection-telemetry
+	// report (RecordInjected): surface is the reporting hook surface
+	// ("briefing"|"prompt"|"pretool"); result is "injected" or a suppression
+	// reason ("suppressed_seen"|"suppressed_cooldown"|"suppressed_budget"|
+	// "suppressed_unchanged"|"suppressed_score"); n is how many memories fell
+	// in that bucket. Zero buckets are not reported.
+	InjectedResult(surface, result string, n int)
+	// InjectedTokens adds a report's client-side estimate of the tokens its
+	// injections consumed, by surface.
+	InjectedTokens(surface string, tokens int)
 	// EmbedBackfillPending reports the number of memories still marked
 	// pending_embed after one backfill tick (0 once the queue is drained).
 	EmbedBackfillPending(n int)
@@ -190,6 +200,8 @@ func (nopMetrics) DedupTombstoned(int)                 {}
 func (nopMetrics) CorroborateResult(string)            {}
 func (nopMetrics) ContradictResult(string)             {}
 func (nopMetrics) TierClassified(string)               {}
+func (nopMetrics) InjectedResult(string, string, int)  {}
+func (nopMetrics) InjectedTokens(string, int)          {}
 func (nopMetrics) EmbedBackfillPending(int)            {}
 func (nopMetrics) ChunkBackfillPending(int)            {}
 
@@ -1922,6 +1934,26 @@ type RecallInput struct {
 	// any result via LinkedMemoryIDs (1-hop expansion). Linked memories that
 	// are superseded are skipped. Default (false) is no expansion.
 	IncludeLinked bool
+	// MaxTokens, when > 0, is a server-enforced token budget over the final
+	// ranked results: they fill in rank order until the estimated cost
+	// (render.ApproxTokens over the shipped content + render.ItemOverheadTokens
+	// per item) would exceed it, and the tail is dropped whole — except the
+	// first result, which always ships (a non-empty recall never becomes
+	// empty by budget). 0 is unbounded. See applyRecallBudget.
+	MaxTokens int
+	// EstimateConcise makes MaxTokens estimate over the CONCISE projection of
+	// each result (summary-or-boundary-cut, render.SearchMax) instead of the
+	// full content — set by callers whose response will ship the concise form
+	// (REST response_format=concise), so the budget prices what actually goes
+	// on the wire. It does NOT change what content ships; the response
+	// projection stays the transport layer's job. Meaningless without
+	// MaxTokens.
+	EstimateConcise bool
+	// Omitted (output-only) receives the number of results MaxTokens dropped
+	// (0 without a budget or when everything fit). Same out-param pattern as
+	// Degraded/ReadSet; nil disables reporting. The count also lands in the
+	// recall activity event's detail as budget_omitted.
+	Omitted *int
 }
 
 // durableTiers restricts a requested tier set to the durable tiers (semantic,
@@ -2011,6 +2043,12 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	}
 
 	if results, ok := s.tryQueryRewrite(ctx, in); ok {
+		// The budget applies to the FUSED result — the variant sub-recalls run
+		// unbudgeted (see tryQueryRewrite) so no variant pre-trims what fusion
+		// might rank differently. This early-return path logs per-variant
+		// events only, so budget_omitted rides the Omitted out-param alone
+		// (written by applyRecallBudget).
+		results, _ = applyRecallBudget(in, results)
 		return results, nil
 	}
 
@@ -2173,11 +2211,17 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	ranked = s.applyTurnEchoGuard(in, ranked)
 	results := s.finalizeRecall(ctx, in.Query, ranked, k)
 	results = s.maybeExpandLinked(ctx, in, results, k)
+	// The token budget trims BEFORE reinforcement and logging: a result the
+	// budget dropped never reached the caller, so it must neither count as
+	// used nor appear as served — the event instead records the drop count
+	// (budget_omitted), keeping the omission visible. The Omitted out-param
+	// is written inside applyRecallBudget.
+	results, budgetOmitted := applyRecallBudget(in, results)
 	s.reinforceResults(ctx, results)
 	// Reinforcement rolls usage up into per-memory counters; the activity log
 	// keeps the detail those counters throw away — which query served this
 	// memory, at what rank, with what score.
-	s.logRecallEvent(ctx, in, results)
+	s.logRecallEvent(ctx, in, results, budgetOmitted)
 	s.metrics.RecallResult("ok", tf, hitsBucket(len(results)))
 	return results, nil
 }
@@ -2312,6 +2356,14 @@ func (s *Service) tryQueryRewrite(ctx context.Context, in RecallInput) ([]store.
 			sub.Query = q
 			sub.QueryRewrite = false // prevent recursion into tryQueryRewrite
 			sub.Degraded = &degradedReasons[i]
+			// The token budget belongs to the FUSED result the caller receives,
+			// not to any one variant: a per-variant trim would starve fusion of
+			// candidates another variant ranked lower but the fused order ranks
+			// higher. Recall applies the budget once, after this path returns.
+			// Omitted is nil'd for the same reason ReadSet is below — a shared
+			// out-param pointer across variant goroutines would race.
+			sub.MaxTokens = 0
+			sub.Omitted = nil
 			if i != 0 {
 				// RecallInput.ReadSet is a *[]ReadSetEntry out-param: handing every
 				// variant goroutine the SAME pointer would race the moment more
@@ -2979,7 +3031,56 @@ func metaSeconds(v any) (int64, bool) {
 	}
 }
 
-// Get returns a single memory by ID.
+// idPrefixMinLen is the minimum number of leading hex chars for an id prefix
+// Get will resolve. Shorter (or non-hex) misses keep their plain not-found
+// error: below 8 chars collisions get likely and the intent ambiguous, so the
+// caller is told the id doesn't exist rather than guessed at.
+const idPrefixMinLen = 8
+
+// idPrefixEligible reports whether id is shaped like a resolvable memory-id
+// prefix: at least idPrefixMinLen leading hex chars, then only hex chars and
+// hyphens (the UUID alphabet). Custom ids with other characters (e.g.
+// imported "openclaw:main:<uuid>") are never prefix-resolved — they can only
+// be addressed verbatim.
+func idPrefixEligible(id string) bool {
+	if len(id) < idPrefixMinLen {
+		return false
+	}
+	for i, r := range id {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
+		case r == '-' && i >= idPrefixMinLen:
+			// Hyphens only past the leading hex run, per the UUID shape.
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// AmbiguousIDError is returned by Get when an id prefix matches more than one
+// memory in the namespace. It lists the colliding full ids so the caller can
+// retry with a longer prefix (or the full id), and matches store.ErrConflict
+// under errors.Is so the REST layer maps it to 409.
+type AmbiguousIDError struct {
+	Prefix string
+	IDs    []string
+}
+
+func (e *AmbiguousIDError) Error() string {
+	return fmt.Sprintf("ambiguous memory id prefix %q: matches %s; retry with a longer prefix or the full id",
+		e.Prefix, strings.Join(e.IDs, ", "))
+}
+
+// Is makes the conflict classifiable without a dedicated sentinel:
+// errors.Is(err, store.ErrConflict) holds, which statusFor in the REST layer
+// already maps to http.StatusConflict.
+func (e *AmbiguousIDError) Is(target error) bool { return target == store.ErrConflict }
+
+// Get returns a single memory by ID. The id may also be a unique prefix of at
+// least idPrefixMinLen hex chars (exact match always wins; see
+// getByIDPrefix): recall surfaces render short ids, so the model can address
+// a memory without echoing the full UUID.
 //
 // A get is logged to the activity feed but deliberately does not reinforce:
 // reinforcement is a relevance signal (it slides TTLs and gates promotion), and
@@ -2987,11 +3088,52 @@ func metaSeconds(v any) (int64, bool) {
 // about whether it answered a question.
 func (s *Service) Get(ctx context.Context, namespace, id string) (*memory.Memory, error) {
 	m, err := s.store.Get(ctx, namespace, id)
+	if errors.Is(err, store.ErrNotFound) {
+		m, err = s.getByIDPrefix(ctx, namespace, id, err)
+	}
 	if err != nil {
 		return nil, err
 	}
 	s.logMemoryEvent(ctx, store.EventGet, namespace, m, nil)
 	return m, nil
+}
+
+// getVerbatim is Get without prefix resolution — the read half of mutations
+// (Update composes it with Remember), which must only ever address a memory
+// by its exact full id so a short handle can never write to a memory the
+// caller didn't name.
+func (s *Service) getVerbatim(ctx context.Context, namespace, id string) (*memory.Memory, error) {
+	m, err := s.store.Get(ctx, namespace, id)
+	if err != nil {
+		return nil, err
+	}
+	s.logMemoryEvent(ctx, store.EventGet, namespace, m, nil)
+	return m, nil
+}
+
+// getByIDPrefix resolves id as a memory-id prefix after an exact miss:
+// exactly one match in the namespace returns that memory, zero returns the
+// original not-found error, and two or more return an *AmbiguousIDError
+// listing the collisions. The store scan is bounded at 2 rows — enough to
+// tell unique from ambiguous. Only Get resolves prefixes; mutations
+// (update/forget/supersede) stay verbatim-full-id-only so a short handle can
+// never write to a memory the caller didn't name exactly.
+func (s *Service) getByIDPrefix(ctx context.Context, namespace, id string, notFound error) (*memory.Memory, error) {
+	if !idPrefixEligible(id) {
+		return nil, notFound
+	}
+	ids, err := s.store.IDsByPrefix(ctx, namespace, id, 2)
+	if err != nil {
+		return nil, err
+	}
+	switch len(ids) {
+	case 0:
+		return nil, notFound
+	case 1:
+		return s.store.Get(ctx, namespace, ids[0])
+	default:
+		return nil, &AmbiguousIDError{Prefix: id, IDs: ids}
+	}
 }
 
 // History returns the full supersession lineage of a memory: the memory itself,

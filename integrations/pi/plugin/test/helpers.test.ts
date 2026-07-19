@@ -688,6 +688,8 @@ const fullMemory = (overrides: Record<string, any> = {}) => ({
   valid_from: "2025-12-01T00:00:00Z",
   valid_to: null,
   confidence: 0.92,
+  content_hash: "0123456789abcdef",
+  content_truncated: false,
   ...overrides,
 });
 

@@ -38,6 +38,8 @@ func (*sanitizeRecorder) DedupTombstoned(int)                 {}
 func (*sanitizeRecorder) CorroborateResult(string)            {}
 func (*sanitizeRecorder) ContradictResult(string)             {}
 func (*sanitizeRecorder) TierClassified(string)               {}
+func (*sanitizeRecorder) InjectedResult(string, string, int)  {}
+func (*sanitizeRecorder) InjectedTokens(string, int)          {}
 func (*sanitizeRecorder) EmbedBackfillPending(int)            {}
 func (*sanitizeRecorder) ChunkBackfillPending(int)            {}
 

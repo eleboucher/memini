@@ -137,6 +137,14 @@ type Store interface {
 	// Get returns a memory by ID, or ErrNotFound.
 	Get(ctx context.Context, namespace, id string) (*memory.Memory, error)
 
+	// IDsByPrefix returns the IDs in the namespace that begin with prefix,
+	// ordered ascending and bounded at limit rows — an indexed prefix scan
+	// backing short-id resolution (service.Get accepts an 8+ hex-char id
+	// prefix). LIKE/glob metacharacters in prefix match literally, never as
+	// wildcards. An empty prefix or non-positive limit returns no rows: the
+	// caller is resolving a specific handle, never enumerating a namespace.
+	IDsByPrefix(ctx context.Context, namespace, prefix string, limit int) ([]string, error)
+
 	// GetEmbedding returns the stored vector for a memory, for a write that must
 	// preserve a vector it is not recomputing (see service.Remember's reuse of
 	// the stored vector when an update leaves content unchanged). Returns
@@ -451,6 +459,11 @@ type ClientSettings struct {
 	// disables that call gate, because the gate's clock lives in the dedupe
 	// state.
 	InjectDedupe *bool `json:"inject_dedupe,omitempty"`
+	// InjectTelemetry reports what each hook actually injected vs suppressed
+	// back to the server (POST /v1/activity/injected) so the activity feed and
+	// metrics reflect reality instead of pre-suppression serves. Best-effort
+	// and bounded; off disables the beacon entirely.
+	InjectTelemetry *bool `json:"inject_telemetry,omitempty"`
 	// InjectCooldownMs is the time window (ms) within which an already-injected
 	// memory is not re-injected; 0 disables the time dimension. Must be >= 0.
 	InjectCooldownMs *int `json:"inject_cooldown_ms,omitempty"`
@@ -615,14 +628,15 @@ func DefaultClientSettings() ClientSettings {
 		InjectBriefingFacts:      new(5),
 		InjectBriefingProcedures: new(5),
 		InjectBriefingRecent:     new(3),
-		InjectBriefingMaxTok:     new(0),
+		InjectBriefingMaxTok:     new(600),
 
 		InjectPretoolItems:    new(3),
-		InjectPretoolMaxTok:   new(0),
+		InjectPretoolMaxTok:   new(200),
 		InjectPretoolMinScore: new(float64(0)),
 		InjectPretoolTools:    &[]string{"Read", "Write", "Edit", "MultiEdit", "Glob", "Grep"},
 		InjectPretoolGateMs:   new(90000),
 		InjectDedupe:          new(true),
+		InjectTelemetry:       new(true),
 		InjectCooldownMs:      new(1800000),
 		InjectCooldownPrompts: new(3),
 
@@ -632,7 +646,7 @@ func DefaultClientSettings() ClientSettings {
 		Capture:     new(true),
 		RecallLimit: new(3),
 
-		InjectRecallMaxTok:   new(0),
+		InjectRecallMaxTok:   new(250),
 		InjectRecallMinScore: new(float64(0)),
 
 		MinCaptureChars:          new(0),
@@ -725,6 +739,9 @@ func MergeClientSettings(layers ...SettingsLayer) (ClientSettings, map[string]st
 		}
 		if applyPtr(&out.InjectPretoolGateMs, s.InjectPretoolGateMs) {
 			sources["inject_pretool_gate_ms"] = l.Source
+		}
+		if applyPtr(&out.InjectTelemetry, s.InjectTelemetry) {
+			sources["inject_telemetry"] = l.Source
 		}
 		if applyPtr(&out.InjectDedupe, s.InjectDedupe) {
 			sources["inject_dedupe"] = l.Source
@@ -932,6 +949,10 @@ const (
 	EventPin       EventKind = "pin"
 	EventUnpin     EventKind = "unpin"
 	EventSettings  EventKind = "settings"
+	// EventInject is a client injection-telemetry report (POST
+	// /v1/activity/injected): which served memories a hook actually injected
+	// into model context, and what its local gates suppressed.
+	EventInject EventKind = "inject"
 )
 
 // ValidEventKind reports whether k is one of the recorded kinds, so the REST
@@ -939,7 +960,7 @@ const (
 func ValidEventKind(k EventKind) bool {
 	switch k {
 	case EventRecall, EventGet, EventBriefing, EventRemember, EventUpdate, EventForget, EventSupersede,
-		EventPin, EventUnpin, EventSettings:
+		EventPin, EventUnpin, EventSettings, EventInject:
 		return true
 	}
 	return false

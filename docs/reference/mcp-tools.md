@@ -146,7 +146,7 @@ Browse memories without a query — filter by tier, tags, or metadata (e.g. all 
 
 *read-only*
 
-Fetch one memory with full metadata, tags, and timestamps by ID (ids come from memory_recall / memory_list results).
+Fetch one memory with full metadata, tags, and timestamps by ID (ids come from memory_recall / memory_list results). A unique id prefix of at least 8 hex chars also works; an ambiguous prefix errors listing the colliding full ids — retry with a longer prefix.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |

@@ -263,6 +263,11 @@ type Briefing struct {
 	// (T6) has no dedicated field for it, so renderers surface it themselves
 	// (MCP appends an "… and N more" note; REST returns just the capped array).
 	ChildrenTruncated int `json:"children_truncated,omitempty"`
+	// Omitted is the total number of items BriefingOpts.MaxTokens dropped
+	// across the four sections (0 without a budget or when everything fit).
+	// The briefing has no per-call activity detail for it — this field IS the
+	// budget's visibility on this surface.
+	Omitted int `json:"omitted,omitempty"`
 }
 
 // ChildSummary is one direct-child rollup entry in a Briefing: the child
@@ -322,6 +327,18 @@ type BriefingOpts struct {
 	// RecallInput.ReadSet. The caller passes the address of a local slice;
 	// nil disables reporting.
 	ReadSet *[]ReadSetEntry
+	// MaxTokens, when > 0, is a server-enforced token budget across the whole
+	// briefing, filled in section order pinned → facts → procedures → recent
+	// (fill order IS priority order: pinned fills first, recent starves
+	// first), dropping whole tail items — never splitting one — and reporting
+	// the drop count in Briefing.Omitted. The first item overall always
+	// ships. 0 is unbounded. See applyBriefingBudget.
+	MaxTokens int
+	// EstimateConcise makes MaxTokens estimate over each item's concise
+	// projection (render.BriefingMax) instead of full content — set when the
+	// response will ship the concise form (?format=concise), same doctrine as
+	// RecallInput.EstimateConcise.
+	EstimateConcise bool
 }
 
 // DefaultPerSection is the briefing cap applied to any section whose dedicated
@@ -450,6 +467,11 @@ func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingO
 	b.Procedures = topN(procs, procsN)
 	b.Recent = topN(recent, recentN)
 	b.Pinned = topN(b.Pinned, pinnedN)
+
+	// Server-enforced token budget, applied AFTER the per-section caps and
+	// BEFORE logBriefingEvent, so the activity log records only what was
+	// actually served and Briefing.Omitted reports what the budget dropped.
+	b.Omitted = applyBriefingBudget(&b, opts.MaxTokens, opts.EstimateConcise)
 
 	// The rollup describes the default cascade view of primary's subtree; a
 	// bare (scope=project) or explicit-namespaces briefing renders no rollup,

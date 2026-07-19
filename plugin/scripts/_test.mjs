@@ -193,12 +193,34 @@ function runCommand(script, argv, env = {}, cwd = process.cwd()) {
   });
 }
 
-function startMockServer(handler) {
+// `beacon` option: the injection-telemetry beacon (POST /v1/activity/injected)
+// is served automatically by default — 204, recorded into the returned
+// `beacons` array ({ns, body}), NOT passed to the inner handler — the same
+// doctrine as withHandshake: existing tests keep counting exactly the
+// briefing/search/capture calls they always did, while beacon tests read
+// `beacons`. Pass { beacon: "manual" } to route it to the handler instead
+// (hang/500 fault-injection tests).
+function startMockServer(handler, { beacon = "auto" } = {}) {
+  const beacons = [];
   return new Promise((resolveProm) => {
     const server = http.createServer((req, res) => {
       let body = "";
       req.on("data", (c) => (body += c));
-      req.on("end", () => handler(req, res, body));
+      req.on("end", () => {
+        if (beacon === "auto" && req.method === "POST" && req.url === "/v1/activity/injected") {
+          let parsed;
+          try {
+            parsed = JSON.parse(body);
+          } catch {
+            parsed = body;
+          }
+          beacons.push({ ns: req.headers["x-memini-namespace"], body: parsed });
+          res.statusCode = 204;
+          res.end();
+          return;
+        }
+        handler(req, res, body);
+      });
     });
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address();
@@ -213,7 +235,7 @@ function startMockServer(handler) {
           server.closeAllConnections();
           server.close(() => r(undefined));
         });
-      resolveProm({ url, close });
+      resolveProm({ url, close, beacons });
     });
   });
 }
@@ -750,10 +772,11 @@ test("MEMORY_INSTRUCTION tells the agent about visibility, not just tier", async
   assert.match(MEMORY_INSTRUCTION, /personal/);
 });
 
-test("session-start.mjs: source \"compact\" appends the compact-recovery directive (fresh briefing)", async () => {
-  // After a compaction the context was rebuilt and durable facts learned before
-  // it may no longer be visible — so the fresh-briefing path must emit BOTH the
-  // save directive AND the compact-recovery directive.
+test("session-start.mjs: source \"compact\" emits the compact-recovery directive alone (fresh briefing)", async () => {
+  // After a compaction the context was rebuilt, so the briefing re-injects and
+  // the recovery nudge fires — but NOT the save directive: the MCP server's
+  // instructions (the canonical copy of the save policy) persist in the system
+  // prompt across compaction, so re-sending the directive is pure duplication.
   const { url, close } = await startMockServer(
     withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
       res.setHeader("Content-Type", "application/json");
@@ -774,16 +797,17 @@ test("session-start.mjs: source \"compact\" appends the compact-recovery directi
       JSON.stringify({ session_id: "compact-fresh", cwd: __dirname, source: "compact" }),
       { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() },
     );
-    assert.match(stdout, /<memini-memory-directive>/, "the save directive must still be emitted");
-    assert.match(stdout, /<memini-compact-recovery>/, "post-compaction must also emit the recovery directive");
+    assert.doesNotMatch(stdout, /<memini-memory-directive>/, "the save directive is NOT re-sent after compaction (MCP instructions persist)");
+    assert.match(stdout, /<memini-compact-recovery>/, "post-compaction must emit the recovery directive");
   } finally {
     await close();
   }
 });
 
-test("session-start.mjs: source \"compact\" appends the compact-recovery directive (empty briefing)", async () => {
+test("session-start.mjs: source \"compact\" emits the compact-recovery directive alone (empty briefing)", async () => {
   // The empty-briefing path is one of the three emission sites; a post-compaction
-  // fire with no memories yet must still carry both directives.
+  // fire with no memories yet still carries the recovery nudge, but not the
+  // save directive (see the fresh-briefing compact test).
   const { url, close } = await startMockServer(
     withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
       res.setHeader("Content-Type", "application/json");
@@ -796,8 +820,8 @@ test("session-start.mjs: source \"compact\" appends the compact-recovery directi
       JSON.stringify({ session_id: "compact-empty", cwd: __dirname, source: "compact" }),
       { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() },
     );
-    assert.match(stdout, /<memini-memory-directive>/, "the save directive must still be emitted on an empty briefing");
-    assert.match(stdout, /<memini-compact-recovery>/, "post-compaction must also emit the recovery directive on an empty briefing");
+    assert.doesNotMatch(stdout, /<memini-memory-directive>/, "the save directive is NOT re-sent after compaction, even on an empty briefing");
+    assert.match(stdout, /<memini-compact-recovery>/, "post-compaction must emit the recovery directive on an empty briefing");
     // The reachable-but-empty note precedes both directives.
     assert.match(
       stdout,
@@ -830,6 +854,70 @@ test("session-start.mjs: source \"startup\" emits the memory directive but NOT c
     );
     assert.match(stdout, /<memini-memory-directive>/, "startup still gets the save directive");
     assert.doesNotMatch(stdout, /<memini-compact-recovery>/, "a non-compact start must not emit the recovery directive");
+    // The directive is the abridged trigger, not the full policy — the canonical
+    // save policy lives in the MCP server instructions. Keep it slim.
+    const directive = stdout.slice(stdout.indexOf("<memini-memory-directive>"), stdout.indexOf("</memini-memory-directive>"));
+    assert.ok(directive.length > 0 && directive.length < 900, `directive must stay abridged (<900 chars), got ${directive.length}`);
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: source \"clear\" emits the memory directive (fresh conversation)", async () => {
+  // /clear starts a fresh conversation: nothing is in context, so the directive
+  // must come back exactly as on startup.
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify(
+          briefingBody({ namespace: "team/app", facts: [bi({ content: "convention: use tabs" })] }),
+        ),
+      );
+    }),
+  );
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "clear1", cwd: __dirname, source: "clear" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() },
+    );
+    assert.match(stdout, /<memini-memory-directive>/, "clear rebuilds context, so the directive is emitted");
+    assert.doesNotMatch(stdout, /<memini-compact-recovery>/);
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: source \"resume\" with a CHANGED briefing injects the briefing but no directive", async () => {
+  // A changed briefing must reach the context on resume — but the directive is
+  // still in the replayed transcript, so it stays out.
+  const cache = freshCache();
+  let calls = 0;
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
+      calls++;
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify(
+          briefingBody({
+            namespace: "team/app",
+            facts: [bi({ content: calls === 1 ? "convention: use tabs" : "convention: use spaces now" })],
+          }),
+        ),
+      );
+    }),
+  );
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    await runHook("session-start.mjs", JSON.stringify({ session_id: "resume-changed", cwd: __dirname, source: "startup" }), env);
+    const resumed = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "resume-changed", cwd: __dirname, source: "resume" }),
+      env,
+    );
+    assert.match(resumed.stdout, /use spaces now/, "a changed briefing is injected on resume");
+    assert.doesNotMatch(resumed.stdout, /<memini-memory-directive>/, "the directive stays out — it is already in the replayed transcript");
   } finally {
     await close();
   }
@@ -875,11 +963,11 @@ test("session-start.mjs: source \"compact\" re-injects an unchanged briefing", a
   }
 });
 
-test("session-start.mjs: source \"resume\" still skips an unchanged briefing but re-emits the directive", async () => {
-  // The guard's surviving purpose: on a resume the context is intact, so an
-  // identical briefing block is already in it — re-injecting is pure token
-  // waste. Only the directive (dropped by the context rebuild machinery on
-  // some clients) is re-emitted.
+test("session-start.mjs: source \"resume\" with an unchanged briefing emits nothing at all", async () => {
+  // On a resume the context is intact AND Claude Code replays previously
+  // injected hook text for past turns — so both the briefing block and the
+  // directive are already in the transcript. Re-emitting either is pure
+  // duplication; an unchanged resume must be completely silent.
   const cache = freshCache();
   const { url, close } = await startMockServer(
     withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
@@ -900,7 +988,7 @@ test("session-start.mjs: source \"resume\" still skips an unchanged briefing but
       env,
     );
     assert.doesNotMatch(resumed.stdout, /<memini-context/, "an unchanged briefing is not re-injected on resume");
-    assert.match(resumed.stdout, /<memini-memory-directive>/, "the directive is re-emitted");
+    assert.equal(resumed.stdout, "", "resume replays prior injections — nothing to emit, not even the directive");
   } finally {
     await close();
   }
@@ -928,7 +1016,7 @@ test("session-start.mjs: a resume after a compact re-injection still skips (hash
     assert.match(compacted.stdout, /<memini-context/, "compact re-injects");
     const resumed = await runHook("session-start.mjs", payload("resume"), env);
     assert.doesNotMatch(resumed.stdout, /<memini-context/, "the later resume still skips");
-    assert.match(resumed.stdout, /<memini-memory-directive>/);
+    assert.equal(resumed.stdout, "", "a resume after compact is silent too — the compact fire's output is in the transcript");
   } finally {
     await close();
   }
@@ -2275,7 +2363,9 @@ test("pre-tool-use.mjs: MEMINI_INJECT_PRETOOL_MAX_TOK truncates per-file block",
       { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_ITEMS: "4", MEMINI_INJECT_PRETOOL_MAX_TOK: "10" },
     );
     const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
-    assert.match(ctx, /\[...\s+\d+ item\(s\) truncated/);
+    // PR-E renamed the recall-path drop footer to name the tool that recovers
+    // the tail (the briefing keeps the old "[... N item(s) truncated]" form).
+    assert.match(ctx, /\[\+\d+ more — memory_recall for detail\]/);
   } finally {
     await close();
   }
@@ -4713,11 +4803,16 @@ test("user-prompt-submit.mjs: a server that 400s exclude_ids gets one retry with
   try {
     await runHook("user-prompt-submit.mjs", payload("what did we decide about auth tokens"), env);
     const second = await runHook("user-prompt-submit.mjs", payload("and what about session cookies here"), env);
-    assert.equal(bodies.length, 3, "first prompt: one call; second prompt: 400 then retry");
+    // The strip chain removes ONE field per retry, newest first: the first
+    // retry drops max_tokens (blind — this server only rejects exclude_ids),
+    // the second drops exclude_ids and lands.
+    assert.equal(bodies.length, 4, "first prompt: one call; second prompt: 400, 400, then success");
     assert.ok(bodies[1].exclude_ids, "the retryable attempt carried exclude_ids");
-    assert.equal(bodies[2].exclude_ids, undefined, "the retry dropped the field");
+    assert.equal(bodies[2].max_tokens, undefined, "the first retry strips max_tokens (newest field)");
+    assert.ok(bodies[2].exclude_ids, "exclude_ids survives the first strip");
+    assert.equal(bodies[3].exclude_ids, undefined, "the second retry dropped the field");
     const ctxText = JSON.parse(second.stdout).hookSpecificOutput.additionalContext;
-    assert.match(ctxText, /fact number 3/, "recall still lands after the retry");
+    assert.match(ctxText, /fact number 4/, "recall still lands after the retries");
   } finally {
     await close();
   }
@@ -5510,7 +5605,7 @@ test("postSearch: a recall slower than the timeout aborts; a wider timeout lets 
     const tight = await import("./_shared.mjs?cb=timeout-tight-" + Date.now());
     assert.deepEqual(
       await tight.postSearch("q", "ns"),
-      { hits: [], degraded: "", note: "" },
+      { hits: [], degraded: "", note: "", omitted: 0 },
       "a call slower than the timeout must abort, not hang",
     );
 
@@ -5558,6 +5653,849 @@ test("getSessionContext: a server-pushed request_timeout_ms widens the window; M
     });
     assert.equal(overridden.timeoutMs, 45000);
     assert.equal(overridden.setting("request_timeout_ms").source, "env-override");
+  } finally {
+    await close();
+  }
+});
+
+// ─── injection-telemetry beacon (POST /v1/activity/injected) ──────────────
+//
+// Every injection surface reports what it served — and what it withheld — in
+// ONE best-effort beacon per hook invocation, sent AFTER the hook's stdout
+// payload is fully written. The harness's startMockServer intercepts the
+// beacon route by default (recording into `beacons`, replying 204) so these
+// tests read the wire body directly; fault-injection tests opt out with
+// { beacon: "manual" }.
+
+test("session-start.mjs: a fresh briefing beacons its injected ids with token/char estimates", async () => {
+  const cache = freshCache();
+  const { url, close, beacons } = await startMockServer(
+    withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify(
+          briefingBody({
+            namespace: "team/app",
+            pinned: [bi({ id: "b-pin", content: "pinned identity" })],
+            facts: [bi({ id: "b-fact", content: "convention: use tabs" })],
+          }),
+        ),
+      );
+    }),
+  );
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "tel-b1", cwd: __dirname, source: "startup" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.match(stdout, /convention: use tabs/, "the briefing still injects");
+    assert.equal(beacons.length, 1, "exactly one beacon per hook invocation");
+    const rep = beacons[0].body;
+    assert.equal(rep.surface, "briefing");
+    assert.equal(rep.session_id, "tel-b1");
+    assert.equal(rep.source, "claude-code");
+    assert.deepEqual([...rep.injected_ids].sort(), ["b-fact", "b-pin"], "the briefing's memory ids are reported");
+    assert.ok(rep.injected_tokens_est > 0, "tokens estimated over the emitted block");
+    assert.ok(rep.injected_chars > 0, "chars = emitted length");
+    assert.equal(rep.suppressed, undefined, "nothing suppressed on a fresh injection — all-zero counts are omitted");
+    assert.equal(beacons[0].ns, "team/app", "the beacon rides the same namespace header as postSearch");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: an unchanged-briefing skip beacons suppressed.unchanged and no injected ids", async () => {
+  const cache = freshCache();
+  const { url, close, beacons } = await startMockServer(
+    withHandshake(mkHS({ namespace: "team/app" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify(
+          briefingBody({
+            namespace: "team/app",
+            facts: [bi({ id: "bu1", content: "convention: use tabs" }), bi({ id: "bu2", content: "tokens rotate weekly" })],
+          }),
+        ),
+      );
+    }),
+  );
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    await runHook("session-start.mjs", JSON.stringify({ session_id: "tel-b2", cwd: __dirname, source: "startup" }), env);
+    assert.equal(beacons.length, 1, "the startup fire beacons its fresh injection");
+
+    const resumed = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "tel-b2", cwd: __dirname, source: "resume" }),
+      env,
+    );
+    assert.equal(resumed.stdout, "", "an unchanged resume stays silent on stdout");
+    assert.equal(beacons.length, 2, "the unchanged skip still beacons what it withheld");
+    const rep = beacons[1].body;
+    assert.equal(rep.surface, "briefing");
+    assert.deepEqual(rep.injected_ids, [], "nothing was injected on the skip path");
+    assert.deepEqual(rep.suppressed, { unchanged: 2 }, "every withheld briefing item is counted as unchanged");
+    assert.equal(rep.injected_tokens_est, undefined, "zero token estimate is omitted");
+    assert.equal(rep.injected_chars, undefined, "zero char count is omitted");
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: prompt recall beacons surface=prompt with the hit ids; MEMINI_INJECT_TELEMETRY=0 sends none", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "srv/app" }));
+  const { url, close, beacons } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify(
+        searchBody([sm({ id: "mp1", content: "auth decision: rotate weekly" }, 0.95), sm({ id: "mp2", content: "tokens live in vault" }, 0.9)]),
+      ),
+    );
+  });
+  try {
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "tel-p1", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.match(JSON.parse(stdout).hookSpecificOutput.additionalContext, /rotate weekly/);
+    assert.equal(beacons.length, 1, "one beacon per prompt hook invocation");
+    const rep = beacons[0].body;
+    assert.equal(rep.surface, "prompt");
+    assert.equal(rep.session_id, "tel-p1");
+    assert.equal(rep.source, "claude-code");
+    assert.deepEqual(rep.injected_ids, ["mp1", "mp2"], "the rendered hits' ids are reported");
+    assert.ok(rep.injected_tokens_est > 0);
+    assert.ok(rep.injected_chars > 0);
+    assert.equal(beacons[0].ns, "srv/app");
+
+    // Opt-out: the knob off means NO beacon request at all — not an empty one.
+    const second = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "tel-p2", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_TELEMETRY: "0" },
+    );
+    assert.match(JSON.parse(second.stdout).hookSpecificOutput.additionalContext, /rotate weekly/, "the injection itself is unaffected");
+    assert.equal(beacons.length, 1, "MEMINI_INJECT_TELEMETRY=0 must send no beacon");
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: every hit client-filtered → a suppression-only beacon (seen), no stdout", async () => {
+  // An in-cooldown injected entry re-served by an older server (one that
+  // ignores exclude_ids) is dropped by the belt-and-braces filter; with no
+  // hits left the hook injects nothing but still reports the suppression.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  mkdirSync(join(cache, "memini", "sessions"), { recursive: true });
+  writeFileSync(
+    INJ_STATE(cache, "tel-p3"),
+    JSON.stringify({ v: 2, n: 10, ids: { "m-hot": { h: "0123456789abcdef", at: Date.now(), n: 10 } } }),
+  );
+  const { url, close, beacons } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m-hot", content: "the hot fact" }, 0.95)])));
+  });
+  try {
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "tel-p3", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.equal(stdout.trim(), "", "nothing injected — every hit was filtered");
+    assert.equal(beacons.length, 1, "the suppression-only report is still sent");
+    const rep = beacons[0].body;
+    assert.equal(rep.surface, "prompt");
+    assert.deepEqual(rep.injected_ids, [], "required field stays present as an empty array");
+    assert.deepEqual(rep.suppressed, { seen: 1 }, "the client-side seen-filter drop is counted");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: one aggregated beacon per call; a fingerprint-duplicate re-serve beacons suppressed.unchanged", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const { url, close, beacons } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "auth decision" }, 0.95)])));
+  });
+  try {
+    const payload = JSON.stringify({
+      session_id: "tel-t1",
+      cwd: __dirname,
+      tool_name: "Read",
+      tool_input: { file_path: "internal/auth.go" },
+    });
+    // gate=0 pins legacy always-call so the second run reaches the server.
+    const gate0 = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_GATE_MS: "0" };
+    const first = await runHook("pre-tool-use.mjs", payload, gate0);
+    assert.match(first.stdout, /auth decision/, "first call injects");
+    assert.equal(beacons.length, 1, "one aggregated beacon for the whole invocation");
+    assert.equal(beacons[0].body.surface, "pretool");
+    assert.equal(beacons[0].body.session_id, "tel-t1");
+    assert.deepEqual(beacons[0].body.injected_ids, ["m1"]);
+    assert.ok(beacons[0].body.injected_tokens_est > 0);
+    assert.equal(beacons[0].body.suppressed, undefined, "a clean inject reports no suppression");
+
+    // Lapse the cross-surface cooldown (backdate {at, n} like the lapsed-entry
+    // tests) so the re-served hit passes the seen filter and reaches the
+    // per-file FINGERPRINT, which still matches — a suppressed duplicate.
+    const injPath = INJ_STATE(cache, "tel-t1");
+    const st = JSON.parse(readFileSync(injPath, "utf8"));
+    st.ids.m1.at = Date.now() - 7200000;
+    st.ids.m1.n = 0;
+    writeFileSync(injPath, JSON.stringify(st));
+
+    const second = await runHook("pre-tool-use.mjs", payload, gate0);
+    assert.equal(second.stdout, "", "the duplicate injection is suppressed");
+    assert.equal(beacons.length, 2, "the suppression still beacons");
+    const rep = beacons[1].body;
+    assert.deepEqual(rep.injected_ids, [], "nothing injected on the duplicate run");
+    assert.deepEqual(rep.suppressed, { unchanged: 1 }, "the withheld duplicate's items are counted as unchanged");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: a hanging beacon endpoint neither delays the hook past the abort bound nor fails it", async () => {
+  // Structural best-effort guarantee: the beacon is sent AFTER stdout is fully
+  // composed and written, bounded by its own 500ms abort — so a beacon
+  // endpoint that never answers cannot corrupt the payload, fail the hook
+  // (runHook rejects on a non-zero exit), or stall it beyond ~the bound.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const { url, close } = await startMockServer(
+    (req, res) => {
+      if (req.method === "POST" && req.url === "/v1/activity/injected") return; // hang: never respond
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "auth decision" }, 0.9)])));
+    },
+    { beacon: "manual" },
+  );
+  try {
+    const started = Date.now();
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "tel-t2", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    const elapsed = Date.now() - started;
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.hookSpecificOutput.hookEventName, "PreToolUse");
+    assert.match(parsed.hookSpecificOutput.additionalContext, /auth decision/, "stdout payload intact despite the hanging beacon");
+    assert.ok(elapsed < 2000, `hook took ${elapsed}ms; the 500ms beacon abort must bound it`);
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: a beacon endpoint returning 500 never fails the hook — exit 0, stdout intact", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  let beaconHits = 0;
+  const { url, close } = await startMockServer(
+    (req, res) => {
+      if (req.method === "POST" && req.url === "/v1/activity/injected") {
+        beaconHits++;
+        res.statusCode = 500;
+        res.end("boom");
+        return;
+      }
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "a durable fact" }, 0.9)])));
+    },
+    { beacon: "manual" },
+  );
+  try {
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "tel-p4", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    assert.match(JSON.parse(stdout).hookSpecificOutput.additionalContext, /a durable fact/, "stdout payload intact despite the 500");
+    assert.equal(beaconHits, 1, "the beacon was attempted and its failure swallowed");
+  } finally {
+    await close();
+  }
+});
+
+// ─── progressive disclosure (PR-E): concise wire + [m:id] handles ──────────
+//
+// The hooks ask the server for CONCISE payloads (search `response_format:
+// "concise"`, briefing `format=concise`), render an `[m:<id8>]` handle on
+// every id-carrying bullet, and teach the model — once per recall/pretool
+// block that truncated anything — to pull full text with memory_get. Identity
+// moves to the server-minted content_hash when present, so a concise hit and
+// its full-form sibling dedupe as the SAME memory. On the wire, content_hash
+// / content_truncated ride ON THE MEMORY object (bi/sm take the memory whole,
+// so the new fields flow through the shared constructors).
+
+const TEACH = "<!-- summaries; full text: memory_get with the id from [m:…] -->";
+
+test("formatRecallHit: renders an [m:<id8>] handle when the hit has an id; none without", async () => {
+  const { formatRecallHit } = await import("./_shared.mjs");
+  const none = new Set();
+  assert.equal(
+    formatRecallHit({ content: "auth decision", score: 0.95, memory: { id: "0123456789abcdef0123" } }, none),
+    "- (0.95) auth decision [m:01234567]",
+  );
+  // ids shorter than 8 chars render verbatim — slice never pads.
+  assert.equal(formatRecallHit({ content: "x", score: 0.5, memory: { id: "m1" } }, none), "- (0.50) x [m:m1]");
+  // no id → no handle (both the empty-memory and missing-memory shapes).
+  assert.equal(formatRecallHit({ content: "auth decision", score: 0.95, memory: {} }, none), "- (0.95) auth decision");
+  assert.equal(formatRecallHit({ content: "auth decision", score: 0.95 }, none), "- (0.95) auth decision");
+  // labels keep the handle at the tail.
+  assert.equal(
+    formatRecallHit({ content: "auth decision", score: 0.9, tier: "semantic", memory: { id: "abcd1234ef" } }, new Set(["tier"])),
+    "- (0.90) [semantic] auth decision [m:abcd1234]",
+  );
+});
+
+test("injectedIdentity: prefers a valid content_hash; rejects malformed; cross-format stable", async () => {
+  const { injectedIdentity } = await import("./_shared.mjs");
+  const local = injectedIdentity({ content: "the full fact text, well past any render cap" });
+  assert.match(local, /^[0-9a-f]{16}$/);
+  // A valid server-minted hash wins — read off the memory itself (briefing
+  // shape) or off the hit's nested memory (recall shape).
+  assert.equal(injectedIdentity({ content: "anything", content_hash: "aaaabbbbccccdddd" }), "aaaabbbbccccdddd");
+  assert.equal(
+    injectedIdentity({ content: "concise cut…", memory: { id: "m1", content_hash: "aaaabbbbccccdddd", content_truncated: true } }),
+    "aaaabbbbccccdddd",
+  );
+  // Malformed hashes (wrong case, wrong length, junk, empty) fall back to the
+  // local recipe rather than poisoning identity.
+  for (const bad of ["AAAABBBBCCCCDDDD", "aaaabbbbccccddd", "aaaabbbbccccdddd0", "not-hex-not-real", 42, ""]) {
+    assert.equal(injectedIdentity({ content: "the full fact text, well past any render cap", content_hash: bad }), local);
+  }
+  // The regression that motivated content_hash: a briefing item (FULL content)
+  // and a concise recall hit (truncated content) of the same memory hashed
+  // DIFFERENTLY under the local recipe, so the seen-filter re-injected what the
+  // context already carried. With the shared server hash they are the same.
+  const briefed = { id: "m9", content: "the full fact text, well past any render cap", content_hash: "0123456789abcdef" };
+  const concise = { content: "the full fact te…", memory: { id: "m9", content_hash: "0123456789abcdef", content_truncated: true } };
+  assert.equal(injectedIdentity(briefed), injectedIdentity(concise));
+});
+
+test("user-prompt-submit.mjs: search asks response_format concise; a 400 on it retries once without (old servers)", async () => {
+  // Mirrors the exclude_ids 400-retry: an old server that rejects unknown body
+  // fields must degrade to full-content recall, never to NO recall. Strip
+  // order is newest field first: max_tokens, then exclude_ids, then
+  // response_format.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    const parsed = JSON.parse(body);
+    bodies.push(parsed);
+    res.setHeader("Content-Type", "application/json");
+    if (parsed.exclude_ids || parsed.response_format) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ error: "unknown field" }));
+      return;
+    }
+    const n = bodies.length;
+    res.end(JSON.stringify(searchBody([sm({ id: `m${n}`, content: `fact number ${n}` }, 0.9)])));
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  const payload = (p) => JSON.stringify({ session_id: "p400rf", cwd: __dirname, prompt: p });
+  try {
+    const first = await runHook("user-prompt-submit.mjs", payload("what did we decide about auth tokens"), env);
+    assert.equal(bodies[0].response_format, "concise", "the first attempt asks for concise content");
+    assert.equal(bodies[1].max_tokens, undefined, "the first retry strips max_tokens (newest field, blind)");
+    assert.equal(bodies[1].response_format, "concise", "response_format survives that strip");
+    assert.equal(bodies[2].response_format, undefined, "the second retry drops response_format");
+    assert.match(JSON.parse(first.stdout).hookSpecificOutput.additionalContext, /fact number 3/, "recall lands after the retries");
+
+    // Second prompt carries exclude_ids too: worst-case old server 400s every
+    // new field → strip max_tokens, still 400 → strip exclude_ids, still 400
+    // → strip response_format, then 200.
+    const second = await runHook("user-prompt-submit.mjs", payload("and what about session cookies here"), env);
+    assert.equal(bodies.length, 7, "second prompt: 400, 400, 400, then success");
+    assert.ok(bodies[3].exclude_ids, "attempt 1 carried exclude_ids");
+    assert.equal(bodies[3].response_format, "concise");
+    assert.equal(bodies[4].max_tokens, undefined, "max_tokens is stripped first");
+    assert.ok(bodies[4].exclude_ids, "exclude_ids survives the max_tokens strip");
+    assert.equal(bodies[5].exclude_ids, undefined, "then exclude_ids");
+    assert.equal(bodies[5].response_format, "concise");
+    assert.equal(bodies[6].response_format, undefined, "then response_format");
+    assert.match(JSON.parse(second.stdout).hookSpecificOutput.additionalContext, /fact number 7/);
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: fingerprint rides content_hash — a concise re-serve is suppressed; a changed hash re-injects", async () => {
+  // The per-file fingerprint hashes {id, h} pairs, where h prefers the
+  // server's content_hash: the same memory served FULL then CONCISE (same
+  // hash) must fingerprint identically — truncation is display, not identity
+  // — and the fingerprint stays tool-agnostic (Read then Edit). A genuinely
+  // changed memory (new content_hash) still re-injects.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const searches = [];
+  const full = "the auth decision in full detail, way past any concise boundary";
+  const responses = [
+    sm({ id: "m1", content: full, content_hash: "aaaabbbbccccdddd" }, 0.95),
+    sm({ id: "m1", content: "the auth decision in full…", content_truncated: true, content_hash: "aaaabbbbccccdddd" }, 0.95),
+    sm({ id: "m1", content: "the auth decision, amended…", content_truncated: true, content_hash: "1111222233334444" }, 0.95),
+  ];
+  const { url, close } = await startMockServer((req, res, body) => {
+    searches.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([responses[searches.length - 1]])));
+  });
+  const gate0 = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_GATE_MS: "0" };
+  const mk = (tool) =>
+    JSON.stringify({ session_id: "fp-hash", cwd: __dirname, tool_name: tool, tool_input: { file_path: "internal/auth.go" } });
+  const lapse = () => {
+    // Backdate the cross-surface cooldown so the re-serve reaches the per-file
+    // fingerprint (the same maneuver as the beacon suppressed.unchanged test).
+    const p = INJ_STATE(cache, "fp-hash");
+    const st = JSON.parse(readFileSync(p, "utf8"));
+    st.ids.m1.at = Date.now() - 7200000;
+    st.ids.m1.n = 0;
+    writeFileSync(p, JSON.stringify(st));
+  };
+  try {
+    const first = await runHook("pre-tool-use.mjs", mk("Read"), gate0);
+    assert.match(first.stdout, /auth decision in full/, "the full form injects");
+    assert.equal(searches[0].response_format, "concise", "pretool recall asks for concise content");
+
+    lapse();
+    const second = await runHook("pre-tool-use.mjs", mk("Edit"), gate0);
+    assert.equal(second.stdout, "", "the concise re-serve (same content_hash, different tool) is suppressed");
+
+    const third = await runHook("pre-tool-use.mjs", mk("Read"), gate0);
+    assert.match(third.stdout, /amended/, "a changed content_hash is a REAL change and re-injects");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: a wire-truncated hit teaches memory_get exactly once; an untruncated block never does", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  let mode = "truncated";
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    const hit =
+      mode === "truncated"
+        ? sm({ id: "m1", content: "concise summary of the fact…", content_truncated: true, content_hash: "aaaabbbbccccdddd" }, 0.9)
+        : sm({ id: "m2", content: "short and complete" }, 0.9);
+    res.end(JSON.stringify(searchBody([hit])));
+  });
+  try {
+    const cut = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "teach1", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "a.go" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    const ctx = JSON.parse(cut.stdout).hookSpecificOutput.additionalContext;
+    assert.equal((ctx.match(/summaries; full text/g) || []).length, 1, "the teach line appears exactly once");
+    assert.ok(ctx.includes(TEACH), "byte-exact teach line (prompt-cache friendly)");
+    assert.ok(
+      ctx.indexOf("Related memories") < ctx.indexOf(TEACH) && ctx.indexOf(TEACH) < ctx.indexOf("File:"),
+      "the teach line sits after the opening comment, before the hits",
+    );
+    assert.match(ctx, /\[m:m1\]/, "the handle the teach line points at is rendered");
+
+    mode = "plain";
+    const plain = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "teach2", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "b.go" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    const plainCtx = JSON.parse(plain.stdout).hookSpecificOutput.additionalContext;
+    assert.match(plainCtx, /short and complete/);
+    assert.doesNotMatch(plainCtx, /summaries; full text/, "nothing truncated → no teach line");
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: the client-side 240-char cap also teaches memory_get (old servers, full content)", async () => {
+  // An old server ignores response_format and serves full content; the
+  // client's own 240-char render cap is then the truncation that warrants the
+  // teach line.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "0123456789abcdef", content: "c".repeat(300) }, 0.9)])));
+  });
+  try {
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "teach3", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.equal((ctx.match(/summaries; full text/g) || []).length, 1, "the client cap fires the teach line, once");
+    assert.ok(ctx.includes(TEACH), "byte-identical to the pretool teach line");
+    assert.match(ctx, /\[m:01234567\]/, "the handle memory_get resolves is rendered");
+    assert.equal((ctx.match(/<\/memini-recall>/g) || []).length, 1, "wrapper structure intact");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: briefing asks format=concise; Recent renders index-mode; facts keep the 280 cap + handle", async () => {
+  const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString();
+  const urls = [];
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
+      urls.push(req.url);
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify(
+          briefingBody({
+            facts: [bi({ id: "1111222233334444", content: "f".repeat(300) })],
+            recent: [bi({ id: "abcdef1234567890", content: "r".repeat(150), created_at: threeDaysAgo })],
+          }),
+        ),
+      );
+    }),
+  );
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "pd-brief", cwd: __dirname, source: "startup" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() },
+    );
+    const briefingUrl = urls.find((u) => u.startsWith("/v1/namespaces/briefing"));
+    assert.ok(briefingUrl, "the briefing call happened");
+    assert.equal(new URL(briefingUrl, "http://x").searchParams.get("format"), "concise", "briefing asks for concise items");
+    // Recent is an index now: age label + 120-code-point cap + [m:id8] handle.
+    assert.match(stdout, new RegExp(`^- \\[3d\\] r{120}… \\[m:abcdef12\\]$`, "m"), "recent renders age + 120cp cap + handle");
+    assert.doesNotMatch(stdout, /r{121}/, "recent content is capped at 120 code points");
+    // Facts keep the 280-cap and gain the handle.
+    assert.match(stdout, new RegExp(`^- f{280}… \\[m:11112222\\]$`, "m"), "facts keep the 280cp cap and gain the handle");
+    assert.doesNotMatch(stdout, /f{281}/);
+    // The teach line is a recall-surface instrument, never the briefing's.
+    assert.doesNotMatch(stdout, /summaries; full text/, "no teach line on the briefing");
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: fitByTokens drops render a [+N more — memory_recall for detail] final line", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  const long = (n) => Array.from({ length: 30 }, (_, i) => `word${n}-${i}`).join(" ");
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify(
+        searchBody([sm({ id: "a", content: long(1) }, 0.9), sm({ id: "b", content: long(2) }, 0.8), sm({ id: "c", content: long(3) }, 0.7)]),
+      ),
+    );
+  });
+  try {
+    const { stdout } = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "pd-drop", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_RECALL_MAX_TOK: "10" },
+    );
+    const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(ctx, /\[\+\d+ more — memory_recall for detail\]/, "the drop footer names the recovery tool");
+    assert.doesNotMatch(ctx, /item\(s\) truncated by token budget/, "the old anonymous footer is gone from recall paths");
+    const lines = ctx.split("\n");
+    assert.equal(lines[lines.length - 1], "</memini-recall>");
+    assert.match(lines[lines.length - 2], /^\[\+\d+ more — memory_recall for detail\]$/, "the footer is the block's final line");
+  } finally {
+    await close();
+  }
+});
+
+test("cross-format dedupe: a briefing's full item suppresses its concise pretool re-serve (same content_hash)", async () => {
+  // End-to-end form of the regression: the briefing records the memory from
+  // FULL content; a later pretool recall serves it CONCISE. Under the local
+  // hash those differ and the hook would re-inject a fact the context already
+  // carries; the shared content_hash makes them the same memory.
+  const cache = freshCache();
+  const full = "briefed in full: rotate the auth tokens weekly, and here is the entire rationale in detail";
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      if (req.url.startsWith("/v1/namespaces/briefing")) {
+        res.end(JSON.stringify(briefingBody({ facts: [bi({ id: "bf1", content: full, content_hash: "fedcba9876543210" })] })));
+        return;
+      }
+      res.end(
+        JSON.stringify(
+          searchBody([sm({ id: "bf1", content: "briefed in full: rotate the auth…", content_truncated: true, content_hash: "fedcba9876543210" }, 0.95)]),
+        ),
+      );
+    }),
+  );
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    const start = await runHook("session-start.mjs", JSON.stringify({ session_id: "xfmt1", cwd: __dirname, source: "startup" }), env);
+    assert.match(start.stdout, /briefed in full/, "the briefing injects the full form");
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "xfmt1", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      env,
+    );
+    assert.equal(stdout, "", "the concise re-serve of a briefed memory is filtered — same content_hash, same memory");
+  } finally {
+    await close();
+  }
+});
+
+// ─── server-enforced token budgets (PR-F): max_tokens on the wire ──────────
+//
+// The server — not the client — decides what fits a token budget and reports
+// what it omitted: postSearch sends the hooks' *_MAX_TOK knobs as the search
+// body's `max_tokens` (prompt recall passes inject_recall_max_tok, pretool
+// passes inject_pretool_max_tok per file), getBriefing sends
+// inject_briefing_max_tok as the ?max_tokens query param, and a response
+// `omitted` count folds into the existing drop footers. The client-side
+// fitByTokens trim stays wired verbatim as the old-server fallback and the
+// render-skeleton guard. Defaults flip in lockstep: 250 / 200 / 600.
+
+test("user-prompt-submit.mjs: sends inject_recall_max_tok as the search max_tokens", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    bodies.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "a budgeted fact" }, 0.9)])));
+  });
+  try {
+    await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "bud-p1", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_RECALL_MAX_TOK: "77" },
+    );
+    assert.equal(bodies.length, 1);
+    assert.equal(bodies[0].max_tokens, 77, "the recall budget rides the wire as max_tokens");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: sends inject_pretool_max_tok as max_tokens on each per-file search", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    bodies.push(JSON.parse(body));
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "a budgeted pretool fact" }, 0.9)])));
+  });
+  try {
+    await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "bud-t1", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_PRETOOL_MAX_TOK: "88" },
+    );
+    assert.equal(bodies.length, 1);
+    assert.equal(bodies[0].max_tokens, 88, "the per-file budget rides the wire as max_tokens");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: briefing carries inject_briefing_max_tok as the max_tokens query param", async () => {
+  const urls = [];
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
+      urls.push(req.url);
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(briefingBody({ facts: [bi({ id: "bf1", content: "a briefing fact" })] })));
+    }),
+  );
+  try {
+    await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "bud-b1", cwd: __dirname, source: "startup" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache(), MEMINI_INJECT_BRIEFING_MAX_TOK: "99" },
+    );
+    const briefingUrl = urls.find((u) => u.startsWith("/v1/namespaces/briefing"));
+    assert.ok(briefingUrl, "the briefing call happened");
+    assert.equal(new URL(briefingUrl, "http://x").searchParams.get("max_tokens"), "99", "the briefing budget rides the query string");
+  } finally {
+    await close();
+  }
+});
+
+test("new defaults flow: no env/server override sends 250 (recall) / 200 (pretool) / 600 (briefing)", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const searches = [];
+  const urls = [];
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res, body) => {
+      urls.push(req.url);
+      res.setHeader("Content-Type", "application/json");
+      if (req.url.startsWith("/v1/namespaces/briefing")) {
+        res.end(JSON.stringify(briefingBody({ facts: [bi({ id: "bf1", content: "a default-budget fact" })] })));
+        return;
+      }
+      searches.push(JSON.parse(body));
+      res.end(JSON.stringify(searchBody([sm({ id: "m1", content: "a default-budget fact" }, 0.9)])));
+    }),
+  );
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  try {
+    await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "bud-d1", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      env,
+    );
+    assert.equal(searches[0].max_tokens, 250, "prompt recall's built-in default budget is 250");
+
+    await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "bud-d1", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/other.go" } }),
+      env,
+    );
+    assert.equal(searches[1].max_tokens, 200, "pretool recall's built-in default budget is 200");
+
+    await runHook("session-start.mjs", JSON.stringify({ session_id: "bud-d2", cwd: __dirname, source: "startup" }), env);
+    const briefingUrl = urls.find((u) => u.startsWith("/v1/namespaces/briefing"));
+    assert.equal(new URL(briefingUrl, "http://x").searchParams.get("max_tokens"), "600", "briefing's built-in default budget is 600");
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: a server-side omitted count renders the drop footer and sums with client drops", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  const long = (n) => Array.from({ length: 30 }, (_, i) => `word${n}-${i}`).join(" ");
+  let respond = () => ({ ...searchBody([sm({ id: "m1", content: "a short budgeted fact" }, 0.9)]), omitted: 2 });
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(respond()));
+  });
+  try {
+    // Server-only drops: the footer carries the SERVER's count.
+    const serverOnly = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "bud-o1", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    const ctx1 = JSON.parse(serverOnly.stdout).hookSpecificOutput.additionalContext;
+    assert.match(ctx1, /\[\+2 more — memory_recall for detail\]/, "the footer carries the server's omitted count");
+    assert.match(ctx1, /summaries; full text/, "a server-trimmed block teaches memory_get");
+
+    // Mixed old/new drops: the server omitted 2 AND the client's fallback trim
+    // drops 2 of 3 long hits under a 10-token budget — the footer sums both.
+    respond = () => ({
+      ...searchBody([sm({ id: "a", content: long(1) }, 0.9), sm({ id: "b", content: long(2) }, 0.8), sm({ id: "c", content: long(3) }, 0.7)]),
+      omitted: 2,
+    });
+    const summed = await runHook(
+      "user-prompt-submit.mjs",
+      JSON.stringify({ session_id: "bud-o2", cwd: __dirname, prompt: "what did we decide about auth tokens" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache, MEMINI_INJECT_RECALL_MAX_TOK: "10" },
+    );
+    const ctx2 = JSON.parse(summed.stdout).hookSpecificOutput.additionalContext;
+    const m = ctx2.match(/\[\+(\d+) more — memory_recall for detail\]/);
+    assert.ok(m, "the drop footer renders");
+    assert.equal(Number(m[1]), 4, "server (2) and client fitByTokens (2) drops sum in the footer");
+  } finally {
+    await close();
+  }
+});
+
+test("pre-tool-use.mjs: a server-side omitted count on a per-file search lands in the block footer", async () => {
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS({ namespace: "memini" }));
+  const { url, close } = await startMockServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ ...searchBody([sm({ id: "m1", content: "the surviving pretool fact" }, 0.9)]), omitted: 3 }));
+  });
+  try {
+    const { stdout } = await runHook(
+      "pre-tool-use.mjs",
+      JSON.stringify({ session_id: "bud-o3", cwd: __dirname, tool_name: "Read", tool_input: { file_path: "internal/auth.go" } }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache },
+    );
+    const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    assert.match(ctx, /surviving pretool fact/);
+    assert.match(ctx, /\[\+3 more — memory_recall for detail\]/, "the footer carries the server's omitted count");
+    assert.match(ctx, /summaries; full text/, "a server-trimmed block teaches memory_get");
+  } finally {
+    await close();
+  }
+});
+
+test("session-start.mjs: a server-side briefing omitted count renders the truncation footer", async () => {
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "memini" }), (req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          ...briefingBody({ pinned: [bi({ id: "p1", content: "the one pinned fact that fit" })] }),
+          omitted: 4,
+        }),
+      );
+    }),
+  );
+  try {
+    const { stdout } = await runHook(
+      "session-start.mjs",
+      JSON.stringify({ session_id: "bud-o4", cwd: __dirname, source: "startup" }),
+      { MEMINI_BASE_URL: url, XDG_CACHE_HOME: freshCache() },
+    );
+    assert.match(stdout, /the one pinned fact that fit/);
+    assert.match(stdout, /\[\.\.\. 4 item\(s\) truncated by token budget\]/, "the server's omitted count folds into the briefing footer");
+  } finally {
+    await close();
+  }
+});
+
+test("user-prompt-submit.mjs: a 400 on max_tokens strips it FIRST (newest field), then exclude_ids, then response_format", async () => {
+  // The one-strip-per-retry chain, newest field first: max_tokens →
+  // exclude_ids → response_format. An old server that rejects every new field
+  // degrades to a bare search, never to NO recall.
+  const cache = freshCache();
+  await primeCache(cache, __dirname, mkHS());
+  const bodies = [];
+  const { url, close } = await startMockServer((req, res, body) => {
+    const parsed = JSON.parse(body);
+    bodies.push(parsed);
+    res.setHeader("Content-Type", "application/json");
+    if (parsed.max_tokens || parsed.exclude_ids || parsed.response_format) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ error: "unknown field" }));
+      return;
+    }
+    const n = bodies.length;
+    res.end(JSON.stringify(searchBody([sm({ id: `m${n}`, content: `fact number ${n}` }, 0.9)])));
+  });
+  const env = { MEMINI_BASE_URL: url, XDG_CACHE_HOME: cache };
+  const payload = (p) => JSON.stringify({ session_id: "bud-400", cwd: __dirname, prompt: p });
+  try {
+    // First prompt (no exclude_ids yet): max_tokens stripped first, then
+    // response_format — three attempts.
+    const first = await runHook("user-prompt-submit.mjs", payload("what did we decide about auth tokens"), env);
+    assert.equal(bodies.length, 3, "first prompt: 400, 400, then success");
+    assert.ok(bodies[0].max_tokens > 0, "attempt 1 carried max_tokens (the default budget)");
+    assert.equal(bodies[1].max_tokens, undefined, "max_tokens is stripped first (newest field)");
+    assert.equal(bodies[1].response_format, "concise", "response_format survives the first strip");
+    assert.equal(bodies[2].response_format, undefined, "then response_format");
+    assert.match(JSON.parse(first.stdout).hookSpecificOutput.additionalContext, /fact number 3/, "recall lands after the retries");
+
+    // Second prompt adds exclude_ids: worst case is four attempts, stripping
+    // max_tokens → exclude_ids → response_format in that order.
+    const second = await runHook("user-prompt-submit.mjs", payload("and what about session cookies here"), env);
+    assert.equal(bodies.length, 7, "second prompt: 400, 400, 400, then success");
+    assert.ok(bodies[3].max_tokens > 0 && bodies[3].exclude_ids && bodies[3].response_format, "attempt 1 carried all three");
+    assert.equal(bodies[4].max_tokens, undefined, "max_tokens first");
+    assert.ok(bodies[4].exclude_ids, "exclude_ids survives the max_tokens strip");
+    assert.equal(bodies[5].exclude_ids, undefined, "exclude_ids second");
+    assert.equal(bodies[5].response_format, "concise");
+    assert.equal(bodies[6].response_format, undefined, "response_format last");
+    assert.match(JSON.parse(second.stdout).hookSpecificOutput.additionalContext, /fact number 7/);
   } finally {
     await close();
   }

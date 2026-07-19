@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	sqlitevec "github.com/asg017/sqlite-vec-go-bindings/ncruces"
 	_ "github.com/ncruces/go-sqlite3/driver" // registers the database/sql "sqlite3" driver
@@ -559,6 +560,36 @@ func (s *Store) Get(ctx context.Context, namespace, id string) (*memory.Memory, 
 		return nil, store.ErrNotFound
 	}
 	return m, err
+}
+
+// IDsByPrefix returns the IDs in the namespace beginning with prefix,
+// ascending, bounded at limit rows. The LIKE with escaped metacharacters is
+// the indexed prefix scan; the substr equality guard restores byte-literal
+// matching (sqlite LIKE is ASCII case-insensitive, and the store contract is
+// literal) and runs before LIMIT so a case-mismatched row never consumes a
+// slot.
+func (s *Store) IDsByPrefix(ctx context.Context, namespace, prefix string, limit int) ([]string, error) {
+	if prefix == "" || limit <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM memories
+		 WHERE namespace = ? AND id LIKE ? ESCAPE '\' AND substr(id, 1, ?) = ?
+		 ORDER BY id LIMIT ?`,
+		namespace, escapeLike(prefix)+"%", utf8.RuneCountInString(prefix), prefix, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitevec: ids by prefix %q: %w", prefix, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // GetEmbedding returns the stored vector for a memory, or nil when the row is

@@ -154,7 +154,7 @@ authority is restored.
 | `MEMINI_RECALL`                      | on               | Automatic prompt recall.                                                                      |
 | `MEMINI_CAPTURE`                     | on               | Settled-turn capture.                                                                         |
 | `MEMINI_RECALL_LIMIT`                | `3`              | Maximum automatic recall hits.                                                                |
-| `MEMINI_INJECT_RECALL_MAX_TOK`       | `0`              | Recall injection token ceiling; `0` is unbounded.                                             |
+| `MEMINI_INJECT_RECALL_MAX_TOK`       | `250`            | Recall injection token ceiling; `0` is unbounded.                                             |
 | `MEMINI_INJECT_RECALL_MIN_SCORE`     | `0`              | Minimum automatic recall score.                                                               |
 | `MEMINI_INJECT_DEDUPE`               | on               | Shared cross-surface suppression state.                                                       |
 | `MEMINI_INJECT_COOLDOWN_MS`          | `1800000`        | Time cooldown for repeated injection; `0` disables this dimension.                            |
@@ -164,7 +164,7 @@ authority is restored.
 | `MEMINI_INJECT_BRIEFING_FACTS`       | `5`              | Startup durable-fact cap.                                                                     |
 | `MEMINI_INJECT_BRIEFING_PROCEDURES`  | `5`              | Startup procedure cap.                                                                        |
 | `MEMINI_INJECT_BRIEFING_RECENT`      | `3`              | Startup recent-memory cap.                                                                    |
-| `MEMINI_INJECT_BRIEFING_MAX_TOK`     | `0`              | Whole briefing token ceiling; `0` is unbounded.                                               |
+| `MEMINI_INJECT_BRIEFING_MAX_TOK`     | `600`            | Whole briefing token ceiling; `0` is unbounded.                                               |
 | `MEMINI_SESSION_DIGEST`              | on               | Pre-compaction and shutdown activity checkpoints.                                             |
 | `MEMINI_MIN_CAPTURE_CHARS`           | `0`              | Minimum settled user-text length required for capture.                                        |
 | `MEMINI_CAPTURE_USER_MAX_CHARS`      | `1000`           | Per-turn captured user-text cap; `0` is unbounded.                                            |

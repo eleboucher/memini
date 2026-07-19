@@ -302,7 +302,10 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** Fetch a memory by ID */
+        /**
+         * Fetch a memory by ID (or unique id prefix)
+         * @description The id may be a prefix of at least 8 hex chars instead of the full id: an exact match always wins; otherwise a prefix matching exactly one memory in the request namespace resolves to it, no match is a 404, and more than one match is a 409 whose error lists the colliding full ids (retry with a longer prefix). Prefixes shorter than 8 hex chars are never resolved (404, same as any unknown id). GET only — mutations (PATCH/DELETE/supersede) require the verbatim full id.
+         */
         get: operations["getMemory"];
         put?: never;
         post?: never;
@@ -488,6 +491,26 @@ export interface paths {
         get: operations["listActivity"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/activity/injected": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Report what a client hook actually injected vs suppressed
+         * @description The injection-telemetry beacon: after the server serves memories (a recall or a session briefing), the reporting hook says which of them actually reached model context and what its local gates held back (seen/cooldown/budget/unchanged/score), so the activity feed and the server metrics reflect injected reality rather than pre-suppression serves. Recorded as a single "inject" activity event whose memory refs are the injected ids; a nearby recall event's memories are then annotated with the injected flag (see ActivityMemory.injected). Best-effort by design: unknown memory ids are accepted verbatim (never a 404), and namespace comes from the X-Memini-Namespace header exactly like the other activity routes. No-op (still 204) when the storage backend has no activity log — metrics still count.
+         */
+        post: operations["reportInjected"];
         delete?: never;
         options?: never;
         head?: never;
@@ -744,6 +767,17 @@ export interface components {
              * @description Per-call relevance floor on the fused score. Candidates below it are dropped server-side before re-ranking. 0 (or unset) falls back to the server's baked relevance floor (0.1). Only meaningful with score fusion (RRF scores are not comparable to this threshold).
              */
             min_score?: number;
+            /**
+             * @description "detailed" (default, and the behavior when absent) returns each result's full stored content. "concise" replaces each result's memory.content with its compact form — the summary when one exists, else the content cut at a word/sentence boundary to at most 240 runes with a "…" suffix — and sets memory.content_truncated on results whose concise text is such a cut. A projection at response mapping only: ranking, filters, and scores are identical across formats, and memory.content_hash is always computed over the full stored content. Fetch full text with GET /v1/memories/{id}.
+             * @default detailed
+             * @enum {string}
+             */
+            response_format: "concise" | "detailed";
+            /**
+             * @description Server-enforced token budget over the results. The server fills results in final rank order until the estimated cost — a cheap word-count estimate (ceil(words*4/3), the client hooks' own approxTokens recipe) over the content each result ships (the concise text under response_format=concise) plus a 10-token per-item render overhead — would exceed the budget, drops the whole tail, and reports the drop count in the response's `omitted`. The first result always ships even when it alone exceeds the budget: a non-empty recall never becomes empty by budget. An estimate, not a tokenizer — treat the bound as approximate. 0 (or absent) is unbounded. The drop count is also recorded server-side as `budget_omitted` on the recall activity event.
+             * @default 0
+             */
+            max_tokens: number;
         };
         ScoredMemory: {
             memory: components["schemas"]["Memory"];
@@ -758,6 +792,8 @@ export interface components {
             degraded?: string;
             /** @description Human-readable explanation of `degraded`; omitted alongside it on a healthy search. */
             note?: string;
+            /** @description Results dropped by the request's `max_tokens` budget. Absent — never an explicit 0 — when no budget was set or everything fit, so its presence always means the server trimmed the tail. */
+            omitted?: number;
         };
         AnswerRequest: {
             query: string;
@@ -789,10 +825,10 @@ export interface components {
             memories: components["schemas"]["Memory"][];
         };
         /**
-         * @description The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede, pin, unpin, settings.
+         * @description The operation an activity event records. Reads: recall, get, briefing. Writes: remember, update, forget, supersede, pin, unpin, settings. Client telemetry: inject (a POST /v1/activity/injected report).
          * @enum {string}
          */
-        EventKind: "recall" | "get" | "briefing" | "remember" | "update" | "forget" | "supersede" | "pin" | "unpin" | "settings";
+        EventKind: "recall" | "get" | "briefing" | "remember" | "update" | "forget" | "supersede" | "pin" | "unpin" | "settings" | "inject";
         /** @description One memory as it appeared in an event — a snapshot taken at serve time, so a forgotten memory still renders — plus why it was there. */
         ActivityMemory: {
             id: string;
@@ -809,6 +845,8 @@ export interface components {
             score?: number;
             /** @description Which briefing section it appeared under; briefing only. */
             section?: string;
+            /** @description The served→injected join's verdict, on a recall event's memories: true when a client injection-telemetry report (POST /v1/activity/injected) named this memory as actually reaching model context, false when a report covered the recall but omitted it (the client suppressed it). ABSENT when no report covered the serve — absent means unknown, so old data and non-reporting integrations render unchanged; only a report ever yields false. */
+            injected?: boolean;
         };
         /** @description One logical operation, with the memories it served or wrote. */
         ActivityEvent: {
@@ -840,6 +878,38 @@ export interface components {
             next_cursor?: string;
             has_more: boolean;
         };
+        /** @description One injection-telemetry beacon (POST /v1/activity/injected): what a hook actually injected into model context and what its local gates suppressed, reported after the serve. Memory ids are taken on faith — an unknown id is recorded as-is, never rejected. */
+        InjectedReport: {
+            /** @description The client session the injection happened in. */
+            session_id?: string;
+            /**
+             * @description Which hook surface is reporting.
+             * @enum {string}
+             */
+            surface: "briefing" | "prompt" | "pretool";
+            /** @description Free-form client name (e.g. "claude-code"). */
+            source?: string;
+            /** @description Memory ids actually injected, in injection order. May be empty — a suppression-only report still records. */
+            injected_ids?: string[];
+            /** @description Client-side estimate of the tokens the injections consumed. */
+            injected_tokens_est?: number;
+            /** @description Characters actually injected. */
+            injected_chars?: number;
+            suppressed?: components["schemas"]["InjectedSuppressed"];
+        };
+        /** @description Per-reason counts of served memories the client's local gates held back from injection. Omitted reasons mean "none reported". */
+        InjectedSuppressed: {
+            /** @description Already injected this session (dedupe). */
+            seen?: number;
+            /** @description Inside the injection cooldown window. */
+            cooldown?: number;
+            /** @description Over the token/char budget for the surface. */
+            budget?: number;
+            /** @description Byte-identical to what was already injected. */
+            unchanged?: number;
+            /** @description Below the client's score floor. */
+            score?: number;
+        };
         Briefing: {
             namespace: string;
             /** @description A human-readable one-line summary of which namespaces this briefing drew from (its resolved read set scope), e.g. "Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2), +1 link" — primary first, then each cascade leg that contributed durable memories (nearest ancestor first, home last, counts per leg), then a "+K link(s)" suffix for contributing links. */
@@ -854,6 +924,8 @@ export interface components {
             pinned?: components["schemas"]["BriefingItem"][];
             /** @description Direct-child namespace rollups (one segment deeper than the briefed namespace), each aggregating its whole subtree: all-tier live total plus up to 3 pinned and 3 recent-durable highlight memories. Ordered by most-recent write, capped at 10 children; omitted at a leaf namespace. */
             children?: components["schemas"]["BriefingChild"][] | null;
+            /** @description Total items dropped across the four sections by the request's `max_tokens` budget. Absent — never an explicit 0 — when no budget was set or everything fit. */
+            omitted?: number;
         };
         BriefingItem: {
             memory: components["schemas"]["Memory"];
@@ -864,8 +936,14 @@ export interface components {
             namespace: string;
             /** @description Live memory count in this child namespace. */
             total: number;
+            /** @description Full pinned highlight memories; only with children=full (the default). */
             pinned?: components["schemas"]["Memory"][];
+            /** @description Full recent-durable highlight memories; only with children=full (the default). */
             recent?: components["schemas"]["Memory"][];
+            /** @description Compact display titles (summary, else a ≤60-rune boundary cut of content) of the pinned highlights; only with children=summary, which ships titles/counts and no memory objects. */
+            pinned_titles?: string[];
+            /** @description Compact display titles of the recent-durable highlights; only with children=summary. */
+            recent_titles?: string[];
         };
         Stats: {
             namespace: string;
@@ -992,6 +1070,10 @@ export interface components {
             /** @description Derivation provenance: explicit (user-stated / heuristic) vs deduced (LLM-distilled). Null/omitted when the row predates the tag or when unset. */
             level?: components["schemas"]["Level"];
             content: string;
+            /** @description Content-identity hash for injection dedupe: the first 16 hex chars of sha256 over the FULL stored content, falling back to the summary only when content is empty — the same recipe as the plugin client's injectedIdentity, so client and server derive identical identities. Always computed over the stored text (never a concise projection), so it is stable across response formats. Present on search and briefing responses; omitted elsewhere. */
+            content_hash?: string;
+            /** @description Present (true) only in concise-format responses (response_format=concise on /v1/search, format=concise on /v1/namespaces/briefing) when this memory's content was replaced by a boundary cut of the stored content. Absent when the concise text is a stored summary or content short enough to pass through verbatim — and always absent in detailed responses. */
+            content_truncated?: boolean;
             summary?: string;
             metadata?: {
                 [key: string]: unknown;
@@ -1155,8 +1237,8 @@ export interface components {
              */
             inject_briefing_recent: number;
             /**
-             * @description Hard ceiling on briefing injection tokens; 0 is uncapped.
-             * @default 0
+             * @description Hard ceiling on briefing injection tokens; 0 is uncapped. Sent to the server as the briefing's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
+             * @default 600
              */
             inject_briefing_max_tok: number;
             /**
@@ -1165,8 +1247,8 @@ export interface components {
              */
             inject_pretool_items: number;
             /**
-             * @description Hard ceiling on per-tool injection tokens; 0 is uncapped.
-             * @default 0
+             * @description Hard ceiling on per-tool injection tokens; 0 is uncapped. Sent to the server as each per-file search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
+             * @default 200
              */
             inject_pretool_max_tok: number;
             /**
@@ -1196,6 +1278,11 @@ export interface components {
              * @default true
              */
             inject_dedupe: boolean;
+            /**
+             * @description Report what each hook actually injected vs suppressed back to the server (POST /v1/activity/injected) so the activity feed and metrics reflect what reached model context instead of pre-suppression serves. Best-effort and bounded (the beacon never blocks or fails a hook); off disables reporting entirely.
+             * @default true
+             */
+            inject_telemetry: boolean;
             /**
              * @description Time window (milliseconds) within which an already-injected memory is not re-injected; 0 disables the time dimension.
              * @default 1800000
@@ -1227,8 +1314,8 @@ export interface components {
              */
             recall_limit: number;
             /**
-             * @description Hard ceiling on recall injection tokens; 0 is uncapped.
-             * @default 0
+             * @description Hard ceiling on recall injection tokens; 0 is uncapped. Sent to the server as the prompt search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.
+             * @default 250
              */
             inject_recall_max_tok: number;
             /**
@@ -1709,6 +1796,12 @@ export interface operations {
                 scope?: "project" | "full" | "everywhere" | "exact" | "subtree";
                 /** @description Repeatable. Brief exactly these namespaces instead of the default read set (the namespace, its subtree, and the global namespace). An entry ending in "/*" also includes namespaces nested under it. Writes are unaffected. */
                 namespaces?: string[];
+                /** @description "detailed" (default) carries each item's full stored content. "concise" replaces each item's memory.content with its compact form — the summary when one exists, else the content cut at a word/sentence boundary to at most 280 runes (the client's briefing render cap) with a "…" suffix — and sets memory.content_truncated on items whose concise text is such a cut. Section selection and ordering are identical across formats, and memory.content_hash is always computed over the full stored content. */
+                format?: "concise" | "detailed";
+                /** @description How to render the direct-child rollup: "full" (default) carries complete memory objects per child (the admin UI consumes these); "summary" ships titles/counts only per child — namespace, total, and compact pinned/recent title lines (pinned_titles/ recent_titles), the same isolation surface the MCP briefing renders; "none" omits the rollup entirely. */
+                children?: "summary" | "full" | "none";
+                /** @description Server-enforced token budget across the whole briefing, filled in section order pinned → facts → procedures → recent — fill order IS priority order, so pinned fills first and recent starves first. Whole tail items are dropped, never split, and the total drop count lands in the response's `omitted`. The estimate is the same recipe as search's max_tokens (word-count over the shipped content — the concise text under format=concise — plus a 10-token per-item overhead), and the first item overall always ships. The child rollup is neither counted nor trimmed. 0 (or absent) is unbounded. */
+                max_tokens?: number;
             };
             header?: {
                 /** @description Namespace for this request; falls back to the server default. */
@@ -1979,6 +2072,7 @@ export interface operations {
                 };
             };
             404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
         };
     };
     forgetMemory: {
@@ -2323,6 +2417,33 @@ export interface operations {
             400: components["responses"]["Error"];
             401: components["responses"]["Error"];
             501: components["responses"]["Error"];
+        };
+    };
+    reportInjected: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Namespace for this request; falls back to the server default. */
+                "X-Memini-Namespace"?: components["parameters"]["Namespace"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InjectedReport"];
+            };
+        };
+        responses: {
+            /** @description Report recorded (best-effort). */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
         };
     };
     handshake: {

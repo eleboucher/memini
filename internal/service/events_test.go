@@ -603,6 +603,170 @@ func TestEventLogOffRecordsNothing(t *testing.T) {
 	}
 }
 
+// TestRecordInjectedWritesEvent covers the injection-telemetry beacon's write
+// path: one report becomes one inject event carrying the session, surface,
+// size estimates and suppression counts in its detail, with the injected ids
+// as the event's memory refs — unknown ids included, best-effort by design.
+func TestRecordInjectedWritesEvent(t *testing.T) {
+	ctx := context.Background()
+	svc := newEventSvc(t)
+
+	m, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "n", Content: "the database is postgres", Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	tokens, chars := 412, 1650
+	svc.RecordInjected(ctx, "n", service.InjectedReport{
+		SessionID:   "s1",
+		Surface:     "prompt",
+		Source:      "claude-code",
+		InjectedIDs: []string{m.ID, "ghost-id"},
+		TokensEst:   &tokens,
+		Chars:       &chars,
+		Suppressed:  service.InjectedSuppressed{Seen: 2, Cooldown: 1, Score: 3},
+	})
+
+	page, err := svc.Events(ctx, service.EventsInput{
+		Namespace: "n", Kinds: []store.EventKind{store.EventInject},
+	})
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if len(page.Events) != 1 {
+		t.Fatalf("got %d inject events, want 1", len(page.Events))
+	}
+	ev := page.Events[0]
+	if ev.Kind != store.EventInject {
+		t.Fatalf("kind = %q, want inject", ev.Kind)
+	}
+	if ev.Detail["surface"] != "prompt" || ev.Detail["session_id"] != "s1" || ev.Detail["source"] != "claude-code" {
+		t.Errorf("detail = %+v, want surface=prompt session_id=s1 source=claude-code", ev.Detail)
+	}
+	if got := ev.Detail["injected_tokens_est"]; !eqInt(got, 412) {
+		t.Errorf("injected_tokens_est = %v (%T), want 412", got, got)
+	}
+	if got := ev.Detail["injected_chars"]; !eqInt(got, 1650) {
+		t.Errorf("injected_chars = %v (%T), want 1650", got, got)
+	}
+	sup, ok := ev.Detail["suppressed"].(map[string]any)
+	if !ok {
+		t.Fatalf("detail suppressed = %v (%T), want a map", ev.Detail["suppressed"], ev.Detail["suppressed"])
+	}
+	if !eqInt(sup["seen"], 2) || !eqInt(sup["cooldown"], 1) || !eqInt(sup["score"], 3) {
+		t.Errorf("suppressed = %+v, want seen=2 cooldown=1 score=3", sup)
+	}
+	if _, ok := sup["budget"]; ok {
+		t.Errorf("suppressed carries budget = %v, want zero reasons omitted", sup["budget"])
+	}
+	if len(ev.Memories) != 2 {
+		t.Fatalf("inject event carries %d memory refs, want 2 (unknown ids are kept)", len(ev.Memories))
+	}
+	if ev.Memories[0].ID != m.ID || ev.Memories[1].ID != "ghost-id" {
+		t.Errorf("memory refs = [%q, %q], want [%q, ghost-id]", ev.Memories[0].ID, ev.Memories[1].ID, m.ID)
+	}
+
+	// A suppression-only report (nothing injected) still records: one sentinel
+	// event with no memory refs, mirroring the zero-hit recall.
+	svc.RecordInjected(ctx, "quiet", service.InjectedReport{
+		SessionID: "s2", Surface: "pretool",
+		Suppressed: service.InjectedSuppressed{Budget: 4},
+	})
+	only, err := svc.Events(ctx, service.EventsInput{Namespace: "quiet"})
+	if err != nil {
+		t.Fatalf("events quiet: %v", err)
+	}
+	if len(only.Events) != 1 || len(only.Events[0].Memories) != 0 {
+		t.Fatalf("suppression-only report = %+v, want one memory-less event", only.Events)
+	}
+	if sup, _ := only.Events[0].Detail["suppressed"].(map[string]any); !eqInt(sup["budget"], 4) {
+		t.Errorf("suppression-only detail = %+v, want suppressed.budget=4", only.Events[0].Detail)
+	}
+}
+
+// TestEventsAnnotatesInjectedMemories is the served→injected join: a recall
+// event's memory is marked injected=true when a later inject report names it,
+// injected=false when a report exists but omits it (the client suppressed it),
+// and stays unannotated — absent, not false — when no report covered the
+// serve, so old data and non-reporting integrations render unchanged.
+func TestEventsAnnotatesInjectedMemories(t *testing.T) {
+	ctx := context.Background()
+	svc := newEventSvc(t)
+
+	seed := func(ns, content string) string {
+		t.Helper()
+		m, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: ns, Content: content, Tier: memory.TierSemantic,
+		})
+		if err != nil {
+			t.Fatalf("remember %q: %v", content, err)
+		}
+		return m.ID
+	}
+	injectedID := seed("n", "the primary database is postgres")
+	suppressedID := seed("n", "the backup database is mysql")
+
+	res, err := svc.Recall(ctx, service.RecallInput{Namespace: "n", Query: "database", Limit: 5})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("recall served %d memories, want both seeds", len(res))
+	}
+	// The client injected one and suppressed the other.
+	svc.RecordInjected(ctx, "n", service.InjectedReport{
+		SessionID: "s1", Surface: "prompt", InjectedIDs: []string{injectedID},
+		Suppressed: service.InjectedSuppressed{Seen: 1},
+	})
+
+	page, err := svc.Events(ctx, service.EventsInput{
+		Namespace: "n", Kinds: []store.EventKind{store.EventRecall, store.EventInject},
+	})
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	var recall *service.ActivityEvent
+	for i := range page.Events {
+		if page.Events[i].Kind == store.EventRecall {
+			recall = &page.Events[i]
+		}
+	}
+	if recall == nil {
+		t.Fatalf("no recall event in %+v", page.Events)
+	}
+	flags := map[string]*bool{}
+	for _, m := range recall.Memories {
+		flags[m.ID] = m.Injected
+	}
+	if got := flags[injectedID]; got == nil || !*got {
+		t.Errorf("injected memory flag = %v, want true", got)
+	}
+	if got := flags[suppressedID]; got == nil || *got {
+		t.Errorf("suppressed memory flag = %v, want false (reported-suppressed, not unknown)", got)
+	}
+
+	// A recall no report ever covered stays unannotated: absent means unknown.
+	seed("bare", "the cache is redis")
+	if _, err := svc.Recall(ctx, service.RecallInput{Namespace: "bare", Query: "cache", Limit: 5}); err != nil {
+		t.Fatalf("bare recall: %v", err)
+	}
+	bare, err := svc.Events(ctx, service.EventsInput{
+		Namespace: "bare", Kinds: []store.EventKind{store.EventRecall},
+	})
+	if err != nil {
+		t.Fatalf("events bare: %v", err)
+	}
+	if len(bare.Events) != 1 || len(bare.Events[0].Memories) == 0 {
+		t.Fatalf("bare recall = %+v, want one event with memories", bare.Events)
+	}
+	for _, m := range bare.Events[0].Memories {
+		if m.Injected != nil {
+			t.Errorf("unreported memory %s flag = %v, want absent (nil)", m.ID, *m.Injected)
+		}
+	}
+}
+
 // TestPruneEvents covers the retention path the sweeper drives.
 func TestPruneEvents(t *testing.T) {
 	ctx := context.Background()

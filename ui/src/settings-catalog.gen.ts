@@ -86,8 +86,8 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   {
     "key": "inject_briefing_max_tok",
     "type": "integer",
-    "default": 0,
-    "description": "Hard ceiling on briefing injection tokens; 0 is uncapped.",
+    "default": 600,
+    "description": "Hard ceiling on briefing injection tokens; 0 is uncapped. Sent to the server as the briefing's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.",
     "min": 0
   },
   {
@@ -100,8 +100,8 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   {
     "key": "inject_pretool_max_tok",
     "type": "integer",
-    "default": 0,
-    "description": "Hard ceiling on per-tool injection tokens; 0 is uncapped.",
+    "default": 200,
+    "description": "Hard ceiling on per-tool injection tokens; 0 is uncapped. Sent to the server as each per-file search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.",
     "min": 0
   },
   {
@@ -136,6 +136,12 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
     "type": "boolean",
     "default": true,
     "description": "Suppress re-injecting a recalled memory that is still within its injection cooldown window (inject_cooldown_ms / inject_cooldown_prompts); with both windows 0, an unchanged memory stays suppressed for the rest of the session. This gates the injection; whether the PreToolUse recall call runs at all follows inject_pretool_gate_ms, but turning inject_dedupe off also disables that call gate, because the gate's clock lives in the dedupe state."
+  },
+  {
+    "key": "inject_telemetry",
+    "type": "boolean",
+    "default": true,
+    "description": "Report what each hook actually injected vs suppressed back to the server (POST /v1/activity/injected) so the activity feed and metrics reflect what reached model context instead of pre-suppression serves. Best-effort and bounded (the beacon never blocks or fails a hook); off disables reporting entirely."
   },
   {
     "key": "inject_cooldown_ms",
@@ -185,8 +191,8 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   {
     "key": "inject_recall_max_tok",
     "type": "integer",
-    "default": 0,
-    "description": "Hard ceiling on recall injection tokens; 0 is uncapped.",
+    "default": 250,
+    "description": "Hard ceiling on recall injection tokens; 0 is uncapped. Sent to the server as the prompt search's max_tokens (server-enforced budget) and kept as the client-side fallback trim for old servers.",
     "min": 0
   },
   {

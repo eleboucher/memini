@@ -251,9 +251,26 @@ export async function postJSON(path, body, namespace, timeoutMs = requestTimeout
  * most-recent kept. An older server that doesn't know the field 400s the
  * whole request — retried once without it, degrading to "no server-side
  * dedupe" instead of "no recall at all".
+ *
+ * Every search asks for `response_format: "concise"` (progressive
+ * disclosure): the server serves summary-or-boundary-cut content plus
+ * `content_truncated` on cut memories, and the model pulls full text on
+ * demand via memory_get using the rendered [m:id] handle.
+ *
+ * `maxTokens` (> 0) is the SERVER-enforced token budget (PR-F): sent as the
+ * body's max_tokens, the server fills results in rank order until the
+ * estimated cost would exceed it, drops the tail, and reports the count in
+ * the response's `omitted` (returned here; 0 when absent). The caller keeps
+ * its own fitByTokens trim as the old-server fallback and render-skeleton
+ * guard — same knob, two layers.
+ *
+ * Old servers reject unknown body fields with a 400. The fallback chain
+ * strips ONE field per retry, newest field first — max_tokens, then
+ * exclude_ids, then response_format — degrading a search to progressively
+ * older wire shapes instead of "no recall at all".
  */
-export async function postSearch(query, namespace, { limit = 5, tiers, exclude, minScore, source, excludeIds } = {}) {
-  const body = { query, limit };
+export async function postSearch(query, namespace, { limit = 5, tiers, exclude, minScore, source, excludeIds, maxTokens } = {}) {
+  const body = { query, limit, response_format: "concise" };
   if (tiers) body.tiers = tiers;
   if (typeof minScore === "number" && minScore > 0) body.min_score = minScore;
   // source is the recall's "why" — recorded on the activity event so the feed
@@ -265,12 +282,21 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude, 
   // while still in the live context.
   if (exclude && Object.keys(exclude).length) body.exclude_metadata = exclude;
   if (Array.isArray(excludeIds) && excludeIds.length) body.exclude_ids = excludeIds.slice(-MAX_RECALL_EXCLUDE_IDS);
+  if (Number.isFinite(maxTokens) && maxTokens > 0) body.max_tokens = maxTokens;
   let res = await postJSONStatus("/v1/search", body, namespace);
+  if (res.status === 400 && body.max_tokens) {
+    delete body.max_tokens;
+    res = await postJSONStatus("/v1/search", body, namespace);
+  }
   if (res.status === 400 && body.exclude_ids) {
     delete body.exclude_ids;
     res = await postJSONStatus("/v1/search", body, namespace);
   }
-  if (!res.json || !Array.isArray(res.json.results)) return { hits: [], degraded: "", note: "" };
+  if (res.status === 400 && body.response_format) {
+    delete body.response_format;
+    res = await postJSONStatus("/v1/search", body, namespace);
+  }
+  if (!res.json || !Array.isArray(res.json.results)) return { hits: [], degraded: "", note: "", omitted: 0 };
   const resBody = res.json;
   const floor = typeof minScore === "number" && minScore > 0 ? minScore : 0;
   const hits = resBody.results
@@ -280,12 +306,22 @@ export async function postSearch(query, namespace, { limit = 5, tiers, exclude, 
       score: typeof r?.score === "number" ? r.score : 0,
       memory: r?.memory || null,
       tier: r?.memory?.tier || "",
+      // Concise-wire markers, normalized onto the hit whether the server put
+      // them on the memory (canonical) or the result wrapper (tolerated).
+      content_truncated: r?.memory?.content_truncated === true || r?.content_truncated === true,
+      ...(typeof r?.content_hash === "string" && r.content_hash ? { content_hash: r.content_hash } : {}),
     }))
     .filter((r) => r.score >= floor);
   return {
     hits,
     degraded: typeof resBody.degraded === "string" ? resBody.degraded : "",
     note: typeof resBody.note === "string" ? resBody.note : "",
+    // How many ranked results the server's max_tokens budget dropped — the
+    // count the hooks fold into their "[+N more]" drop footer (summed with
+    // any client-side fitByTokens drops). 0 when absent: an old server (or an
+    // unbudgeted call) reports nothing, and the wire omits the field when
+    // everything fit.
+    omitted: Number.isInteger(resBody.omitted) && resBody.omitted > 0 ? resBody.omitted : 0,
   };
 }
 
@@ -310,17 +346,22 @@ export function filterFreshTurnEchoes(hits, now = Date.now()) {
 }
 
 /**
- * Render one recall hit as a "- (score) [labels] text" bullet. Neutralizes
- * memini wrapper tags in the untrusted recalled content BEFORE the 240-char
- * truncate, so a forged closing tag can't break out of the enclosing
- * injection block (memory-poisoning defense — same rationale as formatMemory
- * in session-start). Returns null when the hit has no renderable text.
+ * Render one recall hit as a "- (score) [labels] text [m:id8]" bullet.
+ * Neutralizes memini wrapper tags in the untrusted recalled content BEFORE
+ * the 240-char truncate, so a forged closing tag can't break out of the
+ * enclosing injection block (memory-poisoning defense — same rationale as
+ * formatMemory in session-start). The trailing [m:<first 8 id chars>] handle
+ * (only when the hit carries an id) is what the block header's memory_get
+ * teaching points at; ids are server-minted hex/uuid, safe to render
+ * verbatim. Returns null when the hit has no renderable text.
  */
 export function formatRecallHit(h, labels) {
   const text = escapeMeminiTags(h?.content || h?.summary || "");
   if (!text) return null;
+  const id = h?.memory?.id;
+  const handle = typeof id === "string" && id ? ` [m:${id.slice(0, 8)}]` : "";
   if (labels.size === 0) {
-    return `- (${h.score.toFixed(2)}) ${truncate(text, 240)}`;
+    return `- (${h.score.toFixed(2)}) ${truncate(text, 240)}${handle}`;
   }
   const tagParts = [];
   if (labels.has("tier") && h.tier) tagParts.push(h.tier);
@@ -329,7 +370,33 @@ export function formatRecallHit(h, labels) {
   }
   if (labels.has("reason")) tagParts.push("relevant memory");
   const prefix = tagParts.length ? `[${tagParts.join(" · ")}] ` : "";
-  return `- (${h.score.toFixed(2)}) ${prefix}${truncate(text, 240)}`;
+  return `- (${h.score.toFixed(2)}) ${prefix}${truncate(text, 240)}${handle}`;
+}
+
+/**
+ * The one comment line a recall/pretool block adds — after its opening
+ * comment — when anything in it was truncated (server-concise or the client's
+ * 240-char cap) or dropped by the token budget: it teaches the model that the
+ * bullets are summaries and memory_get with an [m:…] id recovers full text.
+ * ONE shared byte-identical constant across both surfaces, deliberately: any
+ * per-block variation would bust the prompt prefix cache for zero information.
+ * Never emitted on the briefing — its ~21 fires/day don't earn the
+ * instruction cost; truncation lives on the recall surfaces.
+ */
+export const RECALL_DETAIL_HEADER = "<!-- summaries; full text: memory_get with the id from [m:…] -->";
+
+/**
+ * Did this hit's rendered text lose content? True when the server says so
+ * (content_truncated — set only when its concise form actually cut), or when
+ * the client's own 240-char render cap in formatRecallHit fires (an old
+ * server serves full content; the cap is then the truncation). Checked
+ * against the same escaped text formatRecallHit renders, so the two can't
+ * disagree about where the cap lands.
+ */
+export function recallHitTruncated(h) {
+  if (h?.content_truncated === true || h?.memory?.content_truncated === true) return true;
+  const text = escapeMeminiTags(h?.content || h?.summary || "");
+  return typeof text === "string" && text.length > 240;
 }
 
 /**
@@ -376,9 +443,21 @@ export async function getJSON(path, namespace, timeoutMs = requestTimeoutMs, opt
  * `opts` controls per-section caps. Each field is an int; omit (or 0) to use
  * the server default (5). Pass an explicit 0 to disable that section (REST
  * only — MCP can't distinguish omitted from zero).
+ *
+ * `opts.max_tokens` (> 0) is the SERVER-enforced briefing budget (PR-F),
+ * sent as the ?max_tokens query param: the server fills whole items in
+ * section order pinned → facts → procedures → recent, drops the tail, and
+ * reports the count in the response's `omitted`. Old servers ignore unknown
+ * query params (no fallback needed) and the caller's own token trim remains
+ * the guard for them.
  */
 export async function getBriefing(namespace, opts = {}) {
   const params = new URLSearchParams();
+  // Progressive disclosure: ask for concise items (280-rune summaries with
+  // content_hash identity); the model recovers full text via memory_get with
+  // the rendered [m:id] handles. An old server ignores the unknown query
+  // param and serves full content — no fallback needed.
+  params.set("format", "concise");
   // A "per_section_default" opt acts as the catch-all; per-section fields
   // win when set. This matches the REST contract exactly.
   const fallback = opts.per_section_default ?? opts.perSection ?? 5;
@@ -397,7 +476,87 @@ export async function getBriefing(namespace, opts = {}) {
   setIf("per_section_facts", opts.per_section_facts ?? opts.facts);
   setIf("per_section_procedures", opts.per_section_procedures ?? opts.procedures);
   setIf("per_section_recent", opts.per_section_recent ?? opts.recent);
+  const maxTokens = opts.max_tokens ?? opts.maxTokens;
+  if (Number.isInteger(maxTokens) && maxTokens > 0) params.set("max_tokens", String(maxTokens));
   return getJSON(`/v1/namespaces/briefing?${params.toString()}`, namespace);
+}
+
+// --- Injection telemetry (POST /v1/activity/injected) ---------------------
+//
+// Each injection surface (briefing / prompt / pretool) reports what it served
+// — and what it withheld — so the server's activity feed can show injection
+// volume next to recall volume. Best-effort BY DESIGN: the beacon is bounded
+// by its own tight abort, every failure is swallowed (a DEBUG-only stderr
+// note), and it never writes to stdout — a telemetry hiccup must never crash,
+// fail, or slow a hook beyond the bound, nor corrupt the hook's context
+// payload. Hooks send it AFTER their stdout payload is fully composed and
+// written, and AWAIT it before exiting: a hook is a short-lived process, so a
+// true fire-and-forget request would die with it.
+
+/**
+ * The beacon's abort bound. Deliberately far below requestTimeoutMs: the
+ * beacon rides after the hook's real work, so this window is the only latency
+ * telemetry may ever add to a hook.
+ */
+export const INJECTED_BEACON_TIMEOUT_MS = 500;
+
+/** The suppression counters the wire contract knows. */
+const SUPPRESSED_KEYS = ["seen", "cooldown", "budget", "unchanged", "score"];
+
+/**
+ * Build the wire body for POST /v1/activity/injected. Pure. The endpoint's
+ * required fields are always present — session_id, surface, source (always
+ * "claude-code"), injected_ids ([] is allowed when only suppressions are
+ * reported) — while zero/empty optionals are omitted: injected_tokens_est,
+ * injected_chars, each zero count inside `suppressed`, and the whole
+ * `suppressed` object when every count is zero.
+ */
+export function injectedReport({ surface, sessionId, ids, tokens, chars, suppressed } = {}) {
+  const body = {
+    session_id: sessionId || "",
+    surface,
+    source: "claude-code",
+    injected_ids: Array.isArray(ids) ? ids.filter((id) => typeof id === "string" && id) : [],
+  };
+  if (Number.isFinite(tokens) && tokens > 0) body.injected_tokens_est = tokens;
+  if (Number.isFinite(chars) && chars > 0) body.injected_chars = chars;
+  const sup = {};
+  for (const k of SUPPRESSED_KEYS) {
+    const v = suppressed?.[k];
+    if (Number.isFinite(v) && v > 0) sup[k] = v;
+  }
+  if (Object.keys(sup).length > 0) body.suppressed = sup;
+  return body;
+}
+
+/**
+ * POST an injection report (see injectedReport) to /v1/activity/injected —
+ * same base-url/API-key resolution and header building as every other REST
+ * helper here; the server replies 204. Skips silently (no request) when the
+ * report names no session or has nothing to report (no injected ids AND no
+ * suppressed counts); callers gate on the inject_telemetry setting themselves,
+ * since only they hold a session ctx. Never throws, never writes stdout.
+ * Callers MUST await it before the hook process exits.
+ */
+export async function postInjected(report, { namespace, timeoutMs = INJECTED_BEACON_TIMEOUT_MS } = {}) {
+  if (!report || !report.session_id) return;
+  const suppressedAny =
+    report.suppressed && Object.values(report.suppressed).some((v) => Number.isFinite(v) && v > 0);
+  if ((!Array.isArray(report.injected_ids) || report.injected_ids.length === 0) && !suppressedAny) return;
+  try {
+    assertBearerTransportSafe(boot.baseUrl, boot.apiKey);
+    const res = await fetch(`${boot.baseUrl}/v1/activity/injected`, {
+      method: "POST",
+      headers: authHeaders({ "X-Memini-Namespace": namespace }),
+      body: JSON.stringify(report),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    // 204 expected, body ignored. Unlike postJSONStatus, a non-2xx here is
+    // DEBUG-only noise: telemetry must never make a sound recall wouldn't.
+    if (!res.ok && DEBUG) console.error(`[memini] POST /v1/activity/injected -> ${res.status}`);
+  } catch (e) {
+    if (DEBUG) console.error(`[memini] POST /v1/activity/injected failed:`, e?.message || e);
+  }
 }
 
 // --- Injection budget ----------------------------------------------------
@@ -837,12 +996,29 @@ function injectedStatePath(sessionId) {
 }
 
 /**
- * Content-identity hash for the injected-memory state: the UNTRUNCATED text a
- * recall surface would render (content, falling back to summary) — the same
+ * True for a well-formed server-minted content hash: 16 lowercase hex chars
+ * (the server's sha256(content||summary).slice(0,16) — the same recipe as the
+ * local fallback in injectedIdentity, so the two are interchangeable).
+ */
+export function isContentHash(s) {
+  return typeof s === "string" && /^[0-9a-f]{16}$/.test(s);
+}
+
+/**
+ * Content-identity hash for the injected-memory state. Prefers the
+ * server-minted `content_hash` when present and well-formed — read off the
+ * object itself (a briefing memory) or its nested `memory` (a recall hit) —
+ * because the server hashes the FULL content even when it serves a concise
+ * form: a briefing's full item and a concise recall hit of the same memory
+ * must be the SAME identity, or the seen-filter re-injects what the context
+ * already carries. Falls back to hashing the text a recall surface would
+ * render (content, falling back to summary) for old servers — the same
  * doctrine as the pretool fingerprint, so an in-place update past any render
  * cap still changes identity and re-injects.
  */
 export function injectedIdentity(m) {
+  const ch = m?.content_hash ?? m?.memory?.content_hash;
+  if (isContentHash(ch)) return ch;
   const text = m?.content || m?.summary || "";
   return crypto.createHash("sha256").update(text).digest("hex").slice(0, 16);
 }
@@ -1257,49 +1433,25 @@ export function readToolCall(payload) {
 // keeps a legacy scraper (parseMemoryBlocks) as a back-compat fallback for
 // sessions still emitting inline <memory> blocks under the old instruction.
 //
-// The save-policy invariants below (what is durable, visibility, correction
-// hygiene) are canonical in internal/api/mcp/mcp.go serverInstructions; keep
-// the two phrasings in sync.
+// This is deliberately the ABRIDGED trigger, not the full save policy. The
+// canonical policy (what is durable, visibility rules, correction hygiene)
+// lives in internal/api/mcp/mcp.go serverInstructions, which MCP-capable
+// hosts carry in the system prompt every turn — the directive only has to
+// re-arm the habit, so keep it under ~700 chars and let the server text be
+// the single source of truth.
 
 export const MEMORY_INSTRUCTION = `
 
 <memini-memory-directive>
-You have persistent cross-session memory via the memini memory_remember MCP
-tool. Saving is your job — do not wait for the user to ask. Save one memory
-per durable fact when you learn:
-- a decision and the reason it was made
-- a bug's root cause, or a gotcha worth flagging next time
-- a project convention (layout, style, test/deploy commands)
-- a stated user preference, or a correction the user gives you — a
-  correction IS a preference
-- an environment or tool quirk, or a non-obvious command/workflow
-
-When the user says "remember this" or corrects you, call memory_remember
-first, then acknowledge — and save an explicit request unconditionally, even
-if it seems trivial or already stored; secrets and credentials are the one
-exception. Before ending a turn in which you
-learned something durable, make sure it was saved.
-
-Rules:
-- Each memory must be self-contained, readable without this conversation's
-  context. State facts, not commands: "User prefers concise replies" (good),
-  "Always reply concisely" (bad).
-- visibility: "personal" for anything true of the USER wherever they go
-  (their preferences, habits, how they like to work); "project" (the
-  default) for anything specific to this codebase. Getting this wrong is
-  the common failure: a preference saved as "project" is stranded here and
-  will not follow them to their next repo.
-- Omit tier to let the server classify. Tag a critical, always-relevant
-  fact "pinned" so it surfaces in every session briefing.
-- Never save secrets or credentials, transient session state, task
-  progress, or facts already in CLAUDE.md or project docs.
-- If a stored memory turns out to be wrong or outdated, fix it immediately:
-  correct it in place with the memory_update MCP tool, or delete it with
-  memory_forget if it should not exist. Never leave a memory you know is
-  incorrect in place.
-- Never print memory markup or JSON memory payloads in your reply text.
-  Memories are saved only through the MCP tools. If the tools are
-  unavailable, do nothing.
+You have persistent cross-session memory via the memini MCP tools. Saving is
+your job — proactively call memory_remember (one self-contained fact per
+call) when you learn: a decision and its reason, a bug's root cause, a
+project convention, a stated user preference or correction (a correction IS
+a preference), an environment quirk or non-obvious workflow. "Remember this"
+→ save first, then acknowledge. visibility: "personal" for facts about the
+user anywhere, "project" (default) for this codebase. Never save secrets,
+credentials, or transient session state. Fix a wrong memory immediately via
+memory_update or memory_forget. Never print memory markup in reply text.
 </memini-memory-directive>`;
 
 // Injected by SessionStart after a compaction (wired by a later task): durable

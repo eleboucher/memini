@@ -58,7 +58,7 @@ type UpdateInput struct {
 // metadata-only edit costs no embedder call. Remember's dedup, consolidation and
 // corroborate/contradict routing are fresh-write-only and never fire here.
 func (s *Service) Update(ctx context.Context, in UpdateInput) (*memory.Memory, error) {
-	cur, err := s.Get(ctx, in.Namespace, in.ID)
+	cur, err := s.getVerbatim(ctx, in.Namespace, in.ID)
 	if err != nil {
 		return nil, err
 	}

@@ -1,7 +1,7 @@
 /**
  * Behavioral settings resolution for the config-handshake redesign.
  *
- * BEHAVIOR_KNOBS/effectiveSetting cover the 29 behavioral fields of the
+ * BEHAVIOR_KNOBS/effectiveSetting cover the 30 behavioral fields of the
  * spec's ClientSettings (api/openapi.yaml) — everything a HandshakeResponse
  * can hand back as a server-merged default, and everything a local env var
  * can still override. namespace_scope/namespace_prefix are deliberately
@@ -59,9 +59,9 @@ export const BEHAVIOR_KNOBS: BehaviorKnob[] = [
   { envName: "MEMINI_INJECT_BRIEFING_FACTS", wireKey: "inject_briefing_facts", kind: "int", default: 5 },
   { envName: "MEMINI_INJECT_BRIEFING_PROCEDURES", wireKey: "inject_briefing_procedures", kind: "int", default: 5 },
   { envName: "MEMINI_INJECT_BRIEFING_RECENT", wireKey: "inject_briefing_recent", kind: "int", default: 3 },
-  { envName: "MEMINI_INJECT_BRIEFING_MAX_TOK", wireKey: "inject_briefing_max_tok", kind: "int", default: 0 },
+  { envName: "MEMINI_INJECT_BRIEFING_MAX_TOK", wireKey: "inject_briefing_max_tok", kind: "int", default: 600 },
   { envName: "MEMINI_INJECT_PRETOOL_ITEMS", wireKey: "inject_pretool_items", kind: "int", default: 3 },
-  { envName: "MEMINI_INJECT_PRETOOL_MAX_TOK", wireKey: "inject_pretool_max_tok", kind: "int", default: 0 },
+  { envName: "MEMINI_INJECT_PRETOOL_MAX_TOK", wireKey: "inject_pretool_max_tok", kind: "int", default: 200 },
   { envName: "MEMINI_INJECT_PRETOOL_MIN_SCORE", wireKey: "inject_pretool_min_score", kind: "float", default: 0 },
   {
     envName: "MEMINI_INJECT_PRETOOL_TOOLS",
@@ -71,13 +71,14 @@ export const BEHAVIOR_KNOBS: BehaviorKnob[] = [
   },
   { envName: "MEMINI_INJECT_PRETOOL_GATE_MS", wireKey: "inject_pretool_gate_ms", kind: "int", default: 90000 },
   { envName: "MEMINI_INJECT_DEDUPE", wireKey: "inject_dedupe", kind: "bool", default: true },
+  { envName: "MEMINI_INJECT_TELEMETRY", wireKey: "inject_telemetry", kind: "bool", default: true },
   { envName: "MEMINI_INJECT_COOLDOWN_MS", wireKey: "inject_cooldown_ms", kind: "int", default: 1800000 },
   { envName: "MEMINI_INJECT_COOLDOWN_PROMPTS", wireKey: "inject_cooldown_prompts", kind: "int", default: 3 },
   { envName: "MEMINI_INJECT_LABELS", wireKey: "inject_labels", kind: "list", default: [] },
   { envName: "MEMINI_RECALL", wireKey: "recall", kind: "bool", default: true },
   { envName: "MEMINI_CAPTURE", wireKey: "capture", kind: "bool", default: true },
   { envName: "MEMINI_RECALL_LIMIT", wireKey: "recall_limit", kind: "int", default: 3 },
-  { envName: "MEMINI_INJECT_RECALL_MAX_TOK", wireKey: "inject_recall_max_tok", kind: "int", default: 0 },
+  { envName: "MEMINI_INJECT_RECALL_MAX_TOK", wireKey: "inject_recall_max_tok", kind: "int", default: 250 },
   { envName: "MEMINI_INJECT_RECALL_MIN_SCORE", wireKey: "inject_recall_min_score", kind: "float", default: 0 },
   { envName: "MEMINI_MIN_CAPTURE_CHARS", wireKey: "min_capture_chars", kind: "int", default: 0 },
   { envName: "MEMINI_CAPTURE_USER_MAX_CHARS", wireKey: "capture_user_max_chars", kind: "int", default: 1000 },
