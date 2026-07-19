@@ -55,11 +55,16 @@ const CLIENT_VERSION = readPluginVersion();
 
 // Auto-update: opencode never re-fetches cached npm plugins, so the plugin
 // checks npm dist-tags once per process and self-updates (same major version
-// only) so the running copy stays current.
+// only) so the running copy stays current. opencode installs each plugin spec
+// into its own isolated wrapper directory under
+// ~/.cache/opencode/packages/<spec>/ (e.g. .../opencode-memini@latest/) — the
+// wrapper holds a package.json listing the plugin as a dependency plus a
+// node_modules/ tree — so the wrapper dir is where we rewrite the pin and
+// re-run npm install.
 const PACKAGE_NAME = "@eleboucher/opencode-memini";
 const NPM_REGISTRY_URL = `https://registry.npmjs.org/-/package/${PACKAGE_NAME}/dist-tags`;
 const NPM_FETCH_TIMEOUT = 5000;
-const BUN_INSTALL_TIMEOUT_MS = 60000;
+const INSTALL_TIMEOUT_MS = 60000;
 let autoUpdateChecked = false;
 
 /**
@@ -87,19 +92,46 @@ export function compareVersions(a, b) {
 }
 
 /**
- * resolveInstallContext finds the opencode plugin cache directory that holds
- * this running plugin instance, by walking up from import.meta.url. Returns
- * { installDir, packageJsonPath } or null.
+ * resolveInstallContextFrom walks up from `startPath` looking for the opencode
+ * plugin cache wrapper dir: the first ancestor whose child is a `node_modules`
+ * directory AND that also has a `package.json` sibling. Returns
+ * { installDir, packageJsonPath } or null. Pure (no `import.meta.url` read) so
+ * it can be driven from a synthetic on-disk layout in tests. Exported for
+ * testing.
  */
-function resolveInstallContext() {
+export function resolveInstallContextFrom(startPath) {
   try {
-    const pluginDir = dirname(fileURLToPath(import.meta.url));
-    const nodeModulesDir = dirname(pluginDir);
-    const installDir = dirname(nodeModulesDir);
-    const packageJsonPath = join(installDir, "package.json");
-    if (existsSync(packageJsonPath)) {
-      return { installDir, packageJsonPath };
+    let dir = startPath;
+    for (let i = 0; i < 20; i++) {
+      const nodeModules = join(dir, "node_modules");
+      if (existsSync(nodeModules) && statSync(nodeModules).isDirectory()) {
+        const packageJsonPath = join(dir, "package.json");
+        if (existsSync(packageJsonPath)) {
+          return { installDir: dir, packageJsonPath };
+        }
+        return null; // node_modules found but no package.json — not a wrapper
+      }
+      const parent = dirname(dir);
+      if (parent === dir) break; // reached root
+      dir = parent;
     }
+  } catch {}
+  return null;
+}
+
+/**
+ * resolveInstallContext finds the opencode plugin cache wrapper directory that
+ * holds this running plugin instance. opencode installs each npm plugin spec
+ * into its own isolated dir under ~/.cache/opencode/packages/<spec>/ (e.g.
+ * .../opencode-memini@latest/), containing a package.json listing the plugin as
+ * a dependency and a node_modules/ tree. The plugin's own file lives at
+ * <wrapper>/node_modules/@eleboucher/opencode-memini/memini.js, so the wrapper
+ * is the first ancestor whose child is a `node_modules` directory. Returns
+ * { installDir, packageJsonPath } or null. Exported for testing.
+ */
+export function resolveInstallContext() {
+  try {
+    return resolveInstallContextFrom(dirname(fileURLToPath(import.meta.url)));
   } catch {}
   return null;
 }
@@ -129,12 +161,19 @@ async function fetchLatestVersion() {
 }
 
 /**
- * prepareCacheUpdate rewrites the cache package.json to pin the new version,
- * removes the installed node_modules package, and cleans bun.lock. Returns
- * the installDir on success, null on failure.
+ * prepareCacheUpdate rewrites the wrapper package.json to pin the new version,
+ * removes the installed node_modules package, and cleans any lockfile so the
+ * next install re-fetches. Returns the installDir on success, null on failure.
+ *
+ * `ctx` is optional: when omitted, resolves from `import.meta.url` (the live
+ * path); tests pass a synthetic { installDir, packageJsonPath } so the full
+ * rewrite-and-clean flow can be exercised against a temp dir without touching
+ * the dev checkout. Exported for testing.
  */
-function prepareCacheUpdate(newVersion, log) {
-  const ctx = resolveInstallContext();
+export function prepareCacheUpdate(newVersion, log, ctx) {
+  if (!ctx) {
+    ctx = resolveInstallContext();
+  }
   if (!ctx) {
     log.warn("auto-update: could not resolve install context");
     return null;
@@ -151,7 +190,7 @@ function prepareCacheUpdate(newVersion, log) {
     log.warn(`auto-update: failed to rewrite cache package.json: ${String(err)}`);
     return null;
   }
-  // Remove installed node_modules so bun install re-fetches
+  // Remove installed node_modules so the install re-fetches
   try {
     const pkgDir = join(ctx.installDir, "node_modules", "@eleboucher", "opencode-memini");
     if (existsSync(pkgDir)) rmSync(pkgDir, { recursive: true, force: true });
@@ -159,39 +198,33 @@ function prepareCacheUpdate(newVersion, log) {
     log.warn(`auto-update: failed to remove cached node_modules: ${String(err)}`);
     return null;
   }
-  // Clean bun.lock entry if it exists
-  const lockPath = join(ctx.installDir, "bun.lock");
-  if (existsSync(lockPath)) {
+  // Clean lockfiles: opencode's installer may write either package-lock.json
+  // (npm/arborist) or bun.lock depending on the bundler. Remove both if
+  // present; the install regenerates them.
+  for (const lockName of ["package-lock.json", "bun.lock"]) {
+    const lockPath = join(ctx.installDir, lockName);
+    if (!existsSync(lockPath)) continue;
     try {
-      const lock = JSON.parse(readFileSync(lockPath, "utf8"));
-      let modified = false;
-      if (lock.workspaces?.[""]?.dependencies?.[PACKAGE_NAME]) {
-        delete lock.workspaces[""].dependencies[PACKAGE_NAME];
-        modified = true;
-      }
-      if (lock.packages?.[PACKAGE_NAME]) {
-        delete lock.packages[PACKAGE_NAME];
-        modified = true;
-      }
-      if (modified) writeFileSync(lockPath, JSON.stringify(lock, null, 2));
+      rmSync(lockPath, { force: true });
     } catch {
-      // bun.lock format varies; if we can't parse it, leave it — bun install
-      // will reconcile.
+      // A lock we can't remove isn't fatal — npm install reconciles it.
     }
   }
   return ctx.installDir;
 }
 
 /**
- * runBunInstall runs `bun install` in the given directory with a timeout.
- * Returns true on success (exit code 0), false otherwise.
+ * runNpmInstall runs `npm install` in the given directory with a timeout.
+ * Returns true on success (exit code 0), false otherwise. opencode uses
+ * @npmcli/arborist under the hood, so `npm install` matches the lockfile
+ * format it produces; `bun install` would rewrite it. Exported for testing.
  */
-function runBunInstall(installDir) {
+export function runNpmInstall(installDir) {
   try {
-    const result = spawnSync(process.execPath, ["install"], {
+    const result = spawnSync("npm", ["install"], {
       cwd: installDir,
       stdio: ["ignore", "pipe", "pipe"],
-      timeout: BUN_INSTALL_TIMEOUT_MS,
+      timeout: INSTALL_TIMEOUT_MS,
     });
     return result.status === 0;
   } catch {
@@ -1453,11 +1486,11 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
               log.warn(`auto-update: updating ${CLIENT_VERSION} → ${latest}`);
               const installDir = prepareCacheUpdate(latest, log);
               if (!installDir) return;
-              const ok = runBunInstall(installDir);
+              const ok = runNpmInstall(installDir);
               if (ok) {
                 log.warn(`auto-update: installed v${latest} — restart opencode to apply`);
               } else {
-                log.warn(`auto-update: bun install failed; will retry next session`);
+                log.warn(`auto-update: npm install failed; will retry next session`);
               }
             } catch (err) {
               log.warn(`auto-update: check failed: ${String(err)}`);

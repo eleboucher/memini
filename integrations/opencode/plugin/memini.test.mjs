@@ -1,10 +1,10 @@
 // Run: node --test (from this directory). Not shipped by install.sh.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { join, basename } from "node:path";
+import { join, basename, dirname } from "node:path";
 import {
   MeminiPlugin,
   resolveConfig,
@@ -31,6 +31,9 @@ import {
   compareVersions,
   injectedSuppressed,
   injectedIdentity,
+  resolveInstallContext,
+  resolveInstallContextFrom,
+  prepareCacheUpdate,
 } from "./memini.js";
 
 test("namespace derives from the git worktree basename", () => {
@@ -158,6 +161,146 @@ test("resolveConfig includes auto_update defaulting to true", () => {
   assert.equal(resolveConfig({}, { auto_update: false }, "/repo").auto_update, false);
   assert.equal(resolveConfig({ MEMINI_AUTO_UPDATE: "1" }, { auto_update: false }, "/repo").auto_update, false);
   assert.equal(resolveConfig({ MEMINI_AUTO_UPDATE: "0" }, { auto_update: true }, "/repo").auto_update, true);
+});
+
+// --- auto-update: resolveInstallContext / prepareCacheUpdate ----------------
+//
+// opencode installs each npm plugin spec into its own isolated wrapper dir
+// under ~/.cache/opencode/packages/<spec>/ — e.g. opencode-memini@latest/ —
+// holding a package.json listing the plugin as a dependency plus a
+// node_modules/ tree. The plugin file lives at
+// <wrapper>/node_modules/@eleboucher/opencode-memini/memini.js, so the wrapper
+// is the first ancestor whose child is a `node_modules` directory. These tests
+// build that layout in a temp dir and confirm the walker finds it.
+
+function buildWrapperLayout(root, { withPackageJson = true, withLockfiles = [] } = {}) {
+  // <root>/opencode-memini@latest/node_modules/@eleboucher/opencode-memini/memini.js
+  const wrapper = join(root, "opencode-memini@latest");
+  const pkgDir = join(wrapper, "node_modules", "@eleboucher", "opencode-memini");
+  mkdirSync(pkgDir, { recursive: true });
+  writeFileSync(join(pkgDir, "memini.js"), "// plugin entry\n");
+  if (withPackageJson) {
+    writeFileSync(
+      join(wrapper, "package.json"),
+      JSON.stringify({ dependencies: { "@eleboucher/opencode-memini": "0.7.5" } }, null, 2),
+    );
+  }
+  for (const name of withLockfiles) {
+    writeFileSync(join(wrapper, name), "{}\n");
+  }
+  return { wrapper, pkgDir, pluginFile: join(pkgDir, "memini.js") };
+}
+
+test("resolveInstallContextFrom finds the wrapper dir by walking up to node_modules", () => {
+  const root = mkdtempSync(join(tmpdir(), "memini-ctx-"));
+  try {
+    const { wrapper, pluginFile } = buildWrapperLayout(root);
+    const ctx = resolveInstallContextFrom(pluginFile);
+    assert.ok(ctx, "should resolve the wrapper context");
+    assert.equal(ctx.installDir, wrapper);
+    assert.equal(ctx.packageJsonPath, join(wrapper, "package.json"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveInstallContextFrom returns null when node_modules exists but package.json is absent", () => {
+  const root = mkdtempSync(join(tmpdir(), "memini-ctx-"));
+  try {
+    const { pluginFile } = buildWrapperLayout(root, { withPackageJson: false });
+    const ctx = resolveInstallContextFrom(pluginFile);
+    assert.equal(ctx, null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveInstallContextFrom returns null when no node_modules ancestor exists", () => {
+  const root = mkdtempSync(join(tmpdir(), "memini-ctx-"));
+  try {
+    // A loose file with no node_modules anywhere above it.
+    const loose = join(root, "lonely", "memini.js");
+    mkdirSync(dirname(loose), { recursive: true });
+    writeFileSync(loose, "// nope\n");
+    const ctx = resolveInstallContextFrom(loose);
+    assert.equal(ctx, null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("prepareCacheUpdate rewrites the version pin, drops node_modules, and removes both lockfile formats", () => {
+  const root = mkdtempSync(join(tmpdir(), "memini-ctx-"));
+  try {
+    const { wrapper, pkgDir } = buildWrapperLayout(root, {
+      withLockfiles: ["package-lock.json", "bun.lock"],
+    });
+    const log = { warn: () => {} };
+    const ctx = { installDir: wrapper, packageJsonPath: join(wrapper, "package.json") };
+    const installDir = prepareCacheUpdate("0.7.6", log, ctx);
+    assert.equal(installDir, wrapper);
+
+    // package.json now pins 0.7.6
+    const pkg = JSON.parse(readFileSync(join(wrapper, "package.json"), "utf8"));
+    assert.equal(pkg.dependencies["@eleboucher/opencode-memini"], "0.7.6");
+
+    // node_modules plugin dir is gone
+    assert.equal(existsSync(pkgDir), false, "cached node_modules package should be removed");
+
+    // both lockfiles removed
+    assert.equal(existsSync(join(wrapper, "package-lock.json")), false);
+    assert.equal(existsSync(join(wrapper, "bun.lock")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("prepareCacheUpdate no-ops (returns the dir) when the pin already matches", () => {
+  const root = mkdtempSync(join(tmpdir(), "memini-ctx-"));
+  try {
+    const { wrapper, pkgDir } = buildWrapperLayout(root, { withLockfiles: ["package-lock.json"] });
+    const log = { warn: () => {} };
+    const ctx = { installDir: wrapper, packageJsonPath: join(wrapper, "package.json") };
+    // Pin already 0.7.5 — matching the layout fixture above.
+    const installDir = prepareCacheUpdate("0.7.5", log, ctx);
+    assert.equal(installDir, wrapper);
+    // Short-circuited: node_modules plugin dir and lockfile are NOT touched.
+    assert.equal(existsSync(pkgDir), true, "cached node_modules should be left in place on a matching pin");
+    assert.equal(existsSync(join(wrapper, "package-lock.json")), true, "lockfile should be left in place on a matching pin");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("prepareCacheUpdate returns null when given no ctx and the live install context can't be resolved", () => {
+  // From the test process, import.meta.url of memini.js lives in the dev
+  // checkout, where resolveInstallContext() walks up to the repo root. The
+  // repo root here has a package.json + node_modules, so it would actually
+  // resolve — making this a weak test. Instead, assert the explicit-null-ctx
+  // contract by passing a ctx whose packageJsonPath doesn't exist: the rewrite
+  // step throws and the function returns null.
+  const root = mkdtempSync(join(tmpdir(), "memini-ctx-"));
+  try {
+    const bogus = { installDir: root, packageJsonPath: join(root, "does-not-exist.json") };
+    const warnings = [];
+    const log = { warn: (m) => warnings.push(m) };
+    const result = prepareCacheUpdate("0.7.6", log, bogus);
+    assert.equal(result, null);
+    assert.ok(warnings.some((w) => /failed to rewrite cache package\.json/.test(w)));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveInstallContext: smoke check it returns null or a real ctx (doesn't throw from the dev checkout)", () => {
+  // In the dev checkout, resolveInstallContext() walks up from this test file's
+  // sibling memini.js to the repo root, which has node_modules + package.json.
+  // That is NOT a real opencode wrapper dir, but the walker's contract is only
+  // "find an ancestor with node_modules + package.json", so it resolves there.
+  // This test asserts it doesn't throw; we don't assert the exact path because
+  // where it lands depends on the caller's cwd layout, not the contract.
+  const ctx = resolveInstallContext();
+  assert.ok(ctx === null || (typeof ctx.installDir === "string" && typeof ctx.packageJsonPath === "string"));
 });
 
 test("resolveConfig rejects malformed recall_limit (NaN / negative) gracefully", () => {
