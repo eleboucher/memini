@@ -2016,6 +2016,9 @@ export default function meminiExtension(pi: ExtensionAPI): void {
         maxItems: MAX_SERVER_EXCLUDE_IDS,
         description: "Drop these memory ids before ranking and limit.",
       })),
+      min_rank_score: Type.Optional(Type.Number({
+        description: "drop results whose final ranked score is below this ([0,1)); rarely needed — the server already gates relevance",
+      })),
       include_fresh_turns: Type.Optional(Type.Boolean({
         description: "Include just-captured turns normally hidden by the temporal echo guard.",
       })),
@@ -2039,7 +2042,7 @@ export default function meminiExtension(pi: ExtensionAPI): void {
       };
       for (const key of [
         "tiers", "levels", "tags", "metadata", "exclude_metadata", "exclude_ids",
-        "include_fresh_turns", "query_rewrite", "as_of",
+        "min_rank_score", "include_fresh_turns", "query_rewrite", "as_of",
       ]) {
         if (hasOwn(params, key)) body[key] = params[key];
       }
