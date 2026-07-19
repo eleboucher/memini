@@ -15,11 +15,17 @@
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import fs from "node:fs";
-import crypto from "node:crypto";
 
 // The shared client core (packages/memini-client), bundled to a committed,
 // dependency-free ESM file so these hooks keep running under a bare `node` with
 // no install step. Regenerate with `mise run build-client`.
+//
+// The injection-enforcement primitives (packages/memini-client/src/enforce/)
+// live in the same bundle: identity hashing, the windowed seen/cooldown
+// predicate and its state algebra, token budgeting, recall rendering, and the
+// telemetry payload builder. They are pure — the file I/O, env, and transport
+// adapters around them stay in this file — and their semantics are pinned by
+// packages/memini-client/vectors/enforcement.json.
 import {
   readBootstrap,
   assertBearerTransportSafe,
@@ -35,6 +41,31 @@ import {
   writeSessionCwd,
   deleteSessionCwd,
   buildTurnCapture,
+  // enforce/ — identity
+  isContentHash,
+  injectedIdentity,
+  pretoolFingerprint,
+  briefingContentHash,
+  // enforce/ — seen state
+  normalizeInjectedState,
+  recordInjected,
+  mergeInjectedStates,
+  injectedSuppressed,
+  cooldownIds,
+  // enforce/ — budget
+  approxTokens,
+  fitByTokens,
+  // enforce/ — render
+  RECALL_DETAIL_HEADER,
+  escapeMeminiTags,
+  truncate,
+  memoryHandle,
+  formatRecallHit,
+  recallHitTruncated,
+  recallDropFooter,
+  briefingDropFooter,
+  // enforce/ — telemetry
+  injectedReport,
 } from "./_client.gen.mjs";
 
 export {
@@ -43,6 +74,24 @@ export {
   buildTurnCapture,
   deleteCachedHandshake,
   invalidateAllHandshakes,
+  isContentHash,
+  injectedIdentity,
+  pretoolFingerprint,
+  briefingContentHash,
+  recordInjected,
+  injectedSuppressed,
+  cooldownIds,
+  approxTokens,
+  fitByTokens,
+  RECALL_DETAIL_HEADER,
+  escapeMeminiTags,
+  truncate,
+  memoryHandle,
+  formatRecallHit,
+  recallHitTruncated,
+  recallDropFooter,
+  briefingDropFooter,
+  injectedReport,
 };
 
 export const DEBUG = process.env["MEMINI_DEBUG"] === "1";
@@ -345,59 +394,9 @@ export function filterFreshTurnEchoes(hits, now = Date.now()) {
   );
 }
 
-/**
- * Render one recall hit as a "- (score) [labels] text [m:id8]" bullet.
- * Neutralizes memini wrapper tags in the untrusted recalled content BEFORE
- * the 240-char truncate, so a forged closing tag can't break out of the
- * enclosing injection block (memory-poisoning defense — same rationale as
- * formatMemory in session-start). The trailing [m:<first 8 id chars>] handle
- * (only when the hit carries an id) is what the block header's memory_get
- * teaching points at; ids are server-minted hex/uuid, safe to render
- * verbatim. Returns null when the hit has no renderable text.
- */
-export function formatRecallHit(h, labels) {
-  const text = escapeMeminiTags(h?.content || h?.summary || "");
-  if (!text) return null;
-  const id = h?.memory?.id;
-  const handle = typeof id === "string" && id ? ` [m:${id.slice(0, 8)}]` : "";
-  if (labels.size === 0) {
-    return `- (${h.score.toFixed(2)}) ${truncate(text, 240)}${handle}`;
-  }
-  const tagParts = [];
-  if (labels.has("tier") && h.tier) tagParts.push(h.tier);
-  if (labels.has("confidence") && typeof h.memory?.confidence === "number") {
-    tagParts.push(`conf=${h.memory.confidence.toFixed(2)}`);
-  }
-  if (labels.has("reason")) tagParts.push("relevant memory");
-  const prefix = tagParts.length ? `[${tagParts.join(" · ")}] ` : "";
-  return `- (${h.score.toFixed(2)}) ${prefix}${truncate(text, 240)}${handle}`;
-}
-
-/**
- * The one comment line a recall/pretool block adds — after its opening
- * comment — when anything in it was truncated (server-concise or the client's
- * 240-char cap) or dropped by the token budget: it teaches the model that the
- * bullets are summaries and memory_get with an [m:…] id recovers full text.
- * ONE shared byte-identical constant across both surfaces, deliberately: any
- * per-block variation would bust the prompt prefix cache for zero information.
- * Never emitted on the briefing — its ~21 fires/day don't earn the
- * instruction cost; truncation lives on the recall surfaces.
- */
-export const RECALL_DETAIL_HEADER = "<!-- summaries; full text: memory_get with the id from [m:…] -->";
-
-/**
- * Did this hit's rendered text lose content? True when the server says so
- * (content_truncated — set only when its concise form actually cut), or when
- * the client's own 240-char render cap in formatRecallHit fires (an old
- * server serves full content; the cap is then the truncation). Checked
- * against the same escaped text formatRecallHit renders, so the two can't
- * disagree about where the cap lands.
- */
-export function recallHitTruncated(h) {
-  if (h?.content_truncated === true || h?.memory?.content_truncated === true) return true;
-  const text = escapeMeminiTags(h?.content || h?.summary || "");
-  return typeof text === "string" && text.length > 240;
-}
+// formatRecallHit / RECALL_DETAIL_HEADER / recallHitTruncated (and the
+// memoryHandle + drop-footer builders) live in the shared enforcement core —
+// packages/memini-client/src/enforce/render.ts — re-exported above.
 
 /**
  * GET JSON from memini. `namespace` is sent as X-Memini-Namespace. Returns
@@ -500,34 +499,9 @@ export async function getBriefing(namespace, opts = {}) {
  */
 export const INJECTED_BEACON_TIMEOUT_MS = 500;
 
-/** The suppression counters the wire contract knows. */
-const SUPPRESSED_KEYS = ["seen", "cooldown", "budget", "unchanged", "score"];
-
-/**
- * Build the wire body for POST /v1/activity/injected. Pure. The endpoint's
- * required fields are always present — session_id, surface, source (always
- * "claude-code"), injected_ids ([] is allowed when only suppressions are
- * reported) — while zero/empty optionals are omitted: injected_tokens_est,
- * injected_chars, each zero count inside `suppressed`, and the whole
- * `suppressed` object when every count is zero.
- */
-export function injectedReport({ surface, sessionId, ids, tokens, chars, suppressed } = {}) {
-  const body = {
-    session_id: sessionId || "",
-    surface,
-    source: "claude-code",
-    injected_ids: Array.isArray(ids) ? ids.filter((id) => typeof id === "string" && id) : [],
-  };
-  if (Number.isFinite(tokens) && tokens > 0) body.injected_tokens_est = tokens;
-  if (Number.isFinite(chars) && chars > 0) body.injected_chars = chars;
-  const sup = {};
-  for (const k of SUPPRESSED_KEYS) {
-    const v = suppressed?.[k];
-    if (Number.isFinite(v) && v > 0) sup[k] = v;
-  }
-  if (Object.keys(sup).length > 0) body.suppressed = sup;
-  return body;
-}
+// injectedReport (the pure beacon-payload builder) lives in the shared
+// enforcement core — packages/memini-client/src/enforce/telemetry.ts —
+// re-exported above. Only the transport below stays here.
 
 /**
  * POST an injection report (see injectedReport) to /v1/activity/injected —
@@ -633,55 +607,8 @@ export function labelsEnv(name = "MEMINI_INJECT_LABELS") {
   return new Set(listEnv(name));
 }
 
-/**
- * approxTokens is a cheap token estimator. ~0.75 tokens/word for English-ish
- * content, with a floor of 1 so a single non-empty line never reports 0.
- */
-export function approxTokens(text) {
-  if (!text) return 0;
-  const words = String(text).trim().split(/\s+/).filter(Boolean).length;
-  return Math.max(1, Math.ceil((words * 4) / 3));
-}
-
-/**
- * fitByTokens trims a list of pre-formatted strings to fit under `maxTokens`,
- * keeping the head (the most-relevant entries first). Returns the trimmed
- * list and the running token total, so callers can render a "[… truncated]"
- * footer when items were dropped.
- */
-export function fitByTokens(items, maxTokens) {
-  if (!Array.isArray(items) || items.length === 0) return { items: [], tokens: 0, dropped: 0 };
-  if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
-    const tokens = items.reduce((sum, s) => sum + approxTokens(s), 0);
-    return { items: items.slice(), tokens, dropped: 0 };
-  }
-  const out = [];
-  let used = 0;
-  let dropped = 0;
-  for (const s of items) {
-    const t = approxTokens(s);
-    if (used + t > maxTokens) {
-      // If the item fits partially, truncate at the last newline boundary so
-      // bullet points stay intact (~4 chars/token).
-      const charBudget = (maxTokens - used) * 4;
-      if (charBudget > 20) {
-        let cut = s.slice(0, charBudget);
-        const lastNL = cut.lastIndexOf("\n");
-        if (lastNL > 20) cut = cut.slice(0, lastNL);
-        if (cut.length > 20) {
-          out.push(cut + "\n[...truncated]");
-          used += approxTokens(cut);
-          continue;
-        }
-      }
-      dropped++;
-      continue;
-    }
-    out.push(s);
-    used += t;
-  }
-  return { items: out, tokens: used, dropped };
-}
+// approxTokens / fitByTokens live in the shared enforcement core —
+// packages/memini-client/src/enforce/budget.ts — re-exported above.
 
 /**
  * POST /v1/memories. Returns the saved Memory on success, null otherwise.
@@ -713,39 +640,8 @@ export async function postSupersede(id, by, namespace) {
   return postJSON(`/v1/memories/${enc}/supersede`, { by }, namespace);
 }
 
-/**
- * Neutralize memini wrapper tags inside untrusted stored content before it is
- * rendered into an injected block. Memory-poisoning defense (Unit 42 / MINJA):
- * a memory whose content carries `</memini-context>` or `<memini-memory-directive>`
- * could otherwise break out of its wrapper and masquerade as a harness directive.
- * We entity-escape only the leading "<" of any `<memini` / `</memini` sequence
- * (case-insensitive); generic angle brackets stay as-is so real code snippets
- * (e.g. `Promise<memory>`, `<div>`) render unmangled.
- */
-export function escapeMeminiTags(content) {
-  if (typeof content !== "string") return content;
-  return content.replace(/<(\/?)memini/gi, "&lt;$1memini");
-}
-
-/**
- * Truncate to `max` bytes, suffix with a marker. Same shape as
- * agentmemory's truncate helper.
- */
-export function truncate(value, max) {
-  if (typeof value === "string") {
-    return value.length > max ? value.slice(0, max) + "\n[...truncated]" : value;
-  }
-  if (value && typeof value === "object") {
-    let str;
-    try {
-      str = JSON.stringify(value);
-    } catch {
-      return value;
-    }
-    return str.length > max ? str.slice(0, max) + "...[truncated]" : str;
-  }
-  return value;
-}
+// escapeMeminiTags / truncate live in the shared enforcement core —
+// packages/memini-client/src/enforce/render.ts — re-exported above.
 
 // --- Session event buffer -------------------------------------------------
 //
@@ -986,9 +882,11 @@ export function deleteLastRecallState(sessionId) {
 // file sees only `v`/`n`/`ids` keys, none a string hash, and its filter yields
 // `{}` — no crash, it just re-derives dedupe from scratch.
 
-// Bounded to the server's exclude_ids cap: keeping more than we can send is
-// pure growth with no dedupe value.
-const MAX_INJECTED_IDS = 512;
+// The pure state algebra — isContentHash / injectedIdentity, the v1→v2
+// normalization, recordInjected, the merge-on-write algorithm, and the
+// injectedSuppressed / cooldownIds windowed predicate — lives in the shared
+// enforcement core (packages/memini-client/src/enforce/{identity,seen}.ts),
+// re-exported above. Only the per-session FILE adapters below stay here.
 
 /** Path of the per-session cross-surface injected-memory state file. */
 function injectedStatePath(sessionId) {
@@ -996,168 +894,38 @@ function injectedStatePath(sessionId) {
 }
 
 /**
- * True for a well-formed server-minted content hash: 16 lowercase hex chars
- * (the server's sha256(content||summary).slice(0,16) — the same recipe as the
- * local fallback in injectedIdentity, so the two are interchangeable).
- */
-export function isContentHash(s) {
-  return typeof s === "string" && /^[0-9a-f]{16}$/.test(s);
-}
-
-/**
- * Content-identity hash for the injected-memory state. Prefers the
- * server-minted `content_hash` when present and well-formed — read off the
- * object itself (a briefing memory) or its nested `memory` (a recall hit) —
- * because the server hashes the FULL content even when it serves a concise
- * form: a briefing's full item and a concise recall hit of the same memory
- * must be the SAME identity, or the seen-filter re-injects what the context
- * already carries. Falls back to hashing the text a recall surface would
- * render (content, falling back to summary) for old servers — the same
- * doctrine as the pretool fingerprint, so an in-place update past any render
- * cap still changes identity and re-injects.
- */
-export function injectedIdentity(m) {
-  const ch = m?.content_hash ?? m?.memory?.content_hash;
-  if (isContentHash(ch)) return ch;
-  const text = m?.content || m?.summary || "";
-  return crypto.createHash("sha256").update(text).digest("hex").slice(0, 16);
-}
-
-/** Coerce a raw v2 ids-map entry into a well-formed { h, at, n } or null. */
-function normInjectedEntry(e, fallbackAt) {
-  if (!e || typeof e !== "object" || Array.isArray(e) || typeof e.h !== "string") return null;
-  return {
-    h: e.h,
-    at: Number.isFinite(e.at) ? e.at : fallbackAt,
-    n: Number.isFinite(e.n) ? e.n : 0,
-  };
-}
-
-/**
  * Read the session's injected state as { n, ids } where ids maps memory id →
  * { h, at, n }. Migrates a legacy v1 flat file (id → hash string) in-memory to
- * { h, at: now, n: 0 } entries. Junk values are skipped; any error yields an
- * empty state — never a crash.
+ * { h, at: now, n: 0 } entries (normalizeInjectedState). Junk values are
+ * skipped; any error yields an empty state — never a crash.
  */
 export function readInjectedState(sessionId) {
-  const empty = { n: 0, ids: {} };
   try {
     const raw = parseJSON(fs.readFileSync(injectedStatePath(sessionId), "utf8"));
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return empty;
-    const now = Date.now();
-    const ids = {};
-    if (raw.v === 2) {
-      const rawIds = raw.ids && typeof raw.ids === "object" && !Array.isArray(raw.ids) ? raw.ids : {};
-      for (const [id, e] of Object.entries(rawIds)) {
-        const norm = normInjectedEntry(e, now);
-        if (id && norm) ids[id] = norm;
-      }
-      return { n: Number.isFinite(raw.n) ? raw.n : 0, ids };
-    }
-    // v1 flat migration: { id: "hash" } → { h, at: now, n: 0 }.
-    for (const [id, h] of Object.entries(raw)) {
-      if (id && typeof h === "string") ids[id] = { h, at: now, n: 0 };
-    }
-    return { n: 0, ids };
+    return normalizeInjectedState(raw, Date.now());
   } catch {
-    return empty;
+    return { n: 0, ids: {} };
   }
-}
-
-/**
- * Record an injection into an in-memory state: ids[id] = { h, at: now, n } with
- * n stamped from the state's current prompt counter. Mutates and returns state.
- */
-export function recordInjected(state, id, h, now = Date.now()) {
-  if (!state.ids) state.ids = {};
-  state.ids[id] = { h, at: now, n: Number.isFinite(state.n) ? state.n : 0 };
-  return state;
 }
 
 /**
  * Persist the injected state (best-effort) as v2. Bounds ids to MAX by NEWEST
- * `at` (evict oldest). Merge-on-write for concurrent RMW safety: re-read the
- * file and take n = max(file.n, mem.n) and, per id, keep the entry with the
- * larger `at` (residual last-write-wins on ties is accepted — bounded to one
- * extra suppression or injection).
+ * `at` (evict oldest). Merge-on-write for concurrent RMW safety
+ * (mergeInjectedStates): re-read the file and take n = max(file.n, mem.n)
+ * and, per id, keep the entry with the larger `at` (residual last-write-wins
+ * on ties is accepted — bounded to one extra suppression or injection).
  */
 export function writeInjectedState(sessionId, state) {
   try {
     fs.mkdirSync(bufferDir(), { recursive: true });
-    const mem = state && typeof state === "object" ? state : {};
-    const memIds = mem.ids && typeof mem.ids === "object" ? mem.ids : {};
-    const memN = Number.isFinite(mem.n) ? mem.n : 0;
-
     // Best-effort merge with whatever is on disk now (a parallel Pre/PostToolUse
     // process may have written between our read and this write).
     const disk = readInjectedState(sessionId);
-    const merged = { ...disk.ids };
-    for (const [id, e] of Object.entries(memIds)) {
-      const norm = normInjectedEntry(e, Date.now());
-      if (!id || !norm) continue;
-      const prev = merged[id];
-      if (!prev || norm.at >= prev.at) merged[id] = norm;
-    }
-    const n = Math.max(memN, disk.n);
-
-    let entries = Object.entries(merged);
-    if (entries.length > MAX_INJECTED_IDS) {
-      entries.sort((a, b) => (b[1]?.at || 0) - (a[1]?.at || 0));
-      entries = entries.slice(0, MAX_INJECTED_IDS);
-    }
-    fs.writeFileSync(injectedStatePath(sessionId), JSON.stringify({ v: 2, n, ids: Object.fromEntries(entries) }));
+    const merged = mergeInjectedStates(disk, state, Date.now());
+    fs.writeFileSync(injectedStatePath(sessionId), JSON.stringify(merged));
   } catch (e) {
     if (DEBUG) console.error("[memini] writeInjectedState failed:", e?.message || e);
   }
-}
-
-/**
- * Shared cooldown predicate: is this recorded entry still suppressed?
- *
- *   suppressed(entry, identity, { now, counter, cooldownMs, cooldownPrompts }):
- *     entry.h === ""                       → true   sentinel/tool-read: FOREVER
- *                                                   (the model pulled it; hooks
- *                                                   never re-push it)
- *     identity && entry.h !== identity     → false  content changed → re-inject
- *     cooldownMs == 0 && prompts == 0      → true   legacy forever-dedupe (#134)
- *     promptDim = prompts > 0 && counter > 0 && counter - entry.n < prompts
- *                  (counter == 0 ⇒ prompt dimension inert: a host that never
- *                   fires UserPromptSubmit degrades to time-only, not forever)
- *     timeDim   = cooldownMs > 0 && now - entry.at < cooldownMs
- *                  (negative deltas — clock skew / counter regression — clamp
- *                   to suppressed)
- *     → promptDim || timeDim                        suppress within EITHER
- *                                                   window; re-admit once BOTH
- *                                                   lapse
- *
- * `identity` null means "id-only check" (used by cooldownIds): the content-
- * change bypass is skipped, so a real-hash entry is judged on the windows
- * alone and a sentinel stays suppressed.
- */
-export function injectedSuppressed(entry, identity, { now, counter, cooldownMs, cooldownPrompts }) {
-  if (!entry || typeof entry !== "object") return false;
-  if (entry.h === "") return true; // sentinel / tool-read: forever
-  if (identity && entry.h !== identity) return false; // content changed: re-inject
-  if (cooldownMs === 0 && cooldownPrompts === 0) return true; // legacy forever-dedupe
-  const promptDim = cooldownPrompts > 0 && counter > 0 && counter - entry.n < cooldownPrompts;
-  const timeDim = cooldownMs > 0 && now - entry.at < cooldownMs;
-  return promptDim || timeDim;
-}
-
-/**
- * The ids currently in cooldown for exclude_ids senders: every recorded entry
- * the predicate suppresses judged by id alone (identity=null) against the
- * state's own counter. Sentinel entries are always in cooldown; real-hash
- * entries ride the time/prompt windows.
- */
-export function cooldownIds(state, { now, cooldownMs, cooldownPrompts }) {
-  const ids = state && state.ids && typeof state.ids === "object" ? state.ids : {};
-  const counter = Number.isFinite(state?.n) ? state.n : 0;
-  const out = [];
-  for (const [id, entry] of Object.entries(ids)) {
-    if (injectedSuppressed(entry, null, { now, counter, cooldownMs, cooldownPrompts })) out.push(id);
-  }
-  return out;
 }
 
 /** Delete the session's injected-id state (best-effort). */
