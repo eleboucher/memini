@@ -31,7 +31,6 @@ import {
   compareVersions,
   injectedSuppressed,
   injectedIdentity,
-  resolveInstallContext,
   resolveInstallContextFrom,
   prepareCacheUpdate,
 } from "./memini.js";
@@ -165,13 +164,10 @@ test("resolveConfig includes auto_update defaulting to true", () => {
 
 // --- auto-update: resolveInstallContext / prepareCacheUpdate ----------------
 //
-// opencode installs each npm plugin spec into its own isolated wrapper dir
-// under ~/.cache/opencode/packages/<spec>/ — e.g. opencode-memini@latest/ —
-// holding a package.json listing the plugin as a dependency plus a
-// node_modules/ tree. The plugin file lives at
-// <wrapper>/node_modules/@eleboucher/opencode-memini/memini.js, so the wrapper
-// is the first ancestor whose child is a `node_modules` directory. These tests
-// build that layout in a temp dir and confirm the walker finds it.
+// opencode installs each npm plugin spec into its own wrapper dir under
+// ~/.cache/opencode/packages/<spec>/ (e.g. opencode-memini@latest/) holding a
+// package.json + node_modules/ tree. These tests build that layout in a temp
+// dir and confirm the walker finds it.
 
 function buildWrapperLayout(root, { withPackageJson = true, withLockfiles = [] } = {}) {
   // <root>/opencode-memini@latest/node_modules/@eleboucher/opencode-memini/memini.js
@@ -272,35 +268,20 @@ test("prepareCacheUpdate no-ops (returns the dir) when the pin already matches",
   }
 });
 
-test("prepareCacheUpdate returns null when given no ctx and the live install context can't be resolved", () => {
-  // From the test process, import.meta.url of memini.js lives in the dev
-  // checkout, where resolveInstallContext() walks up to the repo root. The
-  // repo root here has a package.json + node_modules, so it would actually
-  // resolve — making this a weak test. Instead, assert the explicit-null-ctx
-  // contract by passing a ctx whose packageJsonPath doesn't exist: the rewrite
-  // step throws and the function returns null.
+test("prepareCacheUpdate returns null when the rewrite throws", () => {
+  // Passing a ctx whose packageJsonPath doesn't exist: the rewrite step
+  // throws and the function returns null.
   const root = mkdtempSync(join(tmpdir(), "memini-ctx-"));
   try {
     const bogus = { installDir: root, packageJsonPath: join(root, "does-not-exist.json") };
     const warnings = [];
-    const log = { warn: (m) => warnings.push(m) };
+    const log = { warn: (m) => warnings.push(m), error: (m) => warnings.push(m) };
     const result = prepareCacheUpdate("0.7.6", log, bogus);
     assert.equal(result, null);
     assert.ok(warnings.some((w) => /failed to rewrite cache package\.json/.test(w)));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
-
-test("resolveInstallContext: smoke check it returns null or a real ctx (doesn't throw from the dev checkout)", () => {
-  // In the dev checkout, resolveInstallContext() walks up from this test file's
-  // sibling memini.js to the repo root, which has node_modules + package.json.
-  // That is NOT a real opencode wrapper dir, but the walker's contract is only
-  // "find an ancestor with node_modules + package.json", so it resolves there.
-  // This test asserts it doesn't throw; we don't assert the exact path because
-  // where it lands depends on the caller's cwd layout, not the contract.
-  const ctx = resolveInstallContext();
-  assert.ok(ctx === null || (typeof ctx.installDir === "string" && typeof ctx.packageJsonPath === "string"));
 });
 
 test("resolveConfig rejects malformed recall_limit (NaN / negative) gracefully", () => {

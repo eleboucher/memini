@@ -120,14 +120,9 @@ export function resolveInstallContextFrom(startPath) {
 }
 
 /**
- * resolveInstallContext finds the opencode plugin cache wrapper directory that
- * holds this running plugin instance. opencode installs each npm plugin spec
- * into its own isolated dir under ~/.cache/opencode/packages/<spec>/ (e.g.
- * .../opencode-memini@latest/), containing a package.json listing the plugin as
- * a dependency and a node_modules/ tree. The plugin's own file lives at
- * <wrapper>/node_modules/@eleboucher/opencode-memini/memini.js, so the wrapper
- * is the first ancestor whose child is a `node_modules` directory. Returns
- * { installDir, packageJsonPath } or null. Exported for testing.
+ * resolveInstallContext finds the opencode plugin cache wrapper directory
+ * holding this running plugin instance, by walking up from import.meta.url.
+ * Exported for testing.
  */
 export function resolveInstallContext() {
   try {
@@ -175,7 +170,7 @@ export function prepareCacheUpdate(newVersion, log, ctx) {
     ctx = resolveInstallContext();
   }
   if (!ctx) {
-    log.warn("auto-update: could not resolve install context");
+    log.error("auto-update: could not resolve install context");
     return null;
   }
   // Rewrite package.json with the new version pin
@@ -187,7 +182,7 @@ export function prepareCacheUpdate(newVersion, log, ctx) {
     pkg.dependencies = { ...pkg.dependencies, [PACKAGE_NAME]: newVersion };
     writeFileSync(ctx.packageJsonPath, JSON.stringify(pkg, null, 2));
   } catch (err) {
-    log.warn(`auto-update: failed to rewrite cache package.json: ${String(err)}`);
+    log.error(`auto-update: failed to rewrite cache package.json: ${String(err)}`);
     return null;
   }
   // Remove installed node_modules so the install re-fetches
@@ -195,7 +190,7 @@ export function prepareCacheUpdate(newVersion, log, ctx) {
     const pkgDir = join(ctx.installDir, "node_modules", "@eleboucher", "opencode-memini");
     if (existsSync(pkgDir)) rmSync(pkgDir, { recursive: true, force: true });
   } catch (err) {
-    log.warn(`auto-update: failed to remove cached node_modules: ${String(err)}`);
+    log.error(`auto-update: failed to remove cached node_modules: ${String(err)}`);
     return null;
   }
   // Clean lockfiles: opencode's installer may write either package-lock.json
@@ -1131,15 +1126,42 @@ export function lastAssistantFailed(messages) {
 }
 
 export const MeminiPlugin = async ({ client, worktree, directory }, options) => {
+  // Structured logger is primary; console.error is the fallback when it
+  // throws (absent client.app.log). Direct call so a missing app.log reaches
+  // the catch. Symbols match oh-my-opencode-slim: [ok]/[x]/[!]/[i].
+  const GREEN = "\x1b[32m";
+  const RED = "\x1b[31m";
+  const YELLOW = "\x1b[33m";
+  const BLUE = "\x1b[34m";
+  const RESET = "\x1b[0m";
   const log = {
-    warn: (message) => {
-      // client.app.log is opencode's structured logger; fall back to stderr.
+    error: (message) => {
       try {
-        client?.app?.log?.({ body: { service: "memini", level: "warn", message } });
+        client.app.log({ body: { service: "memini", level: "error", message } });
       } catch {
-        /* ignore logging failures */
+        console.error(`${RED}[x]${RESET} [memini] ${message}`);
       }
-      console.error(`[memini] ${message}`);
+    },
+    warn: (message) => {
+      try {
+        client.app.log({ body: { service: "memini", level: "warn", message } });
+      } catch {
+        console.error(`${YELLOW}[!]${RESET} [memini] ${message}`);
+      }
+    },
+    info: (message) => {
+      try {
+        client.app.log({ body: { service: "memini", level: "info", message } });
+      } catch {
+        console.error(`${BLUE}[i]${RESET} [memini] ${message}`);
+      }
+    },
+    success: (message) => {
+      try {
+        client.app.log({ body: { service: "memini", level: "info", message } });
+      } catch {
+        console.error(`${GREEN}[ok]${RESET} [memini] ${message}`);
+      }
     },
   };
 
@@ -1245,7 +1267,7 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       excludeIds: serverExcludeIds ? excludeIds : [],
       onExcludeIdsUnsupported: () => {
         serverExcludeIds = false;
-        log.warn("memini: server does not accept exclude_ids; using client-side dedupe only");
+        log.info("memini: server does not accept exclude_ids; using client-side dedupe only");
       },
     });
 
@@ -1256,7 +1278,7 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
     try {
       return await fn(...args);
     } catch (error) {
-      log.warn(`${name} hook failed: ${String(error)}`);
+      log.error(`${name} hook failed: ${String(error)}`);
     }
   };
 
@@ -1375,7 +1397,7 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
         result = await Promise.race([settled, budget]);
         clearTimeout(timer);
         if (result === BUDGET_EXPIRED) {
-          log.warn(
+          log.info(
             `recall exceeded its ${live.recall_budget_ms}ms budget; late results will inject next turn`,
           );
           if (sessionID) {
@@ -1480,20 +1502,20 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
               const cur = parseVersion(CLIENT_VERSION);
               const nxt = parseVersion(latest);
               if (!cur || !nxt || cur.major !== nxt.major) {
-                log.warn(`auto-update: v${latest} available (major bump — update manually: pin @eleboucher/opencode-memini@${latest} in opencode.json)`);
+                log.info(`auto-update: v${latest} available (major bump — update manually: pin @eleboucher/opencode-memini@${latest} in opencode.json)`);
                 return;
               }
-              log.warn(`auto-update: updating ${CLIENT_VERSION} → ${latest}`);
+              log.info(`auto-update: updating ${CLIENT_VERSION} → ${latest}`);
               const installDir = prepareCacheUpdate(latest, log);
               if (!installDir) return;
               const ok = runNpmInstall(installDir);
               if (ok) {
-                log.warn(`auto-update: installed v${latest} — restart opencode to apply`);
+                log.success(`auto-update: installed v${latest} — restart opencode to apply`);
               } else {
-                log.warn(`auto-update: npm install failed; will retry next session`);
+                log.error(`auto-update: npm install failed; will retry next session`);
               }
             } catch (err) {
-              log.warn(`auto-update: check failed: ${String(err)}`);
+              log.error(`auto-update: check failed: ${String(err)}`);
             }
           })();
         }
