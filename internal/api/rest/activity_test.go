@@ -26,13 +26,14 @@ type activityEvent struct {
 	Query     string         `json:"query"`
 	Detail    map[string]any `json:"detail"`
 	Memories  []struct {
-		ID       string   `json:"id"`
-		Summary  string   `json:"summary"`
-		Tier     string   `json:"tier"`
-		Rank     int      `json:"rank"`
-		Score    *float64 `json:"score"`
-		Section  string   `json:"section"`
-		Injected *bool    `json:"injected"`
+		ID        string   `json:"id"`
+		Namespace string   `json:"namespace"`
+		Summary   string   `json:"summary"`
+		Tier      string   `json:"tier"`
+		Rank      int      `json:"rank"`
+		Score     *float64 `json:"score"`
+		Section   string   `json:"section"`
+		Injected  *bool    `json:"injected"`
 	} `json:"memories"`
 }
 
@@ -251,6 +252,20 @@ func TestReportInjected(t *testing.T) {
 		}
 		if len(ev.Memories) != 2 {
 			t.Fatalf("inject event carries %d memory refs, want 2 (unknown ids kept)", len(ev.Memories))
+		}
+		// The wire contract the dashboard renders from. A served id must come
+		// back with the snapshot of the serve that produced it — an empty one
+		// draws a blank row and leaves the UI no namespace to open it with —
+		// while an id nothing served stays bare.
+		byID := map[string]struct{ ns, tier, summary string }{}
+		for _, m := range ev.Memories {
+			byID[m.ID] = struct{ ns, tier, summary string }{m.Namespace, m.Tier, m.Summary}
+		}
+		if got := byID[injectedID]; got.ns != "acme" || got.tier != string(memory.TierSemantic) || got.summary == "" {
+			t.Errorf("injected ref = %+v, want a populated acme/semantic snapshot", got)
+		}
+		if got := byID["unknown-id-is-fine"]; got.ns != "" || got.tier != "" || got.summary != "" {
+			t.Errorf("unserved ref = %+v, want it left bare", got)
 		}
 	})
 

@@ -184,6 +184,7 @@ export function Activity() {
   const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [openError, setOpenError] = useState<string | null>(null)
   const [open, setOpen] = useState<Memory | null>(null)
 
   const kinds = EVENT_KINDS.filter((k) => !hidden.includes(k))
@@ -263,12 +264,23 @@ export function Activity() {
     }
   }
 
-  const openMemory = async (id: string, ns: string) => {
+  // ns is optional: a row whose snapshot recorded no namespace has none to pass,
+  // and api.get then falls back to the active one rather than sending the
+  // request unscoped.
+  const openMemory = async (id: string, ns?: string) => {
+    setOpenError(null)
     try {
       setOpen(await api.get(id, ns))
-    } catch {
-      // The memory is gone (a forget event, most likely). The row still renders
-      // from its snapshot; there is simply nothing to open.
+    } catch (e) {
+      // Swallowing this made a 404 look like a dead button, which is what hid
+      // the empty-snapshot bug for as long as it hid. Say something.
+      setOpenError(
+        e instanceof ApiError && e.status === 404
+          ? 'That memory could not be opened — it may have been forgotten, or this row recorded no namespace to look it up in.'
+          : e instanceof Error
+            ? e.message
+            : 'Could not open that memory.',
+      )
     }
   }
 
@@ -342,6 +354,7 @@ export function Activity() {
         </div>
 
         {error && <ErrorBanner message={error} />}
+        {openError && <ErrorBanner message={openError} />}
         {loading && events.length === 0 ? (
           <Loading />
         ) : events.length === 0 ? (
@@ -390,11 +403,21 @@ export function Activity() {
                         key={m.id}
                         type="button"
                         class={`act-mem${m.filtered ? ' floored' : ''}`}
-                        onClick={() => openMemory(m.id, m.namespace)}
+                        onClick={() => openMemory(m.id, m.namespace || undefined)}
                       >
                         {m.rank ? <span class="act-rank mono">#{m.rank}</span> : <span class="act-rank" />}
                         <TierBadge tier={m.tier} />
-                        <span class="act-summary">{m.summary}</span>
+                        {/* A row whose writer recorded no snapshot has no text
+                            to show. Fall back to the id prefix rather than an
+                            empty line — memini resolves short ids, so it is
+                            something you can actually act on. */}
+                        {m.summary ? (
+                          <span class="act-summary">{m.summary}</span>
+                        ) : (
+                          <span class="act-summary mono muted" title="No snapshot was recorded for this memory">
+                            {m.id.slice(0, 8)}
+                          </span>
+                        )}
                         {m.section && <span class="chip">{m.section}</span>}
                         {/* The score is the "why": how well this memory matched
                             the query it was served for. */}
@@ -421,7 +444,7 @@ export function Activity() {
                             floored
                           </span>
                         )}
-                        {showNs && m.namespace !== ev.namespace && (
+                        {showNs && m.namespace && m.namespace !== ev.namespace && (
                           <span class="chip mono">{m.namespace}</span>
                         )}
                       </button>

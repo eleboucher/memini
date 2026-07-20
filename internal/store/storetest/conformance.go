@@ -325,6 +325,7 @@ func testEventLog(t *testing.T, st store.Store, _ int) {
 	t.Run("RoundTripAndOrder", func(t *testing.T) { testEventRoundTrip(t, els, ns, base) })
 	t.Run("Filters", func(t *testing.T) { testEventFilters(t, els, ns, other, base) })
 	t.Run("Cursor", func(t *testing.T) { testEventCursor(t, els, ns) })
+	t.Run("ServedSnapshots", func(t *testing.T) { testServedSnapshots(t, els, ns, base) })
 	t.Run("Prune", func(t *testing.T) { testEventPrune(t, els, ns, base) })
 }
 
@@ -552,6 +553,121 @@ func testEventCursor(t *testing.T, els store.EventLogStore, ns string) {
 
 // testEventPrune covers pruning by age and by row cap. It destroys the fixture,
 // so it runs last.
+// testServedSnapshots pins the lookup backing inject-event hydration. It seeds
+// its own namespace at timestamps after the shared fixture's, so it stays
+// invisible to the read subtests that already ran and leaves testEventPrune's
+// counts untouched.
+//
+// The cases that matter are the ones a naive implementation gets wrong: an
+// ancestor-namespace serve must report the MEMORY's namespace and not the
+// request's, a bare inject row must not shadow the real snapshot beneath it,
+// and a non-serve kind must not be a donor.
+func testServedSnapshots(t *testing.T, els store.EventLogStore, ns string, base time.Time) {
+	ctx := context.Background()
+	snapNS := ns + "-snap"
+	parent := ns + "-parent"
+	at := base.Add(3 * time.Minute)
+
+	// One id per case the lookup has to get right.
+	const (
+		idTwice     = "s-twice"     // served twice: newest snapshot wins
+		idAncestor  = "s-ancestor"  // served to a child, owned by the parent
+		idShadowed  = "s-shadowed"  // a bare inject row sits on top of the serve
+		idWritten   = "s-written"   // written, never served: not a donor
+		idElsewhere = "s-elsewhere" // served, but to another namespace
+		idUnknown   = "s-unknown"   // never seen at all
+	)
+
+	seed := []store.Event{
+		// Served twice: the newer snapshot must win.
+		{
+			OpID: "op-s1", Kind: store.EventRecall, Namespace: snapNS,
+			MemoryID: idTwice, MemoryNS: snapNS, MemoryTier: memory.TierSemantic,
+			MemorySummary: "stale text", CreatedAt: at,
+		},
+		{
+			OpID: "op-s2", Kind: store.EventRecall, Namespace: snapNS,
+			MemoryID: idTwice, MemoryNS: snapNS, MemoryTier: memory.TierProcedural,
+			MemorySummary: "current text", CreatedAt: at.Add(time.Minute),
+		},
+		// A cascading recall: served against snapNS, but the memory lives in an
+		// ancestor. The serve row is the only record of that fact.
+		{
+			OpID: "op-s3", Kind: store.EventBriefing, Namespace: snapNS,
+			MemoryID: idAncestor, MemoryNS: parent, MemoryTier: memory.TierSemantic,
+			MemorySummary: "inherited fact", CreatedAt: at,
+		},
+		// A real serve, then a bare inject row on top of it. The bare row is
+		// newer, so a lookup that forgets to skip snapshot-less rows returns
+		// empty strings here instead of the snapshot underneath.
+		{
+			OpID: "op-s4", Kind: store.EventRecall, Namespace: snapNS,
+			MemoryID: idShadowed, MemoryNS: snapNS, MemoryTier: memory.TierEpisodic,
+			MemorySummary: "still findable", CreatedAt: at,
+		},
+		{
+			OpID: "op-s5", Kind: store.EventInject, Namespace: snapNS,
+			MemoryID: idShadowed, Rank: 1, CreatedAt: at.Add(time.Minute),
+		},
+		// Written but never served: not a donor, so a beacon cannot use a write
+		// it did not see to learn the memory's text.
+		{
+			OpID: "op-s6", Kind: store.EventRemember, Namespace: snapNS,
+			MemoryID: idWritten, MemoryNS: snapNS, MemoryTier: memory.TierSemantic,
+			MemorySummary: "never served", CreatedAt: at,
+		},
+		// Served, but to a different namespace.
+		{
+			OpID: "op-s7", Kind: store.EventRecall, Namespace: parent,
+			MemoryID: idElsewhere, MemoryNS: parent, MemoryTier: memory.TierSemantic,
+			MemorySummary: "someone else's", CreatedAt: at,
+		},
+	}
+	if err := els.AppendEvents(ctx, seed); err != nil {
+		t.Fatalf("append snapshot fixture: %v", err)
+	}
+
+	ids := []string{idTwice, idAncestor, idShadowed, idWritten, idElsewhere, idUnknown}
+	got, err := els.ServedSnapshots(ctx, snapNS, ids, time.Time{})
+	if err != nil {
+		t.Fatalf("served snapshots: %v", err)
+	}
+
+	want := map[string]store.MemorySnapshot{
+		idTwice:    {Namespace: snapNS, Tier: memory.TierProcedural, Summary: "current text"},
+		idAncestor: {Namespace: parent, Tier: memory.TierSemantic, Summary: "inherited fact"},
+		idShadowed: {Namespace: snapNS, Tier: memory.TierEpisodic, Summary: "still findable"},
+	}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("snapshot[%s] = %+v, want %+v", id, got[id], w)
+		}
+	}
+	for _, id := range []string{idWritten, idElsewhere, idUnknown} {
+		if snap, ok := got[id]; ok {
+			t.Errorf("snapshot[%s] = %+v, want absent", id, snap)
+		}
+	}
+
+	// The since bound excludes a serve older than the window.
+	fresh, err := els.ServedSnapshots(ctx, snapNS, []string{idAncestor}, at.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("served snapshots since: %v", err)
+	}
+	if snap, ok := fresh[idAncestor]; ok {
+		t.Errorf("snapshot outside the window = %+v, want absent", snap)
+	}
+
+	// No ids is not an error — the caller has nothing to hydrate.
+	empty, err := els.ServedSnapshots(ctx, snapNS, nil, time.Time{})
+	if err != nil {
+		t.Fatalf("served snapshots with no ids: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("served snapshots with no ids = %+v, want empty", empty)
+	}
+}
+
 func testEventPrune(t *testing.T, els store.EventLogStore, ns string, base time.Time) {
 	ctx := context.Background()
 

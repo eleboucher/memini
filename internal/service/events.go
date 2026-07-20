@@ -83,6 +83,19 @@ func (s *Service) eventLog() (store.EventLogStore, bool) {
 // behaviour with WithSyncEventLog. Best-effort throughout: a failure here is
 // logged, never returned — losing an audit row must not fail a recall.
 func (s *Service) logEvents(ctx context.Context, events []store.Event) {
+	s.logEventsPrepared(ctx, events, nil)
+}
+
+// logEventsPrepared is logEvents with a hook that runs against the rows just
+// before they are appended, for a writer that must read the store to complete
+// them (RecordInjected's snapshot hydration). Running inside the same goroutine
+// as the append keeps the read off the caller's latency, and — since the
+// background write is already queued behind the serve that preceded it — gives
+// that serve's own rows a head start on landing, which is exactly what the
+// hydration looks for. prepare must be best-effort: it cannot fail the append.
+func (s *Service) logEventsPrepared(ctx context.Context, events []store.Event,
+	prepare func(context.Context, []store.Event),
+) {
 	els, ok := s.eventLog()
 	if !ok || len(events) == 0 {
 		return
@@ -96,6 +109,9 @@ func (s *Service) logEvents(ctx context.Context, events []store.Event) {
 		events[i].ActorKind = a.kind
 	}
 	write := func(ctx context.Context) {
+		if prepare != nil {
+			prepare(ctx, events)
+		}
 		if err := els.AppendEvents(ctx, events); err != nil {
 			slog.WarnContext(ctx, "activity: append events failed",
 				"kind", string(events[0].Kind), "count", len(events), "err", err)
@@ -236,8 +252,10 @@ func filteredDetail(base map[string]any) map[string]any {
 // /v1/activity/injected): after the server served memories (a recall or a
 // briefing), the client hook reports which of them actually reached model
 // context and what its local gates held back. Memory ids are taken on faith —
-// an unknown id is recorded as-is, never resolved or rejected — because the
-// report is best-effort observability, not a write to the memories themselves.
+// an unknown id is recorded as-is, never rejected — because the report is
+// best-effort observability, not a write to the memories themselves. An id the
+// caller's namespace was demonstrably served does pick up that serve's snapshot
+// so the row is renderable (hydrateInjected); one that was not stays bare.
 type InjectedReport struct {
 	// SessionID is the client session the injection happened in; "" when the
 	// client did not say.
@@ -282,11 +300,82 @@ func (s InjectedSuppressed) buckets() []suppressedBucket {
 	}
 }
 
+// injectHydrateWindow bounds how far back hydrateInjected looks for the serve
+// row carrying a memory's snapshot. A beacon follows its serve by seconds, so
+// this is generous by design; it exists to keep the lookup off the full history,
+// not to express a correctness bound. Deliberately NOT injectAnnotateWindow: an
+// id→snapshot mapping is a property of the memory, not of a moment, so the tight
+// join window that suits annotateInjected is the wrong bound here.
+const injectHydrateWindow = 24 * time.Hour
+
+// injectHydrateMaxIDs caps how many ids one beacon can turn into a lookup. Ids
+// are taken on faith and never authorized, so the bound is what keeps a buggy —
+// or hostile — client from building an unbounded query.
+const injectHydrateMaxIDs = 200
+
+// hydrateInjected fills in the memory snapshot (namespace, tier, summary) an
+// inject row cannot supply for itself. The client beacon reports bare ids, so
+// unlike recall and briefing — which hold the memory in hand and stamp it via
+// applyMemory — RecordInjected has nothing to snapshot, and a row left bare
+// renders as a blank line in the feed, misses the tier and text filters, and
+// offers the UI no namespace to open the memory with.
+//
+// The snapshot is BORROWED from the serve that produced the injection rather
+// than re-read from the memories table, which makes it both correct and safe:
+//
+//   - correct, because a cascading recall serves memories from ancestor
+//     namespaces, and the serve row is the only place that memory's own
+//     namespace was ever recorded (see store.Event.Namespace);
+//   - safe, because ids are never authorized. Resolving them against the
+//     memories table would let a client beacon arbitrary ids and read back the
+//     summaries of memories it was never served. Serves already logged against
+//     the caller's namespace bound what a report can learn to what it was shown.
+//
+// Score is deliberately not copied: the composite score belongs to the recall
+// that computed it against its query, and duplicating it onto the injection
+// would have two events claim the same number.
+//
+// Best-effort like everything else on this path — an unresolved id keeps its
+// bare row (the "taken on faith" contract), and a store error logs and leaves
+// every row bare.
+func (s *Service) hydrateInjected(ctx context.Context, namespace string, events []store.Event) {
+	els, ok := s.eventLog()
+	if !ok {
+		return
+	}
+	ids := make([]string, 0, len(events))
+	seen := make(map[string]bool, len(events))
+	for _, e := range events {
+		if e.MemoryID == "" || seen[e.MemoryID] || len(ids) >= injectHydrateMaxIDs {
+			continue
+		}
+		seen[e.MemoryID] = true
+		ids = append(ids, e.MemoryID)
+	}
+	if len(ids) == 0 {
+		return
+	}
+	snaps, err := els.ServedSnapshots(ctx, namespace, ids, s.now().Add(-injectHydrateWindow))
+	if err != nil {
+		slog.WarnContext(ctx, "activity: inject snapshot hydration failed",
+			"namespace", namespace, "count", len(ids), "err", err)
+		return
+	}
+	for i := range events {
+		if snap, ok := snaps[events[i].MemoryID]; ok {
+			events[i].MemoryNS = snap.Namespace
+			events[i].MemoryTier = snap.Tier
+			events[i].MemorySummary = snap.Summary
+		}
+	}
+}
+
 // RecordInjected records one injection-telemetry report as a single inject
 // activity event: the session/surface/source and size estimates ride the
 // event detail (the way recall stores its source), the injected ids become
-// the event's memory refs, and the suppression counts land under detail
-// "suppressed" with zero reasons omitted. Metrics are incremented per report
+// the event's memory refs — hydrated with the snapshot of the serve that
+// produced them, see hydrateInjected — and the suppression counts land under
+// detail "suppressed" with zero reasons omitted. Metrics are incremented per report
 // regardless of the event log's availability. Best-effort like every other
 // event writer: nothing here can fail the request path — the report IS the
 // request, so a lost row costs an audit line, never a client error — and it
@@ -346,7 +435,9 @@ func (s *Service) RecordInjected(ctx context.Context, namespace string, r Inject
 		e.Rank = i + 1
 		events = append(events, e)
 	}
-	s.logEvents(ctx, events)
+	s.logEventsPrepared(ctx, events, func(ctx context.Context, evs []store.Event) {
+		s.hydrateInjected(ctx, namespace, evs)
+	})
 }
 
 // briefingExplorationWindow bounds "recently shown" for the briefing's reserved
