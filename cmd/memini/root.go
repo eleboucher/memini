@@ -344,6 +344,7 @@ func buildServiceStack(
 		service.WithRecallEmbedTimeout(cfg.RecallEmbedTimeout),
 		service.WithRecallRewriteTimeout(cfg.RecallRewriteTimeout),
 		service.WithWriteEmbedTimeout(cfg.WriteEmbedTimeout),
+		service.WithDistillTimeout(cfg.DistillTimeout),
 		service.WithRecallMinScore(cfg.RecallMinScore),
 		service.WithRecallSemanticReserve(cfg.RecallSemanticReserve),
 		service.WithTurnEchoWindow(cfg.TurnEchoWindow),
