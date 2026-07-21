@@ -3,6 +3,7 @@ package rest
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -99,6 +100,12 @@ func (h *Server) Handshake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	keyName := ""
+	if principal != nil {
+		keyName = principal.Name
+	}
+	logNamespaceResolved(ctx, facts, merged, sources, keyName, res)
+
 	entries, err := h.svc.ResolveReadSetInfo(ctx, res.Namespace, homeFromContext(ctx))
 	if err != nil {
 		writeError(w, r, statusFor(err), err)
@@ -134,6 +141,43 @@ func (h *Server) Handshake(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	httputil.JSON(w, http.StatusOK, resp)
+}
+
+// logNamespaceResolved emits the operator-side record of a handshake's
+// namespace decision: who asked (key), what they got (namespace), why
+// (source, plus the winning facts and any prefix with its settings layer).
+// The handshake response reports all of this too, but only to the client that
+// asked — this line is what lets an operator answer "why did that session
+// write there?" from the server logs alone, without asking the person whose
+// session it was. One line per handshake, so volume tracks session starts,
+// not requests.
+func logNamespaceResolved(ctx context.Context, f nsresolve.Facts, merged store.ClientSettings,
+	sources map[string]string, keyName string, res nsresolve.Result,
+) {
+	attrs := make([]slog.Attr, 0, 8)
+	if keyName != "" {
+		attrs = append(attrs, slog.String("key", keyName))
+	}
+	attrs = append(attrs,
+		slog.String("namespace", res.Namespace),
+		slog.String("source", res.Source),
+		slog.String("cwd", f.CwdBasename),
+	)
+	if f.RemoteURL != "" {
+		attrs = append(attrs, slog.String("remote_url", f.RemoteURL))
+	}
+	if f.Agent != "" {
+		attrs = append(attrs, slog.String("agent", f.Agent))
+	}
+	if merged.NamespacePrefix != nil && *merged.NamespacePrefix != "" {
+		attrs = append(attrs,
+			slog.String("prefix", *merged.NamespacePrefix),
+			slog.String("prefix_source", sources["namespace_prefix"]))
+	}
+	if res.Source == nsresolve.SourcePin {
+		attrs = append(attrs, slog.String("pin_key", res.PinKey))
+	}
+	slog.LogAttrs(ctx, slog.LevelInfo, "handshake: namespace resolved", attrs...)
 }
 
 // pinLookup builds an nsresolve.PinLookup over the pins table, fetching the

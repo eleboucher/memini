@@ -237,6 +237,10 @@ func (a AuthConfig) actorMiddleware(next http.Handler) http.Handler {
 			kind = "none"
 		}
 		ctx := service.WithActor(r.Context(), name, kind)
+		// Also record it for the access log: the outer request logger's actor
+		// holder (httputil.RecordActor) is how the (name, kind) resolved here
+		// reaches a log line emitted OUTSIDE this middleware chain.
+		httputil.RecordActor(ctx, name, kind)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

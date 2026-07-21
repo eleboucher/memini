@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
+	"github.com/eleboucher/memini/internal/httputil"
 	"github.com/eleboucher/memini/internal/server"
 )
 
@@ -53,6 +54,74 @@ func TestPanicHandlerStillLoggedAndCounted(t *testing.T) {
 	}
 	if !strings.Contains(logged, `"status":500`) {
 		t.Errorf("request-completion log missing status=500; got: %s", logged)
+	}
+}
+
+// TestRequestLoggerStatsAtDebug pins /v1/stats to debug level in the request
+// log: the admin UI polls it once per namespace per refresh, which at info
+// level buried every meaningful line under ~40-line bursts of identical
+// entries. Same treatment the health/readiness/metrics probes already get.
+func TestRequestLoggerStatsAtDebug(t *testing.T) {
+	var logBuf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	srv := server.New(server.Options{Addr: ":0", ShutdownTimeout: time.Second}, log, prometheus.NewRegistry())
+
+	srv.Router().Handle("GET /v1/stats", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+
+	logged := logBuf.String()
+	if !strings.Contains(logged, `"path":"/v1/stats"`) {
+		t.Fatalf("request log missing /v1/stats entry; got: %s", logged)
+	}
+	if !strings.Contains(logged, `"level":"DEBUG"`) {
+		t.Errorf("/v1/stats logged above debug; got: %s", logged)
+	}
+}
+
+// TestRequestLoggerIncludesRecordedActor asserts the request-completion line
+// carries the actor an inner (auth) middleware recorded via
+// httputil.RecordActor: the key name as "key" when a named key authenticated,
+// and the auth kind always. Without this every line is anonymous and log
+// triage cannot tell whose session did what.
+func TestRequestLoggerIncludesRecordedActor(t *testing.T) {
+	cases := []struct {
+		name, actor, kind string
+		wantInLog         []string
+		wantAbsent        string
+	}{
+		{"named key", "nicole_tyrfing", "key",
+			[]string{`"key":"nicole_tyrfing"`, `"auth":"key"`}, ""},
+		{"admin env key", "", "env",
+			[]string{`"auth":"env"`}, `"key":`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var logBuf bytes.Buffer
+			log := slog.New(slog.NewJSONHandler(&logBuf, nil))
+			srv := server.New(server.Options{Addr: ":0", ShutdownTimeout: time.Second}, log, prometheus.NewRegistry())
+
+			srv.Router().Handle("GET /v1/memories", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				httputil.RecordActor(r.Context(), c.actor, c.kind)
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			rec := httptest.NewRecorder()
+			srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/memories", nil))
+
+			logged := logBuf.String()
+			for _, want := range c.wantInLog {
+				if !strings.Contains(logged, want) {
+					t.Errorf("request log missing %s; got: %s", want, logged)
+				}
+			}
+			if c.wantAbsent != "" && strings.Contains(logged, c.wantAbsent) {
+				t.Errorf("request log has %s, want it absent; got: %s", c.wantAbsent, logged)
+			}
+		})
 	}
 }
 
