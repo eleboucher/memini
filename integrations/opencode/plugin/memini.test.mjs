@@ -960,7 +960,7 @@ test("captured assistant-id window is bounded (an aged-out turn can re-capture)"
     turn = mkTurn("a0");
     await hooks.event(idle);
     assert.equal(posts.length, 1, "first idle captures the turn");
-    assert.equal(posts[0].tier, "episodic");
+    assert.equal(Object.hasOwn(posts[0], "tier"), false);
     assert.equal(posts[0].metadata.session_type, "root");
     // A re-fired idle for the same turn is still deduped.
     await hooks.event(idle);
@@ -1004,7 +1004,7 @@ test("v1 capture skips children by default and records ancestry when opted in", 
     const opted = await MeminiPlugin({ client, worktree: "/tmp/proj" }, { capture_child_sessions: true });
     await opted.event({ event: { type: "session.idle", properties: { sessionID: "child-1" } } });
     assert.equal(posts.length, 1);
-    assert.equal(posts[0].tier, "episodic");
+    assert.equal(Object.hasOwn(posts[0], "tier"), false);
     assert.equal(posts[0].metadata.session_type, "child");
     assert.equal(posts[0].metadata.parent_session_id, "root-1");
   } finally {

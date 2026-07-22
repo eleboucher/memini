@@ -6,7 +6,7 @@
  *   - chat.message: recall memories relevant to the incoming user message and
  *     inject them as a synthetic context part before the turn runs.
  *   - event (session.idle): capture the completed user/assistant turn into
- *     memini as episodic memory once the session goes idle.
+ *     memini once the session goes idle.
  *
  * Talks to memini over REST (/v1/search, /v1/memories), scoped by the
  * X-Memini-Namespace header. Default endpoint http://localhost:8080.
@@ -1546,7 +1546,6 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
         "/v1/memories",
         {
           content: buildTurnCapture(userText, assistantText, live.capture_user_max_chars, live.capture_assistant_max_chars),
-          tier: "episodic",
           tags: ["opencode"],
           metadata,
         },

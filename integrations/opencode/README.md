@@ -15,8 +15,8 @@ What it wires (two hooks):
   excludes this session's own captured turns (already in the live context), so
   they aren't echoed back as memory a turn behind; past sessions still recall.
 - **`event` (`session.idle`)** — once the session goes idle, stores the
-  completed user/assistant turn back into memini (episodic, tagged with the
-  session id) so it can be recalled later.
+  completed user/assistant turn back into memini (tagged with the session id) so
+  it can be recalled later.
 
 ### Install
 
@@ -100,7 +100,7 @@ once at startup to warm the connection, so the first recall doesn't pay the
 DNS/TLS cold-start. Set `recall_budget_ms: 0` to restore fully blocking
 same-turn injection.
 
-Automatic captures are written with `tier: "episodic"`. Before retrieving
+Automatic captures leave tier selection to the server. Before retrieving
 messages, the plugin resolves session ancestry. Root sessions are captured by
 default; child sessions and sessions whose ancestry cannot be resolved are
 skipped by default. Set `capture_child_sessions` (or

@@ -407,7 +407,6 @@ export async function setup(ctx) {
       "/v1/memories",
       {
         content: buildTurnCapture(userText, assistantText, live.capture_user_max_chars, live.capture_assistant_max_chars),
-        tier: "episodic",
         tags: ["opencode"],
         metadata,
       },

@@ -312,7 +312,7 @@ test("capture writes the completed turn on session.idle", async () => {
     assert.match(posts[0].content, /how do I deploy/);
     assert.match(posts[0].content, /run make deploy/);
     assert.equal(posts[0].metadata.session_id, "s1");
-    assert.equal(posts[0].tier, "episodic");
+    assert.equal(Object.hasOwn(posts[0], "tier"), false);
     assert.equal(posts[0].metadata.session_type, "root");
     assert.deepEqual(posts[0].tags, ["opencode"]);
     await cleanup();

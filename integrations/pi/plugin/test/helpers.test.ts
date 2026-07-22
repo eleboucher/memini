@@ -2563,7 +2563,7 @@ test("multiple low-level endings and overflow retries capture only the final set
     const captures = h.calls.filter((call) => call.url.endsWith("/v1/memories"));
     assert.equal(captures.length, 1);
     assert.match(captures[0].body.content, /question\n\nfinal/);
-    assert.equal(captures[0].body.tier, "episodic");
+    assert.equal(Object.hasOwn(captures[0].body, "tier"), false, "automatic settled-turn capture omits tier");
     assert.deepEqual(captures[0].body.metadata, { source: "pi", format: "turn", session_id: "session-life" });
   } finally {
     globalThis.fetch = realFetch;

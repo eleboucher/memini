@@ -1140,7 +1140,7 @@ test("recall searches memini and prepends results; capture writes the episodic t
     const write = requests.find((r) => r.url.endsWith("/v1/memories"));
     assert.ok(write, "capture should POST /v1/memories");
     const body = JSON.parse(write.init.body);
-    assert.equal(body.tier, "episodic", "automatic turn capture must be tagged episodic");
+    assert.equal(body.tier, undefined, "capture omits the tier so the server intakes it as working");
     assert.match(body.content, /q/);
     assert.match(body.content, /a/);
     assert.doesNotMatch(body.content, /User:|Assistant:/);
@@ -1471,7 +1471,7 @@ test("agent_end still captures when success is false, tagging metadata.failed", 
     const write = requests.find((r) => r.url.endsWith("/v1/memories"));
     assert.ok(write, "should still capture failed runs");
     const body = JSON.parse(write.init.body);
-    assert.equal(body.tier, "episodic", "automatic turn capture must be tagged episodic");
+    assert.equal(body.tier, undefined, "capture omits the tier so the server intakes it as working");
     assert.equal(body.metadata.failed, true, "failed runs must be tagged");
     assert.equal(body.metadata.session_id, "sess-fail", "captures must carry the session identity");
 
