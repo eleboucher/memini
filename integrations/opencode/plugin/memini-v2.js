@@ -144,16 +144,17 @@ export async function setup(ctx) {
   // opencode runs the plugin in the project root, so cwd is the project dir —
   // the same input resolveConfig/deriveNamespace expect.
   const dir = process.cwd();
+  const emitLog = async (level, message) => {
+    try {
+      if (typeof ctx?.app?.log !== "function") return;
+      await ctx.app.log({ body: { service: "memini", level, message } });
+    } catch {
+      // Logging is best-effort and must never affect plugin behavior.
+    }
+  };
   const log = {
     warn: (message) => {
-      // ctx is essentially a server client; mirror v1's structured logger and
-      // fall back to stderr.
-      try {
-        ctx?.app?.log?.({ body: { service: "memini", level: "warn", message } });
-      } catch {
-        /* ignore logging failures */
-      }
-      console.error(`[memini] ${message}`);
+      void emitLog("warn", message);
     },
   };
 

@@ -108,6 +108,44 @@ test("injectContext prefers system[], falls back to a system message", () => {
   assert.equal(injectContext({}, "BLOCK"), false);
 });
 
+test("structured v2 logging does not write to console.error", async () => {
+  BASE_ENV();
+  const realError = console.error;
+  const consoleErrors = [];
+  const calls = [];
+  console.error = (...args) => consoleErrors.push(args);
+  try {
+    const { ctx } = makeCtx({ withHooks: false });
+    ctx.app = { log: async (entry) => calls.push(entry) };
+    await setup(ctx);
+    await drain();
+    assert.ok(calls.length > 0, "structured logger was used");
+    assert.deepEqual(calls[0], {
+      body: { service: "memini", level: "warn", message: "recall unavailable: ctx.session.hook is not present on this opencode build" },
+    });
+    assert.deepEqual(consoleErrors, []);
+  } finally {
+    console.error = realError;
+  }
+});
+
+test("v2 logging ignores rejected or absent structured loggers", async () => {
+  BASE_ENV();
+  const realError = console.error;
+  const consoleErrors = [];
+  console.error = (...args) => consoleErrors.push(args);
+  try {
+    const rejected = makeCtx({ withHooks: false });
+    rejected.ctx.app = { log: async () => { throw new Error("logger unavailable"); } };
+    await assert.doesNotReject(() => setup(rejected.ctx));
+    await assert.doesNotReject(() => setup(makeCtx({ withHooks: false }).ctx));
+    await drain();
+    assert.deepEqual(consoleErrors, []);
+  } finally {
+    console.error = realError;
+  }
+});
+
 test("request hook injects a recalled memory into event.system", async () => {
   BASE_ENV();
   const { posts, restore } = installFetch({

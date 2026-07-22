@@ -60,6 +60,10 @@ The same options and env vars below apply. Recall injects into the request's
 > `core/src/plugin/host.ts`. Until then, stay on the v1 entry above with the
 > stable `opencode` binary.
 
+The v2 plugin sends diagnostics through the structured `ctx.app.log` logger when
+available. Logging is best-effort and remains silent when that logger is absent
+or unavailable.
+
 ### Configure
 
 Pass options inline via the `[name, options]` form:
