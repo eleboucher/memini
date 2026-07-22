@@ -73,6 +73,7 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_ACTIVITY_RETENTION`](#memini_activity_retention) | `720h` | [Activity log](#activity-log) |
 | [`MEMINI_ACTIVITY_MAX_ROWS`](#memini_activity_max_rows) | `100000` | [Activity log](#activity-log) |
 | [`MEMINI_RECALL_MIN_SCORE`](#memini_recall_min_score) | `0.1` | [Recall tuning](#recall-tuning) |
+| [`MEMINI_RECALL_MIN_SEMANTIC_SCORE`](#memini_recall_min_semantic_score) | `0.46` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_RECALL_SEMANTIC_RESERVE`](#memini_recall_semantic_reserve) | `2` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_RECALL_EMBED_TIMEOUT`](#memini_recall_embed_timeout) | `2s` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_RECALL_REWRITE_TIMEOUT`](#memini_recall_rewrite_timeout) | `3s` | [Recall tuning](#recall-tuning) |
@@ -433,6 +434,12 @@ float64, default `0.1`. Set by `Config.RecallMinScore`.
 
 `MEMINI_RECALL_MIN_SCORE` is the fused-score floor: candidates below it are dropped before ranking. The default (0.1) is the benched value; it is exposed so a deployment on a different embedder can raise it to trim loosely-relevant injection. Only meaningful with score fusion.
 
+### `MEMINI_RECALL_MIN_SEMANTIC_SCORE`
+
+float64, default `0.46`. Set by `Config.RecallMinSemanticScore`.
+
+`MEMINI_RECALL_MIN_SEMANTIC_SCORE` is the raw vector-score floor: candidates below it are dropped before fusion, preventing the keyword leg from reintroducing an off-topic candidate. 0 disables it. It is applied only when the query embedding succeeds; keyword-only fallback remains available on failure.
+
 ### `MEMINI_RECALL_SEMANTIC_RESERVE`
 
 int, default `2`. Set by `Config.RecallSemanticReserve`.
@@ -743,7 +750,6 @@ old tuning value quietly stops applying. If you are upgrading, read
 | `MEMINI_CONSOLIDATE_QUEUE_CAP` | now a fixed internal default (1024) |
 | `MEMINI_NAMESPACE_HEADER` | the header name is fixed to X-Memini-Namespace |
 | `MEMINI_FUSION_ALPHA` | now a baked retrieval default (0.5); tune via the benchmark harness, not env |
-| `MEMINI_RECALL_MIN_SEMANTIC_SCORE` | now a baked retrieval default (0, off) |
 | `MEMINI_TEMPORAL_BOOST` | now a baked retrieval default (0.40) |
 | `MEMINI_REDACT_SECRETS` | secret redaction is always on |
 | `MEMINI_REINFORCE_SKIP_MARKERS` | always on |

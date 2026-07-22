@@ -77,13 +77,14 @@ Pass options inline via the `[name, options]` form:
 | `home`                    | `MEMINI_HOME`                    | unset                   | caller's personal namespace, sent as `X-Memini-Home`; unset = no home leg                                                                                            |
 | `recall`                  | `MEMINI_RECALL`                  | on                      | `false` disables recall-before-turn                                                                                                                                  |
 | `capture`                 | `MEMINI_CAPTURE`                 | on                      | `false` disables capture-after-turn                                                                                                                                  |
+| `capture_child_sessions`  | `MEMINI_CAPTURE_CHILD_SESSIONS`  | off                     | capture child sessions; off skips children and unknown ancestry (fail-closed), on records ancestry metadata                                                          |
 | `recall_limit`            | `MEMINI_RECALL_LIMIT`            | `3`                     | max memories injected per turn                                                                                                                                       |
 | `recall_max_tokens`       | `MEMINI_INJECT_RECALL_MAX_TOK`   | `0`                     | hard ceiling on the recall-block tokens (`0` = unbounded); the tail is dropped with a `[… N item(s) truncated by token budget]` footer                               |
 | `recall_min_score`        | `MEMINI_INJECT_RECALL_MIN_SCORE` | `0`                     | fused-score floor (>=) sent as `min_score` to `/v1/search`                                                                                                           |
 | `inject_cooldown_ms`      | `MEMINI_INJECT_COOLDOWN_MS`      | `1800000`               | repeat-injection cooldown, **time** window (ms): an already-injected memory is held back this long before it may re-serve; `0` disables the time dimension           |
 | `inject_cooldown_prompts` | `MEMINI_INJECT_COOLDOWN_PROMPTS` | `3`                     | repeat-injection cooldown, **prompt** window (counted per user message); `0` disables the prompt dimension; both cooldown knobs `0` = suppress for the whole session |
 | `recall_budget_ms`        | `MEMINI_RECALL_BUDGET_MS`        | `2000`                  | how long a turn waits for recall before proceeding without it (`0` = wait for the full `timeout_ms`)                                                                 |
-| `timeout_ms`              | `MEMINI_TIMEOUT_MS`              | `30000`                 | per-request timeout (recall past its budget keeps running in the background under this bound)                                                                        |
+| `timeout_ms`              | `MEMINI_TIMEOUT_MS`              | `30000`                 | per-request timeout for memini requests                                                                                                                              |
 | `fallback_on_error`       | `MEMINI_FALLBACK`                | on                      | `false` surfaces errors instead of degrading silently                                                                                                                |
 | `auto_update`             | `MEMINI_AUTO_UPDATE`             | on                      | `false` disables npm auto-update checks (opencode never re-fetches cached plugins otherwise)                                                                         |
 | —                         | `MEMINI_INJECT_LABELS`           | —                       | comma-separated label toggles for each bullet: `tier`, `confidence`, `age`, `reason`                                                                                 |
@@ -93,12 +94,19 @@ Pass options inline via the `[name, options]` form:
 opencode awaits `chat.message` before the model sees the message, so a slow or
 unreachable memini would otherwise freeze the turn for the full `timeout_ms`.
 Instead, recall races `recall_budget_ms`: if the search hasn't answered in time,
-the turn proceeds without memories and the search keeps running in the
-background — results that arrive late are injected on the session's next
-message instead of being dropped. The plugin also pings `/healthz` once at
-startup to warm the connection, so the first recall doesn't pay the
+the turn proceeds without memories and eventual results are discarded. Errors
+from the background request are still logged. The plugin also pings `/healthz`
+once at startup to warm the connection, so the first recall doesn't pay the
 DNS/TLS cold-start. Set `recall_budget_ms: 0` to restore fully blocking
 same-turn injection.
+
+Automatic captures are written with `tier: "episodic"`. Before retrieving
+messages, the plugin resolves session ancestry. Root sessions are captured by
+default; child sessions and sessions whose ancestry cannot be resolved are
+skipped by default. Set `capture_child_sessions` (or
+`MEMINI_CAPTURE_CHILD_SESSIONS=1`) to opt in; captures then include
+`metadata.session_type` (`root`, `child`, or `unknown`) and child captures also
+include `metadata.parent_session_id`.
 
 ### Repeat-injection cooldown
 

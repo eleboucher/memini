@@ -162,20 +162,28 @@ One threshold now decides _whether_ a write is a near-duplicate;
 These are no longer configurable. The value in parentheses is what the code now
 uses unconditionally.
 
-| Removed                            | Now fixed at                                                                                    |
-| ---------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `MEMINI_FUSION_ALPHA`              | `0.5` (a baked retrieval default; tune via the benchmark harness, not env)                      |
-| `MEMINI_TEMPORAL_BOOST`            | `0.40`                                                                                          |
-| `MEMINI_RECALL_MIN_SEMANTIC_SCORE` | `0` (off)                                                                                       |
-| `MEMINI_DEDUP_NEIGHBOURS`          | `20`                                                                                            |
-| `MEMINI_DEDUP_MIN_CLUSTER_SIZE`    | `2`                                                                                             |
-| `MEMINI_CONSOLIDATE_QUEUE_CAP`     | `1024`                                                                                          |
-| `MEMINI_NAMESPACE_HEADER`          | `X-Memini-Namespace` (the header name is fixed; clients and plugins all send this exact header) |
+| Removed                         | Now fixed at                                                                                    |
+| ------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `MEMINI_FUSION_ALPHA`           | `0.5` (a baked retrieval default; tune via the benchmark harness, not env)                      |
+| `MEMINI_TEMPORAL_BOOST`         | `0.40`                                                                                          |
+| `MEMINI_DEDUP_NEIGHBOURS`       | `20`                                                                                            |
+| `MEMINI_DEDUP_MIN_CLUSTER_SIZE` | `2`                                                                                             |
+| `MEMINI_CONSOLIDATE_QUEUE_CAP`  | `1024`                                                                                          |
+| `MEMINI_NAMESPACE_HEADER`       | `X-Memini-Namespace` (the header name is fixed; clients and plugins all send this exact header) |
 
-The three retrieval ones are the ones to care about. If you had moved
+The two fixed retrieval ones are the ones to care about. If you had moved
 `MEMINI_FUSION_ALPHA` or `MEMINI_TEMPORAL_BOOST` off their defaults, your ranking
 has changed. There is no env knob to put it back; the way to influence these now
 is the benchmark harness under [`bench/`](../../bench).
+
+### Raw semantic recall gating is enabled by default
+
+`MEMINI_RECALL_MIN_SEMANTIC_SCORE` is now a live setting with a default of
+`0.46`, rather than an ignored variable. It gates the raw vector leg before
+keyword/vector fusion, preventing keyword overlap from restoring semantically
+weak candidates. Set it to `0` to preserve the old ungated behavior, or tune it
+for your embedding model. When query embedding fails or times out, the gate is
+skipped and recall still falls back to keyword-only search.
 
 ### Now always on
 

@@ -70,6 +70,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.WriteDedupAction != "hint" {
 		t.Errorf("WriteDedupAction = %q, want hint", cfg.WriteDedupAction)
 	}
+	if cfg.RecallMinSemanticScore != 0.46 {
+		t.Errorf("RecallMinSemanticScore = %v, want 0.46", cfg.RecallMinSemanticScore)
+	}
 	if cfg.SweepInterval != time.Hour {
 		t.Errorf("SweepInterval = %v, want 1h", cfg.SweepInterval)
 	}
@@ -340,6 +343,18 @@ func TestLoadValidationErrors(t *testing.T) {
 			env:  map[string]string{"MEMINI_RECALL_MIN_SCORE": "1.5"},
 		},
 		{
+			name: "recall semantic score out of range",
+			env:  map[string]string{"MEMINI_RECALL_MIN_SEMANTIC_SCORE": "1.5"},
+		},
+		{
+			name: "recall semantic score NaN",
+			env:  map[string]string{"MEMINI_RECALL_MIN_SEMANTIC_SCORE": "NaN"},
+		},
+		{
+			name: "recall semantic score infinity",
+			env:  map[string]string{"MEMINI_RECALL_MIN_SEMANTIC_SCORE": "+Inf"},
+		},
+		{
 			name: "consolidate min score negative",
 			env:  map[string]string{"MEMINI_CONSOLIDATE_MIN_SCORE": "-0.2"},
 		},
@@ -442,6 +457,7 @@ var meminiEnvKeys = []string{
 	"MEMINI_DEDUP_INTERVAL", "MEMINI_DEDUP_SIMILARITY", "MEMINI_DEDUP_TIERS",
 	"MEMINI_WRITE_EMBED_TIMEOUT", "MEMINI_RECALL_EMBED_TIMEOUT",
 	"MEMINI_RECALL_REWRITE_TIMEOUT", "MEMINI_REQUEST_TIMEOUT",
+	"MEMINI_RECALL_MIN_SEMANTIC_SCORE",
 	"MEMINI_GLOBAL_NAMESPACE", "MEMINI_TENANT_SHARED",
 	"MEMINI_HOME",
 	"MEMINI_CLIENT_DEFAULTS",

@@ -35,7 +35,7 @@ function installFetch({ search = [] } = {}) {
 
 // makeCtx builds a mock v2 plugin context. Set withHooks:false to simulate a
 // build whose ctx lacks session/tool/event (the current beta).
-function makeCtx({ options = {}, messages = [], withHooks = true } = {}) {
+function makeCtx({ options = {}, messages = [], withHooks = true, sessionInfo = {}, ancestryResponse } = {}) {
   const state = { requestHook: null, tool: null, events: [], messages };
   const ctx = { options };
   if (withHooks) {
@@ -44,6 +44,7 @@ function makeCtx({ options = {}, messages = [], withHooks = true } = {}) {
         if (name === "request") state.requestHook = cb;
         return { dispose() {} };
       },
+      get: async (arg) => ancestryResponse ?? ({ data: { ...sessionInfo, id: arg?.path?.id || "s1" } }),
       messages: async () => ({ data: state.messages }),
     };
     ctx.tool = {
@@ -126,6 +127,41 @@ test("request hook injects a recalled memory into event.system", async () => {
     assert.equal(posts.length, 0, "recall must not write");
   } finally {
     restore();
+  }
+});
+
+test("request hook discards late recall results while budget zero remains blocking", async () => {
+  BASE_ENV();
+  const original = globalThis.fetch;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  globalThis.fetch = async (url) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/v1/handshake")) return new Response("{}", { status: 200 });
+    if (path.endsWith("/v1/search")) {
+      calls++;
+      if (calls === 1) await gate;
+      return new Response(JSON.stringify({ results: [{ memory: { id: `m${calls}`, content: "late hit", tier: "semantic" }, score: 1 }] }), { status: 200 });
+    }
+    return new Response("{}", { status: 200 });
+  };
+  try {
+    const fast = makeCtx({ options: { recall_budget_ms: 10 } });
+    await setup(fast.ctx);
+    const first = { sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] };
+    await fast.state.requestHook(first);
+    assert.equal(first.system.length, 0);
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const blocking = makeCtx({ options: { recall_budget_ms: 0 } });
+    await setup(blocking.ctx);
+    const second = { sessionID: "s2", system: [], messages: [{ role: "user", content: "q" }] };
+    await blocking.state.requestHook(second);
+    assert.equal(second.system.length, 1, "budget zero waits for same-turn recall");
+  } finally {
+    globalThis.fetch = original;
   }
 });
 
@@ -276,8 +312,63 @@ test("capture writes the completed turn on session.idle", async () => {
     assert.match(posts[0].content, /how do I deploy/);
     assert.match(posts[0].content, /run make deploy/);
     assert.equal(posts[0].metadata.session_id, "s1");
+    assert.equal(posts[0].tier, "episodic");
+    assert.equal(posts[0].metadata.session_type, "root");
     assert.deepEqual(posts[0].tags, ["opencode"]);
     await cleanup();
+  } finally {
+    restore();
+  }
+});
+
+test("v2 capture skips child sessions by default and opts in with ancestry metadata", async () => {
+  BASE_ENV();
+  const { posts, restore } = installFetch();
+  try {
+    const child = { info: { role: "user" }, parts: [{ type: "text", text: "q" }] };
+    const answer = { info: { role: "assistant", id: "a1" }, parts: [{ type: "text", text: "a" }] };
+    const first = makeCtx({ messages: [child, answer], sessionInfo: { parentID: "root-1" } });
+    first.state.emit = [{ type: "session.idle", properties: { sessionID: "child-1" } }];
+    const cleanup = await setup(first.ctx);
+    await drain();
+    assert.equal(posts.length, 0, "child capture is off by default");
+    await cleanup();
+
+    const opted = makeCtx({ options: { capture_child_sessions: true }, messages: [child, answer], sessionInfo: { parentID: "root-1" } });
+    opted.state.emit = [{ type: "session.idle", properties: { sessionID: "child-1" } }];
+    const cleanupOpted = await setup(opted.ctx);
+    await drain();
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].metadata.session_type, "child");
+    assert.equal(posts[0].metadata.parent_session_id, "root-1");
+    await cleanupOpted();
+  } finally {
+    restore();
+  }
+});
+
+test("v2 capture fails closed for malformed or mismatched ancestry records", async () => {
+  BASE_ENV();
+  const { posts, restore } = installFetch();
+  let messages = 0;
+  try {
+    for (const ancestryResponse of [{}, { data: {} }, { error: "not found" }, { data: { id: "other" } }, { data: { parentID: "root" } }]) {
+      const made = makeCtx({
+        messages: [
+          { info: { role: "user" }, parts: [{ type: "text", text: "q" }] },
+          { info: { role: "assistant", id: "a1" }, parts: [{ type: "text", text: "a" }] },
+        ],
+        ancestryResponse,
+      });
+      const originalMessages = made.ctx.session.messages;
+      made.ctx.session.messages = async (...args) => { messages++; return originalMessages(...args); };
+      made.state.emit = [{ type: "session.idle", properties: { sessionID: "s1" } }];
+      const cleanup = await setup(made.ctx);
+      await drain();
+      await cleanup();
+    }
+    assert.equal(messages, 0, "malformed ancestry must be rejected before message retrieval");
+    assert.equal(posts.length, 0);
   } finally {
     restore();
   }

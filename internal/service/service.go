@@ -289,10 +289,12 @@ type Service struct {
 	// below it are dropped before composite re-ranking. 0 disables filtering.
 	recallMinScore float64
 	// recallMinSemanticScore is an absolute floor on the raw vector score
-	// (1/(1+L2)): a candidate below it is excluded before fusion and the keyword
-	// leg cannot reintroduce it, so a query with nothing semantically relevant
-	// recalls empty. 0 disables it. The usable value is embedder-specific (see
-	// docs/recall-relevance-gate-2026-06-20.md).
+	// (1/(1+L2)): a known vector candidate below it is excluded before fusion and
+	// the keyword leg cannot reintroduce that candidate. Vectorless and unknown
+	// vector-pool candidates remain keyword-searchable. 0 disables it. The server
+	// configuration default is 0.46;
+	// a directly constructed Service keeps the zero-value gate disabled. The
+	// usable value is embedder-specific.
 	recallMinSemanticScore float64
 	// recallSemanticReserve reserves up to N recall slots for durable tiers
 	// (semantic/procedural) that are relevance-competitive with what they
@@ -670,10 +672,11 @@ func WithRecallMinScore(minScore float64) Option {
 }
 
 // WithRecallMinSemanticScore sets an absolute relevance floor on the raw vector
-// (semantic) score: a candidate below the floor is excluded entirely, so the
-// keyword leg cannot reintroduce an off-topic memory on a shared token. 0 (the
-// default) disables it. The usable value is embedder-dependent; baked to 0 (off)
-// by the server, overridden by the benchmark harness via this Option.
+// (semantic) score: a known vector candidate below the floor is excluded, so
+// the keyword leg cannot reintroduce that candidate on a shared token. Vectorless
+// and unknown vector-pool candidates remain keyword-searchable. 0 (the default)
+// disables it. The usable value is embedder-dependent; the server wires its
+// configured default via this Option, and the benchmark harness can override it.
 func WithRecallMinSemanticScore(minSemanticScore float64) Option {
 	return func(s *Service) { s.recallMinSemanticScore = minSemanticScore }
 }
@@ -2214,10 +2217,12 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	}
 	s.metrics.OpDuration("recall_search", time.Since(searchStart))
 
-	// Absolute semantic-relevance gate: drop candidates whose raw vector score is
-	// below the floor before fusing, so the keyword leg cannot reintroduce an
-	// off-topic memory on a shared token.
-	gateSemantic(vres, kres, s.resolveSemanticFloor(in))
+	// Absolute semantic-relevance gate: drop known vector candidates whose raw
+	// score is below the floor before fusing. Keyword hits with no vector score
+	// (vectorless or outside the bounded vector pool) remain eligible.
+	if vec != nil {
+		gateSemantic(vres, kres, s.resolveSemanticFloor(in))
+	}
 
 	perNS := make([][]store.Scored, len(entries))
 	for i := range entries {
@@ -2246,21 +2251,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	// A per-call MinScore (set by the integration) overrides the server-wide
 	// default, so a hook can request a stricter floor without changing the
 	// global gate.
-	if s.scoreFusionAlpha >= 0 {
-		floor := s.recallMinScore
-		if in.MinScore > 0 {
-			floor = in.MinScore
-		}
-		if floor > 0 {
-			filtered := make([]store.Scored, 0, len(fused))
-			for _, r := range fused {
-				if r.Score >= floor {
-					filtered = append(filtered, r)
-				}
-			}
-			fused = filtered
-		}
-	}
+	fused = applyRecallScoreFloor(fused, s.scoreFusionAlpha, s.recallMinScore, in.MinScore)
 	var ranked []store.Scored
 	if s.temporalBoost > 0 && s.temporalAnchor != nil {
 		ranked = search.RerankTemporal(fused, in.Query, s.now(),
@@ -2301,6 +2292,28 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	s.logRecallEvent(ctx, in, finalized, results, floored, budgetOmitted)
 	s.metrics.RecallResult("ok", tf, hitsBucket(len(results)))
 	return results, nil
+}
+
+// applyRecallScoreFloor applies the fused-score floor only for score fusion.
+// RRF scores are not comparable to the [0,1] threshold.
+func applyRecallScoreFloor(fused []store.Scored, alpha, defaultFloor, overrideFloor float64) []store.Scored {
+	if !(alpha >= 0) {
+		return fused
+	}
+	floor := defaultFloor
+	if overrideFloor > 0 {
+		floor = overrideFloor
+	}
+	if !(floor > 0) {
+		return fused
+	}
+	filtered := make([]store.Scored, 0, len(fused))
+	for _, r := range fused {
+		if r.Score >= floor {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
 }
 
 // keywordSearchReadSet runs keyword-only search across the read-set for
@@ -2766,27 +2779,28 @@ func percentile(scores []float64, p float64) float64 {
 	return sorted[lo] + frac*(sorted[lo+1]-sorted[lo])
 }
 
-// gateSemantic drops vector candidates scoring below floor and restricts the
-// keyword leg to the survivors, so a sub-threshold candidate cannot re-enter via
-// a keyword match. floor <= 0 is a no-op. vres and kres are per-namespace,
-// index-aligned, and filtered in place.
+// gateSemantic drops known vector candidates scoring below floor. Keyword hits
+// are restricted only when their ID was present in the vector leg: vectorless
+// memories and candidates outside the bounded vector pool have no raw semantic
+// score to gate on and must remain keyword-searchable. floor <= 0 is a no-op.
+// vres and kres are per-namespace, index-aligned, and filtered in place.
 func gateSemantic(vres, kres [][]store.Scored, floor float64) {
 	if floor <= 0 {
 		return
 	}
 	for i := range vres {
-		passed := make(map[string]struct{}, len(vres[i]))
+		known := make(map[string]float64, len(vres[i]))
 		kept := vres[i][:0]
 		for _, r := range vres[i] {
+			known[r.Memory.ID] = r.Score
 			if r.Score >= floor {
 				kept = append(kept, r)
-				passed[r.Memory.ID] = struct{}{}
 			}
 		}
 		vres[i] = kept
 		keptKW := kres[i][:0]
 		for _, r := range kres[i] {
-			if _, ok := passed[r.Memory.ID]; ok {
+			if score, ok := known[r.Memory.ID]; !ok || score >= floor {
 				keptKW = append(keptKW, r)
 			}
 		}

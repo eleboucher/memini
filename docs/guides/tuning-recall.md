@@ -185,6 +185,13 @@ Recall has three score scales, and each has its own floor — do not confuse the
   [`MEMINI_RECALL_MIN_SCORE`](../reference/configuration.md#memini_recall_min_score)
   (default `0.1`) or a per-call `min_score`. Applied _before_ ranking, so it
   trims the candidate pool the reranker and composite ranker ever see.
+- **Raw semantic score** (the vector leg's unnormalized relevance score):
+  floored by
+  [`MEMINI_RECALL_MIN_SEMANTIC_SCORE`](../reference/configuration.md#memini_recall_min_semantic_score)
+  (default `0.46`). This gate runs before fusion and prevents keyword overlap
+  from reintroducing a semantically weak candidate. Set it to `0` to disable.
+  It is skipped when query embedding fails, so the keyword-only fallback still
+  returns exact-term matches.
 - **Cross-encoder rerank score** (calibrated absolute relevance): floored by
   [`MEMINI_RERANK_MIN_SCORE`](../reference/configuration.md#memini_rerank_min_score)
   (default `0`, off). Never leaves the server — it decides ordering and the
@@ -431,11 +438,10 @@ you to set. They are **removed**. Setting them does nothing except produce a
 startup warning, and they are now baked defaults tuned through the benchmark
 harness:
 
-| Removed                            | Now                                                                      |
-| ---------------------------------- | ------------------------------------------------------------------------ |
-| `MEMINI_FUSION_ALPHA`              | a baked retrieval default (0.5); tune via the benchmark harness, not env |
-| `MEMINI_TEMPORAL_BOOST`            | a baked retrieval default (0.40)                                         |
-| `MEMINI_RECALL_MIN_SEMANTIC_SCORE` | a baked retrieval default (0, off)                                       |
+| Removed                 | Now                                                                      |
+| ----------------------- | ------------------------------------------------------------------------ |
+| `MEMINI_FUSION_ALPHA`   | a baked retrieval default (0.5); tune via the benchmark harness, not env |
+| `MEMINI_TEMPORAL_BOOST` | a baked retrieval default (0.40)                                         |
 
 A separate pair, `MEMINI_GLOBAL_NAMESPACE` and `MEMINI_TENANT_SHARED`, are
 **fatal at boot** rather than ignored: the scope model underneath them changed, so

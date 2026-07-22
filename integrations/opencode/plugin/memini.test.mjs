@@ -52,6 +52,12 @@ test("config defaults: recall and capture on, project-scoped namespace", () => {
   assert.equal(cfg.recall_max_tokens, 0);
   assert.equal(cfg.recall_min_score, 0);
   assert.equal(cfg.fallback_on_error, true);
+  assert.equal(cfg.capture_child_sessions, false);
+});
+
+test("capture_child_sessions is local and option/env configurable", () => {
+  assert.equal(resolveConfig({ MEMINI_CAPTURE_CHILD_SESSIONS: "1" }, undefined, "/r").capture_child_sessions, true);
+  assert.equal(resolveConfig({ MEMINI_CAPTURE_CHILD_SESSIONS: "1" }, { capture_child_sessions: false }, "/r").capture_child_sessions, false);
 });
 
 test("env overrides defaults; options override env", () => {
@@ -940,7 +946,7 @@ test("captured assistant-id window is bounded (an aged-out turn can re-capture)"
     return { ok: true, async json() { return {}; }, async text() { return ""; } };
   };
   let turn = [];
-  const client = { session: { messages: async () => ({ data: turn }) } };
+  const client = { session: { get: async () => ({ data: { id: "s1" } }), messages: async () => ({ data: turn }) } };
   const mkTurn = (id) => [
     { info: { role: "user" }, parts: [{ type: "text", text: `u-${id}` }] },
     { info: { role: "assistant", id }, parts: [{ type: "text", text: `a-${id}` }] },
@@ -954,6 +960,8 @@ test("captured assistant-id window is bounded (an aged-out turn can re-capture)"
     turn = mkTurn("a0");
     await hooks.event(idle);
     assert.equal(posts.length, 1, "first idle captures the turn");
+    assert.equal(posts[0].tier, "episodic");
+    assert.equal(posts[0].metadata.session_type, "root");
     // A re-fired idle for the same turn is still deduped.
     await hooks.event(idle);
     assert.equal(posts.length, 1, "same turn must not capture twice");
@@ -967,6 +975,68 @@ test("captured assistant-id window is bounded (an aged-out turn can re-capture)"
     turn = mkTurn("a0");
     await hooks.event(idle);
     assert.equal(posts.length, 202, "an id evicted from the window is re-capturable");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("v1 capture skips children by default and records ancestry when opted in", async () => {
+  const realFetch = globalThis.fetch;
+  const posts = [];
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith("/v1/memories")) posts.push(JSON.parse(init.body));
+    return okJson({});
+  };
+  const turn = [
+    { info: { role: "user" }, parts: [{ type: "text", text: "q" }] },
+    { info: { role: "assistant", id: "a1" }, parts: [{ type: "text", text: "a" }] },
+  ];
+  const client = {
+    session: {
+      get: async () => ({ data: { id: "child-1", parentID: "root-1" } }),
+      messages: async () => ({ data: turn }),
+    },
+  };
+  try {
+    const skipped = await MeminiPlugin({ client, worktree: "/tmp/proj" }, {});
+    await skipped.event({ event: { type: "session.idle", properties: { sessionID: "child-1" } } });
+    assert.equal(posts.length, 0);
+    const opted = await MeminiPlugin({ client, worktree: "/tmp/proj" }, { capture_child_sessions: true });
+    await opted.event({ event: { type: "session.idle", properties: { sessionID: "child-1" } } });
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].tier, "episodic");
+    assert.equal(posts[0].metadata.session_type, "child");
+    assert.equal(posts[0].metadata.parent_session_id, "root-1");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("v1 capture fails closed for malformed or mismatched ancestry records", async () => {
+  const realFetch = globalThis.fetch;
+  let writes = 0;
+  let messages = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith("/v1/memories")) writes++;
+    return okJson({});
+  };
+  const turn = [
+    { info: { role: "user" }, parts: [{ type: "text", text: "q" }] },
+    { info: { role: "assistant", id: "a1" }, parts: [{ type: "text", text: "a" }] },
+  ];
+  try {
+    for (const bad of [{}, { data: {} }, { error: "not found" }, { data: { id: "other" } }, { data: { parentID: "root" } }]) {
+      const client = {
+        session: {
+          get: async () => bad,
+          messages: async () => { messages++; return { data: turn }; },
+        },
+      };
+      const hooks = await MeminiPlugin({ client, worktree: "/tmp/proj" }, {});
+      await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } });
+    }
+    assert.equal(messages, 0, "malformed ancestry must be rejected before message retrieval");
+    assert.equal(writes, 0);
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -1259,7 +1329,7 @@ test("the memini_status tool is registered zero-arg and never throws", async () 
   }
 });
 
-// --- Recall budget race + carryover ----------------------------------------
+// --- Recall budget race ------------------------------------------------------
 
 const okJson = (payload) => ({ ok: true, async json() { return payload; }, async text() { return ""; } });
 
@@ -1277,7 +1347,7 @@ test("resolveConfig parses recall_budget_ms: default, option > env, malformed fa
   assert.equal(resolveConfig({}, { recall_budget_ms: 0 }, "/r").recall_budget_ms, 0);
 });
 
-test("a recall slower than the budget skips this turn and carries over to the next", async () => {
+test("a recall slower than the budget skips this turn and discards late results", async () => {
   const realFetch = globalThis.fetch;
   let release;
   const gate = new Promise((r) => { release = r; });
@@ -1300,13 +1370,10 @@ test("a recall slower than the budget skips this turn and carries over to the ne
     await hooks["chat.message"]({ sessionID: "s1" }, first);
     assert.equal(first.parts.length, 1, "a budget miss must not inject this turn");
     release();
-    await new Promise((r) => setTimeout(r, 20)); // let the late fetch settle into the stash
-    // The second turn's own search returns nothing, so an injection can only
-    // come from the carryover.
+    await new Promise((r) => setTimeout(r, 20)); // let the late fetch settle
     const second = { parts: [{ type: "text", text: "q2", sessionID: "s1", messageID: "m2" }] };
     await hooks["chat.message"]({ sessionID: "s1" }, second);
-    assert.equal(second.parts.length, 2, "late results should inject on the next turn");
-    assert.match(second.parts[0].text, /late hit/);
+    assert.equal(second.parts.length, 1, "late results must be discarded");
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -1333,7 +1400,7 @@ test("recall_budget_ms: 0 restores blocking same-turn injection", async () => {
   }
 });
 
-test("carried-over hits still respect the seen-dedup and the score floor", async () => {
+test("late hits are discarded while current recalls retain floor handling", async () => {
   const realFetch = globalThis.fetch;
   let release;
   const gate = new Promise((r) => { release = r; });
@@ -1343,7 +1410,7 @@ test("carried-over hits still respect the seen-dedup and the score floor", async
     if (!String(url).endsWith("/v1/search")) return okJson({});
     const body = init && init.body ? JSON.parse(init.body) : {};
     // Old server rejects the composite floor, so the client applies it as a
-    // fallback — which is exactly what keeps the low carryover hit out below.
+    // fallback — which keeps the low-scoring hit out below.
     if (body.min_rank_score !== undefined) {
       return { ok: false, status: 400, async json() { return {}; }, async text() { return 'unknown field "min_rank_score"'; } };
     }
@@ -1355,7 +1422,7 @@ test("carried-over hits still respect the seen-dedup and the score floor", async
         results: [
           seenHit,
           { score: 0.1, memory: { id: "m2", tier: "episodic", summary: "below the floor" } },
-          { score: 0.8, memory: { id: "m3", tier: "semantic", summary: "fresh carryover" } },
+          { score: 0.8, memory: { id: "m3", tier: "semantic", summary: "fresh result" } },
         ],
       });
     }
@@ -1376,10 +1443,7 @@ test("carried-over hits still respect the seen-dedup and the score floor", async
     await new Promise((r) => setTimeout(r, 20));
     const t3 = { parts: [{ type: "text", text: "q3", sessionID: "s1", messageID: "m3" }] };
     await hooks["chat.message"]({ sessionID: "s1" }, t3);
-    assert.equal(t3.parts.length, 2, "turn 3 injects the carried-over hit");
-    assert.match(t3.parts[0].text, /fresh carryover/);
-    assert.ok(!t3.parts[0].text.includes("already shown"), "seen memory must not re-inject");
-    assert.ok(!t3.parts[0].text.includes("below the floor"), "floored memory must not inject");
+    assert.equal(t3.parts.length, 1, "late hits must not carry over");
   } finally {
     globalThis.fetch = realFetch;
   }

@@ -150,6 +150,7 @@ var groups = []group{
 			"tuning guide](../guides/tuning-recall.md) rather than turning these one at a time.",
 		Vars: []string{
 			"MEMINI_RECALL_MIN_SCORE",
+			"MEMINI_RECALL_MIN_SEMANTIC_SCORE",
 			"MEMINI_RECALL_SEMANTIC_RESERVE",
 			"MEMINI_RECALL_EMBED_TIMEOUT",
 			"MEMINI_RECALL_REWRITE_TIMEOUT",

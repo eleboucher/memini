@@ -365,6 +365,9 @@ export function resolveConfig(env, options, worktree) {
   // guess. Not layered from the server: it is a purely local, per-caller knob.
   const homeRaw = o.home !== undefined ? o.home : e.MEMINI_HOME;
   const home = homeRaw && String(homeRaw).trim() ? String(homeRaw).trim() : undefined;
+  const capture_child_sessions = o.capture_child_sessions !== undefined
+    ? envBool(o.capture_child_sessions, false)
+    : envBool(e.MEMINI_CAPTURE_CHILD_SESSIONS, false);
 
   // Windowed injection-cooldown knobs. 0 is MEANINGFUL (it disables that
   // dimension; both 0 restores the legacy suppress-forever behavior), so a
@@ -387,6 +390,7 @@ export function resolveConfig(env, options, worktree) {
     home,
     recall: o.recall !== undefined ? o.recall !== false : envBool(e.MEMINI_RECALL, true),
     capture: o.capture !== undefined ? o.capture !== false : envBool(e.MEMINI_CAPTURE, true),
+    capture_child_sessions,
     recall_limit,
     recall_max_tokens:
       o.recall_max_tokens !== undefined
@@ -789,6 +793,33 @@ export function truncateForCapture(s, max) {
  */
 export function buildTurnCapture(userText, assistantText, userMax, assistantMax) {
   return `${truncateForCapture(userText, userMax)}\n\n${truncateForCapture(assistantText, assistantMax)}`;
+}
+
+// Resolve ancestry before reading messages. Hosts have exposed several session
+// accessors over time; an unavailable accessor is distinguishable from a root
+// session so the default capture policy can fail closed.
+export async function resolveSessionAncestry(session, sessionID) {
+  if (!session || !sessionID) return { session_type: "unknown" };
+  const attempts = [
+    () => session.get && session.get({ path: { id: sessionID } }),
+    () => session.info && session.info({ path: { id: sessionID } }),
+    () => session.get && session.get(sessionID),
+  ];
+  for (const attempt of attempts) {
+    try {
+      const response = await attempt();
+      if (response?.error) continue;
+      const info = response?.data || response?.session || response;
+      if (!info || typeof info !== "object" || Array.isArray(info) || info.error) continue;
+      const recordID = info.id || info.sessionID || info.sessionId;
+      if (!recordID || String(recordID) !== String(sessionID)) continue;
+      const parent = info.parentID || info.parentId || info.parent_session_id || info.parentSessionId;
+      return parent ? { session_type: "child", parent_session_id: parent } : { session_type: "root" };
+    } catch {
+      // Try the next host shape.
+    }
+  }
+  return { session_type: "unknown" };
 }
 
 /**
@@ -1249,10 +1280,6 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       state.ids.delete(oldest);
     }
   };
-  // Recall results that arrived after the injection budget expired, keyed by
-  // session and injected on that session's next chat.message. Latest-replace:
-  // a second late recall for the same session supersedes the first.
-  const pendingBySession = new Map();
   // /v1/search drops exclude_ids before ranking and the limit, so an
   // already-shown hit frees its slot for the next-best match. Older servers
   // 400 on the unknown field: when a request carrying it fails and the retry
@@ -1377,9 +1404,9 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
         : [];
       // opencode awaits this hook before the model sees the message, so the
       // turn only waits live.recall_budget_ms for the search; the fetch itself keeps
-      // cfg.timeout_ms as its bound and runs on in the background. A slow or
+      // cfg.timeout_ms as its bound and runs in the background. A slow or
       // unreachable memini degrades to "no memories this turn" instead of a
-      // frozen turn, and late results carry over to the session's next message.
+      // frozen turn; results arriving after the budget are discarded.
       const fetchPromise = searchExcluding(body, excludeIds, live.namespace);
       // Once the budget expires nothing awaits this promise, and with
       // fallback_on_error off postJson rethrows — catch here or a late
@@ -1397,15 +1424,7 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
         result = await Promise.race([settled, budget]);
         clearTimeout(timer);
         if (result === BUDGET_EXPIRED) {
-          log.info(
-            `recall exceeded its ${live.recall_budget_ms}ms budget; late results will inject next turn`,
-          );
-          if (sessionID) {
-            settled.then((late) => {
-              const hits = Array.isArray(late && late.data && late.data.results) ? late.data.results : [];
-              if (hits.length) boundedPut(pendingBySession, sessionID, hits);
-            });
-          }
+          log.info(`recall exceeded its ${live.recall_budget_ms}ms budget; late results discarded`);
           result = null;
         }
       } else {
@@ -1419,16 +1438,6 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       const serverEnforcedFloor = rankFloorInRange && !(result && result.rankFloorStripped);
       const floor = live.recall_min_score > 0 && !serverEnforcedFloor ? live.recall_min_score : 0;
       let rawHits = Array.isArray(searchData && searchData.results) ? searchData.results : [];
-      // Merge in results that arrived late on a previous turn: fresh hits
-      // first (they answer the current query), deduped by memory id.
-      if (sessionID) {
-        const pending = pendingBySession.get(sessionID);
-        if (pending && pending.length) {
-          pendingBySession.delete(sessionID);
-          const fresh = new Set(rawHits.map((r) => r?.memory?.id).filter(Boolean));
-          rawHits = rawHits.concat(pending.filter((r) => !fresh.has(r?.memory?.id)));
-        }
-      }
       // Suppress memories this session was already shown and that are still in
       // cooldown — judged PER HIT against its content identity, so an
       // in-window unchanged hit is dropped, a lapsed one passes through and
@@ -1453,8 +1462,7 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       const fit = fitByTokens(hits, live.recall_max_tokens);
       if (fit.items.length === 0) return;
       if (seen) {
-        // Mark only the slice formatResults actually renders: with carryover
-        // merged in, `filtered` can exceed recall_limit, and marking unshown
+        // Mark only the slice formatResults actually renders; marking unshown
         // hits as seen would suppress what was never injected.
         rememberInjected(seen, filtered.slice(0, live.recall_limit || DEFAULT_RECALL_LIMIT));
       }
@@ -1526,16 +1534,19 @@ export const MeminiPlugin = async ({ client, worktree, directory }, options) => 
       if (!live.capture || !event || event.type !== "session.idle") return;
       const sessionID = event.properties && event.properties.sessionID;
       if (!sessionID) return;
+      const ancestry = await resolveSessionAncestry(client.session, sessionID);
+      if (ancestry.session_type !== "root" && !live.capture_child_sessions) return;
       const res = await client.session.messages({ path: { id: sessionID } });
       const { userText, assistantText, assistantID } = extractLastTurn(res && res.data);
       if (!userText || !assistantText) return;
       if (assistantID && captured.has(assistantID)) return;
-      const metadata = { source: "opencode", session_id: sessionID, format: "turn" };
+      const metadata = { source: "opencode", session_id: sessionID, format: "turn", ...ancestry };
       if (lastAssistantFailed(res && res.data)) metadata.failed = true;
       const stored = await rest.postJson(
         "/v1/memories",
         {
           content: buildTurnCapture(userText, assistantText, live.capture_user_max_chars, live.capture_assistant_max_chars),
+          tier: "episodic",
           tags: ["opencode"],
           metadata,
         },

@@ -2063,6 +2063,7 @@ const plugin: {
       if (!event?.success) metadata.failed = true;
       const writeResult = await client.postJson("/v1/memories", {
         content: buildTurnCapture(captureUser, assistantText, live.capture_user_max_chars, live.capture_assistant_max_chars),
+        tier: "episodic",
         tags: ["openclaw"],
         metadata,
       }, ns);

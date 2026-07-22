@@ -48,11 +48,13 @@ import {
   injectedIdentity,
   injectedSuppressed,
   postSearchWithFloor,
+  resolveSessionAncestry,
 } from "./memini.js";
 
 const INJECT_PREAMBLE =
   "Relevant long-term memory from memini (background context — prefer " +
   "current workspace state and the user's instructions):";
+const BUDGET_EXPIRED = Symbol("memini-recall-budget-expired");
 
 // messageText pulls the plain text out of one v2 request message, tolerating the
 // shapes the beta may hand us: `content` as a string, `content` as an array of
@@ -259,11 +261,33 @@ export async function setup(ctx) {
         // fail-soft, and on an older server's 400 it retries once with
         // min_rank_score stripped (v2 sends no exclude_ids), so a slow or
         // out-of-date memini degrades to no memory this turn, never a throw.
-        const { data: result, rankFloorStripped } = await postSearchWithFloor(
+        const searchPromise = postSearchWithFloor(
           rest.postJson,
           body,
           live.namespace,
         );
+        // Keep the rejection handler attached even after the request budget
+        // expires: late results are discarded, but late errors remain visible.
+        const settled = searchPromise.catch((error) => {
+          log.warn(`memini: ${String(error)}`);
+          return { data: null, rankFloorStripped: false };
+        });
+        let search;
+        if (live.recall_budget_ms > 0) {
+          let timer;
+          const budget = new Promise((resolve) => {
+            timer = setTimeout(() => resolve(BUDGET_EXPIRED), live.recall_budget_ms);
+          });
+          search = await Promise.race([settled, budget]);
+          clearTimeout(timer);
+          if (search === BUDGET_EXPIRED) {
+            log.warn(`recall exceeded its ${live.recall_budget_ms}ms budget; late results discarded`);
+            return;
+          }
+        } else {
+          search = await settled;
+        }
+        const { data: result, rankFloorStripped } = search;
 
         // Client composite floor is a fallback ONLY: it runs when the knob was
         // clamped to client-only (>= 1) or the retry stripped min_rank_score. A
@@ -371,16 +395,19 @@ export async function setup(ctx) {
     const sessionID =
       (event && event.properties && event.properties.sessionID) || (event && event.sessionID);
     if (!sessionID) return;
+    const ancestry = await resolveSessionAncestry(ctx.session, sessionID);
+    if (ancestry.session_type !== "root" && !live.capture_child_sessions) return;
     const messages = await fetchSessionMessages(ctx, sessionID);
     const { userText, assistantText, assistantID } = extractLastTurn(messages);
     if (!userText || !assistantText) return;
     if (assistantID && captured.has(assistantID)) return;
-    const metadata = { source: "opencode", session_id: sessionID, format: "turn" };
+    const metadata = { source: "opencode", session_id: sessionID, format: "turn", ...ancestry };
     if (lastAssistantFailed(messages)) metadata.failed = true;
     const stored = await rest.postJson(
       "/v1/memories",
       {
         content: buildTurnCapture(userText, assistantText, live.capture_user_max_chars, live.capture_assistant_max_chars),
+        tier: "episodic",
         tags: ["opencode"],
         metadata,
       },

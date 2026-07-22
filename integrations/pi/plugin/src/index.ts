@@ -1912,6 +1912,7 @@ export default function meminiExtension(pi: ExtensionAPI): void {
       "/v1/memories",
       {
         content: buildTurnContent(turn.userText, turn.assistantText, live.capture_user_max_chars, live.capture_assistant_max_chars),
+        tier: "episodic",
         tags: ["pi"],
         metadata: { source: "pi", format: "turn", session_id: sid },
       },

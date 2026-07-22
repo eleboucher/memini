@@ -216,7 +216,7 @@ func TestRecallEmbedErrorFallsBackToKeyword(t *testing.T) {
 
 	m := &countingMetrics{}
 	svc := service.New(st, errEmbedder{dims: dims}, service.WithSyncReinforce(),
-		service.WithRecallEmbedTimeout(time.Second), service.WithMetrics(m))
+		service.WithRecallEmbedTimeout(time.Second), service.WithRecallMinSemanticScore(0.9), service.WithMetrics(m))
 
 	res, err := svc.Recall(context.Background(), service.RecallInput{Namespace: "alice", Query: "hello", Limit: 5})
 	if err != nil {

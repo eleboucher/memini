@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -410,6 +411,11 @@ type Config struct {
 	// deployment on a different embedder can raise it to trim loosely-relevant
 	// injection. Only meaningful with score fusion.
 	RecallMinScore float64 `env:"MEMINI_RECALL_MIN_SCORE" envDefault:"0.1"`
+	// RecallMinSemanticScore is the raw vector-score floor: candidates below it
+	// are dropped before fusion, preventing the keyword leg from reintroducing
+	// an off-topic candidate. 0 disables it. It is applied only when the query
+	// embedding succeeds; keyword-only fallback remains available on failure.
+	RecallMinSemanticScore float64 `env:"MEMINI_RECALL_MIN_SEMANTIC_SCORE" envDefault:"0.46"`
 	// RecallSemanticReserve reserves up to N of the recall slots for durable
 	// tiers (semantic/procedural) so consolidated knowledge is not crowded out by
 	// episodic chatter. Exposed because it changes recall composition per
@@ -694,7 +700,6 @@ var deprecatedVars = []struct {
 	{"MEMINI_CONSOLIDATE_QUEUE_CAP", "now a fixed internal default (1024)", false},
 	{"MEMINI_NAMESPACE_HEADER", "the header name is fixed to X-Memini-Namespace", false},
 	{"MEMINI_FUSION_ALPHA", "now a baked retrieval default (0.5); tune via the benchmark harness, not env", false},
-	{"MEMINI_RECALL_MIN_SEMANTIC_SCORE", "now a baked retrieval default (0, off)", false},
 	{"MEMINI_TEMPORAL_BOOST", "now a baked retrieval default (0.40)", false},
 	{"MEMINI_REDACT_SECRETS", "secret redaction is always on", false},
 	{"MEMINI_REINFORCE_SKIP_MARKERS", "always on", false},
@@ -958,6 +963,10 @@ func (c *Config) validateChunking() error {
 func (c *Config) validateRecallScores() error {
 	if c.RecallMinScore < 0 || c.RecallMinScore > 1 {
 		return fmt.Errorf("MEMINI_RECALL_MIN_SCORE must be in [0,1], got %v", c.RecallMinScore)
+	}
+	if math.IsNaN(c.RecallMinSemanticScore) || math.IsInf(c.RecallMinSemanticScore, 0) ||
+		c.RecallMinSemanticScore < 0 || c.RecallMinSemanticScore > 1 {
+		return fmt.Errorf("MEMINI_RECALL_MIN_SEMANTIC_SCORE must be finite and in [0,1], got %v", c.RecallMinSemanticScore)
 	}
 	if c.RerankMinScore < 0 {
 		return fmt.Errorf("MEMINI_RERANK_MIN_SCORE must be >= 0, got %v", c.RerankMinScore)
