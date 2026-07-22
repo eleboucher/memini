@@ -41,8 +41,9 @@ const (
 	stopIDPrefix       = "stop:"
 )
 
-// distillOnWriteTimeout bounds one write-time distillation (LLM call + fact
-// writes); distillSemCap bounds concurrent write-time distillations.
+// distillOnWriteTimeout is the default bound on one write-time distillation
+// (LLM call + fact writes), overridable via WithDistillTimeout; distillSemCap
+// bounds concurrent write-time distillations.
 const (
 	distillOnWriteTimeout = 60 * time.Second
 	distillSemCap         = 4
@@ -281,6 +282,9 @@ type Service struct {
 	// only) row marked pending_embed instead of failing. 0 keeps the content embed
 	// unbounded and an embed error fatal (fail-fast, the pre-fallback default).
 	writeEmbedTimeout time.Duration
+	// distillTimeout bounds one write-time distillation (LLM call + fact
+	// writes); defaults to distillOnWriteTimeout.
+	distillTimeout time.Duration
 	// recallMinScore is an absolute relevance floor on the fused score; candidates
 	// below it are dropped before composite re-ranking. 0 disables filtering.
 	recallMinScore float64
@@ -570,6 +574,19 @@ func WithWriteEmbedTimeout(d time.Duration) Option {
 	return func(s *Service) {
 		if d > 0 {
 			s.writeEmbedTimeout = d
+		}
+	}
+}
+
+// WithDistillTimeout bounds one write-time distillation (the LLM call plus
+// fact writes). Distillation runs in the background, so a longer deadline
+// never blocks the write path; raise it when the chat model runs on a slow
+// or shared backend where a distill call can queue behind long-running
+// requests. d <= 0 keeps the default.
+func WithDistillTimeout(d time.Duration) Option {
+	return func(s *Service) {
+		if d > 0 {
+			s.distillTimeout = d
 		}
 	}
 }
@@ -878,6 +895,7 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 		chunkCfg:             chunk.DefaultConfig(),
 		chunkScoreWeight:     1,
 		rerankTimeout:        defaultRerankTimeout,
+		distillTimeout:       distillOnWriteTimeout,
 		scoreFusionAlpha:     search.DefaultFusionAlpha, // convex score fusion by default; negative selects RRF
 		reservePromoteRatio:  defaultReservePromoteRatio,
 		reserveTopAnchor:     defaultReserveTopAnchor,
@@ -2556,7 +2574,7 @@ func (s *Service) distillShortTermAsync(ctx context.Context, m *memory.Memory) {
 		semWait := time.Since(semStart)
 		defer func() { <-s.distillSem }()
 		s.metrics.OpDuration("distill_sem_wait", semWait)
-		dctx, cancel := context.WithTimeout(bg, distillOnWriteTimeout)
+		dctx, cancel := context.WithTimeout(bg, s.distillTimeout)
 		defer cancel()
 		n, err := s.promote(dctx, m.Namespace, []*memory.Memory{m}, s.now())
 		if err != nil {
@@ -2588,7 +2606,7 @@ func (s *Service) extractShortTermAsync(ctx context.Context, m *memory.Memory) {
 	s.bg.Go(func() {
 		s.distillSem <- struct{}{}
 		defer func() { <-s.distillSem }()
-		dctx, cancel := context.WithTimeout(bg, distillOnWriteTimeout)
+		dctx, cancel := context.WithTimeout(bg, s.distillTimeout)
 		defer cancel()
 		for _, r := range results {
 			// source_id links the derived fact back to the episodic it was mined

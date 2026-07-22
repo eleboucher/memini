@@ -166,7 +166,7 @@ func (s *Service) flushDistillBuffer(buf *distillBuffer) {
 	s.bg.Go(func() {
 		s.distillSem <- struct{}{}
 		defer func() { <-s.distillSem }()
-		ctx, cancel := context.WithTimeout(context.Background(), distillOnWriteTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), s.distillTimeout)
 		defer cancel()
 		if _, err := s.promote(ctx, buf.namespace, buf.items, s.now()); err != nil {
 			slog.WarnContext(ctx, "distill batch", "namespace", buf.namespace,

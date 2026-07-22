@@ -90,6 +90,7 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_CONSOLIDATE_MIN_SCORE`](#memini_consolidate_min_score) | `0.3` | [Consolidation and promotion](#consolidation-and-promotion) |
 | [`MEMINI_DISTILL_BATCH_TOKENS`](#memini_distill_batch_tokens) | `1024` | [Consolidation and promotion](#consolidation-and-promotion) |
 | [`MEMINI_DISTILL_BATCH_MAX_AGE`](#memini_distill_batch_max_age) | `10m` | [Consolidation and promotion](#consolidation-and-promotion) |
+| [`MEMINI_DISTILL_TIMEOUT`](#memini_distill_timeout) | `60s` | [Consolidation and promotion](#consolidation-and-promotion) |
 | [`MEMINI_PROMOTE_INTERVAL`](#memini_promote_interval) | `24h` | [Consolidation and promotion](#consolidation-and-promotion) |
 | [`MEMINI_PROMOTE_MIN_ACCESS`](#memini_promote_min_access) | `3` | [Consolidation and promotion](#consolidation-and-promotion) |
 | [`MEMINI_PROMOTE_WHOLE_MAX_CHARS`](#memini_promote_whole_max_chars) | `240` | [Consolidation and promotion](#consolidation-and-promotion) |
@@ -550,6 +551,12 @@ int, default `1024`. Set by `Config.DistillBatchTokens`.
 duration, default `10m`. Set by `Config.DistillBatchMaxAge`.
 
 `MEMINI_DISTILL_BATCH_MAX_AGE` flushes a session's buffered captures once the oldest has waited this long, so a quiet session still distills promptly.
+
+### `MEMINI_DISTILL_TIMEOUT`
+
+duration, default `60s`. Set by `Config.DistillTimeout`.
+
+`MEMINI_DISTILL_TIMEOUT` bounds one write-time distillation (the LLM call plus fact writes). Distillation runs in the background, so a longer deadline never blocks the write path; raise it when the chat model runs on a slow or shared backend where a distill call can queue behind long-running requests and blow the default before it gets compute.
 
 ### `MEMINI_PROMOTE_INTERVAL`
 

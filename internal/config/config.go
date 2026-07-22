@@ -467,6 +467,12 @@ type Config struct {
 	// DistillBatchMaxAge flushes a session's buffered captures once the oldest
 	// has waited this long, so a quiet session still distills promptly.
 	DistillBatchMaxAge time.Duration `env:"MEMINI_DISTILL_BATCH_MAX_AGE" envDefault:"10m"`
+	// DistillTimeout bounds one write-time distillation (the LLM call plus
+	// fact writes). Distillation runs in the background, so a longer deadline
+	// never blocks the write path; raise it when the chat model runs on a
+	// slow or shared backend where a distill call can queue behind
+	// long-running requests and blow the default before it gets compute.
+	DistillTimeout time.Duration `env:"MEMINI_DISTILL_TIMEOUT" envDefault:"60s"`
 
 	// Consolidation tuning.
 	// ConsolidateMode is "async" (default), "sync", or "off".
