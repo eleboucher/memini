@@ -17,6 +17,11 @@ the agent _when_ to use the memory tools.
 | `PreCompact`       | Before context compaction, distills the buffer into an episodic emergency checkpoint (Claude Code only)                                                                                            |
 | `SessionEnd`       | Distills the buffer into one durable episodic **session digest**                                                                                                                                   |
 
+The table describes the full Claude lifecycle. Codex uses the same shared
+scripts for its documented events but omits `SessionEnd` and all
+transcript-dependent behavior; see [Codex CLI](#codex-cli) for the stable
+differences.
+
 ### Auto-save (Stop)
 
 Agents forget to save. So the `Stop` hook counts the conversation's user
@@ -80,7 +85,8 @@ real memories out of the box — not just session digests:
   a back-compat fallback for sessions started under the old directive.
   Model-curated, so it stays low-noise. Set to `0` to disable both.
 
-Plus 3 skills (`remember`, `recall`, `recap`) the agent invokes directly.
+Plus 9 skills (`remember`, `recall`, `recap`, `forget`, `pin`, `status`,
+`namespace`, `doctor`, `backfill`) the agent invokes directly.
 
 ### Turning session digests off (`MEMINI_SESSION_DIGEST=0`)
 
@@ -194,14 +200,27 @@ namespaced `mcp__plugin_memini_memini__*`).
 
 ### Codex CLI
 
-Codex implements a Claude-Code-compatible plugin model: it auto-discovers
-`hooks/hooks.json` and expands `${CLAUDE_PLUGIN_ROOT}` (which Codex provides for
-compatibility), so the same hook wiring drives both. Mount this directory as a
-Codex plugin via `.codex-plugin/plugin.json` — no Codex-specific hooks file is
-needed. (Matchers naming Claude-only tools like `Read`/`Glob`/`Grep` just don't
-fire under Codex, which exposes `Bash`/`apply_patch`/`mcp__*`.) The
-`PostToolUse` hook captures Codex `apply_patch` calls by parsing the patch
-header lines, so session digests still list edited files.
+Install through the repository marketplace:
+
+```sh
+codex plugin marketplace add eleboucher/memini
+codex plugin add memini@memini
+```
+
+The bundled server targets `http://localhost:8080/mcp`. Start `memini serve`,
+set `MEMINI_API_KEY` when needed, review and trust the plugin commands in
+`/hooks`, then start a new thread. Codex uses `hooks/hooks.json` with
+`${PLUGIN_ROOT}` and native `Bash`, `apply_patch`, and MCP matchers; Claude uses
+`hooks/hooks.claude.json`.
+
+For a remote URL, disable the bundled MCP server and use the `config.toml`
+recipe in [`integrations/codex/`](../integrations/codex/). Codex does not
+support Claude-style URL interpolation in the bundled MCP file.
+
+Codex has no reliable final-session event, and Memini does not parse Codex's
+unstable transcript format. Rolling Stop checkpoints and PreCompact recovery
+work, but final SessionEnd digests, transcript-based turn capture, legacy inline
+extraction, and auto-save nudges remain Claude-only.
 
 ### opencode
 
@@ -218,8 +237,10 @@ uncapped); see the opencode recipe for its options.
 plugin/
 ├── .claude-plugin/plugin.json   # Claude Code manifest
 ├── .codex-plugin/plugin.json    # Codex manifest
+├── .mcp.codex.json              # Codex local HTTP MCP server
 ├── hooks/
-│   └── hooks.json               # hook wiring (Claude Code + Codex, via ${CLAUDE_PLUGIN_ROOT})
+│   ├── hooks.json               # Codex wiring (${PLUGIN_ROOT})
+│   └── hooks.claude.json        # full Claude Code event set
 ├── scripts/
 │   ├── _shared.mjs              # resolveProject, postJSON/Search/Remember, session buffer + digest
 │   ├── session-start.mjs
@@ -229,9 +250,7 @@ plugin/
 │   ├── pre-tool-use.mjs
 │   └── post-tool-use.mjs
 └── skills/
-    ├── remember/SKILL.md
-    ├── recall/SKILL.md
-    └── recap/SKILL.md
+    └── <nine plugin-scoped skills>/SKILL.md
 ```
 
 ## How the namespace gets resolved

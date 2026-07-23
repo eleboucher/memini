@@ -1,12 +1,29 @@
 {
   "name": "memini",
   "version": "0.7.12",
-  "description": "Persistent memory for AI coding agents via the memini memory service. Shares the Claude Code hook wiring (hooks/hooks.json), which Codex auto-discovers and runs by expanding ${CLAUDE_PLUGIN_ROOT}, capturing tool usage and surfacing prior context at session start.",
+  "description": "Persistent memory for coding agents, with automatic context recall, rolling checkpoints, skills, and bundled memory tools.",
   "author": {
     "name": "memini maintainers",
     "url": "https://github.com/eleboucher/memini"
   },
   "license": "Apache-2.0",
   "homepage": "https://github.com/eleboucher/memini",
-  "repository": "https://github.com/eleboucher/memini"
+  "repository": "https://github.com/eleboucher/memini",
+  "keywords": ["memory", "agent", "codex", "mcp", "developer-tools"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.codex.json",
+  "interface": {
+    "displayName": "Memini",
+    "shortDescription": "Persistent memory for coding agents",
+    "longDescription": "Recall project context automatically, create rolling work checkpoints, and manage durable memories with bundled MCP tools and skills.",
+    "developerName": "memini maintainers",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "websiteURL": "https://github.com/eleboucher/memini",
+    "defaultPrompt": [
+      "Recall what we know about this project.",
+      "Save this decision to project memory.",
+      "Catch me up on recent work."
+    ]
+  }
 }

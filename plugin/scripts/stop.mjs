@@ -139,6 +139,7 @@ async function captureTurn(payload, sessionId, project, ctx) {
 
 async function main() {
   const payload = parseJSON(await readStdin()) || {};
+  const codexHost = Boolean(process.env.PLUGIN_ROOT);
   const sessionId = payload.session_id || payload.sessionId || "unknown";
   // A server write tagged session_id:"unknown" shares one exclusion bucket
   // with every other unknown-id session (pre-tool-use excludes by exact
@@ -183,7 +184,7 @@ async function main() {
   // for <memory> blocks in the reply text. New sessions save via the memory_remember
   // MCP tool directly; any block that still shows up here is persisted as a durable
   // semantic fact so nothing is lost.
-  if (ctx.setting("inline_extract").value && hasSessionIdentity && payload.transcript_path) {
+  if (!codexHost && ctx.setting("inline_extract").value && hasSessionIdentity && payload.transcript_path) {
     const transcript = readTranscript(payload.transcript_path);
     const assistantTexts = extractAssistantText(transcript);
     const allBlocks = [];
@@ -203,12 +204,17 @@ async function main() {
     }
   }
 
-  await captureTurn(payload, sessionId, project, ctx);
+  // Codex transcript storage is intentionally not part of its stable hook
+  // contract. Do not parse transcript_path even if an experimental build sends
+  // one; Codex retains rolling activity checkpoints without transcript capture.
+  if (!codexHost) await captureTurn(payload, sessionId, project, ctx);
 
-  const reason = autoSaveReasonFor(payload, sessionId, project, ctx);
+  const reason = codexHost ? null : autoSaveReasonFor(payload, sessionId, project, ctx);
   if (reason) process.stdout.write(JSON.stringify({ decision: "block", reason }));
+  else if (codexHost) process.stdout.write("{}");
 }
 
 main().catch((e) => {
   if (DEBUG) console.error("[memini] Stop error:", e);
+  if (process.env.PLUGIN_ROOT) process.stdout.write("{}");
 });

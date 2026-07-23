@@ -1,70 +1,72 @@
-# memini + Codex CLI
+# memini + Codex
 
-Codex reads MCP servers from `~/.codex/config.toml` (or a project-scoped
-`.codex/config.toml`) under `[mcp_servers.<name>]`.
-
-**Local (stdio)** — widely supported; see [`config.stdio.toml`](config.stdio.toml):
+## Install the native plugin
 
 ```sh
-codex mcp add memini -- memini mcp
+codex plugin marketplace add eleboucher/memini
+codex plugin add memini@memini
 ```
 
-**Remote (Streamable HTTP)** — recent Codex; see [`config.remote.toml`](config.remote.toml).
-
-**As a plugin** — memini's [`plugin/`](../../plugin/) directory carries a
-`.codex-plugin/` manifest, so you can mount it as a Codex plugin instead of
-registering the MCP server by hand; that also brings the hooks + skills layer
-(see the [integrations overview](../README.md)).
-
-Verify:
+Run the local server first; the bundled MCP server targets
+`http://localhost:8080/mcp`.
 
 ```sh
-codex mcp list
+memini serve
+curl http://localhost:8080/healthz
 ```
 
-## What you get
+Set authentication and optional static identity before starting Codex:
 
-Codex sees memini's full `memory_*` tool set — no extra config beyond the
-server registration above:
+```sh
+export MEMINI_API_KEY="..."
+export MEMINI_NAMESPACE="my-project" # optional
+export MEMINI_HOME="personal/me"      # optional
+```
 
-- **`memory_recall`** — hybrid (semantic + keyword) search, with optional
-  `tags` / `metadata` filters, `response_format: "concise"` for a token-cheap
-  first pass, and time-travel / nested-namespace options. Results carry
-  `created_at` and `tags`; a `degraded: "keyword_only"` field means semantic
-  search was unavailable and the results are keyword-only.
-- **`memory_list`** — query-less browse by tier / tags / metadata category
-  (e.g. all procedural memories, or everything categorized `bug_fixes`; see
-  [`docs/categories.md`](../../docs/categories.md)). Returns at most `limit`
-  (default 20) newest-first; page past it with `offset`.
-- **`memory_get`** — fetch one memory with full metadata, tags, and
-  timestamps by ID.
-- **`memory_history`** — trace a memory's supersession lineage by ID: the
-  fact plus what it superseded and what replaced it, oldest-first, including
-  tombstoned rows.
-- **`memory_remember`** — store a fact, with optional `tags` and `metadata`.
-  Set `metadata.category` on writes to browse by subject later.
-- **`memory_update`** — partial update of an existing memory by ID (only
-  provided fields change); MCP-only, so this is the one tool in the set that
-  the REST-backed integrations elsewhere in this repo don't get.
-- **`memory_forget`** — permanently delete a memory by ID.
-- **`memory_briefing`** — pinned context, durable facts, procedures, and
-  recent activity for the namespace in one query-less call.
-- **`memory_answer`** — ask a question and get an answer grounded on recalled
-  memories, with the same `tags` / `metadata` filters (only advertised when
-  the server has an LLM configured).
+`MEMINI_API_KEY` is Codex's bearer variable. The legacy `MEMINI_TOKEN` alias is
+Claude-only because Codex accepts one `bearer_token_env_var`.
 
-Use the same namespace as your other agents (the `MEMINI_DEFAULT_NAMESPACE` env
-for stdio, or the `X-Memini-Namespace` header for remote) to share memory.
-The `my-project` placeholder can be replaced with your real project name, or
-removed entirely to fall back to the server's own default namespace (the git
-repo basename of its own working directory, unless a `default_namespace` is
-configured — see [`docs/api-keys.md`](../../docs/api-keys.md) for remote,
-or `MEMINI_DEFAULT_NAMESPACE`/server config for stdio).
+Installing does not trust plugin hooks. Open `/hooks`, review the Memini
+commands, and trust the current definition. Start a new thread after install so
+Codex discovers all nine skills, the `memory_*` tools, and lifecycle hooks.
+Verify with `codex plugin list`, `codex mcp list`, `/hooks`, and a
+`memory_recall` call.
 
-Note that Codex is a plain MCP client: unlike the other integrations in this
-repo (pi, openclaw, opencode, hermes, Open WebUI), it does not perform the
-config-handshake (`POST /v1/handshake`) that resolves a namespace from project
-facts and picks up server-side pins (`memini namespace <ns>` /
-`POST /v1/pins`). A pin set for a project Codex works in has no effect here —
-use the key's bound `default_namespace` or a static `X-Memini-Namespace`
-header (see [`config.remote.toml`](config.remote.toml)) instead.
+The plugin provides session briefing and compaction recovery, prompt/file/tool
+recall, local tool-event buffering, rolling `Stop` checkpoints, PreCompact
+episodic checkpoints, and skills for remember, recall, recap, forget, pin,
+status, namespace, doctor, and backfill. Doctor and backfill require the local
+`memini` binary.
+
+## Remote or custom server URL
+
+Codex does not expand Claude-style `${VAR:-default}` expressions inside plugin
+MCP URLs. The bundled endpoint is therefore static. Disable the bundled server
+and register a project or user MCP server in `config.toml` using
+[`config.remote.toml`](config.remote.toml). This limitation is tracked in
+[openai/codex#2680](https://github.com/openai/codex/issues/2680).
+
+```toml
+[plugins.memini.mcp_servers.memini]
+enabled = false
+```
+
+Then configure `[mcp_servers.memini]` with the desired URL and headers.
+[`config.stdio.toml`](config.stdio.toml) remains available when you prefer the
+local `memini mcp` process.
+
+## Update
+
+Refresh the marketplace, reinstall `memini@memini`, and start a new thread.
+Codex loads an installed plugin copy and thread-scoped skills/tools, so an
+existing thread is not a reliable activation check.
+
+## Stable parity limits
+
+Codex has no reliable final-session event equivalent to Claude's `SessionEnd`,
+so it keeps rolling checkpoints but cannot guarantee the same final digest.
+Codex also does not expose a stable main-session transcript contract: Memini
+does not parse Codex transcripts for automatic turn capture, legacy inline
+extraction, or auto-save nudges. Explicit memory writes, recall, tool buffering,
+Stop checkpoints, and PreCompact recovery remain active. Hooks stay fail-soft
+when Memini is unreachable.
