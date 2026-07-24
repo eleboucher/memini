@@ -73,13 +73,23 @@ test("Codex Stop ignores transcript paths and always returns valid JSON", () => 
 });
 
 test("Codex wiring is documented-event-only and Claude retains SessionEnd", () => {
-  const codex = JSON.parse(fs.readFileSync(path.join(root, "hooks", "hooks.json")));
+  const codex = JSON.parse(fs.readFileSync(path.join(root, "hooks", "hooks.codex.json")));
   const claude = JSON.parse(fs.readFileSync(path.join(root, "hooks", "hooks.claude.json")));
   assert.deepEqual(Object.keys(codex.hooks).sort(), [
     "PostToolUse", "PreCompact", "PreToolUse", "SessionStart", "Stop", "UserPromptSubmit",
   ].sort());
   assert.ok(claude.hooks.SessionEnd);
   assert.match(JSON.stringify(codex), /PLUGIN_ROOT/);
+});
+
+test("each host loads only its own hooks file", () => {
+  // Claude Code always loads hooks/hooks.json on top of the manifest path, so a
+  // file there would run twice under Claude — once with ${PLUGIN_ROOT} unset.
+  assert.equal(fs.existsSync(path.join(root, "hooks", "hooks.json")), false);
+  const claude = JSON.parse(fs.readFileSync(path.join(root, ".claude-plugin", "plugin.json")));
+  const codex = JSON.parse(fs.readFileSync(path.join(root, ".codex-plugin", "plugin.json")));
+  assert.equal(claude.hooks, "./hooks/hooks.claude.json");
+  assert.equal(codex.hooks, "./hooks/hooks.codex.json");
 });
 
 test("all nine skills are installed with required safety invariants", () => {

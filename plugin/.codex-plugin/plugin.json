@@ -11,6 +11,7 @@
   "repository": "https://github.com/eleboucher/memini",
   "keywords": ["memory", "agent", "codex", "mcp", "developer-tools"],
   "skills": "./skills/",
+  "hooks": "./hooks/hooks.codex.json",
   "mcpServers": "./.mcp.codex.json",
   "interface": {
     "displayName": "Memini",
