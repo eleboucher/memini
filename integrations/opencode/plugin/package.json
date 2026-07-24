@@ -1,6 +1,6 @@
 {
   "name": "@eleboucher/opencode-memini",
-  "version": "0.7.13",
+  "version": "0.7.14",
   "description": "Automatic cross-session memory for opencode via memini — recall before each turn, capture after.",
   "keywords": [
     "memini",
