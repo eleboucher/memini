@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// PreCompact hook. Fires right before Claude Code compacts the context window.
+// PreCompact hook. Fires right before Claude Code or Codex compacts context.
 // Distills the buffered tool events into a durable episodic checkpoint so the
 // session's work survives compaction. Unlike SessionEnd it does NOT delete the
-// buffer — the session continues after compaction and SessionEnd still writes
-// the final digest. Claude-Code-only: Codex has no compaction lifecycle event.
+// buffer — the session continues after compaction. Claude SessionEnd later
+// writes the final digest; Codex retains rolling Stop checkpoints instead.
 
 import {
   readStdin,
@@ -36,14 +36,23 @@ async function main() {
   const project = ctx.namespace;
 
   const digest = buildSessionDigest(readSessionEvents(sessionId), project);
-  if (!digest) return; // nothing buffered → no checkpoint, no noise
+  if (!digest) {
+    if (process.env.PLUGIN_ROOT) process.stdout.write("{}");
+    return;
+  }
   // session_digest off → no activity records at all. This checkpoint exists to
   // rescue the digest from a compaction, so with digests off there is nothing
   // to rescue.
-  if (!ctx.setting("session_digest").value) return;
+  if (!ctx.setting("session_digest").value) {
+    if (process.env.PLUGIN_ROOT) process.stdout.write("{}");
+    return;
+  }
   // A checkpoint tagged session_id:"unknown" shares one exclusion bucket with
   // every other unknown-id session (exact-match exclusion), so skip it.
-  if (sessionId === "unknown") return;
+  if (sessionId === "unknown") {
+    if (process.env.PLUGIN_ROOT) process.stdout.write("{}");
+    return;
+  }
 
   if (DEBUG)
     console.error(`[memini] PreCompact project=${project} session=${sessionId} events=${digest.count}`);
@@ -55,6 +64,7 @@ async function main() {
     summary: digest.summary,
     metadata: { session_id: sessionId, trigger: payload.trigger || "unknown" },
   });
+  if (process.env.PLUGIN_ROOT) process.stdout.write("{}");
 }
 
 main().catch((e) => {

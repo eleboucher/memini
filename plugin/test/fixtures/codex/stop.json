@@ -1,0 +1,8 @@
+{
+  "session_id": "codex-tools",
+  "cwd": ".",
+  "turn_id": "turn-stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "Implemented and verified the change.",
+  "transcript_path": "/must/not/be/read/codex.jsonl"
+}

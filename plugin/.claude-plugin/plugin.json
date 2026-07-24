@@ -11,5 +11,6 @@
   "repository": "https://github.com/eleboucher/memini",
   "keywords": ["memory", "agent", "claude-code"],
   "skills": "./skills/",
-  "commands": "./commands/"
+  "commands": "./commands/",
+  "hooks": "./hooks/hooks.claude.json"
 }

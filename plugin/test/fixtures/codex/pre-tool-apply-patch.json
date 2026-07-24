@@ -1,0 +1,10 @@
+{
+  "session_id": "codex-tools",
+  "cwd": ".",
+  "turn_id": "turn-tools",
+  "tool_name": "apply_patch",
+  "tool_use_id": "tool-patch",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Update File: auth.go\n@@\n-old\n+new\n*** End Patch"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "memini": {
+    "type": "http",
+    "url": "http://localhost:8080/mcp",
+    "bearer_token_env_var": "MEMINI_API_KEY",
+    "env_http_headers": {
+      "X-Memini-Namespace": "MEMINI_NAMESPACE",
+      "X-Memini-Home": "MEMINI_HOME"
+    }
+  }
+}

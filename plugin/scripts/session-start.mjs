@@ -40,6 +40,19 @@ import {
   COMPACT_RECOVERY_DIRECTIVE,
   DEBUG,
 } from "./_shared.mjs";
+
+function emitContext(context) {
+  if (!context) return;
+  if (process.env.PLUGIN_ROOT) {
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: context },
+      }),
+    );
+  } else {
+    process.stdout.write(context);
+  }
+}
 import { readOverride, assertBearerTransportSafe } from "./_client.gen.mjs";
 
 // Buffers older than this are abandoned (crashed/killed sessions) and removed.
@@ -303,7 +316,7 @@ async function main() {
     const note = b
       ? `<memini-context project="${project}" read-only>(no stored memories yet for this project)</memini-context>`
       : "";
-    if (note || directive) process.stdout.write(note + directive);
+    emitContext(note + directive);
     return;
   }
 
@@ -324,7 +337,7 @@ async function main() {
     // Skip the unchanged briefing; the directive var already encodes what this
     // fire source owes the context (nothing on resume — the transcript replay
     // carries the original injection — a fresh directive on clear).
-    if (directive) process.stdout.write(directive);
+    emitContext(directive);
     // Telemetry beacon AFTER the stdout payload: the whole briefing was
     // withheld as unchanged, so report the item count and no injected ids.
     // Best-effort and awaited — see postInjected.
@@ -386,7 +399,7 @@ async function main() {
   // be emitted, or a session with only blank-content memories is silently told
   // nothing to save.
   if (blocks.length === 0) {
-    if (directive) process.stdout.write(directive);
+    emitContext(directive);
     return;
   }
 
@@ -495,9 +508,10 @@ async function main() {
     writeInjectedState(sessionId, injectedState);
   }
 
-  // Both Claude Code and Codex interpret stdout as additional context.
+  // Use the host-native Codex envelope. Claude Code continues to receive the
+  // plain stdout format it has always consumed.
   const emitted = lines.join("\n");
-  process.stdout.write(emitted);
+  emitContext(emitted);
   if (DEBUG) {
     console.error(
       `[memini] SessionStart injected ${lines.length - 2} lines ` +

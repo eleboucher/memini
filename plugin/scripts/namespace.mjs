@@ -35,6 +35,7 @@ import path from "node:path";
 const args = process.argv.slice(2).filter((a) => a !== "--");
 const cwd = process.cwd();
 const boot = readBootstrap(process.env);
+const CODEX_HOST = Boolean(process.env.PLUGIN_ROOT);
 
 // Send a JSON request to the pins endpoint. Returns { ok, status, body } or
 // throws (network/guard) so callers can render the offline message.
@@ -168,7 +169,9 @@ async function set(raw) {
     `project key:      ${entry.key || Object.values(facts)[0]}`,
     ``,
     `hooks:  active on the next invocation (session digests, turn capture, recall).`,
-    `MCP:    run /reload-plugins to apply (the headersHelper only runs on connect).`,
+    CODEX_HOST
+      ? `MCP:    start a new thread (or restart Codex) to apply the new namespace.`
+      : `MCP:    run /reload-plugins to apply (the headersHelper only runs on connect).`,
     ``,
     `The pin lives on the memini server, so it follows you across machines and`,
     `every client resolves the same namespace. It beats MEMINI_NAMESPACE.`,
@@ -209,7 +212,7 @@ async function clear() {
     `namespace pin cleared — this project resolves automatically again.`,
     ``,
     `hooks:  active on the next invocation.`,
-    `MCP:    run /reload-plugins to apply.`,
+    CODEX_HOST ? `MCP:    start a new thread (or restart Codex) to apply.` : `MCP:    run /reload-plugins to apply.`,
   ].join("\n");
 }
 

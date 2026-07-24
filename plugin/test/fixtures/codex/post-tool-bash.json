@@ -1,0 +1,9 @@
+{
+  "session_id": "codex-tools",
+  "cwd": ".",
+  "turn_id": "turn-tools",
+  "tool_name": "Bash",
+  "tool_use_id": "tool-bash",
+  "tool_input": { "command": "go test ./..." },
+  "tool_response": { "output": "ok" }
+}
