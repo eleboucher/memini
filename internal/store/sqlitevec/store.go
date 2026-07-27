@@ -175,7 +175,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			default_ns TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			disabled   INTEGER NOT NULL DEFAULT 0,
-			admin      INTEGER NOT NULL DEFAULT 0
+			admin      INTEGER NOT NULL DEFAULT 0,
+			read_only  INTEGER NOT NULL DEFAULT 0
 		)`,
 		// memory_events is the activity log (see store.EventLogStore): one row
 		// per (operation, memory), rows of one operation sharing op_id. The
@@ -245,6 +246,12 @@ func (s *Store) migrate(ctx context.Context) error {
 	// api_keys.admin holds the per-key admin capability (admin-keys redesign);
 	// see store.APIKey.Admin's doc.
 	if err := s.addColumnIfMissing(ctx, "api_keys", "admin", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// api_keys.read_only holds the per-key read-only capability (see
+	// store.APIKey.ReadOnly). Defaulting to 0 is what keeps every pre-existing
+	// key read-write across the upgrade.
+	if err := s.addColumnIfMissing(ctx, "api_keys", "read_only", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	// memory_events.actor/actor_kind carry activity attribution (admin-keys T5):
@@ -1338,12 +1345,14 @@ func (s *Store) PutAPIKey(ctx context.Context, k store.APIKey) error {
 		return fmt.Errorf("sqlitevec: marshal api key settings: %w", err)
 	}
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO api_keys (name, key_hash, home_ns, default_ns, created_at, disabled, settings, admin)
-		VALUES (?,?,?,?,?,?,?,?)
+		`INSERT INTO api_keys (name, key_hash, home_ns, default_ns, created_at, disabled, settings, admin, read_only)
+		VALUES (?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET
 			key_hash=excluded.key_hash, home_ns=excluded.home_ns, default_ns=excluded.default_ns,
-			created_at=excluded.created_at, disabled=excluded.disabled, settings=excluded.settings, admin=excluded.admin`,
-		k.Name, k.Hash, k.HomeNS, k.DefaultNS, created.Format(time.RFC3339Nano), boolToInt(k.Disabled), string(settingsJSON), boolToInt(k.Admin))
+			created_at=excluded.created_at, disabled=excluded.disabled, settings=excluded.settings, admin=excluded.admin,
+			read_only=excluded.read_only`,
+		k.Name, k.Hash, k.HomeNS, k.DefaultNS, created.Format(time.RFC3339Nano),
+		boolToInt(k.Disabled), string(settingsJSON), boolToInt(k.Admin), boolToInt(k.ReadOnly))
 	if err != nil {
 		return fmt.Errorf("sqlitevec: put api key: %w", err)
 	}
@@ -1367,7 +1376,7 @@ func (s *Store) DeleteAPIKey(ctx context.Context, name string) (bool, error) {
 // ListAPIKeys returns every key ordered by name.
 func (s *Store) ListAPIKeys(ctx context.Context) ([]store.APIKey, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled, settings, admin FROM api_keys ORDER BY name`)
+		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled, settings, admin, read_only FROM api_keys ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlitevec: list api keys: %w", err)
 	}
@@ -1378,7 +1387,7 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]store.APIKey, error) {
 // does.
 func (s *Store) GetAPIKeyByHash(ctx context.Context, hash string) (*store.APIKey, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled, settings, admin FROM api_keys WHERE key_hash=?`, hash)
+		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled, settings, admin, read_only FROM api_keys WHERE key_hash=?`, hash)
 	k, err := scanAPIKey(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

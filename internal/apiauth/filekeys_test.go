@@ -109,6 +109,37 @@ keys:
 	}
 }
 
+// TestLoadFileKeysParsesReadOnly covers the read_only YAML field parsing into
+// store.APIKey.ReadOnly, both explicitly true and the false-by-default case.
+// The declarative file is the primary provisioning path for a CI credential
+// (a mounted Secret), so silently dropping the field here would hand that
+// credential write access.
+func TestLoadFileKeysParsesReadOnly(t *testing.T) {
+	path := writeKeysFile(t, `
+keys:
+  - name: ci-agent
+    hash: "`+hashOf("tok-ci-agent")+`"
+    read_only: true
+  - name: plain-bob
+    hash: "`+hashOf("tok-plain-bob-ro")+`"
+`)
+	fk, err := apiauth.LoadFileKeys(path)
+	if err != nil {
+		t.Fatalf("LoadFileKeys: %v", err)
+	}
+	keys := fk.FileKeys()
+	byName := map[string]bool{}
+	for _, k := range keys {
+		byName[k.Name] = k.ReadOnly
+	}
+	if ro, ok := byName["ci-agent"]; !ok || !ro {
+		t.Fatalf("ci-agent: want read_only=true, got %+v", keys)
+	}
+	if ro, ok := byName["plain-bob"]; !ok || ro {
+		t.Fatalf("plain-bob (no read_only field): want read_only=false, got %+v", keys)
+	}
+}
+
 func TestLoadFileKeysDisabledEntry(t *testing.T) {
 	path := writeKeysFile(t, `
 keys:

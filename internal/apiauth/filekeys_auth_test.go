@@ -112,6 +112,53 @@ keys:
 	}
 }
 
+// TestAuthenticateFileKeyReadOnlyPropagates: a file entry with read_only: true
+// yields a Principal with ReadOnly=true, the same per-key capability a table
+// key gets. This is the path a CI credential actually arrives on.
+func TestAuthenticateFileKeyReadOnlyPropagates(t *testing.T) {
+	path := writeKeysFile(t, `
+keys:
+  - name: ci-agent
+    secret: "tok-ci-agent"
+    read_only: true
+`)
+	fk, err := apiauth.LoadFileKeys(path)
+	if err != nil {
+		t.Fatalf("LoadFileKeys: %v", err)
+	}
+	cfg := apiauth.New("", nil).WithFileKeys(fk)
+	p, ok, err := cfg.Authenticate(context.Background(), "tok-ci-agent")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if !ok || p == nil || !p.ReadOnly {
+		t.Fatalf("file key read_only=true: want authenticated with Principal.ReadOnly=true, got (%+v, %v, %v)", p, ok, err)
+	}
+}
+
+// TestAuthenticateFileKeyReadOnlyDefaultsFalse: a file entry with no read_only
+// field yields a Principal with ReadOnly=false, so existing declarative keys
+// keep write access across the upgrade.
+func TestAuthenticateFileKeyReadOnlyDefaultsFalse(t *testing.T) {
+	path := writeKeysFile(t, `
+keys:
+  - name: plain-alex
+    secret: "tok-plain-alex-ro"
+`)
+	fk, err := apiauth.LoadFileKeys(path)
+	if err != nil {
+		t.Fatalf("LoadFileKeys: %v", err)
+	}
+	cfg := apiauth.New("", nil).WithFileKeys(fk)
+	p, ok, err := cfg.Authenticate(context.Background(), "tok-plain-alex-ro")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if !ok || p == nil || p.ReadOnly {
+		t.Fatalf("file key with no read_only field: want authenticated with Principal.ReadOnly=false, got (%+v, %v, %v)", p, ok, err)
+	}
+}
+
 func TestAuthenticateFileKeyHashVariantResolvesSameAsSecret(t *testing.T) {
 	path := writeKeysFile(t, `
 keys:

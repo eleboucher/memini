@@ -2419,43 +2419,69 @@ func testAPIKeys(t *testing.T, st store.Store, dims int) {
 	t.Run("DuplicateHashDifferentNameErrors", func(t *testing.T) { testAPIKeyDuplicateHash(t, ks, ns) })
 	t.Run("DefaultNSRoundTrip", func(t *testing.T) { testAPIKeyDefaultNSRoundTrip(t, ks, ns) })
 	t.Run("RenameNamespaces", func(t *testing.T) { testAPIKeyRenameNamespaces(t, ks, ns) })
-	t.Run("AdminRoundTrip", func(t *testing.T) { testAPIKeyAdminRoundTrip(t, ks, ns) })
-	t.Run("AdminSurvivesRenameNamespaces", func(t *testing.T) { testAPIKeyAdminSurvivesRename(t, ks, ns) })
-	t.Run("AdminPreservedOnUpsertWithZeroCreatedAt", func(t *testing.T) { testAPIKeyAdminPreservedOnUpsert(t, ks, ns) })
+	for _, f := range apiKeyFlags {
+		t.Run(f.Label+"RoundTrip", func(t *testing.T) { testAPIKeyFlagRoundTrip(t, ks, ns, f) })
+		t.Run(f.Label+"SurvivesRenameNamespaces", func(t *testing.T) { testAPIKeyFlagSurvivesRename(t, ks, ns, f) })
+		t.Run(f.Label+"PreservedOnUpsertWithZeroCreatedAt", func(t *testing.T) { testAPIKeyFlagPreservedOnUpsert(t, ks, ns, f) })
+	}
+	t.Run("ReadOnlyIndependentOfAdmin", func(t *testing.T) { testAPIKeyReadOnlyIndependentOfAdmin(t, ks, ns) })
 }
 
-// testAPIKeyAdminRoundTrip covers store.APIKey.Admin round-tripping through
-// PutAPIKey/GetAPIKeyByHash/ListAPIKeys for both values — true (the key
-// authenticates the /v1/keys and /v1/settings/defaults surfaces) and false
-// (the sibling case to Disabled's own false-by-default round trip).
-func testAPIKeyAdminRoundTrip(t *testing.T, ks store.APIKeyStore, ns string) {
+// apiKeyFlag describes one boolean capability column on store.APIKey. The
+// storage contract for every such bit is identical — round-trip through
+// Put/Get/List, survive a namespace rename, survive a zero-CreatedAt upsert
+// (rotation) in both directions — so the coverage is written once here and run
+// per flag rather than copy-pasted per flag. A future third bit gets the full
+// suite by appending one entry.
+type apiKeyFlag struct {
+	// Label names the field in failure messages and prefixes the sub-test
+	// name, so changing it renames the sub-test.
+	Label string
+	// Slug is a filename-safe token mixed into generated key names so two
+	// flags' fixtures cannot collide within one namespace.
+	Slug string
+	Set  func(*store.APIKey, bool)
+	Get  func(store.APIKey) bool
+}
+
+// apiKeyFlags is every boolean capability the store must persist. Admin gates
+// the /v1/keys and /v1/settings/defaults surfaces; ReadOnly denies mutation
+// across both HTTP surfaces. They are independent — see
+// testAPIKeyReadOnlyIndependentOfAdmin.
+var apiKeyFlags = []apiKeyFlag{
+	{
+		Label: "Admin", Slug: "admin",
+		Set: func(k *store.APIKey, v bool) { k.Admin = v },
+		Get: func(k store.APIKey) bool { return k.Admin },
+	},
+	{
+		Label: "ReadOnly", Slug: "readonly",
+		Set: func(k *store.APIKey, v bool) { k.ReadOnly = v },
+		Get: func(k store.APIKey) bool { return k.ReadOnly },
+	},
+}
+
+// testAPIKeyFlagRoundTrip covers f round-tripping through
+// PutAPIKey/GetAPIKeyByHash/ListAPIKeys for both values — true and false (the
+// default, the sibling case to Disabled's own false-by-default round trip).
+func testAPIKeyFlagRoundTrip(t *testing.T, ks store.APIKeyStore, ns string, f apiKeyFlag) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
-	adminName := ns + "-admin-true"
-	admin := store.APIKey{Name: adminName, Hash: apiKeyHash(adminName), CreatedAt: now, Admin: true}
-	if err := ks.PutAPIKey(ctx, admin); err != nil {
-		t.Fatalf("put admin=true: %v", err)
-	}
-	got, err := ks.GetAPIKeyByHash(ctx, admin.Hash)
-	if err != nil {
-		t.Fatalf("get by hash (admin=true): %v", err)
-	}
-	if got == nil || !got.Admin {
-		t.Fatalf("admin=true round-trip = %+v, want Admin=true", got)
-	}
-
-	nonAdminName := ns + "-admin-false"
-	nonAdmin := store.APIKey{Name: nonAdminName, Hash: apiKeyHash(nonAdminName), CreatedAt: now, Admin: false}
-	if err := ks.PutAPIKey(ctx, nonAdmin); err != nil {
-		t.Fatalf("put admin=false: %v", err)
-	}
-	got, err = ks.GetAPIKeyByHash(ctx, nonAdmin.Hash)
-	if err != nil {
-		t.Fatalf("get by hash (admin=false): %v", err)
-	}
-	if got == nil || got.Admin {
-		t.Fatalf("admin=false round-trip = %+v, want Admin=false", got)
+	names := map[bool]string{true: ns + "-" + f.Slug + "-true", false: ns + "-" + f.Slug + "-false"}
+	for _, want := range []bool{true, false} {
+		k := store.APIKey{Name: names[want], Hash: apiKeyHash(names[want]), CreatedAt: now}
+		f.Set(&k, want)
+		if err := ks.PutAPIKey(ctx, k); err != nil {
+			t.Fatalf("put %s=%v: %v", f.Label, want, err)
+		}
+		got, err := ks.GetAPIKeyByHash(ctx, k.Hash)
+		if err != nil {
+			t.Fatalf("get by hash (%s=%v): %v", f.Label, want, err)
+		}
+		if got == nil || f.Get(*got) != want {
+			t.Fatalf("%s=%v round-trip = %+v, want %s=%v", f.Label, want, got, f.Label, want)
+		}
 	}
 
 	// ListAPIKeys carries it too.
@@ -2463,42 +2489,39 @@ func testAPIKeyAdminRoundTrip(t *testing.T, ks store.APIKeyStore, ns string) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	seen := map[string]bool{}
+	seen := map[bool]bool{}
 	for _, k := range all {
-		switch k.Name {
-		case adminName:
-			seen[adminName] = true
-			if !k.Admin {
-				t.Fatalf("list: %q admin = false, want true", adminName)
+		for _, want := range []bool{true, false} {
+			if k.Name != names[want] {
+				continue
 			}
-		case nonAdminName:
-			seen[nonAdminName] = true
-			if k.Admin {
-				t.Fatalf("list: %q admin = true, want false", nonAdminName)
+			seen[want] = true
+			if f.Get(k) != want {
+				t.Fatalf("list: %q %s = %v, want %v", k.Name, f.Label, f.Get(k), want)
 			}
 		}
 	}
-	if !seen[adminName] || !seen[nonAdminName] {
-		t.Fatalf("list missing one of the admin round-trip keys: %+v", all)
+	if !seen[true] || !seen[false] {
+		t.Fatalf("list missing one of the %s round-trip keys: %+v", f.Label, all)
 	}
 }
 
-// testAPIKeyAdminSurvivesRename covers store.APIKey.Admin surviving
-// RenameAPIKeyNamespaces (which only touches HomeNS/DefaultNS) — the same
-// precedent as testAPIKeySettingsSurviveRename for the per-key Settings
-// override.
-func testAPIKeyAdminSurvivesRename(t *testing.T, ks store.APIKeyStore, ns string) {
+// testAPIKeyFlagSurvivesRename covers f surviving RenameAPIKeyNamespaces
+// (which only touches HomeNS/DefaultNS) — the same precedent as
+// testAPIKeySettingsSurviveRename for the per-key Settings override. A rename
+// that silently cleared ReadOnly would hand a CI credential write access.
+func testAPIKeyFlagSurvivesRename(t *testing.T, ks store.APIKeyStore, ns string, f apiKeyFlag) {
 	ctx := context.Background()
-	name := ns + "-admin-rename"
-	from := ns + "-admin-rename-old"
-	to := ns + "-admin-rename-new"
+	name := ns + "-" + f.Slug + "-rename"
+	from := name + "-old"
+	to := name + "-new"
 	k := store.APIKey{
 		Name:      name,
 		Hash:      apiKeyHash(name),
 		HomeNS:    from,
 		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
-		Admin:     true,
 	}
+	f.Set(&k, true)
 	if err := ks.PutAPIKey(ctx, k); err != nil {
 		t.Fatalf("put: %v", err)
 	}
@@ -2515,61 +2538,89 @@ func testAPIKeyAdminSurvivesRename(t *testing.T, ks store.APIKeyStore, ns string
 	if got.HomeNS != to {
 		t.Fatalf("home_ns after rename = %q, want %q", got.HomeNS, to)
 	}
-	if !got.Admin {
-		t.Fatalf("admin did not survive rename: %+v, want Admin=true", got)
+	if !f.Get(*got) {
+		t.Fatalf("%s did not survive rename: %+v, want %s=true", f.Label, got, f.Label)
 	}
 }
 
-// testAPIKeyAdminPreservedOnUpsert covers store.APIKey.Admin round-tripping
-// through the upsert-with-zero-CreatedAt path (rotation): the manual
+// testAPIKeyFlagPreservedOnUpsert covers f round-tripping through the
+// upsert-with-zero-CreatedAt path (rotation): the manual
 // read-then-conditional-write CreatedAt-preserve logic must not accidentally
-// drop Admin from the INSERT/ON CONFLICT column list, in either direction
-// (false->true and true->false), while CreatedAt itself is preserved from
-// the original row.
-func testAPIKeyAdminPreservedOnUpsert(t *testing.T, ks store.APIKeyStore, ns string) {
+// drop the column from the INSERT/ON CONFLICT list, in either direction, while
+// CreatedAt itself is preserved from the original row. A rotation that dropped
+// ReadOnly would silently promote a read-only credential to read-write.
+func testAPIKeyFlagPreservedOnUpsert(t *testing.T, ks store.APIKeyStore, ns string, f apiKeyFlag) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
-	// false -> true across a zero-CreatedAt upsert.
-	nameA := ns + "-admin-upsert-a"
-	original := store.APIKey{Name: nameA, Hash: apiKeyHash(nameA + "-v1"), CreatedAt: now, Admin: false}
-	if err := ks.PutAPIKey(ctx, original); err != nil {
-		t.Fatalf("put original (a): %v", err)
+	for _, tc := range []struct {
+		suffix   string
+		from, to bool
+	}{
+		{"a", false, true},
+		{"b", true, false},
+	} {
+		name := ns + "-" + f.Slug + "-upsert-" + tc.suffix
+		original := store.APIKey{Name: name, Hash: apiKeyHash(name + "-v1"), CreatedAt: now}
+		f.Set(&original, tc.from)
+		if err := ks.PutAPIKey(ctx, original); err != nil {
+			t.Fatalf("put original (%s): %v", tc.suffix, err)
+		}
+		// Zero CreatedAt is what rotation writes: the driver must look the
+		// existing row's timestamp up rather than stamping a new one.
+		rotated := store.APIKey{Name: name, Hash: apiKeyHash(name + "-v2")}
+		f.Set(&rotated, tc.to)
+		if err := ks.PutAPIKey(ctx, rotated); err != nil {
+			t.Fatalf("put rotated (%s): %v", tc.suffix, err)
+		}
+		got, err := ks.GetAPIKeyByHash(ctx, rotated.Hash)
+		if err != nil {
+			t.Fatalf("get by hash after rotation (%s): %v", tc.suffix, err)
+		}
+		if got == nil || f.Get(*got) != tc.to {
+			t.Fatalf("%s after %v->%v upsert = %+v, want %s=%v", f.Label, tc.from, tc.to, got, f.Label, tc.to)
+		}
+		if !got.CreatedAt.Equal(now) {
+			t.Fatalf("created_at after rotation (%s) = %v, want preserved %v", tc.suffix, got.CreatedAt, now)
+		}
 	}
-	rotatedA := store.APIKey{Name: nameA, Hash: apiKeyHash(nameA + "-v2"), Admin: true}
-	if err := ks.PutAPIKey(ctx, rotatedA); err != nil {
-		t.Fatalf("put rotated (a): %v", err)
-	}
-	got, err := ks.GetAPIKeyByHash(ctx, rotatedA.Hash)
-	if err != nil {
-		t.Fatalf("get by hash after rotation (a): %v", err)
-	}
-	if got == nil || !got.Admin {
-		t.Fatalf("admin after false->true upsert = %+v, want Admin=true", got)
-	}
-	if !got.CreatedAt.Equal(now) {
-		t.Fatalf("created_at after rotation (a) = %v, want preserved %v", got.CreatedAt, now)
-	}
+}
 
-	// true -> false across a zero-CreatedAt upsert.
-	nameB := ns + "-admin-upsert-b"
-	originalB := store.APIKey{Name: nameB, Hash: apiKeyHash(nameB + "-v1"), CreatedAt: now, Admin: true}
-	if err := ks.PutAPIKey(ctx, originalB); err != nil {
-		t.Fatalf("put original (b): %v", err)
-	}
-	rotatedB := store.APIKey{Name: nameB, Hash: apiKeyHash(nameB + "-v2"), Admin: false}
-	if err := ks.PutAPIKey(ctx, rotatedB); err != nil {
-		t.Fatalf("put rotated (b): %v", err)
-	}
-	got, err = ks.GetAPIKeyByHash(ctx, rotatedB.Hash)
-	if err != nil {
-		t.Fatalf("get by hash after rotation (b): %v", err)
-	}
-	if got == nil || got.Admin {
-		t.Fatalf("admin after true->false upsert = %+v, want Admin=false", got)
-	}
-	if !got.CreatedAt.Equal(now) {
-		t.Fatalf("created_at after rotation (b) = %v, want preserved %v", got.CreatedAt, now)
+// testAPIKeyReadOnlyIndependentOfAdmin pins that ReadOnly and Admin are two
+// independent bits rather than one collapsed capability: admin+read_only is a
+// legitimate combination (a read-only auditor who can still enumerate keys),
+// so a column mix-up that aliased one onto the other must fail here.
+func testAPIKeyReadOnlyIndependentOfAdmin(t *testing.T, ks store.APIKeyStore, ns string) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	for _, tc := range []struct {
+		label           string
+		admin, readOnly bool
+	}{
+		{"admin-rw", true, false},
+		{"admin-ro", true, true},
+		{"named-rw", false, false},
+		{"named-ro", false, true},
+	} {
+		name := ns + "-combo-" + tc.label
+		k := store.APIKey{
+			Name: name, Hash: apiKeyHash(name), CreatedAt: now,
+			Admin: tc.admin, ReadOnly: tc.readOnly,
+		}
+		if err := ks.PutAPIKey(ctx, k); err != nil {
+			t.Fatalf("%s: put: %v", tc.label, err)
+		}
+		got, err := ks.GetAPIKeyByHash(ctx, k.Hash)
+		if err != nil {
+			t.Fatalf("%s: get by hash: %v", tc.label, err)
+		}
+		if got == nil {
+			t.Fatalf("%s: key not found after put", tc.label)
+		}
+		if got.Admin != tc.admin || got.ReadOnly != tc.readOnly {
+			t.Fatalf("%s: got Admin=%v ReadOnly=%v, want Admin=%v ReadOnly=%v",
+				tc.label, got.Admin, got.ReadOnly, tc.admin, tc.readOnly)
+		}
 	}
 }
 

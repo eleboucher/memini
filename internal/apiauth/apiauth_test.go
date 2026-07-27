@@ -141,6 +141,79 @@ func TestAuthenticateTableKeyAdminFalsePropagates(t *testing.T) {
 	}
 }
 
+// TestAuthenticateTableKeyReadOnlyTruePropagates: a table key with
+// ReadOnly=true yields a Principal with ReadOnly=true — the second
+// authorization bit, carried alongside Admin rather than replacing it.
+func TestAuthenticateTableKeyReadOnlyTruePropagates(t *testing.T) {
+	ks := openKeyStore(t)
+	ctx := context.Background()
+	if err := ks.PutAPIKey(ctx, store.APIKey{
+		Name: "ci-bot", Hash: hashOf("tok-ci"), CreatedAt: time.Now().UTC(), ReadOnly: true,
+	}); err != nil {
+		t.Fatalf("PutAPIKey: %v", err)
+	}
+	cfg := apiauth.New("", ks)
+	p, ok, err := cfg.Authenticate(ctx, "tok-ci")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if !ok {
+		t.Fatalf("table key: want authenticated")
+	}
+	if p == nil || !p.ReadOnly {
+		t.Fatalf("table key read_only=true: want Principal.ReadOnly=true, got %+v", p)
+	}
+}
+
+// TestAuthenticateTableKeyReadOnlyFalsePropagates: a table key with
+// ReadOnly=false (the default) yields a Principal with ReadOnly=false, so an
+// existing key keeps write access after the column is added.
+func TestAuthenticateTableKeyReadOnlyFalsePropagates(t *testing.T) {
+	ks := openKeyStore(t)
+	ctx := context.Background()
+	if err := ks.PutAPIKey(ctx, store.APIKey{
+		Name: "rw-bot", Hash: hashOf("tok-rw"), CreatedAt: time.Now().UTC(), ReadOnly: false,
+	}); err != nil {
+		t.Fatalf("PutAPIKey: %v", err)
+	}
+	cfg := apiauth.New("", ks)
+	p, ok, err := cfg.Authenticate(ctx, "tok-rw")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if !ok {
+		t.Fatalf("table key: want authenticated")
+	}
+	if p == nil || p.ReadOnly {
+		t.Fatalf("table key read_only=false: want Principal.ReadOnly=false, got %+v", p)
+	}
+}
+
+// TestAuthenticateTableKeyAdminAndReadOnlyAreIndependent: admin and read_only
+// are two separate bits on one principal, so an admin key can also be
+// read-only (it may enumerate keys but not mutate anything).
+func TestAuthenticateTableKeyAdminAndReadOnlyAreIndependent(t *testing.T) {
+	ks := openKeyStore(t)
+	ctx := context.Background()
+	if err := ks.PutAPIKey(ctx, store.APIKey{
+		Name: "auditor", Hash: hashOf("tok-auditor"), CreatedAt: time.Now().UTC(),
+		Admin: true, ReadOnly: true,
+	}); err != nil {
+		t.Fatalf("PutAPIKey: %v", err)
+	}
+	cfg := apiauth.New("", ks)
+	p, ok, err := cfg.Authenticate(ctx, "tok-auditor")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if !ok {
+		t.Fatalf("table key: want authenticated")
+	}
+	if p == nil || !p.Admin || !p.ReadOnly {
+		t.Fatalf("admin+read_only key: want Principal{Admin:true, ReadOnly:true}, got %+v", p)
+	}
+}
+
 // TestAuthenticateAdminKeyStaysNilPrincipal: the env admin key still resolves
 // to a nil Principal (never a named admin principal) — adminness for the env
 // key is expressed entirely by principal-nil-ness, unchanged by this

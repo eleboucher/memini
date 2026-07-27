@@ -28,11 +28,17 @@ import (
 // resolution. Admin carries the key's per-key admin capability
 // (store.APIKey.Admin) — adminness is now a capability any named principal
 // can hold, no longer solely the nil-principal env key's exclusive property.
+// ReadOnly carries the key's per-key read-only capability
+// (store.APIKey.ReadOnly), the second and independent authorization bit: it
+// denies every mutating operation at the API edge while leaving reads alone.
+// Both bits are false for a nil principal (the env key and dev mode), which is
+// why those two remain fully privileged.
 type Principal struct {
 	Name      string
 	HomeNS    string
 	DefaultNS string
 	Admin     bool
+	ReadOnly  bool
 }
 
 // keyTableCacheTTL bounds how stale the "does the api_keys table hold any
@@ -146,7 +152,7 @@ func (c Config) Authenticate(ctx context.Context, token string) (p *Principal, o
 			if key.Disabled {
 				return nil, false, nil
 			}
-			return &Principal{Name: key.Name, HomeNS: key.HomeNS, DefaultNS: key.DefaultNS, Admin: key.Admin}, true, nil
+			return &Principal{Name: key.Name, HomeNS: key.HomeNS, DefaultNS: key.DefaultNS, Admin: key.Admin, ReadOnly: key.ReadOnly}, true, nil
 		}
 	}
 	if token != "" && c.KeyStore != nil {
@@ -155,7 +161,7 @@ func (c Config) Authenticate(ctx context.Context, token string) (p *Principal, o
 			return nil, false, gerr
 		}
 		if key != nil && !key.Disabled {
-			return &Principal{Name: key.Name, HomeNS: key.HomeNS, DefaultNS: key.DefaultNS, Admin: key.Admin}, true, nil
+			return &Principal{Name: key.Name, HomeNS: key.HomeNS, DefaultNS: key.DefaultNS, Admin: key.Admin, ReadOnly: key.ReadOnly}, true, nil
 		}
 		return nil, false, nil
 	}
