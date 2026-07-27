@@ -679,6 +679,9 @@ type ApiKey struct {
 	Home *string `json:"home,omitempty"`
 	Name string  `json:"name"`
 
+	// ReadOnly Whether this key is a read-only credential: it may issue reads (GET/HEAD, plus the read-shaped POSTs /v1/search, /v1/answer and /v1/handshake) and every mutating request is refused with 403, across both the REST and MCP surfaces. Independent of admin — an admin key that is also read_only may enumerate keys but not change them. Note this bounds what the key may CHANGE, not what it may SEE: a read-only key can still name any namespace and read it.
+	ReadOnly bool `json:"read_only"`
+
 	// Settings Per-key behavioral settings override; fields left unset inherit the server's global defaults.
 	Settings *ClientSettings `json:"settings,omitempty"`
 
@@ -704,6 +707,9 @@ type ApiKeyWithSecret struct {
 	// Home Bound home namespace; omitted/empty means unbound.
 	Home *string `json:"home,omitempty"`
 	Name string  `json:"name"`
+
+	// ReadOnly Whether this key is a read-only credential: it may issue reads (GET/HEAD, plus the read-shaped POSTs /v1/search, /v1/answer and /v1/handshake) and every mutating request is refused with 403, across both the REST and MCP surfaces. Independent of admin — an admin key that is also read_only may enumerate keys but not change them. Note this bounds what the key may CHANGE, not what it may SEE: a read-only key can still name any namespace and read it.
+	ReadOnly bool `json:"read_only"`
 
 	// Secret The plaintext credential, shown exactly once, here — it is never stored (only its SHA-256 hash is) and cannot be recovered or displayed again.
 	Secret string `json:"secret"`
@@ -786,6 +792,9 @@ type CallerIdentity struct {
 
 	// KeyName Name of the API key that authenticated the request; absent for the admin key or dev mode (no named principal).
 	KeyName *string `json:"key_name,omitempty"`
+
+	// ReadOnly Effective read-only capability: true only for a named key with read_only=true. False for the admin env key and dev mode, which authenticate with no named principal and so carry no capability bits. When true, every mutating request is refused with 403 — clients should skip writes rather than attempt and log them.
+	ReadOnly bool `json:"read_only"`
 }
 
 // ClientSettings Behavioral/injection settings, resolved by merging built-in defaults with any server global defaults and any per-key override. Every field is optional in the schema — absent means "inherit from the next layer down" — but a fully resolved ClientSettings (as returned by /v1/handshake, /v1/self, and GET /v1/settings/defaults) always carries every field.
@@ -914,6 +923,9 @@ type CreateApiKeyRequest struct {
 	// Home Bind the key to a home namespace.
 	Home *string `json:"home,omitempty"`
 	Name string  `json:"name"`
+
+	// ReadOnly Create the key as a read-only credential (see ApiKey.read_only). Defaults to false — a key that may write.
+	ReadOnly *bool `json:"read_only,omitempty"`
 }
 
 // DedupReport defines model for DedupReport.
@@ -1538,6 +1550,9 @@ type UpdateApiKeyRequest struct {
 	// Home Omit to leave the current binding unchanged; an explicit empty string clears it.
 	Home *string `json:"home,omitempty"`
 
+	// ReadOnly Omit to leave the current read-only capability unchanged; impose it with true, lift it with false. A named key cannot impose read_only on itself (read_only=true targeting the key that authenticated the request) — that returns 409, because a read-only credential can no longer reach this endpoint to undo it; use the admin env key, another admin key, or the CLI.
+	ReadOnly *bool `json:"read_only,omitempty"`
+
 	// Settings Omit to leave the key's settings override unchanged; present fields replace the corresponding stored value (fields left unset within it continue to inherit the server's global defaults).
 	Settings *ClientSettings `json:"settings,omitempty"`
 }
@@ -1955,7 +1970,7 @@ type ServerInterface interface {
 	// Resolve namespace, identity, and behavioral settings from client-supplied project facts
 	// (POST /v1/handshake)
 	Handshake(w http.ResponseWriter, r *http.Request)
-	// List API keys (name/home/default namespace/created/disabled/admin/source — never a secret or hash)
+	// List API keys (name/home/default namespace/created/disabled/admin/read_only/source — never a secret or hash)
 	// (GET /v1/keys)
 	ListApiKeys(w http.ResponseWriter, r *http.Request)
 	// Create a new API key, returning its secret exactly once
@@ -1964,7 +1979,7 @@ type ServerInterface interface {
 	// Delete an API key
 	// (DELETE /v1/keys/{name})
 	DeleteApiKey(w http.ResponseWriter, r *http.Request, name string)
-	// Update an API key's home namespace, default namespace, disabled state, admin capability, and/or per-key settings
+	// Update an API key's home namespace, default namespace, disabled state, admin capability, read-only capability, and/or per-key settings
 	// (PATCH /v1/keys/{name})
 	UpdateApiKey(w http.ResponseWriter, r *http.Request, name string)
 	// Rotate an API key's secret, returning the new secret exactly once
@@ -2093,7 +2108,7 @@ func (_ Unimplemented) Handshake(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// List API keys (name/home/default namespace/created/disabled/admin/source — never a secret or hash)
+// List API keys (name/home/default namespace/created/disabled/admin/read_only/source — never a secret or hash)
 // (GET /v1/keys)
 func (_ Unimplemented) ListApiKeys(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -2111,7 +2126,7 @@ func (_ Unimplemented) DeleteApiKey(w http.ResponseWriter, r *http.Request, name
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Update an API key's home namespace, default namespace, disabled state, admin capability, and/or per-key settings
+// Update an API key's home namespace, default namespace, disabled state, admin capability, read-only capability, and/or per-key settings
 // (PATCH /v1/keys/{name})
 func (_ Unimplemented) UpdateApiKey(w http.ResponseWriter, r *http.Request, name string) {
 	w.WriteHeader(http.StatusNotImplemented)

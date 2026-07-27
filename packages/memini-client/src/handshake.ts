@@ -36,6 +36,14 @@ export interface HandshakeResult {
     key_name?: string;
     home?: string;
     default_namespace?: string;
+    /**
+     * True when the credential is read-only: the server refuses every mutating
+     * request with 403, so a client should skip writes rather than attempt and
+     * log them. Optional because a server older than this field simply omits
+     * it — absent must be read as "writable", never as "skip", or a client
+     * would silently stop saving against an older server.
+     */
+    read_only?: boolean;
   };
   /** Fully resolved ClientSettings — every field present. */
   settings: Record<string, unknown>;

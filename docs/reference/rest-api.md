@@ -80,10 +80,10 @@ Requires the admin key (`MEMINI_API_KEY`). See [API keys](../api-keys.md).
 
 | Endpoint | Does |
 | --- | --- |
-| `GET /v1/keys` | List API keys (name/home/default namespace/created/disabled/admin/source — never a secret or hash) |
+| `GET /v1/keys` | List API keys (name/home/default namespace/created/disabled/admin/read_only/source — never a secret or hash) |
 | `POST /v1/keys` | Create a new API key, returning its secret exactly once |
 | `DELETE /v1/keys/{name}` | Delete an API key |
-| `PATCH /v1/keys/{name}` | Update an API key's home namespace, default namespace, disabled state, admin capability, and/or per-key settings |
+| `PATCH /v1/keys/{name}` | Update an API key's home namespace, default namespace, disabled state, admin capability, read-only capability, and/or per-key settings |
 | `POST /v1/keys/{name}/rotate` | Rotate an API key's secret, returning the new secret exactly once |
 
 ## Operational

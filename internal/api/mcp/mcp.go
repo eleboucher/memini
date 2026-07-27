@@ -181,7 +181,7 @@ const serverInstructions = "memini is persistent cross-session memory for this a
 // unauthenticated stdio/dev session — see store.Event); a receiving middleware
 // stamps (author, authorKind) onto every tool call's context via
 // service.WithActor, so all tools inherit it without threading a parameter.
-func NewServer(svc *service.Service, defaultNS, home, author, authorKind string) *mcpsdk.Server {
+func NewServer(svc *service.Service, defaultNS, home, author, authorKind string, opts ...ServerOption) *mcpsdk.Server {
 	s := mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    "memini",
 		Version: version.Version,
@@ -195,6 +195,17 @@ func NewServer(svc *service.Service, defaultNS, home, author, authorKind string)
 			return next(service.WithActor(ctx, author, authorKind), method, req)
 		}
 	})
+
+	// Authorization, when the session's credential carries it. Registered after
+	// attribution so a refused call is still attributed, and only when needed so
+	// an ordinary session pays nothing for it.
+	var cfg serverOpts
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if cfg.readOnly {
+		s.AddReceivingMiddleware(readOnlyMiddleware)
+	}
 
 	h := &tools{svc: svc, defaultNS: defaultNS, defaultHome: home, defaultAuthor: author}
 
@@ -432,7 +443,7 @@ func HTTPHandlerWithAuth(svc *service.Service, nsHeader, defaultNS, homeHeader s
 		} else if strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")) != "" {
 			kind = "env"
 		}
-		return NewServer(svc, ns, home, p.Name, kind)
+		return NewServer(svc, ns, home, p.Name, kind, WithReadOnly(p.ReadOnly))
 	}, nil)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")

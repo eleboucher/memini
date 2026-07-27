@@ -35,6 +35,12 @@ type fileKeyEntry struct {
 	// Admin marks this key as an admin credential (store.APIKey.Admin's doc);
 	// defaults to false when omitted.
 	Admin bool `yaml:"admin"`
+	// ReadOnly marks this key as a read-only credential (store.APIKey.ReadOnly's
+	// doc); defaults to false when omitted, so an existing file keeps every key
+	// read-write across the upgrade. This file is the primary provisioning path
+	// for an unattended credential (a mounted Secret in CI), which is why the
+	// capability has to be expressible declaratively and not only over the API.
+	ReadOnly bool `yaml:"read_only"`
 	// Settings is an optional per-key ClientSettings override (config-handshake
 	// redesign), decoded as a generic map here and bridged to the JSON-tagged
 	// store.ClientSettings in validateFileKeyEntry — see clientSettingsFromYAML
@@ -171,6 +177,7 @@ func validateFileKeyEntry(idx int, e fileKeyEntry) (store.APIKey, error) {
 		DefaultNS: defNS,
 		Disabled:  e.Disabled,
 		Admin:     e.Admin,
+		ReadOnly:  e.ReadOnly,
 		Settings:  settings,
 	}, nil
 }

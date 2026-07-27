@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 import { LocationProvider, Router, Route, useLocation } from 'preact-iso'
-import { apiToken, identity, serverWarning, theme } from './store'
+import { apiToken, identity, readOnlySession, serverWarning, theme } from './store'
 import { verifyToken, ApiError } from './api'
 import { Login } from './views/Login'
 import { NamespaceSelect } from './components/NamespaceSelect'
@@ -167,6 +167,18 @@ function Shell() {
               title="No auth configured on the server — anyone who can reach it has full access. Create an admin API key to lock it down."
             >
               no auth
+            </span>
+          )}
+          {/* The signed-in key cannot write. Persistent for the same reason the
+              dev-mode chip is: it is a standing property of the session, not an
+              event, and it is the one piece of context that explains why every
+              write control on every view is disabled. */}
+          {readOnlySession.value && (
+            <span
+              class="chip limited"
+              title="This API key is read-only — it can read everything it could before, but the server refuses every write. Sign in with a read-write key to make changes."
+            >
+              read-only
             </span>
           )}
           <NamespaceSelect />

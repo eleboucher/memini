@@ -158,6 +158,13 @@ function detailChips(ev: ActivityEvent): { label: string; title?: string; warn?:
     if (typeof d.admin === 'boolean') {
       chips.push({ label: d.admin ? 'admin granted' : 'admin revoked', title: 'Admin capability change', warn: true })
     }
+    if (typeof d.read_only === 'boolean') {
+      chips.push({
+        label: d.read_only ? 'read-only imposed' : 'read-only lifted',
+        title: 'Read-only capability change',
+        warn: true,
+      })
+    }
   }
 
   return chips

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import { createPortal } from 'preact/compat'
 import type { Memory } from '../types'
 import { api } from '../api'
-import { refresh } from '../store'
+import { refresh, readOnlySession, READ_ONLY_HINT } from '../store'
 import { TierBadge } from './TierBadge'
 import { MemoryTypeBadge } from './MemoryTypeBadge'
 import {
@@ -161,8 +161,9 @@ export function MemoryDrawer({ memory: m, onClose, wide, from, fromNs }: Props) 
           <button
             class={`icon-btn ${armed ? 'danger-on' : ''}`}
             aria-label={armed ? 'Confirm delete' : 'Forget memory'}
+            title={readOnlySession.value ? READ_ONLY_HINT : undefined}
             onClick={del}
-            disabled={deleting}
+            disabled={deleting || readOnlySession.value}
           >
             <IconTrash />
           </button>
@@ -286,7 +287,8 @@ export function MemoryDrawer({ memory: m, onClose, wide, from, fromNs }: Props) 
             <button
               class="btn primary"
               onClick={reassign}
-              disabled={reassigning || reassignTo.trim().length === 0}
+              title={readOnlySession.value ? READ_ONLY_HINT : undefined}
+              disabled={reassigning || reassignTo.trim().length === 0 || readOnlySession.value}
             >
               Reassign
             </button>

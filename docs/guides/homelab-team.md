@@ -124,9 +124,10 @@ bare `memini key add kit` never silently demotes or promotes; pass `--admin` /
 `--admin=false` to change it).
 
 Two rules that bite people, both covered in full in
-[api-keys.md](../api-keys.md): a key is **identity, not authorization** (any valid
-key can read or write any namespace, so key bindings are convenience, not a
-fence), and a key's bound `home` **beats** the `X-Memini-Home` header while its
+[api-keys.md](../api-keys.md): a key is **identity, not isolation** (any valid key
+can read any namespace, so key bindings are convenience, not a fence — and while
+`--read-only` stops a key writing, nothing stops it reading), and a key's bound
+`home` **beats** the `X-Memini-Home` header while its
 `default_namespace` **loses** to the `X-Memini-Namespace` header. Home is who you
 are; namespace is where you are working.
 

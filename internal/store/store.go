@@ -837,6 +837,19 @@ type APIKey struct {
 	// capability through storage and auth. Preserved by rotation, same as
 	// every other field CLI/REST rotation does not explicitly change.
 	Admin bool
+	// ReadOnly marks this key as a read-only credential, the second
+	// authorization bit and a sibling to Admin above. It denies every mutating
+	// operation across both HTTP surfaces (REST and MCP) while leaving reads
+	// untouched — the enforcement itself lives at the API edge, not here; this
+	// field only carries the capability through storage and auth. It is
+	// INDEPENDENT of Admin: admin+read_only is a legitimate combination (an
+	// auditor who may enumerate keys but mutate nothing). Preserved by
+	// rotation, same as every other field CLI/REST rotation does not explicitly
+	// change — a rotation that dropped it would silently grant write access.
+	//
+	// Note this is "cannot mutate", not "cannot see": a read-only key can still
+	// name any namespace it likes and read it. Read scoping is a separate axis.
+	ReadOnly bool
 	// Settings is this key's per-key ClientSettings override, merged over the
 	// server's global defaults (ClientSettingsStore) and the built-in
 	// defaults (DefaultClientSettings) by MergeClientSettings. The zero value

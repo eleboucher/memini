@@ -3,47 +3,63 @@
 memini supports multiple named API keys, each optionally bound to a **home**
 namespace (identity) and a **default** namespace (context), instead of a
 single shared bearer token. This doc covers what a key is, the **admin
-attribute** that gates key management, how the two namespace bindings differ,
-the secret lifecycle, the declarative file format, bootstrap and lockout
-behavior, and attribution. If you are setting up a team from scratch, the
-task-oriented [access control guide](guides/access-control.md) walks the whole
-thing end to end; this page is the reference it builds on. It's orthogonal to
+attribute** that gates key management, the **read-only attribute** that refuses
+every write, how the two namespace bindings differ, the secret lifecycle, the
+declarative file format, bootstrap and lockout behavior, and attribution. If you
+are setting up a team from scratch, the task-oriented
+[access control guide](guides/access-control.md) walks the whole thing end to
+end; this page is the reference it builds on. It's orthogonal to
 [scopes.md](scopes.md) (how a namespace's read set is composed once a
 request's namespace/home are resolved — a key's bindings are one of the
 inputs to that resolution) and to [tiers.md](tiers.md) (what a memory's tier
 means, unaffected by which key wrote it).
 
-## Keys are identity, not authorization
+## Keys are identity, not isolation
 
 A memini API key answers "who is this caller" (a name, plus optional home and
-default namespace bindings) — it does **not** scope what that caller can read
-or write. Any valid key — admin, named, or file-sourced — can read or write
-any namespace, the same as the single shared `MEMINI_API_KEY` token always
-could. Binding a key to a home namespace makes memini use that namespace by
-default for `visibility:"personal"` writes and the read cascade's home leg;
-it is a convenience default, not a fence. If you need hard namespace
-isolation between teams, that's a deployment-topology decision (separate
-memini instances/stores), not something an API key's bindings enforce.
+default namespace bindings) — it does **not** scope which namespaces that caller
+can reach. Any valid key — admin, named, or file-sourced — can read **any**
+namespace, the same as the single shared `MEMINI_API_KEY` token always could.
+Binding a key to a home namespace makes memini use that namespace by default for
+`visibility:"personal"` writes and the read cascade's home leg; it is a
+convenience default, not a fence. If you need hard namespace isolation between
+teams, that's a deployment-topology decision (separate memini instances/stores),
+not something an API key's bindings enforce.
 
-There is exactly one authorization bit a key carries, and it is deliberately
-narrow: the **admin attribute**. It gates key management (`/v1/keys` CRUD) and
-the server-wide settings defaults (`/v1/settings/defaults`), and nothing else.
-An admin key reads and writes namespaces on exactly the same terms as any other
-key; a non-admin key is blocked only from those two surfaces. See
-[The admin attribute](#the-admin-attribute) below for the full model.
+A key carries exactly **two** authorization bits, both deliberately narrow, and
+both orthogonal to the namespace bindings above:
+
+| Bit         | What it changes                                                                                                             | Default |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------- | ------- |
+| `admin`     | Unlocks key management (`/v1/keys` CRUD) and the server-wide settings defaults (`/v1/settings/defaults`), and nothing else. | `false` |
+| `read_only` | Refuses **every** mutating request, across both the REST and MCP surfaces. Reads are untouched.                             | `false` |
+
+They are independent, and the combination is meaningful: an `admin` +
+`read_only` key is an auditor who can enumerate keys and inspect server defaults
+but change neither. See [The admin attribute](#the-admin-attribute) and
+[The read-only attribute](#the-read-only-attribute) for the full models.
+
+> [!WARNING]
+> `read_only` bounds what a key can **change**, not what it can **see**. A
+> read-only key can still send any `X-Memini-Namespace` it likes and read every
+> namespace on the server. For an unattended agent running against an untrusted
+> branch, that reading surface is the thing to think about — read-only removes
+> the risk of it corrupting your memory, not the risk of it seeing something.
+> Restricting what a credential can read is a deployment-topology decision, the
+> same as team isolation above.
 
 ## Three kinds of key
 
 A credential comes from one of three **sources**. The source decides how a key
-is created and whether it can change at runtime. Whether a key is an **admin**
-(the next section) is a separate attribute, orthogonal to its source: a named
-key or a file key can be an admin, and the env key always is.
+is created and whether it can change at runtime. The two authorization bits are
+separate attributes, orthogonal to the source: a named key or a file key can be
+an admin and/or read-only, and the env key is always admin and never read-only.
 
-| Kind              | Configured via                                                     | Mutable via API/CLI?                                    | Admin?                   | Typical use                                                                   |
-| ----------------- | ------------------------------------------------------------------ | ------------------------------------------------------- | ------------------------ | ----------------------------------------------------------------------------- |
-| Env (break-glass) | `MEMINI_API_KEY` env var                                           | n/a (one shared value)                                  | Always                   | The operator's always-on recovery credential; authenticates with no principal |
-| Named             | `memini key add` / `POST /v1/keys`, stored in the `api_keys` table | Yes: add/rotate/disable/delete, plus grant/revoke admin | Optional (`--admin`)     | Per-person or per-integration credentials, imperatively managed               |
-| File              | `MEMINI_API_KEYS_FILE` (declarative YAML), loaded once at boot     | No: immutable via the API; edit the file and restart    | Optional (`admin: true`) | GitOps-managed fleets, SOPS-encrypted secrets                                 |
+| Kind              | Configured via                                                     | Mutable via API/CLI?                                 | Admin?                   | Read-only?                   | Typical use                                                                   |
+| ----------------- | ------------------------------------------------------------------ | ---------------------------------------------------- | ------------------------ | ---------------------------- | ----------------------------------------------------------------------------- |
+| Env (break-glass) | `MEMINI_API_KEY` env var                                           | n/a (one shared value)                               | Always                   | Never                        | The operator's always-on recovery credential; authenticates with no principal |
+| Named             | `memini key add` / `POST /v1/keys`, stored in the `api_keys` table | Yes: add/rotate/disable/delete, plus flip either bit | Optional (`--admin`)     | Optional (`--read-only`)     | Per-person or per-integration credentials, imperatively managed               |
+| File              | `MEMINI_API_KEYS_FILE` (declarative YAML), loaded once at boot     | No: immutable via the API; edit the file and restart | Optional (`admin: true`) | Optional (`read_only: true`) | GitOps-managed fleets, SOPS-encrypted secrets                                 |
 
 The env key is no longer the _only_ credential that can manage other keys: any
 key with the admin attribute can. It stays special in one way that earns the
@@ -86,7 +102,8 @@ That string is deliberately different from the old `"admin key required"` so any
 out-of-tree tooling that matched the previous text fails loudly rather than
 silently mis-classifying a response. Nothing else changes for a non-admin key:
 it still reads and writes any namespace exactly as before (a key is
-[identity, not authorization](#keys-are-identity-not-authorization)).
+[identity, not isolation](#keys-are-identity-not-isolation)), unless it also
+carries [read_only](#the-read-only-attribute).
 
 ### Checking whether the current key is an admin
 
@@ -375,6 +392,142 @@ or verbose `/healthz` with its own bearer. If you run named admins and want
 key for the scraper to use. The verbose `/healthz` detail is likewise an
 operator-only view, not something a per-person admin key is meant to unlock.
 
+## The read-only attribute
+
+Every key is either **read-only** or it is not. Read-only is a boolean the server
+tracks per key (`store.APIKey.ReadOnly`, `ApiKey.read_only` on the wire), and it
+refuses every mutating request the key makes — on **both** HTTP surfaces, REST
+and MCP. Reads are entirely untouched.
+
+The case it exists for is an unattended agent: a CI job's LLM that should recall
+project context but must never write, mutate, or delete a memory. A bad write
+from a CI run is invisible until it poisons someone's recall weeks later, and
+nobody is watching the job when it happens.
+
+```console
+$ memini key add ci-agent --read-only
+Secret (save this now — it is not stored and cannot be shown again):
+7f3c…
+
+NAME      HOME  DEFAULT NS  CREATED               DISABLED  ADMIN  READ ONLY
+ci-agent  -     -           2026-07-26T22:17:29Z  false     false  true
+```
+
+A refused write returns a verbatim `403`:
+
+```json
+{
+  "error": "read-only credential: API key \"ci-agent\" has read_only=true and cannot perform mutating requests"
+}
+```
+
+### What counts as a read
+
+The gate is an **allowlist**, not a denylist. A read-only key may issue:
+
+- every `GET` and `HEAD`;
+- `POST /v1/search` and `POST /v1/answer` — queries that need a request body, so
+  they are POSTs despite mutating nothing (`/v1/answer` spends LLM tokens, but
+  spending tokens is not mutating stored state);
+- `POST /v1/handshake` — deliberately side-effect-free, and the call every client
+  makes to resolve its namespace before doing anything else. Denying it would
+  make a read-only credential unusable rather than merely unprivileged.
+
+Everything else is a write, **including any endpoint added in a future version**.
+That is the point of an allowlist: a new mutating endpoint is refused until
+someone consciously classifies it, so forgetting over-restricts (a loud 403)
+instead of silently granting write access. A spec-derived test enforces the
+classification in CI.
+
+Two consequences worth knowing:
+
+- **Dry runs are writes.** `POST /v1/namespaces/move` and `/split` are refused
+  even with `dry_run: true` — the preview posts to the mutating endpoint, so a
+  read-only key cannot preview a move either.
+- **`PUT /v1/self/settings` is a write.** A read-only key cannot change its own
+  per-key behavior settings. An admin has to do it for it.
+
+### Reads still leave a trace
+
+Serving a read still bumps the memory's access counters (`store.Reinforce`,
+which feeds ranking and episodic→durable promotion) and still appends to the
+activity log. That is internal relevance bookkeeping, not caller-facing
+mutation: **read-only bounds what the caller can change, not whether serving a
+read leaves a trace.** A read-only agent's recalls still make the memories it
+uses rank better, which is usually what you want.
+
+### On the MCP surface
+
+MCP is served on the same auth path, so the same credential behaves the same
+way. The write tools — `memory_remember`, `memory_update`, `memory_forget` —
+stay **listed** for a read-only session and are refused when called, with an
+error result the agent can read:
+
+```text
+read-only credential: this API key has read_only=true and cannot call
+"memory_remember", which modifies stored memories. Do not retry — reads
+(memory_recall, memory_briefing, memory_get, memory_list, memory_history)
+still work.
+```
+
+The refusal is an error tool _result_, not a protocol error, precisely so the
+model sees it as output and stops retrying rather than treating it as a
+transient failure.
+
+### Clients skip writes rather than collecting 403s
+
+`GET /v1/self` and `POST /v1/handshake` both report `identity.read_only`, so a
+client learns the capability in the one call it already makes. The bundled
+Claude Code / Codex plugin uses it to **skip** its capture and telemetry writes
+outright. Without that, an unattended agent posts a capture every turn, eats a
+403, and logs it to stderr forever — which reads to an operator as "memory is
+broken" rather than "this key cannot write".
+
+An older server omits the field. Clients must read absent as **writable**, never
+as "skip", or they silently stop saving against a server that predates it.
+
+### The self-guard
+
+A named key cannot make **itself** read-only — `PATCH /v1/keys/<its own name>`
+with `read_only: true` returns `409`:
+
+```json
+{
+  "error": "api key \"robin\" cannot make itself read-only; a read-only credential cannot reach this endpoint to undo it, so use the admin env key (MEMINI_API_KEY), another admin key, or `memini key add robin --read-only`"
+}
+```
+
+This is stricter than the admin self-demote guard for a reason: once the flag is
+set, the read-only gate refuses `/v1/keys` itself, so the key could never lift
+it. Going the other way — clearing `read_only` on itself — is allowed, because
+that direction is a restoration and is only reachable while the key is still
+writable.
+
+The env key and dev mode have no principal, so "self" never matches them; they
+are the escape hatch this points back at.
+
+### Rotation preserves it
+
+`memini key add <existing-name> --read-only` is not needed on a rotation: an
+omitted `--read-only` carries the stored value forward, exactly like `--admin`
+and `--disabled`. Rotating a CI credential's secret never quietly hands it write
+access back. Pass `--read-only=false` explicitly to lift the restriction.
+
+### Read-only does not imply non-admin
+
+The two bits are independent. `--admin --read-only` mints an auditor: it can
+`GET /v1/keys` and `GET /v1/settings/defaults`, and it can change neither. In the
+admin UI that session gets a persistent `read-only` chip and every write control
+disabled.
+
+### The grant/revoke activity event
+
+Imposing or lifting `read_only` writes a `settings` activity event carrying
+`{key_name, read_only}`, so the feed answers "when did this credential stop being
+able to write, and who did it". Deleting a read-only key deliberately writes
+nothing: that removes a restriction from a credential that no longer exists, so a
+`read_only: false` event would read as the opposite of what happened.
+
 ## Home binding vs default namespace: identity vs context
 
 Two fields can be set per key — `home` and `default_namespace` — and they
@@ -492,6 +645,13 @@ keys:
     secret: "correct-horse-battery-staple"
     disabled: false
 
+  # A read-only credential: it can recall everything it could before, and the
+  # server refuses its every write. This is the shape to hand an unattended
+  # agent — a CI job's LLM that should read project context but never change it.
+  - name: ci-agent
+    secret: "another-secret-from-your-secret-store"
+    read_only: true
+
   # disabled: true keeps a name+entry around (e.g. mid-rotation) without it
   # authenticating anything.
   - name: retired-bot
@@ -586,6 +746,8 @@ REST and MCP write paths.
 | `home` (per-key)              | unbound | The key's bound personal namespace — identity, overrides `X-Memini-Home`. See [Home binding vs default namespace](#home-binding-vs-default-namespace-identity-vs-context).                                                                                                                                                                                                                                                               |
 | `default_namespace` (per-key) | unset   | The namespace applied when the request sends no `X-Memini-Namespace` header — context, the header always wins. Same section as above.                                                                                                                                                                                                                                                                                                    |
 | `disabled` (per-key)          | `false` | Rejects the key outright at auth time without deleting it (e.g. incident response, mid-rotation holding pattern).                                                                                                                                                                                                                                                                                                                        |
+| `admin` (per-key)             | `false` | Unlocks `/v1/keys` CRUD and `/v1/settings/defaults`. See [The admin attribute](#the-admin-attribute).                                                                                                                                                                                                                                                                                                                                    |
+| `read_only` (per-key)         | `false` | Refuses every mutating request across REST and MCP; reads are untouched. See [The read-only attribute](#the-read-only-attribute).                                                                                                                                                                                                                                                                                                        |
 
 ## Revocation lag
 

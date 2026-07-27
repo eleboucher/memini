@@ -164,7 +164,8 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 			default_ns text NOT NULL DEFAULT '',
 			created_at timestamptz NOT NULL,
 			disabled   boolean NOT NULL DEFAULT false,
-			admin      boolean NOT NULL DEFAULT false
+			admin      boolean NOT NULL DEFAULT false,
+			read_only  boolean NOT NULL DEFAULT false
 		)`,
 		// Backfill default_ns on databases whose api_keys table predates it.
 		`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS default_ns text NOT NULL DEFAULT ''`,
@@ -174,6 +175,10 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		// api_keys.admin holds the per-key admin capability (admin-keys
 		// redesign); see store.APIKey.Admin's doc.
 		`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS admin boolean NOT NULL DEFAULT false`,
+		// api_keys.read_only holds the per-key read-only capability (see
+		// store.APIKey.ReadOnly). Defaulting to false is what keeps every
+		// pre-existing key read-write across the upgrade.
+		`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS read_only boolean NOT NULL DEFAULT false`,
 		// memory_events is the activity log (see store.EventLogStore): one row
 		// per (operation, memory), rows of one operation sharing op_id. The
 		// memory_* columns are a snapshot, not a join — they keep the feed a
@@ -1053,12 +1058,13 @@ func (s *Store) PutAPIKey(ctx context.Context, k store.APIKey) error {
 		return fmt.Errorf("postgres: marshal api key settings: %w", err)
 	}
 	_, err = tx.Exec(ctx,
-		`INSERT INTO api_keys (name, key_hash, home_ns, default_ns, created_at, disabled, settings, admin)
-		VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
+		`INSERT INTO api_keys (name, key_hash, home_ns, default_ns, created_at, disabled, settings, admin, read_only)
+		VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)
 		ON CONFLICT (name) DO UPDATE SET
 			key_hash=EXCLUDED.key_hash, home_ns=EXCLUDED.home_ns, default_ns=EXCLUDED.default_ns,
-			created_at=EXCLUDED.created_at, disabled=EXCLUDED.disabled, settings=EXCLUDED.settings, admin=EXCLUDED.admin`,
-		k.Name, k.Hash, k.HomeNS, k.DefaultNS, created, k.Disabled, string(settingsJSON), k.Admin)
+			created_at=EXCLUDED.created_at, disabled=EXCLUDED.disabled, settings=EXCLUDED.settings, admin=EXCLUDED.admin,
+			read_only=EXCLUDED.read_only`,
+		k.Name, k.Hash, k.HomeNS, k.DefaultNS, created, k.Disabled, string(settingsJSON), k.Admin, k.ReadOnly)
 	if err != nil {
 		return fmt.Errorf("postgres: put api key: %w", err)
 	}
@@ -1078,7 +1084,7 @@ func (s *Store) DeleteAPIKey(ctx context.Context, name string) (bool, error) {
 // ListAPIKeys returns every key ordered by name.
 func (s *Store) ListAPIKeys(ctx context.Context) ([]store.APIKey, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled, settings, admin FROM api_keys ORDER BY name`)
+		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled, settings, admin, read_only FROM api_keys ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: list api keys: %w", err)
 	}
@@ -1089,7 +1095,7 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]store.APIKey, error) {
 // does.
 func (s *Store) GetAPIKeyByHash(ctx context.Context, hash string) (*store.APIKey, error) {
 	row := s.pool.QueryRow(ctx,
-		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled, settings, admin FROM api_keys WHERE key_hash=$1`, hash)
+		`SELECT name, key_hash, home_ns, default_ns, created_at, disabled, settings, admin, read_only FROM api_keys WHERE key_hash=$1`, hash)
 	k, err := scanAPIKey(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

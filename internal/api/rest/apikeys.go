@@ -51,7 +51,7 @@ func requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 // row), so emitting the Go zero time would render as a nonsensical
 // "0001-01-01" in the UI rather than being recognizably absent.
 func apiKeyModel(k store.APIKey, source ApiKeySource) ApiKey {
-	out := ApiKey{Name: k.Name, Disabled: k.Disabled, Admin: k.Admin, Source: source}
+	out := ApiKey{Name: k.Name, Disabled: k.Disabled, Admin: k.Admin, ReadOnly: k.ReadOnly, Source: source}
 	if !k.CreatedAt.IsZero() {
 		out.CreatedAt = &k.CreatedAt
 	}
@@ -76,7 +76,7 @@ func apiKeyModel(k store.APIKey, source ApiKeySource) ApiKey {
 // always non-zero here — but the same nil-when-zero guard is applied for
 // consistency with apiKeyModel.
 func apiKeyWithSecretModel(k store.APIKey, source ApiKeySource, secret string) ApiKeyWithSecret {
-	out := ApiKeyWithSecret{Name: k.Name, Disabled: k.Disabled, Admin: k.Admin, Source: source, Secret: secret}
+	out := ApiKeyWithSecret{Name: k.Name, Disabled: k.Disabled, Admin: k.Admin, ReadOnly: k.ReadOnly, Source: source, Secret: secret}
 	if !k.CreatedAt.IsZero() {
 		out.CreatedAt = &k.CreatedAt
 	}
@@ -223,6 +223,7 @@ func (h *Server) CreateApiKey(w http.ResponseWriter, r *http.Request) {
 		DefaultNS: defaultNS,
 		Disabled:  deref(req.Disabled),
 		Admin:     deref(req.Admin),
+		ReadOnly:  deref(req.ReadOnly),
 		// CreatedAt intentionally left zero: PutAPIKey stamps "now" for a
 		// brand-new row (store.APIKeyStore.PutAPIKey's doc).
 	}
@@ -238,7 +239,12 @@ func (h *Server) CreateApiKey(w http.ResponseWriter, r *http.Request) {
 	// Minting an admin credential is a privileged act worth auditing, the same
 	// way a settings edit is; a plain key carries no such event.
 	if key.Admin {
-		h.logAdminFlagEvent(r.Context(), name, true)
+		h.logCapabilityEvent(r.Context(), name, eventDetailAdmin, true)
+	}
+	// Likewise for read-only: an operator auditing "when did this credential
+	// stop being able to write" needs the grant recorded, not just the revoke.
+	if key.ReadOnly {
+		h.logCapabilityEvent(r.Context(), name, eventDetailReadOnly, true)
 	}
 	stored, err := ks.GetAPIKeyByHash(r.Context(), key.Hash)
 	if err != nil {
@@ -252,13 +258,14 @@ func (h *Server) CreateApiKey(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusCreated, apiKeyWithSecretModel(*stored, Db, secret))
 }
 
-// logAdminFlagEvent records an admin-capability change as a store.EventSettings
-// activity entry (no new EventKind — same reuse as the per-key settings edit
-// above at UpdateApiKey), with detail {key_name, admin}. Called only when a
-// create grants admin or an update flips the flag, so the activity log carries
-// an audit trail of who became (or stopped being) an admin key.
-func (h *Server) logAdminFlagEvent(ctx context.Context, name string, admin bool) {
-	h.svc.LogConfigEvent(ctx, store.EventSettings, "", map[string]any{eventDetailKeyName: name, eventDetailAdmin: admin})
+// logCapabilityEvent records a per-key authorization change as a
+// store.EventSettings activity entry (no new EventKind — the same reuse as the
+// per-key settings edit at UpdateApiKey), with detail {key_name, <field>: value}
+// where field is eventDetailAdmin or eventDetailReadOnly. Called only when a
+// create grants a capability or an update flips one, so the activity log carries
+// an audit trail of every change to what a credential may do.
+func (h *Server) logCapabilityEvent(ctx context.Context, name, field string, value bool) {
+	h.svc.LogConfigEvent(ctx, store.EventSettings, "", map[string]any{eventDetailKeyName: name, field: value})
 }
 
 // UpdateApiKey implements PATCH /v1/keys/{name}: preserve-unspecified
@@ -312,6 +319,17 @@ func (h *Server) UpdateApiKey(w http.ResponseWriter, r *http.Request, name strin
 				"api key %q cannot demote or disable itself; use the admin env key (MEMINI_API_KEY) or another admin key", name))
 			return
 		}
+		// Imposing read_only on itself is the same class of self-inflicted
+		// lockout, and strictly worse to recover from: once the flag is set, the
+		// read-only gate refuses this very endpoint, so the key can never lift
+		// it. Lifting read_only from itself is allowed — that direction is a
+		// restoration, and is only reachable while the key is still writable.
+		if req.ReadOnly != nil && *req.ReadOnly {
+			httputil.Error(w, http.StatusConflict, fmt.Sprintf(
+				"api key %q cannot make itself read-only; a read-only credential cannot reach this endpoint to undo it, "+
+					"so use the admin env key (MEMINI_API_KEY), another admin key, or `memini key add %s --read-only`", name, name))
+			return
+		}
 	}
 	updated := *existing
 	if req.Home != nil {
@@ -336,10 +354,14 @@ func (h *Server) UpdateApiKey(w http.ResponseWriter, r *http.Request, name strin
 	if req.Admin != nil {
 		updated.Admin = *req.Admin
 	}
+	if req.ReadOnly != nil {
+		updated.ReadOnly = *req.ReadOnly
+	}
 	// Whether this PATCH actually flipped the admin capability (grant or
 	// revoke), used below to emit an audit event only on a real change — a
 	// no-op admin=true against an already-admin key writes nothing.
 	adminFlipped := updated.Admin != existing.Admin
+	readOnlyFlipped := updated.ReadOnly != existing.ReadOnly
 	// Settings: absent (nil) preserves the existing blob untouched (the same
 	// preserve-unspecified convention as home/default_namespace/disabled
 	// above); present REPLACES it wholesale -- full-replace, not a merge, so
@@ -374,7 +396,10 @@ func (h *Server) UpdateApiKey(w http.ResponseWriter, r *http.Request, name strin
 		h.svc.LogConfigEvent(r.Context(), store.EventSettings, "", map[string]any{eventDetailKeyName: name, eventDetailLayer: settingsSourceKey})
 	}
 	if adminFlipped {
-		h.logAdminFlagEvent(r.Context(), name, updated.Admin)
+		h.logCapabilityEvent(r.Context(), name, eventDetailAdmin, updated.Admin)
+	}
+	if readOnlyFlipped {
+		h.logCapabilityEvent(r.Context(), name, eventDetailReadOnly, updated.ReadOnly)
 	}
 	httputil.JSON(w, http.StatusOK, apiKeyModel(updated, Db))
 }
@@ -423,8 +448,13 @@ func (h *Server) DeleteApiKey(w http.ResponseWriter, r *http.Request, name strin
 		return
 	}
 	if existing != nil && existing.Admin {
-		h.logAdminFlagEvent(r.Context(), name, false)
+		h.logCapabilityEvent(r.Context(), name, eventDetailAdmin, false)
 	}
+	// Deliberately no read_only counterpart here. Deleting an admin key removes
+	// a privilege and is worth recording; deleting a read-only key removes a
+	// RESTRICTION on a credential that no longer exists, so a "read_only: false"
+	// event would read as "this key became writable" — the opposite of what
+	// happened.
 	// Invalidate immediately: deleting the last row must relax the
 	// table-emptiness reading back to dev mode right away when no admin key
 	// is configured — see apiauth.Config.Invalidate's doc. (In practice this
