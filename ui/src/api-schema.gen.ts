@@ -414,7 +414,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List API keys (name/home/default namespace/created/disabled/admin/source — never a secret or hash)
+         * List API keys (name/home/default namespace/created/disabled/admin/read_only/source — never a secret or hash)
          * @description Admin-gated: allowed for the admin env key (MEMINI_API_KEY), a named key with admin=true, or dev/bootstrap mode (auth disabled entirely — no admin key, an empty api_keys table, and no MEMINI_API_KEYS_FILE keys). A request authenticated by a non-admin named table or file key gets 403. Includes keys from both the api_keys table (source=db, mutable via this API) and the declarative MEMINI_API_KEYS_FILE (source=file, read-only here — see updateApiKey/deleteApiKey/rotateApiKey).
          */
         get: operations["listApiKeys"];
@@ -450,7 +450,7 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * Update an API key's home namespace, default namespace, disabled state, admin capability, and/or per-key settings
+         * Update an API key's home namespace, default namespace, disabled state, admin capability, read-only capability, and/or per-key settings
          * @description Admin-gated, see listApiKeys. Preserve-unspecified semantics matching `memini key add`'s rotation contract: an omitted field leaves the stored value unchanged; an explicitly passed field — including an explicit empty home/default_namespace, disabled=false, or admin=false — overrides it. A `settings` object replaces the key's per-key behavioral settings override: its present fields replace the corresponding stored values, while fields left unset within it continue to inherit the server's global defaults. 404 if no such key exists; 409 for a MEMINI_API_KEYS_FILE-sourced key (managed declaratively via that file, not this API), or when a named admin key targets ITSELF with admin=false (self-demote) or disabled=true (self-disable) — a break-glass guard, use the admin env key or another admin key instead.
          */
         patch: operations["updateApiKey"];
@@ -1142,6 +1142,8 @@ export interface components {
             disabled: boolean;
             /** @description Whether this key is an admin credential: it may reach the admin-gated surfaces (/v1/keys CRUD and /v1/settings/defaults), exactly like the admin env key (MEMINI_API_KEY). A self-guard still applies — an admin key cannot demote, disable, or delete itself over this API. */
             admin: boolean;
+            /** @description Whether this key is a read-only credential: it may issue reads (GET/HEAD, plus the read-shaped POSTs /v1/search, /v1/answer and /v1/handshake) and every mutating request is refused with 403, across both the REST and MCP surfaces. Independent of admin — an admin key that is also read_only may enumerate keys but not change them. Note this bounds what the key may CHANGE, not what it may SEE: a read-only key can still name any namespace and read it. */
+            read_only: boolean;
             source: components["schemas"]["ApiKeySource"];
             /** @description Per-key behavioral settings override; fields left unset inherit the server's global defaults. */
             settings?: components["schemas"]["ClientSettings"];
@@ -1169,6 +1171,11 @@ export interface components {
              * @default false
              */
             admin: boolean;
+            /**
+             * @description Create the key as a read-only credential (see ApiKey.read_only). Defaults to false — a key that may write.
+             * @default false
+             */
+            read_only: boolean;
         };
         UpdateApiKeyRequest: {
             /** @description Omit to leave the current binding unchanged; an explicit empty string clears it. */
@@ -1179,6 +1186,8 @@ export interface components {
             disabled?: boolean;
             /** @description Omit to leave the current admin capability unchanged; grant it with true, revoke it with false. A named admin key cannot revoke its own admin (admin=false targeting the key that authenticated the request) — that returns 409; use the admin env key or another admin key. */
             admin?: boolean;
+            /** @description Omit to leave the current read-only capability unchanged; impose it with true, lift it with false. A named key cannot impose read_only on itself (read_only=true targeting the key that authenticated the request) — that returns 409, because a read-only credential can no longer reach this endpoint to undo it; use the admin env key, another admin key, or the CLI. */
+            read_only?: boolean;
             /** @description Omit to leave the key's settings override unchanged; present fields replace the corresponding stored value (fields left unset within it continue to inherit the server's global defaults). */
             settings?: components["schemas"]["ClientSettings"];
         };
@@ -1187,6 +1196,8 @@ export interface components {
             authenticated: boolean;
             /** @description Effective admin capability: true for the admin env key, dev mode with no auth configured, and a named key with admin=true. When true the caller may reach the admin-gated surfaces (/v1/keys CRUD and /v1/settings/defaults); when false those return 403. */
             admin: boolean;
+            /** @description Effective read-only capability: true only for a named key with read_only=true. False for the admin env key and dev mode, which authenticate with no named principal and so carry no capability bits. When true, every mutating request is refused with 403 — clients should skip writes rather than attempt and log them. */
+            read_only: boolean;
             /** @description Name of the API key that authenticated the request; absent for the admin key or dev mode (no named principal). */
             key_name?: string;
             /** @description The key's bound home namespace, if any. */

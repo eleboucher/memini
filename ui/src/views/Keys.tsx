@@ -395,6 +395,10 @@ function CreateKeyForm({
         default_namespace: defaultNS.trim() || undefined,
         disabled: false,
         admin,
+        // Placeholder until the create form grows a read-only control: the
+        // generated type requires the field because the spec gives it a
+        // default, the same way it requires `admin` and `disabled`.
+        read_only: false,
       })
       setName('')
       setHome('')

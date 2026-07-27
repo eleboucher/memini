@@ -723,7 +723,7 @@ paths:
     get:
       operationId: listApiKeys
       tags: [memory]
-      summary: List API keys (name/home/default namespace/created/disabled/admin/source — never a secret or hash)
+      summary: List API keys (name/home/default namespace/created/disabled/admin/read_only/source — never a secret or hash)
       description: >
         Admin-gated: allowed for the admin env key (MEMINI_API_KEY), a named
         key with admin=true, or dev/bootstrap mode (auth disabled entirely —
@@ -777,7 +777,7 @@ paths:
     patch:
       operationId: updateApiKey
       tags: [memory]
-      summary: Update an API key's home namespace, default namespace, disabled state, admin capability, and/or per-key settings
+      summary: Update an API key's home namespace, default namespace, disabled state, admin capability, read-only capability, and/or per-key settings
       description: >
         Admin-gated, see listApiKeys. Preserve-unspecified semantics matching
         `memini key add`'s rotation contract: an omitted field leaves the
@@ -2100,7 +2100,7 @@ components:
         delete all reject a "file" key with 409.
     ApiKey:
       type: object
-      required: [name, disabled, admin, source]
+      required: [name, disabled, admin, read_only, source]
       properties:
         name: { type: string }
         home:
@@ -2127,6 +2127,16 @@ components:
             exactly like the admin env key (MEMINI_API_KEY). A self-guard
             still applies — an admin key cannot demote, disable, or delete
             itself over this API.
+        read_only:
+          type: boolean
+          description: >
+            Whether this key is a read-only credential: it may issue reads
+            (GET/HEAD, plus the read-shaped POSTs /v1/search, /v1/answer and
+            /v1/handshake) and every mutating request is refused with 403,
+            across both the REST and MCP surfaces. Independent of admin — an
+            admin key that is also read_only may enumerate keys but not change
+            them. Note this bounds what the key may CHANGE, not what it may
+            SEE: a read-only key can still name any namespace and read it.
         source: { $ref: "#/components/schemas/ApiKeySource" }
         settings:
           allOf:
@@ -2169,6 +2179,12 @@ components:
           description: >
             Create the key as an admin credential (see ApiKey.admin). Defaults
             to false — a plain key that cannot reach the admin-gated surfaces.
+        read_only:
+          type: boolean
+          default: false
+          description: >
+            Create the key as a read-only credential (see ApiKey.read_only).
+            Defaults to false — a key that may write.
     UpdateApiKeyRequest:
       type: object
       properties:
@@ -2192,6 +2208,15 @@ components:
             true, revoke it with false. A named admin key cannot revoke its own
             admin (admin=false targeting the key that authenticated the request)
             — that returns 409; use the admin env key or another admin key.
+        read_only:
+          type: boolean
+          description: >
+            Omit to leave the current read-only capability unchanged; impose it
+            with true, lift it with false. A named key cannot impose read_only
+            on itself (read_only=true targeting the key that authenticated the
+            request) — that returns 409, because a read-only credential can no
+            longer reach this endpoint to undo it; use the admin env key,
+            another admin key, or the CLI.
         settings:
           allOf:
             - $ref: "#/components/schemas/ClientSettings"
@@ -2201,7 +2226,7 @@ components:
             within it continue to inherit the server's global defaults).
     CallerIdentity:
       type: object
-      required: [authenticated, admin]
+      required: [authenticated, admin, read_only]
       description: Who the request authenticated as, independent of any resolved namespace.
       properties:
         authenticated: { type: boolean }
@@ -2212,6 +2237,14 @@ components:
             with no auth configured, and a named key with admin=true. When
             true the caller may reach the admin-gated surfaces (/v1/keys CRUD
             and /v1/settings/defaults); when false those return 403.
+        read_only:
+          type: boolean
+          description: >
+            Effective read-only capability: true only for a named key with
+            read_only=true. False for the admin env key and dev mode, which
+            authenticate with no named principal and so carry no capability
+            bits. When true, every mutating request is refused with 403 —
+            clients should skip writes rather than attempt and log them.
         key_name:
           type: string
           description: >

@@ -48,6 +48,11 @@ const eventDetailKeyName = "key_name"
 // kept here next to its sibling so apikeys.go doesn't inline the literal.
 const eventDetailAdmin = "admin"
 
+// eventDetailReadOnly is eventDetailAdmin's sibling for the read-only
+// capability: the LogConfigEvent detail key carrying the new read_only state
+// (bool) on a grant/revoke, alongside eventDetailKeyName.
+const eventDetailReadOnly = "read_only"
+
 // pinStore type-asserts the backing store to store.PinStore, the
 // optional capability the pins surface needs (keyStore/linkStore's
 // precedent). Returns false — a 501 to the caller — for a driver that predates
@@ -164,7 +169,7 @@ func principalPtr(ctx context.Context) *apiauth.Principal {
 // dev mode (no bearer) does not.
 func (h *Server) identityFor(r *http.Request) CallerIdentity {
 	if p, ok := principalFromContext(r.Context()); ok {
-		id := CallerIdentity{Authenticated: true, Admin: p.Admin}
+		id := CallerIdentity{Authenticated: true, Admin: p.Admin, ReadOnly: p.ReadOnly}
 		name := p.Name
 		id.KeyName = &name
 		if p.HomeNS != "" {
@@ -177,7 +182,10 @@ func (h *Server) identityFor(r *http.Request) CallerIdentity {
 		}
 		return id
 	}
-	return CallerIdentity{Authenticated: bearerPresent(r), Admin: true}
+	// ReadOnly is false here by construction: the env key and dev mode
+	// authenticate with no principal, so they carry no per-key capability bits
+	// and are never read-only.
+	return CallerIdentity{Authenticated: bearerPresent(r), Admin: true, ReadOnly: false}
 }
 
 // bearerPresent reports whether the request carried a non-empty bearer token —

@@ -59,6 +59,10 @@ func (h *Server) Mount(r chi.Router) {
 		// Authentication first: an unauthenticated caller gets 401, never a
 		// 400 that leaks namespace-validation behavior.
 		r.Use(h.auth.authMiddleware)
+		// Authorization second: a read-only credential's write is refused here,
+		// before attribution or namespace resolution does any work for a
+		// request that will never reach a handler.
+		r.Use(h.auth.readOnlyMiddleware)
 		// Attribution rides on the authenticated principal, so it runs right
 		// after auth and before the handlers that log activity events.
 		r.Use(h.auth.actorMiddleware)
