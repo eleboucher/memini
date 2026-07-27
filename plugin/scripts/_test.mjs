@@ -7030,3 +7030,174 @@ test("user-prompt-submit.mjs: a 400 on max_tokens strips it FIRST (newest field)
     await close();
   }
 });
+
+// ─── Read-only credential: skip writes instead of 403-ing every turn ───────
+//
+// The server refuses a read-only credential's writes with 403 regardless, so
+// none of this is a security boundary — it is noise control. Without it an
+// unattended CI agent POSTs a capture every turn, eats a 403, and logs
+// "[memini] POST /v1/memories -> 403" to stderr forever, which reads to an
+// operator as "memory is broken".
+
+test("read-only credential: writes are skipped locally, reads still go out", async () => {
+  const seen = [];
+  const { url, close } = await startMockServer((req, res) => {
+    seen.push(req.url);
+    res.statusCode = req.url === "/v1/handshake" ? 200 : 201;
+    res.setHeader("Content-Type", "application/json");
+    if (req.url === "/v1/handshake") {
+      res.end(
+        JSON.stringify({
+          namespace: "memini",
+          namespace_source: "derived",
+          identity: { authenticated: true, admin: false, read_only: true, key_name: "ci" },
+          settings: {},
+          settings_sources: {},
+          read_set: [],
+          server: { version: "test", default_namespace: "default" },
+        }),
+      );
+      return;
+    }
+    res.end(JSON.stringify({ id: "m1" }));
+  });
+  const prevUrl = process.env.MEMINI_BASE_URL;
+  process.env.MEMINI_BASE_URL = url;
+  try {
+    const mod = await import("./_shared.mjs?cb=ro-skip-" + Date.now());
+    await mod.getSessionContext({ cwd: process.cwd(), ppid: 1, allowNetwork: "always", noPersist: true });
+
+    const wrote = await mod.postRemember("a fact the CI agent tried to save", "memini", {});
+    assert.equal(wrote, null, "a write must resolve null without touching the network");
+    assert.ok(
+      !seen.includes("/v1/memories"),
+      `no write request may leave the client; saw ${JSON.stringify(seen)}`,
+    );
+
+    // A read-shaped POST must still go out — the credential can read.
+    await mod.postJSON("/v1/search", { query: "x" }, "memini");
+    assert.ok(seen.includes("/v1/search"), `search must still be sent; saw ${JSON.stringify(seen)}`);
+  } finally {
+    if (prevUrl === undefined) delete process.env.MEMINI_BASE_URL;
+    else process.env.MEMINI_BASE_URL = prevUrl;
+    await close();
+  }
+});
+
+test("read-only credential: skipping a write logs nothing at default verbosity", async () => {
+  const { url, close } = await startMockServer((req, res) => {
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify({
+        namespace: "memini",
+        namespace_source: "derived",
+        identity: { authenticated: true, admin: false, read_only: true },
+        settings: {},
+        settings_sources: {},
+        read_set: [],
+        server: { version: "test", default_namespace: "default" },
+      }),
+    );
+  });
+  const realError = console.error;
+  const logged = [];
+  console.error = (...a) => logged.push(a.join(" "));
+  const prevUrl = process.env.MEMINI_BASE_URL;
+  const prevDebug = process.env.MEMINI_DEBUG;
+  process.env.MEMINI_BASE_URL = url;
+  delete process.env.MEMINI_DEBUG;
+  try {
+    const mod = await import("./_shared.mjs?cb=ro-quiet-" + Date.now());
+    await mod.getSessionContext({ cwd: process.cwd(), ppid: 1, allowNetwork: "always", noPersist: true });
+    await mod.postRemember("another fact", "memini", {});
+    assert.equal(
+      logged.length,
+      0,
+      `a skipped write must be silent at default verbosity; logged ${JSON.stringify(logged)}`,
+    );
+  } finally {
+    console.error = realError;
+    if (prevUrl === undefined) delete process.env.MEMINI_BASE_URL;
+    else process.env.MEMINI_BASE_URL = prevUrl;
+    if (prevDebug === undefined) delete process.env.MEMINI_DEBUG;
+    else process.env.MEMINI_DEBUG = prevDebug;
+    await close();
+  }
+});
+
+test("read-write credential: writes are sent as normal", async () => {
+  const seen = [];
+  const { url, close } = await startMockServer((req, res) => {
+    seen.push(req.url);
+    res.statusCode = req.url === "/v1/handshake" ? 200 : 201;
+    res.setHeader("Content-Type", "application/json");
+    if (req.url === "/v1/handshake") {
+      res.end(
+        JSON.stringify({
+          namespace: "memini",
+          namespace_source: "derived",
+          identity: { authenticated: true, admin: false, read_only: false },
+          settings: {},
+          settings_sources: {},
+          read_set: [],
+          server: { version: "test", default_namespace: "default" },
+        }),
+      );
+      return;
+    }
+    res.end(JSON.stringify({ id: "m1" }));
+  });
+  const prevUrl = process.env.MEMINI_BASE_URL;
+  process.env.MEMINI_BASE_URL = url;
+  try {
+    const mod = await import("./_shared.mjs?cb=rw-write-" + Date.now());
+    await mod.getSessionContext({ cwd: process.cwd(), ppid: 1, allowNetwork: "always", noPersist: true });
+    await mod.postRemember("a fact", "memini", {});
+    assert.ok(seen.includes("/v1/memories"), `write must be sent; saw ${JSON.stringify(seen)}`);
+  } finally {
+    if (prevUrl === undefined) delete process.env.MEMINI_BASE_URL;
+    else process.env.MEMINI_BASE_URL = prevUrl;
+    await close();
+  }
+});
+
+test("no handshake identity (older server): writes are NOT skipped", async () => {
+  const seen = [];
+  const { url, close } = await startMockServer((req, res) => {
+    seen.push(req.url);
+    res.statusCode = req.url === "/v1/handshake" ? 200 : 201;
+    res.setHeader("Content-Type", "application/json");
+    if (req.url === "/v1/handshake") {
+      res.end(
+        JSON.stringify({
+          namespace: "memini",
+          namespace_source: "derived",
+          identity: { authenticated: true },
+          settings: {},
+          settings_sources: {},
+          read_set: [],
+          server: { version: "test", default_namespace: "default" },
+        }),
+      );
+      return;
+    }
+    res.end(JSON.stringify({ id: "m1" }));
+  });
+  const prevUrl = process.env.MEMINI_BASE_URL;
+  process.env.MEMINI_BASE_URL = url;
+  try {
+    const mod = await import("./_shared.mjs?cb=no-identity-" + Date.now());
+    await mod.getSessionContext({ cwd: process.cwd(), ppid: 1, allowNetwork: "always", noPersist: true });
+    await mod.postRemember("a fact", "memini", {});
+    assert.ok(
+      seen.includes("/v1/memories"),
+      "an absent read_only field must mean 'writable', never 'skip' — a client that " +
+        "guessed otherwise would silently stop saving against an older server",
+    );
+  } finally {
+    if (prevUrl === undefined) delete process.env.MEMINI_BASE_URL;
+    else process.env.MEMINI_BASE_URL = prevUrl;
+    await close();
+  }
+});

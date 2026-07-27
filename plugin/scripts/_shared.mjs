@@ -182,6 +182,12 @@ export async function getSessionContext({ cwd, ppid, allowNetwork = "on-miss", t
   // MEMINI_TIMEOUT_MS > server > built-in default.
   requestTimeoutMs = setting("request_timeout_ms").value;
 
+  // Same module-level-state rationale as requestTimeoutMs above: one hook
+  // process, one session context, and getSessionContext is the documented single
+  // entry point every hook calls before any REST call. `=== true` is deliberate
+  // — a handshake that omits the field (an older server) must leave this false.
+  readOnlyCredential = hs?.identity?.read_only === true;
+
   return {
     namespace: resolved.namespace,
     source: resolved.source,
@@ -239,6 +245,35 @@ function authHeaders(extra) {
   return h;
 }
 
+// --- Read-only credential ------------------------------------------------
+//
+// Set from the handshake identity by getSessionContext. This is NOISE CONTROL,
+// not a security boundary: the server refuses a read-only credential's writes
+// with 403 no matter what this says. Skipping them here is what keeps an
+// unattended agent from POSTing a capture every turn, eating a 403, and logging
+// it to stderr forever — which reads to an operator as "memory is broken".
+//
+// Defaults to false, and a handshake that omits identity.read_only leaves it
+// false: absent means "writable", never "skip". Guessing the other way would
+// make the client silently stop saving against a server older than the field.
+let readOnlyCredential = false;
+
+// Read-shaped POSTs, mirroring isReadRequest's allowlist in
+// internal/api/rest/readonly.go. Kept in sync by hand — the cost of drifting is
+// only that a permitted read gets skipped locally (a visible loss of results),
+// never that a write escapes, because the server gate is authoritative.
+const READ_SHAPED_POSTS = new Set(["/v1/search", "/v1/answer", "/v1/handshake"]);
+
+/**
+ * Whether a POST to `path` must be skipped because this session's credential is
+ * read-only. Compares the path without query string or trailing slash.
+ */
+function skipAsReadOnly(path) {
+  if (!readOnlyCredential) return false;
+  const clean = String(path).split("?")[0].replace(/\/+$/, "");
+  return !READ_SHAPED_POSTS.has(clean);
+}
+
 /**
  * POST JSON to memini, reporting the HTTP status alongside the parsed body so
  * a caller can tell "the server rejected this request shape" (a 400 — worth
@@ -246,6 +281,14 @@ function authHeaders(extra) {
  * `json` is null on any non-2xx or error. Never throws.
  */
 async function postJSONStatus(path, body, namespace, timeoutMs = requestTimeoutMs) {
+  if (skipAsReadOnly(path)) {
+    // Deliberately silent at default verbosity: for a read-only credential this
+    // is expected steady state, and one line per turn is exactly the noise this
+    // exists to remove. Status 0 matches the transport-failure shape callers
+    // already handle, so no caller needs to learn a new outcome.
+    if (DEBUG) console.error(`[memini] skipping POST ${path}: read-only credential`);
+    return { status: 0, json: null };
+  }
   try {
     assertBearerTransportSafe(boot.baseUrl, boot.apiKey);
     const res = await fetch(`${boot.baseUrl}${path}`, {
@@ -541,6 +584,14 @@ export const INJECTED_BEACON_TIMEOUT_MS = 500;
  */
 export async function postInjected(report, { namespace, timeoutMs = INJECTED_BEACON_TIMEOUT_MS } = {}) {
   if (!report || !report.session_id) return;
+  // /v1/activity/injected is a write, and this helper builds its own fetch
+  // rather than going through postJSONStatus, so it needs the gate explicitly.
+  // Telemetry is the most per-turn-chatty write there is, which makes it the
+  // single biggest source of 403 noise for a read-only credential.
+  if (skipAsReadOnly("/v1/activity/injected")) {
+    if (DEBUG) console.error("[memini] skipping POST /v1/activity/injected: read-only credential");
+    return;
+  }
   const suppressedAny =
     report.suppressed && Object.values(report.suppressed).some((v) => Number.isFinite(v) && v > 0);
   if ((!Array.isArray(report.injected_ids) || report.injected_ids.length === 0) && !suppressedAny) return;
