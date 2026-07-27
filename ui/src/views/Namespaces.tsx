@@ -1,7 +1,7 @@
 import { useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import { api } from '../api'
-import { namespace, refreshNonce, refresh } from '../store'
+import { namespace, refreshNonce, refresh, readOnlySession, READ_ONLY_HINT } from '../store'
 import { useAsync } from '../hooks'
 import { TIERS, type Stats } from '../types'
 import { tierColor, relTime, num, nsTree, type NsNode } from '../util'
@@ -424,8 +424,9 @@ function Pod({
           <button
             class={`icon-btn pod-del-btn ${armed ? 'danger-on' : ''}`}
             aria-label={armed ? 'Confirm delete' : `Delete ${name}`}
+            title={readOnlySession.value ? READ_ONLY_HINT : undefined}
             onClick={del}
-            disabled={deleting}
+            disabled={deleting || readOnlySession.value}
           >
             <IconTrash />
           </button>

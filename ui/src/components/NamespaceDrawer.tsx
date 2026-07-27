@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { createPortal } from 'preact/compat'
 import { api } from '../api'
-import { namespace, refresh } from '../store'
+import { namespace, refresh, readOnlySession, READ_ONLY_HINT } from '../store'
 import type { RenamespaceReport } from '../types'
 import { IconClose, IconRefresh } from '../icons'
 
@@ -101,11 +101,21 @@ function MoveSection({ name, onDone, initialTo }: { name: string; onDone: () => 
         style={{ width: '100%', marginBottom: '10px' }}
       />
       <div style={{ display: 'flex', gap: '8px' }}>
-        <button class="btn" onClick={() => run(true)} disabled={!canRun}>
+        <button
+          class="btn"
+          onClick={() => run(true)}
+          title={readOnlySession.value ? READ_ONLY_HINT : undefined}
+          disabled={!canRun || readOnlySession.value}
+        >
           {busy ? <span class="spinner" style={{ width: '14px', height: '14px' }} /> : <IconRefresh />}
           Preview
         </button>
-        <button class="btn primary" onClick={() => run(false)} disabled={!canRun}>
+        <button
+          class="btn primary"
+          onClick={() => run(false)}
+          title={readOnlySession.value ? READ_ONLY_HINT : undefined}
+          disabled={!canRun || readOnlySession.value}
+        >
           Move
         </button>
       </div>
@@ -160,11 +170,21 @@ function SplitSection({ name, onDone }: { name: string; onDone: () => void }) {
         style={{ width: '100%', marginBottom: '10px' }}
       />
       <div style={{ display: 'flex', gap: '8px' }}>
-        <button class="btn" onClick={() => run(true)} disabled={busy}>
+        <button
+          class="btn"
+          onClick={() => run(true)}
+          title={readOnlySession.value ? READ_ONLY_HINT : undefined}
+          disabled={busy || readOnlySession.value}
+        >
           {busy ? <span class="spinner" style={{ width: '14px', height: '14px' }} /> : <IconRefresh />}
           Preview
         </button>
-        <button class="btn primary" onClick={() => run(false)} disabled={busy}>
+        <button
+          class="btn primary"
+          onClick={() => run(false)}
+          title={readOnlySession.value ? READ_ONLY_HINT : undefined}
+          disabled={busy || readOnlySession.value}
+        >
           Split
         </button>
       </div>

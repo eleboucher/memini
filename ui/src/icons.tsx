@@ -82,6 +82,16 @@ export const IconKey = base([
   <circle cx="8" cy="15" r="4.5" />,
   <path d="m11.5 11.5 8-8M16.5 6.5 19 9M14 9l2 2" />,
 ])
+/** Read-only capability toggle. The pair shows the ACTION, not the state:
+    IconLock offers "make read-only", IconUnlock offers "allow writes". */
+export const IconLock = base([
+  <rect x="3.5" y="11" width="17" height="10.5" rx="2" />,
+  <path d="M7.5 11V7a4.5 4.5 0 0 1 9 0v4" />,
+])
+export const IconUnlock = base([
+  <rect x="3.5" y="11" width="17" height="10.5" rx="2" />,
+  <path d="M7.5 11V7a4.5 4.5 0 0 1 8.9-1" />,
+])
 export const IconMoon = base([<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" />])
 export const IconSun = base([
   <circle cx="12" cy="12" r="4" />,

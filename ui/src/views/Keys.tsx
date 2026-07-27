@@ -1,11 +1,11 @@
 import { useState } from 'preact/hooks'
 import { api } from '../api'
-import { apiToken, identity } from '../store'
+import { apiToken, identity, readOnlySession, READ_ONLY_HINT } from '../store'
 import { useAsync } from '../hooks'
 import type { ApiKey } from '../types'
 import { Loading, ErrorBanner, Empty } from '../components/States'
 import { SettingsEditor } from '../components/SettingsEditor'
-import { IconKey, IconTrash, IconRefresh, IconCopy, IconCheck, IconChevron } from '../icons'
+import { IconKey, IconTrash, IconRefresh, IconCopy, IconCheck, IconChevron, IconLock, IconUnlock } from '../icons'
 import { fmtDate } from '../util'
 
 // Keys manages the REST API-key surface (K3b): a list of every key — both
@@ -178,6 +178,23 @@ function KeyRow({ k, globalDefaults, onChanged, onError, onSecret }: RowProps) {
     }
   }
 
+  const toggleReadOnly = async () => {
+    setBusy(true)
+    onError(null)
+    try {
+      // Imposing read-only on one's OWN key returns 409 (the server's
+      // self-guard: a read-only credential can no longer reach this endpoint to
+      // undo it). Surfaced through the shared error path like any other
+      // mutation failure.
+      await api.updateKey(k.name, { read_only: !k.read_only })
+      onChanged()
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const rotate = async () => {
     setBusy(true)
     onError(null)
@@ -219,6 +236,11 @@ function KeyRow({ k, globalDefaults, onChanged, onError, onSecret }: RowProps) {
             admin
           </span>
         )}
+        {k.read_only && (
+          <span class="chip limited" title="Read-only key — may read everything, but the server refuses its every write, over both REST and MCP">
+            read-only
+          </span>
+        )}
         <button
           class="icon-btn"
           aria-label={expanded ? `Collapse settings for ${k.name}` : `Edit settings for ${k.name}`}
@@ -237,30 +259,52 @@ function KeyRow({ k, globalDefaults, onChanged, onError, onSecret }: RowProps) {
               class="btn ghost"
               type="button"
               aria-label={k.admin ? `Revoke admin from ${k.name}` : `Grant admin to ${k.name}`}
-              title={k.admin ? 'Revoke admin capability' : 'Grant admin capability'}
+              title={readOnlySession.value ? READ_ONLY_HINT : k.admin ? 'Revoke admin capability' : 'Grant admin capability'}
               onClick={toggleAdmin}
-              disabled={busy}
+              disabled={busy || readOnlySession.value}
             >
               {k.admin ? 'Revoke admin' : 'Grant admin'}
             </button>
             <button
               class="icon-btn"
+              type="button"
+              aria-label={k.read_only ? `Allow ${k.name} to write` : `Make ${k.name} read-only`}
+              title={
+                readOnlySession.value
+                  ? READ_ONLY_HINT
+                  : k.read_only
+                    ? 'Lift the read-only restriction'
+                    : 'Refuse every write from this key'
+              }
+              onClick={toggleReadOnly}
+              disabled={busy || readOnlySession.value}
+            >
+              {k.read_only ? <IconUnlock /> : <IconLock />}
+            </button>
+            <button
+              class="icon-btn"
               aria-label={k.disabled ? `Enable ${k.name}` : `Disable ${k.name}`}
-              title={k.disabled ? 'Enable' : 'Disable'}
+              title={readOnlySession.value ? READ_ONLY_HINT : k.disabled ? 'Enable' : 'Disable'}
               onClick={toggleDisabled}
-              disabled={busy}
+              disabled={busy || readOnlySession.value}
             >
               <IconCheck />
             </button>
-            <button class="icon-btn" aria-label={`Rotate secret for ${k.name}`} title="Rotate secret" onClick={rotate} disabled={busy}>
+            <button
+              class="icon-btn"
+              aria-label={`Rotate secret for ${k.name}`}
+              title={readOnlySession.value ? READ_ONLY_HINT : 'Rotate secret'}
+              onClick={rotate}
+              disabled={busy || readOnlySession.value}
+            >
               <IconRefresh />
             </button>
             <button
               class={`icon-btn ${armed ? 'danger-on' : ''}`}
               aria-label={armed ? `Confirm delete ${k.name}` : `Delete ${k.name}`}
-              title={armed ? 'Click again to confirm' : 'Delete'}
+              title={readOnlySession.value ? READ_ONLY_HINT : armed ? 'Click again to confirm' : 'Delete'}
               onClick={del}
-              disabled={busy}
+              disabled={busy || readOnlySession.value}
             >
               <IconTrash />
             </button>
@@ -380,6 +424,7 @@ function CreateKeyForm({
   const [home, setHome] = useState('')
   const [defaultNS, setDefaultNS] = useState('')
   const [admin, setAdmin] = useState(bootstrapping)
+  const [readOnly, setReadOnly] = useState(false)
   const [busy, setBusy] = useState(false)
 
   const submit = async (e: Event) => {
@@ -395,15 +440,13 @@ function CreateKeyForm({
         default_namespace: defaultNS.trim() || undefined,
         disabled: false,
         admin,
-        // Placeholder until the create form grows a read-only control: the
-        // generated type requires the field because the spec gives it a
-        // default, the same way it requires `admin` and `disabled`.
-        read_only: false,
+        read_only: readOnly,
       })
       setName('')
       setHome('')
       setDefaultNS('')
       setAdmin(false)
+      setReadOnly(false)
       onCreated(created.name, created.secret)
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err))
@@ -444,7 +487,24 @@ function CreateKeyForm({
         <input type="checkbox" checked={admin} onChange={(e) => setAdmin((e.target as HTMLInputElement).checked)} />
         admin
       </label>
-      <button class="btn primary" type="submit" disabled={busy || !name.trim()}>
+      <label
+        class="hint"
+        title="Make this key read-only: it may read everything, but the server refuses its every write, over both REST and MCP. Use it for unattended agents (CI) that should recall context but never change it."
+        style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: '0 0 auto', cursor: 'pointer' }}
+      >
+        <input
+          type="checkbox"
+          checked={readOnly}
+          onChange={(e) => setReadOnly((e.target as HTMLInputElement).checked)}
+        />
+        read-only
+      </label>
+      <button
+        class="btn primary"
+        type="submit"
+        title={readOnlySession.value ? READ_ONLY_HINT : undefined}
+        disabled={busy || !name.trim() || readOnlySession.value}
+      >
         {busy && <span class="spinner" style={{ width: '14px', height: '14px' }} />}
         <IconKey />
         Create key

@@ -1,4 +1,4 @@
-import { signal, effect } from '@preact/signals'
+import { signal, effect, computed } from '@preact/signals'
 import type { CallerIdentity } from './types'
 
 export type Theme = 'ink' | 'ivory'
@@ -50,6 +50,21 @@ export const theme = signal<Theme>(initial.theme)
 // mid-session 401 in api.ts clears it). authenticated=false is dev mode (no
 // auth configured); admin drives the admin-gated views' locked states.
 export const identity = signal<CallerIdentity | null>(null)
+
+// Whether the signed-in credential is read-only: the server refuses its every
+// mutating request with 403. Write controls read this to disable themselves and
+// say why, rather than letting the operator click through to a failure.
+//
+// This is presentation only — the server is the authority, and it enforces the
+// same rule whatever the UI believes. `=== true` is deliberate: an identity that
+// predates the field (or is still resolving) must read as writable, so an older
+// server never presents a needlessly crippled UI.
+export const readOnlySession = computed(() => identity.value?.read_only === true)
+
+// One sentence, reused as the title on every control readOnlySession disables,
+// so the explanation is identical wherever the operator meets it.
+export const READ_ONLY_HINT =
+  'This API key is read-only — the server refuses every write. Sign in with a read-write key to make changes.'
 
 // Set true when a request 401s WHILE a session was live (api.ts, only when it
 // clears a previously non-null identity) — the key this browser was signed in

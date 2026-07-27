@@ -1467,6 +1467,14 @@ pre.json {
   background: color-mix(in oklab, var(--tier-semantic) 12%, transparent);
   color: color-mix(in oklab, var(--tier-semantic) 82%, var(--text));
 }
+/* Reduced-capability marker: the cool end of the tier ramp, distinct from
+   .warn's ember (a problem) and .pending's amber (an advisory). A read-only
+   credential is neither — it is a deliberate, static constraint. */
+.chip.limited {
+  border-color: color-mix(in oklab, var(--tier-working) 55%, transparent);
+  background: color-mix(in oklab, var(--tier-working) 12%, transparent);
+  color: color-mix(in oklab, var(--tier-working) 82%, var(--text));
+}
 .chip.on {
   border-color: var(--line-strong);
   color: var(--text);

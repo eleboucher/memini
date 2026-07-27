@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 import { api } from '../api'
-import { identity, refreshNonce } from '../store'
+import { identity, refreshNonce, readOnlySession, READ_ONLY_HINT } from '../store'
 import { useAsync } from '../hooks'
 import { SETTINGS_CATALOG } from '../settings-catalog.gen'
 import { SettingsEditor, formatSettingValue } from '../components/SettingsEditor'
@@ -347,7 +347,12 @@ function DefaultsTab() {
         <SettingsEditor values={explicit} placeholders={placeholders} onSet={setField} onReset={resetField} readOnly={readOnly} />
         {!readOnly && (
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginTop: '16px' }}>
-            <button class="btn primary" type="submit" disabled={saving}>
+            <button
+              class="btn primary"
+              type="submit"
+              title={readOnlySession.value ? READ_ONLY_HINT : undefined}
+              disabled={saving || readOnlySession.value}
+            >
               {saving && <span class="spinner" style={{ width: '14px', height: '14px' }} />}
               Save global defaults
             </button>
@@ -475,7 +480,12 @@ function PinRow({
           onInput={(e) => setNote((e.target as HTMLInputElement).value)}
           style={{ flex: '1 1 160px' }}
         />
-        <button class="btn primary" type="submit" disabled={busy || !namespaceVal.trim()}>
+        <button
+          class="btn primary"
+          type="submit"
+          title={readOnlySession.value ? READ_ONLY_HINT : undefined}
+          disabled={busy || !namespaceVal.trim() || readOnlySession.value}
+        >
           Save
         </button>
         <button class="btn ghost" type="button" onClick={() => setEditing(false)} disabled={busy}>
@@ -502,15 +512,21 @@ function PinRow({
       <span class="hint" style={{ flex: '1 1 140px' }}>
         {fmtDate(pin.updated_at)}
       </span>
-      <button class="btn ghost" type="button" onClick={() => setEditing(true)} disabled={busy}>
+      <button
+        class="btn ghost"
+        type="button"
+        onClick={() => setEditing(true)}
+        title={readOnlySession.value ? READ_ONLY_HINT : undefined}
+        disabled={busy || readOnlySession.value}
+      >
         Edit
       </button>
       <button
         class={`icon-btn ${armed ? 'danger-on' : ''}`}
         aria-label={armed ? `Confirm delete pin ${pin.key}` : `Delete pin ${pin.key}`}
-        title={armed ? 'Click again to confirm' : 'Delete'}
+        title={readOnlySession.value ? READ_ONLY_HINT : armed ? 'Click again to confirm' : 'Delete'}
         onClick={del}
-        disabled={busy}
+        disabled={busy || readOnlySession.value}
       >
         <IconTrash />
       </button>
@@ -585,7 +601,8 @@ function AddPinForm({ onAdded, onError }: { onAdded: () => void; onError: (e: st
       <button
         class="btn primary"
         type="submit"
-        disabled={busy || !namespaceVal.trim() || (!remoteUrl.trim() && !toplevelPath.trim())}
+        title={readOnlySession.value ? READ_ONLY_HINT : undefined}
+        disabled={busy || !namespaceVal.trim() || (!remoteUrl.trim() && !toplevelPath.trim()) || readOnlySession.value}
       >
         {busy && <span class="spinner" style={{ width: '14px', height: '14px' }} />}
         Add pin

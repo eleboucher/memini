@@ -1,6 +1,6 @@
 import { useState } from 'preact/hooks'
 import { api } from '../api'
-import { namespace, refreshNonce } from '../store'
+import { namespace, refreshNonce, readOnlySession, READ_ONLY_HINT } from '../store'
 import { useAsync } from '../hooks'
 import type { NamespaceLink, ReadSetEntryItem, ReadSetOrigin, Tier } from '../types'
 import { Loading, ErrorBanner, Empty } from '../components/States'
@@ -136,7 +136,13 @@ function LinkRow({ link, onDelete }: { link: NamespaceLink; onDelete: () => void
       </span>
       <span class="hint mono">{link.tiers?.length ? link.tiers.join(', ') : 'semantic, procedural'}</span>
       {link.note && <span class="hint">{link.note}</span>}
-      <button class="icon-btn" aria-label={`Delete link to ${link.dst}`} onClick={onDelete}>
+      <button
+        class="icon-btn"
+        aria-label={`Delete link to ${link.dst}`}
+        title={readOnlySession.value ? READ_ONLY_HINT : undefined}
+        onClick={onDelete}
+        disabled={readOnlySession.value}
+      >
         <IconTrash />
       </button>
     </div>
@@ -196,7 +202,12 @@ function AddLinkForm({ onAdded, onError }: { onAdded: () => void; onError: (e: s
         onInput={(e) => setNote((e.target as HTMLInputElement).value)}
         style={{ flex: 1, minWidth: '140px' }}
       />
-      <button class="btn primary" type="submit" disabled={busy || !dst.trim()}>
+      <button
+        class="btn primary"
+        type="submit"
+        title={readOnlySession.value ? READ_ONLY_HINT : undefined}
+        disabled={busy || !dst.trim() || readOnlySession.value}
+      >
         {busy && <span class="spinner" style={{ width: '14px', height: '14px' }} />}
         Add link
       </button>
