@@ -20,7 +20,7 @@ flags below belong to the subcommands only. See the
 | [`memini import`](#memini-import) | Bulk-load an export from another memory system |
 | [`memini key`](#memini-key) | Manage local API keys (this store's api_keys table only) |
 | [`memini key add`](#memini-key-add) | Create an API key, or rotate an existing one's secret |
-| [`memini key ls`](#memini-key-ls) | List API keys (name, home/default namespace, created, disabled, admin — never secrets or hashes) |
+| [`memini key ls`](#memini-key-ls) | List API keys (name, home/default namespace, created, disabled, admin, read-only — never secrets or hashes) |
 | [`memini key rm`](#memini-key-rm) | Delete an API key |
 | [`memini link`](#memini-link) | Manage cross-namespace read links (durable-tier recall from another namespace) |
 | [`memini link add`](#memini-link-add) | Create or replace a read link from src to dst |
@@ -131,7 +131,7 @@ memini key
 
 ## `memini key add`
 
-Create a new named API key, generating a random secret that is printed exactly once to stdout — it is never stored and cannot be recovered or shown again, so save it now. Re-running with a name that already exists ROTATES that key: a new secret is generated and the old one stops authenticating immediately, while the key's CreatedAt, home/default namespace bindings, disabled state, and admin state are all preserved unless the corresponding flag is explicitly passed (an explicit --home "" clears the binding; an explicit --disabled=false re-enables a disabled key — rotation alone never re-enables one; an explicit --admin=false demotes an admin key — rotation alone never demotes one).
+Create a new named API key, generating a random secret that is printed exactly once to stdout — it is never stored and cannot be recovered or shown again, so save it now. Re-running with a name that already exists ROTATES that key: a new secret is generated and the old one stops authenticating immediately, while the key's CreatedAt, home/default namespace bindings, disabled state, admin state, and read-only state are all preserved unless the corresponding flag is explicitly passed (an explicit --home "" clears the binding; an explicit --disabled=false re-enables a disabled key — rotation alone never re-enables one; an explicit --admin=false demotes an admin key — rotation alone never demotes one; an explicit --read-only=false lifts the read-only restriction — rotation alone never lifts it).
 
 ```
 memini key add <name> [flags]
@@ -143,10 +143,11 @@ memini key add <name> [flags]
 | `--default-namespace` |  | namespace applied when a request presents this key with no explicit namespace header |
 | `--disabled` |  | create the key already disabled |
 | `--home` |  | bind the key to a home namespace (default: unbound) |
+| `--read-only` |  | make the key read-only: it may read but every mutating request is refused, over both REST and MCP |
 
 ## `memini key ls`
 
-List API keys (name, home/default namespace, created, disabled, admin — never secrets or hashes)
+List API keys (name, home/default namespace, created, disabled, admin, read-only — never secrets or hashes)
 
 ```
 memini key ls

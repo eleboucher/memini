@@ -20,6 +20,7 @@ var (
 	keyDefaultNS string
 	keyDisabled  bool
 	keyAdmin     bool
+	keyReadOnly  bool
 )
 
 var keyCmd = &cobra.Command{
@@ -37,11 +38,12 @@ var keyAddCmd = &cobra.Command{
 		"once to stdout — it is never stored and cannot be recovered or shown again, so " +
 		"save it now. Re-running with a name that already exists ROTATES that key: a new " +
 		"secret is generated and the old one stops authenticating immediately, while the " +
-		"key's CreatedAt, home/default namespace bindings, disabled state, and admin state " +
-		"are all preserved unless the corresponding flag is explicitly passed (an explicit " +
-		"--home \"\" clears the binding; an explicit --disabled=false re-enables a " +
-		"disabled key — rotation alone never re-enables one; an explicit --admin=false " +
-		"demotes an admin key — rotation alone never demotes one).",
+		"key's CreatedAt, home/default namespace bindings, disabled state, admin state, and " +
+		"read-only state are all preserved unless the corresponding flag is explicitly " +
+		"passed (an explicit --home \"\" clears the binding; an explicit --disabled=false " +
+		"re-enables a disabled key — rotation alone never re-enables one; an explicit " +
+		"--admin=false demotes an admin key — rotation alone never demotes one; an explicit " +
+		"--read-only=false lifts the read-only restriction — rotation alone never lifts it).",
 	Args: cobra.ExactArgs(1),
 	RunE: runKeyAdd,
 }
@@ -55,7 +57,7 @@ var keyRmCmd = &cobra.Command{
 
 var keyLsCmd = &cobra.Command{
 	Use:   "ls",
-	Short: "List API keys (name, home/default namespace, created, disabled, admin — never secrets or hashes)",
+	Short: "List API keys (name, home/default namespace, created, disabled, admin, read-only — never secrets or hashes)",
 	Args:  cobra.NoArgs,
 	RunE:  runKeyLs,
 }
@@ -68,6 +70,8 @@ func init() {
 	keyAddCmd.Flags().BoolVar(&keyDisabled, "disabled", false, "create the key already disabled")
 	keyAddCmd.Flags().BoolVar(&keyAdmin, "admin", false,
 		"grant the key admin (the /v1/keys and /v1/settings/defaults surfaces, gated at the REST layer)")
+	keyAddCmd.Flags().BoolVar(&keyReadOnly, "read-only", false,
+		"make the key read-only: it may read but every mutating request is refused, over both REST and MCP")
 
 	keyCmd.AddCommand(keyAddCmd, keyRmCmd, keyLsCmd)
 	rootCmd.AddCommand(keyCmd)
@@ -120,6 +124,7 @@ type keyAddOpts struct {
 	DefaultNS *string
 	Disabled  *bool
 	Admin     *bool
+	ReadOnly  *bool
 }
 
 // addAPIKey validates home/defaultNS, generates a fresh secret, and upserts
@@ -130,7 +135,8 @@ type keyAddOpts struct {
 // existing row — most critically Disabled: a key disabled during incident
 // response must not be silently re-enabled by a later secret rotation. Admin
 // carries forward the same way: rotating an admin key never silently demotes
-// it, and rotating a non-admin key never silently promotes it. Settings has no
+// it, and rotating a non-admin key never silently promotes it. ReadOnly likewise
+// — rotating a read-only CI credential must never quietly hand it write access. Settings has no
 // CLI flag at all, so it is ALWAYS carried forward from the existing row — the
 // store upsert overwrites settings=excluded.settings, so omitting it here would
 // wipe a key's per-key Settings on every rotation.
@@ -147,7 +153,7 @@ func addAPIKey(ctx context.Context, ks store.APIKeyStore, name string, opts keyA
 	// Looked up via ListAPIKeys + filter rather than a new by-name store
 	// method: keys are few, and the store contract stays as-is.
 	var home, defaultNS string
-	var disabled, admin bool
+	var disabled, admin, readOnly bool
 	var settings store.ClientSettings
 	existing, err := findAPIKeyByName(ctx, ks, name)
 	if err != nil {
@@ -155,6 +161,7 @@ func addAPIKey(ctx context.Context, ks store.APIKeyStore, name string, opts keyA
 	}
 	if existing != nil {
 		home, defaultNS, disabled, admin = existing.HomeNS, existing.DefaultNS, existing.Disabled, existing.Admin
+		readOnly = existing.ReadOnly
 		// Settings has no --flag here, so it is always carried forward from the
 		// existing row: the store upsert overwrites settings=excluded.settings,
 		// so leaving this at the zero value would silently wipe a key's per-key
@@ -181,6 +188,9 @@ func addAPIKey(ctx context.Context, ks store.APIKeyStore, name string, opts keyA
 	if opts.Admin != nil {
 		admin = *opts.Admin
 	}
+	if opts.ReadOnly != nil {
+		readOnly = *opts.ReadOnly
+	}
 	secret, err := generateAPIKeySecret()
 	if err != nil {
 		return "", store.APIKey{}, err
@@ -192,6 +202,7 @@ func addAPIKey(ctx context.Context, ks store.APIKeyStore, name string, opts keyA
 		DefaultNS: defaultNS,
 		Disabled:  disabled,
 		Admin:     admin,
+		ReadOnly:  readOnly,
 		Settings:  settings,
 		// CreatedAt intentionally left zero: PutAPIKey stamps "now" for a
 		// brand-new row and preserves the existing CreatedAt on rotation.
@@ -259,6 +270,9 @@ func runKeyAdd(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("admin") {
 			opts.Admin = &keyAdmin
 		}
+		if cmd.Flags().Changed("read-only") {
+			opts.ReadOnly = &keyReadOnly
+		}
 		secret, key, err := addAPIKey(cmd.Context(), ks, args[0], opts)
 		if err != nil {
 			return err
@@ -313,10 +327,11 @@ func printAPIKeys(out io.Writer, keys []store.APIKey) {
 		return
 	}
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tHOME\tDEFAULT NS\tCREATED\tDISABLED\tADMIN") //nolint:errcheck
+	fmt.Fprintln(tw, "NAME\tHOME\tDEFAULT NS\tCREATED\tDISABLED\tADMIN\tREAD ONLY") //nolint:errcheck
 	for _, k := range keys {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%t\t%t\n", //nolint:errcheck
-			k.Name, dashIfEmpty(k.HomeNS), dashIfEmpty(k.DefaultNS), k.CreatedAt.Format(time.RFC3339), k.Disabled, k.Admin)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%t\t%t\t%t\n", //nolint:errcheck
+			k.Name, dashIfEmpty(k.HomeNS), dashIfEmpty(k.DefaultNS), k.CreatedAt.Format(time.RFC3339),
+			k.Disabled, k.Admin, k.ReadOnly)
 	}
 	_ = tw.Flush()
 }
