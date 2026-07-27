@@ -150,6 +150,10 @@ rendered as a ConfigMap for the grafana-operator.
 in-process sweeper already handles decay. Enable it only if you want an explicit,
 scheduled `POST /v1/fsck` on top (hourly, by default).
 
+The token it uses must **not** be read-only: `POST /v1/fsck` is a mutating
+maintenance call, so a read-only credential gets a `403` and the CronJob fails
+every run. See [api-keys.md](../api-keys.md#the-read-only-attribute).
+
 If you do, the fsck container needs `MEMINI_API_KEY` in its own env, pointing at
 the same Secret as the main container. It uses curl's `--variable` /
 `--expand-header` so the token never appears in `argv`.

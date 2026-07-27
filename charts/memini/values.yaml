@@ -206,6 +206,12 @@ controllers:
   # loaded once at boot (fail-loud validation). Mount the YAML from a Secret
   # via the `persistence.api-keys` block below (it needs `enabled: true` AND
   # this env var; either one alone does nothing) and point the server at it.
+  # Give unattended agents `read_only: true` so the server refuses their every
+  # write (docs/api-keys.md#the-read-only-attribute):
+  #   keys:
+  #     - name: ci-agent
+  #       secret: "…from your secret store…"
+  #       read_only: true
   # MEMINI_API_KEYS_FILE: /etc/memini/api-keys.yaml
 
   # -- Periodic fsck CronJob. Disabled by default — the in-process sweeper

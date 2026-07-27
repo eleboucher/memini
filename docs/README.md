@@ -35,8 +35,10 @@ Read these when you want to know why memini behaves the way it does.
   page to read if recall is returning too much or too little.
 - [**Categories**](categories.md). An orthogonal topic axis, for filtering by
   what a memory is about rather than how durable it is.
-- [**API keys**](api-keys.md). Keys are identity, not authorization. Each key can
-  carry its own home and default namespace.
+- [**API keys**](api-keys.md). Keys are identity, not isolation: any key can read
+  any namespace. Each carries its own home and default namespace, plus two narrow
+  authorization bits — `admin` (manage keys and server defaults) and `read_only`
+  (refuse every write, for unattended agents).
 
 ## Guides
 

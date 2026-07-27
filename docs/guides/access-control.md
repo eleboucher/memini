@@ -130,8 +130,9 @@ $ memini key add reviewer-bot --default-namespace acme/phoenix
 ```
 
 A non-admin key is still a full read/write credential for any namespace (a key
-is [identity, not authorization](../api-keys.md#keys-are-identity-not-authorization)).
-What it cannot do is manage other keys. If it tries, it gets a verbatim `403`:
+is [identity, not isolation](../api-keys.md#keys-are-identity-not-isolation)) —
+unless you also make it [read-only](../api-keys.md#the-read-only-attribute).
+What a non-admin key cannot do is manage other keys. If it tries, it gets a verbatim `403`:
 
 ```json
 {
@@ -153,6 +154,43 @@ Two per-key bindings are worth setting on these, both covered in full in
       -H 'Content-Type: application/json' \
       -d '{"settings": {"capture_turns": false, "recall_limit": 5}}'
   ```
+
+### An unattended agent: make it read-only
+
+A CI job's LLM is the one case where "non-admin" is not enough. It runs
+unwatched, often on a branch nobody has reviewed, and a bad write is invisible
+until it poisons someone's recall weeks later. Give it a **read-only** key: it
+recalls project context and the server refuses its every write, over both REST
+and MCP.
+
+```console
+$ memini key add ci-agent --read-only --default-namespace acme
+```
+
+Point the job at it exactly like any other credential — `MEMINI_API_KEY` in the
+runner's environment is the whole integration. The agent's plugin reads
+`identity.read_only` off its handshake and simply stops attempting captures, so
+you get no per-turn 403 noise in the job log.
+
+Verify before you trust it:
+
+```console
+$ curl -sS -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8080/v1/memories \
+    -H "Authorization: Bearer $CI_TOKEN" -H 'Content-Type: application/json' \
+    -H 'X-Memini-Namespace: acme' -d '{"content":"x","tier":"semantic"}'
+403
+$ curl -sS -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8080/v1/search \
+    -H "Authorization: Bearer $CI_TOKEN" -H 'Content-Type: application/json' \
+    -H 'X-Memini-Namespace: acme' -d '{"query":"auth"}'
+200
+```
+
+> [!WARNING]
+> Read-only stops the agent **changing** your memory. It does not stop it
+> **reading** — the key can still name any namespace and read it. If the job runs
+> untrusted code, think about what is readable from that namespace tree, or give
+> CI its own memini instance. See
+> [api-keys.md](../api-keys.md#keys-are-identity-not-isolation).
 
 ## Step 4: the GitOps file-keys pattern
 
@@ -293,6 +331,13 @@ purpose-built locked states for non-admins rather than hiding. Three roles:
   signed-in key and pointing at how to get admin (sign in with an admin key, or
   mint one with `memini key add --admin`). Reads, search, activity, scopes, and
   the health tools all work. `identity.admin` is `false`.
+
+- **Read-only (any key with `read_only: true`, admin or not).** Reads everything
+  its other bits allow, changes nothing. The top bar carries a persistent
+  **read-only** chip, and every write control across Keys, Namespaces, Scopes,
+  Config and the drawers is disabled with an explanation on hover rather than
+  failing on click. An `admin` + `read_only` key is an auditor: it can list keys
+  and read server defaults, and edit neither. `identity.read_only` is `true`.
 
 - **Dev mode (no auth configured).** A fresh server with no `MEMINI_API_KEY`,
   no keys, and no keys file treats every request as an unauthenticated admin, so
