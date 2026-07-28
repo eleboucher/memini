@@ -34,8 +34,10 @@ func TestDemoteStale(t *testing.T) {
 		}
 	}
 	add("debris", old, 0.2, 0, nil, conf(0.25))                // demote: old, unused, low importance + confidence
+	add("default", old, 0.6, 0, nil, conf(0.25))               // demote: tier-seed importance is not a keep signal
 	add("used", old, 0.2, 5, nil, conf(0.25))                  // keep: recalled
 	add("important", old, 0.9, 0, nil, conf(0.25))             // keep: important
+	add("threshold", old, 0.75, 0, nil, conf(0.25))            // keep: at the importance bar
 	add("pinned", old, 0.2, 0, []string{"pinned"}, conf(0.25)) // keep: pinned
 	add("recent", now, 0.2, 0, nil, conf(0.25))                // keep: too new
 	add("legacy", old, 0.2, 0, nil, nil)                       // keep: untracked confidence = trusted
@@ -44,17 +46,19 @@ func TestDemoteStale(t *testing.T) {
 	if err != nil {
 		t.Fatalf("demote: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("demoted %d, want 1 (only debris)", n)
+	if n != 2 {
+		t.Fatalf("demoted %d, want 2 (debris + default)", n)
 	}
-	got, err := st.Get(ctx, "ns", "debris")
-	if err != nil {
-		t.Fatalf("get debris: %v", err)
+	for _, id := range []string{"debris", "default"} {
+		got, err := st.Get(ctx, "ns", id)
+		if err != nil {
+			t.Fatalf("get %s: %v", id, err)
+		}
+		if got.Tier != memory.TierEpisodic || got.ExpiresAt == nil {
+			t.Errorf("%s should be episodic with a TTL, got tier=%q expires=%v", id, got.Tier, got.ExpiresAt)
+		}
 	}
-	if got.Tier != memory.TierEpisodic || got.ExpiresAt == nil {
-		t.Errorf("debris should be episodic with a TTL, got tier=%q expires=%v", got.Tier, got.ExpiresAt)
-	}
-	for _, id := range []string{"used", "important", "pinned", "recent", "legacy"} {
+	for _, id := range []string{"used", "important", "threshold", "pinned", "recent", "legacy"} {
 		m, err := st.Get(ctx, "ns", id)
 		if err != nil {
 			t.Fatalf("get %s: %v", id, err)

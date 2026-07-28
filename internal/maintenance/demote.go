@@ -25,10 +25,11 @@ var longTermTiers = []memory.Tier{memory.TierSemantic, memory.TierProcedural}
 
 // DemoteStale demotes durable (semantic/procedural) memories that have never
 // been recalled (AccessCount 0), were last updated before olderThan, and are
-// neither highly important (>= 0.5) nor pinned, down to the episodic tier —
+// neither highly important (>= 0.75) nor pinned, down to the episodic tier —
 // giving them the episodic TTL. Unused "durable" debris (e.g. a low-quality bulk
-// import) then ages out on its own, while anything recalled even once is
-// reinforced and kept. The mirror image of promotion. Returns the count demoted.
+// import, or a default-importance fact that proved useless) then ages out on its
+// own, while anything recalled even once is reinforced and kept. The mirror
+// image of promotion. Returns the count demoted.
 func DemoteStale(ctx context.Context, st store.Store, olderThan, now time.Time) (int, error) {
 	namespaces, err := st.ListNamespaces(ctx)
 	if err != nil {
@@ -48,7 +49,9 @@ func DemoteStale(ctx context.Context, st store.Store, olderThan, now time.Time) 
 			// Anything ever recalled, marked important, explicitly trusted
 			// (corroborated/legacy memories read as fully confident), or pinned is
 			// kept — only old, unused, low-confidence durable debris demotes.
-			if m.AccessCount > 0 || m.Importance >= 0.5 {
+			// The 0.75 importance bar sits above the 0.6 tier seed, so
+			// default-importance memories are not immune to demotion.
+			if m.AccessCount > 0 || m.Importance >= 0.75 {
 				continue
 			}
 			if !m.UpdatedAt.Before(olderThan) {
