@@ -457,6 +457,19 @@ func HTTPHandlerWithAuth(svc *service.Service, nsHeader, defaultNS, homeHeader s
 			http.Error(w, `{"error":"missing or invalid bearer token"}`, http.StatusUnauthorized)
 			return
 		}
+		// Record the actor for the access log (the outer request logger's
+		// holder — see httputil.RecordActor), classified exactly like REST's
+		// actorMiddleware and NewServer's attribution kind below. At auth
+		// time, deliberately: even a request the MCP layer goes on to reject
+		// is attributed in the log.
+		switch {
+		case p != nil && p.Name != "":
+			httputil.RecordActor(r.Context(), p.Name, "key")
+		case strings.TrimSpace(token) != "":
+			httputil.RecordActor(r.Context(), "", "env")
+		default:
+			httputil.RecordActor(r.Context(), "", "none")
+		}
 		if v := strings.TrimSpace(r.Header.Get(nsHeader)); v != "" {
 			if err := httputil.ValidateNamespace(v); err != nil {
 				http.Error(w, `{"error":"invalid namespace header"}`, http.StatusBadRequest)
