@@ -1,11 +1,16 @@
 // Tests for the opencode v2 plugin (memini-v2.js): the Plugin.define / setup
 // wiring around the shared helpers in memini.js. The memini server is stubbed
-// via globalThis.fetch; ctx is a hand-rolled mock of the documented v2 API.
+// via globalThis.fetch; ctx is a hand-rolled mock of the v2 API as verified
+// against opencode2 v0.0.0-next-16502 (see the header of memini-v2.js):
+//   - the recall hook fires as "context" (docs wrongly say "request"),
+//   - system holds { type: "text", text } parts,
+//   - there is no session.idle: turns are reconstructed from
+//     session.input.admitted / session.text.ended / session.execution.*.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import meminiV2, { setup, extractQueryFromRequest, injectContext } from "./memini-v2.js";
+import meminiV2, { setup, extractQueryFromRequest, injectContext, resetForTests, turnKey } from "./memini-v2.js";
 
 const tick = () => new Promise((r) => setImmediate(r));
 const drain = async () => {
@@ -34,18 +39,18 @@ function installFetch({ search = [] } = {}) {
 }
 
 // makeCtx builds a mock v2 plugin context. Set withHooks:false to simulate a
-// build whose ctx lacks session/tool/event (the current beta).
-function makeCtx({ options = {}, messages = [], withHooks = true, sessionInfo = {}, ancestryResponse } = {}) {
-  const state = { requestHook: null, tool: null, events: [], messages };
+// build whose ctx lacks session/tool/event. session.get mimics v2's
+// ctx.session.get({ sessionID }) returning a bare SessionInfo ({ id, parentID? }).
+function makeCtx({ options = {}, withHooks = true, sessionInfo = {}, ancestryResponse } = {}) {
+  const state = { hooks: {}, tool: null, emitted: [] };
   const ctx = { options };
   if (withHooks) {
     ctx.session = {
       hook: async (name, cb) => {
-        if (name === "request") state.requestHook = cb;
+        state.hooks[name] = cb;
         return { dispose() {} };
       },
-      get: async (arg) => ancestryResponse ?? ({ data: { ...sessionInfo, id: arg?.path?.id || "s1" } }),
-      messages: async () => ({ data: state.messages }),
+      get: async (input) => ancestryResponse ?? { ...sessionInfo, id: input?.sessionID || "s1" },
     };
     ctx.tool = {
       transform: async (fn) => {
@@ -54,18 +59,40 @@ function makeCtx({ options = {}, messages = [], withHooks = true, sessionInfo = 
       },
     };
     ctx.event = {
-      subscribe: (type) => {
-        state.events.push(type);
-        return (async function* () {
-          for (const e of state.emit || []) yield e;
-        })();
-      },
+      subscribe: () =>
+        (async function* () {
+          for (const e of state.emitted) yield e;
+        })(),
     };
   }
   return { ctx, state };
 }
 
+// fireHook invokes the registered context hook (the name this build fires).
+const fireHook = (state, event) => state.hooks["context"](event);
+
+// turnEvent builds a context-hook event. The user message id identifies the
+// TURN: tool-loop continuations re-fire with the same last user message.
+function turnEvent({ sessionID = "s1", userID = "u1", text = "q", system }) {
+  return {
+    sessionID,
+    system: system ?? [],
+    messages: [{ id: userID, role: "user", content: [{ type: "text", text }] }],
+  };
+}
+
+// turnEvents is the event-stream sequence for one completed user turn.
+function turnEvents({ sessionID = "s1", userText = "q", assistantText = "a", aid = "a1", end = "session.execution.succeeded" }) {
+  const events = [
+    { type: "session.input.admitted", data: { sessionID, input: { type: "user", data: { text: userText } } } },
+    { type: "session.text.ended", data: { sessionID, assistantMessageID: aid, ordinal: 0, text: assistantText } },
+  ];
+  if (end) events.push({ type: end, data: { sessionID } });
+  return events;
+}
+
 const BASE_ENV = () => {
+  resetForTests();
   process.env.MEMINI_BASE_URL = "http://memini.test";
   delete process.env.MEMINI_API_KEY;
   delete process.env.MEMINI_NAMESPACE;
@@ -95,10 +122,20 @@ test("extractQueryFromRequest reads the latest user message across shapes", () =
   assert.equal(extractQueryFromRequest({ messages: [] }), "");
 });
 
-test("injectContext prefers system[], falls back to a system message", () => {
+test("turnKey is stable per turn and differs across turns and sessions", () => {
+  const a = turnEvent({ userID: "u1", text: "same" });
+  const b = turnEvent({ userID: "u1", text: "same" });
+  assert.equal(turnKey(a, "same"), turnKey(b, "same"), "same last user message id = same turn");
+  const nextTurn = turnEvent({ userID: "u2", text: "same" });
+  assert.notEqual(turnKey(a, "same"), turnKey(nextTurn, "same"));
+  const otherSession = turnEvent({ sessionID: "s2", userID: "u1", text: "same" });
+  assert.notEqual(turnKey(a, "same"), turnKey(otherSession, "same"));
+});
+
+test("injectContext prefers system[] as a text part, falls back to a system message", () => {
   const withSystem = { system: [], messages: [] };
   assert.equal(injectContext(withSystem, "BLOCK"), true);
-  assert.deepEqual(withSystem.system, ["BLOCK"]);
+  assert.deepEqual(withSystem.system, [{ type: "text", text: "BLOCK" }]);
 
   const noSystem = { messages: [{ role: "user", content: "q" }] };
   assert.equal(injectContext(noSystem, "BLOCK"), true);
@@ -146,7 +183,7 @@ test("v2 logging ignores rejected or absent structured loggers", async () => {
   }
 });
 
-test("request hook injects a recalled memory into event.system", async () => {
+test("context hook injects a recalled memory into event.system", async () => {
   BASE_ENV();
   const { posts, restore } = installFetch({
     search: [{ memory: { id: "m1", content: "the deploy key lives in vault", tier: "semantic" }, score: 0.9 }],
@@ -154,21 +191,87 @@ test("request hook injects a recalled memory into event.system", async () => {
   try {
     const { ctx, state } = makeCtx({ options: { namespace: "test-ns" } });
     await setup(ctx);
-    assert.equal(typeof state.requestHook, "function", "request hook registered");
+    assert.equal(typeof state.hooks["context"], "function", "context hook registered");
+    assert.equal(typeof state.hooks["request"], "function", "docs-named hook registered too (inert on this build)");
 
-    const event = { sessionID: "s1", system: [], messages: [{ role: "user", content: "where is the deploy key" }] };
-    await state.requestHook(event);
+    const event = turnEvent({ text: "where is the deploy key" });
+    await fireHook(state, event);
 
     assert.equal(event.system.length, 1);
-    assert.match(event.system[0], /Relevant long-term memory from memini/);
-    assert.match(event.system[0], /the deploy key lives in vault/);
+    assert.equal(event.system[0].type, "text");
+    assert.match(event.system[0].text, /Relevant long-term memory from memini/);
+    assert.match(event.system[0].text, /the deploy key lives in vault/);
     assert.equal(posts.length, 0, "recall must not write");
   } finally {
     restore();
   }
 });
 
-test("request hook discards late recall results while budget zero remains blocking", async () => {
+test("a tool-loop continuation of the same turn re-injects the cached block without a second search", async () => {
+  BASE_ENV();
+  let searches = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const path = new URL(url).pathname;
+    const json = (body, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    if (path.endsWith("/v1/handshake")) return json({});
+    if (path.endsWith("/v1/search")) {
+      searches++;
+      return json({ results: [{ memory: { id: "m1", content: "continuity fact", tier: "semantic" }, score: 0.9 }] });
+    }
+    return json({}, 404);
+  };
+  try {
+    const { ctx, state } = makeCtx({ options: { namespace: "test-ns" } });
+    await setup(ctx);
+
+    const first = turnEvent({ userID: "u1", text: "q" });
+    await fireHook(state, first);
+    assert.equal(first.system.length, 1, "the turn's first dispatch injects");
+
+    // Same turn, second dispatch: messages gained tool results, last user message unchanged.
+    const step = {
+      sessionID: "s1",
+      system: [],
+      messages: [
+        { id: "u1", role: "user", content: [{ type: "text", text: "q" }] },
+        { role: "assistant", content: [{ type: "tool-call", id: "c1", name: "shell", input: {} }] },
+        { role: "tool", content: [{ type: "tool-result", id: "c1", name: "shell", result: "ok" }] },
+      ],
+    };
+    await fireHook(state, step);
+    assert.equal(searches, 1, "no second search within one turn");
+    assert.equal(step.system.length, 1, "the continuation dispatch keeps the memory block");
+    assert.match(step.system[0].text, /continuity fact/);
+
+    // The next user message is a new turn: search again.
+    const next = turnEvent({ userID: "u2", text: "next question" });
+    await fireHook(state, next);
+    assert.equal(searches, 2, "a new user message starts a new turn");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a build firing both hook names injects a dispatch only once", async () => {
+  BASE_ENV();
+  const { restore } = installFetch({
+    search: [{ memory: { id: "m1", content: "one fact", tier: "semantic" }, score: 0.9 }],
+  });
+  try {
+    const { ctx, state } = makeCtx({ options: { namespace: "test-ns" } });
+    await setup(ctx);
+    const event = turnEvent({ text: "q" });
+    await state.hooks["context"](event);
+    await state.hooks["request"](event);
+    assert.equal(event.system.length, 1, "double fire is neutralized");
+  } finally {
+    restore();
+  }
+});
+
+test("context hook discards late recall results while budget zero remains blocking", async () => {
   BASE_ENV();
   const original = globalThis.fetch;
   let release;
@@ -187,16 +290,16 @@ test("request hook discards late recall results while budget zero remains blocki
   try {
     const fast = makeCtx({ options: { recall_budget_ms: 10 } });
     await setup(fast.ctx);
-    const first = { sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] };
-    await fast.state.requestHook(first);
+    const first = turnEvent({ sessionID: "s1", userID: "u1" });
+    await fireHook(fast.state, first);
     assert.equal(first.system.length, 0);
     release();
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     const blocking = makeCtx({ options: { recall_budget_ms: 0 } });
     await setup(blocking.ctx);
-    const second = { sessionID: "s2", system: [], messages: [{ role: "user", content: "q" }] };
-    await blocking.state.requestHook(second);
+    const second = turnEvent({ sessionID: "s2", userID: "u1" });
+    await fireHook(blocking.state, second);
     assert.equal(second.system.length, 1, "budget zero waits for same-turn recall");
   } finally {
     globalThis.fetch = original;
@@ -206,7 +309,7 @@ test("request hook discards late recall results while budget zero remains blocki
 // The floor rides the wire as min_rank_score (server-enforced final composite
 // score), never the fused-scale min_score. A server that accepts it is
 // authoritative: its result set is NOT re-filtered client-side.
-test("request hook floors on min_rank_score (never min_score) and trusts an enforcing server", async () => {
+test("context hook floors on min_rank_score (never min_score) and trusts an enforcing server", async () => {
   BASE_ENV();
   const searches = [];
   const original = globalThis.fetch;
@@ -227,13 +330,13 @@ test("request hook floors on min_rank_score (never min_score) and trusts an enfo
   try {
     const { ctx, state } = makeCtx({ options: { namespace: "test-ns", recall_min_score: 0.4 } });
     await setup(ctx);
-    const event = { sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] };
-    await state.requestHook(event);
+    const event = turnEvent({ text: "q" });
+    await fireHook(state, event);
     assert.equal(searches[0].min_rank_score, 0.4, "the knob rides as min_rank_score");
     assert.equal(searches[0].min_score, undefined, "the fused-scale min_score is never sent");
     assert.equal(event.system.length, 1);
-    assert.match(event.system[0], /high relevance fact/);
-    assert.match(event.system[0], /low relevance kept/, "an enforcing server's result set is authoritative");
+    assert.match(event.system[0].text, /high relevance fact/);
+    assert.match(event.system[0].text, /low relevance kept/, "an enforcing server's result set is authoritative");
   } finally {
     globalThis.fetch = original;
   }
@@ -241,7 +344,7 @@ test("request hook floors on min_rank_score (never min_score) and trusts an enfo
 
 // Older server: it 400s min_rank_score, so one retry strips it and the client
 // applies the composite floor as a fallback.
-test("request hook retries without min_rank_score on an old server and applies the floor client-side", async () => {
+test("context hook retries without min_rank_score on an old server and applies the floor client-side", async () => {
   BASE_ENV();
   const searches = [];
   const original = globalThis.fetch;
@@ -264,21 +367,21 @@ test("request hook retries without min_rank_score on an old server and applies t
   try {
     const { ctx, state } = makeCtx({ options: { namespace: "test-ns", recall_min_score: 0.4 } });
     await setup(ctx);
-    const event = { sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] };
-    await state.requestHook(event);
+    const event = turnEvent({ text: "q" });
+    await fireHook(state, event);
     assert.equal(searches.length, 2, "one strip-and-retry, then it stops");
     assert.equal(searches[0].min_rank_score, 0.4, "the first attempt carries the floor");
     assert.equal(searches[1].min_rank_score, undefined, "the retry strips min_rank_score");
     assert.equal(searches[1].min_score, undefined, "the retry never resurrects min_score");
     assert.equal(event.system.length, 1);
-    assert.match(event.system[0], /high relevance fact/);
-    assert.doesNotMatch(event.system[0], /low should be filtered/, "the stripped floor is enforced client-side");
+    assert.match(event.system[0].text, /high relevance fact/);
+    assert.doesNotMatch(event.system[0].text, /low should be filtered/, "the stripped floor is enforced client-side");
   } finally {
     globalThis.fetch = original;
   }
 });
 
-test("request hook suppresses a memory already injected this session", async () => {
+test("context hook suppresses a memory already injected this session", async () => {
   BASE_ENV();
   const { restore } = installFetch({
     search: [{ memory: { id: "m1", content: "one time fact", tier: "semantic" }, score: 0.9 }],
@@ -286,14 +389,13 @@ test("request hook suppresses a memory already injected this session", async () 
   try {
     const { ctx, state } = makeCtx({ options: { namespace: "test-ns" } });
     await setup(ctx);
-    const mk = () => ({ sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] });
 
-    const first = mk();
-    await state.requestHook(first);
+    const first = turnEvent({ userID: "u1" });
+    await fireHook(state, first);
     assert.equal(first.system.length, 1, "first turn injects");
 
-    const second = mk();
-    await state.requestHook(second);
+    const second = turnEvent({ userID: "u2" });
+    await fireHook(state, second);
     assert.equal(second.system.length, 0, "second turn suppresses the repeat");
   } finally {
     restore();
@@ -306,43 +408,38 @@ test("recall:false skips injection entirely", async () => {
   try {
     const { ctx, state } = makeCtx({ options: { namespace: "test-ns", recall: false } });
     await setup(ctx);
-    const event = { sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] };
-    await state.requestHook(event);
+    const event = turnEvent({ text: "q" });
+    await fireHook(state, event);
     assert.equal(event.system.length, 0);
   } finally {
     restore();
   }
 });
 
-test("memini_status tool renders the effective settings", async () => {
+test("memini_status tool registers the v2 Tool.Info shape and renders the effective settings", async () => {
   BASE_ENV();
   const { restore } = installFetch();
   try {
     const { ctx, state } = makeCtx({ options: { namespace: "test-ns" } });
     await setup(ctx);
     assert.equal(state.tool && state.tool.name, "memini_status");
+    assert.equal(state.tool.input.type, "object", "raw JSON schema under `input`");
+    assert.deepEqual(state.tool.options, { codemode: false });
     const res = await state.tool.execute({});
     const text = res.content[0].text;
     assert.match(text, /effective settings/);
     assert.match(text, /test-ns/);
-    assert.equal(res.structured.namespace, "test-ns");
   } finally {
     restore();
   }
 });
 
-test("capture writes the completed turn on session.idle", async () => {
+test("capture writes the completed turn when the execution succeeds", async () => {
   BASE_ENV();
   const { posts, restore } = installFetch();
   try {
-    const { ctx, state } = makeCtx({
-      options: { namespace: "test-ns" },
-      messages: [
-        { info: { role: "user", id: "u1" }, parts: [{ type: "text", text: "how do I deploy" }] },
-        { info: { role: "assistant", id: "a1" }, parts: [{ type: "text", text: "run make deploy" }] },
-      ],
-    });
-    state.emit = [{ type: "session.idle", properties: { sessionID: "s1" } }];
+    const { ctx, state } = makeCtx({ options: { namespace: "test-ns" } });
+    state.emitted = turnEvents({ userText: "how do I deploy", assistantText: "run make deploy" });
     const cleanup = await setup(ctx);
     await drain();
 
@@ -359,21 +456,89 @@ test("capture writes the completed turn on session.idle", async () => {
   }
 });
 
+test("capture marks failed and interrupted executions", async () => {
+  BASE_ENV();
+  const { posts, restore } = installFetch();
+  try {
+    for (const [end, aid] of [["session.execution.failed", "a1"], ["session.execution.interrupted", "a2"]]) {
+      const { ctx, state } = makeCtx({ options: { namespace: "test-ns" } });
+      state.emitted = turnEvents({ aid, userText: `q-${aid}`, assistantText: "partial", end });
+      const cleanup = await setup(ctx);
+      await drain();
+      await cleanup();
+    }
+    assert.equal(posts.length, 2);
+    assert.equal(posts[0].metadata.failed, true);
+    assert.equal(posts[1].metadata.failed, true);
+  } finally {
+    restore();
+  }
+});
+
+test("capture joins multi-part assistant text by ordinal", async () => {
+  BASE_ENV();
+  const { posts, restore } = installFetch();
+  try {
+    const { ctx, state } = makeCtx({ options: { namespace: "test-ns" } });
+    state.emitted = [
+      { type: "session.input.admitted", data: { sessionID: "s1", input: { type: "user", data: { text: "q" } } } },
+      { type: "session.text.ended", data: { sessionID: "s1", assistantMessageID: "a1", ordinal: 1, text: "second half" } },
+      { type: "session.text.ended", data: { sessionID: "s1", assistantMessageID: "a1", ordinal: 0, text: "first half" } },
+      { type: "session.execution.succeeded", data: { sessionID: "s1" } },
+    ];
+    const cleanup = await setup(ctx);
+    await drain();
+    assert.equal(posts.length, 1);
+    assert.match(posts[0].content, /first half\nsecond half/);
+    await cleanup();
+  } finally {
+    restore();
+  }
+});
+
+test("capture skips executions with no completed turn (compaction, pre-load turns)", async () => {
+  BASE_ENV();
+  const { posts, restore } = installFetch();
+  try {
+    const { ctx, state } = makeCtx({ options: { namespace: "test-ns" } });
+    state.emitted = [{ type: "session.execution.succeeded", data: { sessionID: "s1" } }];
+    const cleanup = await setup(ctx);
+    await drain();
+    assert.equal(posts.length, 0);
+    await cleanup();
+  } finally {
+    restore();
+  }
+});
+
+test("capture deduplicates an already-captured assistant message", async () => {
+  BASE_ENV();
+  const { posts, restore } = installFetch();
+  try {
+    const { ctx, state } = makeCtx({ options: { namespace: "test-ns" } });
+    state.emitted = [...turnEvents({}), ...turnEvents({})];
+    const cleanup = await setup(ctx);
+    await drain();
+    assert.equal(posts.length, 1, "a duplicate execution event for the same assistant message writes once");
+    await cleanup();
+  } finally {
+    restore();
+  }
+});
+
 test("v2 capture skips child sessions by default and opts in with ancestry metadata", async () => {
   BASE_ENV();
   const { posts, restore } = installFetch();
   try {
-    const child = { info: { role: "user" }, parts: [{ type: "text", text: "q" }] };
-    const answer = { info: { role: "assistant", id: "a1" }, parts: [{ type: "text", text: "a" }] };
-    const first = makeCtx({ messages: [child, answer], sessionInfo: { parentID: "root-1" } });
-    first.state.emit = [{ type: "session.idle", properties: { sessionID: "child-1" } }];
+    const first = makeCtx({ sessionInfo: { parentID: "root-1" } });
+    first.state.emitted = turnEvents({ sessionID: "child-1" });
     const cleanup = await setup(first.ctx);
     await drain();
     assert.equal(posts.length, 0, "child capture is off by default");
     await cleanup();
 
-    const opted = makeCtx({ options: { capture_child_sessions: true }, messages: [child, answer], sessionInfo: { parentID: "root-1" } });
-    opted.state.emit = [{ type: "session.idle", properties: { sessionID: "child-1" } }];
+    const opted = makeCtx({ options: { capture_child_sessions: true }, sessionInfo: { parentID: "root-1" } });
+    opted.state.emitted = turnEvents({ sessionID: "child-1" });
     const cleanupOpted = await setup(opted.ctx);
     await drain();
     assert.equal(posts.length, 1);
@@ -388,69 +553,57 @@ test("v2 capture skips child sessions by default and opts in with ancestry metad
 test("v2 capture fails closed for malformed or mismatched ancestry records", async () => {
   BASE_ENV();
   const { posts, restore } = installFetch();
-  let messages = 0;
   try {
     for (const ancestryResponse of [{}, { data: {} }, { error: "not found" }, { data: { id: "other" } }, { data: { parentID: "root" } }]) {
-      const made = makeCtx({
-        messages: [
-          { info: { role: "user" }, parts: [{ type: "text", text: "q" }] },
-          { info: { role: "assistant", id: "a1" }, parts: [{ type: "text", text: "a" }] },
-        ],
-        ancestryResponse,
-      });
-      const originalMessages = made.ctx.session.messages;
-      made.ctx.session.messages = async (...args) => { messages++; return originalMessages(...args); };
-      made.state.emit = [{ type: "session.idle", properties: { sessionID: "s1" } }];
+      const made = makeCtx({ ancestryResponse });
+      made.state.emitted = turnEvents({});
       const cleanup = await setup(made.ctx);
       await drain();
       await cleanup();
     }
-    assert.equal(messages, 0, "malformed ancestry must be rejected before message retrieval");
     assert.equal(posts.length, 0);
   } finally {
     restore();
   }
 });
 
-test("request hook re-serves a suppressed memory once the cooldown windows lapse", async () => {
+test("context hook re-serves a suppressed memory once the cooldown windows lapse", async () => {
   BASE_ENV();
   const { restore } = installFetch({
     search: [{ memory: { id: "m1", content: "one time fact", tier: "semantic" }, score: 0.9 }],
   });
   try {
-    // Time window off, prompt window 2: each request-hook fire is one prompt.
+    // Time window off, prompt window 2: each user turn is one prompt.
     const { ctx, state } = makeCtx({
       options: { namespace: "test-ns", inject_cooldown_ms: 0, inject_cooldown_prompts: 2 },
     });
     await setup(ctx);
-    const mk = () => ({ sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] });
 
-    const first = mk();
-    await state.requestHook(first);
+    const first = turnEvent({ userID: "u1" });
+    await fireHook(state, first);
     assert.equal(first.system.length, 1, "prompt 1 injects (n=1)");
 
-    const second = mk();
-    await state.requestHook(second);
+    const second = turnEvent({ userID: "u2" });
+    await fireHook(state, second);
     assert.equal(second.system.length, 0, "prompt 2: delta 1 < 2, suppressed");
 
-    const third = mk();
-    await state.requestHook(third);
+    const third = turnEvent({ userID: "u3" });
+    await fireHook(state, third);
     assert.equal(third.system.length, 1, "prompt 3: delta 2 >= 2, re-served");
 
-    const fourth = mk();
-    await state.requestHook(fourth);
+    const fourth = turnEvent({ userID: "u4" });
+    await fireHook(state, fourth);
     assert.equal(fourth.system.length, 0, "the re-record restarts the window");
   } finally {
     restore();
   }
 });
 
-test("request hook re-injects an updated memory inside the window (content-change bypass)", async () => {
+test("context hook re-injects an updated memory inside the window (content-change bypass)", async () => {
   BASE_ENV();
-  const posts = [];
   const original = globalThis.fetch;
   let searches = 0;
-  globalThis.fetch = async (url, init) => {
+  globalThis.fetch = async (url) => {
     const path = new URL(url).pathname;
     const json = (body, status = 200) =>
       new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -461,31 +614,26 @@ test("request hook re-injects an updated memory inside the window (content-chang
       const content = searches <= 1 ? "version one" : "version two — updated";
       return json({ results: [{ memory: { id: "m1", content, tier: "semantic" }, score: 0.9 }] });
     }
-    if (path.endsWith("/v1/memories")) {
-      posts.push(JSON.parse(init.body));
-      return json({ id: "mem_test" });
-    }
     return json({}, 404);
   };
   try {
     const { ctx, state } = makeCtx({ options: { namespace: "test-ns" } });
     await setup(ctx);
-    const mk = () => ({ sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] });
 
-    const first = mk();
-    await state.requestHook(first);
-    assert.match(first.system[0], /version one/);
+    const first = turnEvent({ userID: "u1" });
+    await fireHook(state, first);
+    assert.match(first.system[0].text, /version one/);
 
-    const second = mk();
-    await state.requestHook(second);
+    const second = turnEvent({ userID: "u2" });
+    await fireHook(state, second);
     assert.equal(second.system.length, 1, "an updated memory must re-inject inside the window");
-    assert.match(second.system[0], /version two/);
+    assert.match(second.system[0].text, /version two/);
   } finally {
     globalThis.fetch = original;
   }
 });
 
-test("request hook: both cooldown knobs at zero suppresses for the whole session", async () => {
+test("context hook: both cooldown knobs at zero suppresses for the whole session", async () => {
   BASE_ENV();
   const { restore } = installFetch({
     search: [{ memory: { id: "m1", content: "one time fact", tier: "semantic" }, score: 0.9 }],
@@ -495,13 +643,12 @@ test("request hook: both cooldown knobs at zero suppresses for the whole session
       options: { namespace: "test-ns", inject_cooldown_ms: 0, inject_cooldown_prompts: 0 },
     });
     await setup(ctx);
-    const mk = () => ({ sessionID: "s1", system: [], messages: [{ role: "user", content: "q" }] });
-    const first = mk();
-    await state.requestHook(first);
+    const first = turnEvent({ userID: "u1" });
+    await fireHook(state, first);
     assert.equal(first.system.length, 1);
-    for (let i = 0; i < 5; i++) {
-      const again = mk();
-      await state.requestHook(again);
+    for (let i = 2; i <= 6; i++) {
+      const again = turnEvent({ userID: `u${i}` });
+      await fireHook(state, again);
       assert.equal(again.system.length, 0, "legacy forever-dedupe: never re-served");
     }
   } finally {

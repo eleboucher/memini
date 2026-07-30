@@ -1,0 +1,25 @@
+{
+  "name": "@eleboucher/opencode-memini-v2",
+  "version": "0.7.16",
+  "description": "Automatic cross-session memory for OpenCode V2 via memini.",
+  "keywords": [
+    "memini",
+    "memory",
+    "opencode",
+    "opencode-plugin"
+  ],
+  "license": "MIT",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": "./dist/index.js",
+  "scripts": {
+    "prepack": "node ./prepare-package.mjs"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "0.0.0-next-16502"
+  }
+}
