@@ -847,7 +847,9 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 		input.AsOf = asOf.UTC()
 	}
 	var degraded string
+	var dropped []string
 	input.Degraded = &degraded
+	input.DroppedNamespaces = &dropped
 	var readset []service.ReadSetEntry
 	input.ReadSet = &readset
 	res, err := t.svc.Recall(ctx, input)
@@ -859,10 +861,7 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 	for i, s := range res {
 		out.Results[i] = scoredItem(s, in.ResponseFormat, origins)
 	}
-	if degraded != "" {
-		out.Degraded = "keyword_only"
-		out.Note = "semantic search unavailable (" + degraded + "); results are keyword-only and may be incomplete"
-	}
+	out.Degraded, out.Note = service.DegradedWire(degraded, dropped)
 	return nil, out, nil
 }
 
@@ -893,6 +892,14 @@ type briefingResult struct {
 	// ChildrenNote reports children omitted by the service's 10-child cap
 	// ("… and N more child namespaces"); empty when nothing was truncated.
 	ChildrenNote string `json:"children_note,omitempty"`
+	// Degraded names read-set namespaces that could not be loaded and were
+	// skipped. It matters for an agent specifically: a briefing that silently
+	// omits an ancestor's durable facts is the case where the agent cannot know
+	// what it is missing. The briefed namespace never appears here — losing it
+	// fails the call instead.
+	Degraded []string `json:"degraded,omitempty"`
+	// Note explains Degraded in plain language; omitted alongside it.
+	Note string `json:"note,omitempty"`
 }
 
 // briefingChild is the MCP wire shape of one child rollup entry: namespace,
@@ -970,6 +977,10 @@ func (t *tools) briefing(ctx context.Context, _ *mcpsdk.CallToolRequest, in brie
 		Facts:       briefingItems(b.Facts, origins),
 		Procedures:  briefingItems(b.Procedures, origins),
 		Recent:      briefingItems(b.Recent, origins),
+	}
+	if len(b.Degraded) > 0 {
+		out.Degraded = b.Degraded
+		_, out.Note = service.DegradedWire("", b.Degraded)
 	}
 	if len(b.Children) > 0 {
 		out.Children = make([]briefingChild, len(b.Children))

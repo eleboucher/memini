@@ -3,6 +3,7 @@ package rest
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/eleboucher/memini/internal/apiauth"
@@ -87,10 +88,15 @@ func (h *Server) PutSelfSettings(w http.ResponseWriter, r *http.Request) {
 	// unlike the /v1/keys mutations — there is no auth cache to invalidate.
 	h.svc.LogConfigEvent(r.Context(), store.EventSettings, "", map[string]any{eventDetailKeyName: p.Name, eventDetailLayer: settingsSourceKey})
 
+	// The settings are persisted. Re-resolving the merged three-layer stack is
+	// only for the response body, so a failure there degrades to echoing the
+	// layer we just wrote rather than reporting a 500 for a save that succeeded.
+	// settings_sources is omitempty, so a partial response is a valid one.
 	resp, err := h.selfResponse(r.Context(), r, &p)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, err)
-		return
+		slog.WarnContext(r.Context(), "self settings: re-resolving the merged stack failed, "+
+			"echoing the stored layer", "key", p.Name, "err", err)
+		resp = SelfResponse{Identity: h.identityFor(r), Settings: clientSettingsToAPI(settings)}
 	}
 	httputil.JSON(w, http.StatusOK, resp)
 }

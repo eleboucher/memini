@@ -1,6 +1,7 @@
 package rest
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -96,13 +97,15 @@ func (h *Server) PutPin(w http.ResponseWriter, r *http.Request) {
 	// Echo the stored row for the first (remote-preferred) key: PutPins
 	// preserves an existing pin's created_at/created_by on update, so re-reading
 	// reflects the true provenance rather than the "now" we just wrote.
-	stored, err := pms.GetPins(r.Context(), keys[:1])
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, err)
-		return
-	}
+	// The pin is already stored. A failed read-back costs provenance accuracy
+	// on an update (created_at/created_by fall back to what we wrote), which is
+	// strictly better than a 500 that tells the caller a pin failed when it did
+	// not.
 	out := entries[0]
-	if len(stored) > 0 {
+	if stored, err := pms.GetPins(r.Context(), keys[:1]); err != nil {
+		slog.WarnContext(r.Context(), "pins: provenance read-back failed, echoing the written row",
+			"namespace", ns, "key", keys[0], "err", err)
+	} else if len(stored) > 0 {
 		out = stored[0]
 	}
 	httputil.JSON(w, http.StatusOK, apiPin(out))

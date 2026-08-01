@@ -52,6 +52,10 @@ const (
 // Recall tuning.
 const (
 	reinforceTimeout = 10 * time.Second
+	// similarityJobTimeout bounds one detached write-time similarity job
+	// (corroboration or contradiction routing): a vector search plus at most a
+	// couple of small writes.
+	similarityJobTimeout = 30 * time.Second
 
 	// recallPoolFactor / recallPoolFloor size the per-leg candidate pool for
 	// hybrid recall: each leg over-fetches max(k*factor, floor) so a memory
@@ -1413,7 +1417,16 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		}
 	}
 
-	if err := s.store.Upsert(ctx, m); err != nil {
+	// The write is decided; a client hanging up now must not undo it. Every
+	// driver's Upsert is a transaction, and both database/sql and pgx roll an
+	// in-flight transaction back on context cancellation — so without this, a
+	// disconnect landing between here and the commit loses an accepted memory
+	// and reports a 500 for it. Everything after this point is already
+	// detached or best-effort, so this is the last place that could happen.
+	wctx, wcancel := store.DurableCtx(ctx)
+	err = s.store.Upsert(wctx, m)
+	wcancel()
+	if err != nil {
 		s.metrics.RememberResult("error", string(tier))
 		return nil, fmt.Errorf("remember: store: %w", err)
 	}
@@ -1587,8 +1600,7 @@ func (s *Service) dedupCheck(ctx context.Context, m *memory.Memory) (hit *memory
 			}
 			return nil, nil, existing.ID
 		}
-		s.reinforce(ctx, []store.Scored{{Memory: existing}})
-		s.corroborate(ctx, existing)
+		s.reinforceCorroborateAsync(ctx, existing)
 		return existing, nil, ""
 	}
 	return nil, nil, ""
@@ -1717,8 +1729,7 @@ func (s *Service) fingerprintHit(ctx context.Context, in RememberInput, tier mem
 		}
 		return nil, false
 	}
-	s.reinforce(ctx, []store.Scored{{Memory: existing}})
-	s.corroborate(ctx, existing) // an exact repeat raises the fact's confidence
+	s.reinforceCorroborateAsync(ctx, existing) // an exact repeat raises the fact's confidence
 	return existing, true
 }
 
@@ -1799,10 +1810,7 @@ func (s *Service) corroborateNearestAsync(ctx context.Context, m *memory.Memory,
 		s.corroborateMinScore <= 0 || len(m.Embedding) == 0 {
 		return
 	}
-	bg := context.WithoutCancel(ctx)
-	s.bg.Go(func() {
-		cctx, cancel := context.WithTimeout(bg, 30*time.Second)
-		defer cancel()
+	s.detach(ctx, similarityJobTimeout, func(cctx context.Context) {
 		cands, err := s.store.VectorSearch(cctx, m.Namespace, m.Embedding,
 			store.Filter{Tiers: []memory.Tier{memory.TierSemantic, memory.TierProcedural}, Now: s.now()}, 1)
 		if err != nil {
@@ -1860,10 +1868,7 @@ func (s *Service) contradictNearestAsync(ctx context.Context, m *memory.Memory, 
 		s.contradictMinScore <= 0 || len(m.Embedding) == 0 {
 		return
 	}
-	bg := context.WithoutCancel(ctx)
-	s.bg.Go(func() {
-		cctx, cancel := context.WithTimeout(bg, 30*time.Second)
-		defer cancel()
+	s.detach(ctx, similarityJobTimeout, func(cctx context.Context) {
 		// k=3: this runs after Upsert, so the top hit may be the write itself —
 		// and an earlier same-value update (a blocked or duplicate one) may sit
 		// between the write and the stale fact it should invalidate. Scanning
@@ -2036,6 +2041,13 @@ type RecallInput struct {
 	// (empty) on a healthy recall. nil disables reporting. Same out-param
 	// pattern as MergeHint/AutoSuperseded on RememberInput.
 	Degraded *string
+	// DroppedNamespaces (output-only) receives the read-set namespaces whose
+	// search failed and were skipped, so a caller can tell "nothing matched"
+	// from "part of the corpus was unreachable". Empty on a healthy recall;
+	// the primary namespace never appears here because losing it is fatal
+	// rather than degrading. nil disables reporting. Same out-param pattern as
+	// Degraded.
+	DroppedNamespaces *[]string
 	// ReadSet (output-only) is set to the resolved read-set — every namespace
 	// this recall searched, with the origin recorded when that leg was
 	// appended during resolution (primary/ancestor/home/link/call) and any
@@ -2256,7 +2268,15 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	searchStart := time.Now()
 	vres := make([][]store.Scored, len(entries))
 	kres := make([][]store.Scored, len(entries))
-	g2, g2ctx := errgroup.WithContext(ctx)
+	//
+	// Deliberately a plain errgroup.Group over ctx rather than
+	// errgroup.WithContext: a derived context would let the FIRST leg to fail
+	// cancel every sibling, so one unreachable ancestor or link namespace took
+	// down a recall the primary namespace had already answered. Each leg now
+	// records its own error and the group never short-circuits.
+	verr := make([]error, len(entries))
+	kerr := make([]error, len(entries))
+	var g2 errgroup.Group
 	g2.SetLimit(recallSearchConcurrency)
 	for i, e := range entries {
 		ns := e.ns
@@ -2266,24 +2286,17 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		}
 		if vec != nil {
 			g2.Go(func() error {
-				v, err := s.vectorLeg(g2ctx, ns, vec, f, poolK)
-				if err != nil {
-					return fmt.Errorf("recall: vector search: %w", err)
-				}
-				vres[i] = v
+				vres[i], verr[i] = s.vectorLeg(ctx, ns, vec, f, poolK)
 				return nil
 			})
 		}
 		g2.Go(func() error {
-			kw, err := s.store.KeywordSearch(g2ctx, ns, in.Query, f, poolK)
-			if err != nil {
-				return fmt.Errorf("recall: keyword search: %w", err)
-			}
-			kres[i] = kw
+			kres[i], kerr[i] = s.store.KeywordSearch(ctx, ns, in.Query, f, poolK)
 			return nil
 		})
 	}
-	if err := g2.Wait(); err != nil {
+	_ = g2.Wait() // every leg returns nil; failures are collected above
+	if err := s.reportRecallLegs(ctx, entries, verr, kerr, in.DroppedNamespaces); err != nil {
 		s.metrics.RecallResult("error", tf, "0")
 		return nil, err
 	}
@@ -3101,10 +3114,7 @@ func (s *Service) reinforceResults(ctx context.Context, results []store.Scored) 
 		return
 	}
 	// Detach from the request lifetime but keep its values; bound the work.
-	bg := context.WithoutCancel(ctx)
-	s.bg.Go(func() {
-		rctx, cancel := context.WithTimeout(bg, reinforceTimeout)
-		defer cancel()
+	s.detach(ctx, reinforceTimeout, func(rctx context.Context) {
 		s.reinforce(rctx, results)
 	})
 }
@@ -3402,7 +3412,11 @@ func (s *Service) Forget(ctx context.Context, namespace, id string) error {
 	if _, ok := s.eventLog(); ok {
 		doomed, _ = s.store.Get(ctx, namespace, id)
 	}
-	err := s.store.Delete(ctx, namespace, id)
+	// Accepted deletes are durable too: a disconnect must not leave the caller
+	// believing a forget failed when it was about to succeed.
+	dctx, dcancel := store.DurableCtx(ctx)
+	err := s.store.Delete(dctx, namespace, id)
+	dcancel()
 	switch {
 	case err == nil:
 		s.metrics.ForgetResult("ok")
@@ -3433,7 +3447,9 @@ func (s *Service) Supersede(ctx context.Context, namespace, id, supersededBy str
 	if _, ok := s.eventLog(); ok {
 		replaced, _ = s.store.Get(ctx, namespace, id)
 	}
-	err := s.store.SetSuperseded(ctx, namespace, id, supersededBy)
+	sctx, scancel := store.DurableCtx(ctx)
+	err := s.store.SetSuperseded(sctx, namespace, id, supersededBy)
+	scancel()
 	switch {
 	case err == nil:
 		s.metrics.SupersedeResult("ok")
@@ -3524,4 +3540,111 @@ func hitsBucket(n int) string {
 	default:
 		return "21+"
 	}
+}
+
+// detach runs fn on a context that keeps ctx's values (actor, trace, logger)
+// but not its cancellation, bounded by d, tracked by s.bg so WaitBackground
+// joins it before the store closes.
+//
+// This is the house idiom for best-effort work that must outlive a request,
+// hand-written at seven sites before it was extracted. Note that
+// context.WithoutCancel drops the parent's deadline along with its cancel, so
+// re-imposing a bound is not optional — without d, a detached job inherits no
+// deadline at all.
+func (s *Service) detach(ctx context.Context, d time.Duration, fn func(context.Context)) {
+	bg := context.WithoutCancel(ctx)
+	s.bg.Go(func() {
+		c, cancel := context.WithTimeout(bg, d)
+		defer cancel()
+		fn(c)
+	})
+}
+
+// embedBounded embeds text under the write-embed budget when one is set.
+//
+// It exists because the consolidation and dedup-merge paths called
+// embed.EmbedOne directly and unbounded, so a hung embedder there rode the
+// LLM client's much longer HTTP timeout and blocked the request until the
+// 60s middleware fired — even though the very same package bounds the write
+// path's embed a hundred lines away. A budget of 0 keeps the call unbounded,
+// matching the write path's fail-fast default.
+func (s *Service) embedBounded(ctx context.Context, text string) ([]float32, error) {
+	if s.writeEmbedTimeout <= 0 {
+		return embed.EmbedOne(ctx, s.embedder, text)
+	}
+	ectx, cancel := context.WithTimeout(ctx, s.writeEmbedTimeout)
+	defer cancel()
+	return embed.EmbedOne(ectx, s.embedder, text)
+}
+
+// reportRecallLegs resolves the per-leg outcomes of the search fan-out into
+// either a fatal error or a degraded-but-usable result.
+//
+// The rule is that the PRIMARY namespace failing is fatal while a secondary leg
+// failing is a degrade. A recall that returns nothing from the namespace you
+// asked about is not a degraded recall, it is a failed one, and returning empty
+// would produce exactly the confident negative the MCP tool description warns
+// agents about. A missing ancestor or link, by contrast, costs breadth the
+// caller can be told about.
+//
+// The primary is identified by its origin rather than by position: primaryFirst
+// leaves entries untouched when the primary is absent entirely (an explicit
+// read set can name namespaces that exclude it), so entries[0] is not reliably
+// the primary. With no primary leg at all, nothing is fatal and an empty result
+// is legitimate.
+//
+// A cancelled request context is fatal too, never "partial": the caller went
+// away, so reporting incomplete results as if they were the answer would be a
+// lie about coverage.
+func (s *Service) reportRecallLegs(
+	ctx context.Context, entries []scopeEntry, verr, kerr []error, dropped *[]string,
+) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	var names []string
+	for i, e := range entries {
+		switch {
+		case kerr[i] != nil && e.origin == OriginPrimary:
+			// The keyword leg is the one leg every recall has, so losing it
+			// means the namespace the caller asked about contributed nothing.
+			return fmt.Errorf("recall: keyword search: %w", kerr[i])
+		case kerr[i] != nil:
+			// A secondary namespace is gone entirely; keep the rest and name it.
+			slog.WarnContext(ctx, "recall: namespace unavailable, answering without it",
+				"namespace", e.ns, "origin", e.origin, "err", kerr[i])
+			s.metrics.RecallDegraded("namespace_unavailable")
+			names = append(names, e.ns)
+		case verr[i] != nil:
+			// Vector leg only: this namespace falls back to keyword results,
+			// the same degradation a failed query embed already produces.
+			slog.WarnContext(ctx, "recall: vector leg failed, using this namespace's keyword results only",
+				"namespace", e.ns, "origin", e.origin, "err", verr[i])
+			s.metrics.RecallDegraded("vector_leg_failed")
+		}
+	}
+	if dropped != nil {
+		*dropped = names
+	}
+	return nil
+}
+
+// reinforceCorroborateAsync records a write-time dedup hit against the memory
+// it folded into: the same reinforce plus confidence growth reinforceResults
+// already does for recall, but off the write path.
+//
+// These two ran inline on the fingerprint-hit and dedup-coalesce branches while
+// every sibling call site backgrounded them, putting two extra store writes on
+// the hot path of a write that had already decided its outcome. Honors
+// syncReinforce so the tests that observe the result inline keep working.
+func (s *Service) reinforceCorroborateAsync(ctx context.Context, m *memory.Memory) {
+	if s.syncReinforce {
+		s.reinforce(ctx, []store.Scored{{Memory: m}})
+		s.corroborate(ctx, m)
+		return
+	}
+	s.detach(ctx, reinforceTimeout, func(c context.Context) {
+		s.reinforce(c, []store.Scored{{Memory: m}})
+		s.corroborate(c, m)
+	})
 }

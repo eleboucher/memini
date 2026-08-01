@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -311,14 +312,102 @@ func (vectorErrStore) VectorSearch(context.Context, string, []float32, store.Fil
 	return nil, errors.New("vector boom")
 }
 
-// TestRecallVectorSearchErrorWraps confirms a failing search leg aborts recall
-// with its original wrap when the legs run concurrently.
-func TestRecallVectorSearchErrorWraps(t *testing.T) {
-	st := openTestStore(t)
-	svc := service.New(vectorErrStore{Store: st}, embedtest.New(dims), service.WithSyncReinforce())
+// keywordErrStore fails the keyword leg for one namespace, leaving every other
+// namespace healthy.
+type keywordErrStore struct {
+	store.Store
+	failNS string
+}
 
-	_, err := svc.Recall(context.Background(), service.RecallInput{Namespace: "alice", Query: "hello", Limit: 5})
-	if err == nil || !strings.Contains(err.Error(), "recall: vector search:") {
-		t.Fatalf("want a wrapped recall: vector search error, got %v", err)
+func (k keywordErrStore) KeywordSearch(
+	ctx context.Context, ns, q string, f store.Filter, n int,
+) ([]store.Scored, error) {
+	if ns == k.failNS {
+		return nil, errors.New("keyword boom")
+	}
+	return k.Store.KeywordSearch(ctx, ns, q, f, n)
+}
+
+// TestRecallDegradesWhenTheVectorLegFails confirms a failing vector leg no
+// longer aborts recall: it falls back to keyword results for that namespace,
+// the same degradation a failed query embed already produces. Previously the
+// leg's error propagated and failed the whole call.
+func TestRecallDegradesWhenTheVectorLegFails(t *testing.T) {
+	ctx := context.Background()
+	base := openTestStore(t)
+	seed := service.New(base, embedtest.New(dims), service.WithSyncReinforce())
+	if _, err := seed.Remember(ctx, service.RememberInput{
+		Namespace: "alice", Content: "the deploy key rotates every 90 days", Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	m := &countingMetrics{Metrics: service.NopMetrics()}
+	svc := service.New(vectorErrStore{Store: base}, embedtest.New(dims),
+		service.WithSyncReinforce(), service.WithMetrics(m))
+
+	res, err := svc.Recall(ctx, service.RecallInput{Namespace: "alice", Query: "deploy key rotates", Limit: 5})
+	if err != nil {
+		t.Fatalf("a failing vector leg should degrade to keyword-only, not fail: %v", err)
+	}
+	if len(res) == 0 {
+		t.Fatal("no results; the keyword leg should still have answered")
+	}
+	if m.degraded["vector_leg_failed"] == 0 {
+		t.Fatalf("RecallDegraded(vector_leg_failed) not recorded: %v", m.degraded)
+	}
+}
+
+// TestRecallFailsWhenThePrimaryKeywordLegFails pins the deliberate
+// non-degradation. A recall that returns nothing from the namespace the caller
+// asked about is a failed recall, not a degraded one, and dressing it up as "no
+// results" would produce exactly the confident negative agents are warned about.
+func TestRecallFailsWhenThePrimaryKeywordLegFails(t *testing.T) {
+	st := openTestStore(t)
+	svc := service.New(keywordErrStore{Store: st, failNS: "alice"}, embedtest.New(dims),
+		service.WithSyncReinforce())
+
+	_, err := svc.Recall(context.Background(), service.RecallInput{
+		Namespace: "alice", Query: "hello", Limit: 5,
+	})
+	if err == nil || !strings.Contains(err.Error(), "recall: keyword search:") {
+		t.Fatalf("want a wrapped recall: keyword search error, got %v", err)
+	}
+}
+
+// TestRecallDropsAnUnavailableSecondaryNamespace confirms one unreachable
+// ancestor does not take down a recall the primary already answered, and that
+// the dropped namespace is reported rather than silently omitted.
+func TestRecallDropsAnUnavailableSecondaryNamespace(t *testing.T) {
+	ctx := context.Background()
+	base := openTestStore(t)
+	seed := service.New(base, embedtest.New(dims), service.WithSyncReinforce())
+	if _, err := seed.Remember(ctx, service.RememberInput{
+		Namespace: "acme/phoenix", Content: "the deploy key rotates every 90 days",
+		Tier: memory.TierSemantic,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	m := &countingMetrics{Metrics: service.NopMetrics()}
+	svc := service.New(keywordErrStore{Store: base, failNS: "acme"}, embedtest.New(dims),
+		service.WithSyncReinforce(), service.WithMetrics(m))
+
+	var dropped []string
+	res, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "acme/phoenix", Query: "deploy key rotates", Limit: 5,
+		DroppedNamespaces: &dropped,
+	})
+	if err != nil {
+		t.Fatalf("a failing ancestor leg should degrade, not fail the recall: %v", err)
+	}
+	if len(res) == 0 {
+		t.Fatal("no results; the primary namespace should still have answered")
+	}
+	if !slices.Contains(dropped, "acme") {
+		t.Fatalf("DroppedNamespaces = %v, want it to name the unreachable ancestor", dropped)
+	}
+	if m.degraded["namespace_unavailable"] == 0 {
+		t.Fatalf("RecallDegraded(namespace_unavailable) not recorded: %v", m.degraded)
 	}
 }

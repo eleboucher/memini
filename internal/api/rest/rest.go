@@ -249,14 +249,20 @@ func (h *Server) RememberMemory(w http.ResponseWriter, r *http.Request, _ Rememb
 	// Build the response via JSON round-trip so we can add the optional
 	// merge_hint and auto_superseded fields without duplicating the
 	// apiMemory field-by-field copy.
-	respBytes, err := json.Marshal(apiMemory(m))
+	//
+	// The marshal/unmarshal pair that used to build this map had two 500 paths
+	// on a memory that was ALREADY STORED: a serialization hiccup turned a
+	// successful write into a reported failure. Marshal once, at the end,
+	// through the transport — which handles its own encode error — so nothing
+	// between "stored" and "responded" can invert the outcome.
+	resp, err := structToMap(apiMemory(m))
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, err)
-		return
-	}
-	var resp map[string]any
-	if err := json.Unmarshal(respBytes, &resp); err != nil {
-		writeError(w, r, http.StatusInternalServerError, err)
+		// Cannot realistically happen for a struct of plain fields, and even if
+		// it did the memory is stored: report the write, minus the decorations.
+		slog.WarnContext(r.Context(), "remember: building the response body failed, "+
+			"returning the stored memory without merge/supersede flags",
+			"namespace", m.Namespace, "id", m.ID, "err", err)
+		httputil.JSON(w, http.StatusCreated, apiMemory(m))
 		return
 	}
 	if hint.SimilarID != "" {
@@ -531,7 +537,9 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 		in.MinRankScore = *req.MinRankScore
 	}
 	var degraded string
+	var dropped []string
 	in.Degraded = &degraded
+	in.DroppedNamespaces = &dropped
 	var readset []service.ReadSetEntry
 	in.ReadSet = &readset
 	var omitted int
@@ -543,10 +551,8 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 		return
 	}
 	out := SearchResponse{Results: apiScored(res, service.OriginMap(readset), format)}
-	if degraded != "" {
-		keywordOnly := "keyword_only"
-		note := "semantic search unavailable (" + degraded + "); results are keyword-only and may be incomplete"
-		out.Degraded = &keywordOnly
+	if value, note := service.DegradedWire(degraded, dropped); value != "" {
+		out.Degraded = &value
 		out.Note = &note
 	}
 	// Absent when 0: presence always means the budget dropped something.
@@ -927,6 +933,9 @@ func (h *Server) GetBriefing(w http.ResponseWriter, r *http.Request, params GetB
 		Procedures: apiBriefingItems(b.Procedures, origins, format),
 		Recent:     apiBriefingItems(b.Recent, origins, format),
 		Pinned:     apiBriefingItems(b.Pinned, origins, format),
+	}
+	if len(b.Degraded) > 0 {
+		resp.Degraded = &b.Degraded
 	}
 	switch children {
 	case GetBriefingParamsChildrenNone:
@@ -1515,4 +1524,21 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 		return false
 	}
 	return true
+}
+
+// structToMap renders v as a generic map so a handler can decorate the response
+// with fields the generated type has no home for (merge_hint, auto_superseded,
+// reinforced). Kept as one helper with one error path, rather than an inline
+// marshal/unmarshal pair with two, so the decoration cannot fail a write that
+// already succeeded.
+func structToMap(v any) (map[string]any, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

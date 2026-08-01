@@ -1302,3 +1302,26 @@ func OrEmptySlice(s []string) []string {
 	}
 	return s
 }
+
+// DurableWriteTimeout bounds one already-decided durable write.
+const DurableWriteTimeout = 10 * time.Second
+
+// DurableCtx returns a context for a durable write the caller has already
+// decided to perform. It keeps ctx's values (request actor, trace, logger) but
+// drops its cancellation.
+//
+// Every driver's write path is a transaction, and database/sql and pgx both
+// roll an in-flight transaction back when its context is cancelled. So without
+// this, a client hanging up — or the request deadline landing — between "we
+// decided to store this" and "it committed" loses an accepted write and
+// reports a 500 for it. The window is small but the failure is silent and
+// total, and it is entirely avoidable: by that point nothing about the write
+// depends on the caller still being there.
+//
+// It is NOT for reads, and NOT for bulk passes. A long scan or a maintenance
+// sweep must still die with its request, so a disconnected client cannot pin a
+// connection or a CPU for a report nobody will read. Use it only where the
+// alternative to finishing is losing an accepted write.
+func DurableCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), DurableWriteTimeout)
+}

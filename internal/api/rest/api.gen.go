@@ -755,6 +755,9 @@ type Briefing struct {
 	// Children Direct-child namespace rollups (one segment deeper than the briefed namespace), each aggregating its whole subtree: all-tier live total plus up to 3 pinned and 3 recent-durable highlight memories. Ordered by most-recent write, capped at 10 children; omitted at a leaf namespace.
 	Children *[]BriefingChild `json:"children,omitempty"`
 
+	// Degraded Read-set namespaces that could not be loaded and were skipped, so a caller can distinguish an empty section from an unreachable one. The briefed namespace itself never appears here: losing it fails the request rather than degrading it. Omitted on a healthy briefing.
+	Degraded *[]string `json:"degraded,omitempty"`
+
 	// Facts Durable semantic facts, highest-retention first.
 	Facts     *[]BriefingItem `json:"facts,omitempty"`
 	Namespace string          `json:"namespace"`
@@ -1397,7 +1400,7 @@ type SearchRequestScope string
 
 // SearchResponse defines model for SearchResponse.
 type SearchResponse struct {
-	// Degraded Set to "keyword_only" when the query embed failed or timed out and this search fell back to keyword-only matching; omitted on a healthy (vector+keyword) search.
+	// Degraded Set when this search returned less than the full corpus. "keyword_only" means the query embed failed or timed out and the search fell back to keyword-only matching. "partial" means one or more read-set namespaces were unreachable and were skipped (the namespace you asked about is never among them — losing it fails the request instead). Omitted on a healthy search.
 	Degraded *string `json:"degraded,omitempty"`
 
 	// Note Human-readable explanation of `degraded`; omitted alongside it on a healthy search.

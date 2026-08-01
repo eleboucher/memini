@@ -241,7 +241,17 @@ function scopedSearch(query: string, opts: SearchOpts, ns?: string) {
       limit: opts.limit ?? 20,
     },
     ns,
-  ).then((r) => r.results ?? [])
+  ).then((r) => ({ results: r.results ?? [], degraded: r.degraded, note: r.note }))
+}
+
+// SearchOutcome carries the degradation the server reports alongside the hits.
+// The server has always sent `degraded`/`note` and the UI has always dropped
+// them, which meant a keyword-only fallback or an unreachable namespace looked
+// exactly like "nothing matched" — the one reading a user must not be left with.
+export interface SearchOutcome {
+  results: Scored[]
+  degraded?: string
+  note?: string
 }
 
 interface SearchOpts {
@@ -275,19 +285,28 @@ function listAll(p: ListParams): Promise<Memory[]> {
 // NOTE: searchAll still fans out one request per namespace and merges in the
 // browser. Fine for interactive, limit-bounded recall; if namespace counts make
 // this slow, add an all_namespaces aggregate to /v1/search too.
-async function searchAll(query: string, opts: SearchOpts): Promise<Scored[]> {
+async function searchAll(query: string, opts: SearchOpts): Promise<SearchOutcome> {
   const names = await listNamespaces()
   // Over-fetch per namespace so the merged global top-N isn't truncated by each
   // namespace's local cutoff before merging.
   const want = opts.limit ?? 20
   const perNs = Math.min(want * Math.max(1, names.length), 200)
   const all = await Promise.all(
-    names.map((n) => scopedSearch(query, { ...opts, limit: perNs }, n).catch(() => [])),
+    names.map((n) =>
+      scopedSearch(query, { ...opts, limit: perNs }, n).catch(
+        (): SearchOutcome => ({ results: [], degraded: 'partial', note: `namespace ${n} was unreachable` }),
+      ),
+    ),
   )
-  return all
-    .flat()
+  const results = all
+    .flatMap((o) => o.results)
     .sort((a, b) => b.score - a.score)
     .slice(0, want)
+  // Any degraded leg degrades the merged answer: reporting the union as healthy
+  // would hide exactly the namespace that failed.
+  const notes = all.map((o) => o.note).filter((n): n is string => !!n)
+  if (notes.length === 0) return { results }
+  return { results, degraded: 'partial', note: [...new Set(notes)].join('; ') }
 }
 
 function listNamespaces() {
