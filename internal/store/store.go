@@ -331,6 +331,167 @@ type ChunkStore interface {
 	CountChunks(ctx context.Context, namespace string) (int, error)
 }
 
+// RepairState names the deferred work a memory still owes after a degraded
+// write — one that stored without a vector because the embedder was unreachable
+// or too slow.
+//
+// It lives in a column on the memory itself rather than in a separate job
+// table, and that is load-bearing: the state commits in the same transaction as
+// the memory, so there is no second write to lose and no window in which a
+// stored-but-unqueued row can exist. A separate table would reintroduce exactly
+// the dual write a transactional outbox exists to prevent.
+type RepairState string
+
+const (
+	// RepairNone is a healthy memory owing nothing. It is the zero value, so
+	// every pre-existing row migrates into it for free.
+	RepairNone RepairState = ""
+	// RepairPending needs a vector.
+	RepairPending RepairState = "pending"
+	// RepairEnrich has its vector but still owes the write-time enrichment a
+	// healthy write would have run (dedup, corroboration, contradiction
+	// routing, consolidation). Kept distinct from RepairPending so an embedder
+	// recovery does not silently drop the enrichment half of the repair.
+	RepairEnrich RepairState = "enrich"
+	// RepairFailed exhausted its attempt ceiling. The row is retained with its
+	// last error rather than dropped — the diagnosis is the point, and the
+	// memory is still degraded either way — and excluded from claims so a
+	// wedged row cannot burn the embedder forever. RearmRepairs returns it to
+	// RepairPending after a rest, making the ceiling a circuit breaker with an
+	// auto-close rather than a dead end needing an operator.
+	RepairFailed RepairState = "failed"
+)
+
+// ValidRepairState reports whether s is a state this package defines. Repair
+// states are a closed set because they are a metric label and a wire value.
+func ValidRepairState(s RepairState) bool {
+	switch s {
+	case RepairNone, RepairPending, RepairEnrich, RepairFailed:
+		return true
+	}
+	return false
+}
+
+// RepairRow is one claimed unit of deferred repair work: the fields a repair
+// handler needs, without the cost of loading a whole memory.
+//
+// Fingerprint is the optimistic-concurrency token. Every write that finishes a
+// repair passes it back, and the store applies the change only if it still
+// matches — so a repair that raced a content edit is discarded rather than
+// stamping a vector for text the memory no longer holds. Content hash beats
+// a timestamp here: it cannot false-match two writes landing in the same tick,
+// and it states directly why a re-embed is needed.
+type RepairRow struct {
+	ID          string
+	Namespace   string
+	Tier        memory.Tier
+	Content     string
+	Fingerprint string
+	State       RepairState
+	// Attempts already counts the claim that produced this row, so a handler
+	// comparing it against a ceiling is reading the cost of the run it is
+	// about to perform, not the one before it.
+	Attempts int
+}
+
+// RepairStat is one state's bucket of the repair backlog, for gauges, health
+// and doctor.
+type RepairStat struct {
+	State RepairState
+	Count int
+	// OldestAt is the creation time of the oldest memory in the bucket — the
+	// signal that the backlog is filling faster than it drains.
+	OldestAt time.Time
+	// LastError is the most recent error recorded in the bucket, empty when
+	// none. Only meaningful for RepairFailed.
+	LastError string
+}
+
+// RepairStore is the durable deferred-repair queue. It is an optional
+// capability interface — the EventLogStore/ChunkStore pattern — so callers
+// type-assert and degrade: a store without it falls back to the metadata-marker
+// backfill loop, which is the pre-queue behaviour.
+//
+// Delivery is at-least-once. Every repair handler must be idempotent; the
+// fingerprint guard on each completing write is what makes that true here.
+type RepairStore interface {
+	// ClaimRepairs atomically takes up to limit memories in the given state
+	// whose next-run time has passed, oldest-due first. Each claimed row has
+	// its attempt count incremented and its next run pushed to now+lease
+	// BEFORE being returned, in one statement.
+	//
+	// next_run_at IS the lease: a second claimant (another replica, or a
+	// `memini mcp` process sharing the sqlite file) sees a future timestamp and
+	// skips the row, and a worker that crashed mid-repair has its rows become
+	// claimable again with the attempt already charged — which is the right
+	// accounting, since a repair that killed the process should count against
+	// the ceiling. The caller must keep lease greater than
+	// limit*(per-repair timeout) or a slow batch can be double-claimed; every
+	// handler is idempotent, so that is waste rather than corruption.
+	//
+	// now is honoured by backends without a server clock (sqlite, and every
+	// test) and ignored by postgres, which computes the lease in SQL: with
+	// multiple replicas the lease must be a statement about the database's
+	// clock, not about how well N machines agree on the time.
+	ClaimRepairs(ctx context.Context, state RepairState, now time.Time,
+		lease time.Duration, limit int) ([]RepairRow, error)
+
+	// SetEmbeddingIfUnchanged attaches vec to a memory and moves it to next,
+	// but only while its content fingerprint still matches — reporting false
+	// when it does not, or when the row is gone. Guard and write are one
+	// statement, so a concurrent content change cannot slip between them.
+	//
+	// It deliberately does NOT advance updated_at: a system-initiated re-embed
+	// is index maintenance, not a logical edit, and bumping it would perturb
+	// every "prefer the most recent" recency decision in recall and answer.
+	SetEmbeddingIfUnchanged(ctx context.Context, namespace, id, fingerprint string,
+		vec []float32, next RepairState) (bool, error)
+
+	// SetRepairState moves a memory to next without touching its vector,
+	// under the same fingerprint guard. Separate from SetEmbeddingIfUnchanged
+	// precisely so no caller can express "advance the state" with a nil vector
+	// and have it read as "drop the vector" — the trap that makes a
+	// Get-then-Upsert round trip lossy (see GetEmbedding).
+	SetRepairState(ctx context.Context, namespace, id, fingerprint string, next RepairState) (bool, error)
+
+	// FailRepair records a recoverable failure: it sets the next run time and
+	// the last error. It does NOT touch the attempt count — that was charged at
+	// claim time, so a crashed run and a failed run cost exactly the same,
+	// which is what keeps the ceiling honest.
+	FailRepair(ctx context.Context, namespace, id, lastErr string, nextRunAt time.Time) error
+
+	// ParkRepair moves a memory to RepairFailed with lastErr, excluding it from
+	// claims until RearmRepairs returns it. now is the park instant, which
+	// RearmRepairs later compares against — passed in rather than read from a
+	// store clock so a test can drive the circuit breaker deterministically.
+	ParkRepair(ctx context.Context, namespace, id, lastErr string, now time.Time) error
+
+	// RearmRepairs returns RepairFailed memories last touched before
+	// failedBefore to RepairPending with a zeroed attempt count, due
+	// immediately, and reports how many moved. This is what turns the attempt
+	// ceiling into a circuit breaker: during a long outage each row costs a
+	// couple of probes an hour instead of continuous hammering, and recovery
+	// still needs no human.
+	RearmRepairs(ctx context.Context, failedBefore time.Time, now time.Time) (int64, error)
+
+	// MarkRepairNeeded puts memories into state when they are not already in a
+	// repair state, due immediately, and reports how many moved. It is the
+	// migration and safety-net path: rows written by a release that predates
+	// these columns, or by a write path that bypasses Remember, carry no state
+	// and would otherwise never be repaired. Rows already mid-repair are left
+	// alone so a sweep cannot reset a backoff or unpark a wedged row.
+	MarkRepairNeeded(ctx context.Context, namespace string, ids []string, state RepairState) (int64, error)
+
+	// RepairStats returns one entry per non-empty repair state, ordered by
+	// state. Empty (never an error) when nothing is outstanding.
+	RepairStats(ctx context.Context) ([]RepairStat, error)
+
+	// RepairStateOf returns a memory's repair state, attempt count and last
+	// error. Used by doctor, by the health endpoint and by tests; not on the
+	// hot path. Returns ErrNotFound when the memory is absent.
+	RepairStateOf(ctx context.Context, namespace, id string) (RepairState, int, string, error)
+}
+
 // NamespaceLink is a directed cross-namespace read link: recall scoped to Src
 // additionally reads durable memories from Dst. Tiers restricts which tiers
 // cross the boundary; nil means the service layer applies its durable-tier

@@ -140,6 +140,20 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		`ALTER TABLE memories ALTER COLUMN embedding DROP NOT NULL`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS linked_memory_ids text NOT NULL DEFAULT '[]'`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_fingerprint ON memories(namespace, tier, fingerprint)`,
+		// Deferred-repair state (see store.RepairStore). On the memory rather
+		// than in a job table so a degraded write's "still owes a vector" state
+		// commits in the same transaction as the write itself — there is no
+		// enqueue to lose. '' is store.RepairNone, so existing rows migrate into
+		// "healthy" for free and an older binary ignores the columns.
+		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS embed_state text NOT NULL DEFAULT ''`,
+		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS embed_attempts integer NOT NULL DEFAULT 0`,
+		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS embed_next_run_at timestamptz`,
+		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS embed_last_error text NOT NULL DEFAULT ''`,
+		// The repair claim runs on every poll tick forever, so it must be an
+		// index range scan over just the outstanding repairs. Partial, so
+		// repaired rows leave the index and it stays small permanently.
+		`CREATE INDEX IF NOT EXISTS idx_memories_repair
+			ON memories(embed_next_run_at, id) WHERE embed_state <> ''`,
 		// Key/value store for store-level metadata (e.g. the embedding model the
 		// vectors were produced with — see EmbedModel/SetEmbedModel).
 		`CREATE TABLE IF NOT EXISTS meta (key text PRIMARY KEY, value text NOT NULL)`,

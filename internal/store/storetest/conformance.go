@@ -62,6 +62,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("ListRecencyWindow", func(t *testing.T) { testListRecencyWindow(t, st, dims) })
 	t.Run("EventLog", func(t *testing.T) { testEventLog(t, st, dims) })
 	t.Run("Chunks", func(t *testing.T) { testChunks(t, st, dims) })
+	t.Run("Repair", func(t *testing.T) { testRepair(t, st, dims) })
 	t.Run("IDsByPrefix", func(t *testing.T) { testIDsByPrefix(t, st, dims) })
 }
 

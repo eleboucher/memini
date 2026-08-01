@@ -73,13 +73,28 @@ func Open(ctx context.Context, path string, dims int) (*Store, error) {
 // existing DB the CREATE TABLE in migrate is a no-op, so each is ALTER-added
 // here before any index or query references it.
 var backfillColumns = []struct{ name, decl string }{
-	{"valid_from", "INTEGER"},
-	{"valid_to", "INTEGER"},
+	{"valid_from", colInt},
+	{"valid_to", colInt},
 	{"confidence", "REAL"},
-	{"fingerprint", "TEXT NOT NULL DEFAULT ''"},
-	{"level", "TEXT NOT NULL DEFAULT ''"},
+	{"fingerprint", colTextEmpty},
+	{"level", colTextEmpty},
 	{"linked_memory_ids", "TEXT NOT NULL DEFAULT '[]'"},
+	// Deferred-repair state (see store.RepairStore). These live on the memory
+	// rather than in a job table so the state commits in the same transaction
+	// as the write that needs it — there is no enqueue to lose. '' is
+	// store.RepairNone, so every pre-existing row migrates into "healthy" for
+	// free and an older binary simply ignores the columns.
+	{"embed_state", colTextEmpty},
+	{"embed_attempts", "INTEGER NOT NULL DEFAULT 0"},
+	{"embed_next_run_at", colInt},
+	{"embed_last_error", colTextEmpty},
 }
+
+// Column declarations shared by more than one entry above.
+const (
+	colInt       = "INTEGER"
+	colTextEmpty = "TEXT NOT NULL DEFAULT ''"
+)
 
 func (s *Store) migrate(ctx context.Context) error {
 	// pins was named project_map until the terminology cleanup; rename an
@@ -268,6 +283,16 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx,
 		`CREATE INDEX IF NOT EXISTS idx_memories_fingerprint ON memories(namespace, tier, fingerprint)`); err != nil {
 		return fmt.Errorf("sqlitevec: migrate: create idx_memories_fingerprint: %w", err)
+	}
+	// Likewise embed_state/embed_next_run_at: the repair claim runs on every
+	// poll tick forever, so it must be an index range scan over just the
+	// outstanding repairs. Partial, so repaired rows leave the index and it
+	// stays small permanently — unlike the metadata-marker scan it replaces,
+	// which was a per-namespace full table scan through json_each.
+	if _, err := s.db.ExecContext(ctx,
+		`CREATE INDEX IF NOT EXISTS idx_memories_repair ON memories(embed_next_run_at, id)
+			WHERE embed_state <> ''`); err != nil {
+		return fmt.Errorf("sqlitevec: migrate: create idx_memories_repair: %w", err)
 	}
 	return nil
 }
