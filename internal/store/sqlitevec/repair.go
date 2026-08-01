@@ -166,9 +166,12 @@ func (s *Store) SetRepairState(ctx context.Context, namespace, id, fingerprint s
 		   SET embed_state = ?,
 		       embed_attempts = 0,
 		       embed_next_run_at = CASE WHEN ? = '' THEN NULL ELSE 0 END,
-		       embed_last_error = ''
+		       embed_last_error = '',
+		       -- Reaching the healthy state also strips the legacy metadata
+		       -- marker; see setRepairColumnsTx for why leaving it would loop.
+		       metadata = CASE WHEN ? = '' THEN json_remove(metadata, '$.pending_embed') ELSE metadata END
 		 WHERE id=? AND namespace=? AND fingerprint=?`,
-		string(next), string(next), id, namespace, fingerprint)
+		string(next), string(next), string(next), id, namespace, fingerprint)
 	if err != nil {
 		return false, fmt.Errorf("sqlitevec: set repair state: %w", err)
 	}
@@ -185,9 +188,15 @@ func (s *Store) SetRepairState(ctx context.Context, namespace, id, fingerprint s
 // slate rather than inheriting a stale failure record.
 func setRepairColumnsTx(ctx context.Context, tx *sql.Tx, rowID int64, next store.RepairState) error {
 	if next == store.RepairNone {
+		// json_remove strips the legacy metadata marker in the same statement.
+		// Without it a repaired row still reads as pending to every consumer of
+		// Memory.PendingEmbed (stats, doctor, the UI badge) AND the sweeper's
+		// compat scan re-adopts it from that marker on the next tick — an
+		// infinite repair loop costing one embedder call a minute, forever.
 		_, err := tx.ExecContext(ctx, `
 			UPDATE memories
-			   SET embed_state='', embed_attempts=0, embed_next_run_at=NULL, embed_last_error=''
+			   SET embed_state='', embed_attempts=0, embed_next_run_at=NULL, embed_last_error='',
+			       metadata=json_remove(metadata, '$.pending_embed')
 			 WHERE rowid=?`, rowID)
 		if err != nil {
 			return fmt.Errorf("sqlitevec: clear repair state: %w", err)

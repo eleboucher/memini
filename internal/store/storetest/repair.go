@@ -36,6 +36,7 @@ func testRepair(t *testing.T, st store.Store, dims int) {
 	t.Run("ParkExcludesFromClaim", func(t *testing.T) { testRepairPark(t, st, rs, dims) })
 	t.Run("RearmReturnsParkedRows", func(t *testing.T) { testRepairRearm(t, st, rs, dims) })
 	t.Run("Stats", func(t *testing.T) { testRepairStats(t, st, rs, dims) })
+	t.Run("CompletionClearsTheLegacyMarker", func(t *testing.T) { testRepairClearsMarker(t, st, rs, dims) })
 	t.Run("StateOfMissingRowErrors", func(t *testing.T) { testRepairStateOfMissing(t, rs) })
 }
 
@@ -543,6 +544,54 @@ func testRepairStats(t *testing.T, st store.Store, rs store.RepairStore, _ int) 
 	}
 	if _, ok := byState[store.RepairNone]; ok {
 		t.Fatal("stats reported a bucket for healthy rows; only outstanding work belongs here")
+	}
+}
+
+// testRepairClearsMarker pins that finishing a repair also strips the legacy
+// metadata.pending_embed marker.
+//
+// Leaving it is not cosmetic. Memory.PendingEmbed reads that marker, so stats,
+// doctor and the UI badge would keep reporting a fully repaired memory as
+// degraded — and the sweeper's compat scan re-adopts any row carrying it, so the
+// row would be re-claimed and re-embedded every tick, forever.
+func testRepairClearsMarker(t *testing.T, st store.Store, rs store.RepairStore, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+	m := mem(ns, "a", "carries the legacy marker", nil)
+	m.Metadata = map[string]any{memory.PendingEmbedKey: memory.PendingEmbedValue}
+	mustUpsert(t, st, m)
+	if _, err := rs.MarkRepairNeeded(ctx, ns, []string{m.ID}, store.RepairPending); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	fp := memory.Fingerprint(m.Content)
+
+	// pending -> enrich keeps the marker: the row still owes work.
+	if ok, err := rs.SetEmbeddingIfUnchanged(ctx, ns, m.ID, fp, vec(dims, 2), store.RepairEnrich); err != nil || !ok {
+		t.Fatalf("set embedding: ok=%v err=%v", ok, err)
+	}
+	mid, err := st.Get(ctx, ns, m.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !mid.PendingEmbed() {
+		t.Fatal("marker cleared at the enrich stage; the row still owes its enrichment")
+	}
+
+	// enrich -> healthy must clear it.
+	if ok, err := rs.SetRepairState(ctx, ns, m.ID, fp, store.RepairNone); err != nil || !ok {
+		t.Fatalf("set repair state: ok=%v err=%v", ok, err)
+	}
+	done, err := st.Get(ctx, ns, m.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if done.PendingEmbed() {
+		t.Fatalf("a fully repaired memory still reports PendingEmbed (metadata=%v); stats, doctor "+
+			"and the UI would show it as degraded forever, and the sweeper would re-adopt it every tick",
+			done.Metadata)
+	}
+	if _, ok := done.Metadata[memory.PendingEmbedKey]; ok {
+		t.Fatalf("legacy marker survived the repair: %v", done.Metadata)
 	}
 }
 

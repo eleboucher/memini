@@ -102,7 +102,8 @@ func (s *Store) SetEmbeddingIfUnchanged(ctx context.Context, namespace, id, fing
 		       embed_state = $2,
 		       embed_attempts = 0,
 		       embed_next_run_at = CASE WHEN $2 = '' THEN NULL ELSE now() END,
-		       embed_last_error = ''
+		       embed_last_error = '',
+		       metadata = CASE WHEN $2 = '' THEN metadata - 'pending_embed' ELSE metadata END
 		 WHERE id = $3 AND namespace = $4 AND fingerprint = $5`,
 		embArg, string(next), id, namespace, fingerprint)
 	if err != nil {
@@ -122,7 +123,12 @@ func (s *Store) SetRepairState(ctx context.Context, namespace, id, fingerprint s
 		   SET embed_state = $1,
 		       embed_attempts = 0,
 		       embed_next_run_at = CASE WHEN $1 = '' THEN NULL ELSE now() END,
-		       embed_last_error = ''
+		       embed_last_error = '',
+		       -- Reaching the healthy state also strips the legacy metadata
+		       -- marker: leaving it would make every consumer of
+		       -- Memory.PendingEmbed still report the row as degraded, and the
+		       -- sweeper's compat scan would re-adopt it every tick forever.
+		       metadata = CASE WHEN $1 = '' THEN metadata - 'pending_embed' ELSE metadata END
 		 WHERE id = $2 AND namespace = $3 AND fingerprint = $4`,
 		string(next), id, namespace, fingerprint)
 	if err != nil {
