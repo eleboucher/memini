@@ -366,3 +366,31 @@ func TestCrossEncoderMinScoreSingleCandidateStillScored(t *testing.T) {
 		t.Fatalf("ungated single candidate must not make a network call")
 	}
 }
+
+func TestCrossEncoderAcceptsDataEnvelope(t *testing.T) {
+	// Voyage AI, DashScope, and several aggregator gateways wrap rerank
+	// output in the OpenAI list convention: {"object":"list","data":[...]}
+	// with the same per-item shape as the Cohere-style "results" field.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"object":"list","data":[
+			{"index":0,"relevance_score":0.1},
+			{"index":1,"relevance_score":0.9}
+		],"model":"m","id":"x"}`))
+	}))
+	defer srv.Close()
+
+	ce, err := New(Config{BaseURL: srv.URL, Model: "m"})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	got, err := ce.Rerank(context.Background(), "q", []Candidate{{ID: "a"}, {ID: "b"}})
+	if err != nil {
+		t.Fatalf("rerank: %v", err)
+	}
+	want := []string{"b", "a"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order = %v, want %v", got, want)
+		}
+	}
+}

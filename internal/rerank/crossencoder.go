@@ -95,11 +95,19 @@ type rerankRequest struct {
 	Documents []string `json:"documents"`
 }
 
+type rerankResult struct {
+	Index          int     `json:"index"`
+	RelevanceScore float64 `json:"relevance_score"`
+}
+
 type rerankResponse struct {
-	Results []struct {
-		Index          int     `json:"index"`
-		RelevanceScore float64 `json:"relevance_score"`
-	} `json:"results"`
+	Results []rerankResult `json:"results"`
+	// Data is the OpenAI-list-envelope alias for Results. Servers that wrap
+	// rerank output in the OpenAI list convention (Voyage AI, DashScope, and
+	// several aggregator gateways) return {"object":"list","data":[...]} with
+	// the same per-item shape, which would otherwise be misreported as
+	// "empty results".
+	Data []rerankResult `json:"data"`
 	// Error carries a server-reported error delivered with a 200 status. Some
 	// servers (e.g. LM Studio) answer an unimplemented /rerank route with
 	// HTTP 200 and {"error": "..."} rather than a 4xx, which would otherwise be
@@ -260,6 +268,9 @@ func (c *CrossEncoder) scoreBatch(ctx context.Context, query string, candidates 
 	}
 	if rr.Error != "" {
 		return nil, fmt.Errorf("rerank: server returned 200 with error: %s", rr.Error)
+	}
+	if len(rr.Results) == 0 && len(rr.Data) > 0 {
+		rr.Results = rr.Data
 	}
 	if len(rr.Results) == 0 {
 		return nil, fmt.Errorf("rerank: empty results for %d documents", len(docs))
