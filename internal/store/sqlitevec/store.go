@@ -25,7 +25,7 @@ const overFetch = 4
 // memoryColumns is the canonical column order for scanning a memory row.
 const memoryColumns = `id, namespace, tier, content, summary, metadata, tags, importance,
 	created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-	valid_from, valid_to, confidence, level, linked_memory_ids`
+	valid_from, valid_to, confidence, level, linked_memory_ids, embed_state`
 
 // Store is a sqlite-vec backed store.Store.
 type Store struct {
@@ -484,12 +484,13 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		res, ierr := tx.ExecContext(ctx, `INSERT INTO memories
 			(id, namespace, tier, content, summary, metadata, tags, importance,
 			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-			 valid_from, valid_to, confidence, fingerprint, level, linked_memory_ids)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			 valid_from, valid_to, confidence, fingerprint, level, linked_memory_ids,
+			 embed_state, embed_next_run_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
 			m.Importance, ms(m.CreatedAt), ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
 			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), f64Ptr(m.Confidence),
-			fp, string(m.Level), string(linkedJSON))
+			fp, string(m.Level), string(linkedJSON), m.EmbedState, repairDueAt(m.EmbedState))
 		if ierr != nil {
 			return fmt.Errorf("sqlitevec: insert memory: %w", ierr)
 		}
@@ -509,12 +510,15 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		if _, uerr := tx.ExecContext(ctx, `UPDATE memories SET
 			tier=?, content=?, summary=?, metadata=?, tags=?, importance=?,
 			updated_at=?, last_accessed_at=?, access_count=?, expires_at=?, superseded_by=?,
-			valid_from=?, valid_to=?, confidence=?, fingerprint=?, level=?, linked_memory_ids=?
+			valid_from=?, valid_to=?, confidence=?, fingerprint=?, level=?, linked_memory_ids=?,
+			embed_state=?, embed_attempts=CASE WHEN ?='' THEN 0 ELSE embed_attempts END,
+			embed_next_run_at=?
 			WHERE rowid=?`,
 			string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
 			m.Importance, ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
 			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), f64Ptr(m.Confidence),
-			fp, string(m.Level), string(linkedJSON), rowID); uerr != nil {
+			fp, string(m.Level), string(linkedJSON),
+			m.EmbedState, m.EmbedState, repairDueAt(m.EmbedState), rowID); uerr != nil {
 			return fmt.Errorf("sqlitevec: update memory: %w", uerr)
 		}
 	}

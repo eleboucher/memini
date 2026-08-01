@@ -18,7 +18,7 @@ import (
 
 const memoryColumns = `id, namespace, tier, content, summary, metadata, tags, importance,
 	created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-	valid_from, valid_to, confidence, level, linked_memory_ids`
+	valid_from, valid_to, confidence, level, linked_memory_ids, embed_state`
 
 // Store is a Postgres/VectorChord backed store.Store.
 type Store struct {
@@ -342,8 +342,10 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		INSERT INTO memories
 			(id, namespace, tier, content, summary, metadata, tags, importance,
 			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-			 valid_from, valid_to, confidence, fingerprint, level, linked_memory_ids, embedding)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+			 valid_from, valid_to, confidence, fingerprint, level, linked_memory_ids, embedding,
+			 embed_state, embed_next_run_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
+			$22, CASE WHEN $22 = '' THEN NULL ELSE now() END)
 		ON CONFLICT (id) DO UPDATE SET
 			tier=EXCLUDED.tier, content=EXCLUDED.content,
 			summary=EXCLUDED.summary, metadata=EXCLUDED.metadata, tags=EXCLUDED.tags,
@@ -353,13 +355,20 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 			valid_from=EXCLUDED.valid_from, valid_to=EXCLUDED.valid_to,
 			confidence=EXCLUDED.confidence, fingerprint=EXCLUDED.fingerprint,
 			level=EXCLUDED.level, linked_memory_ids=EXCLUDED.linked_memory_ids,
-			embedding=EXCLUDED.embedding
+			embedding=EXCLUDED.embedding,
+			-- A write carries its own repair state, so a degraded write and its
+			-- "needs a vector" marker commit together and the repair worker can
+			-- claim it the moment it lands. Reaching '' (healthy) resets the
+			-- attempt budget so a row that degrades again starts clean.
+			embed_state=EXCLUDED.embed_state,
+			embed_next_run_at=EXCLUDED.embed_next_run_at,
+			embed_attempts=CASE WHEN EXCLUDED.embed_state = '' THEN 0 ELSE memories.embed_attempts END
 		WHERE memories.namespace = EXCLUDED.namespace`,
 		m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, metaJSON, store.OrEmptySlice(m.Tags),
 		m.Importance, m.CreatedAt, m.UpdatedAt, m.LastAccessedAt, m.AccessCount,
 		m.ExpiresAt, m.SupersededBy, m.ValidFrom, m.ValidTo, m.Confidence, fp,
 		string(m.Level), linkedJSON,
-		embArg)
+		embArg, m.EmbedState)
 	if err != nil {
 		return fmt.Errorf("postgres: upsert: %w", err)
 	}

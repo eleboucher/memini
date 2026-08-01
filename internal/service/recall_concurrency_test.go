@@ -77,6 +77,9 @@ func (e errEmbedder) Dims() int { return e.dims }
 // countingMetrics counts recall error, keyword-only-degrade, and rank-floor
 // events; everything else is a no-op. Safe for concurrent use.
 type countingMetrics struct {
+	// Embedded so a new service.Metrics method does not break this double; the
+	// explicit methods below still win for the ones these tests assert on.
+	service.Metrics
 	mu                   sync.Mutex
 	recallErr            int
 	degraded             map[string]int
@@ -147,7 +150,7 @@ func (m *countingMetrics) ChunkBackfillPending(int) {}
 // recall with the original wrap and reports the error metric exactly once.
 func TestRecallEmbedErrorFailsOnce(t *testing.T) {
 	st := openTestStore(t)
-	m := &countingMetrics{}
+	m := &countingMetrics{Metrics: service.NopMetrics()}
 	svc := service.New(st, errEmbedder{dims: dims}, service.WithSyncReinforce(), service.WithMetrics(m))
 
 	_, err := svc.Recall(context.Background(), service.RecallInput{Namespace: "alice", Query: "hello", Limit: 5})
@@ -192,7 +195,7 @@ func TestRecallEmbedTimeoutFallsBackToKeyword(t *testing.T) {
 	st := openTestStore(t)
 	seedHello(t, st)
 
-	m := &countingMetrics{}
+	m := &countingMetrics{Metrics: service.NopMetrics()}
 	svc := service.New(st, slowEmbedder{d: 2 * time.Second}, service.WithSyncReinforce(),
 		service.WithRecallEmbedTimeout(20*time.Millisecond), service.WithMetrics(m))
 
@@ -214,7 +217,7 @@ func TestRecallEmbedErrorFallsBackToKeyword(t *testing.T) {
 	st := openTestStore(t)
 	seedHello(t, st)
 
-	m := &countingMetrics{}
+	m := &countingMetrics{Metrics: service.NopMetrics()}
 	svc := service.New(st, errEmbedder{dims: dims}, service.WithSyncReinforce(),
 		service.WithRecallEmbedTimeout(time.Second), service.WithRecallMinSemanticScore(0.9), service.WithMetrics(m))
 
@@ -238,7 +241,7 @@ func TestRecallDegradedOutParamSetOnFallback(t *testing.T) {
 	st := openTestStore(t)
 	seedHello(t, st)
 
-	m := &countingMetrics{}
+	m := &countingMetrics{Metrics: service.NopMetrics()}
 	svc := service.New(st, errEmbedder{dims: dims}, service.WithSyncReinforce(),
 		service.WithRecallEmbedTimeout(time.Second), service.WithMetrics(m))
 

@@ -156,14 +156,19 @@ func (s *Store) SetRepairState(ctx context.Context, namespace, id, fingerprint s
 	if !store.ValidRepairState(next) {
 		return false, fmt.Errorf("sqlitevec: set repair state: invalid state %q", next)
 	}
+	// Moving to a new stage makes the row due immediately and starts that
+	// stage's budget fresh. Preserving the existing embed_next_run_at instead
+	// would leave the row invisible for the rest of the claim lease the stage
+	// it just finished was holding — so a repair would stall for ten minutes
+	// between embedding and enriching.
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE memories
 		   SET embed_state = ?,
-		       embed_attempts = CASE WHEN ? = '' THEN 0 ELSE embed_attempts END,
-		       embed_next_run_at = CASE WHEN ? = '' THEN NULL ELSE embed_next_run_at END,
-		       embed_last_error = CASE WHEN ? = '' THEN '' ELSE embed_last_error END
+		       embed_attempts = 0,
+		       embed_next_run_at = CASE WHEN ? = '' THEN NULL ELSE 0 END,
+		       embed_last_error = ''
 		 WHERE id=? AND namespace=? AND fingerprint=?`,
-		string(next), string(next), string(next), string(next), id, namespace, fingerprint)
+		string(next), string(next), id, namespace, fingerprint)
 	if err != nil {
 		return false, fmt.Errorf("sqlitevec: set repair state: %w", err)
 	}
@@ -335,3 +340,18 @@ func truncErr(s string) string {
 
 // compile-time proof the driver satisfies the optional capability.
 var _ store.RepairStore = (*Store)(nil)
+
+// repairDueAt is the embed_next_run_at an Upsert should write for a given
+// repair state: 0 (immediately due) when the write owes a repair, NULL when it
+// does not.
+//
+// It is what makes a degraded write self-queueing. The state and its due time
+// land in the same statement as the memory, so a write that could not reach the
+// embedder is claimable by the repair worker the moment it commits, with no
+// enqueue that could be lost in between.
+func repairDueAt(state string) any {
+	if state == "" {
+		return nil
+	}
+	return int64(0)
+}

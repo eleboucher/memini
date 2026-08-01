@@ -144,6 +144,20 @@ type Memory struct {
 	// writing to the store and is omitted from API responses.
 	Embedding []float32 `json:"-"`
 
+	// EmbedState is the deferred-repair state a write commits alongside the
+	// memory: "" for a healthy write, "pending" when it stored without a vector
+	// because the embedder was unreachable. The values are store.RepairState's;
+	// it is a plain string here only because internal/memory cannot import
+	// internal/store.
+	//
+	// Writing it on the Memory rather than through a separate call is the whole
+	// point: the state and the memory it describes commit in one transaction,
+	// so there is no window in which a degraded write exists without the record
+	// that it needs repairing. On read paths it reflects the stored column, so
+	// a caller can tell a memory that will be repaired shortly from one whose
+	// repair has given up (see EmbedStuck).
+	EmbedState string `json:"embed_state,omitempty"`
+
 	// Chunks are per-segment vectors covering content that runs past the
 	// per-item embed budget, so recall can match text the Embedding above does
 	// not reach. Optional: a store need not implement store.ChunkStore, and
@@ -192,13 +206,32 @@ const (
 	PendingEmbedValue = "true"
 )
 
+// EmbedStateStuck is the EmbedState of a memory whose repair exhausted its
+// attempt ceiling: it will not be retried until the sweeper re-arms it, so it
+// is the one repair state an operator has to be told about. Mirrors
+// store.RepairFailed.
+const EmbedStateStuck = "failed"
+
 // PendingEmbed reports whether this memory is still awaiting its embedding
 // (stored vectorless by a degraded write; keyword-retrieval only until the
-// backfill clears the flag).
+// repair completes).
+//
+// The metadata flag is checked alongside the column so a database written by a
+// release that predates the repair columns still reports honestly until the
+// sweeper adopts it.
 func (m *Memory) PendingEmbed() bool {
+	if m.EmbedState != "" && m.EmbedState != EmbedStateStuck {
+		return true
+	}
 	v, _ := m.Metadata[PendingEmbedKey].(string)
 	return v == PendingEmbedValue
 }
+
+// EmbedStuck reports whether this memory's repair has given up. It is the
+// distinction the UI and doctor need: a pending repair fixes itself within
+// seconds, a stuck one never will without intervention, and rendering them
+// identically is what lets silent degradation hide.
+func (m *Memory) EmbedStuck() bool { return m.EmbedState == EmbedStateStuck }
 
 // retentionHalfLife is the time since last access at which the recency factor
 // of a memory's retention score halves.

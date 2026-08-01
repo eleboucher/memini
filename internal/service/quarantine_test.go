@@ -11,7 +11,12 @@ import (
 
 // sanitizeRecorder is a service.Metrics that only records WriteSanitized; every
 // other method is a no-op. Used to assert the ingestion-hygiene counter fires.
-type sanitizeRecorder struct{ actions map[string]int }
+type sanitizeRecorder struct {
+	// Embedded so a new service.Metrics method does not break this double;
+	// WriteSanitized below still wins for the one it asserts on.
+	service.Metrics
+	actions map[string]int
+}
 
 func (r *sanitizeRecorder) WriteSanitized(action string) {
 	if r.actions == nil {
@@ -49,7 +54,7 @@ func (*sanitizeRecorder) ChunkBackfillPending(int)            {}
 const garbledContent = "Thank you I'm这a家b制c品d with在e上f世g纪h and的i more"
 
 func TestRememberCleansControlChars(t *testing.T) {
-	rec := &sanitizeRecorder{}
+	rec := &sanitizeRecorder{Metrics: service.NopMetrics()}
 	svc := newService(t, service.WithMetrics(rec))
 	m, err := svc.Remember(context.Background(), service.RememberInput{
 		Namespace: "alice",
@@ -100,7 +105,7 @@ func TestQuarantineOffByDefaultKeepsGarbledWrite(t *testing.T) {
 }
 
 func TestQuarantineDownranksGarbledWrite(t *testing.T) {
-	rec := &sanitizeRecorder{}
+	rec := &sanitizeRecorder{Metrics: service.NopMetrics()}
 	svc := newService(t, service.WithCorruptionQuarantine(true), service.WithMetrics(rec))
 	m, err := svc.Remember(context.Background(), service.RememberInput{
 		Namespace:  "alice",

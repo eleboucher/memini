@@ -183,34 +183,52 @@ type Metrics interface {
 	// chunk vectors after one chunk-backfill tick (0 once the queue is
 	// drained). Only meaningful with MEMINI_CHUNK_EMBED on.
 	ChunkBackfillPending(n int)
+	// RepairResult records one deferred-repair outcome. stage is the repair
+	// state the row was claimed in ("pending" or "enrich"); result is "ok",
+	// "moot" (the row no longer needed the work), "retry" (failed, will run
+	// again under backoff), "parked" (failed at the attempt ceiling), or a
+	// stage-specific detail ("embedded", "coalesced", "superseded").
+	RepairResult(stage, result string)
+	// RepairDuration observes one deferred repair's end-to-end execution time.
+	RepairDuration(stage string, d time.Duration)
+	// RepairDepth reports how many memories are currently in one repair state.
+	RepairDepth(state string, n int)
+	// RepairOldestAge reports the age in seconds of the oldest memory in one
+	// repair state — the signal that the backlog is filling faster than it
+	// drains.
+	RepairOldestAge(state string, seconds float64)
 }
 
 type nopMetrics struct{}
 
-func (nopMetrics) ConsolidateResult(string)            {}
-func (nopMetrics) ConsolidateQueueDepth(int)           {}
-func (nopMetrics) RememberResult(string, string)       {}
-func (nopMetrics) RecallResult(string, string, string) {}
-func (nopMetrics) ForgetResult(string)                 {}
-func (nopMetrics) SupersedeResult(string)              {}
-func (nopMetrics) PromoteResult(string, int)           {}
-func (nopMetrics) FsckResult(string)                   {}
-func (nopMetrics) OpDuration(string, time.Duration)    {}
-func (nopMetrics) AnswerResult(string)                 {}
-func (nopMetrics) RerankResult(string, string)         {}
-func (nopMetrics) RecallDegraded(string)               {}
-func (nopMetrics) RecallFloored(string, int)           {}
-func (nopMetrics) RememberDegraded(string)             {}
-func (nopMetrics) WriteSanitized(string)               {}
-func (nopMetrics) ReinforceResult(string)              {}
-func (nopMetrics) DedupTombstoned(int)                 {}
-func (nopMetrics) CorroborateResult(string)            {}
-func (nopMetrics) ContradictResult(string)             {}
-func (nopMetrics) TierClassified(string)               {}
-func (nopMetrics) InjectedResult(string, string, int)  {}
-func (nopMetrics) InjectedTokens(string, int)          {}
-func (nopMetrics) EmbedBackfillPending(int)            {}
-func (nopMetrics) ChunkBackfillPending(int)            {}
+func (nopMetrics) ConsolidateResult(string)             {}
+func (nopMetrics) ConsolidateQueueDepth(int)            {}
+func (nopMetrics) RememberResult(string, string)        {}
+func (nopMetrics) RecallResult(string, string, string)  {}
+func (nopMetrics) ForgetResult(string)                  {}
+func (nopMetrics) SupersedeResult(string)               {}
+func (nopMetrics) PromoteResult(string, int)            {}
+func (nopMetrics) FsckResult(string)                    {}
+func (nopMetrics) OpDuration(string, time.Duration)     {}
+func (nopMetrics) AnswerResult(string)                  {}
+func (nopMetrics) RerankResult(string, string)          {}
+func (nopMetrics) RecallDegraded(string)                {}
+func (nopMetrics) RecallFloored(string, int)            {}
+func (nopMetrics) RememberDegraded(string)              {}
+func (nopMetrics) WriteSanitized(string)                {}
+func (nopMetrics) ReinforceResult(string)               {}
+func (nopMetrics) DedupTombstoned(int)                  {}
+func (nopMetrics) CorroborateResult(string)             {}
+func (nopMetrics) ContradictResult(string)              {}
+func (nopMetrics) TierClassified(string)                {}
+func (nopMetrics) InjectedResult(string, string, int)   {}
+func (nopMetrics) InjectedTokens(string, int)           {}
+func (nopMetrics) EmbedBackfillPending(int)             {}
+func (nopMetrics) ChunkBackfillPending(int)             {}
+func (nopMetrics) RepairResult(string, string)          {}
+func (nopMetrics) RepairDuration(string, time.Duration) {}
+func (nopMetrics) RepairDepth(string, int)              {}
+func (nopMetrics) RepairOldestAge(string, float64)      {}
 
 // NopMetrics is exported for tests, mirroring store.NopMetrics: it lets a test
 // outside this package embed a working sink and override only the one method it
@@ -427,6 +445,16 @@ type Service struct {
 	now   func() time.Time
 	newID func() string
 
+	// repairKick wakes RunRepairWorker the instant a write degrades, so a
+	// repair starts in milliseconds rather than on the next poll tick. Capacity
+	// 1 and edge-triggered; see kickRepair for why dropping a send is correct.
+	repairKick chan struct{}
+	// backgroundEmbedTimeout bounds the embed inside a background repair,
+	// deliberately independent of writeEmbedTimeout: the write budget exists to
+	// bound a caller's latency, and a repair has no caller. 0 selects
+	// repairEmbedTimeout. See WithBackgroundEmbedTimeout.
+	backgroundEmbedTimeout time.Duration
+
 	// bg tracks detached best-effort goroutines (async recall reinforcement) so
 	// WaitBackground can join them before the store is closed.
 	bg sync.WaitGroup
@@ -576,6 +604,23 @@ func WithWriteEmbedTimeout(d time.Duration) Option {
 	return func(s *Service) {
 		if d > 0 {
 			s.writeEmbedTimeout = d
+		}
+	}
+}
+
+// WithBackgroundEmbedTimeout bounds the embed inside a background repair,
+// independently of WithWriteEmbedTimeout.
+//
+// Keeping the two apart is not cosmetic. The write budget is a latency budget
+// for a caller who is waiting; a background repair has no caller. Holding a
+// repair to the write budget means a merely-slow embedder — a network stall,
+// exactly the degraded scenario repairs exist to recover from — makes every
+// repair fail forever while the write path keeps degrading. d <= 0 selects
+// repairEmbedTimeout.
+func WithBackgroundEmbedTimeout(d time.Duration) Option {
+	return func(s *Service) {
+		if d > 0 {
+			s.backgroundEmbedTimeout = d
 		}
 	}
 }
@@ -927,6 +972,11 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 	if s.distillOnWrite || s.extractOnWrite {
 		s.distillSem = make(chan struct{}, distillSemCap)
 	}
+	// Only when the store can actually hold repair state; without it the write
+	// path has nothing to kick and RunRepairWorker no-ops.
+	if _, ok := s.repairStore(); ok {
+		s.repairKick = make(chan struct{}, 1)
+	}
 	return s
 }
 
@@ -1195,6 +1245,22 @@ func (s *Service) embedForRemember(ctx context.Context, in *RememberInput, exist
 	return nil, nil
 }
 
+// degradedRepairState is the repair state a write should commit alongside
+// itself: pending when the embed did not produce a vector, none otherwise.
+//
+// Returning it rather than mutating in place keeps Remember free of another
+// branch — it is already at its cyclomatic ceiling, so any added `if` fails
+// lint. The value rides on the Memory into Upsert, so a degraded write and the
+// record that it needs repairing commit in one transaction: there is no enqueue
+// that can be lost between them, which is the whole reason repair state lives
+// on the row rather than in a job table.
+func degradedRepairState(vec []float32) string {
+	if len(vec) == 0 {
+		return string(store.RepairPending)
+	}
+	return ""
+}
+
 // Remember embeds and stores a memory, returning the persisted record.
 func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memory, error) {
 	start := time.Now()
@@ -1289,6 +1355,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		UpdatedAt:      now,
 		LastAccessedAt: now,
 		Embedding:      vec,
+		EmbedState:     degradedRepairState(vec),
 	}
 	// An update by ID preserves the original creation time, so a tag- or
 	// metadata-only edit doesn't make an old memory appear freshly created and
@@ -1357,6 +1424,11 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	// by a free function so its branches don't count against Remember's
 	// cyclomatic budget (already at the limit).
 	s.logWriteEvent(ctx, m, existing, writeOutcomeDetail(m.Tier, supersedeID, in.MergeHint))
+
+	// A degraded write is durable but vectorless, and its repair state committed
+	// with it above. Wake the repair worker so it runs in milliseconds rather
+	// than on the next poll tick. A no-op on a healthy write.
+	s.kickRepairIfDegraded(m)
 
 	// Auto-supersede: now that the replacement is durably stored, tombstone the
 	// near-duplicate in the background. Deferred to here so a failed Upsert above
