@@ -279,8 +279,14 @@ func buildServiceStack(
 	var svcOpts []service.Option
 	var chatClient llm.Client
 	if cfg.LLMEnabled() {
+		extraBody, err := cfg.LLMExtraBodyMap()
+		if err != nil {
+			_ = st.Close()
+			return nil, nil, nil, nil, nil, err
+		}
 		client, err := llm.New(llm.API(cfg.LLMAPI), llm.Config{
 			BaseURL: cfg.LLMBaseURL, APIKey: cfg.LLMAPIKey, Model: cfg.LLMModel,
+			MaxTokens: cfg.LLMMaxTokens, ExtraBody: extraBody,
 		})
 		if err != nil {
 			_ = st.Close()

@@ -325,6 +325,20 @@ type Config struct {
 	LLMModel string `env:"MEMINI_LLM_MODEL" envDefault:"gpt-4o-mini"`
 	// LLMAPI selects the chat backend: "openai" (default) or "anthropic".
 	LLMAPI string `env:"MEMINI_LLM_API" envDefault:"openai"`
+	// LLMMaxTokens caps the completion length of every chat call. 0 (the
+	// default) keeps the client's built-in budget (4096). Reasoning models
+	// that spend thousands of hidden thinking tokens inside the budget need
+	// more headroom here, or their JSON answers come back truncated
+	// (finish_reason "length") and the affected pipeline call is lost.
+	LLMMaxTokens int `env:"MEMINI_LLM_MAX_TOKENS" envDefault:"0"`
+	// LLMExtraBody is a JSON object merged into every chat request body at
+	// the top level, for provider-specific dialect knobs memini deliberately
+	// does not model. Typical use: disabling hidden reasoning on
+	// DeepSeek-style endpoints ('{"thinking":{"type":"disabled"}}') or
+	// Qwen-style ones ('{"enable_thinking":false}'). Fields memini sets
+	// itself (model, messages, temperature, max_tokens) always win. Invalid
+	// JSON fails config loading.
+	LLMExtraBody string `env:"MEMINI_LLM_EXTRA_BODY"`
 
 	// Rerank selects recall reranking: "off" (default), "llm" (reorder with the
 	// chat LLM), or a cross-encoder /rerank base URL (e.g. http://host:8002/v1).
@@ -992,6 +1006,12 @@ func (c *Config) validate() error {
 	if c.EmbedDims <= 0 {
 		return fmt.Errorf("MEMINI_EMBED_DIMS must be positive, got %d", c.EmbedDims)
 	}
+	if c.LLMMaxTokens < 0 {
+		return fmt.Errorf("MEMINI_LLM_MAX_TOKENS must be >= 0, got %d", c.LLMMaxTokens)
+	}
+	if _, err := c.LLMExtraBodyMap(); err != nil {
+		return err
+	}
 	if c.RequestTimeout < 0 {
 		return fmt.Errorf("MEMINI_REQUEST_TIMEOUT must be >= 0, got %v", c.RequestTimeout)
 	}
@@ -1093,4 +1113,19 @@ func (c *Config) dedupTiers() []memory.Tier {
 		}
 	}
 	return tiers
+}
+
+// LLMExtraBodyMap parses LLMExtraBody into the raw top-level fields to merge
+// into every chat request, or nil when unset. A non-object or invalid JSON
+// value is a configuration error.
+func (c *Config) LLMExtraBodyMap() (map[string]json.RawMessage, error) {
+	raw := strings.TrimSpace(c.LLMExtraBody)
+	if raw == "" {
+		return nil, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return nil, fmt.Errorf("MEMINI_LLM_EXTRA_BODY: invalid JSON object: %w", err)
+	}
+	return m, nil
 }

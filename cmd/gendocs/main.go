@@ -110,7 +110,7 @@ var groups = []group{
 			"handling all work. Configuring one adds background consolidation, `POST /v1/answer`, the `memory_answer` " +
 			"MCP tool, and `MEMINI_RERANK=llm`.\n\nNote that `memory_answer` is only registered as an MCP tool when " +
 			"an LLM is configured. Without one, agents will not see the tool at all.",
-		Vars: []string{"MEMINI_LLM_BASE_URL", "MEMINI_LLM_API_KEY", "MEMINI_LLM_MODEL", "MEMINI_LLM_API"},
+		Vars: []string{"MEMINI_LLM_BASE_URL", "MEMINI_LLM_API_KEY", "MEMINI_LLM_MODEL", "MEMINI_LLM_API", "MEMINI_LLM_MAX_TOKENS", "MEMINI_LLM_EXTRA_BODY"},
 	},
 	{
 		Key:   "rerank",

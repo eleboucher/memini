@@ -309,3 +309,34 @@ func TestOpenAIChatToolsRejectsEmptyReply(t *testing.T) {
 		t.Errorf("error should mention the empty response, got %v", err)
 	}
 }
+
+func TestOpenAIExtraBodyMergedIntoRequest(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &got)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{}"}}]}`))
+	}))
+	defer srv.Close()
+
+	c, err := llm.NewOpenAI(llm.Config{
+		BaseURL: srv.URL, Model: "m",
+		ExtraBody: map[string]json.RawMessage{
+			"thinking": json.RawMessage(`{"type":"disabled"}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if _, err := c.Complete(context.Background(), "sys", "user"); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	th, ok := got["thinking"].(map[string]any)
+	if !ok || th["type"] != "disabled" {
+		t.Fatalf("thinking not merged into request body: %v", got["thinking"])
+	}
+	if got["model"] != "m" {
+		t.Fatalf("client-set field lost: model=%v", got["model"])
+	}
+}
