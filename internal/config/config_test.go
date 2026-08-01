@@ -97,6 +97,19 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.BackfillInterval != time.Minute {
 		t.Errorf("BackfillInterval = %v, want 1m", cfg.BackfillInterval)
 	}
+	if cfg.RepairPollInterval != 5*time.Second {
+		t.Errorf("RepairPollInterval = %v, want 5s", cfg.RepairPollInterval)
+	}
+	// Deliberately NOT the same as WriteEmbedTimeout: the write budget bounds a
+	// waiting caller's latency, a repair has no caller. Sharing one value would
+	// mean tightening the write budget also made every repair fail against a
+	// merely-slow embedder.
+	if cfg.BackgroundEmbedTimeout != 30*time.Second {
+		t.Errorf("BackgroundEmbedTimeout = %v, want 30s", cfg.BackgroundEmbedTimeout)
+	}
+	if cfg.WriteEmbedTimeout != 5*time.Second {
+		t.Errorf("WriteEmbedTimeout = %v, want 5s", cfg.WriteEmbedTimeout)
+	}
 	if cfg.DefaultNamespace != "stable-test-cwd" {
 		t.Errorf("DefaultNamespace = %q, want stable-test-cwd", cfg.DefaultNamespace)
 	}

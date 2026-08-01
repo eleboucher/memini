@@ -56,6 +56,7 @@ function Pipeline() {
     { name: 'reranker', dep: health.deps.reranker, configured: health.deps.reranker.configured },
   ]
   const pending = stats ? stats.pending_embed : null
+  const stuck = stats ? (stats.embed_stuck ?? 0) : null
 
   return (
     <div class="panel panel-pad" style={{ marginBottom: '20px' }}>
@@ -76,14 +77,30 @@ function Pipeline() {
         })}
         <span class="key">awaiting embed</span>
         <span
-          class={`status-dot ${pending === null ? 'idle' : pending > 0 ? 'bad' : 'ok'}`}
+          class={`status-dot ${pending === null ? 'idle' : pending > 0 ? 'warn' : 'ok'}`}
           style={{ alignSelf: 'center' }}
         />
         <span class="val">
           {pending === null
             ? 'unavailable'
             : pending > 0
-              ? `${pending} vectorless ${pending === 1 ? 'memory' : 'memories'} — backfill retries while the embedder is down`
+              ? `${pending} vectorless ${pending === 1 ? 'memory' : 'memories'} — the repair worker retries while the embedder is down`
+              : 'none'}
+        </span>
+        {/* Reported separately from "awaiting embed" on purpose: a pending
+            repair drains on its own within seconds, while a stuck one stays
+            keyword-only until the sweeper re-arms it or someone intervenes.
+            Collapsing the two is what would let permanent degradation hide. */}
+        <span class="key">stuck embed</span>
+        <span
+          class={`status-dot ${stuck === null ? 'idle' : stuck > 0 ? 'bad' : 'ok'}`}
+          style={{ alignSelf: 'center' }}
+        />
+        <span class="val">
+          {stuck === null
+            ? 'unavailable'
+            : stuck > 0
+              ? `${stuck} ${stuck === 1 ? 'memory' : 'memories'} the repair gave up on — check the embedder, then re-run to retry`
               : 'none'}
         </span>
       </div>

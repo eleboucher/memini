@@ -1082,6 +1082,7 @@ func (h *Server) GetStats(w http.ResponseWriter, r *http.Request, params GetStat
 		Superseded:           s.Superseded,
 		LowConfidenceDurable: s.LowConfidenceDurable,
 		PendingEmbed:         s.PendingEmbed,
+		EmbedStuck:           &s.EmbedStuck,
 		TotalAccesses:        s.TotalAccesses,
 		AvgImportance:        s.AvgImportance,
 		LastWriteAt:          s.LastWriteAt,
@@ -1303,6 +1304,10 @@ func apiMemory(m *memory.Memory) Memory {
 		ValidFrom:      m.ValidFrom,
 		ValidTo:        m.ValidTo,
 		Confidence:     m.Confidence,
+	}
+	if m.EmbedState != "" {
+		e := MemoryEmbedState(m.EmbedState)
+		out.EmbedState = &e
 	}
 	if m.Level != "" {
 		l := Level(m.Level)

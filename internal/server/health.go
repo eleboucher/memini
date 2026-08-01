@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eleboucher/memini/internal/httputil"
+	"github.com/eleboucher/memini/internal/store"
 	"github.com/eleboucher/memini/internal/version"
 )
 
@@ -37,6 +38,25 @@ type optionalDepBlock struct {
 	LastSuccess string `json:"last_success,omitempty"`
 }
 
+// repairBlock is the deferred-repair backlog in the verbose healthz response.
+//
+// It is a sibling of Deps rather than an entry in it: repair is internal state,
+// not a dependency, and a backlog must never read as "a dependency is down".
+// Omitted entirely when the store has no repair queue.
+//
+// Stuck is the number that matters. Pending and Enrich drain on their own
+// within seconds; Stuck memories exhausted their attempt ceiling and will stay
+// keyword-only until the sweeper's circuit breaker re-arms them or an operator
+// intervenes, so reporting them identically to Pending is what lets silent
+// degradation hide.
+type repairBlock struct {
+	Pending   int    `json:"pending"`
+	Enrich    int    `json:"enrich"`
+	Stuck     int    `json:"stuck"`
+	OldestAge string `json:"oldest_age,omitempty"`
+	LastError string `json:"last_error,omitempty"`
+}
+
 type verboseHealth struct {
 	Status  string `json:"status"`
 	Version string `json:"version"`
@@ -46,6 +66,7 @@ type verboseHealth struct {
 		LLM      optionalDepBlock `json:"llm"`
 		Reranker optionalDepBlock `json:"reranker"`
 	} `json:"deps"`
+	Repair *repairBlock `json:"repair,omitempty"`
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -97,7 +118,48 @@ func (s *Server) verboseHealthz(ctx context.Context) verboseHealth {
 		resp.Deps.Reranker.LastError = b.LastError
 		resp.Deps.Reranker.LastSuccess = b.LastSuccess
 	}
+	resp.Repair = s.repairBlock(ctx)
 	return resp
+}
+
+// repairBlock renders the deferred-repair backlog, or nil when the store has no
+// repair queue. Bounded by the same deadline as the store ping so a wedged
+// store cannot hang the endpoint an operator is using to diagnose it, and a
+// failed query degrades to omitting the block rather than failing the response.
+func (s *Server) repairBlock(ctx context.Context) *repairBlock {
+	fn := s.repairStats.Load()
+	if fn == nil {
+		return nil
+	}
+	statCtx, cancel := context.WithTimeout(ctx, storePingTimeout)
+	defer cancel()
+	stats, err := (*fn)(statCtx)
+	if err != nil {
+		return nil
+	}
+	var b repairBlock
+	var oldest time.Time
+	for _, st := range stats {
+		switch st.State {
+		case store.RepairPending:
+			b.Pending = st.Count
+		case store.RepairEnrich:
+			b.Enrich = st.Count
+		case store.RepairFailed:
+			b.Stuck = st.Count
+			b.LastError = st.LastError
+		}
+		if !st.OldestAt.IsZero() && (oldest.IsZero() || st.OldestAt.Before(oldest)) {
+			oldest = st.OldestAt
+		}
+	}
+	if b.Pending == 0 && b.Enrich == 0 && b.Stuck == 0 {
+		return &b
+	}
+	if !oldest.IsZero() {
+		b.OldestAge = time.Since(oldest).Round(time.Second).String()
+	}
+	return &b
 }
 
 // storeDepBlock pings the store on demand via the existing readiness func

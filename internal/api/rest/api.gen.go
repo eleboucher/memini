@@ -282,6 +282,30 @@ func (e Level) Valid() bool {
 	}
 }
 
+// Defines values for MemoryEmbedState.
+const (
+	Empty   MemoryEmbedState = ""
+	Enrich  MemoryEmbedState = "enrich"
+	Failed  MemoryEmbedState = "failed"
+	Pending MemoryEmbedState = "pending"
+)
+
+// Valid indicates whether the value is a known member of the MemoryEmbedState enum.
+func (e MemoryEmbedState) Valid() bool {
+	switch e {
+	case Empty:
+		return true
+	case Enrich:
+		return true
+	case Failed:
+		return true
+	case Pending:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ReadSetOrigin.
 const (
 	Ancestor ReadSetOrigin = "ancestor"
@@ -1131,12 +1155,15 @@ type Memory struct {
 	ContentHash *string `json:"content_hash,omitempty"`
 
 	// ContentTruncated Present (true) only in concise-format responses (response_format=concise on /v1/search, format=concise on /v1/namespaces/briefing) when this memory's content was replaced by a boundary cut of the stored content. Absent when the concise text is a stored summary or content short enough to pass through verbatim — and always absent in detailed responses.
-	ContentTruncated *bool      `json:"content_truncated,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
-	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
-	Id               string     `json:"id"`
-	Importance       float64    `json:"importance"`
-	LastAccessedAt   time.Time  `json:"last_accessed_at"`
+	ContentTruncated *bool     `json:"content_truncated,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+
+	// EmbedState Deferred-repair state. Empty (or absent) means healthy. "pending" and "enrich" are transient: the repair worker clears them within seconds of the embedder recovering. "failed" means the repair exhausted its attempt ceiling, so the memory stays keyword-only until the sweeper re-arms it or an operator intervenes — the one value worth surfacing to a user.
+	EmbedState     *MemoryEmbedState `json:"embed_state,omitempty"`
+	ExpiresAt      *time.Time        `json:"expires_at,omitempty"`
+	Id             string            `json:"id"`
+	Importance     float64           `json:"importance"`
+	LastAccessedAt time.Time         `json:"last_accessed_at"`
 
 	// Level Derivation provenance: explicit (user-stated / heuristic) vs deduced (LLM-distilled). Null/omitted when the row predates the tag or when unset.
 	Level *Level `json:"level,omitempty"`
@@ -1160,6 +1187,9 @@ type Memory struct {
 	// ValidTo End of the interval the fact was true; null means open ("still true"). Stamped automatically when a fact is superseded.
 	ValidTo *time.Time `json:"valid_to,omitempty"`
 }
+
+// MemoryEmbedState Deferred-repair state. Empty (or absent) means healthy. "pending" and "enrich" are transient: the repair worker clears them within seconds of the embedder recovering. "failed" means the repair exhausted its attempt ceiling, so the memory stays keyword-only until the sweeper re-arms it or an operator intervenes — the one value worth surfacing to a user.
+type MemoryEmbedState string
 
 // MergeHint Optional. Returned on POST /v1/memories when the write's nearest same-tier candidate scored at/above MEMINI_WRITE_DEDUP_SCORE and MEMINI_WRITE_DEDUP_ACTION is "hint". The caller can decide whether to merge into the near-duplicate via memory_update.
 type MergeHint struct {
@@ -1511,14 +1541,17 @@ type Stats struct {
 	// ByMemoryType Live count per typed-extraction memory_type (decision/preference/problem).
 	ByMemoryType *map[string]int `json:"by_memory_type,omitempty"`
 	ByTier       map[string]int  `json:"by_tier"`
-	Expired      int             `json:"expired"`
-	LastWriteAt  *time.Time      `json:"last_write_at,omitempty"`
+
+	// EmbedStuck Live memories whose repair exhausted its attempt ceiling. Unlike pending_embed these do not fix themselves on the next tick — they stay keyword-only until the sweeper re-arms them or an operator intervenes.
+	EmbedStuck  *int       `json:"embed_stuck,omitempty"`
+	Expired     int        `json:"expired"`
+	LastWriteAt *time.Time `json:"last_write_at,omitempty"`
 
 	// LowConfidenceDurable Live durable memories whose decayed confidence is below the demote floor — reclaimable, uncorroborated debris.
 	LowConfidenceDurable int    `json:"low_confidence_durable"`
 	Namespace            string `json:"namespace"`
 
-	// PendingEmbed Live memories saved without a vector because the embedder was unreachable at write time; the backfill loop re-embeds and unflags them, so a persistently nonzero value means the embedder is still down.
+	// PendingEmbed Live memories saved without a vector because the embedder was unreachable at write time. The repair worker re-embeds them and replays the write-time enrichment they missed, so a persistently nonzero value means the embedder is still down.
 	PendingEmbed int `json:"pending_embed"`
 	Superseded   int `json:"superseded"`
 

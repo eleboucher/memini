@@ -140,9 +140,15 @@ type Stats struct {
 	// uncorroborated durable debris (confidence below the demote floor); unbounded
 	// by short-term caps, so a growing value signals reclaimable bloat
 	LowConfidenceDurable int `json:"low_confidence_durable"`
-	// vectorless degraded writes (metadata pending_embed="true") awaiting the
-	// backfill loop; a persistently nonzero value means the embedder is down
-	PendingEmbed  int        `json:"pending_embed"`
+	// vectorless degraded writes awaiting repair; a persistently nonzero value
+	// means the embedder is down
+	PendingEmbed int `json:"pending_embed"`
+	// degraded writes whose repair exhausted its attempt ceiling. Unlike
+	// PendingEmbed these do NOT fix themselves on the next tick: they stay
+	// keyword-only until the sweeper's circuit breaker re-arms them or an
+	// operator intervenes. Reported separately precisely because rendering the
+	// two identically is what lets a permanently degraded memory hide.
+	EmbedStuck    int        `json:"embed_stuck"`
 	TotalAccesses int        `json:"total_accesses"`
 	AvgImportance float64    `json:"avg_importance"`
 	LastWriteAt   *time.Time `json:"last_write_at,omitempty"`
@@ -180,6 +186,9 @@ func (s *Service) Stats(ctx context.Context, namespace string) (Stats, error) {
 			if m.PendingEmbed() {
 				st.PendingEmbed++
 			}
+			if m.EmbedStuck() {
+				st.EmbedStuck++
+			}
 			st.TotalAccesses += m.AccessCount
 			importanceSum += m.Importance
 		}
@@ -213,6 +222,7 @@ func (s *Service) StatsAll(ctx context.Context) (Stats, error) {
 		merged.Superseded += st.Superseded
 		merged.LowConfidenceDurable += st.LowConfidenceDurable
 		merged.PendingEmbed += st.PendingEmbed
+		merged.EmbedStuck += st.EmbedStuck
 		merged.TotalAccesses += st.TotalAccesses
 		// Weight by live total so the merged average isn't skewed by empty or
 		// tombstone-only namespaces.

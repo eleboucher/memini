@@ -128,6 +128,17 @@ export interface OptionalDepStatus extends DepStatus {
   configured: boolean
 }
 
+// Deferred-repair backlog. Absent when the store has no repair queue.
+// `stuck` is the number that matters: pending and enrich drain on their own,
+// stuck memories stay keyword-only until the sweeper re-arms them.
+export interface RepairStatus {
+  pending: number
+  enrich: number
+  stuck: number
+  oldest_age?: string
+  last_error?: string
+}
+
 export interface VerboseHealth {
   status: string
   version: string
@@ -137,4 +148,5 @@ export interface VerboseHealth {
     llm: OptionalDepStatus
     reranker: OptionalDepStatus
   }
+  repair?: RepairStatus
 }

@@ -1345,6 +1345,10 @@ pre.json {
 .status-dot.bad {
   background: var(--tier-procedural);
 }
+/* Advisory rather than broken: a backlog that is draining on its own. */
+.status-dot.warn {
+  background: var(--tier-semantic);
+}
 .status-dot.idle {
   background: var(--faint);
 }
@@ -1466,6 +1470,15 @@ pre.json {
   border-color: color-mix(in oklab, var(--tier-semantic) 55%, transparent);
   background: color-mix(in oklab, var(--tier-semantic) 12%, transparent);
   color: color-mix(in oklab, var(--tier-semantic) 82%, var(--text));
+}
+/* Abandoned-repair marker: ember and filled, deliberately louder than
+   .pending's amber. The two sit side by side on the same card, and the whole
+   point of the distinction is that one resolves itself in seconds while this
+   one never will without intervention. */
+.chip.stuck {
+  border-color: color-mix(in oklab, var(--tier-procedural) 60%, transparent);
+  background: color-mix(in oklab, var(--tier-procedural) 16%, transparent);
+  color: color-mix(in oklab, var(--tier-procedural) 85%, var(--text));
 }
 /* Reduced-capability marker: the cool end of the tier ramp, distinct from
    .warn's ember (a problem) and .pending's amber (an advisory). A read-only

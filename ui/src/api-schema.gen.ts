@@ -970,8 +970,10 @@ export interface components {
             superseded: number;
             /** @description Live durable memories whose decayed confidence is below the demote floor — reclaimable, uncorroborated debris. */
             low_confidence_durable: number;
-            /** @description Live memories saved without a vector because the embedder was unreachable at write time; the backfill loop re-embeds and unflags them, so a persistently nonzero value means the embedder is still down. */
+            /** @description Live memories saved without a vector because the embedder was unreachable at write time. The repair worker re-embeds them and replays the write-time enrichment they missed, so a persistently nonzero value means the embedder is still down. */
             pending_embed: number;
+            /** @description Live memories whose repair exhausted its attempt ceiling. Unlike pending_embed these do not fix themselves on the next tick — they stay keyword-only until the sweeper re-arms them or an operator intervenes. */
+            embed_stuck?: number;
             total_accesses: number;
             /** Format: double */
             avg_importance: number;
@@ -1075,6 +1077,11 @@ export interface components {
         };
         Memory: {
             id: string;
+            /**
+             * @description Deferred-repair state. Empty (or absent) means healthy. "pending" and "enrich" are transient: the repair worker clears them within seconds of the embedder recovering. "failed" means the repair exhausted its attempt ceiling, so the memory stays keyword-only until the sweeper re-arms it or an operator intervenes — the one value worth surfacing to a user.
+             * @enum {string}
+             */
+            embed_state?: "" | "pending" | "enrich" | "failed";
             namespace: string;
             tier: components["schemas"]["Tier"];
             /** @description Derivation provenance: explicit (user-stated / heuristic) vs deduced (LLM-distilled). Null/omitted when the row predates the tag or when unset. */

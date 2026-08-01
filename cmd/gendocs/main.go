@@ -187,6 +187,17 @@ var groups = []group{
 			"MEMINI_PROMOTE_INTERVAL",
 			"MEMINI_PROMOTE_MIN_ACCESS",
 			"MEMINI_PROMOTE_WHOLE_MAX_CHARS",
+		},
+	},
+	{
+		Key:   "repair",
+		Title: "Repairing degraded writes",
+		Intro: "A write that cannot reach the embedder is still stored — vectorless, keyword-searchable, and marked " +
+			"for repair in the same transaction. These settings control how quickly it gets its vector back, along " +
+			"with the write-time dedup, corroboration and contradiction routing it had to skip.",
+		Vars: []string{
+			"MEMINI_REPAIR_POLL_INTERVAL",
+			"MEMINI_BACKGROUND_EMBED_TIMEOUT",
 			"MEMINI_BACKFILL_INTERVAL",
 		},
 	},
