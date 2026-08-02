@@ -10,6 +10,7 @@ import (
 
 	"github.com/eleboucher/memini/internal/httputil"
 	"github.com/eleboucher/memini/internal/nsresolve"
+	"github.com/eleboucher/memini/internal/service"
 	"github.com/eleboucher/memini/internal/store"
 	"github.com/eleboucher/memini/internal/version"
 )
@@ -106,10 +107,21 @@ func (h *Server) Handshake(w http.ResponseWriter, r *http.Request) {
 	}
 	logNamespaceResolved(ctx, facts, merged, sources, keyName, res)
 
+	// The read set is a retrieval-scope detail; the namespace resolution above
+	// is the answer the caller actually needs. Degrade to primary-only rather
+	// than failing a handshake that has already produced a correct namespace.
+	//
+	// Note the deliberate asymmetry with the pin lookup earlier in this
+	// handler, which stays fatal: a pin exists precisely because derivation
+	// gets the namespace wrong, and the client treats a successful handshake as
+	// authoritative (packages/memini-client resolve.ts). Degrading THAT would
+	// silently misfile every write of the session, where a 500 makes the client
+	// fall back and mark itself degraded. This leg only affects reads.
 	entries, err := h.svc.ResolveReadSetInfo(ctx, res.Namespace, homeFromContext(ctx))
 	if err != nil {
-		writeError(w, r, statusFor(err), err)
-		return
+		slog.WarnContext(ctx, "handshake: read-set resolution failed, returning the primary namespace only",
+			"namespace", res.Namespace, "err", err)
+		entries = []service.ReadSetEntry{{NS: res.Namespace, Origin: service.OriginPrimary}}
 	}
 
 	resp := HandshakeResponse{

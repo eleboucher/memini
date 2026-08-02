@@ -3,11 +3,9 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
-	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/llm"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/store"
@@ -223,7 +221,13 @@ func (s *Service) askConsolidator(ctx context.Context, m *memory.Memory, cands [
 func (s *Service) consolidateSync(ctx context.Context, m *memory.Memory) (*memory.Memory, bool, error) {
 	cands, err := s.candidates(ctx, m, "")
 	if err != nil {
-		return nil, false, fmt.Errorf("remember: consolidate search: %w", err)
+		// Consolidation is an enhancement, not part of storing the memory.
+		// handled=false means "fall through to a normal insert", which is
+		// exactly what the async twin does on the same failure.
+		slog.WarnContext(ctx, "remember: consolidate search failed, storing without consolidation",
+			"namespace", m.Namespace, "err", err)
+		s.metrics.ConsolidateResult("error")
+		return nil, false, nil
 	}
 	if s.gated(cands) {
 		s.metrics.ConsolidateResult("gated")
@@ -263,9 +267,16 @@ func (s *Service) applyUpdate(ctx context.Context, m *memory.Memory, dec llm.Dec
 	// depend on the target's stored state, so doing it first keeps the slow
 	// network call out of the target's read-modify-write window (Get → mutate →
 	// Upsert then stays in-memory).
-	vec, err := embed.EmbedOne(ctx, s.embedder, content)
+	vec, err := s.embedBounded(ctx, content)
 	if err != nil {
-		return nil, false, fmt.Errorf("remember: re-embed merged memory: %w", err)
+		// This bypassed the write path's degrade contract entirely: a flaky
+		// embedder that answered the first embed and failed this one turned a
+		// storable write into a 500. Fall through to a normal insert instead —
+		// the memory is kept, just unmerged.
+		slog.WarnContext(ctx, "remember: re-embedding the merged memory failed, storing it unmerged",
+			"namespace", m.Namespace, "target", dec.Target, "err", err)
+		s.metrics.ConsolidateResult("error")
+		return nil, false, nil
 	}
 	target, err := s.store.Get(ctx, m.Namespace, dec.Target)
 	if errors.Is(err, store.ErrNotFound) {
@@ -335,7 +346,7 @@ func (s *Service) consolidateOne(ctx context.Context, job consolidateJob) {
 	}
 	// Get omits the embedding; re-embed to search for candidates. The embedder
 	// cache makes this near-free (the vector was just computed on the write).
-	if m.Embedding, err = embed.EmbedOne(ctx, s.embedder, m.Content); err != nil {
+	if m.Embedding, err = s.embedBounded(ctx, m.Content); err != nil {
 		slog.WarnContext(ctx, "consolidate: re-embed", "err", err)
 		s.metrics.ConsolidateResult("error")
 		return
@@ -386,7 +397,7 @@ func (s *Service) asyncUpdate(ctx context.Context, m *memory.Memory, dec llm.Dec
 	}
 	// Embed before reading the target so the target's read-modify-write window
 	// (Get → mutate → Upsert) holds no slow network call.
-	vec, err := embed.EmbedOne(ctx, s.embedder, content)
+	vec, err := s.embedBounded(ctx, content)
 	if err != nil {
 		slog.WarnContext(ctx, "consolidate: re-embed", "err", err)
 		s.metrics.ConsolidateResult("error")

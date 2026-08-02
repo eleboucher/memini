@@ -793,7 +793,7 @@ export interface components {
         };
         SearchResponse: {
             results: components["schemas"]["ScoredMemory"][];
-            /** @description Set to "keyword_only" when the query embed failed or timed out and this search fell back to keyword-only matching; omitted on a healthy (vector+keyword) search. */
+            /** @description Set when this search returned less than the full corpus. "keyword_only" means the query embed failed or timed out and the search fell back to keyword-only matching. "partial" means one or more read-set namespaces were unreachable and were skipped (the namespace you asked about is never among them — losing it fails the request instead). Omitted on a healthy search. */
             degraded?: string;
             /** @description Human-readable explanation of `degraded`; omitted alongside it on a healthy search. */
             note?: string;
@@ -922,6 +922,8 @@ export interface components {
         };
         Briefing: {
             namespace: string;
+            /** @description Read-set namespaces that could not be loaded and were skipped, so a caller can distinguish an empty section from an unreachable one. The briefed namespace itself never appears here: losing it fails the request rather than degrading it. Omitted on a healthy briefing. */
+            degraded?: string[];
             /** @description A human-readable one-line summary of which namespaces this briefing drew from (its resolved read set scope), e.g. "Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2), +1 link" — primary first, then each cascade leg that contributed durable memories (nearest ancestor first, home last, counts per leg), then a "+K link(s)" suffix for contributing links. */
             scope_header?: string | null;
             /** @description Durable semantic facts, highest-retention first. */
@@ -970,8 +972,10 @@ export interface components {
             superseded: number;
             /** @description Live durable memories whose decayed confidence is below the demote floor — reclaimable, uncorroborated debris. */
             low_confidence_durable: number;
-            /** @description Live memories saved without a vector because the embedder was unreachable at write time; the backfill loop re-embeds and unflags them, so a persistently nonzero value means the embedder is still down. */
+            /** @description Live memories saved without a vector because the embedder was unreachable at write time. The repair worker re-embeds them and replays the write-time enrichment they missed, so a persistently nonzero value means the embedder is still down. */
             pending_embed: number;
+            /** @description Live memories whose repair exhausted its attempt ceiling. Unlike pending_embed these do not fix themselves on the next tick — they stay keyword-only until the sweeper re-arms them or an operator intervenes. */
+            embed_stuck?: number;
             total_accesses: number;
             /** Format: double */
             avg_importance: number;
@@ -1075,6 +1079,11 @@ export interface components {
         };
         Memory: {
             id: string;
+            /**
+             * @description Deferred-repair state. Empty (or absent) means healthy. "pending" and "enrich" are transient: the repair worker clears them within seconds of the embedder recovering. "failed" means the repair exhausted its attempt ceiling, so the memory stays keyword-only until the sweeper re-arms it or an operator intervenes — the one value worth surfacing to a user.
+             * @enum {string}
+             */
+            embed_state?: "" | "pending" | "enrich" | "failed";
             namespace: string;
             tier: components["schemas"]["Tier"];
             /** @description Derivation provenance: explicit (user-stated / heuristic) vs deduced (LLM-distilled). Null/omitted when the row predates the tag or when unset. */

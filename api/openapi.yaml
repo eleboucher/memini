@@ -1491,9 +1491,12 @@ components:
         degraded:
           type: string
           description: >-
-            Set to "keyword_only" when the query embed failed or timed out and
-            this search fell back to keyword-only matching; omitted on a
-            healthy (vector+keyword) search.
+            Set when this search returned less than the full corpus.
+            "keyword_only" means the query embed failed or timed out and the
+            search fell back to keyword-only matching. "partial" means one or
+            more read-set namespaces were unreachable and were skipped (the
+            namespace you asked about is never among them — losing it fails the
+            request instead). Omitted on a healthy search.
         note:
           type: string
           description: >-
@@ -1727,6 +1730,14 @@ components:
       required: [namespace]
       properties:
         namespace: { type: string }
+        degraded:
+          type: array
+          items: { type: string }
+          description: >-
+            Read-set namespaces that could not be loaded and were skipped, so a
+            caller can distinguish an empty section from an unreachable one. The
+            briefed namespace itself never appears here: losing it fails the
+            request rather than degrading it. Omitted on a healthy briefing.
         scope_header:
           type: string
           nullable: true
@@ -1841,7 +1852,10 @@ components:
           description: Live durable memories whose decayed confidence is below the demote floor — reclaimable, uncorroborated debris.
         pending_embed:
           type: integer
-          description: Live memories saved without a vector because the embedder was unreachable at write time; the backfill loop re-embeds and unflags them, so a persistently nonzero value means the embedder is still down.
+          description: Live memories saved without a vector because the embedder was unreachable at write time. The repair worker re-embeds them and replays the write-time enrichment they missed, so a persistently nonzero value means the embedder is still down.
+        embed_stuck:
+          type: integer
+          description: Live memories whose repair exhausted its attempt ceiling. Unlike pending_embed these do not fix themselves on the next tick — they stay keyword-only until the sweeper re-arms them or an operator intervenes.
         total_accesses: { type: integer }
         avg_importance: { type: number, format: double }
         last_write_at: { type: string, format: date-time, nullable: true }
@@ -2010,6 +2024,16 @@ components:
         ]
       properties:
         id: { type: string }
+        embed_state:
+          type: string
+          description: >-
+            Deferred-repair state. Empty (or absent) means healthy. "pending" and
+            "enrich" are transient: the repair worker clears them within seconds
+            of the embedder recovering. "failed" means the repair exhausted its
+            attempt ceiling, so the memory stays keyword-only until the sweeper
+            re-arms it or an operator intervenes — the one value worth surfacing
+            to a user.
+          enum: ["", pending, enrich, failed]
         namespace: { type: string }
         tier: { $ref: "#/components/schemas/Tier" }
         level:

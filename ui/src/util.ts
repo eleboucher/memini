@@ -58,10 +58,20 @@ export function promotedFrom(m: Memory): string | undefined {
 }
 
 // isPendingEmbed reports a degraded write: the memory was saved without a
-// vector (embedder unreachable) and is keyword-searchable only until the
-// backfill loop re-embeds it and clears the flag.
+// vector (embedder unreachable) and is keyword-searchable only until the repair
+// worker re-embeds it. The metadata flag is still checked so a server that
+// predates the embed_state column keeps reporting honestly.
 export function isPendingEmbed(m: Memory): boolean {
+  if (m.embed_state === 'pending' || m.embed_state === 'enrich') return true
   return (m.metadata as Record<string, unknown> | undefined)?.pending_embed === 'true'
+}
+
+// isEmbedStuck reports a repair that gave up. This is the distinction that
+// matters to a reader: a pending embed fixes itself within seconds, a stuck one
+// never will on its own, and rendering them identically is exactly what lets a
+// permanently keyword-only memory hide in plain sight.
+export function isEmbedStuck(m: Memory): boolean {
+  return m.embed_state === 'failed'
 }
 
 // Tier importance seeds — mirror seedImportance in internal/service/service.go;

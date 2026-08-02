@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/eleboucher/memini/internal/embed"
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/store"
 )
@@ -118,7 +117,11 @@ func (s *Service) BackfillEmbeddings(ctx context.Context) (int, error) {
 
 		delete(fresh.Metadata, memory.PendingEmbedKey)
 		fresh.Embedding = vec
-		fresh.UpdatedAt = s.now()
+		// UpdatedAt is deliberately left alone: a system-initiated re-embed is
+		// index maintenance, not a logical edit. Bumping it made every repaired
+		// memory look freshly written and win every "prefer the most recent"
+		// recency decision in recall and answer — and, recursively, corrupted
+		// the field the staleness guard above compares.
 		if err := s.store.Upsert(ctx, fresh); err != nil {
 			slog.WarnContext(ctx, "embed backfill: upsert row", "namespace", m.Namespace, "id", m.ID, "err", err)
 			continue
@@ -129,19 +132,16 @@ func (s *Service) BackfillEmbeddings(ctx context.Context) (int, error) {
 	return backfilled, nil
 }
 
-// embedForBackfill embeds one pending row's content under the same budget the
-// write path uses (writeEmbedTimeout, see embedForRemember): a
-// slow-but-not-erroring embedder — a network stall, exactly the degraded
-// scenario backfill exists to recover from — must surface as a per-row error
-// (aborting or skipping per BackfillEmbeddings' rules) instead of hanging the
-// tick and every tick after it. writeEmbedTimeout <= 0 keeps the embed
-// unbounded, matching the write path's fail-fast default. Being its own
-// function scopes the cancel to one row rather than deferring it in a loop.
+// embedForBackfill embeds one pending row's content under the BACKGROUND budget
+// (backgroundEmbedTimeout, default repairEmbedTimeout), not the write path's.
+//
+// The two were the same value once, and that was a latent bug: writeEmbedTimeout
+// exists to bound a caller's latency, so tightening it also tightened every
+// background repair, and a merely-slow embedder — a network stall, exactly the
+// degraded scenario this exists to recover from — would make repairs fail
+// forever while the write path kept degrading. A repair has no caller waiting
+// on it and can afford to be patient. Being its own function scopes the cancel
+// to one row rather than deferring it in a loop.
 func (s *Service) embedForBackfill(ctx context.Context, content string) ([]float32, error) {
-	if s.writeEmbedTimeout <= 0 {
-		return embed.EmbedOne(ctx, s.embedder, content)
-	}
-	ectx, cancel := context.WithTimeout(ctx, s.writeEmbedTimeout)
-	defer cancel()
-	return embed.EmbedOne(ectx, s.embedder, content)
+	return s.embedForRepair(ctx, content)
 }

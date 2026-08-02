@@ -158,7 +158,7 @@ func TestPrintWritePathSignals(t *testing.T) {
 		{namespace: "b", classified: 1, pendingEmbed: 1},
 	})
 	out := buf.String()
-	for _, want := range []string{"marker-classified durable writes:  3", "promotion-produced facts:          1", "corroborated durable memories:     3", "pending embed (vectorless, awaiting backfill):  3"} {
+	for _, want := range []string{"marker-classified durable writes:  3", "promotion-produced facts:          1", "corroborated durable memories:     3", "pending embed (vectorless, awaiting repair):    3"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q:\n%s", want, out)
 		}
@@ -168,7 +168,7 @@ func TestPrintWritePathSignals(t *testing.T) {
 	// still print (isolates the `&& pendingEmbed == 0` guard term).
 	buf.Reset()
 	printWritePathSignals(&buf, []nsStat{{namespace: "x", pendingEmbed: 1}})
-	if got := buf.String(); !strings.Contains(got, "pending embed (vectorless, awaiting backfill):  1") {
+	if got := buf.String(); !strings.Contains(got, "pending embed (vectorless, awaiting repair):    1") {
 		t.Fatalf("pending-embed-only signals should print the section, got:\n%s", got)
 	}
 
@@ -176,6 +176,24 @@ func TestPrintWritePathSignals(t *testing.T) {
 	printWritePathSignals(&buf, []nsStat{{namespace: "a"}})
 	if buf.Len() != 0 {
 		t.Fatalf("all-zero signals should print nothing, got:\n%s", buf.String())
+	}
+
+	// A stuck repair is reported separately from a pending one AND counts as a
+	// warning, so doctor exits non-zero instead of printing "No problems
+	// detected" over memories that will never become searchable on their own.
+	buf.Reset()
+	warnings := printWritePathSignals(&buf, []nsStat{{namespace: "x", pendingEmbed: 2, embedStuck: 1}})
+	if warnings != 1 {
+		t.Fatalf("stuck repairs returned %d warnings, want 1", warnings)
+	}
+	if got := buf.String(); !strings.Contains(got, "stuck embed (repair gave up):                  1") {
+		t.Fatalf("stuck repairs should be reported separately from pending ones, got:\n%s", got)
+	}
+
+	// And a backlog with nothing stuck is not a warning: it drains on its own.
+	buf.Reset()
+	if warnings := printWritePathSignals(&buf, []nsStat{{namespace: "x", pendingEmbed: 5}}); warnings != 0 {
+		t.Fatalf("a pending-only backlog returned %d warnings, want 0 (it self-heals)", warnings)
 	}
 }
 

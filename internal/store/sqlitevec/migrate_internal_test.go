@@ -346,10 +346,12 @@ func TestMigrateBackfillsEveryNewerColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	// Drop the only index over a backfilled column (so the column can be dropped),
+	// Drop every index over a backfilled column (so the columns can be dropped),
 	// then strip every backfilled column to recreate an older schema.
-	if _, err := st.db.ExecContext(ctx, "DROP INDEX idx_memories_fingerprint"); err != nil {
-		t.Fatalf("drop index: %v", err)
+	for _, idx := range indexesOverBackfilledColumns {
+		if _, err := st.db.ExecContext(ctx, "DROP INDEX "+idx); err != nil {
+			t.Fatalf("drop index %s: %v", idx, err)
+		}
 	}
 	for _, v := range slices.Backward(backfillColumns) {
 		col := v.name
@@ -372,7 +374,19 @@ func TestMigrateBackfillsEveryNewerColumn(t *testing.T) {
 			t.Errorf("column %q not restored by migrate", c.name)
 		}
 	}
-	if !hasIndex(t, st2.db, "idx_memories_fingerprint") {
-		t.Error("idx_memories_fingerprint not restored by migrate")
+	for _, idx := range indexesOverBackfilledColumns {
+		if !hasIndex(t, st2.db, idx) {
+			t.Errorf("%s not restored by migrate", idx)
+		}
 	}
+}
+
+// indexesOverBackfilledColumns names every index built over a column that
+// migrate ALTER-adds rather than creating with the table. They have to be
+// dropped before their columns can be, and re-created after — which is exactly
+// the ordering bug TestMigrateBackfillsEveryNewerColumn guards. Adding a
+// backfilled column with an index means adding it here too.
+var indexesOverBackfilledColumns = []string{
+	"idx_memories_fingerprint", // fingerprint
+	"idx_memories_repair",      // embed_state, embed_next_run_at
 }

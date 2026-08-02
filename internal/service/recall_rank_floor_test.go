@@ -410,7 +410,7 @@ func TestRecallMinRankScoreFlooredCountVisible(t *testing.T) {
 	}
 	floor := (base[0].Score + base[1].Score) / 2
 
-	m := &countingMetrics{}
+	m := &countingMetrics{Metrics: service.NopMetrics()}
 	svc := service.New(openTestStore(t), embedtest.New(dims),
 		service.WithSyncReinforce(), service.WithEventLog(true), service.WithSyncEventLog(),
 		service.WithMetrics(m))

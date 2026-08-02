@@ -47,7 +47,7 @@ func TestBackfillEmbeddingsHealthyEmbedderClearsQueue(t *testing.T) {
 		"the deploy key rotates every 90 days",
 		"the staging database lives in us-east-1")
 
-	m := &countingMetrics{}
+	m := &countingMetrics{Metrics: service.NopMetrics()}
 	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithMetrics(m))
 
 	n, err := svc.BackfillEmbeddings(context.Background())
@@ -122,7 +122,7 @@ func TestBackfillEmbeddingsEmbedderDownLeavesRowsPending(t *testing.T) {
 		"the deploy key rotates every 90 days",
 		"the staging database lives in us-east-1")
 
-	m := &countingMetrics{}
+	m := &countingMetrics{Metrics: service.NopMetrics()}
 	svc := service.New(st, errEmbedder{dims: dims}, service.WithSyncReinforce(), service.WithMetrics(m))
 
 	n, err := svc.BackfillEmbeddings(context.Background())
@@ -151,19 +151,25 @@ func TestBackfillEmbeddingsEmbedderDownLeavesRowsPending(t *testing.T) {
 	}
 }
 
-// TestBackfillEmbeddingsBoundsEmbedWithWriteTimeout confirms each row's embed
-// is bounded by the write-embed timeout: a slow-but-not-erroring embedder (a
-// network stall, exactly the degraded scenario backfill exists to recover
-// from) must not hang the tick. With WithWriteEmbedTimeout(50ms) and an
-// embedder that blocks for 10s unless its ctx is cancelled, one tick must
-// return promptly, leave the row pending, and report the backlog.
-func TestBackfillEmbeddingsBoundsEmbedWithWriteTimeout(t *testing.T) {
+// TestBackfillEmbeddingsBoundsEmbedWithBackgroundTimeout confirms each row's
+// embed is bounded by the BACKGROUND budget, not the write path's: a
+// slow-but-not-erroring embedder (a network stall, exactly the degraded
+// scenario backfill exists to recover from) must not hang the tick.
+//
+// The two budgets used to be the same value, and that was a latent bug.
+// WithWriteEmbedTimeout exists to bound a waiting caller's latency, so
+// tightening it also tightened every background repair — meaning a merely-slow
+// embedder would make repairs fail forever while the write path kept degrading.
+// A repair has no caller waiting on it and can afford to be patient, so it gets
+// its own knob. This test now sets only the background budget, and would fail
+// if the two were ever re-coupled.
+func TestBackfillEmbeddingsBoundsEmbedWithBackgroundTimeout(t *testing.T) {
 	st := openTestStore(t)
 	ids := seedPendingEmbed(t, st, 1, "the deploy key rotates every 90 days")
 
-	m := &countingMetrics{}
+	m := &countingMetrics{Metrics: service.NopMetrics()}
 	svc := service.New(st, slowEmbedder{d: 10 * time.Second}, service.WithSyncReinforce(),
-		service.WithWriteEmbedTimeout(50*time.Millisecond), service.WithMetrics(m))
+		service.WithBackgroundEmbedTimeout(50*time.Millisecond), service.WithMetrics(m))
 
 	start := time.Now()
 	n, err := svc.BackfillEmbeddings(context.Background())
@@ -172,7 +178,7 @@ func TestBackfillEmbeddingsBoundsEmbedWithWriteTimeout(t *testing.T) {
 		t.Fatalf("BackfillEmbeddings should not hard-fail on a stalled embedder: %v", err)
 	}
 	if elapsed > 2*time.Second {
-		t.Fatalf("BackfillEmbeddings took %v; the row embed is not bounded by the write-embed timeout", elapsed)
+		t.Fatalf("BackfillEmbeddings took %v; the row embed is not bounded by the background embed timeout", elapsed)
 	}
 	if n != 0 {
 		t.Fatalf("BackfillEmbeddings backfilled = %d, want 0", n)
@@ -257,7 +263,7 @@ func TestBackfillEmbeddingsSkipsRowUpdatedConcurrently(t *testing.T) {
 		}
 	}}
 
-	m := &countingMetrics{}
+	m := &countingMetrics{Metrics: service.NopMetrics()}
 	svc := service.New(st, he, service.WithSyncReinforce(), service.WithMetrics(m), service.WithClock(clock))
 
 	n, err := svc.BackfillEmbeddings(context.Background())

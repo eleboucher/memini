@@ -18,7 +18,7 @@ import (
 
 const memoryColumns = `id, namespace, tier, content, summary, metadata, tags, importance,
 	created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-	valid_from, valid_to, confidence, level, linked_memory_ids`
+	valid_from, valid_to, confidence, level, linked_memory_ids, embed_state`
 
 // Store is a Postgres/VectorChord backed store.Store.
 type Store struct {
@@ -140,6 +140,20 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		`ALTER TABLE memories ALTER COLUMN embedding DROP NOT NULL`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS linked_memory_ids text NOT NULL DEFAULT '[]'`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_fingerprint ON memories(namespace, tier, fingerprint)`,
+		// Deferred-repair state (see store.RepairStore). On the memory rather
+		// than in a job table so a degraded write's "still owes a vector" state
+		// commits in the same transaction as the write itself — there is no
+		// enqueue to lose. '' is store.RepairNone, so existing rows migrate into
+		// "healthy" for free and an older binary ignores the columns.
+		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS embed_state text NOT NULL DEFAULT ''`,
+		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS embed_attempts integer NOT NULL DEFAULT 0`,
+		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS embed_next_run_at timestamptz`,
+		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS embed_last_error text NOT NULL DEFAULT ''`,
+		// The repair claim runs on every poll tick forever, so it must be an
+		// index range scan over just the outstanding repairs. Partial, so
+		// repaired rows leave the index and it stays small permanently.
+		`CREATE INDEX IF NOT EXISTS idx_memories_repair
+			ON memories(embed_next_run_at, id) WHERE embed_state <> ''`,
 		// Key/value store for store-level metadata (e.g. the embedding model the
 		// vectors were produced with — see EmbedModel/SetEmbedModel).
 		`CREATE TABLE IF NOT EXISTS meta (key text PRIMARY KEY, value text NOT NULL)`,
@@ -328,8 +342,10 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		INSERT INTO memories
 			(id, namespace, tier, content, summary, metadata, tags, importance,
 			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-			 valid_from, valid_to, confidence, fingerprint, level, linked_memory_ids, embedding)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+			 valid_from, valid_to, confidence, fingerprint, level, linked_memory_ids, embedding,
+			 embed_state, embed_next_run_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
+			$22, CASE WHEN $22 = '' THEN NULL ELSE now() END)
 		ON CONFLICT (id) DO UPDATE SET
 			tier=EXCLUDED.tier, content=EXCLUDED.content,
 			summary=EXCLUDED.summary, metadata=EXCLUDED.metadata, tags=EXCLUDED.tags,
@@ -339,13 +355,20 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 			valid_from=EXCLUDED.valid_from, valid_to=EXCLUDED.valid_to,
 			confidence=EXCLUDED.confidence, fingerprint=EXCLUDED.fingerprint,
 			level=EXCLUDED.level, linked_memory_ids=EXCLUDED.linked_memory_ids,
-			embedding=EXCLUDED.embedding
+			embedding=EXCLUDED.embedding,
+			-- A write carries its own repair state, so a degraded write and its
+			-- "needs a vector" marker commit together and the repair worker can
+			-- claim it the moment it lands. Reaching '' (healthy) resets the
+			-- attempt budget so a row that degrades again starts clean.
+			embed_state=EXCLUDED.embed_state,
+			embed_next_run_at=EXCLUDED.embed_next_run_at,
+			embed_attempts=CASE WHEN EXCLUDED.embed_state = '' THEN 0 ELSE memories.embed_attempts END
 		WHERE memories.namespace = EXCLUDED.namespace`,
 		m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, metaJSON, store.OrEmptySlice(m.Tags),
 		m.Importance, m.CreatedAt, m.UpdatedAt, m.LastAccessedAt, m.AccessCount,
 		m.ExpiresAt, m.SupersededBy, m.ValidFrom, m.ValidTo, m.Confidence, fp,
 		string(m.Level), linkedJSON,
-		embArg)
+		embArg, m.EmbedState)
 	if err != nil {
 		return fmt.Errorf("postgres: upsert: %w", err)
 	}

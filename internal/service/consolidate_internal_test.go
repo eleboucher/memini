@@ -28,7 +28,11 @@ func (r *recordingConsolidator) Consolidate(_ context.Context, in llm.Input) (ll
 	return r.dec, nil
 }
 
+// nopMetrics is embedded so a new Metrics method does not break every test
+// double in the package; the explicit methods below still win for the ones this
+// test actually asserts on.
 type countingMetrics struct {
+	nopMetrics
 	results map[string]int
 	depth   int
 }

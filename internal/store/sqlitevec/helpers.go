@@ -43,7 +43,7 @@ func scanRow(s scanner, metric *float64, extra ...any) (*memory.Memory, error) {
 	dest := []any{
 		&m.ID, &m.Namespace, &tier, &m.Content, &m.Summary, &metaJSON, &tagsJSON,
 		&m.Importance, &created, &updated, &accessed, &m.AccessCount, &expires, &superseded,
-		&validFrom, &validTo, &confidence, &level, &linkedJSON,
+		&validFrom, &validTo, &confidence, &level, &linkedJSON, &m.EmbedState,
 	}
 	if metric != nil {
 		dest = append(dest, metric)

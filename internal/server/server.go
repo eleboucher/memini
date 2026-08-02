@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/eleboucher/memini/internal/store"
 	"github.com/eleboucher/memini/internal/version"
 )
 
@@ -43,6 +44,7 @@ type Server struct {
 	// SetDeps/SetLLMConfigured/SetRerankConfigured) but use atomics for the
 	// same late-binding reason as ready.
 	deps             atomic.Pointer[DepTracker]
+	repairStats      atomic.Pointer[RepairStatsFunc]
 	llmConfigured    atomic.Bool
 	rerankConfigured atomic.Bool
 }
@@ -148,6 +150,15 @@ func validBearer(r *http.Request, key string) bool {
 
 // SetReady installs the readiness check used by /readyz.
 func (s *Server) SetReady(fn ReadinessFunc) { s.ready.Store(&fn) }
+
+// RepairStatsFunc reports the deferred-repair backlog by state, for
+// GET /healthz?verbose=1. Returning an empty slice means nothing is
+// outstanding; a nil func means the store has no repair queue.
+type RepairStatsFunc func(context.Context) ([]store.RepairStat, error)
+
+// SetRepairStats installs the repair-backlog source rendered by
+// GET /healthz?verbose=1. Late-bound for the same reason as SetReady.
+func (s *Server) SetRepairStats(fn RepairStatsFunc) { s.repairStats.Store(&fn) }
 
 // SetDeps installs the dependency tracker rendered by GET /healthz?verbose=1.
 // Unset (nil) is fine: the verbose handler renders ok defaults for every dep.

@@ -19,7 +19,7 @@ import (
 // is recorded, and the memory is still findable via keyword recall.
 func TestRememberEmbedErrorStoresVectorless(t *testing.T) {
 	st := openTestStore(t)
-	m := &countingMetrics{}
+	m := &countingMetrics{Metrics: service.NopMetrics()}
 	svc := service.New(st, errEmbedder{dims: dims}, service.WithSyncReinforce(),
 		service.WithWriteEmbedTimeout(time.Second), service.WithRecallEmbedTimeout(time.Second),
 		service.WithMetrics(m))
@@ -65,7 +65,7 @@ func TestRememberEmbedErrorStoresVectorless(t *testing.T) {
 // records reason "embed_timeout".
 func TestRememberEmbedTimeoutStoresVectorless(t *testing.T) {
 	st := openTestStore(t)
-	m := &countingMetrics{}
+	m := &countingMetrics{Metrics: service.NopMetrics()}
 	svc := service.New(st, slowEmbedder{d: 2 * time.Second}, service.WithSyncReinforce(),
 		service.WithWriteEmbedTimeout(50*time.Millisecond), service.WithMetrics(m))
 
@@ -189,7 +189,7 @@ func TestRememberUpdatePreservesPendingEmbed(t *testing.T) {
 		t.Fatalf("seed remember: %v", err)
 	}
 
-	m := &countingMetrics{}
+	m := &countingMetrics{Metrics: service.NopMetrics()}
 	svc := service.New(st, errEmbedder{dims: dims}, service.WithSyncReinforce(),
 		service.WithWriteEmbedTimeout(time.Second), service.WithMetrics(m))
 

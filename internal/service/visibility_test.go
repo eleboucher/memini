@@ -150,6 +150,13 @@ func newVisibilitySvc(t *testing.T, opts ...Option) (*Service, *sqlitevec.Store)
 		WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }),
 	}, opts...)
 	svc := New(st, embedtest.New(visibilityTestDims), all...)
+	// Registered AFTER the store's Close cleanup so it runs BEFORE it (t.Cleanup
+	// is LIFO): detached best-effort work — write-time reinforcement,
+	// corroboration, contradiction routing — must finish before the store closes
+	// or it writes into a closed database and leaves WAL files behind that
+	// TempDir cleanup then trips over. This is WaitBackground's documented
+	// contract, and it is the same order cmd/memini uses at shutdown.
+	t.Cleanup(svc.WaitBackground)
 	return svc, st
 }
 

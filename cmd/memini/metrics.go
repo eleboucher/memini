@@ -41,6 +41,10 @@ type consolidateMetrics struct {
 	opDuration           *prometheus.HistogramVec
 	embedBackfillPending prometheus.Gauge
 	chunkBackfillPending prometheus.Gauge
+	repairResults        *prometheus.CounterVec
+	repairDuration       *prometheus.HistogramVec
+	repairDepth          *prometheus.GaugeVec
+	repairOldestAge      *prometheus.GaugeVec
 
 	// store-level
 	storeUpsert     *prometheus.CounterVec
@@ -65,6 +69,8 @@ const (
 	labelHitsBucket = "hits_bucket"
 	labelMemoryType = "memory_type"
 	labelOp         = "op"
+	labelStage      = "stage"
+	labelState      = "state"
 	labelReason     = "reason"
 	labelResult     = "result"
 	labelSurface    = "surface"
@@ -231,6 +237,26 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 			Name: "memini_rerank_in_flight",
 			Help: "Rerank calls currently in flight against the backend.",
 		}),
+		repairResults: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "memini_repair_results_total",
+			Help: "Deferred-repair outcomes by stage (pending, enrich) and result " +
+				"(ok, moot, retry, parked, embedded, coalesced, superseded). A rising " +
+				"parked count means memories are permanently vectorless and need attention.",
+		}, []string{labelStage, labelResult}),
+		repairDuration: factory.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "memini_repair_duration_seconds",
+			Help:    "End-to-end latency of one deferred repair, by stage.",
+			Buckets: prometheus.DefBuckets,
+		}, []string{labelStage}),
+		repairDepth: factory.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "memini_repair_depth",
+			Help: "Memories currently owing deferred repair, by state (pending, enrich, failed).",
+		}, []string{labelState}),
+		repairOldestAge: factory.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "memini_repair_oldest_age_seconds",
+			Help: "Age of the oldest memory in each repair state. Growing without bound means " +
+				"repairs are being queued faster than they drain.",
+		}, []string{labelState}),
 	}
 	return m
 }
@@ -356,6 +382,22 @@ func (m *consolidateMetrics) EmbedBackfillPending(n int) {
 
 func (m *consolidateMetrics) ChunkBackfillPending(n int) {
 	m.chunkBackfillPending.Set(float64(n))
+}
+
+func (m *consolidateMetrics) RepairResult(stage, result string) {
+	m.repairResults.WithLabelValues(stage, result).Inc()
+}
+
+func (m *consolidateMetrics) RepairDuration(stage string, d time.Duration) {
+	m.repairDuration.WithLabelValues(stage).Observe(d.Seconds())
+}
+
+func (m *consolidateMetrics) RepairDepth(state string, n int) {
+	m.repairDepth.WithLabelValues(state).Set(float64(n))
+}
+
+func (m *consolidateMetrics) RepairOldestAge(state string, seconds float64) {
+	m.repairOldestAge.WithLabelValues(state).Set(seconds)
 }
 
 func (m *consolidateMetrics) DedupTombstoned(n int) {

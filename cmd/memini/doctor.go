@@ -321,7 +321,8 @@ type nsStat struct {
 	classified   int // durable writes tiered by the marker classifier (tier_classified=marker)
 	promoted     int // durable facts produced by promotion (promoted_from set)
 	corroborated int // durable memories whose confidence grew past the fresh seed
-	pendingEmbed int // live vectorless degraded writes (pending_embed="true") awaiting backfill
+	pendingEmbed int // live vectorless degraded writes awaiting repair
+	embedStuck   int // live degraded writes whose repair exhausted its attempt ceiling
 }
 
 func namespaceStats(ctx context.Context, st store.Store) ([]nsStat, error) {
@@ -363,6 +364,9 @@ func namespaceStats(ctx context.Context, st store.Store) ([]nsStat, error) {
 				// nothing will ever drain.
 				if m.PendingEmbed() && m.SupersededBy == nil && !m.Expired(now) {
 					s.pendingEmbed++
+				}
+				if m.EmbedStuck() && m.SupersededBy == nil && !m.Expired(now) {
+					s.embedStuck++
 				}
 			}
 			if m.Tier.Term() == memory.LongTerm && m.Confidence != nil &&
@@ -410,7 +414,7 @@ func printStoreStats(out io.Writer, stats []nsStat, pluginNS string) int {
 		warnf(out, "recall here uses namespace %q (empty), but %q holds %d memories.", pluginNS, biggest.namespace, biggest.total)
 		note(out, "If agents seem to have lost memory, writes are landing in a different namespace.")
 	}
-	printWritePathSignals(out, stats)
+	warnings += printWritePathSignals(out, stats)
 	return warnings
 }
 
@@ -418,23 +422,40 @@ func printStoreStats(out io.Writer, stats []nsStat, pluginNS string) int {
 // behaving across namespaces: writes the classifier tiered durable, facts the
 // promoter produced, and durable memories whose confidence has grown past the
 // fresh seed (re-observed via corroboration or exact restatement).
-func printWritePathSignals(out io.Writer, stats []nsStat) {
-	var classified, promoted, corroborated, pendingEmbed int
+//
+// Returns the number of warnings, so a stuck repair backlog makes doctor exit
+// non-zero rather than printing "No problems detected" over memories that will
+// never become searchable on their own.
+func printWritePathSignals(out io.Writer, stats []nsStat) int {
+	var classified, promoted, corroborated, pendingEmbed, embedStuck int
 	for _, s := range stats {
 		classified += s.classified
 		promoted += s.promoted
 		corroborated += s.corroborated
 		pendingEmbed += s.pendingEmbed
+		embedStuck += s.embedStuck
 	}
-	if classified == 0 && promoted == 0 && corroborated == 0 && pendingEmbed == 0 {
-		return
+	if classified == 0 && promoted == 0 && corroborated == 0 && pendingEmbed == 0 && embedStuck == 0 {
+		return 0
 	}
 	fmt.Fprintln(out, "Write-path signals:")                                                       //nolint:errcheck
 	fmt.Fprintf(out, "  marker-classified durable writes:  %d\n", classified)                      //nolint:errcheck
 	fmt.Fprintf(out, "  promotion-produced facts:          %d\n", promoted)                        //nolint:errcheck
 	fmt.Fprintf(out, "  corroborated durable memories:     %d (confidence above the %.2f seed)\n", //nolint:errcheck
 		corroborated, memory.ConfidenceSeedFresh)
-	fmt.Fprintf(out, "  pending embed (vectorless, awaiting backfill):  %d\n", pendingEmbed) //nolint:errcheck
+	fmt.Fprintf(out, "  pending embed (vectorless, awaiting repair):    %d\n", pendingEmbed) //nolint:errcheck
+	if embedStuck == 0 {
+		return 0
+	}
+	// A stuck repair is the one write-path signal that is a real problem rather
+	// than an observation: these memories will stay keyword-only until the
+	// sweeper's circuit breaker re-arms them or someone intervenes. Counting it
+	// as a warning is what stops doctor reporting "No problems detected" and
+	// exiting 0 over a permanently degraded corpus.
+	fmt.Fprintf(out, "  stuck embed (repair gave up):                  %d\n", embedStuck)             //nolint:errcheck
+	fmt.Fprintln(out, "    ↳ these memories are keyword-only until the repair sweeper re-arms them.") //nolint:errcheck
+	fmt.Fprintln(out, "      Check the embedder, then run `memini doctor --fix` to retry them now.")  //nolint:errcheck
+	return 1
 }
 
 // nsStat is the per-namespace summary doctor reports.

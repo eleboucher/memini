@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"strings"
@@ -140,9 +141,15 @@ type Stats struct {
 	// uncorroborated durable debris (confidence below the demote floor); unbounded
 	// by short-term caps, so a growing value signals reclaimable bloat
 	LowConfidenceDurable int `json:"low_confidence_durable"`
-	// vectorless degraded writes (metadata pending_embed="true") awaiting the
-	// backfill loop; a persistently nonzero value means the embedder is down
-	PendingEmbed  int        `json:"pending_embed"`
+	// vectorless degraded writes awaiting repair; a persistently nonzero value
+	// means the embedder is down
+	PendingEmbed int `json:"pending_embed"`
+	// degraded writes whose repair exhausted its attempt ceiling. Unlike
+	// PendingEmbed these do NOT fix themselves on the next tick: they stay
+	// keyword-only until the sweeper's circuit breaker re-arms them or an
+	// operator intervenes. Reported separately precisely because rendering the
+	// two identically is what lets a permanently degraded memory hide.
+	EmbedStuck    int        `json:"embed_stuck"`
 	TotalAccesses int        `json:"total_accesses"`
 	AvgImportance float64    `json:"avg_importance"`
 	LastWriteAt   *time.Time `json:"last_write_at,omitempty"`
@@ -180,6 +187,9 @@ func (s *Service) Stats(ctx context.Context, namespace string) (Stats, error) {
 			if m.PendingEmbed() {
 				st.PendingEmbed++
 			}
+			if m.EmbedStuck() {
+				st.EmbedStuck++
+			}
 			st.TotalAccesses += m.AccessCount
 			importanceSum += m.Importance
 		}
@@ -213,6 +223,7 @@ func (s *Service) StatsAll(ctx context.Context) (Stats, error) {
 		merged.Superseded += st.Superseded
 		merged.LowConfidenceDurable += st.LowConfidenceDurable
 		merged.PendingEmbed += st.PendingEmbed
+		merged.EmbedStuck += st.EmbedStuck
 		merged.TotalAccesses += st.TotalAccesses
 		// Weight by live total so the merged average isn't skewed by empty or
 		// tombstone-only namespaces.
@@ -263,6 +274,12 @@ type Briefing struct {
 	// (T6) has no dedicated field for it, so renderers surface it themselves
 	// (MCP appends an "… and N more" note; REST returns just the capped array).
 	ChildrenTruncated int `json:"children_truncated,omitempty"`
+	// Degraded names the read-set namespaces whose load failed and were skipped,
+	// so a caller can tell an empty section from an unreachable one. Empty on a
+	// healthy briefing. The primary namespace never appears here: losing it is
+	// fatal rather than degrading, because a briefing without the project's own
+	// context is not a briefing.
+	Degraded []string `json:"degraded,omitempty"`
 	// Omitted is the total number of items BriefingOpts.MaxTokens dropped
 	// across the four sections (0 without a budget or when everything fit).
 	// The briefing has no per-call activity detail for it — this field IS the
@@ -419,7 +436,21 @@ func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingO
 		// place, rather than fetching and discarding them in bucket.
 		mems, err := s.store.List(ctx, e.ns, store.Filter{Now: now, Tiers: e.tiers}, 0)
 		if err != nil {
-			return Briefing{}, err
+			// The primary namespace is the briefing; losing it is fatal. A
+			// failing ancestor, home or link leg costs breadth, and a session
+			// briefing that opens with the project's own context is far more
+			// useful than none at all — but the caller has to be told, because
+			// a briefing that silently omits an ancestor's durable facts is
+			// precisely the case where an agent does not know what it is
+			// missing.
+			if e.ns == namespace {
+				return Briefing{}, err
+			}
+			slog.WarnContext(ctx, "briefing: read-set leg unavailable, briefing without it",
+				"namespace", e.ns, "err", err)
+			s.metrics.RecallDegraded("namespace_unavailable")
+			b.Degraded = append(b.Degraded, e.ns)
+			continue
 		}
 		for _, m := range mems {
 			if m.Tier.Term() == memory.LongTerm {
@@ -477,9 +508,15 @@ func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingO
 	// bare (scope=project) or explicit-namespaces briefing renders no rollup,
 	// so it must not pay for one either.
 	if !bare && len(opts.Namespaces) == 0 {
-		b.Children, b.ChildrenTruncated, err = s.childRollup(ctx, namespace, now)
-		if err != nil {
-			return Briefing{}, err
+		// The rollup is a decorative subtree index, and its own doc says so.
+		// A failure here degrades to omitting it rather than failing a briefing
+		// whose actual content is already assembled.
+		children, truncated, cerr := s.childRollup(ctx, namespace, now)
+		if cerr != nil {
+			slog.WarnContext(ctx, "briefing: child rollup failed, briefing without the subtree index",
+				"namespace", namespace, "err", cerr)
+		} else {
+			b.Children, b.ChildrenTruncated = children, truncated
 		}
 	}
 	// Log what the briefing served, after the per-section caps, so the feed
@@ -711,4 +748,34 @@ func (s *Service) DeleteNamespace(ctx context.Context, namespace string) (int64,
 	}
 	s.metrics.ForgetResult("ok")
 	return n, nil
+}
+
+// DegradedWire renders a recall's degradation for the caller: a short machine
+// value and a plain-language note.
+//
+// Both transports built this string themselves and had drifted into identical
+// copies, which is how the dropped-namespace case would have ended up reported
+// on one surface and not the other. reasons is the embed-degradation reason
+// ("embed_error"/"embed_timeout", empty when the query embed succeeded);
+// dropped names read-set namespaces whose search failed. Returns empty strings
+// on a healthy recall.
+//
+// Telling the caller matters more here than it looks: an agent handed fewer
+// results with no explanation concludes the memory does not exist, which is a
+// worse outcome than being told the search was partial.
+func DegradedWire(reasons string, dropped []string) (value, note string) {
+	switch {
+	case reasons == "" && len(dropped) == 0:
+		return "", ""
+	case len(dropped) == 0:
+		return "keyword_only",
+			"semantic search unavailable (" + reasons + "); results are keyword-only and may be incomplete"
+	case reasons == "":
+		return "partial",
+			"some namespaces were unavailable (" + strings.Join(dropped, ", ") + "); results may be incomplete"
+	default:
+		return "partial",
+			"semantic search unavailable (" + reasons + ") and some namespaces were unavailable (" +
+				strings.Join(dropped, ", ") + "); results may be incomplete"
+	}
 }

@@ -690,6 +690,7 @@ const fullMemory = (overrides: Record<string, any> = {}) => ({
   confidence: 0.92,
   content_hash: "0123456789abcdef",
   content_truncated: false,
+  embed_state: "",
   ...overrides,
 });
 

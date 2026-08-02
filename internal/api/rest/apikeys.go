@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/eleboucher/memini/internal/apiauth"
 	"github.com/eleboucher/memini/internal/httputil"
@@ -224,10 +225,19 @@ func (h *Server) CreateApiKey(w http.ResponseWriter, r *http.Request) {
 		Disabled:  deref(req.Disabled),
 		Admin:     deref(req.Admin),
 		ReadOnly:  deref(req.ReadOnly),
-		// CreatedAt intentionally left zero: PutAPIKey stamps "now" for a
-		// brand-new row (store.APIKeyStore.PutAPIKey's doc).
+		// Stamped here rather than left zero for PutAPIKey to fill in, so the
+		// echoed response is accurate without a second round trip — the same
+		// reasoning as PutLink. Both drivers honour a non-zero CreatedAt.
+		CreatedAt: time.Now().UTC(),
 	}
-	if err := ks.PutAPIKey(r.Context(), key); err != nil {
+	// The row is decided; a client disconnect must not roll it back. This one
+	// matters more than most: the secret is returned exactly once and is
+	// unrecoverable, so a write that commits while the response is lost strands
+	// a key nobody can use.
+	kctx, kcancel := store.DurableCtx(r.Context())
+	err = ks.PutAPIKey(kctx, key)
+	kcancel()
+	if err != nil {
 		writeError(w, r, statusFor(err), err)
 		return
 	}
@@ -246,16 +256,12 @@ func (h *Server) CreateApiKey(w http.ResponseWriter, r *http.Request) {
 	if key.ReadOnly {
 		h.logCapabilityEvent(r.Context(), name, eventDetailReadOnly, true)
 	}
-	stored, err := ks.GetAPIKeyByHash(r.Context(), key.Hash)
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, err)
-		return
-	}
-	if stored == nil {
-		writeError(w, r, http.StatusInternalServerError, fmt.Errorf("api key %q: not found immediately after write", name))
-		return
-	}
-	httputil.JSON(w, http.StatusCreated, apiKeyWithSecretModel(*stored, Db, secret))
+	// Deliberately no read-back. The response is built from the row we just
+	// wrote, because every field apiKeyWithSecretModel renders is already known
+	// here. Reading it back could only fail, and failing here meant returning
+	// 500 for a key that HAD been created — losing the one-time secret forever
+	// while leaving the row behind.
+	httputil.JSON(w, http.StatusCreated, apiKeyWithSecretModel(key, Db, secret))
 }
 
 // logCapabilityEvent records a per-key authorization change as a
@@ -506,7 +512,10 @@ func (h *Server) RotateApiKey(w http.ResponseWriter, r *http.Request, name strin
 	}
 	updated := *existing
 	updated.Hash = apiauth.HashToken(secret)
-	if err := ks.PutAPIKey(r.Context(), updated); err != nil {
+	rctx, rcancel := store.DurableCtx(r.Context())
+	err = ks.PutAPIKey(rctx, updated)
+	rcancel()
+	if err != nil {
 		writeError(w, r, statusFor(err), err)
 		return
 	}
@@ -516,14 +525,10 @@ func (h *Server) RotateApiKey(w http.ResponseWriter, r *http.Request, name strin
 	// the same reason as CreateApiKey/UpdateApiKey: consistency, and in
 	// case Disabled/home changed via a future extension of this handler.
 	h.auth.keyAuth.Invalidate()
-	stored, err := ks.GetAPIKeyByHash(r.Context(), updated.Hash)
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, err)
-		return
-	}
-	if stored == nil {
-		writeError(w, r, http.StatusInternalServerError, fmt.Errorf("api key %q: not found immediately after rotate", name))
-		return
-	}
-	httputil.JSON(w, http.StatusOK, apiKeyWithSecretModel(*stored, Db, secret))
+	// No read-back, for the same reason as CreateApiKey: `updated` is a copy of
+	// the row we just read and wrote, so it already carries the true CreatedAt
+	// and every other rendered field. A failed read-back used to 500 a rotation
+	// that had already happened, invalidating the caller's old secret and
+	// withholding the new one.
+	httputil.JSON(w, http.StatusOK, apiKeyWithSecretModel(updated, Db, secret))
 }

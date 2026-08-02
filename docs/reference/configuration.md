@@ -95,7 +95,9 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_PROMOTE_INTERVAL`](#memini_promote_interval) | `24h` | [Consolidation and promotion](#consolidation-and-promotion) |
 | [`MEMINI_PROMOTE_MIN_ACCESS`](#memini_promote_min_access) | `3` | [Consolidation and promotion](#consolidation-and-promotion) |
 | [`MEMINI_PROMOTE_WHOLE_MAX_CHARS`](#memini_promote_whole_max_chars) | `240` | [Consolidation and promotion](#consolidation-and-promotion) |
-| [`MEMINI_BACKFILL_INTERVAL`](#memini_backfill_interval) | `1m` | [Consolidation and promotion](#consolidation-and-promotion) |
+| [`MEMINI_REPAIR_POLL_INTERVAL`](#memini_repair_poll_interval) | `5s` | [Repairing degraded writes](#repairing-degraded-writes) |
+| [`MEMINI_BACKGROUND_EMBED_TIMEOUT`](#memini_background_embed_timeout) | `30s` | [Repairing degraded writes](#repairing-degraded-writes) |
+| [`MEMINI_BACKFILL_INTERVAL`](#memini_backfill_interval) | `1m` | [Repairing degraded writes](#repairing-degraded-writes) |
 | [`MEMINI_SWEEP_INTERVAL`](#memini_sweep_interval) | `1h` | [Maintenance and decay](#maintenance-and-decay) |
 | [`MEMINI_SHORT_TERM_CAP`](#memini_short_term_cap) | `1000` | [Maintenance and decay](#maintenance-and-decay) |
 | [`MEMINI_DEMOTE_AFTER`](#memini_demote_after) | `168h` | [Maintenance and decay](#maintenance-and-decay) |
@@ -484,7 +486,9 @@ What happens when a new write closely resembles, or directly contradicts, someth
 
 duration, default `5s`. Set by `Config.WriteEmbedTimeout`.
 
-`MEMINI_WRITE_EMBED_TIMEOUT` bounds the content embed on the remember path; past it, or on embed error, the memory is stored without a vector (keyword-searchable) and marked pending_embed for background backfill. 0 restores fail-fast writes.
+`MEMINI_WRITE_EMBED_TIMEOUT` bounds the content embed on the remember path; past it, or on embed error, the memory is stored without a vector (keyword-searchable) and queued for background repair. 0 restores fail-fast writes.
+
+Lowering it trades write latency for repair latency, not for durability: a degraded write keeps its content and gets its vector and its write-time enrichment back from the repair worker within seconds. Raising it makes more writes keep their vector inline, which is the cheaper path when the embedder is healthy.
 
 ### `MEMINI_WRITE_DEDUP_SCORE`
 
@@ -585,11 +589,31 @@ int, default `240`. Set by `Config.PromoteWholeMaxChars`.
 
 This is a cliff, not a truncation — a longer source is simply never promoted, however often it was recalled. Raise it if your durable facts are written as paragraphs rather than sentences. 0 disables whole-content promotion, leaving only marker extraction. Ignored when an LLM is configured: distillation replaces the heuristic.
 
+## Repairing degraded writes
+
+A write that cannot reach the embedder is still stored — vectorless, keyword-searchable, and marked for repair in the same transaction. These settings control how quickly it gets its vector back, along with the write-time dedup, corroboration and contradiction routing it had to skip.
+
+### `MEMINI_REPAIR_POLL_INTERVAL`
+
+duration, default `5s`. Set by `Config.RepairPollInterval`.
+
+`MEMINI_REPAIR_POLL_INTERVAL` is how often the repair worker polls for memories that still owe a vector or the write-time enrichment that follows it. It is only a backstop: a degraded write wakes the worker directly, so this bounds how long a repair waits when that wake-up was missed (the worker was mid-batch) or when another process marked the row. 0 disables the worker, leaving repairs to the sweeper on MEMINI_BACKFILL_INTERVAL.
+
+### `MEMINI_BACKGROUND_EMBED_TIMEOUT`
+
+duration, default `30s`. Set by `Config.BackgroundEmbedTimeout`.
+
+`MEMINI_BACKGROUND_EMBED_TIMEOUT` bounds the embed inside a background repair, deliberately independent of MEMINI_WRITE_EMBED_TIMEOUT.
+
+The write budget exists to bound a waiting caller's latency; a repair has no caller. Sharing one value means tightening the write budget also tightens every repair, so a merely-slow embedder would make repairs fail forever while the write path kept degrading — the exact failure repairs exist to recover from. 0 selects the built-in default.
+
 ### `MEMINI_BACKFILL_INTERVAL`
 
 duration, default `1m`. Set by `Config.BackfillInterval`.
 
-`MEMINI_BACKFILL_INTERVAL` is how often the vector backfill loop re-embeds memories left vectorless by a degraded write (metadata pending_embed); 0 disables it.
+`MEMINI_BACKFILL_INTERVAL` is how often the repair sweeper runs: it re-arms repairs parked by a long embedder outage, and adopts memories that owe a vector but carry no repair state — rows written by a release predating the repair columns, or by a path that bypasses the normal write. Shared with the chunk backfill. 0 disables it.
+
+It is a safety net, not the main path: a degraded write records its own repair state and wakes the worker directly, so ordinary repairs never wait for this tick.
 
 ## Maintenance and decay
 

@@ -157,6 +157,7 @@ func scanRow(s rowScanner, metric *float64, extra ...any) (*memory.Memory, error
 		&m.ID, &m.Namespace, &tier, &m.Content, &m.Summary, &metaBytes, &m.Tags,
 		&m.Importance, &m.CreatedAt, &m.UpdatedAt, &m.LastAccessedAt, &m.AccessCount,
 		&expires, &superseded, &validFrom, &validTo, &confidence, &level, &linkedBytes,
+		&m.EmbedState,
 	}
 	if metric != nil {
 		dest = append(dest, metric)

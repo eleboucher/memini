@@ -52,6 +52,10 @@ const (
 // Recall tuning.
 const (
 	reinforceTimeout = 10 * time.Second
+	// similarityJobTimeout bounds one detached write-time similarity job
+	// (corroboration or contradiction routing): a vector search plus at most a
+	// couple of small writes.
+	similarityJobTimeout = 30 * time.Second
 
 	// recallPoolFactor / recallPoolFloor size the per-leg candidate pool for
 	// hybrid recall: each leg over-fetches max(k*factor, floor) so a memory
@@ -183,34 +187,52 @@ type Metrics interface {
 	// chunk vectors after one chunk-backfill tick (0 once the queue is
 	// drained). Only meaningful with MEMINI_CHUNK_EMBED on.
 	ChunkBackfillPending(n int)
+	// RepairResult records one deferred-repair outcome. stage is the repair
+	// state the row was claimed in ("pending" or "enrich"); result is "ok",
+	// "moot" (the row no longer needed the work), "retry" (failed, will run
+	// again under backoff), "parked" (failed at the attempt ceiling), or a
+	// stage-specific detail ("embedded", "coalesced", "superseded").
+	RepairResult(stage, result string)
+	// RepairDuration observes one deferred repair's end-to-end execution time.
+	RepairDuration(stage string, d time.Duration)
+	// RepairDepth reports how many memories are currently in one repair state.
+	RepairDepth(state string, n int)
+	// RepairOldestAge reports the age in seconds of the oldest memory in one
+	// repair state — the signal that the backlog is filling faster than it
+	// drains.
+	RepairOldestAge(state string, seconds float64)
 }
 
 type nopMetrics struct{}
 
-func (nopMetrics) ConsolidateResult(string)            {}
-func (nopMetrics) ConsolidateQueueDepth(int)           {}
-func (nopMetrics) RememberResult(string, string)       {}
-func (nopMetrics) RecallResult(string, string, string) {}
-func (nopMetrics) ForgetResult(string)                 {}
-func (nopMetrics) SupersedeResult(string)              {}
-func (nopMetrics) PromoteResult(string, int)           {}
-func (nopMetrics) FsckResult(string)                   {}
-func (nopMetrics) OpDuration(string, time.Duration)    {}
-func (nopMetrics) AnswerResult(string)                 {}
-func (nopMetrics) RerankResult(string, string)         {}
-func (nopMetrics) RecallDegraded(string)               {}
-func (nopMetrics) RecallFloored(string, int)           {}
-func (nopMetrics) RememberDegraded(string)             {}
-func (nopMetrics) WriteSanitized(string)               {}
-func (nopMetrics) ReinforceResult(string)              {}
-func (nopMetrics) DedupTombstoned(int)                 {}
-func (nopMetrics) CorroborateResult(string)            {}
-func (nopMetrics) ContradictResult(string)             {}
-func (nopMetrics) TierClassified(string)               {}
-func (nopMetrics) InjectedResult(string, string, int)  {}
-func (nopMetrics) InjectedTokens(string, int)          {}
-func (nopMetrics) EmbedBackfillPending(int)            {}
-func (nopMetrics) ChunkBackfillPending(int)            {}
+func (nopMetrics) ConsolidateResult(string)             {}
+func (nopMetrics) ConsolidateQueueDepth(int)            {}
+func (nopMetrics) RememberResult(string, string)        {}
+func (nopMetrics) RecallResult(string, string, string)  {}
+func (nopMetrics) ForgetResult(string)                  {}
+func (nopMetrics) SupersedeResult(string)               {}
+func (nopMetrics) PromoteResult(string, int)            {}
+func (nopMetrics) FsckResult(string)                    {}
+func (nopMetrics) OpDuration(string, time.Duration)     {}
+func (nopMetrics) AnswerResult(string)                  {}
+func (nopMetrics) RerankResult(string, string)          {}
+func (nopMetrics) RecallDegraded(string)                {}
+func (nopMetrics) RecallFloored(string, int)            {}
+func (nopMetrics) RememberDegraded(string)              {}
+func (nopMetrics) WriteSanitized(string)                {}
+func (nopMetrics) ReinforceResult(string)               {}
+func (nopMetrics) DedupTombstoned(int)                  {}
+func (nopMetrics) CorroborateResult(string)             {}
+func (nopMetrics) ContradictResult(string)              {}
+func (nopMetrics) TierClassified(string)                {}
+func (nopMetrics) InjectedResult(string, string, int)   {}
+func (nopMetrics) InjectedTokens(string, int)           {}
+func (nopMetrics) EmbedBackfillPending(int)             {}
+func (nopMetrics) ChunkBackfillPending(int)             {}
+func (nopMetrics) RepairResult(string, string)          {}
+func (nopMetrics) RepairDuration(string, time.Duration) {}
+func (nopMetrics) RepairDepth(string, int)              {}
+func (nopMetrics) RepairOldestAge(string, float64)      {}
 
 // NopMetrics is exported for tests, mirroring store.NopMetrics: it lets a test
 // outside this package embed a working sink and override only the one method it
@@ -427,6 +449,16 @@ type Service struct {
 	now   func() time.Time
 	newID func() string
 
+	// repairKick wakes RunRepairWorker the instant a write degrades, so a
+	// repair starts in milliseconds rather than on the next poll tick. Capacity
+	// 1 and edge-triggered; see kickRepair for why dropping a send is correct.
+	repairKick chan struct{}
+	// backgroundEmbedTimeout bounds the embed inside a background repair,
+	// deliberately independent of writeEmbedTimeout: the write budget exists to
+	// bound a caller's latency, and a repair has no caller. 0 selects
+	// repairEmbedTimeout. See WithBackgroundEmbedTimeout.
+	backgroundEmbedTimeout time.Duration
+
 	// bg tracks detached best-effort goroutines (async recall reinforcement) so
 	// WaitBackground can join them before the store is closed.
 	bg sync.WaitGroup
@@ -576,6 +608,23 @@ func WithWriteEmbedTimeout(d time.Duration) Option {
 	return func(s *Service) {
 		if d > 0 {
 			s.writeEmbedTimeout = d
+		}
+	}
+}
+
+// WithBackgroundEmbedTimeout bounds the embed inside a background repair,
+// independently of WithWriteEmbedTimeout.
+//
+// Keeping the two apart is not cosmetic. The write budget is a latency budget
+// for a caller who is waiting; a background repair has no caller. Holding a
+// repair to the write budget means a merely-slow embedder — a network stall,
+// exactly the degraded scenario repairs exist to recover from — makes every
+// repair fail forever while the write path keeps degrading. d <= 0 selects
+// repairEmbedTimeout.
+func WithBackgroundEmbedTimeout(d time.Duration) Option {
+	return func(s *Service) {
+		if d > 0 {
+			s.backgroundEmbedTimeout = d
 		}
 	}
 }
@@ -927,6 +976,11 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 	if s.distillOnWrite || s.extractOnWrite {
 		s.distillSem = make(chan struct{}, distillSemCap)
 	}
+	// Only when the store can actually hold repair state; without it the write
+	// path has nothing to kick and RunRepairWorker no-ops.
+	if _, ok := s.repairStore(); ok {
+		s.repairKick = make(chan struct{}, 1)
+	}
 	return s
 }
 
@@ -1195,6 +1249,22 @@ func (s *Service) embedForRemember(ctx context.Context, in *RememberInput, exist
 	return nil, nil
 }
 
+// degradedRepairState is the repair state a write should commit alongside
+// itself: pending when the embed did not produce a vector, none otherwise.
+//
+// Returning it rather than mutating in place keeps Remember free of another
+// branch — it is already at its cyclomatic ceiling, so any added `if` fails
+// lint. The value rides on the Memory into Upsert, so a degraded write and the
+// record that it needs repairing commit in one transaction: there is no enqueue
+// that can be lost between them, which is the whole reason repair state lives
+// on the row rather than in a job table.
+func degradedRepairState(vec []float32) string {
+	if len(vec) == 0 {
+		return string(store.RepairPending)
+	}
+	return ""
+}
+
 // Remember embeds and stores a memory, returning the persisted record.
 func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memory, error) {
 	start := time.Now()
@@ -1289,6 +1359,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		UpdatedAt:      now,
 		LastAccessedAt: now,
 		Embedding:      vec,
+		EmbedState:     degradedRepairState(vec),
 	}
 	// An update by ID preserves the original creation time, so a tag- or
 	// metadata-only edit doesn't make an old memory appear freshly created and
@@ -1346,7 +1417,16 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		}
 	}
 
-	if err := s.store.Upsert(ctx, m); err != nil {
+	// The write is decided; a client hanging up now must not undo it. Every
+	// driver's Upsert is a transaction, and both database/sql and pgx roll an
+	// in-flight transaction back on context cancellation — so without this, a
+	// disconnect landing between here and the commit loses an accepted memory
+	// and reports a 500 for it. Everything after this point is already
+	// detached or best-effort, so this is the last place that could happen.
+	wctx, wcancel := store.DurableCtx(ctx)
+	err = s.store.Upsert(wctx, m)
+	wcancel()
+	if err != nil {
 		s.metrics.RememberResult("error", string(tier))
 		return nil, fmt.Errorf("remember: store: %w", err)
 	}
@@ -1357,6 +1437,11 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	// by a free function so its branches don't count against Remember's
 	// cyclomatic budget (already at the limit).
 	s.logWriteEvent(ctx, m, existing, writeOutcomeDetail(m.Tier, supersedeID, in.MergeHint))
+
+	// A degraded write is durable but vectorless, and its repair state committed
+	// with it above. Wake the repair worker so it runs in milliseconds rather
+	// than on the next poll tick. A no-op on a healthy write.
+	s.kickRepairIfDegraded(m)
 
 	// Auto-supersede: now that the replacement is durably stored, tombstone the
 	// near-duplicate in the background. Deferred to here so a failed Upsert above
@@ -1515,8 +1600,7 @@ func (s *Service) dedupCheck(ctx context.Context, m *memory.Memory) (hit *memory
 			}
 			return nil, nil, existing.ID
 		}
-		s.reinforce(ctx, []store.Scored{{Memory: existing}})
-		s.corroborate(ctx, existing)
+		s.reinforceCorroborateAsync(ctx, existing)
 		return existing, nil, ""
 	}
 	return nil, nil, ""
@@ -1645,8 +1729,7 @@ func (s *Service) fingerprintHit(ctx context.Context, in RememberInput, tier mem
 		}
 		return nil, false
 	}
-	s.reinforce(ctx, []store.Scored{{Memory: existing}})
-	s.corroborate(ctx, existing) // an exact repeat raises the fact's confidence
+	s.reinforceCorroborateAsync(ctx, existing) // an exact repeat raises the fact's confidence
 	return existing, true
 }
 
@@ -1727,10 +1810,7 @@ func (s *Service) corroborateNearestAsync(ctx context.Context, m *memory.Memory,
 		s.corroborateMinScore <= 0 || len(m.Embedding) == 0 {
 		return
 	}
-	bg := context.WithoutCancel(ctx)
-	s.bg.Go(func() {
-		cctx, cancel := context.WithTimeout(bg, 30*time.Second)
-		defer cancel()
+	s.detach(ctx, similarityJobTimeout, func(cctx context.Context) {
 		cands, err := s.store.VectorSearch(cctx, m.Namespace, m.Embedding,
 			store.Filter{Tiers: []memory.Tier{memory.TierSemantic, memory.TierProcedural}, Now: s.now()}, 1)
 		if err != nil {
@@ -1788,10 +1868,7 @@ func (s *Service) contradictNearestAsync(ctx context.Context, m *memory.Memory, 
 		s.contradictMinScore <= 0 || len(m.Embedding) == 0 {
 		return
 	}
-	bg := context.WithoutCancel(ctx)
-	s.bg.Go(func() {
-		cctx, cancel := context.WithTimeout(bg, 30*time.Second)
-		defer cancel()
+	s.detach(ctx, similarityJobTimeout, func(cctx context.Context) {
 		// k=3: this runs after Upsert, so the top hit may be the write itself —
 		// and an earlier same-value update (a blocked or duplicate one) may sit
 		// between the write and the stale fact it should invalidate. Scanning
@@ -1964,6 +2041,13 @@ type RecallInput struct {
 	// (empty) on a healthy recall. nil disables reporting. Same out-param
 	// pattern as MergeHint/AutoSuperseded on RememberInput.
 	Degraded *string
+	// DroppedNamespaces (output-only) receives the read-set namespaces whose
+	// search failed and were skipped, so a caller can tell "nothing matched"
+	// from "part of the corpus was unreachable". Empty on a healthy recall;
+	// the primary namespace never appears here because losing it is fatal
+	// rather than degrading. nil disables reporting. Same out-param pattern as
+	// Degraded.
+	DroppedNamespaces *[]string
 	// ReadSet (output-only) is set to the resolved read-set — every namespace
 	// this recall searched, with the origin recorded when that leg was
 	// appended during resolution (primary/ancestor/home/link/call) and any
@@ -2184,7 +2268,15 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	searchStart := time.Now()
 	vres := make([][]store.Scored, len(entries))
 	kres := make([][]store.Scored, len(entries))
-	g2, g2ctx := errgroup.WithContext(ctx)
+	//
+	// Deliberately a plain errgroup.Group over ctx rather than
+	// errgroup.WithContext: a derived context would let the FIRST leg to fail
+	// cancel every sibling, so one unreachable ancestor or link namespace took
+	// down a recall the primary namespace had already answered. Each leg now
+	// records its own error and the group never short-circuits.
+	verr := make([]error, len(entries))
+	kerr := make([]error, len(entries))
+	var g2 errgroup.Group
 	g2.SetLimit(recallSearchConcurrency)
 	for i, e := range entries {
 		ns := e.ns
@@ -2194,24 +2286,17 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		}
 		if vec != nil {
 			g2.Go(func() error {
-				v, err := s.vectorLeg(g2ctx, ns, vec, f, poolK)
-				if err != nil {
-					return fmt.Errorf("recall: vector search: %w", err)
-				}
-				vres[i] = v
+				vres[i], verr[i] = s.vectorLeg(ctx, ns, vec, f, poolK)
 				return nil
 			})
 		}
 		g2.Go(func() error {
-			kw, err := s.store.KeywordSearch(g2ctx, ns, in.Query, f, poolK)
-			if err != nil {
-				return fmt.Errorf("recall: keyword search: %w", err)
-			}
-			kres[i] = kw
+			kres[i], kerr[i] = s.store.KeywordSearch(ctx, ns, in.Query, f, poolK)
 			return nil
 		})
 	}
-	if err := g2.Wait(); err != nil {
+	_ = g2.Wait() // every leg returns nil; failures are collected above
+	if err := s.reportRecallLegs(ctx, entries, verr, kerr, in.DroppedNamespaces); err != nil {
 		s.metrics.RecallResult("error", tf, "0")
 		return nil, err
 	}
@@ -3029,10 +3114,7 @@ func (s *Service) reinforceResults(ctx context.Context, results []store.Scored) 
 		return
 	}
 	// Detach from the request lifetime but keep its values; bound the work.
-	bg := context.WithoutCancel(ctx)
-	s.bg.Go(func() {
-		rctx, cancel := context.WithTimeout(bg, reinforceTimeout)
-		defer cancel()
+	s.detach(ctx, reinforceTimeout, func(rctx context.Context) {
 		s.reinforce(rctx, results)
 	})
 }
@@ -3330,7 +3412,11 @@ func (s *Service) Forget(ctx context.Context, namespace, id string) error {
 	if _, ok := s.eventLog(); ok {
 		doomed, _ = s.store.Get(ctx, namespace, id)
 	}
-	err := s.store.Delete(ctx, namespace, id)
+	// Accepted deletes are durable too: a disconnect must not leave the caller
+	// believing a forget failed when it was about to succeed.
+	dctx, dcancel := store.DurableCtx(ctx)
+	err := s.store.Delete(dctx, namespace, id)
+	dcancel()
 	switch {
 	case err == nil:
 		s.metrics.ForgetResult("ok")
@@ -3361,7 +3447,9 @@ func (s *Service) Supersede(ctx context.Context, namespace, id, supersededBy str
 	if _, ok := s.eventLog(); ok {
 		replaced, _ = s.store.Get(ctx, namespace, id)
 	}
-	err := s.store.SetSuperseded(ctx, namespace, id, supersededBy)
+	sctx, scancel := store.DurableCtx(ctx)
+	err := s.store.SetSuperseded(sctx, namespace, id, supersededBy)
+	scancel()
 	switch {
 	case err == nil:
 		s.metrics.SupersedeResult("ok")
@@ -3452,4 +3540,111 @@ func hitsBucket(n int) string {
 	default:
 		return "21+"
 	}
+}
+
+// detach runs fn on a context that keeps ctx's values (actor, trace, logger)
+// but not its cancellation, bounded by d, tracked by s.bg so WaitBackground
+// joins it before the store closes.
+//
+// This is the house idiom for best-effort work that must outlive a request,
+// hand-written at seven sites before it was extracted. Note that
+// context.WithoutCancel drops the parent's deadline along with its cancel, so
+// re-imposing a bound is not optional — without d, a detached job inherits no
+// deadline at all.
+func (s *Service) detach(ctx context.Context, d time.Duration, fn func(context.Context)) {
+	bg := context.WithoutCancel(ctx)
+	s.bg.Go(func() {
+		c, cancel := context.WithTimeout(bg, d)
+		defer cancel()
+		fn(c)
+	})
+}
+
+// embedBounded embeds text under the write-embed budget when one is set.
+//
+// It exists because the consolidation and dedup-merge paths called
+// embed.EmbedOne directly and unbounded, so a hung embedder there rode the
+// LLM client's much longer HTTP timeout and blocked the request until the
+// 60s middleware fired — even though the very same package bounds the write
+// path's embed a hundred lines away. A budget of 0 keeps the call unbounded,
+// matching the write path's fail-fast default.
+func (s *Service) embedBounded(ctx context.Context, text string) ([]float32, error) {
+	if s.writeEmbedTimeout <= 0 {
+		return embed.EmbedOne(ctx, s.embedder, text)
+	}
+	ectx, cancel := context.WithTimeout(ctx, s.writeEmbedTimeout)
+	defer cancel()
+	return embed.EmbedOne(ectx, s.embedder, text)
+}
+
+// reportRecallLegs resolves the per-leg outcomes of the search fan-out into
+// either a fatal error or a degraded-but-usable result.
+//
+// The rule is that the PRIMARY namespace failing is fatal while a secondary leg
+// failing is a degrade. A recall that returns nothing from the namespace you
+// asked about is not a degraded recall, it is a failed one, and returning empty
+// would produce exactly the confident negative the MCP tool description warns
+// agents about. A missing ancestor or link, by contrast, costs breadth the
+// caller can be told about.
+//
+// The primary is identified by its origin rather than by position: primaryFirst
+// leaves entries untouched when the primary is absent entirely (an explicit
+// read set can name namespaces that exclude it), so entries[0] is not reliably
+// the primary. With no primary leg at all, nothing is fatal and an empty result
+// is legitimate.
+//
+// A cancelled request context is fatal too, never "partial": the caller went
+// away, so reporting incomplete results as if they were the answer would be a
+// lie about coverage.
+func (s *Service) reportRecallLegs(
+	ctx context.Context, entries []scopeEntry, verr, kerr []error, dropped *[]string,
+) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	var names []string
+	for i, e := range entries {
+		switch {
+		case kerr[i] != nil && e.origin == OriginPrimary:
+			// The keyword leg is the one leg every recall has, so losing it
+			// means the namespace the caller asked about contributed nothing.
+			return fmt.Errorf("recall: keyword search: %w", kerr[i])
+		case kerr[i] != nil:
+			// A secondary namespace is gone entirely; keep the rest and name it.
+			slog.WarnContext(ctx, "recall: namespace unavailable, answering without it",
+				"namespace", e.ns, "origin", e.origin, "err", kerr[i])
+			s.metrics.RecallDegraded("namespace_unavailable")
+			names = append(names, e.ns)
+		case verr[i] != nil:
+			// Vector leg only: this namespace falls back to keyword results,
+			// the same degradation a failed query embed already produces.
+			slog.WarnContext(ctx, "recall: vector leg failed, using this namespace's keyword results only",
+				"namespace", e.ns, "origin", e.origin, "err", verr[i])
+			s.metrics.RecallDegraded("vector_leg_failed")
+		}
+	}
+	if dropped != nil {
+		*dropped = names
+	}
+	return nil
+}
+
+// reinforceCorroborateAsync records a write-time dedup hit against the memory
+// it folded into: the same reinforce plus confidence growth reinforceResults
+// already does for recall, but off the write path.
+//
+// These two ran inline on the fingerprint-hit and dedup-coalesce branches while
+// every sibling call site backgrounded them, putting two extra store writes on
+// the hot path of a write that had already decided its outcome. Honors
+// syncReinforce so the tests that observe the result inline keep working.
+func (s *Service) reinforceCorroborateAsync(ctx context.Context, m *memory.Memory) {
+	if s.syncReinforce {
+		s.reinforce(ctx, []store.Scored{{Memory: m}})
+		s.corroborate(ctx, m)
+		return
+	}
+	s.detach(ctx, reinforceTimeout, func(c context.Context) {
+		s.reinforce(c, []store.Scored{{Memory: m}})
+		s.corroborate(c, m)
+	})
 }

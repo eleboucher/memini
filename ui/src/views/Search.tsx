@@ -17,6 +17,10 @@ export function Search() {
   const [results, setResults] = useState<Scored[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The server's own explanation when a search returned less than the full
+  // corpus (keyword-only fallback, or a namespace it could not reach). Without
+  // it a partial answer is indistinguishable from "nothing matched".
+  const [degraded, setDegraded] = useState<string | null>(null)
   const [open, setOpen] = useState<Memory | null>(null)
   const [openFrom, setOpenFrom] = useState<string | undefined>(undefined)
   // The namespace the current `results` were fetched under, captured at fetch
@@ -33,6 +37,7 @@ export function Search() {
   // stale list linger under the new selection.
   useEffect(() => {
     setResults(null)
+    setDegraded(null)
     setError(null)
     setOpen(null)
     setOpenFrom(undefined)
@@ -49,12 +54,14 @@ export function Search() {
     const t0 = performance.now()
     try {
       const r = await api.search(q.trim(), { tiers, tags, metadata, limit: 30 })
-      setResults(r)
+      setResults(r.results)
+      setDegraded(r.note ?? null)
       setQueriedNs(ns)
       setTook(performance.now() - t0)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setResults(null)
+      setDegraded(null)
     } finally {
       setLoading(false)
     }
@@ -103,6 +110,10 @@ export function Search() {
         </form>
 
         {error && <ErrorBanner message={error} />}
+        {/* A partial answer must say so. Without this a keyword-only fallback
+            or an unreachable namespace reads as "nothing matched", which is a
+            confident negative rather than an honest one. */}
+        {!error && degraded && <div class="banner warn">{degraded}</div>}
 
         {results !== null && (
           <>

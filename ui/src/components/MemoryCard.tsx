@@ -6,6 +6,7 @@ import {
   confidenceState,
   fromLabel,
   isAutoTiered,
+  isEmbedStuck,
   isPendingEmbed,
   isSeedImportance,
   memoryType,
@@ -53,8 +54,12 @@ export function MemoryCard({ memory: m, score, onOpen, showNamespace, from, from
             promoted
           </span>
         )}
-        {isPendingEmbed(m) && (
-          <span class="chip pending" title="Saved while the embedder was unreachable — keyword search only until the backfill re-embeds it">
+        {isEmbedStuck(m) ? (
+          <span class="chip stuck" title="The embedder repair gave up on this memory — it stays keyword-only until the repair sweeper re-arms it or an operator intervenes">
+            embed stuck
+          </span>
+        ) : isPendingEmbed(m) && (
+          <span class="chip pending" title="Saved while the embedder was unreachable — keyword search only until the repair worker re-embeds it">
             awaiting embed
           </span>
         )}

@@ -139,6 +139,7 @@ func newServer(
 	}, log, reg)
 	srv.SetReady(func(ctx context.Context) error { return st.Ping(ctx) })
 	srv.SetDeps(deps)
+	srv.SetRepairStats(svc.RepairBacklog)
 	srv.SetLLMConfigured(cfg.LLMEnabled())
 	srv.SetRerankConfigured(cfg.RerankEnabled())
 
@@ -344,6 +345,7 @@ func buildServiceStack(
 		service.WithRecallEmbedTimeout(cfg.RecallEmbedTimeout),
 		service.WithRecallRewriteTimeout(cfg.RecallRewriteTimeout),
 		service.WithWriteEmbedTimeout(cfg.WriteEmbedTimeout),
+		service.WithBackgroundEmbedTimeout(cfg.BackgroundEmbedTimeout),
 		service.WithDistillTimeout(cfg.DistillTimeout),
 		service.WithRecallMinScore(cfg.RecallMinScore),
 		service.WithRecallMinSemanticScore(cfg.RecallMinSemanticScore),
@@ -389,7 +391,17 @@ func buildServiceStack(
 	workers.Go(func() { svc.StartConsolidator(workerCtx) })
 	workers.Go(func() { svc.StartDistillBatcher(workerCtx) })
 	workers.Go(func() { svc.RunPromoter(workerCtx, cfg.PromoteInterval) })
-	workers.Go(func() { svc.RunEmbedBackfill(workerCtx, cfg.BackfillInterval) })
+	// Drains the deferred-repair queue: a write that could not reach the
+	// embedder commits its own "needs repair" state, and this worker re-embeds
+	// it and replays the write-time enrichment it missed. Woken directly by a
+	// degraded write, so the poll interval is only a backstop.
+	workers.Go(func() { svc.RunRepairWorker(workerCtx, cfg.RepairPollInterval) })
+	// The safety net behind it: re-arms repairs parked by a long outage, and
+	// adopts rows that owe a vector but carry no repair state (written by a
+	// release predating the repair columns, or by a path that bypasses
+	// Remember). Falls back to the pre-repair backfill loop on a store with no
+	// repair queue.
+	workers.Go(func() { svc.RunRepairSweeper(workerCtx, cfg.BackfillInterval) })
 	// Shares BackfillInterval with the embed backfill: both are the same kind of
 	// job (repair an index the write path could not finish) and there is no
 	// reason for an operator to tune them apart. No-op unless MEMINI_CHUNK_EMBED.

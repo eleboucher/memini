@@ -404,8 +404,30 @@ type Config struct {
 	RecallRewriteTimeout time.Duration `env:"MEMINI_RECALL_REWRITE_TIMEOUT" envDefault:"3s"`
 	// WriteEmbedTimeout bounds the content embed on the remember path; past it, or on
 	// embed error, the memory is stored without a vector (keyword-searchable) and
-	// marked pending_embed for background backfill. 0 restores fail-fast writes.
+	// queued for background repair. 0 restores fail-fast writes.
+	//
+	// Lowering it trades write latency for repair latency, not for durability:
+	// a degraded write keeps its content and gets its vector and its write-time
+	// enrichment back from the repair worker within seconds. Raising it makes
+	// more writes keep their vector inline, which is the cheaper path when the
+	// embedder is healthy.
 	WriteEmbedTimeout time.Duration `env:"MEMINI_WRITE_EMBED_TIMEOUT" envDefault:"5s"`
+	// BackgroundEmbedTimeout bounds the embed inside a background repair,
+	// deliberately independent of MEMINI_WRITE_EMBED_TIMEOUT.
+	//
+	// The write budget exists to bound a waiting caller's latency; a repair has
+	// no caller. Sharing one value means tightening the write budget also
+	// tightens every repair, so a merely-slow embedder would make repairs fail
+	// forever while the write path kept degrading — the exact failure repairs
+	// exist to recover from. 0 selects the built-in default.
+	BackgroundEmbedTimeout time.Duration `env:"MEMINI_BACKGROUND_EMBED_TIMEOUT" envDefault:"30s"`
+	// RepairPollInterval is how often the repair worker polls for memories that
+	// still owe a vector or the write-time enrichment that follows it. It is
+	// only a backstop: a degraded write wakes the worker directly, so this
+	// bounds how long a repair waits when that wake-up was missed (the worker
+	// was mid-batch) or when another process marked the row. 0 disables the
+	// worker, leaving repairs to the sweeper on MEMINI_BACKFILL_INTERVAL.
+	RepairPollInterval time.Duration `env:"MEMINI_REPAIR_POLL_INTERVAL" envDefault:"5s"`
 	// RecallMinScore is the fused-score floor: candidates below it are dropped
 	// before ranking. The default (0.1) is the benched value; it is exposed so a
 	// deployment on a different embedder can raise it to trim loosely-relevant
@@ -506,9 +528,15 @@ type Config struct {
 	// configured: distillation replaces the heuristic.
 	PromoteWholeMaxChars int `env:"MEMINI_PROMOTE_WHOLE_MAX_CHARS" envDefault:"240"`
 
-	// BackfillInterval is how often the vector backfill loop re-embeds
-	// memories left vectorless by a degraded write (metadata pending_embed);
-	// 0 disables it.
+	// BackfillInterval is how often the repair sweeper runs: it re-arms repairs
+	// parked by a long embedder outage, and adopts memories that owe a vector
+	// but carry no repair state — rows written by a release predating the
+	// repair columns, or by a path that bypasses the normal write. Shared with
+	// the chunk backfill. 0 disables it.
+	//
+	// It is a safety net, not the main path: a degraded write records its own
+	// repair state and wakes the worker directly, so ordinary repairs never
+	// wait for this tick.
 	BackfillInterval time.Duration `env:"MEMINI_BACKFILL_INTERVAL" envDefault:"1m"`
 
 	// SweepInterval is how often the decay sweeper purges expired memories.
@@ -979,6 +1007,23 @@ func (c *Config) validateRecallScores() error {
 	return nil
 }
 
+// validateRepair checks the deferred-repair knobs. Split out of validate to
+// keep it under the cyclomatic budget, matching validateChunking and
+// validateRecallScores.
+//
+// 0 is legal for both: it means "no repair worker" (repairs fall back to the
+// sweeper) and "use the built-in background embed budget". Only a negative
+// value is a misconfiguration.
+func (c *Config) validateRepair() error {
+	if c.RepairPollInterval < 0 {
+		return fmt.Errorf("MEMINI_REPAIR_POLL_INTERVAL must be >= 0, got %v", c.RepairPollInterval)
+	}
+	if c.BackgroundEmbedTimeout < 0 {
+		return fmt.Errorf("MEMINI_BACKGROUND_EMBED_TIMEOUT must be >= 0, got %v", c.BackgroundEmbedTimeout)
+	}
+	return nil
+}
+
 func (c *Config) validate() error {
 	switch c.Backend {
 	case BackendSQLite:
@@ -1000,6 +1045,9 @@ func (c *Config) validate() error {
 	// rejected at load time rather than crash the sweeper goroutine.
 	if c.SweepInterval <= 0 {
 		return fmt.Errorf("MEMINI_SWEEP_INTERVAL must be positive, got %v", c.SweepInterval)
+	}
+	if err := c.validateRepair(); err != nil {
+		return err
 	}
 	switch c.ConsolidateMode {
 	case "async", "sync", valueOff:

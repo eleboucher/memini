@@ -563,6 +563,10 @@ const MEMORY_FIELDS = [
   // full stored content, stable across response formats) and
   // content_truncated (set on concise projections that actually cut).
   "content_hash", "content_truncated",
+  // Deferred-repair state. Empty or absent means healthy; "failed" is the one
+  // value worth acting on, since that memory stays keyword-only until the
+  // sweeper re-arms it.
+  "embed_state",
 ] as const;
 
 /** Preserve the complete REST Memory DTO, including explicit null values. */
