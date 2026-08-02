@@ -196,9 +196,18 @@ func testRepairClaimDue(t *testing.T, st store.Store, rs store.RepairStore, _ in
 			t.Fatal("a leased row was re-claimed before its lease expired")
 		}
 	}
+	// Expire the lease. ClaimRepairs' now argument cannot do this portably:
+	// postgres deliberately ignores it and leases against the database clock
+	// (see store.RepairStore), so a client-side fake clock is invisible there.
+	// FailRepair writes the caller's next-run time on every backend and leaves
+	// the attempt count alone, which is precisely the row a worker that died
+	// mid-repair leaves behind once its lease runs out.
+	if err := rs.FailRepair(ctx, ns, m.ID, "", time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("expire lease: %v", err)
+	}
 	// Past the lease it becomes claimable again, with the attempt already
 	// charged — the crash-recovery contract.
-	later, err := rs.ClaimRepairs(ctx, store.RepairPending, time.Now().Add(2*time.Hour), time.Minute, 10)
+	later, err := rs.ClaimRepairs(ctx, store.RepairPending, time.Now(), time.Minute, 10)
 	if err != nil {
 		t.Fatalf("post-lease claim: %v", err)
 	}
