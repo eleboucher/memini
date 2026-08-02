@@ -44,6 +44,9 @@ qa_*.jsonl
 packages/*/dist/
 packages/*/node_modules/
 .superpowers/
+# Local Claude Code session state (skills, worktrees, settings), same as the
+# other local agent directories above.
+/.claude/
 
 # Stray build output from `go build ./cmd/gendocs`.
 /gendocs
