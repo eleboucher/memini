@@ -18,6 +18,7 @@ import (
 // cache-read rate.
 type AnthropicClient struct {
 	client    anthropic.Client
+	extra     []option.RequestOption
 	model     string
 	maxTokens int64
 }
@@ -37,8 +38,13 @@ func NewAnthropic(cfg Config) (*AnthropicClient, error) {
 	if cfg.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(strings.TrimRight(cfg.BaseURL, "/")))
 	}
+	var extra []option.RequestOption
+	for key, raw := range cfg.ExtraBody {
+		extra = append(extra, option.WithJSONSet(key, raw))
+	}
 	return &AnthropicClient{
 		client:    anthropic.NewClient(opts...),
+		extra:     extra,
 		model:     cfg.Model,
 		maxTokens: maxTokensOr(cfg.MaxTokens),
 	}, nil
@@ -160,7 +166,7 @@ func (c *AnthropicClient) ChatTools(
 		}
 	}
 
-	msg, err := c.client.Messages.New(ctx, params)
+	msg, err := c.client.Messages.New(ctx, params, c.extra...)
 	if err != nil {
 		return ChatResult{}, fmt.Errorf("llm: anthropic chat tools: %w", err)
 	}
@@ -196,7 +202,7 @@ func (c *AnthropicClient) chat(ctx context.Context, system, user string) (string
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(user)),
 		},
-	})
+	}, c.extra...)
 	if err != nil {
 		return "", fmt.Errorf("llm: anthropic: %w", err)
 	}

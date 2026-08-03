@@ -18,6 +18,7 @@ type OpenAIClient struct {
 	client    openai.Client
 	model     string
 	maxTokens int64
+	extra     []option.RequestOption
 }
 
 // NewOpenAI builds a chat client. BaseURL and Model are required.
@@ -34,10 +35,15 @@ func NewOpenAI(cfg Config) (*OpenAIClient, error) {
 		option.WithMaxRetries(maxRetries),
 		option.WithHTTPClient(httpClientOr(cfg.HTTPClient)),
 	}
+	var extra []option.RequestOption
+	for key, raw := range cfg.ExtraBody {
+		extra = append(extra, option.WithJSONSet(key, raw))
+	}
 	return &OpenAIClient{
 		client:    openai.NewClient(opts...),
 		model:     cfg.Model,
 		maxTokens: maxTokensOr(cfg.MaxTokens),
+		extra:     extra,
 	}, nil
 }
 
@@ -147,7 +153,7 @@ func (c *OpenAIClient) ChatTools(
 		params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{OfAuto: openai.String(string(choice))}
 	}
 
-	resp, err := c.client.Chat.Completions.New(ctx, params)
+	resp, err := c.client.Chat.Completions.New(ctx, params, c.extra...)
 	if err != nil {
 		return ChatResult{}, fmt.Errorf("llm: chat tools: %w", err)
 	}
@@ -185,7 +191,7 @@ func (c *OpenAIClient) chat(ctx context.Context, system, user string, jsonMode b
 			OfJSONObject: &shared.ResponseFormatJSONObjectParam{},
 		}
 	}
-	resp, err := c.client.Chat.Completions.New(ctx, params)
+	resp, err := c.client.Chat.Completions.New(ctx, params, c.extra...)
 	if err != nil {
 		return "", fmt.Errorf("llm: chat: %w", err)
 	}

@@ -59,6 +59,8 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_LLM_API_KEY`](#memini_llm_api_key) | none | [LLM (optional)](#llm-optional) |
 | [`MEMINI_LLM_MODEL`](#memini_llm_model) | `gpt-4o-mini` | [LLM (optional)](#llm-optional) |
 | [`MEMINI_LLM_API`](#memini_llm_api) | `openai` | [LLM (optional)](#llm-optional) |
+| [`MEMINI_LLM_MAX_TOKENS`](#memini_llm_max_tokens) | `0` | [LLM (optional)](#llm-optional) |
+| [`MEMINI_LLM_EXTRA_BODY`](#memini_llm_extra_body) | none | [LLM (optional)](#llm-optional) |
 | [`MEMINI_RERANK`](#memini_rerank) | `off` | [Reranking](#reranking) |
 | [`MEMINI_RERANK_MODEL`](#memini_rerank_model) | none | [Reranking](#reranking) |
 | [`MEMINI_RERANK_API_KEY`](#memini_rerank_api_key) | none | [Reranking](#reranking) |
@@ -333,6 +335,18 @@ string, default `gpt-4o-mini`. Set by `Config.LLMModel`.
 string, default `openai`. Set by `Config.LLMAPI`.
 
 `MEMINI_LLM_API` selects the chat backend: "openai" (default) or "anthropic".
+
+### `MEMINI_LLM_MAX_TOKENS`
+
+int, default `0`. Set by `Config.LLMMaxTokens`.
+
+`MEMINI_LLM_MAX_TOKENS` caps the completion length of every chat call. 0 (the default) keeps the client's built-in budget (4096). Reasoning models that spend thousands of hidden thinking tokens inside the budget need more headroom here, or their JSON answers come back truncated (finish_reason "length") and the affected pipeline call is lost.
+
+### `MEMINI_LLM_EXTRA_BODY`
+
+string, default none. Set by `Config.LLMExtraBody`.
+
+`MEMINI_LLM_EXTRA_BODY` is a JSON object merged into every chat request body at the top level, for provider-specific dialect knobs memini deliberately does not model. Typical use: disabling hidden reasoning on DeepSeek-style endpoints ('{"thinking":{"type":"disabled"}}') or Qwen-style ones ('{"enable_thinking":false}'). Fields memini sets itself (model, messages, temperature, max_tokens) always win. Invalid JSON fails config loading.
 
 ## Reranking
 

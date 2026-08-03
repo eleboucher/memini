@@ -138,7 +138,15 @@ type Config struct {
 	// MaxTokens caps the completion length (defaults to defaultMaxTokens). A
 	// budget is required for reasoning models, which otherwise spend the server
 	// default on hidden reasoning and return empty content.
-	MaxTokens  int
+	MaxTokens int
+	// ExtraBody is a raw JSON object merged into every chat request body at
+	// the top level. It exists for provider-specific dialect knobs this client
+	// deliberately does not model — e.g. disabling hidden reasoning on
+	// DeepSeek-style endpoints ({"thinking":{"type":"disabled"}}) or
+	// Qwen-style ones ({"enable_thinking":false}). Keys set here override
+	// nothing: fields the client sets explicitly (model, messages,
+	// temperature, max_tokens) win.
+	ExtraBody  map[string]json.RawMessage
 	HTTPClient *http.Client
 }
 
