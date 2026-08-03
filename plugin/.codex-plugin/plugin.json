@@ -1,6 +1,6 @@
 {
   "name": "memini",
-  "version": "0.7.16",
+  "version": "0.7.17",
   "description": "Persistent memory for coding agents, with automatic context recall, rolling checkpoints, skills, and bundled memory tools.",
   "author": {
     "name": "memini maintainers",
