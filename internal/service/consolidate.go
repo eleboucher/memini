@@ -218,7 +218,13 @@ func (s *Service) askConsolidator(ctx context.Context, m *memory.Memory, cands [
 // yet been stored. It returns (result, true, nil) when it fully handles the
 // write (update/supersede), or (nil, false, nil) to fall through to a normal
 // insert.
-func (s *Service) consolidateSync(ctx context.Context, m *memory.Memory) (*memory.Memory, bool, error) {
+//
+// callerImportance says the write carried an importance its caller chose (see
+// explicitImportance), which bars the consolidator from stamping an assessment
+// over it — the resolve step already cleared one, and this runs after it.
+func (s *Service) consolidateSync(
+	ctx context.Context, m *memory.Memory, callerImportance bool,
+) (*memory.Memory, bool, error) {
 	cands, err := s.candidates(ctx, m, "")
 	if err != nil {
 		// Consolidation is an enhancement, not part of storing the memory.
@@ -241,7 +247,9 @@ func (s *Service) consolidateSync(ctx context.Context, m *memory.Memory) (*memor
 	m.LinkedMemoryIDs = dec.LinkedIDs
 	// Covers the two branches that persist m itself (new, supersede); an update
 	// discards m and stamps the target instead.
-	stampAssessedImportance(m, dec)
+	if !callerImportance {
+		stampAssessedImportance(m, dec)
+	}
 
 	switch dec.Action {
 	case llm.ActionUpdate:
@@ -311,13 +319,27 @@ func (s *Service) applyUpdate(ctx context.Context, m *memory.Memory, dec llm.Dec
 
 // stampAssessedImportance records the consolidator's self-assessed importance on
 // m, clamped to the storable range. A model that omitted the key leaves whatever
-// assessment m already carries untouched.
+// assessment m already carries untouched, and so does a memory whose importance
+// is not the system's to judge (see assessable).
 func stampAssessedImportance(m *memory.Memory, dec llm.Decision) {
-	if dec.Importance == nil {
+	if dec.Importance == nil || !assessable(m) {
 		return
 	}
 	a := clampAssessedImportance(*dec.Importance)
 	m.AssessedImportance = &a
+}
+
+// assessable reports whether the LLM may rate m's importance. It may when m
+// already carries an assessment — by the write-time invariant such a row was
+// never given an explicit importance, so this only refreshes an earlier rating —
+// or when m still sits at its untouched tier seed. Any other value is either a
+// caller's own signal or a quarantine zero, and an assessment would override it:
+// EffectiveImportance reads the assessment first.
+func assessable(m *memory.Memory) bool {
+	if m.Metadata["quarantined"] == true {
+		return false
+	}
+	return m.AssessedImportance != nil || m.Importance == memory.SeedImportance(m.Tier)
 }
 
 // applySupersede stores the new memory and tombstones the contradicted target.

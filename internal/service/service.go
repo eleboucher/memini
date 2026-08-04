@@ -1419,7 +1419,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	// (embed degraded, see embedForRemember): the search it needs has no query
 	// vector to run with, so the write falls through to a normal insert instead.
 	if consolidate && s.consolidateMode == ConsolidateSync && len(m.Embedding) > 0 {
-		if result, handled, err := s.consolidateSync(ctx, m); err != nil {
+		if result, handled, err := s.consolidateSync(ctx, m, explicitImportance(in, existing)); err != nil {
 			s.metrics.RememberResult("error", string(tier))
 			return nil, err
 		} else if handled {
@@ -3213,16 +3213,29 @@ func resolveImportance(in RememberInput, existing *memory.Memory, tier memory.Ti
 	}
 }
 
+// explicitImportance reports whether this write carries an importance the caller
+// actually chose, as opposed to the one Update re-sends from the stored row on
+// every edit. That distinction is why RememberInput.ClearAssessedImportance
+// exists: value equality alone cannot tell the two apart.
+//
+// It is the trigger for clearing the LLM's assessment, so the consolidation
+// pipeline consults it too — an assessment stamped after the fact would put both
+// on the row, and EffectiveImportance reads the assessment first.
+func explicitImportance(in RememberInput, existing *memory.Memory) bool {
+	return in.ClearAssessedImportance ||
+		(in.Importance != 0 && (existing == nil || in.Importance != existing.Importance))
+}
+
 // resolveAssessedImportance picks the LLM assessment to store alongside the
 // importance resolved above. The assessment is advisory and never overwrites
-// Importance: an explicit importance is a deliberate caller choice, so it clears
-// the assessment outright. The existing-comparison guard is there because Update
-// re-sends the stored importance on every edit — that is not a choice and must
-// leave the assessment alone (see RememberInput.ClearAssessedImportance).
+// Importance: a caller who chose one clears the assessment outright, and a
+// quarantined write keeps its zeroed importance — an assessment there would
+// re-float the garbled content EffectiveImportance is meant to sink.
 func resolveAssessedImportance(in RememberInput, existing *memory.Memory) *float64 {
 	switch {
-	case in.ClearAssessedImportance ||
-		(in.Importance != 0 && (existing == nil || in.Importance != existing.Importance)):
+	case explicitImportance(in, existing):
+		return nil
+	case in.Metadata["quarantined"] == true:
 		return nil
 	case in.AssessedImportance != nil:
 		a := clampAssessedImportance(*in.AssessedImportance)

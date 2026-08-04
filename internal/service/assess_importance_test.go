@@ -164,10 +164,13 @@ func TestUpdatePreservesAssessment(t *testing.T) {
 // reaching the stored memory on both branches that persist one: a merge into an
 // existing target, and a plain insert.
 func TestConsolidateStampsAssessedImportance(t *testing.T) {
-	t.Run("update stamps the target", func(t *testing.T) {
+	t.Run("update stamps a target still at its tier seed", func(t *testing.T) {
 		fc := &fakeConsolidator{}
 		svc := newConsolidatingService(t, fc)
 		first := remember(t, svc, "the deploy gate is staging")
+		if first.Importance != memory.SeedImportance(memory.TierSemantic) {
+			t.Fatalf("fixture importance = %v, want the untouched tier seed", first.Importance)
+		}
 
 		fc.dec = llm.Decision{
 			Action: llm.ActionUpdate, Target: first.ID,
@@ -188,5 +191,100 @@ func TestConsolidateStampsAssessedImportance(t *testing.T) {
 		fc.dec = llm.Decision{Action: llm.ActionNew, Importance: new(1.0)}
 		got := remember(t, svc, "the release train runs on Thursdays")
 		assertAssessed(t, reread(t, svc, got.ID), new(0.9))
+	})
+}
+
+// TestConsolidateLeavesExplicitImportanceAlone pins the other half of the
+// write-time invariant, which consolidation runs late enough to break: an
+// assessment stamped after the resolve step would sit on a row whose importance
+// the caller chose, and EffectiveImportance reads the assessment first — so the
+// consolidator's opinion would silently outrank the number they asked for.
+func TestConsolidateLeavesExplicitImportanceAlone(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("fresh write the caller gave an importance", func(t *testing.T) {
+		fc := &fakeConsolidator{}
+		svc := newConsolidatingService(t, fc)
+		remember(t, svc, "the deploy gate is staging")
+
+		fc.dec = llm.Decision{Action: llm.ActionNew, Importance: new(0.9)}
+		got, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: "alice", Content: "the release train runs on Thursdays",
+			Tier: memory.TierSemantic, Importance: 0.85,
+		})
+		if err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+		stored := reread(t, svc, got.ID)
+		assertAssessed(t, stored, nil)
+		if stored.Importance != 0.85 {
+			t.Fatalf("importance = %v, want the caller's 0.85", stored.Importance)
+		}
+	})
+
+	t.Run("merge target the caller gave an importance", func(t *testing.T) {
+		fc := &fakeConsolidator{}
+		svc := newConsolidatingService(t, fc)
+		first, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: "alice", Content: "the deploy gate is staging",
+			Tier: memory.TierSemantic, Importance: 0.85,
+		})
+		if err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+
+		fc.dec = llm.Decision{
+			Action: llm.ActionUpdate, Target: first.ID,
+			Content: "deploys go through the staging gate", Importance: new(0.7),
+		}
+		got := remember(t, svc, "deploys go through the staging gate")
+		if got.ID != first.ID {
+			t.Fatalf("id = %q, want the merge target %q", got.ID, first.ID)
+		}
+		stored := reread(t, svc, got.ID)
+		assertAssessed(t, stored, nil)
+		if stored.Importance != 0.85 {
+			t.Fatalf("importance = %v, want the caller's 0.85 preserved through the merge", stored.Importance)
+		}
+	})
+}
+
+// TestQuarantinedWriteStoresNoAssessment pins that the corruption downrank holds:
+// quarantine zeroes Importance so garbled content sinks in recall, and an
+// assessment on the same row would float it right back up.
+func TestQuarantinedWriteStoresNoAssessment(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("assessment supplied by the distill path", func(t *testing.T) {
+		svc := newService(t, service.WithCorruptionQuarantine(true))
+		m, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: "alice", Content: garbledContent, Tier: memory.TierSemantic,
+			AssessedImportance: new(0.8),
+		})
+		if err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+		if m.Importance != 0 {
+			t.Fatalf("importance = %v, want 0 (the quarantine downrank)", m.Importance)
+		}
+		assertAssessed(t, m, nil)
+	})
+
+	t.Run("assessment stamped by the consolidator", func(t *testing.T) {
+		fc := &fakeConsolidator{}
+		svc := newConsolidatingService(t, fc, service.WithCorruptionQuarantine(true))
+		remember(t, svc, "the deploy gate is staging")
+
+		fc.dec = llm.Decision{Action: llm.ActionNew, Importance: new(0.8)}
+		m, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: "alice", Content: garbledContent, Tier: memory.TierSemantic,
+		})
+		if err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+		if m.Importance != 0 {
+			t.Fatalf("importance = %v, want 0 (the quarantine downrank)", m.Importance)
+		}
+		assertAssessed(t, reread(t, svc, m.ID), nil)
 	})
 }

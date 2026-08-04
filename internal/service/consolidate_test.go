@@ -24,14 +24,14 @@ func (f *fakeConsolidator) Consolidate(_ context.Context, in llm.Input) (llm.Dec
 	return f.dec, nil
 }
 
-func newConsolidatingService(t *testing.T, fc *fakeConsolidator) *service.Service {
+func newConsolidatingService(t *testing.T, fc *fakeConsolidator, opts ...service.Option) *service.Service {
 	t.Helper()
 	st, err := sqlitevec.Open(context.Background(), filepath.Join(t.TempDir(), "c.db"), dims)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return service.New(st, embedtest.New(dims),
+	return service.New(st, embedtest.New(dims), append([]service.Option{
 		service.WithConsolidator(fc),
 		// Sync mode so a write reflects its consolidated result immediately, and
 		// gate disabled so the LLM is always consulted (the fake embedder's
@@ -40,7 +40,7 @@ func newConsolidatingService(t *testing.T, fc *fakeConsolidator) *service.Servic
 		service.WithConsolidateMinScore(0),
 		service.WithSyncReinforce(),
 		service.WithClock(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }),
-	)
+	}, opts...)...)
 }
 
 func remember(t *testing.T, svc *service.Service, content string) *memory.Memory {
