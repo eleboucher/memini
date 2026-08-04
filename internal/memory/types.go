@@ -133,6 +133,14 @@ type Memory struct {
 	// treated as fully trusted so existing data is never retroactively penalized.
 	Confidence *float64 `json:"confidence,omitempty"`
 
+	// AssessedImportance is how intrinsically important the LLM judged this
+	// content to be, in [0.1,0.9]. nil means never assessed (every memory
+	// written before the field existed, and every write the assessor did not
+	// reach). Invariant: it is cleared whenever a caller supplies an explicit
+	// Importance, so a non-nil value always refines a tier-seeded guess and
+	// never overrides what a user asked for.
+	AssessedImportance *float64 `json:"assessed_importance,omitempty"`
+
 	// LinkedMemoryIDs references related memories (same entity/topic but distinct
 	// facts). Populated by the LLM consolidator when a new memory is related but
 	// neither a duplicate nor a contradiction. At recall, IncludeLinked expands
@@ -283,6 +291,32 @@ func (m *Memory) Salience() float64 {
 		w = 0.5 // unknown tier: neutral
 	}
 	return clamp01(w * (0.5 + 0.5*clamp01(m.Importance)))
+}
+
+// SeedImportance is the tier-based importance floor for a fresh write that
+// carried none: durable curated tiers outrank episodic turns, which outrank
+// raw working-intake notes.
+func SeedImportance(t Tier) float64 {
+	switch t {
+	case TierSemantic, TierProcedural:
+		return 0.6
+	case TierEpisodic:
+		return 0.3
+	default: // working
+		return 0.1
+	}
+}
+
+// EffectiveImportance is the importance signal ranking should read: the
+// assessed value when present, else the stored (user-supplied or tier-seeded)
+// importance. Write paths maintain the invariant that assessed is absent on any
+// row whose importance was explicitly set, so this never shadows a user's
+// choice.
+func (m *Memory) EffectiveImportance() float64 {
+	if m.AssessedImportance != nil {
+		return clamp01(*m.AssessedImportance)
+	}
+	return clamp01(m.Importance)
 }
 
 // EffectiveConfidence is a durable memory's corroboration at now: the stored

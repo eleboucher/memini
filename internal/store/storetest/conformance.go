@@ -47,6 +47,7 @@ func Run(t *testing.T, st store.Store, dims int) {
 	t.Run("ListNamespaces", func(t *testing.T) { testListNamespaces(t, st, dims) })
 	t.Run("TemporalAsOf", func(t *testing.T) { testTemporalAsOf(t, st, dims) })
 	t.Run("SetConfidence", func(t *testing.T) { testSetConfidence(t, st, dims) })
+	t.Run("SetAssessedImportance", func(t *testing.T) { testSetAssessedImportance(t, st, dims) })
 	t.Run("MarkContradicted", func(t *testing.T) { testMarkContradicted(t, st, dims) })
 	t.Run("GetByFingerprint", func(t *testing.T) { testGetByFingerprint(t, st, dims) })
 	t.Run("LevelFilter", func(t *testing.T) { testLevelFilter(t, st, dims) })
@@ -1509,6 +1510,72 @@ func testSetConfidence(t *testing.T, st store.Store, dims int) {
 	}
 	if got.Confidence == nil || *got.Confidence != 0.2 {
 		t.Errorf("confidence after refused regrow = %v, want 0.2", got.Confidence)
+	}
+}
+
+func testSetAssessedImportance(t *testing.T, st store.Store, dims int) {
+	ctx := context.Background()
+	ns := t.Name()
+	m := mem(ns, "m", "a durable fact", vec(dims, 1))
+	m.Tier = memory.TierSemantic
+	mustUpsert(t, st, m)
+
+	got, err := st.Get(ctx, ns, m.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.AssessedImportance != nil {
+		t.Errorf("assessed importance before set = %v, want nil (never assessed)", got.AssessedImportance)
+	}
+	written := got.UpdatedAt
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if err := st.SetAssessedImportance(ctx, ns, m.ID, 0.7, now); err != nil {
+		t.Fatalf("set assessed importance: %v", err)
+	}
+	got, err = st.Get(ctx, ns, m.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.AssessedImportance == nil || *got.AssessedImportance != 0.7 {
+		t.Errorf("assessed importance = %v, want 0.7", got.AssessedImportance)
+	}
+	// The assessment is a system annotation, so it must not reset the
+	// confidence decay baseline or make the row look freshly re-observed.
+	if !got.UpdatedAt.Equal(written) {
+		t.Errorf("updated_at = %v, want unchanged at %v (assessment is not a re-observation)", got.UpdatedAt, written)
+	}
+	if err := st.SetAssessedImportance(ctx, ns, "missing", 0.5, now); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("set assessed importance on missing: want ErrNotFound, got %v", err)
+	}
+
+	// A validity-closed (contradicted) row is not touched: an invalidated fact
+	// must not be re-ranked back toward the top of recall.
+	if err := st.MarkContradicted(ctx, ns, m.ID, "other", 0.2, now); err != nil {
+		t.Fatalf("mark contradicted: %v", err)
+	}
+	if err := st.SetAssessedImportance(ctx, ns, m.ID, 0.9, now.Add(time.Second)); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("set assessed importance on validity-closed: want ErrNotFound, got %v", err)
+	}
+	got, err = st.Get(ctx, ns, m.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.AssessedImportance == nil || *got.AssessedImportance != 0.7 {
+		t.Errorf("assessed importance after refused write = %v, want 0.7", got.AssessedImportance)
+	}
+
+	// The column also round-trips through Upsert, not just the setter.
+	carried := mem(ns, "carried", "assessed at write time", vec(dims, 2))
+	assessed := 0.35
+	carried.AssessedImportance = &assessed
+	mustUpsert(t, st, carried)
+	got, err = st.Get(ctx, ns, carried.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.AssessedImportance == nil || *got.AssessedImportance != 0.35 {
+		t.Errorf("upserted assessed importance = %v, want 0.35", got.AssessedImportance)
 	}
 }
 

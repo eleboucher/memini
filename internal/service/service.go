@@ -3179,18 +3179,9 @@ func resolveImportance(in RememberInput, existing *memory.Memory, tier memory.Ti
 }
 
 // seedImportance is the tier-based importance floor for a fresh write that
-// carried none: durable curated tiers outrank episodic turns, which outrank
-// raw working-intake notes.
-func seedImportance(tier memory.Tier) float64 {
-	switch tier {
-	case memory.TierSemantic, memory.TierProcedural:
-		return 0.6
-	case memory.TierEpisodic:
-		return 0.3
-	default: // working
-		return 0.1
-	}
-}
+// carried none. It lives in internal/memory so the assessment path can seed and
+// compare against the same values.
+func seedImportance(tier memory.Tier) float64 { return memory.SeedImportance(tier) }
 
 // markCustomTTL records a caller-supplied positive TTL on m (as metadata) so
 // reinforcement can slide its expiry by the intended lifetime rather than the

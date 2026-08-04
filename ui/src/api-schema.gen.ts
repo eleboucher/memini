@@ -1125,6 +1125,11 @@ export interface components {
              * @description Corroboration of a durable fact in [0,1]; null when not tracked.
              */
             confidence?: number | null;
+            /**
+             * Format: double
+             * @description System-generated: how intrinsically important the LLM judged this content to be, in [0.1,0.9]. Null when never assessed. It refines a tier-seeded importance and is cleared whenever a caller supplies an explicit importance, so it never overrides what you asked for.
+             */
+            readonly assessed_importance?: number | null;
             /** @description Optional. Present only on POST /v1/memories responses when the write's nearest same-tier candidate scored at/above MEMINI_WRITE_DEDUP_SCORE and MEMINI_WRITE_DEDUP_ACTION is "hint". */
             merge_hint?: components["schemas"]["MergeHint"];
             /** @description Optional. Present only on POST /v1/memories responses when the write's nearest same-tier candidate scored at/above MEMINI_WRITE_DEDUP_SCORE with MEMINI_WRITE_DEDUP_ACTION="supersede" and the old memory was tombstoned in the background. The caller still receives the new memory. */

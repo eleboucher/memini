@@ -37,13 +37,13 @@ func scanRow(s scanner, metric *float64, extra ...any) (*memory.Memory, error) {
 		expires                    sql.NullInt64
 		superseded                 sql.NullString
 		validFrom, validTo         sql.NullInt64
-		confidence                 sql.NullFloat64
+		confidence, assessed       sql.NullFloat64
 		linkedJSON                 string
 	)
 	dest := []any{
 		&m.ID, &m.Namespace, &tier, &m.Content, &m.Summary, &metaJSON, &tagsJSON,
 		&m.Importance, &created, &updated, &accessed, &m.AccessCount, &expires, &superseded,
-		&validFrom, &validTo, &confidence, &level, &linkedJSON, &m.EmbedState,
+		&validFrom, &validTo, &confidence, &assessed, &level, &linkedJSON, &m.EmbedState,
 	}
 	if metric != nil {
 		dest = append(dest, metric)
@@ -82,6 +82,10 @@ func scanRow(s scanner, metric *float64, extra ...any) (*memory.Memory, error) {
 	if confidence.Valid {
 		c := confidence.Float64
 		m.Confidence = &c
+	}
+	if assessed.Valid {
+		a := assessed.Float64
+		m.AssessedImportance = &a
 	}
 	if err := json.Unmarshal([]byte(linkedJSON), &m.LinkedMemoryIDs); err != nil {
 		return nil, err

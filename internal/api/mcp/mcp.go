@@ -1069,28 +1069,33 @@ type idArgs struct {
 // results stay slim via recallItem; a get has no score and should not drop
 // the record's metadata).
 type memoryItem struct {
-	ID           string         `json:"id"`
-	Content      string         `json:"content"`
-	Tier         string         `json:"tier"`
-	Level        string         `json:"level,omitempty"`
-	Summary      string         `json:"summary,omitempty"`
-	Tags         []string       `json:"tags,omitempty"`
-	Metadata     map[string]any `json:"metadata,omitempty"`
-	Importance   float64        `json:"importance"`
-	CreatedAt    string         `json:"created_at"`
-	UpdatedAt    string         `json:"updated_at"`
-	AccessCount  int            `json:"access_count"`
-	ExpiresAt    string         `json:"expires_at,omitempty"`
-	ValidFrom    string         `json:"valid_from,omitempty"`
-	ValidTo      string         `json:"valid_to,omitempty"`
-	SupersededBy string         `json:"superseded_by,omitempty"`
+	ID         string         `json:"id"`
+	Content    string         `json:"content"`
+	Tier       string         `json:"tier"`
+	Level      string         `json:"level,omitempty"`
+	Summary    string         `json:"summary,omitempty"`
+	Tags       []string       `json:"tags,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
+	Importance float64        `json:"importance"`
+	// AssessedImportance is the LLM's own read of how important the content is,
+	// absent when it was never assessed. Read-only: supplying importance on a
+	// write clears it.
+	AssessedImportance *float64 `json:"assessed_importance,omitempty"`
+	CreatedAt          string   `json:"created_at"`
+	UpdatedAt          string   `json:"updated_at"`
+	AccessCount        int      `json:"access_count"`
+	ExpiresAt          string   `json:"expires_at,omitempty"`
+	ValidFrom          string   `json:"valid_from,omitempty"`
+	ValidTo            string   `json:"valid_to,omitempty"`
+	SupersededBy       string   `json:"superseded_by,omitempty"`
 }
 
 func toMemoryItem(m *memory.Memory) memoryItem {
 	out := memoryItem{
 		ID: m.ID, Content: m.Content, Tier: string(m.Tier), Level: string(m.Level),
 		Summary: m.Summary, Tags: m.Tags, Metadata: m.Metadata, Importance: m.Importance,
-		CreatedAt: m.CreatedAt.Format(time.RFC3339), UpdatedAt: m.UpdatedAt.Format(time.RFC3339),
+		AssessedImportance: m.AssessedImportance,
+		CreatedAt:          m.CreatedAt.Format(time.RFC3339), UpdatedAt: m.UpdatedAt.Format(time.RFC3339),
 		AccessCount: m.AccessCount,
 	}
 	if m.ExpiresAt != nil {

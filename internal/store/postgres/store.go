@@ -18,7 +18,7 @@ import (
 
 const memoryColumns = `id, namespace, tier, content, summary, metadata, tags, importance,
 	created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-	valid_from, valid_to, confidence, level, linked_memory_ids, embed_state`
+	valid_from, valid_to, confidence, assessed_importance, level, linked_memory_ids, embed_state`
 
 // Store is a Postgres/VectorChord backed store.Store.
 type Store struct {
@@ -95,6 +95,7 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 			valid_from       timestamptz,
 			valid_to         timestamptz,
 			confidence       double precision,
+			assessed_importance double precision,
 			fingerprint      text NOT NULL DEFAULT '',
 			level            text NOT NULL DEFAULT '',
 			linked_memory_ids text NOT NULL DEFAULT '[]',
@@ -132,6 +133,7 @@ func migrate(ctx context.Context, conn *pgx.Conn, dims int) error {
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS valid_from timestamptz`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS valid_to timestamptz`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS confidence double precision`,
+		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS assessed_importance double precision`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS fingerprint text NOT NULL DEFAULT ''`,
 		`ALTER TABLE memories ADD COLUMN IF NOT EXISTS level text NOT NULL DEFAULT ''`,
 		// Allow a NULL embedding for vectorless rows (the write path used when
@@ -342,10 +344,10 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		INSERT INTO memories
 			(id, namespace, tier, content, summary, metadata, tags, importance,
 			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-			 valid_from, valid_to, confidence, fingerprint, level, linked_memory_ids, embedding,
-			 embed_state, embed_next_run_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-			$22, CASE WHEN $22 = '' THEN NULL ELSE now() END)
+			 valid_from, valid_to, confidence, assessed_importance, fingerprint, level,
+			 linked_memory_ids, embedding, embed_state, embed_next_run_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
+			$23, CASE WHEN $23 = '' THEN NULL ELSE now() END)
 		ON CONFLICT (id) DO UPDATE SET
 			tier=EXCLUDED.tier, content=EXCLUDED.content,
 			summary=EXCLUDED.summary, metadata=EXCLUDED.metadata, tags=EXCLUDED.tags,
@@ -353,7 +355,8 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 			last_accessed_at=EXCLUDED.last_accessed_at, access_count=EXCLUDED.access_count,
 			expires_at=EXCLUDED.expires_at, superseded_by=EXCLUDED.superseded_by,
 			valid_from=EXCLUDED.valid_from, valid_to=EXCLUDED.valid_to,
-			confidence=EXCLUDED.confidence, fingerprint=EXCLUDED.fingerprint,
+			confidence=EXCLUDED.confidence, assessed_importance=EXCLUDED.assessed_importance,
+			fingerprint=EXCLUDED.fingerprint,
 			level=EXCLUDED.level, linked_memory_ids=EXCLUDED.linked_memory_ids,
 			embedding=EXCLUDED.embedding,
 			-- A write carries its own repair state, so a degraded write and its
@@ -366,8 +369,8 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		WHERE memories.namespace = EXCLUDED.namespace`,
 		m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, metaJSON, store.OrEmptySlice(m.Tags),
 		m.Importance, m.CreatedAt, m.UpdatedAt, m.LastAccessedAt, m.AccessCount,
-		m.ExpiresAt, m.SupersededBy, m.ValidFrom, m.ValidTo, m.Confidence, fp,
-		string(m.Level), linkedJSON,
+		m.ExpiresAt, m.SupersededBy, m.ValidFrom, m.ValidTo, m.Confidence,
+		m.AssessedImportance, fp, string(m.Level), linkedJSON,
 		embArg, m.EmbedState)
 	if err != nil {
 		return fmt.Errorf("postgres: upsert: %w", err)
@@ -817,6 +820,26 @@ func (s *Store) SetConfidence(ctx context.Context, namespace, id string, confide
 		confidence, now, id, namespace, now)
 	if err != nil {
 		return fmt.Errorf("postgres: set confidence: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// SetAssessedImportance stamps the LLM-assessed intrinsic importance in place.
+// Deliberately does NOT bump updated_at: assessment is a system annotation, not
+// a re-observation, and touching updated_at would reset confidence lazy-decay
+// and demote eligibility. Validity-closed rows are skipped (ErrNotFound) for
+// the same reason SetConfidence skips them: an invalidated fact must not be
+// re-ranked back into recall.
+func (s *Store) SetAssessedImportance(ctx context.Context, namespace, id string, v float64, now time.Time) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE memories SET assessed_importance=$1
+		 WHERE id=$2 AND namespace=$3 AND (valid_to IS NULL OR valid_to > $4)`,
+		v, id, namespace, now)
+	if err != nil {
+		return fmt.Errorf("postgres: set assessed importance: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return store.ErrNotFound

@@ -2088,6 +2088,16 @@ components:
           format: double
           nullable: true
           description: Corroboration of a durable fact in [0,1]; null when not tracked.
+        assessed_importance:
+          type: number
+          format: double
+          nullable: true
+          readOnly: true
+          description: >
+            System-generated: how intrinsically important the LLM judged this
+            content to be, in [0.1,0.9]. Null when never assessed. It refines a
+            tier-seeded importance and is cleared whenever a caller supplies an
+            explicit importance, so it never overrides what you asked for.
         merge_hint:
           $ref: "#/components/schemas/MergeHint"
           description: >
