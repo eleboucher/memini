@@ -98,7 +98,7 @@ func TestImportancePoolReserve(t *testing.T) {
 	t.Logf("%-8s | %-7s | %-20s | %-20s", "reserve", "minImp", "fact-gold R@5/10", "chatter-gold R@5/10")
 	t.Logf("%s", "---------+---------+----------------------+---------------------")
 
-	var baseFact5, bestFact5 float64
+	var baseFact5 float64
 	for _, minImp := range minImps {
 		for _, r := range reserves {
 			svc := newSvc(r, minImp)
@@ -130,16 +130,16 @@ func TestImportancePoolReserve(t *testing.T) {
 			if r == 0 && f5 != baseFact5 {
 				t.Errorf("reserve=0 is not inert: fact R@5 %.1f%% at minImp=%.2f vs %.1f%% baseline", f5, minImp, baseFact5)
 			}
-			if f5 > bestFact5 {
-				bestFact5 = f5
+			// Directional sanity, checked per sweep point: the mechanism exists to
+			// make buried important facts reachable, so turning it on must not cost
+			// fact recall relative to the feature-off baseline. (Comparing only the
+			// best point would be vacuous — the r==0 points are in the sweep, so the
+			// best can never fall below the baseline it contains.)
+			if r > 0 && f5 < baseFact5 {
+				t.Errorf("reserve=%d minImp=%.2f: fact R@5 %.1f%% below the reserve=0 baseline %.1f%%",
+					r, minImp, f5, baseFact5)
 			}
 		}
-	}
-
-	// Directional sanity: the mechanism exists to make buried important facts
-	// reachable, so no sweep point may sit below the feature-off baseline.
-	if bestFact5 < baseFact5 {
-		t.Errorf("fact R@5 never reached the reserve=0 baseline: best %.1f%% vs %.1f%%", bestFact5, baseFact5)
 	}
 }
 

@@ -288,3 +288,69 @@ func TestQuarantinedWriteStoresNoAssessment(t *testing.T) {
 		assertAssessed(t, reread(t, svc, m.ID), nil)
 	})
 }
+
+// TestCoalesceReplacementAssessmentCarry pins the write-time invariant across
+// the coalesce informativeness tiebreak. A richer restatement that replaces the
+// stored copy inherits its assessment — the fact is the same, so the rating it
+// earned survives the swap instead of falling back to the tier seed — but only
+// when the replacement is one the invariant lets carry an assessment at all. A
+// nil assessment on the incoming write is ambiguous: resolveAssessedImportance
+// also clears it when the caller named an importance, and inheriting the old
+// row's rating there would silently outrank the number they asked for, since
+// EffectiveImportance reads the assessment first.
+func TestCoalesceReplacementAssessmentCarry(t *testing.T) {
+	ctx := context.Background()
+
+	// Threshold 0.1 so the nearest same-tier match always enters the coalesce
+	// path regardless of embedder geometry — the carry-over is what's under test.
+	seed := func(t *testing.T) (*service.Service, *memory.Memory) {
+		t.Helper()
+		svc := service.New(openTestStore(t), embedtest.New(dims), service.WithSyncReinforce(),
+			service.WithWriteDedup(0.1, service.WriteDedupCoalesce))
+		first, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: "alice", Content: "the user likes coffee", Tier: memory.TierSemantic,
+			AssessedImportance: new(0.85),
+		})
+		if err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+		assertAssessed(t, first, new(0.85))
+		return svc, first
+	}
+
+	const richer = "the user likes coffee strong and black every morning before standup"
+
+	t.Run("carried onto an assessable replacement", func(t *testing.T) {
+		svc, first := seed(t)
+		got, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: "alice", Content: richer, Tier: memory.TierSemantic,
+		})
+		if err != nil {
+			t.Fatalf("remember richer: %v", err)
+		}
+		svc.WaitBackground() // the auto-supersede of the replaced copy runs in the background
+		if got.ID == first.ID {
+			t.Fatal("richer phrasing should replace the stored copy, not coalesce into it")
+		}
+		assertAssessed(t, reread(t, svc, got.ID), new(0.85))
+	})
+
+	t.Run("dropped when the replacement names an importance", func(t *testing.T) {
+		svc, first := seed(t)
+		got, err := svc.Remember(ctx, service.RememberInput{
+			Namespace: "alice", Content: richer, Tier: memory.TierSemantic, Importance: 0.85,
+		})
+		if err != nil {
+			t.Fatalf("remember richer: %v", err)
+		}
+		svc.WaitBackground() // the auto-supersede of the replaced copy runs in the background
+		if got.ID == first.ID {
+			t.Fatal("richer phrasing should replace the stored copy, not coalesce into it")
+		}
+		stored := reread(t, svc, got.ID)
+		assertAssessed(t, stored, nil)
+		if stored.Importance != 0.85 {
+			t.Fatalf("importance = %v, want the caller's 0.85", stored.Importance)
+		}
+	})
+}

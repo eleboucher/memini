@@ -1653,8 +1653,12 @@ func (s *Service) dedupCheck(ctx context.Context, m *memory.Memory) (hit *memory
 			}
 			// Same for the LLM's importance assessment: the replacement restates
 			// the same fact, so an assessment already earned for it survives the
-			// swap rather than falling back to the tier seed.
-			if existing.AssessedImportance != nil && m.AssessedImportance == nil {
+			// swap rather than falling back to the tier seed. assessable guards the
+			// carry-over because a nil assessment on m is ambiguous — it also means
+			// resolveAssessedImportance deliberately cleared it for an explicit
+			// caller importance or a quarantined write, and inheriting the old row's
+			// rating there would override the very signal that cleared it.
+			if existing.AssessedImportance != nil && m.AssessedImportance == nil && assessable(m) {
 				a := *existing.AssessedImportance
 				m.AssessedImportance = &a
 			}

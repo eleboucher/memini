@@ -397,6 +397,47 @@ func TestLoadValidationErrors(t *testing.T) {
 				"MEMINI_RERANK_MIN_SCORE": "0.3",
 			},
 		},
+		// The importance-assessment sweep: 0 is the documented off switch, so a
+		// negative interval is a typo, and a zero batch would spin the sweep
+		// forever selecting nothing.
+		{
+			name: "negative assess interval",
+			env:  map[string]string{"MEMINI_ASSESS_INTERVAL": "-1m"},
+		},
+		{
+			name: "zero assess batch",
+			env:  map[string]string{"MEMINI_ASSESS_BATCH": "0"},
+		},
+		{
+			name: "negative assess max per run",
+			env:  map[string]string{"MEMINI_ASSESS_MAX_PER_RUN": "-1"},
+		},
+		{
+			name: "negative assess min age",
+			env:  map[string]string{"MEMINI_ASSESS_MIN_AGE": "-1h"},
+		},
+		{
+			name: "assessed salience weight out of range",
+			env:  map[string]string{"MEMINI_ASSESSED_SALIENCE_WEIGHT": "1.5"},
+		},
+		// NaN slips past a bare [0,1] comparison — both bounds are false for it —
+		// and would then poison every blended salience score.
+		{
+			name: "assessed salience weight NaN",
+			env:  map[string]string{"MEMINI_ASSESSED_SALIENCE_WEIGHT": "NaN"},
+		},
+		{
+			name: "recall importance min out of range",
+			env:  map[string]string{"MEMINI_RECALL_IMPORTANCE_MIN": "1.5"},
+		},
+		{
+			name: "recall importance min NaN",
+			env:  map[string]string{"MEMINI_RECALL_IMPORTANCE_MIN": "NaN"},
+		},
+		{
+			name: "negative recall importance reserve",
+			env:  map[string]string{"MEMINI_RECALL_IMPORTANCE_RESERVE": "-1"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

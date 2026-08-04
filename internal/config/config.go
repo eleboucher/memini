@@ -635,8 +635,11 @@ type Config struct {
 	// (semantic/procedural) memories that never received an LLM
 	// self-assessment — rows written before the feature existed, written
 	// without an LLM configured, or ones the model declined to rate — are sent
-	// back to the model for a score, which then drives ranking in place of the
-	// tier-seeded default. Only active when an LLM is configured
+	// back to the model for a score. At the shipped defaults that score feeds the
+	// rerank-pool reservation (MEMINI_RECALL_IMPORTANCE_RESERVE) and nothing
+	// else — it decides which candidates the reranker gets to see, not how they
+	// are ordered; it reaches ranking itself only once
+	// MEMINI_ASSESSED_SALIENCE_WEIGHT is turned up. Only active when an LLM is configured
 	// (MEMINI_LLM_BASE_URL); without one the job never starts. A memory whose
 	// importance was set explicitly is left alone. Hourly by default, spending
 	// at most MEMINI_ASSESS_MAX_PER_RUN rows of LLM budget per pass; 0 disables
@@ -1067,14 +1070,16 @@ func (c *Config) validateRecallScores() error {
 			"the LLM reranker returns an ordinal list with no scores, so the gate would " +
 			"silently never fire (unset it, or point MEMINI_RERANK at a /rerank endpoint)")
 	}
-	if c.AssessedSalienceWeight < 0 || c.AssessedSalienceWeight > 1 {
-		return fmt.Errorf("MEMINI_ASSESSED_SALIENCE_WEIGHT must be in [0,1], got %v", c.AssessedSalienceWeight)
+	if math.IsNaN(c.AssessedSalienceWeight) || math.IsInf(c.AssessedSalienceWeight, 0) ||
+		c.AssessedSalienceWeight < 0 || c.AssessedSalienceWeight > 1 {
+		return fmt.Errorf("MEMINI_ASSESSED_SALIENCE_WEIGHT must be finite and in [0,1], got %v", c.AssessedSalienceWeight)
 	}
 	if c.RecallImportanceReserve < 0 {
 		return fmt.Errorf("MEMINI_RECALL_IMPORTANCE_RESERVE must be >= 0, got %d", c.RecallImportanceReserve)
 	}
-	if c.RecallImportanceMin < 0 || c.RecallImportanceMin > 1 {
-		return fmt.Errorf("MEMINI_RECALL_IMPORTANCE_MIN must be in [0,1], got %v", c.RecallImportanceMin)
+	if math.IsNaN(c.RecallImportanceMin) || math.IsInf(c.RecallImportanceMin, 0) ||
+		c.RecallImportanceMin < 0 || c.RecallImportanceMin > 1 {
+		return fmt.Errorf("MEMINI_RECALL_IMPORTANCE_MIN must be finite and in [0,1], got %v", c.RecallImportanceMin)
 	}
 	return nil
 }
