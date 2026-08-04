@@ -356,6 +356,8 @@ func buildServiceStack(
 		service.WithRecallMinScore(cfg.RecallMinScore),
 		service.WithRecallMinSemanticScore(cfg.RecallMinSemanticScore),
 		service.WithRecallSemanticReserve(cfg.RecallSemanticReserve),
+		service.WithImportancePoolReserve(cfg.RecallImportanceReserve),
+		service.WithImportancePoolMin(cfg.RecallImportanceMin),
 		service.WithTurnEchoWindow(cfg.TurnEchoWindow),
 		service.WithEpisodicMinChars(cfg.EpisodicMinChars),
 		service.WithClassifyMaxChars(cfg.ClassifyMaxChars),

@@ -77,6 +77,8 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_RECALL_MIN_SCORE`](#memini_recall_min_score) | `0.1` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_RECALL_MIN_SEMANTIC_SCORE`](#memini_recall_min_semantic_score) | `0.46` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_RECALL_SEMANTIC_RESERVE`](#memini_recall_semantic_reserve) | `2` | [Recall tuning](#recall-tuning) |
+| [`MEMINI_RECALL_IMPORTANCE_RESERVE`](#memini_recall_importance_reserve) | `2` | [Recall tuning](#recall-tuning) |
+| [`MEMINI_RECALL_IMPORTANCE_MIN`](#memini_recall_importance_min) | `0.75` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_RECALL_EMBED_TIMEOUT`](#memini_recall_embed_timeout) | `2s` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_RECALL_REWRITE_TIMEOUT`](#memini_recall_rewrite_timeout) | `3s` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_STABILITY_K`](#memini_stability_k) | `1` | [Recall tuning](#recall-tuning) |
@@ -462,6 +464,18 @@ float64, default `0.46`. Set by `Config.RecallMinSemanticScore`.
 int, default `2`. Set by `Config.RecallSemanticReserve`.
 
 `MEMINI_RECALL_SEMANTIC_RESERVE` reserves up to N of the recall slots for durable tiers (semantic/procedural) so consolidated knowledge is not crowded out by episodic chatter. Exposed because it changes recall composition per deployment: set 0 for pure-relevance recall (no forced durable slots). Reserved slots are relevance-gated — a durable memory is only promoted in when it is relevance-competitive with the entry it displaces.
+
+### `MEMINI_RECALL_IMPORTANCE_RESERVE`
+
+int, default `2`. Set by `Config.RecallImportanceReserve`.
+
+`MEMINI_RECALL_IMPORTANCE_RESERVE` reserves up to N slots of the reranker's candidate pool for high-importance candidates the fused score buried below the pool cut, so an important memory still gets judged on its merits. It changes pool membership only — never the composite top-N a rerank-free recall returns — and is therefore structurally inert unless a reranker is configured AND MEMINI_RERANK_POOL exceeds the recall limit. 0 disables it.
+
+### `MEMINI_RECALL_IMPORTANCE_MIN`
+
+float64, default `0.75`. Set by `Config.RecallImportanceMin`.
+
+`MEMINI_RECALL_IMPORTANCE_MIN` is the effective-importance threshold (assessed value when the LLM set one, else stored importance) a candidate must meet to claim a slot reserved by MEMINI_RECALL_IMPORTANCE_RESERVE. The default (0.75) sits above the tier-seeded baseline every memory carries, so only genuinely important memories compete for a reserved slot.
 
 ### `MEMINI_RECALL_EMBED_TIMEOUT`
 

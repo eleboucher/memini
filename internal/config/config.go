@@ -459,6 +459,19 @@ type Config struct {
 	// Reserved slots are relevance-gated — a durable memory is only promoted in
 	// when it is relevance-competitive with the entry it displaces.
 	RecallSemanticReserve int `env:"MEMINI_RECALL_SEMANTIC_RESERVE" envDefault:"2"`
+	// RecallImportanceReserve reserves up to N slots of the reranker's candidate
+	// pool for high-importance candidates the fused score buried below the pool
+	// cut, so an important memory still gets judged on its merits. It changes
+	// pool membership only — never the composite top-N a rerank-free recall
+	// returns — and is therefore structurally inert unless a reranker is
+	// configured AND MEMINI_RERANK_POOL exceeds the recall limit. 0 disables it.
+	RecallImportanceReserve int `env:"MEMINI_RECALL_IMPORTANCE_RESERVE" envDefault:"2"`
+	// RecallImportanceMin is the effective-importance threshold (assessed value
+	// when the LLM set one, else stored importance) a candidate must meet to
+	// claim a slot reserved by MEMINI_RECALL_IMPORTANCE_RESERVE. The default
+	// (0.75) sits above the tier-seeded baseline every memory carries, so only
+	// genuinely important memories compete for a reserved slot.
+	RecallImportanceMin float64 `env:"MEMINI_RECALL_IMPORTANCE_MIN" envDefault:"0.75"`
 	// StabilityK is the spaced-repetition strength (Ebbinghaus stability): a
 	// short-term memory's effective recall half-life stretches with reinforcement
 	// as halfLife*(1+StabilityK*ln(1+access_count)), so a frequently-recalled
@@ -1030,6 +1043,12 @@ func (c *Config) validateRecallScores() error {
 	}
 	if c.AssessedSalienceWeight < 0 || c.AssessedSalienceWeight > 1 {
 		return fmt.Errorf("MEMINI_ASSESSED_SALIENCE_WEIGHT must be in [0,1], got %v", c.AssessedSalienceWeight)
+	}
+	if c.RecallImportanceReserve < 0 {
+		return fmt.Errorf("MEMINI_RECALL_IMPORTANCE_RESERVE must be >= 0, got %d", c.RecallImportanceReserve)
+	}
+	if c.RecallImportanceMin < 0 || c.RecallImportanceMin > 1 {
+		return fmt.Errorf("MEMINI_RECALL_IMPORTANCE_MIN must be in [0,1], got %v", c.RecallImportanceMin)
 	}
 	return nil
 }

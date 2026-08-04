@@ -290,6 +290,15 @@ type Service struct {
 	// limit itself, which reorders the result set but cannot rescue a candidate
 	// from below it. See WithRerankPool.
 	rerankPool int
+	// importancePoolReserve reserves up to N rerank-pool slots for candidates
+	// whose effective importance clears importancePoolMin, so a high-importance
+	// memory the composite score buried below the pool cut still reaches the
+	// reranker. Structurally inert without a reranker AND a rerankPool deeper
+	// than the caller's limit. 0 disables it. See WithImportancePoolReserve.
+	importancePoolReserve int
+	// importancePoolMin is the effective-importance threshold a candidate must
+	// meet to claim a reserved pool slot. See WithImportancePoolMin.
+	importancePoolMin float64
 	// recallEmbedTimeout bounds the query embed on the recall path; past it, or on
 	// any embed error, recall degrades to keyword-only search instead of failing.
 	// 0 keeps the query embed unbounded and an embed error fatal.
@@ -545,6 +554,37 @@ func WithRerankPool(n int) Option {
 	return func(s *Service) {
 		if n > 0 {
 			s.rerankPool = n
+		}
+	}
+}
+
+// WithImportancePoolReserve reserves up to n slots of the reranker's candidate
+// pool for high-importance memories (effective importance >= the
+// WithImportancePoolMin threshold) that the composite score left below the pool
+// cut. n < 0 is ignored; 0 disables the reserve. The default is 2.
+//
+// This only ever changes pool MEMBERSHIP — the reranker re-scores every
+// candidate it is shown, so pool order is irrelevant to it, and the top-k
+// composite prefix every non-rerank path returns is untouched. It is therefore
+// structurally inert unless a reranker is configured AND WithRerankPool is
+// deeper than the caller's limit: without both there is no membership to change.
+func WithImportancePoolReserve(n int) Option {
+	return func(s *Service) {
+		if n >= 0 {
+			s.importancePoolReserve = n
+		}
+	}
+}
+
+// WithImportancePoolMin sets the effective-importance threshold a candidate must
+// meet to claim a slot reserved by WithImportancePoolReserve. Values outside
+// [0,1] are ignored. The default is 0.75 — high enough that only memories the
+// LLM (or the user) marked as genuinely important qualify, so the reserve does
+// not fire on the tier-seeded baseline importance every memory carries.
+func WithImportancePoolMin(f float64) Option {
+	return func(s *Service) {
+		if f >= 0 && f <= 1 {
+			s.importancePoolMin = f
 		}
 	}
 }
@@ -937,29 +977,31 @@ func WithCorruptionQuarantine(on bool) Option {
 // New builds a Service from a store and embedder.
 func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 	s := &Service{
-		store:                st,
-		embedder:             e,
-		consolidateMode:      ConsolidateAsync,
-		consolidateMinScore:  0.3,
-		promoteMinAccess:     3,
-		classifyMaxChars:     extract.ClassifyMaxChars,
-		promoteWholeMaxChars: DefaultPromoteWholeMaxChars,
-		chunkCfg:             chunk.DefaultConfig(),
-		chunkScoreWeight:     1,
-		rerankTimeout:        defaultRerankTimeout,
-		distillTimeout:       distillOnWriteTimeout,
-		scoreFusionAlpha:     search.DefaultFusionAlpha, // convex score fusion by default; negative selects RRF
-		reservePromoteRatio:  defaultReservePromoteRatio,
-		reserveTopAnchor:     defaultReserveTopAnchor,
-		poolFactor:           recallPoolFactor,
-		poolFloor:            recallPoolFloor,
-		cascade:              true,
-		fingerprintDedup:     true,
-		reinforceSkipMarkers: true,
-		redactSecrets:        true,
-		metrics:              nopMetrics{},
-		now:                  func() time.Time { return time.Now().UTC() },
-		newID:                func() string { return uuid.NewString() },
+		store:                 st,
+		embedder:              e,
+		consolidateMode:       ConsolidateAsync,
+		consolidateMinScore:   0.3,
+		promoteMinAccess:      3,
+		classifyMaxChars:      extract.ClassifyMaxChars,
+		promoteWholeMaxChars:  DefaultPromoteWholeMaxChars,
+		chunkCfg:              chunk.DefaultConfig(),
+		chunkScoreWeight:      1,
+		rerankTimeout:         defaultRerankTimeout,
+		distillTimeout:        distillOnWriteTimeout,
+		scoreFusionAlpha:      search.DefaultFusionAlpha, // convex score fusion by default; negative selects RRF
+		reservePromoteRatio:   defaultReservePromoteRatio,
+		reserveTopAnchor:      defaultReserveTopAnchor,
+		importancePoolReserve: defaultImportancePoolReserve,
+		importancePoolMin:     defaultImportancePoolMin,
+		poolFactor:            recallPoolFactor,
+		poolFloor:             recallPoolFloor,
+		cascade:               true,
+		fingerprintDedup:      true,
+		reinforceSkipMarkers:  true,
+		redactSecrets:         true,
+		metrics:               nopMetrics{},
+		now:                   func() time.Time { return time.Now().UTC() },
+		newID:                 func() string { return uuid.NewString() },
 	}
 	for _, o := range opts {
 		o(s)
@@ -2885,6 +2927,91 @@ func reserveDurableTiers(ranked []store.Scored, limit, reserve int, ratio, topAn
 	return append(out, rest...)
 }
 
+// defaultImportancePoolReserve is how many rerank-pool slots are held for
+// high-importance candidates by default. 2 mirrors the durable-tier reserve: a
+// couple of slots is enough to rescue the buried fact a query is really about
+// without meaningfully thinning the reranker's topical candidate set.
+const defaultImportancePoolReserve = 2
+
+// defaultImportancePoolMin is the effective-importance bar for a reserved pool
+// slot. Tier seeding hands ordinary memories importance in the 0.1-0.6 range, so
+// 0.75 admits only what an LLM assessment (or an explicit user value) marked as
+// genuinely important — the reserve stays dormant on a baseline corpus.
+const defaultImportancePoolMin = 0.75
+
+// reserveImportantPool recomposes the reranker's candidate pool so up to
+// `reserve` of its slots hold high-importance candidates — effective importance
+// >= minImp — that the composite score buried below the pool cut. Candidates are
+// promoted from beyond `poolSize` by swapping with the lowest-scoring entry of
+// the band [k, poolSize) that does not itself clear minImp.
+//
+// The [0, k) prefix is never touched, by construction, and that is the whole
+// safety argument. A reranker re-scores every candidate it is shown and ignores
+// the order they arrive in, so this changes pool MEMBERSHIP only: it can rescue
+// a candidate the fused score left below the cut, and it cannot reorder what the
+// reranker returns. Every path that bypasses the reranker's verdict — no
+// reranker at all, rerank error, timeout, no matched IDs — still returns the
+// composite top-k byte-identical to what it returns with the reserve disabled.
+//
+// Promotion is relevance-gated exactly like reserveDurableTiers: a candidate
+// must score at least ratio× the entry it evicts and topAnchor× the pool's top
+// hit, so an important-but-off-topic memory cannot crowd a genuinely relevant
+// candidate out of the reranker's view. The list is score-ordered, so the first
+// candidate to fail the gate ends the walk — later ones score lower still.
+//
+// deduped must already be deduplicated (finalizeRecall dedups uncapped before
+// calling): promoting a duplicate of a band entry would otherwise smuggle a
+// repeat into the pool that Dedup had already removed.
+func reserveImportantPool(deduped []store.Scored, k, poolSize, reserve int, minImp, ratio, topAnchor float64) []store.Scored {
+	if reserve <= 0 || k < 0 || poolSize <= k || len(deduped) <= poolSize {
+		return deduped
+	}
+	important := func(r store.Scored) bool { return r.Memory.EffectiveImportance() >= minImp }
+
+	count := 0
+	for _, r := range deduped[:poolSize] {
+		if important(r) {
+			count++
+		}
+	}
+	if count >= reserve {
+		return deduped
+	}
+
+	// Copy before mutating: callers hand us a list they may still hold (the
+	// fallback paths re-derive theirs from `ranked`, but a swap in place would
+	// make this helper quietly destructive).
+	out := slices.Clone(deduped)
+	for i := poolSize; i < len(out) && count < reserve; i++ {
+		if !important(out[i]) {
+			continue
+		}
+		// Lowest-scoring evictable band entry. Already-important entries are
+		// skipped (they are what the reserve exists to keep) and [0, k) is off
+		// limits, so the scan floor is k.
+		evict := -1
+		for j := poolSize - 1; j >= k; j-- {
+			if !important(out[j]) {
+				evict = j
+				break
+			}
+		}
+		if evict < 0 {
+			break // band is all important already; nothing left to give up
+		}
+		if out[i].Score < max(ratio*out[evict].Score, topAnchor*out[0].Score) {
+			// Not relevance-competitive with what it would displace. Later
+			// candidates score lower still and the bar never falls — the anchor
+			// leg is fixed and each eviction only raises the evictee leg — so
+			// none of them can clear it either.
+			break
+		}
+		out[i], out[evict] = out[evict], out[i]
+		count++
+	}
+	return out
+}
+
 // percentile returns the p-th percentile (0 < p <= 100) of scores by linear
 // interpolation over the sorted values. scores is not mutated.
 func percentile(scores []float64, p float64) float64 {
@@ -3035,9 +3162,11 @@ func (s *Service) expandLinked(ctx context.Context, results []store.Scored, k in
 
 // finalizeRecall dedups the composite-ranked candidates to the result set. With
 // no reranker it simply caps at k; with one it reranks the top rerankPool
-// candidates (at least k) by the reranker's verdict and returns up to k. A
-// rerank failure falls back to the composite order so recall never errors on
-// the reranker's account.
+// candidates (at least k) by the reranker's verdict and returns up to k, after
+// reserveImportantPool has swapped any high-importance stragglers into that pool.
+// A rerank failure falls back to the composite order so recall never errors on
+// the reranker's account — and because the reserve only ever touches candidates
+// at or past position k, that fallback is byte-identical either way.
 func (s *Service) finalizeRecall(ctx context.Context, query string, ranked []store.Scored, k int) []store.Scored {
 	if s.reranker == nil {
 		return search.Dedup(ranked, k)
@@ -3047,7 +3176,20 @@ func (s *Service) finalizeRecall(ctx context.Context, query string, ranked []sto
 	// at k would let it reorder the result set but never change its membership,
 	// which is where most of a cross-encoder's value lives. The candidates are
 	// already retrieved; the extra depth costs reranker time, not another search.
-	pool := search.Dedup(ranked, max(s.rerankPool, k))
+	poolSize := max(s.rerankPool, k)
+	// Dedup UNCAPPED before reserving, then cut. Reserving on raw `ranked` would
+	// break the prefix invariant: the fallback below re-derives its result with
+	// Dedup(ranked, k), which draws replacements for top-k duplicates from beyond
+	// position k — exactly the region the reserve swaps entries out of. Deduping
+	// first keeps the two views of the top k in lockstep. `ranked` is already
+	// bounded by the recall pool, so the uncapped dedup is cheap.
+	deduped := search.Dedup(ranked, 0)
+	deduped = reserveImportantPool(deduped, k, poolSize,
+		s.importancePoolReserve, s.importancePoolMin, s.reservePromoteRatio, s.reserveTopAnchor)
+	pool := deduped
+	if poolSize > 0 && len(pool) > poolSize {
+		pool = pool[:poolSize]
+	}
 	cands := make([]rerank.Candidate, len(pool))
 	for i, r := range pool {
 		// Judge the passage that matched, when chunked recall found one. The
