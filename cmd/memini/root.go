@@ -373,6 +373,7 @@ func buildServiceStack(
 	// memory.Quality — set it here from config rather than threading it through
 	// every recall call.
 	memory.StabilityK = cfg.StabilityK
+	memory.AssessedSalienceWeight = cfg.AssessedSalienceWeight
 	if cfg.ChunkEmbed {
 		svcOpts = append(svcOpts, service.WithChunkEmbed(chunk.Config{
 			Size:       cfg.ChunkSize,

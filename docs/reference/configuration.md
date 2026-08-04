@@ -80,6 +80,7 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_RECALL_EMBED_TIMEOUT`](#memini_recall_embed_timeout) | `2s` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_RECALL_REWRITE_TIMEOUT`](#memini_recall_rewrite_timeout) | `3s` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_STABILITY_K`](#memini_stability_k) | `1` | [Recall tuning](#recall-tuning) |
+| [`MEMINI_ASSESSED_SALIENCE_WEIGHT`](#memini_assessed_salience_weight) | `0` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_TURN_ECHO_WINDOW`](#memini_turn_echo_window) | `5m` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_CASCADE`](#memini_cascade) | `true` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_WRITE_EMBED_TIMEOUT`](#memini_write_embed_timeout) | `5s` | [Write-time dedup and contradiction](#write-time-dedup-and-contradiction) |
@@ -479,6 +480,12 @@ duration, default `3s`. Set by `Config.RecallRewriteTimeout`.
 float64, default `1`. Set by `Config.StabilityK`.
 
 `MEMINI_STABILITY_K` is the spaced-repetition strength (Ebbinghaus stability): a short-term memory's effective recall half-life stretches with reinforcement as halfLife*(1+`MEMINI_STABILITY_K`*ln(1+access_count)), so a frequently-recalled memory decays more slowly, improving recall of reinforced-but-aged facts (see bench/reinforcement_test.go). Default 1; set 0 to disable (fixed half-life). Only affects short-term tiers with access_count &gt; 0 — durable tiers and never-recalled memories are unchanged.
+
+### `MEMINI_ASSESSED_SALIENCE_WEIGHT`
+
+float64, default `0`. Set by `Config.AssessedSalienceWeight`.
+
+`MEMINI_ASSESSED_SALIENCE_WEIGHT` blends the LLM's self-assessed importance into a memory's salience: above 0 the importance term becomes (1-w)*importance + w*assessed_importance for rows that carry an assessment, leaving unassessed rows untouched. Default 0 (exact no-op). This is a ranking AND lifecycle knob, not a display preference — salience feeds recall's quality term, short-term cap eviction (RetentionScore), briefing order, and dedup representative selection, so raising it changes what gets recalled, what gets evicted, and which duplicate survives. Enable only after benching.
 
 ### `MEMINI_TURN_ECHO_WINDOW`
 

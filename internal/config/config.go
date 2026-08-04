@@ -467,6 +467,16 @@ type Config struct {
 	// half-life). Only affects short-term tiers with access_count > 0 — durable
 	// tiers and never-recalled memories are unchanged.
 	StabilityK float64 `env:"MEMINI_STABILITY_K" envDefault:"1"`
+	// AssessedSalienceWeight blends the LLM's self-assessed importance into a
+	// memory's salience: above 0 the importance term becomes
+	// (1-w)*importance + w*assessed_importance for rows that carry an assessment,
+	// leaving unassessed rows untouched. Default 0 (exact no-op). This is a
+	// ranking AND lifecycle knob, not a display preference — salience feeds
+	// recall's quality term, short-term cap eviction (RetentionScore), briefing
+	// order, and dedup representative selection, so raising it changes what gets
+	// recalled, what gets evicted, and which duplicate survives. Enable only
+	// after benching.
+	AssessedSalienceWeight float64 `env:"MEMINI_ASSESSED_SALIENCE_WEIGHT" envDefault:"0"`
 	// TurnEchoWindow is the server-wide temporal exclusion window for
 	// freshly-captured episodic turns. A just-captured turn
 	// (metadata.format="turn") younger than this is dropped from recall by
@@ -996,12 +1006,12 @@ func (c *Config) validateChunking() error {
 	return nil
 }
 
-// validateRecallScores checks the two recall-path score floors. The fused
-// floor is a [0,1] range check; the rerank gate additionally rejects a
-// configuration the runtime could never honor — the LLM backend returns an
-// ordinal list with no scores, so accepting the combination would configure a
-// gate that silently never fires, which reads as "the gate is broken" with
-// nothing to debug.
+// validateRecallScores checks the recall-path score floors and ranking weights.
+// The fused floor and the salience blend weight are [0,1] range checks; the
+// rerank gate additionally rejects a configuration the runtime could never
+// honor — the LLM backend returns an ordinal list with no scores, so accepting
+// the combination would configure a gate that silently never fires, which reads
+// as "the gate is broken" with nothing to debug.
 func (c *Config) validateRecallScores() error {
 	if c.RecallMinScore < 0 || c.RecallMinScore > 1 {
 		return fmt.Errorf("MEMINI_RECALL_MIN_SCORE must be in [0,1], got %v", c.RecallMinScore)
@@ -1017,6 +1027,9 @@ func (c *Config) validateRecallScores() error {
 		return fmt.Errorf("MEMINI_RERANK_MIN_SCORE requires a cross-encoder reranker: " +
 			"the LLM reranker returns an ordinal list with no scores, so the gate would " +
 			"silently never fire (unset it, or point MEMINI_RERANK at a /rerank endpoint)")
+	}
+	if c.AssessedSalienceWeight < 0 || c.AssessedSalienceWeight > 1 {
+		return fmt.Errorf("MEMINI_ASSESSED_SALIENCE_WEIGHT must be in [0,1], got %v", c.AssessedSalienceWeight)
 	}
 	return nil
 }

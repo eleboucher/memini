@@ -126,6 +126,126 @@ func TestSalience(t *testing.T) {
 	}
 }
 
+// preBlendSalience is the Salience formula as it stood before the assessed
+// blend: tier weight modulated by stored importance alone. The default-weight
+// cases below compare against it so a regression that leaks the assessment in at
+// weight 0 fails loudly.
+func preBlendSalience(tier memory.Tier, importance float64) float64 {
+	w, ok := map[memory.Tier]float64{
+		memory.TierProcedural: 0.95,
+		memory.TierSemantic:   0.90,
+		memory.TierEpisodic:   0.55,
+		memory.TierWorking:    0.30,
+	}[tier]
+	if !ok {
+		w = 0.5
+	}
+	imp := importance
+	if imp < 0 {
+		imp = 0
+	} else if imp > 1 {
+		imp = 1
+	}
+	return w * (0.5 + 0.5*imp)
+}
+
+func TestSalienceAssessedBlend(t *testing.T) {
+	assessed := func(v float64) *float64 { return &v }
+
+	t.Run("weight 0 is an exact no-op", func(t *testing.T) {
+		// The package default must already be 0 — this is the shipped behavior.
+		if memory.AssessedSalienceWeight != 0 {
+			t.Fatalf("AssessedSalienceWeight default = %v, want 0", memory.AssessedSalienceWeight)
+		}
+		tiers := []memory.Tier{
+			memory.TierProcedural, memory.TierSemantic,
+			memory.TierEpisodic, memory.TierWorking, memory.Tier("bogus"),
+		}
+		for _, tier := range tiers {
+			for _, imp := range []float64{-1, 0, 0.3, 0.6, 1, 5} {
+				want := preBlendSalience(tier, imp)
+				// Without an assessment.
+				m := &memory.Memory{Tier: tier, Importance: imp}
+				if got := m.Salience(); got != want {
+					t.Errorf("tier %q imp %v unassessed: Salience() = %v, want exactly %v", tier, imp, got, want)
+				}
+				// With an assessment that would move the value if it were read.
+				m.AssessedImportance = assessed(1 - imp)
+				if got := m.Salience(); got != want {
+					t.Errorf("tier %q imp %v assessed: Salience() = %v, want exactly %v (bit-identical)", tier, imp, got, want)
+				}
+			}
+		}
+	})
+
+	t.Run("weight 0.3 blends an assessed row", func(t *testing.T) {
+		orig := memory.AssessedSalienceWeight
+		memory.AssessedSalienceWeight = 0.3
+		t.Cleanup(func() { memory.AssessedSalienceWeight = orig })
+
+		// semantic (0.90), importance 0.4, assessed 0.9:
+		// imp = 0.7*0.4 + 0.3*0.9 = 0.28 + 0.27 = 0.55
+		// salience = 0.90*(0.5 + 0.5*0.55) = 0.90*0.775 = 0.6975
+		m := &memory.Memory{
+			Tier:               memory.TierSemantic,
+			Importance:         0.4,
+			AssessedImportance: assessed(0.9),
+		}
+		if got := m.Salience(); !closeTo(got, 0.6975) {
+			t.Errorf("blended Salience() = %v, want 0.6975", got)
+		}
+
+		// The assessed value is clamped before blending: 5 behaves as 1.
+		// imp = 0.7*0.4 + 0.3*1 = 0.58; salience = 0.90*0.79 = 0.711
+		m.AssessedImportance = assessed(5)
+		if got := m.Salience(); !closeTo(got, 0.711) {
+			t.Errorf("clamped-assessed Salience() = %v, want 0.711", got)
+		}
+	})
+
+	t.Run("weight 0.3 leaves an unassessed row unchanged", func(t *testing.T) {
+		orig := memory.AssessedSalienceWeight
+		memory.AssessedSalienceWeight = 0.3
+		t.Cleanup(func() { memory.AssessedSalienceWeight = orig })
+
+		for _, imp := range []float64{0, 0.4, 1} {
+			m := &memory.Memory{Tier: memory.TierSemantic, Importance: imp}
+			want := preBlendSalience(memory.TierSemantic, imp)
+			if got := m.Salience(); got != want {
+				t.Errorf("imp %v: unassessed Salience() = %v, want exactly %v", imp, got, want)
+			}
+		}
+	})
+}
+
+func TestEffectiveImportance(t *testing.T) {
+	assessed := func(v float64) *float64 { return &v }
+	tests := []struct {
+		name       string
+		importance float64
+		assessed   *float64
+		want       float64
+	}{
+		{"assessed present wins", 0.2, assessed(0.9), 0.9},
+		{"assessed present wins when lower", 0.9, assessed(0.2), 0.2},
+		{"nil assessed falls back to importance", 0.6, nil, 0.6},
+		{"assessed is clamped high", 0.2, assessed(5), 1},
+		{"assessed is clamped low", 0.2, assessed(-1), 0},
+		{"importance is clamped high", 5, nil, 1},
+		{"importance is clamped low", -1, nil, 0},
+		// An assessed 0 is a real assessment, not an absent one.
+		{"assessed zero is not treated as absent", 0.8, assessed(0), 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &memory.Memory{Importance: tt.importance, AssessedImportance: tt.assessed}
+			if got := m.EffectiveImportance(); !closeTo(got, tt.want) {
+				t.Errorf("EffectiveImportance() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGrowConfidence(t *testing.T) {
 	tests := []struct {
 		name string

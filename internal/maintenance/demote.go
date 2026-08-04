@@ -50,7 +50,11 @@ func DemoteStale(ctx context.Context, st store.Store, olderThan, now time.Time) 
 			// (corroborated/legacy memories read as fully confident), or pinned is
 			// kept — only old, unused, low-confidence durable debris demotes.
 			// The 0.75 importance bar sits above the 0.6 tier seed, so
-			// default-importance memories are not immune to demotion.
+			// default-importance memories are not immune to demotion. It reads raw
+			// Importance deliberately, not EffectiveImportance: an assessed 0.9 does
+			// not immunize a memory from demotion, because switching this silently
+			// would widen demote immunity across a whole backfilled corpus. Moving it
+			// to the assessed signal is a deliberate follow-up, not a side effect.
 			if m.AccessCount > 0 || m.Importance >= 0.75 {
 				continue
 			}
