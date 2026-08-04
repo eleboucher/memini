@@ -221,6 +221,9 @@ func (fakeChat) Consolidate(context.Context, llm.Input) (llm.Decision, error) {
 func (fakeChat) Complete(context.Context, string, string) (string, error)      { return "", nil }
 func (fakeChat) Distill(context.Context, llm.DistillInput) ([]llm.Fact, error) { return nil, nil }
 func (fakeChat) MergeMemories(context.Context, []string) (string, error)       { return "", nil }
+func (fakeChat) AssessImportance(context.Context, []string) ([]*float64, error) {
+	return nil, nil
+}
 
 // TestRerankDisabledGate pins the disabled path: buildReranker is only
 // reached behind cfg.RerankEnabled() (root.go), so "" and "off" mean no

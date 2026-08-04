@@ -111,6 +111,10 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_DEDUP_SIMILARITY`](#memini_dedup_similarity) | `0.85` | [Maintenance and decay](#maintenance-and-decay) |
 | [`MEMINI_DEDUP_TIERS`](#memini_dedup_tiers) | none | [Maintenance and decay](#maintenance-and-decay) |
 | [`MEMINI_DEDUP_LLM_MERGE`](#memini_dedup_llm_merge) | `false` | [Maintenance and decay](#maintenance-and-decay) |
+| [`MEMINI_ASSESS_INTERVAL`](#memini_assess_interval) | `1h` | [Maintenance and decay](#maintenance-and-decay) |
+| [`MEMINI_ASSESS_BATCH`](#memini_assess_batch) | `20` | [Maintenance and decay](#maintenance-and-decay) |
+| [`MEMINI_ASSESS_MAX_PER_RUN`](#memini_assess_max_per_run) | `200` | [Maintenance and decay](#maintenance-and-decay) |
+| [`MEMINI_ASSESS_MIN_AGE`](#memini_assess_min_age) | `1h` | [Maintenance and decay](#maintenance-and-decay) |
 | [`MEMINI_API_KEY`](#memini_api_key) | none | [Authentication](#authentication) |
 | [`MEMINI_API_KEYS_FILE`](#memini_api_keys_file) | none | [Authentication](#authentication) |
 | [`MEMINI_DEFAULT_NAMESPACE`](#memini_default_namespace) | `auto` | [Namespaces](#namespaces) |
@@ -701,6 +705,30 @@ string, default none. Set by `Config.DedupTiers`.
 bool, default `false`. Set by `Config.DedupLLMMerge`.
 
 `MEMINI_DEDUP_LLM_MERGE` (opt-in, default off) enables LLM-based content merging during the periodic dedup pass. Each cluster's content is merged into a single comprehensive memory before tombstoning duplicates. Requires an LLM (MEMINI_LLM_BASE_URL); when false or no LLM, the representative keeps its original content. Defaults off to preserve existing behavior.
+
+### `MEMINI_ASSESS_INTERVAL`
+
+duration, default `1h`. Set by `Config.AssessInterval`.
+
+`MEMINI_ASSESS_INTERVAL` runs a periodic importance-backfill sweep: durable (semantic/procedural) memories that never received an LLM self-assessment — rows written before the feature existed, written without an LLM configured, or ones the model declined to rate — are sent back to the model for a score, which then drives ranking in place of the tier-seeded default. Only active when an LLM is configured (MEMINI_LLM_BASE_URL); without one the job never starts. A memory whose importance was set explicitly is left alone. Hourly by default, spending at most MEMINI_ASSESS_MAX_PER_RUN rows of LLM budget per pass; 0 disables the sweep.
+
+### `MEMINI_ASSESS_BATCH`
+
+int, default `20`. Set by `Config.AssessBatch`.
+
+`MEMINI_ASSESS_BATCH` is how many memory texts go into a single LLM call. Larger batches cost less per row but ask the model to hold a longer positional list together, and a reply that does not line up costs the whole batch.
+
+### `MEMINI_ASSESS_MAX_PER_RUN`
+
+int, default `200`. Set by `Config.AssessMaxPerRun`.
+
+`MEMINI_ASSESS_MAX_PER_RUN` caps the rows one pass assesses, bounding the LLM spend of a single tick. A backlog larger than this drains over successive passes, oldest memories first. 0 falls back to the internal default (200).
+
+### `MEMINI_ASSESS_MIN_AGE`
+
+duration, default `1h`. Set by `Config.AssessMinAge`.
+
+`MEMINI_ASSESS_MIN_AGE` skips memories younger than this, so the sweep never races the write path's own assessment — a fresh write is rated inline by the distill/consolidate call, and a sweep arriving first would waste a slot scoring a row that is about to be scored anyway. 0 falls back to the internal default (1h).
 
 ## Authentication
 

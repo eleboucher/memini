@@ -439,6 +439,19 @@ func buildServiceStack(
 			"interval", cfg.DedupInterval,
 			"similarity", cfg.DedupSimilarity)
 	}
+	// Backfills LLM-assessed importance on durable memories that never got one.
+	// Needs the chat client, so it stays off entirely when no LLM is configured.
+	if cfg.AssessInterval > 0 && chatClient != nil {
+		assessJob := maintenance.NewAssessJob(st, chatClient, log, cfg.AssessInterval, maintenance.AssessOptions{
+			Batch:     cfg.AssessBatch,
+			MaxPerRun: cfg.AssessMaxPerRun,
+			MinAge:    cfg.AssessMinAge,
+		})
+		workers.Go(func() { assessJob.Run(workerCtx) })
+		log.Info("periodic importance assessment enabled",
+			"interval", cfg.AssessInterval,
+			"max_per_run", cfg.AssessMaxPerRun)
+	}
 
 	cleanup := func() {
 		if err := st.Close(); err != nil {

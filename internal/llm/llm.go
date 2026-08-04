@@ -128,13 +128,21 @@ type Merger interface {
 	MergeMemories(ctx context.Context, contents []string) (string, error)
 }
 
+// ImportanceAssessor rates a batch of memory contents for intrinsic importance.
+// Returns one entry per input; nil entries mean the model declined that item.
+type ImportanceAssessor interface {
+	AssessImportance(ctx context.Context, contents []string) ([]*float64, error)
+}
+
 // Client is a chat backend that can consolidate memories, distill facts,
-// answer single-turn prompts, and merge memory clusters.
+// answer single-turn prompts, merge memory clusters, and rate stored memories
+// for importance.
 type Client interface {
 	Consolidator
 	Completer
 	Distiller
 	Merger
+	ImportanceAssessor
 }
 
 // Config configures a chat client. The same fields apply to both the
@@ -300,6 +308,21 @@ restatements of the same fact). Produce a single, comprehensive memory text that
 Respond with a single JSON object: {"content":"<merged memory text>"}
 Output only the JSON object.`
 
+// assessPrompt instructs the model to rate already-stored memories for intrinsic
+// importance, used by the maintenance importance-backfill sweep to fill in rows
+// that never received a self-assessment on the write path. The guidance is the
+// same as distillPrompt's importance paragraph so a backfilled score is
+// comparable to one assigned at write time.
+const assessPrompt = `You rate an AI agent's stored memories for intrinsic importance.
+Input is a JSON array of memory texts. Score each one from 0.0 to 1.0: how much future sessions will
+need it regardless of the current topic. 0.8+ only for standing directives, corrections, and critical
+constraints ("never push to main"); 0.5-0.7 for durable preferences and decisions; 0.2-0.4 for
+situational or narrow facts. Most memories belong in the middle; do not exceed 0.9.
+Respond with a single JSON object: {"scores":[0.0_to_1.0]}
+The array is positional: exactly one entry per input memory, in the input's order. Emit null for a
+memory you cannot rate — never drop a slot, never pad the array to make it fit.
+Output only the JSON object.`
+
 // trimFence strips a leading/trailing markdown code fence some models wrap JSON
 // in despite instructions, and surrounding whitespace.
 func trimFence(content string) string {
@@ -376,6 +399,25 @@ func decodeDecision(content string) (Decision, error) {
 		return Decision{}, fmt.Errorf("llm: invalid action %q", d.Action)
 	}
 	return d, nil
+}
+
+// decodeScores parses an importance-assessment response into one score per
+// input memory, tolerating a markdown code fence or surrounding prose. Scores
+// are positional, so a reply of the wrong length is an error rather than a
+// partial result: there is no way to tell which memories the model dropped, and
+// guessing would stamp the wrong memory with someone else's rating. A nil entry
+// survives as nil — the model declining an item is not a failure.
+func decodeScores(content string, want int) ([]*float64, error) {
+	var out struct {
+		Scores []*float64 `json:"scores"`
+	}
+	if err := unmarshalLoose(content, &out); err != nil {
+		return nil, fmt.Errorf("llm: decode scores JSON: %w", err)
+	}
+	if len(out.Scores) != want {
+		return nil, fmt.Errorf("llm: got %d importance scores for %d memories", len(out.Scores), want)
+	}
+	return out.Scores, nil
 }
 
 // decodeFacts parses a distillation response into durable facts, tolerating a

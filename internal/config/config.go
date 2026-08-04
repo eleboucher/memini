@@ -631,6 +631,32 @@ type Config struct {
 	// keeps its original content. Defaults off to preserve existing behavior.
 	DedupLLMMerge bool `env:"MEMINI_DEDUP_LLM_MERGE" envDefault:"false"`
 
+	// AssessInterval runs a periodic importance-backfill sweep: durable
+	// (semantic/procedural) memories that never received an LLM
+	// self-assessment — rows written before the feature existed, written
+	// without an LLM configured, or ones the model declined to rate — are sent
+	// back to the model for a score, which then drives ranking in place of the
+	// tier-seeded default. Only active when an LLM is configured
+	// (MEMINI_LLM_BASE_URL); without one the job never starts. A memory whose
+	// importance was set explicitly is left alone. Hourly by default, spending
+	// at most MEMINI_ASSESS_MAX_PER_RUN rows of LLM budget per pass; 0 disables
+	// the sweep.
+	AssessInterval time.Duration `env:"MEMINI_ASSESS_INTERVAL" envDefault:"1h"`
+	// AssessBatch is how many memory texts go into a single LLM call. Larger
+	// batches cost less per row but ask the model to hold a longer positional
+	// list together, and a reply that does not line up costs the whole batch.
+	AssessBatch int `env:"MEMINI_ASSESS_BATCH" envDefault:"20"`
+	// AssessMaxPerRun caps the rows one pass assesses, bounding the LLM spend of
+	// a single tick. A backlog larger than this drains over successive passes,
+	// oldest memories first. 0 falls back to the internal default (200).
+	AssessMaxPerRun int `env:"MEMINI_ASSESS_MAX_PER_RUN" envDefault:"200"`
+	// AssessMinAge skips memories younger than this, so the sweep never races
+	// the write path's own assessment — a fresh write is rated inline by the
+	// distill/consolidate call, and a sweep arriving first would waste a slot
+	// scoring a row that is about to be scored anyway. 0 falls back to the
+	// internal default (1h).
+	AssessMinAge time.Duration `env:"MEMINI_ASSESS_MIN_AGE" envDefault:"1h"`
+
 	// UIEnabled mounts the embedded admin UI at /. Enabled by default; set
 	// MEMINI_UI_ENABLED=false to run a headless API/MCP-only service.
 	UIEnabled bool `env:"MEMINI_UI_ENABLED" envDefault:"true"`
@@ -1080,6 +1106,30 @@ func (c *Config) validateRepair() error {
 	return nil
 }
 
+// validateAssess checks the importance-backfill knobs. Split out of validate to
+// keep it under the cyclomatic budget, matching validateChunking, validateRepair
+// and validateRecallScores.
+//
+// A zero interval is the documented "off" switch and a zero cap or min-age falls
+// back to the job's own defaults, so only negatives are misconfigurations. The
+// batch size is the exception: it divides the work, and a zero would mean
+// "assess nothing, forever" rather than anything an operator could want.
+func (c *Config) validateAssess() error {
+	if c.AssessInterval < 0 {
+		return fmt.Errorf("MEMINI_ASSESS_INTERVAL must be >= 0, got %v", c.AssessInterval)
+	}
+	if c.AssessBatch <= 0 {
+		return fmt.Errorf("MEMINI_ASSESS_BATCH must be > 0, got %d", c.AssessBatch)
+	}
+	if c.AssessMaxPerRun < 0 {
+		return fmt.Errorf("MEMINI_ASSESS_MAX_PER_RUN must be >= 0, got %d", c.AssessMaxPerRun)
+	}
+	if c.AssessMinAge < 0 {
+		return fmt.Errorf("MEMINI_ASSESS_MIN_AGE must be >= 0, got %v", c.AssessMinAge)
+	}
+	return nil
+}
+
 func (c *Config) validateBackend() error {
 	switch c.Backend {
 	case BackendSQLite:
@@ -1127,6 +1177,9 @@ func (c *Config) validate() error {
 		if !t.Valid() {
 			return fmt.Errorf("unknown tier %q in MEMINI_DEDUP_TIERS (want working|episodic|semantic|procedural)", t)
 		}
+	}
+	if err := c.validateAssess(); err != nil {
+		return err
 	}
 	// Write-time dedup: one similarity threshold + one action. No band ordering
 	// to get wrong, so no config combination can make startup fail.
