@@ -1011,6 +1011,16 @@ type RememberInput struct {
 	// Confidence overrides the seed corroboration for a durable fact (e.g. a
 	// trusted import). nil uses the default seed. Ignored for short-term tiers.
 	Confidence *float64
+	// AssessedImportance carries the LLM's own read of how important the content
+	// is. Set by the promote/consolidate paths only, never by external callers —
+	// those set Importance, which clears the assessment (see below).
+	AssessedImportance *float64
+	// ClearAssessedImportance forces that clear even when the incoming
+	// Importance equals the stored one. Update seeds Importance from the stored
+	// row on every edit, so value equality alone cannot distinguish "the caller
+	// chose this number" from "the caller touched nothing"; Update sets this
+	// when the edit really carried an importance.
+	ClearAssessedImportance bool
 	// ValidFrom / ValidTo set the interval the fact was true, for recording
 	// historical facts that time-travel (AsOf) recall can surface. ValidFrom
 	// defaults to now (or the existing row on update); ValidTo defaults to open.
@@ -1346,20 +1356,21 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		id = s.newID()
 	}
 	m := &memory.Memory{
-		ID:             id,
-		Namespace:      in.Namespace,
-		Tier:           tier,
-		Level:          in.Level,
-		Content:        in.Content,
-		Summary:        in.Summary,
-		Tags:           in.Tags,
-		Metadata:       in.Metadata,
-		Importance:     resolveImportance(in, existing, tier),
-		CreatedAt:      now,
-		UpdatedAt:      now,
-		LastAccessedAt: now,
-		Embedding:      vec,
-		EmbedState:     degradedRepairState(vec),
+		ID:                 id,
+		Namespace:          in.Namespace,
+		Tier:               tier,
+		Level:              in.Level,
+		Content:            in.Content,
+		Summary:            in.Summary,
+		Tags:               in.Tags,
+		Metadata:           in.Metadata,
+		Importance:         resolveImportance(in, existing, tier),
+		AssessedImportance: resolveAssessedImportance(in, existing),
+		CreatedAt:          now,
+		UpdatedAt:          now,
+		LastAccessedAt:     now,
+		Embedding:          vec,
+		EmbedState:         degradedRepairState(vec),
 	}
 	// An update by ID preserves the original creation time, so a tag- or
 	// metadata-only edit doesn't make an old memory appear freshly created and
@@ -1598,6 +1609,13 @@ func (s *Service) dedupCheck(ctx context.Context, m *memory.Memory) (hit *memory
 				c := *existing.Confidence
 				m.Confidence = &c
 			}
+			// Same for the LLM's importance assessment: the replacement restates
+			// the same fact, so an assessment already earned for it survives the
+			// swap rather than falling back to the tier seed.
+			if existing.AssessedImportance != nil && m.AssessedImportance == nil {
+				a := *existing.AssessedImportance
+				m.AssessedImportance = &a
+			}
 			return nil, nil, existing.ID
 		}
 		s.reinforceCorroborateAsync(ctx, existing)
@@ -1688,6 +1706,23 @@ func clampConfidence(c float64) float64 {
 		return 0.7
 	default:
 		return c
+	}
+}
+
+// clampAssessedImportance bounds an LLM-assessed importance to [0.1, 0.9]. The
+// 0.9 cap prevents saturation — an over-eager model rating everything 1.0 would
+// make the pool-reserve threshold meaningless — while still clearing the 0.75
+// demote bar; the 0.1 floor keeps it out of the 0-sentinel dead zone that marks
+// a quarantined write. The ceiling sits higher than clampConfidence's 0.7
+// because importance, unlike confidence, is not earned later by corroboration.
+func clampAssessedImportance(v float64) float64 {
+	switch {
+	case v < 0.1:
+		return 0.1
+	case v > 0.9:
+		return 0.9
+	default:
+		return v
 	}
 }
 
@@ -3175,6 +3210,27 @@ func resolveImportance(in RememberInput, existing *memory.Memory, tier memory.Ti
 		return existing.Importance
 	default:
 		return seedImportance(tier)
+	}
+}
+
+// resolveAssessedImportance picks the LLM assessment to store alongside the
+// importance resolved above. The assessment is advisory and never overwrites
+// Importance: an explicit importance is a deliberate caller choice, so it clears
+// the assessment outright. The existing-comparison guard is there because Update
+// re-sends the stored importance on every edit — that is not a choice and must
+// leave the assessment alone (see RememberInput.ClearAssessedImportance).
+func resolveAssessedImportance(in RememberInput, existing *memory.Memory) *float64 {
+	switch {
+	case in.ClearAssessedImportance ||
+		(in.Importance != 0 && (existing == nil || in.Importance != existing.Importance)):
+		return nil
+	case in.AssessedImportance != nil:
+		a := clampAssessedImportance(*in.AssessedImportance)
+		return &a
+	case existing != nil:
+		return existing.AssessedImportance
+	default:
+		return nil
 	}
 }
 

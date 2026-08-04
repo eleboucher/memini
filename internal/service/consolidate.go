@@ -239,6 +239,9 @@ func (s *Service) consolidateSync(ctx context.Context, m *memory.Memory) (*memor
 	}
 
 	m.LinkedMemoryIDs = dec.LinkedIDs
+	// Covers the two branches that persist m itself (new, supersede); an update
+	// discards m and stamps the target instead.
+	stampAssessedImportance(m, dec)
 
 	switch dec.Action {
 	case llm.ActionUpdate:
@@ -298,11 +301,23 @@ func (s *Service) applyUpdate(ctx context.Context, m *memory.Memory, dec llm.Dec
 		grown := memory.GrowConfidence(target.EffectiveConfidence(now))
 		target.Confidence = &grown
 	}
+	stampAssessedImportance(target, dec)
 	if err := s.store.Upsert(ctx, target); err != nil {
 		return nil, false, err
 	}
 	s.metrics.ConsolidateResult("update")
 	return target, true, nil
+}
+
+// stampAssessedImportance records the consolidator's self-assessed importance on
+// m, clamped to the storable range. A model that omitted the key leaves whatever
+// assessment m already carries untouched.
+func stampAssessedImportance(m *memory.Memory, dec llm.Decision) {
+	if dec.Importance == nil {
+		return
+	}
+	a := clampAssessedImportance(*dec.Importance)
+	m.AssessedImportance = &a
 }
 
 // applySupersede stores the new memory and tombstones the contradicted target.
@@ -425,6 +440,7 @@ func (s *Service) asyncUpdate(ctx context.Context, m *memory.Memory, dec llm.Dec
 		grown := memory.GrowConfidence(target.EffectiveConfidence(now))
 		target.Confidence = &grown
 	}
+	stampAssessedImportance(target, dec)
 	if err := s.store.Upsert(ctx, target); err != nil {
 		slog.WarnContext(ctx, "consolidate: upsert target", "err", err)
 		s.metrics.ConsolidateResult("error")

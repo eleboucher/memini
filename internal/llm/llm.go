@@ -65,6 +65,10 @@ type Decision struct {
 	// entity/topic) but neither duplicate nor contradiction. Empty for "new"
 	// with no related candidates or update/supersede actions.
 	LinkedIDs []string `json:"linked_ids,omitempty"`
+	// Importance is the LLM's self-assessed intrinsic importance of the
+	// resulting memory, in [0.1, 0.9]. nil means the model omitted it, which
+	// leaves the stored assessment untouched.
+	Importance *float64 `json:"importance,omitempty"`
 }
 
 // Consolidator decides how a new memory relates to existing candidates.
@@ -87,6 +91,10 @@ type Fact struct {
 	// Confidence is the LLM's self-assessed reliability of this fact, in [0.1, 0.7].
 	// nil means unset; the service layer falls back to ConfidenceSeedFresh.
 	Confidence *float64 `json:"confidence,omitempty"`
+	// Importance is the LLM's self-assessed intrinsic importance of this fact,
+	// in [0.1, 0.9]. nil means the model omitted it; the service layer then
+	// stores no assessment and the tier-seeded importance stands.
+	Importance *float64 `json:"importance,omitempty"`
 }
 
 // Episode is one episodic memory to distill, paired with the date it was
@@ -203,7 +211,7 @@ const systemPrompt = `You maintain an AI agent's long-term memory. Given a NEW m
 EXISTING candidate memories, decide how the new one relates to them. Respond with a single JSON object:
 {"action":"new|update|supersede","target":"<candidate id or empty>",
  "content":"<text to store>","summary":"<one line>","reason":"<short>",
- "linked_ids":["<id>",...]}
+ "linked_ids":["<id>",...],"importance":0.0_to_1.0}
 
 A DUPLICATE restates the same fact in different words (same value, same subject, same meaning).
 A CONTRADICTION makes the old fact wrong or outdated: the SAME property now has a DIFFERENT value,
@@ -222,6 +230,9 @@ Rules:
 - "linked_ids": for "new" actions, include the IDs of any candidate about the same entity/topic
   but that is a DISTINCT fact (not duplicate, not contradiction). Skip candidates that are
   a different entity/topic entirely. For "update" and "supersede", leave empty.
+- "importance": how much future sessions will need the resulting memory regardless of the current
+  topic — 0.8+ only for standing directives, corrections, and critical constraints; 0.5-0.7 for
+  durable preferences and decisions; 0.2-0.4 for situational or narrow facts. Do not exceed 0.9.
 
 Test: would the NEW memory make the EXISTING candidate FALSE if both were stored? If yes → supersede.
 Can both be true simultaneously? If yes → update (same fact) or new (different fact).
@@ -267,8 +278,13 @@ absolute YYYY-MM-DD date in the item, grounding against that episode's "date" (o
 Assign each fact a confidence score (0.0 to 1.0) reflecting how certain you are it is a durable, accurate
 observation: 0.9+ for explicit user statements ("I prefer X"), 0.6-0.8 for inferred preferences, 0.3-0.5 for
 speculative or second-hand facts. Clamp to [0.1, 0.7] — no fact starts above 0.7; corroboration raises it later.
+Assign each fact an importance score (0.0 to 1.0): how much future sessions will need it regardless of
+the current topic. 0.8+ only for standing directives, corrections, and critical constraints ("never push
+to main"); 0.5-0.7 for durable preferences and decisions; 0.2-0.4 for situational or narrow facts. Most
+facts belong in the middle; do not exceed 0.9.
 Respond with a single JSON object:
-{"facts":[{"content":"<durable item>","summary":"<one line>","category":"preference|procedure|fact","confidence":0.0_to_1.0}]}
+{"facts":[{"content":"<durable item>","summary":"<one line>","category":"preference|procedure|fact",
+ "confidence":0.0_to_1.0,"importance":0.0_to_1.0}]}
 Return {"facts":[]} if nothing is durable. Output only the JSON object.`
 
 // mergePrompt instructs the model to merge a cluster of near-duplicate memories
