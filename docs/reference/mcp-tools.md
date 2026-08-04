@@ -99,7 +99,7 @@ Store a fact, decision, preference, or event for later recall. Do not wait to be
 | `content` | string | yes | the fact to store — atomic and self-contained, readable without this conversation's context |
 | `confidence` | number |  | 0..1 seed corroboration for a durable fact; omit for default |
 | `id` | string |  | upserts an existing memory when provided |
-| `importance` | number |  | 0..1 ranking/retention bias — higher ranks higher and survives pruning longer; omit for the default |
+| `importance` | number |  | 0..1 ranking/retention bias — higher ranks higher and survives pruning longer; omit for the default and the server may assess one itself (assessed_importance); an explicit value always wins and clears that assessment |
 | `level` | string |  | provenance: explicit = user-stated, deduced = LLM-inferred; omit to leave unset. One of `explicit`, `deduced`. |
 | `metadata` | object |  | structured key/values for later filtering; set 'category' to a topic bucket (e.g. bug_fixes, architecture_decisions, coding_conventions) |
 | `summary` | string |  | optional one-line summary |
@@ -176,7 +176,7 @@ Update fields of an existing memory by ID (partial: only provided fields change;
 | `id` | string | yes | the memory ID to update (from memory_recall/memory_list) |
 | `confidence` | number |  | 0..1; omit to keep |
 | `content` | string |  | replacement content; omit to keep |
-| `importance` | number |  | 0..1; omit to keep |
+| `importance` | number |  | 0..1; omit to keep; an explicit value clears assessed_importance |
 | `metadata` | object |  | merged into existing metadata key-by-key; a null value deletes that key |
 | `namespace` | string |  | namespace; defaults to the server namespace |
 | `summary` | string |  | replacement summary; omit to keep |

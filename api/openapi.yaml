@@ -1187,7 +1187,15 @@ components:
           description: >
             Replaces the stored metadata wholesale when this write carries an id
             (an upsert). Use PATCH /v1/memories/{id} to merge key-by-key instead.
-        importance: { type: number, format: double, minimum: 0, maximum: 1 }
+        importance:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: >
+            Ranking and retention bias. Omit for the tier default — the server
+            may then assess one itself (assessed_importance); an explicit value
+            always wins and clears that assessment.
         level:
           allOf:
             - $ref: "#/components/schemas/Level"
@@ -1269,7 +1277,8 @@ components:
           minimum: 0
           maximum: 1
           description: >
-            Omit to keep the stored importance. Note that 0 is currently
+            Omit to keep the stored importance. An explicit value clears the
+            LLM self-assessment (assessed_importance). Note that 0 is currently
             indistinguishable from omitted and keeps the stored value.
         confidence:
           type: number

@@ -1294,7 +1294,9 @@ type RememberRequest struct {
 	Content    string   `json:"content"`
 
 	// Id Upserts an existing memory when provided.
-	Id         *string  `json:"id,omitempty"`
+	Id *string `json:"id,omitempty"`
+
+	// Importance Ranking and retention bias. Omit for the tier default — the server may then assess one itself (assessed_importance); an explicit value always wins and clears that assessment.
 	Importance *float64 `json:"importance,omitempty"`
 
 	// Level Label the derivation provenance (explicit vs deduced) at write time. Omit to leave unset (default, legacy rows, auto-tagged by service).
@@ -1602,7 +1604,7 @@ type UpdateMemoryRequest struct {
 	Confidence *float64 `json:"confidence,omitempty"`
 	Content    *string  `json:"content,omitempty"`
 
-	// Importance Omit to keep the stored importance. Note that 0 is currently indistinguishable from omitted and keeps the stored value.
+	// Importance Omit to keep the stored importance. An explicit value clears the LLM self-assessment (assessed_importance). Note that 0 is currently indistinguishable from omitted and keeps the stored value.
 	Importance *float64 `json:"importance,omitempty"`
 
 	// Level Relabel derivation provenance. Omit to keep the stored level.

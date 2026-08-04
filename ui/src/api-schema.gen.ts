@@ -647,7 +647,10 @@ export interface components {
             metadata?: {
                 [key: string]: unknown;
             };
-            /** Format: double */
+            /**
+             * Format: double
+             * @description Ranking and retention bias. Omit for the tier default — the server may then assess one itself (assessed_importance); an explicit value always wins and clears that assessment.
+             */
             importance?: number;
             /** @description Label the derivation provenance (explicit vs deduced) at write time. Omit to leave unset (default, legacy rows, auto-tagged by service). */
             level?: components["schemas"]["Level"];
@@ -689,7 +692,7 @@ export interface components {
             };
             /**
              * Format: double
-             * @description Omit to keep the stored importance. Note that 0 is currently indistinguishable from omitted and keeps the stored value.
+             * @description Omit to keep the stored importance. An explicit value clears the LLM self-assessment (assessed_importance). Note that 0 is currently indistinguishable from omitted and keeps the stored value.
              */
             importance?: number;
             /**
