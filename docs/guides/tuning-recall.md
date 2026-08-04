@@ -210,6 +210,141 @@ Recall has three score scales, and each has its own floor — do not confuse the
 
 ---
 
+## An important memory never reaches the reranker
+
+The memory that matters is in the store, it is on topic, and it still does not
+come back. Not because the reranker judged it and passed: because the reranker
+never saw it. Pool membership is decided by the composite score, which is
+relevance-dominated by design, so a standing directive phrased in words the
+query does not share sits below the pool cut and is dropped before a single
+model forward pass happens. The reranker cannot rescue a candidate it was not
+handed.
+
+### Assessed importance
+
+Every memory carries an `importance` in `[0,1]`, and until an agent supplies one
+it is just a **tier seed** — a constant per tier, the same for a critical
+standing directive and a passing observation. It is a placeholder, not a
+judgement, and ranking treats it as one.
+
+**Assessed importance** is a second, separate signal: the LLM's own read of how
+much future sessions will need this content regardless of the current topic. Two
+neighbouring signals are easy to confuse it with, and it is neither. It is not
+user-supplied importance — an explicit `importance` on a write **clears** any
+assessment, so a value the LLM chose can never override a value a human asked
+for. And it is not access-based reinforcement — that measures how often a
+memory _has_ been used; this estimates whether it _should_ be.
+
+It gets written two ways, both LLM-only (no LLM configured, no assessments):
+
+- **On the write path, as a piggyback.** The distill and consolidate calls
+  already read the content and already return structured JSON, so they return a
+  score with it. It costs no extra call.
+- **On a schedule, as a backfill sweep.**
+  [`MEMINI_ASSESS_INTERVAL`](../reference/configuration.md#memini_assess_interval)
+  (default `1h`) catches everything the write path missed: rows written before
+  the feature existed, rows written with no LLM configured, and rows the model
+  declined to rate. It only considers durable (semantic/procedural) memories
+  that are still sitting at exactly their tier-seed importance — a memory whose
+  importance differs from the seed was set deliberately by whoever wrote it and
+  is never second-guessed.
+
+Scores are clamped to `[0.1,0.9]`. The `0.9` ceiling is the load-bearing half:
+an over-eager model that rates everything `1.0` would flatten the scale and make
+the thresholds that read it meaningless, and `0.9` still clears the `0.75`
+demotion bar, so the cap costs nothing real. The `0.1` floor keeps an assessment
+out of the zero-sentinel dead zone that marks a quarantined write — and a
+quarantined write is never stamped with one at all, because an assessment there
+would re-float exactly the garbled content the zero is meant to sink. A memory
+with no assessment is `null`, not `0` — never assessed and rated unimportant are
+different states, and only the first is retried. `assessed_importance` is
+returned read-only on the REST and MCP surfaces, so you can check what the model
+actually decided rather than infer it from ranking.
+
+The sweep's cost knobs bound one pass rather than change its outcome:
+[`MEMINI_ASSESS_BATCH`](../reference/configuration.md#memini_assess_batch)
+(default `20`) is how many memory texts share one LLM call — larger batches cost
+less per row, but ask the model to hold a longer positional list together, and a
+reply that does not line up costs the whole batch.
+[`MEMINI_ASSESS_MAX_PER_RUN`](../reference/configuration.md#memini_assess_max_per_run)
+(default `200`) caps the rows one pass touches, so a large backlog drains over
+successive passes, oldest first, instead of in one expensive burst.
+[`MEMINI_ASSESS_MIN_AGE`](../reference/configuration.md#memini_assess_min_age)
+(default `1h`) skips memories younger than that, so the sweep does not race the
+write path and spend a slot scoring a row that is about to be scored inline.
+Set `MEMINI_ASSESS_INTERVAL=0` to turn the sweep off entirely.
+
+### Reserving pool slots for it
+
+[`MEMINI_RECALL_IMPORTANCE_RESERVE`](../reference/configuration.md#memini_recall_importance_reserve)
+(default `2`) is what closes the loop. It reserves up to N slots of the
+_reranker's candidate pool_ for candidates whose effective importance (the
+assessed value when there is one, else the stored importance) clears
+[`MEMINI_RECALL_IMPORTANCE_MIN`](../reference/configuration.md#memini_recall_importance_min)
+(default `0.75`), promoting them from below the pool cut so they get judged on
+their merits. The `0.75` bar sits above every tier seed, so on a corpus with no
+assessments and no explicit importance the reserve is dormant.
+
+Two properties are worth being precise about, because they are what make this
+safe to leave on:
+
+- **It changes pool membership only, never the top-k.** The `[0, k)` prefix is
+  never touched. A reranker re-scores everything it is shown and ignores arrival
+  order, so the reserve can rescue a buried candidate but cannot reorder the
+  verdict — and every path that bypasses the reranker (no reranker, rerank
+  error, timeout, no matching IDs) returns the composite top-k byte-identical to
+  what it returns with the reserve disabled.
+- **Promotion is relevance-gated**, exactly like
+  `MEMINI_RECALL_SEMANTIC_RESERVE`: a candidate must be score-competitive with
+  the entry it displaces and with the pool's top hit. An important-but-off-topic
+  memory cannot crowd a genuinely relevant candidate out of the reranker's view.
+
+That first property is also the prerequisite. **The reserve is structurally
+inert unless there is a pool to reserve _in_**: you need
+[`MEMINI_RERANK`](../reference/configuration.md#memini_rerank) configured _and_
+[`MEMINI_RERANK_POOL`](../reference/configuration.md#memini_rerank_pool) greater
+than the recall limit. `MEMINI_RERANK_POOL` defaults to `0`, which reranks
+exactly the limit — reordering the results without ever changing which ones they
+are — so a deployment that never set it gets nothing from this knob.
+
+```sh
+# server (the memini process)
+export MEMINI_RERANK=http://reranker:8002/v1
+export MEMINI_RERANK_POOL=50                  # the recall pool ceiling; must exceed the limit
+export MEMINI_RECALL_IMPORTANCE_RESERVE=2     # default
+export MEMINI_RECALL_IMPORTANCE_MIN=0.75      # default
+```
+
+To turn the whole feature off: `MEMINI_RECALL_IMPORTANCE_RESERVE=0` stops the
+reserve, and `MEMINI_ASSESS_INTERVAL=0` stops the backfill sweep. (Write-path
+assessments still ride along with distill and consolidate; they cost nothing
+extra and, with the reserve at `0` and the salience weight at its default, they
+change no ranking.)
+
+### The salience blend, and why it is off
+
+[`MEMINI_ASSESSED_SALIENCE_WEIGHT`](../reference/configuration.md#memini_assessed_salience_weight)
+(default `0`) blends the assessment into a memory's **salience**: above `0` the
+importance term becomes `(1-w)*importance + w*assessed_importance` for rows that
+carry an assessment, leaving unassessed rows untouched. The default is an exact
+no-op.
+
+Treat it as a load-bearing knob, not a display preference. Salience is not
+ranking-only — it feeds recall's quality term, short-term cap eviction
+(retention score), briefing order, and dedup representative selection. Raising
+it changes what gets recalled, **what gets evicted, and which duplicate
+survives**. Bench it before you enable it; a value that improves recall can
+quietly change what your store keeps.
+
+One deliberate exception: the demotion immunity bar (`importance >= 0.75`, see
+[durable facts vanishing](#my-durable-facts-vanished-after-a-week)) still reads
+**raw** importance, not the effective value. An assessed `0.9` does not immunize
+a memory from demotion. Switching that silently would widen demote immunity
+across an entire backfilled corpus in one sweep, which is a decision to make on
+purpose rather than inherit as a side effect.
+
+---
+
 ## It misses queries that are worded semantically
 
 The memory is there, but a paraphrased question does not find it.

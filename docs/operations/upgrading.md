@@ -300,7 +300,8 @@ A durable (semantic or procedural) memory is demoted back to the episodic tier,
 inheriting the episodic TTL, when _all_ of these hold:
 
 - it has never been recalled (`AccessCount == 0`),
-- its importance is below `0.5`,
+- its importance is below `0.75` (raw importance — an LLM assessment does not
+  confer immunity),
 - its effective confidence is below the demotion floor (uncorroborated),
 - it is not pinned,
 - it was last updated more than `MEMINI_DEMOTE_AFTER` ago.
