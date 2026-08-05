@@ -158,6 +158,14 @@ const serverInstructions = "memini is persistent cross-session memory for this a
 	"where knowledge actually lives — never guess or construct a namespace path.\n" +
 	"- Conventions: tag critical always-relevant facts \"pinned\" (they surface in every briefing); " +
 	"set metadata.category to a topic bucket (e.g. bug_fixes, architecture_decisions, coding_conventions).\n" +
+	"- importance is a deliberate marker, not a rating. Omit it and the tier seed applies (0.6 " +
+	"durable, 0.3 episodic) — the right default for almost everything, and the server may assess a " +
+	"value itself. Set it only to mark a fact as unusually load-bearing: >= 0.75 is a real threshold " +
+	"that reserves scarce reranker-pool slots and grants immunity from staleness demotion, so spend " +
+	"it on a standing directive, a hard constraint, a bug's root cause, or a user correction — and " +
+	"leave ordinary decisions and observations unset. Inflating it is worse than omitting it: the " +
+	"reserved band is small and fixed, so a corpus where everything is important crowds out the " +
+	"memories that genuinely are.\n" +
 	"- Keep the store correct: when a stored memory proves wrong or outdated — recall says one " +
 	"thing, reality shows another — fix it immediately with memory_update on its id, or " +
 	"memory_forget if it should not exist; never leave known-incorrect data in place, and never " +
@@ -600,7 +608,7 @@ type rememberArgs struct {
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
 	Metadata map[string]any `json:"metadata,omitempty" jsonschema:"structured key/values for later filtering; set 'category' to a topic bucket (e.g. bug_fixes, architecture_decisions, coding_conventions)"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
-	Importance float64  `json:"importance,omitempty" jsonschema:"0..1 ranking/retention bias — higher ranks higher and survives pruning longer; omit for the default and the server may assess one itself (assessed_importance); an explicit value always wins and clears that assessment"`
+	Importance float64  `json:"importance,omitempty" jsonschema:"0..1 ranking/retention bias. OMIT for ordinary facts — the tier seed (0.6 durable, 0.3 episodic) is the correct default and the server may assess a value itself (assessed_importance). Set it only to mark a fact as unusually load-bearing: >= 0.75 is a real threshold that reserves scarce reranker-pool slots and grants immunity from staleness demotion, so spend it on a standing directive, a hard constraint, a bug's root cause, or a user correction. Inflating it is worse than omitting it — the reserved band is small and fixed, so marking everything important crowds out what genuinely is. An explicit value always wins and permanently clears the assessment"`
 	TTLSeconds *int     `json:"ttl_seconds,omitempty" jsonschema:"overrides the tier default TTL; negative means never expire"`
 	ID         string   `json:"id,omitempty" jsonschema:"upserts an existing memory when provided"`
 	Confidence *float64 `json:"confidence,omitempty" jsonschema:"0..1 seed corroboration for a durable fact; omit for default"`

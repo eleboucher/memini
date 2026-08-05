@@ -46,6 +46,18 @@ tool with:
   facts gain confidence each time they're re-observed and lose it if never
   recalled, so saving a real, lasting fact as `semantic` (not `working`) is what
   lets it rise above one-off noise over time.
+- `importance` (optional) — 0..1, and a deliberate marker rather than a rating.
+  **Omit it for ordinary facts**: the tier seed (0.6 durable, 0.3 episodic) is
+  the correct default, and the server may assess a value itself. Set it only to
+  mark a fact as unusually load-bearing — `>= 0.75` is a real threshold that
+  reserves scarce reranker-pool slots at recall time and grants immunity from
+  staleness demotion, so spend it on a standing directive, a hard constraint, a
+  bug's root cause, or a user correction, and leave ordinary decisions and
+  observations unset. Inflating it is worse than omitting it: the reserved band
+  is small and fixed, so marking everything important crowds out what genuinely
+  is. An explicit value always wins and permanently clears the server's own
+  assessment (`assessed_importance`), so it is the one signal a model authoring
+  a memory can set that will never be second-guessed.
 
 ## Result fields to check
 
