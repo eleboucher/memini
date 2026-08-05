@@ -391,3 +391,62 @@ func TestAssessJobDisabled(t *testing.T) {
 		})
 	}
 }
+
+// TestAssessImportancePreviewMatchesBackfill pins the invariant the preview
+// exists for: it must count exactly the rows the real pass would assess. The
+// two share assessCandidates, so this guards against the preview growing its
+// own selection logic and quoting an operator a cost that doesn't match the
+// bill. It also pins that a preview needs no assessor at all — the signature
+// takes none, so a preview can never spend an LLM call.
+func TestAssessImportancePreviewMatchesBackfill(t *testing.T) {
+	st := openAssessStore(t)
+	now := time.Now().UTC()
+	old := now.Add(-48 * time.Hour)
+	seed := memory.SeedImportance(memory.TierSemantic)
+
+	// Same fixture shape as TestAssessBackfillSelection: two eligible rows plus
+	// one of each ineligible kind (already assessed, too young, explicitly set,
+	// non-durable tiers).
+	putAssessRow(t, st, assessSeed{id: "eligible", namespace: assessTestNS,
+		tier: memory.TierSemantic, importance: seed, createdAt: old})
+	putAssessRow(t, st, assessSeed{id: "eligible-proc", namespace: assessTestNS,
+		tier: memory.TierProcedural, importance: memory.SeedImportance(memory.TierProcedural), createdAt: old})
+	putAssessRow(t, st, assessSeed{id: "already", namespace: assessTestNS,
+		tier: memory.TierSemantic, importance: seed, assessed: new(0.7), createdAt: old})
+	putAssessRow(t, st, assessSeed{id: "young", namespace: assessTestNS,
+		tier: memory.TierSemantic, importance: seed, createdAt: now.Add(-time.Minute)})
+	putAssessRow(t, st, assessSeed{id: "explicit", namespace: assessTestNS,
+		tier: memory.TierSemantic, importance: 0.85, createdAt: old})
+	putAssessRow(t, st, assessSeed{id: "episodic", namespace: assessTestNS,
+		tier: memory.TierEpisodic, importance: memory.SeedImportance(memory.TierEpisodic), createdAt: old})
+
+	opts := quietOpts(maintenance.AssessOptions{})
+	pending, err := maintenance.AssessImportancePreview(t.Context(), st, opts, now)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if pending != 2 {
+		t.Fatalf("preview counted %d rows, want 2 (eligible + eligible-proc)", pending)
+	}
+
+	// The preview must not have written anything: the real pass still finds the
+	// same rows unassessed and rates them.
+	fake := &fakeAssessor{}
+	n, err := maintenance.AssessImportanceBackfill(t.Context(), st, fake, opts, now)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if n != pending {
+		t.Fatalf("backfill assessed %d rows but preview promised %d", n, pending)
+	}
+
+	// And a preview after the pass reports nothing left, so an operator can tell
+	// a drained backlog from a stalled one.
+	rest, err := maintenance.AssessImportancePreview(t.Context(), st, opts, now)
+	if err != nil {
+		t.Fatalf("preview after backfill: %v", err)
+	}
+	if rest != 0 {
+		t.Fatalf("preview after backfill = %d, want 0", rest)
+	}
+}

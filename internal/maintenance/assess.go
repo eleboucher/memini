@@ -141,6 +141,32 @@ func AssessImportanceBackfill(
 
 // assessCandidates collects the rows eligible for assessment across every
 // namespace, oldest-first and capped at opts.MaxPerRun.
+// AssessImportancePreview reports how many durable memories AssessImportanceBackfill
+// would send to the assessor, without calling it. It exists because the sweep's
+// cost is per-row LLM spend: an operator running the backfill by hand needs the
+// size of the bill before agreeing to it, and a preview that itself called the
+// model would defeat the purpose. Candidate selection is shared with the real
+// pass, so the count is exact rather than an estimate — subject only to rows
+// aging past MinAge between the two calls.
+func AssessImportancePreview(
+	ctx context.Context, st store.Store, opts AssessOptions, now time.Time,
+) (int, error) {
+	if opts.Batch <= 0 {
+		opts.Batch = defaultAssessBatch
+	}
+	if opts.MaxPerRun <= 0 {
+		opts.MaxPerRun = defaultAssessMaxPerRun
+	}
+	if opts.MinAge <= 0 {
+		opts.MinAge = defaultAssessMinAge
+	}
+	cands, err := assessCandidates(ctx, st, opts, now)
+	if err != nil {
+		return 0, err
+	}
+	return len(cands), nil
+}
+
 func assessCandidates(
 	ctx context.Context, st store.Store, opts AssessOptions, now time.Time,
 ) ([]assessCandidate, error) {
