@@ -459,6 +459,19 @@ type Config struct {
 	// Reserved slots are relevance-gated — a durable memory is only promoted in
 	// when it is relevance-competitive with the entry it displaces.
 	RecallSemanticReserve int `env:"MEMINI_RECALL_SEMANTIC_RESERVE" envDefault:"2"`
+	// RecallImportanceReserve reserves up to N slots of the reranker's candidate
+	// pool for high-importance candidates the fused score buried below the pool
+	// cut, so an important memory still gets judged on its merits. It changes
+	// pool membership only — never the composite top-N a rerank-free recall
+	// returns — and is therefore structurally inert unless a reranker is
+	// configured AND MEMINI_RERANK_POOL exceeds the recall limit. 0 disables it.
+	RecallImportanceReserve int `env:"MEMINI_RECALL_IMPORTANCE_RESERVE" envDefault:"2"`
+	// RecallImportanceMin is the effective-importance threshold (assessed value
+	// when the LLM set one, else stored importance) a candidate must meet to
+	// claim a slot reserved by MEMINI_RECALL_IMPORTANCE_RESERVE. The default
+	// (0.75) sits above the tier-seeded baseline every memory carries, so only
+	// genuinely important memories compete for a reserved slot.
+	RecallImportanceMin float64 `env:"MEMINI_RECALL_IMPORTANCE_MIN" envDefault:"0.75"`
 	// StabilityK is the spaced-repetition strength (Ebbinghaus stability): a
 	// short-term memory's effective recall half-life stretches with reinforcement
 	// as halfLife*(1+StabilityK*ln(1+access_count)), so a frequently-recalled
@@ -467,6 +480,16 @@ type Config struct {
 	// half-life). Only affects short-term tiers with access_count > 0 — durable
 	// tiers and never-recalled memories are unchanged.
 	StabilityK float64 `env:"MEMINI_STABILITY_K" envDefault:"1"`
+	// AssessedSalienceWeight blends the LLM's self-assessed importance into a
+	// memory's salience: above 0 the importance term becomes
+	// (1-w)*importance + w*assessed_importance for rows that carry an assessment,
+	// leaving unassessed rows untouched. Default 0 (exact no-op). This is a
+	// ranking AND lifecycle knob, not a display preference — salience feeds
+	// recall's quality term, short-term cap eviction (RetentionScore), briefing
+	// order, and dedup representative selection, so raising it changes what gets
+	// recalled, what gets evicted, and which duplicate survives. Enable only
+	// after benching.
+	AssessedSalienceWeight float64 `env:"MEMINI_ASSESSED_SALIENCE_WEIGHT" envDefault:"0"`
 	// TurnEchoWindow is the server-wide temporal exclusion window for
 	// freshly-captured episodic turns. A just-captured turn
 	// (metadata.format="turn") younger than this is dropped from recall by
@@ -607,6 +630,35 @@ type Config struct {
 	// LLM (MEMINI_LLM_BASE_URL); when false or no LLM, the representative
 	// keeps its original content. Defaults off to preserve existing behavior.
 	DedupLLMMerge bool `env:"MEMINI_DEDUP_LLM_MERGE" envDefault:"false"`
+
+	// AssessInterval runs a periodic importance-backfill sweep: durable
+	// (semantic/procedural) memories that never received an LLM
+	// self-assessment — rows written before the feature existed, written
+	// without an LLM configured, or ones the model declined to rate — are sent
+	// back to the model for a score. At the shipped defaults that score feeds the
+	// rerank-pool reservation (MEMINI_RECALL_IMPORTANCE_RESERVE) and nothing
+	// else — it decides which candidates the reranker gets to see, not how they
+	// are ordered; it reaches ranking itself only once
+	// MEMINI_ASSESSED_SALIENCE_WEIGHT is turned up. Only active when an LLM is configured
+	// (MEMINI_LLM_BASE_URL); without one the job never starts. A memory whose
+	// importance was set explicitly is left alone. Hourly by default, spending
+	// at most MEMINI_ASSESS_MAX_PER_RUN rows of LLM budget per pass; 0 disables
+	// the sweep.
+	AssessInterval time.Duration `env:"MEMINI_ASSESS_INTERVAL" envDefault:"1h"`
+	// AssessBatch is how many memory texts go into a single LLM call. Larger
+	// batches cost less per row but ask the model to hold a longer positional
+	// list together, and a reply that does not line up costs the whole batch.
+	AssessBatch int `env:"MEMINI_ASSESS_BATCH" envDefault:"20"`
+	// AssessMaxPerRun caps the rows one pass assesses, bounding the LLM spend of
+	// a single tick. A backlog larger than this drains over successive passes,
+	// oldest memories first. 0 falls back to the internal default (200).
+	AssessMaxPerRun int `env:"MEMINI_ASSESS_MAX_PER_RUN" envDefault:"200"`
+	// AssessMinAge skips memories younger than this, so the sweep never races
+	// the write path's own assessment — a fresh write is rated inline by the
+	// distill/consolidate call, and a sweep arriving first would waste a slot
+	// scoring a row that is about to be scored anyway. 0 falls back to the
+	// internal default (1h).
+	AssessMinAge time.Duration `env:"MEMINI_ASSESS_MIN_AGE" envDefault:"1h"`
 
 	// UIEnabled mounts the embedded admin UI at /. Enabled by default; set
 	// MEMINI_UI_ENABLED=false to run a headless API/MCP-only service.
@@ -996,12 +1048,12 @@ func (c *Config) validateChunking() error {
 	return nil
 }
 
-// validateRecallScores checks the two recall-path score floors. The fused
-// floor is a [0,1] range check; the rerank gate additionally rejects a
-// configuration the runtime could never honor — the LLM backend returns an
-// ordinal list with no scores, so accepting the combination would configure a
-// gate that silently never fires, which reads as "the gate is broken" with
-// nothing to debug.
+// validateRecallScores checks the recall-path score floors and ranking weights.
+// The fused floor and the salience blend weight are [0,1] range checks; the
+// rerank gate additionally rejects a configuration the runtime could never
+// honor — the LLM backend returns an ordinal list with no scores, so accepting
+// the combination would configure a gate that silently never fires, which reads
+// as "the gate is broken" with nothing to debug.
 func (c *Config) validateRecallScores() error {
 	if c.RecallMinScore < 0 || c.RecallMinScore > 1 {
 		return fmt.Errorf("MEMINI_RECALL_MIN_SCORE must be in [0,1], got %v", c.RecallMinScore)
@@ -1017,6 +1069,17 @@ func (c *Config) validateRecallScores() error {
 		return fmt.Errorf("MEMINI_RERANK_MIN_SCORE requires a cross-encoder reranker: " +
 			"the LLM reranker returns an ordinal list with no scores, so the gate would " +
 			"silently never fire (unset it, or point MEMINI_RERANK at a /rerank endpoint)")
+	}
+	if math.IsNaN(c.AssessedSalienceWeight) || math.IsInf(c.AssessedSalienceWeight, 0) ||
+		c.AssessedSalienceWeight < 0 || c.AssessedSalienceWeight > 1 {
+		return fmt.Errorf("MEMINI_ASSESSED_SALIENCE_WEIGHT must be finite and in [0,1], got %v", c.AssessedSalienceWeight)
+	}
+	if c.RecallImportanceReserve < 0 {
+		return fmt.Errorf("MEMINI_RECALL_IMPORTANCE_RESERVE must be >= 0, got %d", c.RecallImportanceReserve)
+	}
+	if math.IsNaN(c.RecallImportanceMin) || math.IsInf(c.RecallImportanceMin, 0) ||
+		c.RecallImportanceMin < 0 || c.RecallImportanceMin > 1 {
+		return fmt.Errorf("MEMINI_RECALL_IMPORTANCE_MIN must be finite and in [0,1], got %v", c.RecallImportanceMin)
 	}
 	return nil
 }
@@ -1044,6 +1107,30 @@ func (c *Config) validateRepair() error {
 	}
 	if c.BackgroundEmbedTimeout < 0 {
 		return fmt.Errorf("MEMINI_BACKGROUND_EMBED_TIMEOUT must be >= 0, got %v", c.BackgroundEmbedTimeout)
+	}
+	return nil
+}
+
+// validateAssess checks the importance-backfill knobs. Split out of validate to
+// keep it under the cyclomatic budget, matching validateChunking, validateRepair
+// and validateRecallScores.
+//
+// A zero interval is the documented "off" switch and a zero cap or min-age falls
+// back to the job's own defaults, so only negatives are misconfigurations. The
+// batch size is the exception: it divides the work, and a zero would mean
+// "assess nothing, forever" rather than anything an operator could want.
+func (c *Config) validateAssess() error {
+	if c.AssessInterval < 0 {
+		return fmt.Errorf("MEMINI_ASSESS_INTERVAL must be >= 0, got %v", c.AssessInterval)
+	}
+	if c.AssessBatch <= 0 {
+		return fmt.Errorf("MEMINI_ASSESS_BATCH must be > 0, got %d", c.AssessBatch)
+	}
+	if c.AssessMaxPerRun < 0 {
+		return fmt.Errorf("MEMINI_ASSESS_MAX_PER_RUN must be >= 0, got %d", c.AssessMaxPerRun)
+	}
+	if c.AssessMinAge < 0 {
+		return fmt.Errorf("MEMINI_ASSESS_MIN_AGE must be >= 0, got %v", c.AssessMinAge)
 	}
 	return nil
 }
@@ -1095,6 +1182,9 @@ func (c *Config) validate() error {
 		if !t.Valid() {
 			return fmt.Errorf("unknown tier %q in MEMINI_DEDUP_TIERS (want working|episodic|semantic|procedural)", t)
 		}
+	}
+	if err := c.validateAssess(); err != nil {
+		return err
 	}
 	// Write-time dedup: one similarity threshold + one action. No band ordering
 	// to get wrong, so no config combination can make startup fail.

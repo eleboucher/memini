@@ -356,6 +356,8 @@ func buildServiceStack(
 		service.WithRecallMinScore(cfg.RecallMinScore),
 		service.WithRecallMinSemanticScore(cfg.RecallMinSemanticScore),
 		service.WithRecallSemanticReserve(cfg.RecallSemanticReserve),
+		service.WithImportancePoolReserve(cfg.RecallImportanceReserve),
+		service.WithImportancePoolMin(cfg.RecallImportanceMin),
 		service.WithTurnEchoWindow(cfg.TurnEchoWindow),
 		service.WithEpisodicMinChars(cfg.EpisodicMinChars),
 		service.WithClassifyMaxChars(cfg.ClassifyMaxChars),
@@ -373,6 +375,7 @@ func buildServiceStack(
 	// memory.Quality — set it here from config rather than threading it through
 	// every recall call.
 	memory.StabilityK = cfg.StabilityK
+	memory.AssessedSalienceWeight = cfg.AssessedSalienceWeight
 	if cfg.ChunkEmbed {
 		svcOpts = append(svcOpts, service.WithChunkEmbed(chunk.Config{
 			Size:       cfg.ChunkSize,
@@ -435,6 +438,19 @@ func buildServiceStack(
 		log.Info("periodic dedup enabled",
 			"interval", cfg.DedupInterval,
 			"similarity", cfg.DedupSimilarity)
+	}
+	// Backfills LLM-assessed importance on durable memories that never got one.
+	// Needs the chat client, so it stays off entirely when no LLM is configured.
+	if cfg.AssessInterval > 0 && chatClient != nil {
+		assessJob := maintenance.NewAssessJob(st, chatClient, log, cfg.AssessInterval, maintenance.AssessOptions{
+			Batch:     cfg.AssessBatch,
+			MaxPerRun: cfg.AssessMaxPerRun,
+			MinAge:    cfg.AssessMinAge,
+		})
+		workers.Go(func() { assessJob.Run(workerCtx) })
+		log.Info("periodic importance assessment enabled",
+			"interval", cfg.AssessInterval,
+			"max_per_run", cfg.AssessMaxPerRun)
 	}
 
 	cleanup := func() {

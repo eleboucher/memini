@@ -25,7 +25,7 @@ const overFetch = 4
 // memoryColumns is the canonical column order for scanning a memory row.
 const memoryColumns = `id, namespace, tier, content, summary, metadata, tags, importance,
 	created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-	valid_from, valid_to, confidence, level, linked_memory_ids, embed_state`
+	valid_from, valid_to, confidence, assessed_importance, level, linked_memory_ids, embed_state`
 
 // Store is a sqlite-vec backed store.Store.
 type Store struct {
@@ -76,6 +76,7 @@ var backfillColumns = []struct{ name, decl string }{
 	{"valid_from", colInt},
 	{"valid_to", colInt},
 	{"confidence", "REAL"},
+	{"assessed_importance", "REAL"},
 	{"fingerprint", colTextEmpty},
 	{"level", colTextEmpty},
 	{"linked_memory_ids", "TEXT NOT NULL DEFAULT '[]'"},
@@ -123,6 +124,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			valid_from       INTEGER,
 			valid_to         INTEGER,
 			confidence       REAL,
+			assessed_importance REAL,
 			fingerprint      TEXT NOT NULL DEFAULT '',
 			level            TEXT NOT NULL DEFAULT '',
 			linked_memory_ids TEXT NOT NULL DEFAULT '[]'
@@ -484,13 +486,14 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		res, ierr := tx.ExecContext(ctx, `INSERT INTO memories
 			(id, namespace, tier, content, summary, metadata, tags, importance,
 			 created_at, updated_at, last_accessed_at, access_count, expires_at, superseded_by,
-			 valid_from, valid_to, confidence, fingerprint, level, linked_memory_ids,
-			 embed_state, embed_next_run_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			 valid_from, valid_to, confidence, assessed_importance, fingerprint, level,
+			 linked_memory_ids, embed_state, embed_next_run_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			m.ID, m.Namespace, string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
 			m.Importance, ms(m.CreatedAt), ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
 			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), f64Ptr(m.Confidence),
-			fp, string(m.Level), string(linkedJSON), m.EmbedState, repairDueAt(m.EmbedState))
+			f64Ptr(m.AssessedImportance), fp, string(m.Level), string(linkedJSON), m.EmbedState,
+			repairDueAt(m.EmbedState))
 		if ierr != nil {
 			return fmt.Errorf("sqlitevec: insert memory: %w", ierr)
 		}
@@ -510,14 +513,15 @@ func (s *Store) Upsert(ctx context.Context, m *memory.Memory) error {
 		if _, uerr := tx.ExecContext(ctx, `UPDATE memories SET
 			tier=?, content=?, summary=?, metadata=?, tags=?, importance=?,
 			updated_at=?, last_accessed_at=?, access_count=?, expires_at=?, superseded_by=?,
-			valid_from=?, valid_to=?, confidence=?, fingerprint=?, level=?, linked_memory_ids=?,
+			valid_from=?, valid_to=?, confidence=?, assessed_importance=?, fingerprint=?,
+			level=?, linked_memory_ids=?,
 			embed_state=?, embed_attempts=CASE WHEN ?='' THEN 0 ELSE embed_attempts END,
 			embed_next_run_at=?
 			WHERE rowid=?`,
 			string(m.Tier), m.Content, m.Summary, string(metaJSON), string(tagsJSON),
 			m.Importance, ms(m.UpdatedAt), ms(m.LastAccessedAt), m.AccessCount,
 			msPtr(m.ExpiresAt), strPtr(m.SupersededBy), msPtr(m.ValidFrom), msPtr(m.ValidTo), f64Ptr(m.Confidence),
-			fp, string(m.Level), string(linkedJSON),
+			f64Ptr(m.AssessedImportance), fp, string(m.Level), string(linkedJSON),
 			m.EmbedState, m.EmbedState, repairDueAt(m.EmbedState), rowID); uerr != nil {
 			return fmt.Errorf("sqlitevec: update memory: %w", uerr)
 		}
@@ -1080,6 +1084,30 @@ func (s *Store) SetConfidence(ctx context.Context, namespace, id string, confide
 		confidence, ms(now), id, namespace, ms(now))
 	if err != nil {
 		return fmt.Errorf("sqlitevec: set confidence: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// SetAssessedImportance stamps the LLM-assessed intrinsic importance in place.
+// Deliberately does NOT bump updated_at: assessment is a system annotation, not
+// a re-observation, and touching updated_at would reset confidence lazy-decay
+// and demote eligibility. Validity-closed rows are skipped (ErrNotFound) for
+// the same reason SetConfidence skips them: an invalidated fact must not be
+// re-ranked back into recall.
+func (s *Store) SetAssessedImportance(ctx context.Context, namespace, id string, v float64, now time.Time) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE memories SET assessed_importance=?
+		 WHERE id=? AND namespace=? AND (valid_to IS NULL OR valid_to > ?)`,
+		v, id, namespace, ms(now))
+	if err != nil {
+		return fmt.Errorf("sqlitevec: set assessed importance: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {

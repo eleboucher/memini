@@ -559,6 +559,10 @@ const MEMORY_FIELDS = [
   "id", "namespace", "tier", "level", "content", "summary", "metadata", "tags",
   "importance", "created_at", "updated_at", "last_accessed_at", "access_count",
   "expires_at", "superseded_by", "valid_from", "valid_to", "confidence",
+  // System-generated: the LLM's own read of the content's intrinsic importance,
+  // absent when never assessed. Read-only — a write that carries an explicit
+  // importance clears it.
+  "assessed_importance",
   // Progressive-disclosure fields: content_hash (16-hex identity over the
   // full stored content, stable across response formats) and
   // content_truncated (set on concise projections that actually cut).

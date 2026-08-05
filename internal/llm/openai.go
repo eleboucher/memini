@@ -104,6 +104,25 @@ func (c *OpenAIClient) MergeMemories(ctx context.Context, contents []string) (st
 	return out.Content, nil
 }
 
+// AssessImportance rates each memory text for intrinsic importance via LLM,
+// using the assessPrompt. The result is positional — one entry per input, nil
+// where the model declined — and a reply that does not line up is an error, so
+// a caller never persists a score against the wrong memory.
+func (c *OpenAIClient) AssessImportance(ctx context.Context, contents []string) ([]*float64, error) {
+	if len(contents) == 0 {
+		return nil, nil
+	}
+	input, err := json.Marshal(contents)
+	if err != nil {
+		return nil, err
+	}
+	content, err := c.chat(ctx, assessPrompt, string(input), true)
+	if err != nil {
+		return nil, err
+	}
+	return decodeScores(content, len(contents))
+}
+
 // ChatTools runs one round of a tool-calling conversation, translating the
 // canonical tool/choice vocabulary to the /chat/completions encoding.
 func (c *OpenAIClient) ChatTools(

@@ -1299,20 +1299,21 @@ func projectMemory(out *Memory, m *memory.Memory, format contentFormat, conciseM
 // emitted only when set, preserving the wire format clients already rely on.
 func apiMemory(m *memory.Memory) Memory {
 	out := Memory{
-		Id:             m.ID,
-		Namespace:      m.Namespace,
-		Tier:           Tier(m.Tier),
-		Content:        m.Content,
-		Importance:     m.Importance,
-		CreatedAt:      m.CreatedAt,
-		UpdatedAt:      m.UpdatedAt,
-		LastAccessedAt: m.LastAccessedAt,
-		AccessCount:    m.AccessCount,
-		ExpiresAt:      m.ExpiresAt,
-		SupersededBy:   m.SupersededBy,
-		ValidFrom:      m.ValidFrom,
-		ValidTo:        m.ValidTo,
-		Confidence:     m.Confidence,
+		Id:                 m.ID,
+		Namespace:          m.Namespace,
+		Tier:               Tier(m.Tier),
+		Content:            m.Content,
+		Importance:         m.Importance,
+		CreatedAt:          m.CreatedAt,
+		UpdatedAt:          m.UpdatedAt,
+		LastAccessedAt:     m.LastAccessedAt,
+		AccessCount:        m.AccessCount,
+		ExpiresAt:          m.ExpiresAt,
+		SupersededBy:       m.SupersededBy,
+		ValidFrom:          m.ValidFrom,
+		ValidTo:            m.ValidTo,
+		Confidence:         m.Confidence,
+		AssessedImportance: m.AssessedImportance,
 	}
 	if m.EmbedState != "" {
 		e := MemoryEmbedState(m.EmbedState)

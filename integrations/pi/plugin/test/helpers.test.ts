@@ -42,16 +42,15 @@ const plainTheme = {
 };
 const renderedLines = (component: any, width = 240): string[] => component.render(width);
 
-// A developer shell may export the real memini config; clear it so the
-// resolution tests see the documented defaults (an exported MEMINI_NAMESPACE —
-// the fish-universal-variable case this feature exists for — would otherwise
-// fail every default-namespace assertion below).
-for (const k of [
-  "MEMINI_NAMESPACE", "MEMINI_BASE_URL", "MEMINI_URL", "MEMINI_API_KEY", "MEMINI_HOME", "MEMINI_FALLBACK",
-  "MEMINI_INJECT_DEDUPE", "MEMINI_INJECT_LABELS", "MEMINI_MIN_CAPTURE_CHARS",
-  "MEMINI_INJECT_COOLDOWN_MS", "MEMINI_INJECT_COOLDOWN_PROMPTS",
-]) {
-  delete process.env[k];
+// A developer shell may export the real memini config; clear every MEMINI_*
+// variable so the tests see the documented defaults (an exported
+// MEMINI_NAMESPACE — the fish-universal-variable case — would fail every
+// default-namespace assertion below, and an exported MEMINI_SESSION_DIGEST=0
+// silently gates off the checkpoint tests). A prefix scrub cannot drift the
+// way the enumerated list it replaces did; tests that need a variable set it
+// themselves.
+for (const k of Object.keys(process.env)) {
+  if (k.startsWith("MEMINI_")) delete process.env[k];
 }
 
 function tmpProject(withGit = true): string {
@@ -688,6 +687,7 @@ const fullMemory = (overrides: Record<string, any> = {}) => ({
   valid_from: "2025-12-01T00:00:00Z",
   valid_to: null,
   confidence: 0.92,
+  assessed_importance: 0.65,
   content_hash: "0123456789abcdef",
   content_truncated: false,
   embed_state: "",

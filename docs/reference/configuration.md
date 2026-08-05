@@ -77,9 +77,12 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_RECALL_MIN_SCORE`](#memini_recall_min_score) | `0.1` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_RECALL_MIN_SEMANTIC_SCORE`](#memini_recall_min_semantic_score) | `0.46` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_RECALL_SEMANTIC_RESERVE`](#memini_recall_semantic_reserve) | `2` | [Recall tuning](#recall-tuning) |
+| [`MEMINI_RECALL_IMPORTANCE_RESERVE`](#memini_recall_importance_reserve) | `2` | [Recall tuning](#recall-tuning) |
+| [`MEMINI_RECALL_IMPORTANCE_MIN`](#memini_recall_importance_min) | `0.75` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_RECALL_EMBED_TIMEOUT`](#memini_recall_embed_timeout) | `2s` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_RECALL_REWRITE_TIMEOUT`](#memini_recall_rewrite_timeout) | `3s` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_STABILITY_K`](#memini_stability_k) | `1` | [Recall tuning](#recall-tuning) |
+| [`MEMINI_ASSESSED_SALIENCE_WEIGHT`](#memini_assessed_salience_weight) | `0` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_TURN_ECHO_WINDOW`](#memini_turn_echo_window) | `5m` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_CASCADE`](#memini_cascade) | `true` | [Recall tuning](#recall-tuning) |
 | [`MEMINI_WRITE_EMBED_TIMEOUT`](#memini_write_embed_timeout) | `5s` | [Write-time dedup and contradiction](#write-time-dedup-and-contradiction) |
@@ -108,6 +111,10 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_DEDUP_SIMILARITY`](#memini_dedup_similarity) | `0.85` | [Maintenance and decay](#maintenance-and-decay) |
 | [`MEMINI_DEDUP_TIERS`](#memini_dedup_tiers) | none | [Maintenance and decay](#maintenance-and-decay) |
 | [`MEMINI_DEDUP_LLM_MERGE`](#memini_dedup_llm_merge) | `false` | [Maintenance and decay](#maintenance-and-decay) |
+| [`MEMINI_ASSESS_INTERVAL`](#memini_assess_interval) | `1h` | [Maintenance and decay](#maintenance-and-decay) |
+| [`MEMINI_ASSESS_BATCH`](#memini_assess_batch) | `20` | [Maintenance and decay](#maintenance-and-decay) |
+| [`MEMINI_ASSESS_MAX_PER_RUN`](#memini_assess_max_per_run) | `200` | [Maintenance and decay](#maintenance-and-decay) |
+| [`MEMINI_ASSESS_MIN_AGE`](#memini_assess_min_age) | `1h` | [Maintenance and decay](#maintenance-and-decay) |
 | [`MEMINI_API_KEY`](#memini_api_key) | none | [Authentication](#authentication) |
 | [`MEMINI_API_KEYS_FILE`](#memini_api_keys_file) | none | [Authentication](#authentication) |
 | [`MEMINI_DEFAULT_NAMESPACE`](#memini_default_namespace) | `auto` | [Namespaces](#namespaces) |
@@ -462,6 +469,18 @@ int, default `2`. Set by `Config.RecallSemanticReserve`.
 
 `MEMINI_RECALL_SEMANTIC_RESERVE` reserves up to N of the recall slots for durable tiers (semantic/procedural) so consolidated knowledge is not crowded out by episodic chatter. Exposed because it changes recall composition per deployment: set 0 for pure-relevance recall (no forced durable slots). Reserved slots are relevance-gated — a durable memory is only promoted in when it is relevance-competitive with the entry it displaces.
 
+### `MEMINI_RECALL_IMPORTANCE_RESERVE`
+
+int, default `2`. Set by `Config.RecallImportanceReserve`.
+
+`MEMINI_RECALL_IMPORTANCE_RESERVE` reserves up to N slots of the reranker's candidate pool for high-importance candidates the fused score buried below the pool cut, so an important memory still gets judged on its merits. It changes pool membership only — never the composite top-N a rerank-free recall returns — and is therefore structurally inert unless a reranker is configured AND MEMINI_RERANK_POOL exceeds the recall limit. 0 disables it.
+
+### `MEMINI_RECALL_IMPORTANCE_MIN`
+
+float64, default `0.75`. Set by `Config.RecallImportanceMin`.
+
+`MEMINI_RECALL_IMPORTANCE_MIN` is the effective-importance threshold (assessed value when the LLM set one, else stored importance) a candidate must meet to claim a slot reserved by MEMINI_RECALL_IMPORTANCE_RESERVE. The default (0.75) sits above the tier-seeded baseline every memory carries, so only genuinely important memories compete for a reserved slot.
+
 ### `MEMINI_RECALL_EMBED_TIMEOUT`
 
 duration, default `2s`. Set by `Config.RecallEmbedTimeout`.
@@ -479,6 +498,12 @@ duration, default `3s`. Set by `Config.RecallRewriteTimeout`.
 float64, default `1`. Set by `Config.StabilityK`.
 
 `MEMINI_STABILITY_K` is the spaced-repetition strength (Ebbinghaus stability): a short-term memory's effective recall half-life stretches with reinforcement as halfLife*(1+`MEMINI_STABILITY_K`*ln(1+access_count)), so a frequently-recalled memory decays more slowly, improving recall of reinforced-but-aged facts (see bench/reinforcement_test.go). Default 1; set 0 to disable (fixed half-life). Only affects short-term tiers with access_count &gt; 0 — durable tiers and never-recalled memories are unchanged.
+
+### `MEMINI_ASSESSED_SALIENCE_WEIGHT`
+
+float64, default `0`. Set by `Config.AssessedSalienceWeight`.
+
+`MEMINI_ASSESSED_SALIENCE_WEIGHT` blends the LLM's self-assessed importance into a memory's salience: above 0 the importance term becomes (1-w)*importance + w*assessed_importance for rows that carry an assessment, leaving unassessed rows untouched. Default 0 (exact no-op). This is a ranking AND lifecycle knob, not a display preference — salience feeds recall's quality term, short-term cap eviction (RetentionScore), briefing order, and dedup representative selection, so raising it changes what gets recalled, what gets evicted, and which duplicate survives. Enable only after benching.
 
 ### `MEMINI_TURN_ECHO_WINDOW`
 
@@ -680,6 +705,30 @@ string, default none. Set by `Config.DedupTiers`.
 bool, default `false`. Set by `Config.DedupLLMMerge`.
 
 `MEMINI_DEDUP_LLM_MERGE` (opt-in, default off) enables LLM-based content merging during the periodic dedup pass. Each cluster's content is merged into a single comprehensive memory before tombstoning duplicates. Requires an LLM (MEMINI_LLM_BASE_URL); when false or no LLM, the representative keeps its original content. Defaults off to preserve existing behavior.
+
+### `MEMINI_ASSESS_INTERVAL`
+
+duration, default `1h`. Set by `Config.AssessInterval`.
+
+`MEMINI_ASSESS_INTERVAL` runs a periodic importance-backfill sweep: durable (semantic/procedural) memories that never received an LLM self-assessment — rows written before the feature existed, written without an LLM configured, or ones the model declined to rate — are sent back to the model for a score. At the shipped defaults that score feeds the rerank-pool reservation (MEMINI_RECALL_IMPORTANCE_RESERVE) and nothing else — it decides which candidates the reranker gets to see, not how they are ordered; it reaches ranking itself only once MEMINI_ASSESSED_SALIENCE_WEIGHT is turned up. Only active when an LLM is configured (MEMINI_LLM_BASE_URL); without one the job never starts. A memory whose importance was set explicitly is left alone. Hourly by default, spending at most MEMINI_ASSESS_MAX_PER_RUN rows of LLM budget per pass; 0 disables the sweep.
+
+### `MEMINI_ASSESS_BATCH`
+
+int, default `20`. Set by `Config.AssessBatch`.
+
+`MEMINI_ASSESS_BATCH` is how many memory texts go into a single LLM call. Larger batches cost less per row but ask the model to hold a longer positional list together, and a reply that does not line up costs the whole batch.
+
+### `MEMINI_ASSESS_MAX_PER_RUN`
+
+int, default `200`. Set by `Config.AssessMaxPerRun`.
+
+`MEMINI_ASSESS_MAX_PER_RUN` caps the rows one pass assesses, bounding the LLM spend of a single tick. A backlog larger than this drains over successive passes, oldest memories first. 0 falls back to the internal default (200).
+
+### `MEMINI_ASSESS_MIN_AGE`
+
+duration, default `1h`. Set by `Config.AssessMinAge`.
+
+`MEMINI_ASSESS_MIN_AGE` skips memories younger than this, so the sweep never races the write path's own assessment — a fresh write is rated inline by the distill/consolidate call, and a sweep arriving first would waste a slot scoring a row that is about to be scored anyway. 0 falls back to the internal default (1h).
 
 ## Authentication
 

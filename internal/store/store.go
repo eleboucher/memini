@@ -232,6 +232,13 @@ type Store interface {
 	// durable fact is re-observed. Returns ErrNotFound if missing.
 	SetConfidence(ctx context.Context, namespace, id string, confidence float64, now time.Time) error
 
+	// SetAssessedImportance stamps the LLM-assessed intrinsic importance in
+	// place. Deliberately does NOT bump updated_at: assessment is a system
+	// annotation, not a re-observation, and touching updated_at would reset
+	// confidence lazy-decay and demote eligibility. now only scopes the
+	// validity predicate. Returns ErrNotFound if missing.
+	SetAssessedImportance(ctx context.Context, namespace, id string, v float64, now time.Time) error
+
 	// MarkContradicted invalidates a durable fact a newer write contradicts: it
 	// sets confidence, stamps valid_to=now (unless already set) so the fact
 	// drops out of live recall while staying reachable via AsOf time-travel, and

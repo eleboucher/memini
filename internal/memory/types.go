@@ -133,6 +133,14 @@ type Memory struct {
 	// treated as fully trusted so existing data is never retroactively penalized.
 	Confidence *float64 `json:"confidence,omitempty"`
 
+	// AssessedImportance is how intrinsically important the LLM judged this
+	// content to be, in [0.1,0.9]. nil means never assessed (every memory
+	// written before the field existed, and every write the assessor did not
+	// reach). Invariant: it is cleared whenever a caller supplies an explicit
+	// Importance, so a non-nil value always refines a tier-seeded guess and
+	// never overrides what a user asked for.
+	AssessedImportance *float64 `json:"assessed_importance,omitempty"`
+
 	// LinkedMemoryIDs references related memories (same entity/topic but distinct
 	// facts). Populated by the LLM consolidator when a new memory is related but
 	// neither a duplicate nor a contradiction. At recall, IncludeLinked expands
@@ -247,6 +255,16 @@ const retentionHalfLife = 7 * 24 * time.Hour
 // the unmodulated baseline unless they opt in. See bench/reinforcement_test.go.
 var StabilityK = 0.0
 
+// AssessedSalienceWeight is the share of the importance term Salience takes from
+// the LLM's assessment rather than the stored importance, read at ranking time.
+// Above 0 the term becomes (1-w)*Importance + w*AssessedImportance for a row that
+// carries an assessment; a row without one is unchanged at any w, and at 0 it is
+// an exact no-op (stored importance only). The memini server sets it from
+// MEMINI_ASSESSED_SALIENCE_WEIGHT (default 0) in cmd/memini; this package-level
+// default stays 0 so direct library callers and unit tests keep the unmodulated
+// baseline unless they opt in.
+var AssessedSalienceWeight = 0.0
+
 // tierSalience is the base quality weight of a memory by tier: a durable fact
 // or procedure matters more than a session summary, which matters more than a
 // raw scratch observation. It is the salience taxonomy (memini scopes by tier,
@@ -277,12 +295,45 @@ const (
 
 // Salience is the base, time-independent quality of a memory in [0,1]: the
 // tier's weight modulated by importance. It does not depend on access or age.
+// When AssessedSalienceWeight is above 0, the importance term is blended with the
+// LLM's assessment for rows that carry one; at the default 0 it is stored
+// importance alone.
 func (m *Memory) Salience() float64 {
 	w, ok := tierSalience[m.Tier]
 	if !ok {
 		w = 0.5 // unknown tier: neutral
 	}
-	return clamp01(w * (0.5 + 0.5*clamp01(m.Importance)))
+	imp := clamp01(m.Importance)
+	if AssessedSalienceWeight > 0 && m.AssessedImportance != nil {
+		imp = (1-AssessedSalienceWeight)*imp + AssessedSalienceWeight*clamp01(*m.AssessedImportance)
+	}
+	return clamp01(w * (0.5 + 0.5*imp))
+}
+
+// SeedImportance is the tier-based importance floor for a fresh write that
+// carried none: durable curated tiers outrank episodic turns, which outrank
+// raw working-intake notes.
+func SeedImportance(t Tier) float64 {
+	switch t {
+	case TierSemantic, TierProcedural:
+		return 0.6
+	case TierEpisodic:
+		return 0.3
+	default: // working
+		return 0.1
+	}
+}
+
+// EffectiveImportance is the importance signal ranking should read: the
+// assessed value when present, else the stored (user-supplied or tier-seeded)
+// importance. Write paths maintain the invariant that assessed is absent on any
+// row whose importance was explicitly set, so this never shadows a user's
+// choice.
+func (m *Memory) EffectiveImportance() float64 {
+	if m.AssessedImportance != nil {
+		return clamp01(*m.AssessedImportance)
+	}
+	return clamp01(m.Importance)
 }
 
 // EffectiveConfidence is a durable memory's corroboration at now: the stored

@@ -94,6 +94,10 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) (*memory.Memory, e
 	}
 	if in.Importance != nil {
 		upd.Importance = *in.Importance
+		// A caller who names an importance overrides the LLM's assessment of it,
+		// even when the number matches what is stored — the seeded
+		// upd.Importance above makes value equality unreadable on its own.
+		upd.ClearAssessedImportance = true
 	}
 	if in.Confidence != nil {
 		upd.Confidence = in.Confidence

@@ -34,8 +34,10 @@ func (r recordingEmbedder) Embed(ctx context.Context, texts []string) ([][]float
 }
 
 // recordingLLM wraps an llm.Client the same way recordingEmbedder wraps an
-// embed.Embedder: every call's outcome (across all three llm.Client methods)
-// feeds the same dep-status tracker under the "llm" key.
+// embed.Embedder: every call's outcome feeds the same dep-status tracker under
+// the "llm" key. It overrides the three methods below; llm.Client's other two
+// (Merge and AssessImportance) reach the embedded client unwrapped, so their
+// outcomes do not yet move dep status.
 type recordingLLM struct {
 	llm.Client
 	deps *server.DepTracker

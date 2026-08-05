@@ -39,7 +39,8 @@ func Rerank(results []store.Scored, now time.Time) []store.Scored {
 }
 
 // RerankWith re-scores a fused result list with a composite of normalized
-// relevance, access recency, and stored importance, then returns it best-first.
+// relevance, access recency, and effective importance, then returns it
+// best-first (the assessed value when the LLM set one, else stored importance).
 // The input Score is treated as the relevance signal (e.g. an RRF score) and is
 // normalized by the maximum in the set so it mixes sanely with the [0,1]
 // recency/importance factors. Order is stable for equal composite scores.
@@ -73,7 +74,7 @@ func RerankWith(results []store.Scored, now time.Time, w RerankWeights) []store.
 			relevance = r.Score / maxRel
 		}
 		recency := r.Memory.Recency(now)
-		importance := clamp01(r.Memory.Importance)
+		importance := r.Memory.EffectiveImportance()
 		quality := 0.0
 		if maxQuality > 0 {
 			quality = qualities[i] / maxQuality
@@ -115,14 +116,4 @@ func Dedup(results []store.Scored, limit int) []store.Scored {
 		}
 	}
 	return out
-}
-
-func clamp01(x float64) float64 {
-	if x < 0 {
-		return 0
-	}
-	if x > 1 {
-		return 1
-	}
-	return x
 }

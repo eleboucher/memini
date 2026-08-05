@@ -600,7 +600,7 @@ type rememberArgs struct {
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
 	Metadata map[string]any `json:"metadata,omitempty" jsonschema:"structured key/values for later filtering; set 'category' to a topic bucket (e.g. bug_fixes, architecture_decisions, coding_conventions)"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
-	Importance float64  `json:"importance,omitempty" jsonschema:"0..1 ranking/retention bias — higher ranks higher and survives pruning longer; omit for the default"`
+	Importance float64  `json:"importance,omitempty" jsonschema:"0..1 ranking/retention bias — higher ranks higher and survives pruning longer; omit for the default and the server may assess one itself (assessed_importance); an explicit value always wins and clears that assessment"`
 	TTLSeconds *int     `json:"ttl_seconds,omitempty" jsonschema:"overrides the tier default TTL; negative means never expire"`
 	ID         string   `json:"id,omitempty" jsonschema:"upserts an existing memory when provided"`
 	Confidence *float64 `json:"confidence,omitempty" jsonschema:"0..1 seed corroboration for a durable fact; omit for default"`
@@ -1069,28 +1069,33 @@ type idArgs struct {
 // results stay slim via recallItem; a get has no score and should not drop
 // the record's metadata).
 type memoryItem struct {
-	ID           string         `json:"id"`
-	Content      string         `json:"content"`
-	Tier         string         `json:"tier"`
-	Level        string         `json:"level,omitempty"`
-	Summary      string         `json:"summary,omitempty"`
-	Tags         []string       `json:"tags,omitempty"`
-	Metadata     map[string]any `json:"metadata,omitempty"`
-	Importance   float64        `json:"importance"`
-	CreatedAt    string         `json:"created_at"`
-	UpdatedAt    string         `json:"updated_at"`
-	AccessCount  int            `json:"access_count"`
-	ExpiresAt    string         `json:"expires_at,omitempty"`
-	ValidFrom    string         `json:"valid_from,omitempty"`
-	ValidTo      string         `json:"valid_to,omitempty"`
-	SupersededBy string         `json:"superseded_by,omitempty"`
+	ID         string         `json:"id"`
+	Content    string         `json:"content"`
+	Tier       string         `json:"tier"`
+	Level      string         `json:"level,omitempty"`
+	Summary    string         `json:"summary,omitempty"`
+	Tags       []string       `json:"tags,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
+	Importance float64        `json:"importance"`
+	// AssessedImportance is the LLM's own read of how important the content is,
+	// absent when it was never assessed. Read-only: supplying importance on a
+	// write clears it.
+	AssessedImportance *float64 `json:"assessed_importance,omitempty"`
+	CreatedAt          string   `json:"created_at"`
+	UpdatedAt          string   `json:"updated_at"`
+	AccessCount        int      `json:"access_count"`
+	ExpiresAt          string   `json:"expires_at,omitempty"`
+	ValidFrom          string   `json:"valid_from,omitempty"`
+	ValidTo            string   `json:"valid_to,omitempty"`
+	SupersededBy       string   `json:"superseded_by,omitempty"`
 }
 
 func toMemoryItem(m *memory.Memory) memoryItem {
 	out := memoryItem{
 		ID: m.ID, Content: m.Content, Tier: string(m.Tier), Level: string(m.Level),
 		Summary: m.Summary, Tags: m.Tags, Metadata: m.Metadata, Importance: m.Importance,
-		CreatedAt: m.CreatedAt.Format(time.RFC3339), UpdatedAt: m.UpdatedAt.Format(time.RFC3339),
+		AssessedImportance: m.AssessedImportance,
+		CreatedAt:          m.CreatedAt.Format(time.RFC3339), UpdatedAt: m.UpdatedAt.Format(time.RFC3339),
 		AccessCount: m.AccessCount,
 	}
 	if m.ExpiresAt != nil {
@@ -1157,7 +1162,7 @@ type updateArgs struct {
 	Tier       *string        `json:"tier,omitempty" jsonschema:"move to this tier; omit to keep"`
 	Tags       []string       `json:"tags,omitempty" jsonschema:"replacement tag set; omit to keep"`
 	Metadata   map[string]any `json:"metadata,omitempty" jsonschema:"merged into existing metadata key-by-key; a null value deletes that key"`
-	Importance *float64       `json:"importance,omitempty" jsonschema:"0..1; omit to keep"`
+	Importance *float64       `json:"importance,omitempty" jsonschema:"0..1; omit to keep; an explicit value clears assessed_importance"`
 	Confidence *float64       `json:"confidence,omitempty" jsonschema:"0..1; omit to keep"`
 	Namespace  string         `json:"namespace,omitempty" jsonschema:"namespace; defaults to the server namespace"`
 }
