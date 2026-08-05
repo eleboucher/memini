@@ -274,13 +274,7 @@ successive passes, oldest first, instead of in one expensive burst.
 write path and spend a slot scoring a row that is about to be scored inline.
 Set `MEMINI_ASSESS_INTERVAL=0` to turn the sweep off entirely.
 
-Turning the timer off does not mean giving up the column.
-[`memini assess`](../reference/cli.md#memini-assess) runs exactly the same pass
-on demand — dry-run by default, reporting how many memories are still at their
-tier seed and what they would cost in LLM calls before you commit. That is the
-path for a deployment that deliberately runs without an LLM: leave
-`MEMINI_ASSESS_INTERVAL=0` set, and point `MEMINI_LLM_BASE_URL` at a model for
-the duration of that one command rather than for the life of the process.
+Turning the timer off does not mean giving up the column. [`memini assess`](../reference/cli.md#memini-assess) runs exactly the same pass on demand — dry-run by default, reporting how many memories are still at their tier seed and what they would cost in LLM calls before you commit. That is the path for a deployment that deliberately runs without an LLM: leave `MEMINI_ASSESS_INTERVAL=0` set, and point `MEMINI_LLM_BASE_URL` at a model for the duration of that one command rather than for the life of the process.
 
 ### Reserving pool slots for it
 
