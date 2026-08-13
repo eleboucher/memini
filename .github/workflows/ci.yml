@@ -100,7 +100,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       # Steps cd with relative paths from the checkout root. The `&&` chains make
       # a failed cd abort the step instead of node --test passing on 0 tests.
