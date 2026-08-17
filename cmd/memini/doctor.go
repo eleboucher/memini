@@ -274,7 +274,7 @@ func doctorFix(ctx context.Context, out io.Writer, stats []nsStat, d fixDeps) er
 	if demoteAfter <= 0 {
 		demoteAfter = 60 * 24 * time.Hour
 	}
-	n, err = maintenance.DemoteStale(ctx, d.store, d.now.Add(-demoteAfter), d.now)
+	n, err = maintenance.DemoteStale(ctx, d.store, d.now.Add(-demoteAfter), d.now, nil)
 	if err != nil {
 		return err
 	}

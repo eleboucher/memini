@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "memini \u2014 what the service is actually doing for your agents. Live memory counts, write/recall traffic by tier, consolidation outcomes, store health, embedder & rerank latency & saturation, HTTP surface.",
+  "description": "memini operator dashboard \u2014 top-to-bottom narrative: live headline health (including the deferred-repair backlog), the write path, recall & retrieval quality, aging & maintenance jobs, embedder & rerank, LLM-backed consolidation/answer, the HTTP surface, and client injection telemetry.",
   "editable": true,
   "graphTooltip": 1,
   "id": null,
@@ -25,22 +25,40 @@
       "id": 2,
       "type": "stat",
       "title": "Live memories",
-      "description": "Live (non-superseded, non-expired) memories by tier.",
+      "description": "Total live (non-superseded, non-expired) memories across all tiers; a sudden drop means a sweep or dedup pass removed more than expected.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 6,
-        "w": 6,
+        "h": 5,
+        "w": 4,
         "x": 0,
         "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
       },
       "options": {
         "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "auto",
-        "orientation": "horizontal",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": ["lastNotNull"],
           "fields": "",
@@ -54,43 +72,57 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "memini_memories_active",
-          "legendFormat": "{{tier}}",
-          "refId": "A"
+          "expr": "sum(memini_memories_active)",
+          "refId": "A",
+          "legendFormat": "live"
         }
       ]
     },
     {
       "id": 3,
       "type": "stat",
-      "title": "Writes (5m rate)",
-      "description": "Successful Remember calls per second, by tier.",
+      "title": "Writes /s (5m)",
+      "description": "Successful Remember writes per second over the last 5m; zero during active agent sessions means writes are failing upstream.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 6,
-        "w": 6,
-        "x": 6,
+        "h": 5,
+        "w": 3,
+        "x": 4,
         "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "decimals": 2
+        },
+        "overrides": []
       },
       "options": {
         "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "auto",
-        "orientation": "horizontal",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
         "textMode": "auto"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ops"
-        }
       },
       "targets": [
         {
@@ -98,43 +130,57 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (tier) (rate(memini_remember_results_total{result=\"ok\"}[5m]))",
-          "legendFormat": "{{tier}}",
-          "refId": "A"
+          "expr": "sum(rate(memini_remember_results_total{result=\"ok\"}[5m]))",
+          "refId": "A",
+          "legendFormat": "writes/s"
         }
       ]
     },
     {
       "id": 4,
       "type": "stat",
-      "title": "Recalls (5m rate)",
-      "description": "Successful Recall calls per second.",
+      "title": "Recalls /s (5m)",
+      "description": "Successful Recall searches per second over the last 5m; the primary read-traffic pulse.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 6,
-        "w": 6,
-        "x": 12,
+        "h": 5,
+        "w": 3,
+        "x": 7,
         "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "decimals": 2
+        },
+        "overrides": []
       },
       "options": {
         "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "auto",
-        "orientation": "horizontal",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
         "textMode": "auto"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ops"
-        }
       },
       "targets": [
         {
@@ -143,41 +189,31 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "expr": "sum(rate(memini_recall_results_total{result=\"ok\"}[5m]))",
-          "legendFormat": "recalls/s",
-          "refId": "A"
+          "refId": "A",
+          "legendFormat": "recalls/s"
         }
       ]
     },
     {
-      "id": 18,
+      "id": 5,
       "type": "stat",
-      "title": "Consolidation queue",
-      "description": "Backlog of memories awaiting async consolidation. Sustained > 0 means the worker can't keep up with Remember writes.",
+      "title": "HTTP 5xx ratio (15m)",
+      "description": "Share of HTTP requests answered 5xx over 15m; anything above zero deserves a look, above 5% is an outage.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 6,
-        "w": 6,
-        "x": 18,
+        "h": 5,
+        "w": 3,
+        "x": 10,
         "y": 1
-      },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": ["lastNotNull"],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -186,16 +222,217 @@
                 "value": null
               },
               {
-                "color": "yellow",
-                "value": 50
+                "color": "orange",
+                "value": 0.01
               },
               {
                 "color": "red",
-                "value": 500
+                "value": 0.05
               }
             ]
-          }
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(rate(memini_http_requests_total{status=~\"5..\"}[15m])) / clamp_min(sum(rate(memini_http_requests_total[15m])), 1e-9)",
+          "refId": "A",
+          "legendFormat": "5xx ratio"
         }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Repair backlog depth",
+      "description": "Memories currently owing deferred repair (pending + enrich + failed); green is empty, any sustained backlog means writes are storing degraded faster than repairs drain.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 13,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(memini_repair_depth)",
+          "refId": "A",
+          "legendFormat": "backlog"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Repair oldest age",
+      "description": "Age of the oldest memory still awaiting repair; amber the moment anything waits, red past 1h means the repair loop is stuck or starved.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 17,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 3600
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "max(memini_repair_oldest_age_seconds)",
+          "refId": "A",
+          "legendFormat": "oldest"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Consolidation queue",
+      "description": "Depth of the async consolidation queue; a queue that grows without draining delays dedup/supersede decisions.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 3,
+        "x": 21,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 100
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
       },
       "targets": [
         {
@@ -204,55 +441,123 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "expr": "memini_consolidate_queue_depth",
-          "legendFormat": "queued",
-          "refId": "A"
+          "refId": "A",
+          "legendFormat": "queued"
         }
       ]
     },
     {
-      "id": 5,
+      "id": 9,
       "type": "row",
-      "title": "Writes & Recalls",
+      "title": "Write path",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 7
+        "y": 6
       },
       "collapsed": false,
       "panels": []
     },
     {
-      "id": 6,
+      "id": 10,
       "type": "timeseries",
-      "title": "Remembers per second (by tier)",
+      "title": "Remember rate by tier",
+      "description": "Successful Remember writes per second split by tier, plus error/dropped outcomes; red or orange series above zero mean writes are being lost.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 8,
+        "h": 7,
         "w": 12,
         "x": 0,
-        "y": 8
+        "y": 7
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "smooth",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
             "fillOpacity": 10,
-            "showPoints": "never"
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
-          "unit": "ops"
-        }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "dropped"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
-          "displayMode": "table",
+          "calcs": [],
+          "displayMode": "list",
           "placement": "bottom",
-          "showLegend": true,
-          "calcs": ["mean", "max"]
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
@@ -265,44 +570,129 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (tier) (rate(memini_remember_results_total{result=\"ok\"}[5m]))",
-          "legendFormat": "{{tier}}",
-          "refId": "A"
+          "expr": "sum by (tier) (rate(memini_remember_results_total{result=\"ok\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{tier}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(rate(memini_remember_results_total{result=\"error\"}[$__rate_interval]))",
+          "refId": "B",
+          "legendFormat": "error"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(rate(memini_remember_results_total{result=\"dropped\"}[$__rate_interval]))",
+          "refId": "C",
+          "legendFormat": "dropped"
         }
       ]
     },
     {
-      "id": 7,
+      "id": 11,
       "type": "timeseries",
-      "title": "Recalls per second (by hit-count bucket)",
-      "description": "How many memories a typical recall returns. '0' means no matches \u2014 investigate if persistent.",
+      "title": "Degraded (vectorless) writes by reason",
+      "description": "Writes stored without a vector (keyword-searchable only, queued for deferred repair) because the embedder timed out or errored; any sustained rate means the embedder is unhealthy.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 8,
+        "h": 7,
         "w": 12,
         "x": 12,
-        "y": 8
+        "y": 7
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "smooth",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
             "fillOpacity": 10,
-            "showPoints": "never"
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
-          "unit": "ops"
-        }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "embed_error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "embed_timeout"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
-          "displayMode": "table",
+          "calcs": [],
+          "displayMode": "list",
           "placement": "bottom",
-          "showLegend": true,
-          "calcs": ["mean", "max"]
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
@@ -315,57 +705,771 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (hits_bucket) (rate(memini_recall_results_total{result=\"ok\"}[5m]))",
-          "legendFormat": "{{hits_bucket}}",
-          "refId": "A"
+          "expr": "sum by (reason) (rate(memini_remember_degraded_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Store mutations",
+      "description": "Raw store write traffic: inserts vs updates (by upsert op), hard deletes from Forget, and tombstones written by consolidation; updates dominating inserts means most writes reinforce existing memories.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (op) (rate(memini_store_upserts_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "upsert: {{op}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "rate(memini_store_deletes_total[$__rate_interval])",
+          "refId": "B",
+          "legendFormat": "hard delete (forget)"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "rate(memini_store_soft_deletes_total[$__rate_interval])",
+          "refId": "C",
+          "legendFormat": "tombstone (supersede)"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Forget & supersede outcomes",
+      "description": "Forget and Supersede API outcomes per second; red error series should stay at zero, orange not_found spikes usually mean a client is retrying stale ids.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*error.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*not_found.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (result) (rate(memini_forget_results_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "forget: {{result}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (result) (rate(memini_supersede_results_total[$__rate_interval]))",
+          "refId": "B",
+          "legendFormat": "supersede: {{result}}"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Content hygiene (sanitizer)",
+      "description": "Ingestion sanitizer actions: cleaned content was rewritten in place, quarantined (orange) content was judged unsafe to store as-is and needs review if it becomes frequent.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 21
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "quarantined"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (action) (rate(memini_write_sanitized_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{action}}"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Corroboration routing",
+      "description": "Corroboration attempts on fresh short-term writes (did this confirm something we already know); a rising red error rate means the corroboration path is failing writes silently.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 21
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (result) (rate(memini_corroborate_results_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Contradiction routing",
+      "description": "Contradiction attempts on fresh durable writes (did this contradict an existing fact); contradicted events drive supersession, red errors mean conflicts are going undetected.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 21
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (result) (rate(memini_contradict_results_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "row",
+      "title": "Recall & retrieval quality",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Recall rate by hit-count bucket",
+      "description": "Successful recalls per second split by how many hits they returned, plus errors; a shift toward the 0-hits bucket means retrieval quality is degrading.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 29
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (hits_bucket) (rate(memini_recall_results_total{result=\"ok\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{hits_bucket}} hits"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(rate(memini_recall_results_total{result=\"error\"}[$__rate_interval]))",
+          "refId": "B",
+          "legendFormat": "error"
         }
       ]
     },
     {
       "id": 19,
-      "type": "row",
-      "title": "Retrieval quality",
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 16
-      },
-      "collapsed": false,
-      "panels": []
-    },
-    {
-      "id": 20,
       "type": "timeseries",
-      "title": "Rerank outcomes by backend",
-      "description": "Per-recall reranker traffic: ok = reranker reordered the fused candidates; fallback = reranker timed out / errored and the fused order was kept.",
+      "title": "Recall degradation (keyword-only fallback)",
+      "description": "Recalls that fell back to keyword-only search because embedding the query timed out or errored; these return without semantic ranking, so any sustained rate hurts result quality.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 8,
+        "h": 7,
         "w": 12,
-        "x": 0,
-        "y": 17
+        "x": 12,
+        "y": 29
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 15,
-            "showPoints": "never"
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
-          "unit": "ops"
-        }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "embed_error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "embed_timeout"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
-          "displayMode": "table",
+          "calcs": [],
+          "displayMode": "list",
           "placement": "bottom",
-          "showLegend": true,
-          "calcs": ["mean", "max"]
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
@@ -378,44 +1482,182 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (backend, result) (rate(memini_rerank_results_total[5m]))",
-          "legendFormat": "{{backend}}/{{result}}",
-          "refId": "A"
+          "expr": "sum by (reason) (rate(memini_recall_degraded_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Recall candidates floored (by tier filter)",
+      "description": "Candidates dropped from recall responses by the min_rank_score composite floor; a jump means the floor (or a scoring regression) is hiding results users would previously have seen.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 36
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (tier_filter) (rate(memini_recall_floored_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{tier_filter}}"
         }
       ]
     },
     {
       "id": 21,
       "type": "timeseries",
-      "title": "Recall degradation reasons",
-      "description": "Recalls that fell back to keyword-only search because the embedder was slow or errored. embed_timeout = the recall embed budget elapsed; embed_error = the embed call failed.",
+      "title": "Recall reinforcement",
+      "description": "Best-effort reinforcement writes triggered by recall hits (strengthening recalled memories); red errors mean reinforcement is silently failing and ranking will slowly stale.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 17
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 36
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 15,
-            "showPoints": "never"
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
-          "unit": "ops"
-        }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
-          "displayMode": "table",
+          "calcs": [],
+          "displayMode": "list",
           "placement": "bottom",
-          "showLegend": true,
-          "calcs": ["mean", "max"]
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
@@ -428,92 +1670,32 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (reason) (rate(memini_recall_degraded_total[5m]))",
-          "legendFormat": "{{reason}}",
-          "refId": "A"
+          "expr": "sum by (result) (rate(memini_reinforce_results_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{result}}"
         }
       ]
     },
     {
       "id": 22,
-      "type": "timeseries",
-      "title": "Recall reinforcement (best-effort)",
-      "description": "Background access-count bump on recalled memories. Errors are swallowed \u2014 a sustained nonzero error rate means the store write path is unhealthy but recall still served.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 25
-      },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 15,
-            "showPoints": "never"
-          },
-          "unit": "ops"
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": ["mean", "max"]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum by (result) (rate(memini_reinforce_results_total[5m]))",
-          "legendFormat": "{{result}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 23,
       "type": "stat",
-      "title": "Recall success ratio",
-      "description": "Fraction of recall calls that succeeded. A drop means the recall path is erroring (embed + keyword + rerank + RRF + everything).",
+      "title": "Recall success ratio (15m)",
+      "description": "Share of Recall calls that completed without error over 15m; below 99% something in the search path is failing.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 25
-      },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "reduceOptions": {
-          "calcs": ["lastNotNull"],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 36
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
-          "min": 0,
-          "max": 1,
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -522,16 +1704,30 @@
                 "value": null
               },
               {
-                "color": "yellow",
-                "value": 0.95
+                "color": "orange",
+                "value": 0.9
               },
               {
                 "color": "green",
                 "value": 0.99
               }
             ]
-          }
-        }
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
       },
       "targets": [
         {
@@ -540,168 +1736,92 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "expr": "sum(rate(memini_recall_results_total{result=\"ok\"}[15m])) / clamp_min(sum(rate(memini_recall_results_total[15m])), 1e-9)",
-          "legendFormat": "ok ratio",
-          "refId": "A"
+          "refId": "A",
+          "legendFormat": "ok ratio"
         }
       ]
     },
     {
-      "id": 8,
+      "id": 23,
       "type": "row",
-      "title": "Consolidation (LLM dedup)",
+      "title": "Aging & maintenance",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 33
+        "y": 43
       },
       "collapsed": false,
       "panels": []
     },
     {
-      "id": 9,
-      "type": "timeseries",
-      "title": "Consolidation outcomes per minute",
-      "description": "gated = similarity gate skipped the LLM; new = nothing to merge; update = merged into an existing memory; supersede = contradiction-tombstoned an old one; noop = nothing to do; error/dropped = failure modes.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 16,
-        "x": 0,
-        "y": 34
-      },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 20,
-            "showPoints": "never",
-            "stacking": {
-              "mode": "normal"
-            }
-          },
-          "unit": "ops"
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "calcs": ["sum"]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum by (result) (rate(memini_consolidate_results_total[5m]))",
-          "legendFormat": "{{result}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 10,
-      "type": "stat",
-      "title": "Dedup effectiveness",
-      "description": "Fraction of consolidations that actually used the LLM (update+supersede+new+noop) vs the similarity gate skipping it. Higher = busier corpus or noisier dedup signal.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 34
-      },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "reduceOptions": {
-          "calcs": ["lastNotNull"],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit",
-          "min": 0,
-          "max": 1
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum(rate(memini_consolidate_results_total{result=~\"update|supersede|new|noop\"}[15m])) / clamp_min(sum(rate(memini_consolidate_results_total{result!~\"error|dropped\"}[15m])), 1e-9)",
-          "legendFormat": "LLM use ratio",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 11,
-      "type": "row",
-      "title": "Storage & decay",
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 42
-      },
-      "collapsed": false,
-      "panels": []
-    },
-    {
-      "id": 12,
+      "id": 24,
       "type": "timeseries",
       "title": "Live memories by tier",
+      "description": "Live memory count per tier over time; working/episodic should churn while semantic/procedural grow slowly \u2014 a cliff in any tier means a sweep or dedup removed too much.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 8,
+        "h": 7,
         "w": 12,
         "x": 0,
-        "y": 43
+        "y": 44
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "fillOpacity": 15,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
             "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
             "stacking": {
-              "mode": "normal"
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
             }
           },
-          "unit": "short"
-        }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "min": 0
+        },
+        "overrides": []
       },
       "options": {
         "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "calcs": ["mean", "max"]
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
@@ -714,44 +1834,96 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "memini_memories_active",
-          "legendFormat": "{{tier}}",
-          "refId": "A"
+          "expr": "sum by (tier) (memini_memories_active)",
+          "refId": "A",
+          "legendFormat": "{{tier}}"
         }
       ]
     },
     {
-      "id": 13,
+      "id": 25,
       "type": "timeseries",
-      "title": "Decay sweep + tombstones (per minute)",
-      "description": "Swept = memories purged by TTL; soft deletes = contradictions tombstoned by consolidation; dedup tombstones = tombstoned by the periodic dedup pass.",
+      "title": "Promotion, classification & demotion (per hour)",
+      "description": "Hourly outcomes of the episodic-to-semantic promotion pass, durable facts it wrote, and omitted-tier writes the marker classifier routed; red promote errors mean durable knowledge is not being distilled. Demotions are the mirror image: stale, never-recalled durable memories retiered down to episodic \u2014 a steady demotion stream usually means bulk-imported debris aging out.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 8,
+        "h": 7,
         "w": 12,
         "x": 12,
-        "y": 43
+        "y": 44
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "fillOpacity": 15,
-            "showPoints": "never"
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
-          "unit": "ops"
-        }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "promote: error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
-          "displayMode": "table",
+          "calcs": [],
+          "displayMode": "list",
           "placement": "bottom",
-          "showLegend": true,
-          "calcs": ["sum"]
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
@@ -764,75 +1936,807 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (tier) (rate(memini_store_swept_total[5m]))",
-          "legendFormat": "swept/{{tier}}",
-          "refId": "A"
+          "expr": "sum by (result) (increase(memini_promote_results_total[1h]))",
+          "refId": "A",
+          "legendFormat": "promote: {{result}}"
         },
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rate(memini_store_soft_deletes_total[5m])",
-          "legendFormat": "consolidate tombstones",
-          "refId": "B"
+          "expr": "sum(increase(memini_promote_facts_total[1h]))",
+          "refId": "B",
+          "legendFormat": "facts promoted"
         },
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rate(memini_dedup_tombstoned_total[5m])",
-          "legendFormat": "dedup tombstones",
-          "refId": "C"
+          "expr": "sum by (tier) (increase(memini_tier_classified_total[1h]))",
+          "refId": "C",
+          "legendFormat": "classified \u2192 {{tier}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (tier) (increase(memini_demoted_total[1h]))",
+          "legendFormat": "demoted from {{tier}}",
+          "refId": "D"
         }
       ]
     },
     {
-      "id": 14,
+      "id": 26,
+      "type": "timeseries",
+      "title": "Decay sweeps & dedup tombstones",
+      "description": "Memories purged by the decay sweeper (by tier) and tombstoned by the dedup pass, per second; sustained zero forever means aging jobs are not running.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 51
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (tier) (rate(memini_store_swept_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "swept: {{tier}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "rate(memini_dedup_tombstoned_total[$__rate_interval])",
+          "refId": "B",
+          "legendFormat": "dedup tombstoned"
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "Fsck outcomes (per hour)",
+      "description": "Hourly consistency-sweep outcomes; red errors mean the store's self-check cannot complete and silent corruption may go unnoticed.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 51
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (result) (increase(memini_fsck_results_total[1h]))",
+          "refId": "A",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "type": "timeseries",
+      "title": "Repair backlog depth by state",
+      "description": "Memories owing deferred repair, split by state; red failed entries are permanently vectorless without operator action, and a growing pending line means the repair loop cannot keep up.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 58
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "failed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (state) (memini_repair_depth)",
+          "refId": "A",
+          "legendFormat": "{{state}}"
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "type": "timeseries",
+      "title": "Repair oldest age by state",
+      "description": "Age of the oldest memory in each repair state; growth without bound means repairs are queued faster than they drain (the red line marks the 1h alarm threshold).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 58
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 3600
+              }
+            ]
+          },
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "max by (state) (memini_repair_oldest_age_seconds)",
+          "refId": "A",
+          "legendFormat": "{{state}}"
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Backfill pending",
+      "description": "Memories still awaiting embedding backfill and long memories still without chunk vectors; a number that never falls means those memories are unreachable by semantic (or chunked) recall.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 58
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "memini_embed_backfill_pending",
+          "refId": "A",
+          "legendFormat": "pending embed"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "memini_chunk_backfill_pending",
+          "refId": "B",
+          "legendFormat": "pending chunk vectors"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Repair outcomes by stage",
+      "description": "Deferred-repair attempt outcomes per second by stage; red parked means a memory gave up retrying and stays vectorless, orange retry churn means the embedder keeps failing under the repair loop.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 65
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*parked.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*retry.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (stage, result) (rate(memini_repair_results_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{stage}}: {{result}}"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Repair duration p95 by stage",
+      "description": "95th-percentile latency of a single deferred repair by stage; climbing durations shrink repair throughput and grow the backlog.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 65
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (stage, le) (rate(memini_repair_duration_seconds_bucket[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "{{stage}}"
+        }
+      ]
+    },
+    {
+      "id": 33,
       "type": "row",
       "title": "Embedder & rerank",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 51
+        "y": 72
       },
       "collapsed": false,
       "panels": []
     },
     {
-      "id": 15,
+      "id": 34,
       "type": "timeseries",
-      "title": "Embedder p95 latency (by backend)",
-      "description": "openai = real network calls; cached/diskcache/batched = local cache or fan-out; disabled = no endpoint configured.",
+      "title": "Embedder p95 latency by backend",
+      "description": "95th-percentile embedder call latency per backend layer; the openai layer reflects the real provider, cached/diskcache should stay near zero.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 8,
+        "h": 7,
         "w": 12,
         "x": 0,
-        "y": 52
+        "y": 73
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "smooth",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
             "fillOpacity": 10,
-            "showPoints": "never"
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
-          "unit": "s"
-        }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
       },
       "options": {
         "legend": {
-          "displayMode": "table",
+          "calcs": [],
+          "displayMode": "list",
           "placement": "bottom",
-          "showLegend": true,
-          "calcs": ["mean", "max"]
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
@@ -845,42 +2749,96 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "histogram_quantile(0.95, sum by (backend, le) (rate(memini_embed_duration_seconds_bucket[5m])))",
-          "legendFormat": "p95 {{backend}}",
-          "refId": "A"
+          "expr": "histogram_quantile(0.95, sum by (backend, le) (rate(memini_embed_duration_seconds_bucket[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "{{backend}}"
         }
       ]
     },
     {
-      "id": 16,
+      "id": 35,
       "type": "timeseries",
-      "title": "Embedder tokens + error rate",
+      "title": "Rerank outcomes by backend",
+      "description": "Recall rerank attempts per second by backend and result; orange fallback means the reranker failed or timed out and results shipped with pre-rerank ordering.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 8,
+        "h": 7,
         "w": 12,
         "x": 12,
-        "y": 52
+        "y": 73
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "smooth",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
             "fillOpacity": 10,
-            "showPoints": "never"
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*fallback.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
           }
-        }
+        ]
       },
       "options": {
         "legend": {
-          "displayMode": "table",
+          "calcs": [],
+          "displayMode": "list",
           "placement": "bottom",
-          "showLegend": true,
-          "calcs": ["mean", "max"]
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
@@ -893,51 +2851,351 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (backend) (rate(memini_embed_tokens_total[5m]))",
-          "legendFormat": "tokens/s {{backend}}",
-          "refId": "A"
+          "expr": "sum by (backend, result) (rate(memini_rerank_results_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{backend}}: {{result}}"
+        }
+      ]
+    },
+    {
+      "id": 36,
+      "type": "timeseries",
+      "title": "Embedder tokens/s by backend",
+      "description": "Embedding tokens consumed per second as reported by the API (openai backend only); this is the embed cost driver.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 80
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (backend) (rate(memini_embed_tokens_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{backend}}"
+        }
+      ]
+    },
+    {
+      "id": 37,
+      "type": "timeseries",
+      "title": "Embedder errors by backend",
+      "description": "Embedder failures per second by backend; any sustained nonzero rate here explains degraded writes and keyword-only recalls elsewhere on this board.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 80
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (backend) (rate(memini_embed_errors_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{backend}}"
+        }
+      ]
+    },
+    {
+      "id": 38,
+      "type": "timeseries",
+      "title": "Embedder batch size (p50 / p95)",
+      "description": "Texts per Embed call at the median and 95th percentile; batches stuck at 1 mean the batcher is not coalescing and each write pays a full round trip.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 80
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.50, sum by (backend, le) (rate(memini_embed_items_bucket[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "p50 {{backend}}"
         },
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (backend) (rate(memini_embed_errors_total[5m]))",
-          "legendFormat": "err/s {{backend}}",
-          "refId": "B"
+          "expr": "histogram_quantile(0.95, sum by (backend, le) (rate(memini_embed_items_bucket[$__rate_interval])))",
+          "refId": "B",
+          "legendFormat": "p95 {{backend}}"
         }
       ]
     },
     {
-      "id": 24,
-      "type": "stat",
-      "title": "Embedder in-flight",
-      "description": "Concurrent embed calls against the backend (post-cap, excludes cache hits). Spikes during ingest storms are normal; sustained values near the cap mean the embedder is the bottleneck.",
+      "id": 39,
+      "type": "timeseries",
+      "title": "In-flight embed & rerank calls",
+      "description": "Concurrent calls currently held against the embedding and rerank backends; pinned at the concurrency cap means requests are queueing behind the limiter.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 4,
-        "w": 8,
+        "h": 6,
+        "w": 24,
         "x": 0,
-        "y": 60
-      },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": ["lastNotNull"],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
+        "y": 87
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
         }
       },
       "targets": [
@@ -947,31 +3205,274 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "expr": "memini_embed_in_flight",
-          "legendFormat": "embed in-flight",
-          "refId": "A"
+          "refId": "A",
+          "legendFormat": "embed"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "memini_rerank_in_flight",
+          "refId": "B",
+          "legendFormat": "rerank"
         }
       ]
     },
     {
-      "id": 25,
-      "type": "stat",
-      "title": "Rerank in-flight",
-      "description": "Concurrent rerank calls. A nonzero value indicates rerank is configured; if this stays pinned at the cap, the reranker is the bottleneck.",
+      "id": 40,
+      "type": "row",
+      "title": "LLM \u2014 consolidation & answer (empty without an LLM configured)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 93
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "Consolidation outcomes",
+      "description": "LLM consolidation decisions per second (gated, new, update, supersede, noop); red errors or orange drops mean writes are skipping dedup and duplicates will accumulate.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 4,
-        "w": 8,
-        "x": 8,
-        "y": 60
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 94
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "dropped"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (result) (rate(memini_consolidate_results_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    },
+    {
+      "id": 42,
+      "type": "timeseries",
+      "title": "Consolidation queue depth",
+      "description": "Async consolidation queue depth over time; a sawtooth is normal, monotonic growth means the LLM cannot keep pace with write volume.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 94
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "memini_consolidate_queue_depth",
+          "refId": "A",
+          "legendFormat": "queue depth"
+        }
+      ]
+    },
+    {
+      "id": 43,
+      "type": "stat",
+      "title": "Dedup effectiveness (15m)",
+      "description": "Share of consolidated writes that matched an existing memory (update/supersede/noop) rather than creating a new one; a sudden drop to zero suggests the matcher is broken.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 94
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
       },
       "options": {
         "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "auto",
-        "orientation": "horizontal",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": ["lastNotNull"],
           "fields": "",
@@ -979,54 +3480,102 @@
         },
         "textMode": "auto"
       },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        }
-      },
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "memini_rerank_in_flight",
-          "legendFormat": "rerank in-flight",
-          "refId": "A"
+          "expr": "sum(rate(memini_consolidate_results_total{result=~\"update|supersede|noop\"}[15m])) / clamp_min(sum(rate(memini_consolidate_results_total{result=~\"new|update|supersede|noop\"}[15m])), 1e-9)",
+          "refId": "A",
+          "legendFormat": "matched"
         }
       ]
     },
     {
-      "id": 26,
+      "id": 44,
       "type": "timeseries",
-      "title": "Embedder batch size (p50 vs p95)",
-      "description": "Items per embed call, by backend. batched shows a single high-p95 bar; cached should be ~1.",
+      "title": "Answer outcomes",
+      "description": "Answer API (LLM-synthesized answers over recall) outcomes per second; red errors mean answer requests are burning LLM budget without returning.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 4,
-        "w": 8,
-        "x": 16,
-        "y": 60
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 101
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 5,
-            "showPoints": "never"
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
           }
-        }
+        ]
       },
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
-          "showLegend": true,
-          "calcs": ["mean"]
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
@@ -1039,69 +3588,210 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "histogram_quantile(0.5, sum by (backend, le) (rate(memini_embed_items_bucket[5m])))",
-          "legendFormat": "p50 {{backend}}",
-          "refId": "A"
+          "expr": "sum by (result) (rate(memini_answer_results_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    },
+    {
+      "id": 45,
+      "type": "timeseries",
+      "title": "LLM op latency p95",
+      "description": "95th-percentile end-to-end latency of the LLM-backed service ops (answer, promote, dedup, semantic distillation wait); these dominate tail latency when the LLM slows down.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 101
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
+          "min": 0
         },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "histogram_quantile(0.95, sum by (backend, le) (rate(memini_embed_items_bucket[5m])))",
-          "legendFormat": "p95 {{backend}}",
-          "refId": "B"
+          "expr": "histogram_quantile(0.95, sum by (op, le) (rate(memini_op_duration_seconds_bucket{op=~\"answer|promote|dedup|distill_sem_wait\"}[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "{{op}}"
         }
       ]
     },
     {
-      "id": 27,
+      "id": 46,
       "type": "row",
       "title": "HTTP surface",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 64
+        "y": 108
       },
       "collapsed": false,
       "panels": []
     },
     {
-      "id": 28,
+      "id": 47,
       "type": "timeseries",
-      "title": "HTTP requests by route (status class)",
-      "description": "Per-route request rate broken down by 2xx / 4xx / 5xx. 5xx spikes point at a broken handler; 4xx spikes usually mean client misuse or a misconfigured agent.",
+      "title": "HTTP request rate by route & status class",
+      "description": "Requests per second per route, grouped into status classes; red 5xx traffic is server failure, orange 4xx spikes usually mean a misconfigured client or expired key.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 8,
-        "w": 16,
+        "h": 7,
+        "w": 12,
         "x": 0,
-        "y": 65
+        "y": 109
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 15,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
             "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
             "stacking": {
-              "mode": "normal"
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
             }
           },
-          "unit": "ops"
-        }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* 5xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* 4xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "calcs": ["mean", "max"]
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
@@ -1114,314 +3804,80 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (route, status) (label_replace(rate(memini_http_requests_total[5m]), \"status_class\", \"$1\", \"status\", \"(...).\"))",
-          "legendFormat": "{{route}} {{status_class}}xx",
-          "refId": "A"
+          "expr": "sum by (route, status_class) (label_replace(rate(memini_http_requests_total[$__rate_interval]), \"status_class\", \"$1\", \"status\", \"(.)..\"))",
+          "refId": "A",
+          "legendFormat": "{{route}} {{status_class}}xx"
         }
       ]
     },
     {
-      "id": 29,
+      "id": 48,
       "type": "timeseries",
       "title": "HTTP p95 latency by route",
+      "description": "95th-percentile HTTP latency per route as clients experience it; compare with the service-op view below to tell transport overhead from service work.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 65
-      },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 10,
-            "showPoints": "never"
-          },
-          "unit": "s"
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": ["mean", "max"]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "histogram_quantile(0.95, sum by (route, le) (rate(memini_http_request_duration_seconds_bucket[5m])))",
-          "legendFormat": "p95 {{route}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 17,
-      "type": "timeseries",
-      "title": "End-to-end op latency p95 (by op)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 16,
-        "x": 0,
-        "y": 73
-      },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 5,
-            "showPoints": "never"
-          },
-          "unit": "s"
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "calcs": ["mean", "max"]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "histogram_quantile(0.95, sum by (op, le) (rate(memini_op_duration_seconds_bucket[5m])))",
-          "legendFormat": "{{op}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 34,
-      "type": "timeseries",
-      "title": "HTTP response size by route (p50/p90)",
-      "description": "Body bytes shipped per response. The recall/briefing routes are what hooks inject from — watch these when tuning context-injection volume.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 73
-      },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 10,
-            "showPoints": "never"
-          },
-          "unit": "bytes"
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": ["mean", "max"]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "histogram_quantile(0.90, sum by (route, le) (rate(memini_http_response_bytes_bucket{route=~\"/v1/search|/v1/namespaces/briefing\"}[5m])))",
-          "legendFormat": "p90 {{route}}",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "histogram_quantile(0.50, sum by (route, le) (rate(memini_http_response_bytes_bucket{route=~\"/v1/search|/v1/namespaces/briefing\"}[5m])))",
-          "legendFormat": "p50 {{route}}",
-          "refId": "B"
-        }
-      ]
-    },
-    {
-      "id": 30,
-      "type": "row",
-      "title": "Write-path signals",
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 82
-      },
-      "panels": []
-    },
-    {
-      "id": 31,
-      "type": "timeseries",
-      "title": "Corroboration routing",
-      "description": "A fresh short-term write restating a durable fact: corroborated (confidence grown), cooldown (inside the 24h per-fact window), miss (no durable neighbour), error.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 83
-      },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 10,
-            "showPoints": "never"
-          },
-          "unit": "short"
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": ["mean", "max"]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum by (result) (rate(memini_corroborate_results_total[5m]))",
-          "legendFormat": "{{result}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 33,
-      "type": "timeseries",
-      "title": "Contradiction routing",
-      "description": "A fresh durable write that changes a fact's value or flips its polarity: contradicted (stale fact invalidated via valid_to + confidence shrink), no_signal (durable neighbour found but not a real change), cooldown (inside the 24h per-fact window), miss (no durable neighbour), error. Default-on; a contradicted rate far above expectation is the misfire smoke alarm (set MEMINI_CONTRADICT_DOWNRANK=false to disable).",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 91
-      },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 10,
-            "showPoints": "never"
-          },
-          "unit": "short"
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": ["mean", "max"]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum by (result) (rate(memini_contradict_results_total[5m]))",
-          "legendFormat": "{{result}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 32,
-      "type": "timeseries",
-      "title": "Tier classification & promotion",
-      "description": "Omitted-tier writes the marker classifier routed to a durable tier, and facts produced by the promotion pass (LLM or marker extractor).",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 8,
+        "h": 7,
         "w": 12,
         "x": 12,
-        "y": 83
+        "y": 109
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "smooth",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
             "fillOpacity": 10,
-            "showPoints": "never"
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
-          "unit": "short"
-        }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
       },
       "options": {
         "legend": {
-          "displayMode": "table",
+          "calcs": [],
+          "displayMode": "list",
           "placement": "bottom",
-          "showLegend": true,
-          "calcs": ["mean", "max"]
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
@@ -1434,68 +3890,274 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (tier) (rate(memini_tier_classified_total[5m]))",
-          "legendFormat": "classified -> {{tier}}",
-          "refId": "A"
+          "expr": "histogram_quantile(0.95, sum by (route, le) (rate(memini_http_request_duration_seconds_bucket[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "{{route}}"
+        }
+      ]
+    },
+    {
+      "id": 49,
+      "type": "timeseries",
+      "title": "Service op latency p95 by op",
+      "description": "95th-percentile end-to-end latency of every public service operation (remember, recall, briefing, forget, ...); this is the service-internal view behind the HTTP numbers.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 116
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (op, le) (rate(memini_op_duration_seconds_bucket[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "{{op}}"
+        }
+      ]
+    },
+    {
+      "id": 50,
+      "type": "timeseries",
+      "title": "HTTP response size (search & briefing, p50 / p90)",
+      "description": "Response body sizes for the two injection-critical routes; growth here directly inflates the tokens injected into agent context.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 116
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.50, sum by (route, le) (rate(memini_http_response_bytes_bucket{route=~\"/v1/search|/v1/namespaces/briefing\"}[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "p50 {{route}}"
         },
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(memini_promote_facts_total[5m]))",
-          "legendFormat": "promoted facts",
-          "refId": "B"
+          "expr": "histogram_quantile(0.90, sum by (route, le) (rate(memini_http_response_bytes_bucket{route=~\"/v1/search|/v1/namespaces/briefing\"}[$__rate_interval])))",
+          "refId": "B",
+          "legendFormat": "p90 {{route}}"
         }
       ]
     },
     {
-      "id": 40,
+      "id": 51,
       "type": "row",
-      "title": "Injection efficiency (client telemetry)",
-      "collapsed": false,
+      "title": "Client injection telemetry",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 99
+        "y": 123
       },
+      "collapsed": false,
       "panels": []
     },
     {
-      "id": 41,
+      "id": 52,
       "type": "timeseries",
-      "title": "Injection outcomes (by result)",
-      "description": "What hooks reported actually reaching model context vs held back by their local gates (seen/cooldown/budget/unchanged/score). Absent entirely means no integration is reporting.",
+      "title": "Injection outcomes by result",
+      "description": "Client-reported memory injections per second by outcome; suppressed_* series show why memories were withheld (already seen, cooldown, budget, unchanged, score) \u2014 a spike in suppressions with flat injections means the hooks are firing but delivering nothing.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 8,
-        "w": 8,
+        "h": 7,
+        "w": 12,
         "x": 0,
-        "y": 100
+        "y": 124
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "smooth",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
             "fillOpacity": 10,
+            "gradientMode": "none",
             "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
             "stacking": {
-              "mode": "normal"
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
             }
-          }
-        }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": []
       },
       "options": {
         "legend": {
-          "displayMode": "table",
+          "calcs": [],
+          "displayMode": "list",
           "placement": "bottom",
-          "showLegend": true,
-          "calcs": ["mean", "max"]
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
@@ -1508,43 +4170,80 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (result) (rate(memini_injected_memories_total[5m]))",
-          "legendFormat": "{{result}}",
-          "refId": "A"
+          "expr": "sum by (result) (rate(memini_injected_memories_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{result}}"
         }
       ]
     },
     {
-      "id": 42,
+      "id": 53,
       "type": "timeseries",
-      "title": "Injected memories (by surface)",
-      "description": "Memories that reached context, split by which hook surface put them there.",
+      "title": "Injected memories by surface",
+      "description": "Memories actually injected into model context per second, by hook surface (briefing, prompt, pretool); a silent surface means that hook is broken client-side.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 100
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 124
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "smooth",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
             "fillOpacity": 10,
-            "showPoints": "never"
-          }
-        }
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": []
       },
       "options": {
         "legend": {
-          "displayMode": "table",
+          "calcs": [],
+          "displayMode": "list",
           "placement": "bottom",
-          "showLegend": true,
-          "calcs": ["mean", "max"]
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
@@ -1557,43 +4256,80 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (surface) (rate(memini_injected_memories_total{result=\"injected\"}[5m]))",
-          "legendFormat": "{{surface}}",
-          "refId": "A"
+          "expr": "sum by (surface) (rate(memini_injected_memories_total{result=\"injected\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{surface}}"
         }
       ]
     },
     {
-      "id": 43,
+      "id": 54,
       "type": "timeseries",
-      "title": "Injected tokens per hour (by surface)",
-      "description": "Client-estimated tokens the hooks added to context. The number injection tuning should push down.",
+      "title": "Injected tokens per hour by surface",
+      "description": "Client-side estimate of context tokens injected per hour by surface; this is the direct context-budget cost of memini to the agent.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 100
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 124
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "smooth",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
             "fillOpacity": 10,
-            "showPoints": "never"
-          }
-        }
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 5,
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "min": 0
+        },
+        "overrides": []
       },
       "options": {
         "legend": {
-          "displayMode": "table",
+          "calcs": [],
+          "displayMode": "list",
           "placement": "bottom",
-          "showLegend": true,
-          "calcs": ["mean", "max"]
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
@@ -1607,8 +4343,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "expr": "sum by (surface) (increase(memini_injected_tokens_total[1h]))",
-          "legendFormat": "{{surface}}",
-          "refId": "A"
+          "refId": "A",
+          "legendFormat": "{{surface}}"
         }
       ]
     }
@@ -1647,6 +4383,6 @@
   "timezone": "",
   "title": "memini",
   "uid": "memini",
-  "version": 2,
+  "version": 3,
   "weekStart": ""
 }

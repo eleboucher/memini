@@ -29,8 +29,11 @@ var longTermTiers = []memory.Tier{memory.TierSemantic, memory.TierProcedural}
 // giving them the episodic TTL. Unused "durable" debris (e.g. a low-quality bulk
 // import, or a default-importance fact that proved useless) then ages out on its
 // own, while anything recalled even once is reinforced and kept. The mirror
-// image of promotion. Returns the count demoted.
-func DemoteStale(ctx context.Context, st store.Store, olderThan, now time.Time) (int, error) {
+// image of promotion. Returns the count demoted. report, when non-nil, is
+// called once per demoted memory with the tier it was demoted FROM — the
+// sweeper wires it to the memini_demoted_total counter so demotion volume is
+// observable rather than log-only.
+func DemoteStale(ctx context.Context, st store.Store, olderThan, now time.Time, report func(fromTier string)) (int, error) {
 	namespaces, err := st.ListNamespaces(ctx)
 	if err != nil {
 		return 0, err
@@ -72,6 +75,9 @@ func DemoteStale(ctx context.Context, st store.Store, olderThan, now time.Time) 
 					continue
 				}
 				return total, err
+			}
+			if report != nil {
+				report(string(m.Tier))
 			}
 			total++
 		}

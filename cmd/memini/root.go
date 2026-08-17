@@ -422,6 +422,7 @@ func buildServiceStack(
 		DemoteAfter:       cfg.DemoteAfter,
 		ActivityRetention: cfg.ActivityRetention,
 		ActivityMaxRows:   cfg.ActivityMaxRows,
+		OnDemoted:         metricsImpl.Demoted,
 	})
 	workers.Go(func() { sweeper.Run(workerCtx) })
 	if cfg.DedupInterval > 0 {
