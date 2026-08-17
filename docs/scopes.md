@@ -247,3 +247,41 @@ whose depth-1-only tenant-shared merge didn't reach a second-level nest
 like this: a reviewer subagent used to be isolated from its own project's
 durable knowledge unless something else compensated for it. Under the
 cascade it just works.
+
+## Fine print
+
+Behaviors of the scoping machinery that only matter once you push on its
+edges. Each is deliberate; the mechanisms behind them are covered in
+[how-it-works/recall.md](how-it-works/recall.md) and
+[how-it-works/namespaces.md](how-it-works/namespaces.md).
+
+- **Read sets are capped.** An explicit `namespaces: [...]` list may name at
+  most 16 entries, and a fully expanded read set (after subtree expansion) is
+  clamped to 64. The clamp logs a warning and truncates rather than failing
+  the recall, and protected legs (the primary, home) are kept ahead of
+  expendable ones when — and only when — the clamp actually fires. Under the
+  cap, entries keep their natural cascade order, because ordering is
+  observable: cross-namespace score fusion breaks ties by first-seen order,
+  which is what makes nearest-ancestors-first meaningful.
+- **An entry's origin is recorded once.** A namespace that enters the read
+  set as an ancestor and is also your home namespace stays labeled
+  `ancestor` — the first append wins, and the `from` provenance on results
+  reflects that first role.
+- **Upward and downward reach use different truth sources.** Ancestors are
+  derived lexically by splitting the namespace on `/` — a parent is in the
+  read set whether or not it holds a single memory. Subtree expansion
+  (`scope:"everywhere"`, `name/*` patterns) walks the store's actual
+  namespace list, so it only ever discovers namespaces that hold rows.
+- **An episodic-only recall skips the cascade entirely.** Every non-primary
+  leg is durable-only, so a recall filtered to `tiers: ["episodic"]` (or
+  `["working"]`) resolves to just the primary namespace and never pays for
+  ancestor, home, or link resolution.
+- **Duplicate legs merge widest-tiers-wins.** When the same namespace enters
+  the read set twice with different tier restrictions (say, via a link and as
+  an ancestor), the merged entry carries the wider tier set.
+- **Both transports normalize the namespace header identically.** REST always
+  canonicalized `X-Memini-Namespace` (trim, strip surrounding slashes,
+  collapse `//`); the MCP transport was trim-only until v0.8 and now matches.
+  `memini doctor` flags rows stored under a non-canonical namespace string
+  from before the change — see
+  [operations/upgrading.md](operations/upgrading.md).

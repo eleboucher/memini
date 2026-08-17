@@ -13,7 +13,11 @@ classify a memory by _topic_.)
 | `procedural` | workflows and how-to knowledge                 | never expires |
 
 `working` and `episodic` are **short-term** (TTL'd); `semantic` and
-`procedural` are **long-term** (durable, curated). A store is normally
+`procedural` are **long-term** (durable, curated). How memini picks a tier
+when a write omits one is covered in
+[the write path](how-it-works/write-path.md#tier-classification), and how
+memories move between tiers over time in
+[lifecycle](how-it-works/lifecycle.md). A store is normally
 lopsided toward `working` — most rows are raw intake — with a smaller core of
 `episodic` session summaries and `semantic`/`procedural` knowledge.
 
