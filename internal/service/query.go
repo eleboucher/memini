@@ -370,6 +370,8 @@ const DefaultPerSection = 5
 // to 0 disables the section. It is a cheap, query-less read for hooks to
 // inject context when a session opens.
 func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingOpts) (Briefing, error) {
+	start := time.Now()
+	defer func() { s.metrics.OpDuration("briefing", time.Since(start)) }()
 	resolve := func(p *int) int {
 		if p == nil {
 			return DefaultPerSection
