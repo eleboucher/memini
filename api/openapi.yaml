@@ -91,6 +91,21 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/RememberRequest" }
       responses:
+        "200":
+          description: >-
+            Accepted but not stored: the write-time value gate dropped a
+            low-signal write. Not an error. tier reports the tier the write
+            resolved to (the explicit tier, or the auto-classified/default one
+            when omitted).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [stored, reason, tier]
+                properties:
+                  stored: { type: boolean }
+                  reason: { type: string }
+                  tier: { $ref: "#/components/schemas/Tier" }
         "201":
           description: Created
           content:

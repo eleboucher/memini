@@ -2888,3 +2888,64 @@ func TestBriefingChildrenTruncationNoteViaMCP(t *testing.T) {
 		t.Fatalf("children_note = %q, want %q", b.ChildrenNote, "… and 2 more child namespaces")
 	}
 }
+
+// TestRememberToolDroppedWriteReportsEffectiveTier pins that a value-gated
+// write (stored=false) reports the tier the write RESOLVED to — the
+// auto-classified or default tier when the caller omitted one — not the raw
+// input tier, which would be "" and teach the agent nothing.
+//
+// Referenced by docs/how-it-works/write-path.md.
+func TestRememberToolDroppedWriteReportsEffectiveTier(t *testing.T) {
+	cs := connectWithOptions(t, service.WithEpisodicMinChars(120))
+	ctx := context.Background()
+
+	t.Run("omitted tier reports the resolved default", func(t *testing.T) {
+		// A turn capture that is pure harness boilerplate strips to empty and
+		// is dropped outright; with no tier given it resolved to "working".
+		res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+			Name: "memory_remember",
+			Arguments: map[string]any{
+				"content":  "<memini-context project=\"x\">noise</memini-context>",
+				"metadata": map[string]any{"format": "turn"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+		var out struct {
+			Tier   string `json:"tier"`
+			Stored bool   `json:"stored"`
+		}
+		structured(t, res, &out)
+		if out.Stored {
+			t.Fatal("stored = true, want the capture dropped")
+		}
+		if out.Tier != "working" {
+			t.Fatalf("tier = %q, want the resolved default %q", out.Tier, "working")
+		}
+	})
+
+	t.Run("explicit episodic still reports episodic", func(t *testing.T) {
+		res, err := cs.CallTool(ctx, &mcpsdk.CallToolParams{
+			Name: "memory_remember",
+			Arguments: map[string]any{
+				"content": "ok keep going",
+				"tier":    "episodic",
+			},
+		})
+		if err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+		var out struct {
+			Tier   string `json:"tier"`
+			Stored bool   `json:"stored"`
+		}
+		structured(t, res, &out)
+		if out.Stored {
+			t.Fatal("stored = true, want the low-signal episodic write gated")
+		}
+		if out.Tier != "episodic" {
+			t.Fatalf("tier = %q, want %q", out.Tier, "episodic")
+		}
+	})
+}
