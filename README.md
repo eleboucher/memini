@@ -19,6 +19,8 @@ in Kubernetes.
 | **Upgrade, and my server will not start**    | [Upgrading](docs/operations/upgrading.md)                                                                  |
 | Look up a setting                            | [Configuration](docs/reference/configuration.md)                                                           |
 | Look up an MCP tool, CLI command or endpoint | [MCP tools](docs/reference/mcp-tools.md), [CLI](docs/reference/cli.md), [REST](docs/reference/rest-api.md) |
+| Understand how it works under the hood       | [How it works](docs/how-it-works/README.md)                                                                |
+| See a full worked example                    | [Examples](docs/examples/README.md)                                                                        |
 | Understand tiers, scopes, categories, keys   | [Concepts](docs/README.md#concepts)                                                                        |
 | See the retrieval numbers                    | [Benchmarks](bench/README.md)                                                                              |
 
@@ -155,7 +157,9 @@ sweeps, methodology, caveats, and the LoCoMo comparison against mem0 and Letta a
 
 ## Contributing
 
-The reference under [`docs/reference/`](docs/reference/) is generated from the code
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the dev loop, the generated-code
+drift gates, and the docs conventions. The short version: the reference under
+[`docs/reference/`](docs/reference/) is generated from the code
 (`mise run docs`), and CI fails if it has drifted. If you add a setting, a CLI command or
 an MCP tool, run `mise run docs` and commit the result. The generator refuses to run when
 a new setting has no doc comment or belongs to no section, which is deliberate: that is

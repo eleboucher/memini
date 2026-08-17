@@ -19,4 +19,7 @@ reference is the authority on what each one does.
 Background reading, in the order it tends to become relevant:
 [tiers](../tiers.md) (how durable a memory is), [scopes](../scopes.md) (which
 namespaces a read and a write touch), [API keys](../api-keys.md) (who the caller
-is), [categories](../categories.md) (what a memory is about).
+is), [categories](../categories.md) (what a memory is about). For the machinery
+behind all of it — how a write is classified and routed, when recall fires, how
+memories age — see [how it works](../how-it-works/README.md); for guided
+walkthroughs with test-pinned behavior, see the [examples](../examples/README.md).

@@ -16,7 +16,14 @@ reference when you need a specific setting.
 | Look up a setting                              | [Configuration](reference/configuration.md)                                                 |
 | Look up an MCP tool, CLI command or endpoint   | [MCP tools](reference/mcp-tools.md), [CLI](reference/cli.md), [REST](reference/rest-api.md) |
 | Understand how memini decides what to remember | [Tiers](tiers.md), [Categories](categories.md)                                              |
+| Understand what happens when I save a memory   | [The write path](how-it-works/write-path.md)                                                |
+| Understand when memories get pulled            | [Recall](how-it-works/recall.md)                                                            |
+| Understand where memories live                 | [Namespaces](how-it-works/namespaces.md)                                                    |
 | Understand which namespaces a search reads     | [Scopes](scopes.md)                                                                         |
+| See a full worked example                      | [Examples](examples/README.md)                                                              |
+| Run it in production (TLS, sizing, Postgres)   | [Production](operations/production.md)                                                      |
+| Back up or restore the store                   | [Backup and restore](operations/backup-restore.md)                                          |
+| Hack on memini itself                          | [Contributing](../CONTRIBUTING.md)                                                          |
 | Check what a word means exactly                | [Glossary](glossary.md)                                                                     |
 | Give each person their own credential          | [API keys](api-keys.md)                                                                     |
 | See the retrieval numbers                      | [Benchmarks](../bench/README.md)                                                            |
@@ -39,6 +46,38 @@ Read these when you want to know why memini behaves the way it does.
   any namespace. Each carries its own home and default namespace, plus two narrow
   authorization bits — `admin` (manage keys and server defaults) and `read_only`
   (refuse every write, for unattended agents).
+
+## How it works
+
+The machinery, one mechanism per page. Start at the
+[overview](how-it-works/README.md) if you want the whole machine on one page.
+
+- [The write path](how-it-works/write-path.md). What happens to a
+  `memory_remember`: tier auto-classification, visibility routing, the value
+  gate, dedup, and degraded writes.
+- [Recall](how-it-works/recall.md). The three pull surfaces, how the read set
+  is searched, and how results are ranked.
+- [Namespaces](how-it-works/namespaces.md). Namespaces are never created —
+  how they materialize, how the client and server agree on one, and pins.
+- [Lifecycle](how-it-works/lifecycle.md). Reinforcement, promotion, demotion,
+  confidence, and bi-temporal supersession.
+- [The plugin](how-it-works/plugin.md). What the hooks inject and when, the
+  handshake, turn capture, and the known limitations.
+
+## Examples
+
+End-to-end walkthroughs whose behavioral claims are pinned by Go tests — see
+the [index](examples/README.md) for the "Validated by" convention.
+
+- [First memory](examples/first-memory.md). Fresh deploy to a remembered fact.
+- [Namespace lifecycle](examples/namespace-lifecycle.md). A namespace from
+  first write to disappearance.
+- [A memory's life story](examples/memory-life-story.md). One fact from birth
+  through supersession and time travel.
+- [Recall in practice](examples/recall-in-practice.md). One query at three
+  scopes, plus what a briefing does differently.
+- [Team sharing](examples/team-sharing.md). Two people, one server: personal
+  and team memories, read-only agent keys.
 
 ## Guides
 
@@ -63,7 +102,12 @@ Generated from the code, so it cannot drift.
 
 ## Operations
 
-- [Deployment](operations/deployment.md). Docker, Compose, Kubernetes.
+- [Deployment](operations/deployment.md). Prebuilt artifacts, Compose,
+  single container, systemd, Kubernetes.
+- [Production](operations/production.md). TLS and reverse proxies, sizing,
+  Postgres operations, key rotation, metrics.
+- [Backup and restore](operations/backup-restore.md). Live-store backups per
+  backend, and the restore invariants that trip people.
 - [Upgrading](operations/upgrading.md). Removed settings, and the two that refuse
   the boot.
 - [Web UI](operations/web-ui.md). What each view is for, and the one security

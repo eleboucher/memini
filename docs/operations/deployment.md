@@ -14,9 +14,73 @@ Pick a shape:
 - **Single container**, for the smallest useful server. SQLite backend.
 - **Kubernetes**, via the bundled Helm chart. SQLite by default, Postgres for
   scale-out.
+- **Bare metal (systemd)**, for a VM or home server with no container runtime.
+  The release binary is fully static.
 
 Environment variables are not restated here. See
 [configuration.md](../reference/configuration.md).
+
+## Prebuilt artifacts
+
+Every release tag (`vX.Y.Z`) publishes the same set of artifacts from
+[`release.yml`](../../.forgejo/workflows/release.yml). Examples below use
+`0.7.18`; substitute the release you want.
+
+**Container images**, multi-arch (`linux/amd64`, `linux/arm64`), pushed to two
+registries with plain-semver tags (no `v` prefix):
+
+| Image                                           | Release tags    |
+| ----------------------------------------------- | --------------- |
+| `registry.erwanleboucher.dev/eleboucher/memini` | `0.7.18`, `0.7` |
+| `git.erwanleboucher.dev/eleboucher/memini`      | `0.7.18`, `0.7` |
+
+Pushes to `main` additionally publish the moving tags `latest` and
+`sha-<full commit>` — to `git.erwanleboucher.dev/eleboucher/memini` only. Pin a
+release tag (or better, a digest) for anything you care about.
+
+**The Helm chart**, as an OCI artifact on the same two registries. The chart
+version keeps the `v` prefix (it is the git tag), unlike the image tags:
+
+```sh
+helm install memini \
+  oci://registry.erwanleboucher.dev/eleboucher/charts/memini \
+  --version v0.7.18 -f my-values.yaml
+```
+
+A released chart has the exact image **digest** of that release's build pinned
+into its values, so it never depends on tag resolution. A chart installed from
+a git checkout does not — see the callout in the Kubernetes section.
+
+**Release tarballs**, attached to the release at
+`https://git.erwanleboucher.dev/eleboucher/memini/releases`:
+`memini_0.7.18_linux_amd64.tar.gz` and `memini_0.7.18_linux_arm64.tar.gz`, each
+holding the static `memini` binary plus LICENSE and README. The binaries are
+extracted from the same build that produced the container image, not
+recompiled. Next to them sit `memini_0.7.18_checksums.txt` and its cosign
+bundle `memini_0.7.18_checksums.txt.cosign.bundle`.
+
+### Verifying signatures
+
+Signing is **key-based** cosign (`cosign sign --key`), not keyless: you verify
+against the project's public key, not an OIDC identity. Obtain the public key
+out of band (the project page) and keep it as `cosign.pub`; trusting these
+signatures means trusting that key.
+
+```sh
+# Container image (either registry; images are signed by digest)
+cosign verify --key cosign.pub \
+  registry.erwanleboucher.dev/eleboucher/memini:0.7.18
+
+# Helm chart (also a signed OCI artifact; note the v-prefixed chart tag)
+cosign verify --key cosign.pub \
+  registry.erwanleboucher.dev/eleboucher/charts/memini:v0.7.18
+
+# Tarballs: verify the checksums file's signature, then the checksums
+cosign verify-blob --key cosign.pub \
+  --bundle memini_0.7.18_checksums.txt.cosign.bundle \
+  memini_0.7.18_checksums.txt
+sha256sum -c memini_0.7.18_checksums.txt
+```
 
 ## Compose
 
@@ -62,6 +126,9 @@ docker run --rm -p 8080:8080 \
   memini
 ```
 
+Instead of building locally, any prebuilt image from
+[Prebuilt artifacts](#prebuilt-artifacts) works in its place.
+
 Two things to get right:
 
 - **The volume is not optional.** The image is distroless and the container has
@@ -88,6 +155,20 @@ helm install memini charts/memini -f my-values.yaml
 
 Read [`values.yaml`](../../charts/memini/values.yaml) before you do. It is
 commented as documentation and covers more than this page can.
+
+> **Installing from a git checkout renders an image that does not exist.** In
+> the committed `values.yaml`, both `image.tag` and `image.digest` are empty
+> strings — the release pipeline injects the image digest when it packages the
+> chart, and only then. From a checkout, the empty tag falls back to the
+> chart's `appVersion`, a `0.1.0` placeholder that was never published, so the
+> pod tries to pull `registry.erwanleboucher.dev/eleboucher/memini:0.1.0` and
+> sits in `ImagePullBackOff` (`manifest unknown`). Two fixes:
+>
+> - Install the released OCI chart instead (see
+>   [Prebuilt artifacts](#prebuilt-artifacts)); it pins that release's image by
+>   digest.
+> - Keep the checkout, but set a real tag:
+>   `--set controllers.main.containers.main.image.tag=0.7.18`.
 
 ### Defaults
 
@@ -161,3 +242,83 @@ every run. See [api-keys.md](../api-keys.md#the-read-only-attribute).
 If you do, the fsck container needs `MEMINI_API_KEY` in its own env, pointing at
 the same Secret as the main container. It uses curl's `--variable` /
 `--expand-header` so the token never appears in `argv`.
+
+## Bare metal (systemd)
+
+The tarball binary is fully static — no libc, no runtime dependencies. Unpack
+it, install it, and write one unit file:
+
+```sh
+tar -xzf memini_0.7.18_linux_amd64.tar.gz
+sudo install -m 0755 memini_0.7.18_linux_amd64/memini /usr/local/bin/memini
+```
+
+**The trap to know about first:** `MEMINI_SQLITE_PATH` defaults to `memini.db`
+**relative to the working directory**. Under systemd, an unconfigured service
+starts in `/`, so the default either fails to create the database (read-only
+`/`) or, with a permissive setup, drops it somewhere you will not look. Always
+set an absolute path under `/var/lib/memini`, and a matching
+`WorkingDirectory` for defense in depth.
+
+`/etc/systemd/system/memini.service`:
+
+```ini
+[Unit]
+Description=memini memory server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/memini
+DynamicUser=yes
+StateDirectory=memini
+WorkingDirectory=/var/lib/memini
+Environment=MEMINI_SQLITE_PATH=/var/lib/memini/memini.db
+EnvironmentFile=-/etc/memini/env
+Restart=on-failure
+RestartSec=2
+
+# Hardening. DynamicUser already implies most of ProtectSystem=strict;
+# stating these keeps the unit safe if you switch to a static user later.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Choices worth understanding:
+
+- **`DynamicUser` + `StateDirectory`**: systemd allocates a throwaway uid and
+  creates `/var/lib/memini` owned by it — no user management, and the rest of
+  the filesystem stays read-only to the service. If backup tooling outside
+  systemd needs stable file ownership, use a dedicated account instead:
+  `User=memini` with `useradd --system --home /var/lib/memini memini`, keeping
+  `StateDirectory=memini`.
+- **`EnvironmentFile` for secrets**: put `MEMINI_API_KEY=...`,
+  `MEMINI_EMBED_BASE_URL=...` and friends in `/etc/memini/env`, root-owned mode
+  `0600`, out of the unit file (unit files are world-readable). The leading `-`
+  makes the file optional so first boot works before you create it.
+- **`Restart=on-failure`**: memini exits non-zero on fatal misconfiguration
+  (removed variables, embedding-model mismatch); a restart loop on those is
+  noise, but transient crashes should come back. Check
+  `journalctl -u memini` before assuming the loop is transient.
+
+Then:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now memini
+curl -s localhost:8080/healthz
+```
+
+## Going further
+
+- [production.md](production.md) — TLS and reverse proxies, resource sizing,
+  Postgres operations, API-key rotation, and how to expose (or not expose)
+  `/metrics`.
+- [backup-restore.md](backup-restore.md) — backing up each backend, PVC
+  snapshots, the portable export path, and the invariants a restore must
+  respect (embedding model and dimensionality).
