@@ -11,7 +11,7 @@ Run the local server first; the bundled MCP server targets
 `http://localhost:8080/mcp`.
 
 ```sh
-memini serve
+memini
 curl http://localhost:8080/healthz
 ```
 

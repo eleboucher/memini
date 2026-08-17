@@ -1,8 +1,12 @@
 # Deployment
 
-memini is a single static binary with two storage backends and one hard external
-dependency: an OpenAI-compatible **embeddings endpoint**. Without one, remember
-and recall error out. Everything else (LLM consolidation, reranking) is optional.
+memini is a single static binary with two storage backends and one strongly
+recommended external dependency: an OpenAI-compatible **embeddings endpoint**.
+Without one the server still runs, but degraded: writes are stored
+keyword-searchable only (flagged `pending_embed` and re-embedded automatically
+once an endpoint appears) and recall falls back to keyword-only search, which
+retrieves noticeably worse. Everything else (LLM consolidation, reranking) is
+optional.
 
 Pick a shape:
 

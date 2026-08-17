@@ -621,7 +621,8 @@ func reconcileEmbedModel(
 
 func buildEmbedder(cfg *config.Config, log *slog.Logger, onInFlight func(n int64)) (embed.Embedder, error) {
 	if cfg.EmbedBaseURL == "" {
-		log.Warn("no embeddings endpoint configured; remember/recall will error until MEMINI_EMBED_BASE_URL is set")
+		log.Warn("no embeddings endpoint configured; writes are stored keyword-searchable only " +
+			"and recall degrades to keyword-only search until MEMINI_EMBED_BASE_URL is set")
 		return embed.Disabled{D: cfg.EmbedDims}, nil
 	}
 	client, err := embed.NewOpenAI(embed.OpenAIConfig{

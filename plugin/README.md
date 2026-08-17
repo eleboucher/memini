@@ -186,7 +186,7 @@ machine-local offline override.
 
 ```
 Install the memini plugin for persistent memory: run `/plugin marketplace add eleboucher/memini`
-then `/plugin install memini`. The plugin registers 7 hooks + 3 skills + the memini MCP server
+then `/plugin install memini`. The plugin registers 7 hooks + 8 commands + 9 skills + the memini MCP server
 so the agent has memory_remember / memory_recall / memory_get / memory_update / memory_forget /
 memory_list / memory_briefing (plus memory_answer, when an LLM is configured) without extra
 config. Verify with `curl http://localhost:8080/healthz`.
@@ -207,7 +207,7 @@ codex plugin marketplace add eleboucher/memini
 codex plugin add memini@memini
 ```
 
-The bundled server targets `http://localhost:8080/mcp`. Start `memini serve`,
+The bundled server targets `http://localhost:8080/mcp`. Start the server (bare `memini`),
 set `MEMINI_API_KEY` when needed, review and trust the plugin commands in
 `/hooks`, then start a new thread. Codex uses `hooks/hooks.codex.json` with
 `${PLUGIN_ROOT}` and native `Bash`, `apply_patch`, and MCP matchers; Claude uses
@@ -359,6 +359,7 @@ actual source (`env-override` / `server (key|global|default)`).
 | `MEMINI_CAPTURE_ASSISTANT_MAX_CHARS` | `3000`  | same for the assistant side, which is larger because the answer usually carries the durable content.                                                                                               |
 | `MEMINI_SESSION_DIGEST`              | on      | record session digests (files edited, commands run); `0` to keep memory to durable facts only.                                                                                                     |
 | `MEMINI_INLINE_EXTRACT`              | on      | inject the memory-save directive (`memory_remember`) and scrape legacy `<memory>` blocks.                                                                                                          |
+| `MEMINI_INJECT_TELEMETRY`            | on      | after each injection (briefing, prompt recall, pretool context), post one best-effort beacon to `POST /v1/activity/injected` so the server can log what reached the agent; `0` disables.           |
 | `MEMINI_TIMEOUT_MS`                  | `30000` | per-request timeout (wire name `request_timeout_ms`); also read at the transport layer, so it bounds calls made before a handshake. Must exceed the server's `MEMINI_RERANK_TIMEOUT` — see above.  |
 
 ### Removed variables

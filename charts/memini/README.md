@@ -94,7 +94,9 @@ persistence:
 
 ## Observability
 
-The service exposes Prometheus metrics at `:8080/metrics`. The chart ships a
+The service exposes Prometheus metrics on the dedicated `metrics` port
+(`MEMINI_METRICS_ADDR`, `:9090` in this chart's defaults) — not on the main
+`:8080` HTTP port. The chart ships a
 single Grafana dashboard at `charts/memini/dashboards/memini.json` that
 surfaces the actual memory value: live counts by tier, write/recall traffic,
 consolidation outcomes (including LLM dedup effectiveness), decay sweeps,

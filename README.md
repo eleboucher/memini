@@ -79,8 +79,8 @@ For the full walk-through, including wiring it into an agent, see
 ## Agent plugin
 
 Most integrations read **`MEMINI_BASE_URL`** for the server and
-**`MEMINI_API_KEY`** for the token. `MEMINI_URL` and `MEMINI_TOKEN` remain
-legacy aliases where documented. The native Codex plugin is the exception: its
+**`MEMINI_API_KEY`** for the token. `MEMINI_URL` and `MEMINI_TOKEN` are removed:
+clients warn once at session start and otherwise ignore them. The native Codex plugin is the exception: its
 bundled server uses a fixed local URL and accepts only `MEMINI_API_KEY`; see the
 remote override recipe below. Where an integration has its own config (opencode
 options, Open WebUI Valves, `openclaw.json`), that config wins over the
@@ -117,7 +117,7 @@ codex plugin marketplace add eleboucher/memini
 codex plugin add memini@memini
 ```
 
-Start the local server first (`memini serve`, default
+Start the local server first (`memini`, default
 `http://localhost:8080`), set `MEMINI_API_KEY` when authentication is enabled,
 review and trust the bundled hooks with `/hooks`, then start a new thread.
 Remote and custom-server setup is covered in
