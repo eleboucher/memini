@@ -983,3 +983,163 @@ func TestPruneEvents(t *testing.T) {
 		t.Fatalf("no-op prune deleted rows: %d events remain, want 1", len(page.Events))
 	}
 }
+
+// slowServeAppendStore delays the append of recall-kind event rows, forcing
+// the interleaving that produced bare inject rows in production: the serve's
+// insert still in flight when the beacon's hydration read runs.
+type slowServeAppendStore struct {
+	*sqlitevec.Store
+	delay time.Duration
+}
+
+func (s *slowServeAppendStore) AppendEvents(ctx context.Context, evs []store.Event) error {
+	if len(evs) > 0 && evs[0].Kind == store.EventRecall {
+		time.Sleep(s.delay)
+	}
+	return s.Store.AppendEvents(ctx, evs)
+}
+
+// TestAsyncEventLogOrdersServeBeforeBeacon is the regression for the
+// serve-vs-beacon append race. With the event log ASYNC (the production
+// default), a recall's serve rows are appended from a detached goroutine; the
+// injection beacon that follows milliseconds later hydrates its rows by
+// reading those serve rows back. Before appends were chained FIFO, nothing
+// ordered the two goroutines — delaying the serve append made the hydration
+// read run first, find nothing, and store the inject rows permanently bare
+// (observed at ~3% of injections on a contended production store, with
+// 7-21ms serve→beacon gaps). The FIFO makes submission order commit order, so
+// the delayed serve must land before the beacon's read runs.
+func TestAsyncEventLogOrdersServeBeforeBeacon(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "events.db"), dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := service.New(&slowServeAppendStore{Store: st, delay: 100 * time.Millisecond},
+		embedtest.New(dims),
+		service.WithSyncReinforce(),
+		service.WithEventLog(true),
+		// Deliberately NOT WithSyncEventLog: the race lives on the async path.
+	)
+
+	m, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "n", Content: "the primary database is postgres", Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	if _, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "n", Query: "database", Limit: 5,
+	}); err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	svc.RecordInjected(ctx, "n", service.InjectedReport{
+		SessionID: "s1", Surface: "prompt", InjectedIDs: []string{m.ID},
+	})
+	svc.WaitBackground()
+
+	// Assert on the RAW stored rows, not through Events(): the read path
+	// heals bare rows for display, which would mask exactly the write-time
+	// race this test exists to catch.
+	raw, err := st.ListEvents(ctx, store.EventFilter{
+		Namespace: "n", Kinds: []store.EventKind{store.EventInject}, Limit: 50,
+	})
+	if err != nil {
+		t.Fatalf("list raw events: %v", err)
+	}
+	if len(raw) != 1 {
+		t.Fatalf("want 1 stored inject row, got %d", len(raw))
+	}
+	if raw[0].MemoryNS != "n" || raw[0].MemorySummary == "" {
+		t.Fatalf("inject row stored bare — beacon hydration ran before the serve append committed: %+v", raw[0])
+	}
+}
+
+// TestEventsHealsBareInjectRows covers the read-time heal for rows the
+// pre-FIFO race already stored bare: an inject row with an id but no
+// snapshot, whose serve row exists in the same namespace. Events must return
+// it hydrated (borrowed from the serve, however old — the lookup is unbounded
+// in time), without writing anything back to the store, and an id that was
+// never served must stay bare.
+func TestEventsHealsBareInjectRows(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "events.db"), dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := service.New(st, embedtest.New(dims),
+		service.WithSyncReinforce(),
+		service.WithEventLog(true),
+		service.WithSyncEventLog(),
+	)
+
+	m, err := svc.Remember(ctx, service.RememberInput{
+		Namespace: "n", Content: "the primary database is postgres", Tier: memory.TierSemantic,
+	})
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	if _, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "n", Query: "database", Limit: 5,
+	}); err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+
+	// Simulate the pre-fix outcome: the beacon's rows landed bare.
+	bare := []store.Event{
+		{OpID: "bare-op", Kind: store.EventInject, Namespace: "n",
+			MemoryID: m.ID, Rank: 1,
+			Detail:    map[string]any{"surface": "prompt"},
+			CreatedAt: time.Now().Add(-48 * time.Hour)},
+		{OpID: "bare-op", Kind: store.EventInject, Namespace: "n",
+			MemoryID: "never-served", Rank: 2,
+			Detail:    map[string]any{"surface": "prompt"},
+			CreatedAt: time.Now().Add(-48 * time.Hour)},
+	}
+	if err := st.AppendEvents(ctx, bare); err != nil {
+		t.Fatalf("append bare rows: %v", err)
+	}
+
+	page, err := svc.Events(ctx, service.EventsInput{
+		Namespace: "n", Kinds: []store.EventKind{store.EventInject},
+	})
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	var healed, unserved *service.ActivityMemory
+	for i := range page.Events {
+		for j := range page.Events[i].Memories {
+			am := &page.Events[i].Memories[j]
+			switch am.ID {
+			case m.ID:
+				healed = am
+			case "never-served":
+				unserved = am
+			}
+		}
+	}
+	if healed == nil || unserved == nil {
+		t.Fatalf("bare inject rows missing from feed: %+v", page.Events)
+	}
+	if healed.Namespace != "n" || healed.Summary == "" {
+		t.Fatalf("bare row not healed at read time: %+v", healed)
+	}
+	if unserved.Namespace != "" || unserved.Summary != "" {
+		t.Fatalf("never-served id must stay bare (borrow-from-serve rule): %+v", unserved)
+	}
+
+	// Heal is display-only: the stored rows must still be bare.
+	raw, err := st.ListEvents(ctx, store.EventFilter{
+		Namespace: "n", Kinds: []store.EventKind{store.EventInject}, Limit: 50,
+	})
+	if err != nil {
+		t.Fatalf("list raw events: %v", err)
+	}
+	for _, r := range raw {
+		if r.OpID == "bare-op" && r.MemoryNS != "" {
+			t.Fatalf("heal must not write back to the store, row %q got ns %q", r.MemoryID, r.MemoryNS)
+		}
+	}
+}

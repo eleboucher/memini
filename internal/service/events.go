@@ -89,10 +89,19 @@ func (s *Service) logEvents(ctx context.Context, events []store.Event) {
 // logEventsPrepared is logEvents with a hook that runs against the rows just
 // before they are appended, for a writer that must read the store to complete
 // them (RecordInjected's snapshot hydration). Running inside the same goroutine
-// as the append keeps the read off the caller's latency, and — since the
-// background write is already queued behind the serve that preceded it — gives
-// that serve's own rows a head start on landing, which is exactly what the
-// hydration looks for. prepare must be best-effort: it cannot fail the append.
+// as the append keeps the read off the caller's latency, and the FIFO chain
+// below guarantees the serve that preceded the beacon has COMMITTED before the
+// hydration read runs, which is exactly what it looks for. prepare must be
+// best-effort: it cannot fail the append.
+//
+// The FIFO is load-bearing, not an optimization. An earlier version spawned
+// each append as a free-running goroutine and asserted in a comment that the
+// beacon's write was "already queued behind the serve that preceded it" — no
+// such queue existed (sync.WaitGroup orders nothing), and under store write
+// contention the beacon's hydration read raced the serve's insert and lost,
+// permanently storing the inject rows bare (~3% of injections on a busy
+// sqlite deployment, observed 7-21ms serve→beacon gaps). Chaining each append
+// on its predecessor's completion makes submission order the commit order.
 func (s *Service) logEventsPrepared(ctx context.Context, events []store.Event,
 	prepare func(context.Context, []store.Event),
 ) {
@@ -122,8 +131,22 @@ func (s *Service) logEventsPrepared(ctx context.Context, events []store.Event,
 		return
 	}
 	// Detach from the request lifetime but keep its values; bound the work.
+	// The chain: take the current tail as this append's predecessor and
+	// install a fresh done channel as the new tail, atomically. The goroutine
+	// waits for the predecessor before writing, so appends commit in
+	// submission order; the per-write timeout starts after the wait, so a
+	// slow predecessor consumes its own budget, not its successors'.
 	bg := context.WithoutCancel(ctx)
+	s.eventQMu.Lock()
+	prev := s.eventQTail
+	done := make(chan struct{})
+	s.eventQTail = done
+	s.eventQMu.Unlock()
 	s.bg.Go(func() {
+		defer close(done)
+		if prev != nil {
+			<-prev
+		}
 		ectx, cancel := context.WithTimeout(bg, eventLogTimeout)
 		defer cancel()
 		write(ectx)
@@ -338,7 +361,12 @@ const injectHydrateMaxIDs = 200
 // Best-effort like everything else on this path — an unresolved id keeps its
 // bare row (the "taken on faith" contract), and a store error logs and leaves
 // every row bare.
-func (s *Service) hydrateInjected(ctx context.Context, namespace string, events []store.Event) {
+//
+// since bounds how far back the serve lookup reaches; zero means unbounded.
+// The write path passes now-injectHydrateWindow (the serve just happened);
+// the read-time heal passes zero, because a historical bare row's serve sits
+// near the ROW's own time, not near now.
+func (s *Service) hydrateInjected(ctx context.Context, namespace string, events []store.Event, since time.Time) {
 	els, ok := s.eventLog()
 	if !ok {
 		return
@@ -355,7 +383,7 @@ func (s *Service) hydrateInjected(ctx context.Context, namespace string, events 
 	if len(ids) == 0 {
 		return
 	}
-	snaps, err := els.ServedSnapshots(ctx, namespace, ids, s.now().Add(-injectHydrateWindow))
+	snaps, err := els.ServedSnapshots(ctx, namespace, ids, since)
 	if err != nil {
 		slog.WarnContext(ctx, "activity: inject snapshot hydration failed",
 			"namespace", namespace, "count", len(ids), "err", err)
@@ -366,6 +394,43 @@ func (s *Service) hydrateInjected(ctx context.Context, namespace string, events 
 			events[i].MemoryNS = snap.Namespace
 			events[i].MemoryTier = snap.Tier
 			events[i].MemorySummary = snap.Summary
+		}
+	}
+}
+
+// healBareInjectRows re-runs snapshot hydration, at read time, over inject
+// rows that were stored bare. Before the append FIFO existed (see
+// logEventsPrepared) a beacon's hydration could race its serve's insert and
+// lose, so historical logs carry inject rows with an id but no namespace,
+// tier or summary — the feed rendered them as raw id prefixes and the UI had
+// no namespace to open them with.
+//
+// Display-only and best-effort: the healed snapshot is returned with the
+// page, never written back, so the store keeps its write-time contract and a
+// row that still resolves nothing stays bare. Rows are grouped by their own
+// event namespace — a feed page can span namespaces, and the borrow-from-serve
+// rule (a beacon only learns what its namespace was served) must hold per
+// row, not per request. The lookup is unbounded in time because a historical
+// row's serve sits near that row's own moment, not near now.
+//
+// Known limit: healing happens after the store-side tier/text filters ran, so
+// a still-bare row keeps missing those filters. Only a persisted backfill
+// could fix that, which this deliberately is not.
+func (s *Service) healBareInjectRows(ctx context.Context, rows []store.Event) {
+	byNS := make(map[string][]int)
+	for i, r := range rows {
+		if r.Kind == store.EventInject && r.MemoryID != "" && r.MemoryNS == "" {
+			byNS[r.Namespace] = append(byNS[r.Namespace], i)
+		}
+	}
+	for ns, idxs := range byNS {
+		sub := make([]store.Event, len(idxs))
+		for j, i := range idxs {
+			sub[j] = rows[i]
+		}
+		s.hydrateInjected(ctx, ns, sub, time.Time{})
+		for j, i := range idxs {
+			rows[i] = sub[j]
 		}
 	}
 }
@@ -436,7 +501,7 @@ func (s *Service) RecordInjected(ctx context.Context, namespace string, r Inject
 		events = append(events, e)
 	}
 	s.logEventsPrepared(ctx, events, func(ctx context.Context, evs []store.Event) {
-		s.hydrateInjected(ctx, namespace, evs)
+		s.hydrateInjected(ctx, namespace, evs, s.now().Add(-injectHydrateWindow))
 	})
 }
 
@@ -751,6 +816,8 @@ func (s *Service) Events(ctx context.Context, in EventsInput) (EventsPage, error
 	if len(rows) == 0 {
 		return EventsPage{}, nil
 	}
+
+	s.healBareInjectRows(ctx, rows)
 
 	groups := groupEvents(rows)
 
