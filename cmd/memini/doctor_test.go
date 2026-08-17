@@ -1187,3 +1187,33 @@ func TestHandshakeMismatchReasonUnknownSource(t *testing.T) {
 		}
 	}
 }
+
+// TestWarnNonCanonicalNamespaces pins the doctor check for rows stored under
+// a namespace string that is not in canonical form (surrounding slashes,
+// doubled separators). Both transports normalize the namespace header as of
+// v0.8, so such rows are unreachable until merged forward — doctor must say
+// so and name the merge command.
+//
+// Referenced by docs/operations/upgrading.md.
+func TestWarnNonCanonicalNamespaces(t *testing.T) {
+	var buf bytes.Buffer
+	warnings := warnNonCanonicalNamespaces(&buf, []nsStat{
+		{namespace: "team/proj", total: 4},
+		{namespace: "team//proj/", total: 2},
+	})
+	if warnings != 1 {
+		t.Fatalf("warnings = %d, want 1", warnings)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "team//proj/") || !strings.Contains(out, "team/proj") {
+		t.Fatalf("output %q must name both the stored and the canonical namespace", out)
+	}
+	if !strings.Contains(out, "namespace move") {
+		t.Fatalf("output %q must point at the merge command", out)
+	}
+
+	buf.Reset()
+	if w := warnNonCanonicalNamespaces(&buf, []nsStat{{namespace: "team/proj", total: 4}}); w != 0 {
+		t.Fatalf("canonical-only store should produce no warnings, got %d: %s", w, buf.String())
+	}
+}

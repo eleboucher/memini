@@ -151,6 +151,9 @@ type SweeperConfig struct {
 	// ActivityMaxRows caps the activity log, dropping the oldest rows beyond it.
 	// 0 disables the cap. With both bounds 0 the log grows without limit.
 	ActivityMaxRows int
+	// OnDemoted, when non-nil, is called once per memory the demote stage
+	// retiers, with the tier it was demoted from (feeds memini_demoted_total).
+	OnDemoted func(fromTier string)
 }
 
 // Sweeper periodically purges expired memories, enforces the short-term cap, and
@@ -207,7 +210,7 @@ func (s *Sweeper) sweep(ctx context.Context) {
 		}
 	}
 	if s.cfg.DemoteAfter > 0 {
-		if n, err := DemoteStale(ctx, s.store, now.Add(-s.cfg.DemoteAfter), now); err != nil {
+		if n, err := DemoteStale(ctx, s.store, now.Add(-s.cfg.DemoteAfter), now, s.cfg.OnDemoted); err != nil {
 			s.log.Warn("retro-tiering demotion failed", "error", err)
 		} else if n > 0 {
 			s.log.Info("demoted stale durable memories to episodic", "count", n)

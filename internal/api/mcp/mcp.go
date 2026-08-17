@@ -231,7 +231,8 @@ func NewServer(svc *service.Service, defaultNS, home, author, authorKind string,
 			"existing memory — either call memory_update with id=merge_hint.similar_id to fold " +
 			"them together, or ignore it to keep both. Returns {id, tier, stored} plus optional " +
 			"flags. stored=false means a low-signal write was dropped by the value gate (not an " +
-			"error). reinforced=true means the fact was ALREADY KNOWN: no new memory was created, " +
+			"error); its tier reports what the write resolved to, including an auto-classified " +
+			"tier. reinforced=true means the fact was ALREADY KNOWN: no new memory was created, " +
 			"the existing one was strengthened, and `id` names that pre-existing memory rather " +
 			"than anything you just wrote — do not report it to the user as a new save, and be " +
 			"careful updating or forgetting it. auto_superseded=true means this write replaced a " +
@@ -414,15 +415,17 @@ func HTTPHandlerWithAuth(svc *service.Service, nsHeader, defaultNS, homeHeader s
 		if p.DefaultNS != "" {
 			ns = p.DefaultNS
 		}
-		if v := strings.TrimSpace(r.Header.Get(nsHeader)); v != "" {
+		if v := httputil.NormalizeNamespace(r.Header.Get(nsHeader)); v != "" {
 			ns = v
 		}
-		// Canonicalize the home header like REST's homeMiddleware does: the
-		// same client input ("Work/Proj/") must resolve to the same namespace
-		// key on both transports, or a caller switching between REST and MCP
-		// would silently read two different home legs. The namespace header
-		// above deliberately keeps its pre-existing TrimSpace-only capture —
-		// changing it is out of scope here.
+		// Both headers are canonicalized like REST's middlewares do (trim
+		// spaces, strip surrounding slashes, collapse "//"): the same client
+		// input ("Work//Proj/") must resolve to the same namespace key on
+		// both transports, or a caller switching between REST and MCP would
+		// silently read and write two different namespaces. The namespace
+		// header was TrimSpace-only until v0.8, so rows written over MCP
+		// under a non-canonical header live in a sibling namespace — see
+		// docs/operations/upgrading.md.
 		home := httputil.NormalizeNamespace(r.Header.Get(homeHeader))
 		if p.HomeNS != "" {
 			if warn := httputil.HomeConflictWarning(p.Name, p.HomeNS, home); warn != "" {
@@ -470,7 +473,10 @@ func HTTPHandlerWithAuth(svc *service.Service, nsHeader, defaultNS, homeHeader s
 		default:
 			httputil.RecordActor(r.Context(), "", "none")
 		}
-		if v := strings.TrimSpace(r.Header.Get(nsHeader)); v != "" {
+		// Validate the normalized value (matching REST's namespaceMiddleware):
+		// a header that normalizes to empty ("///") means "no namespace
+		// header", not an error.
+		if v := httputil.NormalizeNamespace(r.Header.Get(nsHeader)); v != "" {
 			if err := httputil.ValidateNamespace(v); err != nil {
 				http.Error(w, `{"error":"invalid namespace header"}`, http.StatusBadRequest)
 				return
@@ -674,15 +680,17 @@ func (t *tools) remember(ctx context.Context, _ *mcpsdk.CallToolRequest, in reme
 	var hint service.MergeHint
 	var superseded bool
 	var reinforced bool
+	var effectiveTier memory.Tier
 	input.MergeHint = &hint
 	input.AutoSuperseded = &superseded
 	input.Reinforced = &reinforced
+	input.EffectiveTier = &effectiveTier
 	m, err := t.svc.Remember(ctx, input)
 	if err != nil {
 		return nil, rememberResult{}, err
 	}
-	if m == nil { // episodic value gate dropped the write
-		return nil, rememberResult{Tier: string(input.Tier), Stored: false}, nil
+	if m == nil { // value gate dropped the write: report the tier it resolved to
+		return nil, rememberResult{Tier: string(effectiveTier), Stored: false}, nil
 	}
 	res := rememberResult{
 		ID:             m.ID,

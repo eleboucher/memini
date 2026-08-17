@@ -6,7 +6,7 @@
     "name": "memini maintainers",
     "url": "https://github.com/eleboucher/memini"
   },
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-only",
   "homepage": "https://github.com/eleboucher/memini",
   "repository": "https://github.com/eleboucher/memini",
   "keywords": ["memory", "agent", "claude-code"],

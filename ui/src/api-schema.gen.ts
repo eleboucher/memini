@@ -1701,6 +1701,19 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Accepted but not stored: the write-time value gate dropped a low-signal write. Not an error. tier reports the tier the write resolved to (the explicit tier, or the auto-classified/default one when omitted). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        stored: boolean;
+                        reason: string;
+                        tier: components["schemas"]["Tier"];
+                    };
+                };
+            };
             /** @description Created */
             201: {
                 headers: {

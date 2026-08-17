@@ -1105,6 +1105,17 @@ type RememberInput struct {
 	//
 	// The caller passes the address of a local bool; nil disables reporting.
 	Reinforced *bool
+	// EffectiveTier (output-only) receives the tier the write RESOLVED to —
+	// the explicit tier when one was given, otherwise the auto-classified or
+	// default tier. It is populated as soon as validation succeeds, so it is
+	// set even when the value gate drops the write and Remember returns
+	// (nil, nil): without it a caller reporting a dropped write back to an
+	// agent can only echo the raw input tier, which is "" when the agent
+	// omitted it.
+	//
+	// The caller passes the address of a local memory.Tier; nil disables
+	// reporting.
+	EffectiveTier *memory.Tier
 	// Author names the NAMED API key that authenticated this write (set by
 	// the REST/MCP handlers from the request principal — see
 	// internal/api/rest's principalFromContext / internal/apiauth.Principal).
@@ -1338,6 +1349,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 		s.metrics.RememberResult("error", string(tier))
 		return nil, err
 	}
+	reportEffectiveTier(in.EffectiveTier, tier)
 	in = s.stampClassifiedTier(in, tier)
 	in = stampAuthor(in)
 
@@ -1537,6 +1549,16 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 // creating one. A free function, not an inline nil-check, so the branch does not
 // count against Remember's cyclomatic budget — it is already at the limit, and a
 // honesty flag is not worth an exemption.
+// reportEffectiveTier records the tier a write resolved to (explicit,
+// auto-classified, or default) into the caller's EffectiveTier out-param, so
+// the tier is observable even on writes the value gate later drops. nil
+// disables reporting — see RememberInput.EffectiveTier.
+func reportEffectiveTier(out *memory.Tier, tier memory.Tier) {
+	if out != nil {
+		*out = tier
+	}
+}
+
 func markReinforced(flag *bool) {
 	if flag != nil {
 		*flag = true

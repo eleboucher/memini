@@ -232,18 +232,22 @@ func (h *Server) RememberMemory(w http.ResponseWriter, r *http.Request, _ Rememb
 	var hint service.MergeHint
 	var superseded bool
 	var reinforced bool
+	const tierKey = "tier"
+	var effectiveTier memory.Tier
 	in.MergeHint = &hint
 	in.AutoSuperseded = &superseded
 	in.Reinforced = &reinforced
+	in.EffectiveTier = &effectiveTier
 	m, err := h.svc.Remember(r.Context(), in)
 	if err != nil {
 		writeError(w, r, statusFor(err), err)
 		return
 	}
-	// A nil memory with no error means the episodic value gate dropped the write:
-	// accepted, not stored.
+	// A nil memory with no error means the value gate dropped the write:
+	// accepted, not stored. Report the tier the write resolved to so a caller
+	// that omitted it still learns what the write would have been.
 	if m == nil {
-		httputil.JSON(w, http.StatusOK, map[string]any{"stored": false, "reason": "low_signal"})
+		httputil.JSON(w, http.StatusOK, map[string]any{"stored": false, "reason": "low_signal", tierKey: string(effectiveTier)})
 		return
 	}
 	// Build the response via JSON round-trip so we can add the optional
@@ -266,7 +270,6 @@ func (h *Server) RememberMemory(w http.ResponseWriter, r *http.Request, _ Rememb
 		return
 	}
 	if hint.SimilarID != "" {
-		const tierKey = "tier"
 		resp["merge_hint"] = map[string]any{
 			"similar_id":      hint.SimilarID,
 			"similar_content": hint.SimilarContent,

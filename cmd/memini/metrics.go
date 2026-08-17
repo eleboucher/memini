@@ -51,6 +51,7 @@ type consolidateMetrics struct {
 	storeDelete     prometheus.Counter
 	storeSoftDelete prometheus.Counter
 	storeSweep      *prometheus.CounterVec
+	demoted         *prometheus.CounterVec
 	activeByTier    *prometheus.GaugeVec
 	dedupTombstoned prometheus.Counter
 
@@ -203,6 +204,10 @@ func newConsolidateMetrics(reg prometheus.Registerer) *consolidateMetrics {
 			Name: "memini_store_swept_total",
 			Help: "Memories purged by the decay sweeper, by tier.",
 		}, []string{labelTier}),
+		demoted: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "memini_demoted_total",
+			Help: "Durable memories the sweeper demoted to episodic (stale, unused, low confidence), by former tier.",
+		}, []string{labelTier}),
 		activeByTier: factory.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "memini_memories_active",
 			Help: "Live (non-superseded, non-expired) memory count by tier, refreshed after sweeps and fsck.",
@@ -346,6 +351,12 @@ func (m *consolidateMetrics) SoftDelete() {
 
 func (m *consolidateMetrics) SweepExpired(tier string) {
 	m.storeSweep.WithLabelValues(tier).Inc()
+}
+
+// Demoted records one durable memory the sweeper demoted to episodic, by the
+// tier it was demoted from (wired into SweeperConfig.OnDemoted).
+func (m *consolidateMetrics) Demoted(fromTier string) {
+	m.demoted.WithLabelValues(fromTier).Inc()
 }
 
 func (m *consolidateMetrics) ActiveByTier(tier string, n int) {

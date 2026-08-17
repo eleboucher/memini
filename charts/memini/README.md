@@ -94,11 +94,18 @@ persistence:
 
 ## Observability
 
-The service exposes Prometheus metrics at `:8080/metrics`. The chart ships a
-single Grafana dashboard at `charts/memini/dashboards/memini.json` that
-surfaces the actual memory value: live counts by tier, write/recall traffic,
-consolidation outcomes (including LLM dedup effectiveness), decay sweeps,
-embedder latency and tokens, and end-to-end op latency.
+The service exposes Prometheus metrics on the dedicated `metrics` port
+(`MEMINI_METRICS_ADDR`, `:9090` in this chart's defaults) — not on the main
+`:8080` HTTP port. The chart ships a
+single Grafana dashboard at `charts/memini/dashboards/memini.json` covering
+the full metric surface: an at-a-glance "Now" row (live memories, traffic,
+error ratio, repair backlog), the write path (rates by tier, degraded
+vectorless writes, dedup and hygiene), retrieval quality (degradation,
+floored candidates, reinforcement), aging and maintenance (promotion,
+demotion, sweeps, tombstones, the self-repair backlog), embedder and rerank
+health, LLM consolidation, the HTTP surface, and client injection telemetry.
+Every panel query is verified against the metric registry and carries a
+description of what bad looks like.
 
 For automatic loading via the [grafana-operator](https://github.com/grafana-operator/grafana-operator),
 enable the ConfigMap renderer and point your `Grafana` CR's `dashboardsConfigMaps`
