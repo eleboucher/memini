@@ -287,6 +287,27 @@ behaviour is unchanged at every boundary.
 
 ## Behaviour changes that are not variables
 
+### MCP now normalizes the namespace header like REST
+
+The MCP transport used to capture `X-Memini-Namespace` verbatim (trimming
+only surrounding spaces), while REST always canonicalized it (surrounding
+slashes stripped, `//` collapsed). The same client input could therefore
+address two different namespaces depending on the transport. MCP now
+normalizes exactly like REST.
+
+If MCP-written memories seem missing after upgrading, the likely cause is a
+non-canonical namespace string that accumulated rows before the change — for
+example a static `MEMINI_NAMESPACE="team/proj/"` wired straight into an MCP
+header. `memini doctor` flags every stored namespace that is not in canonical
+form and prints the merge command; the fix is:
+
+```sh
+memini namespace move --from "team/proj/" --to "team/proj"
+```
+
+Official plugin installs are unaffected: the plugin resolves namespaces
+through the server handshake, which always produced canonical names.
+
 Not every breaking change shows up as a removed variable. These change what the
 server does without changing what you configure.
 

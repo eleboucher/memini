@@ -415,15 +415,17 @@ func HTTPHandlerWithAuth(svc *service.Service, nsHeader, defaultNS, homeHeader s
 		if p.DefaultNS != "" {
 			ns = p.DefaultNS
 		}
-		if v := strings.TrimSpace(r.Header.Get(nsHeader)); v != "" {
+		if v := httputil.NormalizeNamespace(r.Header.Get(nsHeader)); v != "" {
 			ns = v
 		}
-		// Canonicalize the home header like REST's homeMiddleware does: the
-		// same client input ("Work/Proj/") must resolve to the same namespace
-		// key on both transports, or a caller switching between REST and MCP
-		// would silently read two different home legs. The namespace header
-		// above deliberately keeps its pre-existing TrimSpace-only capture —
-		// changing it is out of scope here.
+		// Both headers are canonicalized like REST's middlewares do (trim
+		// spaces, strip surrounding slashes, collapse "//"): the same client
+		// input ("Work//Proj/") must resolve to the same namespace key on
+		// both transports, or a caller switching between REST and MCP would
+		// silently read and write two different namespaces. The namespace
+		// header was TrimSpace-only until v0.8, so rows written over MCP
+		// under a non-canonical header live in a sibling namespace — see
+		// docs/operations/upgrading.md.
 		home := httputil.NormalizeNamespace(r.Header.Get(homeHeader))
 		if p.HomeNS != "" {
 			if warn := httputil.HomeConflictWarning(p.Name, p.HomeNS, home); warn != "" {
@@ -471,7 +473,10 @@ func HTTPHandlerWithAuth(svc *service.Service, nsHeader, defaultNS, homeHeader s
 		default:
 			httputil.RecordActor(r.Context(), "", "none")
 		}
-		if v := strings.TrimSpace(r.Header.Get(nsHeader)); v != "" {
+		// Validate the normalized value (matching REST's namespaceMiddleware):
+		// a header that normalizes to empty ("///") means "no namespace
+		// header", not an error.
+		if v := httputil.NormalizeNamespace(r.Header.Get(nsHeader)); v != "" {
 			if err := httputil.ValidateNamespace(v); err != nil {
 				http.Error(w, `{"error":"invalid namespace header"}`, http.StatusBadRequest)
 				return

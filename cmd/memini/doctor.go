@@ -19,6 +19,7 @@ import (
 
 	"github.com/eleboucher/memini/internal/config"
 	"github.com/eleboucher/memini/internal/embed"
+	"github.com/eleboucher/memini/internal/httputil"
 	"github.com/eleboucher/memini/internal/logging"
 	"github.com/eleboucher/memini/internal/maintenance"
 	"github.com/eleboucher/memini/internal/memory"
@@ -124,6 +125,7 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	warnings += warnEnvSlashMigration(out, cfg, stats)
+	warnings += warnNonCanonicalNamespaces(out, stats)
 
 	entries, rsSource, rsErr := resolveReadSet(cmd.Context(), st, pluginNS, cfg.Home)
 	if rsErr != nil {
@@ -699,6 +701,28 @@ func statsTotal(stats []nsStat, ns string) (int, bool) {
 // two namespaces silently diverging unless the operator notices. Only fires
 // when the basename actually holds memories; a fresh deployment (or one that
 // already migrated) has nothing there and gets no warning.
+// warnNonCanonicalNamespaces flags rows stored under a namespace string that
+// is not in canonical form (surrounding slashes, doubled separators). Until
+// v0.8 the MCP transport captured X-Memini-Namespace TrimSpace-only while
+// REST normalized it, so an MCP caller sending a messy header (for example a
+// static MEMINI_NAMESPACE="team/proj/" wired through Codex) accumulated rows
+// in a sibling namespace. Both transports normalize now, which makes those
+// rows unreachable until merged forward.
+func warnNonCanonicalNamespaces(out io.Writer, stats []nsStat) int {
+	warnings := 0
+	for _, s := range stats {
+		canonical := httputil.NormalizeNamespace(s.namespace)
+		if canonical == s.namespace || s.total == 0 {
+			continue
+		}
+		warnings++
+		warnf(out, "namespace %q is not in canonical form; both transports now normalize the "+
+			"namespace header, so its %d memories are unreachable as %q.", s.namespace, s.total, canonical)
+		note(out, fmt.Sprintf("Merge them forward with: memini namespace move --from %q --to %q", s.namespace, canonical))
+	}
+	return warnings
+}
+
 func warnEnvSlashMigration(out io.Writer, cfg *config.Config, stats []nsStat) int {
 	if cfg.NamespaceSrc != config.NamespaceFromEnv || !strings.Contains(cfg.DefaultNamespace, "/") {
 		return 0
