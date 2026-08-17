@@ -1566,6 +1566,22 @@ pre.json {
 .act-mem.floored {
   opacity: 0.5;
 }
+/* A bare inject row: a client reported the id but no serve snapshot could be
+   borrowed, so there is nothing to open. Inert on purpose — a hover/pointer
+   affordance here would promise a click that can only 404. */
+.act-mem.ghost {
+  opacity: 0.55;
+  cursor: default;
+}
+.act-mem.ghost:hover {
+  background: none;
+}
+.chip.ghost-badge {
+  border-style: dashed;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
 .chip.floored-badge {
   border-color: var(--line-strong);
   color: var(--muted);

@@ -405,26 +405,40 @@ export function Activity() {
 
                 {(ev.memories?.length ?? 0) > 0 && (
                   <div class="act-mems">
-                    {ev.memories?.map((m) => (
-                      <button
+                    {ev.memories?.map((m) => {
+                      // A row with neither summary nor namespace is a bare
+                      // snapshot: nothing to show and — crucially — no
+                      // namespace to open the memory with, so a click could
+                      // only fall back to the viewer's active namespace and
+                      // 404. Render it inert instead of as a dead button.
+                      const bare = !m.summary && !m.namespace
+                      const Row = bare ? 'span' : 'button'
+                      return (
+                      <Row
                         key={m.id}
-                        type="button"
-                        class={`act-mem${m.filtered ? ' floored' : ''}`}
-                        onClick={() => openMemory(m.id, m.namespace || undefined)}
+                        {...(bare
+                          ? {
+                              class: 'act-mem ghost',
+                              title:
+                                'A client reported injecting this memory, but no matching serve was recorded — there is no snapshot to show and no namespace to open it in.',
+                            }
+                          : {
+                              type: 'button' as const,
+                              class: `act-mem${m.filtered ? ' floored' : ''}`,
+                              onClick: () => openMemory(m.id, m.namespace || undefined),
+                            })}
                       >
                         {m.rank ? <span class="act-rank mono">#{m.rank}</span> : <span class="act-rank" />}
                         <TierBadge tier={m.tier} />
                         {/* A row whose writer recorded no snapshot has no text
                             to show. Fall back to the id prefix rather than an
-                            empty line — memini resolves short ids, so it is
-                            something you can actually act on. */}
+                            empty line. */}
                         {m.summary ? (
                           <span class="act-summary">{m.summary}</span>
                         ) : (
-                          <span class="act-summary mono muted" title="No snapshot was recorded for this memory">
-                            {m.id.slice(0, 8)}
-                          </span>
+                          <span class="act-summary mono muted">{m.id.slice(0, 8)}</span>
                         )}
+                        {bare && <span class="chip ghost-badge">no snapshot</span>}
                         {m.section && <span class="chip">{m.section}</span>}
                         {/* The score is the "why": how well this memory matched
                             the query it was served for. */}
@@ -454,8 +468,9 @@ export function Activity() {
                         {showNs && m.namespace && m.namespace !== ev.namespace && (
                           <span class="chip mono">{m.namespace}</span>
                         )}
-                      </button>
-                    ))}
+                      </Row>
+                      )
+                    })}
                   </div>
                 )}
               </div>
