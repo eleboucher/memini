@@ -1,9 +1,6 @@
 # memini plugin
 
-A Claude Code / Codex / opencode plugin that wires the [memini](../)
-memory service into the agent's lifecycle. It captures what the agent
-does, surfaces prior context at session start, and ships skills that teach
-the agent _when_ to use the memory tools.
+A Claude Code / Codex / opencode plugin that wires the [memini](../) memory service into the agent's lifecycle. It captures what the agent does, surfaces prior context at session start, and ships skills that teach the agent _when_ to use the memory tools.
 
 ## What it does
 
@@ -17,94 +14,42 @@ the agent _when_ to use the memory tools.
 | `PreCompact`       | Before context compaction, distills the buffer into an episodic emergency checkpoint (Claude Code only)                                                                                            |
 | `SessionEnd`       | Distills the buffer into one durable episodic **session digest**                                                                                                                                   |
 
-The table describes the full Claude lifecycle. Codex uses the same shared
-scripts for its documented events but omits `SessionEnd` and all
-transcript-dependent behavior; see [Codex CLI](#codex-cli) for the stable
-differences.
+The table describes the full Claude lifecycle. Codex uses the same shared scripts for its documented events but omits `SessionEnd` and all transcript-dependent behavior; see [Codex CLI](#codex-cli) for the stable differences.
 
 ### Auto-save (Stop)
 
-Agents forget to save. So the `Stop` hook counts the conversation's user
-messages (from the transcript) and, at most once every `MEMINI_AUTO_SAVE_INTERVAL`
-(default 10), **blocks the stop once** with a short instruction: review the
-conversation for durable decisions/facts/preferences and persist each via the
-`memory_remember` MCP tool. The agent saves, then stops normally (the next `Stop`
-carries `stop_hook_active` and passes through — no loop).
+Agents forget to save. So the `Stop` hook counts the conversation's user messages (from the transcript) and, at most once every `MEMINI_AUTO_SAVE_INTERVAL` (default 10), **blocks the stop once** with a short instruction: review the conversation for durable decisions/facts/preferences and persist each via the `memory_remember` MCP tool. The agent saves, then stops normally (the next `Stop` carries `stop_hook_active` and passes through — no loop).
 
-The nudge is **event-aware** — it interrupts only when there is likely something
-to save:
+The nudge is **event-aware** — it interrupts only when there is likely something to save:
 
-- **Already saving?** If the transcript shows any `memory_remember` /
-  `memory_update` call since the counter last reset — including a subagent's —
-  the nudge is **suppressed** and the counter re-baselines. A session keeping its
-  memory current is never interrupted.
-- **Trivial window?** If fewer than `MEMINI_AUTO_SAVE_MIN_EVENTS` (default 3)
-  state-changing tool calls were buffered since that reset, the nudge is
-  **deferred** — the counter keeps growing, not resetting — until the interval
-  **doubles** (2×), at which point it fires a discussion-variant nudge (there may
-  be decisions or preferences worth saving even with no tool activity).
-- **Real activity?** When it fires after real work, the nudge **names the actual
-  files edited and commands run** in that window as anchors, so the agent knows
-  what to look back over.
+- **Already saving?** If the transcript shows any `memory_remember` / `memory_update` call since the counter last reset — including a subagent's — the nudge is **suppressed** and the counter re-baselines. A session keeping its memory current is never interrupted.
+- **Trivial window?** If fewer than `MEMINI_AUTO_SAVE_MIN_EVENTS` (default 3) state-changing tool calls were buffered since that reset, the nudge is **deferred** — the counter keeps growing, not resetting — until the interval **doubles** (2×), at which point it fires a discussion-variant nudge (there may be decisions or preferences worth saving even with no tool activity).
+- **Real activity?** When it fires after real work, the nudge **names the actual files edited and commands run** in that window as anchors, so the agent knows what to look back over.
 
-It still nudges at most once per interval even if the agent saves nothing, and
-never blocks when the transcript is unreadable. On by default; set
-`MEMINI_AUTO_SAVE=0` to disable, or `MEMINI_AUTO_SAVE_MIN_EVENTS=0` to drop the
-activity gate and nudge on the message interval alone. Codex sends no transcript
-path, so the nudge is inert there.
+It still nudges at most once per interval even if the agent saves nothing, and never blocks when the transcript is unreadable. On by default; set `MEMINI_AUTO_SAVE=0` to disable, or `MEMINI_AUTO_SAVE_MIN_EVENTS=0` to drop the activity gate and nudge on the message interval alone. Codex sends no transcript path, so the nudge is inert there.
 
 ### Session capture: buffer → digest
 
-Rather than POSTing a memory per tool call (noisy — recall ends up full of thin
-fragments), `PostToolUse` appends one JSON line per state-changing call to a
-local buffer at `${XDG_CACHE_HOME:-~/.cache}/memini/sessions/<session_id>.jsonl`.
-At `SessionEnd` the buffer is distilled into a **single** dense, searchable
-episodic memory — files edited (with counts), commands run, event count — then
-deleted. `Stop` writes the same digest as a 24h working-tier checkpoint without
-deleting the buffer. `SessionStart` also sweeps away buffers older than 7 days
-left behind by crashed sessions. Net effect: zero network traffic on the hot
-path and one dense memory per session instead of dozens.
+Rather than POSTing a memory per tool call (noisy — recall ends up full of thin fragments), `PostToolUse` appends one JSON line per state-changing call to a local buffer at `${XDG_CACHE_HOME:-~/.cache}/memini/sessions/<session_id>.jsonl`. At `SessionEnd` the buffer is distilled into a **single** dense, searchable episodic memory — files edited (with counts), commands run, event count — then deleted. `Stop` writes the same digest as a 24h working-tier checkpoint without deleting the buffer. `SessionStart` also sweeps away buffers older than 7 days left behind by crashed sessions. Net effect: zero network traffic on the hot path and one dense memory per session instead of dozens.
 
 ### Automatic memory capture (Stop)
 
-Two layers run at every `Stop`, both **on by default** so the plugin produces
-real memories out of the box — not just session digests:
+Two layers run at every `Stop`, both **on by default** so the plugin produces real memories out of the box — not just session digests:
 
-- **Turn capture** (`MEMINI_CAPTURE_TURNS`): the last user→assistant turn is
-  stored as an **episodic** memory (deduped on the assistant message id), the
-  same automatic per-turn recall layer the opencode plugin gets from
-  `session.idle`. Set to `0` to disable.
-- **Memory directive** (`MEMINI_INLINE_EXTRACT`): `SessionStart` injects a
-  short directive asking the agent to persist durable facts via the
-  `memory_remember` MCP tool (tier `semantic`) instead of printing them into
-  its reply. After a context **compaction**, `SessionStart` re-fires and appends
-  a short **recovery note** to that directive, prompting the agent to flush any
-  durable fact it learned before the compaction — which may have scrolled out of
-  the rebuilt context — but never saved. The note rides this same switch. `Stop`
-  still scans transcripts for legacy `<memory>` blocks and persists those too, as
-  a back-compat fallback for sessions started under the old directive.
-  Model-curated, so it stays low-noise. Set to `0` to disable both.
+- **Turn capture** (`MEMINI_CAPTURE_TURNS`): the last user→assistant turn is stored as an **episodic** memory (deduped on the assistant message id), the same automatic per-turn recall layer the opencode plugin gets from `session.idle`. Set to `0` to disable.
+- **Memory directive** (`MEMINI_INLINE_EXTRACT`): `SessionStart` injects a short directive asking the agent to persist durable facts via the `memory_remember` MCP tool (tier `semantic`) instead of printing them into its reply. After a context **compaction**, `SessionStart` re-fires and appends a short **recovery note** to that directive, prompting the agent to flush any durable fact it learned before the compaction — which may have scrolled out of the rebuilt context — but never saved. The note rides this same switch. `Stop` still scans transcripts for legacy `<memory>` blocks and persists those too, as a back-compat fallback for sessions started under the old directive. Model-curated, so it stays low-noise. Set to `0` to disable both.
 
-Plus 9 skills (`remember`, `recall`, `recap`, `forget`, `pin`, `status`,
-`namespace`, `doctor`, `backfill`) the agent invokes directly.
+Plus 9 skills (`remember`, `recall`, `recap`, `forget`, `pin`, `status`, `namespace`, `doctor`, `backfill`) the agent invokes directly.
 
 ### Turning session digests off (`MEMINI_SESSION_DIGEST=0`)
 
-Session digests are **activity records**, not knowledge: "edited `auth.go` (3), ran
-`go test ./...`". They answer "what was I doing in this repo last week", which is
-genuinely useful to some people and pure noise to others. If you want memini to
-hold only durable facts, every session otherwise adds a memory that will never
-answer a question and quietly dilutes recall.
+Session digests are **activity records**, not knowledge: "edited `auth.go` (3), ran `go test ./...`". They answer "what was I doing in this repo last week", which is genuinely useful to some people and pure noise to others. If you want memini to hold only durable facts, every session otherwise adds a memory that will never answer a question and quietly dilutes recall.
 
 ```sh
 export MEMINI_SESSION_DIGEST=0
 ```
 
-That switches off all four write sites at once, since they are the same distilled
-buffer: the `SessionEnd` episodic digest, the `Stop` working-tier checkpoint, the
-`PreCompact` rescue copy, and the `PostToolUse` buffering that feeds them (with
-digests off, nothing would ever read the buffer, so the hot-path write is skipped
-too).
+That switches off all four write sites at once, since they are the same distilled buffer: the `SessionEnd` episodic digest, the `Stop` working-tier checkpoint, the `PreCompact` rescue copy, and the `PostToolUse` buffering that feeds them (with digests off, nothing would ever read the buffer, so the hot-path write is skipped too).
 
 It is deliberately separate from the two knobs it is easy to confuse it with:
 
@@ -114,9 +59,7 @@ It is deliberately separate from the two knobs it is easy to confuse it with:
 | `MEMINI_CAPTURE_TURNS`  | Each user→assistant turn, stored as episodic memory         |
 | `MEMINI_INLINE_EXTRACT` | The directive asking the agent to save durable facts itself |
 
-Turning digests off leaves the other two alone, so the agent keeps saving decisions
-and conventions through `memory_remember`. `/memini:status` shows all three with
-their current values.
+Turning digests off leaves the other two alone, so the agent keeps saving decisions and conventions through `memory_remember`. `/memini:status` shows all three with their current values.
 
 ## Slash commands
 
@@ -131,24 +74,13 @@ their current values.
 | `/memini:doctor`    | Store-level diagnostics — **needs the `memini` binary**                             |
 | `/memini:backfill`  | Import past sessions — **needs the `memini` binary**                                |
 
-`status` and `namespace` are implemented in the plugin itself, so they work for
-plugin-only installs pointed at a remote server — which do not have the `memini`
-binary at all.
+`status` and `namespace` are implemented in the plugin itself, so they work for plugin-only installs pointed at a remote server — which do not have the `memini` binary at all.
 
 ### `/memini:status`
 
-Answers "what is this plugin actually doing right now?", and more usefully _why_.
-Every setting carries its provenance (`<- env` vs `(default)`), because a list of
-values alone is nearly useless: it would show `namespace: default` and look fine.
-What catches a real problem is the line underneath saying git would have given
-`memini` — which is how a forgotten `MEMINI_NAMESPACE` export (a shell rc, or a
-fish _universal_ variable) gets found after quietly collapsing every repo on the
-machine into one shared memory pool.
+Answers "what is this plugin actually doing right now?", and more usefully _why_. Every setting carries its provenance (`<- env` vs `(default)`), because a list of values alone is nearly useless: it would show `namespace: default` and look fine. What catches a real problem is the line underneath saying git would have given `memini` — which is how a forgotten `MEMINI_NAMESPACE` export (a shell rc, or a fish _universal_ variable) gets found after quietly collapsing every repo on the machine into one shared memory pool.
 
-It cross-checks the three things that must agree — the namespace the **hooks**
-write to, the namespace the **MCP tools** write to, and the **read set** the
-server assembles — and warns when they diverge. Secrets are always redacted, so
-the output is safe to paste into an issue.
+It cross-checks the three things that must agree — the namespace the **hooks** write to, the namespace the **MCP tools** write to, and the **read set** the server assembles — and warns when they diverge. Secrets are always redacted, so the output is safe to paste into an issue.
 
 ### `/memini:namespace`
 
@@ -158,27 +90,14 @@ the output is safe to paste into an issue.
 /memini:namespace --clear        # back to automatic resolution
 ```
 
-A **pin** lives on the memini server (keyed by the project's git remote /
-toplevel), so it **follows you across machines** and every client — the hooks,
-the MCP tools, and the `memini` CLI — resolves the same namespace from it. A pin
-**beats `MEMINI_NAMESPACE`**: a globally exported `MEMINI_NAMESPACE` pins every
-repo on the machine to one namespace, and if the environment won, this command
-would silently do nothing on exactly the machines that most need it.
+A **pin** lives on the memini server (keyed by the project's git remote / toplevel), so it **follows you across machines** and every client — the hooks, the MCP tools, and the `memini` CLI — resolves the same namespace from it. A pin **beats `MEMINI_NAMESPACE`**: a globally exported `MEMINI_NAMESPACE` pins every repo on the machine to one namespace, and if the environment won, this command would silently do nothing on exactly the machines that most need it.
 
 Two caveats, both stated by the command itself:
 
-- **The hooks pick it up on their next invocation**; the MCP tools need
-  **`/reload-plugins`**. Claude Code runs the MCP `headersHelper` only when the
-  server _connects_, so `memory_remember` / `memory_recall` keep targeting the
-  old namespace until the plugin reconnects.
-- **Scope is the project** (its git remote / toplevel), not the session. Two
-  sessions in the same repo share the pin. The `headersHelper` is given no
-  session id, so it cannot tell them apart — per-project is the honest
-  granularity here.
+- **The hooks pick it up on their next invocation**; the MCP tools need **`/reload-plugins`**. Claude Code runs the MCP `headersHelper` only when the server _connects_, so `memory_remember` / `memory_recall` keep targeting the old namespace until the plugin reconnects.
+- **Scope is the project** (its git remote / toplevel), not the session. Two sessions in the same repo share the pin. The `headersHelper` is given no session id, so it cannot tell them apart — per-project is the honest granularity here.
 
-Because pins are server-side, setting or clearing one needs the server reachable.
-When it is not, the command says so and points you at `MEMINI_NAMESPACE=<ns>` as a
-machine-local offline override.
+Because pins are server-side, setting or clearing one needs the server reachable. When it is not, the command says so and points you at `MEMINI_NAMESPACE=<ns>` as a machine-local offline override.
 
 ## Install
 
@@ -192,11 +111,7 @@ memory_list / memory_briefing (plus memory_answer, when an LLM is configured) wi
 config. Verify with `curl http://localhost:8080/healthz`.
 ```
 
-The memory directive makes the agent call `memory_remember` on its own, which
-triggers a permission prompt on first use. To pre-approve, add the tools to
-`permissions.allow` in your Claude Code settings, e.g.
-`"mcp__plugin_memini_memini__memory_remember"` (plugin-shipped MCP tools are
-namespaced `mcp__plugin_memini_memini__*`).
+The memory directive makes the agent call `memory_remember` on its own, which triggers a permission prompt on first use. To pre-approve, add the tools to `permissions.allow` in your Claude Code settings, e.g. `"mcp__plugin_memini_memini__memory_remember"` (plugin-shipped MCP tools are namespaced `mcp__plugin_memini_memini__*`).
 
 ### Codex CLI
 
@@ -207,31 +122,15 @@ codex plugin marketplace add eleboucher/memini
 codex plugin add memini@memini
 ```
 
-The bundled server targets `http://localhost:8080/mcp`. Start the server (bare `memini`),
-set `MEMINI_API_KEY` when needed, review and trust the plugin commands in
-`/hooks`, then start a new thread. Codex uses `hooks/hooks.codex.json` with
-`${PLUGIN_ROOT}` and native `Bash`, `apply_patch`, and MCP matchers; Claude uses
-`hooks/hooks.claude.json`. Each manifest names its own file, and neither is at
-`hooks/hooks.json`: Claude Code loads that default path _in addition to_ the
-manifest path, so a file there would run twice under Claude.
+The bundled server targets `http://localhost:8080/mcp`. Start the server (bare `memini`), set `MEMINI_API_KEY` when needed, review and trust the plugin commands in `/hooks`, then start a new thread. Codex uses `hooks/hooks.codex.json` with `${PLUGIN_ROOT}` and native `Bash`, `apply_patch`, and MCP matchers; Claude uses `hooks/hooks.claude.json`. Each manifest names its own file, and neither is at `hooks/hooks.json`: Claude Code loads that default path _in addition to_ the manifest path, so a file there would run twice under Claude.
 
-For a remote URL, disable the bundled MCP server and use the `config.toml`
-recipe in [`integrations/codex/`](../integrations/codex/). Codex does not
-support Claude-style URL interpolation in the bundled MCP file.
+For a remote URL, disable the bundled MCP server and use the `config.toml` recipe in [`integrations/codex/`](../integrations/codex/). Codex does not support Claude-style URL interpolation in the bundled MCP file.
 
-Codex has no reliable final-session event, and Memini does not parse Codex's
-unstable transcript format. Rolling Stop checkpoints and PreCompact recovery
-work, but final SessionEnd digests, transcript-based turn capture, legacy inline
-extraction, and auto-save nudges remain Claude-only.
+Codex has no reliable final-session event, and Memini does not parse Codex's unstable transcript format. Rolling Stop checkpoints and PreCompact recovery work, but final SessionEnd digests, transcript-based turn capture, legacy inline extraction, and auto-save nudges remain Claude-only.
 
 ### opencode
 
-opencode doesn't use the Claude Code hook protocol; it has its own plugin
-system, shipped separately at [integrations/opencode/](../integrations/opencode/).
-That plugin already does automatic memory — recall on `chat.message` and
-per-turn episodic capture on `session.idle`, both on by default — plus the same
-`memory_*` MCP tools and skills. Defaults match this plugin (`recall_limit=3`,
-uncapped); see the opencode recipe for its options.
+opencode doesn't use the Claude Code hook protocol; it has its own plugin system, shipped separately at [integrations/opencode/](../integrations/opencode/). That plugin already does automatic memory — recall on `chat.message` and per-turn episodic capture on `session.idle`, both on by default — plus the same `memory_*` MCP tools and skills. Defaults match this plugin (`recall_limit=3`, uncapped); see the opencode recipe for its options.
 
 ## Layout
 
@@ -257,34 +156,19 @@ plugin/
 
 ## How the namespace gets resolved
 
-The **server** is the authoritative namespace resolver. On `SessionStart` the
-plugin gathers what it knows about the project — the git remote URL, the git
-toplevel, the cwd basename, an optional `MEMINI_AGENT` suffix, and
-`MEMINI_NAMESPACE` if set — and POSTs those facts to `/v1/handshake`. The server
-resolves the effective namespace and returns it (plus the caller's identity and
-the fully-merged behavioral settings). Resolution order, server-side:
+The **server** is the authoritative namespace resolver. On `SessionStart` the plugin gathers what it knows about the project — the git remote URL, the git toplevel, the cwd basename, an optional `MEMINI_AGENT` suffix, and `MEMINI_NAMESPACE` if set — and POSTs those facts to `/v1/handshake`. The server resolves the effective namespace and returns it (plus the caller's identity and the fully-merged behavioral settings). Resolution order, server-side:
 
-1. A **pin** (`/memini:namespace <ns>`), keyed by the project's git remote /
-   toplevel. It wins outright, including over `MEMINI_NAMESPACE`.
+1. A **pin** (`/memini:namespace <ns>`), keyed by the project's git remote / toplevel. It wins outright, including over `MEMINI_NAMESPACE`.
 2. `MEMINI_NAMESPACE`, sent as a fact so a pin can still beat it.
 3. A declared namespace (gateway/integration callers only).
 4. Derivation from the git remote, then the toplevel, then the cwd basename.
 5. The API key's bound default namespace, then the server default.
 
-The result is written to a **per-session handshake cache**
-(`$XDG_CACHE_HOME/memini/sessions/pid-<ppid>.handshake.json`, 10-minute TTL). Every
-other hook reads that cache: `Stop` / `PreCompact` / `SessionEnd` refresh it on a
-miss, while `PreToolUse` / `PostToolUse` are **network-free** — they use the cache
-only, so a live handshake can never race or add latency on the hot path. When the
-server is unreachable the plugin degrades to local derivation (the same order,
-minus the pin/key-default legs) and writes no cache; the absence of a cache entry
-is itself the signal the other hooks read.
+The result is written to a **per-session handshake cache** (`$XDG_CACHE_HOME/memini/sessions/pid-<ppid>.handshake.json`, 10-minute TTL). Every other hook reads that cache: `Stop` / `PreCompact` / `SessionEnd` refresh it on a miss, while `PreToolUse` / `PostToolUse` are **network-free** — they use the cache only, so a live handshake can never race or add latency on the hot path. When the server is unreachable the plugin degrades to local derivation (the same order, minus the pin/key-default legs) and writes no cache; the absence of a cache entry is itself the signal the other hooks read.
 
 ### How the MCP tools find the same namespace
 
-The hooks are handed `data.cwd` on stdin, so they always know their project. The
-MCP `headersHelper` — the only thing that sets `X-Memini-Namespace` for
-`memory_remember` / `memory_recall` — is not. Measured against a live session:
+The hooks are handed `data.cwd` on stdin, so they always know their project. The MCP `headersHelper` — the only thing that sets `X-Memini-Namespace` for `memory_remember` / `memory_recall` — is not. Measured against a live session:
 
 ```
 cwd                : <plugin install root>
@@ -294,38 +178,21 @@ CLAUDE_PLUGIN_ROOT : <plugin install root>
 process.ppid       : the session's `claude` process, cwd = the project dir
 ```
 
-So `process.cwd()` and `PWD` are both traps: resolving from either would derive
-the namespace from the plugin's own version-named directory and scatter memories
-into namespaces like `0.6.7`.
+So `process.cwd()` and `PWD` are both traps: resolving from either would derive the namespace from the plugin's own version-named directory and scatter memories into namespaces like `0.6.7`.
 
 The helper walks the process tree to recover the **project directory**:
 
 1. `CLAUDE_PROJECT_DIR`, if Claude Code ever provides it.
-2. The **parent process's cwd** (Linux `/proc`, macOS `lsof`) — always fresh, and
-   works on the first connect before any hook has run.
-3. `$XDG_CACHE_HOME/memini/sessions/pid-<ppid>.cwd`, written by the hooks under
-   the same ppid both sides observe. Portable (Windows), but only exists once a
-   hook has fired.
+2. The **parent process's cwd** (Linux `/proc`, macOS `lsof`) — always fresh, and works on the first connect before any hook has run.
+3. `$XDG_CACHE_HOME/memini/sessions/pid-<ppid>.cwd`, written by the hooks under the same ppid both sides observe. Portable (Windows), but only exists once a hook has fired.
 
-From that directory it runs the **same handshake flow** the hooks use — reusing
-the per-session cache `SessionStart` populated, else one bounded live handshake,
-else env/local derivation. There is deliberately **no global-namespace file**: the
-old shared file was last-writer-wins across concurrent sessions (two repos, one
-namespace — the "writes land where recall doesn't look" split), which the
-per-session cache exists to end. With no project signal at all the helper emits
-auth-only headers and lets the server apply the key's default namespace.
+From that directory it runs the **same handshake flow** the hooks use — reusing the per-session cache `SessionStart` populated, else one bounded live handshake, else env/local derivation. There is deliberately **no global-namespace file**: the old shared file was last-writer-wins across concurrent sessions (two repos, one namespace — the "writes land where recall doesn't look" split), which the per-session cache exists to end. With no project signal at all the helper emits auth-only headers and lets the server apply the key's default namespace.
 
-A pin follows you across machines and every client resolves the same one, so the
-hooks, the MCP tools, and `memini doctor` can never disagree about which namespace
-is in force.
+A pin follows you across machines and every client resolves the same one, so the hooks, the MCP tools, and `memini doctor` can never disagree about which namespace is in force.
 
 ## Environment
 
-Past this bootstrap layer, everything else — identity, namespace resolution,
-and every behavioral knob below — is resolved by the server on every
-handshake, not derived locally. See
-[docs/reference/env-vars.md](../docs/reference/env-vars.md) for the full
-four-layer model this table is one piece of.
+Past this bootstrap layer, everything else — identity, namespace resolution, and every behavioral knob below — is resolved by the server on every handshake, not derived locally. See [docs/reference/env-vars.md](../docs/reference/env-vars.md) for the full four-layer model this table is one piece of.
 
 | Env var                | Default                 | Used by     | Description                                                                                                                                                                                                                                                                                                                       |
 | ---------------------- | ----------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -340,14 +207,7 @@ four-layer model this table is one piece of.
 
 ### Behavior settings (client env = a debug override, not the source of truth)
 
-These knobs are now server data — resolved fresh on every handshake from
-built-in defaults, overridden by the server's global defaults
-(`PUT /v1/settings/defaults` or the `MEMINI_CLIENT_DEFAULTS` server env), then
-by any per-key setting (`PUT /v1/self/settings`). Setting the matching env var
-below still works, but only as a **local debug override for this one
-client** — it wins over whatever the server resolved, without touching the
-server's stored value for anyone else. `/memini:status` shows each knob's
-actual source (`env-override` / `server (key|global|default)`).
+These knobs are now server data — resolved fresh on every handshake from built-in defaults, overridden by the server's global defaults (`PUT /v1/settings/defaults` or the `MEMINI_CLIENT_DEFAULTS` server env), then by any per-key setting (`PUT /v1/self/settings`). Setting the matching env var below still works, but only as a **local debug override for this one client** — it wins over whatever the server resolved, without touching the server's stored value for anyone else. `/memini:status` shows each knob's actual source (`env-override` / `server (key|global|default)`).
 
 | Env var                              | Default | Description                                                                                                                                                                                        |
 | ------------------------------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -364,10 +224,7 @@ actual source (`env-override` / `server (key|global|default)`).
 
 ### Removed variables
 
-Four client-side variables from before this redesign are retired. Each is
-silently ignored everywhere except `SessionStart`, which prints one combined
-stderr line if any is set (`[memini] ignored removed env vars: ...`) — see
-[docs/reference/env-vars.md#removed-variables-warn-and-ignore](../docs/reference/env-vars.md#removed-variables-warn-and-ignore).
+Four client-side variables from before this redesign are retired. Each is silently ignored everywhere except `SessionStart`, which prints one combined stderr line if any is set (`[memini] ignored removed env vars: ...`) — see [docs/reference/env-vars.md#removed-variables-warn-and-ignore](../docs/reference/env-vars.md#removed-variables-warn-and-ignore).
 
 | Removed                  | Replacement                                                              |
 | ------------------------ | ------------------------------------------------------------------------ |
@@ -378,12 +235,7 @@ stderr line if any is set (`[memini] ignored removed env vars: ...`) — see
 
 ### Tuning injection budgets
 
-The SessionStart and PreToolUse hooks inject context into the agent's
-prompt. The volume is configurable per-knob — shrink it for small / fast
-models, grow it where more recall helps. Every knob below is a behavior
-setting like the ones above (env is a debug override, not the source of
-truth); defaults match the prior hardcoded behavior, so existing installs see
-no change.
+The SessionStart and PreToolUse hooks inject context into the agent's prompt. The volume is configurable per-knob — shrink it for small / fast models, grow it where more recall helps. Every knob below is a behavior setting like the ones above (env is a debug override, not the source of truth); defaults match the prior hardcoded behavior, so existing installs see no change.
 
 **SessionStart** (one briefing call → pinned / facts / procedures / recent):
 
@@ -404,65 +256,21 @@ no change.
 | `MEMINI_INJECT_RECALL_MAX_TOK`   | `250`   | Token budget per prompt, enforced server-side (`max_tokens` on the search — the server drops the tail and reports it in the `[+N more]` footer) with the client trim kept as the old-server fallback. `0` uncaps.                                                            |
 | `MEMINI_INJECT_RECALL_MIN_SCORE` | `0.5`   | Floor on the composite post-rerank score — the final score shown in the activity feed. Enforced server-side via `min_rank_score` (floored hits appear in the feed marked as filtered); against older servers the plugin filters client-side instead. `0` disables the floor. |
 
-Command-shaped prompts (`/`, `!`, `#` prefixes) and prompts too short to be a
-useful query are skipped. When the server reports a degraded (keyword-only)
-search, the block carries a `[memini: ...]` warning line so the model knows the
-results are incomplete rather than a confident negative.
+Command-shaped prompts (`/`, `!`, `#` prefixes) and prompts too short to be a useful query are skipped. When the server reports a degraded (keyword-only) search, the block carries a `[memini: ...]` warning line so the model knows the results are incomplete rather than a confident negative.
 
-**Cross-surface injection dedupe.** The three injection surfaces — the
-`SessionStart` briefing, per-prompt recall, and per-file pretool recall —
-share one per-session record of which memories are already in context, so no
-surface re-injects what another already showed. The prompt hook excludes the
-in-cooldown ids server-side (`exclude_ids`), spending its top hits on memories
-the conversation doesn't yet carry; pretool filters client-side and
-**content-aware**, so a memory updated mid-session (its content changed since
-injection) resurfaces immediately.
+**Cross-surface injection dedupe.** The three injection surfaces — the `SessionStart` briefing, per-prompt recall, and per-file pretool recall — share one per-session record of which memories are already in context, so no surface re-injects what another already showed. The prompt hook excludes the in-cooldown ids server-side (`exclude_ids`), spending its top hits on memories the conversation doesn't yet carry; pretool filters client-side and **content-aware**, so a memory updated mid-session (its content changed since injection) resurfaces immediately.
 
-Suppression is **windowed, not forever.** An already-injected memory is held
-back only while it is within EITHER the time window (`MEMINI_INJECT_COOLDOWN_MS`,
-default 30 min) OR the prompt window (`MEMINI_INJECT_COOLDOWN_PROMPTS`, default
-3 user prompts) of its last injection, and is re-admitted once **both** windows
-have lapsed — so a fact re-surfaces after the conversation has moved on instead
-of being hidden for the whole session. The two dimensions do different jobs: the
-time window covers tool-burst context growth (many `PreToolUse` reads with no
-new prompt), the prompt window counts literal user turns. The prompt counter
-advances on **every** `UserPromptSubmit` — a short steering turn, a slash
-command, and even a `MEMINI_RECALL=0` turn all count (except a degraded turn with
-no resolved namespace, which skips recall entirely and so doesn't bump) — so a
-window that measures prompts can't silently freeze. Set **both** knobs to `0` to restore the old
-suppress-for-the-whole-session behavior; `MEMINI_INJECT_DEDUPE=0` disables dedupe
-entirely and restores always-inject everywhere.
+Suppression is **windowed, not forever.** An already-injected memory is held back only while it is within EITHER the time window (`MEMINI_INJECT_COOLDOWN_MS`, default 30 min) OR the prompt window (`MEMINI_INJECT_COOLDOWN_PROMPTS`, default 3 user prompts) of its last injection, and is re-admitted once **both** windows have lapsed — so a fact re-surfaces after the conversation has moved on instead of being hidden for the whole session. The two dimensions do different jobs: the time window covers tool-burst context growth (many `PreToolUse` reads with no new prompt), the prompt window counts literal user turns. The prompt counter advances on **every** `UserPromptSubmit` — a short steering turn, a slash command, and even a `MEMINI_RECALL=0` turn all count (except a degraded turn with no resolved namespace, which skips recall entirely and so doesn't bump) — so a window that measures prompts can't silently freeze. Set **both** knobs to `0` to restore the old suppress-for-the-whole-session behavior; `MEMINI_INJECT_DEDUPE=0` disables dedupe entirely and restores always-inject everywhere.
 
-Memories the model pulls itself via the memini MCP read tools (`memory_recall` /
-`memory_briefing` / `memory_get`) are the one exception to the windows:
-`PostToolUse` records their ids and they stay suppressed **forever**, never
-re-pushed by a hook. The model asked for them explicitly, and a concise tool
-response may truncate content, so their identity can't be compared to re-admit
-them the way an injected memory's can.
+Memories the model pulls itself via the memini MCP read tools (`memory_recall` / `memory_briefing` / `memory_get`) are the one exception to the windows: `PostToolUse` records their ids and they stay suppressed **forever**, never re-pushed by a hook. The model asked for them explicitly, and a concise tool response may truncate content, so their identity can't be compared to re-admit them the way an injected memory's can.
 
-A second, independent knob gates the pretool **server call** itself.
-`MEMINI_INJECT_PRETOOL_GATE_MS` (default 90 s) skips the `PreToolUse` recall call
-entirely for a file whose last call was younger than the gate, so an unbroken run
-of edits on one file no longer makes a recall round-trip every time. It is
-separate from injection dedupe (which decides whether to render a block once
-results are back): the tradeoff is that a memory saved about a file mid-session
-can be invisible on that file for up to the gate window, because no call is made
-to find it. `0` restores the legacy always-call behavior.
+A second, independent knob gates the pretool **server call** itself. `MEMINI_INJECT_PRETOOL_GATE_MS` (default 90 s) skips the `PreToolUse` recall call entirely for a file whose last call was younger than the gate, so an unbroken run of edits on one file no longer makes a recall round-trip every time. It is separate from injection dedupe (which decides whether to render a block once results are back): the tradeoff is that a memory saved about a file mid-session can be invisible on that file for up to the gate window, because no call is made to find it. `0` restores the legacy always-call behavior.
 
-The state self-clears whenever the context is rebuilt (`SessionStart` on
-startup/clear/compact, `PreCompact`, `SessionEnd`) and survives a resume, whose
-context is intact.
+The state self-clears whenever the context is rebuilt (`SessionStart` on startup/clear/compact, `PreCompact`, `SessionEnd`) and survives a resume, whose context is intact.
 
-**Codex.** Codex fires neither `UserPromptSubmit` nor `PreToolUse` — its tool
-matchers don't include `Read`/`Glob`/etc. — so the prompt window is inert there
-(the counter stays `0`, and the predicate degrades to the time window alone) and
-the pretool call gate never applies. Under Codex the dedupe surfaces are the
-`SessionStart` briefing and MCP tool-read tracking only.
+**Codex.** Codex fires neither `UserPromptSubmit` nor `PreToolUse` — its tool matchers don't include `Read`/`Glob`/etc. — so the prompt window is inert there (the counter stays `0`, and the predicate degrades to the time window alone) and the pretool call gate never applies. Under Codex the dedupe surfaces are the `SessionStart` briefing and MCP tool-read tracking only.
 
-**PreToolUse** (one search per file; the hook fires for
-`Edit|MultiEdit|Write|Read|Glob|Grep` but the default allowlist recalls only on
-`Read|Write|Edit|MultiEdit` — see `MEMINI_INJECT_PRETOOL_TOOLS`; `MEMINI_RECALL=0`
-disables this hook too):
+**PreToolUse** (one search per file; the hook fires for `Edit|MultiEdit|Write|Read|Glob|Grep` but the default allowlist recalls only on `Read|Write|Edit|MultiEdit` — see `MEMINI_INJECT_PRETOOL_TOOLS`; `MEMINI_RECALL=0` disables this hook too):
 
 | Env var                           | Default                        | Description                                                                                                                                                                                                                                                                  |
 | --------------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -475,21 +283,7 @@ disables this hook too):
 | `MEMINI_INJECT_COOLDOWN_MS`       | `1800000`                      | Time window (ms) an injected memory is suppressed before it may re-inject. `0` disables the time dimension.                                                                                                                                                                  |
 | `MEMINI_INJECT_COOLDOWN_PROMPTS`  | `3`                            | Prompt-count window an injected memory is suppressed before it may re-inject. `0` disables the prompt dimension.                                                                                                                                                             |
 
-Repeated tool calls on the same file (e.g. several `Edit`s in a row, or a
-`Read` followed by an `Edit`) are bounded two ways. The **call gate**
-(`MEMINI_INJECT_PRETOOL_GATE_MS`, default 90 s) skips the recall call for a file
-touched again within the gate window; once it lapses the next touch calls again,
-and results can change between calls. When the call does run, a per-file
-**fingerprint** suppresses the injection if the served memories are exactly what
-that file was last injected with THIS session. The fingerprint is keyed by file
-path and the served (id, content) pairs, and is tool-agnostic (a `Read` then an
-`Edit` on the same file with identical results counts as a duplicate), so an
-unbroken sequence of edits doesn't repeat the identical memory block into context
-on every call. Both layers, plus the windowed cross-surface dedupe above, are
-governed by the `inject_dedupe` behavior setting (on by default;
-`MEMINI_INJECT_DEDUPE=0` is the local debug override, like every knob above), and
-the suppression state self-clears on `SessionStart`, `PreCompact`, and
-`SessionEnd`.
+Repeated tool calls on the same file (e.g. several `Edit`s in a row, or a `Read` followed by an `Edit`) are bounded two ways. The **call gate** (`MEMINI_INJECT_PRETOOL_GATE_MS`, default 90 s) skips the recall call for a file touched again within the gate window; once it lapses the next touch calls again, and results can change between calls. When the call does run, a per-file **fingerprint** suppresses the injection if the served memories are exactly what that file was last injected with THIS session. The fingerprint is keyed by file path and the served (id, content) pairs, and is tool-agnostic (a `Read` then an `Edit` on the same file with identical results counts as a duplicate), so an unbroken sequence of edits doesn't repeat the identical memory block into context on every call. Both layers, plus the windowed cross-surface dedupe above, are governed by the `inject_dedupe` behavior setting (on by default; `MEMINI_INJECT_DEDUPE=0` is the local debug override, like every knob above), and the suppression state self-clears on `SessionStart`, `PreCompact`, and `SessionEnd`.
 
 **Output labels** (both hooks):
 
@@ -497,9 +291,7 @@ the suppression state self-clears on `SessionStart`, `PreCompact`, and
 | ---------------------- | ------- | --------------------------------------------------------------- |
 | `MEMINI_INJECT_LABELS` | —       | Comma-separated toggles: `tier`, `confidence`, `age`, `reason`. |
 
-Labels annotate each injected bullet with metadata, e.g.
-`[semantic · conf=0.85 · 14d · durable fact] use tabs in this project`.
-Off by default — the unannotated format matches prior installs.
+Labels annotate each injected bullet with metadata, e.g. `[semantic · conf=0.85 · 14d · durable fact] use tabs in this project`. Off by default — the unannotated format matches prior installs.
 
 **Tight preset for a small / fast model:**
 
@@ -515,35 +307,19 @@ export MEMINI_INJECT_PRETOOL_TOOLS="Read|Edit|Write"
 export MEMINI_INJECT_LABELS=tier,reason
 ```
 
-Top-of-mind: tag a memory `pinned` (via `memory_remember` `tags: ["pinned"]`
-or `memini remember ... --tag pinned`) to make it auto-inject as part of the
-curated briefing, exempt from demotion, and never excluded by the budget
-(within `MEMINI_INJECT_BRIEFING_PINNED`). The default cap is small enough
-that only durable identity / preferences should earn the pin.
+Top-of-mind: tag a memory `pinned` (via `memory_remember` `tags: ["pinned"]` or `memini remember ... --tag pinned`) to make it auto-inject as part of the curated briefing, exempt from demotion, and never excluded by the budget (within `MEMINI_INJECT_BRIEFING_PINNED`). The default cap is small enough that only durable identity / preferences should earn the pin.
 
 ## Remote memini
 
-The plugin works against a remote memini with **no code changes** — point it at
-the server and give it a token:
+The plugin works against a remote memini with **no code changes** — point it at the server and give it a token:
 
 ```sh
 export MEMINI_BASE_URL=https://memini.example.com   # MCP /mcp endpoint is derived
 export MEMINI_API_KEY=<any valid key; a per-person named key is ideal>
 ```
 
-This bearer does **not** need to be an admin key: the plugin only reads and
-writes memories, it never manages keys, so a named non-admin key (ideally bound
-to your `home` namespace) is the right credential here, not the server's
-break-glass `MEMINI_API_KEY`. See [docs/api-keys.md](../docs/api-keys.md).
+This bearer does **not** need to be an admin key: the plugin only reads and writes memories, it never manages keys, so a named non-admin key (ideally bound to your `home` namespace) is the right credential here, not the server's break-glass `MEMINI_API_KEY`. See [docs/api-keys.md](../docs/api-keys.md).
 
-Both the hooks (REST) and the MCP tools then send `Authorization: Bearer
-$MEMINI_API_KEY`. The **namespace stays per-project** even against one shared
-remote: the hooks resolve it from `data.cwd`, and the MCP `headersHelper`
-(`scripts/mcp-headers.mjs`) resolves the _same_ value per connection by walking
-the process tree (see [above](#how-the-mcp-tools-find-the-same-namespace)) — so
-capture and recall always target the same namespace, even with several sessions
-open in different repos. Run the server with `MEMINI_API_KEY` set so `/mcp` (and
-`/v1`) require the token.
+Both the hooks (REST) and the MCP tools then send `Authorization: Bearer $MEMINI_API_KEY`. The **namespace stays per-project** even against one shared remote: the hooks resolve it from `data.cwd`, and the MCP `headersHelper` (`scripts/mcp-headers.mjs`) resolves the _same_ value per connection by walking the process tree (see [above](#how-the-mcp-tools-find-the-same-namespace)) — so capture and recall always target the same namespace, even with several sessions open in different repos. Run the server with `MEMINI_API_KEY` set so `/mcp` (and `/v1`) require the token.
 
-`/memini:status` verifies all of this against the live server and is the fastest
-way to confirm a remote setup is actually wired the way you think it is.
+`/memini:status` verifies all of this against the live server and is the fastest way to confirm a remote setup is actually wired the way you think it is.

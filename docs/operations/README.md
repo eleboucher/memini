@@ -13,7 +13,5 @@ Running memini in anger: deploying it, upgrading it, and moving data through it.
 
 Related, elsewhere:
 
-- [reference/configuration.md](../reference/configuration.md) is the generated
-  list of every environment variable, and of every one that was removed.
-- [scopes.md](../scopes.md) is what a namespace can actually see, which is the
-  thing operators get wrong most often.
+- [reference/configuration.md](../reference/configuration.md) is the generated list of every environment variable, and of every one that was removed.
+- [scopes.md](../scopes.md) is what a namespace can actually see, which is the thing operators get wrong most often.

@@ -1,41 +1,20 @@
 # Namespace scoping
 
-Vocabulary note: this page leans on the exact definitions of namespace,
-project, scope, and read set — the [glossary](glossary.md) pins them down.
+Vocabulary note: this page leans on the exact definitions of namespace, project, scope, and read set — the [glossary](glossary.md) pins them down.
 
-Namespaces are the slash-separated tree memini partitions memories into
-(`acme/phoenix/api`, `acme/phoenix`, `acme`). **Scoping** is the separate
-question of, on a write, which single namespace a memory lands in, and on a
-read, which set of namespaces get searched. A write always lands in exactly
-one namespace — that invariant never changes. A read composes a **read
-set**: the request's own namespace (always first, never filtered out) plus,
-by default, its ancestors, the caller's personal namespace, and any linked
-namespaces, fused into one ranked result list annotated with where each hit
-came from.
+Namespaces are the slash-separated tree memini partitions memories into (`acme/phoenix/api`, `acme/phoenix`, `acme`). **Scoping** is the separate question of, on a write, which single namespace a memory lands in, and on a read, which set of namespaces get searched. A write always lands in exactly one namespace — that invariant never changes. A read composes a **read set**: the request's own namespace (always first, never filtered out) plus, by default, its ancestors, the caller's personal namespace, and any linked namespaces, fused into one ranked result list annotated with where each hit came from.
 
-Scoping is orthogonal to [tiers](tiers.md) (how durable a memory is — tiers
-decide whether a memory is even eligible to cross a namespace boundary) and
-[categories](categories.md) (what topic a memory is about). This doc covers
-the mechanics of the write and read paths, who's responsible for resolving
-what, and the escape hatches available when the defaults aren't enough.
+Scoping is orthogonal to [tiers](tiers.md) (how durable a memory is — tiers decide whether a memory is even eligible to cross a namespace boundary) and [categories](categories.md) (what topic a memory is about). This doc covers the mechanics of the write and read paths, who's responsible for resolving what, and the escape hatches available when the defaults aren't enough.
 
 ## Data flow: write
 
-`memory_remember` (and `POST /v1/memories`) always writes into the caller's
-primary namespace unless `visibility` says otherwise. `visibility` accepts:
+`memory_remember` (and `POST /v1/memories`) always writes into the caller's primary namespace unless `visibility` says otherwise. `visibility` accepts:
 
 - `"project"` (default, or omitted) — stays in the primary namespace.
-- `"personal"` — routes to the caller's home namespace (`X-Memini-Home` /
-  `MEMINI_HOME`); errors if none is configured.
-- an ancestor's name — full path (`"acme/phoenix"`) or an unambiguous last
-  segment (`"acme"`) — routes to that ancestor.
+- `"personal"` — routes to the caller's home namespace (`X-Memini-Home` / `MEMINI_HOME`); errors if none is configured.
+- an ancestor's name — full path (`"acme/phoenix"`) or an unambiguous last segment (`"acme"`) — routes to that ancestor.
 
-**Tier clamp:** episodic and working writes always land in the primary
-namespace, regardless of `visibility`. Only durable tiers (`semantic`,
-`procedural`) actually travel. This is silent and by design — a session
-digest can never pollute a shared ancestor namespace, and the clamp is
-checked before `visibility` is even validated, so a clamped write never
-requires `MEMINI_HOME` to be set.
+**Tier clamp:** episodic and working writes always land in the primary namespace, regardless of `visibility`. Only durable tiers (`semantic`, `procedural`) actually travel. This is silent and by design — a session digest can never pollute a shared ancestor namespace, and the clamp is checked before `visibility` is even validated, so a clamped write never requires `MEMINI_HOME` to be set.
 
 Worked example — a coding session running in `acme/phoenix/api`:
 
@@ -46,26 +25,17 @@ Worked example — a coding session running in `acme/phoenix/api`:
 | `memory_remember(content, visibility:"personal")`              | `semantic`               | `"personal"` | `personal/kit`               | requires `MEMINI_HOME=personal/kit` on the client; errors without it                       |
 | `memory_remember(content, visibility:"widgets")`               | `semantic`               | `"widgets"`  | error                        | `"widgets"` isn't `project`, `personal`, or an ancestor of `acme/phoenix/api`              |
 
-The last row's actual error text (from `internal/service/visibility.go`,
-`resolveVisibility`) enumerates the valid chain so the caller — usually an
-LLM reading the error, not a human — can learn the topology instead of
-guessing:
+The last row's actual error text (from `internal/service/visibility.go`, `resolveVisibility`) enumerates the valid chain so the caller — usually an LLM reading the error, not a human — can learn the topology instead of guessing:
 
 ```
 remember: visibility "widgets" not in scope; valid: project, personal, acme/phoenix, acme
 ```
 
-An ancestor name that matches more than one chain segment (e.g. two
-namespaces both ending in `/mid`) errors the same way — ambiguous is treated
-like invalid, never guessed.
+An ancestor name that matches more than one chain segment (e.g. two namespaces both ending in `/mid`) errors the same way — ambiguous is treated like invalid, never guessed.
 
 ## Data flow: read
 
-`memory_recall` (and `memory_briefing`, `memory_answer`) take a `scope`
-argument. The default, `scope:"full"`, resolves a read set from the
-ancestor/home/link cascade. A `memory_recall(query, scope:"full")` call
-running in `acme/phoenix/api`, with `MEMINI_HOME=personal/kit` and a stored
-link `acme/phoenix -> shared/golang`, resolves to:
+`memory_recall` (and `memory_briefing`, `memory_answer`) take a `scope` argument. The default, `scope:"full"`, resolves a read set from the ancestor/home/link cascade. A `memory_recall(query, scope:"full")` call running in `acme/phoenix/api`, with `MEMINI_HOME=personal/kit` and a stored link `acme/phoenix -> shared/golang`, resolves to:
 
 | namespace          | origin   | tiers searched                                                                                            |
 | ------------------ | -------- | --------------------------------------------------------------------------------------------------------- |
@@ -75,22 +45,11 @@ link `acme/phoenix -> shared/golang`, resolves to:
 | `personal/kit`     | home     | durable only                                                                                              |
 | `shared/golang`    | link     | durable only (or the link's own tighter override — a link can narrow within durable, never widen past it) |
 
-Ancestors are appended nearest-first (`acme/phoenix` before `acme`) — this
-ordering is load-bearing, not cosmetic (see the tie-break note below).
+Ancestors are appended nearest-first (`acme/phoenix` before `acme`) — this ordering is load-bearing, not cosmetic (see the tie-break note below).
 
-**Fusion.** Each namespace in the read set is searched with both vector and
-keyword search; per-namespace results are combined, then the per-namespace
-lists are fused into one ranked list. The default fusion mode is a weighted,
-min-max-normalized score sum across legs (a reciprocal-rank-fusion mode also
-exists as a benchmark-tuned internal alternative, not exposed as a runtime
-setting). Ties at equal fused score are broken by first-seen order across
-the read set, which is exactly why ancestor ordering is nearest-first: at
-equal relevance, a memory in `acme/phoenix` outranks one in `acme`.
+**Fusion.** Each namespace in the read set is searched with both vector and keyword search; per-namespace results are combined, then the per-namespace lists are fused into one ranked list. The default fusion mode is a weighted, min-max-normalized score sum across legs (a reciprocal-rank-fusion mode also exists as a benchmark-tuned internal alternative, not exposed as a runtime setting). Ties at equal fused score are broken by first-seen order across the read set, which is exactly why ancestor ordering is nearest-first: at equal relevance, a memory in `acme/phoenix` outranks one in `acme`.
 
-**Provenance.** Every result carries a `from` field naming where it came
-from — empty/omitted for a primary-namespace hit (the common case, no
-annotation needed), the bare namespace for an ancestor or home hit, and a
-prefixed form for a link or explicit per-call namespace:
+**Provenance.** Every result carries a `from` field naming where it came from — empty/omitted for a primary-namespace hit (the common case, no annotation needed), the bare namespace for an ancestor or home hit, and a prefixed form for a link or explicit per-call namespace:
 
 ```jsonc
 // primary namespace — no "from" at all
@@ -106,26 +65,14 @@ prefixed form for a link or explicit per-call namespace:
 { "id": "m4", "content": "internal Go style: errors wrapped with %w", "tier": "procedural", "namespace": "shared/golang", "from": "link:shared/golang" }
 ```
 
-The LLM is expected to learn the topology by reading `from` (and the
-briefing `Scope:` header), never by constructing a namespace path itself.
+The LLM is expected to learn the topology by reading `from` (and the briefing `Scope:` header), never by constructing a namespace path itself.
 
 **Other `scope` values:**
 
-- `scope:"project"` — primary only, no cascade at all (the `"bare"` path;
-  skips ancestors, home, and links entirely).
-- `scope:"everywhere"` — the full cascade, plus the primary namespace's own
-  subtree (its descendant namespaces). Subtree members are treated as an
-  extension of the _primary_ namespace, not a separate cascade leg, so they
-  are searched at the caller's full tier filter — not clamped to durable —
-  unlike every other cascade leg. This is the one place tiers are not the
-  isolation valve; it's an explicit per-call downward reach, never on by
-  default.
+- `scope:"project"` — primary only, no cascade at all (the `"bare"` path; skips ancestors, home, and links entirely).
+- `scope:"everywhere"` — the full cascade, plus the primary namespace's own subtree (its descendant namespaces). Subtree members are treated as an extension of the _primary_ namespace, not a separate cascade leg, so they are searched at the caller's full tier filter — not clamped to durable — unlike every other cascade leg. This is the one place tiers are not the isolation valve; it's an explicit per-call downward reach, never on by default.
 
-The agentic answer loop's `keyword_search` tool honors the same
-ancestor/home/link cascade as its `search_memory`/`recall_as_of` siblings
-(keyword-only across the resolved read set, durable tiers on the cascade
-legs), and `POST /v1/answer` accepts the same `scope` argument as the MCP
-`memory_answer` tool — so grounding is at parity across both surfaces.
+The agentic answer loop's `keyword_search` tool honors the same ancestor/home/link cascade as its `search_memory`/`recall_as_of` siblings (keyword-only across the resolved read set, durable tiers on the cascade legs), and `POST /v1/answer` accepts the same `scope` argument as the MCP `memory_answer` tool — so grounding is at parity across both surfaces.
 
 ## Isolation contract
 
@@ -141,8 +88,7 @@ legs), and `POST /v1/answer` accepts the same `scope` argument as the MCP
 
 ## Ownership
 
-Scoping is split cleanly across three layers, and each only does its own
-job:
+Scoping is split cleanly across three layers, and each only does its own job:
 
 | Layer                            | Owns                                                                                                                                                                                      |
 | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -150,14 +96,11 @@ job:
 | **Server** (`internal/service`)  | Cascade resolution (ancestors, home, links), `visibility` resolution and the tier clamp, `scope` parsing, read set fusion                                                                 |
 | **Store** (sqlitevec / postgres) | Partitioning memory rows by namespace string only — no tree logic, no cascade awareness; `namespace_links` is just a table of `(src, dst, tiers, note)` rows the service layer interprets |
 
-The store never knows a namespace has a parent, a home, or a link — it just
-filters by the namespace string(s) the service layer hands it.
+The store never knows a namespace has a parent, a home, or a link — it just filters by the namespace string(s) the service layer hands it.
 
 ## Knobs
 
-The cascade needs almost no configuration — that's the point. Two knobs are
-live (one server-side, one client-side), two are removed (the server refuses
-to boot with either set), and the rest of the control surface is per-call:
+The cascade needs almost no configuration — that's the point. Two knobs are live (one server-side, one client-side), two are removed (the server refuses to boot with either set), and the rest of the control surface is per-call:
 
 | Knob                      | Status                | What it does / migration                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -169,30 +112,14 @@ to boot with either set), and the rest of the control surface is per-call:
 | `scope`                   | per-call              | `"project"` / `"full"` (default) / `"everywhere"`. REST also accepts the deprecated aliases `"exact"` (→ `"project"`) and `"subtree"` (→ `"everywhere"`); MCP does not. See [Escape hatches](#escape-hatches).                                                                                                                                                                                                                                                                  |
 | `visibility`              | per-call              | Write-side routing: `"project"` (default) / `"personal"` / an ancestor name. See [Data flow: write](#data-flow-write).                                                                                                                                                                                                                                                                                                                                                          |
 
-On a shared instance, a per-key `home` binding is the recommended way to set
-the `MEMINI_HOME` equivalent server-side instead of relying on every client to
-export the right env var: `memini key add <name> --home personal/<name>` (or
-`POST /v1/keys`) binds a key's home once, and it beats whatever
-`X-Memini-Home` a client sends — identity, not a per-request default. See
-[api-keys.md](api-keys.md#home-binding-vs-default-namespace-identity-vs-context)
-for the full home-vs-default-namespace precedence rules.
+On a shared instance, a per-key `home` binding is the recommended way to set the `MEMINI_HOME` equivalent server-side instead of relying on every client to export the right env var: `memini key add <name> --home personal/<name>` (or `POST /v1/keys`) binds a key's home once, and it beats whatever `X-Memini-Home` a client sends — identity, not a per-request default. See [api-keys.md](api-keys.md#home-binding-vs-default-namespace-identity-vs-context) for the full home-vs-default-namespace precedence rules.
 
 ## Links
 
-Links are the escape hatch for **lateral** sharing — between namespaces that
-aren't in an ancestor/descendant relationship, like two unrelated projects
-that share a language convention. Where the ancestor cascade is implicit
-(nesting under a shared parent is enough), a link is explicit: one command,
-one row.
+Links are the escape hatch for **lateral** sharing — between namespaces that aren't in an ancestor/descendant relationship, like two unrelated projects that share a language convention. Where the ancestor cascade is implicit (nesting under a shared parent is enough), a link is explicit: one command, one row.
 
-- **One hop, permanently.** A link from `acme/phoenix` to `shared/golang`
-  means `acme/phoenix` reads `shared/golang`'s durable memories. It does
-  _not_ mean `acme/phoenix` also inherits anything `shared/golang` itself
-  links to — no transitive traversal, so provenance stays answerable with
-  one lookup.
-- **Durable-tier only by default**, same rule as everywhere else; a link can
-  narrow further (e.g. `--tiers semantic`) but never admit `episodic` or
-  `working`.
+- **One hop, permanently.** A link from `acme/phoenix` to `shared/golang` means `acme/phoenix` reads `shared/golang`'s durable memories. It does _not_ mean `acme/phoenix` also inherits anything `shared/golang` itself links to — no transitive traversal, so provenance stays answerable with one lookup.
+- **Durable-tier only by default**, same rule as everywhere else; a link can narrow further (e.g. `--tiers semantic`) but never admit `episodic` or `working`.
 
 CLI:
 
@@ -202,86 +129,27 @@ memini link rm acme/phoenix shared/golang
 memini link ls acme/phoenix   # or `memini link ls` for every link in the store
 ```
 
-REST: `POST /v1/links` (create/replace, keyed on `dst` — idempotent),
-`GET /v1/links` (outgoing links from the request namespace), `DELETE
-/v1/links?dst=<ns>`. All are scoped by the `X-Memini-Namespace` header as
-`src`, same as recall/briefing.
+REST: `POST /v1/links` (create/replace, keyed on `dst` — idempotent), `GET /v1/links` (outgoing links from the request namespace), `DELETE /v1/links?dst=<ns>`. All are scoped by the `X-Memini-Namespace` header as `src`, same as recall/briefing.
 
 ## Escape hatches
 
-- **Per-call `namespaces: [...]`** (REST `POST /v1/search`, `POST
-/v1/namespaces/briefing`): replaces the entire default read set with
-  exactly the listed namespaces, first-occurrence order, primary moved to
-  the front if present. An entry ending in `/*` expands to that namespace
-  plus everything nested under it. Capped at 16 entries. Explicit always
-  wins over `scope`/`bare`/`subtree`, regardless of value.
-- **`scope` values** — `"project"` / `"full"` / `"everywhere"` — are the
-  main per-call lever on the MCP surface (see above).
-- **REST `scope` back-compat aliases**: `"exact"` and `"subtree"` are
-  deprecated but still accepted on the REST API (not MCP) for older
-  integrations — `"exact"` maps to `"project"` (its original,
-  pre-cascade meaning), `"subtree"` maps to `"everywhere"` (the full
-  cascade plus the subtree, since every scope now inherits the cascade
-  legs that didn't exist when `"subtree"` was coined). New integrations
-  should use `"project"` / `"full"` / `"everywhere"` directly.
-- **Raw `namespace`** stays on the REST API (for scripts and the admin UI)
-  and is dropped from the MCP tool schema — the LLM never sees or
-  constructs a raw namespace path, only `scope` and `visibility`.
-- **`GET /v1/namespaces/readset`** — header-scoped like briefing, returns
-  the resolved structural read set (namespace + origin + tier restriction)
-  for the request namespace, independent of any one query's tier filter.
-  Useful for debugging what a given `MEMINI_NAMESPACE` / `MEMINI_HOME` pair
-  would actually see. `memini doctor` uses the same resolution to show the
-  effective read set on the command line.
+- **Per-call `namespaces: [...]`** (REST `POST /v1/search`, `POST /v1/namespaces/briefing`): replaces the entire default read set with exactly the listed namespaces, first-occurrence order, primary moved to the front if present. An entry ending in `/*` expands to that namespace plus everything nested under it. Capped at 16 entries. Explicit always wins over `scope`/`bare`/`subtree`, regardless of value.
+- **`scope` values** — `"project"` / `"full"` / `"everywhere"` — are the main per-call lever on the MCP surface (see above).
+- **REST `scope` back-compat aliases**: `"exact"` and `"subtree"` are deprecated but still accepted on the REST API (not MCP) for older integrations — `"exact"` maps to `"project"` (its original, pre-cascade meaning), `"subtree"` maps to `"everywhere"` (the full cascade plus the subtree, since every scope now inherits the cascade legs that didn't exist when `"subtree"` was coined). New integrations should use `"project"` / `"full"` / `"everywhere"` directly.
+- **Raw `namespace`** stays on the REST API (for scripts and the admin UI) and is dropped from the MCP tool schema — the LLM never sees or constructs a raw namespace path, only `scope` and `visibility`.
+- **`GET /v1/namespaces/readset`** — header-scoped like briefing, returns the resolved structural read set (namespace + origin + tier restriction) for the request namespace, independent of any one query's tier filter. Useful for debugging what a given `MEMINI_NAMESPACE` / `MEMINI_HOME` pair would actually see. `memini doctor` uses the same resolution to show the effective read set on the command line.
 
 ## Agent segments: an automatic upgrade
 
-`MEMINI_AGENT` nests a per-agent namespace under the project (e.g.
-`acme/phoenix` becomes `acme/phoenix/reviewer` for a reviewer subagent). A
-reviewer namespace is now a plain child in the tree, so it automatically
-inherits `acme/phoenix`'s durable memories via the ancestor cascade on every
-`scope:"full"` recall/briefing — no opt-in flag, no `_shared` sibling
-namespace, no configuration at all. This is a behavior improvement over the
-old model (the removed `MEMINI_TENANT_SHARED` knob — see [Knobs](#knobs)),
-whose depth-1-only tenant-shared merge didn't reach a second-level nest
-like this: a reviewer subagent used to be isolated from its own project's
-durable knowledge unless something else compensated for it. Under the
-cascade it just works.
+`MEMINI_AGENT` nests a per-agent namespace under the project (e.g. `acme/phoenix` becomes `acme/phoenix/reviewer` for a reviewer subagent). A reviewer namespace is now a plain child in the tree, so it automatically inherits `acme/phoenix`'s durable memories via the ancestor cascade on every `scope:"full"` recall/briefing — no opt-in flag, no `_shared` sibling namespace, no configuration at all. This is a behavior improvement over the old model (the removed `MEMINI_TENANT_SHARED` knob — see [Knobs](#knobs)), whose depth-1-only tenant-shared merge didn't reach a second-level nest like this: a reviewer subagent used to be isolated from its own project's durable knowledge unless something else compensated for it. Under the cascade it just works.
 
 ## Fine print
 
-Behaviors of the scoping machinery that only matter once you push on its
-edges. Each is deliberate; the mechanisms behind them are covered in
-[how-it-works/recall.md](how-it-works/recall.md) and
-[how-it-works/namespaces.md](how-it-works/namespaces.md).
+Behaviors of the scoping machinery that only matter once you push on its edges. Each is deliberate; the mechanisms behind them are covered in [how-it-works/recall.md](how-it-works/recall.md) and [how-it-works/namespaces.md](how-it-works/namespaces.md).
 
-- **Read sets are capped.** An explicit `namespaces: [...]` list may name at
-  most 16 entries, and a fully expanded read set (after subtree expansion) is
-  clamped to 64. The clamp logs a warning and truncates rather than failing
-  the recall, and protected legs (the primary, home) are kept ahead of
-  expendable ones when — and only when — the clamp actually fires. Under the
-  cap, entries keep their natural cascade order, because ordering is
-  observable: cross-namespace score fusion breaks ties by first-seen order,
-  which is what makes nearest-ancestors-first meaningful.
-- **An entry's origin is recorded once.** A namespace that enters the read
-  set as an ancestor and is also your home namespace stays labeled
-  `ancestor` — the first append wins, and the `from` provenance on results
-  reflects that first role.
-- **Upward and downward reach use different truth sources.** Ancestors are
-  derived lexically by splitting the namespace on `/` — a parent is in the
-  read set whether or not it holds a single memory. Subtree expansion
-  (`scope:"everywhere"`, `name/*` patterns) walks the store's actual
-  namespace list, so it only ever discovers namespaces that hold rows.
-- **An episodic-only recall skips the cascade entirely.** Every non-primary
-  leg is durable-only, so a recall filtered to `tiers: ["episodic"]` (or
-  `["working"]`) resolves to just the primary namespace and never pays for
-  ancestor, home, or link resolution.
-- **Duplicate legs merge widest-tiers-wins.** When the same namespace enters
-  the read set twice with different tier restrictions (say, via a link and as
-  an ancestor), the merged entry carries the wider tier set.
-- **Both transports normalize the namespace header identically.** REST always
-  canonicalized `X-Memini-Namespace` (trim, strip surrounding slashes,
-  collapse `//`); the MCP transport was trim-only until v0.8 and now matches.
-  `memini doctor` flags rows stored under a non-canonical namespace string
-  from before the change — see
-  [operations/upgrading.md](operations/upgrading.md).
+- **Read sets are capped.** An explicit `namespaces: [...]` list may name at most 16 entries, and a fully expanded read set (after subtree expansion) is clamped to 64. The clamp logs a warning and truncates rather than failing the recall, and protected legs (the primary, home) are kept ahead of expendable ones when — and only when — the clamp actually fires. Under the cap, entries keep their natural cascade order, because ordering is observable: cross-namespace score fusion breaks ties by first-seen order, which is what makes nearest-ancestors-first meaningful.
+- **An entry's origin is recorded once.** A namespace that enters the read set as an ancestor and is also your home namespace stays labeled `ancestor` — the first append wins, and the `from` provenance on results reflects that first role.
+- **Upward and downward reach use different truth sources.** Ancestors are derived lexically by splitting the namespace on `/` — a parent is in the read set whether or not it holds a single memory. Subtree expansion (`scope:"everywhere"`, `name/*` patterns) walks the store's actual namespace list, so it only ever discovers namespaces that hold rows.
+- **An episodic-only recall skips the cascade entirely.** Every non-primary leg is durable-only, so a recall filtered to `tiers: ["episodic"]` (or `["working"]`) resolves to just the primary namespace and never pays for ancestor, home, or link resolution.
+- **Duplicate legs merge widest-tiers-wins.** When the same namespace enters the read set twice with different tier restrictions (say, via a link and as an ancestor), the merged entry carries the wider tier set.
+- **Both transports normalize the namespace header identically.** REST always canonicalized `X-Memini-Namespace` (trim, strip surrounding slashes, collapse `//`); the MCP transport was trim-only until v0.8 and now matches. `memini doctor` flags rows stored under a non-canonical namespace string from before the change — see [operations/upgrading.md](operations/upgrading.md).

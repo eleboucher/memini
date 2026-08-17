@@ -2,9 +2,7 @@
 
 ## Quick start
 
-[mise](https://mise.jdx.dev/) is the single source of truth for tool versions
-and dev tasks (`.mise/config.toml`). CI runs the same tasks, so local green
-means CI green.
+[mise](https://mise.jdx.dev/) is the single source of truth for tool versions and dev tasks (`.mise/config.toml`). CI runs the same tasks, so local green means CI green.
 
 ```sh
 mise install     # toolchain + git hooks (lefthook, via the postinstall hook)
@@ -14,12 +12,9 @@ mise run run     # run the server from source
 mise tasks       # everything else
 ```
 
-A devcontainer exists (`.devcontainer/devcontainer.json`: Debian base, mise,
-docker-in-docker; `postCreateCommand` runs `mise trust && mise install`), so
-"open in container" lands you in a ready environment.
+A devcontainer exists (`.devcontainer/devcontainer.json`: Debian base, mise, docker-in-docker; `postCreateCommand` runs `mise trust && mise install`), so "open in container" lands you in a ready environment.
 
-The dev SQLite database is kept out of your way: `.mise/config.toml` sets
-`MEMINI_SQLITE_PATH` to `bin/memini.dev.db` (gitignored).
+The dev SQLite database is kept out of your way: `.mise/config.toml` sets `MEMINI_SQLITE_PATH` to `bin/memini.dev.db` (gitignored).
 
 Note on the CLI: the server is bare `memini` — there is no `serve` subcommand.
 
@@ -35,15 +30,11 @@ Note on the CLI: the server is bare `memini` — there is no `serve` subcommand.
 | `tidy`          | `go.{mod,sum}`          | `go mod tidy`, re-stages                                                |
 | drift gates     | each generator's inputs | the matching `mise run *-check` task from the table below (glob-scoped) |
 
-On push: `go test ./...`, plus a compile-only check of the bench harnesses
-(`go test -tags bench -run=^$ ./bench/` — builds them, runs nothing, so the
-minutes-long live-embedder eval never triggers accidentally).
+On push: `go test ./...`, plus a compile-only check of the bench harnesses (`go test -tags bench -run=^$ ./bench/` — builds them, runs nothing, so the minutes-long live-embedder eval never triggers accidentally).
 
 ## Generated files and drift gates
 
-Several committed files are generated. **Never hand-edit generated output** —
-change the generator's input and regenerate. CI (and the pre-commit hooks)
-fail on drift by regenerating and diffing.
+Several committed files are generated. **Never hand-edit generated output** — change the generator's input and regenerate. CI (and the pre-commit hooks) fail on drift by regenerating and diffing.
 
 When you touch X, run Y:
 
@@ -55,27 +46,20 @@ When you touch X, run Y:
 | `api/openapi.yaml`, `ui/scripts/gen-catalog.mjs`                                  | `mise run gen-api`      | `ui/src/settings-catalog.gen.ts`, `ui/src/api-schema.gen.ts`                                                                  | `gen-api-check`   |
 | `charts/memini/**` (values comments, `Chart.yaml`, `README.md.gotmpl`)            | `mise run helm-docs`    | `charts/memini/README.md`, `charts/memini/values.schema.json`                                                                 | `helm-docs-check` |
 
-**Warning — vendor the chart dependencies before `mise run helm-docs`.** The
-dependency archive under `charts/memini/charts/` is gitignored, so a fresh
-checkout does not have it. Run:
+**Warning — vendor the chart dependencies before `mise run helm-docs`.** The dependency archive under `charts/memini/charts/` is gitignored, so a fresh checkout does not have it. Run:
 
 ```sh
 helm repo add bjw-s https://bjw-s-labs.github.io/helm-charts
 helm dependency build charts/memini
 ```
 
-first. Without the vendored dependency, `helm-schema` silently truncates
-`values.schema.json` instead of failing — you commit a broken schema and only
-the CI drift gate (which vendors deps first) catches it.
+first. Without the vendored dependency, `helm-schema` silently truncates `values.schema.json` instead of failing — you commit a broken schema and only the CI drift gate (which vendors deps first) catches it.
 
-Each `*-check` task regenerates and then `git diff --exit-code`s the output,
-so running the check also fixes your working tree.
+Each `*-check` task regenerates and then `git diff --exit-code`s the output, so running the check also fixes your working tree.
 
 ## Tests
 
-`mise run test` runs the unit suite (SQLite-backed, no external services).
-`mise run test-hooks` and `mise run test-client` cover the Node plugin scripts
-and the shared TypeScript client.
+`mise run test` runs the unit suite (SQLite-backed, no external services). `mise run test-hooks` and `mise run test-client` cover the Node plugin scripts and the shared TypeScript client.
 
 ### Build tags
 
@@ -87,9 +71,7 @@ and the shared TypeScript client.
 
 ### The Postgres conformance suite
 
-The Postgres-backed tests are enabled by `MEMINI_TEST_POSTGRES_DSN`; without
-it they `t.Skip`. The database must ship VectorChord — the easiest local one
-is the compose service:
+The Postgres-backed tests are enabled by `MEMINI_TEST_POSTGRES_DSN`; without it they `t.Skip`. The database must ship VectorChord — the easiest local one is the compose service:
 
 ```sh
 docker compose up -d db
@@ -97,26 +79,12 @@ MEMINI_TEST_POSTGRES_DSN="postgres://postgres:memini@localhost:5432/memini?sslmo
   go test -tags integration ./internal/store/postgres/ ./cmd/memini/
 ```
 
-CI runs exactly this (against `ghcr.io/tensorchord/vchord-postgres`) so the
-Postgres backend cannot rot untested; the SQLite paths of the e2e suite run
-with the tag even without the DSN.
+CI runs exactly this (against `ghcr.io/tensorchord/vchord-postgres`) so the Postgres backend cannot rot untested; the SQLite paths of the e2e suite run with the tag even without the DSN.
 
 ## Documentation conventions
 
-- **Generated files are never hand-edited** (see the drift-gate table). Any
-  _generated markdown_ must also be listed in `.prettierignore`: the
-  pre-commit `oxfmt` hook reformats markdown, and a reformatted generated page
-  fails its drift gate on an otherwise clean tree.
+- **Generated files are never hand-edited** (see the drift-gate table). Any _generated markdown_ must also be listed in `.prettierignore`: the pre-commit `oxfmt` hook reformats markdown, and a reformatted generated page fails its drift gate on an otherwise clean tree.
 - **No emojis**, in docs or in user-facing output.
-- Prose style follows the existing docs: sentence-case headings, concrete
-  commands with realistic values, American English, tables where they beat
-  prose.
-- Worked examples in `docs/examples/` end with a `Validated by:` footer naming
-  the Go test file that pins the example's behavioral claims (the quoted
-  outputs are shapes those tests assert). If you change an example, change its
-  test; if you add one, add a test.
-- **`docs/scopes.md#knobs` is load-bearing.** The boot-fatal messages for
-  removed scope variables in `internal/config/config.go` cite that anchor, and
-  `internal/config/config_test.go` (`assertFatalMessageComplete`) pins the
-  citation. Renaming or moving the `## Knobs` heading requires changing the
-  code and the test in lockstep — treat `scopes.md` as append-only around it.
+- Prose style follows the existing docs: sentence-case headings, concrete commands with realistic values, American English, tables where they beat prose.
+- Worked examples in `docs/examples/` end with a `Validated by:` footer naming the Go test file that pins the example's behavioral claims (the quoted outputs are shapes those tests assert). If you change an example, change its test; if you add one, add a test.
+- **`docs/scopes.md#knobs` is load-bearing.** The boot-fatal messages for removed scope variables in `internal/config/config.go` cite that anchor, and `internal/config/config_test.go` (`assertFatalMessageComplete`) pins the citation. Renaming or moving the `## Knobs` heading requires changing the code and the test in lockstep — treat `scopes.md` as append-only around it.
