@@ -471,6 +471,16 @@ type Service struct {
 	// bg tracks detached best-effort goroutines (async recall reinforcement) so
 	// WaitBackground can join them before the store is closed.
 	bg sync.WaitGroup
+
+	// eventQMu/eventQTail chain asynchronous activity-log appends into a
+	// strict FIFO: under the mutex each append captures the previous append's
+	// done channel as its predecessor and installs its own as the new tail,
+	// so the goroutines execute in submission order no matter how the
+	// scheduler interleaves them. RecordInjected's snapshot hydration depends
+	// on this ordering — its read must observe the serve rows the preceding
+	// recall/briefing submitted milliseconds earlier (see logEventsPrepared).
+	eventQMu   sync.Mutex
+	eventQTail chan struct{}
 }
 
 // WaitBackground blocks until detached background goroutines (async recall
