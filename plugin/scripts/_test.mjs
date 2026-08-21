@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, basename } from "node:path";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
@@ -409,6 +409,26 @@ test("session-start.mjs: handshake DOWN → degraded local namespace, still emit
   // A null briefing (server down) is NOT proof the namespace is empty — the note
   // is gated on a non-null `b`, so it must be absent here.
   assert.doesNotMatch(stdout, /no stored memories yet/, "a null briefing must not claim emptiness");
+});
+
+test("session-start.mjs: mirrors MEMINI_API_KEY to the credentials file and retires it when unset", async () => {
+  const config = freshConfig();
+  const base = { MEMINI_BASE_URL: DEAD_URL, XDG_CACHE_HOME: freshCache(), XDG_CONFIG_HOME: config };
+  await runHook("session-start.mjs", JSON.stringify({ cwd: __dirname, session_id: "cred-1" }), {
+    ...base,
+    MEMINI_API_KEY: "tok-abc",
+  });
+  const p = join(config, "memini", "credentials");
+  const parsed = JSON.parse(readFileSync(p, "utf8"));
+  const key = DEAD_URL.replace(/\/+$/, "");
+  assert.equal(parsed.credentials[key].api_key, "tok-abc");
+  if (process.platform !== "win32") assert.equal(statSync(p).mode & 0o777, 0o600, "bearer at rest must be 0600");
+
+  // Env truth changed (key unset): the stored copy must not outlive it —
+  // runHook strips MEMINI_API_KEY from the inherited env, so this spawn
+  // genuinely has none.
+  await runHook("session-start.mjs", JSON.stringify({ cwd: __dirname, session_id: "cred-2" }), base);
+  assert.equal(existsSync(p), false, "unset key retires the stored credential");
 });
 
 test("session-start.mjs: reachable handshake but a null briefing does NOT claim emptiness", async () => {
