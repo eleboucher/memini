@@ -338,9 +338,75 @@ function effectiveSetting(knob, server, env = process.env) {
   return { value: knob.default, source: "default" };
 }
 
+// src/credential.ts
+import fs3 from "node:fs";
+import os from "node:os";
+import path3 from "node:path";
+var CREDENTIALS_VERSION = 1;
+function credentialsPath(env = process.env) {
+  const xdg = env["XDG_CONFIG_HOME"];
+  const base = xdg && xdg.trim() ? xdg : path3.join(os.homedir() || os.tmpdir(), ".config");
+  return path3.join(base, "memini", "credentials");
+}
+function credentialKey(baseUrl) {
+  return (baseUrl || "").trim().replace(/\/+$/, "");
+}
+function readFile(p) {
+  try {
+    const parsed = JSON.parse(fs3.readFileSync(p, "utf8"));
+    if (!parsed || typeof parsed !== "object" || typeof parsed.credentials !== "object" || parsed.credentials === null) {
+      return { version: CREDENTIALS_VERSION, credentials: {} };
+    }
+    return parsed;
+  } catch {
+    return { version: CREDENTIALS_VERSION, credentials: {} };
+  }
+}
+function readStoredApiKey(baseUrl, env = process.env) {
+  const entry = readFile(credentialsPath(env)).credentials[credentialKey(baseUrl)];
+  return typeof entry?.api_key === "string" ? entry.api_key : "";
+}
+function syncStoredApiKey(baseUrl, apiKey, env = process.env) {
+  const p = credentialsPath(env);
+  try {
+    const file = readFile(p);
+    const key = credentialKey(baseUrl);
+    const existing = file.credentials[key];
+    if (!apiKey) {
+      if (!existing) return { ok: true, path: p, action: "skipped" };
+      delete file.credentials[key];
+      if (Object.keys(file.credentials).length === 0) {
+        fs3.rmSync(p, { force: true });
+        return { ok: true, path: p, action: "removed" };
+      }
+      writeAtomic(p, file);
+      return { ok: true, path: p, action: "removed" };
+    }
+    if (existing?.api_key === apiKey) return { ok: true, path: p, action: "unchanged" };
+    file.version = CREDENTIALS_VERSION;
+    file.credentials[key] = { api_key: apiKey, updated_at: (/* @__PURE__ */ new Date()).toISOString() };
+    writeAtomic(p, file);
+    return { ok: true, path: p, action: "written" };
+  } catch (e) {
+    return { ok: false, path: p, action: "skipped", error: e?.message || String(e) };
+  }
+}
+function writeAtomic(p, file) {
+  fs3.mkdirSync(path3.dirname(p), { recursive: true, mode: 448 });
+  const tmp = `${p}.${process.pid}.tmp`;
+  fs3.writeFileSync(tmp, JSON.stringify(file, null, 2) + "\n", { mode: 384 });
+  fs3.renameSync(tmp, p);
+}
+function applyCredentialFallback(boot, env = process.env) {
+  if (boot.apiKey) return { boot, source: "env" };
+  const stored = readStoredApiKey(boot.baseUrl, env);
+  if (!stored) return { boot, source: "none" };
+  return { boot: { ...boot, apiKey: stored }, source: "file" };
+}
+
 // src/facts.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
-import path3 from "node:path";
+import path4 from "node:path";
 import crypto from "node:crypto";
 function gitOut(args, dir) {
   try {
@@ -357,14 +423,14 @@ function gitOut(args, dir) {
 function gatherFacts(cwd, env = process.env) {
   const dir = cwd && cwd.trim() ? cwd : process.cwd();
   const facts = {
-    cwd_basename: path3.basename(dir)
+    cwd_basename: path4.basename(dir)
   };
   const remote = gitOut(["remote", "get-url", "origin"], dir);
   if (remote) facts.remote_url = remote;
   const toplevel = gitOut(["rev-parse", "--show-toplevel"], dir);
   if (toplevel) {
     facts.toplevel_path = toplevel;
-    facts.toplevel_basename = path3.basename(toplevel);
+    facts.toplevel_basename = path4.basename(toplevel);
   }
   const agent = env["MEMINI_AGENT"];
   if (agent) facts.agent = agent;
@@ -450,8 +516,8 @@ function resolveNamespace(boot, facts, hs) {
 }
 
 // src/handshake.ts
-import fs3 from "node:fs";
-import path4 from "node:path";
+import fs4 from "node:fs";
+import path5 from "node:path";
 var HANDSHAKE_TTL_MS = 10 * 60 * 1e3;
 async function performHandshake(boot, facts, opts = {}) {
   assertBearerTransportSafe(boot.baseUrl, boot.apiKey, {
@@ -482,17 +548,17 @@ async function performHandshake(boot, facts, opts = {}) {
   }
 }
 function handshakeCachePath(ppid, env = process.env) {
-  return path4.join(cacheDir(env), "sessions", `pid-${ppid}.handshake.json`);
+  return path5.join(cacheDir(env), "sessions", `pid-${ppid}.handshake.json`);
 }
 function readCachedHandshake(ppid, cwd, facts, env = process.env, now = Date.now()) {
   try {
-    const raw = fs3.readFileSync(handshakeCachePath(ppid, env), "utf8");
+    const raw = fs4.readFileSync(handshakeCachePath(ppid, env), "utf8");
     const rec = JSON.parse(raw);
     if (!rec || typeof rec !== "object") return void 0;
     if (typeof rec.writtenAt !== "number" || !Number.isFinite(rec.writtenAt)) return void 0;
     const age = now - rec.writtenAt;
     if (age < 0 || age > HANDSHAKE_TTL_MS) return void 0;
-    if (typeof rec.cwd !== "string" || path4.resolve(rec.cwd) !== path4.resolve(cwd)) return void 0;
+    if (typeof rec.cwd !== "string" || path5.resolve(rec.cwd) !== path5.resolve(cwd)) return void 0;
     if (typeof rec.factsHash !== "string" || rec.factsHash !== factsFingerprint(facts)) return void 0;
     if (!rec.result || typeof rec.result !== "object") return void 0;
     return rec.result;
@@ -503,20 +569,20 @@ function readCachedHandshake(ppid, cwd, facts, env = process.env, now = Date.now
 function writeCachedHandshake(ppid, cwd, facts, result, env = process.env, now = Date.now()) {
   try {
     const p = handshakeCachePath(ppid, env);
-    fs3.mkdirSync(path4.dirname(p), { recursive: true });
+    fs4.mkdirSync(path5.dirname(p), { recursive: true });
     const rec = {
       result,
-      cwd: path4.resolve(cwd),
+      cwd: path5.resolve(cwd),
       factsHash: factsFingerprint(facts),
       writtenAt: now
     };
     const tmp = `${p}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
     try {
-      fs3.writeFileSync(tmp, JSON.stringify(rec));
-      fs3.renameSync(tmp, p);
+      fs4.writeFileSync(tmp, JSON.stringify(rec));
+      fs4.renameSync(tmp, p);
     } catch (e) {
       try {
-        fs3.unlinkSync(tmp);
+        fs4.unlinkSync(tmp);
       } catch {
       }
       throw e;
@@ -526,22 +592,22 @@ function writeCachedHandshake(ppid, cwd, facts, result, env = process.env, now =
 }
 function deleteCachedHandshake(ppid, env = process.env) {
   try {
-    fs3.rmSync(handshakeCachePath(ppid, env), { force: true });
+    fs4.rmSync(handshakeCachePath(ppid, env), { force: true });
   } catch {
   }
 }
 function invalidateAllHandshakes(env = process.env) {
-  const dir = path4.join(cacheDir(env), "sessions");
+  const dir = path5.join(cacheDir(env), "sessions");
   let names;
   try {
-    names = fs3.readdirSync(dir);
+    names = fs4.readdirSync(dir);
   } catch {
     return;
   }
   for (const name of names) {
     if (!name.endsWith(".handshake.json")) continue;
     try {
-      fs3.rmSync(path4.join(dir, name), { force: true });
+      fs4.rmSync(path5.join(dir, name), { force: true });
     } catch {
     }
   }
@@ -769,6 +835,7 @@ function injectedReport({
 }
 export {
   BEHAVIOR_KNOBS,
+  CREDENTIALS_VERSION,
   DEFAULT_TIMEOUT_MS,
   HANDSHAKE_TTL_MS,
   MAX_INJECTED_IDS,
@@ -778,6 +845,7 @@ export {
   RECALL_DETAIL_HEADER,
   SESSION_CWD_TTL_MS,
   TRUNCATION_MARKER,
+  applyCredentialFallback,
   approxTokens,
   assertBearerTransportSafe,
   briefingContentHash,
@@ -785,6 +853,8 @@ export {
   buildTurnCapture,
   cacheDir,
   cooldownIds,
+  credentialKey,
+  credentialsPath,
   defaultOverridesPath,
   deleteCachedHandshake,
   deleteSessionCwd,
@@ -821,6 +891,7 @@ export {
   readOverride,
   readOverrides,
   readSessionCwd,
+  readStoredApiKey,
   recallDropFooter,
   recallHitTruncated,
   recordInjected,
@@ -831,6 +902,7 @@ export {
   resolveHarnessCwd,
   resolveNamespace,
   sessionCwdPath,
+  syncStoredApiKey,
   truncate,
   truncateForCapture,
   validateNamespace,

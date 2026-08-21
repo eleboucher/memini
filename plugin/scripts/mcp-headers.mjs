@@ -29,6 +29,8 @@
 
 import {
   readBootstrap,
+  applyCredentialFallback,
+  credentialsPath,
   gatherFacts,
   readCachedHandshake,
   writeCachedHandshake,
@@ -45,14 +47,25 @@ async function resolveNamespaceForHeader(boot, ppid) {
   // namespace — a defined outcome, unlike a namespace guessed from the plugin's
   // own install dir.
   const harness = resolveHarnessCwd(process.env, ppid);
-  if (!harness) return { namespace: "", source: "auth-only" };
+  if (!harness) return { namespace: "", source: "auth-only", authExpected: false };
 
   const facts = gatherFacts(harness.cwd, process.env);
 
   // A valid per-session cached handshake wins — SessionStart populated it and it
   // is authoritative for this session's namespace + settings.
   const cached = readCachedHandshake(ppid, harness.cwd, facts, process.env);
-  if (cached) return { namespace: cached.namespace, source: `cache:${cached.namespace_source}`, cwd: harness.cwd };
+  if (cached) {
+    return {
+      namespace: cached.namespace,
+      source: `cache:${cached.namespace_source}`,
+      cwd: harness.cwd,
+      // The cache remembers whether this session's hooks authenticated — the
+      // signal main() uses to tell "no auth configured anywhere" (fine) apart
+      // from "auth works for the hooks but not for this helper" (the silent
+      // 2.1.238 failure worth shouting about).
+      authExpected: cached.identity?.authenticated === true,
+    };
+  }
 
   // Miss (no hook has run yet, or the TTL lapsed): do one bounded live handshake
   // and cache it. performHandshake runs the plaintext-bearer guard outside its
@@ -66,19 +79,32 @@ async function resolveNamespaceForHeader(boot, ppid) {
   }
   if (hs) {
     writeCachedHandshake(ppid, harness.cwd, facts, hs, process.env);
-    return { namespace: hs.namespace, source: `server:${hs.namespace_source}`, cwd: harness.cwd };
+    return {
+      namespace: hs.namespace,
+      source: `server:${hs.namespace_source}`,
+      cwd: harness.cwd,
+      authExpected: hs.identity?.authenticated === true,
+    };
   }
 
   // Server unreachable: env override or local derivation — never the network.
   const r = resolveNamespace(boot, facts, undefined);
-  return { namespace: r.namespace, source: r.source, cwd: harness.cwd };
+  // Server unreachable and no cache: nothing proves auth is expected.
+  return { namespace: r.namespace, source: r.source, cwd: harness.cwd, authExpected: false };
 }
 
 async function main() {
-  const boot = readBootstrap(process.env);
+  // Claude Code >= 2.1.238 runs a plugin headersHelper WITHOUT inherited
+  // credential env vars (intentional hardening — see credential.ts in
+  // @memini/client). MEMINI_BASE_URL survives (not credential-shaped);
+  // MEMINI_API_KEY does not. Fall back to the 0600 credentials file the
+  // SessionStart hook (full env) mirrors it into, keyed by base URL so a
+  // bearer stored for one server is never sent to another. An env-provided
+  // key still wins, so pre-2.1.238 behavior is unchanged.
+  const { boot, source: credSource } = applyCredentialFallback(readBootstrap(process.env), process.env);
   const ppid = process.ppid;
 
-  const { namespace, source, cwd } = await resolveNamespaceForHeader(boot, ppid);
+  const { namespace, source, cwd, authExpected } = await resolveNamespaceForHeader(boot, ppid);
 
   const headers = {};
   if (namespace) headers["X-Memini-Namespace"] = namespace;
@@ -101,10 +127,28 @@ async function main() {
     }
   }
 
+  // The silent failure mode this plugin shipped with on Claude Code >= 2.1.238:
+  // hooks authenticated (reads look healthy) while the MCP channel dies with
+  // no Authorization (writes silently impossible). If this session's cached
+  // handshake proves the hooks ARE authenticated and we still ended up with no
+  // bearer from env or file, say so loudly — this stderr lands in Claude
+  // Code's MCP logs — instead of letting the server 401 and Claude Code wander
+  // into OAuth discovery ("Dynamic Client Registration rejected").
+  if (authExpected && !headers.Authorization) {
+    console.error(
+      `[memini] headersHelper has no API key: MEMINI_API_KEY is not in this process's environment ` +
+        `(Claude Code >= 2.1.238 strips credential env vars from plugin headersHelpers) and no stored ` +
+        `credential for ${boot.baseUrl} exists at ${credentialsPath(process.env)}. memini's MCP tools ` +
+        `will fail to authenticate. Update the memini plugin, then start a new session so the ` +
+        `SessionStart hook can store the credential — or register the server at user scope ` +
+        `(see plugin/README.md, "Claude Code 2.1.238 and credential env vars").`,
+    );
+  }
+
   if (DEBUG) {
     console.error(
       `[memini] headersHelper: namespace=${namespace || "(none)"} via ${source}` +
-        `${cwd ? ` cwd=${cwd}` : ""} ppid=${ppid}`,
+        `${cwd ? ` cwd=${cwd}` : ""} ppid=${ppid} cred=${credSource}`,
     );
   }
 
