@@ -13,6 +13,7 @@ flags below belong to the subcommands only. See the
 
 | Command | Does |
 | --- | --- |
+| [`memini assess`](#memini-assess) | Backfill LLM-assessed importance on durable memories, on demand |
 | [`memini backfill`](#memini-backfill) | Seed nil confidence on legacy durable memories (pre-0.0.11 recovery) |
 | [`memini doctor`](#memini-doctor) | Diagnose namespace mismatches and store health |
 | [`memini export`](#memini-export) | Export memories to memini's portable JSON (re-importable for backup/migration) |
@@ -35,6 +36,25 @@ flags below belong to the subcommands only. See the
 | [`memini namespace split`](#memini-namespace-split) | Regroup a pooled namespace back into per-source namespaces by metadata |
 | [`memini reembed`](#memini-reembed) | Re-embed every memory under the currently configured embedding model |
 | [`memini version`](#memini-version) | Print version information |
+
+## `memini assess`
+
+Send durable (semantic / procedural) memories still sitting at their tier-seed importance to the configured LLM for an intrinsic-importance score, writing the result to assessed_importance.
+
+This is the same pass MEMINI_ASSESS_INTERVAL runs on a timer, exposed as a command so a deployment can populate the column without leaving an hourly LLM job switched on — including deployments that keep MEMINI_ASSESS_INTERVAL=0 permanently and point MEMINI_LLM_BASE_URL at a model for this invocation alone.
+
+Idempotent, and never second-guesses a human: a memory whose importance differs from its tier seed was set deliberately and is skipped. Dry-run by default.
+
+```
+memini assess [flags]
+```
+
+| Flag | Default | Does |
+| --- | --- | --- |
+| `--batch` | `0` | memories per LLM call (0 uses MEMINI_ASSESS_BATCH) |
+| `--max-per-run` | `0` | cap rows touched by this pass (0 uses MEMINI_ASSESS_MAX_PER_RUN) |
+| `--min-age` | `0s` | skip memories younger than this (0 uses MEMINI_ASSESS_MIN_AGE) |
+| `--yes` |  | spend LLM calls and write the assessments (default is a dry-run count) |
 
 ## `memini backfill`
 
