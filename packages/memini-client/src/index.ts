@@ -83,6 +83,18 @@ export {
 } from "./bootstrap.js";
 
 export {
+  CREDENTIALS_VERSION,
+  credentialsPath,
+  credentialKey,
+  readStoredApiKey,
+  syncStoredApiKey,
+  applyCredentialFallback,
+  type StoredCredential,
+  type CredentialsFile,
+  type SyncResult,
+} from "./credential.js";
+
+export {
   gatherFacts,
   factsFingerprint,
   type ProjectFacts,

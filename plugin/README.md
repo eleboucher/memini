@@ -323,3 +323,49 @@ This bearer does **not** need to be an admin key: the plugin only reads and writ
 Both the hooks (REST) and the MCP tools then send `Authorization: Bearer $MEMINI_API_KEY`. The **namespace stays per-project** even against one shared remote: the hooks resolve it from `data.cwd`, and the MCP `headersHelper` (`scripts/mcp-headers.mjs`) resolves the _same_ value per connection by walking the process tree (see [above](#how-the-mcp-tools-find-the-same-namespace)) — so capture and recall always target the same namespace, even with several sessions open in different repos. Run the server with `MEMINI_API_KEY` set so `/mcp` (and `/v1`) require the token.
 
 `/memini:status` verifies all of this against the live server and is the fastest way to confirm a remote setup is actually wired the way you think it is.
+
+## Claude Code 2.1.238 and credential env vars
+
+Claude Code 2.1.238's changelog, verbatim:
+
+> MCP `headersHelper` from a project `.mcp.json`, **plugin**, or agent file runs without inherited credential env vars; user, managed and claude.ai-scope helpers now run from the Claude config dir
+
+This is **intentional security hardening**, not a Claude Code bug — a plugin is third-party marketplace code, and env inheritance handed every installed plugin every `*_API_KEY`/`*_TOKEN` in the shell. Don't file it upstream.
+
+On plugin versions that read the bearer only from `MEMINI_API_KEY`, the effect was nasty because it was **asymmetric and silent**: the hooks (ordinary processes with full env) kept delivering briefings and recall, while the MCP `headersHelper` emitted no `Authorization`, the server 401'd, Claude Code fell into OAuth discovery, and the connection died with `Dynamic Client Registration rejected (HTTP 404)` — so every MCP tool (`memory_remember`/`memory_recall`/`memory_get`/`memory_forget`) silently disappeared. Reads looked healthy; writes were impossible.
+
+### The fix (shipped in this plugin)
+
+Filesystem access was never restricted — only env inheritance was. So the `SessionStart` hook (full env) mirrors `MEMINI_API_KEY` into
+
+```
+${XDG_CONFIG_HOME:-~/.config}/memini/credentials   # mode 0600, keyed by base URL
+```
+
+and the `headersHelper` falls back to it when its own env carries no key. An env-provided key still wins; unsetting `MEMINI_API_KEY` retires the stored copy at the next session start, so the file tracks the env rather than outliving a rotated key. The path is deliberately **not** configurable via an env var — any name containing `KEY`/`TOKEN`/`SECRET` would be stripped by the same heuristic.
+
+The honest tradeoff: the bearer now also rests on disk, readable by any process running as you. It is memini's own file at `0600`, holds only memini's key, and entries are keyed by base URL so a bearer stored for one server is never sent to another — the upstream hardening targeted inheritance _breadth_ (every plugin seeing every credential), not secrets-at-rest. If that tradeoff is unacceptable in your environment, use the user-scope registration below instead.
+
+If the helper ever finds itself with no key while this session's handshake shows the hooks _are_ authenticated, it says so loudly on stderr (visible in Claude Code's MCP logs) instead of letting the connection die quietly.
+
+### Workaround for older plugin versions
+
+If you are stuck on a plugin version without the credentials file, register the server at **user scope** — user-scope helpers are exempt from the restriction — reusing the plugin's own helper so per-project namespace resolution is preserved:
+
+```sh
+claude mcp add --scope user --transport http memini-user https://memini.example.com/mcp
+```
+
+Then set `headersHelper` on that entry in `~/.claude.json`. Resolve the plugin root via the breadcrumb the SessionStart hook writes, **not** a version-pinned path — otherwise the next plugin auto-update silently breaks it again:
+
+```sh
+R="${XDG_CACHE_HOME:-$HOME/.cache}/memini/plugin-root"; R=$(cat "$R" 2>/dev/null); \
+if [ -n "$R" ] && [ -f "$R/scripts/mcp-headers.mjs" ]; then \
+  exec "$R/scripts/run.sh" "$R/scripts/mcp-headers.mjs"; fi; \
+printf '{"Authorization":"Bearer %s"}' "$MEMINI_API_KEY"
+```
+
+Verify with `claude mcp list` — it performs a live health check, so no session restart is needed. Two caveats:
+
+- The broken `plugin:memini:memini` entry keeps failing in parallel and shows as ✘ in `/mcp`. Harmless but noisy.
+- Once you're on a fixed plugin version, **remove `memini-user`** or the session registers two identical tool sets.

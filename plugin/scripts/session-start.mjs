@@ -53,7 +53,7 @@ function emitContext(context) {
     process.stdout.write(context);
   }
 }
-import { readOverride, assertBearerTransportSafe } from "./_client.gen.mjs";
+import { readOverride, assertBearerTransportSafe, syncStoredApiKey } from "./_client.gen.mjs";
 
 // Buffers older than this are abandoned (crashed/killed sessions) and removed.
 const STALE_BUFFER_MS = 7 * 24 * 60 * 60 * 1000;
@@ -215,6 +215,22 @@ async function main() {
   // entry is the degraded signal Pre/PostToolUse depend on.
   let ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "always", timeoutMs: 3000 });
   let project = ctx.namespace;
+
+  // Mirror the API key into the 0600 credentials file the MCP headersHelper
+  // falls back to: Claude Code >= 2.1.238 strips credential env vars from
+  // plugin headersHelpers, but hooks (this process) keep the full env — the
+  // same asymmetry the plugin-root breadcrumb already bridges. An unset
+  // MEMINI_API_KEY retires the stored copy so the file tracks the env truth
+  // instead of replaying a rotated-away bearer forever. Failure is loud when
+  // a key exists: silently skipping the write recreates the exact
+  // reads-work-writes-don't failure this exists to end.
+  const cred = syncStoredApiKey(ctx.boot.baseUrl, ctx.boot.apiKey);
+  if (!cred.ok && ctx.boot.apiKey) {
+    console.error(
+      `[memini] could not store the API key for the MCP headersHelper at ${cred.path} (${cred.error}); ` +
+        `on Claude Code >= 2.1.238 memini's MCP tools may fail to authenticate`,
+    );
+  }
 
   // Record this session's PROJECT DIRECTORY under the harness pid that both this
   // hook and the MCP headersHelper see as their parent (Claude Code runs hooks

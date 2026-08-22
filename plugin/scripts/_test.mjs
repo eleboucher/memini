@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, basename } from "node:path";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
@@ -52,6 +52,13 @@ for (const k of Object.keys(process.env)) {
 // cache dir so runs don't pollute the real ~/.cache or each other.
 function freshCache() {
   return mkdtempSync(join(tmpdir(), "memini-test-"));
+}
+
+// Same isolation for XDG_CONFIG_HOME: tests that read or write the credentials
+// file (credential.ts) get their own config dir, so one test's stored bearer
+// can never satisfy — or fail — another's assertion about auth headers.
+function freshConfig() {
+  return mkdtempSync(join(tmpdir(), "memini-config-"));
 }
 
 // A full HandshakeResponse (api/openapi.yaml), with sensible defaults. Override
@@ -402,6 +409,26 @@ test("session-start.mjs: handshake DOWN → degraded local namespace, still emit
   // A null briefing (server down) is NOT proof the namespace is empty — the note
   // is gated on a non-null `b`, so it must be absent here.
   assert.doesNotMatch(stdout, /no stored memories yet/, "a null briefing must not claim emptiness");
+});
+
+test("session-start.mjs: mirrors MEMINI_API_KEY to the credentials file and retires it when unset", async () => {
+  const config = freshConfig();
+  const base = { MEMINI_BASE_URL: DEAD_URL, XDG_CACHE_HOME: freshCache(), XDG_CONFIG_HOME: config };
+  await runHook("session-start.mjs", JSON.stringify({ cwd: __dirname, session_id: "cred-1" }), {
+    ...base,
+    MEMINI_API_KEY: "tok-abc",
+  });
+  const p = join(config, "memini", "credentials");
+  const parsed = JSON.parse(readFileSync(p, "utf8"));
+  const key = DEAD_URL.replace(/\/+$/, "");
+  assert.equal(parsed.credentials[key].api_key, "tok-abc");
+  if (process.platform !== "win32") assert.equal(statSync(p).mode & 0o777, 0o600, "bearer at rest must be 0600");
+
+  // Env truth changed (key unset): the stored copy must not outlive it —
+  // runHook strips MEMINI_API_KEY from the inherited env, so this spawn
+  // genuinely has none.
+  await runHook("session-start.mjs", JSON.stringify({ cwd: __dirname, session_id: "cred-2" }), base);
+  assert.equal(existsSync(p), false, "unset key retires the stored credential");
 });
 
 test("session-start.mjs: reachable handshake but a null briefing does NOT claim emptiness", async () => {
@@ -3420,10 +3447,61 @@ test("mcp-headers.mjs: omits Authorization when no token", async () => {
     CLAUDE_PROJECT_DIR: __dirname,
     MEMINI_BASE_URL: DEAD_URL,
     XDG_CACHE_HOME: freshCache(),
+    // Own config dir: a credentials file written by any other test must not
+    // supply the bearer this test asserts the absence of.
+    XDG_CONFIG_HOME: freshConfig(),
   });
   const h = JSON.parse(stdout);
   assert.equal(h["X-Memini-Namespace"], "memini");
   assert.equal(h.Authorization, undefined);
+});
+
+test("mcp-headers.mjs: falls back to the stored credential when MEMINI_API_KEY is absent (Claude Code >= 2.1.238)", async () => {
+  const config = freshConfig();
+  const mod = await import("./_client.gen.mjs");
+  mod.syncStoredApiKey(DEAD_URL, "tok-from-file", { XDG_CONFIG_HOME: config });
+  // runHook strips MEMINI_API_KEY from the inherited env — exactly what
+  // 2.1.238+ hands a plugin headersHelper.
+  const { stdout } = await runHook("mcp-headers.mjs", "", {
+    CLAUDE_PROJECT_DIR: __dirname,
+    MEMINI_BASE_URL: DEAD_URL,
+    XDG_CACHE_HOME: freshCache(),
+    XDG_CONFIG_HOME: config,
+  });
+  const h = JSON.parse(stdout);
+  assert.equal(h.Authorization, "Bearer tok-from-file");
+  assert.equal(h["X-Memini-Namespace"], "memini", "namespace path unchanged by the fallback");
+});
+
+test("mcp-headers.mjs: ignores a stored credential for a different base URL", async () => {
+  const config = freshConfig();
+  const mod = await import("./_client.gen.mjs");
+  mod.syncStoredApiKey("http://other.invalid:9", "tok-other", { XDG_CONFIG_HOME: config });
+  const { stdout } = await runHook("mcp-headers.mjs", "", {
+    CLAUDE_PROJECT_DIR: __dirname,
+    MEMINI_BASE_URL: DEAD_URL,
+    XDG_CACHE_HOME: freshCache(),
+    XDG_CONFIG_HOME: config,
+  });
+  assert.equal(JSON.parse(stdout).Authorization, undefined, "another server's bearer must never travel");
+});
+
+test("mcp-headers.mjs: warns loudly when the session is authenticated but the helper has no key", async () => {
+  const config = freshConfig();
+  const cache = freshCache();
+  // Prime the per-session handshake cache the way an authenticated
+  // SessionStart would (identity.authenticated: true, mkHS's default), with
+  // NO credential file and NO env key: the exact silent-auth-loss condition
+  // Claude Code >= 2.1.238 created.
+  await primeCache(cache, __dirname, mkHS(), { XDG_CONFIG_HOME: config });
+  const { stdout, stderr } = await runHook("mcp-headers.mjs", "", {
+    CLAUDE_PROJECT_DIR: __dirname,
+    MEMINI_BASE_URL: DEAD_URL,
+    XDG_CACHE_HOME: cache,
+    XDG_CONFIG_HOME: config,
+  });
+  assert.equal(JSON.parse(stdout).Authorization, undefined);
+  assert.match(stderr, /headersHelper has no API key/);
 });
 
 test("mcp-headers.mjs: emits X-Memini-Home when MEMINI_HOME is set, omits when unset", async () => {
