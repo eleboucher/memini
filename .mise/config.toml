@@ -4,7 +4,7 @@
 [tools]
 go = "1.26.6"
 golangci-lint = "2.12.2"
-lefthook = "2.1.10"
+lefthook = "2.1.11"
 helm = "4.2.4"
 helm-docs = "1.14.2"
 "aqua:dadav/helm-schema" = "0.23.4"
