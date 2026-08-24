@@ -76,12 +76,15 @@ For options, use the documented object form:
 The same options and env vars below apply. Recall injects into the request's
 `system` prompt (rather than a synthetic message part).
 
-> **Beta status.** Verified against `opencode2 v0.0.0-next-16502`: the working
-> request hook is `context` (the docs call it `request`); user/assistant turns
-> are captured from `session.input.admitted`, `session.text.ended`, and
-> `session.execution.*` because this build emits no `session.idle` and exposes
-> no session-message list method. The plugin registers both hook names so it
-> remains compatible with the documented spelling.
+> **Beta status.** Verified against `opencode2 v0.0.0-next-16502` and re-checked
+> through `v0.0.0-beta-18050`: the working request hook is `context` (the docs
+> call it `request`); user/assistant turns are captured from
+> `session.inbox.enqueued`, `session.text.ended`, and `session.execution.*`
+> because these builds emit no `session.idle` and expose no session-message list
+> method. `next-17444` renamed the first event from `session.input.admitted` and
+> moved its text from `input.data` to `item.payload`; the plugin reads both
+> shapes, and registers both hook names so it remains compatible with the
+> documented spelling.
 
 The v2 plugin sends diagnostics through the structured `ctx.app.log` logger when
 available. Logging is best-effort and remains silent when that logger is absent

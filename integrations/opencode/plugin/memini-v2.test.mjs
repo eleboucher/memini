@@ -5,7 +5,8 @@
 //   - the recall hook fires as "context" (docs wrongly say "request"),
 //   - system holds { type: "text", text } parts,
 //   - there is no session.idle: turns are reconstructed from
-//     session.input.admitted / session.text.ended / session.execution.*.
+//     session.inbox.enqueued / session.text.ended / session.execution.*
+//     (session.input.admitted on builds up to next-16502).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -81,10 +82,20 @@ function turnEvent({ sessionID = "s1", userID = "u1", text = "q", system }) {
   };
 }
 
+// userInput is the event carrying a turn's user text. next-17444 renamed it
+// from session.input.admitted { input: { type, data } } to
+// session.inbox.enqueued { item: { type, payload } }; the plugin reads both, so
+// tests can build either shape.
+function userInput(sessionID, text, legacy = false) {
+  return legacy
+    ? { type: "session.input.admitted", data: { sessionID, input: { type: "user", data: { text } } } }
+    : { type: "session.inbox.enqueued", data: { sessionID, item: { type: "user", payload: { text } } } };
+}
+
 // turnEvents is the event-stream sequence for one completed user turn.
-function turnEvents({ sessionID = "s1", userText = "q", assistantText = "a", aid = "a1", end = "session.execution.succeeded" }) {
+function turnEvents({ sessionID = "s1", userText = "q", assistantText = "a", aid = "a1", end = "session.execution.succeeded", legacy = false }) {
   const events = [
-    { type: "session.input.admitted", data: { sessionID, input: { type: "user", data: { text: userText } } } },
+    userInput(sessionID, userText, legacy),
     { type: "session.text.ended", data: { sessionID, assistantMessageID: aid, ordinal: 0, text: assistantText } },
   ];
   if (end) events.push({ type: end, data: { sessionID } });
@@ -456,6 +467,51 @@ test("capture writes the completed turn when the execution succeeds", async () =
   }
 });
 
+// Regression: next-17444 renamed session.input.admitted to
+// session.inbox.enqueued and moved the text from input.data to item.payload.
+// Reading only the old name left capture silently writing nothing.
+test("capture reads the user text from either input event generation", async () => {
+  for (const legacy of [false, true]) {
+    BASE_ENV();
+    const { posts, restore } = installFetch();
+    try {
+      const { ctx, state } = makeCtx({ options: { namespace: "test-ns" } });
+      state.emitted = turnEvents({ userText: "how do I deploy", assistantText: "run make deploy", legacy });
+      const cleanup = await setup(ctx);
+      await drain();
+
+      assert.equal(posts.length, 1, `one capture write (legacy=${legacy})`);
+      assert.match(posts[0].content, /how do I deploy/);
+      assert.match(posts[0].content, /run make deploy/);
+      await cleanup();
+    } finally {
+      restore();
+    }
+  }
+});
+
+// Only "user" items carry a turn's prompt; synthetic/compaction/move items ride
+// the same event and must not be captured as if the user had typed them.
+test("capture ignores non-user inbox items", async () => {
+  BASE_ENV();
+  const { posts, restore } = installFetch();
+  try {
+    const { ctx, state } = makeCtx({ options: { namespace: "test-ns" } });
+    state.emitted = [
+      { type: "session.inbox.enqueued", data: { sessionID: "s1", item: { type: "synthetic", payload: { text: "compact me" } } } },
+      { type: "session.text.ended", data: { sessionID: "s1", assistantMessageID: "a1", ordinal: 0, text: "a" } },
+      { type: "session.execution.succeeded", data: { sessionID: "s1" } },
+    ];
+    const cleanup = await setup(ctx);
+    await drain();
+
+    assert.equal(posts.length, 0, "synthetic input is not a captured turn");
+    await cleanup();
+  } finally {
+    restore();
+  }
+});
+
 test("capture marks failed and interrupted executions", async () => {
   BASE_ENV();
   const { posts, restore } = installFetch();
@@ -481,7 +537,7 @@ test("capture joins multi-part assistant text by ordinal", async () => {
   try {
     const { ctx, state } = makeCtx({ options: { namespace: "test-ns" } });
     state.emitted = [
-      { type: "session.input.admitted", data: { sessionID: "s1", input: { type: "user", data: { text: "q" } } } },
+      userInput("s1", "q"),
       { type: "session.text.ended", data: { sessionID: "s1", assistantMessageID: "a1", ordinal: 1, text: "second half" } },
       { type: "session.text.ended", data: { sessionID: "s1", assistantMessageID: "a1", ordinal: 0, text: "first half" } },
       { type: "session.execution.succeeded", data: { sessionID: "s1" } },

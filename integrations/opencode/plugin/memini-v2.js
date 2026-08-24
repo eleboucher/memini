@@ -2,10 +2,11 @@
  * memini memory plugin for opencode v2 (the Plugin.define / `setup` API).
  *
  * This is the v2 sibling of memini.js. It targets the v2 plugin contract as
- * verified against opencode2 v0.0.0-next-16502 (@opencode-ai/plugin `next`),
- * which differs from the docs at https://opencode.ai/v2/docs/build/plugins in
- * several places — every shape below is feature-detected and was confirmed
- * against the live runtime:
+ * verified against opencode2 v0.0.0-next-16502 and re-checked through
+ * v0.0.0-beta-18050 (@opencode-ai/plugin `next` / `beta`), which differs from
+ * the docs at https://opencode.ai/v2/docs/build/plugins in several places —
+ * every shape below is feature-detected and was confirmed against the live
+ * runtime:
  *
  *   - RECALL — ctx.session.hook("context", …): the docs call this hook
  *     "request", but this build fires "context" (unknown names register without
@@ -25,10 +26,13 @@
  *     also no message-listing method on ctx.session (create/get/prompt/command/
  *     synthetic/generate/interrupt only; session.get returns SessionInfo with
  *     no messages). Capture is therefore event-driven: the user text comes from
- *     `session.input.admitted` (data.input.data.text) and the assistant text
+ *     `session.inbox.enqueued` (data.item.payload.text) and the assistant text
  *     from `session.text.ended` parts (keyed by assistantMessageID + ordinal),
  *     flushed to memini when the execution terminal event arrives. v1's
  *     failed-turn marking maps to execution.failed / execution.interrupted.
+ *     Builds up to next-16502 named that event `session.input.admitted` and
+ *     nested the same Prompt.fields under `data.input.data`; both shapes are
+ *     read, so one plugin covers either build.
  *   - STATUS TOOL — ctx.tool.transform(t => t.add(…)): `add` takes ONE
  *     structural Tool.Info object ({ name, input, description, execute,
  *     options? }) — not the docs' three-argument add(name, def, options). The
@@ -462,7 +466,9 @@ export async function setup(ctx) {
   //
   // There is no `session.idle` and no message list accessor in v2, so a turn
   // is reconstructed from the public event stream:
-  //   session.input.admitted      -> user text    (data.input.data.text)
+  //   session.inbox.enqueued      -> user text    (data.item.payload.text;
+  //                                  session.input.admitted / data.input.data
+  //                                  on builds up to next-16502)
   //   session.text.ended          -> assistant part (data: sessionID,
   //                                  assistantMessageID, ordinal, text)
   //   session.execution.succeeded -> flush        (failed / interrupted flush
@@ -529,8 +535,15 @@ export async function setup(ctx) {
     const data = (event && event.data) || {};
     const sessionID = data.sessionID || (data.properties && data.properties.sessionID);
     if (!sessionID) return;
-    if (type === "session.input.admitted") {
-      const text = data.input && data.input.type === "user" ? data.input.data && data.input.data.text : "";
+    if (type === "session.inbox.enqueued" || type === "session.input.admitted") {
+      // next-17444 renamed the event and its payload: session.input.admitted
+      // { input: { type, data } } became session.inbox.enqueued
+      // { item: { type, payload } }. Both carry Prompt.fields, so `text` is
+      // read the same way once the wrapper is unwrapped. Synthetic and
+      // compaction items are skipped, as the "user" check always did.
+      const item = data.item || data.input;
+      const payload = item && item.type === "user" ? item.payload || item.data : null;
+      const text = payload && payload.text;
       const pending = pendingState(sessionID);
       pending.userText = typeof text === "string" ? text : "";
       pending.texts = new Map();
