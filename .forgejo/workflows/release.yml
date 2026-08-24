@@ -201,6 +201,43 @@ jobs:
           # Ship the integration README as the npm package page.
           cp ../README.md README.md
           npm publish --access public
+  # Publishes the opencode v2 plugin to npm as @eleboucher/opencode-memini-v2.
+  # It is a SEPARATE package from the v1 one on purpose: opencode's loader
+  # resolves a plugin entry through exports["./server"] before falling back to
+  # `main`, and it uses that same "server" kind for v1-style plugins too — so
+  # adding a "./server" key to @eleboucher/opencode-memini would hand the v2
+  # module to v1 hosts, which cannot load it. Version comes from the tag.
+  opencode-v2-npm:
+    needs: [release]
+    runs-on: docker
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v7
+      - name: Install Node.js
+        uses: https://data.forgejo.org/actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - name: Test, stage and publish opencode v2 plugin to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # This runner resolves `working-directory:` against /tmp; cd instead.
+          cd integrations/opencode/plugin
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN secret is empty or missing" >&2
+            exit 1
+          fi
+          node --test
+          cd ../plugin-v2
+          VERSION="${TAG#v}"
+          npm version "${VERSION}" --no-git-tag-version --allow-same-version
+          # Unlike the other integrations this package keeps its own README
+          # (v2-specific install instructions), so nothing is copied over it.
+          # prepack stages dist/ from ../plugin, so the published tree always
+          # matches the sources just tested above.
+          npm publish --access public
   # Publishes the Pi extension to npm as @eleboucher/pi-memini so
   # `"packages": ["npm:@eleboucher/pi-memini"]` resolves. Unlike opencode this
   # plugin is TypeScript: build dist/ (gitignored, referenced by pi.extensions

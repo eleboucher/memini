@@ -43,7 +43,7 @@ session hooks, public event stream, and tool transforms.
 
 The v2 loader treats a `plugins` entry as either an npm package specifier or a
 path. It cannot install this package's `/v2` export subpath as an npm package,
-so V2 has its own package name once published:
+so v2 ships under its own package name:
 
 ```jsonc
 {
@@ -52,7 +52,19 @@ so V2 has its own package name once published:
 }
 ```
 
-For a checkout before the V2 package is published, use the local entrypoint:
+A bare entry resolves to the `latest` dist-tag, so that is where this package
+is published. `opencode2 plugin add @eleboucher/opencode-memini-v2` writes the
+entry for you, using whatever specifier you pass it.
+
+> **Why a second package rather than one with two entrypoints?** opencode
+> resolves a plugin through `exports["./server"]` before falling back to
+> `main`, and it uses that same `server` kind for v1-style plugins. Adding a
+> `./server` key to `@eleboucher/opencode-memini` would therefore hand the v2
+> module to v1 hosts, which cannot load it.
+
+To run from a checkout, use the local entrypoint. opencode does not install
+dependencies for path-loaded plugins; this one has none, so nothing else is
+needed:
 
 ```jsonc
 {

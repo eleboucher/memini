@@ -147,6 +147,31 @@ jobs:
       - name: Test opencode plugin
         run: cd integrations/opencode/plugin && node --test
 
+      # The v2 package is assembled by prepack from ../plugin, so `node --test`
+      # above never exercises the tree that actually gets published. Stage it
+      # and load the entrypoint: this catches a broken generated manifest (a
+      # missing "type": "module" makes node reparse the ESM entry as CommonJS)
+      # or an entrypoint the loader could not resolve.
+      - name: Check opencode v2 package stages and loads
+        run: |
+          cd integrations/opencode/plugin-v2
+          node ./prepare-package.mjs
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const pkg = JSON.parse(readFileSync("./package.json", "utf8"));
+            const entry = pkg.exports["./server"];
+            if (entry !== pkg.main) throw new Error("./server and main must agree");
+            // dist/package.json shadows the root manifest for everything under
+            // dist/, so it has to restate the module type; node only warns.
+            const staged = JSON.parse(readFileSync("./dist/package.json", "utf8"));
+            if (staged.type !== "module") throw new Error("staged dist/package.json must set type: module");
+            const mod = await import(entry);
+            const plugin = mod.default;
+            if (plugin?.id !== "memini" || typeof plugin.setup !== "function") {
+              throw new Error("v2 package entrypoint is not a { id, setup } plugin");
+            }
+          '
+
       # OpenClaw plugin. The build (esbuild) bundles @memini/client into dist/
       # so the published clawpack is self-contained; typebox stays an external
       # npm dependency. `test` runs the bundle guard (issue #34) too.

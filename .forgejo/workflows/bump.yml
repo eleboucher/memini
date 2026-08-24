@@ -77,6 +77,7 @@ jobs:
                    integrations/openclaw/plugin/package.json \
                    integrations/openclaw/plugin/openclaw.plugin.json \
                    integrations/opencode/plugin/package.json \
+                   integrations/opencode/plugin-v2/package.json \
                    integrations/pi/plugin/package.json; do
             sed -i -E 's/("version"[[:space:]]*:[[:space:]]*")[^"]*(")/\1'"${NEXT}"'\2/' "$f"
             grep -q "\"version\": \"${NEXT}\"" "$f" || { echo "failed to set version in $f" >&2; exit 1; }
@@ -111,6 +112,7 @@ jobs:
             integrations/openclaw/plugin/openclaw.plugin.json \
             integrations/openclaw/plugin/plugin.yaml \
             integrations/opencode/plugin/package.json \
+            integrations/opencode/plugin-v2/package.json \
             integrations/pi/plugin/package.json \
             integrations/pi/plugin/package-lock.json \
             integrations/hermes/plugin/memini/plugin.yaml
