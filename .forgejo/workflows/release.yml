@@ -301,14 +301,16 @@ jobs:
             DATE=${{ steps.build-meta.outputs.created }}
           cache-from: type=registry,ref=registry.erwanleboucher.dev/${{ vars.USERNAME }}/memini-buildcache:release
           cache-to: type=registry,ref=registry.erwanleboucher.dev/${{ vars.USERNAME }}/memini-buildcache:release,mode=max,ignore-error=true
-      # Reuses the cache above (cache hit, no recompile); copies the bare
-      # binaries out of the `artifact` stage to prebuilt/<os>_<arch>/memini.
+      # Copies the bare binaries out of the `artifact` stage to
+      # prebuilt/<os>_<arch>/memini; linux reuses the cache above. darwin needs
+      # no runner: the build stage is pinned to BUILDPLATFORM and `artifact` is
+      # FROM scratch, so buildx only flips GOOS/GOARCH.
       - name: Extract release binaries
         uses: https://data.forgejo.org/docker/build-push-action@v7
         with:
           context: .
           target: artifact
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64,linux/arm64,darwin/amd64,darwin/arm64
           outputs: type=local,dest=prebuilt
           build-args: |
             VERSION=${{ github.ref_name }}
@@ -347,10 +349,10 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${TAG#v}"
-          for ARCH in amd64 arm64; do
-            STAGE="memini_${VERSION}_linux_${ARCH}"
+          for PLATFORM in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+            STAGE="memini_${VERSION}_${PLATFORM}"
             mkdir -p "$STAGE"
-            install -m 0755 "prebuilt/linux_${ARCH}/memini" "$STAGE/memini"
+            install -m 0755 "prebuilt/${PLATFORM}/memini" "$STAGE/memini"
             cp LICENSE README.md "$STAGE/"
             tar -czf "${STAGE}.tar.gz" "$STAGE"
           done
@@ -394,8 +396,8 @@ jobs:
           }
           VERSION="${TAG#v}"
           CHECKSUMS="memini_${VERSION}_checksums.txt"
-          for ARCH in amd64 arm64; do
-            upload "memini_${VERSION}_linux_${ARCH}.tar.gz"
+          for PLATFORM in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+            upload "memini_${VERSION}_${PLATFORM}.tar.gz"
           done
           upload "${CHECKSUMS}"
           upload "${CHECKSUMS}.cosign.bundle"

@@ -34,7 +34,7 @@ helm install memini \
 
 A released chart has the exact image **digest** of that release's build pinned into its values, so it never depends on tag resolution. A chart installed from a git checkout does not — see the callout in the Kubernetes section.
 
-**Release tarballs**, attached to the release at `https://git.erwanleboucher.dev/eleboucher/memini/releases`: `memini_0.7.18_linux_amd64.tar.gz` and `memini_0.7.18_linux_arm64.tar.gz`, each holding the static `memini` binary plus LICENSE and README. The binaries are extracted from the same build that produced the container image, not recompiled. Next to them sit `memini_0.7.18_checksums.txt` and its cosign bundle `memini_0.7.18_checksums.txt.cosign.bundle`.
+**Release tarballs**, attached to the release at `https://git.erwanleboucher.dev/eleboucher/memini/releases`: `memini_0.7.18_<os>_<arch>.tar.gz` for `linux_amd64`, `linux_arm64`, `darwin_amd64` and `darwin_arm64`, each holding the static `memini` binary plus LICENSE and README. The linux binaries are extracted from the same build that produced the container image, not recompiled; the darwin ones are cross-compiled in the same job. The darwin binaries are not Apple-notarized, so macOS quarantines them on download — clear it with `xattr -d com.apple.quarantine ./memini` after verifying the checksum. Next to them sit `memini_0.7.18_checksums.txt` and its cosign bundle `memini_0.7.18_checksums.txt.cosign.bundle`.
 
 ### Verifying signatures
 
