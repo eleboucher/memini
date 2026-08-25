@@ -89,7 +89,7 @@ means no home leg; there is no derivation, just this explicit config/env pair.
 
 ```
 1. MEMINI_NAMESPACE       local env override, wins outright
-2. server-side pin        set with memini:namespace, stored on the memini server
+2. server-side pin        set with memini-namespace, stored on the memini server
 3. the `namespace` config sent to the server as the declared namespace
 4. "openclaw"             the default
 ```
@@ -125,8 +125,8 @@ temporary big hammer.
 
 | Command            | What it does                                                         |
 | ------------------ | -------------------------------------------------------------------- |
-| `memini:status`    | Effective settings, resolved namespace **with provenance**, warnings |
-| `memini:namespace` | Show, set, or clear the server-side namespace pin for this install   |
+| `memini-status`    | Effective settings, resolved namespace **with provenance**, warnings |
+| `memini-namespace` | Show, set, or clear the server-side namespace pin for this install   |
 
 Recall shaping (both optional, matching the opencode/Claude Code plugins):
 `recall_limit` (max memories per turn, default **3**) and `recall_max_tokens`

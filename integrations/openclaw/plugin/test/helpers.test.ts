@@ -799,7 +799,7 @@ test("sessionLive: a network failure always degrades regardless of fallback_on_e
   }
 });
 
-// --- registerMeminiCommands: memini:status / memini:namespace -----------------
+// --- registerMeminiCommands: memini-status / memini-namespace -----------------
 
 function fakeApi() {
   const commands: Record<string, (ctx: any) => Promise<{ text: string }>> = {};
@@ -812,22 +812,22 @@ function fakeApi() {
   return { api, commands };
 }
 
-test("registerMeminiCommands: registers memini:status and memini:namespace", () => {
+test("registerMeminiCommands: registers memini-status and memini-namespace", () => {
   const { api, commands } = fakeApi();
   registerMeminiCommands(api, fixedSessionContext({}, undefined));
-  assert.deepEqual(Object.keys(commands).sort(), ["memini:namespace", "memini:status"]);
+  assert.deepEqual(Object.keys(commands).sort(), ["memini-namespace", "memini-status"]);
 });
 
-test("memini:namespace (no args): shows the live namespace + pin details", async () => {
+test("memini-namespace (no args): shows the live namespace + pin details", async () => {
   const { api, commands } = fakeApi();
   const hs = fakeHandshake({ namespace: "acme/widget", namespace_source: "pin", pin: { key: "remote:x", created_by: "kit" } });
   registerMeminiCommands(api, fixedSessionContext({}, hs));
-  const { text } = await commands["memini:namespace"]({});
+  const { text } = await commands["memini-namespace"]({});
   assert.match(text, /namespace: acme\/widget\s+\(source: server:pin\)/);
   assert.match(text, /pin:\s+key remote:x, set by kit/);
 });
 
-test("memini:namespace <ns>: PUTs a pin keyed by the daemon-cwd toplevel_path and invalidates the memo", async () => {
+test("memini-namespace <ns>: PUTs a pin keyed by the daemon-cwd toplevel_path and invalidates the memo", async () => {
   // A plain non-git directory on purpose: the pin identity is the daemon's
   // cwd path, so no git repo is needed to pin a gateway install.
   const cwd = tmpProject(false);
@@ -849,7 +849,7 @@ test("memini:namespace <ns>: PUTs a pin keyed by the daemon-cwd toplevel_path an
 
     const { api, commands } = fakeApi();
     registerMeminiCommands(api, ctx);
-    const { text } = await commands["memini:namespace"]({ args: "acme/api" });
+    const { text } = await commands["memini-namespace"]({ args: "acme/api" });
     assert.match(text, /namespace pinned: acme\/api/);
     const put = calls.find((c) => c.method === "PUT");
     assert.ok(put, "expected a PUT /v1/pins call");
@@ -864,7 +864,7 @@ test("memini:namespace <ns>: PUTs a pin keyed by the daemon-cwd toplevel_path an
   }
 });
 
-test("a pin written via memini:namespace is resolved by this gateway's own next handshake", async () => {
+test("a pin written via memini-namespace is resolved by this gateway's own next handshake", async () => {
   // The end-to-end loop the pin exists for: PUT the pin, memo invalidated,
   // and the very next handshake (same facts, matched by path:<daemon-cwd>)
   // resolves it as server:pin, beating the declared/config namespace.
@@ -899,7 +899,7 @@ test("a pin written via memini:namespace is resolved by this gateway's own next 
 
     const { api, commands } = fakeApi();
     registerMeminiCommands(api, ctx);
-    await commands["memini:namespace"]({ args: "acme/api" });
+    await commands["memini-namespace"]({ args: "acme/api" });
 
     // After the pin: no TTL wait needed (the write invalidated the memo), and
     // the fresh handshake resolves the pin.
@@ -914,7 +914,7 @@ test("a pin written via memini:namespace is resolved by this gateway's own next 
   }
 });
 
-test("memini:namespace <ns>: refuses a header-injecting namespace instead of normalizing it", async () => {
+test("memini-namespace <ns>: refuses a header-injecting namespace instead of normalizing it", async () => {
   const cwd = tmpProject();
   const realFetch = globalThis.fetch;
   let putCalled = false;
@@ -926,7 +926,7 @@ test("memini:namespace <ns>: refuses a header-injecting namespace instead of nor
     const ctx = createSessionContext({}, process.env, cwd);
     const { api, commands } = fakeApi();
     registerMeminiCommands(api, ctx);
-    const { text } = await commands["memini:namespace"]({ args: "evil\r\nX-Evil: 1" });
+    const { text } = await commands["memini-namespace"]({ args: "evil\r\nX-Evil: 1" });
     assert.match(text, /invalid namespace/);
     assert.equal(putCalled, false);
   } finally {
@@ -934,7 +934,7 @@ test("memini:namespace <ns>: refuses a header-injecting namespace instead of nor
   }
 });
 
-test("memini:namespace --clear: 404 reports nothing to clear; success invalidates the memo", async () => {
+test("memini-namespace --clear: 404 reports nothing to clear; success invalidates the memo", async () => {
   const cwd = tmpProject();
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async () => ({ ok: false, status: 404, async json() { return {}; } })) as any;
@@ -942,14 +942,14 @@ test("memini:namespace --clear: 404 reports nothing to clear; success invalidate
     const ctx = createSessionContext({}, process.env, cwd);
     const { api, commands } = fakeApi();
     registerMeminiCommands(api, ctx);
-    const { text } = await commands["memini:namespace"]({ args: "--clear" });
+    const { text } = await commands["memini-namespace"]({ args: "--clear" });
     assert.match(text, /nothing to clear/);
   } finally {
     globalThis.fetch = realFetch;
   }
 });
 
-test("memini:namespace: an unreachable server on a pin write points at the config namespace value", async () => {
+test("memini-namespace: an unreachable server on a pin write points at the config namespace value", async () => {
   const cwd = tmpProject();
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async () => { throw new Error("ECONNREFUSED"); }) as any;
@@ -957,7 +957,7 @@ test("memini:namespace: an unreachable server on a pin write points at the confi
     const ctx = createSessionContext({}, process.env, cwd);
     const { api, commands } = fakeApi();
     registerMeminiCommands(api, ctx);
-    const { text } = await commands["memini:namespace"]({ args: "acme/api" });
+    const { text } = await commands["memini-namespace"]({ args: "acme/api" });
     assert.match(text, /Could not reach the memini server/);
     assert.match(text, /config `namespace`/);
   } finally {
@@ -965,20 +965,20 @@ test("memini:namespace: an unreachable server on a pin write points at the confi
   }
 });
 
-test("memini:status reports an unreachable server rather than throwing into the host", async () => {
+test("memini-status reports an unreachable server rather than throwing into the host", async () => {
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async () => { throw new Error("ECONNREFUSED"); }) as any;
   try {
     const { api, commands } = fakeApi();
     registerMeminiCommands(api, fixedSessionContext({}, undefined));
-    const { text } = await commands["memini:status"]({});
+    const { text } = await commands["memini-status"]({});
     assert.match(text, /reachable\s+NO/);
   } finally {
     globalThis.fetch = realFetch;
   }
 });
 
-test("memini:status reports the read set, redacts the bearer, and reads a 404 /healthz as not-exposed", async () => {
+test("memini-status reports the read set, redacts the bearer, and reads a 404 /healthz as not-exposed", async () => {
   const realFetch = globalThis.fetch;
   const prevKey = process.env.MEMINI_API_KEY;
   const requests: { url: string; headers: any }[] = [];
@@ -1001,7 +1001,7 @@ test("memini:status reports the read set, redacts the bearer, and reads a 404 /h
     process.env.MEMINI_API_KEY = "sk-abcdefghijklmnop4f2a";
     const { api, commands } = fakeApi();
     registerMeminiCommands(api, fixedSessionContext({}, fakeHandshake()));
-    const { text } = await commands["memini:status"]({ agentId: "miso" });
+    const { text } = await commands["memini-status"]({ agentId: "miso" });
 
     assert.match(text, /reachable\s+yes/);
     assert.match(text, /\/healthz not routed/);
