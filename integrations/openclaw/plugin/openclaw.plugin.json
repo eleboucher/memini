@@ -30,6 +30,7 @@
       "timeout_ms": { "type": "number" },
       "expose_tools": { "type": "boolean" },
       "recall_limit": { "type": "number" },
+      "recall_position": { "type": "string", "enum": ["prepend", "append"] },
       "recall_max_tokens": { "type": "number" },
       "min_capture_chars": { "type": "number" },
       "namespace_prefix": { "type": "string" },

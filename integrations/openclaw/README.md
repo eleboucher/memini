@@ -11,7 +11,7 @@ no tool calls required from the agent.
 What it wires (via `api.registerMemoryCapability` + two hooks):
 
 - **`before_prompt_build`** — searches memini for the incoming prompt and
-  prepends the matches as context. It excludes the current session's own
+  injects the matches as context. It excludes the current session's own
   captured turns (via `exclude_metadata`), so a turn still in the live transcript
   isn't echoed back as "long-term memory" the next turn; captures from earlier
   sessions are still recalled.
@@ -135,6 +135,11 @@ other integrations; set it `> 0` to cap a raised `recall_limit`, the tail is
 dropped with a truncation footer). `recall_max_tokens` also reads
 `MEMINI_INJECT_RECALL_MAX_TOK`, and `MEMINI_INJECT_LABELS` (`tier`, `confidence`,
 `age`) toggles the per-bullet tag prefix.
+
+`recall_position` controls where automatic recall is placed. It defaults to
+`"prepend"`, preserving existing behavior. Set it to `"append"` to place recall
+after the current prompt, keeping the existing conversation prefix stable for
+provider prefix caching.
 
 The **repeat-injection cooldown** keeps an already-injected memory from being
 re-served on every step. It is windowed on two dimensions, and an injected id

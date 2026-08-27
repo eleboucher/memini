@@ -2,7 +2,7 @@
  * memini memory-slot plugin for OpenClaw.
  *
  * Claims plugins.slots.memory via api.registerMemoryCapability, plus:
- *   - before_prompt_build: recall relevant memories, prepend as context
+ *   - before_prompt_build: recall relevant memories as prepend/append context
  *   - agent_end: capture the completed turn into memini
  *
  * Rather than wiring the slot's `runtime`/`flushPlanResolver` (the host-driven
@@ -120,6 +120,7 @@ const typeboxConfigSchema = Type.Object(
     timeout_ms: Type.Optional(Type.Number()),
     expose_tools: Type.Optional(Type.Boolean()),
     recall_limit: Type.Optional(Type.Number()),
+    recall_position: Type.Optional(Type.Union([Type.Literal("prepend"), Type.Literal("append")])),
     recall_min_score: Type.Optional(Type.Number()),
     inject_cooldown_ms: Type.Optional(Type.Number()),
     inject_cooldown_prompts: Type.Optional(Type.Number()),
@@ -318,6 +319,9 @@ export function resolveConfig(
     // are available yet here, so this is env-or-default only; effectiveConfig
     // recomputes these three once a handshake is in hand.
     recall_limit: recallLimitExplicit ? c.recall_limit : effectiveSetting<number>(knob("recall_limit"), undefined, env).value,
+    // Prepending is the established behavior. Appending keeps prior messages
+    // byte-stable for providers that cache conversation prefixes.
+    recall_position: c.recall_position === "append" ? "append" : "prepend",
     // inject_recall_min_score floors the FINAL composite score. Resolves like
     // recall_limit: config wins outright when explicitly set, else env-override >
     // (later) server > built-in default (0 / no floor).
@@ -1409,7 +1413,7 @@ const TOOL_NAMES = ["memory_recall", "memory_briefing", "memory_list", "memory_r
 // before the factory returns the tool array.
 // EchoGuard is the echo-suppression state shared between the hook handlers
 // (recallHandler/captureHandler) and the explicit tools (memory_recall). The
-// tools bypass the prependContext channel, so without this they'd return
+// tools bypass the automatic recall context channel, so without this they'd return
 // just-captured turns and already-injected memories that recallHandler
 // already filters.
 export interface EchoGuard {
@@ -2021,7 +2025,8 @@ const plugin: {
         );
       }
       if (fit.dropped > 0) lines.push(`[... ${fit.dropped} item(s) truncated by token budget]`);
-      return { prependContext: lines.join("\n") };
+      const context = lines.join("\n");
+      return live.recall_position === "append" ? { appendContext: context } : { prependContext: context };
     };
     // api.on is OpenClaw's typed hook surface and the only one that can register
     // before_prompt_build/agent_end (the coarse api.registerHook is for internal

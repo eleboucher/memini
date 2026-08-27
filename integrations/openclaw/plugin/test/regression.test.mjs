@@ -465,6 +465,38 @@ test("resolveConfig falls back when recall_limit is zero/negative", () => {
   assert.equal(resolveConfig({ recall_limit: -1 }).recall_limit, 3, "negative falls back to default");
 });
 
+test("recall_position defaults to prepend and accepts append", () => {
+  assert.equal(resolveConfig(undefined).recall_position, "prepend");
+  assert.equal(resolveConfig({ recall_position: "append" }).recall_position, "append");
+  assert.equal(resolveConfig({ recall_position: "invalid" }).recall_position, "prepend");
+});
+
+test("recall appends context when recall_position is append", async () => {
+  const hooks = {};
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = withHandshakeFailure(async () => ({
+    ok: true,
+    async json() {
+      return { results: [{ memory: { summary: "cache-safe fact", tier: "semantic" }, score: 0.9 }] };
+    },
+    async text() { return ""; },
+  }));
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false, recall_position: "append" },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    const result = await hooks.before_prompt_build({ prompt: "q" }, {});
+    assert.match(result.appendContext, /cache-safe fact/);
+    assert.equal(result.prependContext, undefined);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("recall sends recall_limit, no min_score, and the default 0.5 min_rank_score on /v1/search", async () => {
   const hooks = {};
   const requests = [];
