@@ -1,6 +1,6 @@
 {
   "name": "memini",
-  "version": "0.7.20",
+  "version": "0.7.21",
   "description": "Persistent memory for AI coding agents via the memini memory service. 7 hooks, MCP tools, and skills that capture tool usage and inject prior context at session start and per prompt.",
   "author": {
     "name": "memini maintainers",
