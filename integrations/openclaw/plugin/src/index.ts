@@ -1017,7 +1017,7 @@ export async function sessionLive(
   return effectiveConfig(ctx.cfg, hs, env);
 }
 
-// --- pins (/memini:namespace) -------------------------------------------------
+// --- pins (/memini-namespace) -------------------------------------------------
 
 async function pinsRequest(
   boot: Bootstrap,
@@ -1061,7 +1061,7 @@ function offlineMessage(boot: Bootstrap, error: unknown): string {
   );
 }
 
-// --- /memini:status + /memini:namespace --------------------------------------
+// --- /memini-status + /memini-namespace --------------------------------------
 
 // statusGet is the diagnostics-only GET. It bypasses the client's
 // warn-and-return-null degrade path: a failed probe here is data for the report,
@@ -1260,8 +1260,20 @@ export function renderStatus(
   return L.join("\n");
 }
 
+// openclaw's command-name validator rejects a colon ("Command name must start
+// with a letter and contain only letters, numbers, hyphens, and underscores"),
+// so the `plugin:command` convention Claude Code uses for these same two
+// commands (plugin/commands/status.md, plugin/commands/namespace.md, resolved
+// via ${CLAUDE_PLUGIN_ROOT}) cannot be reused verbatim here — see
+// https://github.com/eleboucher/memini/issues/82. These names are openclaw-only
+// (Claude Code derives its own from the plugin/command directory layout, not
+// from this file), so the colon is swapped for a hyphen at this boundary only:
+// nothing upstream of registerCommand needs to change.
+const OPENCLAW_STATUS_COMMAND = "memini-status";
+const OPENCLAW_NAMESPACE_COMMAND = "memini-namespace";
+
 /**
- * registerMeminiCommands wires memini:status and memini:namespace.
+ * registerMeminiCommands wires memini-status and memini-namespace.
  *
  * The namespace command no longer writes a local override file: `<namespace>`/
  * `--clear` now PUT/DELETE a server-side pin (POST/DELETE /v1/pins) keyed by
@@ -1281,7 +1293,7 @@ export function registerMeminiCommands(api: any, ctx: SessionContext) {
   };
 
   api.registerCommand({
-    name: "memini:status",
+    name: OPENCLAW_STATUS_COMMAND,
     description: "Show memini's effective settings: namespace + provenance, connection, server read set",
     acceptsArgs: false,
     async handler(cmdCtx: any) {
@@ -1301,7 +1313,7 @@ export function registerMeminiCommands(api: any, ctx: SessionContext) {
   });
 
   api.registerCommand({
-    name: "memini:namespace",
+    name: OPENCLAW_NAMESPACE_COMMAND,
     description: "Show, set, or --clear the server-side memini namespace pin for this gateway install",
     acceptsArgs: true,
     async handler(cmdCtx: any) {
@@ -1323,8 +1335,8 @@ export function registerMeminiCommands(api: any, ctx: SessionContext) {
             out.push(`take effect while it is set.`);
           }
           out.push("");
-          out.push(`Set a pin with:    /memini:namespace <namespace>`);
-          out.push(`Clear it with:     /memini:namespace --clear`);
+          out.push(`Set a pin with:    /${OPENCLAW_NAMESPACE_COMMAND} <namespace>`);
+          out.push(`Clear it with:     /${OPENCLAW_NAMESPACE_COMMAND} --clear`);
           return { text: out.join("\n") };
         }
 
@@ -2091,7 +2103,7 @@ const plugin: {
       }
     }
 
-    // /memini:status and /memini:namespace. Best-effort for the same reason: a
+    // /memini-status and /memini-namespace. Best-effort for the same reason: a
     // host build without registerCommand must not cost the plugin its memory slot.
     if (typeof api.registerCommand === "function") {
       try {

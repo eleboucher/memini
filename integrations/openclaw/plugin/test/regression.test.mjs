@@ -153,10 +153,10 @@ test("the base namespace chain is MEMINI_NAMESPACE > config > openclaw", () => {
   });
 });
 
-// The pin loop, from the shipped bundle: memini:namespace PUTs a pin keyed by
+// The pin loop, from the shipped bundle: memini-namespace PUTs a pin keyed by
 // the same daemon-cwd toplevel_path every handshake sends, the write drops the
 // memo, and the next handshake resolves server:pin over the declared value.
-test("a pin written via memini:namespace is resolved by the gateway's own next handshake", async () => {
+test("a pin written via memini-namespace is resolved by the gateway's own next handshake", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "openclaw-memini-pin-"));
   const realFetch = globalThis.fetch;
   let pinned = false;
@@ -186,7 +186,7 @@ test("a pin written via memini:namespace is resolved by the gateway's own next h
 
     const commands = {};
     registerMeminiCommands({ logger: { warn() {} }, registerCommand(def) { commands[def.name] = def.handler; } }, ctx);
-    const { text } = await commands["memini:namespace"]({ args: "acme/api" });
+    const { text } = await commands["memini-namespace"]({ args: "acme/api" });
     assert.match(text, /namespace pinned: acme\/api/);
 
     // No TTL wait: the write invalidated the memo, so the next resolution
@@ -199,7 +199,7 @@ test("a pin written via memini:namespace is resolved by the gateway's own next h
   }
 });
 
-test("register wires memini:status and memini:namespace when the host supports commands", () => {
+test("register wires memini-status and memini-namespace when the host supports commands", () => {
   const names = [];
   plugin.register({
     pluginConfig: { enabled: true },
@@ -211,7 +211,7 @@ test("register wires memini:status and memini:namespace when the host supports c
       names.push(def.name);
     },
   });
-  assert.deepEqual(names.sort(), ["memini:namespace", "memini:status"]);
+  assert.deepEqual(names.sort(), ["memini-namespace", "memini-status"]);
 });
 
 test("register survives a host with no registerCommand at all", () => {
