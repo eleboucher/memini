@@ -36,8 +36,8 @@ importers:
         specifier: 0.84.2
         version: 0.84.2(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3)
       '@earendil-works/pi-tui':
-        specifier: 0.84.1
-        version: 0.84.1
+        specifier: 0.84.3
+        version: 0.84.3
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.3
@@ -233,12 +233,8 @@ packages:
     resolution: {integrity: sha512-2BJI6qwRQfnM0Q7seL1+SbacU/jRRjBnN7Hu3n9BjAn7/s5FaBNnvdD1qBQYRsFTHfjqMaDsjYqanPyqwXj99w==}
     engines: {node: '>=22.19.0'}
 
-  '@earendil-works/pi-tui@0.84.1':
-    resolution: {integrity: sha512-udeXFbgEhJ6JiB0uguwNVNkDy2FENfmtQwPcY+/iJ8GWeq18wkal1tKqa5YyeH0IqtX1vG0cGh8zfSYzyzVuLA==}
-    engines: {node: '>=22.19.0'}
-
-  '@earendil-works/pi-tui@0.84.2':
-    resolution: {integrity: sha512-ds2TLihOnM5sLJB3VpXV6y0uR5efVuHf4MN7yDpsty6hA2DUO/EDVzjp/0od0G2JslzVLMjT8T8zavtxVb+qbg==}
+  '@earendil-works/pi-tui@0.84.3':
+    resolution: {integrity: sha512-fS6OEQKEEALnKa6Uw8LcgZZ+9CWck7f3MQSCETQp6leUgIFwMEDtKmOUnL9nsYm+RIPmy7OmplVxYRbV6hiaFg==}
     engines: {node: '>=22.19.0'}
 
   '@esbuild/aix-ppc64@0.28.2':
@@ -2198,7 +2194,7 @@ snapshots:
       '@earendil-works/pi-ai': 0.84.2(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3)
       '@earendil-works/pi-client': 0.84.2
       '@earendil-works/pi-protocol': 0.84.2
-      '@earendil-works/pi-tui': 0.84.2
+      '@earendil-works/pi-tui': 0.84.3
       '@silvia-odwyer/photon-node': 0.3.4
       chalk: 5.6.2
       cross-spawn: 7.0.6
@@ -2236,12 +2232,7 @@ snapshots:
       get-east-asian-width: 1.6.0
       marked: 18.0.5
 
-  '@earendil-works/pi-tui@0.84.1':
-    dependencies:
-      get-east-asian-width: 1.6.0
-      marked: 18.0.5
-
-  '@earendil-works/pi-tui@0.84.2':
+  '@earendil-works/pi-tui@0.84.3':
     dependencies:
       get-east-asian-width: 1.6.0
       marked: 18.0.5
