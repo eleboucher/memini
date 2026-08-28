@@ -506,11 +506,17 @@ jobs:
           registry: registry.erwanleboucher.dev
           username: ${{ vars.USERNAME }}
           password: ${{ secrets.APOCI_REGISTRY_TOKEN }}
-      - name: Build chart dependencies
+      # Deps are vendored in charts/memini/charts/ (see ci.yml); `helm
+      # package` below embeds them, so no download is needed. Verify
+      # offline that Chart.lock is in sync with Chart.yaml.
+      - name: Verify vendored chart dependencies
         run: |
           set -euo pipefail
-          helm repo add bjw-s https://bjw-s-labs.github.io/helm-charts
-          helm dependency build charts/memini
+          helm dependency list charts/memini | awk 'NR>1 && NF && $NF!="ok" { bad=1 } END { exit bad+0 }' || {
+            echo "::error::Chart.lock is out of sync with Chart.yaml — re-vendor the dependency"
+            helm dependency list charts/memini
+            exit 1
+          }
       - name: Package and push chart to git.erwanleboucher.dev
         id: push-git
         run: |

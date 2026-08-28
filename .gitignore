@@ -30,9 +30,12 @@ qa_*.jsonl
 /locomo-qa
 /memini
 
-# Vendored Helm subchart tarballs (re-fetched via `helm dependency build`;
-# Chart.lock is committed).
-/charts/*/charts/
+# Helm subchart download dir; the memini chart's dependency tarballs are
+# deliberately vendored (committed) so CI/release never fetches from the
+# flaky GitHub Pages helm repo — see the "Verify vendored chart
+# dependencies" step. Everything else under charts/*/charts/ stays ignored.
+/charts/*/charts/*
+!/charts/memini/charts/*.tgz
 .bench-mining/
 
 # Deepwork session state (local planning, not committed).
