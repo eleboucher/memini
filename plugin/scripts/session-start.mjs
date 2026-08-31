@@ -219,16 +219,30 @@ async function main() {
   // Mirror the API key into the 0600 credentials file the MCP headersHelper
   // falls back to: Claude Code >= 2.1.238 strips credential env vars from
   // plugin headersHelpers, but hooks (this process) keep the full env — the
-  // same asymmetry the plugin-root breadcrumb already bridges. An unset
-  // MEMINI_API_KEY retires the stored copy so the file tracks the env truth
-  // instead of replaying a rotated-away bearer forever. Failure is loud when
-  // a key exists: silently skipping the write recreates the exact
-  // reads-work-writes-don't failure this exists to end.
-  const cred = syncStoredApiKey(ctx.boot.baseUrl, ctx.boot.apiKey);
-  if (!cred.ok && ctx.boot.apiKey) {
+  // same asymmetry the plugin-root breadcrumb already bridges. Retirement is
+  // tri-state, so this MUST pass the raw env value: ctx.boot.apiKey has
+  // already been through readBootstrap's `env.MEMINI_API_KEY || ""`, which
+  // collapses "absent" into "explicitly empty" — and that collapse was the
+  // footgun. It made one session launched from a keyless env (an IDE/GUI
+  // launcher, or Codex running this same script) delete the credential every
+  // other session's MCP reconnect depends on. Set-but-empty still retires,
+  // so a rotated-away bearer is not replayed forever.
+  const envApiKey = process.env.MEMINI_API_KEY;
+  const cred = syncStoredApiKey(ctx.boot.baseUrl, envApiKey);
+  // Failure is loud when a key exists: silently skipping the write recreates
+  // the exact reads-work-writes-don't failure this exists to end.
+  if (!cred.ok && envApiKey) {
     console.error(
       `[memini] could not store the API key for the MCP headersHelper at ${cred.path} (${cred.error}); ` +
         `on Claude Code >= 2.1.238 memini's MCP tools may fail to authenticate`,
+    );
+  }
+  // Deleting the bearer other sessions authenticate with is too consequential
+  // to do silently — say it, so a stray `MEMINI_API_KEY=` is diagnosable.
+  if (cred.action === "removed") {
+    console.error(
+      `[memini] MEMINI_API_KEY is set but empty; retired the stored MCP credential for ` +
+        `${ctx.boot.baseUrl} at ${cred.path}`,
     );
   }
 

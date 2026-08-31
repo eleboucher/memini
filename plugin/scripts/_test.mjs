@@ -411,7 +411,7 @@ test("session-start.mjs: handshake DOWN → degraded local namespace, still emit
   assert.doesNotMatch(stdout, /no stored memories yet/, "a null briefing must not claim emptiness");
 });
 
-test("session-start.mjs: mirrors MEMINI_API_KEY to the credentials file and retires it when unset", async () => {
+test("session-start.mjs: mirrors MEMINI_API_KEY, and a session with NO key leaves the stored copy alone", async () => {
   const config = freshConfig();
   const base = { MEMINI_BASE_URL: DEAD_URL, XDG_CACHE_HOME: freshCache(), XDG_CONFIG_HOME: config };
   await runHook("session-start.mjs", JSON.stringify({ cwd: __dirname, session_id: "cred-1" }), {
@@ -424,11 +424,33 @@ test("session-start.mjs: mirrors MEMINI_API_KEY to the credentials file and reti
   assert.equal(parsed.credentials[key].api_key, "tok-abc");
   if (process.platform !== "win32") assert.equal(statSync(p).mode & 0o777, 0o600, "bearer at rest must be 0600");
 
-  // Env truth changed (key unset): the stored copy must not outlive it —
-  // runHook strips MEMINI_API_KEY from the inherited env, so this spawn
-  // genuinely has none.
+  // The IDE/GUI-launcher regression: runHook strips MEMINI_API_KEY, so this
+  // spawn genuinely has none. An ABSENT var is not a revocation — deleting
+  // here is what stranded every other session's MCP reconnect on a bare 401.
+  const before = readFileSync(p, "utf8");
   await runHook("session-start.mjs", JSON.stringify({ cwd: __dirname, session_id: "cred-2" }), base);
-  assert.equal(existsSync(p), false, "unset key retires the stored credential");
+  assert.equal(existsSync(p), true, "a keyless session must not retire the stored credential");
+  assert.equal(readFileSync(p, "utf8"), before, "and must not rewrite the file either");
+});
+
+test("session-start.mjs: an explicitly EMPTY MEMINI_API_KEY retires the stored credential, loudly", async () => {
+  const config = freshConfig();
+  const base = { MEMINI_BASE_URL: DEAD_URL, XDG_CACHE_HOME: freshCache(), XDG_CONFIG_HOME: config };
+  await runHook("session-start.mjs", JSON.stringify({ cwd: __dirname, session_id: "cred-3" }), {
+    ...base,
+    MEMINI_API_KEY: "tok-abc",
+  });
+  const p = join(config, "memini", "credentials");
+  assert.equal(existsSync(p), true, "precondition: the bearer was mirrored");
+
+  // Set-but-empty is the deliberate "forget this bearer", and unlike before it
+  // says so on stderr instead of silently emptying the file.
+  const { stderr } = await runHook("session-start.mjs", JSON.stringify({ cwd: __dirname, session_id: "cred-4" }), {
+    ...base,
+    MEMINI_API_KEY: "",
+  });
+  assert.equal(existsSync(p), false, "an explicit empty key retires the stored credential");
+  assert.match(stderr, /retired the stored MCP credential/, "retirement must not be silent");
 });
 
 test("session-start.mjs: reachable handshake but a null briefing does NOT claim emptiness", async () => {
