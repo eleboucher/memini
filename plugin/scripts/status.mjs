@@ -22,6 +22,8 @@ import {
   isPlaintextBearerUnsafe,
   redactValue,
   cacheDir,
+  credentialsPath,
+  readStoredApiKey,
 } from "./_client.gen.mjs";
 import fs from "node:fs";
 import path from "node:path";
@@ -233,6 +235,41 @@ async function main() {
       code: "plaintext-bearer",
       message: `a bearer token is configured for plaintext HTTP to ${boot.baseUrl}; the token and your memory payloads can be observed on the network.`,
       fix: "Use HTTPS, or tunnel over SSH. Set MEMINI_REQUIRE_HTTPS=1 to make this a hard refusal.",
+    });
+  }
+
+  // Credential-file drift. Claude Code >= 2.1.238 strips credential env vars
+  // from a plugin's MCP headersHelper, so MCP tool calls authenticate from the
+  // credentials file that SessionStart mirrors MEMINI_API_KEY into — while
+  // these hooks (and this command) read the environment. When the two
+  // disagree, the only symptom is a bare 401 that Claude Code renders as a
+  // bogus "Dynamic Client Registration rejected (HTTP 404)". Say it plainly.
+  //
+  // The RAW env var, not boot.apiKey: readBootstrap collapses it with `|| ""`,
+  // which erases the difference between "unset" (the mirror is the only key,
+  // and is kept) and an explicit "" (a deliberate retirement). Neither key is
+  // ever printed — only whether they match — because this output is meant to
+  // be pasted into an issue.
+  const envKey = process.env.MEMINI_API_KEY;
+  const storedKey = readStoredApiKey(boot.baseUrl, process.env);
+
+  if (envKey && storedKey !== envKey) {
+    warnings.push({
+      level: "warn",
+      code: "cred-file-stale",
+      message: storedKey
+        ? `MEMINI_API_KEY is set here, but ${credentialsPath(process.env)} holds a DIFFERENT key for ${boot.baseUrl}. MCP tool calls authenticate from that file, so they are acting as the old key while these hooks use the new one.`
+        : `MEMINI_API_KEY is set here, but ${credentialsPath(process.env)} has no entry for ${boot.baseUrl}. MCP tool calls authenticate from that file, so they are sent without a bearer and the server answers 401 (Claude Code shows this as "Dynamic Client Registration rejected").`,
+      fix: "Start a new Claude Code session from this environment — SessionStart mirrors the current MEMINI_API_KEY into the credentials file.",
+    });
+  }
+
+  if (envKey === undefined && storedKey) {
+    warnings.push({
+      level: "info",
+      code: "cred-file-only",
+      message: `MEMINI_API_KEY is unset here, but ${credentialsPath(process.env)} holds a key for ${boot.baseUrl}. MCP tools authenticate from that file, while REST calls made from THIS environment (these hooks, and this command) are unauthenticated.`,
+      fix: "Export MEMINI_API_KEY here if the hooks should carry the same identity as the MCP tools.",
     });
   }
 
